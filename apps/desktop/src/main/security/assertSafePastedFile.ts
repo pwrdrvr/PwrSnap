@@ -246,6 +246,16 @@ function defaultPrefixes(): readonly string[] {
 }
 
 let testPrefixOverride: readonly string[] | null = null;
+type PrivilegedRootRealpath = (path: string) => Promise<string>;
+let privilegedRootRealpath: PrivilegedRootRealpath = async (path) =>
+  await realpath(path);
+
+class PrivilegedPolicyInspectionError extends Error {
+  constructor() {
+    super("Unable to inspect privileged path policy");
+    this.name = "PrivilegedPolicyInspectionError";
+  }
+}
 
 /** Test-only override. An empty array intentionally disables prefix checks. */
 export function __setPrivilegedPrefixesForTest(
@@ -254,7 +264,37 @@ export function __setPrivilegedPrefixesForTest(
   testPrefixOverride = prefixes;
 }
 
-async function canonicalizeIfPresent(rootPath: string): Promise<string | null> {
+/** Test-only injection seam for privileged-root inspection failures. */
+export function __setPrivilegedRootRealpathForTest(
+  implementation: PrivilegedRootRealpath | null
+): void {
+  privilegedRootRealpath =
+    implementation ?? (async (path) => await realpath(path));
+}
+
+function isAbsentPathError(cause: unknown): boolean {
+  if (!(cause instanceof Error) || !("code" in cause)) return false;
+  const code = (cause as NodeJS.ErrnoException).code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+async function canonicalizePrivilegedRoot(
+  rootPath: string
+): Promise<string | null> {
+  try {
+    return await privilegedRootRealpath(rootPath);
+  } catch (cause) {
+    // A configured/common root may legitimately not exist on this machine.
+    // Every other failure means the policy could not prove where the root
+    // points, so omitting it would fail open.
+    if (isAbsentPathError(cause)) return null;
+    throw new PrivilegedPolicyInspectionError();
+  }
+}
+
+async function canonicalizeOptionalPath(
+  rootPath: string
+): Promise<string | null> {
   try {
     return await realpath(rootPath);
   } catch {
@@ -286,7 +326,10 @@ export function __isExpectedDarwinTempDirForTest(
 export async function __canonicalDarwinTempDirForTest(
   candidatePath: string
 ): Promise<string | null> {
-  const canonicalPath = await canonicalizeIfPresent(candidatePath);
+  // Failure here only removes the /private/var exception, which is itself the
+  // fail-closed result. Privileged-root inspection below is intentionally
+  // stricter because failure there would remove a deny root.
+  const canonicalPath = await canonicalizeOptionalPath(candidatePath);
   if (canonicalPath === null || process.getuid === undefined) return null;
   try {
     const inspected = await stat(canonicalPath);
@@ -307,7 +350,9 @@ async function buildPolicy(
   prefixes: readonly string[]
 ): Promise<PrivilegedPathCheckOptions> {
   const platform = runtimePlatform();
-  const canonical = await Promise.all(prefixes.map(canonicalizeIfPresent));
+  const canonical = await Promise.all(
+    prefixes.map(canonicalizePrivilegedRoot)
+  );
   const roots = uniqueNormalized(
     [
       ...prefixes,
@@ -330,6 +375,7 @@ async function effectivePolicy(): Promise<PrivilegedPathCheckOptions> {
 
 export type UnsafePastedFileErrorCode =
   | "privileged_path"
+  | "policy_inspection_failed"
   | VerifiedFileErrorCode;
 
 export class UnsafePastedFileError extends Error {
@@ -362,7 +408,18 @@ function pastedPathValidator(): (candidatePath: string) => Promise<void> {
     // The privileged root can itself be a symlink. Rebuild at every
     // pre/post-open validation boundary so a mid-verification retarget cannot
     // leave the canonical policy pointing at its former destination.
-    const policy = await effectivePolicy();
+    let policy: PrivilegedPathCheckOptions;
+    try {
+      policy = await effectivePolicy();
+    } catch (cause) {
+      if (cause instanceof PrivilegedPolicyInspectionError) {
+        throw new UnsafePastedFileError(
+          "policy_inspection_failed",
+          "Invalid file"
+        );
+      }
+      throw cause;
+    }
     if (__isPrivilegedPathForTest(candidatePath, policy)) {
       throw new UnsafePastedFileError("privileged_path", "Invalid file");
     }

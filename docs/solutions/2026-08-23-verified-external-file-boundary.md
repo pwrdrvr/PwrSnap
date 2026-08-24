@@ -32,6 +32,13 @@ SystemCertificates, IdentityCache, and TokenBroker stores. This is a curated
 deny set, not a claim that pathname policy can discover every application that
 may invent a new credential location.
 
+Canonicalizing a deny root may omit it only when inspection reports `ENOENT`
+or `ENOTDIR`. Permission failures, I/O errors, Windows sharing failures, and
+unclassified errors reject the ingest with a path-free
+`policy_inspection_failed` code. Treating every `realpath` error as "not
+present" would silently remove a configured security boundary precisely when
+the operating system could not prove its target.
+
 The generic verifier explicitly rejects a leaf symlink or redirecting reparse
 point, requires a regular file, and compares the initial, opened-handle, and
 post-open `dev`/`ino` identities. POSIX opens add `O_NOFOLLOW | O_NONBLOCK`:

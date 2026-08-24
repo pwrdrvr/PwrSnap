@@ -15,6 +15,7 @@ import {
   __isExpectedDarwinTempDirForTest,
   __isPrivilegedPathForTest,
   __setPrivilegedPrefixesForTest,
+  __setPrivilegedRootRealpathForTest,
   readSafePastedFile,
   UnsafePastedFileError
 } from "../assertSafePastedFile";
@@ -30,6 +31,7 @@ beforeEach(async () => {
 afterEach(async () => {
   __setVerifiedFileBeforeOpenHookForTest(null);
   __setPrivilegedPrefixesForTest(null);
+  __setPrivilegedRootRealpathForTest(null);
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -105,6 +107,50 @@ describe("safe pasted files", () => {
       readSafePastedFile(join(privileged, "secret.png"))
     ).rejects.toMatchObject({ code: "privileged_path" });
   });
+
+  test.each(["ENOENT", "ENOTDIR"])(
+    "treats only %s privileged-root inspection as absence",
+    async (code) => {
+      const file = join(dir, "ordinary.png");
+      await writeFile(file, Buffer.from([0x89]));
+      __setPrivilegedPrefixesForTest([join(dir, "optional-secret-store")]);
+      __setPrivilegedRootRealpathForTest(async () => {
+        throw Object.assign(new Error("not present"), { code });
+      });
+
+      await expect(readSafePastedFile(file)).resolves.toEqual(
+        Buffer.from([0x89])
+      );
+    }
+  );
+
+  test.each(["EACCES", "EIO", "EPERM", "EBUSY", undefined])(
+    "fails closed for a %s privileged-root inspection failure",
+    async (code) => {
+      const privatePath = join(dir, "private-policy-root");
+      const file = join(dir, "ordinary.png");
+      await writeFile(file, Buffer.from([0x89]));
+      __setPrivilegedPrefixesForTest([privatePath]);
+      __setPrivilegedRootRealpathForTest(async () => {
+        const failure = new Error(`inspection failed for ${privatePath}`);
+        if (code !== undefined) Object.assign(failure, { code });
+        throw failure;
+      });
+
+      let caught: unknown;
+      try {
+        await readSafePastedFile(file);
+      } catch (cause) {
+        caught = cause;
+      }
+      expect(caught).toMatchObject({
+        name: "UnsafePastedFileError",
+        code: "policy_inspection_failed",
+        sanitizedMessage: "Invalid file"
+      });
+      expect(JSON.stringify(caught)).not.toContain(privatePath);
+    }
+  );
 
   test("re-canonicalizes a privileged root after its symlink is retargeted", async () => {
     const firstTarget = join(dir, "privileged-first");

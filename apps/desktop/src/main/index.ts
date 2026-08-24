@@ -88,13 +88,15 @@ import {
   registerLibraryWindowHandlers
 } from "./handlers/library-handlers";
 import { registerRecordingHandlers } from "./handlers/recording-handlers";
-import { installRecordingController } from "./recording/recording-controller";
+import {
+  disposeRecordingController,
+  installRecordingController
+} from "./recording/recording-controller";
 import { cancelRecordingPermissionPreflight } from "./recording/recording-permission-preflight";
 import { createInteractiveRecordingSingleFlight } from "./recording/interactive-recording-single-flight";
 import { withRecordingForegroundRestored } from "./recording/recording-foreground";
 import { readRecordingReadiness } from "./recording/recording-permissions";
 import { getRecordingService } from "./recording/recording-service";
-import { isRecordingActive } from "./recording/recording-state";
 import { videoAssetDir } from "./recording/video-frames";
 import {
   getDesktopSettingsServices,
@@ -1305,6 +1307,7 @@ export function bootstrapApp(): void {
     {
       disposeTray,
       disposeFloatOver,
+      disposeRecordingController,
       disposeRegionSelector,
       disposeFocusSink,
       destroyTextBakePool
@@ -2331,7 +2334,7 @@ export function bootstrapApp(): void {
     }
   });
 
-  // Track whether we've already initiated the recording-cancel
+  // Track whether we've already initiated the recording-shutdown
   // teardown so we don't loop on the will-quit handler firing again
   // after `app.quit()` is called from inside it.
   let quitTeardownInFlight = false;
@@ -2343,20 +2346,21 @@ export function bootstrapApp(): void {
     // launchd reparents it) and the user's clip is lost AND a stray
     // PwrSnapRecorder process sits in their process list until it
     // hits its own write error or the parent-death watchdog reaps it.
-    if (isRecordingActive() && !quitTeardownInFlight) {
+    const recordingService = getRecordingService();
+    if (recordingService.isActive() && !quitTeardownInFlight) {
       quitTeardownInFlight = true;
       event.preventDefault();
-      void getRecordingService()
-        .cancel()
+      void recordingService
+        .shutdown()
         .catch((cause) => {
-          getMainLogger("pwrsnap:bootstrap").warn("cancel-on-quit failed", {
+          getMainLogger("pwrsnap:bootstrap").warn("recording shutdown-on-quit failed", {
             message: cause instanceof Error ? cause.message : String(cause)
           });
         })
         .finally(() => {
-          // Retry the quit — the second time around the recording
-          // state is idle so this branch falls through to the
-          // ordinary teardown below.
+          // Retry the quit. The in-flight guard makes the second pass fall
+          // through to ordinary teardown even if an OS process refused the
+          // bounded shutdown barrier.
           app.quit();
         });
       return;

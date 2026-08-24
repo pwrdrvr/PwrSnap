@@ -3,7 +3,8 @@
 //
 //   • Creates + shows the window when state leaves `idle`.
 //   • Anchors it at the top-center of the active display.
-//   • Hides + destroys when state returns to `idle` / `ready` / `failed`.
+//   • Keeps terminal failures visible until recovery or Dismiss.
+//   • Hides + destroys when state returns to `idle` / `ready`.
 //
 // The window itself is wired in `window.ts`; the React side lives in
 // `apps/desktop/src/renderer/src/features/recording/RecordingController.tsx`
@@ -24,10 +25,14 @@ import {
 
 const log = getMainLogger("pwrsnap:recording-controller");
 
+const FAILURE_CARD_WIDTH_CSS_PX = 480;
+const FAILURE_CARD_HEIGHT_CSS_PX = 176;
+
 let window: BrowserWindow | null = null;
 let installed = false;
 let escapeShortcutArmed = false;
 let activePermissionRequestId: string | null = null;
+let unsubscribeRecordingState: (() => void) | null = null;
 
 function ensureWindow(): BrowserWindow {
   if (window !== null && !window.isDestroyed()) return window;
@@ -401,9 +406,35 @@ export function applyRecordingStateToController(state: RecordingState): void {
       }
       break;
     }
-    case "idle":
-    case "ready":
     case "failed": {
+      const win = ensureWindow();
+      disarmLeadInEscapeShortcut();
+      // Recording has ended, so the failure card can accept keyboard and
+      // pointer input without interfering with the non-activating controls
+      // used while pixels are still being captured. The renderer shares
+      // Chromium's HostZoomMap with the other app surfaces, so convert the
+      // card's CSS-pixel dimensions to the DIP dimensions BrowserWindow
+      // expects before positioning it.
+      win.setFocusable(true);
+      win.setIgnoreMouseEvents(false);
+      const zoomFactor = win.webContents.zoomFactor;
+      const zoom = Number.isFinite(zoomFactor) && zoomFactor > 0 ? zoomFactor : 1;
+      win.setContentSize(
+        Math.ceil(FAILURE_CARD_WIDTH_CSS_PX * zoom),
+        Math.ceil(FAILURE_CARD_HEIGHT_CSS_PX * zoom),
+        false
+      );
+      anchorTopCenter(win, state.displayId);
+      // Unlike the countdown and in-recording controls, a terminal failure
+      // deliberately activates PwrSnap. The renderer then moves DOM focus to
+      // the primary recovery action so the card is usable without a pointer.
+      win.show();
+      win.focus();
+      win.moveTop();
+      break;
+    }
+    case "idle":
+    case "ready": {
       disarmLeadInEscapeShortcut();
       activePermissionRequestId = null;
       if (window !== null && !window.isDestroyed()) {
@@ -476,5 +507,18 @@ export function resizeRecordingPermissionController(input: {
 export function installRecordingController(): void {
   if (installed) return;
   installed = true;
-  subscribeToRecordingState(applyRecordingStateToController);
+  unsubscribeRecordingState = subscribeToRecordingState(applyRecordingStateToController);
+}
+
+/** Release the durable HUD and its state subscription during app shutdown. */
+export function disposeRecordingController(): void {
+  disarmLeadInEscapeShortcut();
+  unsubscribeRecordingState?.();
+  unsubscribeRecordingState = null;
+  installed = false;
+  if (window !== null && !window.isDestroyed()) {
+    window.hide();
+    window.destroy();
+  }
+  window = null;
 }

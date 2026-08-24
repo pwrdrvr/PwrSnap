@@ -150,9 +150,46 @@ export type VideoRange = {
  * binds Stop UI to `recording`; the Library waits for `ready` to
  * surface the new capture; the float-over loads on `ready`.
  *
- * Carries the optional `captureId` once a row is persisted (`ready`)
- * and an `error` payload on the `failed` arm.
+ * Carries the optional `captureId` once a row is persisted (`ready`).
+ * The durable `failed` arm contains an allowlisted code only; raw recorder
+ * diagnostics never cross into renderer-visible state.
  */
+export type RecordingFailureCode =
+  | "recorder_unavailable"
+  | "recorder_prepare_failed"
+  | "recorder_spawn_failed"
+  | "recorder_start_failed"
+  | "recorder_start_timeout"
+  | "recorder_exited"
+  | "stop_timeout"
+  | "stop_failed"
+  | "processing_failed";
+
+const RECORDING_FAILURE_SUMMARIES: Readonly<Record<RecordingFailureCode, string>> = {
+  recorder_unavailable:
+    "The recording helper is unavailable. Restart or reinstall PwrSnap, then try again.",
+  recorder_prepare_failed: "PwrSnap couldn't prepare the recording.",
+  recorder_spawn_failed: "PwrSnap couldn't start the recorder.",
+  recorder_start_failed: "PwrSnap couldn't start the recorder.",
+  recorder_start_timeout: "The recorder did not start in time.",
+  recorder_exited: "The recorder stopped unexpectedly before the clip was saved.",
+  stop_timeout: "PwrSnap couldn't finish and save the recording.",
+  stop_failed: "PwrSnap couldn't finish and save the recording.",
+  processing_failed:
+    "The recording stopped, but PwrSnap couldn't add the clip to your Library. Reveal the log file for recovery details."
+};
+
+/**
+ * User-safe copy for a recording backend failure. Failure events carry only
+ * the allowlisted code; raw child-process errors, command arguments, stderr,
+ * and filesystem paths stay in the owning process's durable log.
+ */
+export function recordingFailureSummary(code: RecordingFailureCode): string {
+  return Object.prototype.hasOwnProperty.call(RECORDING_FAILURE_SUMMARIES, code)
+    ? RECORDING_FAILURE_SUMMARIES[code]
+    : "Recording failed unexpectedly.";
+}
+
 export type RecordingState =
   | { phase: "idle" }
   | { phase: "permission"; preflight: RecordingPermissionPreflight }
@@ -181,7 +218,13 @@ export type RecordingState =
   | { phase: "stopping"; sessionId: string }
   | { phase: "processing"; sessionId: string }
   | { phase: "ready"; sessionId: string; captureId: string }
-  | { phase: "failed"; sessionId: string; code: string; message: string };
+  | {
+      phase: "failed";
+      sessionId: string;
+      code: RecordingFailureCode;
+      canRetry: boolean;
+      displayId: number;
+    };
 
 /**
  * Capabilities the user wanted included in this recording session.
@@ -4221,6 +4264,17 @@ export type Commands = {
    * is in flight.
    */
   "recording:restart": { req: Record<string, never>; res: { sessionId: string } };
+  /**
+   * Retry a matching failed session with its privately-retained subject and
+   * capability snapshot. The session id prevents a stale HUD click from
+   * affecting a newer recording.
+   */
+  "recording:retry": { req: { sessionId: string }; res: { sessionId: string } };
+  /**
+   * Dismiss a matching durable failure. This is deliberately separate from
+   * recording:cancel so a stale failure card can never cancel a newer take.
+   */
+  "recording:dismissFailure": { req: { sessionId: string }; res: void };
   /**
    * Current recording state. Renderers that mount mid-flight (the
    * Library window opened after a recording started) call this once

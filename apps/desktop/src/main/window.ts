@@ -1432,20 +1432,22 @@ export function createFloatOverWindow(): BrowserWindow {
 
 /**
  * Floating recording-controller HUD (Fast Video Capture, issue #64).
- * Shown only while the recorder is active — created when state
- * transitions out of `idle`, destroyed when it returns to `idle` /
- * `ready` / `failed`. Carries the countdown digits during the
- * pre-roll, then a Stop + Cancel pair plus a live duration timer.
+ * Created when state transitions out of `idle`, destroyed when it
+ * returns to `idle` / `ready`, and retained for a durable failure card
+ * until recovery or Dismiss. Carries the countdown digits during the
+ * pre-roll, then recording controls plus a live duration timer.
  *
- * Same NSPanel construction model as the float-over toast so it
- * never steals focus from the app the user is recording. Anchored
- * top-center of the active display by `recording-controller.ts`
- * (positioning lives next to the show/hide policy, not here).
+ * Same NSPanel construction model as the float-over toast. It remains
+ * non-activating while pixels are captured, then becomes focusable and is
+ * activated for accessible failure actions after recording has ended. The
+ * failure size is converted from CSS pixels with the current page zoom and
+ * anchored top-center by `recording-controller.ts` (positioning lives with
+ * show/hide policy).
  */
 export function createRecordingControllerWindow(): BrowserWindow {
-  // Tight defaults for the recording phase. The countdown phase
-  // grows to ~220×180; the renderer posts a resize over IPC when it
-  // flips between phases. setMinimumSize(0,0) below lifts the
+  // Tight defaults for the recording phase. Main resizes the same window
+  // to the selected rect during countdown and to a larger failure card.
+  // setMinimumSize(0,0) below lifts the
   // implicit constructor floor so subsequent setContentSize calls
   // actually land (see CLAUDE.md "BrowserWindow sizing" note).
   const width = 280;

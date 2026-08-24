@@ -1,21 +1,47 @@
 // Floating HUD shown while the recording service is non-idle.
 // Lives in its own BrowserWindow (`createRecordingControllerWindow`
 // in main/window.ts); subscribes to `events:recording:state` and
-// flips between two visuals:
+// flips between three visuals:
 //
 //   permission phase →  required/optional capability choices
 //   countdown phase  →  "Starting in 3…"  (big number)
 //   recording phase  →  ●  00:00:00   [Stop]   [Cancel]
+//   failed phase     →  safe summary + recovery / Reveal Log File / Dismiss
 //
-// The window is hidden when state.phase === 'idle' / 'ready' /
-// 'failed' so the user only sees it while something is happening.
+// The window is hidden when state.phase === 'idle' / 'ready'. A failure
+// remains visible until the user chooses a recovery action or dismisses it.
 // Recording phase shows a live duration timer driven from
 // state.startedAt.
 
-import { useEffect, useState, type ReactElement } from "react";
-import { EVENT_CHANNELS, type RecordingState } from "@pwrsnap/shared";
+import { useEffect, useRef, useState, type ReactElement } from "react";
+import {
+  EVENT_CHANNELS,
+  recordingFailureSummary,
+  type RecordingState
+} from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
 import { RecordingPermissionDialog } from "./RecordingPermissionDialog";
+
+type FailedRecordingState = Extract<RecordingState, { phase: "failed" }>;
+type FailureAction = "retry" | "reveal-logs" | "dismiss";
+
+function retryLabelForFailure(
+  code: FailedRecordingState["code"]
+): "Retry" | "Record Again" {
+  switch (code) {
+    case "recorder_unavailable":
+    case "recorder_prepare_failed":
+    case "recorder_spawn_failed":
+    case "recorder_start_failed":
+    case "recorder_start_timeout":
+      return "Retry";
+    case "recorder_exited":
+    case "stop_timeout":
+    case "stop_failed":
+    case "processing_failed":
+      return "Record Again";
+  }
+}
 
 function formatHMS(seconds: number): string {
   const total = Math.max(0, Math.floor(seconds));
@@ -75,7 +101,11 @@ export function RecordingController(): ReactElement {
   const isRecording = state.phase === "recording";
   const isStopping = state.phase === "stopping" || state.phase === "processing";
 
-  if (state.phase === "idle" || state.phase === "ready" || state.phase === "failed") {
+  if (state.phase === "failed") {
+    return <RecordingFailureCard key={state.sessionId} state={state} />;
+  }
+
+  if (state.phase === "idle" || state.phase === "ready") {
     return <div data-recording-phase={state.phase} />;
   }
 
@@ -248,6 +278,141 @@ export function RecordingController(): ReactElement {
         50% { opacity: 0.45; }
         100% { opacity: 1; }
       }`}</style>
+    </div>
+  );
+}
+
+function RecordingFailureCard({ state }: { state: FailedRecordingState }): ReactElement {
+  const [pending, setPending] = useState<FailureAction | null>(null);
+  const [actionFailed, setActionFailed] = useState(false);
+  const retryRef = useRef<HTMLButtonElement | null>(null);
+  const revealLogsRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    // Main activates the BrowserWindow only after recording has ended. Put
+    // keyboard focus on the primary recovery action once the card mounts;
+    // when retry is unavailable, revealing the diagnostic log is the next
+    // useful action and Dismiss remains one Tab away.
+    (state.canRetry ? retryRef : revealLogsRef).current?.focus();
+  }, [state.canRetry]);
+
+  const runAction = async (action: FailureAction): Promise<void> => {
+    if (pending !== null) return;
+    setPending(action);
+    setActionFailed(false);
+    try {
+      const result =
+        action === "retry"
+          ? await dispatch("recording:retry", { sessionId: state.sessionId })
+          : action === "dismiss"
+            ? await dispatch("recording:dismissFailure", { sessionId: state.sessionId })
+            : await dispatch("renderer:revealLogFile", {});
+      if (!result.ok) setActionFailed(true);
+    } catch {
+      // Never copy a transport or process error into the renderer. The local
+      // log contains diagnostics; the user-facing card stays allowlisted.
+      setActionFailed(true);
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const disabled = pending !== null;
+  const retryLabel = retryLabelForFailure(state.code);
+  const buttonStyle: React.CSSProperties = {
+    padding: "7px 11px",
+    borderRadius: 7,
+    border: "1px solid rgba(255,255,255,0.22)",
+    background: "transparent",
+    color: "#fff",
+    font: "600 12px/1 'Geist', system-ui, sans-serif",
+    cursor: disabled ? "default" : "pointer",
+    opacity: disabled ? 0.6 : 1
+  };
+
+  return (
+    <div
+      data-recording-phase="failed"
+      role="alert"
+      aria-live="assertive"
+      style={{
+        boxSizing: "border-box",
+        width: "100%",
+        height: "100%",
+        padding: "16px 18px",
+        borderRadius: 12,
+        border: "1px solid rgba(255, 138, 31, 0.55)",
+        background: "rgba(0, 0, 0, 0.94)",
+        color: "#fff",
+        display: "flex",
+        flexDirection: "column",
+        justifyContent: "space-between",
+        gap: 10,
+        font: "500 13px/1.35 'Geist', system-ui, sans-serif",
+        WebkitAppRegion: "drag",
+        userSelect: "none"
+      } as React.CSSProperties}
+    >
+      <div>
+        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 5 }}>Recording failed</div>
+        <div style={{ color: "rgba(255,255,255,0.72)" }}>
+          {recordingFailureSummary(state.code)}
+        </div>
+        {actionFailed && (
+          <div data-recording-action-error style={{ color: "#ffb36d", marginTop: 5 }}>
+            That action didn&apos;t complete. Reveal the log file for details.
+          </div>
+        )}
+      </div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 7,
+          WebkitAppRegion: "no-drag"
+        } as React.CSSProperties}
+      >
+        {state.canRetry && (
+          <button
+            ref={retryRef}
+            type="button"
+            data-recording-action="retry"
+            disabled={disabled}
+            onClick={() => void runAction("retry")}
+            style={{
+              ...buttonStyle,
+              borderColor: "#ff8a1f",
+              background: "#ff8a1f",
+              color: "#000"
+            }}
+          >
+            {pending === "retry"
+              ? retryLabel === "Retry"
+                ? "Retrying…"
+                : "Starting…"
+              : retryLabel}
+          </button>
+        )}
+        <button
+          ref={revealLogsRef}
+          type="button"
+          data-recording-action="reveal-logs"
+          disabled={disabled}
+          onClick={() => void runAction("reveal-logs")}
+          style={buttonStyle}
+        >
+          {pending === "reveal-logs" ? "Opening…" : "Reveal Log File"}
+        </button>
+        <button
+          type="button"
+          data-recording-action="dismiss"
+          disabled={disabled}
+          onClick={() => void runAction("dismiss")}
+          style={{ ...buttonStyle, marginLeft: "auto" }}
+        >
+          {pending === "dismiss" ? "Dismissing…" : "Dismiss"}
+        </button>
+      </div>
     </div>
   );
 }

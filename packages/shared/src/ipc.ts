@@ -46,11 +46,11 @@ export const EVENT_CHANNELS = {
    * Payload type: `RecordingState`. Discriminated union over
    * `phase: "idle" | "permission" | "preflight" | "countdown" |
    *  "starting" | "recording" | "stopping" | "processing" |
-   *  "ready" | "failed"`. Drives the
-   * tray's Stop-Recording row, the selector's countdown overlay,
-   * and the float-over's video-loaded transition. Renderers that
-   * mount mid-flight call `recording:state` once for the snapshot,
-   * then subscribe for subsequent transitions.
+   *  "ready" | "failed"`. Drives the tray's Stop-Recording row, the
+   * permission and countdown surfaces, the durable failure HUD, and the
+   * float-over's video-loaded transition.
+   * Renderers that mount mid-flight call `recording:state` once for the
+   * snapshot, then subscribe for subsequent transitions.
    */
   recordingState: "events:recording:state",
   settingsChanged: "events:settings:changed",

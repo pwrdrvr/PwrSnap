@@ -8,7 +8,11 @@
 // without polling.
 
 import { BrowserWindow } from "electron";
-import { EVENT_CHANNELS, type RecordingState } from "@pwrsnap/shared";
+import {
+  EVENT_CHANNELS,
+  type RecordingFailureCode,
+  type RecordingState
+} from "@pwrsnap/shared";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:recording-state");
@@ -61,6 +65,19 @@ export function setRecordingState(next: RecordingState): void {
       });
     }
   }
+}
+
+/**
+ * Publish a renderer-safe terminal failure. Callers log raw backend detail
+ * separately; this event intentionally contains no arbitrary error string.
+ */
+export function setRecordingFailureState(input: {
+  sessionId: string;
+  code: RecordingFailureCode;
+  displayId: number;
+  canRetry: boolean;
+}): void {
+  setRecordingState({ phase: "failed", ...input });
 }
 
 /** Convenience predicate — true when a native recording session is

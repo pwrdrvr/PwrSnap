@@ -13,6 +13,7 @@ describe("installTransientWindowTeardown", () => {
     const disposers = {
       disposeTray: vi.fn(),
       disposeFloatOver: vi.fn(),
+      disposeRecordingController: vi.fn(),
       disposeRegionSelector: vi.fn(),
       disposeFocusSink: vi.fn(),
       destroyTextBakePool: vi.fn()
@@ -23,6 +24,7 @@ describe("installTransientWindowTeardown", () => {
     expect(app.on).toHaveBeenCalledWith("before-quit", expect.any(Function));
     expect(beforeQuitListener).not.toBeNull();
     beforeQuitListener!();
+    expect(disposers.disposeRecordingController).toHaveBeenCalledTimes(1);
     for (const dispose of Object.values(disposers)) {
       expect(dispose).toHaveBeenCalledTimes(1);
     }

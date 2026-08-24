@@ -14,6 +14,9 @@
 //   • recording:state idle on a fresh launch (default RecordingState)
 //   • recording:cancel always succeeds (unconditional reset contract)
 //   • recording:restart from idle returns validation/not_recording
+//   • recording:retry validates session identity, guards stale failures,
+//     and never returns raw process detail
+//   • recording:dismissFailure validates + guards stale failure cards
 //   • permissions:readiness shape (status strings + explicit evidence + fingerprint)
 //   • permission actions reject unknown permission names
 //
@@ -21,23 +24,24 @@
 // systemPreferences + the recording service so we don't touch macOS TCC
 // or spawn the Swift recorder binary.
 
-import { describe, expect, test, vi } from "vitest";
+import type { PwrSnapError, Result } from "@pwrsnap/shared";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
-// Full RecordingService surface — only `cancel` and `restart` are
-// exercised by the 5 tests in this file. `start`, `stop`, `isActive`
-// are intentionally unimplemented `vi.fn()` stubs: present so the mock
-// satisfies the interface shape, but a test that accidentally invoked
-// them would surface as a clean assertion failure rather than a
-// TypeError. Add a real implementation only when a new test exercises
-// the verb.
+// Full RecordingService surface. `start`, `stop`, and `isActive` remain
+// intentionally unimplemented `vi.fn()` stubs: present so the mock satisfies
+// the interface shape, but an accidental invocation surfaces as a clean test
+// failure rather than a TypeError.
 const mocks = vi.hoisted(() => ({
   cancel: vi.fn(async () => undefined),
   restart: vi.fn(async () => {
     throw new Error("not_recording");
   }),
+  retry: vi.fn(async (sessionId: string) => ({ sessionId: `retry-${sessionId}` })),
+  dismissFailure: vi.fn(async (_sessionId: string) => undefined),
   start: vi.fn(),
   stop: vi.fn(),
-  isActive: vi.fn(() => false)
+  isActive: vi.fn(() => false),
+  logError: vi.fn()
 }));
 
 vi.mock("electron", (): Partial<typeof import("electron")> => ({
@@ -55,6 +59,16 @@ vi.mock("electron", (): Partial<typeof import("electron")> => ({
   BrowserWindow: {
     getAllWindows: () => []
   } as unknown as typeof import("electron").BrowserWindow
+}));
+
+vi.mock("../../capture/screen-permission-gate", () => ({
+  guardScreenCapture: vi.fn(async () => null),
+  markScreenCapturePrompted: vi.fn(async () => undefined),
+  readScreenCapturePrompted: vi.fn(async () => false)
+}));
+
+vi.mock("../../capture/capture-storage-gate", () => ({
+  ensureCapturesDirReady: vi.fn(async () => null)
 }));
 
 // Stub the persistence layer + video repo + export coordinator so
@@ -85,11 +99,57 @@ vi.mock("../../recording/recording-service", () => ({
   getRecordingService: () => mocks
 }));
 
+vi.mock("../../log", () => ({
+  getMainLogger: () => ({
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: mocks.logError
+  })
+}));
+
 const { bus } = await import("../../command-bus");
 const { registerRecordingHandlers } = await import("../recording-handlers");
 const originalPlatform = process.platform;
 
 registerRecordingHandlers();
+
+beforeEach(() => {
+  mocks.start.mockReset();
+  mocks.stop.mockReset();
+  mocks.cancel.mockReset();
+  mocks.cancel.mockImplementation(async () => undefined);
+  mocks.restart.mockReset();
+  mocks.restart.mockImplementation(async () => {
+    throw new Error("not_recording");
+  });
+  mocks.retry.mockReset();
+  mocks.retry.mockImplementation(async (sessionId: string) => ({
+    sessionId: `retry-${sessionId}`
+  }));
+  mocks.dismissFailure.mockReset();
+  mocks.dismissFailure.mockImplementation(async (_sessionId: string) => undefined);
+  mocks.logError.mockReset();
+});
+
+const RAW_PROCESS_FAILURE =
+  "spawn C:\\Users\\alice\\Secret Project\\recorder.exe --token top-secret";
+
+function expectSafeRecordingFailure(
+  result: Result<unknown, PwrSnapError>,
+  expectedCode: string,
+  expectedMessage: string
+): void {
+  expect(result.ok).toBe(false);
+  if (result.ok) throw new Error("expected error");
+  expect(result.error).toEqual({
+    kind: "capture",
+    code: expectedCode,
+    message: expectedMessage
+  });
+  expect(JSON.stringify(result.error)).not.toContain(RAW_PROCESS_FAILURE);
+  expect(result.error.cause).toBeUndefined();
+}
 
 describe("recording:* command-bus surface", () => {
   // Note: `recording-state.ts` holds module-level state. None of the
@@ -128,6 +188,211 @@ describe("recording:* command-bus surface", () => {
     if (result.ok) throw new Error("expected error");
     expect(result.error.kind).toBe("validation");
     expect(result.error.code).toBe("not_recording");
+  });
+
+  test("recording lifecycle failures keep raw process detail in the local log only", async () => {
+    mocks.start.mockRejectedValueOnce(new Error(RAW_PROCESS_FAILURE));
+    const started = await bus.dispatch(
+      "recording:start",
+      {
+        subject: { kind: "display", displayId: 1 },
+        capabilities: { microphone: false, systemAudio: false },
+        countdownSeconds: 0
+      },
+      { principal: "ipc" }
+    );
+    expectSafeRecordingFailure(
+      started,
+      "recording_start_failed",
+      "PwrSnap couldn't start the recorder."
+    );
+    expect(mocks.logError).toHaveBeenLastCalledWith("recording:start failed", {
+      message: RAW_PROCESS_FAILURE
+    });
+
+    mocks.stop.mockRejectedValueOnce(new Error(RAW_PROCESS_FAILURE));
+    const stopped = await bus.dispatch("recording:stop", {}, { principal: "ipc" });
+    expectSafeRecordingFailure(
+      stopped,
+      "recording_stop_failed",
+      "PwrSnap couldn't finish and save the recording."
+    );
+    expect(mocks.logError).toHaveBeenLastCalledWith("recording:stop failed", {
+      message: RAW_PROCESS_FAILURE
+    });
+
+    mocks.restart.mockRejectedValueOnce(new Error(RAW_PROCESS_FAILURE));
+    const restarted = await bus.dispatch("recording:restart", {}, { principal: "ipc" });
+    expectSafeRecordingFailure(
+      restarted,
+      "recording_restart_failed",
+      "PwrSnap couldn't start the recorder."
+    );
+    expect(mocks.logError).toHaveBeenLastCalledWith("recording:restart failed", {
+      message: RAW_PROCESS_FAILURE
+    });
+
+    mocks.cancel.mockRejectedValueOnce(new Error(RAW_PROCESS_FAILURE));
+    const cancelled = await bus.dispatch("recording:cancel", {}, { principal: "ipc" });
+    expectSafeRecordingFailure(
+      cancelled,
+      "recording_cancel_failed",
+      "PwrSnap couldn't cancel the recording. Open the log file for details."
+    );
+    expect(mocks.logError).toHaveBeenLastCalledWith("recording:cancel failed", {
+      message: RAW_PROCESS_FAILURE
+    });
+
+    mocks.dismissFailure.mockRejectedValueOnce(new Error(RAW_PROCESS_FAILURE));
+    const dismissed = await bus.dispatch(
+      "recording:dismissFailure",
+      { sessionId: "failed-1" },
+      { principal: "ipc" }
+    );
+    expectSafeRecordingFailure(
+      dismissed,
+      "recording_dismiss_failed",
+      "PwrSnap couldn't dismiss the failure. Open the log file for details."
+    );
+    expect(mocks.logError).toHaveBeenLastCalledWith(
+      "recording:dismissFailure failed",
+      { message: RAW_PROCESS_FAILURE }
+    );
+  });
+
+  test("recording:retry validates and forwards the failed session id", async () => {
+    const invalid = await bus.dispatch(
+      "recording:retry",
+      { sessionId: "" },
+      { principal: "ipc" }
+    );
+    expect(invalid.ok).toBe(false);
+    if (invalid.ok) throw new Error("expected error");
+    expect(invalid.error.code).toBe("invalid_session");
+    expect(mocks.retry).not.toHaveBeenCalled();
+
+    const result = await bus.dispatch(
+      "recording:retry",
+      { sessionId: "failed-1" },
+      { principal: "ipc" }
+    );
+    expect(result).toEqual({ ok: true, value: { sessionId: "retry-failed-1" } });
+    expect(mocks.retry).toHaveBeenCalledWith("failed-1");
+  });
+
+  test("recording:retry rejects malformed runtime requests without handler_threw", async () => {
+    for (const req of [null, "failed-1", 42, []] as const) {
+      const result = await bus.dispatch(
+        "recording:retry",
+        req as never,
+        { principal: "ipc" }
+      );
+      expect(result).toEqual({
+        ok: false,
+        error: {
+          kind: "validation",
+          code: "invalid_session",
+          message: "A valid failed recording session is required."
+        }
+      });
+      expect(JSON.stringify(result)).not.toContain("handler_threw");
+    }
+    expect(mocks.retry).not.toHaveBeenCalled();
+  });
+
+  test("recording:retry maps stale failures without exposing backend detail", async () => {
+    mocks.retry.mockRejectedValueOnce(new Error("stale_failure"));
+
+    const result = await bus.dispatch(
+      "recording:retry",
+      { sessionId: "failed-old" },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected error");
+    expect(result.error).toEqual({
+      kind: "validation",
+      code: "stale_failure",
+      message: "That recording failure is no longer current."
+    });
+  });
+
+  test("recording:retry replaces a raw process error with allowlisted copy", async () => {
+    const raw = "spawn C:\\Users\\alice\\Secret\\ffmpeg.exe --token top-secret";
+    mocks.retry.mockRejectedValueOnce(new Error(raw));
+
+    const result = await bus.dispatch(
+      "recording:retry",
+      { sessionId: "failed-1" },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected error");
+    expect(result.error.kind).toBe("capture");
+    expect(result.error.code).toBe("recording_retry_failed");
+    expect(result.error.message).toBe("PwrSnap couldn't start the recorder.");
+    expect(result.error.message).not.toContain(raw);
+    expect(result.error.cause).toBeUndefined();
+    expect(JSON.stringify(result.error)).not.toContain(raw);
+    expect(mocks.logError).toHaveBeenCalledWith("recording:retry failed", {
+      message: raw
+    });
+  });
+
+  test("recording:dismissFailure validates, forwards, and guards stale cards", async () => {
+    const invalid = await bus.dispatch(
+      "recording:dismissFailure",
+      { sessionId: "" },
+      { principal: "ipc" }
+    );
+    expect(invalid.ok).toBe(false);
+    if (invalid.ok) throw new Error("expected error");
+    expect(invalid.error.code).toBe("invalid_session");
+    expect(mocks.dismissFailure).not.toHaveBeenCalled();
+
+    const dismissed = await bus.dispatch(
+      "recording:dismissFailure",
+      { sessionId: "failed-1" },
+      { principal: "ipc" }
+    );
+    expect(dismissed).toEqual({ ok: true, value: undefined });
+    expect(mocks.dismissFailure).toHaveBeenCalledWith("failed-1");
+
+    mocks.dismissFailure.mockRejectedValueOnce(new Error("stale_failure"));
+    const stale = await bus.dispatch(
+      "recording:dismissFailure",
+      { sessionId: "failed-old" },
+      { principal: "ipc" }
+    );
+    expect(stale.ok).toBe(false);
+    if (stale.ok) throw new Error("expected error");
+    expect(stale.error).toEqual({
+      kind: "validation",
+      code: "stale_failure",
+      message: "That recording failure is no longer current."
+    });
+  });
+
+  test("recording:dismissFailure rejects malformed runtime requests without handler_threw", async () => {
+    for (const req of [null, "failed-1", 42, []] as const) {
+      const result = await bus.dispatch(
+        "recording:dismissFailure",
+        req as never,
+        { principal: "ipc" }
+      );
+      expect(result).toEqual({
+        ok: false,
+        error: {
+          kind: "validation",
+          code: "invalid_session",
+          message: "A valid failed recording session is required."
+        }
+      });
+      expect(JSON.stringify(result)).not.toContain("handler_threw");
+    }
+    expect(mocks.dismissFailure).not.toHaveBeenCalled();
   });
 });
 

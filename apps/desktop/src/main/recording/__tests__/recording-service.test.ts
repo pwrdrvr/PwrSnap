@@ -20,6 +20,8 @@ const mocks = vi.hoisted(() => {
      *  by the multi-monitor translation test to verify the rect
      *  reaches the HUD in display-local coords. */
     stateLogFull: [] as Array<Record<string, unknown>>,
+    currentState: { phase: "idle" } as Record<string, unknown>,
+    mkdtempQueue: [] as Array<Promise<string>>,
     pendingTimeouts: [] as Array<() => void>
   };
 });
@@ -29,6 +31,11 @@ class FakeChild extends EventEmitter {
   stdout = new EventEmitter();
   stderr = new EventEmitter();
   killCalled = false;
+  killed = false;
+  exitCode: number | null = null;
+  signalCode: NodeJS.Signals | null = null;
+  exitOnSignal: NodeJS.Signals | null = "SIGTERM";
+  killSignals: NodeJS.Signals[] = [];
   constructor() {
     super();
     // Default stream behavior — tests opt-in to emitting "started"/
@@ -36,11 +43,22 @@ class FakeChild extends EventEmitter {
     (this.stdout as unknown as { setEncoding: (e: string) => void }).setEncoding = () => undefined;
     (this.stderr as unknown as { setEncoding: (e: string) => void }).setEncoding = () => undefined;
   }
-  kill = (_signal?: string): boolean => {
+  override emit(eventName: string | symbol, ...args: unknown[]): boolean {
+    if (eventName === "exit") {
+      this.exitCode = args[0] as number | null;
+      this.signalCode = args[1] as NodeJS.Signals | null;
+    }
+    return super.emit(eventName, ...args);
+  }
+  kill = (signal: NodeJS.Signals = "SIGTERM"): boolean => {
     this.killCalled = true;
-    // Emit exit so the recorder's `child.on("exit", ...)` reject
-    // path can fire — matches real OS behavior.
-    setTimeout(() => this.emit("exit", null, "SIGTERM"), 0);
+    this.killed = true;
+    this.killSignals.push(signal);
+    if (this.exitOnSignal === signal) {
+      // Emit exit so the recorder's `child.on("exit", ...)` reject
+      // path can fire — matches real OS behavior.
+      setTimeout(() => this.emit("exit", null, signal), 0);
+    }
     return true;
   };
   /** Test helper: pump a JSON line into the recorder's stdout
@@ -64,7 +82,12 @@ vi.mock("node:fs", () => ({
 }));
 
 vi.mock("node:fs/promises", () => ({
-  mkdtemp: vi.fn(async () => "/tmp/pwrsnap-recording-fake")
+  mkdtemp: vi.fn(async () => {
+    const deferred = mocks.mkdtempQueue.shift();
+    return deferred === undefined
+      ? "/tmp/pwrsnap-recording-fake"
+      : await deferred;
+  })
 }));
 
 vi.mock("electron", () => ({
@@ -121,17 +144,24 @@ vi.mock("../recording-controller", () => ({
   installRecordingController: () => undefined
 }));
 
-vi.mock("../recording-state", async () => {
-  const real = (await import("../recording-state")) as Record<string, unknown>;
-  return {
-    ...real,
-    setRecordingState: (next: Record<string, unknown>) => {
-      mocks.stateLog.push({ phase: next.phase as string });
-      mocks.stateLogFull.push(next);
-    },
-    isRecordingActive: () => false
-  };
-});
+vi.mock("../recording-state", () => ({
+  getRecordingState: () => mocks.currentState,
+  setRecordingState: (next: Record<string, unknown>) => {
+    mocks.currentState = next;
+    mocks.stateLog.push({ phase: next.phase as string });
+    mocks.stateLogFull.push(next);
+  },
+  setRecordingFailureState: (failure: Record<string, unknown>) => {
+    const next = { phase: "failed", ...failure };
+    mocks.currentState = next;
+    mocks.stateLog.push({ phase: "failed" });
+    mocks.stateLogFull.push(next);
+  },
+  isRecordingActive: () =>
+    ["preflight", "countdown", "starting", "recording", "stopping", "processing"].includes(
+      String(mocks.currentState.phase)
+    )
+}));
 
 vi.mock("../../float-over", () => ({
   setFloatOverState: vi.fn()
@@ -194,6 +224,8 @@ beforeEach(() => {
   mocks.spawnCalls.length = 0;
   mocks.stateLog.length = 0;
   mocks.stateLogFull.length = 0;
+  mocks.currentState = { phase: "idle" };
+  mocks.mkdtempQueue.length = 0;
   mocks.pendingTimeouts.length = 0;
   // resolveRecorderBinary() returns null off-darwin AND probes
   // `process.resourcesPath/PwrSnapRecorder` via path.join — neither
@@ -222,6 +254,45 @@ const SUBJECT = {
 };
 const CAPS = { systemAudio: false, microphone: false };
 
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (cause: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (cause: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function latestFailureState(): Record<string, unknown> {
+  const failed = [...mocks.stateLogFull].reverse().find((state) => state.phase === "failed");
+  expect(failed).toBeDefined();
+  return failed!;
+}
+
+function expectSafeFailureState(
+  state: Record<string, unknown>,
+  expected: { sessionId: string; code: string; canRetry?: boolean },
+  forbiddenFragments: string[] = []
+): void {
+  expect(state).toMatchObject({
+    phase: "failed",
+    sessionId: expected.sessionId,
+    code: expected.code,
+    canRetry: expected.canRetry ?? true,
+    displayId: 1
+  });
+  expect(state).not.toHaveProperty("message");
+  const serialized = JSON.stringify(state);
+  for (const fragment of forbiddenFragments) {
+    expect(serialized).not.toContain(fragment);
+  }
+}
+
 describe("RecordingService.start cancel-during-countdown", () => {
   test("cancel mid-countdown bails the loop without re-asserting countdown state", async () => {
     const { __setRecordingServiceForTests, getRecordingService } = await import(
@@ -249,18 +320,14 @@ describe("RecordingService.start cancel-during-countdown", () => {
     // Tick into the SECOND countdown iteration so we're mid-loop.
     await vi.advanceTimersByTimeAsync(1100);
 
-    // Cancel from another caller (e.g. tray Cancel Recording).
-    // cancel() internally awaits `Promise.race([stoppedPromise,
-    // setTimeout(500)])`; with fake timers we have to advance past
-    // that 500ms grace before the await resolves. THEN we have to
-    // advance another second so the countdown loop's in-flight
-    // `setTimeout(1000)` fires — only then does the loop iterate
-    // to the bail check and throw "cancelled".
+    // Cancel from another caller (e.g. tray Cancel Recording). Both the
+    // process-exit wait and the countdown delay are explicitly released;
+    // no anonymous one-second timer is allowed to survive teardown.
     const cancelDone = service.cancel();
-    await vi.advanceTimersByTimeAsync(600);
+    await vi.advanceTimersByTimeAsync(0);
     await cancelDone;
-    await vi.advanceTimersByTimeAsync(1100);
     await startPromise;
+    expect(vi.getTimerCount()).toBe(0);
 
     // The countdown loop should HAVE BAILED. Drain remaining
     // timers — the loop must NOT push another `countdown` state.
@@ -289,6 +356,39 @@ describe("RecordingService.start cancel-during-countdown", () => {
     // resets state to idle (the unconditional-reset contract).
     await expect(service.cancel()).resolves.toBeUndefined();
     expect(mocks.stateLog.at(-1)?.phase).toBe("idle");
+  });
+
+  test("cancel sees an atomically claimed session while temp preparation is pending", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
+    const tempDir = deferred<string>();
+    mocks.mkdtempQueue.push(tempDir.promise);
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    let startOutcome: Error | "ok" | null = null;
+    const startPromise = service
+      .start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 })
+      .then(() => (startOutcome = "ok"))
+      .catch((cause: Error) => (startOutcome = cause));
+
+    expect(service.isActive()).toBe(true);
+    expect(mocks.currentState).toMatchObject({ phase: "preflight" });
+    expect(mocks.spawnedChildren).toHaveLength(0);
+
+    await service.cancel();
+    expect(service.isActive()).toBe(false);
+    expect(mocks.currentState).toEqual({ phase: "idle" });
+
+    tempDir.resolve("/tmp/pwrsnap-recording-cancelled-prepare");
+    await startPromise;
+    expect(startOutcome).toBeInstanceOf(Error);
+    expect((startOutcome as unknown as Error).message).toBe("cancelled");
+    expect(mocks.spawnedChildren).toHaveLength(0);
+    expect(mocks.stateLog.map((state) => state.phase)).not.toContain("failed");
   });
 });
 
@@ -655,7 +755,7 @@ describe("RecordingService.stop source-app metadata → capture row", () => {
 });
 
 describe("RecordingService.start startedPromise timeout", () => {
-  test("recorder that never acks `started` is killed after 15s and state goes to failed", async () => {
+  test("recorder that never acks `started` is killed and leaves a durable safe failure", async () => {
     const { __setRecordingServiceForTests, getRecordingService } = await import(
       "../recording-service"
     );
@@ -670,6 +770,7 @@ describe("RecordingService.start startedPromise timeout", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(mocks.spawnedChildren).toHaveLength(1);
     const child = mocks.spawnedChildren[0]!;
+    const sessionId = mocks.currentState.sessionId as string;
 
     // Recorder never emits `started`. Advance 15s past the timeout.
     await vi.advanceTimersByTimeAsync(15_500);
@@ -680,8 +781,185 @@ describe("RecordingService.start startedPromise timeout", () => {
 
     // We SIGTERM'd the wedged child.
     expect(child.killCalled).toBe(true);
-    // State path includes a `failed` transition for the HUD/tray.
-    expect(mocks.stateLog.map((s) => s.phase)).toContain("failed");
+    const failed = latestFailureState();
+    expectSafeFailureState(
+      failed,
+      {
+        sessionId,
+        code: "recorder_start_timeout"
+      },
+      ["/tmp/pwrsnap-recording-fake", mocks.binaryPath]
+    );
+
+    // Failure is terminal UI state, not a transient toast. Advancing
+    // well beyond the old 1.5s reset must not make it disappear.
+    const failureIndex = mocks.stateLogFull.indexOf(failed);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mocks.currentState).toEqual(failed);
+    expect(mocks.stateLogFull.slice(failureIndex + 1).map((state) => state.phase)).not.toContain(
+      "idle"
+    );
+  });
+});
+
+describe("Native recorder post-start failure", () => {
+  test("a pre-start child error rejects with its cause and publishes a safe failure", async () => {
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    let outcome: Error | "ok" | null = null;
+    const startPromise = service
+      .start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 })
+      .then(() => (outcome = "ok"))
+      .catch((cause: Error) => (outcome = cause));
+    await vi.advanceTimersByTimeAsync(0);
+    const child = mocks.spawnedChildren[0]!;
+    const sessionId = mocks.currentState.sessionId as string;
+    child.emit(
+      "error",
+      new Error(
+        "spawn /Users/alice/Private Tools/PwrSnapRecorder --token native-spawn-secret ENOENT"
+      )
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    await startPromise;
+
+    expect(outcome).toBeInstanceOf(Error);
+    expect((outcome as unknown as Error).message).not.toBe("cancelled");
+    expectSafeFailureState(
+      latestFailureState(),
+      { sessionId, code: "recorder_spawn_failed" },
+      [
+        "/Users/alice",
+        "Private Tools",
+        "--token",
+        "native-spawn-secret",
+        "ENOENT",
+        mocks.binaryPath
+      ]
+    );
+    expect(child.killSignals).toEqual(["SIGTERM"]);
+    expect(service.isActive()).toBe(false);
+  });
+
+  test("cancel suppresses an in-flight pre-start failure instead of publishing it later", async () => {
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    let outcome: Error | "ok" | null = null;
+    const startPromise = service
+      .start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 })
+      .then(() => (outcome = "ok"))
+      .catch((cause: Error) => (outcome = cause));
+    await vi.advanceTimersByTimeAsync(0);
+    const child = mocks.spawnedChildren[0]!;
+    child.exitOnSignal = "SIGKILL";
+    child.emit("error", new Error("pre-start process failure"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(child.killSignals).toEqual(["SIGTERM"]);
+
+    const cancelPromise = service.cancel();
+    await vi.advanceTimersByTimeAsync(500);
+    await vi.runOnlyPendingTimersAsync();
+    await cancelPromise;
+    await startPromise;
+
+    expect(outcome).toBeInstanceOf(Error);
+    expect((outcome as unknown as Error).message).toBe("cancelled");
+    expect(mocks.currentState).toEqual({ phase: "idle" });
+    expect(mocks.stateLog.map((state) => state.phase)).not.toContain("failed");
+    expect(service.isActive()).toBe(false);
+  });
+
+  test("coalesced started and error lines cannot reassert recording", async () => {
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    let outcome: Error | "ok" | null = null;
+    const startPromise = service
+      .start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 })
+      .then(() => (outcome = "ok"))
+      .catch((cause: Error) => (outcome = cause));
+    await vi.advanceTimersByTimeAsync(0);
+    const child = mocks.spawnedChildren[0]!;
+    const sessionId = mocks.currentState.sessionId as string;
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        event: "started",
+        physicalRect: { x: 0, y: 0, w: 100, h: 100 }
+      })}\n${JSON.stringify({
+        event: "error",
+        code: "capture_failed",
+        message: "/Users/alice/Secret Project/clip.mp4 --token coalesced-secret"
+      })}\n`
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    await startPromise;
+
+    expect(outcome).toBeInstanceOf(Error);
+    expect((outcome as unknown as Error).message).toContain("capture_failed");
+    expect((outcome as unknown as Error).message).not.toBe("cancelled");
+    expectSafeFailureState(
+      latestFailureState(),
+      { sessionId, code: "recorder_exited" },
+      ["/Users/alice", "Secret Project", "--token", "coalesced-secret"]
+    );
+    expect(mocks.stateLog.map((state) => state.phase)).not.toContain("recording");
+    expect(service.isActive()).toBe(false);
+  });
+
+  test("unexpected child exit cleans up and remains visible without broadcasting stderr", async () => {
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    const startPromise = service.start({
+      subject: SUBJECT,
+      capabilities: CAPS,
+      countdownSeconds: 0
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const child = mocks.spawnedChildren[0]!;
+    child.emitLine({
+      event: "started",
+      physicalRect: { x: 0, y: 0, w: 100, h: 100 }
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const started = await startPromise;
+
+    child.stderr.emit(
+      "data",
+      "/Users/alice/Secret Project/recording.mp4 --access-token native-super-secret"
+    );
+    child.emit("exit", 17, null);
+    await vi.advanceTimersByTimeAsync(0);
+
+    const failed = latestFailureState();
+    expectSafeFailureState(failed, { sessionId: started.sessionId, code: "recorder_exited" }, [
+      "/Users/alice",
+      "Secret Project",
+      "--access-token",
+      "native-super-secret",
+      "/tmp/pwrsnap-recording-fake",
+      mocks.binaryPath
+    ]);
+    expect(child.killCalled).toBe(false);
+    expect(service.isActive()).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mocks.currentState).toEqual(failed);
   });
 });
 
@@ -788,5 +1066,478 @@ describe("Windows FFmpeg recorder", () => {
     expect(mocks.stateLog.map((s) => s.phase)).toContain("failed");
     expect(mocks.stateLog.map((s) => s.phase)).not.toContain("processing");
     expect(mocks.stateLog.map((s) => s.phase)).not.toContain("ready");
+  });
+
+  test("processing failure remains durable without broadcasting the capture path", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
+    const sourceStore = await import("../../persistence/source-store");
+    vi.mocked(sourceStore.adoptExistingFileAsSource).mockRejectedValueOnce(
+      new Error(
+        "EPERM opening C:\\Users\\alice\\Documents\\Private Captures\\client-demo.mp4 --storage-key processing-secret"
+      )
+    );
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    const started = await service.start({
+      subject: SUBJECT,
+      capabilities: CAPS,
+      countdownSeconds: 0
+    });
+    const child = mocks.spawnedChildren[0]!;
+    let stopOutcome: Error | { captureId: string } | null = null;
+    const stopPromise = service
+      .stop()
+      .then((result) => (stopOutcome = result))
+      .catch((cause: Error) => (stopOutcome = cause));
+    child.emit("exit", 0, null);
+    await vi.advanceTimersByTimeAsync(0);
+    await stopPromise;
+
+    expect(stopOutcome).toBeInstanceOf(Error);
+    const failed = latestFailureState();
+    expectSafeFailureState(
+      failed,
+      { sessionId: started.sessionId, code: "processing_failed", canRetry: false },
+      [
+        "alice",
+        "Private Captures",
+        "client-demo.mp4",
+        "--storage-key",
+        "processing-secret",
+        "/tmp/pwrsnap-recording-fake"
+      ]
+    );
+    expect(mocks.stateLog.map((state) => state.phase)).toContain("processing");
+    expect(mocks.stateLog.map((state) => state.phase)).not.toContain("ready");
+    expect(service.isActive()).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mocks.currentState).toEqual(failed);
+  });
+
+  test("unexpected exit publishes a durable safe failure and cleans up ffmpeg", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    const started = await service.start({
+      subject: SUBJECT,
+      capabilities: CAPS,
+      countdownSeconds: 0
+    });
+    const child = mocks.spawnedChildren[0]!;
+    child.stderr.emit(
+      "data",
+      "C:\\Users\\alice\\Secret Project\\clip.mp4 --api-key windows-super-secret"
+    );
+    child.emit("exit", 23, null);
+    await vi.advanceTimersByTimeAsync(0);
+
+    const failed = latestFailureState();
+    expectSafeFailureState(failed, { sessionId: started.sessionId, code: "recorder_exited" }, [
+      "alice",
+      "Secret Project",
+      "--api-key",
+      "windows-super-secret",
+      "/tmp/pwrsnap-recording-fake",
+      "PwrSnapFFmpeg.exe",
+      "-video_size",
+      "gdigrab"
+    ]);
+    expect(child.killCalled).toBe(false);
+    expect(service.isActive()).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mocks.currentState).toEqual(failed);
+  });
+
+  test("asynchronous spawn error publishes only the allowlisted code and stays failed", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    const started = await service.start({
+      subject: SUBJECT,
+      capabilities: CAPS,
+      countdownSeconds: 0
+    });
+    const child = mocks.spawnedChildren[0]!;
+    child.emit(
+      "error",
+      new Error(
+        "spawn C:\\Users\\alice\\Private Tools\\PwrSnapFFmpeg.exe --token windows-spawn-secret ENOENT"
+      )
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    const failed = latestFailureState();
+    expectSafeFailureState(
+      failed,
+      { sessionId: started.sessionId, code: "recorder_spawn_failed" },
+      [
+        "alice",
+        "Private Tools",
+        "--token",
+        "windows-spawn-secret",
+        "ENOENT",
+        "/tmp/pwrsnap-recording-fake",
+        "-video_size",
+        "gdigrab"
+      ]
+    );
+    expect(child.killCalled).toBe(true);
+    expect(service.isActive()).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mocks.currentState).toEqual(failed);
+  });
+
+  test("waits for TERM then KILL process exit before publishing a retryable failure", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    const started = await service.start({
+      subject: SUBJECT,
+      capabilities: CAPS,
+      countdownSeconds: 0
+    });
+    const child = mocks.spawnedChildren[0]!;
+    child.exitOnSignal = "SIGKILL";
+    child.emit(
+      "error",
+      new Error("spawn C:\\Users\\alice\\Private Recorder.exe --token barrier-secret")
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(child.killSignals).toEqual(["SIGTERM"]);
+    expect(mocks.currentState).toMatchObject({
+      phase: "recording",
+      sessionId: started.sessionId
+    });
+    expect(mocks.stateLog.map((state) => state.phase)).not.toContain("failed");
+
+    await vi.advanceTimersByTimeAsync(499);
+    expect(child.killSignals).toEqual(["SIGTERM"]);
+    expect(mocks.stateLog.map((state) => state.phase)).not.toContain("failed");
+
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(child.killSignals).toEqual(["SIGTERM", "SIGKILL"]);
+    await vi.runOnlyPendingTimersAsync();
+    expectSafeFailureState(
+      latestFailureState(),
+      { sessionId: started.sessionId, code: "recorder_spawn_failed" },
+      ["alice", "Private Recorder.exe", "--token", "barrier-secret"]
+    );
+    expect(service.isActive()).toBe(false);
+  });
+
+  test("keeps a recorder that ignores TERM and KILL non-retryable until shutdown cleans it", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    const started = await service.start({
+      subject: SUBJECT,
+      capabilities: CAPS,
+      countdownSeconds: 0
+    });
+    const child = mocks.spawnedChildren[0]!;
+    child.exitOnSignal = null;
+    child.emit(
+      "error",
+      new Error("spawn C:\\Users\\alice\\Private Recorder.exe --token stubborn-secret")
+    );
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(child.killSignals).toEqual(["SIGTERM", "SIGKILL"]);
+    expectSafeFailureState(
+      latestFailureState(),
+      {
+        sessionId: started.sessionId,
+        code: "recorder_spawn_failed",
+        canRetry: false
+      },
+      ["alice", "Private Recorder.exe", "--token", "stubborn-secret"]
+    );
+    expect(mocks.currentState.phase).toBe("failed");
+    await expect(service.retry(started.sessionId)).rejects.toThrow(
+      "failure_not_retryable"
+    );
+    await expect(service.stop()).rejects.toThrow("no_active_recording");
+    expect(mocks.currentState.phase).toBe("failed");
+
+    // A queued normal Cancel from the old HUD cannot erase the durable
+    // failure. App shutdown uses its distinct cleanup path and retries the
+    // bounded process barrier without exposing a replacement recording.
+    await service.cancel();
+    expect(mocks.currentState).toMatchObject({
+      phase: "failed",
+      sessionId: started.sessionId,
+      canRetry: false
+    });
+    child.exitOnSignal = "SIGTERM";
+    const shutdown = service.shutdown();
+    await vi.advanceTimersByTimeAsync(0);
+    await shutdown;
+    expect(child.killSignals).toEqual(["SIGTERM", "SIGKILL", "SIGTERM"]);
+    expect(service.isActive()).toBe(false);
+    expect(mocks.currentState).toEqual({ phase: "idle" });
+  });
+
+  test("deduplicates concurrent Stop calls before persistence", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
+    const sourceStore = await import("../../persistence/source-store");
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    await service.start({
+      subject: SUBJECT,
+      capabilities: CAPS,
+      countdownSeconds: 0
+    });
+    const child = mocks.spawnedChildren[0]!;
+    const firstStop = service.stop();
+    await expect(service.stop()).rejects.toThrow("stop_in_progress");
+    child.emit("exit", 0, null);
+    await expect(firstStop).resolves.toEqual({ captureId: "cap-1" });
+    expect(sourceStore.adoptExistingFileAsSource).toHaveBeenCalledTimes(1);
+  });
+
+  test("claims a deferred retry atomically and rejects duplicate retry or stale dismiss", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    const first = await service.start({
+      subject: SUBJECT,
+      capabilities: CAPS,
+      countdownSeconds: 0
+    });
+    mocks.spawnedChildren[0]!.emit("exit", 7, null);
+    await vi.advanceTimersByTimeAsync(0);
+    expectSafeFailureState(latestFailureState(), {
+      sessionId: first.sessionId,
+      code: "recorder_exited"
+    });
+
+    const retryTmpDir = deferred<string>();
+    mocks.mkdtempQueue.push(retryTmpDir.promise);
+    const retryPromise = service.retry(first.sessionId);
+
+    expect(mocks.currentState).toMatchObject({ phase: "preflight" });
+    const retrySessionId = mocks.currentState.sessionId as string;
+    expect(retrySessionId).not.toBe(first.sessionId);
+    expect(service.isActive()).toBe(true);
+    expect(mocks.spawnedChildren).toHaveLength(1);
+    await expect(service.retry(first.sessionId)).rejects.toThrow("failure_not_retryable");
+    await expect(service.dismissFailure(first.sessionId)).rejects.toThrow("stale_failure");
+    expect(mocks.currentState).toMatchObject({
+      phase: "preflight",
+      sessionId: retrySessionId
+    });
+
+    retryTmpDir.resolve("/tmp/pwrsnap-recording-retry");
+    await vi.advanceTimersByTimeAsync(0);
+    const retried = await retryPromise;
+    expect(retried.sessionId).toBe(retrySessionId);
+    expect(mocks.spawnedChildren).toHaveLength(2);
+    expect(mocks.currentState).toMatchObject({
+      phase: "recording",
+      sessionId: retrySessionId
+    });
+
+    const cancelPromise = service.cancel();
+    await vi.advanceTimersByTimeAsync(0);
+    await cancelPromise;
+  });
+
+  test("an old stop completion cannot kill or overwrite a replacement recording", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
+    const sourceStore = await import("../../persistence/source-store");
+    const adoption = deferred<
+      Awaited<ReturnType<typeof sourceStore.adoptExistingFileAsSource>>
+    >();
+    vi.mocked(sourceStore.adoptExistingFileAsSource).mockImplementationOnce(
+      async () => await adoption.promise
+    );
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    const first = await service.start({
+      subject: SUBJECT,
+      capabilities: CAPS,
+      countdownSeconds: 0
+    });
+    const firstChild = mocks.spawnedChildren[0]!;
+    let oldStopOutcome: Error | { captureId: string } | null = null;
+    const oldStopPromise = service
+      .stop()
+      .then((result) => (oldStopOutcome = result))
+      .catch((cause: Error) => (oldStopOutcome = cause));
+    firstChild.emit("exit", 0, null);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.currentState).toMatchObject({
+      phase: "processing",
+      sessionId: first.sessionId
+    });
+
+    await service.cancel();
+    expect(mocks.currentState).toEqual({ phase: "idle" });
+    const replacement = await service.start({
+      subject: SUBJECT,
+      capabilities: CAPS,
+      countdownSeconds: 0
+    });
+    const replacementChild = mocks.spawnedChildren[1]!;
+
+    adoption.resolve({
+      id: "src-stale-stop",
+      srcPath: "/fake/captures/src-stale-stop.mp4",
+      sha256: "stale-stop-sha",
+      byteSize: 2048,
+      widthPx: 0,
+      heightPx: 0
+    });
+    await oldStopPromise;
+
+    expect(oldStopOutcome).toBeInstanceOf(Error);
+    expect((oldStopOutcome as unknown as Error).message).toBe("cancelled");
+    expect(vi.mocked(sourceStore.statSource)).not.toHaveBeenCalled();
+    expect(replacementChild.killCalled).toBe(false);
+    expect(service.isActive()).toBe(true);
+    expect(mocks.currentState).toMatchObject({
+      phase: "recording",
+      sessionId: replacement.sessionId
+    });
+
+    const cancelPromise = service.cancel();
+    await vi.advanceTimersByTimeAsync(0);
+    await cancelPromise;
+  });
+
+  test("retry starts a fresh session and a stale dismiss cannot cancel it", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    const first = await service.start({
+      subject: SUBJECT,
+      capabilities: CAPS,
+      captureCursor: false,
+      countdownSeconds: 0
+    });
+    mocks.spawnedChildren[0]!.emit("exit", 9, null);
+    await vi.advanceTimersByTimeAsync(0);
+    expectSafeFailureState(latestFailureState(), {
+      sessionId: first.sessionId,
+      code: "recorder_exited"
+    });
+
+    const retried = await service.retry(first.sessionId);
+    expect(retried.sessionId).not.toBe(first.sessionId);
+    expect(mocks.spawnedChildren).toHaveLength(2);
+    expect(mocks.currentState).toMatchObject({
+      phase: "recording",
+      sessionId: retried.sessionId
+    });
+
+    await expect(service.dismissFailure(first.sessionId)).rejects.toThrow("stale_failure");
+    expect(service.isActive()).toBe(true);
+    expect(mocks.spawnedChildren[1]!.killCalled).toBe(false);
+
+    const cancelPromise = service.cancel();
+    mocks.spawnedChildren[1]!.emit("exit", 0, null);
+    await cancelPromise;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.currentState).toEqual({ phase: "idle" });
+  });
+
+  test("failed retry can be dismissed and clears its process and retry snapshot", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    const first = await service.start({
+      subject: SUBJECT,
+      capabilities: CAPS,
+      countdownSeconds: 0
+    });
+    mocks.spawnedChildren[0]!.emit("exit", 5, null);
+    await vi.advanceTimersByTimeAsync(0);
+
+    const retry = await service.retry(first.sessionId);
+    const retryChild = mocks.spawnedChildren[1]!;
+    retryChild.emit(
+      "error",
+      new Error("spawn C:\\Users\\alice\\private-recorder.exe --password retry-secret")
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    const failedRetry = latestFailureState();
+    expectSafeFailureState(
+      failedRetry,
+      { sessionId: retry.sessionId, code: "recorder_spawn_failed" },
+      [
+        "alice",
+        "private-recorder.exe",
+        "--password",
+        "retry-secret",
+        "/tmp/pwrsnap-recording-fake",
+        "-video_size",
+        "gdigrab"
+      ]
+    );
+    expect(retryChild.killCalled).toBe(true);
+    expect(service.isActive()).toBe(false);
+
+    await service.dismissFailure(retry.sessionId);
+    expect(mocks.currentState).toEqual({ phase: "idle" });
+    await expect(service.retry(retry.sessionId)).rejects.toThrow("failure_not_retryable");
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mocks.currentState).toEqual({ phase: "idle" });
   });
 });

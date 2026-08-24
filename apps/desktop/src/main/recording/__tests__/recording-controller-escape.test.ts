@@ -20,6 +20,9 @@ const mocks = vi.hoisted(() => ({
   dispatch: vi.fn(async () => ({ ok: true, value: undefined })),
   setPermissionWindowId: vi.fn(),
   recordingState: { phase: "idle" } as RecordingState,
+  unsubscribeRecordingState: vi.fn(),
+  subscribeToRecordingState: vi.fn(() => mocks.unsubscribeRecordingState),
+  recordingZoomFactor: 1,
   overlappingWindows: [] as WindowSpy[],
   createdWindows: [] as WindowSpy[]
 }));
@@ -28,6 +31,7 @@ const originalPlatform = process.platform;
 type WindowSpy = {
   id: number;
   webContents: {
+    zoomFactor: number;
     on: ReturnType<typeof vi.fn>;
     getOSProcessId: ReturnType<typeof vi.fn>;
   };
@@ -39,8 +43,8 @@ type WindowSpy = {
   setPosition: ReturnType<typeof vi.fn>;
   getSize: ReturnType<typeof vi.fn>;
   isVisible: ReturnType<typeof vi.fn>;
-  showInactive: ReturnType<typeof vi.fn>;
   show: ReturnType<typeof vi.fn>;
+  showInactive: ReturnType<typeof vi.fn>;
   focus: ReturnType<typeof vi.fn>;
   moveTop: ReturnType<typeof vi.fn>;
   blur: ReturnType<typeof vi.fn>;
@@ -50,9 +54,11 @@ type WindowSpy = {
 };
 
 function makeWindowSpy(): WindowSpy {
+  const size: [number, number] = [420, 80];
   return {
     id: 71,
     webContents: {
+      zoomFactor: mocks.recordingZoomFactor,
       on: vi.fn(),
       getOSProcessId: vi.fn(() => 7100)
     },
@@ -60,12 +66,15 @@ function makeWindowSpy(): WindowSpy {
     setAlwaysOnTop: vi.fn(),
     setFocusable: vi.fn(),
     setIgnoreMouseEvents: vi.fn(),
-    setContentSize: vi.fn(),
+    setContentSize: vi.fn((width: number, height: number) => {
+      size[0] = width;
+      size[1] = height;
+    }),
     setPosition: vi.fn(),
-    getSize: vi.fn(() => [420, 80]),
+    getSize: vi.fn(() => size),
     isVisible: vi.fn(() => false),
-    showInactive: vi.fn(),
     show: vi.fn(),
+    showInactive: vi.fn(),
     focus: vi.fn(),
     moveTop: vi.fn(),
     blur: vi.fn(),
@@ -117,7 +126,7 @@ vi.mock("../../window", () => ({
 
 vi.mock("../recording-state", () => ({
   getRecordingState: () => mocks.recordingState,
-  subscribeToRecordingState: vi.fn()
+  subscribeToRecordingState: mocks.subscribeToRecordingState
 }));
 
 vi.mock("../recording-permission-preflight", () => ({
@@ -141,6 +150,9 @@ beforeEach(() => {
   mocks.unregisterShortcut.mockClear();
   mocks.dispatch.mockClear();
   mocks.setPermissionWindowId.mockClear();
+  mocks.unsubscribeRecordingState.mockClear();
+  mocks.subscribeToRecordingState.mockClear();
+  mocks.recordingZoomFactor = 1;
   mocks.overlappingWindows.length = 0;
   mocks.createdWindows.length = 0;
   mocks.recordingState = { phase: "idle" };
@@ -406,6 +418,7 @@ describe("recording-controller lead-in Escape shortcut", () => {
 
     expect(mocks.unregisterShortcut).toHaveBeenCalledWith("Escape");
     expect(mocks.shortcutCallbacks.has("Escape")).toBe(false);
+    expect(mocks.createdWindows[0]?.setFocusable).toHaveBeenLastCalledWith(false);
   });
 
   test("full-display Windows recordings keep the HUD at the normal tray-stop position", async () => {
@@ -422,5 +435,116 @@ describe("recording-controller lead-in Escape shortcut", () => {
 
     const win = mocks.createdWindows[0];
     expect(win?.setPosition).toHaveBeenCalledWith(510, 16, false);
+  });
+
+  test("a failed recording keeps a readable interactive HUD instead of destroying it", async () => {
+    const { applyRecordingStateToController } = await import("../recording-controller");
+
+    applyRecordingStateToController({
+      phase: "failed",
+      sessionId: "failed-1",
+      code: "recorder_spawn_failed",
+      canRetry: true,
+      displayId: 1
+    });
+
+    const win = mocks.createdWindows[0];
+    expect(win).toBeDefined();
+    expect(win?.setFocusable).toHaveBeenCalledWith(true);
+    expect(win?.setIgnoreMouseEvents).toHaveBeenCalledWith(false);
+    expect(win?.setContentSize).toHaveBeenCalledWith(480, 176, false);
+    expect(win?.setPosition).toHaveBeenCalledWith(480, 16, false);
+    expect(win?.show).toHaveBeenCalledTimes(1);
+    expect(win?.focus).toHaveBeenCalledTimes(1);
+    expect(win?.showInactive).not.toHaveBeenCalled();
+    expect(win?.hide).not.toHaveBeenCalled();
+    expect(win?.destroy).not.toHaveBeenCalled();
+    expect(mocks.registerShortcut).not.toHaveBeenCalledWith("Escape", expect.any(Function));
+  });
+
+  test("a failed recording scales its BrowserWindow DIP size with page zoom", async () => {
+    mocks.recordingZoomFactor = 1.25;
+    const { applyRecordingStateToController } = await import("../recording-controller");
+
+    applyRecordingStateToController({
+      phase: "failed",
+      sessionId: "failed-zoomed",
+      code: "recorder_spawn_failed",
+      canRetry: true,
+      displayId: 1
+    });
+
+    const win = mocks.createdWindows[0];
+    expect(win?.setContentSize).toHaveBeenCalledWith(600, 220, false);
+    expect(win?.setPosition).toHaveBeenCalledWith(420, 16, false);
+  });
+
+  test("idle after a durable failure hides and destroys the HUD", async () => {
+    const { applyRecordingStateToController } = await import("../recording-controller");
+
+    applyRecordingStateToController({
+      phase: "failed",
+      sessionId: "failed-1",
+      code: "stop_failed",
+      canRetry: true,
+      displayId: 1
+    });
+    const win = mocks.createdWindows[0];
+
+    applyRecordingStateToController({ phase: "idle" });
+
+    expect(win?.hide).toHaveBeenCalledTimes(1);
+    expect(win?.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  test("retry preflight restores the non-focusable click-through countdown surface", async () => {
+    const { applyRecordingStateToController } = await import("../recording-controller");
+
+    applyRecordingStateToController({
+      phase: "failed",
+      sessionId: "failed-1",
+      code: "recorder_exited",
+      canRetry: true,
+      displayId: 1
+    });
+    const win = mocks.createdWindows[0];
+
+    applyRecordingStateToController({
+      phase: "preflight",
+      sessionId: "retry-2",
+      rect: { x: 10, y: 20, w: 800, h: 600 },
+      displayId: 1
+    });
+
+    expect(win?.setFocusable).toHaveBeenLastCalledWith(false);
+    expect(win?.setIgnoreMouseEvents).toHaveBeenLastCalledWith(true);
+    expect(win?.destroy).not.toHaveBeenCalled();
+  });
+
+  test("dispose is idempotent, unsubscribes, and destroys a durable failure HUD", async () => {
+    const {
+      applyRecordingStateToController,
+      disposeRecordingController,
+      installRecordingController
+    } = await import("../recording-controller");
+
+    installRecordingController();
+    installRecordingController();
+    applyRecordingStateToController({
+      phase: "failed",
+      sessionId: "failed-1",
+      code: "recorder_exited",
+      canRetry: true,
+      displayId: 1
+    });
+    const win = mocks.createdWindows[0];
+
+    disposeRecordingController();
+    disposeRecordingController();
+
+    expect(mocks.subscribeToRecordingState).toHaveBeenCalledTimes(1);
+    expect(mocks.unsubscribeRecordingState).toHaveBeenCalledTimes(1);
+    expect(win?.hide).toHaveBeenCalledTimes(1);
+    expect(win?.destroy).toHaveBeenCalledTimes(1);
   });
 });

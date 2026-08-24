@@ -17,7 +17,14 @@
 // slow controller (network, App Server round-trip) keeps the modal in
 // its busy state rather than letting the user fire a second decision.
 
-import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactElement
+} from "react";
 import type { ChatApprovalDecision, ChatApprovalRequest } from "@pwrsnap/shared";
 import "./chat-primitives.css";
 
@@ -50,6 +57,13 @@ export function ChatApprovalModal(props: ChatApprovalModalProps): ReactElement {
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [localDecision, setLocalDecision] = useState<ChatApprovalDecision | null>(null);
+  const busy = submitting || phase === "resolving";
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const denyButtonRef = useRef<HTMLButtonElement | null>(null);
+  const primaryButtonRef = useRef<HTMLButtonElement | null>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
+  const busyRef = useRef<boolean>(busy);
+  busyRef.current = busy;
   // Ref guard so the first click wins even if a second click lands in
   // the same tick (React state updates are async; the ref is not).
   const resolvingRef = useRef<boolean>(false);
@@ -63,6 +77,36 @@ export function ChatApprovalModal(props: ChatApprovalModalProps): ReactElement {
       mountedRef.current = false;
     };
   }, []);
+
+  // `aria-modal` describes the accessibility tree but does not manage focus.
+  // Capture the element that owned focus before the prompt, then restore it
+  // when the exact approval leaves the UI. Request supersession reuses this
+  // mounted modal, so the original app control remains the restore target.
+  useLayoutEffect(() => {
+    restoreFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const containFocus = (event: FocusEvent): void => {
+      const dialog = dialogRef.current;
+      if (dialog === null || dialog.contains(event.target as Node | null)) return;
+      if (busyRef.current) dialog.focus();
+      else (denyButtonRef.current ?? primaryButtonRef.current ?? dialog).focus();
+    };
+    document.addEventListener("focusin", containFocus, true);
+    return () => {
+      document.removeEventListener("focusin", containFocus, true);
+      const restoreTarget = restoreFocusRef.current;
+      restoreFocusRef.current = null;
+      if (restoreTarget?.isConnected === true) restoreTarget.focus();
+    };
+  }, []);
+
+  // Deny is the safe initial/default action. While submission disables every
+  // action, keep focus on the dialog itself so Tab cannot escape to the hidden
+  // composer, New, thread-close, or other app controls behind the scrim.
+  useLayoutEffect(() => {
+    if (busy) dialogRef.current?.focus();
+    else denyButtonRef.current?.focus();
+  }, [busy, requestKey]);
 
   // A newer exact request may replace the modal without unmounting it. Its
   // controls must not inherit the prior request's local click latch.
@@ -105,29 +149,61 @@ export function ChatApprovalModal(props: ChatApprovalModalProps): ReactElement {
     [resolve, retryDecision]
   );
 
-  // Escape = Deny. Window-level so the modal catches it regardless of
-  // which child holds focus.
+  // Own keyboard focus for the lifetime of the modal. Capture-phase handling
+  // prevents controls behind the scrim from seeing Escape/Tab first if focus
+  // is moved outside programmatically.
   useEffect(() => {
     const handler = (event: KeyboardEvent): void => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      resolve("deny");
-    };
-    window.addEventListener("keydown", handler);
-    return () => {
-      window.removeEventListener("keydown", handler);
-    };
-  }, [resolve]);
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        resolve("deny");
+        return;
+      }
+      if (event.key !== "Tab") return;
 
-  const busy = submitting || phase === "resolving";
+      const dialog = dialogRef.current;
+      if (dialog === null) return;
+      const actions = [denyButtonRef.current, primaryButtonRef.current].filter(
+        (button): button is HTMLButtonElement => button !== null && !button.disabled
+      );
+      if (actions.length === 0) {
+        event.preventDefault();
+        event.stopPropagation();
+        dialog.focus();
+        return;
+      }
+
+      const first = actions[0];
+      const last = actions[actions.length - 1];
+      const active = document.activeElement;
+      const focusLeftModal = active === null || !dialog.contains(active);
+      if (focusLeftModal || (event.shiftKey && active === first)) {
+        event.preventDefault();
+        event.stopPropagation();
+        (event.shiftKey ? last : first).focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        event.stopPropagation();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", handler, true);
+    return () => {
+      window.removeEventListener("keydown", handler, true);
+    };
+  }, [busy, resolve]);
+
   const activeDecision = submitting ? retryDecision : localDecision;
   const titleId = `ps-approval-title-${request.approvalId}`;
 
   return (
     <div className="ps-approval-scrim" data-testid="ps-approval-scrim">
       <div
+        ref={dialogRef}
         className="ps-approval"
         role="dialog"
+        tabIndex={-1}
         aria-modal="true"
         aria-label="Agent approval"
         aria-labelledby={titleId}
@@ -153,6 +229,7 @@ export function ChatApprovalModal(props: ChatApprovalModalProps): ReactElement {
         ) : null}
         <div className="ps-approval__actions">
           <button
+            ref={denyButtonRef}
             type="button"
             className="ps-approval__btn ps-approval__btn--deny"
             onClick={onDeny}
@@ -174,6 +251,7 @@ export function ChatApprovalModal(props: ChatApprovalModalProps): ReactElement {
             )}
           </button>
           <button
+            ref={primaryButtonRef}
             type="button"
             className="ps-approval__btn ps-approval__btn--approve"
             onClick={errorMessage === null ? onApprove : onRetry}

@@ -228,12 +228,25 @@ describe("cross-platform privileged roots", () => {
 
     for (const expected of [
       "C:\\Users\\Alice\\.ssh",
+      "C:\\Users\\Alice\\.azure",
+      "C:\\Users\\Alice\\.kube",
+      "C:\\Users\\Alice\\.docker",
+      "C:\\Users\\Alice\\.git-credentials",
+      "C:\\Users\\Alice\\.npmrc",
+      "C:\\Users\\Alice\\.terraform.d\\credentials.tfrc.json",
       "C:\\Users\\Alice\\.config\\gh",
+      "C:\\Users\\Alice\\.config\\gcloud",
+      "C:\\Users\\Alice\\.config\\containers\\auth.json",
       "C:\\Users\\Alice\\AppData\\Roaming\\GitHub CLI",
       "C:\\Users\\Alice\\AppData\\Roaming\\gnupg",
+      "C:\\Users\\Alice\\AppData\\Roaming\\Microsoft\\Crypto",
       "C:\\Users\\Alice\\AppData\\Roaming\\Microsoft\\Credentials",
+      "C:\\Users\\Alice\\AppData\\Roaming\\Microsoft\\SystemCertificates",
       "C:\\Users\\Alice\\AppData\\Local\\Microsoft\\Protect",
+      "C:\\Users\\Alice\\AppData\\Local\\Microsoft\\TokenBroker",
+      "C:\\Users\\Alice\\AppData\\Local\\Microsoft\\IdentityCache",
       "C:\\Users\\Alice\\AppData\\Local\\Microsoft\\Vault",
+      "C:\\Users\\Alice\\AppData\\Roaming\\NuGet\\NuGet.Config",
       "C:\\Windows",
       "C:\\ProgramData",
       "C:\\Recovery",
@@ -277,6 +290,23 @@ describe("cross-platform privileged roots", () => {
         platform: "win32",
         prefixes: ["C:\\Program Files"]
       })
+    ).toBe(false);
+
+    const fileRootOptions = {
+      platform: "win32" as const,
+      prefixes: ["C:\\Users\\Alice\\.npmrc"]
+    };
+    expect(
+      __isPrivilegedPathForTest(
+        "c:\\users\\alice\\.NPMRC",
+        fileRootOptions
+      )
+    ).toBe(true);
+    expect(
+      __isPrivilegedPathForTest(
+        "C:\\Users\\Alice\\.npmrc-backup",
+        fileRootOptions
+      )
     ).toBe(false);
   });
 
@@ -336,6 +366,12 @@ describe("cross-platform privileged roots", () => {
         "/Library/Keychains",
         "/Users/alice/Library/Keychains",
         "/Users/alice/.ssh",
+        "/Users/alice/.azure",
+        "/Users/alice/.kube",
+        "/Users/alice/.docker",
+        "/Users/alice/.git-credentials",
+        "/Users/alice/.npmrc",
+        "/Users/alice/.config/gcloud",
         "/Users/alice/.config/gh"
       ])
     );

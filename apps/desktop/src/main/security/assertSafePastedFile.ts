@@ -16,6 +16,36 @@ import { normalizeWindowsPathForPolicy } from "./windows-path";
 type PrivilegedPathPlatform = "darwin" | "win32" | "linux";
 type Environment = Readonly<Record<string, string | undefined>>;
 
+// Well-known user-scoped stores that commonly contain reusable credentials,
+// access tokens, registry auth, cluster credentials, or package-manager
+// secrets. Entries may name either a directory or a single config file; the
+// separator-aware containment check handles both without broadening to home.
+const COMMON_HOME_SECRET_PATHS = [
+  [".ssh"],
+  [".aws"],
+  [".azure"],
+  [".gnupg"],
+  [".kube"],
+  [".docker"],
+  [".terraform.d", "credentials.tfrc.json"],
+  [".config", "gh"],
+  [".config", "gcloud"],
+  [".config", "hub"],
+  [".config", "op"],
+  [".config", "rclone"],
+  [".config", "containers", "auth.json"],
+  [".local", "share", "keyrings"],
+  [".local", "share", "fish", "fish_history"],
+  [".git-credentials"],
+  [".npmrc"],
+  [".netrc"],
+  [".pypirc"],
+  [".m2", "settings.xml"],
+  [".gradle", "gradle.properties"],
+  [".zsh_history"],
+  [".bash_history"]
+] as const;
+
 export type PrivilegedPrefixBuildOptions = {
   platform: PrivilegedPathPlatform;
   homeDir: string;
@@ -67,12 +97,9 @@ export function __buildPrivilegedPrefixesForTest(
   const { platform, homeDir } = options;
   const env = options.env ?? {};
   const pathApi = pathApiFor(platform);
-  const roots: string[] = [
-    pathApi.resolve(homeDir, ".ssh"),
-    pathApi.resolve(homeDir, ".aws"),
-    pathApi.resolve(homeDir, ".gnupg"),
-    pathApi.resolve(homeDir, ".config", "gh")
-  ];
+  const roots: string[] = COMMON_HOME_SECRET_PATHS.map((segments) =>
+    pathApi.resolve(homeDir, ...segments)
+  );
 
   if (platform === "darwin") {
     roots.push(
@@ -104,6 +131,20 @@ export function __buildPrivilegedPrefixesForTest(
     roots.push(
       pathApi.resolve(appData, "GitHub CLI"),
       pathApi.resolve(appData, "gnupg"),
+      pathApi.resolve(appData, "Azure"),
+      pathApi.resolve(localAppData, "Azure"),
+      pathApi.resolve(appData, "Docker"),
+      pathApi.resolve(appData, "GitCredentialManager"),
+      pathApi.resolve(localAppData, "GitCredentialManager"),
+      pathApi.resolve(appData, "NuGet", "NuGet.Config"),
+      pathApi.resolve(
+        appData,
+        "Microsoft",
+        "Windows",
+        "PowerShell",
+        "PSReadLine"
+      ),
+      pathApi.resolve(appData, "Microsoft", "PowerShell", "PSReadLine"),
       systemRoot,
       programData,
       pathApi.resolve(systemVolumeRoot, "Recovery"),
@@ -112,10 +153,17 @@ export function __buildPrivilegedPrefixesForTest(
     for (const dataRoot of [appData, localAppData]) {
       roots.push(
         pathApi.resolve(dataRoot, "Microsoft", "Credentials"),
+        pathApi.resolve(dataRoot, "Microsoft", "Crypto"),
         pathApi.resolve(dataRoot, "Microsoft", "Protect"),
+        pathApi.resolve(dataRoot, "Microsoft", "SystemCertificates"),
         pathApi.resolve(dataRoot, "Microsoft", "Vault")
       );
     }
+
+    roots.push(
+      pathApi.resolve(localAppData, "Microsoft", "IdentityCache"),
+      pathApi.resolve(localAppData, "Microsoft", "TokenBroker")
+    );
 
     for (const value of [
       envValue(env, "ProgramFiles"),

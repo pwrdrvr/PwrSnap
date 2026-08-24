@@ -23,6 +23,15 @@ The shared boundary lives in
   roots, re-canonicalizing those roots at each pre/post-open boundary so a
   privileged-root symlink retarget cannot stale the policy.
 
+The pasted-image policy covers common user secret stores as well as platform
+system roots. That includes SSH/AWS/Azure/GCP, kube and container registry
+credentials, Git/GitHub CLI, GPG/keyrings, Terraform, package-manager config
+files that commonly embed tokens, and shell histories. On Windows it also
+covers roaming/local Microsoft Crypto, Protect, Credentials, Vault,
+SystemCertificates, IdentityCache, and TokenBroker stores. This is a curated
+deny set, not a claim that pathname policy can discover every application that
+may invent a new credential location.
+
 The generic verifier explicitly rejects a leaf symlink or redirecting reparse
 point, requires a regular file, and compares the initial, opened-handle, and
 post-open `dev`/`ino` identities. POSIX opens add `O_NOFOLLOW | O_NONBLOCK`:

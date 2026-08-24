@@ -67,6 +67,19 @@ const screenSnapshotMocks = vi.hoisted(() => ({
   captureAndRegister: vi.fn(),
   releaseSnapshot: vi.fn()
 }));
+const selectorShortcutMocks = vi.hoisted(() => {
+  const callbacks = new Map<string, () => void>();
+  return {
+    callbacks,
+    register: vi.fn((accelerator: string, callback: () => void) => {
+      callbacks.set(accelerator, callback);
+      return true;
+    }),
+    unregister: vi.fn((accelerator: string) => {
+      callbacks.delete(accelerator);
+    })
+  };
+});
 
 function selectorLoadPromise(): Promise<void> {
   if (!deferSelectorLoads) return Promise.resolve();
@@ -162,8 +175,8 @@ vi.mock("electron", () => {
     },
     BrowserWindow,
     globalShortcut: {
-      register: vi.fn(),
-      unregister: vi.fn()
+      register: selectorShortcutMocks.register,
+      unregister: selectorShortcutMocks.unregister
     },
     ipcMain: {
       on: vi.fn((channel: string, listener: (event: unknown, payload: unknown) => void) => {
@@ -220,6 +233,9 @@ beforeEach(() => {
   suppressPaintAck = false;
   screenSnapshotMocks.captureAndRegister.mockReset();
   screenSnapshotMocks.releaseSnapshot.mockReset();
+  selectorShortcutMocks.callbacks.clear();
+  selectorShortcutMocks.register.mockClear();
+  selectorShortcutMocks.unregister.mockClear();
   screenSnapshotMocks.captureAndRegister.mockResolvedValue({
     id: "snapshot-1",
     filePath: "/tmp/snapshot.png",
@@ -316,6 +332,62 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
     expect(moveTopOrder!).toBeGreaterThan(showOrder!);
     expect(moveTopOrder!).toBeGreaterThan(focusOrder!);
     expect(moveTopOrder!).toBeGreaterThan(webFocusOrder!);
+
+    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
+  });
+
+  test("the Settings recorder lease releases and restores selector Escape and Return ownership", async () => {
+    const [{ pickRegion }, { hotkeyRecorderSuspension }] = await Promise.all([
+      import("../capture/region-selector"),
+      import("../hotkeys/hotkey-recorder-suspension-instance")
+    ]);
+    hotkeyRecorderSuspension.configureOwnership({
+      registrationManager: null,
+      withSerializedSettings: async (operation) => operation({} as never)
+    });
+    const pick = pickRegion();
+
+    await vi.waitFor(() => {
+      expect(selectorShortcutMocks.callbacks.has("Escape")).toBe(true);
+      expect(selectorShortcutMocks.callbacks.has("Return")).toBe(true);
+    });
+    const selector = constructed[0]!;
+    const originalEscape = selectorShortcutMocks.callbacks.get("Escape");
+
+    const lease = await hotkeyRecorderSuspension.begin(
+      "settings_session_1",
+      1,
+      17,
+      "documentepoch0001"
+    );
+    expect(lease.accepted).toBe(true);
+    expect(selectorShortcutMocks.unregister.mock.calls.map(([key]) => key)).toEqual([
+      "Escape",
+      "Return"
+    ]);
+    expect(selectorShortcutMocks.callbacks.size).toBe(0);
+    originalEscape?.();
+    expect(selector.webContents.send).not.toHaveBeenCalledWith(
+      "region-selector:key",
+      { key: "Escape" }
+    );
+
+    await expect(
+      hotkeyRecorderSuspension.end(
+        "settings_session_1",
+        1,
+        17,
+        "documentepoch0001"
+      )
+    ).resolves.toBe(true);
+    expect(selectorShortcutMocks.callbacks.has("Escape")).toBe(true);
+    expect(selectorShortcutMocks.callbacks.has("Return")).toBe(true);
+    selectorShortcutMocks.callbacks.get("Escape")?.();
+    expect(selector.webContents.send).toHaveBeenCalledWith(
+      "region-selector:key",
+      { key: "Escape" }
+    );
 
     ipcListeners.get("region-selector:result")?.({}, { ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });

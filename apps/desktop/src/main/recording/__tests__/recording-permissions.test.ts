@@ -9,13 +9,14 @@ const electronMock = vi.hoisted(() => ({
   status: { screen: "granted", microphone: "granted" } as Record<string, string>,
   askResolved: true as boolean,
   askCalls: 0,
+  appVersion: "1.2.3",
   systemVersion: "14.0.0",
   desktopCapturerCalls: 0,
   shellOpenUrls: [] as string[]
 }));
 
 vi.mock("electron", () => ({
-  app: { getVersion: () => "1.2.3" },
+  app: { getVersion: () => electronMock.appVersion },
   shell: {
     openExternal: vi.fn().mockImplementation(async (url: string) => {
       electronMock.shellOpenUrls.push(url);
@@ -53,6 +54,7 @@ beforeEach(() => {
   electronMock.status = { screen: "granted", microphone: "granted" };
   electronMock.askResolved = true;
   electronMock.askCalls = 0;
+  electronMock.appVersion = "1.2.3";
   electronMock.desktopCapturerCalls = 0;
   electronMock.shellOpenUrls = [];
   Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
@@ -107,7 +109,7 @@ describe("readRecordingReadiness", () => {
     expect(needsAttention(r)).toBe(false);
   });
 
-  test("fingerprint changes when any input changes", async () => {
+  test("fingerprint changes when a permission-status input changes", async () => {
     electronMock.status = { screen: "granted", microphone: "granted" };
     electronMock.systemVersion = "14.0.0";
     const mod1 = await import("../recording-permissions");
@@ -119,6 +121,21 @@ describe("readRecordingReadiness", () => {
     const b = mod2.readRecordingReadiness();
 
     expect(a.fingerprint).not.toBe(b.fingerprint);
+  });
+
+  test("fingerprint excludes app version", async () => {
+    electronMock.status = { screen: "granted", microphone: "granted" };
+    electronMock.systemVersion = "14.0.0";
+    electronMock.appVersion = "1.2.3";
+    const mod1 = await import("../recording-permissions");
+    const a = mod1.readRecordingReadiness();
+
+    vi.resetModules();
+    electronMock.appVersion = "9.9.9";
+    const mod2 = await import("../recording-permissions");
+    const b = mod2.readRecordingReadiness();
+
+    expect(a.fingerprint).toBe(b.fingerprint);
   });
 
   test("Linux returns granted for every current capability", async () => {
@@ -224,11 +241,12 @@ describe("requestPermission", () => {
     expect(electronMock.shellOpenUrls).toEqual([]);
   });
 
-  test("Windows request remains a no-op and never calls the macOS prompt API", async () => {
+  test("Windows request reports unknown and never calls a prompt API", async () => {
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });
     const { requestPermission } = await import("../recording-permissions");
-    expect(await requestPermission("microphone")).toEqual({ status: "granted" });
+    expect(await requestPermission("microphone")).toEqual({ status: "unknown" });
     expect(electronMock.askCalls).toBe(0);
+    expect(electronMock.desktopCapturerCalls).toBe(0);
   });
 });
 

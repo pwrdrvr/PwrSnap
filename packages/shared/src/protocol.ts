@@ -4119,7 +4119,7 @@ export type Commands = {
    */
   "permissions:readiness": { req: Record<string, never>; res: PermissionReadinessReport };
   /**
-   * Trigger an OS-level permission prompt. Microphone uses
+   * Trigger a macOS permission prompt. Microphone uses
    * `askForMediaAccess`. Screen + system-audio issue a real screen-source
    * request (`desktopCapturer.getSources`), which drives the macOS
    * first-grant dialog AND registers PwrSnap in the Privacy pane — this
@@ -4127,6 +4127,8 @@ export type Commands = {
    * `recording.screenCapturePrompted` so the next time around the UI
    * routes to System Settings via `permissions:openSystemSettings` (macOS
    * won't prompt twice). Returns the live status read back after the prompt.
+   * Other platforms do not expose an equivalent request API through this
+   * command, so no prompt or inspection occurs and the status is `unknown`.
    */
   "permissions:request": {
     req: { permission: RecordingPermission };

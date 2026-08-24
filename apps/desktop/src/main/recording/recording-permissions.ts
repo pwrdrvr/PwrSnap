@@ -29,7 +29,7 @@
 // unsupported system audio). Never present the readiness fallback as a grant.
 //
 // The fingerprint is a stable SHA-1 of `(screen, mic, systemAudio,
-// backend, appVersion)`. Settings persists the last fingerprint that
+// backend)`. Settings persists the last fingerprint that
 // triggered routing to System Permissions; startup routes only when
 // the current fingerprint differs AND any permission needs attention.
 

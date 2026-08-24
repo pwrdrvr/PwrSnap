@@ -9,6 +9,19 @@ function read(path) {
   return readFileSync(resolve(repoRoot, path), "utf8");
 }
 
+function expectLocalMarkdownLinksToExist(path) {
+  const sourcePath = resolve(repoRoot, path);
+  const missing = [];
+
+  for (const match of read(path).matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
+    const target = match[1].split("#", 1)[0];
+    if (/^(?:https?:|mailto:)/.test(target) || target.length === 0) continue;
+    if (!existsSync(resolve(dirname(sourcePath), target))) missing.push(target);
+  }
+
+  expect(missing, `${path} has missing local Markdown links`).toEqual([]);
+}
+
 describe("Windows release configuration", () => {
   test("electron-builder declares signing, updater, and .pwrsnap association metadata", () => {
     const config = read("apps/desktop/electron-builder.yml");
@@ -185,6 +198,98 @@ describe("Windows release configuration", () => {
     expect(workflow).toContain("windows-dist/PwrSnap-windows-x64-setup.exe");
   });
 
+  test("install and support docs describe the shipping Windows contract", () => {
+    const rootReadme = read("README.md");
+    const windowsReadme = read("docs/windows/README.md");
+    const wingetReadme = read("docs/windows/winget/README.md");
+    const userFacingDocs = `${rootReadme}\n${windowsReadme}`;
+    const paths = read("apps/desktop/src/main/persistence/paths.ts");
+    const builder = read("apps/desktop/electron-builder.yml");
+    const previewWorkflow = read(".github/workflows/preview-build.yml");
+    const wingetInstaller = read("docs/windows/winget/PwrDrvr.PwrSnap.installer.yaml");
+
+    // These source contracts make the documentation assertions evidence-based
+    // instead of preserving prose after the product changes underneath it.
+    expect(paths).toContain('join(app.getPath("documents"), "PwrSnap")');
+    expect(paths).toContain('join(app.getPath("home"), "PwrSnap")');
+    expect(paths).toContain('join(getDataRoot(), "pwrsnap.db")');
+    expect(builder).toContain('LSMinimumSystemVersion: "14.0"');
+    expect(builder).toMatch(/win:\r?\n[\s\S]*?target:\r?\n[\s\S]*?arch: \[x64\]/);
+    expect(builder).toContain("verifyUpdateCodeSignature: true");
+    expect(wingetInstaller).toContain("MinimumOSVersion: 10.0.0.0");
+    expect(previewWorkflow).toContain("Build preview installer (unsigned)");
+    expect(previewWorkflow).toContain("retention-days: 14");
+
+    expect(rootReadme).toContain("macOS 14 or later");
+    expect(rootReadme).toContain("Windows 10 or Windows 11");
+    expect(rootReadme).toContain("Apple Silicon + Intel");
+    expect(rootReadme).toContain("Linux desktop support is not shipped");
+    expect(rootReadme).toContain("Developer ID signed, hardened, and Apple-notarized");
+    expect(rootReadme).toContain("Authenticode-signed");
+    expect(rootReadme).toMatch(/To install a\s+1\.1 prerelease/);
+    expect(rootReadme).toMatch(/Once 1\.1 is promoted\s+stable/);
+
+    for (const docs of [rootReadme, windowsReadme]) {
+      expect(docs).toContain("PwrSnap-<version>-windows-x64-setup.exe");
+      expect(docs).toContain("https://github.com/pwrdrvr/PwrSnap/releases/latest");
+      expect(docs).toContain("https://github.com/pwrdrvr/PwrSnap/releases");
+      expect(docs).toContain("Settings → General → Updates");
+      expect(docs).toContain("%APPDATA%\\PwrSnap");
+    }
+
+    expect(rootReadme).toContain("~/Documents/PwrSnap");
+    expect(windowsReadme).toContain("%USERPROFILE%\\Documents\\PwrSnap");
+    expect(windowsReadme).toContain("%USERPROFILE%\\PwrSnap");
+    expect(windowsReadme).toContain("PwrSnapFFmpeg.exe");
+    expect(windowsReadme).toContain("users do not install FFmpeg separately");
+    expect(windowsReadme).toContain("Windows Actions artifact");
+    expect(windowsReadme).toContain("14 days and is unsigned");
+    expect(windowsReadme).toContain("Windows video capture records the screen");
+    expect(windowsReadme).toContain("Arm64 is not packaged");
+    expect(windowsReadme).toContain("Help → Logs");
+    expect(windowsReadme).toMatch(/To install a\s+1\.1 prerelease/);
+    expect(windowsReadme).toMatch(/Once 1\.1 is promoted\s+stable/);
+    expect(windowsReadme).toContain("preserves the previous working binding");
+    expect(windowsReadme).toContain("Full-window capture on Windows depends on Electron");
+    expect(wingetReadme).toContain("PwrSnap is not published there yet");
+    expect(windowsReadme).toContain("not currently published in the Windows Package Manager");
+
+    for (const stale of [
+      "Windows Preview",
+      "1.0.0-beta.20",
+      "The real public release still needs final Authenticode signing",
+      "Settings → Experimental",
+      "Captures land under `~/Library/Application Support/PwrSnap/`",
+      "https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap-windows-x64-setup.exe",
+      "The 1.1 line is currently a prerelease",
+      "For the current 1.1 prerelease line",
+      "Windows video currently includes the pointer",
+      "Some in-app shortcut labels still render macOS key glyphs",
+      "shows the macOS Command glyph",
+      "the remaining fallback is macOS-only",
+      "Headed Windows smoke testing is not",
+    ]) {
+      expect(userFacingDocs).not.toContain(stale);
+    }
+
+    for (const protectedDetail of [
+      "pwrdrvr/pwrsnap-ffmpeg-builds",
+      "FFMPEG_BUILDS_APP_PRIVATE_KEY",
+      "WIN_AZURE_SIGN_",
+      "eus.codesigning.azure.net",
+    ]) {
+      expect(windowsReadme).not.toContain(protectedDetail);
+    }
+
+    for (const path of [
+      "README.md",
+      "docs/windows/README.md",
+      "docs/windows/winget/README.md",
+    ]) {
+      expectLocalMarkdownLinksToExist(path);
+    }
+  });
+
   test("release manifest verification asserts the decoder contract on both platforms", () => {
     const workflow = read(".github/workflows/release.yml");
 
@@ -238,9 +343,9 @@ describe("Windows release configuration", () => {
     // (pwrdrvr/pwrsnap-ffmpeg-builds, FFMPEG_VERSION in scripts/lib/config.mjs)
     // and cannot be derived from anything installed here, so it is restated in
     // this repo once per consumer: the workflows' FFMPEG_VERSION guards, the
-    // artifact names they download, the pin tables in three docs, and — the one
-    // with legal consequences — the LGPL-2.1 attribution and written source
-    // offer in THIRD_PARTY_LICENSES.
+    // artifact names they download, the pin tables in the release docs, and —
+    // the one with legal consequences — the LGPL-2.1 attribution and written
+    // source offer in THIRD_PARTY_LICENSES.
     //
     // A repin PR that updates the workflows and forgets the notice would ship a
     // correct binary under a false attribution, and every other check would
@@ -275,7 +380,6 @@ describe("Windows release configuration", () => {
     for (const docPath of [
       "docs/ffmpeg-build-reference.md",
       "docs/desktop-release-runbook.md",
-      "docs/windows/README.md",
     ]) {
       push(`doc:${docPath}`, read(docPath), artifactPattern);
     }
@@ -294,7 +398,6 @@ describe("Windows release configuration", () => {
       "workflow-artifact:preview-build.yml",
       "doc:docs/ffmpeg-build-reference.md",
       "doc:docs/desktop-release-runbook.md",
-      "doc:docs/windows/README.md",
     ]) {
       expect(
         found.filter((entry) => entry.source === required),

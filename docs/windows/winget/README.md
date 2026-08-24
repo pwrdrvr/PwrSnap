@@ -1,15 +1,16 @@
 # winget submission — `PwrDrvr.PwrSnap`
 
-Everything needed to publish PwrSnap to the Windows Package Manager community
-repository so that this works:
+This directory prepares a future PwrSnap submission to the Windows Package
+Manager community repository. PwrSnap is not published there yet, so this
+command does not currently resolve:
 
 ```powershell
 winget install PwrDrvr.PwrSnap
 ```
 
-The three manifests in this directory are the submission payload. They are kept
-here, in our repo, as the source of truth; the copies that live in
-`microsoft/winget-pkgs` are a downstream mirror.
+The three manifests in this directory are the proposed submission payload and
+the repository source of truth. There is no downstream copy in
+`microsoft/winget-pkgs` yet.
 
 **Submitting the pull request to `microsoft/winget-pkgs` is the operator's
 call.** Nothing in this directory submits anything on its own.

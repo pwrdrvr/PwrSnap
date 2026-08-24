@@ -374,9 +374,7 @@ export function applyRecordingStateToController(state: RecordingState): void {
       }
       break;
     }
-    case "recording":
-    case "stopping":
-    case "processing": {
+    case "recording": {
       const win = ensureWindow();
       disarmLeadInEscapeShortcut();
       win.setAlwaysOnTop(true, "floating");
@@ -388,17 +386,29 @@ export function applyRecordingStateToController(state: RecordingState): void {
       // reassurance caption underneath.
       win.setIgnoreMouseEvents(false);
       win.setContentSize(420, 80, false);
-      // Only the `recording` phase carries `displayId`; stopping/
-      // processing arms fall back to the primary display via
-      // anchorTopCenter. In practice these phases are very brief and
-      // the pill stays anchored from the recording transition.
-      const recordedDisplayId =
-        state.phase === "recording" ? state.displayId : undefined;
-      if (process.platform === "win32" && state.phase === "recording") {
+      if (process.platform === "win32") {
         anchorAwayFromRecordedRect(win, state.rect, state.displayId);
       } else {
-        anchorTopCenter(win, recordedDisplayId);
+        anchorTopCenter(win, state.displayId);
       }
+      if (!win.isVisible()) {
+        win.showInactive();
+      } else {
+        win.moveTop();
+      }
+      break;
+    }
+    case "stopping":
+    case "processing": {
+      const win = ensureWindow();
+      disarmLeadInEscapeShortcut();
+      win.setFocusable(false);
+      win.setIgnoreMouseEvents(false);
+      win.setContentSize(420, 80, false);
+      // Preserve the recording-phase position. In particular, Windows may
+      // have placed the HUD outside a region because gdigrab cannot exclude
+      // it. Re-anchoring when Stop begins can paint the HUD into the final
+      // captured frames; processing must not move it either.
       if (!win.isVisible()) {
         win.showInactive();
       } else {

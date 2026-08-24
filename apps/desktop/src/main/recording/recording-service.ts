@@ -310,6 +310,10 @@ class NativeRecorderService implements RecordingService {
   private readonly pendingFailures = new Map<string, PendingSessionFailure>();
   private readonly cancellingSessions = new Set<string>();
   private countdownDelay: CountdownDelay | null = null;
+  /** Resolves after stopping/processing reaches ready or failed. App shutdown
+   * and stale close/cancel actions join this instead of invalidating durable
+   * source adoption or metadata persistence. */
+  private finalizationSettled: Promise<void> | null = null;
 
   isActive(): boolean {
     return this.sessionId !== null;
@@ -574,6 +578,23 @@ class NativeRecorderService implements RecordingService {
     if (state.phase === "stopping" || state.phase === "processing") {
       throw new Error("stop_in_progress");
     }
+    let resolveFinalization!: () => void;
+    const finalizationSettled = new Promise<void>((resolve) => {
+      resolveFinalization = resolve;
+    });
+    this.finalizationSettled = finalizationSettled;
+    const task = this.stopClaimedSession();
+    const finishFinalization = (): void => {
+      if (this.finalizationSettled === finalizationSettled) {
+        this.finalizationSettled = null;
+      }
+      resolveFinalization();
+    };
+    void task.then(finishFinalization, finishFinalization);
+    return await task;
+  }
+
+  private async stopClaimedSession(): Promise<{ captureId: string }> {
     if (this.child === null || this.sessionId === null) {
       throw new Error("no_active_recording");
     }
@@ -687,6 +708,14 @@ class NativeRecorderService implements RecordingService {
   }
 
   private async cancelSession(cleanupFailedSession: boolean): Promise<void> {
+    const finalizationSettled = this.finalizationSettled;
+    if (finalizationSettled !== null) {
+      // Once Stop has begun, the recorder output is being finalized. Cancel,
+      // controller close, and app shutdown must wait for that durable outcome;
+      // clearing the session would make persistence fail its generation guard.
+      await finalizationSettled;
+      return;
+    }
     // Reset an active pre-capture/recording session even if its child has not
     // spawned yet. A terminal failure is intentionally excluded: a stale
     // normal Cancel must not erase the durable card or its retry snapshot.
@@ -1029,6 +1058,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
   private readonly pendingFailures = new Map<string, PendingSessionFailure>();
   private readonly cancellingSessions = new Set<string>();
   private countdownDelay: CountdownDelay | null = null;
+  private finalizationSettled: Promise<void> | null = null;
 
   isActive(): boolean {
     return this.sessionId !== null;
@@ -1186,6 +1216,23 @@ class WindowsFfmpegRecorderService implements RecordingService {
     if (state.phase === "stopping" || state.phase === "processing") {
       throw new Error("stop_in_progress");
     }
+    let resolveFinalization!: () => void;
+    const finalizationSettled = new Promise<void>((resolve) => {
+      resolveFinalization = resolve;
+    });
+    this.finalizationSettled = finalizationSettled;
+    const task = this.stopClaimedSession();
+    const finishFinalization = (): void => {
+      if (this.finalizationSettled === finalizationSettled) {
+        this.finalizationSettled = null;
+      }
+      resolveFinalization();
+    };
+    void task.then(finishFinalization, finishFinalization);
+    return await task;
+  }
+
+  private async stopClaimedSession(): Promise<{ captureId: string }> {
     if (this.child === null || this.sessionId === null || this.exitPromise === null) {
       throw new Error("no_active_recording");
     }
@@ -1302,6 +1349,11 @@ class WindowsFfmpegRecorderService implements RecordingService {
   }
 
   private async cancelSession(cleanupFailedSession: boolean): Promise<void> {
+    const finalizationSettled = this.finalizationSettled;
+    if (finalizationSettled !== null) {
+      await finalizationSettled;
+      return;
+    }
     const sessionId = this.sessionId;
     const child = this.child;
     if (getRecordingState().phase === "failed" && !cleanupFailedSession) {

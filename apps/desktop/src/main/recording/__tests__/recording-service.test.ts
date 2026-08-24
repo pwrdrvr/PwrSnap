@@ -1382,7 +1382,7 @@ describe("Windows FFmpeg recorder", () => {
     await cancelPromise;
   });
 
-  test("an old stop completion cannot kill or overwrite a replacement recording", async () => {
+  test("shutdown and stale close-cancel wait for processing to persist", async () => {
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });
     (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
     const sourceStore = await import("../../persistence/source-store");
@@ -1404,11 +1404,7 @@ describe("Windows FFmpeg recorder", () => {
       countdownSeconds: 0
     });
     const firstChild = mocks.spawnedChildren[0]!;
-    let oldStopOutcome: Error | { captureId: string } | null = null;
-    const oldStopPromise = service
-      .stop()
-      .then((result) => (oldStopOutcome = result))
-      .catch((cause: Error) => (oldStopOutcome = cause));
+    const stopPromise = service.stop();
     firstChild.emit("exit", 0, null);
     await vi.advanceTimersByTimeAsync(0);
     expect(mocks.currentState).toMatchObject({
@@ -1416,38 +1412,48 @@ describe("Windows FFmpeg recorder", () => {
       sessionId: first.sessionId
     });
 
-    await service.cancel();
-    expect(mocks.currentState).toEqual({ phase: "idle" });
-    const replacement = await service.start({
-      subject: SUBJECT,
-      capabilities: CAPS,
-      countdownSeconds: 0
+    let shutdownSettled = false;
+    let closeCancelSettled = false;
+    const shutdownPromise = service.shutdown().then(() => {
+      shutdownSettled = true;
     });
-    const replacementChild = mocks.spawnedChildren[1]!;
+    const closeCancelPromise = service.cancel().then(() => {
+      closeCancelSettled = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(shutdownSettled).toBe(false);
+    expect(closeCancelSettled).toBe(false);
+    expect(mocks.currentState).toMatchObject({
+      phase: "processing",
+      sessionId: first.sessionId
+    });
+    await expect(
+      service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 })
+    ).rejects.toThrow("already_recording");
 
     adoption.resolve({
-      id: "src-stale-stop",
-      srcPath: "/fake/captures/src-stale-stop.mp4",
-      sha256: "stale-stop-sha",
+      id: "src-finalized-on-quit",
+      srcPath: "/fake/captures/src-finalized-on-quit.mp4",
+      sha256: "finalized-on-quit-sha",
       byteSize: 2048,
       widthPx: 0,
       heightPx: 0
     });
-    await oldStopPromise;
+    await expect(stopPromise).resolves.toEqual({ captureId: "cap-1" });
+    await shutdownPromise;
+    await closeCancelPromise;
 
-    expect(oldStopOutcome).toBeInstanceOf(Error);
-    expect((oldStopOutcome as unknown as Error).message).toBe("cancelled");
-    expect(vi.mocked(sourceStore.statSource)).not.toHaveBeenCalled();
-    expect(replacementChild.killCalled).toBe(false);
-    expect(service.isActive()).toBe(true);
+    expect(vi.mocked(sourceStore.statSource)).toHaveBeenCalledWith(
+      "/fake/captures/src-finalized-on-quit.mp4"
+    );
+    expect(firstChild.killCalled).toBe(false);
+    expect(mocks.spawnedChildren).toHaveLength(1);
+    expect(service.isActive()).toBe(false);
     expect(mocks.currentState).toMatchObject({
-      phase: "recording",
-      sessionId: replacement.sessionId
+      phase: "ready",
+      sessionId: first.sessionId,
+      captureId: "cap-1"
     });
-
-    const cancelPromise = service.cancel();
-    await vi.advanceTimersByTimeAsync(0);
-    await cancelPromise;
   });
 
   test("retry starts a fresh session and a stale dismiss cannot cancel it", async () => {

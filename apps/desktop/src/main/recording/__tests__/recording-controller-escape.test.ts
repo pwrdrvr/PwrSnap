@@ -51,10 +51,12 @@ type WindowSpy = {
   hide: ReturnType<typeof vi.fn>;
   destroy: ReturnType<typeof vi.fn>;
   on: ReturnType<typeof vi.fn>;
+  emit: (event: string) => void;
 };
 
 function makeWindowSpy(): WindowSpy {
   const size: [number, number] = [420, 80];
+  const listeners = new Map<string, Array<() => void>>();
   return {
     id: 71,
     webContents: {
@@ -80,7 +82,14 @@ function makeWindowSpy(): WindowSpy {
     blur: vi.fn(),
     hide: vi.fn(),
     destroy: vi.fn(),
-    on: vi.fn()
+    on: vi.fn((event: string, listener: () => void) => {
+      const registered = listeners.get(event) ?? [];
+      registered.push(listener);
+      listeners.set(event, registered);
+    }),
+    emit: (event: string) => {
+      for (const listener of listeners.get(event) ?? []) listener();
+    }
   };
 }
 
@@ -435,6 +444,35 @@ describe("recording-controller lead-in Escape shortcut", () => {
 
     const win = mocks.createdWindows[0];
     expect(win?.setPosition).toHaveBeenCalledWith(510, 16, false);
+  });
+
+  test("stopping, processing, and controller close preserve finalization placement", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    const { applyRecordingStateToController } = await import("../recording-controller");
+
+    applyRecordingStateToController({
+      phase: "recording",
+      sessionId: "rec-finalize",
+      startedAt: new Date(0).toISOString(),
+      rect: { x: 100, y: 100, w: 500, h: 400 },
+      displayId: 1
+    });
+    const win = mocks.createdWindows[0]!;
+    const placementCalls = win.setPosition.mock.calls.length;
+    expect(placementCalls).toBeGreaterThan(0);
+
+    applyRecordingStateToController({
+      phase: "stopping",
+      sessionId: "rec-finalize"
+    });
+    applyRecordingStateToController({
+      phase: "processing",
+      sessionId: "rec-finalize"
+    });
+
+    expect(win.setPosition).toHaveBeenCalledTimes(placementCalls);
+    win.emit("closed");
+    expect(mocks.dispatch).not.toHaveBeenCalled();
   });
 
   test("a failed recording keeps a readable interactive HUD instead of destroying it", async () => {

@@ -307,6 +307,9 @@ export function SystemPermissionsPage(): ReactElement {
   const windowsMicrophoneToneValue = windowsMicrophoneTone(
     windowsMicrophoneStatus
   );
+  const canOpenWindowsMicrophonePrivacy =
+    windowsMicrophoneStatus !== "restricted" &&
+    windowsMicrophoneStatus !== "unavailable";
 
   return (
     <>
@@ -485,25 +488,27 @@ export function SystemPermissionsPage(): ReactElement {
               >
                 {windowsMicrophoneLabel(windowsMicrophoneStatus)}
               </span>
-              <button
-                type="button"
-                onClick={() => void openWindowsMicrophonePrivacy()}
-                disabled={busyPermission === "microphone" || readiness === null}
-                style={{
-                  padding: "6px 12px",
-                  borderRadius: 6,
-                  border: "1px solid var(--border)",
-                  background: "var(--surface)",
-                  color: "var(--text)",
-                  cursor:
-                    busyPermission === "microphone" ? "wait" : "pointer",
-                  font: "500 12px/1 var(--font-sans)"
-                }}
-              >
-                {busyPermission === "microphone"
-                  ? "Opening…"
-                  : "Open microphone privacy"}
-              </button>
+              {canOpenWindowsMicrophonePrivacy && (
+                <button
+                  type="button"
+                  onClick={() => void openWindowsMicrophonePrivacy()}
+                  disabled={busyPermission === "microphone" || readiness === null}
+                  style={{
+                    padding: "6px 12px",
+                    borderRadius: 6,
+                    border: "1px solid var(--border)",
+                    background: "var(--surface)",
+                    color: "var(--text)",
+                    cursor:
+                      busyPermission === "microphone" ? "wait" : "pointer",
+                    font: "500 12px/1 var(--font-sans)"
+                  }}
+                >
+                  {busyPermission === "microphone"
+                    ? "Opening…"
+                    : "Open microphone privacy"}
+                </button>
+              )}
             </div>
           </Row>
         </Card>

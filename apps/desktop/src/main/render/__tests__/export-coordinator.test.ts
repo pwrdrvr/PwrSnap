@@ -170,8 +170,8 @@ describe("exportCapture", () => {
 
     expect(exported).toMatchObject({
       preset: "med",
-      widthPx: 25,
-      heightPx: 13
+      widthPx: 50,
+      heightPx: 25
     });
   });
 

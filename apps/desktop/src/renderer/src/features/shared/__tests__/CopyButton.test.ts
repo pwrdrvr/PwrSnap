@@ -8,6 +8,9 @@ function rung(partial: Partial<ExportRung>): ExportRung {
     widthPx: 2880,
     heightPx: 1800,
     onScreenMultiple: 2,
+    available: true,
+    actual: false,
+    highDensity: true,
     retina: true,
     ...partial
   };
@@ -15,21 +18,30 @@ function rung(partial: Partial<ExportRung>): ExportRung {
 
 describe("rungTag", () => {
   it("labels a Retina rung explicitly", () => {
-    expect(rungTag(rung({ retina: true, onScreenMultiple: 2 }))).toEqual({
+    expect(rungTag(rung({ retina: true, onScreenMultiple: 2 }), "darwin")).toEqual({
       label: "Retina",
-      retina: true
+      highDensity: true
     });
   });
 
+  it("uses platform-neutral High DPI wording on Windows", () => {
+    expect(
+      rungTag(
+        rung({ retina: false, highDensity: true, onScreenMultiple: 1.5 }),
+        "win32"
+      )
+    ).toEqual({ label: "High DPI", highDensity: true });
+  });
+
   it("renders common fractions for sub-1× rungs", () => {
-    expect(rungTag(rung({ retina: false, onScreenMultiple: 1 })).label).toBe("1×");
-    expect(rungTag(rung({ retina: false, onScreenMultiple: 0.5 })).label).toBe("½×");
-    expect(rungTag(rung({ retina: false, onScreenMultiple: 0.25 })).label).toBe("¼×");
-    expect(rungTag(rung({ retina: false, onScreenMultiple: 0.75 })).label).toBe("¾×");
+    expect(rungTag(rung({ retina: false, highDensity: false, onScreenMultiple: 1 })).label).toBe("1×");
+    expect(rungTag(rung({ retina: false, highDensity: false, onScreenMultiple: 0.5 })).label).toBe("½×");
+    expect(rungTag(rung({ retina: false, highDensity: false, onScreenMultiple: 0.25 })).label).toBe("¼×");
+    expect(rungTag(rung({ retina: false, highDensity: false, onScreenMultiple: 0.75 })).label).toBe("¾×");
   });
 
   it("falls back to a decimal multiple for odd scales (e.g. 3× Med)", () => {
-    expect(rungTag(rung({ retina: false, onScreenMultiple: 1.5 })).label).toBe("1.5×");
+    expect(rungTag(rung({ retina: false, highDensity: false, onScreenMultiple: 1.5 }), "darwin").label).toBe("1.5×");
   });
 });
 

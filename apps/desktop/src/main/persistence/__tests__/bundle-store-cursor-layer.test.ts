@@ -160,6 +160,9 @@ describe("persistCaptureFromTempV2 — cursor layer", () => {
   test("no cursorLayer → tree is exactly root group + Source (unchanged baseline)", async () => {
     const tempPath = await makeTempScreenshot();
     const { record } = await persistCaptureFromTempV2({ tempPath, sourceApp: null });
+    // Unknown/imported density must not fabricate Retina detail. Capture
+    // handlers pass the selected display scale explicitly.
+    expect(record.device_pixel_ratio).toBe(1);
     const layers = listLayerTree(record.id);
     expect(layers).toHaveLength(2);
     expect(layers.map((l) => l.kind).sort()).toEqual(["group", "raster"]);

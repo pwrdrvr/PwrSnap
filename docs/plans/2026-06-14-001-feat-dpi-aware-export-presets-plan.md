@@ -2,8 +2,19 @@
 
 **Status:** Phase 1 implemented on branch `feat/dpi-aware-export-presets`.
 Experimental, default OFF — mergeable to `main` without changing behavior
-for normal users. Phase 2 (fixedWidths / byte-collapse / `auto` heuristic)
-and Phase 3 (video) are not started. Owner: huntharo.
+for normal users. The Phase 2 small-capture legibility slice is implemented;
+fixedWidths / byte-collapse / the broader `auto` heuristic and Phase 3 (video)
+remain unstarted. Owner: huntharo.
+
+**2026-08-25 legibility + density-truthfulness update:** DPI-aware ladders now
+disable downscaled rungs below 480×240. If neither downscale is useful, the
+three-card UI exposes one centered **Actual** action and disables Low/High;
+the underlying preset ids alias upward so shortcuts and API callers cannot
+bypass the guard. Interactive and headless region captures persist the
+selected display's actual scale factor (including fractional Windows scales),
+and unknown density defaults to 1× instead of inventing 2× detail. Copy-card
+and Settings language stays Retina-specific on macOS and uses **High DPI** on
+Windows/Linux.
 
 This document covers a rethink of how the image (and later video)
 **Low / Med / High** export presets map to output resolution, driven
@@ -171,7 +182,7 @@ finding above). Two wiring requirements:
   — change it to read `record.device_pixel_ratio`. Worth doing
   regardless of the experiment.
 
-### 6. The heuristic — measure first, then formalize (deferred to Phase 2)
+### 6. The heuristic — measure first, then formalize (partially implemented)
 
 The point of shipping the instrument (switchable mapping + **real**
 bytes) is to flip it on a Retina machine and *see* which ladder gives
@@ -186,6 +197,12 @@ to tune against real numbers:
   within ~12% bytes of a larger one, merge and relabel ("Med = High").
   Judged on the real file — the content-aware rule that finally kills
   "I pick Med but it's identical."
+
+The first source-size guard has now landed: a downscale is useful only at
+≥480×240. Unusable lower rungs alias to the next useful size and are disabled;
+when neither lower rung clears the floor, the top permitted size moves to the
+center as the single Actual action. Byte-distinctness and content-aware `auto`
+selection remain deferred.
 
 ## Clipboard paste — DPI inference + verbatim PNG (shipped with Phase 1)
 
@@ -225,8 +242,9 @@ DPR — a copy-as-file round-trip is already clean. A follow-up could write
    `capture:presetMetrics`, and clipboard handlers; refetch metrics on
    toggle; Retina/Standard tag in the copy card; estimate + popover
    badge fixes. Ships `legacy` + `scalePhysical`.
-2. **Phase 2:** add `fixedWidths`, the byte-distinctness collapse, and
-   the `auto` heuristic, informed by real numbers gathered in Phase 1.
+2. **Phase 2 (partial):** small-capture legibility guard shipped; add
+   `fixedWidths`, the byte-distinctness collapse, and the broader `auto`
+   heuristic, informed by real numbers gathered in Phase 1.
 3. **Phase 3:** apply the same scale ladder to video *resolution*
    (fps / bitrate stay as tuned in the video-export-presets plan).
 

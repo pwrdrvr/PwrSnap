@@ -40,6 +40,7 @@ import {
   hideSelector
 } from "../capture/region-selector";
 import { captureRegion, captureScreen, captureWindow } from "../capture/screencapture";
+import { displayScaleFactorForId } from "../capture/display-density";
 import { guardScreenCapture } from "../capture/screen-permission-gate";
 import {
   CapturesLocationFallbackError,
@@ -238,7 +239,9 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     // most recent window-list snapshot. Agents calling this directly
     // may not have a snapshot yet; that's fine — fields stay null.
     const sourceApp = resolveSourceAppByRect(req.rect, getLastWindowListSnapshot());
-    return persistAndBroadcast(captureResult.tempPath, sourceApp);
+    return persistAndBroadcast(captureResult.tempPath, sourceApp, {
+      devicePixelRatio: displayScaleFactorForId(screen.getAllDisplays(), req.displayId)
+    });
   });
 
   bus.register("capture:interactive", async (req, ctx) => {
@@ -536,6 +539,10 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
         }
       }
       const persisted = await persistAndBroadcast(captureResult.tempPath, sourceApp, {
+        devicePixelRatio: displayScaleFactorForId(
+          screen.getAllDisplays(),
+          selection.displayId
+        ),
         cursorLayer
       });
       if (persisted.ok) {

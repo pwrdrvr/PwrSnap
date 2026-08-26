@@ -73,7 +73,7 @@ vi.mock("../../persistence/video-repo", () => ({
 }));
 
 // Dynamically import after mocks are registered.
-const { exportVideoRange } = await import("../recording-exporter");
+const { exportVideoRange, ffmpegFailureSummary } = await import("../recording-exporter");
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -337,6 +337,29 @@ describe("exportVideoRange concurrency", () => {
     await expect(failing).rejects.toThrow(
       "ffmpeg exited 234: Stream map '0:a:1' matches no streams. To ignore this, add a trailing '?' to the map."
     );
+  });
+
+  test("ffmpeg failure summaries retain root causes before generic teardown lines", () => {
+    const summary = ffmpegFailureSummary(
+      [
+        "ffmpeg version 8.1 Copyright (c) 2000-2026 the FFmpeg developers",
+        "  built with Apple clang version 21.0.0",
+        "  configuration: --prefix=/opt/homebrew/Cellar/ffmpeg/8.1 --enable-videotoolbox",
+        "[h264 @ 0x1234] Invalid NAL unit size (4294967295 > 2048).",
+        "[in#0/mov,mp4,m4a,3gp,3g2,mj2 @ 0x2345] Error during demuxing: Invalid data found when processing input",
+        "[out#0/mp4 @ 0x3456] Error muxing a packet",
+        "[out#0/mp4 @ 0x3456] Task finished with error code: -1094995529 (Invalid data found when processing input)",
+        "[out#0/mp4 @ 0x3456] Terminating thread with return code -1094995529 (Invalid data found when processing input)",
+        "Nothing was written into output file, because at least one of its streams received no packets.",
+        "Conversion failed!"
+      ].join("\n")
+    );
+
+    expect(summary).toContain("Invalid NAL unit size");
+    expect(summary).toContain("Conversion failed!");
+    expect(summary).not.toContain("ffmpeg version");
+    expect(summary).not.toContain("configuration:");
+    expect(summary.length).toBeLessThanOrEqual(900);
   });
 
   test("HIGH MP4 re-encodes at source resolution with GOP flags", async () => {

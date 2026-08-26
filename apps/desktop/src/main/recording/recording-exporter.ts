@@ -502,21 +502,53 @@ function runFfmpeg(ffmpeg: string, args: string[]): Promise<void> {
   });
 }
 
-/** Keep user-facing export errors focused on ffmpeg's final diagnosis.
+const FFMPEG_FAILURE_TAIL_LINES = 8;
+const FFMPEG_FAILURE_MAX_CHARS = 900;
+
+/** Keep user-facing export errors focused on ffmpeg's diagnosis.
  *  ffmpeg writes its version, compiler, configure flags, input probe,
  *  progress, and actual error to the same stderr stream. Passing a raw
  *  byte tail to the renderer can therefore turn a one-line failure into
- *  a screen-sized tooltip headed by an irrelevant build banner. */
+ *  a screen-sized tooltip headed by an irrelevant build banner. Keep a
+ *  bounded diagnostic tail rather than only the final lines: corrupt-input
+ *  and encoder/filter failures often put their root cause before generic
+ *  "Nothing was written" / "Conversion failed" teardown messages. */
 export function ffmpegFailureSummary(stderr: string): string {
   const lines = stderr
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
     .replaceAll("\r", "\n")
     .split("\n")
-    .map((line) => line.trim())
+    .map((line) =>
+      line
+        .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+        .trim()
+    )
     .filter((line) => line.length > 0)
-    .filter((line) => !/^frame=\s*\d+/i.test(line));
+    .filter((line) => !isFfmpegPreambleOrProgress(line));
 
   if (lines.length === 0) return "unknown ffmpeg error";
 
-  const tail = lines.slice(-2).join(" ");
-  return tail.length <= 600 ? tail : `${tail.slice(0, 597)}...`;
+  const tail = lines.slice(-FFMPEG_FAILURE_TAIL_LINES).join(" ");
+  return tail.length <= FFMPEG_FAILURE_MAX_CHARS
+    ? tail
+    : `${tail.slice(0, FFMPEG_FAILURE_MAX_CHARS - 3)}...`;
+}
+
+function isFfmpegPreambleOrProgress(line: string): boolean {
+  return (
+    /^ffmpeg version\b/i.test(line) ||
+    /^built with\b/i.test(line) ||
+    /^configuration:/i.test(line) ||
+    /^lib(?:av|sw|postproc)\w*\s+\d/i.test(line) ||
+    /^Input #\d+,/i.test(line) ||
+    /^Metadata:$/i.test(line) ||
+    /^(?:major_brand|minor_version|compatible_brands|creation_time|handler_name)\s*:/i.test(
+      line
+    ) ||
+    /^Duration:/i.test(line) ||
+    /^Stream #\d+:\d+(?:\[[^\]]+\])?(?:\([^)]*\))?:/i.test(line) ||
+    /^Stream mapping:$/i.test(line) ||
+    /^Press \[q\] to stop/i.test(line) ||
+    /^frame=\s*\d+/i.test(line)
+  );
 }

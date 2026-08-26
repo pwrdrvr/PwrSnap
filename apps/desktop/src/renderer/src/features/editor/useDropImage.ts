@@ -12,9 +12,10 @@
 //     dragging arbitrary text or URLs is a no-op. Filter
 //     `dataTransfer.files` by MIME type, refusing anything not image/*.
 //     Single-file paste only — multi-image batch drop is deferred.
-//   • Main-side: `assertSafePastedFile` (symlink + privileged-dir
-//     reject) + the same 5-defense worker pipeline as paste. Even if a
-//     renderer-compromise lets a hostile path through, main refuses.
+//   • Main-side: a bounded verified-handle read (symlink + privileged-dir
+//     reject) feeds bytes, never a pathname, into the same worker pipeline as
+//     paste. Even if a renderer compromise supplies a hostile path, main
+//     refuses it or snapshots the already-opened file.
 //
 // File paths from `dataTransfer.files[i].path` are an Electron-specific
 // extension to the standard File API — in pure-web contexts the path is

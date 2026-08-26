@@ -27,6 +27,7 @@
 import { Worker } from "node:worker_threads";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { PASTE_IMAGE_MAX_BYTES } from "@pwrsnap/shared";
 import type { PasteWorkerInput, PasteWorkerResult } from "./paste-image-worker";
 
 function resolveWorkerPath(): string {
@@ -53,6 +54,16 @@ export async function runPasteImageWorker(
   input: PasteWorkerInput,
   options: { timeoutMs?: number } = {}
 ): Promise<PasteWorkerResult> {
+  // Avoid a workerData-sized allocation for an already-oversize input
+  // buffer. The worker repeats this check as defense in depth.
+  if (input.bytes.byteLength > PASTE_IMAGE_MAX_BYTES) {
+    return {
+      ok: false,
+      code: "size_cap_exceeded",
+      message: `input exceeds ${PASTE_IMAGE_MAX_BYTES} byte cap`
+    };
+  }
+
   const timeoutMs = options.timeoutMs ?? 30_000;
   const workerPath = getWorkerPath();
 
@@ -64,12 +75,9 @@ export async function runPasteImageWorker(
       resolvePromise(result);
     };
 
-    // Transfer the input buffer to the worker without copying for
-    // the decode-buffer path. Note: passing through workerData
-    // doesn't accept transferList directly in older Node; we use
-    // `postMessage` in the worker direction is only available if we
-    // open a MessageChannel. workerData copies, which is fine — we
-    // already capped the input at 32 MiB so a copy is bounded.
+    // `workerData` copies the input bytes. This stays bounded by the
+    // worker's PASTE_IMAGE_MAX_BYTES defense and preserves the caller's
+    // buffer for persistence after decode.
     let worker: Worker;
     try {
       worker = new Worker(workerPath, { workerData: input });

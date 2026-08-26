@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 /**
- * Compile the bundled native helpers (currently just the
- * window-list helper). Idempotent — skips when the source hasn't
+ * Compile the bundled native helpers. Idempotent — skips when the source hasn't
  * changed since the last build.
  *
  * Output: apps/desktop/build/native/<name>
@@ -16,11 +15,10 @@
  * macOS — compiles the Swift CLI helpers + Quick Look .appex bundles
  * (window-list, recorder, thumbnail/preview extensions) below.
  *
- * Windows — compiles the C++ window-list helper
- * (native/window-list-win/main.cpp → build/native/window-list.exe) via
- * the win32 branch immediately below, then exits. The .exe is the
- * counterpart to the Swift window-list binary: it drives snap-to-window
- * in the region selector and source-app metadata at capture time. The
+ * Windows — compiles the C++ window-list and verified-file helpers via the
+ * win32 branch immediately below, then exits. The former drives
+ * snap-to-window/source-app metadata; the latter supplies the atomic Win32
+ * reparse-point-safe open boundary for untrusted external files. The
  * macOS-only Swift/.appex targets are skipped on Windows.
  *
  * Linux — no native helpers; the build is a no-op so unit tests + Linux
@@ -433,8 +431,9 @@ for (const appex of appexTargets) {
 // ---------------------------------------------------------------------------
 
 /**
- * Compile the Windows window-list helper:
+ * Compile the Windows C++ helpers:
  *   native/window-list-win/main.cpp → build/native/window-list.exe
+ *   native/verified-file-win/main.cpp → build/native/verified-file.exe
  *
  * Counterpart to the macOS Swift `window-list` binary. Self-contained
  * C++ over Win32 (EnumWindows / DWM / PSAPI); compiled with cl.exe from
@@ -453,28 +452,53 @@ for (const appex of appexTargets) {
 function buildWindowsHelpers() {
   mkdirSync(buildRoot, { recursive: true });
 
-  const source = join(nativeRoot, "window-list-win", "main.cpp");
-  const output = join(buildRoot, "window-list.exe");
+  const windowsTargets = [
+    {
+      name: "window-list",
+      source: join(nativeRoot, "window-list-win", "main.cpp"),
+      output: join(buildRoot, "window-list.exe"),
+      libraries: [
+        "user32.lib",
+        "gdi32.lib",
+        "dwmapi.lib",
+        "shell32.lib",
+        "ole32.lib",
+        "windowscodecs.lib"
+      ]
+    },
+    {
+      name: "verified-file",
+      source: join(nativeRoot, "verified-file-win", "main.cpp"),
+      output: join(buildRoot, "verified-file.exe"),
+      libraries: []
+    }
+  ];
 
-  if (!existsSync(source)) {
-    console.error(`[build-native] missing Windows source: ${source}`);
+  for (const target of windowsTargets) {
+    buildWindowsTarget(target);
+  }
+}
+
+function buildWindowsTarget(target) {
+  if (!existsSync(target.source)) {
+    console.error(`[build-native] missing Windows source: ${target.source}`);
     process.exit(1);
   }
 
   // Up-to-date check — same mtime semantics as the macOS targets.
   if (
-    existsSync(output) &&
-    statSync(output).mtimeMs >= statSync(source).mtimeMs
+    existsSync(target.output) &&
+    statSync(target.output).mtimeMs >= statSync(target.source).mtimeMs
   ) {
-    console.log("[build-native] window-list.exe up to date");
+    console.log(`[build-native] ${target.name}.exe up to date`);
     return;
   }
 
   // Object files land next to the .exe; cl.exe drops `main.obj` in the
   // cwd otherwise. Build dir is fine for transient artifacts.
-  const objFile = join(buildRoot, "window-list.obj");
+  const objFile = join(buildRoot, `${target.name}.obj`);
 
-  console.log("[build-native] compiling window-list.exe…");
+  console.log(`[build-native] compiling ${target.name}.exe…`);
 
   // cl flags:
   //   /O2     optimize for speed (tiny binary, hot path)
@@ -491,15 +515,10 @@ function buildWindowsHelpers() {
     "/EHsc",
     "/std:c++17",
     "/nologo",
-    `/Fe:${output}`,
+    `/Fe:${target.output}`,
     `/Fo:${objFile}`,
-    source,
-    "user32.lib",
-    "gdi32.lib",
-    "dwmapi.lib",
-    "shell32.lib",
-    "ole32.lib",
-    "windowscodecs.lib"
+    target.source,
+    ...target.libraries
   ];
 
   // Quote each cl arg so paths with spaces survive cmd parsing.
@@ -532,7 +551,7 @@ function buildWindowsHelpers() {
       process.exit(1);
     }
     const hostArch = process.arch === "arm64" ? "arm64" : "amd64";
-    tempBat = join(buildRoot, "build-window-list.bat");
+    tempBat = join(buildRoot, `build-${target.name}.bat`);
     // `@echo off` keeps the VsDevCmd banner quiet; `exit /b` propagates
     // cl's exit code as the batch (and therefore the process) status.
     const batContents = [
@@ -547,7 +566,7 @@ function buildWindowsHelpers() {
   }
 
   if (result.status !== 0) {
-    console.error("[build-native] window-list.exe compilation failed");
+    console.error(`[build-native] ${target.name}.exe compilation failed`);
     process.exit(result.status ?? 1);
   }
 
@@ -561,7 +580,7 @@ function buildWindowsHelpers() {
     }
   }
 
-  console.log(`[build-native] window-list.exe → ${output}`);
+  console.log(`[build-native] ${target.name}.exe → ${target.output}`);
 }
 
 /** True when `name` resolves on the current PATH (Windows: tries

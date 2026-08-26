@@ -41,6 +41,22 @@ async function makePng(width: number, height: number, density?: number): Promise
   return await pipeline.png().toBuffer();
 }
 
+async function makeAnimatedGif(): Promise<Buffer> {
+  const width = 2;
+  const pageHeight = 2;
+  const channels = 3;
+  const height = pageHeight * 2;
+  const frameBytes = width * pageHeight * channels;
+  const raw = Buffer.alloc(width * height * channels);
+  raw.fill(0xff, 0, frameBytes);
+  raw.fill(0x20, frameBytes);
+  return await sharp(raw, {
+    raw: { width, height, channels, pageHeight }
+  })
+    .gif({ delay: [50, 50], loop: 0 })
+    .toBuffer();
+}
+
 describe("clipboard image buffer helpers", () => {
   test("filters native image-like formats without taking MIME or URL formats", () => {
     expect(
@@ -139,5 +155,14 @@ describe("ingestImageBufferToTempPng", () => {
     await expect(
       ingestImageBufferToTempPng(Buffer.from("not an image"), makeTempPath)
     ).rejects.toThrow();
+  });
+
+  test("rejects animated clipboard buffers instead of persisting frame one", async () => {
+    await expect(
+      ingestImageBufferToTempPng(await makeAnimatedGif(), makeTempPath)
+    ).rejects.toMatchObject({
+      name: "SafeRasterError",
+      code: "unsupported_multi_page"
+    });
   });
 });

@@ -332,6 +332,8 @@ win:
   extraResources:
     - from: "build/native/window-list.exe"
       to: "PwrSnapWindowList.exe"
+    - from: "build/native/verified-file.exe"
+      to: "PwrSnapVerifiedFile.exe"
 
 nsis:
   oneClick: false

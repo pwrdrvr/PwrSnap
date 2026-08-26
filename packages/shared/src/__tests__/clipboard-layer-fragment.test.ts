@@ -15,7 +15,9 @@ import { describe, expect, test } from "vitest";
 
 import {
   CLIPBOARD_FRAGMENT_MAX_BYTES,
+  CLIPBOARD_FRAGMENT_MAX_DECODED_BYTES,
   CLIPBOARD_FRAGMENT_MAX_LAYERS,
+  CLIPBOARD_FRAGMENT_MAX_PIXELS,
   CLIPBOARD_FRAGMENT_MAX_SOURCES,
   CLIPBOARD_LAYER_FRAGMENT_UTI,
   ClipboardLayerFragmentV1,
@@ -30,6 +32,11 @@ import type { BundleLayerNode } from "../bundle-manifest-schema-v2";
 describe("clipboard-layer-fragment constants", () => {
   test("size cap is 64 MiB", () => {
     expect(CLIPBOARD_FRAGMENT_MAX_BYTES).toBe(64 * 1024 * 1024);
+  });
+
+  test("aggregate source decode work is bounded", () => {
+    expect(CLIPBOARD_FRAGMENT_MAX_PIXELS).toBe(32 * 1024 * 1024);
+    expect(CLIPBOARD_FRAGMENT_MAX_DECODED_BYTES).toBe(128 * 1024 * 1024);
   });
 
   test("layer count cap matches BundleDocumentV2 (4096)", () => {

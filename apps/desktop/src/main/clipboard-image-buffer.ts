@@ -1,5 +1,5 @@
-import sharp from "sharp";
 import { writeFile } from "node:fs/promises";
+import { canonicalizeSafeRasterToPng } from "./image/safe-raster-decode";
 
 const CLIPBOARD_IMAGE_FORMAT_NEEDLES = [
   "avif",
@@ -58,17 +58,12 @@ export async function ingestImageBufferToTempPng(
   buf: Buffer,
   makeTempPath: () => Promise<string>
 ): Promise<IngestedClipboardImage> {
-  const meta = await sharp(buf).metadata();
-  if (meta.width === undefined || meta.height === undefined || meta.width <= 0 || meta.height <= 0) {
-    throw new Error("clipboard image has no decodable dimensions");
-  }
-  const devicePixelRatio = devicePixelRatioFromDensity(meta.density);
+  const { pngBytes, metadata } = await canonicalizeSafeRasterToPng(buf, {
+    preservePng: true
+  });
+  const devicePixelRatio = devicePixelRatioFromDensity(metadata.density);
   const tempPath = await makeTempPath();
-  if (meta.format === "png") {
-    await writeFile(tempPath, buf);
-  } else {
-    await sharp(buf).png().toFile(tempPath);
-  }
+  await writeFile(tempPath, pngBytes);
   return { tempPath, devicePixelRatio };
 }
 

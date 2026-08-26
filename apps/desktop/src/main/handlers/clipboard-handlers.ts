@@ -41,13 +41,13 @@
 //       3. sha256 verification — recompute hash of each pngBytes
 //          and reject on mismatch; closes the trojan vector where
 //          attackers claim a known-good sha but ship different bytes
-//       4. sharp decode-probe — bytes must actually decode as PNG
-//          with sane (≤ 32768²) dimensions
+//       4. shared raster sanitizer — approved still format, one page/frame,
+//          bounded pixels/channels/raw bytes, full decode, canonical PNG
 //       5. Sanitized errors — attacker-controlled identifiers (claimed
 //          sha, byte content) never appear in error messages flowing
 //          to the renderer
 //
-// Defenses (1) and (2) bound DoS; (3) and (4) close the integrity
+// Defenses (1), (2), and (4) bound DoS; (3) and (4) close the integrity
 // trojan; (5) closes log-injection / terminal-escape via clipboard
 // payload.
 
@@ -63,7 +63,6 @@ import {
   ClipboardLayerFragmentV1,
   CLIPBOARD_FRAGMENT_MAX_BYTES,
   CLIPBOARD_LAYER_FRAGMENT_UTI,
-  MAX_IMAGE_DIM_PX,
   computePlacement,
   placeLayerIntoTarget,
   resolveCropViewport,
@@ -865,56 +864,33 @@ export function registerClipboardHandlers(): void {
       }
 
       // ── Defense (3): sha256 verify each source_ref ────────────────
-      // ── Defense (4): sharp decode-probe each pngBytes ─────────────
-      const verifiedSources = new Map<string, Buffer>();
-      for (const ref of fragment.source_refs) {
-        let bytes: Buffer;
-        try {
-          bytes = Buffer.from(ref.png_base64, "base64");
-        } catch {
-          return err({
-            kind: "validation",
-            code: "source_decode_failed",
-            message: "clipboard source_ref base64 decode failed"
-          });
-        }
-        const computed = createHash("sha256").update(bytes).digest("hex");
-        if (computed !== ref.sha256) {
-          // Sanitized: log neither the claimed sha nor the bytes.
-          log.warn("clipboard:paste: source content-hash mismatch", { captureId: req.captureId });
-          return err({
-            kind: "validation",
-            code: "source_hash_mismatch",
-            message: "clipboard source hash mismatch (refusing to ingest)"
-          });
-        }
-        try {
-          const meta = await sharp(bytes).metadata();
-          const w = meta.width ?? 0;
-          const h = meta.height ?? 0;
-          if (w === 0 || h === 0 || w > MAX_IMAGE_DIM_PX || h > MAX_IMAGE_DIM_PX) {
-            return err({
-              kind: "validation",
-              code: "source_invalid_dimensions",
-              message: "clipboard source dimensions invalid or exceed cap"
-            });
-          }
-        } catch {
-          return err({
-            kind: "validation",
-            code: "source_sharp_probe_failed",
-            message: "clipboard source bytes failed sharp decode probe"
-          });
-        }
-        verifiedSources.set(ref.sha256, bytes);
+      // ── Defense (4): shared bounded raster sanitizer ──────────────
+      const { sanitizeLayerFragmentSources } = await import(
+        "../clipboard/verified-layer-fragment-sources"
+      );
+      const sanitized = await sanitizeLayerFragmentSources(
+        fragment.source_refs,
+        fragment.layers
+      );
+      if (!sanitized.ok) {
+        log.warn("clipboard:paste: fragment source rejected", {
+          captureId: req.captureId,
+          code: sanitized.rasterCode ?? sanitized.code
+        });
+        return err({
+          kind: "validation",
+          code: sanitized.code,
+          message: sanitized.message
+        });
       }
 
-      // All defenses passed. Materialize new sources into durable
-      // pending storage before inserting layers that reference them.
-      // The debounced repack folds these into the bundle.
-      for (const [sha, bytes] of verifiedSources) {
-        await materializePendingSourceForCapture(req.captureId, sha, bytes);
+      // All defenses passed. Materialize only canonical PNGs into durable
+      // pending storage before inserting layers that reference them. The
+      // debounced repack folds these into the bundle.
+      for (const [sha, pngBytes] of sanitized.sources) {
+        await materializePendingSourceForCapture(req.captureId, sha, pngBytes);
       }
+      const canonicalFragmentLayers = sanitized.layers;
 
       // ── Placement: drop the block coherently into THIS canvas ───────
       // When the copy recorded the source canvas frame (it baked the
@@ -939,11 +915,11 @@ export function registerClipboardHandlers(): void {
                 },
                 target
               );
-              return fragment.layers.map((n) =>
+              return canonicalFragmentLayers.map((n) =>
                 placeLayerIntoTarget(n, placement, target)
               );
             })()
-          : fragment.layers;
+          : canonicalFragmentLayers;
 
       // Insert the pasted layers with fresh ids so they don't collide
       // with existing rows in the target capture's layers table.
@@ -1014,7 +990,7 @@ export function registerClipboardHandlers(): void {
       log.info("pasted layer fragment", {
         captureId: req.captureId,
         layerCount: renumberedLayers.length,
-        sourceCount: verifiedSources.size,
+        sourceCount: sanitized.sources.size,
         sourceCaptureId: fragment.source_capture_id
       });
 

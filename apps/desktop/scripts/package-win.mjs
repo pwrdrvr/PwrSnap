@@ -242,6 +242,11 @@ function assertRequiredWindowsResources() {
       label: "Windows window-list helper",
       path: join(stageDir, "build", "native", "window-list.exe"),
       hint: "Run `pnpm --filter @pwrsnap/desktop build:native` on Windows before packaging."
+    },
+    {
+      label: "Windows verified-file helper",
+      path: join(stageDir, "build", "native", "verified-file.exe"),
+      hint: "Run `pnpm --filter @pwrsnap/desktop build:native` on Windows before packaging."
     }
   ];
 

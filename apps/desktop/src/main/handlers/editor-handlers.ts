@@ -9,9 +9,9 @@
 //     the result as a new raster layer on the v2 capture.
 //
 //   • editor:dropImageAsLayer — Finder drag-drop onto the canvas.
-//     Same pipeline, plus assertSafePastedFile up front (symlink +
+//     Same pipeline, plus a bounded safe-open/read up front (symlink +
 //     privileged-dir reject) so a hostile drag payload can't redirect
-//     us at ~/.ssh/id_rsa or similar.
+//     us at credentials or swap the file before the worker consumes it.
 //
 // Both refuse v1 captures with `v1_capture_use_v2`. The renderer
 // surfaces a toast pointing at the v2-only nature; Phase 6 flipped
@@ -27,16 +27,28 @@
 import { clipboard } from "electron";
 import { nanoid } from "nanoid";
 import type { BundleLayerNode } from "@pwrsnap/shared";
-import { cloneAffineTransform, ok, err } from "@pwrsnap/shared";
+import {
+  cloneAffineTransform,
+  ok,
+  err,
+  PASTE_IMAGE_MAX_BYTES
+} from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getCaptureById } from "../persistence/captures-repo";
 import { insertLayerTreeForCapture, listLayerTree } from "../persistence/layers-repo";
 import { scheduleRepack } from "../persistence/bundle-store";
 import { materializePendingSourceForCapture } from "../persistence/pending-source-store";
 import { getMainLogger } from "../log";
-import { assertSafePastedFile, UnsafePastedFileError } from "../security/assertSafePastedFile";
+import {
+  readSafePastedFile,
+  UnsafePastedFileError
+} from "../security/assertSafePastedFile";
 import { runPasteImageWorker } from "../workers/paste-image-worker-client";
 import type { PasteWorkerErrorCode } from "../workers/paste-image-worker";
+import {
+  SafeRasterError,
+  validateSafeRgbaRasterDimensions
+} from "../image/safe-raster-decode";
 
 const log = getMainLogger("pwrsnap:editor");
 
@@ -52,6 +64,7 @@ function workerErrorToBusError(code: PasteWorkerErrorCode, message: string): {
 } {
   switch (code) {
     case "size_cap_exceeded":
+    case "raster_limit_exceeded":
       return {
         kind: "validation",
         code: "image_too_large",
@@ -62,6 +75,18 @@ function workerErrorToBusError(code: PasteWorkerErrorCode, message: string): {
         kind: "validation",
         code: "image_invalid_dimensions",
         message: "Image dimensions invalid or exceed cap"
+      };
+    case "unsupported_multi_page":
+      return {
+        kind: "validation",
+        code: "image_unsupported_multi_page",
+        message: "Animated and multi-page images are not supported"
+      };
+    case "unsupported_format":
+      return {
+        kind: "validation",
+        code: "image_unsupported_format",
+        message: "Image format is not supported"
       };
     case "decode_failed":
       return {
@@ -255,7 +280,34 @@ export function registerEditorHandlers(): void {
         message: "Clipboard does not contain an image"
       });
     }
-    const inputBytes = image.toPNG();
+    try {
+      const size = image.getSize();
+      validateSafeRgbaRasterDimensions(size.width, size.height);
+    } catch (cause) {
+      const invalidDimensions =
+        cause instanceof SafeRasterError &&
+        cause.code === "invalid_dimensions";
+      return err({
+        kind: "validation",
+        code: invalidDimensions
+          ? "image_invalid_dimensions"
+          : "image_too_large",
+        message: invalidDimensions
+          ? "Image dimensions invalid or exceed cap"
+          : "Decoded image exceeds resource limits"
+      });
+    }
+
+    let inputBytes: Buffer;
+    try {
+      inputBytes = image.toPNG();
+    } catch {
+      return err({
+        kind: "render",
+        code: "image_decode_failed",
+        message: "Image failed to decode"
+      });
+    }
     if (inputBytes.length === 0) {
       return err({
         kind: "clipboard",
@@ -263,11 +315,18 @@ export function registerEditorHandlers(): void {
         message: "Clipboard image was empty"
       });
     }
+    if (inputBytes.length > PASTE_IMAGE_MAX_BYTES) {
+      return err({
+        kind: "validation",
+        code: "image_too_large",
+        message: "Image exceeds size cap"
+      });
+    }
 
     // Off-main-thread decode + sha256 + dimension probe.
     const result = await runPasteImageWorker({
       kind: "decode-buffer",
-      bytes: new Uint8Array(inputBytes)
+      bytes: inputBytes
     });
     if (!result.ok) {
       log.warn("editor:pasteImageAsLayer worker rejected input", {
@@ -333,12 +392,15 @@ export function registerEditorHandlers(): void {
       });
     }
 
-    // Security gate FIRST — refuse symlinks + privileged-dir paths
-    // before we even read the bytes. Sanitized error never leaks the
-    // attacker-controlled path to the renderer.
-    let safePath: string;
+    // Security gate and read are one trusted boundary. The returned bytes
+    // come from the securely opened handle and are capped before allocation;
+    // no later stage reopens the attacker-controlled pathname. Sanitized
+    // errors never leak that path to the renderer or logs.
+    let inputBytes: Buffer;
     try {
-      safePath = await assertSafePastedFile(req.filePath);
+      inputBytes = await readSafePastedFile(req.filePath, {
+        maxBytes: PASTE_IMAGE_MAX_BYTES
+      });
     } catch (cause) {
       if (cause instanceof UnsafePastedFileError) {
         log.warn("editor:dropImageAsLayer refused unsafe file", {
@@ -347,6 +409,13 @@ export function registerEditorHandlers(): void {
           // path intentionally omitted from log — could include a
           // privileged dir we don't want in disk logs
         });
+        if (cause.code === "size_cap_exceeded") {
+          return err({
+            kind: "validation",
+            code: "image_too_large",
+            message: "Image exceeds size cap"
+          });
+        }
         return err({
           kind: "validation",
           code: `unsafe_${cause.code}`,
@@ -356,11 +425,12 @@ export function registerEditorHandlers(): void {
       throw cause;
     }
 
-    // Off-main-thread decode + sha256 + dimension probe. The worker
-    // reads the file itself — keeping the read off the main thread.
+    // Off-main-thread decode + sha256 + dimension probe. Only the bytes from
+    // the securely opened handle cross this boundary; the worker has no path
+    // variant and therefore cannot race a replacement of req.filePath.
     const result = await runPasteImageWorker({
-      kind: "decode-path",
-      path: safePath
+      kind: "decode-buffer",
+      bytes: inputBytes
     });
     if (!result.ok) {
       log.warn("editor:dropImageAsLayer worker rejected input", {

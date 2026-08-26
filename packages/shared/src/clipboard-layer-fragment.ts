@@ -20,11 +20,11 @@
 //   3. zod schema validation
 //   4. sha256(pngBytes) verification — closes the trojan vector where
 //      an attacker claims a known-good sha but ships different bytes
-//   5. sharp decode-probe — the bytes must actually decode as PNG and
-//      have sane dimensions
+//   5. shared raster sanitizer — approved still format, one page/frame,
+//      bounded pixels/channels/raw bytes, full decode, canonical PNG output
 //
 // Defense (1) lives at the IPC handler boundary; (2)+(3) here in the
-// zod schema; (4)+(5) at the paste handler before any layer is
+// zod schema; (4)+(5) at the paste handler before any source is
 // inserted.
 
 import { z } from "zod";
@@ -52,6 +52,30 @@ export const CLIPBOARD_FRAGMENT_MAX_BYTES = 64 * 1024 * 1024;
  */
 export const PASTE_IMAGE_MAX_BYTES = 32 * 1024 * 1024;
 
+/** Maximum pixels decoded for one pasted/dropped raster (~8K landscape). */
+export const PASTE_IMAGE_MAX_PIXELS = 32 * 1024 * 1024;
+
+/** RGB/RGBA/greyscale inputs only; extra spectral/spot channels are refused. */
+export const PASTE_IMAGE_MAX_CHANNELS = 4;
+
+/** Maximum estimated uncompressed raster allocation (128 MiB). */
+export const PASTE_IMAGE_MAX_DECODED_BYTES = 128 * 1024 * 1024;
+
+/** Maximum canonical PNG emitted by the sanitizer (64 MiB). */
+export const PASTE_IMAGE_MAX_PNG_BYTES = 64 * 1024 * 1024;
+
+/** Paste/drop is a still-image boundary, never an animation/document import. */
+export const PASTE_IMAGE_MAX_PAGES = 1;
+
+/**
+ * Aggregate private-fragment decode budgets. A fragment may reference many
+ * individually valid images, so cap the total work to one maximum-size paste
+ * before any source is canonicalized.
+ */
+export const CLIPBOARD_FRAGMENT_MAX_PIXELS = PASTE_IMAGE_MAX_PIXELS;
+export const CLIPBOARD_FRAGMENT_MAX_DECODED_BYTES =
+  PASTE_IMAGE_MAX_DECODED_BYTES;
+
 /**
  * Hard upper bound on layer count per paste. Mirrors the bundle
  * document's 4096 cap (BundleDocumentV2.layers). A malicious payload
@@ -72,9 +96,9 @@ const Base64Png = z
 
 export const ClipboardSourceRef = z.object({
   sha256: Sha256Hex,
-  /** Base64-encoded PNG bytes. Receiver verifies sha256(decoded) === sha256
-   *  AND that sharp can decode the bytes as PNG before accepting the
-   *  payload. */
+  /** Base64-encoded raster bytes. Receiver verifies sha256(decoded) ===
+   *  sha256, passes them through the shared still-raster boundary, then
+   *  rewrites the layer reference to the canonical PNG content hash. */
   png_base64: Base64Png
 });
 export type ClipboardSourceRef = z.infer<typeof ClipboardSourceRef>;

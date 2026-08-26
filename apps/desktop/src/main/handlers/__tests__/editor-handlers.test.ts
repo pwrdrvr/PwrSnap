@@ -18,14 +18,26 @@
 //   • worker rejects → code mapped to image_* bus errors
 //   • drop with symlink path → unsafe_symlink refusal (sanitized
 //     message, no raw path in the error)
+//   • drop path replacement after secure read cannot change worker bytes
 //   • happy path → layer inserted, layerId returned, scheduleRepack
 //     called
 
 import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, mkdtempSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
+import {
+  readFileSync,
+  readdirSync,
+  mkdtempSync,
+  writeFileSync,
+  rmSync,
+  realpathSync,
+  renameSync,
+  symlinkSync,
+  truncateSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PASTE_IMAGE_MAX_BYTES } from "@pwrsnap/shared";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 let testDb: Database.Database;
@@ -43,6 +55,7 @@ vi.mock("electron", () => ({
     // Per-test, the test overrides this via the helper below.
     readImage: () => ({
       isEmpty: () => true,
+      getSize: () => ({ width: 0, height: 0 }),
       toPNG: () => Buffer.alloc(0)
     })
   }
@@ -57,6 +70,7 @@ vi.mock("../../persistence/bundle-store", () => ({
 
 // Stub the worker client so we don't spawn worker_threads in tests.
 const workerInputs: unknown[] = [];
+let beforeWorker: (() => void) | null = null;
 let workerResponse: {
   ok: boolean;
   code?: string;
@@ -68,6 +82,7 @@ let workerResponse: {
 } = { ok: true };
 vi.mock("../../workers/paste-image-worker-client", () => ({
   runPasteImageWorker: async (input: unknown) => {
+    beforeWorker?.();
     workerInputs.push(input);
     return workerResponse;
   }
@@ -176,9 +191,13 @@ function seedV1Capture(id: string): void {
     .run({ id, sha: `sha_${id}` });
 }
 
-function setClipboardImage(pngBytes: Buffer | null): void {
+function setClipboardImage(
+  pngBytes: Buffer | null,
+  size: { width: number; height: number } = { width: 1, height: 1 }
+): void {
   (clipboard.readImage as unknown as () => unknown) = () => ({
     isEmpty: () => pngBytes === null || pngBytes.length === 0,
+    getSize: () => size,
     toPNG: () => (pngBytes === null ? Buffer.alloc(0) : pngBytes)
   });
 }
@@ -189,7 +208,10 @@ beforeEach(() => {
   applyAllMigrations();
   repackCalls.length = 0;
   workerInputs.length = 0;
-  tmpDataRoot = mkdtempSync(join(tmpdir(), "pwrsnap-editor-test-"));
+  beforeWorker = null;
+  tmpDataRoot = mkdtempSync(
+    join(realpathSync(tmpdir()), "pwrsnap-editor-test-")
+  );
   workerResponse = {
     ok: true,
     sha256: WORKER_PNG_SHA,
@@ -261,6 +283,25 @@ describe("editor:pasteImageAsLayer", () => {
     expect(result.error.code).toBe("image_too_large");
     // Sanitized: never leak the worker's raw message.
     expect(result.error.message).not.toContain("internal");
+  });
+
+  test("preflights NativeImage pixels before synchronous PNG encoding", async () => {
+    seedV2Capture("cap_bomb001", "/tmp/cap_native_bomb.pwrsnap");
+    setClipboardImage(Buffer.from([0x89, 0x50]), {
+      width: 6_000,
+      height: 6_000
+    });
+
+    const result = await bus.dispatch(
+      "editor:pasteImageAsLayer",
+      { captureId: "cap_bomb001" },
+      { principal: "ipc" }
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "image_too_large" }
+    });
+    expect(workerInputs).toHaveLength(0);
   });
 
   test("worker rejects with decode_failed → image_decode_failed", async () => {
@@ -361,10 +402,29 @@ describe("editor:dropImageAsLayer", () => {
     expect(result.error.message).toBe("Invalid file");
   });
 
-  test("happy path → layer inserted via worker decode-path", async () => {
+  test("oversize file → image_too_large (sanitized)", async () => {
+    seedV2Capture("cap_size", "/tmp/cap_size.pwrsnap");
+    const path = join(tmpDataRoot, "oversize.png");
+    writeFileSync(path, Buffer.alloc(0));
+    truncateSync(path, PASTE_IMAGE_MAX_BYTES + 1);
+    const result = await bus.dispatch(
+      "editor:dropImageAsLayer",
+      { captureId: "cap_size", filePath: path },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected error");
+    expect(result.error.code).toBe("image_too_large");
+    expect(result.error.message).toBe("Image exceeds size cap");
+    expect(result.error.message).not.toContain(path);
+    expect(workerInputs).toHaveLength(0);
+  });
+
+  test("happy path → worker receives securely-read bytes, never a path", async () => {
     seedV2Capture("cap_g", "/tmp/cap_g.pwrsnap");
     const path = join(tmpDataRoot, "drop.png");
-    writeFileSync(path, Buffer.from([0x89, 0x50]));
+    const sourceBytes = Buffer.from([0x89, 0x50, 0x11, 0x22]);
+    writeFileSync(path, sourceBytes);
     const result = await bus.dispatch(
       "editor:dropImageAsLayer",
       { captureId: "cap_g", filePath: path, positionXn: 0.5, positionYn: 0.5 },
@@ -374,9 +434,39 @@ describe("editor:dropImageAsLayer", () => {
     if (!result.ok) throw new Error("expected ok");
     expect(typeof result.value.layerId).toBe("string");
     expect(workerInputs.length).toBe(1);
-    const wi = workerInputs[0] as { kind: string; path?: string };
-    expect(wi.kind).toBe("decode-path");
-    expect(wi.path).toBe(path);
+    const wi = workerInputs[0] as { kind: string; bytes: Uint8Array };
+    expect(wi.kind).toBe("decode-buffer");
+    expect(Buffer.from(wi.bytes)).toEqual(sourceBytes);
+    expect(wi).not.toHaveProperty("path");
     expect(repackCalls).toContain("cap_g");
+  });
+
+  test("replacing the leaf after secure read cannot change worker input", async () => {
+    seedV2Capture("cap_swap", "/tmp/cap_swap.pwrsnap");
+    const path = join(tmpDataRoot, "replace-after-open.png");
+    const replacementPath = join(tmpDataRoot, "replacement.png");
+    const originalBytes = Buffer.from([0x89, 0x50, 0xaa, 0xbb]);
+    const replacementBytes = Buffer.from("replacement-secret-bytes");
+    writeFileSync(path, originalBytes);
+    writeFileSync(replacementPath, replacementBytes);
+    beforeWorker = () => {
+      rmSync(path);
+      renameSync(replacementPath, path);
+    };
+
+    const result = await bus.dispatch(
+      "editor:dropImageAsLayer",
+      { captureId: "cap_swap", filePath: path },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(readFileSync(path)).toEqual(replacementBytes);
+    expect(workerInputs).toHaveLength(1);
+    const wi = workerInputs[0] as { kind: string; bytes: Uint8Array };
+    expect(wi.kind).toBe("decode-buffer");
+    expect(Buffer.from(wi.bytes)).toEqual(originalBytes);
+    expect(Buffer.from(wi.bytes)).not.toEqual(replacementBytes);
+    expect(wi).not.toHaveProperty("path");
   });
 });

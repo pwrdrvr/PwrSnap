@@ -1635,7 +1635,7 @@ describe("characterization — shell surfaces", () => {
     expect(el.querySelector(".szl__editor")).toBeNull();
   });
 
-  test("an initial project-list failure is visible and Retry load recovers", async () => {
+  test("an invalid project file is visible and Retry load recovers after repair", async () => {
     const loaded = project({ name: "Recovered Reel" });
     let attempts = 0;
     const { el, dispatch } = await renderApp([loaded], {
@@ -1646,8 +1646,8 @@ describe("characterization — shell surfaces", () => {
               ok: false,
               error: {
                 kind: "persistence",
-                code: "sizzle_list_failed",
-                message: "project file is unavailable"
+                code: "sizzle_project_file_invalid",
+                message: "the original was preserved in a corrupt-file backup"
               }
             }
           : { ok: true, value: { projects: [loaded] } };
@@ -1656,7 +1656,7 @@ describe("characterization — shell surfaces", () => {
 
     const firstAlert = el.querySelector<HTMLElement>('[role="alert"].szl__failure-notice');
     expect(firstAlert?.textContent).toContain(
-      "Could not load Sizzle Reels: project file is unavailable"
+      "Could not load Sizzle Reels: the original was preserved in a corrupt-file backup"
     );
     expect(findButton(el, "+ New Sizzle Reel").disabled).toBe(true);
     expect(el.querySelector(".szl__list--recents")?.textContent).toContain(

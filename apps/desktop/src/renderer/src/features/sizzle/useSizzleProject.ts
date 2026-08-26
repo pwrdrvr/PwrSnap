@@ -558,6 +558,56 @@ export function useSizzleProject(): SizzleProjectState {
     return flushPatchRef.current(id);
   }, []);
 
+  const closeRequestInFlightRef = useRef(false);
+  useEffect(() => {
+    return subscribe(EVENT_CHANNELS.sizzleCloseRequested, (payload) => {
+      if (
+        closeRequestInFlightRef.current ||
+        typeof payload !== "object" ||
+        payload === null ||
+        !Number.isSafeInteger((payload as { requestId?: unknown }).requestId)
+      ) {
+        return;
+      }
+      const requestId = (payload as { requestId: number }).requestId;
+      closeRequestInFlightRef.current = true;
+
+      void (async () => {
+        let saved = true;
+        while (saved) {
+          const ids = new Set([
+            ...pendingPatches.current.keys(),
+            ...inFlightPatches.current.keys(),
+            ...failedProjectIds.current.keys()
+          ]);
+          if (ids.size === 0) break;
+          for (const id of ids) {
+            // Closing is an explicit persistence boundary, so retry a retained
+            // failed patch once while the native close remains blocked.
+            failedProjectIds.current.delete(id);
+            if (!(await flushPatchRef.current(id))) saved = false;
+          }
+        }
+
+        const action =
+          saved ||
+          window.confirm(
+            "PwrSnap could not save all Sizzle changes. Close and discard the unsaved changes?"
+          )
+            ? "close"
+            : "cancel";
+        try {
+          const response = await dispatch("sizzle:closeResponse", { requestId, action });
+          if (!response.ok || action === "cancel") {
+            closeRequestInFlightRef.current = false;
+          }
+        } catch {
+          closeRequestInFlightRef.current = false;
+        }
+      })();
+    });
+  }, []);
+
   const duplicatingProjectIds = useRef<Set<string>>(new Set());
   const onDuplicate = useCallback(
     async function duplicateProject(id: string): Promise<void> {
@@ -737,20 +787,13 @@ export function useSizzleProject(): SizzleProjectState {
     }
   }, [activeId]);
 
-  // Flush any pending edits on unmount so the on-disk state catches up
-  // when the window closes mid-debounce. Clear every timer first, then
-  // enter each serialization lane once. If a lane is already in flight,
-  // flushPatch returns that SAME promise and its loop drains the newer
-  // patch after the current write settles.
+  // Native window close is handled by the main↔renderer barrier above.
+  // Unmount itself cannot await IPC because Electron may terminate the
+  // renderer immediately, so cleanup only cancels timers.
   useEffect(() => {
     return () => {
       for (const timer of debounceTimers.current.values()) clearTimeout(timer);
       debounceTimers.current.clear();
-      for (const id of pendingPatches.current.keys()) {
-        if (pausedProjectIds.current.has(id)) continue;
-        failedProjectIds.current.delete(id);
-        void flushPatchRef.current(id);
-      }
     };
   }, []);
 

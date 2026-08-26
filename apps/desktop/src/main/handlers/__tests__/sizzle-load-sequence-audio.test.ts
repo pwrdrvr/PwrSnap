@@ -63,6 +63,12 @@ vi.mock("../../sizzle/sizzle-store", () => ({
       super(`sizzle: project not found: ${projectId}`);
       this.name = "SizzleProjectNotFoundError";
     }
+  },
+  SizzleStoreCorruptError: class SizzleStoreCorruptError extends Error {
+    constructor(message: string, public readonly backupPath: string | null) {
+      super(message);
+      this.name = "SizzleStoreCorruptError";
+    }
   }
 }));
 

@@ -33,6 +33,7 @@ import { activateForUserSurface } from "./process-split/activate-user-surface";
 import { signalLibraryWindowReady } from "./process-split/agent-bridge";
 import { showWindowWhenReady } from "./window-show";
 import { DesktopSettingsService } from "./settings/desktop-settings-service";
+import { wireSizzleCloseBarrier } from "./sizzle/sizzle-close-barrier";
 import {
   defaultLibraryWindowBounds,
   fitLibraryWindowBoundsToWorkArea,
@@ -1069,6 +1070,7 @@ export function createSizzleWindow(
     webPreferences: themedWebPreferences()
   });
   sizzleWindow = window;
+  wireSizzleCloseBarrier(window);
 
   loadRenderer(window, rendererTarget("sizzle", extraHash));
   showWindowWhenReady(window, { label: "sizzle" });

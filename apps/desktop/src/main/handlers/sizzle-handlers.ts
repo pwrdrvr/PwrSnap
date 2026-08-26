@@ -22,7 +22,12 @@ import {
 } from "@pwrsnap/shared";
 import { bus, type CommandContext, type CommandDispatchOptions } from "../command-bus";
 import { getMainLogger } from "../log";
-import { getSizzleStore, SizzleProjectNotFoundError } from "../sizzle/sizzle-store";
+import { completeSizzleCloseRequest } from "../sizzle/sizzle-close-barrier";
+import {
+  getSizzleStore,
+  SizzleProjectNotFoundError,
+  SizzleStoreCorruptError
+} from "../sizzle/sizzle-store";
 import { appendCapturesToScenes, removeCaptureFromScenes } from "../sizzle/scene-edits";
 import { cleanupProjectChats, forkProjectChats } from "./sizzle-chat-handlers";
 import {
@@ -171,6 +176,14 @@ function toError(cause: unknown, fallbackCode: string): PwrSnapError {
 function toPersistenceError(cause: unknown, fallbackCode: string): PwrSnapError {
   if (cause instanceof SizzleProjectNotFoundError) {
     return { kind: "validation", code: "not_found", message: cause.message };
+  }
+  if (cause instanceof SizzleStoreCorruptError) {
+    return {
+      kind: "persistence",
+      code: "sizzle_project_file_invalid",
+      message: cause.message,
+      cause
+    };
   }
   return {
     kind: "persistence",
@@ -451,6 +464,24 @@ export function registerSizzleHandlers(
     } catch (cause) {
       return err(toPersistenceError(cause, "sizzle_list_failed"));
     }
+  });
+
+  bus.register("sizzle:closeResponse", async (req, ctx) => {
+    if (
+      ctx.principal !== "ipc" ||
+      ctx.sourceWindowId === undefined ||
+      !Number.isSafeInteger(req.requestId) ||
+      req.requestId < 1 ||
+      (req.action !== "close" && req.action !== "cancel") ||
+      !completeSizzleCloseRequest(ctx.sourceWindowId, req.requestId, req.action)
+    ) {
+      return err({
+        kind: "validation",
+        code: "sizzle_close_request_invalid",
+        message: "The Sizzle close request is no longer active."
+      });
+    }
+    return ok(undefined);
   });
 
   // Helper: snapshot+broadcast. The store's in-memory cache makes

@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { app } from "electron";
@@ -31,6 +31,16 @@ type StoredBlob = {
 const DEFAULT_BLOB: StoredBlob = { schemaVersion: 1, projects: [] };
 const PROJECT_NAME_MAX = 200;
 
+export class SizzleStoreCorruptError extends Error {
+  constructor(
+    message: string,
+    public readonly backupPath: string | null
+  ) {
+    super(message);
+    this.name = "SizzleStoreCorruptError";
+  }
+}
+
 export class SizzleStore {
   private readonly filePath: string;
   private readonly log: Logger;
@@ -48,6 +58,8 @@ export class SizzleStore {
    */
   private cachedBlob: StoredBlob | null = null;
   private cachedBlobNeedsPersist = false;
+  private corruptBackupAttempted = false;
+  private corruptBackupPath: string | null = null;
 
   constructor(config: SizzleStoreConfig = {}) {
     this.filePath =
@@ -202,18 +214,19 @@ export class SizzleStore {
       });
       throw cause;
     }
-    if (raw.length === 0) {
-      this.cachedBlob = clone(DEFAULT_BLOB);
-      this.cachedBlobNeedsPersist = false;
-      return clone(this.cachedBlob);
-    }
+    if (raw.length === 0) throw await this.corruptBlobError("the file is empty");
+
+    let parsed: unknown;
     try {
-      const parsed = JSON.parse(raw) as unknown;
-      if (!isStoredBlob(parsed)) {
-        this.cachedBlob = clone(DEFAULT_BLOB);
-        this.cachedBlobNeedsPersist = false;
-        return clone(this.cachedBlob);
-      }
+      parsed = JSON.parse(raw) as unknown;
+    } catch {
+      throw await this.corruptBlobError("the file is not valid JSON");
+    }
+    if (!isStoredBlob(parsed)) {
+      throw await this.corruptBlobError("the file has an unsupported shape");
+    }
+
+    try {
       // Normalize scenes on the read path so every consumer sees the
       // new SizzleScene fields (mediaTrim, audioSource, transition)
       // with sensible defaults, regardless of when the project was
@@ -244,20 +257,39 @@ export class SizzleStore {
       this.cachedBlob = parsed;
       this.cachedBlobNeedsPersist = normalizedNeedsPersist;
       return clone(this.cachedBlob);
-    } catch (cause) {
-      this.log.warn("sizzle-store: parse failed, quarantining", {
-        message: cause instanceof Error ? cause.message : String(cause)
-      });
-      const quarantine = `${this.filePath}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
-      try {
-        await rename(this.filePath, quarantine);
-      } catch {
-        /* ignore */
-      }
-      this.cachedBlob = clone(DEFAULT_BLOB);
-      this.cachedBlobNeedsPersist = false;
-      return clone(this.cachedBlob);
+    } catch {
+      throw await this.corruptBlobError("the file contains invalid project data");
     }
+  }
+
+  private async corruptBlobError(reason: string): Promise<SizzleStoreCorruptError> {
+    if (!this.corruptBackupAttempted) {
+      this.corruptBackupAttempted = true;
+      const backupPath = `${this.filePath}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+      try {
+        await copyFile(this.filePath, backupPath);
+        this.corruptBackupPath = backupPath;
+      } catch (cause) {
+        this.log.warn("sizzle-store: corrupt-file backup failed", {
+          path: this.filePath,
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+      }
+    }
+
+    this.log.warn("sizzle-store: refusing to load corrupt project data", {
+      path: this.filePath,
+      reason,
+      backupPath: this.corruptBackupPath
+    });
+    const preservation =
+      this.corruptBackupPath === null
+        ? "The original file was left untouched."
+        : `The original file was left untouched and copied to ${this.corruptBackupPath}.`;
+    return new SizzleStoreCorruptError(
+      `Sizzle project data could not be loaded because ${reason}. ${preservation} Repair or restore the file, then Retry.`,
+      this.corruptBackupPath
+    );
   }
 
   private async writeBlob(blob: StoredBlob): Promise<void> {

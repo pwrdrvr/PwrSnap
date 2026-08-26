@@ -182,6 +182,9 @@ export const EVENT_CHANNELS = {
    * reach an already-loaded window. Payload: `{ projectId: string }`.
    */
   sizzleNav: "events:sizzle:nav",
+  /** Main → Sizzle composer: the native window close was paused while
+   *  the renderer flushes pending edits. Payload: `{ requestId: number }`. */
+  sizzleCloseRequested: "events:sizzle:close-requested",
   /**
    * Main → every BrowserWindow: the single global Project Asset Cart
    * changed (toggle / reorder / remove / rename / clear / commit). The
@@ -485,6 +488,7 @@ export type EventPayloads = {
   [EVENT_CHANNELS.capturesAccessChanged]: import("./protocol").CapturesAccessHealth;
   [EVENT_CHANNELS.sizzleProjectsChanged]: { projects: SizzleProject[] };
   [EVENT_CHANNELS.sizzleRenderProgress]: SizzleRenderProgressEvent;
+  [EVENT_CHANNELS.sizzleCloseRequested]: { requestId: number };
   [EVENT_CHANNELS.cartChanged]: { cart: DraftCart };
   [EVENT_CHANNELS.cartExportProgress]: CartExportProgressEvent;
   [EVENT_CHANNELS.libraryChatThreadUpdated]: { thread: LibraryChatThreadView };

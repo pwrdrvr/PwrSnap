@@ -53,6 +53,13 @@ const mocks = vi.hoisted(() => ({
   assertSizzleRenderPlatform: vi.fn(),
   synthesizeSilence: vi.fn(),
   resolveCacheFile: vi.fn(),
+  completeSizzleCloseRequest: vi.fn(),
+  SizzleStoreCorruptError: class SizzleStoreCorruptError extends Error {
+    constructor(message: string, public readonly backupPath: string | null) {
+      super(message);
+      this.name = "SizzleStoreCorruptError";
+    }
+  },
   ComposeError: class ComposeError extends Error {
     constructor(
       public readonly code: string,
@@ -95,7 +102,12 @@ vi.mock("../../sizzle/sizzle-store", () => ({
       super(`sizzle: project not found: ${projectId}`);
       this.name = "SizzleProjectNotFoundError";
     }
-  }
+  },
+  SizzleStoreCorruptError: mocks.SizzleStoreCorruptError
+}));
+
+vi.mock("../../sizzle/sizzle-close-barrier", () => ({
+  completeSizzleCloseRequest: mocks.completeSizzleCloseRequest
 }));
 
 vi.mock("../sizzle-chat-handlers", () => ({
@@ -240,6 +252,7 @@ beforeEach(() => {
   mocks.synthesizeSilence.mockResolvedValue("/tmp/silence.m4a");
   mocks.resolveCacheFile.mockReset();
   mocks.resolveCacheFile.mockResolvedValue("/tmp/capture.png");
+  mocks.completeSizzleCloseRequest.mockReset();
   // Default: store.list returns whatever store.update returned, in
   // an array. Most tests just need "some projects exist" — they can
   // override per-case.
@@ -337,6 +350,40 @@ describe("Sizzle persistence truthfulness", () => {
         message: "disk unavailable"
       }
     });
+  });
+
+  test("list distinguishes an invalid existing project file from an empty library", async () => {
+    mocks.store.list.mockRejectedValue(
+      new mocks.SizzleStoreCorruptError(
+        "Sizzle project data is invalid. Repair or restore the file, then Retry.",
+        "/tmp/sizzle-projects.json.corrupt-backup"
+      )
+    );
+
+    const handler = await loadHandler("sizzle:list");
+    const result = await handler({});
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        kind: "persistence",
+        code: "sizzle_project_file_invalid",
+        message: expect.stringContaining("Repair or restore")
+      }
+    });
+  });
+
+  test("close response resolves only the originating renderer request", async () => {
+    mocks.completeSizzleCloseRequest.mockReturnValue(true);
+
+    const handler = await loadHandler("sizzle:closeResponse");
+    const result = await handler(
+      { requestId: 7, action: "close" },
+      commandCtx(41)
+    );
+
+    expect(result).toEqual({ ok: true, value: undefined });
+    expect(mocks.completeSizzleCloseRequest).toHaveBeenCalledWith(41, 7, "close");
   });
 
   test("reveal returns output_missing when the persisted output no longer exists", async () => {

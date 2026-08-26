@@ -637,61 +637,84 @@ describe("useSizzleProject persistence state", () => {
     expect(dispatch.mock.calls.filter(([name]) => name === "sizzle:update")).toHaveLength(0);
   });
 
-  test("unmount reuses an in-flight lane and serially drains one newer edit", async () => {
+  test("window close waits for an in-flight save before allowing the native close", async () => {
     vi.useFakeTimers();
     const initial = project();
-    const updates: Array<{
-      req: { id: string; patch: Record<string, unknown> };
-      result: Deferred<unknown>;
-    }> = [];
-    installApi((name, req) => {
+    const update = deferred<unknown>();
+    const confirm = vi.spyOn(window, "confirm");
+    const { dispatch, emit } = installApi((name) => {
       if (name === "sizzle:list") return { ok: true, value: { projects: [initial] } };
       if (name === "library:list" || name === "library:listByIds") {
         return { ok: true, value: { rows: [] } };
       }
-      if (name === "sizzle:update") {
-        const result = deferred<unknown>();
-        updates.push({ req: req as { id: string; patch: Record<string, unknown> }, result });
-        return result.promise;
-      }
+      if (name === "sizzle:update") return update.promise;
+      if (name === "sizzle:closeResponse") return { ok: true, value: undefined };
       return { ok: true, value: undefined };
     });
     await mountHook();
 
     act(() => snapshot().onUpdate("sz_1", { name: "First write" }));
-    let flush!: Promise<boolean>;
     act(() => {
-      flush = snapshot().flushPatch("sz_1");
+      void snapshot().flushPatch("sz_1");
     });
     await flushMicrotasks();
-    expect(updates).toHaveLength(1);
+    expect(dispatch.mock.calls.filter(([name]) => name === "sizzle:update")).toHaveLength(1);
 
-    act(() => snapshot().onUpdate("sz_1", { name: "Newest write", voice: "nova" }));
-    await act(async () => {
-      root!.unmount();
-      await Promise.resolve();
+    act(() => {
+      emit(EVENT_CHANNELS.sizzleCloseRequested, { requestId: 11 });
     });
-    root = null;
-    expect(updates).toHaveLength(1);
+    await flushMicrotasks();
+    expect(
+      dispatch.mock.calls.filter(([name]) => name === "sizzle:closeResponse")
+    ).toHaveLength(0);
 
     await act(async () => {
-      updates[0]!.result.resolve({ ok: true, value: initial });
-      for (let index = 0; index < 4; index += 1) await Promise.resolve();
+      update.resolve({ ok: true, value: { ...initial, name: "First write" } });
+      for (let index = 0; index < 8; index += 1) await Promise.resolve();
     });
-    expect(updates).toHaveLength(2);
-    expect(updates[1]!.req).toEqual({
-      id: "sz_1",
-      patch: { name: "Newest write", voice: "nova" }
-    });
+    expect(dispatch.mock.calls.filter(([name]) => name === "sizzle:closeResponse")).toEqual([
+      ["sizzle:closeResponse", { requestId: 11, action: "close" }]
+    ]);
+    expect(confirm).not.toHaveBeenCalled();
+  });
 
-    let saved: boolean | undefined;
-    await act(async () => {
-      updates[1]!.result.resolve({ ok: true, value: initial });
-      saved = await flush;
-      vi.advanceTimersByTime(DEBOUNCE_MS + 1);
-      await Promise.resolve();
+  test("repeated close failures stay blocked until the user explicitly discards", async () => {
+    vi.useFakeTimers();
+    const initial = project();
+    const error = persistenceError("sizzle_update_failed", "project file is read-only");
+    const confirm = vi
+      .spyOn(window, "confirm")
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
+    const { dispatch, emit } = installApi((name) => {
+      if (name === "sizzle:list") return { ok: true, value: { projects: [initial] } };
+      if (name === "library:list" || name === "library:listByIds") {
+        return { ok: true, value: { rows: [] } };
+      }
+      if (name === "sizzle:update") return { ok: false, error };
+      if (name === "sizzle:closeResponse") return { ok: true, value: undefined };
+      return { ok: true, value: undefined };
     });
-    expect(saved).toBe(true);
-    expect(updates).toHaveLength(2);
+    await mountHook();
+
+    act(() => snapshot().onUpdate("sz_1", { name: "Unsaved close" }));
+    act(() => emit(EVENT_CHANNELS.sizzleCloseRequested, { requestId: 21 }));
+    await flushMicrotasks(12);
+
+    expect(dispatch.mock.calls.filter(([name]) => name === "sizzle:update")).toHaveLength(1);
+    expect(dispatch.mock.calls.filter(([name]) => name === "sizzle:closeResponse")).toEqual([
+      ["sizzle:closeResponse", { requestId: 21, action: "cancel" }]
+    ]);
+    expect(snapshot().saveState).toEqual({ phase: "error", error });
+
+    act(() => emit(EVENT_CHANNELS.sizzleCloseRequested, { requestId: 22 }));
+    await flushMicrotasks(12);
+
+    expect(dispatch.mock.calls.filter(([name]) => name === "sizzle:update")).toHaveLength(2);
+    expect(dispatch.mock.calls.filter(([name]) => name === "sizzle:closeResponse")).toEqual([
+      ["sizzle:closeResponse", { requestId: 21, action: "cancel" }],
+      ["sizzle:closeResponse", { requestId: 22, action: "close" }]
+    ]);
+    expect(confirm).toHaveBeenCalledTimes(2);
   });
 });

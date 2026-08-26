@@ -21,6 +21,7 @@ vi.mock("electron", () => ({
 
 const { bus } = await import("../../command-bus");
 const {
+  cleanupProjectChats,
   forkProjectChats,
   registerSizzleChatHandlers
 } = await import("../sizzle-chat-handlers");
@@ -98,6 +99,7 @@ const controller = {
     archived,
   })),
   interrupt: vi.fn(async () => undefined),
+  interruptAcknowledged: vi.fn(async () => undefined),
   resolveApproval: vi.fn(async (_input: unknown) => undefined),
   forkThreadsForAnchor: vi.fn(async () => [])
 };
@@ -309,7 +311,7 @@ describe("codex:sizzleChat verbs", () => {
     const resolver = vi.fn(async () => undefined);
     approvalBroker.openThread(request.threadId);
     approvalBroker.register(request, {}, resolver);
-    controller.interrupt.mockClear();
+    controller.interruptAcknowledged.mockClear();
     controller.archive.mockRejectedValueOnce(new Error("archive store failed"));
 
     try {
@@ -320,7 +322,7 @@ describe("codex:sizzleChat verbs", () => {
       );
 
       expect(result.ok).toBe(false);
-      expect(controller.interrupt).toHaveBeenCalledWith(request.threadId);
+      expect(controller.interruptAcknowledged).toHaveBeenCalledWith(request.threadId);
       expect(approvalBroker.pendingForThread(request.threadId)).toBeNull();
       expect(resolver).toHaveBeenCalledWith("deny");
     } finally {
@@ -339,7 +341,7 @@ describe("codex:sizzleChat verbs", () => {
     let interrupted = false;
     let archived = false;
     const postArchiveTool = vi.fn();
-    controller.interrupt.mockImplementationOnce(async () => {
+    controller.interruptAcknowledged.mockImplementationOnce(async () => {
       order.push("interrupt");
       interrupted = true;
     });
@@ -383,7 +385,9 @@ describe("codex:sizzleChat verbs", () => {
     approvalBroker.openThread(request.threadId);
     approvalBroker.register(request, {}, resolver);
     controller.archive.mockClear();
-    controller.interrupt.mockRejectedValueOnce(new Error("backend cancellation failed"));
+    controller.interruptAcknowledged.mockRejectedValueOnce(
+      new Error("backend cancellation failed")
+    );
 
     try {
       const result = await bus.dispatch(
@@ -444,7 +448,7 @@ describe("codex:sizzleChat verbs", () => {
     const resolver = vi.fn(async () => undefined);
     approvalBroker.openThread(request.threadId);
     approvalBroker.register(request, {}, resolver);
-    controller.interrupt.mockRejectedValueOnce(new Error("interrupt failed"));
+    controller.interruptAcknowledged.mockRejectedValueOnce(new Error("interrupt failed"));
 
     try {
       const result = await bus.dispatch(
@@ -617,6 +621,92 @@ describe("codex:sizzleChat verbs", () => {
   test("interrupt delegates", async () => {
     await bus.dispatch("codex:sizzleChat:interrupt", { threadId: "th1" }, { principal: "ipc" });
     expect(controller.interrupt).toHaveBeenCalledWith("th1");
+  });
+
+  test("project deletion quiesces a pending approval before denial and journal deletion", async () => {
+    const order: string[] = [];
+    let interrupted = false;
+    let deleted = false;
+    const hiddenTool = vi.fn();
+    const resolver = vi.fn(async (decision: string) => {
+      order.push(`resolve:${decision}`);
+      if (!interrupted || deleted) hiddenTool();
+    });
+    approvalBroker.openThread("th1");
+    approvalBroker.register(
+      {
+        threadId: "th1",
+        turnId: "turn-project-delete",
+        approvalId: "approval-project-delete",
+        summary: "Run tool"
+      },
+      {},
+      resolver
+    );
+    controller.interruptAcknowledged.mockImplementationOnce(async () => {
+      order.push("interrupt");
+      interrupted = true;
+    });
+    const deleteThread = vi.fn(async () => {
+      order.push("delete");
+      deleted = true;
+    });
+
+    try {
+      await cleanupProjectChats("sz_1", {
+        store: {
+          list: vi.fn(async () => [sidecar]),
+          delete: deleteThread
+        } as never,
+        approvalBroker,
+        controllerFor: async () => controller as never,
+        access: threadAccess
+      });
+
+      expect(order).toEqual(["interrupt", "resolve:deny", "delete"]);
+      expect(hiddenTool).not.toHaveBeenCalled();
+      expect(deleteThread).toHaveBeenCalledWith("th1");
+      expect(approvalBroker.pendingForThread("th1")).toBeNull();
+    } finally {
+      approvalBroker.openThread("th1");
+    }
+  });
+
+  test("project deletion preserves the pending thread when cancellation is not acknowledged", async () => {
+    const request = {
+      threadId: "th1",
+      turnId: "turn-project-delete-failure",
+      approvalId: "approval-project-delete-failure",
+      summary: "Run tool"
+    };
+    const resolver = vi.fn(async () => undefined);
+    const deleteThread = vi.fn(async () => undefined);
+    approvalBroker.openThread(request.threadId);
+    approvalBroker.register(request, {}, resolver);
+    controller.interruptAcknowledged.mockRejectedValueOnce(
+      new Error("backend cancellation failed")
+    );
+
+    try {
+      await expect(
+        cleanupProjectChats("sz_1", {
+          store: {
+            list: vi.fn(async () => [sidecar]),
+            delete: deleteThread
+          } as never,
+          approvalBroker,
+          controllerFor: async () => controller as never,
+          access: threadAccess
+        })
+      ).rejects.toThrow("backend cancellation failed");
+
+      expect(deleteThread).not.toHaveBeenCalled();
+      expect(resolver).not.toHaveBeenCalled();
+      expect(approvalBroker.pendingForThread(request.threadId)).toEqual(request);
+    } finally {
+      await approvalBroker.closeThread(request.threadId);
+      approvalBroker.openThread(request.threadId);
+    }
   });
 
   test("forkProjectChats delegates to the shared Sizzle controller", async () => {

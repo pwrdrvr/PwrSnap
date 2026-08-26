@@ -103,6 +103,7 @@ const controller = {
     archived,
   })),
   interrupt: vi.fn(async () => undefined),
+  interruptAcknowledged: vi.fn(async () => undefined),
   resolveApproval: vi.fn(async () => undefined)
 };
 
@@ -253,7 +254,7 @@ describe("codex:libraryChat handlers", () => {
     const resolver = vi.fn(async () => undefined);
     approvalBroker.openThread(request.threadId);
     approvalBroker.register(request, {}, resolver);
-    controller.interrupt.mockClear();
+    controller.interruptAcknowledged.mockClear();
     controller.archive.mockRejectedValueOnce(new Error("archive store failed"));
 
     try {
@@ -264,7 +265,7 @@ describe("codex:libraryChat handlers", () => {
       );
 
       expect(result.ok).toBe(false);
-      expect(controller.interrupt).toHaveBeenCalledWith(request.threadId);
+      expect(controller.interruptAcknowledged).toHaveBeenCalledWith(request.threadId);
       expect(approvalBroker.pendingForThread(request.threadId)).toBeNull();
       expect(resolver).toHaveBeenCalledWith("deny");
     } finally {
@@ -283,7 +284,7 @@ describe("codex:libraryChat handlers", () => {
     let interrupted = false;
     let archived = false;
     const postArchiveTool = vi.fn();
-    controller.interrupt.mockImplementationOnce(async () => {
+    controller.interruptAcknowledged.mockImplementationOnce(async () => {
       order.push("interrupt");
       interrupted = true;
     });
@@ -329,7 +330,9 @@ describe("codex:libraryChat handlers", () => {
     approvalBroker.openThread(request.threadId);
     approvalBroker.register(request, {}, resolver);
     controller.archive.mockClear();
-    controller.interrupt.mockRejectedValueOnce(new Error("backend cancellation failed"));
+    controller.interruptAcknowledged.mockRejectedValueOnce(
+      new Error("backend cancellation failed")
+    );
 
     try {
       const result = await bus.dispatch(
@@ -390,7 +393,7 @@ describe("codex:libraryChat handlers", () => {
     const resolver = vi.fn(async () => undefined);
     approvalBroker.openThread(request.threadId);
     approvalBroker.register(request, {}, resolver);
-    controller.interrupt.mockRejectedValueOnce(new Error("interrupt failed"));
+    controller.interruptAcknowledged.mockRejectedValueOnce(new Error("interrupt failed"));
 
     try {
       const result = await bus.dispatch(

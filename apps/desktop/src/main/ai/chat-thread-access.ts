@@ -82,15 +82,18 @@ export function chatMessagesFromJournal(entries: readonly unknown[]): ChatMessag
     ) {
       continue;
     }
+    const timestamp =
+      typeof message.createdAt === "number" && Number.isFinite(message.createdAt)
+        ? new Date(message.createdAt)
+        : new Date(0);
     messages.push({
       id: message.id,
       role: message.role,
       content: [{ kind: "text", text: message.text }],
       status: "complete",
-      createdAt:
-        typeof message.createdAt === "number"
-          ? new Date(message.createdAt).toISOString()
-          : new Date(0).toISOString()
+      createdAt: Number.isNaN(timestamp.getTime())
+        ? new Date(0).toISOString()
+        : timestamp.toISOString()
     });
   }
   return messages;

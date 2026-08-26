@@ -204,6 +204,10 @@ describe("ChatThreadAccess store-authoritative reads", () => {
         kind: "message",
         message: { id: "m2", role: "assistant", text: "hi" }
       },
+      {
+        kind: "message",
+        message: { id: "m3", role: "assistant", text: "recovered", createdAt: 1e100 }
+      },
       { kind: "tool_call", args: { private: true } },
       { kind: "message", message: { id: "bad", role: "tool", text: "hidden" } },
       null
@@ -222,6 +226,13 @@ describe("ChatThreadAccess store-authoritative reads", () => {
         id: "m2",
         role: "assistant",
         content: [{ kind: "text", text: "hi" }],
+        status: "complete",
+        createdAt: new Date(0).toISOString()
+      },
+      {
+        id: "m3",
+        role: "assistant",
+        content: [{ kind: "text", text: "recovered" }],
         status: "complete",
         createdAt: new Date(0).toISOString()
       }

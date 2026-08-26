@@ -52,6 +52,70 @@ import { toAgentKitLogger, PWRSNAP_SERVICE_NAME } from "./agent-kit-bindings";
 import type { ChatApprovalBroker } from "./chat-approval-broker";
 import type { ChatThreadAccess } from "./chat-thread-access";
 
+type InterruptAcknowledgement = (threadId: string) => Promise<void>;
+
+const acknowledgedInterrupts = new WeakMap<object, InterruptAcknowledgement>();
+
+/**
+ * Interrupt a turn through the exact backend owned by the controller and only
+ * return after that backend acknowledges cancellation. The agent-client 0.8.x
+ * controller intentionally swallows interrupt transport errors, which is fine
+ * for a best-effort Stop button but unsafe before denying an approval and
+ * hiding/deleting its thread.
+ */
+export async function interruptChatThreadAcknowledged(
+  controller: ChatThreadController<Settings>,
+  threadId: string
+): Promise<void> {
+  const interrupt = acknowledgedInterrupts.get(controller);
+  if (interrupt !== undefined) {
+    await interrupt(threadId);
+    return;
+  }
+
+  // Explicit seam for handler unit-test controllers. Production controllers
+  // are always registered in the WeakMap below; do not silently fall back to
+  // ChatThreadController.interrupt(), whose swallowed failure is the bug this
+  // boundary exists to prevent.
+  const injected = controller as unknown as {
+    interruptAcknowledged?: (candidateThreadId: string) => Promise<void>;
+  };
+  if (injected.interruptAcknowledged === undefined) {
+    throw new Error("Chat controller does not expose acknowledged interruption.");
+  }
+  await injected.interruptAcknowledged(threadId);
+}
+
+function acknowledgedInterruptBackend(client: AgentBackend): {
+  backend: AgentBackend;
+  acknowledge: InterruptAcknowledgement;
+  clear: (threadId: string) => void;
+} {
+  const acknowledged = new Set<string>();
+  const backend = new Proxy(client, {
+    get(target, property, receiver) {
+      if (property === "interruptTurn") {
+        return async (threadId: string): Promise<void> => {
+          if (acknowledged.delete(threadId)) return;
+          await target.interruptTurn(threadId);
+        };
+      }
+      const value = Reflect.get(target, property, receiver) as unknown;
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  }) as AgentBackend;
+  return {
+    backend,
+    acknowledge: async (threadId) => {
+      await client.interruptTurn(threadId);
+      acknowledged.add(threadId);
+    },
+    clear: (threadId) => {
+      acknowledged.delete(threadId);
+    }
+  };
+}
+
 /** PwrSnap's approval decision union → the kit's neutral decision. PwrSnap
  *  distinguishes "reject-layer" / "reject-run" at the renderer for the layer-
  *  level undo affordances, but at the Codex protocol boundary every non-approve
@@ -393,6 +457,7 @@ export async function buildChatSurface(
   });
   const resolved = await resolveChatBackend(config, deps);
   const client: AgentBackend = resolved.client;
+  const controllerBackend = acknowledgedInterruptBackend(client);
 
   // The kit controller swallows `thread_settings` into a private map and only
   // forwards `model` on recordUsage. Tee the backend's settings events into
@@ -477,7 +542,7 @@ export async function buildChatSurface(
   });
 
   controller = new ChatThreadController<Settings>({
-    client,
+    client: controllerBackend.backend,
     store: adapter,
     readSettings: config.readSettings,
     broadcast,
@@ -525,6 +590,17 @@ export async function buildChatSurface(
       : config.effort ?? "medium",
     ...(config.model !== undefined ? { model: config.model } : {}),
     logger: toAgentKitLogger(config.loggerScope)
+  });
+  acknowledgedInterrupts.set(controller, async (threadId) => {
+    // First call the original backend directly so its rejection propagates.
+    // Then let the kit perform its local finalization while its otherwise
+    // duplicate backend call consumes the one-shot acknowledgement above.
+    await controllerBackend.acknowledge(threadId);
+    try {
+      await controller.interrupt(threadId);
+    } finally {
+      controllerBackend.clear(threadId);
+    }
   });
   controller.wire();
 

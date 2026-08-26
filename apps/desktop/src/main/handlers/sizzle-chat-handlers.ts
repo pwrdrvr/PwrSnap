@@ -27,7 +27,10 @@ import { bus, type CommandDispatchOptions } from "../command-bus";
 import { getMainLogger } from "../log";
 import { resolveCodexThreadConfigForCommand } from "../ai/codex-thread-config";
 import { ChatThreadStore, rootKeyedChatThreadStore } from "../ai/chat-thread-store";
-import { buildChatSurface } from "../ai/chat-controller-factory";
+import {
+  buildChatSurface,
+  interruptChatThreadAcknowledged
+} from "../ai/chat-controller-factory";
 import {
   createKeyedChatControllerCache,
   type ChatBackendConfig,
@@ -419,7 +422,11 @@ export function registerSizzleChatHandlers(params?: {
       const config = configForSizzleSidecar(authorized.value);
       const c = await sizzleControllerFor(config);
       if (req.archived) {
-        await c.interrupt(req.threadId);
+        if (getSizzleApprovalBroker().pendingForThread(req.threadId) !== null) {
+          await interruptChatThreadAcknowledged(c, req.threadId);
+        } else {
+          await c.interrupt(req.threadId);
+        }
         await getSizzleApprovalBroker().closeThread(req.threadId);
       }
       const view = await c.archive(req.threadId, req.archived);
@@ -435,7 +442,11 @@ export function registerSizzleChatHandlers(params?: {
       const authorized = await getSizzleAccess().require(req.threadId, ctx);
       if (!authorized.ok) return authorized;
       const c = await sizzleControllerFor(configForSizzleSidecar(authorized.value));
-      await c.interrupt(req.threadId);
+      if (getSizzleApprovalBroker().pendingForThread(req.threadId) !== null) {
+        await interruptChatThreadAcknowledged(c, req.threadId);
+      } else {
+        await c.interrupt(req.threadId);
+      }
       await getSizzleApprovalBroker().closeThread(req.threadId);
       return ok(undefined);
     } catch (cause) {
@@ -481,17 +492,34 @@ function chatsDirPath(): string {
 /**
  * Delete every chat thread (index row + on-disk dir) anchored to a Sizzle
  * project. Called from the sizzle:delete cascade so deleting a reel leaves
- * no orphan chat dir (locked decision #6). Best-effort + idempotent; uses
- * a throwaway store over the shared DB (no controller / codex needed).
+ * no orphan chat dir (locked decision #6). A thread with a live approval is
+ * first quiesced through its existing controller; idle rows need only the
+ * throwaway store over the shared DB.
  */
-export async function cleanupProjectChats(projectId: string): Promise<void> {
-  const store = new ChatThreadStore({ chatsDir: chatsDirPath() });
+export async function cleanupProjectChats(
+  projectId: string,
+  testDeps?: {
+    store?: Pick<ChatThreadStore, "list" | "delete">;
+    approvalBroker?: ChatApprovalBroker | null;
+    controllerFor?: (config: ChatBackendConfig) => Promise<ChatThreadController<Settings>>;
+    access?: Pick<ChatThreadAccess, "forget"> | null;
+  }
+): Promise<void> {
+  const store = testDeps?.store ?? new ChatThreadStore({ chatsDir: chatsDirPath() });
+  const broker = testDeps?.approvalBroker ?? sizzleApprovalBroker;
+  const controllerFor = testDeps?.controllerFor ?? sizzleControllerFor;
+  const access = testDeps?.access ?? sizzleAccess;
   const threads = await store.list({ includeArchived: true, anchorCaptureId: projectId });
   for (const t of threads) {
-    if (sizzleApprovalBroker !== null) {
-      await sizzleApprovalBroker.closeThread(t.threadId);
+    const pendingApproval = broker?.pendingForThread(t.threadId) ?? null;
+    if (pendingApproval !== null) {
+      const controller = await controllerFor(configForSizzleSidecar(t));
+      await interruptChatThreadAcknowledged(controller, t.threadId);
+    }
+    if (broker !== null) {
+      await broker.closeThread(t.threadId);
     }
     await store.delete(t.threadId);
-    sizzleAccess?.forget(t.threadId);
+    access?.forget(t.threadId);
   }
 }

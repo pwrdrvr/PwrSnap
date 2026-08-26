@@ -32,7 +32,10 @@ import {
 import { bus, type CommandDispatchOptions } from "../command-bus";
 import { getMainLogger } from "../log";
 import { resolveCodexThreadConfigForCommand } from "../ai/codex-thread-config";
-import { buildChatSurface } from "../ai/chat-controller-factory";
+import {
+  buildChatSurface,
+  interruptChatThreadAcknowledged
+} from "../ai/chat-controller-factory";
 import {
   createKeyedChatControllerCache,
   type ChatBackendConfig
@@ -463,7 +466,11 @@ export function registerLibraryChatHandlers(params?: {
         // Truthful interrupt (owned by #488's session controller) must
         // acknowledge backend cancellation before broker denial can resume an
         // awaiting model. Only then may the thread become hidden.
-        await c.interrupt(req.threadId);
+        if (approvalBroker.pendingForThread(req.threadId) !== null) {
+          await interruptChatThreadAcknowledged(c, req.threadId);
+        } else {
+          await c.interrupt(req.threadId);
+        }
         await approvalBroker.closeThread(req.threadId);
       }
       const view = await c.archive(req.threadId, req.archived);
@@ -479,7 +486,11 @@ export function registerLibraryChatHandlers(params?: {
       const authorized = await access.require(req.threadId, ctx);
       if (!authorized.ok) return authorized;
       const c = await controllerFor(configForSidecar(authorized.value));
-      await c.interrupt(req.threadId);
+      if (approvalBroker.pendingForThread(req.threadId) !== null) {
+        await interruptChatThreadAcknowledged(c, req.threadId);
+      } else {
+        await c.interrupt(req.threadId);
+      }
       // Do not deny or terminalize the pending approval unless interruption
       // was acknowledged by the controller.
       await approvalBroker.closeThread(req.threadId);

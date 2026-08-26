@@ -18,6 +18,7 @@ import {
   buildChatSurface,
   chatControllerSignature,
   chatSurfaceDefaultsFromSettings,
+  interruptChatThreadAcknowledged,
   type ChatBackendDeps,
   type ChatSurfaceConfig
 } from "../chat-controller-factory";
@@ -201,6 +202,23 @@ function settingsWithAcpPref(
 }
 
 describe("buildChatSurface — backend selection", () => {
+  test("acknowledged interruption propagates the original backend failure", async () => {
+    const backend = stubBackend();
+    vi.mocked(backend.interruptTurn).mockRejectedValueOnce(
+      new Error("backend cancellation failed")
+    );
+    const surface = await buildChatSurface(baseConfig({ provider: "codex" }), {
+      makeCodexClient: () => backend
+    });
+    const controllerInterrupt = vi.spyOn(surface.controller, "interrupt");
+
+    await expect(
+      interruptChatThreadAcknowledged(surface.controller, "thread-awaiting-approval")
+    ).rejects.toThrow("backend cancellation failed");
+    expect(backend.interruptTurn).toHaveBeenCalledTimes(1);
+    expect(controllerInterrupt).not.toHaveBeenCalled();
+  });
+
   test('provider "codex" builds the Codex backend (no ACP discovery)', async () => {
     const makeCodexClient = vi.fn(() => stubBackend());
     const makeAcpClient = vi.fn(() => stubAcpResult());

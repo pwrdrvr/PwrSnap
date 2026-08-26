@@ -167,6 +167,10 @@ export type LibraryChatThreadView = {
   provider: string | null;
   model: string | null;
   reasoning: string | null;
+  /** Transient, main-process-owned approval awaiting this thread. This is
+   *  replayed from memory when a panel/window remounts; it is deliberately
+   *  never persisted because the backend resolver cannot survive app restart. */
+  pendingApproval: ChatApprovalRequest | null;
 };
 
 // ---- Approval flow -----------------------------------------------------
@@ -186,6 +190,38 @@ export const chatApprovalDecisionSchema = z.enum([
 ]);
 export type ChatApprovalDecision = z.infer<typeof chatApprovalDecisionSchema>;
 
+export const CHAT_APPROVAL_ID_MAX_BYTES = 256;
+export const CHAT_APPROVAL_SUMMARY_MAX_BYTES = 512;
+export const CHAT_APPROVAL_SUMMARY_MAX_LINES = 2;
+export const CHAT_APPROVAL_DETAIL_MAX_BYTES = 4_096;
+export const CHAT_APPROVAL_DETAIL_MAX_LINES = 32;
+
+// IDs round-trip to an exact backend resolver and therefore cannot be
+// modified. Reject non-printing/format characters (including bidi controls),
+// line separators, lone surrogates, and values beyond the wire budget.
+const unsafeApprovalIdentityCharacter = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
+const chatApprovalIdentitySchema = z
+  .string()
+  .min(1)
+  .max(CHAT_APPROVAL_ID_MAX_BYTES)
+  .refine(
+    (value) =>
+      !unsafeApprovalIdentityCharacter.test(value) &&
+      utf8ByteLength(value) <= CHAT_APPROVAL_ID_MAX_BYTES,
+    { message: "approval identity is unsafe or too large" }
+  );
+
+/** Strict renderer/MCP → main response envelope. Runtime validation matters:
+ *  an unknown decision must never fall through the protocol mapper as deny,
+ *  and empty/mistyped ids must never enter the exact-request broker. */
+export const chatApprovalResponseSchema = z.object({
+  threadId: chatApprovalIdentitySchema,
+  turnId: chatApprovalIdentitySchema,
+  approvalId: chatApprovalIdentitySchema,
+  decision: chatApprovalDecisionSchema
+}).strict();
+export type ChatApprovalResponse = z.infer<typeof chatApprovalResponseSchema>;
+
 export type ChatApprovalRequest = {
   threadId: string;
   turnId: string;
@@ -194,6 +230,126 @@ export type ChatApprovalRequest = {
   summary: string;
   /** Optional longer detail (command text, file path, layer count). */
   detail?: string;
+};
+
+const chatApprovalRequestInputSchema = z.object({
+  threadId: chatApprovalIdentitySchema,
+  turnId: chatApprovalIdentitySchema,
+  approvalId: chatApprovalIdentitySchema,
+  summary: z.string(),
+  detail: z.string().optional()
+}).strict();
+
+/** Parse the only approval payload allowed to cross into the broker/renderer.
+ *  Exact IDs are rejected rather than rewritten; display text is stripped of
+ *  control/format/bidi characters and prefix-bounded by UTF-8 bytes + lines.
+ *  This preserves the existing summary/detail-only chat disclosure policy. */
+export function parseChatApprovalRequest(input: unknown): ChatApprovalRequest | null {
+  const parsed = chatApprovalRequestInputSchema.safeParse(input);
+  if (!parsed.success) return null;
+
+  const summary = sanitizeApprovalDisplayText(
+    parsed.data.summary,
+    CHAT_APPROVAL_SUMMARY_MAX_BYTES,
+    CHAT_APPROVAL_SUMMARY_MAX_LINES
+  );
+  const detail = parsed.data.detail === undefined
+    ? ""
+    : sanitizeApprovalDisplayText(
+        parsed.data.detail,
+        CHAT_APPROVAL_DETAIL_MAX_BYTES,
+        CHAT_APPROVAL_DETAIL_MAX_LINES
+      );
+  return {
+    threadId: parsed.data.threadId,
+    turnId: parsed.data.turnId,
+    approvalId: parsed.data.approvalId,
+    summary: summary.length > 0 ? summary : "Approval requested",
+    ...(detail.length > 0 ? { detail } : {})
+  };
+}
+
+function sanitizeApprovalDisplayText(
+  value: string,
+  maxBytes: number,
+  maxLines: number
+): string {
+  // Bound work as well as output when a backend sends a hostile huge value.
+  // Eight UTF-16 code units per output byte leaves ample room for stripped
+  // controls while preventing an unbounded normalization/allocation pass.
+  const boundedInput = value.slice(0, maxBytes * 8).normalize("NFC");
+  let output = "";
+  let bytes = 0;
+  let lines = 1;
+
+  for (let index = 0; index < boundedInput.length;) {
+    let codePoint = boundedInput.codePointAt(index)!;
+    let character = String.fromCodePoint(codePoint);
+    index += character.length;
+
+    // Normalize every supported line separator before applying the line cap.
+    if (codePoint === 0x0d) {
+      if (boundedInput.codePointAt(index) === 0x0a) index += 1;
+      codePoint = 0x0a;
+      character = "\n";
+    } else if (codePoint === 0x2028 || codePoint === 0x2029) {
+      codePoint = 0x0a;
+      character = "\n";
+    }
+
+    if (codePoint === 0x0a) {
+      if (lines >= maxLines || bytes + 1 > maxBytes) break;
+      output += "\n";
+      bytes += 1;
+      lines += 1;
+      continue;
+    }
+    if (unsafeApprovalIdentityCharacter.test(character)) continue;
+
+    const characterBytes = utf8CodePointBytes(codePoint);
+    if (bytes + characterBytes > maxBytes) break;
+    output += character;
+    bytes += characterBytes;
+  }
+
+  return output.trim();
+}
+
+function utf8ByteLength(value: string): number {
+  let bytes = 0;
+  for (const character of value) {
+    bytes += utf8CodePointBytes(character.codePointAt(0)!);
+  }
+  return bytes;
+}
+
+function utf8CodePointBytes(codePoint: number): number {
+  if (codePoint <= 0x7f) return 1;
+  if (codePoint <= 0x7ff) return 2;
+  if (codePoint <= 0xffff) return 3;
+  return 4;
+}
+
+/** Main acknowledged an exact approval response. Every eligible window sees
+ *  this terminal event so a response in one surface clears the others. */
+export type ChatApprovalResolvedEvent = {
+  threadId: string;
+  turnId: string;
+  approvalId: string;
+  decision: ChatApprovalDecision;
+};
+
+/** An exact pending request can no longer be answered. No response from a
+ *  stale renderer may be applied to a later turn/request. */
+export type ChatApprovalSupersededEvent = {
+  threadId: string;
+  turnId: string;
+  approvalId: string;
+  reason:
+    | "request_replaced"
+    | "request_stale"
+    | "thread_closed"
+    | "controller_disposed";
 };
 
 // Drawing shapes are modeled as one tool PER primitive (draw_arrow,

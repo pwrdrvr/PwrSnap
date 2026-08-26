@@ -3,14 +3,28 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredAcpAgentGroup } from "@pwrdrvr/agent-acp";
 import type { ChatBackend } from "@pwrdrvr/agent-client";
-import type { AiSurfaceDefault, Settings } from "@pwrsnap/shared";
+import type {
+  AgentBackendApprovalHandler,
+  NormalizedThreadEvent
+} from "@pwrdrvr/agent-core";
+import type {
+  AiSurfaceDefault,
+  ChatApprovalRequest,
+  ChatThreadSidecar,
+  LibraryChatThreadView,
+  Settings
+} from "@pwrsnap/shared";
 import {
   buildChatSurface,
   chatControllerSignature,
   chatSurfaceDefaultsFromSettings,
+  interruptChatThreadAcknowledged,
   type ChatBackendDeps,
   type ChatSurfaceConfig
 } from "../chat-controller-factory";
+import { ChatApprovalBroker, type ChatApprovalResolver } from "../chat-approval-broker";
+import { ChatThreadAccess } from "../chat-thread-access";
+import { ThreadStoreAdapter } from "../thread-store-adapter";
 
 describe("chatSurfaceDefaultsFromSettings", () => {
   test("an empty surface default yields no kit knobs (Codex / kit defaults)", () => {
@@ -94,6 +108,66 @@ function stubBackend(): ChatBackend {
   } as unknown as ChatBackend;
 }
 
+function controllableBackend(): {
+  backend: ChatBackend;
+  requestApproval: (method: string, params: unknown) => Promise<"approved" | "denied" | "abort">;
+  emit: (event: NormalizedThreadEvent) => void;
+} {
+  const backend = stubBackend();
+  let handler: AgentBackendApprovalHandler | null = null;
+  const listeners = new Set<(event: NormalizedThreadEvent) => void>();
+  vi.mocked(backend.onEvent).mockImplementation((listener) => {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  });
+  vi.mocked(backend.onApprovalRequest).mockImplementation((next) => {
+    handler = next;
+    return () => {
+      if (handler === next) handler = null;
+    };
+  });
+  return {
+    backend,
+    requestApproval: (method, params) => {
+      if (handler === null) throw new Error("approval handler was not wired");
+      return handler(method, params);
+    },
+    emit: (event) => {
+      for (const listener of listeners) listener(event);
+    }
+  };
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function approvalBrokerDouble(overrides: {
+  register?: (
+    request: ChatApprovalRequest,
+    owner: object,
+    resolve: ChatApprovalResolver
+  ) => boolean;
+  closeOwner?: (owner: object) => Promise<void>;
+  closeThread?: (threadId: string) => Promise<void>;
+  openThread?: (threadId: string) => void;
+} = {}): ChatApprovalBroker {
+  return {
+    register: overrides.register ?? (() => true),
+    decorateThread: (view: LibraryChatThreadView) => view,
+    closeOwner: overrides.closeOwner ?? (async () => undefined),
+    closeThread: overrides.closeThread ?? (async () => undefined),
+    openThread: overrides.openThread ?? (() => undefined)
+  } as unknown as ChatApprovalBroker;
+}
+
 /** The ACP factory now returns the client + its per-thread mcpServers. */
 function stubAcpResult(): { client: ChatBackend; mcpServers: never[] } {
   return { client: stubBackend(), mcpServers: [] };
@@ -128,6 +202,23 @@ function settingsWithAcpPref(
 }
 
 describe("buildChatSurface — backend selection", () => {
+  test("acknowledged interruption propagates the original backend failure", async () => {
+    const backend = stubBackend();
+    vi.mocked(backend.interruptTurn).mockRejectedValueOnce(
+      new Error("backend cancellation failed")
+    );
+    const surface = await buildChatSurface(baseConfig({ provider: "codex" }), {
+      makeCodexClient: () => backend
+    });
+    const controllerInterrupt = vi.spyOn(surface.controller, "interrupt");
+
+    await expect(
+      interruptChatThreadAcknowledged(surface.controller, "thread-awaiting-approval")
+    ).rejects.toThrow("backend cancellation failed");
+    expect(backend.interruptTurn).toHaveBeenCalledTimes(1);
+    expect(controllerInterrupt).not.toHaveBeenCalled();
+  });
+
   test('provider "codex" builds the Codex backend (no ACP discovery)', async () => {
     const makeCodexClient = vi.fn(() => stubBackend());
     const makeAcpClient = vi.fn(() => stubAcpResult());
@@ -402,6 +493,294 @@ describe("chatControllerSignature", () => {
 });
 
 describe("buildChatSurface — dispose", () => {
+  test("does not make approval cleanup idle until delayed final journal commit finishes", async () => {
+    const threadId = "thread-delayed-journal";
+    const turnId = "turn-delayed-journal";
+    const record = {
+      threadId,
+      name: "Delayed journal",
+      createdAt: "2026-08-23T00:00:00.000Z",
+      modifiedAt: "2026-08-23T00:00:00.000Z",
+      anchorId: null,
+      anchorHistory: [],
+      archived: false,
+      pinned: false
+    };
+    const journal: unknown[] = [];
+    const assistantAppendStarted = deferred<void>();
+    const assistantAppendGate = deferred<void>();
+    const storeGet = vi
+      .spyOn(ThreadStoreAdapter.prototype, "get")
+      .mockResolvedValue(record);
+    const journalAppend = vi
+      .spyOn(ThreadStoreAdapter.prototype, "journalAppend")
+      .mockImplementation(async (_id, entry) => {
+        const role = (entry as { message?: { role?: unknown } }).message?.role;
+        if (role === "assistant") {
+          assistantAppendStarted.resolve(undefined);
+          await assistantAppendGate.promise;
+        }
+        journal.push(entry);
+      });
+    const controlled = controllableBackend();
+    vi.mocked(controlled.backend.startTurn).mockResolvedValue({ turnId });
+    const closeThread = vi.fn(async () => {
+      expect(
+        journal.some(
+          (entry) =>
+            (entry as { message?: { role?: unknown; text?: unknown } }).message?.role ===
+              "assistant" &&
+            (entry as { message?: { text?: unknown } }).message?.text === "final answer"
+        )
+      ).toBe(true);
+    });
+    const surface = await buildChatSurface(
+      baseConfig({
+        provider: "codex",
+        approvalBroker: approvalBrokerDouble({ closeThread })
+      }),
+      { makeCodexClient: () => controlled.backend }
+    );
+
+    try {
+      await surface.controller.sendMessage({ threadId, text: "question" });
+      controlled.emit({
+        kind: "agent_message_delta",
+        threadId,
+        turnId,
+        itemId: "assistant-item",
+        delta: "final answer"
+      });
+      controlled.emit({ kind: "turn_completed", threadId, turnId, status: "completed" });
+
+      await assistantAppendStarted.promise;
+      expect(closeThread).not.toHaveBeenCalled();
+
+      assistantAppendGate.resolve(undefined);
+      await vi.waitFor(() => expect(closeThread).toHaveBeenCalledWith(threadId));
+      expect(journalAppend).toHaveBeenCalledTimes(2);
+    } finally {
+      await surface.dispose();
+      journalAppend.mockRestore();
+      storeGet.mockRestore();
+    }
+  });
+
+  test("registers an approval resolver bound to the exact originating controller", async () => {
+    // The kit publishes awaiting/idle thread status around its private approval
+    // promise. This factory-level test has no app database, so keep that
+    // incidental lookup at the adapter seam while exercising the real
+    // controller approval machinery.
+    const storeGet = vi.spyOn(ThreadStoreAdapter.prototype, "get").mockResolvedValue(null);
+    const controlled = controllableBackend();
+    let registered:
+      | {
+          request: ChatApprovalRequest;
+          owner: object;
+          resolve: ChatApprovalResolver;
+        }
+      | undefined;
+    const register = vi.fn(
+      (request: ChatApprovalRequest, owner: object, resolve: ChatApprovalResolver) => {
+        registered = { request, owner, resolve };
+        return true;
+      }
+    );
+    const broker = approvalBrokerDouble({ register });
+    const surface = await buildChatSurface(
+      baseConfig({ provider: "codex", approvalBroker: broker }),
+      { makeCodexClient: () => controlled.backend }
+    );
+    const controllerResolve = vi.spyOn(surface.controller, "resolveApproval");
+
+    const backendDecision = controlled.requestApproval(
+      "item/commandExecution/requestApproval",
+      {
+        threadId: "thread-original",
+        turnId: "turn-original",
+        command: "pwd"
+      }
+    );
+    await vi.waitFor(() => expect(registered).toBeDefined());
+    const captured = registered;
+    if (captured === undefined) throw new Error("broker did not capture approval");
+
+    await captured.resolve("approve");
+
+    expect(controllerResolve).toHaveBeenCalledWith({
+      threadId: captured.request.threadId,
+      turnId: captured.request.turnId,
+      approvalId: captured.request.approvalId,
+      decision: "approved"
+    });
+    await expect(backendDecision).resolves.toBe("approved");
+    await vi.waitFor(() => expect(storeGet).toHaveBeenCalledTimes(2));
+    await surface.dispose();
+    storeGet.mockRestore();
+  });
+
+  test("safe-denies an invalid backend approval identity without broker or renderer exposure", async () => {
+    const storeGet = vi.spyOn(ThreadStoreAdapter.prototype, "get").mockResolvedValue(null);
+    const controlled = controllableBackend();
+    const register = vi.fn(() => true);
+    const send = vi.fn();
+    const surface = await buildChatSurface(
+      baseConfig({
+        provider: "codex",
+        approvalBroker: approvalBrokerDouble({ register }),
+        send: send as unknown as ChatSurfaceConfig["send"]
+      }),
+      { makeCodexClient: () => controlled.backend }
+    );
+
+    try {
+      const backendDecision = controlled.requestApproval(
+        "item/commandExecution/requestApproval",
+        {
+          threadId: "thread\u202espoofed",
+          turnId: "turn-invalid",
+          command: "never expose"
+        }
+      );
+
+      await expect(backendDecision).resolves.toBe("denied");
+      expect(register).not.toHaveBeenCalled();
+      expect(
+        send.mock.calls.some(([channel]) => channel === "x:f")
+      ).toBe(false);
+    } finally {
+      await surface.dispose();
+      storeGet.mockRestore();
+    }
+  });
+
+  test("safe-denies an MCP-owned approval before broker pending state or human IPC", async () => {
+    const threadId = "mcp-owned-thread";
+    const sidecar: ChatThreadSidecar = {
+      schemaVersion: 1,
+      threadId,
+      name: "MCP chat",
+      createdAt: "2026-08-23T00:00:00.000Z",
+      modifiedAt: "2026-08-23T00:00:00.000Z",
+      anchorCaptureId: "cap-mcp",
+      focusHistory: [],
+      archived: false,
+      pinned: false,
+      provider: "codex",
+      model: null,
+      reasoning: null,
+      ownerClientId: "local-client-a"
+    };
+    const access = new ChatThreadAccess({
+      surface: "library",
+      store: () => ({}) as never,
+      loggerScope: "test:mcp-approval-access"
+    });
+    access.onThreadCreated(sidecar);
+    const broker = new ChatApprovalBroker({
+      surface: "library",
+      loggerScope: "test:mcp-approval-broker",
+      emitResolved: vi.fn(),
+      emitSuperseded: vi.fn()
+    });
+    const register = vi.spyOn(broker, "register");
+    const storeGet = vi.spyOn(ThreadStoreAdapter.prototype, "get").mockResolvedValue(null);
+    const controlled = controllableBackend();
+    const send = vi.fn();
+    const surface = await buildChatSurface(
+      baseConfig({
+        provider: "codex",
+        approvalBroker: broker,
+        threadAccess: access,
+        send: send as unknown as ChatSurfaceConfig["send"]
+      }),
+      { makeCodexClient: () => controlled.backend }
+    );
+
+    try {
+      const backendDecision = controlled.requestApproval(
+        "item/commandExecution/requestApproval",
+        { threadId, turnId: "mcp-turn", command: "pwd" }
+      );
+
+      await expect(backendDecision).resolves.toBe("denied");
+      expect(register).not.toHaveBeenCalled();
+      expect(broker.pendingForThread(threadId)).toBeNull();
+      expect(send.mock.calls.some(([channel]) => channel === "x:f")).toBe(false);
+    } finally {
+      await surface.dispose();
+      storeGet.mockRestore();
+    }
+  });
+
+  test("closes broker ownership before closing the exclusive backend", async () => {
+    const order: string[] = [];
+    const controlled = controllableBackend();
+    const send = vi.fn();
+    vi.mocked(controlled.backend.close).mockImplementation(async () => {
+      order.push("backend.close");
+    });
+    const closeOwner = vi.fn(async () => {
+      order.push("broker.closeOwner");
+      controlled.emit({
+        kind: "tool_call",
+        threadId: "thread-live-during-cleanup",
+        turnId: "turn-live-during-cleanup",
+        toolCall: {
+          id: "call-live-during-cleanup",
+          name: "library_search",
+          kind: "search",
+          label: "Still live",
+          status: "completed"
+        }
+      });
+    });
+    const surface = await buildChatSurface(
+      baseConfig({
+        provider: "codex",
+        approvalBroker: approvalBrokerDouble({ closeOwner }),
+        send: send as unknown as ChatSurfaceConfig["send"]
+      }),
+      { makeCodexClient: () => controlled.backend }
+    );
+
+    await surface.dispose();
+
+    expect(order).toEqual(["broker.closeOwner", "backend.close"]);
+    expect(send).toHaveBeenCalledTimes(1);
+    controlled.emit({
+      kind: "tool_call",
+      threadId: "thread-after-cleanup",
+      turnId: "turn-after-cleanup",
+      toolCall: {
+        id: "call-after-cleanup",
+        name: "library_search",
+        kind: "search",
+        label: "Must be silent",
+        status: "completed"
+      }
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  test("still closes the exclusive backend when broker-owner cleanup fails", async () => {
+    const codexBackend = stubBackend();
+    const closeOwner = vi.fn(async () => {
+      throw new Error("deny callback failed");
+    });
+    const surface = await buildChatSurface(
+      baseConfig({
+        provider: "codex",
+        approvalBroker: approvalBrokerDouble({ closeOwner })
+      }),
+      { makeCodexClient: () => codexBackend }
+    );
+
+    await expect(surface.dispose()).resolves.toBeUndefined();
+
+    expect(codexBackend.close).toHaveBeenCalledTimes(1);
+  });
+
   test("dispose closes an exclusively-ours Codex backend", async () => {
     const codexBackend = stubBackend();
     const makeCodexClient = vi.fn(() => codexBackend);

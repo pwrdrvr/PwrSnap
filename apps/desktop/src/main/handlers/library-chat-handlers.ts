@@ -13,20 +13,29 @@
 // prompt for ~/Documents (expected — surfaced during onboarding).
 
 import { app, BrowserWindow } from "electron";
-import { join } from "node:path";
 import type { ChatThreadController } from "@pwrdrvr/agent-client";
 import type {
   EventPayloads,
+  ChatThreadSidecar,
   PwrSnapError,
   Result,
   Settings,
   TypedEventChannel
 } from "@pwrsnap/shared";
-import { acpAgentIdFromThreadId, EVENT_CHANNELS, err, ok } from "@pwrsnap/shared";
+import {
+  acpAgentIdFromThreadId,
+  chatApprovalResponseSchema,
+  EVENT_CHANNELS,
+  err,
+  ok
+} from "@pwrsnap/shared";
 import { bus, type CommandDispatchOptions } from "../command-bus";
 import { getMainLogger } from "../log";
 import { resolveCodexThreadConfigForCommand } from "../ai/codex-thread-config";
-import { buildChatSurface, toKitApprovalDecision } from "../ai/chat-controller-factory";
+import {
+  buildChatSurface,
+  interruptChatThreadAcknowledged
+} from "../ai/chat-controller-factory";
 import {
   createKeyedChatControllerCache,
   type ChatBackendConfig
@@ -34,11 +43,13 @@ import {
 import { rootKeyedChatThreadStore } from "../ai/chat-thread-store";
 import { codexEnvForProfile } from "../ai/agent-kit-bindings";
 import type { ChatBroadcast, ChatChannelSet } from "../ai/chat-event-adapter";
-import { toChatMessage, toLibraryThreadView } from "../ai/chat-event-adapter";
+import { toLibraryThreadView } from "../ai/chat-event-adapter";
 import { buildLibrarySystemPrompt } from "../ai/library-chat-system-prompt";
 import { buildLibraryToolCatalog } from "../ai/library-tool-catalog";
 import { dispatchLibraryToolCall } from "../ai/library-tool-catalog";
 import { getChatsRoot } from "../persistence/paths";
+import { ChatApprovalBroker } from "../ai/chat-approval-broker";
+import { ChatThreadAccess } from "../ai/chat-thread-access";
 
 const log = getMainLogger("pwrsnap:library-chat-handlers");
 
@@ -69,7 +80,9 @@ const LIBRARY_CHAT_CHANNELS: ChatChannelSet = {
   toolCall: EVENT_CHANNELS.libraryChatToolCall,
   messageCommitted: EVENT_CHANNELS.libraryChatMessageCommitted,
   turnInterrupted: EVENT_CHANNELS.libraryChatTurnInterrupted,
-  approvalRequested: EVENT_CHANNELS.libraryChatApprovalRequested
+  approvalRequested: EVENT_CHANNELS.libraryChatApprovalRequested,
+  approvalResolved: EVENT_CHANNELS.libraryChatApprovalResolved,
+  approvalSuperseded: EVENT_CHANNELS.libraryChatApprovalSuperseded
 };
 
 /** Friendly activity-chip labels for the Library tool catalog. */
@@ -136,7 +149,17 @@ const broadcast: ChatBroadcast = <C extends TypedEventChannel>(
 ): void => {
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue;
-    win.webContents.send(channel, payload);
+    try {
+      win.webContents.send(channel, payload);
+    } catch (cause) {
+      // One renderer disappearing between isDestroyed() and send must not
+      // prevent sibling windows from receiving the terminal lifecycle event.
+      log.warn("library chat window broadcast failed", {
+        channel,
+        windowId: win.id,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
   }
 };
 
@@ -160,6 +183,33 @@ export function registerLibraryChatHandlers(params?: {
   // Reads each thread's persisted backend config (for routing) + writes it on
   // create. Root-keyed so it follows a runtime captures-location flip.
   const store = rootKeyedChatThreadStore(getChatsRoot);
+  const access = new ChatThreadAccess({
+    surface: "library",
+    store,
+    loggerScope: "pwrsnap:library-chat-access"
+  });
+  const approvalBroker = new ChatApprovalBroker({
+    surface: "library",
+    loggerScope: "pwrsnap:library-chat-approval",
+    emitResolved: (event) => {
+      if (access.shouldBroadcastToHuman(event.threadId)) {
+        broadcast(LIBRARY_CHAT_CHANNELS.approvalResolved, event);
+      }
+    },
+    emitSuperseded: (event) => {
+      if (access.shouldBroadcastToHuman(event.threadId)) {
+        broadcast(LIBRARY_CHAT_CHANNELS.approvalSuperseded, event);
+      }
+    },
+    pendingChanged: (threadId) => {
+      const view = access.humanViewForThread(threadId);
+      if (view !== null) {
+        broadcast(LIBRARY_CHAT_CHANNELS.threadUpdated, {
+          thread: approvalBroker.decorateThread(view)
+        });
+      }
+    }
+  });
   // sendMessage returns at turn start; backend tool calls arrive later. Keep
   // the last turn origin per thread until a subsequent send replaces it.
   const activeToolContexts = new Map<string, CommandDispatchOptions>();
@@ -193,6 +243,8 @@ export function registerLibraryChatHandlers(params?: {
         readSettings: settingsReader,
         channels: LIBRARY_CHAT_CHANNELS,
         send: broadcast,
+        approvalBroker,
+        threadAccess: access,
         usageSurface: "library-chat",
         buildSystemPrompt: ({ settings: s, anchorId }) =>
           buildLibrarySystemPrompt({ settings: s, anchorCaptureId: anchorId }),
@@ -217,6 +269,9 @@ export function registerLibraryChatHandlers(params?: {
       return { controller: surface.controller, dispose: surface.dispose };
     }
   });
+  app?.once?.("before-quit", () => {
+    void cache.reset();
+  });
 
   // A test-injected controller pins every config to that instance (no rebuild,
   // no real backend) — existing handler tests rely on this.
@@ -236,52 +291,40 @@ export function registerLibraryChatHandlers(params?: {
     };
   };
 
-  /** Resolve an EXISTING thread's backend config: its persisted config first,
-   *  else the provider baked into its id (acp:<id>:… / Codex), with model +
-   *  reasoning left to the backend default. */
-  const configForThread = async (threadId: string): Promise<ChatBackendConfig> => {
-    const sidecar = await store().get(threadId).catch(() => null);
-    const agentId = acpAgentIdFromThreadId(threadId);
+  /** Resolve an authorized EXISTING thread's backend config. Authorization
+   *  always supplies the authoritative sidecar first; no store failure may be
+   *  converted into a default/human-owned thread. */
+  const configForSidecar = (sidecar: ChatThreadSidecar): ChatBackendConfig => {
+    const agentId = acpAgentIdFromThreadId(sidecar.threadId);
     return {
-      provider: sidecar?.provider ?? (agentId !== null ? `acp:${agentId}` : "codex"),
-      model: sidecar?.model ?? null,
-      reasoning: sidecar?.reasoning ?? null
+      provider: sidecar.provider ?? (agentId !== null ? `acp:${agentId}` : "codex"),
+      model: sidecar.model,
+      reasoning: sidecar.reasoning
     };
   };
 
   bus.register("codex:libraryChat:list", async (req, ctx) => {
-    try {
-      const c = await controllerFor(await defaultConfig());
-      const threads = await c.listThreads({
-        includeArchived: req.includeArchived ?? false,
-        ...(req.anchorCaptureId !== undefined ? { anchorId: req.anchorCaptureId } : {})
-      });
-      // Merge each thread's persisted config into the view (locked chips).
-      const sidecars = await store()
-        .list({ includeArchived: req.includeArchived ?? false })
-        .catch(() => []);
-      const byId = new Map(sidecars.map((s) => [s.threadId, s]));
-      return ok({
-        threads: threads.filter((thread) => {
-          const ownerClientId = byId.get(thread.threadId)?.ownerClientId ?? null;
-          return ctx.principal === "mcp"
-            ? ownerClientId === ctx.localAgent?.clientId
-            : ownerClientId === null;
-        }).map((t) => {
-          const s = byId.get(t.threadId);
-          return toLibraryThreadView(
-            t,
-            s ? { provider: s.provider, model: s.model, reasoning: s.reasoning } : undefined
-          );
-        })
-      });
-    } catch (cause) {
-      return codexUnreachable(cause);
-    }
+    const listed = await access.list(ctx, {
+      includeArchived: req.includeArchived ?? false,
+      ...(req.anchorCaptureId !== undefined ? { anchorCaptureId: req.anchorCaptureId } : {})
+    });
+    if (!listed.ok) return listed;
+    return ok({
+      threads: listed.value.map((sidecar) => approvalBroker.decorateThread(access.viewFor(sidecar)))
+    });
   });
 
   bus.register("codex:libraryChat:create", async (req, ctx) => {
     try {
+      if (req.anchorCaptureId?.startsWith("sz_") === true) {
+        return err({
+          kind: "validation",
+          code: "library_chat_capture_required",
+          message: "A Library chat cannot be attached to a Sizzle project."
+        });
+      }
+      const actor = access.actorFor(ctx);
+      if (!actor.ok) return actor;
       const d = await defaultConfig();
       // The chosen config: chips override, else the Settings default.
       const config: ChatBackendConfig = {
@@ -290,23 +333,21 @@ export function registerLibraryChatHandlers(params?: {
         reasoning: req.reasoning !== undefined && req.reasoning !== "" ? req.reasoning : d.reasoning
       };
       const c = await controllerFor(config);
-      const view = await c.createThread({
-        ...(req.name !== undefined ? { name: req.name } : {}),
-        ...(req.anchorCaptureId !== undefined ? { anchorId: req.anchorCaptureId } : {})
-      });
-      // Persist the locked config + MCP owner on the thread in ONE write
-      // block (skip in injected-controller tests, which have no DB). Two
-      // separately awaited setters left a window where a concurrent `list`
-      // saw the row with a null owner and showed a local agent's private
-      // thread in the user's Library.
+      const view = await access.runCreate(actor.value.ownerClientId, () =>
+        c.createThread({
+          ...(req.name !== undefined ? { name: req.name } : {}),
+          ...(req.anchorCaptureId !== undefined ? { anchorId: req.anchorCaptureId } : {})
+        })
+      );
+      // The production adapter put backend config + exact owner in the INITIAL
+      // INSERT before createThread emitted its first event. Read that row back
+      // for the response (injected tests have no production adapter/store).
       if (injected === null) {
-        await store().lockThreadProvenance(
-          view.threadId,
-          config,
-          ctx.principal === "mcp" ? (ctx.localAgent?.clientId ?? null) : null
-        );
+        const sidecar = await access.require(view.threadId, ctx);
+        if (!sidecar.ok) return sidecar;
+        return ok(approvalBroker.decorateThread(access.viewFor(sidecar.value)));
       }
-      return ok(toLibraryThreadView(view, config));
+      return ok(approvalBroker.decorateThread(toLibraryThreadView(view, config)));
     } catch (cause) {
       return codexUnreachable(cause);
     }
@@ -314,16 +355,22 @@ export function registerLibraryChatHandlers(params?: {
 
   bus.register("codex:libraryChat:send", async (req, ctx) => {
     try {
-      if (ctx.principal === "mcp") {
-        const sidecar = await store().get(req.threadId);
-        if (sidecar?.ownerClientId !== ctx.localAgent?.clientId) {
-          return aiError("thread_owner_mismatch", "This chat belongs to another user or local client.");
-        }
+      const authorized = await access.require(req.threadId, ctx);
+      if (!authorized.ok) return authorized;
+      if (req.anchorCaptureId?.startsWith("sz_") === true) {
+        return err({
+          kind: "validation",
+          code: "library_chat_capture_required",
+          message: "A Library chat cannot be moved to a Sizzle project."
+        });
       }
-      const c = await controllerFor(await configForThread(req.threadId));
+      approvalBroker.openThread(req.threadId);
+      const c = await controllerFor(configForSidecar(authorized.value));
       const commandContext: CommandDispatchOptions = {
         principal: ctx.principal,
-        ...(ctx.localAgent !== undefined ? { localAgent: ctx.localAgent } : {})
+        ...(ctx.localAgent !== undefined ? { localAgent: ctx.localAgent } : {}),
+        ...(ctx.sourceWindowId !== undefined ? { sourceWindowId: ctx.sourceWindowId } : {}),
+        ...(ctx.sourceBounds !== undefined ? { sourceBounds: ctx.sourceBounds } : {})
       };
       activeToolContexts.set(req.threadId, commandContext);
       const result = await c.sendMessage({
@@ -351,22 +398,28 @@ export function registerLibraryChatHandlers(params?: {
     const timeoutMs = Math.min(Math.max(req.timeoutMs ?? 600_000, 1_000), 600_000);
     const deadline = Date.now() + timeoutMs;
     try {
-      const config = await configForThread(req.threadId);
+      const authorized = await access.require(req.threadId, ctx);
+      if (!authorized.ok) return authorized;
+      const config = configForSidecar(authorized.value);
       const c = await controllerFor(config);
       while (true) {
         if (ctx.signal.aborted) {
           return aiError("edit_cancelled", "The image-edit request was cancelled.");
         }
-        const thread = (await c.listThreads({ includeArchived: true }))
+        const thread = (await access.runCreate(authorized.value.ownerClientId, () =>
+          c.listThreads({ includeArchived: true })
+        ))
           .find((candidate) => candidate.threadId === req.threadId);
         if (thread === undefined) {
           return aiError("thread_not_found", "This chat thread could not be reopened.");
         }
-        if (thread.status.kind === "idle") {
-          const messages = await c.getHistory(req.threadId);
+        const view = approvalBroker.decorateThread(toLibraryThreadView(thread, config));
+        if (view.status.kind === "idle") {
+          const messages = await access.history(authorized.value);
+          if (!messages.ok) return messages;
           return ok({
-            thread: toLibraryThreadView(thread, config),
-            messages: messages.map(toChatMessage)
+            thread: view,
+            messages: messages.value
           });
         }
         if (Date.now() >= deadline) {
@@ -382,61 +435,88 @@ export function registerLibraryChatHandlers(params?: {
     }
   });
 
-  bus.register("codex:libraryChat:history", async (req) => {
-    try {
-      const c = await controllerFor(await configForThread(req.threadId));
-      const messages = await c.getHistory(req.threadId);
-      return ok({ messages: messages.map(toChatMessage) });
-    } catch (cause) {
-      return codexUnreachable(cause);
-    }
+  bus.register("codex:libraryChat:history", async (req, ctx) => {
+    const authorized = await access.require(req.threadId, ctx);
+    if (!authorized.ok) return authorized;
+    const messages = await access.history(authorized.value);
+    return messages.ok ? ok({ messages: messages.value }) : messages;
   });
 
-  bus.register("codex:libraryChat:rename", async (req) => {
+  bus.register("codex:libraryChat:rename", async (req, ctx) => {
     try {
-      const config = await configForThread(req.threadId);
+      const authorized = await access.require(req.threadId, ctx);
+      if (!authorized.ok) return authorized;
+      const config = configForSidecar(authorized.value);
       const c = await controllerFor(config);
       const view = await c.rename(req.threadId, req.name);
-      return ok(toLibraryThreadView(view, config));
+      return ok(approvalBroker.decorateThread(toLibraryThreadView(view, config)));
     } catch (cause) {
       return codexUnreachable(cause);
     }
   });
 
-  bus.register("codex:libraryChat:archive", async (req) => {
+  bus.register("codex:libraryChat:archive", async (req, ctx) => {
     try {
-      const config = await configForThread(req.threadId);
+      const authorized = await access.require(req.threadId, ctx);
+      if (!authorized.ok) return authorized;
+      const config = configForSidecar(authorized.value);
       const c = await controllerFor(config);
+      if (req.archived) {
+        // Archiving is a quiescing lifecycle operation, not just metadata.
+        // Truthful interrupt (owned by #488's session controller) must
+        // acknowledge backend cancellation before broker denial can resume an
+        // awaiting model. Only then may the thread become hidden.
+        if (approvalBroker.pendingForThread(req.threadId) !== null) {
+          await interruptChatThreadAcknowledged(c, req.threadId);
+        } else {
+          await c.interrupt(req.threadId);
+        }
+        await approvalBroker.closeThread(req.threadId);
+      }
       const view = await c.archive(req.threadId, req.archived);
-      return ok(toLibraryThreadView(view, config));
+      if (!req.archived) approvalBroker.openThread(req.threadId);
+      return ok(approvalBroker.decorateThread(toLibraryThreadView(view, config)));
     } catch (cause) {
       return codexUnreachable(cause);
     }
   });
 
-  bus.register("codex:libraryChat:interrupt", async (req) => {
+  bus.register("codex:libraryChat:interrupt", async (req, ctx) => {
     try {
-      const c = await controllerFor(await configForThread(req.threadId));
-      await c.interrupt(req.threadId);
+      const authorized = await access.require(req.threadId, ctx);
+      if (!authorized.ok) return authorized;
+      const c = await controllerFor(configForSidecar(authorized.value));
+      if (approvalBroker.pendingForThread(req.threadId) !== null) {
+        await interruptChatThreadAcknowledged(c, req.threadId);
+      } else {
+        await c.interrupt(req.threadId);
+      }
+      // Do not deny or terminalize the pending approval unless interruption
+      // was acknowledged by the controller.
+      await approvalBroker.closeThread(req.threadId);
       return ok(undefined);
     } catch (cause) {
       return codexUnreachable(cause);
     }
   });
 
-  bus.register("codex:libraryChat:approval", async (req) => {
-    try {
-      const c = await controllerFor(await configForThread(req.threadId));
-      await c.resolveApproval({
-        threadId: req.threadId,
-        turnId: req.turnId,
-        approvalId: req.approvalId,
-        decision: toKitApprovalDecision(req.decision)
+  bus.register("codex:libraryChat:approval", async (req, ctx) => {
+    const response = chatApprovalResponseSchema.safeParse(req);
+    if (!response.success) {
+      return err({
+        kind: "validation",
+        code: "invalid_approval_response",
+        message: "The approval response was malformed."
       });
-      return ok(undefined);
-    } catch (cause) {
-      return codexUnreachable(cause);
     }
+    const authorized = await access.require(response.data.threadId, ctx);
+    if (!authorized.ok) return authorized;
+    return approvalBroker.resolve({
+      threadId: response.data.threadId,
+      turnId: response.data.turnId,
+      approvalId: response.data.approvalId,
+      decision: response.data.decision
+    });
   });
 }
 

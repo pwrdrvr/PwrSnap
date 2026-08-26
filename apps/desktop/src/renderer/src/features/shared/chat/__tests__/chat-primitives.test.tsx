@@ -72,6 +72,97 @@ const REQUEST: ChatApprovalRequest = {
 };
 
 describe("ChatApprovalModal", () => {
+  test("focuses safe Deny first and traps Tab inside the modal", async () => {
+    const outside = document.createElement("button");
+    outside.textContent = "Hidden composer control";
+    document.body.appendChild(outside);
+    outside.focus();
+    try {
+      const el = await mount(
+        createElement(ChatApprovalModal, {
+          request: REQUEST,
+          onResolve: vi.fn(() => Promise.resolve())
+        })
+      );
+      const deny = query<HTMLButtonElement>(el, '[data-testid="ps-approval-deny"]');
+      const approve = query<HTMLButtonElement>(el, '[data-testid="ps-approval-approve"]');
+
+      expect(document.activeElement).toBe(deny);
+
+      await act(async () => {
+        deny.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Tab",
+            shiftKey: true,
+            bubbles: true,
+            cancelable: true
+          })
+        );
+      });
+      expect(document.activeElement).toBe(approve);
+
+      await act(async () => {
+        approve.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Tab",
+            bubbles: true,
+            cancelable: true
+          })
+        );
+      });
+      expect(document.activeElement).toBe(deny);
+
+      // Even a programmatic focus move behind the scrim is recaptured
+      // immediately; hidden app controls never become the keyboard target.
+      outside.focus();
+      expect(document.activeElement).toBe(deny);
+
+      approve.focus();
+      await act(async () => {
+        root?.render(
+          createElement(ChatApprovalModal, {
+            request: {
+              ...REQUEST,
+              turnId: "turn-2",
+              approvalId: "appr-2",
+              summary: "Approve the superseding request?"
+            },
+            onResolve: vi.fn(() => Promise.resolve())
+          })
+        );
+        await Promise.resolve();
+      });
+      expect(document.activeElement).toBe(
+        query<HTMLButtonElement>(el, '[data-testid="ps-approval-deny"]')
+      );
+    } finally {
+      outside.remove();
+    }
+  });
+
+  test("restores prior focus and removes its keyboard ownership on unmount", async () => {
+    const returnTarget = document.createElement("button");
+    returnTarget.textContent = "New chat";
+    document.body.appendChild(returnTarget);
+    returnTarget.focus();
+    const onResolve = vi.fn(() => Promise.resolve());
+    try {
+      await mount(createElement(ChatApprovalModal, { request: REQUEST, onResolve }));
+      expect(document.activeElement).not.toBe(returnTarget);
+
+      await act(async () => root?.unmount());
+      root = null;
+      expect(document.activeElement).toBe(returnTarget);
+
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
+      );
+      expect(onResolve).not.toHaveBeenCalled();
+    } finally {
+      returnTarget.remove();
+    }
+  });
+
   test("clicking Approve resolves with 'approve' once", async () => {
     const onResolve = vi.fn(() => Promise.resolve());
     const el = await mount(
@@ -110,6 +201,18 @@ describe("ChatApprovalModal", () => {
     expect(approve.disabled).toBe(true);
     expect(deny.disabled).toBe(true);
     expect(el.querySelector('[data-testid="ps-approval-spinner"]')).not.toBeNull();
+    const dialog = query<HTMLDivElement>(el, '[data-testid="ps-approval"]');
+    expect(document.activeElement).toBe(dialog);
+    await act(async () => {
+      dialog.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Tab",
+          bubbles: true,
+          cancelable: true
+        })
+      );
+    });
+    expect(document.activeElement).toBe(dialog);
 
     await act(async () => {
       d.resolve();
@@ -119,6 +222,56 @@ describe("ChatApprovalModal", () => {
 
     expect(onResolve).toHaveBeenCalledTimes(1);
     expect(onResolve).toHaveBeenCalledWith("approve");
+  });
+
+  test("re-arms the click guard after a failed resolution so the user can retry", async () => {
+    const onResolve = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error("transport failed"))
+      .mockResolvedValue(undefined);
+    const el = await mount(createElement(ChatApprovalModal, { request: REQUEST, onResolve }));
+
+    await act(async () => {
+      query(el, '[data-testid="ps-approval-approve"]').click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      query(el, '[data-testid="ps-approval-approve"]').click();
+      await Promise.resolve();
+    });
+
+    expect(onResolve).toHaveBeenCalledTimes(2);
+  });
+
+  test("renders sanitized failure copy and retries the failed decision", async () => {
+    const onResolve = vi.fn(() => Promise.resolve());
+    const el = await mount(
+      createElement(ChatApprovalModal, {
+        request: REQUEST,
+        onResolve,
+        errorMessage: "The request is still pending. Try again, or send Deny instead.",
+        retryDecision: "approve"
+      })
+    );
+    expect(query(el, '[data-testid="ps-approval-error"]').getAttribute("role")).toBe("alert");
+
+    await act(async () => {
+      query(el, '[data-testid="ps-approval-retry"]').click();
+      await Promise.resolve();
+    });
+    expect(onResolve).toHaveBeenCalledWith("approve");
+    expect(el.querySelector('[data-testid="ps-approval-approve"]')).toBeNull();
+  });
+
+  test("controlled submitting remains busy after the local callback settles", async () => {
+    const onResolve = vi.fn(() => Promise.resolve());
+    const el = await mount(
+      createElement(ChatApprovalModal, { request: REQUEST, onResolve, submitting: true })
+    );
+    expect(query<HTMLButtonElement>(el, '[data-testid="ps-approval-approve"]').disabled).toBe(true);
+    expect(query<HTMLButtonElement>(el, '[data-testid="ps-approval-deny"]').disabled).toBe(true);
+    expect(el.querySelector('[data-testid="ps-approval-spinner"]')).not.toBeNull();
   });
 
   test("Escape resolves with 'deny'", async () => {
@@ -168,6 +321,8 @@ describe("ChatApprovalModal", () => {
     const dialog = query(el, '[data-testid="ps-approval"]');
     expect(dialog.getAttribute("role")).toBe("dialog");
     expect(dialog.getAttribute("aria-label")).toBe("Agent approval");
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(dialog.getAttribute("tabindex")).toBe("-1");
   });
 });
 

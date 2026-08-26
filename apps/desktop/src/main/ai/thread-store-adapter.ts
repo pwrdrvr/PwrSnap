@@ -38,6 +38,19 @@ export type ThreadStoreAdapterOptions = {
   store: ChatThreadStore;
   /** Usage-accounting surface. Omit to disable usage recording (tests). */
   usageSurface?: AiUsageThreadSurface;
+  /** Supplies create-time ownership from the command's async context and is
+   *  notified before the controller emits its first thread_updated event. */
+  createContext?: {
+    ownerClientId: () => string | null;
+    onCreated: (sidecar: ChatThreadSidecar) => void;
+  };
+  /** Immutable controller backend identity, persisted in the same initial row
+   *  as owner provenance (including controller-created forks). */
+  threadConfig?: {
+    provider: string | null;
+    model: string | null;
+    reasoning: string | null;
+  };
 };
 
 /** Map a PwrSnap `ChatThreadSidecar` (DB row shape) to the kit's neutral
@@ -65,6 +78,8 @@ function sidecarToRecord(sidecar: ChatThreadSidecar): NormalizedThreadRecord {
 export class ThreadStoreAdapter implements ThreadStore {
   private readonly store: ChatThreadStore;
   private readonly usageSurface: AiUsageThreadSurface | undefined;
+  private readonly createContext: ThreadStoreAdapterOptions["createContext"];
+  private readonly threadConfig: ThreadStoreAdapterOptions["threadConfig"];
   /** Bridges the kit's path-only PreparedThreadDir back to PwrSnap's
    *  dirName-carrying handle, so `create({ preparedDir })` reuses the dir
    *  minted by `prepareThreadDir` instead of minting a second one. */
@@ -73,6 +88,8 @@ export class ThreadStoreAdapter implements ThreadStore {
   constructor(options: ThreadStoreAdapterOptions) {
     this.store = options.store;
     this.usageSurface = options.usageSurface;
+    this.createContext = options.createContext;
+    this.threadConfig = options.threadConfig;
   }
 
   async prepareThreadDir(name: string): Promise<PreparedThreadDir> {
@@ -97,8 +114,11 @@ export class ThreadStoreAdapter implements ThreadStore {
       threadId: opts.threadId,
       name: opts.name,
       anchorCaptureId: opts.anchorId ?? null,
+      ownerClientId: this.createContext?.ownerClientId() ?? null,
+      ...(this.threadConfig !== undefined ? this.threadConfig : {}),
       ...(native !== undefined ? { preparedDir: native } : {})
     });
+    this.createContext?.onCreated(sidecar);
     return sidecarToRecord(sidecar);
   }
 
@@ -107,7 +127,10 @@ export class ThreadStoreAdapter implements ThreadStore {
       includeArchived: opts.includeArchived ?? false,
       ...(opts.anchorId !== undefined ? { anchorCaptureId: opts.anchorId } : {})
     });
-    return sidecars.map(sidecarToRecord);
+    const ownerClientId = this.createContext?.ownerClientId() ?? null;
+    return sidecars
+      .filter((sidecar) => sidecar.ownerClientId === ownerClientId)
+      .map(sidecarToRecord);
   }
 
   async get(threadId: string): Promise<NormalizedThreadRecord | null> {
@@ -152,6 +175,7 @@ export class ThreadStoreAdapter implements ThreadStore {
     if (this.usageSurface === undefined) return;
     const sidecar = await this.store.get(record.threadId);
     if (sidecar === null) return;
+    const broadcastToHuman = sidecar.ownerClientId === null;
     const usage = record.usage;
     // The kit's NormalizedTokenUsage is flat + optional; PwrSnap's
     // AiUsageTokenBreakdown is flat + required. Build it, carrying
@@ -187,7 +211,9 @@ export class ThreadStoreAdapter implements ThreadStore {
         tokens
       })
     });
-    this.broadcastUsageUpdated(record.threadId, record.turnId);
+    // Usage remains accounted for every owner, but an MCP-owned thread id may
+    // never leak through the renderer-wide live event channel.
+    if (broadcastToHuman) this.broadcastUsageUpdated(record.threadId, record.turnId);
   }
 
   // The kit's NormalizedUsageRecord carries `model` but not provider /

@@ -11,7 +11,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatThreadStore } from "../chat-thread-store";
 import { ThreadStoreAdapter } from "../thread-store-adapter";
 
@@ -78,6 +78,25 @@ describe("ThreadStoreAdapter", () => {
     expect(record).not.toBeNull();
     expect(record?.anchorId).toBeNull();
     expect(record?.anchorHistory).toEqual([]);
+  });
+
+  it("uses create context ownership in the initial row before notifying observers", async () => {
+    const store = new ChatThreadStore({ chatsDir, db });
+    const onCreated = vi.fn();
+    const adapter = new ThreadStoreAdapter({
+      store,
+      createContext: {
+        ownerClientId: () => "client-a",
+        onCreated
+      }
+    });
+
+    await adapter.create({ threadId: "owned", name: "Owned", anchorId: null });
+
+    expect(onCreated).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: "owned", ownerClientId: "client-a" })
+    );
+    expect(await store.get("owned")).toMatchObject({ ownerClientId: "client-a" });
   });
 
   it("appendAnchor sets the current anchor AND pushes a focus-history entry", async () => {

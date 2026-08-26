@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import type {
+  ChatApprovalDecision,
   ChatApprovalRequest,
   ChatMessage,
   LibraryChatStreamDeltaEvent,
@@ -20,6 +21,7 @@ import { dispatch, subscribe } from "../../lib/pwrsnap";
 import { MessageList, type ChatActivityChip } from "../shared/chat/MessageList";
 import { Composer, type ComposerAttachment } from "../shared/chat/Composer";
 import { ChatApprovalModal } from "../shared/chat/ChatApprovalModal";
+import { useChatApprovalSession } from "../shared/chat/useChatApprovalSession";
 import {
   NewChatConfigChips,
   LockedBackendChips,
@@ -41,7 +43,6 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
-  const [approval, setApproval] = useState<ChatApprovalRequest | null>(null);
   const [codexError, setCodexError] = useState<ChatPanelError | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
@@ -68,6 +69,28 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
   pendingChipsRef.current = pendingChips;
   const turnMsgRef = useRef<Map<string, string>>(new Map());
   const streamState = useRef<Map<string, StreamEntry>>(new Map());
+
+  const submitApproval = useCallback(
+    (request: ChatApprovalRequest, decision: ChatApprovalDecision) =>
+      dispatch("codex:sizzleChat:approval", {
+        threadId: request.threadId,
+        turnId: request.turnId,
+        approvalId: request.approvalId,
+        decision
+      }),
+    []
+  );
+  const approvalSession = useChatApprovalSession({
+    activeThreadId,
+    pendingApproval:
+      activeThreadId === null
+        ? null
+        : (threads.find((thread) => thread.threadId === activeThreadId)?.pendingApproval ?? null),
+    requestedChannel: EVENT_CHANNELS.sizzleChatApprovalRequested,
+    resolvedChannel: EVENT_CHANNELS.sizzleChatApprovalResolved,
+    supersededChannel: EVENT_CHANNELS.sizzleChatApprovalSuperseded,
+    submit: submitApproval
+  });
 
   const appendActivity = useCallback((messageId: string, chip: ChatActivityChip): void => {
     setActivityByMsg((prev) => {
@@ -171,6 +194,7 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
     unsubs.push(
       subscribe(EVENT_CHANNELS.sizzleChatThreadUpdated, (payload) => {
         const { thread } = payload as { thread: LibraryChatThreadView };
+        if (thread.anchorCaptureId !== projectId) return;
         setThreads((prev) => {
           if (thread.archived) return prev.filter((t) => t.threadId !== thread.threadId);
           const idx = prev.findIndex((t) => t.threadId === thread.threadId);
@@ -255,14 +279,6 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
     );
 
     unsubs.push(
-      subscribe(EVENT_CHANNELS.sizzleChatApprovalRequested, (payload) => {
-        const req = payload as ChatApprovalRequest;
-        if (req.threadId !== activeThreadRef.current) return;
-        setApproval(req);
-      })
-    );
-
-    unsubs.push(
       subscribe(EVENT_CHANNELS.sizzleChatTurnInterrupted, (payload) => {
         const e = payload as { threadId: string };
         if (e.threadId !== activeThreadRef.current) return;
@@ -275,7 +291,7 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
     return () => {
       for (const u of unsubs) u();
     };
-  }, [appendActivity, flushPendingTo]);
+  }, [appendActivity, flushPendingTo, projectId]);
 
   const subscribeToStream = useCallback(
     (messageId: string, onDelta: (fullText: string) => void): (() => void) => {
@@ -498,18 +514,13 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
         <Composer onSubmit={onSubmit} placeholder="Describe the reel, or ask for an edit…" />
       </div>
 
-      {approval !== null ? (
+      {approvalSession.request !== null ? (
         <ChatApprovalModal
-          request={approval}
-          onResolve={async (decision) => {
-            await dispatch("codex:sizzleChat:approval", {
-              threadId: approval.threadId,
-              turnId: approval.turnId,
-              approvalId: approval.approvalId,
-              decision
-            });
-            setApproval(null);
-          }}
+          request={approvalSession.request}
+          submitting={approvalSession.phase === "submitting"}
+          errorMessage={approvalSession.errorMessage}
+          retryDecision={approvalSession.retryDecision}
+          onResolve={approvalSession.resolve}
         />
       ) : null}
     </div>

@@ -53,6 +53,16 @@
   word-break: break-word;
 }
 
+.ps-approval__error {
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font: 500 var(--fs-meta)/var(--lh-normal) var(--font-sans);
+}
+
 .ps-approval__actions {
   display: flex;
   justify-content: flex-end;
@@ -120,6 +130,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: var(--space-2);
   min-width: 88px;
   min-height: 32px;
   padding: var(--space-2) var(--space-4);

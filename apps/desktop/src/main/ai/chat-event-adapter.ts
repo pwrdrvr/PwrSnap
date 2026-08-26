@@ -1,9 +1,7 @@
 // Adapter: maps the kit `ChatThreadController`'s neutral `ChatControllerEvent`
-// union onto PwrSnap's six existing per-surface IPC channels, building
+// union onto PwrSnap's per-surface IPC channels, building
 // PwrSnap's `LibraryChatThreadView` / `ChatMessage` / status payloads from the
 // kit's neutral `NormalizedThreadView` / `NormalizedMessage` / event payloads.
-// The RENDERER IS UNCHANGED — it still receives exactly the same payloads on
-// the same `events:libraryChat:*` / `events:sizzleChat:*` channels.
 //
 // Event → channel map (per surface):
 //   thread_updated      → threadUpdated      { thread: LibraryChatThreadView }
@@ -12,6 +10,7 @@
 //   message_committed   → messageCommitted   { threadId, message: ChatMessage }
 //   turn_interrupted    → turnInterrupted    LibraryChatTurnInterruptedEvent
 //   approval_requested  → approvalRequested  ChatApprovalRequest
+// Broker terminal events use approvalResolved / approvalSuperseded directly.
 
 import type { ChatBroadcast as KitChatBroadcast, ChatControllerEvent } from "@pwrdrvr/agent-client";
 import type {
@@ -20,13 +19,14 @@ import type {
   NormalizedThreadView
 } from "@pwrdrvr/agent-core";
 import type {
+  ChatApprovalRequest,
   ChatMessage,
   EventPayloads,
   LibraryChatThreadStatus,
   LibraryChatThreadView,
   TypedEventChannel
 } from "@pwrsnap/shared";
-import { EVENT_CHANNELS } from "@pwrsnap/shared";
+import { EVENT_CHANNELS, parseChatApprovalRequest } from "@pwrsnap/shared";
 
 /** Typed broadcast — accepts any typed event channel. Default impl sends to
  *  every live BrowserWindow. */
@@ -35,7 +35,7 @@ export type ChatBroadcast = <C extends TypedEventChannel>(
   payload: EventPayloads[C]
 ) => void;
 
-/** The six `events:*Chat:*` channels a surface broadcasts on. Each surface
+/** The `events:*Chat:*` channels a surface broadcasts on. Each surface
  *  (Library, Sizzle) passes its own set so one event adapter serves either —
  *  the channel constants differ, the payload types are identical. */
 export type ChatChannelSet = {
@@ -57,6 +57,52 @@ export type ChatChannelSet = {
   approvalRequested:
     | typeof EVENT_CHANNELS.libraryChatApprovalRequested
     | typeof EVENT_CHANNELS.sizzleChatApprovalRequested;
+  approvalResolved:
+    | typeof EVENT_CHANNELS.libraryChatApprovalResolved
+    | typeof EVENT_CHANNELS.sizzleChatApprovalResolved;
+  approvalSuperseded:
+    | typeof EVENT_CHANNELS.libraryChatApprovalSuperseded
+    | typeof EVENT_CHANNELS.sizzleChatApprovalSuperseded;
+};
+
+type MessageCommittedEvent = Extract<ChatControllerEvent, { type: "message_committed" }>;
+
+export type ChatEventAdapterOptions = {
+  /** Every controller is built for one immutable backend tuple. Put that
+   *  identity on every producer view instead of making renderers guess/merge. */
+  fixedThreadConfig?: { provider: string | null; model: string | null; reasoning: string | null };
+  /** Main-owned transient state (approval replay) decorates controller views. */
+  decorateThread?: (view: LibraryChatThreadView) => LibraryChatThreadView;
+  /** Observe truthful views even when owner routing suppresses renderer IPC. */
+  observeThread?: (view: LibraryChatThreadView) => void;
+  /** Fail-closed owner/surface router. */
+  shouldSend?: (threadId: string) => boolean;
+  /** Register the exact sanitized request with its originating controller.
+   *  False means duplicate/terminal and suppresses another requested event. */
+  onApprovalRequested?: (request: ChatApprovalRequest) => boolean;
+  /** Fail closed on a malformed/unsafe request without letting that raw
+   *  payload enter the broker or any renderer. The controller-bound callback
+   *  can deny its original backend resolver by exact raw identity. */
+  onInvalidApprovalRequested?: (identity: {
+    threadId: string;
+    turnId: string;
+    approvalId: string;
+  }) => void;
+  /** A valid request belongs to an unattended/non-human thread. Deny it on
+   *  the originating controller before broker registration; local-agent wait
+   *  has no approval UI or identity with which to answer it. */
+  onUnattendedApprovalRequested?: (identity: {
+    threadId: string;
+    turnId: string;
+    approvalId: string;
+  }) => void;
+  /** Runs only after the controller has committed an assistant message to its
+   *  journal. Approval cleanup may make the thread idle, so it must never run
+   *  from the earlier raw backend terminal event. */
+  onAssistantCommitted?: (threadId: string) => void;
+  /** #471 can inject its backend terminal tracker here; the adapter remains
+   *  producer-truthful and never requires a renderer-only status merge. */
+  messageStatusFor?: (event: MessageCommittedEvent) => ChatMessage["status"];
 };
 
 /** Kit status → PwrSnap status (identical discriminated shapes). */
@@ -93,7 +139,8 @@ export function toLibraryThreadView(
     status: toStatus(view.status),
     provider: config?.provider ?? null,
     model: config?.model ?? null,
-    reasoning: config?.reasoning ?? null
+    reasoning: config?.reasoning ?? null,
+    pendingApproval: null
   };
 }
 
@@ -113,12 +160,15 @@ export function toLibraryThreadView(
  *  PwrSnap's own committed messages; the kit commits plain user/assistant
  *  text messages, so the text block is the faithful mapping.
  */
-export function toChatMessage(message: NormalizedMessage): ChatMessage {
+export function toChatMessage(
+  message: NormalizedMessage,
+  status: ChatMessage["status"] = "complete"
+): ChatMessage {
   return {
     id: message.id,
     role: message.role,
     content: [{ kind: "text", text: message.text }],
-    status: "complete",
+    status,
     createdAt:
       message.createdAt !== undefined
         ? new Date(message.createdAt).toISOString()
@@ -133,14 +183,21 @@ export function toChatMessage(message: NormalizedMessage): ChatMessage {
  */
 export function makeChatBroadcast(
   channels: ChatChannelSet,
-  send: ChatBroadcast
+  send: ChatBroadcast,
+  options: ChatEventAdapterOptions = {}
 ): KitChatBroadcast {
   return (event: ChatControllerEvent): void => {
     switch (event.type) {
-      case "thread_updated":
-        send(channels.threadUpdated, { thread: toLibraryThreadView(event.thread) });
+      case "thread_updated": {
+        const base = toLibraryThreadView(event.thread, options.fixedThreadConfig);
+        const thread = options.decorateThread?.(base) ?? base;
+        options.observeThread?.(thread);
+        if (options.shouldSend?.(thread.threadId) === false) return;
+        send(channels.threadUpdated, { thread });
         return;
+      }
       case "stream_delta":
+        if (options.shouldSend?.(event.threadId) === false) return;
         send(channels.streamDelta, {
           threadId: event.threadId,
           turnId: event.turnId,
@@ -149,6 +206,7 @@ export function makeChatBroadcast(
         });
         return;
       case "tool_call":
+        if (options.shouldSend?.(event.threadId) === false) return;
         send(channels.toolCall, {
           threadId: event.threadId,
           turnId: event.turnId,
@@ -158,13 +216,26 @@ export function makeChatBroadcast(
           summary: event.toolCall.label
         });
         return;
-      case "message_committed":
-        send(channels.messageCommitted, {
-          threadId: event.threadId,
-          message: toChatMessage(event.message)
-        });
+      case "message_committed": {
+        try {
+          if (options.shouldSend?.(event.threadId) !== false) {
+            send(channels.messageCommitted, {
+              threadId: event.threadId,
+              message: toChatMessage(
+                event.message,
+                options.messageStatusFor?.(event) ?? "complete"
+              )
+            });
+          }
+        } finally {
+          if (event.message.role === "assistant") {
+            options.onAssistantCommitted?.(event.threadId);
+          }
+        }
         return;
+      }
       case "turn_interrupted":
+        if (options.shouldSend?.(event.threadId) === false) return;
         // The only path that interrupts a turn in PwrSnap is the user verb
         // (`codex:*Chat:interrupt`), so the reason is always user-initiated.
         send(channels.turnInterrupted, {
@@ -173,8 +244,8 @@ export function makeChatBroadcast(
           reason: "user_interrupted"
         });
         return;
-      case "approval_requested":
-        send(channels.approvalRequested, {
+      case "approval_requested": {
+        const request = parseChatApprovalRequest({
           threadId: event.threadId,
           turnId: event.turnId,
           approvalId: event.approval.id,
@@ -183,7 +254,26 @@ export function makeChatBroadcast(
             ? { detail: (event.approval.params as { detail: string }).detail }
             : {})
         });
+        if (request === null) {
+          options.onInvalidApprovalRequested?.({
+            threadId: event.threadId,
+            turnId: event.turnId,
+            approvalId: event.approval.id
+          });
+          return;
+        }
+        if (options.shouldSend?.(request.threadId) === false) {
+          options.onUnattendedApprovalRequested?.({
+            threadId: request.threadId,
+            turnId: request.turnId,
+            approvalId: request.approvalId
+          });
+          return;
+        }
+        if (options.onApprovalRequested?.(request) === false) return;
+        send(channels.approvalRequested, request);
         return;
+      }
       default:
         return;
     }

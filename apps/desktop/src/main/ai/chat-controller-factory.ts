@@ -42,8 +42,79 @@ import type {
 } from "@pwrsnap/shared";
 import { ChatThreadStore } from "./chat-thread-store";
 import { ThreadStoreAdapter } from "./thread-store-adapter";
-import { makeChatBroadcast, type ChatBroadcast, type ChatChannelSet } from "./chat-event-adapter";
+import {
+  makeChatBroadcast,
+  type ChatBroadcast,
+  type ChatChannelSet,
+  type ChatEventAdapterOptions
+} from "./chat-event-adapter";
 import { toAgentKitLogger, PWRSNAP_SERVICE_NAME } from "./agent-kit-bindings";
+import type { ChatApprovalBroker } from "./chat-approval-broker";
+import type { ChatThreadAccess } from "./chat-thread-access";
+
+type InterruptAcknowledgement = (threadId: string) => Promise<void>;
+
+const acknowledgedInterrupts = new WeakMap<object, InterruptAcknowledgement>();
+
+/**
+ * Interrupt a turn through the exact backend owned by the controller and only
+ * return after that backend acknowledges cancellation. The agent-client 0.8.x
+ * controller intentionally swallows interrupt transport errors, which is fine
+ * for a best-effort Stop button but unsafe before denying an approval and
+ * hiding/deleting its thread.
+ */
+export async function interruptChatThreadAcknowledged(
+  controller: ChatThreadController<Settings>,
+  threadId: string
+): Promise<void> {
+  const interrupt = acknowledgedInterrupts.get(controller);
+  if (interrupt !== undefined) {
+    await interrupt(threadId);
+    return;
+  }
+
+  // Explicit seam for handler unit-test controllers. Production controllers
+  // are always registered in the WeakMap below; do not silently fall back to
+  // ChatThreadController.interrupt(), whose swallowed failure is the bug this
+  // boundary exists to prevent.
+  const injected = controller as unknown as {
+    interruptAcknowledged?: (candidateThreadId: string) => Promise<void>;
+  };
+  if (injected.interruptAcknowledged === undefined) {
+    throw new Error("Chat controller does not expose acknowledged interruption.");
+  }
+  await injected.interruptAcknowledged(threadId);
+}
+
+function acknowledgedInterruptBackend(client: AgentBackend): {
+  backend: AgentBackend;
+  acknowledge: InterruptAcknowledgement;
+  clear: (threadId: string) => void;
+} {
+  const acknowledged = new Set<string>();
+  const backend = new Proxy(client, {
+    get(target, property, receiver) {
+      if (property === "interruptTurn") {
+        return async (threadId: string): Promise<void> => {
+          if (acknowledged.delete(threadId)) return;
+          await target.interruptTurn(threadId);
+        };
+      }
+      const value = Reflect.get(target, property, receiver) as unknown;
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  }) as AgentBackend;
+  return {
+    backend,
+    acknowledge: async (threadId) => {
+      await client.interruptTurn(threadId);
+      acknowledged.add(threadId);
+    },
+    clear: (threadId) => {
+      acknowledged.delete(threadId);
+    }
+  };
+}
 
 /** PwrSnap's approval decision union → the kit's neutral decision. PwrSnap
  *  distinguishes "reject-layer" / "reject-run" at the renderer for the layer-
@@ -67,6 +138,13 @@ export type ChatSurfaceConfig = {
   channels: ChatChannelSet;
   /** Typed broadcast to live renderers. */
   send: ChatBroadcast;
+  /** Main-process approval authority. Chat-only; enrichment never supplies or
+   *  imports this broker. */
+  approvalBroker?: ChatApprovalBroker;
+  /** Central owner/surface authorization and fail-closed event router. */
+  threadAccess?: ChatThreadAccess;
+  /** Optional producer-side terminal status seam consumed by Editor #471. */
+  messageStatusFor?: ChatEventAdapterOptions["messageStatusFor"];
   /** Usage-accounting surface. */
   usageSurface: AiUsageThreadSurface;
   /** L1 + L2 system prompt builder. */
@@ -360,9 +438,26 @@ export async function buildChatSurface(
   deps: ChatBackendDeps = {}
 ): Promise<ChatSurface> {
   const store = new ChatThreadStore({ chatsDir: config.chatsDir });
-  const adapter = new ThreadStoreAdapter({ store, usageSurface: config.usageSurface });
+  const adapter = new ThreadStoreAdapter({
+    store,
+    usageSurface: config.usageSurface,
+    threadConfig: {
+      provider: config.provider ?? null,
+      model: config.model ?? null,
+      reasoning: config.effort ?? null
+    },
+    ...(config.threadAccess !== undefined
+      ? {
+          createContext: {
+            ownerClientId: () => config.threadAccess?.ownerClientIdForCreate() ?? null,
+            onCreated: (sidecar) => config.threadAccess?.onThreadCreated(sidecar)
+          }
+        }
+      : {})
+  });
   const resolved = await resolveChatBackend(config, deps);
   const client: AgentBackend = resolved.client;
+  const controllerBackend = acknowledgedInterruptBackend(client);
 
   // The kit controller swallows `thread_settings` into a private map and only
   // forwards `model` on recordUsage. Tee the backend's settings events into
@@ -373,6 +468,9 @@ export async function buildChatSurface(
         modelProvider: event.settings.modelProvider ?? null,
         serviceTier: event.settings.serviceTier ?? null
       });
+    }
+    if (config.approvalBroker !== undefined && event.kind === "turn_started") {
+      config.approvalBroker.openThread(event.threadId);
     }
   });
 
@@ -385,10 +483,66 @@ export async function buildChatSurface(
   const guardedSend: ChatBroadcast = (channel, payload) => {
     if (live) config.send(channel, payload);
   };
-  const broadcast = makeChatBroadcast(config.channels, guardedSend);
+  const approvalOwner = {};
+  let controller: ChatThreadController<Settings>;
+  const denyOriginatingApproval = (identity: {
+    threadId: string;
+    turnId: string;
+    approvalId: string;
+  }): void => {
+    void controller.resolveApproval({
+      threadId: identity.threadId,
+      turnId: identity.turnId,
+      approvalId: identity.approvalId,
+      decision: "denied"
+    }).catch(() => {
+      // Never log backend-controlled IDs or payload text.
+      toAgentKitLogger(config.loggerScope).warn?.(
+        "failed to deny unattended or malformed chat approval request"
+      );
+    });
+  };
+  const broadcast = makeChatBroadcast(config.channels, guardedSend, {
+    fixedThreadConfig: {
+      provider: config.provider ?? null,
+      model: config.model ?? null,
+      reasoning: config.effort ?? null
+    },
+    ...(config.threadAccess !== undefined
+      ? {
+          decorateThread: (view) => config.approvalBroker?.decorateThread(view) ?? view,
+          observeThread: (view) => config.threadAccess?.observeThreadView(view),
+          shouldSend: (threadId) => config.threadAccess?.shouldBroadcastToHuman(threadId) ?? false
+        }
+      : config.approvalBroker !== undefined
+        ? { decorateThread: (view) => config.approvalBroker?.decorateThread(view) ?? view }
+        : {}),
+    ...(config.approvalBroker !== undefined
+      ? {
+          onApprovalRequested: (request) =>
+            config.approvalBroker?.register(request, approvalOwner, async (decision) => {
+              await controller.resolveApproval({
+                threadId: request.threadId,
+                turnId: request.turnId,
+                approvalId: request.approvalId,
+                decision: toKitApprovalDecision(decision)
+              });
+            }) ?? false,
+          onInvalidApprovalRequested: denyOriginatingApproval,
+          onUnattendedApprovalRequested: denyOriginatingApproval,
+          // ChatThreadController emits this only after journalAppend resolves.
+          // Closing from the earlier raw terminal event made MCP wait observe
+          // sticky idle before the final assistant output was readable.
+          onAssistantCommitted: (threadId) => {
+            void config.approvalBroker?.closeThread(threadId);
+          }
+        }
+      : {}),
+    ...(config.messageStatusFor !== undefined ? { messageStatusFor: config.messageStatusFor } : {})
+  });
 
-  const controller = new ChatThreadController<Settings>({
-    client,
+  controller = new ChatThreadController<Settings>({
+    client: controllerBackend.backend,
     store: adapter,
     readSettings: config.readSettings,
     broadcast,
@@ -437,9 +591,34 @@ export async function buildChatSurface(
     ...(config.model !== undefined ? { model: config.model } : {}),
     logger: toAgentKitLogger(config.loggerScope)
   });
+  acknowledgedInterrupts.set(controller, async (threadId) => {
+    // First call the original backend directly so its rejection propagates.
+    // Then let the kit perform its local finalization while its otherwise
+    // duplicate backend call consumes the one-shot acknowledgement above.
+    await controllerBackend.acknowledge(threadId);
+    try {
+      await controller.interrupt(threadId);
+    } finally {
+      controllerBackend.clear(threadId);
+    }
+  });
   controller.wire();
 
   const dispose = async (): Promise<void> => {
+    // Resolve against the ORIGINAL controller while it and its backend request
+    // handler are still live. A replacement controller cannot acknowledge the
+    // old private pending entry.
+    if (config.approvalBroker !== undefined) {
+      try {
+        await config.approvalBroker.closeOwner(approvalOwner);
+      } catch (cause) {
+        // Teardown must still silence the stale controller and close its
+        // backend even if a lifecycle observer misbehaves.
+        toAgentKitLogger(config.loggerScope).warn?.("approval cleanup failed during chat disposal", {
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+      }
+    }
     live = false;
     if (!resolved.shared) {
       // Codex backend views release their surface registration here while the

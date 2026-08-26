@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import type {
+  ChatApprovalDecision,
   ChatApprovalRequest,
   ChatMessage,
   LibraryChatStreamDeltaEvent,
@@ -21,6 +22,7 @@ import { dispatch, subscribe } from "../../../lib/pwrsnap";
 import { MessageList, type ChatActivityChip } from "../../shared/chat/MessageList";
 import { Composer, type ComposerAttachment } from "../../shared/chat/Composer";
 import { ChatApprovalModal } from "../../shared/chat/ChatApprovalModal";
+import { useChatApprovalSession } from "../../shared/chat/useChatApprovalSession";
 import {
   NewChatConfigChips,
   LockedBackendChips,
@@ -42,7 +44,6 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
-  const [approval, setApproval] = useState<ChatApprovalRequest | null>(null);
   const [codexError, setCodexError] = useState<ChatPanelError | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   // New-chat backend draft (editable chips until the first message locks it).
@@ -80,6 +81,28 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
   // chip attach to the right bubble in the transcript.
   const turnMsgRef = useRef<Map<string, string>>(new Map());
   const streamState = useRef<Map<string, StreamEntry>>(new Map());
+
+  const submitApproval = useCallback(
+    (request: ChatApprovalRequest, decision: ChatApprovalDecision) =>
+      dispatch("codex:libraryChat:approval", {
+        threadId: request.threadId,
+        turnId: request.turnId,
+        approvalId: request.approvalId,
+        decision
+      }),
+    []
+  );
+  const approvalSession = useChatApprovalSession({
+    activeThreadId,
+    pendingApproval:
+      activeThreadId === null
+        ? null
+        : (threads.find((thread) => thread.threadId === activeThreadId)?.pendingApproval ?? null),
+    requestedChannel: EVENT_CHANNELS.libraryChatApprovalRequested,
+    resolvedChannel: EVENT_CHANNELS.libraryChatApprovalResolved,
+    supersededChannel: EVENT_CHANNELS.libraryChatApprovalSuperseded,
+    submit: submitApproval
+  });
 
   /** Append a chip to a message's activity (dedup by callId). */
   const appendActivity = useCallback(
@@ -286,14 +309,6 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
           flushPendingTo(e.message.id);
           setActiveTurnId(null);
         }
-      })
-    );
-
-    unsubs.push(
-      subscribe(EVENT_CHANNELS.libraryChatApprovalRequested, (payload) => {
-        const req = payload as ChatApprovalRequest;
-        if (req.threadId !== activeThreadRef.current) return;
-        setApproval(req);
       })
     );
 
@@ -542,18 +557,13 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
         <Composer onSubmit={onSubmit} placeholder="Ask PwrSnap to edit, redact, or find…" />
       </div>
 
-      {approval !== null ? (
+      {approvalSession.request !== null ? (
         <ChatApprovalModal
-          request={approval}
-          onResolve={async (decision) => {
-            await dispatch("codex:libraryChat:approval", {
-              threadId: approval.threadId,
-              turnId: approval.turnId,
-              approvalId: approval.approvalId,
-              decision
-            });
-            setApproval(null);
-          }}
+          request={approvalSession.request}
+          submitting={approvalSession.phase === "submitting"}
+          errorMessage={approvalSession.errorMessage}
+          retryDecision={approvalSession.retryDecision}
+          onResolve={approvalSession.resolve}
         />
       ) : null}
     </div>

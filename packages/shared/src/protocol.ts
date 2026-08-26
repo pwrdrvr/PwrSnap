@@ -2756,7 +2756,7 @@ export const GRID_ZOOM_MAX = GRID_ZOOM_LEVELS[GRID_ZOOM_LEVELS.length - 1];
 // `export * from "./chat-schemas"`. Mirrors how `ArrowEndStyle` is owned
 // by overlay-schemas.ts. See plan §F2 #9.
 import type {
-  ChatApprovalDecision,
+  ChatApprovalResponse,
   ChatMessage,
   LibraryChatThreadView
 } from "./chat-schemas";
@@ -4408,12 +4408,7 @@ export type Commands = {
   /** Resolve a pending approval. Carries (threadId, turnId, approvalId)
    *  so a late resolution can't land in the wrong turn (plan §F10 T3). */
   "codex:libraryChat:approval": {
-    req: {
-      threadId: string;
-      turnId: string;
-      approvalId: string;
-      decision: ChatApprovalDecision;
-    };
+    req: ChatApprovalResponse;
     res: void;
   };
 
@@ -4462,12 +4457,7 @@ export type Commands = {
     res: void;
   };
   "codex:sizzleChat:approval": {
-    req: {
-      threadId: string;
-      turnId: string;
-      approvalId: string;
-      decision: ChatApprovalDecision;
-    };
+    req: ChatApprovalResponse;
     res: void;
   };
 

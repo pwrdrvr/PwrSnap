@@ -11,7 +11,8 @@
 // `NormalizedThreadView → LibraryChatThreadView` (anchorId → anchorCaptureId)
 // on the way out, and `ChatApprovalDecision → NormalizedApprovalDecision`.
 
-import { beforeAll, describe, expect, test, vi } from "vitest";
+import type { ChatThreadSidecar } from "@pwrsnap/shared";
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 
 vi.mock("electron", () => ({
   app: { getPath: () => "/tmp" },
@@ -20,9 +21,12 @@ vi.mock("electron", () => ({
 
 const { bus } = await import("../../command-bus");
 const {
+  cleanupProjectChats,
   forkProjectChats,
   registerSizzleChatHandlers
 } = await import("../sizzle-chat-handlers");
+const { ChatApprovalBroker } = await import("../../ai/chat-approval-broker");
+const { ChatThreadAccess } = await import("../../ai/chat-thread-access");
 
 /** What the kit controller returns: a `NormalizedThreadView` (anchorId). */
 const kitView = {
@@ -51,8 +55,37 @@ const rendererView = {
   status: { kind: "idle" as const },
   provider: null,
   model: null,
-  reasoning: null
+  reasoning: null,
+  pendingApproval: null
 };
+
+const sidecar: ChatThreadSidecar = {
+  schemaVersion: 1 as const,
+  threadId: "th1",
+  name: "Chat",
+  createdAt: "",
+  modifiedAt: "",
+  anchorCaptureId: "sz_1",
+  focusHistory: [],
+  archived: false,
+  pinned: false,
+  provider: null,
+  model: null,
+  reasoning: null,
+  ownerClientId: null
+};
+
+const store = {
+  list: vi.fn(async () => [sidecar]),
+  get: vi.fn(async (threadId: string) => (threadId === "th1" ? sidecar : null)),
+  readJournal: vi.fn(async () => [])
+};
+
+const threadAccess = new ChatThreadAccess({
+  surface: "sizzle",
+  store: () => store as never,
+  loggerScope: "test:sizzle-access"
+});
 
 const controller = {
   listThreads: vi.fn(async () => [kitView]),
@@ -60,30 +93,55 @@ const controller = {
   sendMessage: vi.fn(async () => ({ turnId: "turn1" })),
   getHistory: vi.fn(async () => []),
   rename: vi.fn(async () => kitView),
-  archive: vi.fn(async () => kitView),
+  archive: vi.fn(async (threadId: string, archived: boolean) => ({
+    ...kitView,
+    threadId,
+    archived,
+  })),
   interrupt: vi.fn(async () => undefined),
-  resolveApproval: vi.fn(async () => undefined),
+  interruptAcknowledged: vi.fn(async () => undefined),
+  resolveApproval: vi.fn(async (_input: unknown) => undefined),
   forkThreadsForAnchor: vi.fn(async () => [])
 };
 
+const approvalBroker = new ChatApprovalBroker({
+  surface: "sizzle",
+  loggerScope: "test:sizzle-approval",
+  emitResolved: vi.fn(),
+  emitSuperseded: vi.fn()
+});
+
 beforeAll(() => {
+  bus.installLocalAgentAuthorizer(async (clientId) => ({
+    clientId,
+    capabilities: ["sizzle.compose"]
+  }));
   registerSizzleChatHandlers({
     controller: controller as never,
-    settingsReader: async () => ({}) as never
+    settingsReader: async () => ({}) as never,
+    store: store as never,
+    access: threadAccess,
+    approvalBroker
   });
 });
 
+afterAll(() => {
+  bus.uninstallLocalAgentAuthorizerForTests();
+});
+
 describe("codex:sizzleChat verbs", () => {
-  test("list scoped to a project delegates with the anchor", async () => {
+  test("list scoped to a project is store-authoritative without constructing a controller", async () => {
+    controller.listThreads.mockClear();
     const r = await bus.dispatch(
       "codex:sizzleChat:list",
       { anchorCaptureId: "sz_1" },
       { principal: "ipc" }
     );
-    expect(controller.listThreads).toHaveBeenCalledWith({
+    expect(store.list).toHaveBeenCalledWith({
       includeArchived: false,
-      anchorId: "sz_1"
+      anchorCaptureId: "sz_1"
     });
+    expect(controller.listThreads).not.toHaveBeenCalled();
     expect(r).toEqual({ ok: true, value: { threads: [rendererView] } });
   });
 
@@ -103,6 +161,37 @@ describe("codex:sizzleChat verbs", () => {
     expect(controller.createThread).toHaveBeenCalledWith({ anchorId: "sz_1" });
   });
 
+  test("create binds the exact IPC-null or MCP-client owner during controller creation", async () => {
+    const ownersSeen: Array<string | null> = [];
+    controller.createThread
+      .mockImplementationOnce(async () => {
+        ownersSeen.push(threadAccess.ownerClientIdForCreate());
+        return kitView;
+      })
+      .mockImplementationOnce(async () => {
+        ownersSeen.push(threadAccess.ownerClientIdForCreate());
+        return kitView;
+      });
+
+    const ipcResult = await bus.dispatch(
+      "codex:sizzleChat:create",
+      { anchorCaptureId: "sz_1" },
+      { principal: "ipc" }
+    );
+    const mcpResult = await bus.dispatch(
+      "codex:sizzleChat:create",
+      { anchorCaptureId: "sz_1" },
+      {
+        principal: "mcp",
+        localAgent: { clientId: "client-a", capabilities: [] }
+      }
+    );
+
+    expect(ipcResult.ok).toBe(true);
+    expect(mcpResult.ok).toBe(true);
+    expect(ownersSeen).toEqual([null, "client-a"]);
+  });
+
   test("send forwards threadId + text + anchor and returns the turnId", async () => {
     const r = await bus.dispatch(
       "codex:sizzleChat:send",
@@ -118,6 +207,18 @@ describe("codex:sizzleChat verbs", () => {
   });
 
   test("approval forwards the full (threadId, turnId, approvalId, decision)", async () => {
+    approvalBroker.register(
+      { threadId: "th1", turnId: "turn1", approvalId: "ap1", summary: "Run tool" },
+      {},
+      async (decision) => {
+        await controller.resolveApproval({
+          threadId: "th1",
+          turnId: "turn1",
+          approvalId: "ap1",
+          decision: decision === "approve" ? "approved" : "denied"
+        });
+      }
+    );
     await bus.dispatch(
       "codex:sizzleChat:approval",
       { threadId: "th1", turnId: "turn1", approvalId: "ap1", decision: "approve" },
@@ -132,9 +233,480 @@ describe("codex:sizzleChat verbs", () => {
     });
   });
 
+  test("approval Result failure keeps the exact request pending and retry succeeds", async () => {
+    const request = {
+      threadId: "th1",
+      turnId: "turn-retry",
+      approvalId: "approval-retry",
+      summary: "Run tool",
+      detail: "Existing chat-policy detail"
+    };
+    const resolver = vi.fn()
+      .mockRejectedValueOnce(new Error("transport leaked raw tool args"))
+      .mockResolvedValueOnce(undefined);
+    approvalBroker.register(request, {}, resolver);
+
+    const first = await bus.dispatch(
+      "codex:sizzleChat:approval",
+      {
+        threadId: request.threadId,
+        turnId: request.turnId,
+        approvalId: request.approvalId,
+        decision: "approve"
+      },
+      { principal: "ipc" }
+    );
+
+    expect(first.ok).toBe(false);
+    if (!first.ok) {
+      expect(first.error.code).toBe("approval_response_failed");
+      expect(first.error.message).not.toContain("raw tool args");
+    }
+    expect(approvalBroker.pendingForThread("th1")).toEqual(request);
+
+    const retry = await bus.dispatch(
+      "codex:sizzleChat:approval",
+      {
+        threadId: request.threadId,
+        turnId: request.turnId,
+        approvalId: request.approvalId,
+        decision: "approve"
+      },
+      { principal: "ipc" }
+    );
+
+    expect(retry).toEqual({ ok: true, value: undefined });
+    expect(resolver).toHaveBeenCalledTimes(2);
+    expect(resolver).toHaveBeenNthCalledWith(1, "approve");
+    expect(resolver).toHaveBeenNthCalledWith(2, "approve");
+    expect(approvalBroker.pendingForThread("th1")).toBeNull();
+  });
+
+  test("stale exact approval IDs return a Result error without reaching a controller", async () => {
+    controller.resolveApproval.mockClear();
+
+    const result = await bus.dispatch(
+      "codex:sizzleChat:approval",
+      {
+        threadId: "th1",
+        turnId: "turn-stale",
+        approvalId: "approval-stale",
+        decision: "deny"
+      },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("approval_stale");
+    expect(controller.resolveApproval).not.toHaveBeenCalled();
+  });
+
+  test("archive store failure leaves the visible thread quiesced and approval terminal", async () => {
+    const request = {
+      threadId: "th1",
+      turnId: "turn-archive-failure",
+      approvalId: "approval-archive-failure",
+      summary: "Run tool"
+    };
+    const resolver = vi.fn(async () => undefined);
+    approvalBroker.openThread(request.threadId);
+    approvalBroker.register(request, {}, resolver);
+    controller.interruptAcknowledged.mockClear();
+    controller.archive.mockRejectedValueOnce(new Error("archive store failed"));
+
+    try {
+      const result = await bus.dispatch(
+        "codex:sizzleChat:archive",
+        { threadId: request.threadId, archived: true },
+        { principal: "ipc" }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(controller.interruptAcknowledged).toHaveBeenCalledWith(request.threadId);
+      expect(approvalBroker.pendingForThread(request.threadId)).toBeNull();
+      expect(resolver).toHaveBeenCalledWith("deny");
+    } finally {
+      approvalBroker.openThread(request.threadId);
+    }
+  });
+
+  test("awaiting-approval archive interrupts before denial and permits no hidden tool continuation", async () => {
+    const request = {
+      threadId: "th1",
+      turnId: "turn-archive-quiesce",
+      approvalId: "approval-archive-quiesce",
+      summary: "Run tool"
+    };
+    const order: string[] = [];
+    let interrupted = false;
+    let archived = false;
+    const postArchiveTool = vi.fn();
+    controller.interruptAcknowledged.mockImplementationOnce(async () => {
+      order.push("interrupt");
+      interrupted = true;
+    });
+    controller.archive.mockImplementationOnce(async (_threadId, nextArchived) => {
+      order.push("archive");
+      archived = nextArchived;
+      return { ...kitView, archived: nextArchived };
+    });
+    const resolver = vi.fn(async (decision: string) => {
+      order.push(`resolve:${decision}`);
+      if (!interrupted || archived) postArchiveTool();
+    });
+    approvalBroker.openThread(request.threadId);
+    approvalBroker.register(request, {}, resolver);
+
+    try {
+      const result = await bus.dispatch(
+        "codex:sizzleChat:archive",
+        { threadId: request.threadId, archived: true },
+        { principal: "ipc" }
+      );
+
+      expect(result.ok).toBe(true);
+      expect(order).toEqual(["interrupt", "resolve:deny", "archive"]);
+      expect(postArchiveTool).not.toHaveBeenCalled();
+      expect(approvalBroker.pendingForThread(request.threadId)).toBeNull();
+      if (result.ok) expect(result.value.archived).toBe(true);
+    } finally {
+      approvalBroker.openThread(request.threadId);
+    }
+  });
+
+  test("archive aborts before metadata or denial when quiescing interrupt fails", async () => {
+    const request = {
+      threadId: "th1",
+      turnId: "turn-archive-interrupt-failure",
+      approvalId: "approval-archive-interrupt-failure",
+      summary: "Run tool"
+    };
+    const resolver = vi.fn(async () => undefined);
+    approvalBroker.openThread(request.threadId);
+    approvalBroker.register(request, {}, resolver);
+    controller.archive.mockClear();
+    controller.interruptAcknowledged.mockRejectedValueOnce(
+      new Error("backend cancellation failed")
+    );
+
+    try {
+      const result = await bus.dispatch(
+        "codex:sizzleChat:archive",
+        { threadId: request.threadId, archived: true },
+        { principal: "ipc" }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(controller.archive).not.toHaveBeenCalled();
+      expect(approvalBroker.pendingForThread(request.threadId)).toEqual(request);
+      expect(resolver).not.toHaveBeenCalled();
+    } finally {
+      await approvalBroker.closeThread(request.threadId);
+      approvalBroker.openThread(request.threadId);
+    }
+  });
+
+  test("unarchive failure preserves the broker's closed state", async () => {
+    const threadId = "th1";
+    await approvalBroker.closeThread(threadId);
+    controller.archive.mockRejectedValueOnce(new Error("unarchive store failed"));
+
+    try {
+      const result = await bus.dispatch(
+        "codex:sizzleChat:archive",
+        { threadId, archived: false },
+        { principal: "ipc" }
+      );
+      expect(result.ok).toBe(false);
+
+      const resolver = vi.fn(async () => undefined);
+      expect(
+        approvalBroker.register(
+          {
+            threadId,
+            turnId: "turn-after-unarchive-failure",
+            approvalId: "approval-after-unarchive-failure",
+            summary: "Run tool"
+          },
+          {},
+          resolver
+        )
+      ).toBe(false);
+      await vi.waitFor(() => expect(resolver).toHaveBeenCalledWith("deny"));
+    } finally {
+      approvalBroker.openThread(threadId);
+    }
+  });
+
+  test("interrupt failure preserves a live pending approval", async () => {
+    const request = {
+      threadId: "th1",
+      turnId: "turn-interrupt-failure",
+      approvalId: "approval-interrupt-failure",
+      summary: "Run tool"
+    };
+    const resolver = vi.fn(async () => undefined);
+    approvalBroker.openThread(request.threadId);
+    approvalBroker.register(request, {}, resolver);
+    controller.interruptAcknowledged.mockRejectedValueOnce(new Error("interrupt failed"));
+
+    try {
+      const result = await bus.dispatch(
+        "codex:sizzleChat:interrupt",
+        { threadId: request.threadId },
+        { principal: "ipc" }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(approvalBroker.pendingForThread(request.threadId)).toEqual(request);
+      expect(resolver).not.toHaveBeenCalled();
+    } finally {
+      await approvalBroker.closeThread(request.threadId);
+      approvalBroker.openThread(request.threadId);
+    }
+  });
+
+  test("rejects an unknown approval decision instead of mapping it to deny", async () => {
+    controller.resolveApproval.mockClear();
+
+    const result = await bus.dispatch(
+      "codex:sizzleChat:approval",
+      {
+        threadId: "th1",
+        turnId: "turn-invalid",
+        approvalId: "approval-invalid",
+        decision: "allow"
+      } as never,
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("invalid_approval_response");
+    expect(controller.resolveApproval).not.toHaveBeenCalled();
+  });
+
+  test("every thread verb rejects IPC/MCP owner mismatches before side effects", async () => {
+    const ownerSidecars = new Map<string, typeof sidecar>();
+    store.get.mockImplementation(async (threadId: string) => ownerSidecars.get(threadId) ?? null);
+
+    const cases = [
+      {
+        suffix: "send",
+        command: "codex:sizzleChat:send",
+        request: (threadId: string) => ({ threadId, text: "make a reel", anchorCaptureId: "sz_1" }),
+        sideEffect: () => controller.sendMessage
+      },
+      {
+        suffix: "history",
+        command: "codex:sizzleChat:history",
+        request: (threadId: string) => ({ threadId }),
+        sideEffect: () => store.readJournal
+      },
+      {
+        suffix: "rename",
+        command: "codex:sizzleChat:rename",
+        request: (threadId: string) => ({ threadId, name: "Renamed" }),
+        sideEffect: () => controller.rename
+      },
+      {
+        suffix: "archive",
+        command: "codex:sizzleChat:archive",
+        request: (threadId: string) => ({ threadId, archived: true }),
+        sideEffect: () => controller.archive
+      },
+      {
+        suffix: "interrupt",
+        command: "codex:sizzleChat:interrupt",
+        request: (threadId: string) => ({ threadId }),
+        sideEffect: () => controller.interrupt
+      }
+    ] as const;
+    const scenarios = [
+      {
+        suffix: "ipc-to-mcp",
+        storedOwner: "client-a",
+        dispatch: { principal: "ipc" as const }
+      },
+      {
+        suffix: "mcp-to-ipc",
+        storedOwner: null,
+        dispatch: {
+          principal: "mcp" as const,
+          localAgent: { clientId: "client-a", capabilities: [] }
+        }
+      }
+    ] as const;
+
+    try {
+      for (const scenario of scenarios) {
+        for (const entry of cases) {
+          const threadId = `th-${scenario.suffix}-${entry.suffix}`;
+          ownerSidecars.set(threadId, {
+            ...sidecar,
+            threadId,
+            ownerClientId: scenario.storedOwner
+          });
+          const sideEffect = entry.sideEffect();
+          sideEffect.mockClear();
+
+          const result = await bus.dispatch(
+            entry.command as never,
+            entry.request(threadId) as never,
+            scenario.dispatch
+          );
+
+          expect(result.ok, `${scenario.suffix} ${entry.suffix}`).toBe(false);
+          if (!result.ok) expect(result.error.code).toBe("thread_owner_mismatch");
+          expect(sideEffect, `${scenario.suffix} ${entry.suffix}`).not.toHaveBeenCalled();
+        }
+
+        const threadId = `th-${scenario.suffix}-approval`;
+        const approvalId = `approval-${scenario.suffix}`;
+        ownerSidecars.set(threadId, {
+          ...sidecar,
+          threadId,
+          ownerClientId: scenario.storedOwner
+        });
+        const resolver = vi.fn(async () => undefined);
+        approvalBroker.register(
+          { threadId, turnId: "turn-owner", approvalId, summary: "Run tool" },
+          {},
+          resolver
+        );
+
+        const result = await bus.dispatch(
+          "codex:sizzleChat:approval",
+          { threadId, turnId: "turn-owner", approvalId, decision: "approve" },
+          scenario.dispatch
+        );
+
+        expect(result.ok, `${scenario.suffix} approval`).toBe(false);
+        if (!result.ok) expect(result.error.code).toBe("thread_owner_mismatch");
+        expect(resolver, `${scenario.suffix} approval`).not.toHaveBeenCalled();
+        await approvalBroker.closeThread(threadId);
+      }
+    } finally {
+      store.get.mockImplementation(async (threadId: string) => (threadId === "th1" ? sidecar : null));
+    }
+  });
+
+  test("list filters exact IPC-null and MCP-client ownership", async () => {
+    const human = { ...sidecar, threadId: "th-human", ownerClientId: null };
+    const clientA = { ...sidecar, threadId: "th-client-a", ownerClientId: "client-a" };
+    const clientB = { ...sidecar, threadId: "th-client-b", ownerClientId: "client-b" };
+    store.list.mockResolvedValue([human, clientA, clientB]);
+
+    try {
+      const ipc = await bus.dispatch(
+        "codex:sizzleChat:list",
+        { anchorCaptureId: "sz_1" },
+        { principal: "ipc" }
+      );
+      const mcp = await bus.dispatch(
+        "codex:sizzleChat:list",
+        { anchorCaptureId: "sz_1" },
+        {
+          principal: "mcp",
+          localAgent: { clientId: "client-a", capabilities: [] }
+        }
+      );
+
+      expect(ipc.ok && ipc.value.threads.map((thread) => thread.threadId)).toEqual(["th-human"]);
+      expect(mcp.ok && mcp.value.threads.map((thread) => thread.threadId)).toEqual(["th-client-a"]);
+    } finally {
+      store.list.mockResolvedValue([sidecar]);
+    }
+  });
+
   test("interrupt delegates", async () => {
     await bus.dispatch("codex:sizzleChat:interrupt", { threadId: "th1" }, { principal: "ipc" });
     expect(controller.interrupt).toHaveBeenCalledWith("th1");
+  });
+
+  test("project deletion quiesces a pending approval before denial and journal deletion", async () => {
+    const order: string[] = [];
+    let interrupted = false;
+    let deleted = false;
+    const hiddenTool = vi.fn();
+    const resolver = vi.fn(async (decision: string) => {
+      order.push(`resolve:${decision}`);
+      if (!interrupted || deleted) hiddenTool();
+    });
+    approvalBroker.openThread("th1");
+    approvalBroker.register(
+      {
+        threadId: "th1",
+        turnId: "turn-project-delete",
+        approvalId: "approval-project-delete",
+        summary: "Run tool"
+      },
+      {},
+      resolver
+    );
+    controller.interruptAcknowledged.mockImplementationOnce(async () => {
+      order.push("interrupt");
+      interrupted = true;
+    });
+    const deleteThread = vi.fn(async () => {
+      order.push("delete");
+      deleted = true;
+    });
+
+    try {
+      await cleanupProjectChats("sz_1", {
+        store: {
+          list: vi.fn(async () => [sidecar]),
+          delete: deleteThread
+        } as never,
+        approvalBroker,
+        controllerFor: async () => controller as never,
+        access: threadAccess
+      });
+
+      expect(order).toEqual(["interrupt", "resolve:deny", "delete"]);
+      expect(hiddenTool).not.toHaveBeenCalled();
+      expect(deleteThread).toHaveBeenCalledWith("th1");
+      expect(approvalBroker.pendingForThread("th1")).toBeNull();
+    } finally {
+      approvalBroker.openThread("th1");
+    }
+  });
+
+  test("project deletion preserves the pending thread when cancellation is not acknowledged", async () => {
+    const request = {
+      threadId: "th1",
+      turnId: "turn-project-delete-failure",
+      approvalId: "approval-project-delete-failure",
+      summary: "Run tool"
+    };
+    const resolver = vi.fn(async () => undefined);
+    const deleteThread = vi.fn(async () => undefined);
+    approvalBroker.openThread(request.threadId);
+    approvalBroker.register(request, {}, resolver);
+    controller.interruptAcknowledged.mockRejectedValueOnce(
+      new Error("backend cancellation failed")
+    );
+
+    try {
+      await expect(
+        cleanupProjectChats("sz_1", {
+          store: {
+            list: vi.fn(async () => [sidecar]),
+            delete: deleteThread
+          } as never,
+          approvalBroker,
+          controllerFor: async () => controller as never,
+          access: threadAccess
+        })
+      ).rejects.toThrow("backend cancellation failed");
+
+      expect(deleteThread).not.toHaveBeenCalled();
+      expect(resolver).not.toHaveBeenCalled();
+      expect(approvalBroker.pendingForThread(request.threadId)).toEqual(request);
+    } finally {
+      await approvalBroker.closeThread(request.threadId);
+      approvalBroker.openThread(request.threadId);
+    }
   });
 
   test("forkProjectChats delegates to the shared Sizzle controller", async () => {

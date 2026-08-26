@@ -57,6 +57,24 @@ const securityMocks = vi.hoisted(() => {
   return { UnsafePastedFileError };
 });
 
+const captureStorageMocks = vi.hoisted(() => {
+  class CapturesLocationFallbackError extends Error {
+    readonly pwrSnapError: {
+      kind: "capture";
+      code: string;
+      message: string;
+    };
+
+    constructor(error: { kind: "capture"; code: string; message: string }) {
+      super(error.message);
+      this.name = "CapturesLocationFallbackError";
+      this.pwrSnapError = error;
+    }
+  }
+
+  return { CapturesLocationFallbackError };
+});
+
 vi.mock("electron", () => ({
   clipboard: {
     readImage: () => ({
@@ -129,16 +147,9 @@ vi.mock("../../capture/screencapture", () => ({
 }));
 
 vi.mock("../../capture/capture-storage-gate", () => {
-  class CapturesLocationFallbackError extends Error {
-    readonly pwrSnapError = {
-      kind: "capture" as const,
-      code: "captures_location_unavailable",
-      message: "Capture storage unavailable"
-    };
-  }
-
   return {
-    CapturesLocationFallbackError,
+    CapturesLocationFallbackError:
+      captureStorageMocks.CapturesLocationFallbackError,
     ensureCapturesDirReady: async () => null,
     runWithCapturesDirFallback: async (
       operation: (outputDir: string) => Promise<unknown>
@@ -433,6 +444,37 @@ describe("capture:pasteFromClipboard", () => {
       code: "persist_failed"
     });
     expect(JSON.stringify(mocks.logError.mock.calls)).not.toContain(privatePath);
+  });
+
+  test("preserves the actionable path-free captures fallback failure", async () => {
+    mocks.readBookmark.mockReturnValue({
+      title: "clipboard.png",
+      url: pathToFileURL(join(tmpdir(), "clipboard.png")).href
+    });
+    const fallbackError = {
+      kind: "capture" as const,
+      code: "captures_fallback_failed",
+      message:
+        "PwrSnap couldn't remember its fallback captures folder, so it did not risk splitting your library across two locations."
+    };
+    mocks.persistCaptureFromTempV2.mockRejectedValue(
+      new captureStorageMocks.CapturesLocationFallbackError(fallbackError)
+    );
+
+    const result = await bus.dispatch(
+      "capture:pasteFromClipboard",
+      {},
+      { principal: "ipc" }
+    );
+
+    expect(result).toEqual({ ok: false, error: fallbackError });
+    expect(mocks.logError).toHaveBeenCalledWith("capture persist failed", {
+      code: "captures_fallback_failed"
+    });
+    expect(mocks.logError).not.toHaveBeenCalledWith(
+      "clipboard paste failed",
+      expect.anything()
+    );
   });
 
   test("sanitizes a decoder/temp failure thrown before persistence", async () => {

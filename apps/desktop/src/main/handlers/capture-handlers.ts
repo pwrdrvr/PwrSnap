@@ -593,6 +593,11 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
         devicePixelRatio: clipboardPng.devicePixelRatio
       });
       if (!persisted.ok) {
+        if (persisted.error.code === "captures_fallback_failed") {
+          // This domain error is deliberately path-free and tells the user
+          // why PwrSnap refused to split their library across two roots.
+          return persisted;
+        }
         // persistAndBroadcast's general capture Result can retain the raw fs
         // cause for internal callers. The clipboard boundary must not forward
         // it because it can name the private source or temporary path.

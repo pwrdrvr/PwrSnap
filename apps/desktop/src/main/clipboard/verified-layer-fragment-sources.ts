@@ -1,11 +1,14 @@
 import { createHash } from "node:crypto";
 import {
   CLIPBOARD_FRAGMENT_MAX_BYTES,
+  CLIPBOARD_FRAGMENT_MAX_DECODED_BYTES,
+  CLIPBOARD_FRAGMENT_MAX_PIXELS,
   type BundleLayerNode,
   type ClipboardLayerFragmentV1
 } from "@pwrsnap/shared";
 import {
   canonicalizeSafeRasterToPng,
+  inspectSafeRaster,
   SafeRasterError,
   type SafeRasterErrorCode
 } from "../image/safe-raster-decode";
@@ -20,6 +23,7 @@ type SanitizedFragmentSourcesResult =
       ok: false;
       code:
         | "source_decode_failed"
+        | "source_decode_budget_exceeded"
         | "source_hash_mismatch"
         | "source_output_too_large"
         | "source_raster_rejected"
@@ -44,6 +48,8 @@ export async function sanitizeLayerFragmentSources(
 ): Promise<SanitizedFragmentSourcesResult> {
   const verified = new Map<string, VerifiedFragmentSource>();
   let canonicalOutputBytes = 0;
+  let decodedPixels = 0;
+  let decodedBytes = 0;
 
   for (const ref of sourceRefs) {
     let bytes: Buffer;
@@ -64,7 +70,30 @@ export async function sanitizeLayerFragmentSources(
       };
     }
 
+    // Duplicate source refs are legal on the wire, but their content hash
+    // identifies the same bytes. Verify every declaration above, then reuse
+    // the first canonical result so duplicates cannot multiply decode work.
+    if (verified.has(ref.sha256)) continue;
+
     try {
+      const metadata = await inspectSafeRaster(bytes);
+      const sourcePixels = metadata.widthPx * metadata.heightPx;
+      if (
+        decodedPixels > CLIPBOARD_FRAGMENT_MAX_PIXELS - sourcePixels ||
+        decodedBytes >
+          CLIPBOARD_FRAGMENT_MAX_DECODED_BYTES - metadata.decodedBytes
+      ) {
+        return {
+          ok: false,
+          code: "source_decode_budget_exceeded",
+          message: "clipboard source images exceed the fragment decode cap"
+        };
+      }
+      // Reserve the work before canonicalization. A later decode failure does
+      // not matter because the complete fragment is rejected without staging.
+      decodedPixels += sourcePixels;
+      decodedBytes += metadata.decodedBytes;
+
       const { pngBytes } = await canonicalizeSafeRasterToPng(bytes);
       canonicalOutputBytes += pngBytes.byteLength;
       if (canonicalOutputBytes > CLIPBOARD_FRAGMENT_MAX_BYTES) {

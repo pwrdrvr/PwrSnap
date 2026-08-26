@@ -68,6 +68,15 @@ export const PASTE_IMAGE_MAX_PNG_BYTES = 64 * 1024 * 1024;
 export const PASTE_IMAGE_MAX_PAGES = 1;
 
 /**
+ * Aggregate private-fragment decode budgets. A fragment may reference many
+ * individually valid images, so cap the total work to one maximum-size paste
+ * before any source is canonicalized.
+ */
+export const CLIPBOARD_FRAGMENT_MAX_PIXELS = PASTE_IMAGE_MAX_PIXELS;
+export const CLIPBOARD_FRAGMENT_MAX_DECODED_BYTES =
+  PASTE_IMAGE_MAX_DECODED_BYTES;
+
+/**
  * Hard upper bound on layer count per paste. Mirrors the bundle
  * document's 4096 cap (BundleDocumentV2.layers). A malicious payload
  * with 100k+ adversarial parent_id chains would otherwise stall the

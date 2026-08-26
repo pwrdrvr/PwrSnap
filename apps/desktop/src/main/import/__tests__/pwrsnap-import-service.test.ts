@@ -488,6 +488,9 @@ describe("importPwrsnapBundle", () => {
       bundle_edits_version: 9,
       width_px: 80,
       height_px: 50,
+      // v2 does not serialize display identity/density. Match #512's
+      // truthful unknown/imported fallback instead of inventing Retina detail.
+      device_pixel_ratio: 1,
       sha256: fixture.baseSha
     });
     expect(outcome.record.bundle_path).not.toBe(sourcePath);

@@ -41,8 +41,6 @@ const mocks = vi.hoisted(() => ({
   listEnrichmentsByCaptureIds: vi.fn<
     (ids: readonly string[]) => Map<string, CaptureEnrichment | null>
   >(),
-  addUserTag: vi.fn(),
-  removeTag: vi.fn(),
   scheduleRepack: vi.fn(),
   send: vi.fn()
 }));
@@ -184,32 +182,8 @@ beforeEach(() => {
   mocks.discoverCaptureSearchFacets.mockReset();
   mocks.searchCaptures.mockReset();
   mocks.listEnrichmentsByCaptureIds.mockReset();
-  mocks.addUserTag.mockReset();
-  mocks.removeTag.mockReset();
   mocks.scheduleRepack.mockReset();
   mocks.send.mockReset();
-});
-
-describe("portable metadata convergence", () => {
-  test("tag add and remove schedule the capture bundle repack", async () => {
-    const enrichment = { captureId: "cap-metadata" } as CaptureEnrichment;
-    mocks.addUserTag.mockReturnValue(enrichment);
-    mocks.removeTag.mockReturnValue(enrichment);
-    const { registerLibraryHandlers } = await import("../library-handlers");
-    registerLibraryHandlers();
-
-    await mocks.handlers.get("library:addTag")!({
-      captureId: "cap-metadata",
-      label: "Portable"
-    });
-    await mocks.handlers.get("library:removeTag")!({
-      captureId: "cap-metadata",
-      label: "Portable"
-    });
-
-    expect(mocks.scheduleRepack).toHaveBeenNthCalledWith(1, "cap-metadata");
-    expect(mocks.scheduleRepack).toHaveBeenNthCalledWith(2, "cap-metadata");
-  });
 });
 
 describe("library:listByIds — handler contract", () => {
@@ -570,6 +544,8 @@ describe("library tag mutation handlers", () => {
 
     expect(mocks.addUserTag).toHaveBeenCalledOnce();
     expect(mocks.addUserTag).toHaveBeenCalledWith("cap-1", "Triage");
+    expect(mocks.scheduleRepack).toHaveBeenCalledOnce();
+    expect(mocks.scheduleRepack).toHaveBeenCalledWith("cap-1");
     expect(result).toEqual({ ok: true, value: enrichment });
     expect(mocks.send).toHaveBeenCalledWith(EVENT_CHANNELS.aiRunUpdated, {
       run: null,
@@ -597,6 +573,7 @@ describe("library tag mutation handlers", () => {
         message: "capture not found or deleted: cap-1"
       }
     });
+    expect(mocks.scheduleRepack).not.toHaveBeenCalled();
     expect(mocks.send).not.toHaveBeenCalled();
   });
 
@@ -613,6 +590,8 @@ describe("library tag mutation handlers", () => {
 
     expect(mocks.removeTag).toHaveBeenCalledOnce();
     expect(mocks.removeTag).toHaveBeenCalledWith("cap-1", "Triage");
+    expect(mocks.scheduleRepack).toHaveBeenCalledOnce();
+    expect(mocks.scheduleRepack).toHaveBeenCalledWith("cap-1");
     expect(result).toEqual({ ok: true, value: enrichment });
     expect(mocks.send).toHaveBeenCalledWith(EVENT_CHANNELS.aiRunUpdated, {
       run: null,
@@ -640,6 +619,7 @@ describe("library tag mutation handlers", () => {
         message: "capture not found: cap-1"
       }
     });
+    expect(mocks.scheduleRepack).not.toHaveBeenCalled();
     expect(mocks.send).not.toHaveBeenCalled();
   });
 });

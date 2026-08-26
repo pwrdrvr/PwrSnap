@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 import * as fs from "node:fs/promises";
 import { readFileSync, readdirSync } from "node:fs";
-import type { BigIntStats } from "node:fs";
+import type { BigIntStats, Dirent } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -178,6 +178,10 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  const { __setPwrsnapImportSweepForTest } = await import(
+    "../pwrsnap-import-service"
+  );
+  __setPwrsnapImportSweepForTest(null);
   mocks.db?.close();
   mocks.db = null;
   await fs.rm(workDir, { recursive: true, force: true });
@@ -857,6 +861,64 @@ describe("importPwrsnapBundle", () => {
     expect((await fs.readdir(mocks.capturesRoot)).filter((name) => name.endsWith(".pwrsnap"))).toEqual([
       "crash-recover.pwrsnap"
     ]);
+  });
+
+  test("bounds a parked destination sweep so queued file-open imports continue", async () => {
+    await fs.mkdir(join(mocks.dataRoot, "import-staging"), { recursive: true });
+    await fs.mkdir(mocks.capturesRoot, { recursive: true });
+    const fixture = await makeBundle({
+      captureId: "boundedboot0001",
+      filename: "bounded-boot.png",
+      color: "#225588ff",
+      description: "Bounded boot sweep"
+    });
+    const sourcePath = await writeExternal("bounded-boot.pwrsnap", fixture.bytes);
+    let sweepStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      sweepStarted = resolve;
+    });
+    let releaseSweep!: () => void;
+    const parked = new Promise<Dirent[]>((resolve) => {
+      releaseSweep = () => resolve([]);
+    });
+    const {
+      __setPwrsnapImportSweepForTest,
+      importPwrsnapBundle,
+      reconcileAndSweepPwrsnapImportsOnBoot
+    } = await import("../pwrsnap-import-service");
+    __setPwrsnapImportSweepForTest({
+      waitMs: 10,
+      readdir: async (directory) => {
+        if (directory === mocks.capturesRoot) {
+          sweepStarted();
+          return parked;
+        }
+        return fs.readdir(directory, { withFileTypes: true });
+      }
+    });
+
+    const boot = reconcileAndSweepPwrsnapImportsOnBoot();
+    await started;
+    let timeout: NodeJS.Timeout | undefined;
+    try {
+      const imported = await Promise.race([
+        importPwrsnapBundle(sourcePath),
+        new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(
+            () => reject(new Error("queued import remained blocked behind destination sweep")),
+            1_000
+          );
+        })
+      ]);
+      expect(imported).toMatchObject({
+        status: "imported",
+        record: { id: "boundedboot0001" }
+      });
+    } finally {
+      if (timeout !== undefined) clearTimeout(timeout);
+      releaseSweep();
+    }
+    await expect(boot).resolves.toEqual([]);
   });
 
   test("retains the durable intent when rollback cleanup fails, then recovers", async () => {

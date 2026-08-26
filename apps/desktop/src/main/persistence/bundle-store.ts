@@ -809,8 +809,17 @@ export function scheduleRepack(captureId: string): void {
       return;
     }
     if (record === null) return;
-    // v2 is the only bundle format — every live capture re-packs via
-    // the tree-walking compositor.
+    // Only image captures own v2 layer-tree bundles. Metadata handlers also
+    // accept video captures, whose vestigial bundle_format_version=1 must
+    // never route into this repacker.
+    if (
+      record.kind !== "image" ||
+      record.bundle_format_version !== 2 ||
+      record.bundle_path === null ||
+      record.deleted_at !== null
+    ) {
+      return;
+    }
     void runRepackV2(captureId).catch((err: unknown) => {
       log.error("bundle-store: repack failed", {
         captureId,
@@ -1247,16 +1256,17 @@ async function runRepackV2(captureId: string): Promise<void> {
     const sources = new Map(portable.sources);
     for (const node of layers) {
       if (node.kind === "raster" && !sources.has(node.source_ref.sha256)) {
-        try {
-          const bytes = await readSourceForCapture(captureId, record.bundle_path, node.source_ref.sha256);
-          sources.set(node.source_ref.sha256, bytes);
-        } catch (cause) {
-          log.warn("bundle-store: v2 repack failed to read source", {
-            captureId,
-            sha: node.source_ref.sha256.slice(0, 8),
-            message: cause instanceof Error ? cause.message : String(cause)
-          });
-        }
+        // Every raster retained in the document must have bytes in the same
+        // archive. Older repackers omitted rejected history while SQLite kept
+        // its rows, so recovery can legitimately fail here. Propagate that
+        // failure before atomicWriteBundle rather than replacing a healthy
+        // bundle with one the strict reader will reject as source_missing.
+        const bytes = await readSourceForCapture(
+          captureId,
+          record.bundle_path,
+          node.source_ref.sha256
+        );
+        sources.set(node.source_ref.sha256, bytes);
       }
     }
 

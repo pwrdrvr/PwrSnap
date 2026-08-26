@@ -46,7 +46,24 @@ import type { ValidatedPwrsnapBundle } from "./pwrsnap-import-reader";
 
 const log = getMainLogger("pwrsnap:bundle-import");
 const MAX_ID_PROBES = 10_000;
+const IMPORT_DESTINATION_SWEEP_WAIT_MS = 1_500;
 let importQueue: Promise<void> = Promise.resolve();
+
+type ImportSweepReaddir = (directory: string) => Promise<Dirent[]>;
+const defaultImportSweepReaddir: ImportSweepReaddir = async (directory) =>
+  readdir(directory, { withFileTypes: true });
+let importSweepReaddir = defaultImportSweepReaddir;
+let importDestinationSweepWaitMs = IMPORT_DESTINATION_SWEEP_WAIT_MS;
+
+/** Test seam for a parked TCC directory read and its single boot deadline. */
+export function __setPwrsnapImportSweepForTest(options: {
+  readdir?: ImportSweepReaddir;
+  waitMs?: number;
+} | null): void {
+  importSweepReaddir = options?.readdir ?? defaultImportSweepReaddir;
+  importDestinationSweepWaitMs =
+    options?.waitMs ?? IMPORT_DESTINATION_SWEEP_WAIT_MS;
+}
 
 export type PwrsnapImportOutcome =
   | {
@@ -396,20 +413,47 @@ async function sweepOrphanedImportTempsExclusive(): Promise<void> {
   const roots = new Set(getDurableCapturesRoots().map((root) => root.path));
   for (const intent of remainingIntents) roots.add(dirname(intent.bundlePath));
   // Probe one TCC-gated root at a time so a pending Documents prompt consumes
-  // at most one libuv worker and cannot starve unrelated main-process I/O.
-  for (const root of roots) {
-    await sweepImportTempDirectory(root, DESTINATION_TEMP_NAME, new Set());
+  // at most one libuv worker. Charge one bounded wait across every root so
+  // boot recovery cannot hold importQueue (and queued OS file opens) behind a
+  // pending Documents consent prompt. The parked read may settle later, but
+  // shouldContinue prevents it from deleting after the queue is released.
+  const sweepState = { active: true, complete: false };
+  const destinationSweep = (async (): Promise<void> => {
+    for (const root of roots) {
+      await sweepImportTempDirectory(
+        root,
+        DESTINATION_TEMP_NAME,
+        new Set(),
+        () => sweepState.active
+      );
+      if (!sweepState.active) return;
+    }
+  })();
+  void destinationSweep.then(
+    () => {
+      sweepState.complete = true;
+    },
+    () => {
+      sweepState.complete = true;
+    }
+  );
+  await settleWithin(destinationSweep, importDestinationSweepWaitMs);
+  sweepState.active = false;
+  if (!sweepState.complete) {
+    log.warn("bundle-import sweep: destination cleanup deferred after bounded wait");
   }
 }
 
 async function sweepImportTempDirectory(
   directory: string,
   namePattern: RegExp,
-  protectedPaths: ReadonlySet<string>
+  protectedPaths: ReadonlySet<string>,
+  shouldContinue: () => boolean = () => true
 ): Promise<void> {
+  if (!shouldContinue()) return;
   let entries: Dirent[];
   try {
-    entries = await readdir(directory, { withFileTypes: true });
+    entries = await importSweepReaddir(directory);
   } catch (cause) {
     if (isErrno(cause, "ENOENT")) return;
     log.warn("bundle-import sweep: directory could not be inspected", {
@@ -417,12 +461,15 @@ async function sweepImportTempDirectory(
     });
     return;
   }
+  if (!shouldContinue()) return;
   for (const entry of entries) {
+    if (!shouldContinue()) return;
     if (!entry.isFile() || !namePattern.test(entry.name)) continue;
     const path = join(directory, entry.name);
     if (protectedPaths.has(path)) continue;
     try {
       const stat = await lstat(path, { bigint: true });
+      if (!shouldContinue()) return;
       if (!stat.isFile() || stat.isSymbolicLink()) continue;
       await removeImportArtifact({
         path,
@@ -434,6 +481,19 @@ async function sweepImportTempDirectory(
       });
     }
   }
+}
+
+/** Resolve when a cleanup settles or its single boot budget expires. */
+function settleWithin(promise: Promise<unknown>, waitMs: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, waitMs);
+    timer.unref?.();
+    const done = (): void => {
+      clearTimeout(timer);
+      resolve();
+    };
+    promise.then(done, done);
+  });
 }
 
 function serializeImportOperation<T>(operation: () => Promise<T>): Promise<T> {

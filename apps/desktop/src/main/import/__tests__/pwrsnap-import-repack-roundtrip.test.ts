@@ -252,4 +252,150 @@ describe("imported v2 ordinary repack", () => {
     expect(repacked.layerBytes.get(historyId)).toEqual(layerPayload);
     expect(repacked.sources.get(sha)).toEqual(source);
   }, 15_000);
+
+  test("does not overwrite a bundle when rejected raster history has no recoverable source", async () => {
+    const captureId = "repackmissing001";
+    const createdAt = "2026-08-23T15:00:00.000Z";
+    const source = await sharp({
+      create: { width: 40, height: 30, channels: 4, background: "#446688ff" }
+    })
+      .png()
+      .toBuffer();
+    const sourceSha = createHash("sha256").update(source).digest("hex");
+    const missingSha = createHash("sha256").update("missing history").digest("hex");
+    const rootId = "abortroot0000001";
+    const sourceId = "abortsource00001";
+    const historyId = "aborthistory0001";
+    const allLayers: BundleDocumentV2["layers"] = [
+      {
+        id: rootId,
+        parent_id: null,
+        kind: "group",
+        collapsed: false,
+        name: "Root",
+        visible: true,
+        locked: false,
+        opacity: 1,
+        blend_mode: "normal",
+        transform: [1, 0, 0, 1, 0, 0],
+        z_index: 0,
+        source: "user",
+        ai_run_id: null,
+        applied_at: createdAt,
+        rejected_at: null,
+        superseded_by: null,
+        created_at: createdAt
+      },
+      {
+        id: sourceId,
+        parent_id: rootId,
+        kind: "raster",
+        source_ref: { kind: "embedded", sha256: sourceSha },
+        natural_width_px: 40,
+        natural_height_px: 30,
+        name: "Source",
+        visible: true,
+        locked: false,
+        opacity: 1,
+        blend_mode: "normal",
+        transform: [1, 0, 0, 1, 0, 0],
+        z_index: 0,
+        source: "user",
+        ai_run_id: null,
+        applied_at: createdAt,
+        rejected_at: null,
+        superseded_by: null,
+        created_at: createdAt
+      },
+      {
+        id: historyId,
+        parent_id: rootId,
+        kind: "raster",
+        source_ref: { kind: "embedded", sha256: missingSha },
+        natural_width_px: 10,
+        natural_height_px: 10,
+        name: "Rejected raster history",
+        visible: true,
+        locked: false,
+        opacity: 1,
+        blend_mode: "normal",
+        transform: [1, 0, 0, 1, 0, 0],
+        z_index: 1_000,
+        source: "user",
+        ai_run_id: null,
+        applied_at: createdAt,
+        rejected_at: "2026-08-23T15:01:00.000Z",
+        superseded_by: null,
+        created_at: createdAt
+      }
+    ];
+    const oldDocument: BundleDocumentV2 = {
+      document_format_version: 1,
+      edits_version: 4,
+      layers: allLayers.slice(0, 2),
+      tags: [],
+      description: null,
+      ai_runs: []
+    };
+    const manifest: BundleManifestV2 = {
+      bundle_format_version: 2,
+      capture_id: captureId,
+      canvas_dimensions: { width_px: 40, height_px: 30 },
+      paired_png_filename: "missing-history.png",
+      created_at: createdAt,
+      bundle_modified_at: createdAt
+    };
+    const bundlePath = join(workDir, "missing-history.pwrsnap");
+    mocks.compositePath = join(workDir, "missing-history-composite.png");
+    await fs.writeFile(mocks.compositePath, source);
+    const { packBundleV2, repackCaptureNow } = await import(
+      "../../persistence/bundle-store"
+    );
+    const originalBytes = await packBundleV2({
+      manifest,
+      document: oldDocument,
+      sources: new Map([[sourceSha, source]]),
+      layerBytes: new Map()
+    });
+    await fs.writeFile(bundlePath, originalBytes);
+
+    const { insertCapture, getCaptureById } = await import(
+      "../../persistence/captures-repo"
+    );
+    const { insertImportedLayerTreeForCapture } = await import(
+      "../../persistence/layers-repo"
+    );
+    insertCapture({
+      id: captureId,
+      kind: "image",
+      captured_at: createdAt,
+      source_app_bundle_id: null,
+      source_app_name: null,
+      legacy_src_path: null,
+      bundle_path: bundlePath,
+      flat_png_path: null,
+      bundle_modified_at: createdAt,
+      bundle_format_version: 2,
+      bundle_edits_version: 4,
+      width_px: 40,
+      height_px: 30,
+      device_pixel_ratio: 1,
+      byte_size: source.length,
+      sha256: sourceSha,
+      has_alpha: true
+    });
+    insertImportedLayerTreeForCapture(captureId, allLayers);
+    mocks.db!
+      .prepare("UPDATE captures SET edits_version = 5 WHERE id = ?")
+      .run(captureId);
+
+    await expect(repackCaptureNow(captureId)).rejects.toThrow();
+    await expect(fs.readFile(bundlePath)).resolves.toEqual(originalBytes);
+    expect(getCaptureById(captureId)?.bundle_edits_version).toBe(4);
+
+    const { validatePwrsnapBundleBytes } = await import("../pwrsnap-import-reader");
+    await expect(validatePwrsnapBundleBytes(await fs.readFile(bundlePath))).resolves.toMatchObject({
+      document: { layers: expect.arrayContaining([expect.objectContaining({ id: sourceId })]) }
+    });
+  });
 });

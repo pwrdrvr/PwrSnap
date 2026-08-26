@@ -86,6 +86,7 @@ import {
   storeCompletedEnrichment
 } from "../persistence/enrichment-repo";
 import { renameBundleToEffectiveFilename } from "../persistence/bundle-filename-maintenance";
+import { scheduleRepack } from "../persistence/bundle-store";
 import { renameVideoSourceToEffectiveFilename } from "../persistence/video-filename-maintenance";
 import { getCodexCliCompatibilityAlert } from "../settings/codex-compatibility-alert";
 
@@ -697,6 +698,7 @@ export function registerCodexHandlers(params?: {
     }
     try {
       const enrichment = acceptDescription(parsed.data.captureId, parsed.data.description);
+      scheduleRepack(parsed.data.captureId);
       broadcastAiRunUpdated({ run: null, enrichment });
       return ok(enrichment);
     } catch (error) {
@@ -729,6 +731,9 @@ export function registerCodexHandlers(params?: {
       // than being explicitly enumerated — keeps the repo signature
       // clean.
       const enrichment = acceptAllDrafts(parsed.data);
+      if ((parsed.data.description ?? "").trim().length > 0) {
+        scheduleRepack(parsed.data.captureId);
+      }
       if (parsed.data.filenameStem !== undefined) {
         await tryRenameCaptureAssetToEffectiveFilename(parsed.data.captureId);
       }
@@ -746,6 +751,7 @@ export function registerCodexHandlers(params?: {
     }
     try {
       const enrichment = acceptSuggestedTag(parsed.data.captureId, parsed.data.tagId);
+      scheduleRepack(parsed.data.captureId);
       broadcastAiRunUpdated({ run: null, enrichment });
       return ok(enrichment);
     } catch (error) {
@@ -1144,6 +1150,7 @@ async function runCaptureEnrichment(params: {
       result: response.result,
       autoAccept
     });
+    if (autoAccept) scheduleRepack(captureId);
     const tokens = response.tokens;
     saveAiRunUsage({
       aiRunId: params.runId,

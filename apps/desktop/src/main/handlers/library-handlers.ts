@@ -41,7 +41,8 @@ import {
 import {
   moveBundlePairToTrash,
   purgeBundlePairFromTrash,
-  restoreBundlePairFromTrash
+  restoreBundlePairFromTrash,
+  scheduleRepack
 } from "../persistence/bundle-store";
 import {
   moveSourceToTrash,
@@ -425,6 +426,7 @@ export function registerLibraryDataHandlers(): void {
     }
     try {
       const enrichment = addUserTag(parsed.data.captureId, parsed.data.label);
+      scheduleRepack(parsed.data.captureId);
       // Reuse the AI-run broadcast channel — every renderer that cares
       // about a capture's enrichment (DetailRail, FloatOverHost) already
       // subscribes here and refreshes from `payload.enrichment`. A new
@@ -454,6 +456,7 @@ export function registerLibraryDataHandlers(): void {
     }
     try {
       const enrichment = removeTag(parsed.data.captureId, parsed.data.label);
+      scheduleRepack(parsed.data.captureId);
       broadcastEnrichmentUpdated(enrichment);
       return ok(enrichment);
     } catch (error) {

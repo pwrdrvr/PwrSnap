@@ -41,6 +41,9 @@ const mocks = vi.hoisted(() => ({
   listEnrichmentsByCaptureIds: vi.fn<
     (ids: readonly string[]) => Map<string, CaptureEnrichment | null>
   >(),
+  addUserTag: vi.fn(),
+  removeTag: vi.fn(),
+  scheduleRepack: vi.fn(),
   send: vi.fn()
 }));
 
@@ -97,7 +100,8 @@ vi.mock("../../persistence/enrichment-repo", () => ({
 vi.mock("../../persistence/bundle-store", () => ({
   moveBundlePairToTrash: vi.fn(),
   purgeBundlePairFromTrash: vi.fn(),
-  restoreBundlePairFromTrash: vi.fn()
+  restoreBundlePairFromTrash: vi.fn(),
+  scheduleRepack: mocks.scheduleRepack
 }));
 
 vi.mock("../../persistence/source-store", () => ({
@@ -180,7 +184,32 @@ beforeEach(() => {
   mocks.discoverCaptureSearchFacets.mockReset();
   mocks.searchCaptures.mockReset();
   mocks.listEnrichmentsByCaptureIds.mockReset();
+  mocks.addUserTag.mockReset();
+  mocks.removeTag.mockReset();
+  mocks.scheduleRepack.mockReset();
   mocks.send.mockReset();
+});
+
+describe("portable metadata convergence", () => {
+  test("tag add and remove schedule the capture bundle repack", async () => {
+    const enrichment = { captureId: "cap-metadata" } as CaptureEnrichment;
+    mocks.addUserTag.mockReturnValue(enrichment);
+    mocks.removeTag.mockReturnValue(enrichment);
+    const { registerLibraryHandlers } = await import("../library-handlers");
+    registerLibraryHandlers();
+
+    await mocks.handlers.get("library:addTag")!({
+      captureId: "cap-metadata",
+      label: "Portable"
+    });
+    await mocks.handlers.get("library:removeTag")!({
+      captureId: "cap-metadata",
+      label: "Portable"
+    });
+
+    expect(mocks.scheduleRepack).toHaveBeenNthCalledWith(1, "cap-metadata");
+    expect(mocks.scheduleRepack).toHaveBeenNthCalledWith(2, "cap-metadata");
+  });
 });
 
 describe("library:listByIds — handler contract", () => {

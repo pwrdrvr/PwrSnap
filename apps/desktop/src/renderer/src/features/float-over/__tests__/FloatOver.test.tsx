@@ -192,6 +192,56 @@ function installHostApi(): {
   };
 }
 
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
+function defaultHostDispatchResult(name: string): unknown {
+  if (name === "capture:presetMetrics") return { ok: true, value: { metrics: [] } };
+  if (name === "settings:read") return { ok: true, value: baseSettings };
+  if (name === "settings:refreshCodexDiscovery") return codexSnapshotResult;
+  return { ok: true, value: undefined };
+}
+
+async function renderHostRecord(
+  api: ReturnType<typeof installHostApi>,
+  record: CaptureRecord = imageRecord
+): Promise<HTMLDivElement> {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+  await act(async () => {
+    root?.render(createElement(FloatOverHost));
+  });
+  await act(async () => {
+    api.pushEvent(EVENT_CHANNELS.floatOverState, {
+      kind: "show-loaded",
+      captureId: record.id,
+      record
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  return container;
+}
+
+function enterTag(input: HTMLInputElement, label: string, repeatEnter = false): void {
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    "value"
+  )?.set;
+  setter?.call(input, label);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  if (repeatEnter) {
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  }
+}
+
 async function renderFloatOver(props: Parameters<typeof FloatOver>[0]): Promise<HTMLDivElement> {
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -758,6 +808,286 @@ describe("FloatOverHost", () => {
   });
 });
 
+describe("FloatOverHost manual tag persistence", () => {
+  test("add is optimistic, single-flight, and reconciles to the returned canonical tags", async () => {
+    const api = installHostApi();
+    const dispatchMock = window.pwrsnapApi!.dispatch as ReturnType<typeof vi.fn>;
+    const success = {
+      ok: true as const,
+      value: enrichment({
+        acceptedTags: ["external", "Canonical Tag"],
+        suggestedTags: []
+      })
+    };
+    const pending = deferred<typeof success>();
+    dispatchMock.mockImplementation(async (name: string) => {
+      if (name === "library:addTag") return pending.promise;
+      return defaultHostDispatchResult(name);
+    });
+    const el = await renderHostRecord(api);
+    const input = el.querySelector<HTMLInputElement>(".fo__tag-input");
+    expect(input).not.toBeNull();
+
+    await act(async () => {
+      enterTag(input!, "  Canonical Tag  ", true);
+      await Promise.resolve();
+    });
+
+    const addCalls = dispatchMock.mock.calls.filter(([name]) => name === "library:addTag");
+    expect(addCalls).toHaveLength(1);
+    expect(addCalls[0]?.[1]).toEqual({ captureId: "cap_1", label: "Canonical Tag" });
+    expect(el.querySelector(".fo__tags")?.getAttribute("aria-busy")).toBe("true");
+    expect(el.textContent).toContain("Canonical Tag");
+
+    // A full enrichment snapshot may arrive before the command Result.
+    // Keep the in-flight optimistic tag overlaid on that newer truth.
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.aiRunUpdated, {
+        enrichment: enrichment({ acceptedTags: ["external"], suggestedTags: [] })
+      });
+    });
+    expect(el.textContent).toContain("external");
+    expect(el.textContent).toContain("Canonical Tag");
+    const bulkAccept = el.querySelector<HTMLButtonElement>(".fo__ai-accept");
+    expect(bulkAccept?.textContent).toMatch(/Save|Use/);
+    expect(bulkAccept?.disabled).toBe(true);
+    bulkAccept?.click();
+    expect(
+      dispatchMock.mock.calls.filter(([name]) => name === "codex:acceptTag")
+    ).toHaveLength(0);
+
+    await act(async () => {
+      pending.resolve(success);
+      await pending.promise;
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(el.querySelector(".fo__tags")?.getAttribute("aria-busy")).toBe("false");
+    expect(el.querySelector('[role="alert"]')).toBeNull();
+    expect(el.textContent).toContain("external");
+    expect(el.textContent).toContain("Canonical Tag");
+
+    // Server and renderer normalize case + repeated whitespace the same
+    // way, so re-entering the persisted tag never issues a duplicate IPC.
+    await act(async () => {
+      enterTag(input!, "canonical   tag");
+      await Promise.resolve();
+    });
+    expect(dispatchMock.mock.calls.filter(([name]) => name === "library:addTag")).toHaveLength(1);
+  });
+
+  test("add Result failure rolls back and Retry persists the same label", async () => {
+    const api = installHostApi();
+    const dispatchMock = window.pwrsnapApi!.dispatch as ReturnType<typeof vi.fn>;
+    const failed = {
+      ok: false as const,
+      error: {
+        kind: "persistence" as const,
+        code: "db_busy",
+        message: "The library is busy"
+      }
+    };
+    const pending = deferred<typeof failed>();
+    const retried = {
+      ok: true as const,
+      value: enrichment({ acceptedTags: ["triage"], suggestedTags: [] })
+    };
+    let addAttempt = 0;
+    dispatchMock.mockImplementation(async (name: string) => {
+      if (name === "library:addTag") {
+        addAttempt += 1;
+        return addAttempt === 1 ? pending.promise : retried;
+      }
+      return defaultHostDispatchResult(name);
+    });
+    const el = await renderHostRecord(api);
+    const input = el.querySelector<HTMLInputElement>(".fo__tag-input");
+
+    await act(async () => {
+      enterTag(input!, "triage");
+      await Promise.resolve();
+    });
+    expect(el.textContent).toContain("triage");
+
+    await act(async () => {
+      pending.resolve(failed);
+      await pending.promise;
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const alert = el.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("Couldn’t add “triage”: The library is busy");
+    expect(
+      Array.from(el.querySelectorAll(".fo__tag")).some((tag) =>
+        tag.textContent?.includes("triage")
+      )
+    ).toBe(false);
+
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>(".fo__tag-retry")?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(dispatchMock.mock.calls.filter(([name]) => name === "library:addTag")).toHaveLength(2);
+    expect(el.querySelector('[role="alert"]')).toBeNull();
+    expect(el.textContent).toContain("triage");
+  });
+
+  test("remove is optimistic, single-flight, and stays removed after success", async () => {
+    const api = installHostApi();
+    const dispatchMock = window.pwrsnapApi!.dispatch as ReturnType<typeof vi.fn>;
+    const success = {
+      ok: true as const,
+      value: enrichment({ acceptedTags: ["chat"], suggestedTags: [] })
+    };
+    const pending = deferred<typeof success>();
+    dispatchMock.mockImplementation(async (name: string) => {
+      if (name === "library:removeTag") return pending.promise;
+      return defaultHostDispatchResult(name);
+    });
+    const el = await renderHostRecord(api);
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.aiRunUpdated, {
+        enrichment: enrichment({ acceptedTags: ["chat", "triage"], suggestedTags: [] })
+      });
+    });
+    const remove = el.querySelector<HTMLButtonElement>('[aria-label="remove triage"]');
+    expect(remove).not.toBeNull();
+
+    await act(async () => {
+      remove?.click();
+      remove?.click();
+      await Promise.resolve();
+    });
+
+    const removeCalls = dispatchMock.mock.calls.filter(
+      ([name]) => name === "library:removeTag"
+    );
+    expect(removeCalls).toHaveLength(1);
+    expect(removeCalls[0]?.[1]).toEqual({ captureId: "cap_1", label: "triage" });
+    expect(el.querySelector('[aria-label="remove triage"]')).toBeNull();
+
+    await act(async () => {
+      pending.resolve(success);
+      await pending.promise;
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(el.querySelector('[aria-label="remove triage"]')).toBeNull();
+    expect(el.querySelector('[aria-label="remove chat"]')).not.toBeNull();
+    expect(el.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  test("remove Result failure restores the chip and Retry removes it", async () => {
+    const api = installHostApi();
+    const dispatchMock = window.pwrsnapApi!.dispatch as ReturnType<typeof vi.fn>;
+    const failed = {
+      ok: false as const,
+      error: {
+        kind: "persistence" as const,
+        code: "db_busy",
+        message: "The library is busy"
+      }
+    };
+    const pending = deferred<typeof failed>();
+    const retried = {
+      ok: true as const,
+      value: enrichment({ acceptedTags: ["chat"], suggestedTags: [] })
+    };
+    let removeAttempt = 0;
+    dispatchMock.mockImplementation(async (name: string) => {
+      if (name === "library:removeTag") {
+        removeAttempt += 1;
+        return removeAttempt === 1 ? pending.promise : retried;
+      }
+      return defaultHostDispatchResult(name);
+    });
+    const el = await renderHostRecord(api);
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.aiRunUpdated, {
+        enrichment: enrichment({ acceptedTags: ["chat", "triage"], suggestedTags: [] })
+      });
+    });
+
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[aria-label="remove triage"]')?.click();
+      await Promise.resolve();
+    });
+    expect(el.querySelector('[aria-label="remove triage"]')).toBeNull();
+
+    await act(async () => {
+      pending.resolve(failed);
+      await pending.promise;
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(el.querySelector('[aria-label="remove triage"]')).not.toBeNull();
+    expect(el.querySelector('[role="alert"]')?.textContent).toContain(
+      "Couldn’t remove “triage”: The library is busy"
+    );
+
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>(".fo__tag-retry")?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(dispatchMock.mock.calls.filter(([name]) => name === "library:removeTag")).toHaveLength(2);
+    expect(el.querySelector('[aria-label="remove triage"]')).toBeNull();
+    expect(el.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  test("a late tag failure cannot leak into the next capture", async () => {
+    const api = installHostApi();
+    const dispatchMock = window.pwrsnapApi!.dispatch as ReturnType<typeof vi.fn>;
+    const failed = {
+      ok: false as const,
+      error: {
+        kind: "persistence" as const,
+        code: "db_busy",
+        message: "stale failure"
+      }
+    };
+    const pending = deferred<typeof failed>();
+    dispatchMock.mockImplementation(async (name: string) => {
+      if (name === "library:addTag") return pending.promise;
+      return defaultHostDispatchResult(name);
+    });
+    const el = await renderHostRecord(api);
+    const input = el.querySelector<HTMLInputElement>(".fo__tag-input");
+    await act(async () => {
+      enterTag(input!, "old-capture-tag");
+      await Promise.resolve();
+    });
+
+    const nextRecord = { ...imageRecord, id: "cap_2", sha256: "sha_cap_2" };
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.floatOverState, {
+        kind: "show-loaded",
+        captureId: nextRecord.id,
+        record: nextRecord
+      });
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      pending.resolve(failed);
+      await pending.promise;
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(el.textContent).not.toContain("old-capture-tag");
+    expect(el.textContent).not.toContain("stale failure");
+    expect(el.querySelector('[role="alert"]')).toBeNull();
+  });
+});
+
 describe("FloatOver AI suggestions", () => {
   test("shows Configure AI instead of Enable when the enrichment provider is unavailable", async () => {
     const onConfigureAi = vi.fn();
@@ -885,7 +1215,11 @@ describe("FloatOver AI suggestions", () => {
         suggestedTags: []
       }),
       aiEnabled: true,
-      aiConsentAccepted: true
+      aiConsentAccepted: true,
+      onAddTag: async () => ({
+        ok: true,
+        value: enrichment({ acceptedTags: ["manual-tag"], suggestedTags: [] })
+      })
     });
 
     expect(el.querySelector(".fo")?.classList.contains("is-thinking")).toBe(true);

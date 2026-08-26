@@ -15,15 +15,18 @@
 // the SQLite query.
 
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import type {
-  CaptureEnrichment,
-  CaptureRecord,
-  CaptureSearchRequest,
-  CaptureSearchResultRow
+import {
+  EVENT_CHANNELS,
+  type CaptureEnrichment,
+  type CaptureRecord,
+  type CaptureSearchRequest,
+  type CaptureSearchResultRow
 } from "@pwrsnap/shared";
 
 const mocks = vi.hoisted(() => ({
   handlers: new Map<string, (req: unknown) => Promise<unknown>>(),
+  addUserTag: vi.fn<(captureId: string, label: string) => CaptureEnrichment>(),
+  removeTag: vi.fn<(captureId: string, label: string) => CaptureEnrichment>(),
   getCapturesByIds: vi.fn<(ids: readonly string[]) => CaptureRecord[]>(),
   getCaptureById: vi.fn(),
   getAppStats: vi.fn(),
@@ -86,8 +89,8 @@ vi.mock("../../persistence/captures-repo", () => ({
 }));
 
 vi.mock("../../persistence/enrichment-repo", () => ({
-  addUserTag: vi.fn(),
-  removeTag: vi.fn(),
+  addUserTag: mocks.addUserTag,
+  removeTag: mocks.removeTag,
   listEnrichmentsByCaptureIds: mocks.listEnrichmentsByCaptureIds
 }));
 
@@ -147,9 +150,32 @@ function makeRecord(overrides: Partial<CaptureRecord> = {}): CaptureRecord {
   };
 }
 
+function makeEnrichment(captureId: string, acceptedTags: string[]): CaptureEnrichment {
+  return {
+    captureId,
+    latestRunId: null,
+    status: null,
+    error: null,
+    ocrText: null,
+    suggestedTitle: null,
+    acceptedTitle: null,
+    titleAcceptedAt: null,
+    suggestedDescription: null,
+    acceptedDescription: null,
+    descriptionAcceptedAt: null,
+    suggestedFilenameStem: null,
+    acceptedFilenameStem: null,
+    filenameAcceptedAt: null,
+    suggestedTags: [],
+    acceptedTags
+  };
+}
+
 beforeEach(() => {
   vi.resetModules();
   mocks.handlers.clear();
+  mocks.addUserTag.mockReset();
+  mocks.removeTag.mockReset();
   mocks.getCapturesByIds.mockReset();
   mocks.discoverCaptureSearchFacets.mockReset();
   mocks.searchCaptures.mockReset();
@@ -498,5 +524,93 @@ describe("library:discover — handler contract", () => {
       error: { kind: "validation", code: "limit_invalid" }
     });
     expect(mocks.discoverCaptureSearchFacets).not.toHaveBeenCalled();
+  });
+});
+
+describe("library tag mutation handlers", () => {
+  test("library:addTag trims, persists, broadcasts, and returns the refreshed enrichment", async () => {
+    const enrichment = makeEnrichment("cap-1", ["Triage"]);
+    mocks.addUserTag.mockReturnValue(enrichment);
+    const { registerLibraryHandlers } = await import("../library-handlers");
+    registerLibraryHandlers();
+
+    const result = await mocks.handlers.get("library:addTag")!({
+      captureId: "cap-1",
+      label: "  Triage  "
+    });
+
+    expect(mocks.addUserTag).toHaveBeenCalledOnce();
+    expect(mocks.addUserTag).toHaveBeenCalledWith("cap-1", "Triage");
+    expect(result).toEqual({ ok: true, value: enrichment });
+    expect(mocks.send).toHaveBeenCalledWith(EVENT_CHANNELS.aiRunUpdated, {
+      run: null,
+      enrichment
+    });
+  });
+
+  test("library:addTag returns an actionable not_found Result without broadcasting", async () => {
+    mocks.addUserTag.mockImplementation(() => {
+      throw new Error("capture not found or deleted: cap-1");
+    });
+    const { registerLibraryHandlers } = await import("../library-handlers");
+    registerLibraryHandlers();
+
+    const result = await mocks.handlers.get("library:addTag")!({
+      captureId: "cap-1",
+      label: "triage"
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        kind: "validation",
+        code: "not_found",
+        message: "capture not found or deleted: cap-1"
+      }
+    });
+    expect(mocks.send).not.toHaveBeenCalled();
+  });
+
+  test("library:removeTag trims, persists, broadcasts, and returns the refreshed enrichment", async () => {
+    const enrichment = makeEnrichment("cap-1", ["chat"]);
+    mocks.removeTag.mockReturnValue(enrichment);
+    const { registerLibraryHandlers } = await import("../library-handlers");
+    registerLibraryHandlers();
+
+    const result = await mocks.handlers.get("library:removeTag")!({
+      captureId: "cap-1",
+      label: "  Triage  "
+    });
+
+    expect(mocks.removeTag).toHaveBeenCalledOnce();
+    expect(mocks.removeTag).toHaveBeenCalledWith("cap-1", "Triage");
+    expect(result).toEqual({ ok: true, value: enrichment });
+    expect(mocks.send).toHaveBeenCalledWith(EVENT_CHANNELS.aiRunUpdated, {
+      run: null,
+      enrichment
+    });
+  });
+
+  test("library:removeTag returns an actionable not_found Result without broadcasting", async () => {
+    mocks.removeTag.mockImplementation(() => {
+      throw new Error("capture not found: cap-1");
+    });
+    const { registerLibraryHandlers } = await import("../library-handlers");
+    registerLibraryHandlers();
+
+    const result = await mocks.handlers.get("library:removeTag")!({
+      captureId: "cap-1",
+      label: "triage"
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        kind: "validation",
+        code: "not_found",
+        message: "capture not found: cap-1"
+      }
+    });
+    expect(mocks.send).not.toHaveBeenCalled();
   });
 });

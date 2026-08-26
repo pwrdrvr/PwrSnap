@@ -22,9 +22,11 @@ export function usePresetRenderMetrics(
     }
 
     let cancelled = false;
+    let requestSeq = 0;
     const fetchMetrics = (): void => {
+      const seq = ++requestSeq;
       void dispatch("capture:presetMetrics", { captureId }).then((result) => {
-        if (cancelled) return;
+        if (cancelled || seq !== requestSeq) return;
         if (!result.ok) return;
         setMetrics(metricsByPreset(result.value.metrics));
       });

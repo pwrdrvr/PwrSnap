@@ -559,19 +559,26 @@ export function GridCopyPalette({
             {COPY_PRESETS.map((p) => {
               const rung =
                 exportLadder === null ? undefined : rungForPreset(exportLadder, p);
-              const estimate =
-                rung === undefined
+              const unavailable = rung !== undefined && !rung.available;
+              const estimate = unavailable
+                ? { dim: "—", bytes: "—", exact: true }
+                : rung === undefined
                   ? presetMetrics(p, record.width_px, record.height_px, record.byte_size)
                   : estimateMetricForRung(rung, record.width_px, record.byte_size);
-              const m = renderMetrics[p] ?? estimate;
+              const m = unavailable ? estimate : (renderMetrics[p] ?? estimate);
               return (
                 <CopyButton
                   key={p}
                   preset={p}
-                  label={COPY_LABELS[p]}
+                  label={rung?.actual === true ? "Actual" : COPY_LABELS[p]}
                   dim={m.dim}
                   bytes={m.bytes}
-                  tag={rung === undefined ? undefined : rungTag(rung)}
+                  tag={
+                    rung === undefined || unavailable
+                      ? undefined
+                      : rungTag(rung, window.pwrsnapApi?.platform)
+                  }
+                  disabled={unavailable}
                   onCopy={(preset) => copyImagePreset(record.id, preset)}
                   onCopyPath={(preset) => copyImagePresetPath(record.id, preset)}
                   onDrag={(preset) => startCaptureDrag(record.id, preset)}

@@ -23,12 +23,11 @@ export type CopyButtonMetric = {
 };
 
 /** Small DPI callout shown under a copy card's dimensions when the
- *  experimental DPI-aware export ladder is active. `retina` drives the
- *  accent treatment so the user can see at a glance which rung is the
- *  full Retina image vs. a downscaled one. */
+ *  experimental DPI-aware export ladder is active. `highDensity` drives
+ *  the accent treatment for macOS Retina and cross-platform High DPI. */
 export type CopyTag = {
   readonly label: string;
-  readonly retina: boolean;
+  readonly highDensity: boolean;
 };
 
 /** Format a rung's on-screen multiple as a compact label (2×, 1×, ½×). */
@@ -47,10 +46,17 @@ function formatOnScreenMultiple(m: number): string {
 }
 
 /** Derive the DPI callout for a resolved ladder rung. */
-export function rungTag(rung: ExportRung): CopyTag {
-  return rung.retina
-    ? { label: "Retina", retina: true }
-    : { label: formatOnScreenMultiple(rung.onScreenMultiple), retina: false };
+export function rungTag(rung: ExportRung, platform?: string): CopyTag {
+  if (platform === "darwin" && rung.retina) {
+    return { label: "Retina", highDensity: true };
+  }
+  if (platform !== "darwin" && rung.highDensity) {
+    return { label: "High DPI", highDensity: true };
+  }
+  return {
+    label: formatOnScreenMultiple(rung.onScreenMultiple),
+    highDensity: false
+  };
 }
 
 /** Estimate dims + bytes for a resolved ladder rung — used as the
@@ -133,6 +139,9 @@ export type CopyButtonProps = {
    *  active; `undefined` (legacy mode) keeps the card visually identical
    *  to what normal users see. */
   tag?: CopyTag | undefined;
+  /** Unavailable DPI-aware rung. The card remains in the three-column
+   *  layout but cannot copy, drag, or expose a file-path action. */
+  disabled?: boolean;
   /** Fired when the user clicks. Caller chooses whether this copies
    *  raw image bytes or a file-backed export; the overlay animation
    *  runs unconditionally on click. */
@@ -174,6 +183,7 @@ export function CopyButton({
   dim,
   bytes,
   tag,
+  disabled = false,
   onCopy,
   onDrag,
   onCopyPath,
@@ -195,19 +205,20 @@ export function CopyButton({
   };
 
   const handleClick = (): void => {
+    if (disabled) return;
     onCopy(preset);
     showCopied();
   };
 
   const handleDragStart = (event: React.DragEvent<HTMLAnchorElement>): void => {
-    if (onDrag === undefined) return;
+    if (disabled || onDrag === undefined) return;
     event.preventDefault();
     onDrag(preset);
   };
 
   const handleFileClick = (event: React.MouseEvent<HTMLAnchorElement>): void => {
     event.preventDefault();
-    if (onCopyPath === undefined) return;
+    if (disabled || onCopyPath === undefined) return;
     onCopyPath(preset);
     setPathCopied(true);
     if (pathTimerRef.current !== null) clearTimeout(pathTimerRef.current);
@@ -237,29 +248,37 @@ export function CopyButton({
   useEffect(() => {
     if (copyPulse === copyPulseRef.current) return;
     copyPulseRef.current = copyPulse;
+    if (disabled) return;
     showCopied();
-  }, [copyPulse]);
+  }, [copyPulse, disabled]);
 
   const [dimLine1, dimLine2] = splitDimensionLabel(dim);
   const [bytesLine1, bytesLine2] = splitBytesLabel(bytes);
 
   return (
-    <div className="fo__copy-card">
+    <div className={"fo__copy-card" + (disabled ? " is-disabled" : "")}>
       <button
         type="button"
         className={"fo__copy-btn" + (copied ? " is-copied" : "")}
+        disabled={disabled}
         onClick={handleClick}
       >
         <div className="fo__copy-btn-row1">
           <span className="fo__copy-label">{label}</span>
-          <span className="fo__copy-kbd">⌘{KBD_DIGIT[preset]}</span>
+          <span className="fo__copy-kbd">
+            {disabled ? "—" : `⌘${KBD_DIGIT[preset]}`}
+          </span>
         </div>
         <div className="fo__copy-meta">
           <span className="fo__copy-dim">
             <span>{dimLine1}</span>
             {dimLine2.length > 0 ? <span>{dimLine2}</span> : null}
             {tag !== undefined ? (
-              <span className={"fo__copy-tag" + (tag.retina ? " is-retina" : "")}>
+              <span
+                className={
+                  "fo__copy-tag" + (tag.highDensity ? " is-high-density" : "")
+                }
+              >
                 {tag.label}
               </span>
             ) : null}
@@ -280,7 +299,7 @@ export function CopyButton({
           Copied
         </span>
       </button>
-      {onDrag !== undefined || onCopyPath !== undefined ? (
+      {!disabled && (onDrag !== undefined || onCopyPath !== undefined) ? (
         <a
           className={"fo__copy-file" + (pathCopied ? " is-copied" : "")}
           draggable={onDrag !== undefined}

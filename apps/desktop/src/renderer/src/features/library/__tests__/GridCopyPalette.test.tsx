@@ -247,6 +247,46 @@ describe("GridCopyPalette", () => {
     expect(el.textContent).toContain("High");
   });
 
+  test("offers one centered Actual action for a tiny DPI-aware capture", async () => {
+    dispatchMock.mockImplementation(async (name: string) => {
+      if (name === "settings:read") {
+        return ok({
+          ...settings,
+          experimental: {
+            processSplit: false,
+            dpiAwareExport: true,
+            allowRetinaExport: true
+          }
+        });
+      }
+      if (name === "capture:presetMetrics") return ok({ metrics: [] });
+      return ok(undefined);
+    });
+    const el = await renderPalette({
+      ...imageRecord,
+      width_px: 308,
+      height_px: 310,
+      device_pixel_ratio: 1
+    });
+    const buttons = [...el.querySelectorAll<HTMLButtonElement>(".fo__copy-btn")];
+    expect(buttons.map((button) => button.disabled)).toEqual([true, false, true]);
+    expect(buttons[1]?.textContent).toContain("Actual");
+    expect(buttons[1]?.textContent).toContain("308 ×");
+    expect(buttons[1]?.textContent).toContain("310");
+
+    dispatchMock.mockClear();
+    await act(async () => {
+      buttons[0]?.click();
+      buttons[1]?.click();
+      await Promise.resolve();
+    });
+    expect(dispatchMock).toHaveBeenCalledTimes(1);
+    expect(dispatchMock).toHaveBeenCalledWith("clipboard:copy", {
+      captureId: imageRecord.id,
+      preset: "med"
+    });
+  });
+
   test("card body copies image bytes via clipboard:copy", async () => {
     const el = await renderPalette();
     const low = el.querySelector<HTMLButtonElement>(".fo__copy-btn");

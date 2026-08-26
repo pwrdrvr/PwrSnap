@@ -922,27 +922,34 @@ export function DetailRail({
                       );
                 return COPY_PRESETS.map((p) => {
                   const rung = ladder === null ? undefined : rungForPreset(ladder, p);
-                  const estimate =
-                    rung === undefined
+                  const unavailable = rung !== undefined && !rung.available;
+                  const estimate = unavailable
+                    ? { dim: "—", bytes: "—", exact: true }
+                    : rung === undefined
                       ? presetMetrics(p, record.width_px, record.height_px, record.byte_size)
                       : estimateMetricForRung(rung, record.width_px, record.byte_size);
-                  const m = renderMetrics[p] ?? estimate;
+                  const m = unavailable ? estimate : (renderMetrics[p] ?? estimate);
                   return (
-                  <CopyButton
-                    key={p}
-                    preset={p}
-                    label={COPY_LABELS[p]}
-                    dim={m.dim}
-                    bytes={m.bytes}
-                    tag={rung === undefined ? undefined : rungTag(rung)}
-                    // Image BYTES, via the shared helper so every copy
-                    // surface stays in lockstep (see clipboard-copy.ts —
-                    // PR #232 drifted this card body to a file URL).
-                    onCopy={(preset) => copyImagePreset(record.id, preset)}
-                    onCopyPath={(preset) => copyImagePresetPath(record.id, preset)}
-                    onDrag={(preset) => startCaptureDrag(record.id, preset)}
-                    copyPulse={copyPulses?.[p] ?? 0}
-                  />
+                    <CopyButton
+                      key={p}
+                      preset={p}
+                      label={rung?.actual === true ? "Actual" : COPY_LABELS[p]}
+                      dim={m.dim}
+                      bytes={m.bytes}
+                      tag={
+                        rung === undefined || unavailable
+                          ? undefined
+                          : rungTag(rung, window.pwrsnapApi?.platform)
+                      }
+                      disabled={unavailable}
+                      // Image BYTES, via the shared helper so every copy
+                      // surface stays in lockstep (see clipboard-copy.ts —
+                      // PR #232 drifted this card body to a file URL).
+                      onCopy={(preset) => copyImagePreset(record.id, preset)}
+                      onCopyPath={(preset) => copyImagePresetPath(record.id, preset)}
+                      onDrag={(preset) => startCaptureDrag(record.id, preset)}
+                      copyPulse={copyPulses?.[p] ?? 0}
+                    />
                   );
                 });
               })()}

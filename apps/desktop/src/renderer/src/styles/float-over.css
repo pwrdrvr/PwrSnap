@@ -247,6 +247,12 @@
   gap: 4px;
   min-width: 0;
 }
+.fo__copy-card.is-disabled {
+  opacity: 0.38;
+}
+.fo__copy-card.is-disabled .fo__copy-btn {
+  cursor: not-allowed;
+}
 .fo__copy-btn {
   position: relative;
   display: flex; flex-direction: column; align-items: stretch; gap: 4px;
@@ -388,7 +394,7 @@
   opacity: 0.55;
   white-space: nowrap;
 }
-.fo__copy-tag.is-retina {
+.fo__copy-tag.is-high-density {
   color: var(--accent);
   opacity: 0.9;
 }

@@ -49,12 +49,13 @@ function dimText(w: number, h: number) {
 /** Preview-size badge text from the capture's scale factor. Reads the
  *  real `device_pixel_ratio` instead of the old hardcoded "2× retina" so
  *  1× / 3× / fractional-DPI captures are labeled honestly. */
-function dprBadgeLabel(dpr: number): string {
+function dprBadgeLabel(dpr: number, platform?: string): string {
   const scale = Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
   const rounded = Math.round(scale * 10) / 10;
   const num = Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1);
-  // ≥2× is where macOS calls a display "Retina"; below that it's just 1×.
-  return scale >= 2 ? `${num}× retina` : `${num}×`;
+  if (platform === "darwin" && scale >= 2) return `${num}× retina`;
+  if (platform !== "darwin" && scale > 1) return `${num}× High DPI`;
+  return `${num}×`;
 }
 
 function fmtDurationLabel(seconds: number): string {
@@ -653,7 +654,9 @@ export function FloatOver({
           <b>{dimText(srcW, srcH)}</b>
         </div>
         <div className="fo__preview-size">
-          {asset?.kind === "video" ? fmtDurationLabel(asset.durationSec) : dprBadgeLabel(srcDpr)}
+          {asset?.kind === "video"
+            ? fmtDurationLabel(asset.durationSec)
+            : dprBadgeLabel(srcDpr, window.pwrsnapApi?.platform)}
         </div>
 
         {asset?.kind !== "video" && (
@@ -771,19 +774,26 @@ export function FloatOver({
                   );
             return RES_PRESETS.map((p) => {
               const rung = ladder === null ? undefined : rungForPreset(ladder, p.id);
-              const estimate =
-                rung === undefined
+              const unavailable = rung !== undefined && !rung.available;
+              const estimate = unavailable
+                ? { dim: "—", bytes: "—", exact: true }
+                : rung === undefined
                   ? presetMetrics(p.id, srcW, srcH, srcBytes)
                   : estimateMetricForRung(rung, srcW, srcBytes);
-              const m = copyMetrics?.[p.id] ?? estimate;
+              const m = unavailable ? estimate : (copyMetrics?.[p.id] ?? estimate);
               return (
                 <CopyButton
                   key={p.id}
                   preset={p.id}
-                  label={p.label}
+                  label={rung?.actual === true ? "Actual" : p.label}
                   dim={m.dim}
                   bytes={m.bytes}
-                  tag={rung === undefined ? undefined : rungTag(rung)}
+                  tag={
+                    rung === undefined || unavailable
+                      ? undefined
+                      : rungTag(rung, window.pwrsnapApi?.platform)
+                  }
+                  disabled={unavailable}
                   onCopy={(preset) => onCopy?.(preset)}
                   {...(onCopyPath !== undefined ? { onCopyPath } : {})}
                   {...(onDragPreset !== undefined ? { onDrag: onDragPreset } : {})}

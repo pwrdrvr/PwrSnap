@@ -80,8 +80,37 @@ describe("resolveExportLadder — scalePhysical (Retina export on)", () => {
 
   it("never marks anything Retina on a 1× capture", () => {
     const l = resolveExportLadder(oneX, "scalePhysical");
-    expect(widths(l)).toEqual({ low: 400, med: 800, high: 1600 });
+    expect(widths(l)).toEqual({ low: 800, med: 800, high: 1600 });
+    expect(l.map((rung) => rung.available)).toEqual([false, true, true]);
     expect(l.every((r) => !r.retina)).toBe(true);
+  });
+
+  it("offers one centered Actual rung when every downscale would be illegible", () => {
+    const tiny = resolveExportLadder(
+      { widthPx: 308, heightPx: 310, devicePixelRatio: 1 },
+      "scalePhysical"
+    );
+    expect(widths(tiny)).toEqual({ low: 308, med: 308, high: 308 });
+    expect(tiny.map((rung) => rung.available)).toEqual([false, true, false]);
+    expect(rungForPreset(tiny, "med")?.actual).toBe(true);
+  });
+
+  it("disables only a useless lower rung when a useful downscale remains", () => {
+    const ladder = resolveExportLadder(
+      { widthPx: 1200, heightPx: 800, devicePixelRatio: 1 },
+      "scalePhysical"
+    );
+    expect(widths(ladder)).toEqual({ low: 600, med: 600, high: 1200 });
+    expect(ladder.map((rung) => rung.available)).toEqual([false, true, true]);
+  });
+
+  it("recognizes fractional Windows display scaling as high density, not Retina", () => {
+    const ladder = resolveExportLadder(
+      { widthPx: 1500, heightPx: 900, devicePixelRatio: 1.5 },
+      "scalePhysical"
+    );
+    expect(rungForPreset(ladder, "high")?.highDensity).toBe(true);
+    expect(rungForPreset(ladder, "high")?.retina).toBe(false);
   });
 });
 
@@ -90,7 +119,7 @@ describe("resolveExportLadder — scaleLogical (Retina export off)", () => {
     // logical = 2880 / 2 = 1440 → High=1440 (was the old 50%), with two
     // smaller rungs below.
     expect(widths(resolveExportLadder(retina2x, "scaleLogical"))).toEqual({
-      low: 360,
+      low: 720,
       med: 720,
       high: 1440
     });
@@ -100,6 +129,16 @@ describe("resolveExportLadder — scaleLogical (Retina export off)", () => {
     expect(widths(resolveExportLadder(oneX, "scaleLogical"))).toEqual(
       widths(resolveExportLadder(oneX, "scalePhysical"))
     );
+  });
+
+  it("labels the sole useful logical-resolution fallback as Actual", () => {
+    const tiny = resolveExportLadder(
+      { widthPx: 1200, heightPx: 800, devicePixelRatio: 2 },
+      "scaleLogical"
+    );
+    expect(widths(tiny)).toEqual({ low: 600, med: 600, high: 600 });
+    expect(tiny.map((rung) => rung.available)).toEqual([false, true, false]);
+    expect(rungForPreset(tiny, "med")?.actual).toBe(true);
   });
 });
 
@@ -118,7 +157,7 @@ describe("resolveExportLadder — invariants", () => {
       { widthPx: 1000, heightPx: 500, devicePixelRatio: 0 },
       "scalePhysical"
     );
-    expect(widths(l)).toEqual({ low: 250, med: 500, high: 1000 });
+    expect(widths(l)).toEqual({ low: 500, med: 500, high: 1000 });
     expect(l.every((r) => Number.isFinite(r.onScreenMultiple))).toBe(true);
   });
 });

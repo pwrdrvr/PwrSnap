@@ -647,10 +647,11 @@ export type PersistCaptureFromTempArgs = {
   /** Defaults to `getCapturesRoot()` (`~/Documents/PwrSnap/`). */
   outputDir?: string;
   /**
-   * Captured-display DPR. Defaults to 2 (Retina). The clipboard-paste
-   * caller (PR #48) passes 1 because pasted bytes aren't from a
-   * physical display. Surfaces in `CaptureRecord.device_pixel_ratio`
-   * for thumbnail / preset-rendering math.
+   * Captured-display DPR. Capture callers pass the selected display's
+   * scale explicitly. Unknown/imported density defaults to 1 because
+   * inventing Retina/High-DPI detail produces false export labels.
+   * Surfaces in `CaptureRecord.device_pixel_ratio` for thumbnail /
+   * preset-rendering math.
    */
   devicePixelRatio?: number | undefined;
   /**
@@ -1121,7 +1122,7 @@ export async function persistCaptureFromTempV2(
     bundle_edits_version: 0,
     width_px: widthPx,
     height_px: heightPx,
-    device_pixel_ratio: args.devicePixelRatio ?? 2,
+    device_pixel_ratio: args.devicePixelRatio ?? 1,
     byte_size: buf.length,
     sha256,
     has_alpha: hasAlpha

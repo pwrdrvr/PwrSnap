@@ -157,6 +157,15 @@ describe("ExperimentalPage — platform gating", () => {
     expect(container?.textContent).not.toContain("Two-process mode");
     expect(container?.textContent).toContain("DPI-aware export");
   });
+
+  test("uses High DPI wording instead of Retina on Windows", async () => {
+    await renderExperimental(
+      withExperimental({ processSplit: false, dpiAwareExport: true, allowRetinaExport: true }),
+      "win32"
+    );
+    expect(container?.textContent).toContain("Allow High DPI export");
+    expect(container?.textContent).not.toContain("Allow Retina export");
+  });
 });
 
 describe("ExperimentalPage — Allow Retina gating", () => {

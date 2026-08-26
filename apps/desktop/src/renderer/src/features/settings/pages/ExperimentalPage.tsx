@@ -26,6 +26,7 @@ export function ExperimentalPage(): ReactElement {
   // (the boot is always single-process there), so don't show a switch
   // that can't do anything.
   const isMac = window.pwrsnapApi?.platform === "darwin";
+  const densityName = isMac ? "Retina" : "High DPI";
 
   const processSplit = settings?.experimental.processSplit ?? false;
   const dpiAwareExport = settings?.experimental.dpiAwareExport ?? false;
@@ -77,16 +78,16 @@ export function ExperimentalPage(): ReactElement {
       <Card eyebrow="EXPERIMENTAL" title="DPI-aware export">
         <Row
           label="Scale exports by display resolution"
-          sub="Maps Low / Med / High to 25% / 50% / 100% of the capture's pixels instead of the fixed 800 / 1440 / full widths. On a Retina display High is the full 2× image; Med lands at the on-screen (1×) size. Off by default — flip it on to try the new sizing."
+          sub={`Maps Low / Med / High to useful fractions of the capture's pixels instead of fixed widths. On a ${densityName} display, High keeps the full-density image and Med normally lands at the on-screen size. Tiny captures offer one Actual-size export instead of illegible downscales. Off by default — flip it on to try the new sizing.`}
           tag="experimental"
         >
           <Switch on={dpiAwareExport} onChange={onDpiAwareExportChange} />
         </Row>
         {dpiAwareExport ? (
           <Row
-            label="Allow Retina export"
-            sub="When on, High keeps the full Retina (2×) pixels. Turn off to cap exports at the on-screen 1× resolution — High becomes today's 50%, with two smaller sizes below it."
-            tag="retina"
+            label={`Allow ${densityName} export`}
+            sub={`When on, High keeps the full ${densityName} pixels. Turn off to cap exports at the on-screen 1× resolution, with smaller useful sizes below it.`}
+            tag={isMac ? "retina" : "high dpi"}
           >
             <Switch on={allowRetinaExport} onChange={onAllowRetinaExportChange} />
           </Row>

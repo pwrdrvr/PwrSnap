@@ -462,7 +462,13 @@ async function encodeMp4(
     args.push("-an");
   } else {
     for (const m of mappings) {
-      args.push("-map", m);
+      // `hasSystemAudio` / `hasMicrophoneAudio` is persisted recorder
+      // metadata. Older macOS recordings could claim a microphone
+      // track even when AVCapture delivered no samples, so make each
+      // audio map optional at the ffmpeg boundary. The requested
+      // tracks are still mapped when present; a stale missing track
+      // no longer aborts the entire video export.
+      args.push("-map", `${m}?`);
     }
     args.push("-c:a", "aac", "-b:a", "192k");
   }
@@ -491,7 +497,26 @@ function runFfmpeg(ffmpeg: string, args: string[]): Promise<void> {
     child.on("error", reject);
     child.on("exit", (code) => {
       if (code === 0) resolve();
-      else reject(new Error(`ffmpeg exited ${code}: ${stderr.slice(-2000)}`));
+      else reject(new Error(`ffmpeg exited ${code}: ${ffmpegFailureSummary(stderr)}`));
     });
   });
+}
+
+/** Keep user-facing export errors focused on ffmpeg's final diagnosis.
+ *  ffmpeg writes its version, compiler, configure flags, input probe,
+ *  progress, and actual error to the same stderr stream. Passing a raw
+ *  byte tail to the renderer can therefore turn a one-line failure into
+ *  a screen-sized tooltip headed by an irrelevant build banner. */
+export function ffmpegFailureSummary(stderr: string): string {
+  const lines = stderr
+    .replaceAll("\r", "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .filter((line) => !/^frame=\s*\d+/i.test(line));
+
+  if (lines.length === 0) return "unknown ffmpeg error";
+
+  const tail = lines.slice(-2).join(" ");
+  return tail.length <= 600 ? tail : `${tail.slice(0, 597)}...`;
 }

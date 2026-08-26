@@ -292,6 +292,53 @@ describe("exportVideoRange concurrency", () => {
     await med;
   });
 
+  test("MP4 audio maps tolerate stale track metadata from older recordings", async () => {
+    const encoded = exportVideoRange({
+      ...baseInput,
+      video: {
+        ...video,
+        hasSystemAudio: true,
+        hasMicrophoneAudio: true
+      },
+      audio: {
+        includeSystemAudio: true,
+        includeMicrophone: true
+      }
+    });
+    await waitForSpawnCount(1);
+
+    const args = spawnQueue[0]?.args ?? [];
+    expect(args).toEqual(expect.arrayContaining(["-map", "0:a:0?", "-map", "0:a:1?"]));
+    expect(args).not.toContain("0:a:0");
+    expect(args).not.toContain("0:a:1");
+
+    await resolveNextSpawn(0);
+    await encoded;
+  });
+
+  test("ffmpeg failures surface the actionable error instead of its build banner", async () => {
+    const failing = exportVideoRange(baseInput);
+    await waitForSpawnCount(1);
+    spawnQueue[0]?.child.stderr.emit(
+      "data",
+      Buffer.from(
+        [
+          "ffmpeg version 8.1 Copyright (c) 2000-2026 the FFmpeg developers",
+          "  built with Apple clang version 21.0.0",
+          "  configuration: --prefix=/opt/homebrew/Cellar/ffmpeg/8.1 --enable-shared --enable-videotoolbox",
+          "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from '/Users/person/Documents/PwrSnap/source.mp4':",
+          "Stream map '0:a:1' matches no streams.",
+          "To ignore this, add a trailing '?' to the map."
+        ].join("\n")
+      )
+    );
+
+    await resolveNextSpawn(234);
+    await expect(failing).rejects.toThrow(
+      "ffmpeg exited 234: Stream map '0:a:1' matches no streams. To ignore this, add a trailing '?' to the map."
+    );
+  });
+
   test("HIGH MP4 re-encodes at source resolution with GOP flags", async () => {
     const high = exportVideoRange({ ...baseInput, preset: "high" });
     await waitForSpawnCount(1);

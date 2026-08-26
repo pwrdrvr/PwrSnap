@@ -15,6 +15,10 @@ import { insertImportedLayerTreeForCapture } from "../persistence/layers-repo";
 import { getDataRoot, getDurableCapturesRoots } from "../persistence/paths";
 import { sourceBufferHasAlpha } from "../persistence/source-alpha";
 import {
+  remapPortableBundleMetadata,
+  type PortableBundleMetadata
+} from "../persistence/portable-bundle-metadata";
+import {
   projectPortableDescription,
   writePortableBundleCarrier
 } from "../persistence/bundle-carrier-repo";
@@ -77,6 +81,10 @@ async function importPwrsnapBundleExclusive(
       contentDigest: bundle.contentDigest,
       idExists: layerIdExists
     });
+    const portableMetadata = remapPortableBundleMetadata(
+      bundle.portableMetadata,
+      remapped.layerIdMap
+    );
     const destinationPath = await findAvailableDestination(
       capturesRoot,
       bundle.manifest.paired_png_filename,
@@ -106,6 +114,7 @@ async function importPwrsnapBundleExclusive(
       copiedBytes = await packBundleV2({
         manifest: copiedManifest,
         document: remapped.document,
+        portableMetadata,
         sources: bundle.sources,
         layerBytes: remapped.layerBytes,
         thumbnailJpg
@@ -147,6 +156,7 @@ async function importPwrsnapBundleExclusive(
           bundlePath: destinationPath,
           bundleModifiedAt: copiedManifest.bundle_modified_at,
           document: remapped.document,
+          portableMetadata,
           widthPx: copiedManifest.canvas_dimensions.width_px,
           heightPx: copiedManifest.canvas_dimensions.height_px,
           baseSourceSha256: bundle.baseSourceSha256,
@@ -334,6 +344,7 @@ async function reconcilePendingPwrsnapImportsExclusive(): Promise<string[]> {
         bundlePath: intent.bundlePath,
         bundleModifiedAt: bundle.manifest.bundle_modified_at,
         document: bundle.document,
+        portableMetadata: bundle.portableMetadata,
         widthPx: bundle.manifest.canvas_dimensions.width_px,
         heightPx: bundle.manifest.canvas_dimensions.height_px,
         baseSourceSha256: bundle.baseSourceSha256,
@@ -515,6 +526,7 @@ function persistImportedBundle(input: {
   bundlePath: string;
   bundleModifiedAt: string;
   document: BundleDocumentV2;
+  portableMetadata: PortableBundleMetadata;
   widthPx: number;
   heightPx: number;
   baseSourceSha256: string;
@@ -553,7 +565,11 @@ function persistImportedBundle(input: {
     if (projectedDescription !== null) {
       acceptDescription(input.captureId, projectedDescription);
     }
-    writePortableBundleCarrier(input.captureId, input.document);
+    writePortableBundleCarrier(
+      input.captureId,
+      input.document,
+      input.portableMetadata
+    );
 
     db.prepare(
       `UPDATE captures
@@ -582,6 +598,7 @@ export function remapCollidingLayerIds(
   document: BundleDocumentV2;
   layerBytes: Map<string, Buffer>;
   remappedCount: number;
+  layerIdMap: ReadonlyMap<string, string>;
 } {
   const sourceIds = new Set(document.layers.map((layer) => layer.id));
   const assigned = new Set<string>();
@@ -635,7 +652,8 @@ export function remapCollidingLayerIds(
   return {
     document: { ...document, layers },
     layerBytes: remappedBytes,
-    remappedCount
+    remappedCount,
+    layerIdMap: mapping
   };
 }
 

@@ -7,6 +7,7 @@ import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import type { BundleDocumentV2, BundleManifestV2 } from "@pwrsnap/shared";
+import type { PortableBundleMetadata } from "../../persistence/portable-bundle-metadata";
 
 import { packBundleV2 } from "../../persistence/bundle-store";
 import { __setVerifiedFileBeforeOpenHookForTest } from "../../security/verified-file";
@@ -45,6 +46,7 @@ async function validBundle(overrides: {
   document?: Partial<BundleDocumentV2>;
   sources?: Map<string, Buffer>;
   layerBytes?: Map<string, Buffer>;
+  portableMetadata?: PortableBundleMetadata;
 } = {}): Promise<{
   bytes: Buffer;
   manifest: BundleManifestV2;
@@ -190,7 +192,10 @@ async function validBundle(overrides: {
     manifest,
     document,
     sources,
-    layerBytes: overrides.layerBytes ?? new Map()
+    layerBytes: overrides.layerBytes ?? new Map(),
+    ...(overrides.portableMetadata === undefined
+      ? {}
+      : { portableMetadata: overrides.portableMetadata })
   });
   return { bytes, manifest, document, sourceA, sourceB, sourceASha, sourceBSha };
 }
@@ -257,6 +262,52 @@ describe("validatePwrsnapBundleBytes", () => {
     expect(parsed.document.description).toContain("multi-source");
     expect(parsed.document.ai_runs).toHaveLength(1);
     expect(parsed.contentDigest).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test("preserves only bounded portable metadata and fingerprints it", async () => {
+    const portableMetadata: PortableBundleMetadata = {
+      version: 1,
+      manifest: {
+        portable_origin: { device: "other-mac", version: 3 },
+        canvas_dimensions: { portable_color_space: "display-p3" }
+      },
+      document: { portable_workspace: { grid: true } },
+      layers: {
+        vector0000000001: {
+          portable_layer: { tool: "future-shape" },
+          shape: { portable_shape_hint: "keep-with-vector" }
+        }
+      },
+      aiRuns: {
+        "foreign-ai-run": { portable_model_hint: "future-model" }
+      }
+    };
+    const fixture = await validBundle({ portableMetadata });
+    const parsed = await validatePwrsnapBundleBytes(fixture.bytes);
+    expect(parsed.portableMetadata).toEqual(portableMetadata);
+
+    const changed = await validBundle({
+      portableMetadata: {
+        ...portableMetadata,
+        document: { portable_workspace: { grid: false } }
+      }
+    });
+    expect((await validatePwrsnapBundleBytes(changed.bytes)).contentDigest).not.toBe(
+      parsed.contentDigest
+    );
+
+    const rawManifest = {
+      ...fixture.manifest,
+      unrelated_unknown: "discarded",
+      portable_too_large: "x".repeat(70 * 1024)
+    };
+    const oversized = await rawZip([
+      { name: "manifest.json", bytes: Buffer.from(JSON.stringify(rawManifest)) },
+      { name: "document.json", bytes: Buffer.from(JSON.stringify(fixture.document)) }
+    ]);
+    await expect(validatePwrsnapBundleBytes(oversized)).rejects.toMatchObject({
+      code: "portable_metadata_invalid"
+    });
   });
 
   test("uses the first live raster when a multi-source base layer was renamed", async () => {

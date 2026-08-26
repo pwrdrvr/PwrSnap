@@ -10,6 +10,7 @@ import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { BundleDocumentV2, BundleManifestV2 } from "@pwrsnap/shared";
+import type { PortableBundleMetadata } from "../../persistence/portable-bundle-metadata";
 import type {
   VerifiedFileConsumer,
   VerifiedFileOptions
@@ -208,6 +209,7 @@ async function makeBundle(input: {
   color: string;
   description: string;
   layerPrefix?: string;
+  includePortableMetadata?: boolean;
 }): Promise<{
   bytes: Buffer;
   document: BundleDocumentV2;
@@ -215,6 +217,7 @@ async function makeBundle(input: {
   layerPayload: Buffer;
   vectorId: string;
   effectId: string;
+  portableMetadata: PortableBundleMetadata;
 }> {
   const base = await sharp({
     create: { width: 80, height: 50, channels: 4, background: input.color }
@@ -364,17 +367,45 @@ async function makeBundle(input: {
     created_at: createdAt,
     bundle_modified_at: createdAt
   };
+  const portableMetadata: PortableBundleMetadata = input.includePortableMetadata === true
+    ? {
+        version: 1,
+        manifest: {
+          portable_origin: { device: "foreign-device" },
+          canvas_dimensions: { portable_color_space: "display-p3" }
+        },
+        document: { portable_workspace: { grid: true } },
+        layers: {
+          [vectorId]: {
+            portable_layer: { owner: "vector" },
+            shape: { portable_shape_hint: "round-trip" }
+          }
+        },
+        aiRuns: {
+          "foreign-run": { portable_model_hint: "future-model" }
+        }
+      }
+    : { version: 1, manifest: {}, document: {}, layers: {}, aiRuns: {} };
   const { packBundleV2 } = await import("../../persistence/bundle-store");
   const bytes = await packBundleV2({
     manifest,
     document,
+    portableMetadata,
     sources: new Map([
       [baseSha, base],
       [pastedSha, pasted]
     ]),
     layerBytes: new Map([[vectorId, layerPayload]])
   });
-  return { bytes, document, baseSha, layerPayload, vectorId, effectId };
+  return {
+    bytes,
+    document,
+    baseSha,
+    layerPayload,
+    vectorId,
+    effectId,
+    portableMetadata
+  };
 }
 
 async function writeExternal(name: string, bytes: Buffer): Promise<string> {
@@ -573,7 +604,8 @@ describe("importPwrsnapBundle", () => {
       captureId: "collisioncap0001",
       filename: "collision.png",
       color: "#0000ffff",
-      description: "Incoming"
+      description: "Incoming",
+      includePortableMetadata: true
     });
     const originalPath = await writeExternal("original.pwrsnap", original.bytes);
     const incomingPath = await writeExternal("incoming.pwrsnap", incoming.bytes);
@@ -613,6 +645,22 @@ describe("importPwrsnapBundle", () => {
     expect(copiedVector.superseded_by).toBe(copiedEffect.id);
     expect(copiedConflict.layerBytes.get(copiedVector.id)).toEqual(incoming.layerPayload);
     expect(copiedConflict.layerBytes.has(incoming.vectorId)).toBe(false);
+    expect(copiedConflict.portableMetadata).toEqual({
+      ...incoming.portableMetadata,
+      layers: {
+        [copiedVector.id]: incoming.portableMetadata.layers[incoming.vectorId]
+      }
+    });
+    const carrierMetadata = JSON.parse(
+      (
+        mocks.db!
+          .prepare(
+            "SELECT portable_metadata_json FROM capture_bundle_carriers WHERE capture_id = ?"
+          )
+          .get(conflict.record.id) as { portable_metadata_json: string }
+      ).portable_metadata_json
+    ) as unknown;
+    expect(carrierMetadata).toEqual(copiedConflict.portableMetadata);
     const copiedVectorRow = mocks.db!.prepare(
       "SELECT id, parent_id, superseded_by FROM layers WHERE capture_id = ? AND kind = 'vector'"
     ).get(conflict.record.id) as {
@@ -705,7 +753,8 @@ describe("importPwrsnapBundle", () => {
       captureId: "longfilename0001",
       filename,
       color: "#445566ff",
-      description: "Portable long filename"
+      description: "Portable long filename",
+      includePortableMetadata: true
     });
     const sourcePath = await writeExternal("long-name.pwrsnap", fixture.bytes);
     const { importPwrsnapBundle } = await import("../pwrsnap-import-service");
@@ -724,6 +773,7 @@ describe("importPwrsnapBundle", () => {
     expect(copied.manifest.paired_png_filename).toBe(
       `${ownedName.slice(0, -".pwrsnap".length)}.png`
     );
+    expect(copied.portableMetadata).toEqual(fixture.portableMetadata);
   });
 
   test("reconciles a power loss after final publication without duplicating the capture", async () => {

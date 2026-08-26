@@ -61,6 +61,11 @@ import {
   writePortableBundleCarrier
 } from "./bundle-carrier-repo";
 import {
+  applyPortableBundleMetadata,
+  emptyPortableBundleMetadata,
+  type PortableBundleMetadata
+} from "./portable-bundle-metadata";
+import {
   deletePendingSourcesForCapture,
   PendingSourceMissingError,
   readPendingSourceForCapture
@@ -234,6 +239,8 @@ export async function buildCompositeThumbnail(
 export type PackBundleV2Args = {
   manifest: BundleManifestV2;
   document: BundleDocumentV2;
+  /** Bounded portable_* fields extracted at the verified import boundary. */
+  portableMetadata?: PortableBundleMetadata;
   /**
    * Map sha256 → bytes. Content-addressable; the writer stores each
    * entry at `sources/<sha>.png` and the reader verifies sha256 on
@@ -286,9 +293,14 @@ export type PackBundleV2Args = {
 export async function packBundleV2(args: PackBundleV2Args): Promise<Buffer> {
   const validatedManifest = BundleManifestV2.parse(args.manifest);
   const validatedDocument = BundleDocumentV2.parse(args.document);
+  const portable = applyPortableBundleMetadata(
+    validatedManifest,
+    validatedDocument,
+    args.portableMetadata ?? emptyPortableBundleMetadata()
+  );
 
-  const manifestBuf = Buffer.from(JSON.stringify(validatedManifest));
-  const documentBuf = Buffer.from(JSON.stringify(validatedDocument));
+  const manifestBuf = Buffer.from(JSON.stringify(portable.manifestJson));
+  const documentBuf = Buffer.from(JSON.stringify(portable.documentJson));
 
   return new Promise<Buffer>((resolve, reject) => {
     const zip = new yazl.ZipFile();
@@ -1288,6 +1300,7 @@ async function runRepackV2(captureId: string): Promise<void> {
     const bundleBuf = await packBundleV2({
       manifest,
       document,
+      ...(carrier === null ? {} : { portableMetadata: carrier.portableMetadata }),
       sources,
       layerBytes: portable.layerBytes,
       thumbnailJpg
@@ -1299,7 +1312,7 @@ async function runRepackV2(captureId: string): Promise<void> {
       bundle_modified_at: now,
       bundle_edits_version: record.edits_version
     });
-    writePortableBundleCarrier(captureId, document);
+    writePortableBundleCarrier(captureId, document, carrier?.portableMetadata);
     await deletePendingSourcesForCapture(captureId, sources.keys()).catch((cause) => {
       log.warn("bundle-store: v2 repack pending-source cleanup failed", {
         captureId,

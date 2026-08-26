@@ -21,6 +21,11 @@ import {
   VerifiedFileError,
   withVerifiedFileHandle
 } from "../security/verified-file";
+import {
+  extractPortableBundleMetadata,
+  PortableBundleMetadataError,
+  type PortableBundleMetadata
+} from "../persistence/portable-bundle-metadata";
 
 // The archive, expanded assets, repacked output, and image decode can coexist
 // briefly in Electron's main process. Keep each carrier bounded so a valid-at-
@@ -73,6 +78,7 @@ export type ValidatedPwrsnapBundle = {
   legacyCompositePng: Buffer | null;
   baseSourceSha256: string;
   contentDigest: string;
+  portableMetadata: PortableBundleMetadata;
   openedFileIdentity: {
     dev: string;
     ino: string;
@@ -206,6 +212,24 @@ async function validateOpenedPwrsnapBundle(
     } catch (cause) {
       throw corrupt("document_schema_invalid", "The layer document is malformed.", cause);
     }
+    let portableMetadata: PortableBundleMetadata;
+    try {
+      portableMetadata = extractPortableBundleMetadata(
+        manifestJson,
+        manifest,
+        documentJson,
+        document
+      );
+    } catch (cause) {
+      if (cause instanceof PortableBundleMetadataError) {
+        throw corrupt(
+          "portable_metadata_invalid",
+          "The bundle contains portable metadata outside supported safety bounds.",
+          cause
+        );
+      }
+      throw cause;
+    }
     validateLayerGraph(document.layers);
     validateAiRunIds(document);
 
@@ -254,7 +278,8 @@ async function validateOpenedPwrsnapBundle(
       manifest,
       document,
       sources,
-      layerBytes
+      layerBytes,
+      portableMetadata
     });
 
     return {
@@ -268,6 +293,7 @@ async function validateOpenedPwrsnapBundle(
       legacyCompositePng,
       baseSourceSha256,
       contentDigest,
+      portableMetadata,
       openedFileIdentity: null
     };
   } finally {
@@ -775,6 +801,7 @@ function logicalContentDigest(input: {
   document: BundleDocument;
   sources: ReadonlyMap<string, Buffer>;
   layerBytes: ReadonlyMap<string, Buffer>;
+  portableMetadata: PortableBundleMetadata;
 }): string {
   const layerIds = new Map(input.document.layers.map((layer, index) => [layer.id, `L${index}`]));
   const runIds = new Map(input.document.ai_runs.map((run, index) => [run.id, `A${index}`]));
@@ -791,6 +818,21 @@ function logicalContentDigest(input: {
     ...run,
     id: runIds.get(run.id)
   }));
+  const canonicalPortableMetadata = {
+    ...input.portableMetadata,
+    layers: Object.fromEntries(
+      Object.entries(input.portableMetadata.layers).map(([id, metadata]) => [
+        layerIds.get(id) ?? id,
+        metadata
+      ])
+    ),
+    aiRuns: Object.fromEntries(
+      Object.entries(input.portableMetadata.aiRuns).map(([id, metadata]) => [
+        runIds.get(id) ?? id,
+        metadata
+      ])
+    )
+  };
   const logical = {
     created_at: input.manifest.created_at,
     canvas_dimensions: input.manifest.canvas_dimensions,
@@ -799,6 +841,7 @@ function logicalContentDigest(input: {
       layers: canonicalLayers,
       ai_runs: canonicalRuns
     },
+    portable_metadata: canonicalPortableMetadata,
     sources: [...input.sources.keys()].sort(),
     layer_payloads: [...input.layerBytes.entries()]
       .map(([id, bytes]) => [layerIds.get(id), sha256(bytes)] as const)

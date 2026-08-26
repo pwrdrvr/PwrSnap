@@ -8,6 +8,7 @@ import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { BundleDocumentV2, BundleManifestV2 } from "@pwrsnap/shared";
+import type { PortableBundleMetadata } from "../../persistence/portable-bundle-metadata";
 
 const mocks = vi.hoisted(() => ({
   db: null as Database.Database | null,
@@ -160,6 +161,20 @@ describe("imported v2 ordinary repack", () => {
       created_at: createdAt,
       bundle_modified_at: createdAt
     };
+    const portableMetadata: PortableBundleMetadata = {
+      version: 1,
+      manifest: { portable_origin: { device: "foreign-device" } },
+      document: { portable_workspace: { mode: "future" } },
+      layers: {
+        [historyId]: {
+          portable_history: { reason: "kept" },
+          shape: { portable_shape_hint: "opaque-v2" }
+        }
+      },
+      aiRuns: {
+        "foreign-run": { portable_model_hint: "future-model" }
+      }
+    };
     const bundlePath = join(workDir, "portable-roundtrip.pwrsnap");
     mocks.compositePath = join(workDir, "composite.png");
     await fs.writeFile(mocks.compositePath, source);
@@ -171,6 +186,7 @@ describe("imported v2 ordinary repack", () => {
       await packBundleV2({
         manifest,
         document,
+        portableMetadata,
         sources: new Map([[sha, source]]),
         layerBytes: new Map([[historyId, layerPayload]])
       })
@@ -208,7 +224,7 @@ describe("imported v2 ordinary repack", () => {
     insertImportedLayerTreeForCapture(captureId, document.layers);
     for (const tag of document.tags) addUserTag(captureId, tag);
     acceptDescription(captureId, fullDescription.slice(0, 2_000));
-    writePortableBundleCarrier(captureId, document);
+    writePortableBundleCarrier(captureId, document, portableMetadata);
     mocks.db!
       .prepare(
         "UPDATE captures SET edits_version = 10, bundle_edits_version = 9 WHERE id = ?"
@@ -232,6 +248,7 @@ describe("imported v2 ordinary repack", () => {
     expect(repacked.document.tags).toEqual(["Portable", "History"]);
     expect(repacked.document.description).toBe(fullDescription);
     expect(repacked.document.ai_runs).toEqual(document.ai_runs);
+    expect(repacked.portableMetadata).toEqual(portableMetadata);
     expect(repacked.layerBytes.get(historyId)).toEqual(layerPayload);
     expect(repacked.sources.get(sha)).toEqual(source);
   }, 15_000);

@@ -25,6 +25,8 @@
 import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import {
+  existsSync,
+  mkdirSync,
   readFileSync,
   readdirSync,
   mkdtempSync,
@@ -35,6 +37,7 @@ import {
   symlinkSync,
   truncateSync
 } from "node:fs";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PASTE_IMAGE_MAX_BYTES } from "@pwrsnap/shared";
@@ -43,13 +46,24 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 let testDb: Database.Database;
 let tmpDataRoot: string;
 
+const mocks = vi.hoisted(() => ({
+  persistenceFailure: null as Error | null,
+  materializeWait: null as Promise<void> | null,
+  materialized: vi.fn(),
+  windows: new Map<number, unknown>(),
+  logError: vi.fn(),
+  logInfo: vi.fn(),
+  logWarn: vi.fn()
+}));
+
 vi.mock("../../persistence/db", () => ({
   getDb: () => testDb
 }));
 
 vi.mock("electron", () => ({
   BrowserWindow: {
-    getAllWindows: () => []
+    getAllWindows: () => [],
+    fromId: (id: number) => mocks.windows.get(id) ?? null
   },
   clipboard: {
     // Per-test, the test overrides this via the helper below.
@@ -61,6 +75,37 @@ vi.mock("electron", () => ({
   }
 }));
 
+vi.mock("../../log", () => ({
+  getMainLogger: () => ({
+    error: mocks.logError,
+    info: mocks.logInfo,
+    warn: mocks.logWarn
+  })
+}));
+
+vi.mock("../../persistence/pending-source-store", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../persistence/pending-source-store")>();
+  return {
+    ...actual,
+    materializePendingSourceForCapture: async (
+      captureId: string,
+      sha: string,
+      bytes: Buffer
+    ) => {
+      if (mocks.persistenceFailure !== null) throw mocks.persistenceFailure;
+      const materialization = await actual.materializePendingSourceForCapture(
+        captureId,
+        sha,
+        bytes
+      );
+      mocks.materialized();
+      if (mocks.materializeWait !== null) await mocks.materializeWait;
+      return materialization;
+    }
+  };
+});
+
 const repackCalls: string[] = [];
 vi.mock("../../persistence/bundle-store", () => ({
   scheduleRepack: (captureId: string): void => {
@@ -71,6 +116,7 @@ vi.mock("../../persistence/bundle-store", () => ({
 // Stub the worker client so we don't spawn worker_threads in tests.
 const workerInputs: unknown[] = [];
 let beforeWorker: (() => void) | null = null;
+let workerWait: Promise<void> | null = null;
 let workerResponse: {
   ok: boolean;
   code?: string;
@@ -84,6 +130,7 @@ vi.mock("../../workers/paste-image-worker-client", () => ({
   runPasteImageWorker: async (input: unknown) => {
     beforeWorker?.();
     workerInputs.push(input);
+    if (workerWait !== null) await workerWait;
     return workerResponse;
   }
 }));
@@ -202,6 +249,20 @@ function setClipboardImage(
   });
 }
 
+function installSourceWindow(id: number): EventEmitter {
+  const webContents = new EventEmitter();
+  Object.assign(webContents, {
+    isDestroyed: () => false,
+    send: vi.fn()
+  });
+  mocks.windows.set(id, {
+    id,
+    isDestroyed: () => false,
+    webContents
+  });
+  return webContents;
+}
+
 beforeEach(() => {
   testDb = new Database(":memory:");
   testDb.pragma("foreign_keys = ON");
@@ -209,6 +270,14 @@ beforeEach(() => {
   repackCalls.length = 0;
   workerInputs.length = 0;
   beforeWorker = null;
+  workerWait = null;
+  mocks.persistenceFailure = null;
+  mocks.materializeWait = null;
+  mocks.materialized.mockReset();
+  mocks.windows.clear();
+  mocks.logError.mockReset();
+  mocks.logInfo.mockReset();
+  mocks.logWarn.mockReset();
   tmpDataRoot = mkdtempSync(
     join(realpathSync(tmpdir()), "pwrsnap-editor-test-")
   );
@@ -318,6 +387,26 @@ describe("editor:pasteImageAsLayer", () => {
     expect(result.error.code).toBe("image_decode_failed");
   });
 
+  test("worker rejects non-raster decoder → image_unsupported_format", async () => {
+    seedV2Capture("cap_format", "/tmp/cap_format.pwrsnap");
+    setClipboardImage(Buffer.from([0x89, 0x50]));
+    workerResponse = {
+      ok: false,
+      code: "unsupported_format",
+      message: "decoded format svg is not allowed"
+    };
+    const result = await bus.dispatch(
+      "editor:pasteImageAsLayer",
+      { captureId: "cap_format" },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected error");
+    expect(result.error.code).toBe("image_unsupported_format");
+    expect(result.error.message).toBe("Image format is not supported");
+    expect(result.error.message).not.toContain("svg");
+  });
+
   test("happy path → layer inserted, layerId returned, repack scheduled", async () => {
     seedV2Capture("cap_d", "/tmp/cap_d.pwrsnap");
     setClipboardImage(Buffer.from([0x89, 0x50]));
@@ -350,6 +439,37 @@ describe("editor:pasteImageAsLayer", () => {
       readFileSync(join(tmpDataRoot, "pending-sources", "cap_d", `${WORKER_PNG_SHA}.png`))
     ).toEqual(WORKER_PNG_BYTES);
   });
+
+  test("persistence failure is path-free in both Result and logs", async () => {
+    seedV2Capture("cap_pf", "/tmp/cap_pf.pwrsnap");
+    setClipboardImage(Buffer.from([0x89, 0x50]));
+    const privatePath = join(tmpDataRoot, "pending-sources", "private.png");
+    mocks.persistenceFailure = Object.assign(
+      new Error(`ENOSPC: no space left on device, open '${privatePath}'`),
+      { code: "ENOSPC" }
+    );
+
+    const result = await bus.dispatch(
+      "editor:pasteImageAsLayer",
+      { captureId: "cap_pf" },
+      { principal: "ipc" }
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        kind: "persistence",
+        code: "insert_failed",
+        message: "Unable to add image layer"
+      }
+    });
+    expect(JSON.stringify(mocks.logError.mock.calls)).not.toContain(privatePath);
+    expect(mocks.logError).toHaveBeenCalledWith(
+      "editor:pasteImageAsLayer persistence failed",
+      { captureId: "cap_pf", code: "insert_failed" }
+    );
+    expect(repackCalls).not.toContain("cap_pf");
+  });
 });
 
 describe("editor:dropImageAsLayer", () => {
@@ -359,7 +479,7 @@ describe("editor:dropImageAsLayer", () => {
     writeFileSync(path, Buffer.from([0x89, 0x50]));
     const result = await bus.dispatch(
       "editor:dropImageAsLayer",
-      { captureId: "cap_v1", filePath: path },
+      { captureId: "cap_v1", filePath: path, operationId: "op_v1" },
       { principal: "ipc" }
     );
     expect(result.ok).toBe(false);
@@ -375,7 +495,7 @@ describe("editor:dropImageAsLayer", () => {
     symlinkSync(target, link);
     const result = await bus.dispatch(
       "editor:dropImageAsLayer",
-      { captureId: "cap_e", filePath: link },
+      { captureId: "cap_e", filePath: link, operationId: "op_symlink" },
       { principal: "ipc" }
     );
     expect(result.ok).toBe(false);
@@ -393,7 +513,7 @@ describe("editor:dropImageAsLayer", () => {
     const missing = join(tmpDataRoot, "nope.png");
     const result = await bus.dispatch(
       "editor:dropImageAsLayer",
-      { captureId: "cap_f", filePath: missing },
+      { captureId: "cap_f", filePath: missing, operationId: "op_missing" },
       { principal: "ipc" }
     );
     expect(result.ok).toBe(false);
@@ -409,7 +529,7 @@ describe("editor:dropImageAsLayer", () => {
     truncateSync(path, PASTE_IMAGE_MAX_BYTES + 1);
     const result = await bus.dispatch(
       "editor:dropImageAsLayer",
-      { captureId: "cap_size", filePath: path },
+      { captureId: "cap_size", filePath: path, operationId: "op_size" },
       { principal: "ipc" }
     );
     expect(result.ok).toBe(false);
@@ -427,7 +547,13 @@ describe("editor:dropImageAsLayer", () => {
     writeFileSync(path, sourceBytes);
     const result = await bus.dispatch(
       "editor:dropImageAsLayer",
-      { captureId: "cap_g", filePath: path, positionXn: 0.5, positionYn: 0.5 },
+      {
+        captureId: "cap_g",
+        filePath: path,
+        operationId: "op_happy",
+        positionXn: 0.5,
+        positionYn: 0.5
+      },
       { principal: "ipc" }
     );
     expect(result.ok).toBe(true);
@@ -439,6 +565,413 @@ describe("editor:dropImageAsLayer", () => {
     expect(Buffer.from(wi.bytes)).toEqual(sourceBytes);
     expect(wi).not.toHaveProperty("path");
     expect(repackCalls).toContain("cap_g");
+  });
+
+  test("persistence failure is path-free in both Result and logs", async () => {
+    seedV2Capture("cap_df", "/tmp/cap_df.pwrsnap");
+    const inputPath = join(tmpDataRoot, "drop.png");
+    writeFileSync(inputPath, Buffer.from([0x89, 0x50, 0x11, 0x22]));
+    const privatePath = join(tmpDataRoot, "pending-sources", "private.png");
+    mocks.persistenceFailure = Object.assign(
+      new Error(`EACCES: permission denied, rename '${privatePath}.tmp' -> '${privatePath}'`),
+      { code: "EACCES" }
+    );
+
+    const result = await bus.dispatch(
+      "editor:dropImageAsLayer",
+      {
+        captureId: "cap_df",
+        filePath: inputPath,
+        operationId: "op_drop_fail"
+      },
+      { principal: "ipc" }
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        kind: "persistence",
+        code: "insert_failed",
+        message: "Unable to add image layer"
+      }
+    });
+    expect(JSON.stringify(mocks.logError.mock.calls)).not.toContain(privatePath);
+    expect(mocks.logError).toHaveBeenCalledWith(
+      "editor:dropImageAsLayer persistence failed",
+      { captureId: "cap_df", code: "insert_failed" }
+    );
+    expect(repackCalls).not.toContain("cap_df");
+  });
+
+  test("cancel during decode prevents insertion into the old capture", async () => {
+    seedV2Capture("cap_cancel", "/tmp/cap_cancel.pwrsnap");
+    const path = join(tmpDataRoot, "cancel.png");
+    writeFileSync(path, Buffer.from([0x89, 0x50, 0x11, 0x22]));
+    let releaseWorker!: () => void;
+    workerWait = new Promise<void>((resolve) => {
+      releaseWorker = resolve;
+    });
+
+    const dropPromise = bus.dispatch(
+      "editor:dropImageAsLayer",
+      {
+        captureId: "cap_cancel",
+        filePath: path,
+        operationId: "op_cancel"
+      },
+      { principal: "ipc" }
+    );
+    await vi.waitFor(() => expect(workerInputs).toHaveLength(1));
+    const cancelled = await bus.dispatch(
+      "editor:cancelDropImageImport",
+      { operationId: "op_cancel" },
+      { principal: "ipc" }
+    );
+    expect(cancelled).toEqual({ ok: true, value: { cancelled: true } });
+    releaseWorker();
+
+    const result = await dropPromise;
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected cancellation");
+    expect(result.error.code).toBe("drop_cancelled");
+    expect(
+      testDb
+        .prepare<[string], { count: number }>(
+          `SELECT COUNT(*) AS count FROM layers WHERE capture_id = ? AND kind = 'raster'`
+        )
+        .get("cap_cancel")?.count
+    ).toBe(0);
+    expect(repackCalls).not.toContain("cap_cancel");
+  });
+
+  test("renderer teardown cancels an owned decode before insertion", async () => {
+    seedV2Capture("cap_destroy", "/tmp/cap_destroy.pwrsnap");
+    const path = join(tmpDataRoot, "destroy.png");
+    writeFileSync(path, Buffer.from([0x89, 0x50, 0x11, 0x22]));
+    const webContents = installSourceWindow(41);
+    let releaseWorker!: () => void;
+    workerWait = new Promise<void>((resolve) => {
+      releaseWorker = resolve;
+    });
+
+    const dropPromise = bus.dispatch(
+      "editor:dropImageAsLayer",
+      {
+        captureId: "cap_destroy",
+        filePath: path,
+        operationId: "op_destroy"
+      },
+      { principal: "ipc", sourceWindowId: 41 }
+    );
+    await vi.waitFor(() => expect(workerInputs).toHaveLength(1));
+    webContents.emit("destroyed");
+    releaseWorker();
+
+    const result = await dropPromise;
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "drop_cancelled" }
+    });
+    expect(
+      testDb
+        .prepare<[string], { count: number }>(
+          `SELECT COUNT(*) AS count FROM layers WHERE capture_id = ? AND kind = 'raster'`
+        )
+        .get("cap_destroy")?.count
+    ).toBe(0);
+    expect(repackCalls).not.toContain("cap_destroy");
+  });
+
+  test("main-frame navigation cancels an owned decode before reload", async () => {
+    seedV2Capture("cap_reload", "/tmp/cap_reload.pwrsnap");
+    const path = join(tmpDataRoot, "reload.png");
+    writeFileSync(path, Buffer.from([0x89, 0x50, 0x11, 0x22]));
+    const webContents = installSourceWindow(44);
+    let releaseWorker!: () => void;
+    workerWait = new Promise<void>((resolve) => {
+      releaseWorker = resolve;
+    });
+
+    const dropPromise = bus.dispatch(
+      "editor:dropImageAsLayer",
+      {
+        captureId: "cap_reload",
+        filePath: path,
+        operationId: "op_reload"
+      },
+      { principal: "ipc", sourceWindowId: 44 }
+    );
+    await vi.waitFor(() => expect(workerInputs).toHaveLength(1));
+    webContents.emit(
+      "did-start-navigation",
+      {},
+      "pwrsnap://renderer/index.html",
+      false,
+      true
+    );
+    releaseWorker();
+
+    await expect(dropPromise).resolves.toMatchObject({
+      ok: false,
+      error: { code: "drop_cancelled" }
+    });
+    expect(repackCalls).not.toContain("cap_reload");
+  });
+
+  test("source-window lock survives capture remount until the old worker settles", async () => {
+    seedV2Capture("cap_old", "/tmp/cap_old.pwrsnap");
+    seedV2Capture("cap_new", "/tmp/cap_new.pwrsnap");
+    const oldPath = join(tmpDataRoot, "old.png");
+    const newPath = join(tmpDataRoot, "new.png");
+    writeFileSync(oldPath, Buffer.from([0x89, 0x50, 0x01]));
+    writeFileSync(newPath, Buffer.from([0x89, 0x50, 0x02]));
+    installSourceWindow(42);
+    let releaseWorker!: () => void;
+    workerWait = new Promise<void>((resolve) => {
+      releaseWorker = resolve;
+    });
+
+    const oldDrop = bus.dispatch(
+      "editor:dropImageAsLayer",
+      {
+        captureId: "cap_old",
+        filePath: oldPath,
+        operationId: "op_old"
+      },
+      { principal: "ipc", sourceWindowId: 42 }
+    );
+    await vi.waitFor(() => expect(workerInputs).toHaveLength(1));
+
+    const replacementDrop = await bus.dispatch(
+      "editor:dropImageAsLayer",
+      {
+        captureId: "cap_new",
+        filePath: newPath,
+        operationId: "op_new"
+      },
+      { principal: "ipc", sourceWindowId: 42 }
+    );
+    expect(replacementDrop).toMatchObject({
+      ok: false,
+      error: { code: "drop_in_progress" }
+    });
+    expect(workerInputs).toHaveLength(1);
+
+    await bus.dispatch(
+      "editor:cancelDropImageImport",
+      { operationId: "op_old" },
+      { principal: "ipc", sourceWindowId: 42 }
+    );
+    releaseWorker();
+    await expect(oldDrop).resolves.toMatchObject({
+      ok: false,
+      error: { code: "drop_cancelled" }
+    });
+  });
+
+  test("finish releases the source-window lock after a sequential batch", async () => {
+    seedV2Capture("cap_bwin", "/tmp/cap_bwin.pwrsnap");
+    seedV2Capture("cap_after", "/tmp/cap_after.pwrsnap");
+    const firstPath = join(tmpDataRoot, "batch-window-first.png");
+    const secondPath = join(tmpDataRoot, "batch-window-second.png");
+    writeFileSync(firstPath, Buffer.from([0x89, 0x50, 0x01]));
+    writeFileSync(secondPath, Buffer.from([0x89, 0x50, 0x02]));
+    installSourceWindow(46);
+    const context = { principal: "ipc" as const, sourceWindowId: 46 };
+
+    const first = await bus.dispatch(
+      "editor:dropImageAsLayer",
+      {
+        captureId: "cap_bwin",
+        filePath: firstPath,
+        operationId: "op_batch_window"
+      },
+      context
+    );
+    const second = await bus.dispatch(
+      "editor:dropImageAsLayer",
+      {
+        captureId: "cap_bwin",
+        filePath: secondPath,
+        operationId: "op_batch_window"
+      },
+      context
+    );
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+
+    await expect(
+      bus.dispatch(
+        "editor:dropImageAsLayer",
+        {
+          captureId: "cap_after",
+          filePath: secondPath,
+          operationId: "op_blocked_until_finish"
+        },
+        context
+      )
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "drop_in_progress" }
+    });
+    await expect(
+      bus.dispatch(
+        "editor:finishDropImageImport",
+        { operationId: "op_batch_window" },
+        context
+      )
+    ).resolves.toEqual({ ok: true, value: { finished: true } });
+
+    await expect(
+      bus.dispatch(
+        "editor:dropImageAsLayer",
+        {
+          captureId: "cap_after",
+          filePath: secondPath,
+          operationId: "op_after_finish"
+        },
+        context
+      )
+    ).resolves.toMatchObject({ ok: true });
+    await bus.dispatch(
+      "editor:finishDropImageImport",
+      { operationId: "op_after_finish" },
+      context
+    );
+  });
+
+  test("cancellation rolls back newly materialized pending and cache files", async () => {
+    seedV2Capture("cap_roll", "/tmp/cap_roll.pwrsnap");
+    const path = join(tmpDataRoot, "rollback.png");
+    writeFileSync(path, Buffer.from([0x89, 0x50, 0x11, 0x22]));
+    installSourceWindow(43);
+    let releaseMaterialize!: () => void;
+    mocks.materializeWait = new Promise<void>((resolve) => {
+      releaseMaterialize = resolve;
+    });
+
+    const dropPromise = bus.dispatch(
+      "editor:dropImageAsLayer",
+      {
+        captureId: "cap_roll",
+        filePath: path,
+        operationId: "op_rollback"
+      },
+      { principal: "ipc", sourceWindowId: 43 }
+    );
+    await vi.waitFor(() => expect(mocks.materialized).toHaveBeenCalledOnce());
+    await bus.dispatch(
+      "editor:cancelDropImageImport",
+      { operationId: "op_rollback" },
+      { principal: "ipc", sourceWindowId: 43 }
+    );
+    releaseMaterialize();
+
+    await expect(dropPromise).resolves.toMatchObject({
+      ok: false,
+      error: { code: "drop_cancelled" }
+    });
+    const pendingPath = join(
+      tmpDataRoot,
+      "pending-sources",
+      "cap_roll",
+      `${WORKER_PNG_SHA}.png`
+    );
+    const cachePath = join(
+      tmpDataRoot,
+      "render-cache",
+      "cap_roll",
+      `${WORKER_PNG_SHA}.png`
+    );
+    expect(existsSync(pendingPath)).toBe(false);
+    expect(existsSync(cachePath)).toBe(false);
+  });
+
+  test("cancellation preserves source files that predated the operation", async () => {
+    seedV2Capture("cap_keep", "/tmp/cap_keep.pwrsnap");
+    const inputPath = join(tmpDataRoot, "keep.png");
+    writeFileSync(inputPath, Buffer.from([0x89, 0x50, 0x11, 0x22]));
+    const pendingPath = join(
+      tmpDataRoot,
+      "pending-sources",
+      "cap_keep",
+      `${WORKER_PNG_SHA}.png`
+    );
+    const cachePath = join(
+      tmpDataRoot,
+      "render-cache",
+      "cap_keep",
+      `${WORKER_PNG_SHA}.png`
+    );
+    mkdirSync(join(tmpDataRoot, "pending-sources", "cap_keep"), {
+      recursive: true
+    });
+    mkdirSync(join(tmpDataRoot, "render-cache", "cap_keep"), {
+      recursive: true
+    });
+    writeFileSync(pendingPath, WORKER_PNG_BYTES);
+    writeFileSync(cachePath, WORKER_PNG_BYTES);
+    installSourceWindow(45);
+    let releaseMaterialize!: () => void;
+    mocks.materializeWait = new Promise<void>((resolve) => {
+      releaseMaterialize = resolve;
+    });
+
+    const dropPromise = bus.dispatch(
+      "editor:dropImageAsLayer",
+      {
+        captureId: "cap_keep",
+        filePath: inputPath,
+        operationId: "op_keep"
+      },
+      { principal: "ipc", sourceWindowId: 45 }
+    );
+    await vi.waitFor(() => expect(mocks.materialized).toHaveBeenCalledOnce());
+    await bus.dispatch(
+      "editor:cancelDropImageImport",
+      { operationId: "op_keep" },
+      { principal: "ipc", sourceWindowId: 45 }
+    );
+    releaseMaterialize();
+
+    await expect(dropPromise).resolves.toMatchObject({
+      ok: false,
+      error: { code: "drop_cancelled" }
+    });
+    expect(readFileSync(pendingPath)).toEqual(WORKER_PNG_BYTES);
+    expect(readFileSync(cachePath)).toEqual(WORKER_PNG_BYTES);
+  });
+
+  test("sequential drops preserve input order as increasing visual z-order", async () => {
+    seedV2Capture("cap_batch", "/tmp/cap_batch.pwrsnap");
+    const firstPath = join(tmpDataRoot, "first.png");
+    const secondPath = join(tmpDataRoot, "second.png");
+    writeFileSync(firstPath, Buffer.from([0x89, 0x50, 0x01]));
+    writeFileSync(secondPath, Buffer.from([0x89, 0x50, 0x02]));
+
+    const first = await bus.dispatch(
+      "editor:dropImageAsLayer",
+      { captureId: "cap_batch", filePath: firstPath, operationId: "op_batch" },
+      { principal: "ipc" }
+    );
+    const second = await bus.dispatch(
+      "editor:dropImageAsLayer",
+      { captureId: "cap_batch", filePath: secondPath, operationId: "op_batch" },
+      { principal: "ipc" }
+    );
+
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    if (!first.ok || !second.ok) throw new Error("expected both drops to succeed");
+    const rows = testDb
+      .prepare<[string, string], { id: string; z_index: number }>(
+        `SELECT id, z_index FROM layers WHERE id IN (?, ?)`
+      )
+      .all(first.value.layerId, second.value.layerId);
+    const zById = new Map(rows.map((row) => [row.id, row.z_index]));
+    expect(zById.get(first.value.layerId)).toBeLessThan(
+      zById.get(second.value.layerId) ?? -1
+    );
   });
 
   test("replacing the leaf after secure read cannot change worker input", async () => {
@@ -456,7 +989,7 @@ describe("editor:dropImageAsLayer", () => {
 
     const result = await bus.dispatch(
       "editor:dropImageAsLayer",
-      { captureId: "cap_swap", filePath: path },
+      { captureId: "cap_swap", filePath: path, operationId: "op_swap" },
       { principal: "ipc" }
     );
 

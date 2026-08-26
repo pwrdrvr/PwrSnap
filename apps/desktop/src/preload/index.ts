@@ -14,7 +14,7 @@
 // fully typed with autocomplete. See apps/desktop/src/renderer/src/lib/
 // command-bus.ts (Phase 1.4) for the renderer-side helper.
 
-import { contextBridge, ipcRenderer, webFrame } from "electron";
+import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 
 // **Re-enable pinch gestures.** Electron disables visual zoom by
 // default, and "disabled" here means more than "no zooming
@@ -67,6 +67,7 @@ import type {
 } from "@pwrsnap/shared/protocol";
 import type { PerfMarkPayload } from "@pwrsnap/shared/ipc";
 import { parseAppearanceArg } from "@pwrsnap/shared/appearance-arg";
+import { resolveDroppedFilePath } from "./dropped-file-path";
 
 // Internal (non-command-bus) channel for the region selector to commit
 // its result back to main. Kept narrow: the preload exposes one
@@ -147,6 +148,14 @@ const pwrsnapApi = {
     chrome: process.versions.chrome,
     electron: process.versions.electron,
     node: process.versions.node
+  },
+  /**
+   * Resolve one user-selected/dropped browser File to its backing path.
+   * Electron 32 removed File.path; webUtils is the supported replacement.
+   * Expose this one operation, never the Electron or webUtils objects.
+   */
+  getPathForFile(file: File): string {
+    return resolveDroppedFilePath(file, webUtils.getPathForFile);
   },
   /**
    * Dispatch a command-bus command. Returns the typed Result envelope

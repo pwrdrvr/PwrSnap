@@ -36,6 +36,7 @@ export default defineConfig({
             "scripts/**/*.test.mjs",
             "apps/desktop/scripts/**/*.test.mjs",
             "apps/desktop/src/main/**/__tests__/**/*.test.ts",
+            "apps/desktop/src/preload/**/__tests__/**/*.test.ts",
             "apps/desktop/src/test-setup/**/__tests__/**/*.test.ts"
           ],
           setupFiles: ["apps/desktop/src/test-setup/outbound-fetch-guard.ts"]

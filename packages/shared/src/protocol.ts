@@ -3821,10 +3821,22 @@ export type Commands = {
     req: {
       captureId: string;
       filePath: string;
+      /** Whole-gesture token used to cancel an in-flight decode before insert. */
+      operationId: string;
       positionXn?: number;
       positionYn?: number;
     };
     res: { layerId: string };
+  };
+  /** Abort an active drop operation after editor unmount or record switch. */
+  "editor:cancelDropImageImport": {
+    req: { operationId: string };
+    res: { cancelled: boolean };
+  };
+  /** Release the main-process single-flight guard after a whole drop gesture. */
+  "editor:finishDropImageImport": {
+    req: { operationId: string };
+    res: { finished: boolean };
   };
 
   // ---- settings ----

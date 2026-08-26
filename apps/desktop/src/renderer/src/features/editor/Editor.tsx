@@ -132,6 +132,7 @@ import {
 } from "./editor-types";
 import type { PasteImagePosition } from "./usePasteImage";
 import { useDropImage } from "./useDropImage";
+import { formatDropProgress, formatDropSummary } from "./drop-image-status";
 import { computeNewOrder, diffChanges, moveToIndex } from "./z-order";
 import {
   filterSelectionToAliveOrInFlight,
@@ -3193,6 +3194,8 @@ export function Editor({
         return "Image dimensions invalid or exceed cap";
       case "image_decode_failed":
         return "Image failed to decode";
+      case "image_unsupported_format":
+        return "Unsupported image format";
       case "image_read_failed":
         return "Image bytes unreadable";
       case "unsafe_symlink":
@@ -6097,8 +6100,23 @@ function EditorLoaded({
     canvasEl: canvasRef.current,
     onError: (error) => {
       setPasteNotice({ text: formatPasteError(error), tone: "error" });
+    },
+    onCompleted: (summary) => {
+      // Single-file success needs no toast; failures already route through
+      // onError. Batch drops always report the exact landed/requested count,
+      // including files beyond the hard gesture cap.
+      if (summary.requestedCount <= 1) return;
+      const importedCount = summary.importedLayerIds.length;
+      setPasteNotice({
+        text: formatDropSummary(summary, formatPasteError),
+        tone: importedCount === summary.requestedCount ? "info" : "error"
+      });
     }
   });
+  const visiblePasteNotice =
+    drop.progress === null
+      ? pasteNotice
+      : { text: formatDropProgress(drop.progress), tone: "info" as const };
 
   // -------------------- ToolStylePopover anchor + open state -------
   //
@@ -6314,9 +6332,12 @@ function EditorLoaded({
         onDragLeave={drop.onDragLeave}
         onDrop={(e) => void drop.onDrop(e)}
         data-testid="editor-canvas-wrap"
+        aria-busy={drop.isImporting}
+        data-drop-importing={drop.isImporting ? "true" : "false"}
       >
         <div
           ref={canvasRef}
+          data-testid="editor-canvas"
           className={
             "editor-canvas" +
             // Until useZoomPan's layout effect measures the wrap and
@@ -6657,14 +6678,14 @@ function EditorLoaded({
             (v1-only, oversize, decode failure, symlink reject) for a
             short window. Auto-clears after 3.5s via the timer effect
             in the outer component. */}
-        {pasteNotice !== null && (
+        {visiblePasteNotice !== null && (
           <div
-            className={`pse-paste-notice is-${pasteNotice.tone}`}
+            className={`pse-paste-notice is-${visiblePasteNotice.tone}`}
             data-testid="paste-notice"
             role="status"
             aria-live="polite"
           >
-            {pasteNotice.text}
+            {visiblePasteNotice.text}
           </div>
         )}
         {/* Right-click context menu over the canvas. Rendered as a

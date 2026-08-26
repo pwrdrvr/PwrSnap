@@ -126,11 +126,13 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private var audioInput: AVAssetWriterInput?
     private var micInput: AVAssetWriterInput?
     private var micSession: AVCaptureSession?
+    // Retain the sample-buffer delegate explicitly for the full
+    // recording so callback lifetime is not coupled to AVFoundation's
+    // delegate ownership behavior.
+    private var micForwarder: MicForwarder?
     private var startedAtCMTime: CMTime = .invalid
     private var startedAtWallClock: Date = Date()
     private var outputURL: URL?
-    private var hasSystemAudio = false
-    private var hasMicrophoneAudio = false
     private var firstSampleWritten = false
     private let writeQueue = DispatchQueue(label: "pwrsnap.recorder.write")
     /// Sample counters for end-of-recording diagnostics. The
@@ -147,7 +149,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     /// recorder — mic capture runs through AVCaptureSession — but
     /// counted so a stray sample shows up in the stop() diag totals
     /// rather than getting swallowed by an `@unknown default`.
-    private var microphoneSamplesReceived: Int = 0
+    private var screenCaptureKitMicrophoneSamplesReceived: Int = 0
     /// Lifecycle phase observable by the SCStreamDelegate. Without
     /// this, didStopWithError can't tell whether the delegate fired
     /// during the openStream startup window (in which case we want
@@ -218,7 +220,6 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             cfg.sampleRate = 48_000
             cfg.channelCount = 2
             cfg.excludesCurrentProcessAudio = true
-            hasSystemAudio = true
         }
 
         // NOTE: SCStream construction + addStreamOutput is DEFERRED
@@ -292,8 +293,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             mi.expectsMediaDataInRealTime = true
             if writer.canAdd(mi) { writer.add(mi) }
             micInput = mi
-            await setUpMicrophoneCapture(into: mi)
-            hasMicrophoneAudio = true
+            await setUpMicrophoneCapture(into: mi, writer: writer)
         }
 
         // Sleep until the requested wall-clock capture time. The TS
@@ -503,7 +503,10 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         return err.domain == "com.apple.ScreenCaptureKit.SCStreamErrorDomain" && err.code == -3805
     }
 
-    private func setUpMicrophoneCapture(into input: AVAssetWriterInput) async {
+    private func setUpMicrophoneCapture(
+        into input: AVAssetWriterInput,
+        writer: AVAssetWriter
+    ) async {
         let session = AVCaptureSession()
         session.sessionPreset = .high
         guard let device = AVCaptureDevice.default(for: .audio),
@@ -513,7 +516,9 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         if session.canAddInput(micInputDevice) { session.addInput(micInputDevice) }
         let micOutput = AVCaptureAudioDataOutput()
         if session.canAddOutput(micOutput) { session.addOutput(micOutput) }
-        micOutput.setSampleBufferDelegate(MicForwarder(input: input), queue: writeQueue)
+        let forwarder = MicForwarder(input: input, writer: writer)
+        micForwarder = forwarder
+        micOutput.setSampleBufferDelegate(forwarder, queue: writeQueue)
         session.startRunning()
         micSession = session
     }
@@ -531,7 +536,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             // here — mic capture goes through AVCaptureSession in
             // setUpMicrophoneCapture(). Counted distinctly so future
             // mic-via-SCStream work is visible in the diag totals.
-            microphoneSamplesReceived += 1
+            screenCaptureKitMicrophoneSamplesReceived += 1
         @unknown default: break
         }
         guard CMSampleBufferDataIsReady(buf) else { return }
@@ -605,7 +610,8 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             }
         case .microphone:
             // Mic samples from SCStream (macOS 14+) are deliberately
-            // ignored — see microphoneSamplesReceived for why. If we
+            // ignored — see screenCaptureKitMicrophoneSamplesReceived
+            // for why. If we
             // ever consolidate mic capture into SCStream, route the
             // append here. Until then dropping is correct.
             break
@@ -615,7 +621,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func stop() async {
-        diag("stop() entered videoSamples=\(videoSamplesReceived)/\(videoSamplesAppended) audioSamples=\(audioSamplesReceived)/\(audioSamplesAppended) microphoneSamples=\(microphoneSamplesReceived) firstSampleWritten=\(firstSampleWritten)")
+        diag("stop() entered videoSamples=\(videoSamplesReceived)/\(videoSamplesAppended) audioSamples=\(audioSamplesReceived)/\(audioSamplesAppended) scMicrophoneSamples=\(screenCaptureKitMicrophoneSamplesReceived) firstSampleWritten=\(firstSampleWritten)")
         guard let s = stream, let writer = assetWriter else {
             diag("stop() guard failed: stream=\(stream != nil) writer=\(assetWriter != nil)")
             return
@@ -627,6 +633,12 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             diag("stopCapture() threw: \(error) — continuing to finalize")
         }
         micSession?.stopRunning()
+        // Drain callbacks already queued by AVCapture before reading
+        // the counters or marking the writer inputs finished.
+        writeQueue.sync { }
+        let microphoneSamplesReceived = micForwarder?.samplesReceived ?? 0
+        let microphoneSamplesAppended = micForwarder?.samplesAppended ?? 0
+        diag("microphone samples=\(microphoneSamplesReceived)/\(microphoneSamplesAppended)")
 
         videoInput?.markAsFinished()
         audioInput?.markAsFinished()
@@ -649,8 +661,10 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             "event": "stopped",
             "durationSec": durationSec,
             "containerFormat": "mp4",
-            "hasSystemAudio": hasSystemAudio,
-            "hasMicrophoneAudio": hasMicrophoneAudio,
+            // Track flags describe what is actually in the finalized
+            // file, not what the user requested at start time.
+            "hasSystemAudio": audioSamplesAppended > 0,
+            "hasMicrophoneAudio": microphoneSamplesAppended > 0,
             "outputPath": outputURL?.path ?? ""
         ])
     }
@@ -674,9 +688,23 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
 @available(macOS 13.0, *)
 final class MicForwarder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     let input: AVAssetWriterInput
-    init(input: AVAssetWriterInput) { self.input = input }
+    let writer: AVAssetWriter
+    private(set) var samplesReceived: Int = 0
+    private(set) var samplesAppended: Int = 0
+    init(input: AVAssetWriterInput, writer: AVAssetWriter) {
+        self.input = input
+        self.writer = writer
+    }
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        if input.isReadyForMoreMediaData { input.append(sampleBuffer) }
+        samplesReceived += 1
+        // The microphone session starts during the countdown, before
+        // the first screen/system-audio sample starts AVAssetWriter.
+        // Drop that pre-roll instead of appending into an idle writer.
+        if writer.status == .writing &&
+           input.isReadyForMoreMediaData &&
+           input.append(sampleBuffer) {
+            samplesAppended += 1
+        }
     }
 }
 

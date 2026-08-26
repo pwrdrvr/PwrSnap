@@ -157,7 +157,7 @@ export function resolveExportLadder(
       ...high,
       preset,
       available: preset === "med",
-      actual: preset === "med" && high.widthPx === sourceWidth
+      actual: preset === "med"
     }));
   }
 

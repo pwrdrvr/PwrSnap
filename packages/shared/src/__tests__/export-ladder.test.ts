@@ -130,6 +130,16 @@ describe("resolveExportLadder — scaleLogical (Retina export off)", () => {
       widths(resolveExportLadder(oneX, "scalePhysical"))
     );
   });
+
+  it("labels the sole useful logical-resolution fallback as Actual", () => {
+    const tiny = resolveExportLadder(
+      { widthPx: 1200, heightPx: 800, devicePixelRatio: 2 },
+      "scaleLogical"
+    );
+    expect(widths(tiny)).toEqual({ low: 600, med: 600, high: 600 });
+    expect(tiny.map((rung) => rung.available)).toEqual([false, true, false]);
+    expect(rungForPreset(tiny, "med")?.actual).toBe(true);
+  });
 });
 
 describe("resolveExportLadder — invariants", () => {

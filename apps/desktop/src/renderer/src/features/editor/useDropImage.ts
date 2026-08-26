@@ -206,9 +206,10 @@ export function useDropImage(args: UseDropImageArgs): UseDropImageReturn {
           operationId: activeDrop.operationId
         });
       }
-      // Keep the aborted job installed until its in-flight command settles.
-      // A replacement capture therefore cannot start another command loop in
-      // parallel; the old job's finally block releases the single-flight.
+      // This hook instance keeps its local job installed until the in-flight
+      // command settles. If React replaces the instance during loading, main's
+      // source-window lock still rejects a second worker loop until this
+      // operation settles or the renderer is torn down.
     };
   }, [captureId]);
 
@@ -369,9 +370,15 @@ export function useDropImage(args: UseDropImageArgs): UseDropImageReturn {
           truncatedCount: files.length - attempted.length
         });
       } finally {
-        if (activeDropRef.current === activeDrop) {
-          activeDropRef.current = null;
-          if (mountedRef.current) setProgress(null);
+        try {
+          await dispatch("editor:finishDropImageImport", {
+            operationId: activeDrop.operationId
+          });
+        } finally {
+          if (activeDropRef.current === activeDrop) {
+            activeDropRef.current = null;
+            if (mountedRef.current) setProgress(null);
+          }
         }
       }
     },

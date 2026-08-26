@@ -3833,6 +3833,11 @@ export type Commands = {
     req: { operationId: string };
     res: { cancelled: boolean };
   };
+  /** Release the main-process single-flight guard after a whole drop gesture. */
+  "editor:finishDropImageImport": {
+    req: { operationId: string };
+    res: { finished: boolean };
+  };
 
   // ---- settings ----
   "settings:read": { req: Record<string, never>; res: Settings };

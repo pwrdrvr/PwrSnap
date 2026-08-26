@@ -263,7 +263,7 @@ describe("useDropImage", () => {
     );
     await hook.onDrop(event);
     expect(errors).toEqual([{ code: "drop_not_image" }]);
-    expect(dispatchMock).not.toHaveBeenCalled();
+    expect(dropDispatchCalls()).toHaveLength(0);
   });
 
   test("Windows empty-MIME image extension defers to main decoder", async () => {
@@ -346,12 +346,18 @@ describe("useDropImage", () => {
   test("multi-file drop imports sequentially and reports exact completion", async () => {
     let activeDispatches = 0;
     let maxActiveDispatches = 0;
-    dispatchMock.mockImplementation(async (_name: string, req: { filePath: string }) => {
+    dispatchMock.mockImplementation(async (name: string, req: { filePath?: string }) => {
+      if (name === "editor:finishDropImageImport") {
+        return { ok: true, value: { finished: true } };
+      }
       activeDispatches += 1;
       maxActiveDispatches = Math.max(maxActiveDispatches, activeDispatches);
       await Promise.resolve();
       activeDispatches -= 1;
-      return { ok: true, value: { layerId: req.filePath.endsWith("a.png") ? "a" : "b" } };
+      return {
+        ok: true,
+        value: { layerId: req.filePath?.endsWith("a.png") ? "a" : "b" }
+      };
     });
     const completed: unknown[] = [];
     const dropped: string[] = [];
@@ -426,8 +432,8 @@ describe("useDropImage", () => {
     firstResult.resolve({ ok: true, value: { layerId: "first-from-first" } });
     await act(async () => await firstDrop);
 
-    expect(dispatchMock).toHaveBeenCalledTimes(2);
-    expect(dispatchMock.mock.calls.map((call) => call[1].filePath)).toEqual([
+    expect(dropDispatchCalls()).toHaveLength(2);
+    expect(dropDispatchCalls().map((call) => (call[1] as { filePath: string }).filePath)).toEqual([
       "/tmp/a.png",
       "/tmp/b.png"
     ]);
@@ -579,11 +585,11 @@ describe("useDropImage", () => {
         [makeFile("new.png", "image/png", "/tmp/new.png")]
       )
     );
-    expect(dispatchMock).toHaveBeenLastCalledWith("editor:dropImageAsLayer", {
+    expect(dropDispatchCalls().at(-1)).toEqual(["editor:dropImageAsLayer", {
       captureId: "cap_new",
       filePath: "/tmp/new.png",
       operationId: expect.any(String)
-    });
+    }]);
   });
 
   test("unmount aborts callbacks and prevents the rest of the batch", async () => {
@@ -686,7 +692,7 @@ describe("useDropImage", () => {
 
     await hook.onDrop(makeDragEvent(["Files"], files));
 
-    expect(dispatchMock).toHaveBeenCalledTimes(DROP_IMAGE_MAX_FILES);
+    expect(dropDispatchCalls()).toHaveLength(DROP_IMAGE_MAX_FILES);
     expect(completed[0]).toMatchObject({
       requestedCount: DROP_IMAGE_MAX_FILES + 3,
       attemptedCount: DROP_IMAGE_MAX_FILES,

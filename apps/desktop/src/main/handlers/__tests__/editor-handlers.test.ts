@@ -25,6 +25,8 @@
 import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import {
+  existsSync,
+  mkdirSync,
   readFileSync,
   readdirSync,
   mkdtempSync,
@@ -35,6 +37,7 @@ import {
   symlinkSync,
   truncateSync
 } from "node:fs";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PASTE_IMAGE_MAX_BYTES } from "@pwrsnap/shared";
@@ -45,6 +48,9 @@ let tmpDataRoot: string;
 
 const mocks = vi.hoisted(() => ({
   persistenceFailure: null as Error | null,
+  materializeWait: null as Promise<void> | null,
+  materialized: vi.fn(),
+  windows: new Map<number, unknown>(),
   logError: vi.fn(),
   logInfo: vi.fn(),
   logWarn: vi.fn()
@@ -56,7 +62,8 @@ vi.mock("../../persistence/db", () => ({
 
 vi.mock("electron", () => ({
   BrowserWindow: {
-    getAllWindows: () => []
+    getAllWindows: () => [],
+    fromId: (id: number) => mocks.windows.get(id) ?? null
   },
   clipboard: {
     // Per-test, the test overrides this via the helper below.
@@ -85,9 +92,16 @@ vi.mock("../../persistence/pending-source-store", async (importOriginal) => {
       captureId: string,
       sha: string,
       bytes: Buffer
-    ): Promise<void> => {
+    ) => {
       if (mocks.persistenceFailure !== null) throw mocks.persistenceFailure;
-      await actual.materializePendingSourceForCapture(captureId, sha, bytes);
+      const materialization = await actual.materializePendingSourceForCapture(
+        captureId,
+        sha,
+        bytes
+      );
+      mocks.materialized();
+      if (mocks.materializeWait !== null) await mocks.materializeWait;
+      return materialization;
     }
   };
 });
@@ -235,6 +249,20 @@ function setClipboardImage(
   });
 }
 
+function installSourceWindow(id: number): EventEmitter {
+  const webContents = new EventEmitter();
+  Object.assign(webContents, {
+    isDestroyed: () => false,
+    send: vi.fn()
+  });
+  mocks.windows.set(id, {
+    id,
+    isDestroyed: () => false,
+    webContents
+  });
+  return webContents;
+}
+
 beforeEach(() => {
   testDb = new Database(":memory:");
   testDb.pragma("foreign_keys = ON");
@@ -244,6 +272,9 @@ beforeEach(() => {
   beforeWorker = null;
   workerWait = null;
   mocks.persistenceFailure = null;
+  mocks.materializeWait = null;
+  mocks.materialized.mockReset();
+  mocks.windows.clear();
   mocks.logError.mockReset();
   mocks.logInfo.mockReset();
   mocks.logWarn.mockReset();
@@ -611,6 +642,304 @@ describe("editor:dropImageAsLayer", () => {
         .get("cap_cancel")?.count
     ).toBe(0);
     expect(repackCalls).not.toContain("cap_cancel");
+  });
+
+  test("renderer teardown cancels an owned decode before insertion", async () => {
+    seedV2Capture("cap_destroy", "/tmp/cap_destroy.pwrsnap");
+    const path = join(tmpDataRoot, "destroy.png");
+    writeFileSync(path, Buffer.from([0x89, 0x50, 0x11, 0x22]));
+    const webContents = installSourceWindow(41);
+    let releaseWorker!: () => void;
+    workerWait = new Promise<void>((resolve) => {
+      releaseWorker = resolve;
+    });
+
+    const dropPromise = bus.dispatch(
+      "editor:dropImageAsLayer",
+      {
+        captureId: "cap_destroy",
+        filePath: path,
+        operationId: "op_destroy"
+      },
+      { principal: "ipc", sourceWindowId: 41 }
+    );
+    await vi.waitFor(() => expect(workerInputs).toHaveLength(1));
+    webContents.emit("destroyed");
+    releaseWorker();
+
+    const result = await dropPromise;
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "drop_cancelled" }
+    });
+    expect(
+      testDb
+        .prepare<[string], { count: number }>(
+          `SELECT COUNT(*) AS count FROM layers WHERE capture_id = ? AND kind = 'raster'`
+        )
+        .get("cap_destroy")?.count
+    ).toBe(0);
+    expect(repackCalls).not.toContain("cap_destroy");
+  });
+
+  test("main-frame navigation cancels an owned decode before reload", async () => {
+    seedV2Capture("cap_reload", "/tmp/cap_reload.pwrsnap");
+    const path = join(tmpDataRoot, "reload.png");
+    writeFileSync(path, Buffer.from([0x89, 0x50, 0x11, 0x22]));
+    const webContents = installSourceWindow(44);
+    let releaseWorker!: () => void;
+    workerWait = new Promise<void>((resolve) => {
+      releaseWorker = resolve;
+    });
+
+    const dropPromise = bus.dispatch(
+      "editor:dropImageAsLayer",
+      {
+        captureId: "cap_reload",
+        filePath: path,
+        operationId: "op_reload"
+      },
+      { principal: "ipc", sourceWindowId: 44 }
+    );
+    await vi.waitFor(() => expect(workerInputs).toHaveLength(1));
+    webContents.emit(
+      "did-start-navigation",
+      {},
+      "pwrsnap://renderer/index.html",
+      false,
+      true
+    );
+    releaseWorker();
+
+    await expect(dropPromise).resolves.toMatchObject({
+      ok: false,
+      error: { code: "drop_cancelled" }
+    });
+    expect(repackCalls).not.toContain("cap_reload");
+  });
+
+  test("source-window lock survives capture remount until the old worker settles", async () => {
+    seedV2Capture("cap_old", "/tmp/cap_old.pwrsnap");
+    seedV2Capture("cap_new", "/tmp/cap_new.pwrsnap");
+    const oldPath = join(tmpDataRoot, "old.png");
+    const newPath = join(tmpDataRoot, "new.png");
+    writeFileSync(oldPath, Buffer.from([0x89, 0x50, 0x01]));
+    writeFileSync(newPath, Buffer.from([0x89, 0x50, 0x02]));
+    installSourceWindow(42);
+    let releaseWorker!: () => void;
+    workerWait = new Promise<void>((resolve) => {
+      releaseWorker = resolve;
+    });
+
+    const oldDrop = bus.dispatch(
+      "editor:dropImageAsLayer",
+      {
+        captureId: "cap_old",
+        filePath: oldPath,
+        operationId: "op_old"
+      },
+      { principal: "ipc", sourceWindowId: 42 }
+    );
+    await vi.waitFor(() => expect(workerInputs).toHaveLength(1));
+
+    const replacementDrop = await bus.dispatch(
+      "editor:dropImageAsLayer",
+      {
+        captureId: "cap_new",
+        filePath: newPath,
+        operationId: "op_new"
+      },
+      { principal: "ipc", sourceWindowId: 42 }
+    );
+    expect(replacementDrop).toMatchObject({
+      ok: false,
+      error: { code: "drop_in_progress" }
+    });
+    expect(workerInputs).toHaveLength(1);
+
+    await bus.dispatch(
+      "editor:cancelDropImageImport",
+      { operationId: "op_old" },
+      { principal: "ipc", sourceWindowId: 42 }
+    );
+    releaseWorker();
+    await expect(oldDrop).resolves.toMatchObject({
+      ok: false,
+      error: { code: "drop_cancelled" }
+    });
+  });
+
+  test("finish releases the source-window lock after a sequential batch", async () => {
+    seedV2Capture("cap_bwin", "/tmp/cap_bwin.pwrsnap");
+    seedV2Capture("cap_after", "/tmp/cap_after.pwrsnap");
+    const firstPath = join(tmpDataRoot, "batch-window-first.png");
+    const secondPath = join(tmpDataRoot, "batch-window-second.png");
+    writeFileSync(firstPath, Buffer.from([0x89, 0x50, 0x01]));
+    writeFileSync(secondPath, Buffer.from([0x89, 0x50, 0x02]));
+    installSourceWindow(46);
+    const context = { principal: "ipc" as const, sourceWindowId: 46 };
+
+    const first = await bus.dispatch(
+      "editor:dropImageAsLayer",
+      {
+        captureId: "cap_bwin",
+        filePath: firstPath,
+        operationId: "op_batch_window"
+      },
+      context
+    );
+    const second = await bus.dispatch(
+      "editor:dropImageAsLayer",
+      {
+        captureId: "cap_bwin",
+        filePath: secondPath,
+        operationId: "op_batch_window"
+      },
+      context
+    );
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+
+    await expect(
+      bus.dispatch(
+        "editor:dropImageAsLayer",
+        {
+          captureId: "cap_after",
+          filePath: secondPath,
+          operationId: "op_blocked_until_finish"
+        },
+        context
+      )
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "drop_in_progress" }
+    });
+    await expect(
+      bus.dispatch(
+        "editor:finishDropImageImport",
+        { operationId: "op_batch_window" },
+        context
+      )
+    ).resolves.toEqual({ ok: true, value: { finished: true } });
+
+    await expect(
+      bus.dispatch(
+        "editor:dropImageAsLayer",
+        {
+          captureId: "cap_after",
+          filePath: secondPath,
+          operationId: "op_after_finish"
+        },
+        context
+      )
+    ).resolves.toMatchObject({ ok: true });
+    await bus.dispatch(
+      "editor:finishDropImageImport",
+      { operationId: "op_after_finish" },
+      context
+    );
+  });
+
+  test("cancellation rolls back newly materialized pending and cache files", async () => {
+    seedV2Capture("cap_roll", "/tmp/cap_roll.pwrsnap");
+    const path = join(tmpDataRoot, "rollback.png");
+    writeFileSync(path, Buffer.from([0x89, 0x50, 0x11, 0x22]));
+    installSourceWindow(43);
+    let releaseMaterialize!: () => void;
+    mocks.materializeWait = new Promise<void>((resolve) => {
+      releaseMaterialize = resolve;
+    });
+
+    const dropPromise = bus.dispatch(
+      "editor:dropImageAsLayer",
+      {
+        captureId: "cap_roll",
+        filePath: path,
+        operationId: "op_rollback"
+      },
+      { principal: "ipc", sourceWindowId: 43 }
+    );
+    await vi.waitFor(() => expect(mocks.materialized).toHaveBeenCalledOnce());
+    await bus.dispatch(
+      "editor:cancelDropImageImport",
+      { operationId: "op_rollback" },
+      { principal: "ipc", sourceWindowId: 43 }
+    );
+    releaseMaterialize();
+
+    await expect(dropPromise).resolves.toMatchObject({
+      ok: false,
+      error: { code: "drop_cancelled" }
+    });
+    const pendingPath = join(
+      tmpDataRoot,
+      "pending-sources",
+      "cap_roll",
+      `${WORKER_PNG_SHA}.png`
+    );
+    const cachePath = join(
+      tmpDataRoot,
+      "render-cache",
+      "cap_roll",
+      `${WORKER_PNG_SHA}.png`
+    );
+    expect(existsSync(pendingPath)).toBe(false);
+    expect(existsSync(cachePath)).toBe(false);
+  });
+
+  test("cancellation preserves source files that predated the operation", async () => {
+    seedV2Capture("cap_keep", "/tmp/cap_keep.pwrsnap");
+    const inputPath = join(tmpDataRoot, "keep.png");
+    writeFileSync(inputPath, Buffer.from([0x89, 0x50, 0x11, 0x22]));
+    const pendingPath = join(
+      tmpDataRoot,
+      "pending-sources",
+      "cap_keep",
+      `${WORKER_PNG_SHA}.png`
+    );
+    const cachePath = join(
+      tmpDataRoot,
+      "render-cache",
+      "cap_keep",
+      `${WORKER_PNG_SHA}.png`
+    );
+    mkdirSync(join(tmpDataRoot, "pending-sources", "cap_keep"), {
+      recursive: true
+    });
+    mkdirSync(join(tmpDataRoot, "render-cache", "cap_keep"), {
+      recursive: true
+    });
+    writeFileSync(pendingPath, WORKER_PNG_BYTES);
+    writeFileSync(cachePath, WORKER_PNG_BYTES);
+    installSourceWindow(45);
+    let releaseMaterialize!: () => void;
+    mocks.materializeWait = new Promise<void>((resolve) => {
+      releaseMaterialize = resolve;
+    });
+
+    const dropPromise = bus.dispatch(
+      "editor:dropImageAsLayer",
+      {
+        captureId: "cap_keep",
+        filePath: inputPath,
+        operationId: "op_keep"
+      },
+      { principal: "ipc", sourceWindowId: 45 }
+    );
+    await vi.waitFor(() => expect(mocks.materialized).toHaveBeenCalledOnce());
+    await bus.dispatch(
+      "editor:cancelDropImageImport",
+      { operationId: "op_keep" },
+      { principal: "ipc", sourceWindowId: 45 }
+    );
+    releaseMaterialize();
+
+    await expect(dropPromise).resolves.toMatchObject({
+      ok: false,
+      error: { code: "drop_cancelled" }
+    });
+    expect(readFileSync(pendingPath)).toEqual(WORKER_PNG_BYTES);
+    expect(readFileSync(cachePath)).toEqual(WORKER_PNG_BYTES);
   });
 
   test("sequential drops preserve input order as increasing visual z-order", async () => {

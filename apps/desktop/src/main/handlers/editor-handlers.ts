@@ -1,6 +1,6 @@
 // Phase 5 multi-image paste/drop — editor-handlers.
 //
-// Two bus verbs:
+// Image insertion bus verbs:
 //
 //   • editor:pasteImageAsLayer — ⌘V on the editor canvas. Reads the
 //     image bytes off the system clipboard, runs the same 5-defense
@@ -13,6 +13,10 @@
 //     privileged-dir reject) so a hostile drag payload can't redirect
 //     us at credentials or swap the file before the worker consumes it.
 //
+//   • editor:cancelDropImageImport / finishDropImageImport — own a whole
+//     renderer drop gesture in main, including source-window teardown, so a
+//     React remount cannot create concurrent bounded decode workers.
+//
 // Both refuse v1 captures with `v1_capture_use_v2`. The renderer
 // surfaces a toast pointing at the v2-only nature; Phase 6 flipped
 // v2 to the default for new captures so most live captures hit this
@@ -24,7 +28,7 @@
 // immediately; this handler resolves with the layer id when the
 // worker returns.
 
-import { clipboard } from "electron";
+import { BrowserWindow, clipboard, type Event } from "electron";
 import { nanoid } from "nanoid";
 import type { BundleLayerNode } from "@pwrsnap/shared";
 import {
@@ -37,7 +41,11 @@ import { bus } from "../command-bus";
 import { getCaptureById } from "../persistence/captures-repo";
 import { insertLayer, listLayerTree } from "../persistence/layers-repo";
 import { scheduleRepack } from "../persistence/bundle-store";
-import { materializePendingSourceForCapture } from "../persistence/pending-source-store";
+import {
+  materializePendingSourceForCapture,
+  rollbackPendingSourceMaterialization,
+  type PendingSourceMaterialization
+} from "../persistence/pending-source-store";
 import { getMainLogger } from "../log";
 import {
   readSafePastedFile,
@@ -51,10 +59,145 @@ import {
 } from "../image/safe-raster-decode";
 
 const log = getMainLogger("pwrsnap:editor");
-const activeDropImportOperations = new Set<string>();
-const cancelledDropImportOperations = new Set<string>();
+
+type DropImportOperation = {
+  operationId: string;
+  captureId: string;
+  sourceWindowId: number | undefined;
+  activeCommands: number;
+  cancelled: boolean;
+  finished: boolean;
+  detachWindowLifecycle: (() => void) | null;
+};
+
+const dropImportOperations = new Map<string, DropImportOperation>();
+const dropImportOperationByWindow = new Map<number, string>();
 
 class DropImageImportCancelledError extends Error {}
+
+const DROP_IN_PROGRESS_ERROR = {
+  kind: "validation" as const,
+  code: "drop_in_progress",
+  message: "Image import already in progress"
+};
+
+const DROP_CANCELLED_ERROR = {
+  kind: "validation" as const,
+  code: "drop_cancelled",
+  message: "Image import cancelled"
+};
+
+function operationOwnedByWindow(
+  operation: DropImportOperation,
+  sourceWindowId: number | undefined
+): boolean {
+  return operation.sourceWindowId === sourceWindowId;
+}
+
+function releaseDropImportOperation(operation: DropImportOperation): void {
+  if (dropImportOperations.get(operation.operationId) !== operation) return;
+  dropImportOperations.delete(operation.operationId);
+  if (
+    operation.sourceWindowId !== undefined &&
+    dropImportOperationByWindow.get(operation.sourceWindowId) ===
+      operation.operationId
+  ) {
+    dropImportOperationByWindow.delete(operation.sourceWindowId);
+  }
+  operation.detachWindowLifecycle?.();
+  operation.detachWindowLifecycle = null;
+}
+
+function releaseDropImportOperationIfSettled(
+  operation: DropImportOperation
+): void {
+  if (operation.finished && operation.activeCommands === 0) {
+    releaseDropImportOperation(operation);
+  }
+}
+
+function cancelDropImportOperation(operation: DropImportOperation): void {
+  operation.cancelled = true;
+  operation.finished = true;
+  releaseDropImportOperationIfSettled(operation);
+}
+
+function attachDropImportWindowLifecycle(
+  operation: DropImportOperation,
+  sourceWindowId: number
+): boolean {
+  const sourceWindow = BrowserWindow.fromId(sourceWindowId);
+  if (sourceWindow === null || sourceWindow.isDestroyed()) return false;
+  const webContents = sourceWindow.webContents;
+  if (webContents.isDestroyed()) return false;
+
+  const cancel = (): void => cancelDropImportOperation(operation);
+  const onDidStartNavigation = (
+    _event: Event,
+    _url: string,
+    _isInPlace: boolean,
+    isMainFrame: boolean
+  ): void => {
+    if (isMainFrame) cancel();
+  };
+  webContents.once("destroyed", cancel);
+  webContents.on("render-process-gone", cancel);
+  webContents.on("did-start-navigation", onDidStartNavigation);
+  operation.detachWindowLifecycle = () => {
+    webContents.removeListener("destroyed", cancel);
+    webContents.removeListener("render-process-gone", cancel);
+    webContents.removeListener("did-start-navigation", onDidStartNavigation);
+  };
+  return true;
+}
+
+function startDropImportCommand(
+  operationId: string,
+  captureId: string,
+  sourceWindowId: number | undefined
+): DropImportOperation | null {
+  const existing = dropImportOperations.get(operationId);
+  if (existing !== undefined) {
+    if (
+      existing.captureId !== captureId ||
+      !operationOwnedByWindow(existing, sourceWindowId) ||
+      existing.cancelled ||
+      existing.finished ||
+      existing.activeCommands > 0
+    ) {
+      return null;
+    }
+    existing.activeCommands += 1;
+    return existing;
+  }
+
+  if (
+    sourceWindowId !== undefined &&
+    dropImportOperationByWindow.has(sourceWindowId)
+  ) {
+    return null;
+  }
+
+  const operation: DropImportOperation = {
+    operationId,
+    captureId,
+    sourceWindowId,
+    activeCommands: 1,
+    cancelled: false,
+    finished: false,
+    detachWindowLifecycle: null
+  };
+  dropImportOperations.set(operationId, operation);
+  if (sourceWindowId !== undefined) {
+    dropImportOperationByWindow.set(sourceWindowId, operationId);
+    if (!attachDropImportWindowLifecycle(operation, sourceWindowId)) {
+      operation.activeCommands = 0;
+      cancelDropImportOperation(operation);
+      return null;
+    }
+  }
+  return operation;
+}
 
 const IMAGE_LAYER_PERSISTENCE_ERROR = {
   kind: "persistence" as const,
@@ -222,8 +365,21 @@ async function persistRasterFromBytes(args: {
   parentId: string | null;
   beforeInsert?: () => boolean;
 }): Promise<string> {
-  await materializePendingSourceForCapture(args.captureId, args.sha256, args.pngBytes);
+  const materialization = await materializePendingSourceForCapture(
+    args.captureId,
+    args.sha256,
+    args.pngBytes
+  );
+  const rollbackIfUnreferenced = async (): Promise<void> => {
+    if (captureReferencesRasterSource(args.captureId, args.sha256)) return;
+    await rollbackMaterializationPathFree(
+      args.captureId,
+      args.sha256,
+      materialization
+    );
+  };
   if (args.beforeInsert !== undefined && !args.beforeInsert()) {
+    await rollbackIfUnreferenced();
     throw new DropImageImportCancelledError();
   }
 
@@ -267,12 +423,43 @@ async function persistRasterFromBytes(args: {
   // repository resolves MAX(z_index)+gap inside the insert transaction;
   // sequential multi-file drops therefore preserve input order as visual
   // z-order instead of tying every raster at z=0.
-  insertLayer({
-    captureId: args.captureId,
-    node: rasterLayer,
-    bumpZIndexToMax: true
-  });
+  try {
+    insertLayer({
+      captureId: args.captureId,
+      node: rasterLayer,
+      bumpZIndexToMax: true
+    });
+  } catch (cause) {
+    await rollbackIfUnreferenced();
+    throw cause;
+  }
   return rasterId;
+}
+
+function captureReferencesRasterSource(captureId: string, sha: string): boolean {
+  return listLayerTree(captureId).some(
+    (layer) =>
+      layer.kind === "raster" &&
+      layer.source_ref.kind === "embedded" &&
+      layer.source_ref.sha256 === sha
+  );
+}
+
+async function rollbackMaterializationPathFree(
+  captureId: string,
+  sha: string,
+  materialization: PendingSourceMaterialization
+): Promise<void> {
+  try {
+    await rollbackPendingSourceMaterialization(captureId, sha, materialization);
+  } catch {
+    // Preserve the original cancellation/insert error and keep paths out of
+    // durable logs. A cleanup failure is diagnostic, not a renderer contract.
+    log.error("editor: pending source rollback failed", {
+      captureId,
+      code: "rollback_failed"
+    });
+  }
 }
 
 /** Find the canonical root group for a capture so pasted rasters
@@ -408,29 +595,36 @@ export function registerEditorHandlers(): void {
   });
 
   // ── editor:dropImageAsLayer ───────────────────────────────────────
-  bus.register("editor:cancelDropImageImport", async (req) => {
-    const cancelled = activeDropImportOperations.has(req.operationId);
-    if (cancelled) cancelledDropImportOperations.add(req.operationId);
+  bus.register("editor:cancelDropImageImport", async (req, ctx) => {
+    const operation = dropImportOperations.get(req.operationId);
+    const cancelled =
+      operation !== undefined &&
+      operationOwnedByWindow(operation, ctx.sourceWindowId);
+    if (cancelled) cancelDropImportOperation(operation);
     return ok({ cancelled });
   });
 
-  bus.register("editor:dropImageAsLayer", async (req) => {
-    if (activeDropImportOperations.has(req.operationId)) {
-      return err({
-        kind: "validation",
-        code: "drop_in_progress",
-        message: "Image import already in progress"
-      });
+  bus.register("editor:finishDropImageImport", async (req, ctx) => {
+    const operation = dropImportOperations.get(req.operationId);
+    const finished =
+      operation !== undefined &&
+      operationOwnedByWindow(operation, ctx.sourceWindowId);
+    if (finished) {
+      operation.finished = true;
+      releaseDropImportOperationIfSettled(operation);
     }
-    activeDropImportOperations.add(req.operationId);
-    const isCancelled = (): boolean =>
-      cancelledDropImportOperations.has(req.operationId);
-    const cancelledResult = () =>
-      err({
-        kind: "validation" as const,
-        code: "drop_cancelled",
-        message: "Image import cancelled"
-      });
+    return ok({ finished });
+  });
+
+  bus.register("editor:dropImageAsLayer", async (req, ctx) => {
+    const operation = startDropImportCommand(
+      req.operationId,
+      req.captureId,
+      ctx.sourceWindowId
+    );
+    if (operation === null) return err(DROP_IN_PROGRESS_ERROR);
+    const isCancelled = (): boolean => operation.cancelled;
+    const cancelledResult = () => err(DROP_CANCELLED_ERROR);
     try {
       const refusal = refuseIfV1Capture(req.captureId);
       if ("kind" in refusal) return err(refusal);
@@ -524,8 +718,12 @@ export function registerEditorHandlers(): void {
         return persistenceFailureResult("dropImageAsLayer", req.captureId);
       }
     } finally {
-      activeDropImportOperations.delete(req.operationId);
-      cancelledDropImportOperations.delete(req.operationId);
+      operation.activeCommands -= 1;
+      // Non-window transports do not have a renderer gesture lifecycle. Keep
+      // their historical one-command scope while IPC-owned batches remain
+      // locked until finish/cancel/window teardown.
+      if (operation.sourceWindowId === undefined) operation.finished = true;
+      releaseDropImportOperationIfSettled(operation);
     }
   });
 }

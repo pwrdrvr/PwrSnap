@@ -348,9 +348,13 @@ export function preflightPackagedWindowsSmokeRequest(
     throw new Error("packaged Windows smoke refuses a development renderer URL");
   }
   const requireFfmpegValue = env[PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG_ENV];
-  if (requireFfmpegValue !== undefined && requireFfmpegValue !== "1") {
+  if (
+    requireFfmpegValue !== undefined &&
+    requireFfmpegValue !== "" &&
+    requireFfmpegValue !== "1"
+  ) {
     throw new Error(
-      `${PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG_ENV} must be unset or exactly 1`
+      `${PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG_ENV} must be unset, empty, or exactly 1`
     );
   }
 

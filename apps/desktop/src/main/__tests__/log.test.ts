@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => {
     format: "",
     level: "silly" as string | false,
     maxSize: 0,
+    sync: true,
     transforms: [],
     getFile: vi.fn(() => ({ path: "/tmp/pwrsnap/main.log" }))
   });
@@ -71,6 +72,7 @@ describe("initializeMainLogger", () => {
     mocks.fileTransport.format = "";
     mocks.fileTransport.level = "silly";
     mocks.fileTransport.maxSize = 0;
+    mocks.fileTransport.sync = true;
     mocks.fileTransport.transforms = [];
     mocks.electronLog.hooks.length = 0;
     mocks.electronLog.scope.labelPadding = true;
@@ -115,8 +117,12 @@ describe("initializeMainLogger", () => {
   });
 
   test("keeps file logging configured when console logging is disabled", async () => {
-    const { initializeMainLogger, MAIN_LOG_FILE_LEVEL, MAIN_LOG_FILE_MAX_SIZE_BYTES } =
-      await import("../log");
+    const {
+      initializeMainLogger,
+      MAIN_LOG_FILE_LEVEL,
+      MAIN_LOG_FILE_MAX_SIZE_BYTES,
+      MAIN_LOG_FILE_SYNC
+    } = await import("../log");
     initializeMainLogger();
 
     process.stderr.emit("error", makeBrokenPipeError());
@@ -124,6 +130,8 @@ describe("initializeMainLogger", () => {
     expect(mocks.consoleTransport.level).toBe(false);
     expect(mocks.fileTransport.level).toBe(MAIN_LOG_FILE_LEVEL);
     expect(mocks.fileTransport.maxSize).toBe(MAIN_LOG_FILE_MAX_SIZE_BYTES);
+    expect(mocks.fileTransport.sync).toBe(MAIN_LOG_FILE_SYNC);
+    expect(mocks.fileTransport.sync).toBe(false);
     expect(mocks.electronLog.hooks).toHaveLength(1);
     expect(mocks.electronLog.scope.labelPadding).toBe(false);
   });

@@ -23,15 +23,22 @@ beforeAll(() => {
 });
 
 type ModePayload = {
+  invocationId: number;
   mode: "auto" | "region" | "window";
   screenUrl?: string;
   intent?: "snap" | "video";
+  cursor?: boolean;
+  quickCaptureAction?: "ask" | "snap" | "record";
 };
 type SnapshotPayload = {
+  invocationId: number;
   windows: WindowSnapEntry[];
   displayBounds: { width: number; height: number };
   cursor?: { x: number; y: number };
+  status?: "ready" | "error";
 };
+
+const DEFAULT_INVOCATION_ID = 1001;
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -40,18 +47,25 @@ let modeHandler: ((p: ModePayload) => void) | null = null;
 let snapshotHandler: ((p: SnapshotPayload) => void) | null = null;
 let keyHandler: ((p: { key: string }) => void) | null = null;
 const submitRegion = vi.fn();
+const notifySelectorSnapshotPainted = vi.fn();
+const reportSelectorPerformance = vi.fn();
+let nextAnimationFrameId = 1;
+let animationFrames = new Map<number, FrameRequestCallback>();
 
 function installSelectorApi(): void {
   modeHandler = null;
   snapshotHandler = null;
   keyHandler = null;
   submitRegion.mockReset();
+  notifySelectorSnapshotPainted.mockReset();
+  reportSelectorPerformance.mockReset();
   window.pwrsnapApi = {
     platform: "test",
     versions: { chrome: "", electron: "", node: "" },
     dispatch: vi.fn(),
     on: vi.fn(() => () => undefined),
     submitRegion,
+    notifySelectorSnapshotPainted,
     onWindowListSnapshot: (h: (p: SnapshotPayload) => void) => {
       snapshotHandler = h;
       return () => undefined;
@@ -69,11 +83,12 @@ function installSelectorApi(): void {
     startCaptureDrag: vi.fn(),
     startVideoDrag: vi.fn(),
     reportSelectorDiagnostics: vi.fn(),
+    reportSelectorPerformance,
     perfMark: vi.fn()
   } as unknown as NonNullable<Window["pwrsnapApi"]>;
 }
 
-async function mount(): Promise<void> {
+async function mount(options: { activate?: boolean } = {}): Promise<void> {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -83,9 +98,22 @@ async function mount(): Promise<void> {
   await act(async () => {
     await Promise.resolve();
   });
+  if (options.activate !== false) {
+    await emitMode({ mode: "auto", invocationId: DEFAULT_INVOCATION_ID });
+  }
 }
 
 beforeEach(() => {
+  nextAnimationFrameId = 1;
+  animationFrames = new Map();
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    const id = nextAnimationFrameId++;
+    animationFrames.set(id, callback);
+    return id;
+  });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => {
+    animationFrames.delete(id);
+  });
   installSelectorApi();
 });
 
@@ -98,9 +126,22 @@ afterEach(async () => {
   root = null;
   // Clear the body attributes the component stamps so state never
   // leaks across tests.
-  for (const k of ["interaction", "snap", "spaceHeld", "fullWindow", "mode", "discarding"]) {
+  for (const k of [
+    "interaction",
+    "snap",
+    "spaceHeld",
+    "fullWindow",
+    "mode",
+    "discarding",
+    "windowListCount",
+    "windowListReady",
+    "windowListState",
+    "snapshotState",
+    "choosing"
+  ]) {
     delete document.body.dataset[k];
   }
+  vi.restoreAllMocks();
 });
 
 // --- event + query helpers (shared across unit describes) -----------
@@ -167,6 +208,27 @@ async function emitKey(key: string): Promise<void> {
   });
 }
 
+async function emitSnapshotImageEvent(type: "load" | "error"): Promise<void> {
+  const image = container?.querySelector("img");
+  if (!(image instanceof HTMLImageElement)) throw new Error("snapshot image not found");
+  await act(async () => {
+    image.dispatchEvent(new Event(type));
+  });
+}
+
+async function flushAnimationFrame(): Promise<void> {
+  const callbacks = Array.from(animationFrames.values());
+  animationFrames.clear();
+  await act(async () => {
+    for (const callback of callbacks) callback(0);
+  });
+}
+
+async function flushDoubleAnimationFrame(): Promise<void> {
+  await flushAnimationFrame();
+  await flushAnimationFrame();
+}
+
 // Real-time delay, used to let the Escape de-dupe guard (a ~50ms timer)
 // disarm between a step-back and a deliberate second Escape. Kept just
 // above ESCAPE_DEDUPE_MS so the second press is honored.
@@ -181,6 +243,45 @@ async function drawRect(): Promise<void> {
   await mouseDown(100, 100);
   await mouseMove(300, 300);
   await mouseUp(300, 300);
+}
+
+async function openAskChooser(cursor = true): Promise<void> {
+  await emitMode({
+    invocationId: DEFAULT_INVOCATION_ID + 1,
+    mode: "auto",
+    intent: "snap",
+    cursor,
+    quickCaptureAction: "ask"
+  });
+  await drawRect();
+  await keyDown("Enter");
+}
+
+function chooser(): HTMLElement {
+  const el = container?.querySelector('[data-testid="region-capture-chooser"]');
+  if (!(el instanceof HTMLElement)) throw new Error("capture chooser not found");
+  return el;
+}
+
+function choiceButton(action: "snap" | "record"): HTMLButtonElement {
+  const el = container?.querySelector(`[data-testid="region-capture-choice-${action}"]`);
+  if (!(el instanceof HTMLButtonElement)) throw new Error(`${action} choice not found`);
+  return el;
+}
+
+function cursorToggleButton(): HTMLButtonElement {
+  const el = container?.querySelector('[data-testid="region-capture-cursor-toggle"]');
+  if (!(el instanceof HTMLButtonElement)) throw new Error("record cursor toggle not found");
+  return el;
+}
+
+async function clickButton(button: HTMLButtonElement): Promise<void> {
+  await act(async () => {
+    button.dispatchEvent(
+      new MouseEvent("mousedown", { button: 0, bubbles: true, cancelable: true })
+    );
+    button.click();
+  });
 }
 
 function regionHintText(): string {
@@ -212,10 +313,20 @@ const WIN: WindowSnapEntry = {
   rawRect: { x: 200, y: 150, w: 400, h: 300 }
 };
 
+const WIN_B: WindowSnapEntry = {
+  ...WIN,
+  windowId: 4343,
+  appName: "Other Target App",
+  zIndex: 1,
+  rect: { x: 650, y: 150, w: 300, h: 300 },
+  rawRect: { x: 650, y: 150, w: 300, h: 300 }
+};
+
 /** snap → hover a window → click (no drag) → adjusting with a window
  *  snap. displayBounds = innerSize so the css-to-logical scale is 1. */
 async function adjustWindowSnap(): Promise<void> {
   await emitSnapshot({
+    invocationId: DEFAULT_INVOCATION_ID,
     windows: [WIN],
     displayBounds: { width: window.innerWidth, height: window.innerHeight }
   });
@@ -248,18 +359,19 @@ describe("U1 — crosshair guide-lines", () => {
 
   test("window mode is surfaced as body[data-mode] (the CSS hide signal)", async () => {
     await mount();
-    await emitMode({ mode: "window" });
+    await emitMode({ mode: "window", invocationId: 1 });
     expect(document.body.dataset.mode).toBe("window");
     // auto / region keep the crosshair (attribute is not "window").
-    await emitMode({ mode: "region" });
+    await emitMode({ mode: "region", invocationId: 2 });
     expect(document.body.dataset.mode).toBe("region");
-    await emitMode({ mode: "auto" });
+    await emitMode({ mode: "auto", invocationId: 3 });
     expect(document.body.dataset.mode).toBe("auto");
   });
 
   test("window-list snapshot cursor seeds the crosshair in snap mode", async () => {
     await mount();
     await emitSnapshot({
+      invocationId: DEFAULT_INVOCATION_ID,
       windows: [],
       // displayBounds width == innerWidth → scale 1, so cursor maps 1:1.
       displayBounds: { width: window.innerWidth, height: window.innerHeight },
@@ -276,7 +388,10 @@ describe("U2 — multi-step Escape", () => {
     expect(document.body.dataset.interaction).toBe("snap");
     await keyDown("Escape");
     expect(submitRegion).toHaveBeenCalledTimes(1);
-    expect(submitRegion).toHaveBeenCalledWith({ ok: false });
+    expect(submitRegion).toHaveBeenCalledWith({
+      ok: false,
+      invocationId: DEFAULT_INVOCATION_ID
+    });
   });
 
   test("first Esc from a committed pick steps back to snap without submitting", async () => {
@@ -298,7 +413,10 @@ describe("U2 — multi-step Escape", () => {
     await delay(ESC_GUARD_WAIT_MS); // let the de-dupe guard disarm
     await keyDown("Escape"); // now in snap → exit
     expect(submitRegion).toHaveBeenCalledTimes(1);
-    expect(submitRegion).toHaveBeenCalledWith({ ok: false });
+    expect(submitRegion).toHaveBeenCalledWith({
+      ok: false,
+      invocationId: DEFAULT_INVOCATION_ID
+    });
   });
 
   test("Esc during a staged interior discard clears the dim (no stuck data-discarding)", async () => {
@@ -458,5 +576,488 @@ describe("U4 — border move-band", () => {
     await mouseMove(500, 450);
     await mouseUp(500, 450);
     expect(rectStyle()).toEqual({ left: 200, top: 200, width: 300, height: 250 });
+  });
+});
+
+describe("U5 — window-picker loading and invocation correctness", () => {
+  test("a duplicate list delivery cannot rewind a newer pointer highlight", async () => {
+    await mount();
+    await emitMode({ mode: "window", invocationId: 4 });
+    const payload: SnapshotPayload = {
+      invocationId: 4,
+      status: "ready",
+      windows: [WIN, WIN_B],
+      displayBounds: { width: window.innerWidth, height: window.innerHeight },
+      cursor: { x: 400, y: 300 }
+    };
+
+    await emitSnapshot(payload);
+    expect(document.body.dataset.snap).toBe("window");
+
+    // The user moves to B after the first delivery. A compatibility resend
+    // still carries the trigger-time cursor over A and must be idempotent.
+    await mouseMove(800, 300);
+    await emitSnapshot(payload);
+    await keyDown("Enter");
+
+    expect(submitRegion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ok: true,
+        invocationId: 4,
+        snappedWindowId: WIN_B.windowId,
+        fullWindow: true
+      })
+    );
+  });
+
+  test("a press during loading cannot retain a display target when the list resolves before mouseup", async () => {
+    await mount();
+    await emitMode({ mode: "window", invocationId: 5 });
+
+    await mouseDown(400, 300);
+    expect(document.body.dataset.interaction).toBe("snap");
+
+    await emitSnapshot({
+      invocationId: 5,
+      status: "ready",
+      windows: [WIN],
+      displayBounds: { width: window.innerWidth, height: window.innerHeight },
+      cursor: { x: 400, y: 300 }
+    });
+    await mouseUp(400, 300);
+
+    expect(document.body.dataset.interaction).toBe("snap");
+    expect(document.body.dataset.snap).toBe("window");
+    expect(submitRegion).not.toHaveBeenCalled();
+
+    // A complete click after readiness commits the current HWND normally.
+    await mouseDown(400, 300);
+    await mouseUp(400, 300);
+    expect(submitRegion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ok: true,
+        invocationId: 5,
+        snappedWindowId: WIN.windowId,
+        fullWindow: true
+      })
+    );
+  });
+
+  test("an id-less mode/list payload cannot activate or submit the pre-warmed selector", async () => {
+    await mount({ activate: false });
+
+    await act(async () => {
+      modeHandler?.({ mode: "auto" } as unknown as ModePayload);
+      snapshotHandler?.({
+        windows: [WIN],
+        displayBounds: { width: window.innerWidth, height: window.innerHeight }
+      } as unknown as SnapshotPayload);
+    });
+    await keyDown("Enter");
+    await keyDown("Escape");
+
+    expect(submitRegion).not.toHaveBeenCalled();
+    expect(document.body.dataset.windowListCount).not.toBe("1");
+  });
+
+  test("a new mode invocation immediately clears stale HWND candidates", async () => {
+    await mount();
+    await emitMode({ mode: "window", invocationId: 1 });
+    await emitSnapshot({
+      invocationId: 1,
+      status: "ready",
+      windows: [WIN],
+      displayBounds: { width: window.innerWidth, height: window.innerHeight },
+      cursor: { x: 400, y: 300 }
+    });
+    expect(document.body.dataset.windowListState).toBe("ready");
+    expect(document.body.dataset.snap).toBe("window");
+
+    await emitMode({ mode: "window", invocationId: 2 });
+    expect(document.body.dataset.windowListState).toBe("loading");
+    expect(document.body.dataset.windowListCount).toBe("0");
+    expect(document.body.dataset.snap).toBe("display");
+    expect(container?.querySelector('[data-testid="region-window-status"]')?.textContent).toContain(
+      "Finding open windows"
+    );
+
+    // Moving over the previous invocation's window and pressing Enter
+    // cannot revive or submit its stale HWND geometry.
+    await mouseMove(400, 300);
+    await keyDown("Enter");
+    expect(submitRegion).not.toHaveBeenCalled();
+  });
+
+  test("ignores a mismatched list result and submits only the current invocation", async () => {
+    await mount();
+    await emitMode({ mode: "window", invocationId: 7 });
+
+    await emitSnapshot({
+      invocationId: 6,
+      status: "ready",
+      windows: [WIN],
+      displayBounds: { width: window.innerWidth, height: window.innerHeight },
+      cursor: { x: 400, y: 300 }
+    });
+    expect(document.body.dataset.windowListState).toBe("loading");
+    expect(document.body.dataset.windowListCount).toBe("0");
+
+    await emitSnapshot({
+      invocationId: 7,
+      status: "ready",
+      windows: [WIN],
+      displayBounds: { width: window.innerWidth, height: window.innerHeight },
+      cursor: { x: 400, y: 300 }
+    });
+    expect(document.body.dataset.windowListState).toBe("ready");
+    expect(document.body.dataset.windowListCount).toBe("1");
+    expect(document.body.dataset.snap).toBe("window");
+
+    await keyDown("Enter");
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ok: true,
+        invocationId: 7,
+        snappedWindowId: WIN.windowId,
+        fullWindow: true
+      })
+    );
+  });
+
+  test.each([
+    {
+      name: "empty",
+      payload: { status: "ready" as const, windows: [] as WindowSnapEntry[] },
+      copy: "No capturable windows found"
+    },
+    {
+      name: "error",
+      payload: { status: "error" as const, windows: [] as WindowSnapEntry[] },
+      copy: "Couldn’t inspect open windows"
+    }
+  ])("renders a truthful $name terminal state, blocks Enter, and exposes mouse cancel", async ({ payload, copy }) => {
+    await mount();
+    await emitMode({ mode: "window", invocationId: 11 });
+    await emitSnapshot({
+      invocationId: 11,
+      ...payload,
+      displayBounds: { width: window.innerWidth, height: window.innerHeight }
+    });
+
+    expect(container?.querySelector('[data-testid="region-window-status"]')?.textContent).toContain(
+      copy
+    );
+    await keyDown("Enter");
+    expect(submitRegion).not.toHaveBeenCalled();
+
+    const dismiss = container?.querySelector(".region-window-dismiss");
+    if (!(dismiss instanceof HTMLButtonElement)) throw new Error("window dismiss not found");
+    await act(async () => dismiss.click());
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion).toHaveBeenCalledWith({ ok: false, invocationId: 11 });
+  });
+
+  test("the loading shell exposes an invocation-safe mouse Cancel", async () => {
+    await mount();
+    await emitMode({ mode: "window", invocationId: 13 });
+
+    const cancelButton = container?.querySelector(".region-window-dismiss");
+    if (!(cancelButton instanceof HTMLButtonElement)) throw new Error("window cancel not found");
+    expect(cancelButton.textContent).toBe("Cancel");
+    await act(async () => cancelButton.click());
+
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion).toHaveBeenCalledWith({ ok: false, invocationId: 13 });
+    await keyDown("Escape");
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+  });
+
+  test("auto mode stays display-usable while fresh window candidates load", async () => {
+    await mount();
+    await emitMode({
+      mode: "auto",
+      invocationId: 12,
+      screenUrl: "pwrsnap-screen://r/current"
+    });
+    expect(document.body.dataset.windowListState).toBe("loading");
+    await emitSnapshotImageEvent("load");
+
+    await keyDown("Enter");
+    expect(submitRegion).toHaveBeenCalledWith(
+      expect.objectContaining({ ok: true, invocationId: 12 })
+    );
+  });
+});
+
+describe("U6 — snapshot and paint feedback", () => {
+  test("acknowledges a decoded snapshot only after a guarded paint opportunity", async () => {
+    await mount();
+    await emitMode({
+      mode: "auto",
+      invocationId: 20,
+      screenUrl: "pwrsnap-screen://r/ready"
+    });
+    await emitSnapshotImageEvent("load");
+
+    expect(document.body.dataset.snapshotState).toBe("ready");
+    expect(notifySelectorSnapshotPainted).not.toHaveBeenCalled();
+    await flushAnimationFrame();
+    expect(notifySelectorSnapshotPainted).not.toHaveBeenCalled();
+    await flushAnimationFrame();
+    expect(notifySelectorSnapshotPainted).toHaveBeenCalledWith({
+      screenUrl: "pwrsnap-screen://r/ready",
+      invocationId: 20,
+      status: "painted"
+    });
+  });
+
+  test("a snapshot decode error is opaque/truthful and cannot commit", async () => {
+    await mount();
+    await emitMode({
+      mode: "auto",
+      invocationId: 21,
+      screenUrl: "pwrsnap-screen://r/broken"
+    });
+    await emitSnapshotImageEvent("error");
+
+    expect(document.body.dataset.snapshotState).toBe("error");
+    expect(container?.querySelector('[data-testid="region-snapshot-status"]')?.textContent).toContain(
+      "Couldn’t load the frozen screen"
+    );
+    expect(notifySelectorSnapshotPainted).not.toHaveBeenCalled();
+    await flushAnimationFrame();
+    expect(notifySelectorSnapshotPainted).not.toHaveBeenCalled();
+    await flushAnimationFrame();
+    expect(notifySelectorSnapshotPainted).toHaveBeenCalledWith({
+      screenUrl: "pwrsnap-screen://r/broken",
+      invocationId: 21,
+      status: "error"
+    });
+    await keyDown("Enter");
+    expect(submitRegion).not.toHaveBeenCalled();
+
+    await keyDown("Escape");
+    expect(submitRegion).toHaveBeenCalledWith({ ok: false, invocationId: 21 });
+  });
+
+  test("the snapshot error shell has a Dismiss path and suppresses a stale paint ack", async () => {
+    await mount();
+    await emitMode({
+      mode: "auto",
+      invocationId: 22,
+      screenUrl: "pwrsnap-screen://r/broken-dismiss"
+    });
+    await emitSnapshotImageEvent("error");
+
+    const dismiss = container?.querySelector(".region-snapshot-dismiss");
+    if (!(dismiss instanceof HTMLButtonElement)) throw new Error("Dismiss button not found");
+    await act(async () => {
+      dismiss.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(submitRegion).toHaveBeenCalledWith({ ok: false, invocationId: 22 });
+
+    await flushDoubleAnimationFrame();
+    expect(notifySelectorSnapshotPainted).not.toHaveBeenCalled();
+  });
+
+  test("reports shell paint before terminal window-target paint without a wall-clock assertion", async () => {
+    await mount();
+    await emitMode({ mode: "window", invocationId: 31 });
+
+    expect(reportSelectorPerformance).not.toHaveBeenCalled();
+    await flushDoubleAnimationFrame();
+    expect(reportSelectorPerformance).toHaveBeenNthCalledWith(1, {
+      invocationId: 31,
+      mark: "shell-painted"
+    });
+
+    await emitSnapshot({
+      invocationId: 31,
+      status: "ready",
+      windows: [],
+      displayBounds: { width: window.innerWidth, height: window.innerHeight }
+    });
+    expect(reportSelectorPerformance).toHaveBeenCalledTimes(1);
+    await flushDoubleAnimationFrame();
+    expect(reportSelectorPerformance).toHaveBeenNthCalledWith(2, {
+      invocationId: 31,
+      mark: "window-targets-painted"
+    });
+  });
+
+  test("a superseded invocation cannot report a stale shell paint", async () => {
+    await mount();
+    await emitMode({ mode: "window", invocationId: 40 });
+    await flushAnimationFrame();
+    await emitMode({ mode: "window", invocationId: 41 });
+    await flushDoubleAnimationFrame();
+
+    expect(reportSelectorPerformance).not.toHaveBeenCalledWith({
+      invocationId: 40,
+      mark: "shell-painted"
+    });
+    expect(reportSelectorPerformance).toHaveBeenCalledWith({
+      invocationId: 41,
+      mark: "shell-painted"
+    });
+  });
+});
+
+describe("U7 — Quick Capture Snap-vs-Record chooser", () => {
+  test("anchors a named modal chooser, focuses Snap, and uses platform labels", async () => {
+    window.pwrsnapApi!.platform = "darwin";
+    await mount();
+    await openAskChooser();
+
+    const dialog = chooser();
+    expect(dialog.getAttribute("role")).toBe("dialog");
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(dialog.getAttribute("aria-labelledby")).toBe("region-capture-chooser-title");
+    expect(dialog.querySelector('[role="group"]')?.getAttribute("aria-label")).toBe(
+      "Capture action"
+    );
+    expect(choiceButton("snap").getAttribute("aria-label")).toBe("Snap (Return)");
+    expect(choiceButton("record").getAttribute("aria-label")).toBe("Record (R)");
+    expect(cursorToggleButton().getAttribute("aria-label")).toBe(
+      "Record cursor: on (C)"
+    );
+    expect(document.activeElement).toBe(choiceButton("snap"));
+    expect(dialog.style.left).toBe("60px");
+    expect(dialog.style.top).toBe("310px");
+
+    await emitMode({
+      invocationId: DEFAULT_INVOCATION_ID + 2,
+      mode: "auto",
+      quickCaptureAction: "ask"
+    });
+    window.pwrsnapApi!.platform = "win32";
+    await drawRect();
+    await keyDown("Enter");
+    expect(choiceButton("snap").getAttribute("aria-label")).toBe("Snap (Enter)");
+  });
+
+  test("Snap click submits the frozen selection exactly once", async () => {
+    await mount();
+    await openAskChooser();
+    await clickButton(choiceButton("snap"));
+    await emitKey("Enter");
+
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion).toHaveBeenCalledWith({
+      ok: true,
+      invocationId: DEFAULT_INVOCATION_ID + 1,
+      rect: { x: 100, y: 100, w: 200, h: 200 },
+      displayId: 0,
+      action: "snap"
+    });
+  });
+
+  test("R records with the persisted cursor default and C toggles it off once", async () => {
+    await mount();
+    await openAskChooser(true);
+
+    await keyDown("c");
+    await emitKey("C");
+    expect(cursorToggleButton().getAttribute("aria-pressed")).toBe("false");
+    expect(cursorToggleButton().getAttribute("aria-label")).toBe(
+      "Record cursor: off (C)"
+    );
+    await keyDown("r");
+
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ok: true,
+        invocationId: DEFAULT_INVOCATION_ID + 1,
+        action: "record",
+        captureCursor: false
+      })
+    );
+  });
+
+  test("mouse toggles cursor from Off to On before Record", async () => {
+    await mount();
+    await openAskChooser(false);
+    expect(cursorToggleButton().getAttribute("aria-pressed")).toBe("false");
+    await clickButton(cursorToggleButton());
+    expect(cursorToggleButton().getAttribute("aria-pressed")).toBe("true");
+    await clickButton(choiceButton("record"));
+
+    expect(submitRegion).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "record", captureCursor: true })
+    );
+  });
+
+  test("Escape cancels the chooser without persisting and duplicate paths are inert", async () => {
+    await mount();
+    await openAskChooser();
+    await keyDown("Escape");
+    await emitKey("Escape");
+    await emitKey("r");
+
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion).toHaveBeenCalledWith({
+      ok: false,
+      invocationId: DEFAULT_INVOCATION_ID + 1
+    });
+  });
+
+  test.each([
+    ["snap", "snap"],
+    ["record", "record"]
+  ] as const)("fixed %s policy bypasses the chooser", async (policy, action) => {
+    await mount();
+    await emitMode({
+      invocationId: DEFAULT_INVOCATION_ID + 3,
+      mode: "auto",
+      quickCaptureAction: policy,
+      cursor: false
+    });
+    await drawRect();
+    await keyDown("Enter");
+
+    expect(container?.querySelector('[data-testid="region-capture-chooser"]')).toBeNull();
+    expect(submitRegion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        invocationId: DEFAULT_INVOCATION_ID + 3,
+        action,
+        ...(action === "record" ? { captureCursor: false } : {})
+      })
+    );
+  });
+
+  test("dedupes the Return that opens Ask so a deliberate later Return chooses Snap", async () => {
+    await mount();
+    await openAskChooser();
+    await emitKey("Enter");
+    expect(submitRegion).not.toHaveBeenCalled();
+    await delay(ESC_GUARD_WAIT_MS);
+    await emitKey("Enter");
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "snap" })
+    );
+  });
+
+  test("late window-list delivery cannot mutate the frozen chooser selection", async () => {
+    await mount();
+    await openAskChooser();
+    const frozen = rectStyle();
+    const frozenTop = chooser().style.top;
+
+    await emitSnapshot({
+      invocationId: DEFAULT_INVOCATION_ID + 1,
+      status: "ready",
+      windows: [],
+      displayBounds: { width: window.innerWidth, height: window.innerHeight },
+      cursor: { x: 0, y: 0 }
+    });
+    expect(rectStyle()).toEqual(frozen);
+    expect(chooser().style.top).toBe(frozenTop);
+    await clickButton(choiceButton("record"));
+    expect(submitRegion).toHaveBeenCalledWith(
+      expect.objectContaining({ rect: { x: 100, y: 100, w: 200, h: 200 } })
+    );
   });
 });

@@ -15,8 +15,15 @@ import { execFile } from "node:child_process";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { promisify } from "node:util";
-import { desktopCapturer, screen, type Display } from "electron";
+import {
+  desktopCapturer,
+  screen,
+  type Display,
+  type NativeImage,
+  type Size
+} from "electron";
 import sharp from "sharp";
 import { getMainLogger } from "../log";
 import { classifyCaptureError } from "./permissions";
@@ -26,6 +33,193 @@ const log = getMainLogger("pwrsnap:screencapture");
 const execFileAsync = promisify(execFile);
 
 export type Rect = { x: number; y: number; w: number; h: number };
+
+export type PickerSnapshotMode = "auto" | "region" | "window";
+
+/**
+ * Picker previews are presentation pixels, not capture pixels. A 1920 px
+ * long edge is enough to stay 1:1 on the common 4K-at-200%-scaling Windows
+ * setup while bounding JPEG encode, IPC response, and renderer decode work.
+ */
+export const WINDOWS_PICKER_PREVIEW_MAX_DIMENSION = 1_920;
+const WINDOWS_PICKER_PREVIEW_JPEG_QUALITY = 82;
+
+export type PickerSnapshotStageTimings = {
+  getSourcesMs: number;
+  previewResizeMs: number;
+  previewEncodeMs: number;
+  totalMs: number;
+  requestedSize: Size;
+  sourceSize: Size;
+  previewSize: Size;
+  previewByteSize: number;
+  retainedFullImage: boolean;
+};
+
+export type WindowsPickerSnapshotCapture = {
+  previewBytes: Buffer;
+  previewMimeType: "image/jpeg";
+  /**
+   * Trigger-time native pixels retained only when the eventual commit crops
+   * this frozen display (auto/region). Pure window mode re-captures the chosen
+   * HWND, so retaining a full display image there only wastes memory.
+   */
+  fullImage: NativeImage | null;
+  displayId: number;
+  displayBounds: { x: number; y: number; width: number; height: number };
+  timings: PickerSnapshotStageTimings;
+};
+
+/** Fit `size` inside a square long-edge cap without upscaling. */
+export function boundedPickerPreviewSize(
+  size: Size,
+  maxDimension = WINDOWS_PICKER_PREVIEW_MAX_DIMENSION
+): Size {
+  const width = Math.max(1, Math.round(Number.isFinite(size.width) ? size.width : 1));
+  const height = Math.max(1, Math.round(Number.isFinite(size.height) ? size.height : 1));
+  const cap = Math.max(1, Math.round(Number.isFinite(maxDimension) ? maxDimension : 1));
+  const scale = Math.min(1, cap / Math.max(width, height));
+  return {
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale))
+  };
+}
+
+/**
+ * Pure requested-size policy for Windows picker capture.
+ *
+ * Window mode only needs a bounded visual preview because commit captures the
+ * selected HWND separately. Auto/region retain trigger-time display pixels for
+ * an exact later crop, so their source request must stay at physical size.
+ */
+export function windowsPickerSourceRequestSize(
+  logicalSize: Size,
+  scaleFactor: number,
+  mode: PickerSnapshotMode,
+  maxPreviewDimension = WINDOWS_PICKER_PREVIEW_MAX_DIMENSION
+): Size {
+  const scale = Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
+  const physical = {
+    width: Math.max(1, Math.round(logicalSize.width * scale)),
+    height: Math.max(1, Math.round(logicalSize.height * scale))
+  };
+  return mode === "window"
+    ? boundedPickerPreviewSize(physical, maxPreviewDimension)
+    : physical;
+}
+
+function elapsedMs(startedAt: number): number {
+  return Math.max(0, performance.now() - startedAt);
+}
+
+async function captureDisplayImage(display: Display, thumbnailSize: Size): Promise<NativeImage> {
+  const sources = await desktopCapturer.getSources({
+    types: ["screen"],
+    thumbnailSize
+  });
+  if (sources.length === 0) {
+    throw new Error("desktopCapturer returned no screen sources");
+  }
+  // Primary match: Electron tags screen sources with `display_id` (the
+  // string form of Display.id) on macOS + Windows. An exact match is
+  // authoritative and the only way to grab the RIGHT monitor on a
+  // multi-display setup.
+  let source = sources.find((candidate) => candidate.display_id === String(display.id));
+  if (source === undefined && sources.length === 1) {
+    // Single monitor: the lone source IS this display, even when
+    // `display_id` comes back empty (observed on some Windows configs /
+    // remote sessions). Unambiguous, so take it without a warning.
+    source = sources[0];
+  }
+  if (source === undefined) {
+    // Multi-monitor with no display_id match. The ordering of
+    // desktopCapturer's sources is NOT guaranteed to align with
+    // screen.getAllDisplays(), so an index fallback can grab the wrong
+    // screen — this is a genuine last resort. Log it so a wrong-monitor
+    // capture is diagnosable instead of silently producing the wrong
+    // pixels.
+    const idx = screen.getAllDisplays().findIndex((candidate) => candidate.id === display.id);
+    source = (idx >= 0 ? sources[idx] : undefined) ?? sources[0];
+    log.warn(
+      "desktopCapturer: no source matched display_id; falling back to index/first source",
+      { displayId: display.id, sourceCount: sources.length, matchedIndex: idx }
+    );
+  }
+  if (source === undefined || source.thumbnail.isEmpty()) {
+    throw new Error("desktopCapturer returned no usable screen source");
+  }
+  return source.thumbnail;
+}
+
+/**
+ * Windows-only frozen picker source. The preview stays in memory; callers keep
+ * the full NativeImage only for modes whose commit crops the trigger-time
+ * display. No PNG or preview temp file is produced on this path.
+ */
+export async function captureWindowsPickerSnapshot(
+  displayId: number,
+  mode: PickerSnapshotMode
+): Promise<WindowsPickerSnapshotCapture> {
+  if (process.platform !== "win32") {
+    throw new Error("Windows picker snapshot requested on a non-Windows platform");
+  }
+  const display = screen.getAllDisplays().find((candidate) => candidate.id === displayId);
+  if (display === undefined) {
+    throw new Error(`unknown display id: ${displayId}`);
+  }
+
+  const totalStartedAt = performance.now();
+  const requestedSize = windowsPickerSourceRequestSize(
+    { width: display.bounds.width, height: display.bounds.height },
+    display.scaleFactor,
+    mode
+  );
+  const getSourcesStartedAt = performance.now();
+  const sourceImage = await captureDisplayImage(display, requestedSize);
+  const getSourcesMs = elapsedMs(getSourcesStartedAt);
+  const sourceSize = sourceImage.getSize();
+
+  const previewSize = boundedPickerPreviewSize(sourceSize);
+  const previewResizeStartedAt = performance.now();
+  const previewImage =
+    previewSize.width === sourceSize.width && previewSize.height === sourceSize.height
+      ? sourceImage
+      : sourceImage.resize({ ...previewSize, quality: "good" });
+  const previewResizeMs = elapsedMs(previewResizeStartedAt);
+
+  const previewEncodeStartedAt = performance.now();
+  const previewBytes = previewImage.toJPEG(WINDOWS_PICKER_PREVIEW_JPEG_QUALITY);
+  const previewEncodeMs = elapsedMs(previewEncodeStartedAt);
+  if (previewBytes.length === 0) {
+    throw new Error("desktopCapturer picker preview was empty");
+  }
+
+  const fullImage = mode === "window" ? null : sourceImage;
+  const timings: PickerSnapshotStageTimings = {
+    getSourcesMs,
+    previewResizeMs,
+    previewEncodeMs,
+    totalMs: elapsedMs(totalStartedAt),
+    requestedSize,
+    sourceSize,
+    previewSize,
+    previewByteSize: previewBytes.length,
+    retainedFullImage: fullImage !== null
+  };
+  log.info("Windows picker snapshot captured", {
+    displayId,
+    mode,
+    ...timings
+  });
+  return {
+    previewBytes,
+    previewMimeType: "image/jpeg",
+    fullImage,
+    displayId,
+    displayBounds: { ...display.bounds },
+    timings
+  };
+}
 
 /**
  * Grab a whole display as a PNG buffer via Electron's `desktopCapturer`
@@ -45,42 +239,8 @@ async function captureDisplayPng(display: Display): Promise<Buffer> {
   // from scaleFactor, to stay robust).
   const width = Math.max(1, Math.round(display.bounds.width * display.scaleFactor));
   const height = Math.max(1, Math.round(display.bounds.height * display.scaleFactor));
-  const sources = await desktopCapturer.getSources({
-    types: ["screen"],
-    thumbnailSize: { width, height }
-  });
-  if (sources.length === 0) {
-    throw new Error("desktopCapturer returned no screen sources");
-  }
-  // Primary match: Electron tags screen sources with `display_id` (the
-  // string form of Display.id) on macOS + Windows. An exact match is
-  // authoritative and the only way to grab the RIGHT monitor on a
-  // multi-display setup.
-  let source = sources.find((s) => s.display_id === String(display.id));
-  if (source === undefined && sources.length === 1) {
-    // Single monitor: the lone source IS this display, even when
-    // `display_id` comes back empty (observed on some Windows configs /
-    // remote sessions). Unambiguous, so take it without a warning.
-    source = sources[0];
-  }
-  if (source === undefined) {
-    // Multi-monitor with no display_id match. The ordering of
-    // desktopCapturer's sources is NOT guaranteed to align with
-    // screen.getAllDisplays(), so an index fallback can grab the wrong
-    // screen — this is a genuine last resort. Log it so a wrong-monitor
-    // capture is diagnosable instead of silently producing the wrong
-    // pixels.
-    const idx = screen.getAllDisplays().findIndex((d) => d.id === display.id);
-    source = (idx >= 0 ? sources[idx] : undefined) ?? sources[0];
-    log.warn(
-      "desktopCapturer: no source matched display_id; falling back to index/first source",
-      { displayId: display.id, sourceCount: sources.length, matchedIndex: idx }
-    );
-  }
-  if (source === undefined) {
-    throw new Error("desktopCapturer returned no usable screen source");
-  }
-  const png = source.thumbnail.toPNG();
+  const image = await captureDisplayImage(display, { width, height });
+  const png = image.toPNG();
   if (png.length === 0) {
     throw new Error("desktopCapturer screen thumbnail was empty");
   }

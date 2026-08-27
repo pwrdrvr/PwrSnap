@@ -68,6 +68,7 @@ import {
   GRID_ZOOM_MAX,
   GRID_ZOOM_MIN,
   MAX_HIGHLIGHT_OPACITY,
+  QUICK_CAPTURE_ACTION_DEFAULT,
   DEFAULT_PARALLELOGRAM_SKEW_DEG,
   DEFAULT_SHAPE_KIND,
   isAiReasoningEffort,
@@ -81,6 +82,7 @@ import {
   isGridCopyPaletteAnchor,
   isLibrarySidebarTab,
   isLocalAgentCapability,
+  isQuickCaptureAction,
   findRoleForCapabilities,
   defaultLocalAgentRoleConstraints,
   isValidRole,
@@ -206,6 +208,10 @@ export function defaultSettings(): Settings {
       capturesLocation: "documents"
     },
     recording: {
+      // Quick Capture asks after selector commit by default so users can
+      // choose a still or a recording without learning another hotkey.
+      // The dedicated Video Capture hotkey bypasses this preference.
+      quickCaptureAction: QUICK_CAPTURE_ACTION_DEFAULT,
       // Audio defaults OFF — recording either source is privacy-
       // relevant; we'd rather have the user explicitly toggle ON
       // for their first MP4 export than silently default to "yes
@@ -824,9 +830,12 @@ function parseV1(raw: unknown, appVersion = ""): Settings | null {
     },
     recording: {
       // `recording.*` landed after v1 shipped; older files won't have
-      // it. Defaults to audio OFF + an empty fingerprint so the
-      // startup permission routing fires once after the first launch
-      // on the new build.
+      // it. Quick Capture defaults to asking, audio defaults OFF, and
+      // an empty fingerprint lets startup permission routing fire once
+      // after the first launch on the new build.
+      quickCaptureAction: isQuickCaptureAction(recording.quickCaptureAction)
+        ? recording.quickCaptureAction
+        : defaults.recording.quickCaptureAction,
       includeSystemAudio: pickBoolean(recording.includeSystemAudio, defaults.recording.includeSystemAudio),
       includeMicrophone: pickBoolean(recording.includeMicrophone, defaults.recording.includeMicrophone),
       // `videoCaptureCursor` / `imageCaptureCursor` landed with the

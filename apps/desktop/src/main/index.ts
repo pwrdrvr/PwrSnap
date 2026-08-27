@@ -12,28 +12,28 @@ import {
   globalShortcut,
   Menu,
   nativeTheme,
-  Notification,
   shell
 } from "electron";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
-import type { RecordingSubject, Settings, SettingsChangedEvent } from "@pwrsnap/shared";
+import type { Settings, SettingsChangedEvent } from "@pwrsnap/shared";
 import {
   disposeRegionSelector,
-  getLastWindowListSnapshot,
   hideSelector,
   pickRegion,
   preWarmRegionSelector
 } from "./capture/region-selector";
-import { releaseSnapshot } from "./capture/screen-snapshot";
-import { activateApp, selfPidSet } from "./capture/window-list";
-import { appWindowsOverlappingRect } from "./capture/rect-overlap";
+import {
+  CAPTURE_TRIGGER_DEBOUNCE_MS,
+  createCaptureTriggerGate
+} from "./capture/capture-trigger-gate";
+import {
+  acquireInteractiveCaptureSession,
+  releaseInteractiveCaptureSession
+} from "./capture/interactive-capture-session";
+import { startRecordingFromSelection } from "./capture/record-selection";
 import { guardScreenCapture } from "./capture/screen-permission-gate";
 import { ensureCapturesDirReady } from "./capture/capture-storage-gate";
 import { reconcileCapturesLocationOnBoot } from "./capture/capture-location-reconciliation";
-import {
-  resolveSelectionSourceApp,
-  shouldConsiderRaisingOurWindows
-} from "./capture/source-app";
 import { getAppIconPath } from "./app-icons/app-icon-cache";
 import {
   disposeFloatOver,
@@ -116,7 +116,10 @@ import {
   installSizzleQuitBarrier,
   isSizzleQuitDeferred
 } from "./sizzle/sizzle-close-barrier";
-import { DesktopSettingsService } from "./settings/desktop-settings-service";
+import {
+  defaultSettings,
+  DesktopSettingsService
+} from "./settings/desktop-settings-service";
 import {
   checkForAppUpdatesNow,
   initAppUpdater,
@@ -685,27 +688,87 @@ async function runPasteFromClipboard(): Promise<void> {
  *  so we can unregister cleanly when a setting changes (the
  *  globalShortcut API doesn't track "who registered what"). */
 const registeredHotkeys = new Map<HotkeyKind, string>();
+const interactiveCaptureTriggerGate = createCaptureTriggerGate();
+// Hotkey registration already reads settings before it installs the live
+// accelerators. Keep the recording subset from that read so Fast Video does
+// not synchronously re-parse settings before it can show the shared picker.
+// Defaults cover the narrow startup window before the first read completes.
+let cachedRecordingSettings: Settings["recording"] = defaultSettings().recording;
+
+function triggerInteractiveCaptureFromHotkey(
+  mode: "auto" | "region" | "window" | "timed",
+  kind: HotkeyKind
+): void {
+  // Synchronous by design: claim the one interactive-capture slot before
+  // command dispatch (or any other awaited work) can yield to another
+  // globalShortcut callback.
+  const decision = interactiveCaptureTriggerGate.acquire();
+  const log = getMainLogger("pwrsnap:shortcut");
+  log.info("interactive capture trigger gate decision", {
+    kind,
+    mode,
+    decision: decision.status,
+    reason: decision.reason,
+    ageMs: decision.ageMs,
+    debounceMs: CAPTURE_TRIGGER_DEBOUNCE_MS
+  });
+  if (decision.status === "suppressed") return;
+
+  void runInteractiveCapture(mode, {
+    kind,
+    shortcutFiredAt: decision.acceptedAtMs
+  })
+    .finally(() => {
+      interactiveCaptureTriggerGate.release(decision.token);
+    })
+    .catch((cause: unknown) => {
+      log.error("interactive capture hotkey failed unexpectedly", {
+        kind,
+        mode,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    });
+}
+
+function triggerInteractiveRecordFromHotkey(kind: HotkeyKind): void {
+  const decision = interactiveCaptureTriggerGate.acquire();
+  const log = getMainLogger("pwrsnap:shortcut");
+  log.info("interactive capture trigger gate decision", {
+    kind,
+    mode: "video",
+    decision: decision.status,
+    reason: decision.reason,
+    ageMs: decision.ageMs,
+    debounceMs: CAPTURE_TRIGGER_DEBOUNCE_MS
+  });
+  if (decision.status === "suppressed") return;
+
+  void runInteractiveRecord()
+    .finally(() => {
+      interactiveCaptureTriggerGate.release(decision.token);
+    })
+    .catch((cause: unknown) => {
+      log.error("interactive video capture hotkey failed unexpectedly", {
+        kind,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    });
+}
 
 function handlerFor(kind: HotkeyKind): () => void {
   const log = getMainLogger("pwrsnap:shortcut");
   switch (kind) {
     case "quickCapture":
       return () => {
-        const shortcutFiredAt = Date.now();
-        log.info("global hotkey fired", { kind, mode: "auto" });
-        void runInteractiveCapture("auto", { kind, shortcutFiredAt });
+        triggerInteractiveCaptureFromHotkey("auto", kind);
       };
     case "region":
       return () => {
-        const shortcutFiredAt = Date.now();
-        log.info("global hotkey fired", { kind, mode: "region" });
-        void runInteractiveCapture("region", { kind, shortcutFiredAt });
+        triggerInteractiveCaptureFromHotkey("region", kind);
       };
     case "window":
       return () => {
-        const shortcutFiredAt = Date.now();
-        log.info("global hotkey fired", { kind, mode: "window" });
-        void runInteractiveCapture("window", { kind, shortcutFiredAt });
+        triggerInteractiveCaptureFromHotkey("window", kind);
       };
     case "fullScreen":
       // Capture the display under the cursor end-to-end (no selector).
@@ -726,9 +789,7 @@ function handlerFor(kind: HotkeyKind): () => void {
       // 5-second countdown, then the auto-mode selector. Routed through
       // `capture:interactive` (mode `"timed"`), same as the tray tile.
       return () => {
-        const shortcutFiredAt = Date.now();
-        log.info("global hotkey fired", { kind, mode: "timed" });
-        void runInteractiveCapture("timed", { kind, shortcutFiredAt });
+        triggerInteractiveCaptureFromHotkey("timed", kind);
       };
     case "videoCapture":
       // Fast Video Capture (issue #64). Opens the selector in auto
@@ -738,8 +799,7 @@ function handlerFor(kind: HotkeyKind): () => void {
       // the explicit "record video" entry point and the existing
       // ⌘⇧C remains the explicit "take a snap" entry point.
       return () => {
-        log.info("global hotkey fired", { kind, mode: "video" });
-        void runInteractiveRecord();
+        triggerInteractiveRecordFromHotkey(kind);
       };
     case "reshowFloatOver":
       // Re-pop the most recent capture's float-over toast (issue: the
@@ -798,6 +858,7 @@ async function wireHotkeyRegistrations(): Promise<void> {
   let currentTrain: Settings["updates"]["train"] = "stable";
   try {
     const settings = await service.read();
+    cachedRecordingSettings = settings.recording;
     setTrayHotkeys(settings.hotkeys);
     applyHotkeys(settings.hotkeys);
     // Pick up the persisted developer-mode flag and re-install the menu
@@ -818,6 +879,7 @@ async function wireHotkeyRegistrations(): Promise<void> {
     train: currentTrain
   }));
   onSettingsChanged((settings) => {
+    cachedRecordingSettings = settings.recording;
     setTrayHotkeys(settings.hotkeys);
     applyHotkeys(settings.hotkeys);
     if (settings.general.developerMode !== lastKnownDeveloperMode) {
@@ -1031,31 +1093,6 @@ function runReshowLastFloatOver(): void {
 }
 
 /**
- * Choose which of the overlapping PwrSnap windows to give keyboard
- * focus when we raise them for a recording. Prefer the Library (the
- * primary user-facing window in this app); fall back to the first
- * entry in the overlap set. `BrowserWindow.getAllWindows()` ordering
- * isn't documented as z-order, so a stable tie-breaker beats letting
- * implementation order decide.
- *
- * Caller invariant: `overlapping` is the result of
- * `appWindowsOverlappingRect` BEFORE the recording HUD has been
- * created. The HUD is only constructed when the state machine enters
- * preflight, which happens *after* this call (inside the awaited
- * `bus.dispatch("recording:start", ...)`), so the HUD can't appear
- * here and we don't need to filter it out. If a future caller invokes
- * this from a code path where the HUD is live, pass `excludeWindow`
- * to `appWindowsOverlappingRect` first.
- */
-function pickFocusTargetForRecording(overlapping: BrowserWindow[]): BrowserWindow {
-  const library = findMainLibraryWindow();
-  if (library !== null && overlapping.includes(library)) {
-    return library;
-  }
-  return overlapping[0]!;
-}
-
-/**
  * Fast Video Capture entry (issue #64). Opens the selector to pick a
  * region/window, then routes the commit to `recording:start` instead
  * of `capture:interactive`. The Snap-vs-Video chooser ships later;
@@ -1066,6 +1103,15 @@ async function runInteractiveRecord(
   protectWindowIds: readonly number[] = []
 ): Promise<void> {
   const log = getMainLogger("pwrsnap:shortcut");
+  const session = acquireInteractiveCaptureSession("video");
+  if (session.status === "busy") {
+    log.info("video picker invocation suppressed", {
+      reason: "interactive_capture_in_flight",
+      activeOwner: session.activeOwner
+    });
+    return;
+  }
+  try {
   // Gate BEFORE pickRegion, exactly like `capture:interactive`. The
   // selector freezes a screen snapshot on show(), which is all-black on
   // a Mac without Screen Recording permission — so on a first-ever (or
@@ -1077,8 +1123,14 @@ async function runInteractiveRecord(
   // down and no focus to restore.
   const blocked = await guardScreenCapture();
   if (blocked !== null) return;
-  const storageBlocked = await ensureCapturesDirReady();
-  if (storageBlocked !== null) return;
+  // macOS must resolve its Documents TCC prompt before the screen-saver
+  // selector covers it. Windows has no equivalent permission surface, so
+  // keep its cold mkdir/probe off the feedback path and perform it after the
+  // user has made a selection.
+  if (process.platform === "darwin") {
+    const storageBlocked = await ensureCapturesDirReady();
+    if (storageBlocked !== null) return;
+  }
 
   // Pick a rect / window via the existing region selector. We can't
   // route through capture:interactive (which persists an image on
@@ -1096,9 +1148,7 @@ async function runInteractiveRecord(
   // Read settings before the picker so the selector's cursor toggle
   // seeds from the persisted default. Reused below for audio
   // capabilities + the cursor value passed to `recording:start`.
-  const settings = await new DesktopSettingsService({
-    filePath: join(app.getPath("userData"), "pwrsnap-settings.json")
-  }).read();
+  const settings = cachedRecordingSettings;
   const selection = await pickRegion({
     mode: "auto",
     keepPwrSnapChrome: false,
@@ -1111,9 +1161,15 @@ async function runInteractiveRecord(
     // Library as a valid target.
     protectWindowIds,
     // Seed the selector's cursor toggle from the persisted default.
-    cursorDefault: settings.recording.videoCaptureCursor
+    cursorDefault: settings.videoCaptureCursor
   });
   if (!selection.ok) {
+    if (selection.reason === "busy") {
+      getMainLogger("pwrsnap:recording").info("video picker invocation suppressed", {
+        reason: "interactive_capture_in_flight"
+      });
+      return;
+    }
     setFloatOverState({ kind: "cancel" });
     await new Promise((resolve) => setTimeout(resolve, 50));
     hideSelector();
@@ -1123,10 +1179,12 @@ async function runInteractiveRecord(
     // primary trigger for AppKit demoting PwrSnap to Accessory (Dock
     // flash + orphaned Library). Mirrors the image cancel path in
     // capture-handlers.ts. Only intervene when PwrSnap's OWN window was
-    // frontmost (previousAppPid null): there the selector-hide
+    // frontmost (previousAppOrigin === "pwrsnap"): there the selector-hide
     // key-window cascade would let the floating focus-sink steal key
     // from the Library, so restore it explicitly.
-    if (selection.previousAppPid === null || selection.previousAppPid === undefined) {
+    // An unknown origin means enumeration has not resolved (or failed), so it
+    // must not raise PwrSnap over whichever app is actually frontmost.
+    if (selection.previousAppOrigin === "pwrsnap") {
       const library = findMainLibraryWindow();
       if (library !== null && !library.isDestroyed()) {
         if (library.isMinimized()) library.restore();
@@ -1142,159 +1200,9 @@ async function runInteractiveRecord(
     scheduleDockReclaim();
     return;
   }
-  const { screenSnapshotId, previousAppPid } = selection;
-  // CRITICAL: the selector is at screen-saver level and would
-  // otherwise be in the captured pixels for the entire countdown +
-  // first frames of the recording. Drop it BEFORE `recording:start`
-  // (which awaits the 3s countdown before the recorder spawns) so
-  // the captured pixels are the user's actual workspace, not our
-  // orange selector frame. The countdown HUD lives in its own
-  // floating panel at top-center; the in-area overlay (when added)
-  // is also outside the selector's lifecycle.
-  hideSelector();
-  void releaseSnapshot(screenSnapshotId);
-
-  // Focus / z-order policy. Three cases:
-  //
-  //   • Snap to one of OUR windows, OR free-region drag whose rect
-  //     overlaps one of ours → raise our window(s). The user clearly
-  //     wants PwrSnap visible in the recording.
-  //   • Snap to ANOTHER app's window → leave our windows alone and run
-  //     activateApp(previousAppPid). Raising the Library here would
-  //     obscure the very window the user picked (e.g. Library sitting
-  //     partially behind Claude on screen — overlap detection would
-  //     match, but the recording subject is Claude, not us).
-  //   • Snap to one of ours but the rect doesn't actually intersect
-  //     any visible BrowserWindow (e.g. that window just closed) →
-  //     fall through to the previous-app activation; nothing to raise.
-  const cachedSnapshot = getLastWindowListSnapshot();
-  const shouldRaise = shouldConsiderRaisingOurWindows(
-    selection.snappedWindowId,
-    cachedSnapshot,
-    selfPidSet()
-  );
-  const overlapping = shouldRaise
-    ? appWindowsOverlappingRect(selection.rect, selection.displayId)
-    : [];
-  // Debug-only — useful when triaging "Library hid / dove under"
-  // reports. Turn on with `electron-log` debug; default level keeps
-  // this out of the dev terminal on every video recording.
-  log.debug("video-record post-commit focus policy", {
-    snappedWindowId: selection.snappedWindowId ?? null,
-    previousAppPid,
-    shouldRaise,
-    overlappingCount: overlapping.length,
-    overlappingTitles: overlapping.map((w) => w.getTitle()),
-    dockVisibleBefore: app.dock?.isVisible() ?? null,
-    libraryAlive: findMainLibraryWindow() !== null
-  });
-  if (overlapping.length > 0) {
-    // Two-step "really bring PwrSnap forward" because Electron's
-    // app.focus() + window.focus() are unreliable when the app's
-    // activation policy has drifted to Accessory (NSUIElement) — a
-    // previous activateApp() side-effect.
-    //
-    //   1. `reclaimDockIconIfLibraryAlive()` → calls
-    //      `app.dock.show()` which forcibly re-asserts Regular
-    //      activation policy. Without this the next focus() is a
-    //      no-op while Accessory.
-    //   2. `activateApp(process.pid)` → goes through the same native
-    //      NSRunningApplication.activate helper we use to bring
-    //      OTHER apps forward, but pointed at our own pid. This
-    //      bypasses Electron entirely and uses the macOS API
-    //      directly. More reliable than `app.focus({ steal: true })`
-    //      which has had spotty behavior with our floating panels
-    //      (focus-sink + HUD) in the window list.
-    reclaimDockIconIfLibraryAlive();
-    await activateApp(process.pid);
-    for (const win of overlapping) {
-      if (win.isMinimized()) win.restore();
-      if (!win.isVisible()) win.show();
-      win.moveTop();
-    }
-    pickFocusTargetForRecording(overlapping).focus();
-    log.debug("video-record raised our windows", {
-      ownPid: process.pid,
-      dockVisibleAfter: app.dock?.isVisible() ?? null
-    });
-  } else if (previousAppPid !== null) {
-    // No activateApp(previousAppPid): the non-activating selector never
-    // deactivated the previously-frontmost app, so it stays frontmost as
-    // the selector hides. Dropping the re-activation removes the AppKit
-    // Accessory-demotion (Dock flash + Library hide). Mirrors the image
-    // commit path; the raise-our-windows branch above is the deliberate
-    // exception — there we DO want PwrSnap forward to record our window.
-    // Spread reclaim to catch the async demotion (see cancel branch).
-    scheduleDockReclaim();
-    log.debug("video-record left previous app frontmost", { previousAppPid });
-  }
-  // Honor the user's persisted audio defaults; the in-context
-  // recording dialog (a later enhancement) can override these.
-  // `settings` is read once above (before the picker) and reused here.
-  const capabilities = {
-    systemAudio: settings.recording.includeSystemAudio,
-    microphone: settings.recording.includeMicrophone
-  };
-  // Source-app attribution mirrors the image-capture path
-  // (capture-handlers.ts) via the shared `resolveSelectionSourceApp`
-  // helper: snap-target id first, rect-center hit test as fallback,
-  // null if neither resolves. This runs whether the user held ⇧ at
-  // commit time or just clicked — both shapes attribute the same app
-  // for the same selection. We also reuse the cached window-list
-  // snapshot rather than re-running `listWindows()`, so the lookup
-  // matches the list the user actually picked against (no drift if
-  // a window moved/closed in the ~50ms between hideSelector + here).
-  const sourceApp = resolveSelectionSourceApp(
-    selection.rect,
-    selection.snappedWindowId,
-    getLastWindowListSnapshot()
-  );
-  // A snapshot windowId in the selection means the user pointed at a
-  // specific window (with or without ⇧). Persist that as a `window`
-  // subject so the Library row shows the source app even when the
-  // user didn't opt into the full-window capture path. Region kind
-  // is reserved for free-hand drags where no window was snapped.
-  let subject: RecordingSubject;
-  if (selection.snappedWindowId !== undefined) {
-    subject = {
-      kind: "window",
-      windowId: selection.snappedWindowId,
-      rect: selection.rect,
-      displayId: selection.displayId,
-      appName: sourceApp?.appName ?? null,
-      appBundleId: sourceApp?.bundleId ?? null
-    };
-  } else {
-    subject = {
-      kind: "region",
-      rect: selection.rect,
-      displayId: selection.displayId
-    };
-  }
-  const result = await bus.dispatch(
-    "recording:start",
-    {
-      subject,
-      capabilities,
-      // The selector's `C` toggle wins; fall back to the persisted
-      // default if the renderer didn't send a value.
-      captureCursor: selection.captureCursor ?? settings.recording.videoCaptureCursor,
-      countdownSeconds: 3
-    },
-    { principal: "ipc" }
-  );
-  if (!result.ok && result.error.code !== "cancelled") {
-    log.warn("recording:start failed", { code: result.error.code, message: result.error.message });
-    try {
-      if (Notification.isSupported()) {
-        new Notification({
-          title: "Recording failed",
-          body: result.error.message
-        }).show();
-      }
-    } catch {
-      /* notification support is best-effort */
-    }
+  await startRecordingFromSelection(selection, settings);
+  } finally {
+    releaseInteractiveCaptureSession(session.token);
   }
 }
 

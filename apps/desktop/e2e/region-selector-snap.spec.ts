@@ -24,6 +24,8 @@
 import { type Page } from "@playwright/test";
 import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 
+const TEST_INVOCATION_ID = 90_001;
+
 const SYNTHETIC_WINDOW = {
   windowId: 4242,
   pid: 99999,
@@ -175,17 +177,18 @@ test("click-without-drag on a window enters adjusting + ↵ commits with snapped
       return list;
     })) as Array<{
       ok: boolean;
+      action?: "snap" | "record";
       rect: { x: number; y: number; w: number; h: number };
       snappedWindowId?: number;
     }>;
 
-    // We can get one or two payloads here depending on whether the
-    // adjusting commit considers itself "still snapped" after a
-    // click — that judgment lives in the renderer's commit() and
-    // is checked by inspecting the latest payload, not the count.
-    expect(payloads.length).toBeGreaterThanOrEqual(1);
-    const last = payloads[payloads.length - 1]!;
+    // A focused keydown and the global Return relay can both observe the
+    // same physical key. The selector's synchronous terminal latch must
+    // collapse them to one pipeline action.
+    expect(payloads).toHaveLength(1);
+    const last = payloads[0]!;
     expect(last.ok).toBe(true);
+    expect(last.action).toBe("snap");
     // The rect must match the snap target's bounds — the user
     // didn't refine.
     expect(last.rect).toEqual({
@@ -333,13 +336,15 @@ test("⇧ over a window expands the snap rect to full bounds + flags fullWindow 
       return list;
     })) as Array<{
       ok: boolean;
+      action?: "snap" | "record";
       snappedWindowId?: number;
       fullWindow?: boolean;
       rect: { x: number; y: number; w: number; h: number };
     }>;
-    expect(payloads.length).toBeGreaterThanOrEqual(1);
-    const last = payloads[payloads.length - 1]!;
+    expect(payloads).toHaveLength(1);
+    const last = payloads[0]!;
     expect(last.ok).toBe(true);
+    expect(last.action).toBe("snap");
     expect(last.snappedWindowId).toBe(targetWindow.windowId);
     expect(last.fullWindow).toBe(true);
     // Rect should be the full bounds (rawRect), not the visible bbox.
@@ -562,8 +567,19 @@ async function hydrateWindowList(
   }));
   const payload =
     cursor === undefined
-      ? { windows: [...windows], displayBounds: innerSize }
-      : { windows: [...windows], displayBounds: innerSize, cursor };
+      ? {
+          invocationId: TEST_INVOCATION_ID,
+          status: "ready" as const,
+          windows: [...windows],
+          displayBounds: innerSize
+        }
+      : {
+          invocationId: TEST_INVOCATION_ID,
+          status: "ready" as const,
+          windows: [...windows],
+          displayBounds: innerSize,
+          cursor
+        };
   await app.electronApp.evaluate(
     ({ BrowserWindow }, payload) => {
       const w = BrowserWindow.getAllWindows().find(
@@ -627,7 +643,25 @@ async function showAndGetSelector(
   }
   for (let i = 0; i < 30; i++) {
     const found = app.electronApp.windows().find((w) => w.url().includes("stage=region"));
-    if (found !== undefined) return found;
+    if (found !== undefined) {
+      await app.electronApp.evaluate(
+        ({ BrowserWindow }, payload) => {
+          const w = BrowserWindow.getAllWindows().find(
+            (candidate) =>
+              !candidate.isDestroyed() &&
+              candidate.webContents.getURL().includes("stage=region")
+          );
+          if (w === undefined) throw new Error("no selector window");
+          w.webContents.send("region-selector:mode", payload);
+        },
+        { invocationId: TEST_INVOCATION_ID, mode: "auto" as const }
+      );
+      await expect(found.locator("body")).toHaveAttribute(
+        "data-window-list-state",
+        "loading"
+      );
+      return found;
+    }
     await new Promise((r) => setTimeout(r, 100));
   }
   throw new Error("region-selector page never appeared");

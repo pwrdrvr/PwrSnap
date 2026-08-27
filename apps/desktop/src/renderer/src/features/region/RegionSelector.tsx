@@ -35,6 +35,7 @@
 // the selector window covers the whole display). Main converts to
 // global virtual coords + display id before screencapture.
 
+import type { QuickCaptureAction } from "@pwrsnap/shared";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { WindowSnapEntry } from "../../preload-types";
 import {
@@ -61,12 +62,44 @@ const NUDGE_PX_SHIFT = 10;
 // deliberate second press. Timer-only — NOT re-armed on mousemove (a
 // stray cursor move must not be able to defeat the de-dupe).
 const ESCAPE_DEDUPE_MS = 50;
+const ENTER_DEDUPE_MS = 50;
+const CURSOR_TOGGLE_DEDUPE_MS = 50;
+const CHOOSER_WIDTH_PX = 280;
+const CHOOSER_ESTIMATED_HEIGHT_PX = 164;
+const CHOOSER_MARGIN_PX = 12;
+const CHOOSER_GAP_PX = 10;
+
+type CaptureAction = Exclude<QuickCaptureAction, "ask">;
+
+type SuccessfulRegionPayload = {
+  ok: true;
+  invocationId: number;
+  rect: { x: number; y: number; w: number; h: number };
+  displayId: number;
+  snappedWindowId?: number;
+  fullWindow?: boolean;
+  captureCursor?: boolean;
+};
+
+type PendingChoice = {
+  payload: SuccessfulRegionPayload;
+  /** CSS-pixel geometry used only to anchor the chooser. */
+  anchorRect: Rect;
+};
 
 type SnapTarget =
   | { kind: "window"; entry: WindowSnapEntry }
   | { kind: "display" };
 
 type SelectorMode = "auto" | "region" | "window";
+
+type SelectorInvocationId = number;
+type WindowListState = "idle" | "loading" | "ready" | "empty" | "error";
+type SnapshotState = "idle" | "loading" | "ready" | "error";
+
+type SubmitRegionPayload = Parameters<
+  NonNullable<Window["pwrsnapApi"]>["submitRegion"]
+>[0];
 
 type Interaction =
   | { kind: "snap" } // live-snap; rect tracks cursor
@@ -99,6 +132,10 @@ function displaySnapRect(): Rect {
   return { x: 0, y: 0, w: v.width, h: v.height };
 }
 
+function isSelectorInvocationId(value: unknown): value is SelectorInvocationId {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
 export function RegionSelector() {
   const displayIdParam = parseHashParam(HASH_PARAM_DISPLAY_ID);
   const displayId = displayIdParam !== null ? Number.parseInt(displayIdParam, 10) : 0;
@@ -111,8 +148,8 @@ export function RegionSelector() {
   const [interaction, setInteraction] = useState<Interaction>({ kind: "snap" });
   const [spaceHeld, setSpaceHeld] = useState(false);
   // Selector mode. Set by main via `region-selector:mode` IPC right
-  // before show(). Defaults to 'auto' for backwards-compat with any
-  // call site that hasn't migrated yet (e.g. ⌘⇧P pre-mode-aware).
+  // before show(). The pre-warmed renderer defaults visually to 'auto',
+  // but remains inactive until a mode signal supplies an invocation id.
   //   - 'auto'   — current behavior (snap + drag, ⇧ → full-window)
   //   - 'region' — pure rect drag; snap candidates are suppressed; ⇧
   //                does nothing
@@ -120,6 +157,12 @@ export function RegionSelector() {
   //                window with fullWindow=true; drag-to-region is
   //                suppressed
   const [mode, setMode] = useState<SelectorMode>("auto");
+  const [invocationId, setInvocationId] = useState<SelectorInvocationId | null>(null);
+  // A reused selector renderer must treat every mode signal as a new
+  // picker invocation. `loading` starts immediately, before the native
+  // HWND helper resolves, so window mode never presents the previous
+  // invocation's candidates as if they were current.
+  const [windowListState, setWindowListState] = useState<WindowListState>("idle");
   // SnagIt-style frozen-screen background. Main captures the screen
   // before show() and ships a `pwrsnap-screen://r/<id>` URL via the
   // mode signal. We render it as a full-window <img> behind the dim
@@ -127,11 +170,13 @@ export function RegionSelector() {
   // not the live screen. Apps starting / stopping during selection
   // can no longer change what's under the cursor.
   const [screenUrl, setScreenUrl] = useState<string | null>(null);
+  const [snapshotState, setSnapshotState] = useState<SnapshotState>("idle");
   // Visual intent: 'video' swaps the rect badge + hint copy so the
   // user knows commit starts a recording, not a snap. Defaults to
   // 'snap' for backwards-compat with every call site that doesn't
   // set the flag (Quick Capture, Region, Window, Timed).
   const [intent, setIntent] = useState<"snap" | "video">("snap");
+  const [pendingChoice, setPendingChoice] = useState<PendingChoice | null>(null);
   // Video-only: whether the recording bakes in the mouse cursor.
   // Seeded from `settings.recording.videoCaptureCursor` via the mode
   // signal on every show (so a prior capture's flip never leaks through
@@ -153,6 +198,10 @@ export function RegionSelector() {
   const spaceRef = useRef(false);
   const snapTargetRef = useRef<SnapTarget>(snapTarget);
   const windowsRef = useRef<readonly WindowSnapEntry[]>([]);
+  const windowListStateRef = useRef<WindowListState>("idle");
+  const invocationIdRef = useRef<SelectorInvocationId | null>(null);
+  const screenUrlRef = useRef<string | null>(null);
+  const snapshotStateRef = useRef<SnapshotState>("idle");
   // Coord-space scale: how many CSS pixels equal one display-logical
   // pixel. On macOS "scaled" display modes (fractional
   // devicePixelRatio, e.g. 2.629), `window.innerWidth` is NOT equal
@@ -168,7 +217,11 @@ export function RegionSelector() {
   const shiftRef = useRef(false);
   const modeRef = useRef<SelectorMode>("auto");
   const intentRef = useRef<"snap" | "video">("snap");
+  const quickCaptureActionRef = useRef<QuickCaptureAction | undefined>(undefined);
   const captureCursorRef = useRef(true);
+  const pendingChoiceRef = useRef<PendingChoice | null>(null);
+  const terminalSubmittedRef = useRef(false);
+  const snapChoiceButtonRef = useRef<HTMLButtonElement | null>(null);
   // Cursor-tracking crosshair guide-lines (auto/region modes). Rendered
   // once and repositioned by direct DOM writes from `onMouseMove` /
   // the window-list cursor — never via React state, so they impose no
@@ -185,6 +238,10 @@ export function RegionSelector() {
   // can be cleared on unmount / rescheduled.
   const escapeGuardRef = useRef(false);
   const escapeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const enterGuardRef = useRef(false);
+  const enterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cursorToggleGuardRef = useRef(false);
+  const cursorToggleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // True while an interior mousedown is staging a discard of the
   // committed pick. The branch leaves rect + snapTarget untouched, so a
   // click-without-drag "keep" just stays put (no re-derivation); a drag
@@ -210,6 +267,10 @@ export function RegionSelector() {
     // paints at a stray 0,0 corner.
     positionCrosshair(window.innerWidth / 2, window.innerHeight / 2);
     // positionCrosshair only reads stable refs; safe to omit from deps.
+    return () => {
+      // Any delayed paint callback must fail closed after unmount.
+      invocationIdRef.current = null;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -221,6 +282,10 @@ export function RegionSelector() {
   modeRef.current = mode;
   intentRef.current = intent;
   captureCursorRef.current = captureCursor;
+  windowListStateRef.current = windowListState;
+  screenUrlRef.current = screenUrl;
+  snapshotStateRef.current = snapshotState;
+  pendingChoiceRef.current = pendingChoice;
 
   // Surface state to CSS for cursor switching + snap visualization.
   useLayoutEffect(() => {
@@ -235,7 +300,15 @@ export function RegionSelector() {
         ? "true"
         : "false";
     document.body.dataset.mode = mode;
-  }, [interaction.kind, spaceHeld, snapTarget, shiftHeld, mode]);
+    document.body.dataset.windowListState = windowListState;
+    document.body.dataset.snapshotState = snapshotState;
+    document.body.dataset.choosing = pendingChoice === null ? "false" : "true";
+  }, [interaction.kind, spaceHeld, snapTarget, shiftHeld, mode, windowListState, snapshotState, pendingChoice]);
+
+  useLayoutEffect(() => {
+    if (pendingChoice === null) return;
+    snapChoiceButtonRef.current?.focus({ preventScroll: true });
+  }, [pendingChoice]);
 
   // Subscribe to per-show mode signal from main. The selector windows
   // are pre-warmed once at boot so we can't pass mode in the URL hash;
@@ -246,26 +319,97 @@ export function RegionSelector() {
   // snapshot subscription above.
   useLayoutEffect(() => {
     const unsub = window.pwrsnapApi?.onSelectorMode((payload) => {
+      // IPC is an untrusted runtime boundary even though preload exposes a
+      // required number. An invalid signal cannot activate the selector.
+      if (!isSelectorInvocationId(payload.invocationId)) return;
+      terminalSubmittedRef.current = false;
+      pendingChoiceRef.current = null;
+      setPendingChoice(null);
+      quickCaptureActionRef.current = payload.quickCaptureAction;
+      escapeGuardRef.current = false;
+      if (escapeTimerRef.current !== null) {
+        clearTimeout(escapeTimerRef.current);
+        escapeTimerRef.current = null;
+      }
+      enterGuardRef.current = false;
+      if (enterTimerRef.current !== null) {
+        clearTimeout(enterTimerRef.current);
+        enterTimerRef.current = null;
+      }
+      cursorToggleGuardRef.current = false;
+      if (cursorToggleTimerRef.current !== null) {
+        clearTimeout(cursorToggleTimerRef.current);
+        cursorToggleTimerRef.current = null;
+      }
+      const nextScreenUrl = payload.screenUrl ?? null;
+      const nextListState: WindowListState =
+        payload.mode === "region" ? "idle" : "loading";
+
+      // This signal is the invocation boundary for the reused Windows
+      // renderer. Clear candidates and every selection ref synchronously,
+      // before React commits, so a key/mouse event in the same turn cannot
+      // submit stale HWND geometry from the previous picker.
+      invocationIdRef.current = payload.invocationId;
+      windowsRef.current = [];
+      lastMouseRef.current = null;
+      windowListStateRef.current = nextListState;
+      cssToLogicalRef.current = 1;
+      modeRef.current = payload.mode;
+      intentRef.current = payload.intent ?? "snap";
+      captureCursorRef.current = payload.cursor ?? true;
+      snapTargetRef.current = { kind: "display" };
+      interactionRef.current = { kind: "snap" };
+      const nextRect = displaySnapRect();
+      rectRef.current = nextRect;
+      screenUrlRef.current = nextScreenUrl;
+      snapshotStateRef.current = nextScreenUrl === null ? "idle" : "loading";
+      document.body.dataset.windowListCount = "0";
+
       setMode(payload.mode);
-      setScreenUrl(payload.screenUrl ?? null);
+      setInvocationId(payload.invocationId);
+      setWindowListState(nextListState);
+      setScreenUrl(nextScreenUrl);
+      setSnapshotState(nextScreenUrl === null ? "idle" : "loading");
       setIntent(payload.intent ?? "snap");
+      setInteraction({ kind: "snap" });
+      setSnapTarget({ kind: "display" });
+      setRect(nextRect);
+      setShiftHeld(false);
+      setSpaceHeld(false);
+      discardingRef.current = false;
+      document.body.dataset.discarding = "false";
       // Re-seed the cursor toggle from the persisted default each show
       // (defaults ON when unset) so a prior capture's choice can't bleed
       // into this one through the reused, pre-warmed selector window.
       setCaptureCursor(payload.cursor ?? true);
-      // When switching INTO 'region' mode, drop any existing window
-      // snap target back to display — otherwise the user sees a stale
-      // window-snap rect from the previous session before they move
-      // the cursor.
-      if (payload.mode === "region") {
-        setSnapTarget({ kind: "display" });
-        setRect(displaySnapRect());
-      }
     });
     return () => {
       unsub?.();
     };
   }, []);
+
+  // Two animation frames are intentional: the first lets React's committed
+  // invocation state reach Chromium's frame pipeline; the second reports
+  // only after that shell had a paint opportunity. Main uses this as an
+  // ordering barrier before it starts expensive HWND enumeration on Windows.
+  useEffect(() => {
+    if (invocationId === null) return;
+    const expectedInvocationId = invocationId;
+    let secondFrame: number | null = null;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        if (invocationIdRef.current !== expectedInvocationId) return;
+        window.pwrsnapApi?.reportSelectorPerformance({
+          invocationId: expectedInvocationId,
+          mark: "shell-painted"
+        });
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame !== null) window.cancelAnimationFrame(secondFrame);
+    };
+  }, [invocationId]);
 
   // Window-list snapshot from main. Empty until the helper resolves;
   // until then, snap defaults to display.
@@ -283,6 +427,30 @@ export function RegionSelector() {
   // delivery against a synthetic mouse move.
   useLayoutEffect(() => {
     const unsubscribe = window.pwrsnapApi?.onWindowListSnapshot((payload) => {
+      // A late helper result from a cancelled/replaced picker must never
+      // hydrate the current shell. Missing/invalid ids fail closed too.
+      if (
+        !isSelectorInvocationId(payload.invocationId) ||
+        payload.invocationId !== invocationIdRef.current
+      ) {
+        return;
+      }
+
+      if (payload.status === "error") {
+        windowsRef.current = [];
+        windowListStateRef.current = "error";
+        setWindowListState("error");
+        if (pendingChoiceRef.current === null) {
+          snapTargetRef.current = { kind: "display" };
+          setSnapTarget({ kind: "display" });
+          const nextRect = displaySnapRect();
+          rectRef.current = nextRect;
+          setRect(nextRect);
+        }
+        document.body.dataset.windowListCount = "0";
+        return;
+      }
+
       // Compute the renderer-vs-main coord-space scale. On scaled-
       // mode Retina displays this is < 1 (e.g. 1460/1920 ≈ 0.76).
       // On standard 2× Retina or non-Retina it's 1.
@@ -310,16 +478,39 @@ export function RegionSelector() {
         }
       }));
       windowsRef.current = scaledWindows;
-      if (payload.cursor !== undefined && interactionRef.current.kind === "snap") {
-        const cursor = {
-          x: payload.cursor.x * scale,
-          y: payload.cursor.y * scale
-        };
+      const nextListState: WindowListState =
+        scaledWindows.length === 0 ? "empty" : "ready";
+      windowListStateRef.current = nextListState;
+      setWindowListState(nextListState);
+      if (
+        pendingChoiceRef.current === null &&
+        interactionRef.current.kind === "snap"
+      ) {
+        // Main may resend the same snapshot after reveal as a compatibility
+        // nudge for a prewarmed renderer. Never let that duplicate move the
+        // highlight back to the trigger-time cursor after the user has
+        // already moved. The mode boundary clears lastMouseRef, so the first
+        // payload can still seed it when no renderer mousemove has arrived.
+        const cursor =
+          lastMouseRef.current ??
+          (payload.cursor === undefined
+            ? null
+            : {
+                x: payload.cursor.x * scale,
+                y: payload.cursor.y * scale
+              });
+        if (cursor === null) {
+          document.body.dataset.windowListCount = String(payload.windows.length);
+          return;
+        }
         lastMouseRef.current = cursor;
         positionCrosshair(cursor.x, cursor.y);
         const next = snapAt(cursor.x, cursor.y);
+        snapTargetRef.current = next;
         setSnapTarget(next);
-        setRect(rectForSnap(next));
+        const nextRect = rectForSnap(next);
+        rectRef.current = nextRect;
+        setRect(nextRect);
       }
       document.body.dataset.windowListCount = String(payload.windows.length);
     });
@@ -344,6 +535,40 @@ export function RegionSelector() {
       unsubscribe?.();
     };
   }, []);
+
+  // The same post-paint marker closes the native-enumeration span. Empty and
+  // error are usable terminal picker states too: both render truthful copy,
+  // keep Esc live, and deliberately block a window capture.
+  useEffect(() => {
+    if (
+      invocationId === null ||
+      windowListState === "idle" ||
+      windowListState === "loading"
+    ) {
+      return;
+    }
+    const expectedInvocationId = invocationId;
+    const expectedState = windowListState;
+    let secondFrame: number | null = null;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        if (
+          invocationIdRef.current !== expectedInvocationId ||
+          windowListStateRef.current !== expectedState
+        ) {
+          return;
+        }
+        window.pwrsnapApi?.reportSelectorPerformance({
+          invocationId: expectedInvocationId,
+          mark: "window-targets-painted"
+        });
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame !== null) window.cancelAnimationFrame(secondFrame);
+    };
+  }, [invocationId, windowListState]);
 
   function findWindowAt(clientX: number, clientY: number): WindowSnapEntry | null {
     // Walk the z-order ascending (frontmost first). Hit-test uses
@@ -388,31 +613,16 @@ export function RegionSelector() {
     return displaySnapRect();
   }
 
-  function commit(): void {
-    const r = rectRef.current;
-    // Refuse to submit only when the rect has truly zero usable area
-    // (no real drag happened). A long thin strip — e.g. 200×1 to grab
-    // a status bar — is a legitimate user intent and should commit.
-    if (!rectIsMeaningful(r)) {
-      cancel();
-      return;
-    }
+  function buildSuccessfulPayload(
+    currentInvocationId: number,
+    r: Rect
+  ): SuccessfulRegionPayload {
     const snap = snapTargetRef.current;
-    // The renderer's rect is in CSS pixels. Main + screencapture
-    // expect display-logical pixels. Scale back via the inverse of
-    // the snapshot's css-to-logical factor. On standard displays
-    // this is 1.0 — no-op. On scaled-mode Retina (e.g. inner=1460
-    // logical=1920) it's ~1.315 and corrects the doubling we'd
-    // otherwise see in the captured PNG.
     const inv = cssToLogicalRef.current > 0 ? 1 / cssToLogicalRef.current : 1;
-    // A "window snap commit" can happen from any interaction state
-    // when we have a window snap target — not just live `snap`. In
-    // window-mode the user clicks once, the pending → adjusting flow
-    // commits with snap=window even after the brief mouseup.
     const fromWindowSnap = snap.kind === "window";
     const wantFull =
       fromWindowSnap && (shiftRef.current || modeRef.current === "window");
-    window.pwrsnapApi?.submitRegion({
+    const payload: SuccessfulRegionPayload = {
       ok: true,
       rect: {
         x: Math.round(r.x * inv),
@@ -421,34 +631,113 @@ export function RegionSelector() {
         h: Math.round(r.h * inv)
       },
       displayId,
-      // snappedWindowId tags the commit when the user clicked
-      // straight from a window snap. Used by main for source-app
-      // metadata even when fullWindow is false. Once the user
-      // adjusts the rect (drag / resize) the windowId promise no
-      // longer holds — the renderer leaves snap mode for adjusting,
-      // and we don't include it.
       ...(fromWindowSnap ? { snappedWindowId: snap.entry.windowId } : {}),
-      // fullWindow opts into the `screencapture -l <id>` path —
-      // valid when (a) we have a windowId AND ⇧ is held at commit,
-      // OR (b) the selector is in 'window' mode (always full-window
-      // by definition). The default (no ⇧, mode='auto'|'region')
-      // goes through the rect path, which captures whatever's
-      // literally on screen including overlapping windows.
       ...(wantFull ? { fullWindow: true } : {}),
-      // Video-only: the cursor choice for this recording. Read from the
-      // ref (not state) because this commit closure is captured once at
-      // mount by the global keydown listener. Omitted for image
-      // captures, which don't consume it yet (Phase 3).
       ...(intentRef.current === "video"
+        ? { captureCursor: captureCursorRef.current }
+        : {}),
+      invocationId: currentInvocationId
+    };
+    Object.freeze(payload.rect);
+    Object.freeze(payload);
+    return payload;
+  }
+
+  function submitSuccessful(
+    payload: SuccessfulRegionPayload,
+    action: CaptureAction
+  ): void {
+    if (terminalSubmittedRef.current) return;
+    terminalSubmittedRef.current = true;
+    pendingChoiceRef.current = null;
+    setPendingChoice(null);
+    invocationIdRef.current = null;
+    setInvocationId(null);
+    window.pwrsnapApi?.submitRegion({
+      ...payload,
+      action,
+      ...(action === "record"
         ? { captureCursor: captureCursorRef.current }
         : {})
     });
-    setInteraction({ kind: "snap" });
-    setSnapTarget({ kind: "display" });
-    setRect(displaySnapRect());
+    resetToSnap();
+  }
+
+  function handleCaptureCursorToggle(): void {
+    if (cursorToggleGuardRef.current) return;
+    cursorToggleGuardRef.current = true;
+    if (cursorToggleTimerRef.current !== null) {
+      clearTimeout(cursorToggleTimerRef.current);
+    }
+    cursorToggleTimerRef.current = setTimeout(() => {
+      cursorToggleGuardRef.current = false;
+      cursorToggleTimerRef.current = null;
+    }, CURSOR_TOGGLE_DEDUPE_MS);
+    const next = !captureCursorRef.current;
+    captureCursorRef.current = next;
+    setCaptureCursor(next);
+  }
+
+  function chooseCaptureAction(action: CaptureAction): void {
+    const choice = pendingChoiceRef.current;
+    if (choice === null) return;
+    submitSuccessful(choice.payload, action);
+  }
+
+  function commit(): void {
+    if (terminalSubmittedRef.current || pendingChoiceRef.current !== null) return;
+    const currentInvocationId = invocationIdRef.current;
+    if (currentInvocationId === null) return;
+
+    // A frozen-screen picker is not truthful/usable until its image has
+    // decoded. The normal main path shows only after `onLoad`; this also
+    // protects the timeout fallback and explicit image-error state.
+    if (
+      screenUrlRef.current !== null &&
+      snapshotStateRef.current !== "ready"
+    ) {
+      return;
+    }
+
+    const snap = snapTargetRef.current;
+    // Pure window mode never falls back to a display/region capture. In
+    // particular, Enter while the native helper is loading/empty/failed
+    // must not submit the full-display rect seeded for other modes.
+    if (
+      modeRef.current === "window" &&
+      (windowListStateRef.current !== "ready" || snap.kind !== "window")
+    ) {
+      return;
+    }
+
+    const r = rectRef.current;
+    // Refuse to submit only when the rect has truly zero usable area
+    // (no real drag happened). A long thin strip — e.g. 200×1 to grab
+    // a status bar — is a legitimate user intent and should commit.
+    if (!rectIsMeaningful(r)) {
+      cancel();
+      return;
+    }
+    const payload = buildSuccessfulPayload(currentInvocationId, r);
     // Committing can happen mid-staged-discard (Enter while pending);
     // clear the dim + flag so they don't leak into the next show.
     clearDiscardPending();
+
+    const configuredAction =
+      intentRef.current === "video"
+        ? "record"
+        : (quickCaptureActionRef.current ?? "snap");
+    if (configuredAction === "ask") {
+      const choice: PendingChoice = {
+        payload,
+        anchorRect: Object.freeze({ ...r })
+      };
+      Object.freeze(choice);
+      pendingChoiceRef.current = choice;
+      setPendingChoice(choice);
+      return;
+    }
+    submitSuccessful(payload, configuredAction);
   }
 
   // Reset the selector to live-snap mode WITHOUT submitting anything to
@@ -463,9 +752,17 @@ export function RegionSelector() {
   }
 
   function resetToSnap(): void {
-    setInteraction({ kind: "snap" });
-    setSnapTarget({ kind: "display" });
-    setRect(displaySnapRect());
+    const nextInteraction: Interaction = { kind: "snap" };
+    const nextSnap: SnapTarget = { kind: "display" };
+    const nextRect = displaySnapRect();
+    interactionRef.current = nextInteraction;
+    snapTargetRef.current = nextSnap;
+    rectRef.current = nextRect;
+    shiftRef.current = false;
+    spaceRef.current = false;
+    setInteraction(nextInteraction);
+    setSnapTarget(nextSnap);
+    setRect(nextRect);
     setShiftHeld(false);
     setSpaceHeld(false);
     // A reset can interrupt a staged discard (Esc held during pending);
@@ -475,9 +772,24 @@ export function RegionSelector() {
   }
 
   function cancel(): void {
+    if (terminalSubmittedRef.current) return;
     // The real exit: tell main to tear the selector down, then reset
     // local state so a re-shown (pre-warmed) window starts clean.
-    window.pwrsnapApi?.submitRegion({ ok: false });
+    const currentInvocationId = invocationIdRef.current;
+    if (currentInvocationId === null) {
+      resetToSnap();
+      return;
+    }
+    terminalSubmittedRef.current = true;
+    pendingChoiceRef.current = null;
+    setPendingChoice(null);
+    const payload: SubmitRegionPayload = {
+      ok: false,
+      invocationId: currentInvocationId
+    };
+    invocationIdRef.current = null;
+    setInvocationId(null);
+    window.pwrsnapApi?.submitRegion(payload);
     resetToSnap();
   }
 
@@ -498,10 +810,27 @@ export function RegionSelector() {
       escapeGuardRef.current = false;
       escapeTimerRef.current = null;
     }, ESCAPE_DEDUPE_MS);
-    if (interactionRef.current.kind !== "snap") {
+    if (pendingChoiceRef.current !== null) {
+      cancel();
+    } else if (interactionRef.current.kind !== "snap") {
       resetToSnap();
     } else {
       cancel();
+    }
+  }
+
+  function handleEnter(): void {
+    if (enterGuardRef.current) return;
+    enterGuardRef.current = true;
+    if (enterTimerRef.current !== null) clearTimeout(enterTimerRef.current);
+    enterTimerRef.current = setTimeout(() => {
+      enterGuardRef.current = false;
+      enterTimerRef.current = null;
+    }, ENTER_DEDUPE_MS);
+    if (pendingChoiceRef.current !== null) {
+      chooseCaptureAction("snap");
+    } else {
+      commit();
     }
   }
 
@@ -534,6 +863,26 @@ export function RegionSelector() {
     }
 
     function onKeyDown(event: KeyboardEvent): void {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        handleEscape();
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Return") {
+        event.preventDefault();
+        handleEnter();
+        return;
+      }
+      if (pendingChoiceRef.current !== null) {
+        if (event.key === "c" || event.key === "C") {
+          event.preventDefault();
+          handleCaptureCursorToggle();
+        } else if (event.key === "r" || event.key === "R") {
+          event.preventDefault();
+          chooseCaptureAction("record");
+        }
+        return;
+      }
       // Track ⇧ in snap mode: full-window capture opt-in. The rect
       // expands from the visible-region bbox to the full window
       // bounds + the chip text changes + commit sends fullWindow:true.
@@ -557,16 +906,6 @@ export function RegionSelector() {
           return;
         }
       }
-      if (event.key === "Escape") {
-        event.preventDefault();
-        handleEscape();
-        return;
-      }
-      if (event.key === "Enter") {
-        event.preventDefault();
-        commit();
-        return;
-      }
       if (
         (event.key === "c" || event.key === "C") &&
         intentRef.current === "video"
@@ -575,7 +914,7 @@ export function RegionSelector() {
         // cursor. The hint bar reflects the current state; the value
         // rides the commit payload to `recording:start`.
         event.preventDefault();
-        setCaptureCursor((prev) => !prev);
+        handleCaptureCursorToggle();
         return;
       }
       if (event.key === "Tab" && interactionRef.current.kind === "snap") {
@@ -638,6 +977,7 @@ export function RegionSelector() {
     }
 
     function onKeyUp(event: KeyboardEvent): void {
+      if (pendingChoiceRef.current !== null) return;
       if (event.key === " ") {
         setSpaceHeld(false);
       }
@@ -661,10 +1001,25 @@ export function RegionSelector() {
     }
 
     function onMouseDown(event: MouseEvent): void {
+      if (pendingChoiceRef.current !== null) return;
       if (event.button !== 0) return;
       event.preventDefault();
       const handle = getHandleFromTarget(event.target);
       const i = interactionRef.current;
+
+      // Pure window mode has no meaningful display selection. Ignore a
+      // press until the current invocation has a fresh HWND under the
+      // pointer. This is specifically load-bearing across the async-list
+      // boundary: if a press captured the initial display target and the
+      // list became ready before mouseup, the stale pending interaction
+      // could otherwise strand the picker in an uncommittable adjusting
+      // state even though a real window was now highlighted.
+      if (
+        modeRef.current === "window" &&
+        (windowListStateRef.current !== "ready" || snapTargetRef.current.kind !== "window")
+      ) {
+        return;
+      }
 
       // Adjusting → handle drag = resize.
       if (handle !== null && i.kind === "adjusting") {
@@ -724,6 +1079,7 @@ export function RegionSelector() {
     }
 
     function onMouseMove(event: MouseEvent): void {
+      if (pendingChoiceRef.current !== null) return;
       lastMouseRef.current = { x: event.clientX, y: event.clientY };
       // Crosshair tracks the cursor in every state; CSS decides whether
       // it paints (hidden during moving/resizing and in window mode).
@@ -834,6 +1190,7 @@ export function RegionSelector() {
     }
 
     function onMouseUp(event: MouseEvent): void {
+      if (pendingChoiceRef.current !== null) return;
       const i = interactionRef.current;
       // Clear the discard-pending dim on ANY mouseup — including when
       // Esc/Enter already stepped the interaction back to snap/adjusting
@@ -918,8 +1275,18 @@ export function RegionSelector() {
     const unsubKey = window.pwrsnapApi?.onSelectorKey((payload) => {
       if (payload.key === "Escape") {
         handleEscape();
-      } else if (payload.key === "Enter") {
-        commit();
+      } else if (payload.key === "Enter" || payload.key === "Return") {
+        handleEnter();
+      } else if (
+        (payload.key === "R" || payload.key === "r") &&
+        pendingChoiceRef.current !== null
+      ) {
+        chooseCaptureAction("record");
+      } else if (
+        (payload.key === "C" || payload.key === "c") &&
+        (pendingChoiceRef.current !== null || intentRef.current === "video")
+      ) {
+        handleCaptureCursorToggle();
       }
     });
     return () => {
@@ -930,17 +1297,49 @@ export function RegionSelector() {
       window.removeEventListener("mouseup", onMouseUp);
       unsubKey?.();
       if (escapeTimerRef.current !== null) clearTimeout(escapeTimerRef.current);
+      if (enterTimerRef.current !== null) clearTimeout(enterTimerRef.current);
+      if (cursorToggleTimerRef.current !== null) {
+        clearTimeout(cursorToggleTimerRef.current);
+      }
     };
     // commit/cancel close over refs only; safe to leave deps empty.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const isAdjustable = interaction.kind === "adjusting";
+  const isChoosing = pendingChoice !== null;
+  const isAdjustable = interaction.kind === "adjusting" && !isChoosing;
   const isSnap = interaction.kind === "snap" || interaction.kind === "pending";
   const dimsChipPosition: { left: number; top: number } | null = {
     left: rect.x,
     top: rect.y > 30 ? rect.y - 30 : rect.y + rect.h + 6
   };
+  const chooserPosition = (() => {
+    if (pendingChoice === null) return null;
+    const v = viewport();
+    const anchor = pendingChoice.anchorRect;
+    const maxLeft = Math.max(
+      CHOOSER_MARGIN_PX,
+      v.width - CHOOSER_WIDTH_PX - CHOOSER_MARGIN_PX
+    );
+    const left = Math.min(
+      Math.max(
+        anchor.x + anchor.w / 2 - CHOOSER_WIDTH_PX / 2,
+        CHOOSER_MARGIN_PX
+      ),
+      maxLeft
+    );
+    const below = anchor.y + anchor.h + CHOOSER_GAP_PX;
+    const top =
+      below + CHOOSER_ESTIMATED_HEIGHT_PX <= v.height - CHOOSER_MARGIN_PX
+        ? below
+        : Math.max(
+            CHOOSER_MARGIN_PX,
+            anchor.y - CHOOSER_GAP_PX - CHOOSER_ESTIMATED_HEIGHT_PX
+          );
+    return { left, top };
+  })();
+  const confirmKeyLabel =
+    window.pwrsnapApi?.platform === "darwin" ? "Return" : "Enter";
 
   // Hint copy varies by mode + snap target so the user always knows
   // what action is bound to click / drag / arrows.
@@ -963,10 +1362,16 @@ export function RegionSelector() {
       // Window mode: click commits the highlighted window. No drag,
       // no ⇧ (full-window is implied).
       if (mode === "window") {
+        if (windowListState !== "ready") {
+          return <span>Please wait…</span>;
+        }
         const what =
           snapTarget.kind === "window"
             ? snapTarget.entry.appName ?? "window"
-            : "—";
+            : null;
+        if (what === null) {
+          return <span>Move over a window</span>;
+        }
         return (
           <>
             <span>
@@ -1065,7 +1470,58 @@ export function RegionSelector() {
           // never revealed as an empty transparent overlay (which would
           // flash the live screen behind it). Fires while the window is
           // still hidden — onLoad doesn't require a visible paint.
-          onLoad={() => window.pwrsnapApi?.notifySelectorSnapshotPainted(screenUrl)}
+          onLoad={() => {
+            if (screenUrlRef.current !== screenUrl) return;
+            const currentInvocationId = invocationIdRef.current;
+            if (currentInvocationId === null) return;
+            snapshotStateRef.current = "ready";
+            setSnapshotState("ready");
+            // Decode completion alone is not a usable-paint barrier. Give
+            // React and Chromium two frame opportunities to commit the
+            // frozen image, mirroring the truthful error-shell handshake.
+            window.requestAnimationFrame(() => {
+              window.requestAnimationFrame(() => {
+                if (
+                  invocationIdRef.current !== currentInvocationId ||
+                  screenUrlRef.current !== screenUrl ||
+                  snapshotStateRef.current !== "ready"
+                ) {
+                  return;
+                }
+                window.pwrsnapApi?.notifySelectorSnapshotPainted({
+                  screenUrl,
+                  invocationId: currentInvocationId,
+                  status: "painted"
+                });
+              });
+            });
+          }}
+          onError={() => {
+            if (screenUrlRef.current !== screenUrl) return;
+            const currentInvocationId = invocationIdRef.current;
+            if (currentInvocationId === null) return;
+            snapshotStateRef.current = "error";
+            setSnapshotState("error");
+            // The error acknowledgement authorizes main to reveal this
+            // BrowserWindow. Wait two frames so the opaque, truthful error
+            // surface has entered Chromium's paint pipeline first.
+            window.requestAnimationFrame(() => {
+              window.requestAnimationFrame(() => {
+                if (
+                  invocationIdRef.current !== currentInvocationId ||
+                  screenUrlRef.current !== screenUrl ||
+                  snapshotStateRef.current !== "error"
+                ) {
+                  return;
+                }
+                window.pwrsnapApi?.notifySelectorSnapshotPainted({
+                  screenUrl,
+                  invocationId: currentInvocationId,
+                  status: "error"
+                });
+              });
+            });
+          }}
           style={{
             position: "fixed",
             inset: 0,
@@ -1084,6 +1540,66 @@ export function RegionSelector() {
             userSelect: "none"
           }}
         />
+      )}
+      {screenUrl !== null && snapshotState !== "ready" && (
+        <div
+          className={`region-snapshot-status region-snapshot-status--${snapshotState}`}
+          role={snapshotState === "error" ? "alert" : "status"}
+          aria-live={snapshotState === "error" ? "assertive" : "polite"}
+          data-testid="region-snapshot-status"
+        >
+          <strong>
+            {snapshotState === "error"
+              ? "Couldn’t load the frozen screen"
+              : "Preparing the frozen screen…"}
+          </strong>
+          <span>
+            {snapshotState === "error"
+              ? "Press Esc to cancel and try again."
+              : "Your picker will be ready in a moment."}
+          </span>
+          {snapshotState === "error" && (
+            <button
+              type="button"
+              className="region-snapshot-dismiss"
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={cancel}
+            >
+              Dismiss
+            </button>
+          )}
+        </div>
+      )}
+      {mode === "window" && windowListState !== "ready" && (
+        <div
+          className={`region-window-status region-window-status--${windowListState}`}
+          role={windowListState === "error" ? "alert" : "status"}
+          aria-live={windowListState === "error" ? "assertive" : "polite"}
+          data-testid="region-window-status"
+        >
+          <strong>
+            {windowListState === "loading"
+              ? "Finding open windows…"
+              : windowListState === "empty"
+                ? "No capturable windows found"
+                : "Couldn’t inspect open windows"}
+          </strong>
+          <span>
+            {windowListState === "loading"
+              ? "PwrSnap is checking the current desktop."
+              : windowListState === "empty"
+                ? "Open a window, then cancel and try again."
+                : "Cancel and try again."}
+          </span>
+          <button
+            type="button"
+            className="region-window-dismiss"
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={cancel}
+          >
+            {windowListState === "loading" ? "Cancel" : "Dismiss"}
+          </button>
+        </div>
       )}
       {/* Four-quadrant dim mask. Always rendered — the rect is always
           present (snap rect at boot, drawn / committed rect later). */}
@@ -1182,7 +1698,87 @@ export function RegionSelector() {
         </div>
       )}
 
-      <div className="region-hint">
+      {pendingChoice !== null && chooserPosition !== null && (
+        <div
+          className="region-capture-chooser"
+          data-testid="region-capture-chooser"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="region-capture-chooser-title"
+          aria-describedby="region-capture-chooser-description"
+          style={chooserPosition}
+        >
+          <h2 id="region-capture-chooser-title">Capture selection</h2>
+          <p id="region-capture-chooser-description">
+            Choose a snap or start recording. Use C to include or hide the
+            cursor in recordings. Escape cancels.
+          </p>
+          <div
+            className="region-capture-chooser__actions"
+            role="group"
+            aria-label="Capture action"
+          >
+            <button
+              ref={snapChoiceButtonRef}
+              type="button"
+              className="region-capture-choice region-capture-choice--snap"
+              data-testid="region-capture-choice-snap"
+              aria-label={`Snap (${confirmKeyLabel})`}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+              onClick={(event) => {
+                event.stopPropagation();
+                chooseCaptureAction("snap");
+              }}
+            >
+              <span>Snap</span>
+              <kbd aria-hidden="true">{confirmKeyLabel}</kbd>
+            </button>
+            <button
+              type="button"
+              className="region-capture-choice region-capture-choice--record"
+              data-testid="region-capture-choice-record"
+              aria-label="Record (R)"
+              onMouseDown={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+              onClick={(event) => {
+                event.stopPropagation();
+                chooseCaptureAction("record");
+              }}
+            >
+              <span>Record</span>
+              <kbd aria-hidden="true">R</kbd>
+            </button>
+          </div>
+          <button
+            type="button"
+            className="region-capture-chooser__cursor"
+            data-testid="region-capture-cursor-toggle"
+            aria-label={`Record cursor: ${captureCursor ? "on" : "off"} (C)`}
+            aria-pressed={captureCursor}
+            onMouseDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+            onClick={(event) => {
+              event.stopPropagation();
+              handleCaptureCursorToggle();
+            }}
+          >
+            <span>Record cursor</span>
+            <span className="region-capture-chooser__cursor-state">
+              {captureCursor ? "On" : "Off"}
+            </span>
+            <kbd aria-hidden="true">C</kbd>
+          </button>
+        </div>
+      )}
+
+      {pendingChoice === null && <div className="region-hint">
         {intent === "video" && (
           <>
             <span>
@@ -1205,7 +1801,7 @@ export function RegionSelector() {
           <kbd>esc</kbd>
           {interaction.kind === "snap" ? "cancel" : "back"}
         </span>
-      </div>
+      </div>}
       <style>{`@keyframes ps-rec-pulse {
         0% { opacity: 1; }
         50% { opacity: 0.4; }

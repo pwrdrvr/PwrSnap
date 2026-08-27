@@ -29,9 +29,11 @@ import type {
   CaptureRecord,
   ExportStrategy,
   PwrSnapError,
+  QuickCaptureAction,
   Rect,
   RenderPreset,
-  Result
+  Result,
+  Settings
 } from "@pwrsnap/shared";
 import { bus, type CommandContext } from "../command-bus";
 import {
@@ -47,7 +49,20 @@ import {
   ensureCapturesDirReady,
   runWithCapturesDirFallback
 } from "../capture/capture-storage-gate";
-import { releaseSnapshot } from "../capture/screen-snapshot";
+import {
+  cropRegisteredSnapshot,
+  getSnapshot,
+  releaseSnapshot
+} from "../capture/screen-snapshot";
+import {
+  acquireInteractiveCaptureSession,
+  releaseInteractiveCaptureSession
+} from "../capture/interactive-capture-session";
+import {
+  startRecordingFromSelection as defaultStartRecordingFromSelection,
+  type CommittedSelectorResult
+} from "../capture/record-selection";
+import { resolveQuickCaptureAction } from "../capture/quick-capture-action";
 import { type WindowInfo } from "../capture/window-list";
 import {
   resolveSelectionSourceApp,
@@ -223,7 +238,17 @@ export function registerCaptureSaveAsHandler(): void {
   });
 }
 
-export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): void {
+type StartRecordingFromSelection = (
+  selection: CommittedSelectorResult,
+  settings: Settings["recording"]
+) => Promise<Result<{ sessionId: string }, PwrSnapError>>;
+
+export function registerCaptureHandlers(options?: {
+  includeSaveAs?: boolean;
+  startRecordingFromSelection?: StartRecordingFromSelection;
+}): void {
+  const startRecordingFromSelection =
+    options?.startRecordingFromSelection ?? defaultStartRecordingFromSelection;
   bus.register("capture:region", async (req) => {
     // Headless/agent path — still trigger the OS prompt on a first-ever
     // attempt (it registers PwrSnap so captures can ever work), but don't
@@ -250,6 +275,30 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
   });
 
   bus.register("capture:interactive", async (req, ctx) => {
+    const mode = req.mode ?? "auto";
+    const session = acquireInteractiveCaptureSession("image");
+    if (session.status === "busy") {
+      log.info("capture:interactive invocation suppressed", {
+        mode,
+        principal: ctx.principal,
+        reason: "in_flight",
+        activeOwner: session.activeOwner
+      });
+      return err({
+        kind: "capture",
+        code: "capture_in_progress",
+        message: "An interactive capture is already in progress."
+      });
+    }
+    // Claim synchronously before the first permission/storage await. This is
+    // the command-bus backstop for tray/IPC double dispatches; the hotkey has
+    // its own leading-edge debounce one layer earlier.
+    const handlerStartedAt = Date.now();
+    // Start the settings read immediately and overlap it with permission,
+    // storage, timed-delay, and cursor work. Only Quick Capture consumes the
+    // policy; explicit Region/Window/Timed remain fixed still flows.
+    const quickSettingsPromise = mode === "auto" ? readDesktopSettings() : null;
+    try {
     // Gate BEFORE pickRegion: the selector freezes a screen snapshot on
     // show(), which is all-black on a Mac without Screen Recording. On a
     // first-ever attempt the gate fires the macOS prompt instead; on a
@@ -257,13 +306,14 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     // we never paint an empty selector at the user.
     const blocked = await guardScreenCapture();
     if (blocked) return blocked;
-    // Pre-warm the captures-folder (Documents) TCC grant before the
-    // selector goes up — otherwise the "Allow Documents" dialog pops
-    // under the screen-saver-level selector at persist time.
-    const storageBlocked = await ensureCapturesDirReady();
-    if (storageBlocked) return storageBlocked;
-    const handlerStartedAt = Date.now();
-    const mode = req.mode ?? "auto";
+    // macOS must preflight the Documents TCC grant before the screen-saver
+    // selector can cover its consent prompt. Windows has no equivalent TCC
+    // prompt, so its cold mkdir/probe/write is deferred until after selection
+    // and cannot delay the first picker feedback.
+    if (process.platform === "darwin") {
+      const storageBlocked = await ensureCapturesDirReady();
+      if (storageBlocked) return storageBlocked;
+    }
     log.info("capture:interactive handler received", {
       mode,
       principal: ctx.principal
@@ -349,6 +399,10 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     // in the picker — there the user may well want to capture it.
     const protectWindowIds = librarySourceWindowIds(ctx);
 
+    const quickSettings = await quickSettingsPromise;
+    const quickCaptureAction: QuickCaptureAction =
+      quickSettings?.recording.quickCaptureAction ?? "snap";
+
     const pickRegionStartedAt = Date.now();
     log.info("capture:interactive calling pickRegion", {
       mode,
@@ -357,7 +411,18 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       protectWindowCount: protectWindowIds.length,
       durationFromHandlerReceivedMs: pickRegionStartedAt - handlerStartedAt
     });
-    const selection = await pickRegion({ mode: selectorMode, keepPwrSnapChrome, protectWindowIds });
+    const selection = await pickRegion({
+      mode: selectorMode,
+      keepPwrSnapChrome,
+      protectWindowIds,
+      ...(mode === "auto"
+        ? {
+            quickCaptureAction,
+            intent: quickCaptureAction === "record" ? ("video" as const) : ("snap" as const),
+            cursorDefault: quickSettings!.recording.videoCaptureCursor
+          }
+        : {})
+    });
     log.info("capture:interactive pickRegion returned", {
       mode,
       selectorMode,
@@ -375,6 +440,13 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     // it the whole time, and the selector hide reveals the desktop
     // (not the float-over).
     if (!selection.ok) {
+      if (selection.reason === "busy") {
+        return err({
+          kind: "capture",
+          code: "capture_in_progress",
+          message: "An interactive capture is already in progress."
+        });
+      }
       setFloatOverState({ kind: "cancel" });
       // Compositor flush — the float-over hide must reach the
       // window server before we lower the selector, otherwise
@@ -389,10 +461,13 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       // the main trigger for AppKit demoting PwrSnap to Accessory,
       // which is what made the Dock icon flash and the Library appear
       // to hide. We only intervene when PwrSnap's OWN window was
-      // frontmost (previousAppPid null): there the selector-hide
+      // frontmost (previousAppOrigin === "pwrsnap"): there the selector-hide
       // key-window cascade would let the floating focus-sink steal key
       // from the Library, so restore it explicitly.
-      if (selection.previousAppPid === null || selection.previousAppPid === undefined) {
+      // "unknown" is intentionally non-destructive: cancellation can beat
+      // deferred window enumeration, and an unresolved origin must never be
+      // interpreted as permission to raise PwrSnap over the user's app.
+      if (selection.previousAppOrigin === "pwrsnap") {
         const library = findMainLibraryWindow();
         if (library !== null && !library.isDestroyed()) {
           if (library.isMinimized()) library.restore();
@@ -415,6 +490,17 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       });
     }
 
+    const terminalAction =
+      mode === "auto"
+        ? resolveQuickCaptureAction(quickCaptureAction, selection.action)
+        : "snap";
+    if (terminalAction === "record") {
+      const recording = await startRecordingFromSelection(selection, quickSettings!.recording);
+      return recording.ok
+        ? ok({ kind: "record" as const, sessionId: recording.value.sessionId })
+        : recording;
+    }
+
     // COMMIT path. The user has selected AND committed — the selector has
     // done its job. We tear it down COMPLETELY before attempting the file
     // save, so a first-capture macOS Documents TCC prompt (triggered by
@@ -425,7 +511,13 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     //
     // We own the screen snapshot now and MUST release it; the try/finally
     // is a safety net (both teardown + release are idempotent).
-    const { screenSnapshotId, screenSnapshotPath } = selection;
+    const { screenSnapshotId } = selection;
+    let snapshotReleased = false;
+    const releaseOwnedSnapshot = async (): Promise<void> => {
+      if (screenSnapshotId === undefined || snapshotReleased) return;
+      snapshotReleased = true;
+      await releaseSnapshot(screenSnapshotId);
+    };
     let teardownDone = false;
     const tearDownSelector = async (): Promise<void> => {
       if (teardownDone) return;
@@ -444,6 +536,37 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       scheduleDockReclaim();
     };
     try {
+      // Defense in depth: pure Window mode has no display/region fallback.
+      // Main validates the renderer against the current candidate allowlist;
+      // keep the consumer fail-closed too so a malformed integration can
+      // never fall through to a snapshot crop or persistence path.
+      if (
+        selectorMode === "window" &&
+        (selection.fullWindow !== true || typeof selection.snappedWindowId !== "number")
+      ) {
+        log.warn("capture:interactive rejected invalid window selection", {
+          mode,
+          selectorMode,
+          fullWindow: selection.fullWindow === true,
+          hasWindowId: typeof selection.snappedWindowId === "number"
+        });
+        setFloatOverState({ kind: "cancel" });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        await tearDownSelector();
+        return err({
+          kind: "capture",
+          code: "invalid_window_selection",
+          message: "Window capture requires a selected window."
+        });
+      }
+
+      if (process.platform !== "darwin") {
+        const storageBlocked = await ensureCapturesDirReady();
+        if (storageBlocked) {
+          setFloatOverState({ kind: "cancel" });
+          return storageBlocked;
+        }
+      }
       // Two capture paths:
       //   • Full-window mode (user held ⇧ at commit time, or `mode`
       //     was 'window') → desktopCapturer / `screencapture -l
@@ -465,15 +588,21 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       const captureResult =
         selection.fullWindow === true && selection.snappedWindowId !== undefined
           ? await captureWindow(selection.snappedWindowId)
-          : await cropScreenSnapshot(
-              screenSnapshotPath,
-              selection.rect,
-              selection.displayId
-            );
+          : screenSnapshotId !== undefined
+            ? await cropSelectorSnapshot(
+                screenSnapshotId,
+                selection.rect,
+                selection.displayId
+              )
+            : {
+                ok: false as const,
+                reason: "error" as const,
+                message: "region selector returned no frozen snapshot for a rect capture"
+              };
       // Snapshot pixels are now in `captureResult.tempPath` — release the
-      // frozen snapshot immediately (idempotent; finally re-calls as a
-      // safety net).
-      void releaseSnapshot(screenSnapshotId);
+      // frozen snapshot immediately. The guarded finally below owns the
+      // unexpected-throw path without double-releasing the registry entry.
+      await releaseOwnedSnapshot();
       // Source-app resolution is the same on both capture branches —
       // the choice of pixel-fetch path (full-window vs. cropped
       // snapshot) doesn't change WHO owned the window. Single shared
@@ -566,8 +695,11 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       return persisted;
     } finally {
       // Safety net for an unexpected throw before the explicit teardown.
-      void releaseSnapshot(screenSnapshotId);
+      await releaseOwnedSnapshot();
       await tearDownSelector();
+    }
+    } finally {
+      releaseInteractiveCaptureSession(session.token);
     }
   });
 
@@ -1174,6 +1306,45 @@ function looksLikeImageFile(filePath: string): boolean {
   return IMAGE_FILE_EXTENSIONS.has(extname(filePath).toLowerCase());
 }
 
+/** Consume the representation registered by pickRegion without guessing. */
+async function cropSelectorSnapshot(
+  snapshotId: string,
+  rect: Rect,
+  displayId: number
+): Promise<
+  | { ok: true; tempPath: string; displayId: number }
+  | { ok: false; reason: "validation" | "error"; message: string }
+> {
+  const snapshot = getSnapshot(snapshotId);
+  if (snapshot === null) {
+    return {
+      ok: false,
+      reason: "error",
+      message: "frozen screen snapshot was released before commit"
+    };
+  }
+  if (snapshot.displayId !== displayId) {
+    return {
+      ok: false,
+      reason: "validation",
+      message: `snapshot display mismatch: expected ${snapshot.displayId}, got ${displayId}`
+    };
+  }
+  if (snapshot.kind === "memory") {
+    const result = await cropRegisteredSnapshot(snapshotId, rect, displayId);
+    if (result.ok) {
+      log.info("picker latency stage", {
+        stage: "registered_snapshot_crop_completed",
+        snapshotId,
+        displayId,
+        ...result.timings
+      });
+    }
+    return result;
+  }
+  return cropScreenSnapshot(snapshot.filePath, rect, displayId);
+}
+
 /**
  * Crop the frozen-screen snapshot at `rect`. The snapshot is in
  * PHYSICAL pixels (logical * display.scaleFactor); `rect` is in
@@ -1331,6 +1502,11 @@ const CURSOR_SAMPLE_PRE_SELECTOR_BUDGET_MS = 350;
  *  Shared by every image-capture entry point so the Settings toggle
  *  means what it says: "screenshots", not "one kind of screenshot". */
 function startCursorSampleIfEnabled(): Promise<CursorSample | null> {
+  // The helper is macOS-only. Returning before the settings read is
+  // load-bearing on Windows: otherwise every capture waits on an uncached
+  // settings file read (and can burn the whole pre-selector budget) only for
+  // sampleCursor() to return null afterward.
+  if (process.platform !== "darwin") return Promise.resolve(null);
   return readDesktopSettings()
     .then((settings) =>
       settings.recording.imageCaptureCursor ? sampleCursor() : null

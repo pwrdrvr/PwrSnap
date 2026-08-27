@@ -13,6 +13,7 @@ import {
   EVENT_CHANNELS,
   type AppUpdateStatus,
   type LaunchAtLoginStatus,
+  type QuickCaptureAction,
   type Settings
 } from "@pwrsnap/shared";
 import { GeneralPage } from "../GeneralPage";
@@ -64,6 +65,7 @@ const baseSettings: Settings = {
   updates: { channel: "latest", train: "stable" },
   storage: { filenameTimestampZone: "local", capturesLocation: "documents" },
   recording: {
+    quickCaptureAction: "ask",
     includeSystemAudio: false,
     includeMicrophone: false,
     videoCaptureCursor: true,
@@ -216,6 +218,49 @@ function findSwitchIn(label: string): HTMLButtonElement {
   if (!toggle) throw new Error(`no switch found in row "${label}"`);
   return toggle;
 }
+
+function findQuickCaptureActionSelect(): HTMLSelectElement {
+  const select = container?.querySelector<HTMLSelectElement>(
+    'select[aria-label="Action after Quick Capture selection"]'
+  );
+  if (!select) throw new Error("no Quick Capture action select found");
+  return select;
+}
+
+describe("GeneralPage — Quick Capture action", () => {
+  test.each([
+    ["ask", "Ask every time"],
+    ["snap", "Always Snap"],
+    ["record", "Always Record"]
+  ] as const)("renders %s as the selected accessible option", async (action, label) => {
+    await renderGeneral(
+      {
+        ...baseSettings,
+        recording: { ...baseSettings.recording, quickCaptureAction: action }
+      },
+      healthyStatus
+    );
+
+    const select = findQuickCaptureActionSelect();
+    expect(select.value).toBe(action);
+    expect(select.selectedOptions.item(0)?.textContent).toBe(label);
+    expect(select.disabled).toBe(false);
+  });
+
+  test("patches only recording.quickCaptureAction when the selection changes", async () => {
+    await renderGeneral(baseSettings, healthyStatus);
+    const select = findQuickCaptureActionSelect();
+
+    await act(async () => {
+      select.value = "record" satisfies QuickCaptureAction;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    expect(patchMock).toHaveBeenCalledWith({
+      recording: { quickCaptureAction: "record" }
+    });
+  });
+});
 
 describe("GeneralPage — cursor capture", () => {
   test("image toggle patches recording.imageCaptureCursor", async () => {

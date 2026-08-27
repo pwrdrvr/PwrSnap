@@ -22,7 +22,10 @@ import {
 } from "@pwrsnap/shared";
 import { bus, type CommandContext, type CommandDispatchOptions } from "../command-bus";
 import { getMainLogger } from "../log";
-import { completeSizzleCloseRequest } from "../sizzle/sizzle-close-barrier";
+import {
+  completeSizzleCloseRequest,
+  markSizzleCloseRendererReady
+} from "../sizzle/sizzle-close-barrier";
 import {
   getSizzleStore,
   SizzleProjectNotFoundError,
@@ -410,6 +413,17 @@ export function registerSizzleHandlers(
   const store = getSizzleStore();
   const renderPlatform = runtime.platform ?? process.platform;
 
+  async function readProject(
+    id: string,
+    fallbackCode: string
+  ): Promise<Result<SizzleProject | null, PwrSnapError>> {
+    try {
+      return ok(await store.get(id));
+    } catch (cause) {
+      return err(toPersistenceError(cause, fallbackCode));
+    }
+  }
+
   bus.register("sizzle:open", async (req, ctx) => {
     const v = validateSizzleOpenRequest(req);
     if (!v.ok) return err(v.error);
@@ -479,6 +493,21 @@ export function registerSizzleHandlers(
         kind: "validation",
         code: "sizzle_close_request_invalid",
         message: "The Sizzle close request is no longer active."
+      });
+    }
+    return ok(undefined);
+  });
+
+  bus.register("sizzle:closeReady", async (_req, ctx) => {
+    if (
+      ctx.principal !== "ipc" ||
+      ctx.sourceWindowId === undefined ||
+      !markSizzleCloseRendererReady(ctx.sourceWindowId)
+    ) {
+      return err({
+        kind: "validation",
+        code: "sizzle_close_window_invalid",
+        message: "The Sizzle window is no longer active."
       });
     }
     return ok(undefined);
@@ -565,7 +594,9 @@ export function registerSizzleHandlers(
   bus.register("sizzle:toggleScene", async (req, ctx) => {
     const v = validateSizzleToggleScene(req);
     if (!v.ok) return err(v.error);
-    const project = await store.get(v.projectId);
+    const projectResult = await readProject(v.projectId, "sizzle_toggle_failed");
+    if (!projectResult.ok) return projectResult;
+    const project = projectResult.value;
     if (project === null) {
       return err({ kind: "validation", code: "not_found", message: "Project not found" });
     }
@@ -606,7 +637,9 @@ export function registerSizzleHandlers(
   bus.register("sizzle:previewSceneAudio", async (req) => {
     const v = validateSizzlePreviewRequest(req);
     if (!v.ok) return err(v.error);
-    const project = await store.get(v.projectId);
+    const projectResult = await readProject(v.projectId, "sizzle_preview_failed");
+    if (!projectResult.ok) return projectResult;
+    const project = projectResult.value;
     if (project === null) {
       return err({ kind: "validation", code: "not_found", message: "Project not found" });
     }
@@ -723,7 +756,12 @@ export function registerSizzleHandlers(
   bus.register("sizzle:previewSequenceScenePlan", async (req) => {
     const v = validateSizzlePreviewRequest(req);
     if (!v.ok) return err(v.error);
-    const project = await store.get(v.projectId);
+    const projectResult = await readProject(
+      v.projectId,
+      "sizzle_sequence_preview_failed"
+    );
+    if (!projectResult.ok) return projectResult;
+    const project = projectResult.value;
     if (project === null) {
       return err({ kind: "validation", code: "not_found", message: "Project not found" });
     }
@@ -830,7 +868,12 @@ export function registerSizzleHandlers(
   bus.register("sizzle:loadSequenceSceneAudio", async (req) => {
     const v = validateSizzlePreviewRequest(req);
     if (!v.ok) return err(v.error);
-    const project = await store.get(v.projectId);
+    const projectResult = await readProject(
+      v.projectId,
+      "sizzle_load_sequence_audio_failed"
+    );
+    if (!projectResult.ok) return projectResult;
+    const project = projectResult.value;
     if (project === null) {
       return err({ kind: "validation", code: "not_found", message: "Project not found" });
     }
@@ -958,7 +1001,9 @@ export function registerSizzleHandlers(
   }, PwrSnapError>> => {
     const v = validateSizzleIdRequest(req);
     if (!v.ok) return err(v.error);
-    const project = await store.get(v.id);
+    const projectResult = await readProject(v.id, "sizzle_render_failed");
+    if (!projectResult.ok) return projectResult;
+    const project = projectResult.value;
     if (project === null) {
       return err({ kind: "validation", code: "not_found", message: `Project ${v.id} not found` });
     }

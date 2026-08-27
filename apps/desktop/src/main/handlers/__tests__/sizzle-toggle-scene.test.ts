@@ -54,6 +54,7 @@ const mocks = vi.hoisted(() => ({
   synthesizeSilence: vi.fn(),
   resolveCacheFile: vi.fn(),
   completeSizzleCloseRequest: vi.fn(),
+  markSizzleCloseRendererReady: vi.fn(),
   SizzleStoreCorruptError: class SizzleStoreCorruptError extends Error {
     constructor(message: string, public readonly backupPath: string | null) {
       super(message);
@@ -107,7 +108,8 @@ vi.mock("../../sizzle/sizzle-store", () => ({
 }));
 
 vi.mock("../../sizzle/sizzle-close-barrier", () => ({
-  completeSizzleCloseRequest: mocks.completeSizzleCloseRequest
+  completeSizzleCloseRequest: mocks.completeSizzleCloseRequest,
+  markSizzleCloseRendererReady: mocks.markSizzleCloseRendererReady
 }));
 
 vi.mock("../sizzle-chat-handlers", () => ({
@@ -253,6 +255,7 @@ beforeEach(() => {
   mocks.resolveCacheFile.mockReset();
   mocks.resolveCacheFile.mockResolvedValue("/tmp/capture.png");
   mocks.completeSizzleCloseRequest.mockReset();
+  mocks.markSizzleCloseRendererReady.mockReset();
   // Default: store.list returns whatever store.update returned, in
   // an array. Most tests just need "some projects exist" — they can
   // override per-case.
@@ -384,6 +387,44 @@ describe("Sizzle persistence truthfulness", () => {
 
     expect(result).toEqual({ ok: true, value: undefined });
     expect(mocks.completeSizzleCloseRequest).toHaveBeenCalledWith(41, 7, "close");
+  });
+
+  test("close readiness is attributed to the originating renderer window", async () => {
+    mocks.markSizzleCloseRendererReady.mockReturnValue(true);
+
+    const handler = await loadHandler("sizzle:closeReady");
+    const result = await handler({}, commandCtx(41));
+
+    expect(result).toEqual({ ok: true, value: undefined });
+    expect(mocks.markSizzleCloseRendererReady).toHaveBeenCalledWith(41);
+  });
+
+  test.each([
+    ["sizzle:toggleScene", { projectId: "proj-1", captureId: "cap-1" }],
+    ["sizzle:previewSceneAudio", { projectId: "proj-1", sceneId: "sc-1" }],
+    ["sizzle:previewSequenceScenePlan", { projectId: "proj-1", sceneId: "sc-1" }],
+    ["sizzle:loadSequenceSceneAudio", { projectId: "proj-1", sceneId: "sc-1" }],
+    ["sizzle:revealOutput", { id: "proj-1" }],
+    ["sizzle:render", { id: "proj-1" }]
+  ])("%s converts a corrupt store read to the typed persistence error", async (command, req) => {
+    mocks.store.get.mockRejectedValue(
+      new mocks.SizzleStoreCorruptError(
+        "Sizzle project data is invalid. Repair or restore the file, then Retry.",
+        "/tmp/sizzle-projects.json.corrupt-backup"
+      )
+    );
+
+    const handler = await loadHandler(command);
+    const result = await handler(req, commandCtx(41));
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        kind: "persistence",
+        code: "sizzle_project_file_invalid",
+        message: expect.stringContaining("Repair or restore")
+      }
+    });
   });
 
   test("reveal returns output_missing when the persisted output no longer exists", async () => {

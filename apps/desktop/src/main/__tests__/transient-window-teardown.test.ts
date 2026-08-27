@@ -35,4 +35,33 @@ describe("installTransientWindowTeardown", () => {
       expect(dispose).toHaveBeenCalledTimes(1);
     }
   });
+
+  it("leaves transient windows intact during a deferred Sizzle quit", () => {
+    let beforeQuitListener: (() => void) | null = null;
+    const app = {
+      on: vi.fn((_event: "before-quit", listener: () => void) => {
+        beforeQuitListener = listener;
+      })
+    };
+    const disposeTray = vi.fn();
+    let deferred = true;
+    installTransientWindowTeardown(
+      app,
+      {
+        disposeTray,
+        disposeFloatOver: vi.fn(),
+        disposeRegionSelector: vi.fn(),
+        disposeFocusSink: vi.fn(),
+        destroyTextBakePool: vi.fn()
+      },
+      { shouldDisposeOnBeforeQuit: () => !deferred }
+    );
+
+    beforeQuitListener!();
+    expect(disposeTray).not.toHaveBeenCalled();
+
+    deferred = false;
+    beforeQuitListener!();
+    expect(disposeTray).toHaveBeenCalledOnce();
+  });
 });

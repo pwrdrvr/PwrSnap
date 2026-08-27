@@ -560,7 +560,7 @@ export function useSizzleProject(): SizzleProjectState {
 
   const closeRequestInFlightRef = useRef(false);
   useEffect(() => {
-    return subscribe(EVENT_CHANNELS.sizzleCloseRequested, (payload) => {
+    const unsubscribe = subscribe(EVENT_CHANNELS.sizzleCloseRequested, (payload) => {
       if (
         closeRequestInFlightRef.current ||
         typeof payload !== "object" ||
@@ -606,6 +606,10 @@ export function useSizzleProject(): SizzleProjectState {
         }
       })();
     });
+    // Subscribe first, then announce readiness. A close queued during initial
+    // mount or renderer reload is delivered only after this listener exists.
+    void dispatch("sizzle:closeReady", {});
+    return unsubscribe;
   }, []);
 
   const duplicatingProjectIds = useRef<Set<string>>(new Set());

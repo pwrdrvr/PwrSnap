@@ -4478,6 +4478,7 @@ export type Commands = {
     req: { requestId: number; action: "close" | "cancel" };
     res: void;
   };
+  "sizzle:closeReady": { req: Record<string, never>; res: void };
   "sizzle:render": {
     req: { id: string; mode?: "preview" | "full" };
     res: {

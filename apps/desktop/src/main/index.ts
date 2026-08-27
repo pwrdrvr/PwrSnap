@@ -112,6 +112,10 @@ import { registerCaptureStorageHandlers } from "./handlers/capture-storage-handl
 import { registerSizzleHandlers } from "./handlers/sizzle-handlers";
 import { registerCartHandlers } from "./handlers/cart-handlers";
 import { getSizzleStore } from "./sizzle/sizzle-store";
+import {
+  installSizzleQuitBarrier,
+  isSizzleQuitDeferred
+} from "./sizzle/sizzle-close-barrier";
 import { DesktopSettingsService } from "./settings/desktop-settings-service";
 import {
   checkForAppUpdatesNow,
@@ -1434,18 +1438,25 @@ export function bootstrapApp(): void {
   markStartup("main: bootstrapApp begin");
   initializeMainLogger();
   installTerminalSignalShutdown();
+  // Install first: a Sizzle save may defer the initial before-quit pass.
+  // Transient teardown skips that pass and runs on the resumed app.quit().
+  installSizzleQuitBarrier(app);
   // Electron emits before-quit before it begins closing BrowserWindows. Tear
   // down persistent transient/infrastructure windows there so they cannot
   // hold the graceful quit handshake open. The returned idempotent helper is
   // called again from will-quit as defense in depth. The Library is
   // intentionally not part of this list and follows Electron's normal close.
-  const disposeTransientWindows = installTransientWindowTeardown(app, {
-    disposeTray,
-    disposeFloatOver,
-    disposeRegionSelector,
-    disposeFocusSink,
-    destroyTextBakePool
-  });
+  const disposeTransientWindows = installTransientWindowTeardown(
+    app,
+    {
+      disposeTray,
+      disposeFloatOver,
+      disposeRegionSelector,
+      disposeFocusSink,
+      destroyTextBakePool
+    },
+    { shouldDisposeOnBeforeQuit: () => !isSizzleQuitDeferred() }
+  );
 
   // setName BEFORE the first app.getPath("userData") access — Electron
   // derives userData from the app name, and the role peek below reads

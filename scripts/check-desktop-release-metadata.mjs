@@ -213,14 +213,14 @@ const protectedWindowsJob = releaseWorkflow
 if (!protectedWindowsJob) {
   fail(".github/workflows/release.yml protected Windows job is missing");
 } else {
-  if (!protectedWindowsJob.includes("timeout-minutes: 90")) {
+  if (!protectedWindowsJob.includes("timeout-minutes: 45")) {
     fail(
-      ".github/workflows/release.yml protected Windows job must retain the 90-minute paired-installer budget",
+      ".github/workflows/release.yml protected Windows job must retain the 45-minute single-installer budget",
     );
   }
-  if (protectedWindowsJob.includes("timeout-minutes: 55")) {
+  if (protectedWindowsJob.includes("timeout-minutes: 90")) {
     fail(
-      ".github/workflows/release.yml protected Windows job must not regress to the single-installer 55-minute budget",
+      ".github/workflows/release.yml protected Windows job must not pre-allocate an unmeasured paired-installer budget",
     );
   }
   for (const unexpected of ["actions/checkout", "pnpm install", "npm install"]) {

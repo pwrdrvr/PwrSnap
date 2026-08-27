@@ -227,8 +227,10 @@ function Remove-SmokeOwnedFileAssociationRemainder {
     return
   }
 
-  # electron-builder's APP_UNASSOCIATE removes the PwrSnap ProgID and its
-  # OpenWithProgids value, but deliberately leaves the extension root behind.
+  # NSIS can return from its launcher before the temporary uninstaller has
+  # deleted the PwrSnap OpenWithProgids value. Wait for that owned value to
+  # disappear; never erase it on NSIS's behalf, because that would hide an
+  # uninstaller regression. The extension root itself is deliberately left.
   # The preflight above proved that this key did not exist before the smoke.
   # Delete it only when it has the exact inert shape created by this installer;
   # any foreign value or subkey is user state and must make cleanup fail closed.
@@ -249,14 +251,27 @@ function Remove-SmokeOwnedFileAssociationRemainder {
   }
 
   $openWithPath = Join-Path $extensionPath "OpenWithProgids"
-  if (Test-Path -LiteralPath $openWithPath -ErrorAction Stop) {
+  $openWithDeadline = [DateTime]::UtcNow.AddSeconds(20)
+  while (Test-Path -LiteralPath $openWithPath -ErrorAction Stop) {
     $openWithKey = Get-Item -LiteralPath $openWithPath -ErrorAction Stop
-    if (
-      @($openWithKey.GetValueNames()).Count -ne 0 -or
-      @($openWithKey.GetSubKeyNames()).Count -ne 0
-    ) {
-      throw "Refusing to remove non-empty .pwrsnap OpenWithProgids state after uninstall."
+    $openWithValueNames = @($openWithKey.GetValueNames())
+    $openWithSubkeyNames = @($openWithKey.GetSubKeyNames())
+    if ($openWithValueNames.Count -eq 0 -and $openWithSubkeyNames.Count -eq 0) {
+      break
     }
+    $hasOnlyPendingPwrSnapValue = (
+      $openWithValueNames.Count -eq 1 -and
+      $openWithValueNames[0] -eq $pwrSnapFileClass -and
+      [string]::IsNullOrEmpty([string]$openWithKey.GetValue($pwrSnapFileClass)) -and
+      $openWithSubkeyNames.Count -eq 0
+    )
+    if (-not $hasOnlyPendingPwrSnapValue) {
+      throw "Refusing to remove unexpected .pwrsnap OpenWithProgids state after uninstall."
+    }
+    if ([DateTime]::UtcNow -ge $openWithDeadline) {
+      throw "NSIS uninstall did not remove its .pwrsnap OpenWithProgids value within 20 seconds."
+    }
+    Start-Sleep -Milliseconds 250
   }
 
   Remove-Item -LiteralPath $extensionPath -Recurse -Force -ErrorAction Stop
@@ -711,11 +726,16 @@ try {
     $smokeRoot,
     "Process"
   )
-  [Environment]::SetEnvironmentVariable(
-    "PWRSNAP_PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG",
-    $(if ($RequireBundledFfmpeg) { "1" } else { $null }),
-    "Process"
-  )
+  if ($RequireBundledFfmpeg) {
+    [Environment]::SetEnvironmentVariable(
+      "PWRSNAP_PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG",
+      "1",
+      "Process"
+    )
+  } else {
+    Remove-Item Env:\PWRSNAP_PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG `
+      -ErrorAction SilentlyContinue
+  }
   foreach ($name in @(
     "ELECTRON_RENDERER_URL",
     "ELECTRON_RUN_AS_NODE",

@@ -404,9 +404,9 @@ jobs:
       }}
     environment: windows-signing
     runs-on: windows-2022
-    # Merge invariant with the updater lane: protected signing may package a
-    # baseline + target pair before the two credential-free smoke jobs run.
-    timeout-minutes: 90
+    # This bounds execution after environment approval; GitHub owns the
+    # separate approval wait. Keep the established single-installer budget.
+    timeout-minutes: 45
     permissions:
       contents: read
       id-token: none

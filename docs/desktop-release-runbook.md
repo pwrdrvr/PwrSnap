@@ -202,9 +202,11 @@ The release workflow separates preparation, signing, and publication:
    controller. It does not check out source, install dependencies, or launch
    PR-controlled application code. See
    [desktop-windows-signing.md](desktop-windows-signing.md).
-   Its 90-minute timeout is a shared launch/updater merge invariant: the
-   updater lane may package a baseline and target before either credential-free
-   smoke runs. Keep updater-only synthetic installers outside
+   Its 45-minute timeout bounds runner execution after the protected environment
+   is approved; GitHub's environment approval wait is separate. If the updater
+   lane later packages a baseline and target in this job, measure that signed
+   path before changing the execution budget. Keep updater-only synthetic
+   installers outside
    `release-stage/dist`, so the launch lane's exact-one versioned setup glob
    continues to select only the publication artifact.
    NSIS must keep `deleteAppDataOnUninstall: false`. The installed-app

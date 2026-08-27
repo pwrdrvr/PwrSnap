@@ -182,8 +182,8 @@ describe("Windows release configuration", () => {
       .split("\n  windows-sign:\n")[1]
       ?.split("\n  windows-installed-smoke:\n")[0];
     expect(protectedWindowsJob, "the protected Windows job is missing").toBeDefined();
-    expect(protectedWindowsJob).toContain("timeout-minutes: 90");
-    expect(protectedWindowsJob).not.toContain("timeout-minutes: 55");
+    expect(protectedWindowsJob).toContain("timeout-minutes: 45");
+    expect(protectedWindowsJob).not.toContain("timeout-minutes: 90");
     const releaseOrder = (needle) => protectedWindowsJob.indexOf(needle);
     expect(releaseOrder("Verify Authenticode signatures")).toBeLessThan(
       releaseOrder("Prepare stable-name Windows installer alias"),
@@ -257,6 +257,9 @@ describe("Windows release configuration", () => {
       "Get-PwrSnapRegistryResidue",
       "Remove-SmokeOwnedFileAssociationRemainder",
       "Refusing to remove unexpected .pwrsnap registry state",
+      "Refusing to remove unexpected .pwrsnap OpenWithProgids state",
+      "NSIS uninstall did not remove its .pwrsnap OpenWithProgids value within 20 seconds",
+      "$openWithValueNames[0] -eq $pwrSnapFileClass",
       "$pwrSnapProductCode",
       "NODE_PATH",
       "NSIS uninstall left production-identity residue",
@@ -293,6 +296,12 @@ describe("Windows release configuration", () => {
     expect(publicationNeeds).toContain("- windows-installed-smoke");
     expect(smokeScript).not.toContain("latest.yml");
     expect(smokeScript).not.toContain("electron-updater");
+    expect(smokeScript).toContain(
+      "Remove-Item Env:\\PWRSNAP_PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG"
+    );
+    expect(smokeScript).not.toContain(
+      '$(if ($RequireBundledFfmpeg) { "1" } else { $null })'
+    );
     const authenticodeStep = protectedWindowsJob
       .split("- name: Verify Authenticode signatures")[1]
       .split("\n      - name:")[0];

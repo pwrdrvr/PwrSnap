@@ -471,4 +471,55 @@ describe("Composer", () => {
     expect(textarea.value).toBe("next message");
     expect(onDraftChange).toHaveBeenLastCalledWith("next message");
   });
+
+  test("does not clear a newer external draft written after the submitting composer unmounts", async () => {
+    const sending = deferred<void>();
+    let nextRevision = 2;
+    let storedDraft: { text: string; revision: number } | null = {
+      text: "first message",
+      revision: 1
+    };
+    const onDraftChange = vi.fn((text: string): number => {
+      const revision = nextRevision++;
+      storedDraft = text === "" ? null : { text, revision };
+      return revision;
+    });
+    const onDraftClear = vi.fn((revision: number): void => {
+      if (storedDraft?.revision === revision) storedDraft = null;
+    });
+
+    const el = await renderComposer({
+      onSubmit: vi.fn().mockReturnValue(sending.promise),
+      initialText: "first message",
+      initialDraftRevision: 1,
+      onDraftChange,
+      onDraftClear
+    });
+    await pressKey(getTextarea(el), { key: "Enter" });
+
+    await act(async () => {
+      root?.render(
+        createElement(Composer, {
+          key: "remounted",
+          onSubmit: vi.fn().mockResolvedValue(undefined),
+          initialText: "first message",
+          initialDraftRevision: 1,
+          onDraftChange,
+          onDraftClear
+        })
+      );
+      await Promise.resolve();
+    });
+    await typeInto(getTextarea(el), "newer remounted draft");
+
+    await act(async () => {
+      sending.resolve();
+      await sending.promise;
+      await Promise.resolve();
+    });
+
+    expect(storedDraft).toEqual({ text: "newer remounted draft", revision: 2 });
+    expect(onDraftClear).toHaveBeenCalledWith(1);
+    expect(getTextarea(el).value).toBe("newer remounted draft");
+  });
 });

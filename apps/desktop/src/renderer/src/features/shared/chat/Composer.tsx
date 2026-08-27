@@ -90,8 +90,14 @@ export interface ComposerProps {
   readonly onStop?: () => void | Promise<void>;
   /** Optional one-time draft hydration for panels that unmount while hidden. */
   readonly initialText?: string;
-  /** Reports draft edits and the successful-submit clear to an external store. */
-  readonly onDraftChange?: (text: string) => void;
+  /** Store revision paired with initialText, when the external store supports
+   *  compare-and-delete draft clearing. */
+  readonly initialDraftRevision?: number | null;
+  /** Reports draft edits to an external store. Returning its new revision
+   *  lets a successful submit clear only the snapshot that was submitted. */
+  readonly onDraftChange?: (text: string) => number | void;
+  /** Compare-and-delete the submitted external draft revision. */
+  readonly onDraftClear?: (revision: number) => void;
   /** Whether this surface has a real attachment transport. When false, image
    *  paste/drop stays unclaimed and no attachment chips can be created. */
   readonly attachmentsEnabled?: boolean;
@@ -122,7 +128,9 @@ export function Composer(props: ComposerProps): ReactElement {
     turnState = "idle",
     onStop,
     initialText = "",
+    initialDraftRevision = null,
     onDraftChange,
+    onDraftClear,
     attachmentsEnabled = true,
     placeholder = "Message AI…",
     testIdPrefix = "composer"
@@ -140,6 +148,7 @@ export function Composer(props: ComposerProps): ReactElement {
   const stopInFlight = useRef<boolean>(false);
   const stopCycle = useRef<number>(0);
   const draftRevision = useRef<number>(0);
+  const externalDraftRevision = useRef<number | null>(initialDraftRevision);
 
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const dropzoneRef = useRef<HTMLDivElement | null>(null);
@@ -294,6 +303,7 @@ export function Composer(props: ComposerProps): ReactElement {
     // success terms while the draft survives if onSubmit rejects.
     const sending = textRef.current;
     const sendingRevision = draftRevision.current;
+    const sendingExternalRevision = externalDraftRevision.current;
     const sendingAttachments = attachments;
 
     // Start from a resolved promise so a synchronous throw from an otherwise
@@ -312,7 +322,11 @@ export function Composer(props: ComposerProps): ReactElement {
         if (draftRevision.current === sendingRevision) {
           textRef.current = "";
           setText("");
-          onDraftChange?.("");
+          if (sendingExternalRevision !== null && onDraftClear !== undefined) {
+            onDraftClear(sendingExternalRevision);
+          } else {
+            onDraftChange?.("");
+          }
         }
         setAttachments((prev) =>
           prev.filter((a) => !sendingAttachments.some((s) => s.id === a.id))
@@ -326,7 +340,7 @@ export function Composer(props: ComposerProps): ReactElement {
         submitInFlight.current = false;
         setSendState("idle");
       });
-  }, [attachments, onDraftChange, onSubmit]);
+  }, [attachments, onDraftChange, onDraftClear, onSubmit]);
 
   const doStop = useCallback((): void => {
     if (onStop === undefined) return;
@@ -363,7 +377,8 @@ export function Composer(props: ComposerProps): ReactElement {
     (event: ChangeEvent<HTMLTextAreaElement>): void => {
       setText(event.target.value);
       draftRevision.current += 1;
-      onDraftChange?.(event.target.value);
+      const revision = onDraftChange?.(event.target.value);
+      if (typeof revision === "number") externalDraftRevision.current = revision;
     },
     [onDraftChange]
   );

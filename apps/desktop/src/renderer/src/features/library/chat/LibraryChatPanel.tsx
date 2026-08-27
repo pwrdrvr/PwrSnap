@@ -26,7 +26,7 @@ import {
   chatDraftKey,
   clearChatDraftAtRevision,
   moveChatDraft,
-  readChatDraft,
+  readChatDraftSnapshot,
   writeChatDraft
 } from "../../shared/chat/chat-draft-store";
 import { ChatApprovalModal } from "../../shared/chat/ChatApprovalModal";
@@ -45,7 +45,32 @@ export interface LibraryChatPanelProps {
 }
 
 type StreamEntry = { full: string; listeners: Set<(t: string) => void> };
+type ThreadStreamState = Map<string, Map<string, StreamEntry>>;
 type ChatPanelError = { message: string; showSettingsHint: boolean };
+
+function streamsForThread(
+  state: ThreadStreamState,
+  threadId: string
+): Map<string, StreamEntry> {
+  let streams = state.get(threadId);
+  if (streams === undefined) {
+    streams = new Map();
+    state.set(threadId, streams);
+  }
+  return streams;
+}
+
+function latestStreamMessageId(
+  state: ThreadStreamState,
+  threadId: string | null
+): string | null {
+  if (threadId === null) return null;
+  const ids = state.get(threadId)?.keys();
+  if (ids === undefined) return null;
+  let latest: string | null = null;
+  for (const id of ids) latest = id;
+  return latest;
+}
 
 export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelProps): ReactElement {
   const [threads, setThreads] = useState<LibraryChatThreadView[]>([]);
@@ -95,7 +120,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
   // chip attach to the right bubble in the transcript.
   const turnMsgRef = useRef<Map<string, string>>(new Map());
   const terminalStatusRef = useRef<Map<string, ChatMessage["status"]>>(new Map());
-  const streamState = useRef<Map<string, StreamEntry>>(new Map());
+  const streamState = useRef<ThreadStreamState>(new Map());
 
   const submitApproval = useCallback(
     (request: ChatApprovalRequest, decision: ChatApprovalDecision) =>
@@ -148,9 +173,6 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     updateActiveTurn(null);
     updateStoppingTurn(null);
     stopInFlightRef.current = null;
-    turnMsgRef.current.clear();
-    terminalStatusRef.current.clear();
-    streamState.current.clear();
   }, [updateActiveTurn, updateStoppingTurn]);
 
   /** Append a chip to a message's activity (dedup by callId). */
@@ -236,19 +258,27 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     };
   }, [anchorCaptureId, clearTurnTracking, updatePendingChips]);
 
-  // Load history when the active thread changes. Switching threads is a
-  // fresh view: drop the prior thread's in-memory activity + turn state
-  // (it isn't journaled, so it doesn't reload — that's fine).
+  // Load history when the active thread changes. Activity chips are view-local,
+  // but live stream buffers and turn identity stay partitioned by thread so a
+  // navigation round-trip cannot truncate an uncommitted assistant response.
   useEffect(() => {
-    setMessages([]);
+    const bufferedMessageId = latestStreamMessageId(streamState.current, activeThreadId);
+    setMessages(
+      bufferedMessageId === null
+        ? []
+        : [{
+            id: bufferedMessageId,
+            role: "assistant",
+            content: [{ kind: "text", text: "" }],
+            status: "streaming",
+            createdAt: new Date().toISOString()
+          }]
+    );
     setActivityByMsg({});
     updatePendingChips([]);
     updateStoppingTurn(null);
     stopInFlightRef.current = null;
-    setStreamingMessageId(null);
-    turnMsgRef.current.clear();
-    terminalStatusRef.current.clear();
-    streamState.current.clear();
+    setStreamingMessageId(bufferedMessageId);
     setActionError(null);
     const selected = threadsRef.current.find((thread) => thread.threadId === activeThreadId);
     updateActiveTurn(
@@ -264,12 +294,12 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
       if (cancelled || !result.ok) return;
       for (const message of result.value.messages) {
         if (message.status === "streaming") continue;
+        streamsForThread(streamState.current, activeThreadId).delete(message.id);
+        setStreamingMessageId((current) => current === message.id ? null : current);
         const matchingTurn = [...turnMsgRef.current].find(
           ([, messageId]) => messageId === message.id
         )?.[0];
         if (matchingTurn === undefined) continue;
-        streamState.current.delete(message.id);
-        setStreamingMessageId((current) => current === message.id ? null : current);
         terminalStatusRef.current.set(matchingTurn, message.status);
         if (activeTurnRef.current === matchingTurn) updateActiveTurn(null);
         if (
@@ -326,22 +356,25 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     unsubs.push(
       subscribe(EVENT_CHANNELS.libraryChatStreamDelta, (payload) => {
         const e = payload as LibraryChatStreamDeltaEvent;
-        if (e.threadId !== activeThreadRef.current) return;
-        if (terminalStatusRef.current.has(e.turnId)) return;
-        if (activeTurnRef.current === null) updateActiveTurn(e.turnId);
-        // First delta tells us which assistant message this turn produced
-        // → attach any chips that arrived before the text started.
-        if (turnMsgRef.current.get(e.turnId) !== e.messageId) {
-          turnMsgRef.current.set(e.turnId, e.messageId);
-          flushPendingTo(e.messageId);
+        const isActiveThread = e.threadId === activeThreadRef.current;
+        if (!isActiveThread && !threadsRef.current.some((thread) => thread.threadId === e.threadId)) {
+          return;
         }
-        let entry = streamState.current.get(e.messageId);
+        if (terminalStatusRef.current.has(e.turnId)) return;
+        let entry = streamsForThread(streamState.current, e.threadId).get(e.messageId);
         if (entry === undefined) {
           entry = { full: "", listeners: new Set() };
-          streamState.current.set(e.messageId, entry);
+          streamsForThread(streamState.current, e.threadId).set(e.messageId, entry);
         }
         entry.full += e.delta;
         for (const listener of entry.listeners) listener(entry.full);
+        const learnedMessageId = turnMsgRef.current.get(e.turnId) !== e.messageId;
+        if (learnedMessageId) turnMsgRef.current.set(e.turnId, e.messageId);
+        if (!isActiveThread) return;
+        if (activeTurnRef.current === null) updateActiveTurn(e.turnId);
+        // First delta tells us which assistant message this turn produced
+        // → attach any chips that arrived before the text started.
+        if (learnedMessageId) flushPendingTo(e.messageId);
         setStreamingMessageId(e.messageId);
         setMessages((prev) =>
           prev.some((m) => m.id === e.messageId)
@@ -386,6 +419,13 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     unsubs.push(
       subscribe(EVENT_CHANNELS.libraryChatMessageCommitted, (payload) => {
         const e = payload as LibraryChatMessageCommittedEvent;
+        if (
+          e.threadId !== activeThreadRef.current &&
+          !threadsRef.current.some((thread) => thread.threadId === e.threadId)
+        ) {
+          return;
+        }
+        streamState.current.get(e.threadId)?.delete(e.message.id);
         if (e.threadId !== activeThreadRef.current) return;
         let turnId: string | null = e.turnId ?? null;
         if (turnId === null) {
@@ -408,7 +448,6 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
         const override = turnId !== null ? terminalStatusRef.current.get(turnId) : undefined;
         const committed =
           override === "interrupted" ? { ...e.message, status: "interrupted" as const } : e.message;
-        streamState.current.delete(e.message.id);
         setStreamingMessageId((cur) => (cur === e.message.id ? null : cur));
         setMessages((prev) => {
           const idx = prev.findIndex((m) => m.id === e.message.id);
@@ -458,7 +497,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
         setActionError(null);
         const messageId = turnMsgRef.current.get(e.turnId);
         if (messageId !== undefined) {
-          const partial = streamState.current.get(messageId)?.full ?? "";
+          const partial = streamState.current.get(e.threadId)?.get(messageId)?.full ?? "";
           setMessages((prev) =>
             prev.map((message) => {
               if (message.id !== messageId) return message;
@@ -475,7 +514,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
               };
             })
           );
-          streamState.current.delete(messageId);
+          streamState.current.get(e.threadId)?.delete(messageId);
           setStreamingMessageId((cur) => cur === messageId ? null : cur);
         }
         if (currentTurn === e.turnId) updateActiveTurn(null);
@@ -501,15 +540,18 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
 
   const subscribeToStream = useCallback(
     (messageId: string, onDelta: (fullText: string) => void): (() => void) => {
-      let entry = streamState.current.get(messageId);
+      const threadId = activeThreadRef.current;
+      if (threadId === null) return () => undefined;
+      const streams = streamsForThread(streamState.current, threadId);
+      let entry = streams.get(messageId);
       if (entry === undefined) {
         entry = { full: "", listeners: new Set() };
-        streamState.current.set(messageId, entry);
+        streams.set(messageId, entry);
       }
       entry.listeners.add(onDelta);
       onDelta(entry.full);
       return () => {
-        streamState.current.get(messageId)?.listeners.delete(onDelta);
+        entry.listeners.delete(onDelta);
       };
     },
     []
@@ -537,8 +579,14 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
       }
       setActionError(null);
       let threadId = activeThreadRef.current;
-      let migratedDraft: { key: string; revision: number } | null = null;
+      let migratedDraft: {
+        key: string;
+        revision: number;
+        isSubmittedSnapshot: boolean;
+      } | null = null;
       if (threadId === null) {
+        const sourceDraftKey = chatDraftKey("library", anchorCaptureId, null);
+        const submittedDraftRevision = readChatDraftSnapshot(sourceDraftKey)?.revision ?? null;
         // First message of a new chat: lock in the chosen backend config. A
         // model is required.
         const cfg = draftConfigRef.current;
@@ -559,13 +607,11 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
         }
         threadId = created.value.threadId;
         const targetDraftKey = chatDraftKey("library", anchorCaptureId, threadId);
+        const movedDraft = moveChatDraft(sourceDraftKey, targetDraftKey, text);
         migratedDraft = {
           key: targetDraftKey,
-          revision: moveChatDraft(
-            chatDraftKey("library", anchorCaptureId, null),
-            targetDraftKey,
-            text
-          )
+          revision: movedDraft.revision,
+          isSubmittedSnapshot: movedDraft.sourceRevision === submittedDraftRevision
         };
         // Dedup: the controller also broadcasts threadUpdated for this new
         // thread, which can land before this optimistic add — without the
@@ -591,7 +637,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
         setActionError(`Message not sent: ${errorFor(result.error).message}`);
         throw new Error(result.error.message);
       }
-      if (migratedDraft !== null) {
+      if (migratedDraft?.isSubmittedSnapshot === true) {
         if (clearChatDraftAtRevision(migratedDraft.key, migratedDraft.revision)) {
           setDraftResetVersion((version) => version + 1);
         }
@@ -696,6 +742,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
 
   const showGreeting = activeThreadId === null;
   const composerDraftKey = chatDraftKey("library", anchorCaptureId, activeThreadId);
+  const composerDraft = readChatDraftSnapshot(composerDraftKey);
   const activeThread =
     activeThreadId !== null ? (threads.find((t) => t.threadId === activeThreadId) ?? null) : null;
   // The active thread's locked config, falling back to the provider baked into
@@ -798,8 +845,12 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
         <Composer
           key={`${composerDraftKey}:${draftResetVersion}`}
           attachmentsEnabled={false}
-          initialText={readChatDraft(composerDraftKey)}
+          initialText={composerDraft?.text ?? ""}
+          initialDraftRevision={composerDraft?.revision ?? null}
           onDraftChange={(text) => writeChatDraft(composerDraftKey, text)}
+          onDraftClear={(revision) => {
+            clearChatDraftAtRevision(composerDraftKey, revision);
+          }}
           onSubmit={onSubmit}
           onStop={onStop}
           turnState={

@@ -41,9 +41,11 @@ function makeThread(
 }
 
 type ApiOptions = {
+  create?: () => Promise<unknown>;
   interrupt?: () => Promise<unknown>;
   send?: () => Promise<unknown>;
   history?: () => Promise<unknown>;
+  settings?: unknown;
 };
 
 function installApi(seedThreads: LibraryChatThreadView[] = [], options: ApiOptions = {}): {
@@ -53,8 +55,12 @@ function installApi(seedThreads: LibraryChatThreadView[] = [], options: ApiOptio
 } {
   const handlers = new Map<string, Set<Handler>>();
   const dispatch = vi.fn(async (name: string) => {
+    if (name === "settings:read" && options.settings !== undefined) {
+      return { ok: true, value: options.settings };
+    }
     if (name === "codex:sizzleChat:list") return { ok: true, value: { threads: seedThreads } };
     if (name === "codex:sizzleChat:create") {
+      if (options.create !== undefined) return options.create();
       return {
         ok: true,
         value: {
@@ -223,6 +229,88 @@ describe("SizzleChatPanel", () => {
     const reopened = await renderPanel([thread]);
     expect(reopened.el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!.value)
       .toBe("survives hide");
+  });
+
+  test("preserves a newer draft typed while the first reel chat is being created", async () => {
+    const creating = deferred<unknown>();
+    const sending = deferred<unknown>();
+    const createdThread = makeThread("created", "Created reel chat");
+    const { el } = await renderPanel([], {
+      create: () => creating.promise,
+      send: () => sending.promise,
+      settings: {
+        ai: {
+          defaults: {
+            sizzleChat: { provider: "codex", model: "gpt-test", reasoning: "medium" }
+          }
+        }
+      }
+    });
+    const textarea = el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!;
+    await typeInto(textarea, "first reel message");
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await Promise.resolve();
+    });
+    await typeInto(textarea, "next reel message");
+
+    await act(async () => {
+      creating.resolve({ ok: true, value: createdThread });
+      await creating.promise;
+      await Promise.resolve();
+    });
+    expect(el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!.value)
+      .toBe("next reel message");
+
+    await act(async () => {
+      sending.resolve({ ok: true, value: { turnId: "turn-created" } });
+      await sending.promise;
+      await Promise.resolve();
+    });
+    expect(el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!.value)
+      .toBe("next reel message");
+  });
+
+  test("retains a reel thread's complete stream buffer while another thread is selected", async () => {
+    const streaming = makeThread(
+      "streaming",
+      "Streaming reel",
+      "2026-05-30T11:00:00.000Z",
+      { kind: "streaming", turnId: "turn-streaming" }
+    );
+    const other = makeThread("other", "Other reel", "2026-05-30T10:00:00.000Z");
+    const { el, emit } = await renderPanel([other, streaming]);
+
+    await act(async () => {
+      emit(EVENT_CHANNELS.sizzleChatStreamDelta, {
+        threadId: "streaming",
+        turnId: "turn-streaming",
+        messageId: "message-streaming",
+        delta: "scene one, "
+      });
+    });
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('button[title="Other reel"]')!.click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      emit(EVENT_CHANNELS.sizzleChatStreamDelta, {
+        threadId: "streaming",
+        turnId: "turn-streaming",
+        messageId: "message-streaming",
+        delta: "scene two"
+      });
+    });
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('button[title="Streaming reel"]')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    });
+
+    expect(el.textContent).toContain("scene one, scene two");
   });
 
   test("does not advertise or silently discard image attachments", async () => {

@@ -41,9 +41,11 @@ function makeThread(
 }
 
 type ApiOptions = {
+  create?: () => Promise<unknown>;
   interrupt?: () => Promise<unknown>;
   send?: () => Promise<unknown>;
   history?: () => Promise<unknown>;
+  settings?: unknown;
 };
 
 function installApi(
@@ -56,7 +58,11 @@ function installApi(
 } {
   const handlers = new Map<string, Set<Handler>>();
   const dispatch = vi.fn(async (name: string, req?: { threadId?: string }) => {
+    if (name === "settings:read" && options.settings !== undefined) {
+      return { ok: true, value: options.settings };
+    }
     if (name === "codex:libraryChat:list") return { ok: true, value: { threads: seedThreads } };
+    if (name === "codex:libraryChat:create") return options.create?.();
     if (name === "codex:libraryChat:history") {
       return options.history?.() ?? { ok: true, value: { messages: [] } };
     }
@@ -243,6 +249,88 @@ describe("LibraryChatPanel", () => {
     const reopened = await renderPanel([thread]);
     expect(reopened.el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!.value)
       .toBe("survives close");
+  });
+
+  test("preserves a newer draft typed while the first thread is being created", async () => {
+    const creating = deferred<unknown>();
+    const sending = deferred<unknown>();
+    const createdThread = makeThread("created", "Created chat");
+    const { el } = await renderPanel([], {
+      create: () => creating.promise,
+      send: () => sending.promise,
+      settings: {
+        ai: {
+          defaults: {
+            libraryChat: { provider: "codex", model: "gpt-test", reasoning: "medium" }
+          }
+        }
+      }
+    });
+    const textarea = el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!;
+    await typeInto(textarea, "first message");
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await Promise.resolve();
+    });
+    await typeInto(textarea, "next message");
+
+    await act(async () => {
+      creating.resolve({ ok: true, value: createdThread });
+      await creating.promise;
+      await Promise.resolve();
+    });
+    expect(el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!.value)
+      .toBe("next message");
+
+    await act(async () => {
+      sending.resolve({ ok: true, value: { turnId: "turn-created" } });
+      await sending.promise;
+      await Promise.resolve();
+    });
+    expect(el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!.value)
+      .toBe("next message");
+  });
+
+  test("retains a thread's complete stream buffer while another thread is selected", async () => {
+    const streaming = makeThread(
+      "streaming",
+      "Streaming chat",
+      "2026-05-30T11:00:00.000Z",
+      { kind: "streaming", turnId: "turn-streaming" }
+    );
+    const other = makeThread("other", "Other chat", "2026-05-30T10:00:00.000Z");
+    const { el, emit } = await renderPanel([other, streaming]);
+
+    await act(async () => {
+      emit(EVENT_CHANNELS.libraryChatStreamDelta, {
+        threadId: "streaming",
+        turnId: "turn-streaming",
+        messageId: "message-streaming",
+        delta: "prefix "
+      });
+    });
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('button[title="Other chat"]')!.click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      emit(EVENT_CHANNELS.libraryChatStreamDelta, {
+        threadId: "streaming",
+        turnId: "turn-streaming",
+        messageId: "message-streaming",
+        delta: "suffix"
+      });
+    });
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('button[title="Streaming chat"]')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    });
+
+    expect(el.textContent).toContain("prefix suffix");
   });
 
   test("does not advertise or silently discard image attachments", async () => {

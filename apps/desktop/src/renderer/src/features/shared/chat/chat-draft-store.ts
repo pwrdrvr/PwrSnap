@@ -1,8 +1,13 @@
 export type ChatDraftSurface = "library" | "sizzle";
 
-type DraftEntry = { text: string; revision: number };
+export type ChatDraftSnapshot = { text: string; revision: number };
 
-const drafts = new Map<string, DraftEntry>();
+export type ChatDraftMove = {
+  revision: number;
+  sourceRevision: number | null;
+};
+
+const drafts = new Map<string, ChatDraftSnapshot>();
 let nextRevision = 1;
 
 export function chatDraftKey(
@@ -17,6 +22,11 @@ export function readChatDraft(key: string): string {
   return drafts.get(key)?.text ?? "";
 }
 
+export function readChatDraftSnapshot(key: string): ChatDraftSnapshot | null {
+  const entry = drafts.get(key);
+  return entry === undefined ? null : { ...entry };
+}
+
 export function writeChatDraft(key: string, text: string): number {
   const revision = nextRevision++;
   if (text.length === 0) drafts.delete(key);
@@ -24,10 +34,18 @@ export function writeChatDraft(key: string, text: string): number {
   return revision;
 }
 
-export function moveChatDraft(fromKey: string, toKey: string, fallbackText: string): number {
-  const text = drafts.get(fromKey)?.text ?? fallbackText;
+export function moveChatDraft(
+  fromKey: string,
+  toKey: string,
+  fallbackText: string
+): ChatDraftMove {
+  const source = drafts.get(fromKey);
+  const text = source?.text ?? fallbackText;
   drafts.delete(fromKey);
-  return writeChatDraft(toKey, text);
+  return {
+    revision: writeChatDraft(toKey, text),
+    sourceRevision: source?.revision ?? null
+  };
 }
 
 export function clearChatDraftAtRevision(key: string, revision: number): boolean {

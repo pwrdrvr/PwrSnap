@@ -205,10 +205,7 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
     const sourceUrl = parseSourceUrl(request.url);
     if (sourceUrl !== null) {
       try {
-        const filePath = await resolver.sourceBytesPath(
-          sourceUrl.captureId,
-          sourceUrl.sha256
-        );
+        const filePath = await resolver.sourceBytesPath(sourceUrl.captureId, sourceUrl.sha256);
         if (filePath === null) {
           return new Response("not found", { status: 404 });
         }
@@ -306,7 +303,9 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
       // for up to 5 minutes after an app auto-update changed the icon.
       // fileResponse now stamps an ETag/Last-Modified, so those
       // revalidations resolve as bodyless 304s rather than refetches.
-      return await fileResponse(filePath, request, { cacheControl: "no-cache" });
+      return await fileResponse(filePath, request, {
+        cacheControl: "no-cache"
+      });
     } catch (cause) {
       log.error("app-icon handler threw", {
         bundleId,
@@ -398,7 +397,9 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
       // so `no-cache` stays. The ETag/Last-Modified that fileResponse
       // stamps makes each revalidation a stat + 304 instead of a full
       // refetch, which is what keeps hover-preview loops cheap.
-      return await fileResponse(filePath, request, { cacheControl: "no-cache" });
+      return await fileResponse(filePath, request, {
+        cacheControl: "no-cache"
+      });
     } catch (cause) {
       log.error("sizzle-output handler threw", {
         projectId,

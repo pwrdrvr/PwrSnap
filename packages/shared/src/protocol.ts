@@ -343,8 +343,6 @@ export type PermissionReadinessReport = RecordingReadiness & {
   permissionEvidence: RecordingPermissionEvidenceReport;
 };
 
-export type RecordingPermission = "screen" | "microphone" | "systemAudio";
-
 /** One requested capability that is not currently usable. The main
  * process computes this list from the live readiness snapshot so the
  * recording-time dialog never nags about an audio source the user did

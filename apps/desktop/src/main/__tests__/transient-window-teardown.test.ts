@@ -52,6 +52,7 @@ describe("installTransientWindowTeardown", () => {
       {
         disposeTray,
         disposeFloatOver: vi.fn(),
+        disposeRecordingController: vi.fn(),
         disposeRegionSelector: vi.fn(),
         disposeFocusSink: vi.fn(),
         destroyTextBakePool: vi.fn()

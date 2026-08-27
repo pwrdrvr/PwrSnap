@@ -10,7 +10,13 @@ const mocks = vi.hoisted(() => ({
     microphone: "granted",
     systemAudio: "granted",
     fingerprint: "0123456789abcdef",
-    screenCapturePrompted: true
+    screenCapturePrompted: true,
+    permissionEvidence: {
+      platform: "darwin",
+      screen: { kind: "os-status", status: "granted" },
+      microphone: { kind: "os-status", status: "granted" },
+      systemAudio: { kind: "derived", status: "granted" }
+    }
   } as PermissionReadinessReport,
   start: vi.fn(async () => ({ sessionId: "session-1" })),
   cancel: vi.fn(async () => undefined),
@@ -158,7 +164,13 @@ beforeEach(() => {
     microphone: "granted",
     systemAudio: "granted",
     fingerprint: "0123456789abcdef",
-    screenCapturePrompted: true
+    screenCapturePrompted: true,
+    permissionEvidence: {
+      platform: "darwin",
+      screen: { kind: "os-status", status: "granted" },
+      microphone: { kind: "os-status", status: "granted" },
+      systemAudio: { kind: "derived", status: "granted" }
+    }
   };
   mocks.start.mockClear();
   mocks.cancel.mockClear();

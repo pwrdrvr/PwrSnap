@@ -34,7 +34,13 @@ const grantedReport: PermissionReadinessReport = {
   microphone: "granted",
   systemAudio: "granted",
   fingerprint: "0123456789abcdef",
-  screenCapturePrompted: true
+  screenCapturePrompted: true,
+  permissionEvidence: {
+    platform: "darwin",
+    screen: { kind: "os-status", status: "granted" },
+    microphone: { kind: "os-status", status: "granted" },
+    systemAudio: { kind: "derived", status: "granted" }
+  }
 };
 
 function harness(

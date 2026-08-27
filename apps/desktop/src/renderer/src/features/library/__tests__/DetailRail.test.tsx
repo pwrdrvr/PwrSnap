@@ -1631,3 +1631,39 @@ describe("DetailRail video export honors the persisted trim range", () => {
     );
   });
 });
+
+describe("DetailRail trash mutation routing", () => {
+  test("routes trashed-record restore and purge through the Library coordinators", async () => {
+    const onRestore = vi.fn();
+    const onPurge = vi.fn();
+    const trashedRecord: CaptureRecord = {
+      ...record,
+      deleted_at: "2026-05-15T19:00:00.000Z"
+    };
+    const { el, dispatch } = await renderDetailRail(enrichment(), undefined, {
+      record: trashedRecord,
+      onRestore,
+      onPurge
+    });
+    dispatch.mockClear();
+
+    const restore = el.querySelector<HTMLButtonElement>('button[title="Restore from Trash"]');
+    const purge = el.querySelector<HTMLButtonElement>('button[title="Delete permanently"]');
+    expect(restore).not.toBeNull();
+    expect(purge).not.toBeNull();
+
+    await act(async () => {
+      restore?.click();
+      purge?.click();
+      await Promise.resolve();
+    });
+
+    expect(onRestore).toHaveBeenCalledOnce();
+    expect(onRestore).toHaveBeenCalledWith("cap_1");
+    expect(onPurge).toHaveBeenCalledOnce();
+    expect(onPurge).toHaveBeenCalledWith("cap_1");
+    expect(dispatch.mock.calls.some(([name]) => name === "library:restore")).toBe(false);
+    expect(dispatch.mock.calls.some(([name]) => name === "library:purge")).toBe(false);
+  });
+
+});

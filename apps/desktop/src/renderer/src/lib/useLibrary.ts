@@ -25,7 +25,9 @@ import type {
   CaptureRecord,
   LibraryAppStat,
   LibraryCursor,
-  LibraryKindStat
+  LibraryKindStat,
+  PwrSnapError,
+  Result
 } from "@pwrsnap/shared";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "./pwrsnap";
@@ -78,9 +80,22 @@ function subscribeToStore(listener: () => void): () => void {
   };
 }
 
-let inFlightHead: Promise<void> | null = null;
+export type LibraryRefreshSnapshot = {
+  readonly totalLive: number;
+  readonly trashTotal: number;
+};
+
+export type LibraryRefreshResult = Result<LibraryRefreshSnapshot, PwrSnapError>;
+
+type QueuedHeadRefresh = {
+  readonly promise: Promise<LibraryRefreshResult>;
+  readonly resolve: (result: LibraryRefreshResult) => void;
+  isInitial: boolean;
+};
+
+let inFlightHead: Promise<LibraryRefreshResult> | null = null;
 let inFlightMore: Promise<void> | null = null;
-let headRefreshQueued = false;
+let queuedHeadRefresh: QueuedHeadRefresh | null = null;
 
 /** Initial-load retry schedule. The first `library:list` after a fresh
  *  BrowserWindow can race the preload's `contextBridge.exposeInMainWorld`
@@ -100,14 +115,51 @@ const INITIAL_RETRY_DELAYS_MS = [80, 250, 800] as const;
  * `isInitial` toggles transient-failure retry. Capture-change refetches
  * skip the retry — if they fail, the next event triggers another one.
  */
-async function refetchHead(isInitial = false): Promise<void> {
+function queueHeadRefresh(isInitial: boolean): Promise<LibraryRefreshResult> {
+  if (queuedHeadRefresh !== null) {
+    queuedHeadRefresh.isInitial ||= isInitial;
+    return queuedHeadRefresh.promise;
+  }
+  let resolve!: (result: LibraryRefreshResult) => void;
+  const promise = new Promise<LibraryRefreshResult>((accept) => {
+    resolve = accept;
+  });
+  queuedHeadRefresh = { promise, resolve, isInitial };
+  return promise;
+}
+
+function refreshTransportError(cause: unknown): PwrSnapError {
+  return {
+    kind: "unknown",
+    code: "library_refresh_failed",
+    message: cause instanceof Error ? cause.message : String(cause),
+    cause
+  };
+}
+
+function refetchHead(isInitial = false): Promise<LibraryRefreshResult> {
   if (inFlightHead !== null) {
-    headRefreshQueued = true;
-    return inFlightHead;
+    // A caller that arrives during an earlier fetch needs the outcome of a
+    // FOLLOW-UP fetch, not the stale request already in flight. This matters
+    // after mutations: their captures-changed broadcast can start a refresh
+    // before the command Result reaches the renderer.
+    return queueHeadRefresh(isInitial);
   }
   inFlightHead = (async () => {
     try {
-      const result = await fetchHeadOnce(isInitial);
+      let result: Awaited<ReturnType<typeof fetchHeadOnce>>;
+      try {
+        result = await fetchHeadOnce(isInitial);
+      } catch (cause) {
+        const error = refreshTransportError(cause);
+        setSnapshot({
+          ...snapshot,
+          loading: false,
+          error: error.message,
+          version: snapshot.version + 1
+        });
+        return { ok: false, error };
+      }
       if (!result.ok) {
         // eslint-disable-next-line no-console
         console.warn("[useLibrary] library:list failed", result.error);
@@ -117,26 +169,33 @@ async function refetchHead(isInitial = false): Promise<void> {
           error: result.error.message,
           version: snapshot.version + 1
         });
-        return;
+        return { ok: false, error: result.error };
       }
       const { rows, nextCursor, appStats, totalLive, kindStats, trashTotal } = result.value;
+      const nextTotalLive = totalLive ?? rows.length;
+      const nextTrashTotal = trashTotal ?? 0;
       setSnapshot({
         loading: false,
         isLoadingMore: false,
         rows,
         nextCursor,
         appStats: appStats ?? [],
-        totalLive: totalLive ?? rows.length,
+        totalLive: nextTotalLive,
         kindStats: kindStats ?? [],
-        trashTotal: trashTotal ?? 0,
+        trashTotal: nextTrashTotal,
         error: null,
         version: snapshot.version + 1
       });
+      return {
+        ok: true,
+        value: { totalLive: nextTotalLive, trashTotal: nextTrashTotal }
+      };
     } finally {
       inFlightHead = null;
-      if (headRefreshQueued) {
-        headRefreshQueued = false;
-        void refetchHead();
+      const queued = queuedHeadRefresh;
+      queuedHeadRefresh = null;
+      if (queued !== null) {
+        void refetchHead(queued.isInitial).then(queued.resolve);
       }
     }
   })();
@@ -234,7 +293,7 @@ export type UseLibraryResult = {
   trashTotal: number;
   error: string | null;
   loadMore: () => Promise<void>;
-  refresh: () => Promise<void>;
+  refresh: () => Promise<LibraryRefreshResult>;
 };
 
 export function useLibrary(): UseLibraryResult {

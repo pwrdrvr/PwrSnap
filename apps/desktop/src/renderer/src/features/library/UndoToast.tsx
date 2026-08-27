@@ -18,6 +18,9 @@ export type UndoToastProps = {
   readonly message: string;
   /** Auto-dismiss window in ms; also the countdown-strip duration. */
   readonly durationMs: number;
+  /** Prevent restoring the wrong history head while another mutation is
+   *  changing the delete stack. Also pauses this toast's countdown. */
+  readonly disabled?: boolean;
   readonly onUndo: () => void;
   readonly onDismiss: () => void;
 };
@@ -25,6 +28,7 @@ export type UndoToastProps = {
 export function UndoToast({
   message,
   durationMs,
+  disabled = false,
   onUndo,
   onDismiss
 }: UndoToastProps): ReactElement {
@@ -37,11 +41,12 @@ export function UndoToast({
   // re-subscribing (a parent re-render makes a fresh callback identity).
   const onDismissRef = useRef(onDismiss);
   onDismissRef.current = onDismiss;
+  const paused = hovering || disabled;
 
   useEffect(() => {
     // Pause while hovered: bank the elapsed time and stop the loop so the
     // user can reach the Undo button without the toast vanishing.
-    if (hovering) {
+    if (paused) {
       elapsedAtPause.current += Date.now() - startedAt.current;
       startedAt.current = Date.now();
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
@@ -62,11 +67,11 @@ export function UndoToast({
     return () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
     };
-  }, [hovering, durationMs]);
+  }, [paused, durationMs]);
 
   return (
     <div
-      className={"ps-undo-toast" + (hovering ? " is-paused" : "")}
+      className={"ps-undo-toast" + (paused ? " is-paused" : "")}
       role="status"
       aria-live="polite"
       onMouseEnter={() => setHovering(true)}
@@ -91,7 +96,12 @@ export function UndoToast({
         <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
       </svg>
       <span className="ps-undo-toast__msg">{message}</span>
-      <button type="button" className="ps-undo-toast__undo" onClick={onUndo}>
+      <button
+        type="button"
+        className="ps-undo-toast__undo"
+        disabled={disabled}
+        onClick={onUndo}
+      >
         Undo
       </button>
       <button

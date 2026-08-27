@@ -1595,6 +1595,37 @@
   color: var(--danger-text, var(--danger-text));
   font: 500 12px/1.4 var(--font-sans);
 }
+.psl__action-error {
+  margin: 0;
+  max-width: min(420px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  box-shadow: var(--shadow-lg);
+}
+.psl__action-error-message {
+  overflow-wrap: anywhere;
+}
+.psl__action-error-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.psl__action-error-retry,
+.psl__action-error-dismiss {
+  border: 1px solid var(--danger-border);
+  border-radius: 5px;
+  padding: 4px 8px;
+  background: var(--bg-panel);
+  color: inherit;
+  font: 600 11px/1.2 var(--font-sans);
+  cursor: pointer;
+}
+.psl__action-error-retry {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--button-text-on-accent);
+}
 /* Trash-view banner. Pinned at the top of the grid pane when the
    user is on the Trash sidebar entry; explains the 30d retention and
    surfaces the Empty Trash bulk action. */

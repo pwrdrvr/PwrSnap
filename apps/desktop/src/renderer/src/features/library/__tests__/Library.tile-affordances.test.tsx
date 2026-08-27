@@ -339,7 +339,10 @@ describe("capture tile context menu", () => {
       await Promise.resolve();
     });
 
-    const alert = container?.querySelector('[role="alert"].psl__error');
+    // Action errors portal into the app toast stack so they stay visible
+    // above Focus/Reel as well as Grid. This isolated harness has no stack,
+    // so Library falls back to document.body.
+    const alert = document.querySelector('[role="alert"].psl__error');
     expect(alert?.textContent).toContain("disk is full");
   });
 

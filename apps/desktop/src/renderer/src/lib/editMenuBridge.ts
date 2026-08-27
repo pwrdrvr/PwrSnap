@@ -44,7 +44,8 @@
 //   • Ctrl+Y is NOT a registered menu accelerator, so the browser default
 //     is NOT suppressed: in a text field we leave the field's native
 //     Ctrl+Y alone (redo on Windows/Linux, emacs "yank" on macOS); only
-//     outside a text field does it drive editor redo.
+//     outside a text field does it drive the editor-first redo chain, then
+//     the capture fallback once editor redo is exhausted.
 //
 // Double-fire guard: ⌘Z / ⌘⇧Z are registered menu accelerators AND handled
 // by the keydown listener. On platforms where BOTH fire for one keypress
@@ -215,7 +216,8 @@ export function useEditMenuBridge(): void {
     const onKey = (e: KeyboardEvent): void => {
       // Ctrl+Y (Windows/Linux redo) — deliberately NOT a menu accelerator.
       // In a text field, leave the field's native Ctrl+Y alone (redo on
-      // Windows/Linux, emacs "yank" on macOS). Outside one, editor redo.
+      // Windows/Linux, emacs "yank" on macOS). Outside one, use the same
+      // editor-first/capture-fallback chain as the other redo inputs.
       if (
         e.ctrlKey &&
         !e.metaKey &&
@@ -224,7 +226,7 @@ export function useEditMenuBridge(): void {
       ) {
         if (activeElementIsEditable()) return;
         e.preventDefault();
-        registeredEditor?.redo();
+        performRedo();
         return;
       }
       // ⌘Z / Ctrl+Z (undo) and ⌘⇧Z / Ctrl+Shift+Z (redo).

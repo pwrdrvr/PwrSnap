@@ -51,11 +51,11 @@ describe("database migrations", () => {
     }
   });
 
-  test("0029 preserves existing capture and search data while adding a nullable window title", () => {
+  test("0031 preserves existing capture and search data while adding a nullable window title", () => {
     const db = new Database(":memory:");
     try {
       db.pragma("foreign_keys = ON");
-      for (const file of migrationFiles().filter((name) => Number(name.slice(0, 4)) <= 28)) {
+      for (const file of migrationFiles().filter((name) => Number(name.slice(0, 4)) <= 30)) {
         const sql = readFileSync(join(migrationsDir, file), "utf8");
         const needsFkOff = sql.startsWith("-- @no-foreign-keys");
         if (needsFkOff) db.pragma("foreign_keys = OFF");
@@ -98,7 +98,7 @@ describe("database migrations", () => {
       ).run();
 
       db.exec(
-        readFileSync(join(migrationsDir, "0029_capture_source_window_title.sql"), "utf8")
+        readFileSync(join(migrationsDir, "0031_capture_source_window_title.sql"), "utf8")
       );
 
       expect(

@@ -25,13 +25,13 @@ import {
   preWarmRegionSelector
 } from "./capture/region-selector";
 import { releaseSnapshot } from "./capture/screen-snapshot";
-import { activateApp, listWindows, selfPidSet } from "./capture/window-list";
+import { activateApp, selfPidSet } from "./capture/window-list";
 import { appWindowsOverlappingRect } from "./capture/rect-overlap";
 import { guardScreenCapture } from "./capture/screen-permission-gate";
 import { ensureCapturesDirReady } from "./capture/capture-storage-gate";
 import { reconcileCapturesLocationOnBoot } from "./capture/capture-location-reconciliation";
 import {
-  resolveSelectedWindowTitle,
+  findWindowById,
   resolveSelectionSourceApp,
   shouldConsiderRaisingOurWindows
 } from "./capture/source-app";
@@ -100,7 +100,10 @@ import {
   installRecordingController
 } from "./recording/recording-controller";
 import { readRecordingReadiness } from "./recording/recording-permissions";
-import { getRecordingService } from "./recording/recording-service";
+import {
+  attachTrustedRecordingWindowIdentity,
+  getRecordingService
+} from "./recording/recording-service";
 import { getRecordingState, isRecordingActive } from "./recording/recording-state";
 import { videoAssetDir } from "./recording/video-frames";
 import {
@@ -1152,12 +1155,16 @@ async function runInteractiveRecord(
   }
   const { screenSnapshotId, previousAppPid } = selection;
   const cachedSnapshot = getLastWindowListSnapshot();
-  // The cached selector list identifies the user's target, but cannot prove
-  // the window still exists. Enumerate live windows immediately after commit
-  // and later accept a title only for the same native id + pid. Run it in
-  // parallel with selector teardown/focus work to avoid adding picker latency.
-  const liveWindowsPromise =
-    selection.snappedWindowId === undefined ? null : listWindows();
+  const selectedWindow =
+    selection.snappedWindowId === undefined
+      ? null
+      : findWindowById(cachedSnapshot, selection.snappedWindowId);
+  // Retain only main-process native identity through the countdown. The title
+  // in this selector snapshot may already be stale when recording begins.
+  const trustedWindowIdentity =
+    selectedWindow === null
+      ? null
+      : { windowId: selectedWindow.windowId, pid: selectedWindow.pid };
   // CRITICAL: the selector is at screen-saver level and would
   // otherwise be in the captured pixels for the entire countdown +
   // first frames of the recording. Drop it BEFORE `recording:start`
@@ -1256,21 +1263,13 @@ async function runInteractiveRecord(
   // commit time or just clicked — both shapes attribute the same app
   // for the same selection. We also reuse the cached window-list
   // snapshot so the lookup matches the list the user actually picked
-  // against. Window TITLE attribution is deliberately stricter below:
-  // it needs an exact live id + pid match and never uses the rect fallback.
+  // against. Window title attribution is attached separately after the
+  // recorder starts; public recording:start input never carries it.
   const sourceApp = resolveSelectionSourceApp(
     selection.rect,
     selection.snappedWindowId,
     cachedSnapshot
   );
-  const sourceWindowTitle =
-    liveWindowsPromise === null
-      ? null
-      : resolveSelectedWindowTitle(
-          selection.snappedWindowId,
-          cachedSnapshot,
-          await liveWindowsPromise
-        );
   // A snapshot windowId in the selection means the user pointed at a
   // specific window (with or without ⇧). Persist that as a `window`
   // subject so the Library row shows the source app even when the
@@ -1284,8 +1283,7 @@ async function runInteractiveRecord(
       rect: selection.rect,
       displayId: selection.displayId,
       appName: sourceApp?.appName ?? null,
-      appBundleId: sourceApp?.bundleId ?? null,
-      windowTitle: sourceWindowTitle
+      appBundleId: sourceApp?.bundleId ?? null
     };
   } else {
     subject = {
@@ -1306,6 +1304,12 @@ async function runInteractiveRecord(
     },
     { principal: "ipc" }
   );
+  if (result.ok && trustedWindowIdentity !== null) {
+    attachTrustedRecordingWindowIdentity(
+      result.value.sessionId,
+      trustedWindowIdentity
+    );
+  }
   if (!result.ok && result.error.code !== "cancelled") {
     log.warn("recording:start failed", { code: result.error.code, message: result.error.message });
     if (getRecordingState().phase === "failed") return;

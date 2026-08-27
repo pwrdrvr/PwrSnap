@@ -460,11 +460,31 @@ describe("InfoPanel", () => {
     const title = q('[data-testid="info-window-title"]');
     expect(title?.textContent).toBe(windowTitle);
     expect(title?.classList.contains("pse-info-window-title")).toBe(true);
+    expect(title?.getAttribute("dir")).toBe("auto");
   });
 
   test("16. null source window title omits the metadata row", async () => {
     dispatchMock.mockImplementation(async (name: string) => {
       if (name === "library:byId") return { ok: true, value: makeRecord() };
+      if (name === "codex:enrichment") return { ok: true, value: null };
+      return { ok: true, value: undefined };
+    });
+    render(createElement(InfoPanel, { captureId: "cap_1" }));
+    await flush();
+
+    expect(q('[data-testid="info-window-title"]')).toBeNull();
+  });
+
+  test("16. legacy records without the additive field omit the metadata row", async () => {
+    dispatchMock.mockImplementation(async (name: string) => {
+      if (name === "library:byId") {
+        return {
+          ok: true,
+          value: makeRecord({
+            source_window_title: undefined as unknown as null
+          })
+        };
+      }
       if (name === "codex:enrichment") return { ok: true, value: null };
       return { ok: true, value: undefined };
     });

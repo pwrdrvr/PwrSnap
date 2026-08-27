@@ -115,6 +115,11 @@ export function InfoPanel({ captureId }: InfoPanelProps): ReactElement {
   const appIdentifier = isResolvableAppIdentifier(bundleId ?? undefined)
     ? bundleId
     : null;
+  const sourceWindowTitle =
+    typeof record.source_window_title === "string" &&
+    record.source_window_title.length > 0
+      ? record.source_window_title
+      : null;
   const acceptedTags = enrichment?.acceptedTags ?? [];
   const description =
     enrichment?.acceptedDescription !== null &&
@@ -152,13 +157,14 @@ export function InfoPanel({ captureId }: InfoPanelProps): ReactElement {
         </span>
       </InfoRow>
 
-      {record.source_window_title !== null ? (
+      {sourceWindowTitle !== null ? (
         <InfoRow label="Window title">
           <span
             className="pse-info-window-title"
             data-testid="info-window-title"
+            dir="auto"
           >
-            {record.source_window_title}
+            {sourceWindowTitle}
           </span>
         </InfoRow>
       ) : null}

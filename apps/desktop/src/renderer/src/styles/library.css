@@ -3037,6 +3037,7 @@
   color: var(--text-secondary);
   font-family: var(--font-sans);
   overflow-wrap: anywhere;
+  unicode-bidi: isolate;
 }
 .psl__detail-row {
   display: flex; gap: 14px;

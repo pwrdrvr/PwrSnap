@@ -27,6 +27,7 @@ import { setFloatOverState } from "../float-over";
 import { broadcastCapturesChanged } from "../events";
 import { maybeEnqueueCaptureEnrichment } from "../handlers/codex-handlers";
 import { runWithCapturesDirFallback } from "../capture/capture-storage-gate";
+import { listWindows } from "../capture/window-list";
 import {
   getCaptureById,
   insertCapture,
@@ -93,6 +94,11 @@ export type StartOptions = {
   captureCursor?: boolean | undefined;
 };
 
+export type TrustedRecordingWindowIdentity = Readonly<{
+  windowId: number;
+  pid: number;
+}>;
+
 export type RecordingService = {
   start(opts: StartOptions): Promise<{ sessionId: string }>;
   stop(): Promise<{ captureId: string }>;
@@ -106,12 +112,34 @@ export type RecordingService = {
   retryCapabilities(sessionId: string): RecordingCapabilities;
   retry(sessionId: string): Promise<{ sessionId: string }>;
   dismissFailure(sessionId: string): Promise<void>;
+  /** Main-process-only provenance attached after an interactive start.
+   *  Public recording:start callers cannot provide this evidence. */
+  attachTrustedWindowIdentity?(
+    sessionId: string,
+    identity: TrustedRecordingWindowIdentity
+  ): boolean;
   /** True when this service has an active session. Used by the
    *  app-quit hook to cancel before exit. */
   isActive(): boolean;
 };
 
 let activeService: RecordingService | null = null;
+
+async function resolveTrustedRecordingWindowTitle(
+  identity: TrustedRecordingWindowIdentity
+): Promise<string | null> {
+  try {
+    const live = (await listWindows()).find(
+      (window) => window.windowId === identity.windowId
+    );
+    if (live === undefined || live.pid !== identity.pid) return null;
+    return normalizeSourceWindowTitle(
+      typeof live.title === "string" ? live.title : null
+    );
+  } catch {
+    return null;
+  }
+}
 
 /** Resolve the `PwrSnapRecorder` binary. Mirrors the lookup pattern
  *  used by `apps/desktop/src/main/capture/window-list.ts` — production
@@ -176,9 +204,27 @@ class NativeRecorderService implements RecordingService {
   private stopRequested = false;
   private retryOptions: StartOptions | null = null;
   private retryInFlight = false;
+  private trustedWindowIdentity: TrustedRecordingWindowIdentity | null = null;
+  private sourceWindowTitlePromise: Promise<string | null> | null = null;
 
   isActive(): boolean {
     return this.child !== null && this.sessionId !== null;
+  }
+
+  attachTrustedWindowIdentity(
+    sessionId: string,
+    identity: TrustedRecordingWindowIdentity
+  ): boolean {
+    if (
+      this.sessionId !== sessionId ||
+      this.subject?.kind !== "window" ||
+      this.subject.windowId !== identity.windowId
+    ) {
+      return false;
+    }
+    this.trustedWindowIdentity = identity;
+    this.sourceWindowTitlePromise = resolveTrustedRecordingWindowTitle(identity);
+    return true;
   }
 
   async start(opts: StartOptions): Promise<{ sessionId: string }> {
@@ -323,6 +369,7 @@ class NativeRecorderService implements RecordingService {
     });
     child.on("exit", (code, signal) => {
       log.info("recorder exited", { code, signal });
+      if (this.child !== child || this.sessionId !== sessionId) return;
       if (this.startReject !== null && this.startedPromise !== null) {
         this.startReject(new Error(`recorder exited before start ack (code=${code})`));
         this.startReject = null;
@@ -483,13 +530,16 @@ class NativeRecorderService implements RecordingService {
     }
     setRecordingState({ phase: "processing", sessionId });
     try {
+      const sourceWindowTitle = await (this.sourceWindowTitlePromise ??
+        Promise.resolve(null));
       const stored = await persistStoppedRecording({
         outputPath: stopped.outputPath,
         durationSec: stopped.durationSec,
         containerFormat: stopped.containerFormat,
         hasSystemAudio: stopped.hasSystemAudio,
         hasMicrophoneAudio: stopped.hasMicrophoneAudio,
-        subject: this.subject!
+        subject: this.subject!,
+        sourceWindowTitle
       });
       setRecordingState({ phase: "ready", sessionId, captureId: stored.captureId });
       this.retryOptions = null;
@@ -523,8 +573,18 @@ class NativeRecorderService implements RecordingService {
     const subject = this.subject;
     const capabilities = this.capabilities;
     const captureCursor = this.captureCursor;
+    const trustedWindowIdentity = this.trustedWindowIdentity;
     await this.cancel();
-    return this.start({ subject, capabilities, captureCursor, countdownSeconds: 3 });
+    const restarted = await this.start({
+      subject,
+      capabilities,
+      captureCursor,
+      countdownSeconds: 3
+    });
+    if (trustedWindowIdentity !== null) {
+      this.attachTrustedWindowIdentity(restarted.sessionId, trustedWindowIdentity);
+    }
+    return restarted;
   }
 
   async retry(sessionId: string): Promise<{ sessionId: string }> {
@@ -692,6 +752,8 @@ class NativeRecorderService implements RecordingService {
     this.stopReject = null;
     this.inboundBuffer = "";
     this.stopRequested = false;
+    this.trustedWindowIdentity = null;
+    this.sourceWindowTitlePromise = null;
   }
 }
 
@@ -703,41 +765,28 @@ type PersistStoppedRecordingInput = {
   hasSystemAudio: boolean;
   hasMicrophoneAudio: boolean;
   subject: RecordingSubject;
+  sourceWindowTitle: string | null;
 };
-
-/** Keep the copy embedded in video metadata bounded just like the capture row. */
-function normalizeRecordingSubjectWindowTitle(
-  subject: RecordingSubject
-): RecordingSubject {
-  if (subject.kind !== "window") return subject;
-  return {
-    ...subject,
-    windowTitle: normalizeSourceWindowTitle(subject.windowTitle)
-  };
-}
 
 async function persistStoppedRecording(stopped: PersistStoppedRecordingInput): Promise<{ captureId: string }> {
   const stored = await runWithCapturesDirFallback((outputDir) =>
     adoptExistingFileAsSource(stopped.outputPath, outputDir)
   );
   const sizeInfo = await statSource(stored.srcPath);
-  const subject = normalizeRecordingSubjectWindowTitle(stopped.subject);
+  const subject = stopped.subject;
   const rect = subjectToPhysicalRect(subject);
 
   const sourceAppBundleId =
     subject.kind === "window" ? subject.appBundleId ?? null : null;
   const sourceAppName =
     subject.kind === "window" ? subject.appName ?? null : null;
-  const sourceWindowTitle =
-    subject.kind === "window" ? subject.windowTitle ?? null : null;
-
   const { record } = insertCapture({
     id: stored.id,
     kind: "video",
     captured_at: new Date().toISOString(),
     source_app_bundle_id: sourceAppBundleId,
     source_app_name: sourceAppName,
-    source_window_title: sourceWindowTitle,
+    source_window_title: stopped.sourceWindowTitle,
     legacy_src_path: stored.srcPath,
     width_px: rect.w,
     height_px: rect.h,
@@ -795,9 +844,27 @@ class WindowsFfmpegRecorderService implements RecordingService {
   private stderrTail: string[] = [];
   private retryOptions: StartOptions | null = null;
   private retryInFlight = false;
+  private trustedWindowIdentity: TrustedRecordingWindowIdentity | null = null;
+  private sourceWindowTitlePromise: Promise<string | null> | null = null;
 
   isActive(): boolean {
     return this.child !== null && this.sessionId !== null;
+  }
+
+  attachTrustedWindowIdentity(
+    sessionId: string,
+    identity: TrustedRecordingWindowIdentity
+  ): boolean {
+    if (
+      this.sessionId !== sessionId ||
+      this.subject?.kind !== "window" ||
+      this.subject.windowId !== identity.windowId
+    ) {
+      return false;
+    }
+    this.trustedWindowIdentity = identity;
+    this.sourceWindowTitlePromise = resolveTrustedRecordingWindowTitle(identity);
+    return true;
   }
 
   async start(opts: StartOptions): Promise<{ sessionId: string }> {
@@ -1014,13 +1081,16 @@ class WindowsFfmpegRecorderService implements RecordingService {
     setRecordingState({ phase: "processing", sessionId });
     const durationSec = Math.max(0.1, (Date.now() - startedAtMs) / 1000);
     try {
+      const sourceWindowTitle = await (this.sourceWindowTitlePromise ??
+        Promise.resolve(null));
       const stored = await persistStoppedRecording({
         outputPath,
         durationSec,
         containerFormat: "mp4",
         hasSystemAudio: false,
         hasMicrophoneAudio: false,
-        subject
+        subject,
+        sourceWindowTitle
       });
       setRecordingState({ phase: "ready", sessionId, captureId: stored.captureId });
       this.retryOptions = null;
@@ -1045,13 +1115,18 @@ class WindowsFfmpegRecorderService implements RecordingService {
     }
     const subject = this.subject;
     const captureCursor = this.captureCursor;
+    const trustedWindowIdentity = this.trustedWindowIdentity;
     await this.cancel();
-    return this.start({
+    const restarted = await this.start({
       subject,
       capabilities: { systemAudio: false, microphone: false },
       captureCursor,
       countdownSeconds: 3
     });
+    if (trustedWindowIdentity !== null) {
+      this.attachTrustedWindowIdentity(restarted.sessionId, trustedWindowIdentity);
+    }
+    return restarted;
   }
 
   async retry(sessionId: string): Promise<{ sessionId: string }> {
@@ -1148,6 +1223,8 @@ class WindowsFfmpegRecorderService implements RecordingService {
     this.stopRequested = false;
     this.exitPromise = null;
     this.stderrTail = [];
+    this.trustedWindowIdentity = null;
+    this.sourceWindowTitlePromise = null;
   }
 }
 
@@ -1321,6 +1398,14 @@ export function getRecordingService(): RecordingService {
       : new NativeRecorderService();
   }
   return activeService;
+}
+
+/** Attach selector provenance without exposing it on recording:start IPC. */
+export function attachTrustedRecordingWindowIdentity(
+  sessionId: string,
+  identity: TrustedRecordingWindowIdentity
+): boolean {
+  return getRecordingService().attachTrustedWindowIdentity?.(sessionId, identity) ?? false;
 }
 
 /** Test seam: swap the recorder for a stub between specs. */

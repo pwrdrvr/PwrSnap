@@ -133,6 +133,23 @@ describe("captures-repo source_window_title", () => {
     expect(controlOnly.source_window_title).toBeNull();
   });
 
+  test("drops invisible-only and bidi formatting while preserving emoji joiners", async () => {
+    const { insertCapture } = await import("../captures-repo");
+    const invisible = insertCapture({
+      ...baseInput,
+      id: "title-invisible",
+      source_window_title: "\u200b\u2060\u202e\u2067"
+    }).record;
+    const visible = insertCapture({
+      ...baseInput,
+      id: "title-visible",
+      source_window_title: "Plan\u202e.txt — 👩‍💻 ✈️"
+    }).record;
+
+    expect(invisible.source_window_title).toBeNull();
+    expect(visible.source_window_title).toBe("Plan.txt — 👩‍💻 ✈️");
+  });
+
   test("identical source bytes retain independent window titles", async () => {
     const { insertCapture } = await import("../captures-repo");
     const first = insertCapture({

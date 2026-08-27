@@ -321,7 +321,7 @@ describe("packaged Windows smoke", () => {
           [PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG_ENV]: "true"
         };
       },
-      message: /must be unset or exactly 1/
+      message: /must be unset, empty, or exactly 1/
     },
     {
       name: "a data root outside the smoke root",
@@ -718,6 +718,30 @@ describe("packaged Windows smoke", () => {
       executed: false
     });
     expect(dependencies.probeBundledWindowList).toHaveBeenCalledTimes(1);
+    expect(probeBundledFfmpeg).not.toHaveBeenCalled();
+  });
+
+  test("treats an empty PowerShell environment value as preview FFmpeg being absent", async () => {
+    const probeBundledFfmpeg = vi.fn();
+    const dependencies = makeDependencies(layout, {
+      env: {
+        ...layout.env,
+        [PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG_ENV]: ""
+      },
+      probeBundledFfmpeg,
+      hasBundledFfmpeg: () => false
+    });
+
+    await expect(runPackagedWindowsSmokeIfRequested(dependencies)).resolves.toBe(true);
+
+    const report = JSON.parse(
+      await readFile(layout.reportPath, "utf8")
+    ) as PackagedWindowsSmokeReport;
+    expect(report.bundledHelpers.ffmpeg).toEqual({
+      required: false,
+      present: false,
+      executed: false
+    });
     expect(probeBundledFfmpeg).not.toHaveBeenCalled();
   });
 

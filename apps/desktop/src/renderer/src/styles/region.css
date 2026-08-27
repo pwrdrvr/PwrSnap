@@ -65,6 +65,22 @@ body[data-stage="region"][data-mode="window"] .region-crosshair {
   display: none;
 }
 
+/* Pure window mode has no truthful display/region fallback. Hide the
+   full-display seed rect until the CURRENT invocation has a window target;
+   otherwise a reused renderer makes stale/full-screen geometry look
+   clickable while native enumeration is still running. */
+body[data-stage="region"][data-mode="window"]:not([data-window-list-state="ready"])
+  .region-dim,
+body[data-stage="region"][data-mode="window"]:not([data-window-list-state="ready"])
+  .region-rect,
+body[data-stage="region"][data-mode="window"]:not([data-window-list-state="ready"])
+  .region-dims-chip,
+body[data-stage="region"][data-mode="window"][data-snap="display"] .region-dim,
+body[data-stage="region"][data-mode="window"][data-snap="display"] .region-rect,
+body[data-stage="region"][data-mode="window"][data-snap="display"] .region-dims-chip {
+  display: none;
+}
+
 .region-rect {
   position: fixed;
   border: 1.5px solid var(--accent);
@@ -238,4 +254,87 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
 }
 .region-hint-sep {
   color: var(--text-muted);
+}
+
+/* Immediate, truthful picker feedback. The window status card paints in the
+   transparent live-shell path before HWND enumeration begins. Snapshot status
+   is opaque/full-screen: if image decode fails (or main's bounded paint gate
+   expires), the selector must never imply that live pixels are frozen/capturable. */
+.region-window-status,
+.region-snapshot-status {
+  position: fixed;
+  z-index: 10;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  min-width: 280px;
+  max-width: min(440px, calc(100vw - 48px));
+  padding: 16px 20px;
+  background: color-mix(in srgb, var(--bg-panel) 96%, transparent);
+  border: 1px solid var(--border-default);
+  border-radius: 12px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
+  color: var(--text-primary);
+  font: 500 12px/1.4 var(--font-sans);
+  text-align: center;
+  pointer-events: none;
+}
+
+.region-window-status strong,
+.region-snapshot-status strong {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.region-window-status span,
+.region-snapshot-status span {
+  color: var(--text-secondary);
+}
+
+.region-window-status--error,
+.region-snapshot-status--error {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border-default));
+}
+
+.region-snapshot-status {
+  z-index: 20;
+  inset: 0;
+  left: 0;
+  top: 0;
+  transform: none;
+  min-width: 0;
+  max-width: none;
+  justify-content: center;
+  background: #000;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.region-snapshot-dismiss,
+.region-window-dismiss {
+  pointer-events: auto;
+  margin-top: 5px;
+  padding: 7px 14px;
+  border: 1px solid var(--accent-border);
+  border-radius: 6px;
+  background: var(--bg-panel-hover);
+  color: var(--text-primary);
+  font: 600 12px/1 var(--font-sans);
+  cursor: pointer;
+}
+
+.region-snapshot-dismiss:hover,
+.region-window-dismiss:hover {
+  background: color-mix(in srgb, var(--accent) 16%, var(--bg-panel-hover));
+}
+
+.region-snapshot-dismiss:focus-visible,
+.region-window-dismiss:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }

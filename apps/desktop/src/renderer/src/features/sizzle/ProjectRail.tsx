@@ -41,6 +41,7 @@ export type ProjectRailProps = {
   railIsPopover: boolean;
   railOpen: boolean;
   loading: boolean;
+  loadFailed: boolean;
   projectCount: number;
   rail: ProjectRailModel;
   activeId: string | null;
@@ -55,6 +56,7 @@ export function ProjectRail({
   railIsPopover,
   railOpen,
   loading,
+  loadFailed,
   projectCount,
   rail,
   activeId,
@@ -70,7 +72,12 @@ export function ProjectRail({
       className="szl__rail"
       aria-hidden={railIsPopover && !railOpen ? true : undefined}
     >
-      <button className="szl__new" onClick={onCreate} type="button">
+      <button
+        className="szl__new"
+        onClick={onCreate}
+        type="button"
+        disabled={loading || loadFailed}
+      >
         + New Sizzle Reel
       </button>
       <section className="szl__section" aria-label="Recent projects">
@@ -80,6 +87,8 @@ export function ProjectRail({
         <ul className="szl__list szl__list--recents" data-testid="sizzle-recents-list">
           {loading ? (
             <li className="szl__empty">Loading...</li>
+          ) : loadFailed ? (
+            <li className="szl__empty">Projects are unavailable.</li>
           ) : rail.recents.length === 0 ? (
             <li className="szl__empty">No recent projects.</li>
           ) : (
@@ -107,7 +116,7 @@ export function ProjectRail({
           ) : null}
         </div>
         <ul className="szl__list szl__list--projects" data-testid="sizzle-projects-list">
-          {loading ? null : projectCount === 0 ? (
+          {loading || loadFailed ? null : projectCount === 0 ? (
             <li className="szl__empty">No projects yet. Create one above.</li>
           ) : rail.list.length === 0 ? (
             <li className="szl__empty">All visible projects are in Recents.</li>

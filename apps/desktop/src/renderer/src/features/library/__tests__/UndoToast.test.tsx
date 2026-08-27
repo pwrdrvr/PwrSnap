@@ -31,7 +31,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function render(durationMs: number): {
+function render(durationMs: number, disabled = false): {
   onUndo: ReturnType<typeof vi.fn<() => void>>;
   onDismiss: ReturnType<typeof vi.fn<() => void>>;
 } {
@@ -45,6 +45,7 @@ function render(durationMs: number): {
       <UndoToast
         message="Moved to Trash"
         durationMs={durationMs}
+        disabled={disabled}
         onUndo={onUndo}
         onDismiss={onDismiss}
       />
@@ -93,6 +94,18 @@ describe("UndoToast", () => {
     });
     act(() => vi.advanceTimersByTime(3000));
     expect(onDismiss).not.toHaveBeenCalled();
+  });
+
+  test("disabled pauses countdown and prevents Undo", () => {
+    const { onUndo, onDismiss } = render(1000, true);
+    const undo = toast().querySelector<HTMLButtonElement>(".ps-undo-toast__undo");
+    expect(undo?.disabled).toBe(true);
+
+    act(() => vi.advanceTimersByTime(3000));
+    undo?.click();
+
+    expect(onDismiss).not.toHaveBeenCalled();
+    expect(onUndo).not.toHaveBeenCalled();
   });
 
   test("Undo button calls onUndo; close button calls onDismiss", () => {

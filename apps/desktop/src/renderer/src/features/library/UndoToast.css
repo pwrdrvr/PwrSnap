@@ -84,6 +84,15 @@
   border-color: var(--accent);
   color: var(--text-primary);
 }
+.ps-undo-toast__undo:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.ps-undo-toast__undo:disabled:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent-bright);
+}
 .ps-undo-toast__undo:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;

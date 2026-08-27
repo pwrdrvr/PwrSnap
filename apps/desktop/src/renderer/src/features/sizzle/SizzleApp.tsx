@@ -60,8 +60,16 @@ export function SizzleApp(): ReactElement {
     active,
     activeId,
     loading,
+    loadError,
+    retryLoad,
     captures,
     status,
+    saveState,
+    saveStates,
+    retrySave,
+    actionFailure,
+    retryAction,
+    dismissActionFailure,
     projectRail,
     focusTitleForId,
     setFocusTitleForId,
@@ -106,6 +114,14 @@ export function SizzleApp(): ReactElement {
   const [chatWidth, setChatWidth] = useState<number>(() => getSavedChatWidth());
   const [projectContextMenu, setProjectContextMenu] =
     useState<ProjectContextMenuState | null>(null);
+
+  const backgroundSaveFailure = Object.entries(saveStates).find(
+    ([projectId, state]) => projectId !== activeId && state.phase === "error"
+  );
+  const backgroundSaveProject =
+    backgroundSaveFailure === undefined
+      ? null
+      : projects.find((project) => project.id === backgroundSaveFailure[0]) ?? null;
 
   const selectProject = useCallback(
     (id: string): void => {
@@ -244,11 +260,38 @@ export function SizzleApp(): ReactElement {
           </>
         ) : null}
       </header>
+      {loadError !== null || actionFailure !== null || backgroundSaveFailure !== undefined ? (
+        <div className="szl__failure-stack">
+          {loadError !== null ? (
+            <FailureNotice
+              message={`Could not load Sizzle Reels: ${loadError.message}`}
+              actionLabel="Retry load"
+              onAction={() => void retryLoad()}
+            />
+          ) : null}
+          {actionFailure !== null ? (
+            <FailureNotice
+              message={`${actionFailureLabel(actionFailure.action)}: ${actionFailure.error.message}`}
+              actionLabel="Try again"
+              onAction={() => void retryAction()}
+              onDismiss={dismissActionFailure}
+            />
+          ) : null}
+          {backgroundSaveFailure !== undefined && backgroundSaveFailure[1].phase === "error" ? (
+            <FailureNotice
+              message={`Could not save ${backgroundSaveProject?.name ?? "another reel"}: ${backgroundSaveFailure[1].error.message}`}
+              actionLabel="Retry save"
+              onAction={() => void retrySave(backgroundSaveFailure[0])}
+            />
+          ) : null}
+        </div>
+      ) : null}
       <ProjectRail
         railRef={railRef}
         railIsPopover={railIsPopover}
         railOpen={railOpen}
         loading={loading}
+        loadFailed={loadError !== null}
         projectCount={projects.length}
         rail={projectRail}
         activeId={activeId}
@@ -266,6 +309,8 @@ export function SizzleApp(): ReactElement {
             <Editor
               project={active}
               captures={captures}
+              saveState={saveState}
+              onRetrySave={() => void retrySave(active.id)}
               autoFocusTitle={focusTitleForId === active.id}
               onTitleFocused={() => setFocusTitleForId(null)}
               onRename={(name) => onUpdate(active.id, { name })}
@@ -391,6 +436,45 @@ function EmptyState(): ReactElement {
       <p className="szl__hint">
         Tip: Add your OpenAI API key in Settings → AI Providers to enable text-to-speech voiceover.
       </p>
+    </div>
+  );
+}
+
+function actionFailureLabel(action: "create" | "duplicate" | "delete" | "reveal"): string {
+  switch (action) {
+    case "create":
+      return "Could not create the reel";
+    case "duplicate":
+      return "Could not duplicate the reel";
+    case "delete":
+      return "Could not delete the reel";
+    case "reveal":
+      return "Could not reveal the rendered output";
+  }
+}
+
+function FailureNotice({
+  message,
+  actionLabel,
+  onAction,
+  onDismiss
+}: {
+  message: string;
+  actionLabel: string;
+  onAction: () => void;
+  onDismiss?: () => void;
+}): ReactElement {
+  return (
+    <div className="szl__failure-notice" role="alert">
+      <span>{message}</span>
+      <button type="button" className="szl__failure-action" onClick={onAction}>
+        {actionLabel}
+      </button>
+      {onDismiss !== undefined ? (
+        <button type="button" className="szl__failure-dismiss" onClick={onDismiss}>
+          Dismiss
+        </button>
+      ) : null}
     </div>
   );
 }

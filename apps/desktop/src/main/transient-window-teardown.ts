@@ -19,7 +19,8 @@ export type TransientWindowDisposers = Readonly<{
  */
 export function installTransientWindowTeardown(
   app: BeforeQuitRegistrar,
-  disposers: TransientWindowDisposers
+  disposers: TransientWindowDisposers,
+  options: { shouldDisposeOnBeforeQuit?: () => boolean } = {}
 ): () => void {
   let disposed = false;
   const disposeTransientWindows = (): void => {
@@ -32,6 +33,9 @@ export function installTransientWindowTeardown(
     disposers.destroyTextBakePool();
   };
 
-  app.on("before-quit", disposeTransientWindows);
+  app.on("before-quit", () => {
+    if (options.shouldDisposeOnBeforeQuit?.() === false) return;
+    disposeTransientWindows();
+  });
   return disposeTransientWindows;
 }

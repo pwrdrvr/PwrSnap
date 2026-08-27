@@ -143,6 +143,103 @@ const ACTION_ERROR_MS = 10_000;
  *  marathon session can't grow the arrays without bound. */
 const MAX_DELETE_UNDO = 200;
 
+type CaptureMutationCommand = "library:delete" | "library:restore" | "library:purge";
+
+type CaptureMutationFailure = {
+  readonly id: string;
+  readonly message: string;
+};
+
+type CaptureMutationOutcome = {
+  readonly succeededIds: string[];
+  readonly failures: CaptureMutationFailure[];
+};
+
+type ActionErrorState = {
+  readonly message: string;
+  readonly retryLabel?: string;
+  readonly retry?: () => void;
+};
+
+type CaptureMutationJob = {
+  readonly key: string;
+  readonly task: () => Promise<void>;
+};
+
+/**
+ * Run one Result-returning capture mutation per id and preserve the per-id
+ * outcome. Bulk Library actions deliberately do not use an optimistic local
+ * state: navigation, cart membership, undo history, and success toasts are
+ * reconciled from `succeededIds` only after every Result has settled.
+ */
+async function mutateCaptures(
+  command: CaptureMutationCommand,
+  ids: readonly string[]
+): Promise<CaptureMutationOutcome> {
+  const uniqueIds = [...new Set(ids)];
+  const settled = await Promise.all(
+    uniqueIds.map(async (id) => {
+      try {
+        const result = await dispatch(command, { id });
+        return result.ok
+          ? ({ id, ok: true as const })
+          : ({ id, ok: false as const, message: result.error.message });
+      } catch (cause) {
+        return {
+          id,
+          ok: false as const,
+          message: cause instanceof Error ? cause.message : String(cause)
+        };
+      }
+    })
+  );
+
+  return {
+    succeededIds: settled.filter((item) => item.ok).map((item) => item.id),
+    failures: settled
+      .filter((item): item is Extract<(typeof settled)[number], { ok: false }> => !item.ok)
+      .map(({ id, message }) => ({ id, message }))
+  };
+}
+
+async function removeCartCaptures(ids: readonly string[]): Promise<CaptureMutationOutcome> {
+  const uniqueIds = [...new Set(ids)];
+  const settled = await Promise.all(
+    uniqueIds.map(async (id) => {
+      try {
+        const result = await dispatch("cart:remove", { captureId: id });
+        return result.ok
+          ? ({ id, ok: true as const })
+          : ({ id, ok: false as const, message: result.error.message });
+      } catch (cause) {
+        return {
+          id,
+          ok: false as const,
+          message: cause instanceof Error ? cause.message : String(cause)
+        };
+      }
+    })
+  );
+
+  return {
+    succeededIds: settled.filter((item) => item.ok).map((item) => item.id),
+    failures: settled
+      .filter((item): item is Extract<(typeof settled)[number], { ok: false }> => !item.ok)
+      .map(({ id, message }) => ({ id, message }))
+  };
+}
+
+function mutationFailureMessage(
+  action: string,
+  failures: readonly CaptureMutationFailure[]
+): string {
+  const ids = failures.map(({ id }) => id).join(", ");
+  const reasons = [...new Set(failures.map(({ message }) => message))].join("; ");
+  return `${action} failed for ${failures.length} capture${
+    failures.length === 1 ? "" : "s"
+  }. Failed capture ID${failures.length === 1 ? "" : "s"}: ${ids}. ${reasons}`;
+}
+
 function codexAvailableInSnapshot(snapshot: DesktopCodexDiscoverySnapshot): boolean {
   if (snapshot.resolvedPath === null) return false;
   if (snapshot.auth?.status !== "authenticated") return false;
@@ -233,6 +330,10 @@ function clampContextMenuPosition(
     x: Math.max(8, Math.min(x, window.innerWidth - width - 8)),
     y: Math.max(8, Math.min(y, window.innerHeight - height - 8))
   };
+}
+
+function sameCaptureIds(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((id, index) => id === b[index]);
 }
 
 const INITIAL_COPY_PULSES: Record<CopyPreset, number> = {
@@ -781,58 +882,30 @@ export function Library() {
    * in main looked exactly like a save that succeeded, and the user
    * would go looking for a file that was never written.
    */
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<ActionErrorState | null>(null);
   useEffect(() => {
     if (actionError === null) return;
     const timer = setTimeout(() => setActionError(null), ACTION_ERROR_MS);
     return () => clearTimeout(timer);
   }, [actionError]);
-
-  // ⌘Z / Edit ▸ Undo / toast "Undo": restore the most-recently trashed
-  // capture (the stack moves it onto its redo list).
-  const undoDelete = useCallback(() => {
-    const ids = deleteUndoRef.current?.undo();
-    if (ids === undefined || ids.length === 0) return;
-    // The toast advertised this batch; undoing it clears the toast.
-    setLastDeleted(null);
-    void (async () => {
-      for (const id of ids) {
-        const res = await dispatch("library:restore", { id });
-        // If we're in single-capture Focus and just restored the one
-        // capture, bring it back into view — otherwise the undo is
-        // invisible (it reappears in the grid behind the editor).
-        // `library:restore` clears `deleted_at` synchronously before
-        // resolving, so editor:open won't reject as deleted.
-        if (res.ok && ids.length === 1 && viewRef.current.kind === "focus") {
-          void dispatch("editor:open", { captureId: id });
-        }
-      }
-    })();
-  }, []);
-
-  // ⌘⇧Z / Edit ▸ Redo: re-trash the most-recently restored batch (the
-  // inverse of the undo above; still recoverable, so it's a safe redo).
-  const redoDelete = useCallback(() => {
-    const ids = deleteUndoRef.current?.redo();
-    if (ids === undefined || ids.length === 0) return;
-    for (const id of ids) {
-      void dispatch("library:delete", { id });
-    }
-    setLastDeleted({ ids });
-  }, []);
-
-  // Register the capture-level undo/redo with the edit-menu bridge. The bridge
-  // consults this when the editor's own history is empty (or no editor is
-  // mounted — i.e. grid mode), so ⌘Z / Edit ▸ Undo restores deletes session-
-  // wide, independent of the toast.
-  useEffect(() => {
-    return registerCaptureUndoFallback({
-      undo: undoDelete,
-      redo: redoDelete,
-      canUndo: () => deleteUndoRef.current?.canUndo() === true,
-      canRedo: () => deleteUndoRef.current?.canRedo() === true
-    });
-  }, [undoDelete, redoDelete]);
+  // A captures-changed broadcast can beat the matching invoke Result back to
+  // the renderer. Retain the selected record while its delete is pending so
+  // that early broadcast cannot close/advance Focus and report success before
+  // the Result itself succeeds.
+  const [pendingMutationRecords, setPendingMutationRecords] = useState<
+    ReadonlyMap<string, CaptureRecord>
+  >(() => new Map());
+  const [pendingMutationCounts, setPendingMutationCounts] = useState<{
+    readonly totalLive: number;
+    readonly trashTotal: number;
+  } | null>(null);
+  const captureMutationActiveKeyRef = useRef<string | null>(null);
+  const captureMutationQueueRef = useRef<CaptureMutationJob[]>([]);
+  const [captureMutationBusy, setCaptureMutationBusy] = useState(false);
+  // Tracks successful mutations synchronously across queued jobs. The
+  // captures-changed refresh and React render can land after the next queued
+  // job starts, so navigation cannot rely on the visible list alone.
+  const sessionDeletedCaptureIdsRef = useRef(new Set<string>());
   const sourceAppRowsRef = useRef(sourceAppRows);
   useEffect(() => {
     sourceAppRowsRef.current = sourceAppRows;
@@ -1303,11 +1376,17 @@ export function Library() {
     isLoadingMore,
     loading,
     loadMore,
-    totalLive,
+    refresh: refreshLibrary,
+    totalLive: fetchedTotalLive,
     appStats,
     kindStats,
-    trashTotal
+    trashTotal: fetchedTrashTotal
   } = useLibrary();
+  // The main process broadcasts captures-changed before invoke resolves.
+  // Freeze both authoritative totals at command start; deriving adjustments
+  // from loaded rows would under-correct a purgeAll larger than one page.
+  const totalLive = pendingMutationCounts?.totalLive ?? fetchedTotalLive;
+  const trashTotal = pendingMutationCounts?.trashTotal ?? fetchedTrashTotal;
   // First-run nudge: while the Library has no live captures (and the
   // head fetch has resolved, so we don't flicker on cold start for users
   // who DO have captures), breathe the Quick Capture button to point a
@@ -1505,17 +1584,32 @@ export function Library() {
     };
   }, []);
 
+  // A captures-changed event can arrive before the Result for the command
+  // that caused it. While a mutation is pending, overlay its pre-command
+  // records onto the fetched snapshot so the grid/focus/trash UI cannot
+  // visually claim success before the matching Result resolves.
+  const recordsForDisplay = useMemo(() => {
+    if (pendingMutationRecords.size === 0) return records;
+    const byId = new Map(records.map((record) => [record.id, record]));
+    for (const [id, record] of pendingMutationRecords) byId.set(id, record);
+    return [...byId.values()].sort(
+      (a, b) => Date.parse(b.captured_at) - Date.parse(a.captured_at)
+    );
+  }, [pendingMutationRecords, records]);
+
   // Partition records into live + trash. useLibrary fetches with
   // `includeDeleted: true`, so the keyset-paginated snapshot contains
   // both; we partition here so the Trash sidebar entry swaps the
   // active universe without a second fetch.
   const liveRecords = useMemo(() => {
-    return mergeOpenedLiveRecords(records, openedRecords);
-  }, [openedRecords, records]);
+    return mergeOpenedLiveRecords(recordsForDisplay, openedRecords);
+  }, [openedRecords, recordsForDisplay]);
   const trashRecords = useMemo(
-    () => records.filter((r) => r.deleted_at !== null),
-    [records]
+    () => recordsForDisplay.filter((r) => r.deleted_at !== null),
+    [recordsForDisplay]
   );
+  const trashRecordsRef = useRef(trashRecords);
+  trashRecordsRef.current = trashRecords;
 
   const revalidateOpenedRecords = useCallback((changedIds: readonly string[] | null) => {
     const opened = openedRecordsRef.current;
@@ -2204,14 +2298,15 @@ export function Library() {
   // buttons in Focus + Reel modes (Phase C). Null = nothing selected.
   const selectedRecord: CaptureRecord | null = useMemo(() => {
     if (selectedRecordId === null) return null;
-    const fallbackRecord = records.find((r) => r.id === selectedRecordId) ?? null;
+    const fallbackRecord =
+      recordsForDisplay.find((r) => r.id === selectedRecordId) ?? null;
     return (
       universeRecords.find((r) => r.id === selectedRecordId) ??
       (fallbackRecord !== null && (isTrashView || fallbackRecord.deleted_at === null)
         ? fallbackRecord
         : null)
     );
-  }, [isTrashView, records, selectedRecordId, universeRecords]);
+  }, [isTrashView, recordsForDisplay, selectedRecordId, universeRecords]);
 
   // ── Video trim range: ONE source of truth for the whole window ──────
   //
@@ -2293,6 +2388,8 @@ export function Library() {
     }
     return out;
   }, [visible, fixtureBacking]);
+  const visibleRecordsRef = useRef(visibleRecords);
+  visibleRecordsRef.current = visibleRecords;
 
   // Keep pagination alive when a client-side facet filters the loaded
   // keyset window down to nothing. Types and EXCLUDE source-app facets
@@ -3280,15 +3377,126 @@ export function Library() {
     img.src = captureSrcUrl(record.id);
   }
 
+  const runExclusiveCaptureMutation = useCallback(
+    (key: string, task: () => Promise<void>): void => {
+      // Coalesce a repeated click/shortcut for the SAME mutation. Running it
+      // twice would create duplicate undo entries or consume two history
+      // batches. Different actions are queued in click order instead of being
+      // silently dropped behind one global boolean lock.
+      if (
+        captureMutationActiveKeyRef.current === key ||
+        captureMutationQueueRef.current.some((job) => job.key === key)
+      ) {
+        return;
+      }
+
+      setActionError(null);
+      captureMutationQueueRef.current.push({ key, task });
+      setCaptureMutationBusy(true);
+
+      const runNext = (): void => {
+        if (captureMutationActiveKeyRef.current !== null) return;
+        const next = captureMutationQueueRef.current.shift();
+        if (next === undefined) return;
+        captureMutationActiveKeyRef.current = next.key;
+        void next
+          .task()
+          .catch((cause: unknown) => {
+            setActionError({
+              message: `Capture action failed. ${
+                cause instanceof Error ? cause.message : String(cause)
+              }`
+            });
+          })
+          .finally(() => {
+            captureMutationActiveKeyRef.current = null;
+            runNext();
+            if (
+              captureMutationActiveKeyRef.current === null &&
+              captureMutationQueueRef.current.length === 0
+            ) {
+              setCaptureMutationBusy(false);
+            }
+          });
+      };
+
+      runNext();
+    },
+    []
+  );
+
+  const holdMutationRecords = useCallback(
+    (ids: readonly string[]): void => {
+      setPendingMutationCounts((current) => current ?? { totalLive, trashTotal });
+      const wanted = new Set(ids);
+      const snapshotsById = new Map<string, CaptureRecord>();
+      for (const record of [...recordsForDisplay, ...openedRecordsRef.current]) {
+        if (wanted.has(record.id)) snapshotsById.set(record.id, record);
+      }
+      const snapshots = [...snapshotsById.values()];
+      if (snapshots.length === 0) return;
+      setPendingMutationRecords((current) => {
+        const next = new Map(current);
+        for (const record of snapshots) next.set(record.id, record);
+        return next;
+      });
+    },
+    [recordsForDisplay, totalLive, trashTotal]
+  );
+
+  const releaseMutationRecords = useCallback((ids: readonly string[]): void => {
+    setPendingMutationCounts(null);
+    if (ids.length === 0) return;
+    const released = new Set(ids);
+    setPendingMutationRecords((current) => {
+      if (![...released].some((id) => current.has(id))) return current;
+      const next = new Map(current);
+      for (const id of released) next.delete(id);
+      return next;
+    });
+  }, []);
+
+  const navigateAfterSuccessfulDeletes = useCallback(
+    (succeededIds: readonly string[], visibleIdsAtStart: readonly string[]): void => {
+      const current = viewRef.current;
+      const selectedId = current.selectedRecordId;
+      if (selectedId === null || !succeededIds.includes(selectedId)) return;
+
+      // Keep the selected id in the decision input but remove every OTHER id
+      // deleted by the same batch, so navigation never lands on a neighbor
+      // that the same successful cart/redo action also moved to Trash.
+      const succeeded = new Set(succeededIds);
+      const navigationIds = visibleIdsAtStart.filter(
+        (id) =>
+          id === selectedId ||
+          (!succeeded.has(id) && !sessionDeletedCaptureIdsRef.current.has(id))
+      );
+      const nav = nextAfterDelete({
+        viewKind: current.kind,
+        selectedRecordId: selectedId,
+        deletedId: selectedId,
+        visibleIds: navigationIds
+      });
+      if (nav !== null) viewDispatch(nav);
+    },
+    [viewDispatch]
+  );
+
+  const recordSuccessfulDelete = useCallback((ids: readonly string[]): void => {
+    if (ids.length === 0) return;
+    const copied = [...ids];
+    for (const id of copied) sessionDeletedCaptureIdsRef.current.add(id);
+    deleteUndoRef.current?.pushDelete(copied);
+    setLastDeleted({ ids: copied });
+  }, []);
+
   /**
    * Soft-delete a capture (move to Trash), with the editor kept honest.
    *
    * If the deleted capture is the one currently open in Focus/Reel, advance
-   * to the next capture (wrapping; closing Focus if it was the last one)
-   * BEFORE the async refetch lands. This is the fix for the "Delete didn't
-   * close the image, so I clicked again and it trashed a neighbor" trap:
-   * the view never lingers on a just-deleted record, so a second click can
-   * only ever target the new, live capture.
+   * only AFTER `library:delete` returns an ok Result. The pre-command record
+   * is retained while the Result is pending, so an early captures-changed
+   * broadcast cannot close Focus first.
    *
    * Also arms the Undo affordance — the lower-left toast and the ⌘Z /
    * Edit ▸ Undo capture fallback — for a short window. Every soft-delete
@@ -3296,34 +3504,75 @@ export function Library() {
    * button) routes here, all gated behind the DeleteConfirm popover.
    */
   function deleteCaptureById(recordId: string): void {
-    const nav = nextAfterDelete({
-      viewKind: view.kind,
-      selectedRecordId: view.selectedRecordId,
-      deletedId: recordId,
-      visibleIds: visibleRecords.map((r) => r.id)
+    runExclusiveCaptureMutation(`delete:${recordId}`, async () => {
+      const visibleIdsAtStart = visibleRecordsRef.current.map((record) => record.id);
+      holdMutationRecords([recordId]);
+      try {
+        const outcome = await mutateCaptures("library:delete", [recordId]);
+        if (outcome.succeededIds.length > 0) {
+          navigateAfterSuccessfulDeletes(outcome.succeededIds, visibleIdsAtStart);
+          recordSuccessfulDelete(outcome.succeededIds);
+        }
+        if (outcome.failures.length > 0) {
+          setActionError({
+            message: mutationFailureMessage("Move to Trash", outcome.failures),
+            retryLabel: "Retry move",
+            retry: () => deleteCaptureById(recordId)
+          });
+        }
+      } finally {
+        releaseMutationRecords([recordId]);
+      }
     });
-    if (nav !== null) viewDispatch(nav);
-    void dispatch("library:delete", { id: recordId });
-    // Record on the session undo stack — this is what ⌘Z / Edit ▸ Undo
-    // restores from, independent of the toast. Then surface the toast (keyed
-    // by id) as the quick, visible affordance for this delete.
-    deleteUndoRef.current?.pushDelete([recordId]);
-    setLastDeleted({ ids: [recordId] });
   }
 
-  // Bulk soft-delete from the cart: trash every collected capture as ONE
-  // undoable batch (toast "Restore N" + ⌘Z restores all), then empty the
-  // cart. The library refresh + FILTER_CHANGED clears any now-trashed grid
-  // selection, so no manual deselect is needed.
-  const trashCartCaptures = useCallback((captureIds: string[]): void => {
-    if (captureIds.length === 0) return;
-    for (const id of captureIds) {
-      void dispatch("library:delete", { id });
-    }
-    deleteUndoRef.current?.pushDelete(captureIds);
-    setLastDeleted({ ids: captureIds });
-    void dispatch("cart:clear", {});
-  }, []);
+  // Bulk soft-delete from the cart. Only successful delete ids become one
+  // undoable batch and leave the cart; failed ids remain collected and are
+  // named in an actionable retry banner. `cleanupOnlyIds` are captures whose
+  // delete succeeded earlier but whose cart:remove Result failed — retries
+  // must not soft-delete them a second time.
+  function trashCartCaptures(captureIds: string[], cleanupOnlyIds: string[] = []): void {
+    if (captureIds.length === 0 && cleanupOnlyIds.length === 0) return;
+    runExclusiveCaptureMutation(
+      `cart-delete:${[...captureIds, ...cleanupOnlyIds].sort().join(",")}`,
+      async () => {
+        const visibleIdsAtStart = visibleRecordsRef.current.map((record) => record.id);
+        holdMutationRecords(captureIds);
+        try {
+          const deleteOutcome = await mutateCaptures("library:delete", captureIds);
+          if (deleteOutcome.succeededIds.length > 0) {
+            navigateAfterSuccessfulDeletes(deleteOutcome.succeededIds, visibleIdsAtStart);
+            recordSuccessfulDelete(deleteOutcome.succeededIds);
+          }
+
+          const cartOutcome = await removeCartCaptures([
+            ...cleanupOnlyIds,
+            ...deleteOutcome.succeededIds
+          ]);
+          if (deleteOutcome.failures.length > 0 || cartOutcome.failures.length > 0) {
+            const parts: string[] = [];
+            if (deleteOutcome.failures.length > 0) {
+              parts.push(mutationFailureMessage("Move to Trash", deleteOutcome.failures));
+            }
+            if (cartOutcome.failures.length > 0) {
+              parts.push(mutationFailureMessage("Remove from cart", cartOutcome.failures));
+            }
+            setActionError({
+              message: parts.join(" "),
+              retryLabel: "Retry failed",
+              retry: () =>
+                trashCartCaptures(
+                  deleteOutcome.failures.map(({ id }) => id),
+                  cartOutcome.failures.map(({ id }) => id)
+                )
+            });
+          }
+        } finally {
+          releaseMutationRecords(captureIds);
+        }
+      }
+    );
+  }
 
   function trashCapture(captureId: number): void {
     const record = fixtureBacking.recordFor(captureId);
@@ -3354,7 +3603,24 @@ export function Library() {
   /** Restore a soft-deleted capture. Shared by the in-trash hover
    *  affordance and the tile context menu's Restore row. */
   function restoreCaptureById(recordId: string): void {
-    void dispatch("library:restore", { id: recordId });
+    runExclusiveCaptureMutation(`restore:${recordId}`, async () => {
+      holdMutationRecords([recordId]);
+      try {
+        const outcome = await mutateCaptures("library:restore", [recordId]);
+        for (const id of outcome.succeededIds) {
+          sessionDeletedCaptureIdsRef.current.delete(id);
+        }
+        if (outcome.failures.length > 0) {
+          setActionError({
+            message: mutationFailureMessage("Restore", outcome.failures),
+            retryLabel: "Retry restore",
+            retry: () => restoreCaptureById(recordId)
+          });
+        }
+      } finally {
+        releaseMutationRecords([recordId]);
+      }
+    });
   }
 
   function restoreCaptureAction(captureId: number, event: ReactMouseEvent): void {
@@ -3374,7 +3640,25 @@ export function Library() {
   function purgeCaptureById(recordId: string): void {
     const ok = window.confirm("Permanently delete this capture? This cannot be undone.");
     if (!ok) return;
-    void dispatch("library:purge", { id: recordId });
+    purgeCaptureConfirmed(recordId);
+  }
+
+  function purgeCaptureConfirmed(recordId: string): void {
+    runExclusiveCaptureMutation(`purge:${recordId}`, async () => {
+      holdMutationRecords([recordId]);
+      try {
+        const outcome = await mutateCaptures("library:purge", [recordId]);
+        if (outcome.failures.length > 0) {
+          setActionError({
+            message: mutationFailureMessage("Permanently delete", outcome.failures),
+            retryLabel: "Retry delete",
+            retry: () => purgeCaptureConfirmed(recordId)
+          });
+        }
+      } finally {
+        releaseMutationRecords([recordId]);
+      }
+    });
   }
 
   function purgeCaptureAction(captureId: number, event: ReactMouseEvent): void {
@@ -3390,18 +3674,233 @@ export function Library() {
    * prompt is the right friction.
    */
   function emptyTrash(): void {
-    if (trashTotal === 0) return;
-    // `trashTotal` (head-page COUNT), not `trashRecords.length` — the
-    // latter only sees the loaded keyset window, so on a large library
-    // this prompt used to understate what `library:purgeAll` destroys.
-    const ok = window.confirm(
-      `Permanently delete ${trashTotal} capture${
-        trashTotal === 1 ? "" : "s"
-      }? This cannot be undone.`
-    );
-    if (!ok) return;
-    void dispatch("library:purgeAll", {});
+    if (
+      captureMutationActiveKeyRef.current !== null ||
+      captureMutationQueueRef.current.length > 0
+    ) {
+      setActionError({
+        message:
+          "Another capture action is still finishing. Empty Trash was not queued; confirm it again after the current action completes.",
+        retryLabel: "Empty Trash",
+        retry: emptyTrash
+      });
+      return;
+    }
+    runExclusiveCaptureMutation("purge-all", async () => {
+      // Refresh BEFORE confirmation. A captures-changed read from an earlier
+      // mutation may still be in flight; useLibrary.refresh queues a follow-up
+      // read and returns THAT authoritative count. The confirmation and purge
+      // then run in this same exclusive job, so no queued trash change can
+      // commit between them.
+      const beforePurge = await refreshLibrary();
+      if (!beforePurge.ok) {
+        setActionError({
+          message: `Couldn’t refresh Trash before confirmation. ${beforePurge.error.message}`,
+          retryLabel: "Empty Trash",
+          retry: emptyTrash
+        });
+        return;
+      }
+      const currentTrashTotal = beforePurge.value.trashTotal;
+      if (currentTrashTotal === 0) return;
+      const confirmed = window.confirm(
+        `Permanently delete ${currentTrashTotal} capture${
+          currentTrashTotal === 1 ? "" : "s"
+        }? This cannot be undone.`
+      );
+      if (!confirmed) return;
+
+      const visibleTrashIds = trashRecordsRef.current.map((record) => record.id);
+      holdMutationRecords(visibleTrashIds);
+      try {
+        let result: Result<Res<"library:purgeAll">, PwrSnapError>;
+        try {
+          result = await dispatch("library:purgeAll", {});
+        } catch (cause) {
+          // The transport can fail after main started its sequential purge.
+          // Reconcile whatever committed before offering an idempotent retry.
+          await refreshLibrary();
+          setActionError({
+            message: `Couldn’t empty Trash. ${
+              cause instanceof Error ? cause.message : String(cause)
+            }`,
+            retryLabel: "Retry empty Trash",
+            retry: emptyTrash
+          });
+          return;
+        }
+
+        // Reconcile even on a Result error: purgeAll hard-deletes
+        // sequentially, so an unexpected mid-loop error can follow earlier
+        // committed removals. If the purge succeeded but only the refresh
+        // failed, never run the destructive command again just to repaint.
+        const refreshResult = await refreshLibrary();
+        if (result.ok && !refreshResult.ok) {
+          const message = `Trash was emptied, but the Library couldn’t refresh. ${refreshResult.error.message}`;
+          setActionError({
+            message,
+            retryLabel: "Retry refresh",
+            retry: () => retryLibraryRefresh(message)
+          });
+          return;
+        }
+        if (!result.ok) {
+          setActionError({
+            message: `Couldn’t empty Trash. ${result.error.message}`,
+            retryLabel: "Retry empty Trash",
+            retry: emptyTrash
+          });
+        }
+      } finally {
+        releaseMutationRecords(visibleTrashIds);
+      }
+    });
   }
+
+  function retryLibraryRefresh(previousMessage: string): void {
+    runExclusiveCaptureMutation("refresh-library", async () => {
+      const result = await refreshLibrary();
+      if (!result.ok) {
+        setActionError({
+          message: `${previousMessage} ${result.error.message}`,
+          retryLabel: "Retry refresh",
+          retry: () => retryLibraryRefresh(previousMessage)
+        });
+      }
+    });
+  }
+
+  function openRestoredCapture(recordId: string): void {
+    runExclusiveCaptureMutation(`editor-open:${recordId}`, async () => {
+      const result = await dispatch("editor:open", { captureId: recordId });
+      if (!result.ok) {
+        setActionError({
+          message: `Restored ${recordId}, but couldn’t open it. ${result.error.message}`,
+          retryLabel: "Open capture",
+          retry: () => openRestoredCapture(recordId)
+        });
+      }
+    });
+  }
+
+  // ⌘Z / Edit ▸ Undo / toast Undo: peek first, await every restore Result,
+  // then move only successful ids to redo. Failed ids remain undoable.
+  const undoDelete = useCallback((advertisedIds?: readonly string[]): void => {
+    if (advertisedIds !== undefined) {
+      if (
+        captureMutationActiveKeyRef.current !== null ||
+        captureMutationQueueRef.current.length > 0
+      ) {
+        return;
+      }
+      const currentIds = deleteUndoRef.current?.peekUndo();
+      if (currentIds === undefined || !sameCaptureIds(currentIds, advertisedIds)) {
+        setActionError({
+          message:
+            "That Undo notice is no longer the latest trash action. Use Edit › Undo to restore the current batch."
+        });
+        return;
+      }
+    }
+    runExclusiveCaptureMutation("undo-delete", async () => {
+      const ids = deleteUndoRef.current?.peekUndo();
+      if (ids === undefined || ids.length === 0) return;
+      holdMutationRecords(ids);
+      try {
+        const outcome = await mutateCaptures("library:restore", ids);
+        for (const id of outcome.succeededIds) {
+          sessionDeletedCaptureIdsRef.current.delete(id);
+        }
+        deleteUndoRef.current?.settleUndo(outcome.succeededIds);
+        if (outcome.succeededIds.length > 0) {
+          const restored = new Set(outcome.succeededIds);
+          setLastDeleted((current) => {
+            if (current === null) return null;
+            const remaining = current.ids.filter((id) => !restored.has(id));
+            return remaining.length === 0 ? null : { ids: remaining };
+          });
+        }
+
+        if (
+          ids.length === 1 &&
+          outcome.succeededIds.length === 1 &&
+          viewRef.current.kind === "focus"
+        ) {
+          const openResult = await dispatch("editor:open", { captureId: ids[0]! });
+          if (!openResult.ok) {
+            setActionError({
+              message: `Restored ${ids[0]}, but couldn’t open it. ${openResult.error.message}`,
+              retryLabel: "Open capture",
+              retry: () => openRestoredCapture(ids[0]!)
+            });
+          }
+        }
+        if (outcome.failures.length > 0) {
+          setActionError({
+            message: mutationFailureMessage("Undo restore", outcome.failures),
+            retryLabel: "Retry undo",
+            retry: undoDelete
+          });
+        }
+      } finally {
+        releaseMutationRecords(ids);
+      }
+    });
+  }, [holdMutationRecords, releaseMutationRecords, runExclusiveCaptureMutation]);
+
+  // ⌘⇧Z / Edit ▸ Redo: mirror Undo's two-phase settlement. Only successful
+  // re-deletes return to undo history, navigate, and receive a success toast.
+  const redoDelete = useCallback((): void => {
+    runExclusiveCaptureMutation("redo-delete", async () => {
+      const ids = deleteUndoRef.current?.peekRedo();
+      if (ids === undefined || ids.length === 0) return;
+      const visibleIdsAtStart = visibleRecordsRef.current.map((record) => record.id);
+      holdMutationRecords(ids);
+      try {
+        const outcome = await mutateCaptures("library:delete", ids);
+        deleteUndoRef.current?.settleRedo(outcome.succeededIds);
+        if (outcome.succeededIds.length > 0) {
+          for (const id of outcome.succeededIds) {
+            sessionDeletedCaptureIdsRef.current.add(id);
+          }
+          navigateAfterSuccessfulDeletes(outcome.succeededIds, visibleIdsAtStart);
+          setLastDeleted({ ids: outcome.succeededIds });
+        }
+        if (outcome.failures.length > 0) {
+          setActionError({
+            message: mutationFailureMessage("Redo move to Trash", outcome.failures),
+            retryLabel: "Retry redo",
+            retry: redoDelete
+          });
+        }
+      } finally {
+        releaseMutationRecords(ids);
+      }
+    });
+  }, [
+    holdMutationRecords,
+    navigateAfterSuccessfulDeletes,
+    releaseMutationRecords,
+    runExclusiveCaptureMutation,
+  ]);
+
+  // Register the capture-level undo/redo with the edit-menu bridge. The bridge
+  // consults this when the editor's own history is empty (or no editor is
+  // mounted), so ⌘Z restores deletes session-wide.
+  useEffect(() => {
+    return registerCaptureUndoFallback({
+      undo: undoDelete,
+      redo: redoDelete,
+      canUndo: () =>
+        captureMutationActiveKeyRef.current === null &&
+        captureMutationQueueRef.current.length === 0 &&
+        deleteUndoRef.current?.canUndo() === true,
+      canRedo: () =>
+        captureMutationActiveKeyRef.current === null &&
+        captureMutationQueueRef.current.length === 0 &&
+        deleteUndoRef.current?.canRedo() === true
+    });
+  }, [redoDelete, undoDelete]);
 
   /**
    * Cell-pulse effect (Phase C.7). When view.kind transitions from
@@ -4339,11 +4838,6 @@ export function Library() {
             Failed to load library: {error}
           </div>
         )}
-        {actionError !== null && (
-          <div className="psl__error" role="alert">
-            {actionError}
-          </div>
-        )}
         {captureContextMenu !== null ? (
           <LibraryCaptureContextMenu
             menu={captureContextMenu}
@@ -4370,7 +4864,9 @@ export function Library() {
                 // gets a banner. Dropping the Result here is what made
                 // every main-process error a silent no-op.
                 if (!result.ok) {
-                  setActionError(`Couldn’t save the file — ${result.error.message}`);
+                  setActionError({
+                    message: `Couldn’t save the file — ${result.error.message}`
+                  });
                 }
               })();
             }}
@@ -4581,6 +5077,8 @@ export function Library() {
           activeTab={rightActiveTab}
           onActiveTabChange={setRightActiveTab}
           onTrash={deleteCaptureById}
+          onRestore={restoreCaptureById}
+          onPurge={purgeCaptureById}
           confirmBeforeTrash={confirmBeforeTrash}
           onDontAskAgainTrash={suppressTrashConfirm}
           onCartJumpTo={jumpToCapture}
@@ -4606,9 +5104,44 @@ export function Library() {
                 : `Moved ${lastDeleted.ids.length} to Trash`
             }
             durationMs={UNDO_TOAST_MS}
-            onUndo={undoDelete}
+            disabled={captureMutationBusy}
+            onUndo={() => undoDelete(lastDeleted.ids)}
             onDismiss={clearLastDeleted}
           />,
+          document.querySelector(".app-toast-stack") ?? document.body
+        )}
+
+      {/* Result-aware action failures stay visible over Grid, Focus, and
+          Reel. Mutation failures carry a direct retry that targets only the
+          ids whose command (or cart cleanup) failed. */}
+      {actionError !== null &&
+        createPortal(
+          <aside className="psl__error psl__action-error" role="alert" aria-live="assertive">
+            <span className="psl__action-error-message">{actionError.message}</span>
+            <span className="psl__action-error-actions">
+              {actionError.retry !== undefined ? (
+                <button
+                  type="button"
+                  className="psl__action-error-retry"
+                  onClick={() => {
+                    const retry = actionError.retry;
+                    setActionError(null);
+                    retry?.();
+                  }}
+                >
+                  {actionError.retryLabel ?? "Retry"}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="psl__action-error-dismiss"
+                aria-label="Dismiss action error"
+                onClick={() => setActionError(null)}
+              >
+                Dismiss
+              </button>
+            </span>
+          </aside>,
           document.querySelector(".app-toast-stack") ?? document.body
         )}
 

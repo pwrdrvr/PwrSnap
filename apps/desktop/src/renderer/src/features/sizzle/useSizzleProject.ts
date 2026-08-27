@@ -10,6 +10,7 @@ import {
   newSizzleSequenceScene,
   normalizeSizzleSequenceBeatContinuity,
   type CaptureRecord,
+  type PwrSnapError,
   type SizzleProject,
   type SizzleRenderProgressEvent,
   type SizzleScene,
@@ -43,6 +44,49 @@ const HISTORY_MAX = 50;
 
 export type SizzleProjectPatch = Partial<Omit<SizzleProject, "id" | "createdAt">>;
 
+export type SizzleSaveState =
+  | { phase: "saved"; error: null }
+  | { phase: "dirty"; error: null }
+  | { phase: "saving"; error: null }
+  | { phase: "error"; error: PwrSnapError };
+
+export type SizzleProjectAction = "create" | "duplicate" | "delete" | "reveal";
+
+export type SizzleActionFailure = {
+  action: SizzleProjectAction;
+  projectId: string | null;
+  error: PwrSnapError;
+};
+
+type SizzleActionFailureEntry = {
+  requestId: number;
+  failure: SizzleActionFailure;
+  retry: () => Promise<void>;
+};
+
+const SAVED_STATE: SizzleSaveState = { phase: "saved", error: null };
+
+function unexpectedDispatchError(code: string, cause: unknown): PwrSnapError {
+  return {
+    kind: "unknown",
+    code,
+    message: cause instanceof Error ? cause.message : String(cause)
+  };
+}
+
+function applyLocalPatchToAuthoritative(
+  project: SizzleProject,
+  patch: SizzleProjectPatch | null
+): SizzleProject {
+  if (patch === null) return project;
+  return {
+    ...mergeProjectPatch(project, patch),
+    // Local edits never own the persistence timestamp. Keep the timestamp
+    // from the authoritative snapshot while overlaying optimistic fields.
+    modifiedAt: project.modifiedAt
+  };
+}
+
 export function admitRecentProject(prev: string[], id: string): string[] {
   if (prev.includes(id)) return prev;
   return [id, ...prev].slice(0, RECENT_PROJECT_LIMIT);
@@ -53,8 +97,16 @@ export type SizzleProjectState = {
   active: SizzleProject | null;
   activeId: string | null;
   loading: boolean;
+  loadError: PwrSnapError | null;
+  retryLoad: () => Promise<void>;
   captures: CaptureRecord[];
   status: RenderStatus;
+  saveState: SizzleSaveState;
+  saveStates: Readonly<Record<string, SizzleSaveState>>;
+  retrySave: (id: string) => Promise<boolean>;
+  actionFailure: SizzleActionFailure | null;
+  retryAction: () => Promise<void>;
+  dismissActionFailure: () => void;
   projectRail: ProjectRailModel;
   /** The reel whose title input should grab focus (just created / duplicated). */
   focusTitleForId: string | null;
@@ -66,7 +118,7 @@ export type SizzleProjectState = {
   onRender: () => Promise<void>;
   onReveal: () => Promise<void>;
   onUpdate: (id: string, patch: SizzleProjectPatch) => void;
-  flushPatch: (id: string) => Promise<void>;
+  flushPatch: (id: string) => Promise<boolean>;
   /** Append a new sequence scene built from one capture (the picker's "scene" target). */
   onAddScene: (captureId: string) => Promise<void>;
   /** Append a clip to an existing sequence scene (the picker's "sequenceBeat" target). */
@@ -83,11 +135,68 @@ export function useSizzleProject(): SizzleProjectState {
   const requestedCaptureIdsRef = useRef<Set<string>>(new Set());
   const [status, setStatus] = useState<RenderStatus>(IDLE_STATUS);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<PwrSnapError | null>(null);
+  const [saveStates, setSaveStates] = useState<Record<string, SizzleSaveState>>({});
+  const [actionFailure, setActionFailure] = useState<SizzleActionFailure | null>(null);
   const [focusTitleForId, setFocusTitleForId] = useState<string | null>(null);
   const [recentProjectIds, setRecentProjectIds] = useState<string[]>(() => {
     const initial = readInitialProjectId();
     return initial === null ? [] : [initial];
   });
+
+  const mountedRef = useRef(true);
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
+  const projectsRef = useRef<SizzleProject[]>(projects);
+  projectsRef.current = projects;
+  const saveStatesRef = useRef(saveStates);
+  saveStatesRef.current = saveStates;
+
+  const pendingPatches = useRef<Map<string, SizzleProjectPatch>>(new Map());
+  const debounceTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(
+    new Map()
+  );
+  // One drain promise per project is the client-side serialization lane.
+  // A drain owns at most one update dispatch at a time and takes another
+  // coalesced snapshot only after the prior write succeeds.
+  const drainPromises = useRef<Map<string, Promise<boolean>>>(new Map());
+  const inFlightPatches = useRef<Map<string, SizzleProjectPatch>>(new Map());
+  const pausedProjectIds = useRef<Set<string>>(new Set());
+  const failedProjectIds = useRef<Set<string>>(new Set());
+  const authoritativeProjectsRef = useRef<Map<string, SizzleProject>>(new Map());
+  const authoritativeRevisionRef = useRef<Map<string, number>>(new Map());
+  const authoritativeRevisionCounterRef = useRef(0);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const setProjectSaveState = useCallback(
+    (id: string, state: SizzleSaveState): void => {
+      if (!mountedRef.current) return;
+      setSaveStates((prev) => (prev[id] === state ? prev : { ...prev, [id]: state }));
+    },
+    []
+  );
+
+  const hasLocalWork = useCallback(
+    (id: string): boolean =>
+      pendingPatches.current.has(id) ||
+      inFlightPatches.current.has(id) ||
+      failedProjectIds.current.has(id) ||
+      saveStatesRef.current[id]?.phase === "error",
+    []
+  );
+
+  const localWorkPatch = useCallback((id: string): SizzleProjectPatch | null => {
+    const inFlight = inFlightPatches.current.get(id);
+    const pending = pendingPatches.current.get(id);
+    if (inFlight === undefined && pending === undefined) return null;
+    return { ...(inFlight ?? {}), ...(pending ?? {}) };
+  }, []);
 
   const active = useMemo(
     () => projects.find((p) => p.id === activeId) ?? null,
@@ -112,16 +221,48 @@ export function useSizzleProject(): SizzleProjectState {
     setRecentProjectIds((prev) => admitRecentProject(prev, id));
   }, []);
 
-  const reloadProjects = useCallback(async () => {
-    const r = await dispatch("sizzle:list", {});
-    if (r.ok) {
-      setProjects(r.value.projects);
+  const loadRequestRef = useRef(0);
+  const reloadProjects = useCallback(async (): Promise<void> => {
+    const request = ++loadRequestRef.current;
+    if (mountedRef.current) {
+      setLoading(true);
+      setLoadError(null);
+    }
+    try {
+      const r = await dispatch("sizzle:list", {});
+      if (!mountedRef.current || request !== loadRequestRef.current) return;
       setLoading(false);
-      if (activeId === null && r.value.projects.length > 0) {
+      if (!r.ok) {
+        setLoadError(r.error);
+        return;
+      }
+      setLoadError(null);
+      for (const project of r.value.projects) {
+        authoritativeProjectsRef.current.set(project.id, project);
+      }
+      setProjects((prev) => {
+        const incomingIds = new Set(r.value.projects.map((project) => project.id));
+        return [
+          ...r.value.projects.map((project) =>
+            applyLocalPatchToAuthoritative(project, localWorkPatch(project.id))
+          ),
+          // A stale list reply must not erase a local project that still
+          // has an update in flight. Its authoritative broadcast/list
+          // snapshot will reconcile it after the lane becomes clean.
+          ...prev.filter(
+            (project) => !incomingIds.has(project.id) && hasLocalWork(project.id)
+          )
+        ];
+      });
+      if (activeIdRef.current === null && r.value.projects.length > 0) {
         selectProject(r.value.projects[0]!.id);
       }
+    } catch (cause) {
+      if (!mountedRef.current || request !== loadRequestRef.current) return;
+      setLoading(false);
+      setLoadError(unexpectedDispatchError("sizzle_list_failed", cause));
     }
-  }, [activeId, selectProject]);
+  }, [hasLocalWork, localWorkPatch, selectProject]);
 
   useEffect(() => {
     void reloadProjects();
@@ -171,23 +312,111 @@ export function useSizzleProject(): SizzleProjectState {
     });
   }, [activeId, reloadProjects]);
 
-  const onCreate = useCallback(async () => {
+  const currentActionFailureRef = useRef<SizzleActionFailureEntry | null>(null);
+  const queuedActionFailuresRef = useRef<SizzleActionFailureEntry[]>([]);
+  const nextActionRequestRef = useRef(0);
+  const beginActionRequest = useCallback((): number => {
+    nextActionRequestRef.current += 1;
+    return nextActionRequestRef.current;
+  }, []);
+  const showActionFailure = useCallback(
+    (
+      requestId: number,
+      action: SizzleProjectAction,
+      projectId: string | null,
+      error: PwrSnapError,
+      retry: () => Promise<void>
+    ): void => {
+      const entry: SizzleActionFailureEntry = {
+        requestId,
+        failure: { action, projectId, error },
+        retry
+      };
+      if (currentActionFailureRef.current === null) {
+        currentActionFailureRef.current = entry;
+        if (mountedRef.current) setActionFailure(entry.failure);
+        return;
+      }
+      // Concurrent actions can fail in either completion order. Keep every
+      // failure actionable; the notice advances through this FIFO as the
+      // user retries or dismisses each one.
+      queuedActionFailuresRef.current.push(entry);
+    },
+    []
+  );
+  const exposeNextActionFailure = useCallback((): void => {
+    const next = queuedActionFailuresRef.current.shift() ?? null;
+    currentActionFailureRef.current = next;
+    if (mountedRef.current) setActionFailure(next?.failure ?? null);
+  }, []);
+  const clearActionFailure = useCallback(
+    (
+      requestId: number,
+      action: SizzleProjectAction,
+      projectId: string | null
+    ): void => {
+      const matches = (entry: SizzleActionFailureEntry): boolean =>
+        entry.requestId === requestId ||
+        (entry.failure.action === action && entry.failure.projectId === projectId);
+      queuedActionFailuresRef.current = queuedActionFailuresRef.current.filter(
+        (entry) => !matches(entry)
+      );
+      const current = currentActionFailureRef.current;
+      if (current !== null && matches(current)) exposeNextActionFailure();
+    },
+    [exposeNextActionFailure]
+  );
+  const dismissActionFailure = useCallback((): void => {
+    exposeNextActionFailure();
+  }, [exposeNextActionFailure]);
+  const retryAction = useCallback(async (): Promise<void> => {
+    const current = currentActionFailureRef.current;
+    if (current === null) return;
+    exposeNextActionFailure();
+    await current.retry();
+  }, [exposeNextActionFailure]);
+
+  const creatingProjectRef = useRef(false);
+  const onCreate = useCallback(async function createProject(): Promise<void> {
+    if (creatingProjectRef.current) return;
+    creatingProjectRef.current = true;
+    const requestId = beginActionRequest();
     // Electron deliberately doesn't implement window.prompt — it
     // silently returns null. Skip the dialog: create with a default
     // name and auto-focus the editor's title input so the user can
     // rename in one keystroke.
-    const r = await dispatch("sizzle:create", { name: "Untitled Sizzle" });
-    if (r.ok) {
-      setProjects((prev) => [r.value, ...prev]);
+    try {
+      const r = await dispatch("sizzle:create", { name: "Untitled Sizzle" });
+      if (!r.ok) {
+        showActionFailure(requestId, "create", null, r.error, createProject);
+        return;
+      }
+      clearActionFailure(requestId, "create", null);
+      if (!mountedRef.current) return;
+      // The main handler broadcasts the committed list before the invoke
+      // response resolves, so the new project may already be present.
+      setProjects((prev) => [r.value, ...prev.filter((p) => p.id !== r.value.id)]);
+      setProjectSaveState(r.value.id, SAVED_STATE);
       selectProject(r.value.id);
       setFocusTitleForId(r.value.id);
+    } catch (cause) {
+      showActionFailure(
+        requestId,
+        "create",
+        null,
+        unexpectedDispatchError("sizzle_create_failed", cause),
+        createProject
+      );
+    } finally {
+      creatingProjectRef.current = false;
     }
-  }, [selectProject]);
-
-  const pendingPatches = useRef<Map<string, SizzleProjectPatch>>(new Map());
-  const debounceTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(
-    new Map()
-  );
+  }, [
+    beginActionRequest,
+    clearActionFailure,
+    selectProject,
+    setProjectSaveState,
+    showActionFailure
+  ]);
 
   // ── Undo / redo (per active project) ────────────────────────────────
   // Every local scene mutation funnels through onUpdate({ scenes }); we
@@ -197,55 +426,233 @@ export function useSizzleProject(): SizzleProjectState {
   // Rapid edits (typing) coalesce into one entry within the debounce
   // window. `applyingHistoryRef` suppresses recording while an undo/redo
   // is being applied (so it doesn't re-record or clear the redo stack).
-  const projectsRef = useRef<SizzleProject[]>(projects);
-  projectsRef.current = projects;
   const undoStacks = useRef<Map<string, SizzleScene[][]>>(new Map());
   const redoStacks = useRef<Map<string, SizzleScene[][]>>(new Map());
   const lastHistoryAtRef = useRef<Map<string, number>>(new Map());
   const applyingHistoryRef = useRef(false);
 
-  const flushPatch = useCallback(async (id: string): Promise<void> => {
-    const pending = pendingPatches.current.get(id);
-    pendingPatches.current.delete(id);
+  const clearDebounceTimer = useCallback((id: string): void => {
     const timer = debounceTimers.current.get(id);
     if (timer !== undefined) {
       clearTimeout(timer);
       debounceTimers.current.delete(id);
     }
-    if (pending === undefined) return;
-    const r = await dispatch("sizzle:update", { id, patch: pending });
-    if (!r.ok) {
-      // Surface persistence failures so the user knows their edit
-      // didn't land. Local state already reflects the optimistic
-      // value, but disk is out of sync.
-      // eslint-disable-next-line no-console
-      console.warn("[sizzle] update failed", r.error);
-      return;
-    }
-    // After a successful flush, reconcile the server's modifiedAt back
-    // into local state — but ONLY if there's no further pending patch
-    // for this id (otherwise we'd overwrite text the user typed during
-    // the flush). The scenes field is intentionally NOT echoed back:
-    // local state is the source of truth for in-flight edits.
-    if (pendingPatches.current.has(id)) return;
-    setProjects((prev) =>
-      prev.map((p) =>
-        p.id === id ? { ...p, modifiedAt: r.value.modifiedAt } : p
-      )
-    );
   }, []);
 
+  const flushPatchRef = useRef<(id: string) => Promise<boolean>>(async () => true);
+  const flushPatch = useCallback(
+    (id: string): Promise<boolean> => {
+      clearDebounceTimer(id);
+      const existing = drainPromises.current.get(id);
+      if (existing !== undefined) return existing;
+      if (pausedProjectIds.current.has(id)) return Promise.resolve(false);
+      // A failed snapshot stays retained until the visible Retry save
+      // action explicitly clears this gate. Render/preview/duplicate must
+      // not silently turn into an automatic retry of a known-bad write.
+      if (failedProjectIds.current.has(id)) return Promise.resolve(false);
+
+      // Queue the worker into a microtask so the shared promise is visible
+      // before the first IPC dispatch starts. A synchronous project-change
+      // broadcast from that dispatch must see the project as in flight.
+      let tracked!: Promise<boolean>;
+      const drain = async (): Promise<boolean> => {
+        while (!pausedProjectIds.current.has(id)) {
+          clearDebounceTimer(id);
+          const patch = pendingPatches.current.get(id);
+          if (patch === undefined) {
+            if (!failedProjectIds.current.has(id)) {
+              setProjectSaveState(id, SAVED_STATE);
+            }
+            return true;
+          }
+          pendingPatches.current.delete(id);
+          inFlightPatches.current.set(id, patch);
+          setProjectSaveState(id, { phase: "saving", error: null });
+          const authoritativeRevisionBeforeDispatch =
+            authoritativeRevisionRef.current.get(id) ?? 0;
+
+          let error: PwrSnapError | null = null;
+          let savedProject: SizzleProject | null = null;
+          try {
+            const r = await dispatch("sizzle:update", { id, patch });
+            if (r.ok) savedProject = r.value;
+            else error = r.error;
+          } catch (cause) {
+            error = unexpectedDispatchError("sizzle_update_failed", cause);
+          }
+          inFlightPatches.current.delete(id);
+
+          if (error !== null) {
+            // Put the failed snapshot BACK underneath anything edited while
+            // it was in flight. Later values win field-by-field, including
+            // a wholesale newer scenes array.
+            const newer = pendingPatches.current.get(id) ?? {};
+            pendingPatches.current.set(id, { ...patch, ...newer });
+            clearDebounceTimer(id);
+            failedProjectIds.current.add(id);
+            setProjectSaveState(id, { phase: "error", error });
+            return false;
+          }
+
+          failedProjectIds.current.delete(id);
+          if (mountedRef.current && savedProject !== null) {
+            // The handler broadcasts before its invoke response. If an
+            // authoritative snapshot arrived during this write, it includes
+            // our patch and any serialized external edits; otherwise the
+            // response itself is authoritative (as in the unit-test bridge).
+            const authoritativeRevisionAfterDispatch =
+              authoritativeRevisionRef.current.get(id) ?? 0;
+            const base =
+              authoritativeRevisionAfterDispatch > authoritativeRevisionBeforeDispatch
+                ? (authoritativeProjectsRef.current.get(id) ?? savedProject)
+                : applyLocalPatchToAuthoritative(savedProject, patch);
+            const newer = pendingPatches.current.get(id) ?? null;
+            const reconciled = applyLocalPatchToAuthoritative(base, newer);
+            setProjects((prev) =>
+              prev.map((project) =>
+                project.id === id ? reconciled : project
+              )
+            );
+          }
+          // Loop immediately when an edit arrived during this write. That
+          // makes flushPatch a real persistence barrier for preview/render/
+          // duplicate without ever running two updates concurrently.
+        }
+        if (
+          !pendingPatches.current.has(id) &&
+          !failedProjectIds.current.has(id)
+        ) {
+          setProjectSaveState(id, SAVED_STATE);
+        }
+        return true;
+      };
+
+      tracked = Promise.resolve()
+        .then(drain)
+        .finally(() => {
+          if (drainPromises.current.get(id) === tracked) {
+            drainPromises.current.delete(id);
+          }
+          inFlightPatches.current.delete(id);
+          // onUpdate normally cannot interleave between the drain's final
+          // empty check and this promise finalizer. Re-check anyway so a
+          // React/effect boundary at exactly that edge can never strand a
+          // patch merely because it observed the old lane as in flight.
+          if (
+            pendingPatches.current.has(id) &&
+            !pausedProjectIds.current.has(id) &&
+            !failedProjectIds.current.has(id)
+          ) {
+            void flushPatchRef.current(id);
+          }
+        });
+      drainPromises.current.set(id, tracked);
+      return tracked;
+    },
+    [clearDebounceTimer, setProjectSaveState]
+  );
+  flushPatchRef.current = flushPatch;
+
+  const retrySave = useCallback((id: string): Promise<boolean> => {
+    failedProjectIds.current.delete(id);
+    return flushPatchRef.current(id);
+  }, []);
+
+  const closeRequestInFlightRef = useRef(false);
+  useEffect(() => {
+    const unsubscribe = subscribe(EVENT_CHANNELS.sizzleCloseRequested, (payload) => {
+      if (
+        closeRequestInFlightRef.current ||
+        typeof payload !== "object" ||
+        payload === null ||
+        !Number.isSafeInteger((payload as { requestId?: unknown }).requestId)
+      ) {
+        return;
+      }
+      const requestId = (payload as { requestId: number }).requestId;
+      closeRequestInFlightRef.current = true;
+
+      void (async () => {
+        let saved = true;
+        while (saved) {
+          const ids = new Set([
+            ...pendingPatches.current.keys(),
+            ...inFlightPatches.current.keys(),
+            ...failedProjectIds.current.keys()
+          ]);
+          if (ids.size === 0) break;
+          for (const id of ids) {
+            // Closing is an explicit persistence boundary, so retry a retained
+            // failed patch once while the native close remains blocked.
+            failedProjectIds.current.delete(id);
+            if (!(await flushPatchRef.current(id))) saved = false;
+          }
+        }
+
+        const action =
+          saved ||
+          window.confirm(
+            "PwrSnap could not save all Sizzle changes. Close and discard the unsaved changes?"
+          )
+            ? "close"
+            : "cancel";
+        try {
+          const response = await dispatch("sizzle:closeResponse", { requestId, action });
+          if (!response.ok || action === "cancel") {
+            closeRequestInFlightRef.current = false;
+          }
+        } catch {
+          closeRequestInFlightRef.current = false;
+        }
+      })();
+    });
+    // Subscribe first, then announce readiness. A close queued during initial
+    // mount or renderer reload is delivered only after this listener exists.
+    void dispatch("sizzle:closeReady", {});
+    return unsubscribe;
+  }, []);
+
+  const duplicatingProjectIds = useRef<Set<string>>(new Set());
   const onDuplicate = useCallback(
-    async (id: string) => {
-      await flushPatch(id);
-      const r = await dispatch("sizzle:duplicate", { id });
-      if (r.ok) {
+    async function duplicateProject(id: string): Promise<void> {
+      if (duplicatingProjectIds.current.has(id)) return;
+      duplicatingProjectIds.current.add(id);
+      let requestId: number | null = null;
+      try {
+        if (!(await flushPatch(id))) return;
+        requestId = beginActionRequest();
+        const r = await dispatch("sizzle:duplicate", { id });
+        if (!r.ok) {
+          showActionFailure(requestId, "duplicate", id, r.error, () => duplicateProject(id));
+          return;
+        }
+        clearActionFailure(requestId, "duplicate", id);
+        if (!mountedRef.current) return;
         setProjects((prev) => [r.value, ...prev.filter((p) => p.id !== r.value.id)]);
+        setProjectSaveState(r.value.id, SAVED_STATE);
         selectProject(r.value.id);
         setFocusTitleForId(r.value.id);
+      } catch (cause) {
+        requestId ??= beginActionRequest();
+        showActionFailure(
+          requestId,
+          "duplicate",
+          id,
+          unexpectedDispatchError("sizzle_duplicate_failed", cause),
+          () => duplicateProject(id)
+        );
+      } finally {
+        duplicatingProjectIds.current.delete(id);
       }
     },
-    [flushPatch, selectProject]
+    [
+      beginActionRequest,
+      clearActionFailure,
+      flushPatch,
+      selectProject,
+      setProjectSaveState,
+      showActionFailure
+    ]
   );
 
   const onUpdate = useCallback(
@@ -277,17 +684,32 @@ export function useSizzleProject(): SizzleProjectState {
       //    per-field; scenes patches replace wholesale).
       const prev = pendingPatches.current.get(id) ?? {};
       pendingPatches.current.set(id, { ...prev, ...patch });
-      // 3. Reset the debounce timer.
+      // 3. Truthful state + debounce. An edit during a write remains
+      //    "saving" (the drain will pick it up next); an edit after a
+      //    failure remains "error" until the user explicitly retries.
+      setSaveStates((states) => {
+        const current = states[id] ?? SAVED_STATE;
+        if (current.phase === "saving" || current.phase === "error") return states;
+        return { ...states, [id]: { phase: "dirty", error: null } };
+      });
       const existing = debounceTimers.current.get(id);
       if (existing !== undefined) clearTimeout(existing);
+      if (
+        pausedProjectIds.current.has(id) ||
+        failedProjectIds.current.has(id) ||
+        drainPromises.current.has(id)
+      ) {
+        debounceTimers.current.delete(id);
+        return;
+      }
       debounceTimers.current.set(
         id,
         setTimeout(() => {
-          void flushPatch(id);
+          void flushPatchRef.current(id);
         }, DEBOUNCE_MS)
       );
     },
-    [flushPatch]
+    []
   );
 
   const applyHistoryScenes = useCallback(
@@ -351,38 +773,94 @@ export function useSizzleProject(): SizzleProjectState {
     return () => window.removeEventListener("keydown", onKey);
   }, [undoSceneEdit, redoSceneEdit]);
 
-  // Flush any pending edits on unmount so the on-disk state catches up
-  // when the window closes mid-debounce.
+  // Switching reels is an immediate UI operation, but it is also a save
+  // boundary for the reel we just left. The per-project drain lane makes
+  // this safe to fire-and-forget: an existing write is reused, never
+  // duplicated, and a failed lane remains available through Retry.
+  const previousActiveIdRef = useRef<string | null>(activeId);
+  useEffect(() => {
+    const previousId = previousActiveIdRef.current;
+    previousActiveIdRef.current = activeId;
+    if (
+      previousId !== null &&
+      previousId !== activeId &&
+      pendingPatches.current.has(previousId) &&
+      !failedProjectIds.current.has(previousId)
+    ) {
+      void flushPatchRef.current(previousId);
+    }
+  }, [activeId]);
+
+  // Native window close is handled by the main↔renderer barrier above.
+  // Unmount itself cannot await IPC because Electron may terminate the
+  // renderer immediately, so cleanup only cancels timers.
   useEffect(() => {
     return () => {
-      for (const id of pendingPatches.current.keys()) {
-        void flushPatch(id);
-      }
+      for (const timer of debounceTimers.current.values()) clearTimeout(timer);
+      debounceTimers.current.clear();
     };
-  }, [flushPatch]);
+  }, []);
 
   // Live-sync external project mutations (e.g. a chat agent's scene
   // edits, or another window). Without this, an external write lands in
   // the store + broadcasts, but the open editor never sees it.
   //
-  // Merge, don't replace: any project with a pending DEBOUNCED local
-  // patch is kept as-is so a broadcast (including the echo of our OWN
-  // write, which round-trips ~350ms after the last keystroke) can't
-  // clobber text the user is still typing. Projects with no in-flight
-  // edit take the authoritative broadcast value.
+  // Merge, don't replace: authoritative external fields must arrive even
+  // while this window has local work, but the exact in-flight + pending
+  // fields stay optimistic on top. That keeps a chat-agent scenes update
+  // while the user types a title without letting our own write echo clobber
+  // the title.
   useEffect(() => {
     return subscribe(EVENT_CHANNELS.sizzleProjectsChanged, (payload) => {
       if (typeof payload !== "object" || payload === null) return;
       const incoming = (payload as { projects?: unknown }).projects;
       if (!Array.isArray(incoming)) return;
       const incomingProjects = incoming as SizzleProject[];
+      const incomingIds = new Set(incomingProjects.map((project) => project.id));
+      const changedAuthoritativeSceneIds = new Set<string>();
+      for (const project of incomingProjects) {
+        const previous = authoritativeProjectsRef.current.get(project.id);
+        if (
+          previous !== undefined &&
+          JSON.stringify(previous.scenes) !== JSON.stringify(project.scenes)
+        ) {
+          changedAuthoritativeSceneIds.add(project.id);
+        }
+        authoritativeProjectsRef.current.set(project.id, project);
+        // A broadcast carries the whole library. Do not count an unrelated
+        // reel's mutation as a new revision for this id; only a changed
+        // project can supersede this lane's update response.
+        if (
+          hasLocalWork(project.id) &&
+          (previous === undefined || JSON.stringify(previous) !== JSON.stringify(project))
+        ) {
+          authoritativeRevisionCounterRef.current += 1;
+          authoritativeRevisionRef.current.set(
+            project.id,
+            authoritativeRevisionCounterRef.current
+          );
+        }
+      }
+      for (const projectId of authoritativeProjectsRef.current.keys()) {
+        if (!incomingIds.has(projectId)) {
+          authoritativeProjectsRef.current.delete(projectId);
+          authoritativeRevisionRef.current.delete(projectId);
+        }
+      }
       // An external actor (the chat agent, another window) changed a
       // project's scenes out from under us — our local undo history would
-      // clobber that change on ⌘Z, so drop it. Skip projects with a
-      // pending local patch (we keep our copy) and the echo of our own
-      // writes (scenes unchanged → not cleared).
+      // clobber that change on ⌘Z. An own-write echo matches the exact local
+      // scenes patch and keeps its history; a genuinely different incoming
+      // scene list invalidates it even while a local scene write is active.
       for (const inc of incomingProjects) {
-        if (pendingPatches.current.has(inc.id)) continue;
+        if (!changedAuthoritativeSceneIds.has(inc.id)) continue;
+        const localScenes = localWorkPatch(inc.id)?.scenes;
+        if (
+          localScenes !== undefined &&
+          JSON.stringify(localScenes) === JSON.stringify(inc.scenes)
+        ) {
+          continue;
+        }
         const local = projectsRef.current.find((lp) => lp.id === inc.id);
         if (
           local !== undefined &&
@@ -393,15 +871,23 @@ export function useSizzleProject(): SizzleProjectState {
           lastHistoryAtRef.current.delete(inc.id);
         }
       }
-      setProjects((prev) =>
-        incomingProjects.map((p) =>
-          pendingPatches.current.has(p.id)
-            ? (prev.find((lp) => lp.id === p.id) ?? p)
-            : p
-        )
-      );
+      // A valid live snapshot is also a successful load recovery. Invalidate
+      // any older list request so its late reply cannot replace this one.
+      loadRequestRef.current += 1;
+      setLoading(false);
+      setLoadError(null);
+      setProjects((prev) => {
+        return [
+          ...incomingProjects.map((project) =>
+            applyLocalPatchToAuthoritative(project, localWorkPatch(project.id))
+          ),
+          ...prev.filter(
+            (project) => !incomingIds.has(project.id) && hasLocalWork(project.id)
+          )
+        ];
+      });
     });
-  }, []);
+  }, [hasLocalWork, localWorkPatch]);
 
   // Navigate when the user clicks a Sizzle Reel in the Library while this
   // composer window is already open (a new window instead gets the target
@@ -417,23 +903,98 @@ export function useSizzleProject(): SizzleProjectState {
     });
   }, [selectProject]);
 
+  const resumePendingSave = useCallback(
+    (id: string): void => {
+      if (failedProjectIds.current.has(id)) return;
+      if (!pendingPatches.current.has(id)) {
+        setProjectSaveState(id, SAVED_STATE);
+        return;
+      }
+      setProjectSaveState(id, { phase: "dirty", error: null });
+      clearDebounceTimer(id);
+      debounceTimers.current.set(
+        id,
+        setTimeout(() => {
+          void flushPatchRef.current(id);
+        }, DEBOUNCE_MS)
+      );
+    },
+    [clearDebounceTimer, setProjectSaveState]
+  );
+
+  const deletingProjectIds = useRef<Set<string>>(new Set());
   const onDelete = useCallback(
-    async (id: string) => {
-      if (!window.confirm("Delete this sizzle reel?")) return;
-      const r = await dispatch("sizzle:delete", { id });
-      if (r.ok) {
-        const fallbackId = projects.find((p) => p.id !== id)?.id ?? null;
+    async function deleteProject(id: string, askForConfirmation = true): Promise<void> {
+      if (askForConfirmation && !window.confirm("Delete this sizzle reel?")) return;
+      if (deletingProjectIds.current.has(id)) return;
+      deletingProjectIds.current.add(id);
+      const requestId = beginActionRequest();
+      pausedProjectIds.current.add(id);
+      clearDebounceTimer(id);
+      // Never let an update validate late and reach the store after delete.
+      // We retain queued (not-yet-started) changes in case deletion fails.
+      const activeDrain = drainPromises.current.get(id);
+      if (activeDrain !== undefined) await activeDrain;
+      try {
+        const r = await dispatch("sizzle:delete", { id });
+        if (!r.ok) {
+          pausedProjectIds.current.delete(id);
+          resumePendingSave(id);
+          showActionFailure(
+            requestId,
+            "delete",
+            id,
+            r.error,
+            () => deleteProject(id, false)
+          );
+          return;
+        }
+        clearActionFailure(requestId, "delete", id);
+        if (!mountedRef.current) return;
+        const fallbackId = projectsRef.current.find((project) => project.id !== id)?.id ?? null;
+        pendingPatches.current.delete(id);
+        failedProjectIds.current.delete(id);
+        pausedProjectIds.current.delete(id);
+        authoritativeProjectsRef.current.delete(id);
+        authoritativeRevisionRef.current.delete(id);
+        undoStacks.current.delete(id);
+        redoStacks.current.delete(id);
+        lastHistoryAtRef.current.delete(id);
+        setSaveStates((states) => {
+          if (states[id] === undefined) return states;
+          const next = { ...states };
+          delete next[id];
+          return next;
+        });
         setProjects((prev) => prev.filter((p) => p.id !== id));
         setRecentProjectIds((prev) => prev.filter((recentId) => recentId !== id));
-        if (activeId === id) {
+        if (activeIdRef.current === id) {
           setActiveId(fallbackId);
           if (fallbackId !== null) {
             setRecentProjectIds((prev) => admitRecentProject(prev, fallbackId));
           }
         }
+      } catch (cause) {
+        pausedProjectIds.current.delete(id);
+        resumePendingSave(id);
+        showActionFailure(
+          requestId,
+          "delete",
+          id,
+          unexpectedDispatchError("sizzle_delete_failed", cause),
+          () => deleteProject(id, false)
+        );
+      } finally {
+        deletingProjectIds.current.delete(id);
       }
     },
-    [activeId, projects]
+    [
+      beginActionRequest,
+      clearDebounceTimer,
+      clearActionFailure,
+      resumePendingSave,
+      showActionFailure
+    ]
   );
 
   const onRender = useCallback(async () => {
@@ -442,7 +1003,7 @@ export function useSizzleProject(): SizzleProjectState {
     // reads the project off disk. Otherwise typed-but-not-yet-saved
     // script lines would be missing — the render would either fail on
     // "empty script" or synthesize stale text.
-    await flushPatch(active.id);
+    if (!(await flushPatch(active.id))) return;
     setStatus({ phase: "tts", message: "Starting…", ratio: 0, error: null });
     const r = await dispatch("sizzle:render", { id: active.id });
     if (!r.ok) {
@@ -455,10 +1016,44 @@ export function useSizzleProject(): SizzleProjectState {
     }
   }, [active, flushPatch]);
 
-  const onReveal = useCallback(async () => {
+  const revealingProjectIds = useRef<Set<string>>(new Set());
+  const revealProject = useCallback(
+    async function revealProjectById(id: string): Promise<void> {
+      if (revealingProjectIds.current.has(id)) return;
+      revealingProjectIds.current.add(id);
+      const requestId = beginActionRequest();
+      try {
+        const r = await dispatch("sizzle:revealOutput", { id });
+        if (!r.ok) {
+          showActionFailure(
+            requestId,
+            "reveal",
+            id,
+            r.error,
+            () => revealProjectById(id)
+          );
+          return;
+        }
+        clearActionFailure(requestId, "reveal", id);
+      } catch (cause) {
+        showActionFailure(
+          requestId,
+          "reveal",
+          id,
+          unexpectedDispatchError("sizzle_reveal_failed", cause),
+          () => revealProjectById(id)
+        );
+      } finally {
+        revealingProjectIds.current.delete(id);
+      }
+    },
+    [beginActionRequest, clearActionFailure, showActionFailure]
+  );
+
+  const onReveal = useCallback(async (): Promise<void> => {
     if (active === null) return;
-    await dispatch("sizzle:revealOutput", { id: active.id });
-  }, [active]);
+    await revealProject(active.id);
+  }, [active, revealProject]);
 
   const onAddScene = useCallback(
     async (captureId: string) => {
@@ -540,13 +1135,23 @@ export function useSizzleProject(): SizzleProjectState {
     [active, captures, onUpdate]
   );
 
+  const saveState = activeId === null ? SAVED_STATE : (saveStates[activeId] ?? SAVED_STATE);
+
   return {
     projects,
     active,
     activeId,
     loading,
+    loadError,
+    retryLoad: reloadProjects,
     captures,
     status,
+    saveState,
+    saveStates,
+    retrySave,
+    actionFailure,
+    retryAction,
+    dismissActionFailure,
     projectRail,
     focusTitleForId,
     setFocusTitleForId,

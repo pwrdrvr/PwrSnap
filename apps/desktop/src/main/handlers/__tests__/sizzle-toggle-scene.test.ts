@@ -14,6 +14,9 @@
 //     so the Library sidebar refreshes live.
 //   - Validation rejects empty / malformed input.
 
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { SizzleProject, SizzleScene } from "@pwrsnap/shared";
 import type { CommandContext } from "../../command-bus";
@@ -42,6 +45,7 @@ const mocks = vi.hoisted(() => ({
   findSizzleWindow: vi.fn(),
   positionSizzleWindowForSource: vi.fn(),
   send: vi.fn(),
+  showItemInFolder: vi.fn(),
   getValue: vi.fn(),
   dispatch: vi.fn(),
   synthesize: vi.fn(),
@@ -49,6 +53,14 @@ const mocks = vi.hoisted(() => ({
   assertSizzleRenderPlatform: vi.fn(),
   synthesizeSilence: vi.fn(),
   resolveCacheFile: vi.fn(),
+  completeSizzleCloseRequest: vi.fn(),
+  markSizzleCloseRendererReady: vi.fn(),
+  SizzleStoreCorruptError: class SizzleStoreCorruptError extends Error {
+    constructor(message: string, public readonly backupPath: string | null) {
+      super(message);
+      this.name = "SizzleStoreCorruptError";
+    }
+  },
   ComposeError: class ComposeError extends Error {
     constructor(
       public readonly code: string,
@@ -70,7 +82,7 @@ vi.mock("electron", () => ({
     ])
   },
   app: { getPath: vi.fn(() => "/tmp") },
-  shell: { openPath: vi.fn(), showItemInFolder: vi.fn() }
+  shell: { openPath: vi.fn(), showItemInFolder: mocks.showItemInFolder }
 }));
 
 vi.mock("../../command-bus", () => ({
@@ -91,7 +103,13 @@ vi.mock("../../sizzle/sizzle-store", () => ({
       super(`sizzle: project not found: ${projectId}`);
       this.name = "SizzleProjectNotFoundError";
     }
-  }
+  },
+  SizzleStoreCorruptError: mocks.SizzleStoreCorruptError
+}));
+
+vi.mock("../../sizzle/sizzle-close-barrier", () => ({
+  completeSizzleCloseRequest: mocks.completeSizzleCloseRequest,
+  markSizzleCloseRendererReady: mocks.markSizzleCloseRendererReady
 }));
 
 vi.mock("../sizzle-chat-handlers", () => ({
@@ -204,14 +222,17 @@ beforeEach(() => {
   mocks.handlers.clear();
   mocks.store.get.mockReset();
   mocks.store.list.mockReset();
+  mocks.store.create.mockReset();
   mocks.store.update.mockReset();
   mocks.store.duplicate.mockReset();
+  mocks.store.delete.mockReset();
   mocks.cleanupProjectChats.mockReset();
   mocks.forkProjectChats.mockReset();
   mocks.createSizzleWindow.mockReset();
   mocks.findSizzleWindow.mockReset();
   mocks.positionSizzleWindowForSource.mockReset();
   mocks.send.mockReset();
+  mocks.showItemInFolder.mockReset();
   mocks.dispatch.mockReset();
   mocks.dispatch.mockImplementation(async (_name, req: { id?: string }) => ({
     ok: true,
@@ -233,6 +254,8 @@ beforeEach(() => {
   mocks.synthesizeSilence.mockResolvedValue("/tmp/silence.m4a");
   mocks.resolveCacheFile.mockReset();
   mocks.resolveCacheFile.mockResolvedValue("/tmp/capture.png");
+  mocks.completeSizzleCloseRequest.mockReset();
+  mocks.markSizzleCloseRendererReady.mockReset();
   // Default: store.list returns whatever store.update returned, in
   // an array. Most tests just need "some projects exist" — they can
   // override per-case.
@@ -312,6 +335,136 @@ describe("sizzle:open — source display placement", () => {
     expect(mocks.createSizzleWindow).not.toHaveBeenCalled();
     expect(fake.show).toHaveBeenCalledTimes(1);
     expect(fake.focus).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Sizzle persistence truthfulness", () => {
+  test("list returns a typed persistence error when the store read fails", async () => {
+    mocks.store.list.mockRejectedValue(new Error("disk unavailable"));
+
+    const handler = await loadHandler("sizzle:list");
+    const result = await handler({});
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        kind: "persistence",
+        code: "sizzle_list_failed",
+        message: "disk unavailable"
+      }
+    });
+  });
+
+  test("list distinguishes an invalid existing project file from an empty library", async () => {
+    mocks.store.list.mockRejectedValue(
+      new mocks.SizzleStoreCorruptError(
+        "Sizzle project data is invalid. Repair or restore the file, then Retry.",
+        "/tmp/sizzle-projects.json.corrupt-backup"
+      )
+    );
+
+    const handler = await loadHandler("sizzle:list");
+    const result = await handler({});
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        kind: "persistence",
+        code: "sizzle_project_file_invalid",
+        message: expect.stringContaining("Repair or restore")
+      }
+    });
+  });
+
+  test("close response resolves only the originating renderer request", async () => {
+    mocks.completeSizzleCloseRequest.mockReturnValue(true);
+
+    const handler = await loadHandler("sizzle:closeResponse");
+    const result = await handler(
+      { requestId: 7, action: "close" },
+      commandCtx(41)
+    );
+
+    expect(result).toEqual({ ok: true, value: undefined });
+    expect(mocks.completeSizzleCloseRequest).toHaveBeenCalledWith(41, 7, "close");
+  });
+
+  test("close readiness is attributed to the originating renderer window", async () => {
+    mocks.markSizzleCloseRendererReady.mockReturnValue(true);
+
+    const handler = await loadHandler("sizzle:closeReady");
+    const result = await handler({}, commandCtx(41));
+
+    expect(result).toEqual({ ok: true, value: undefined });
+    expect(mocks.markSizzleCloseRendererReady).toHaveBeenCalledWith(41);
+  });
+
+  test.each([
+    ["sizzle:toggleScene", { projectId: "proj-1", captureId: "cap-1" }],
+    ["sizzle:previewSceneAudio", { projectId: "proj-1", sceneId: "sc-1" }],
+    ["sizzle:previewSequenceScenePlan", { projectId: "proj-1", sceneId: "sc-1" }],
+    ["sizzle:loadSequenceSceneAudio", { projectId: "proj-1", sceneId: "sc-1" }],
+    ["sizzle:revealOutput", { id: "proj-1" }],
+    ["sizzle:render", { id: "proj-1" }]
+  ])("%s converts a corrupt store read to the typed persistence error", async (command, req) => {
+    mocks.store.get.mockRejectedValue(
+      new mocks.SizzleStoreCorruptError(
+        "Sizzle project data is invalid. Repair or restore the file, then Retry.",
+        "/tmp/sizzle-projects.json.corrupt-backup"
+      )
+    );
+
+    const handler = await loadHandler(command);
+    const result = await handler(req, commandCtx(41));
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        kind: "persistence",
+        code: "sizzle_project_file_invalid",
+        message: expect.stringContaining("Repair or restore")
+      }
+    });
+  });
+
+  test("reveal returns output_missing when the persisted output no longer exists", async () => {
+    const outputDir = await mkdtemp(join(tmpdir(), "pwrsnap-sizzle-reveal-"));
+    const outputPath = join(outputDir, "missing-render.mp4");
+    mocks.store.get.mockResolvedValue(makeProject({ outputPath }));
+
+    try {
+      const handler = await loadHandler("sizzle:revealOutput");
+      const result = await handler({ id: "proj-1" });
+
+      expect(result).toEqual({
+        ok: false,
+        error: {
+          kind: "persistence",
+          code: "output_missing",
+          message: "The rendered output is missing. Render the reel again, then reveal it."
+        }
+      });
+      expect(mocks.showItemInFolder).not.toHaveBeenCalled();
+    } finally {
+      await rm(outputDir, { recursive: true, force: true });
+    }
+  });
+
+  test("create remains successful when a renderer closes during the broadcast", async () => {
+    const project = makeProject({ name: "Recovery reel" });
+    mocks.store.create.mockResolvedValue(project);
+    mocks.store.list.mockResolvedValue([project]);
+    mocks.send.mockImplementation(() => {
+      throw new Error("renderer closed");
+    });
+
+    const handler = await loadHandler("sizzle:create");
+    const result = await handler({ name: "Recovery reel" });
+
+    expect(result).toEqual({ ok: true, value: project });
+    expect(mocks.store.create).toHaveBeenCalledOnce();
+    expect(mocks.store.create).toHaveBeenCalledWith("Recovery reel");
+    expect(mocks.send).toHaveBeenCalledOnce();
   });
 });
 

@@ -176,6 +176,33 @@ export function listLayerTree(captureId: string): BundleLayerNode[] {
   return nodes;
 }
 
+/**
+ * Return the complete durable document projection, including rejected and
+ * superseded history. Repack uses this rather than the compositor's live-tree
+ * view so an ordinary edit cannot erase portable history imported from another
+ * device.
+ */
+export function listAllLayersForBundle(captureId: string): BundleLayerNode[] {
+  const rows = getDb()
+    .prepare<[string], DbLayerRow>(
+      `SELECT id, capture_id, parent_id, kind, z_index, name, visible,
+              locked, opacity, blend_mode, transform_json, data,
+              schema_version, source, ai_run_id, applied_at,
+              rejected_at, superseded_by, created_at
+         FROM layers
+        WHERE capture_id = ?
+        ORDER BY created_at ASC, id ASC`
+    )
+    .all(captureId);
+  const nodes: BundleLayerNode[] = [];
+  for (const row of rows) {
+    const node = tryRowToNode(row, captureId);
+    if (node !== null) nodes.push(node);
+  }
+  assertTreeDepthBounded(nodes);
+  return nodes;
+}
+
 function assertTreeDepthBounded(nodes: readonly BundleLayerNode[]): void {
   const byId = new Map<string, BundleLayerNode>();
   for (const node of nodes) byId.set(node.id, node);
@@ -536,6 +563,78 @@ export function insertLayerTreeForCapture(
         rejected_at: node.rejected_at,
         superseded_by: node.superseded_by,
         created_at: node.created_at
+      });
+    }
+    if (nodes.length > 0) bumpEditsVersion(captureId);
+  });
+  tx();
+}
+
+/**
+ * Insert a fully validated foreign v2 document without depending on its array
+ * order. Bundle documents may put children before parents, and historical
+ * `superseded_by` references commonly point forward. Both columns are immediate
+ * self-FKs in SQLite, so the ordinary single-pass insert cannot safely ingest
+ * that shape.
+ *
+ * Import owns the two-pass rule: first create every row with relationship FKs
+ * null, then restore the exact parent/supersede graph after all IDs exist. The
+ * caller still wraps capture + layers + metadata in one outer transaction and
+ * resets the capture's two edit-version columns to the document checkpoint.
+ */
+export function insertImportedLayerTreeForCapture(
+  captureId: string,
+  nodes: readonly BundleLayerNode[]
+): void {
+  for (const node of nodes) BundleLayerNodeSchema.parse(node);
+  const db = getDb();
+  const tx = db.transaction(() => {
+    const insert = db.prepare(
+      `INSERT INTO layers
+         (id, capture_id, parent_id, kind, z_index, name, visible,
+          locked, opacity, blend_mode, transform_json, data,
+          schema_version, source, ai_run_id, applied_at,
+          rejected_at, superseded_by, created_at)
+       VALUES
+         (@id, @capture_id, NULL, @kind, @z_index, @name, @visible,
+          @locked, @opacity, @blend_mode, @transform_json, @data,
+          1, @source, @ai_run_id, @applied_at,
+          @rejected_at, NULL, @created_at)`
+    );
+    for (const node of nodes) {
+      const { kindSpecificData, transformJson } = splitNodeForStorage(node);
+      insert.run({
+        id: node.id,
+        capture_id: captureId,
+        kind: node.kind,
+        z_index: node.z_index,
+        name: node.name,
+        visible: node.visible ? 1 : 0,
+        locked: node.locked ? 1 : 0,
+        opacity: node.opacity,
+        blend_mode: node.blend_mode,
+        transform_json: transformJson,
+        data: kindSpecificData,
+        source: node.source,
+        ai_run_id: node.ai_run_id,
+        applied_at: node.applied_at,
+        rejected_at: node.rejected_at,
+        created_at: node.created_at
+      });
+    }
+
+    const restoreRelationships = db.prepare(
+      `UPDATE layers
+          SET parent_id = @parent_id,
+              superseded_by = @superseded_by
+        WHERE id = @id AND capture_id = @capture_id`
+    );
+    for (const node of nodes) {
+      restoreRelationships.run({
+        id: node.id,
+        capture_id: captureId,
+        parent_id: node.parent_id,
+        superseded_by: node.superseded_by
       });
     }
     if (nodes.length > 0) bumpEditsVersion(captureId);

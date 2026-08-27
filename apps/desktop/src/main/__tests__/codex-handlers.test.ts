@@ -19,6 +19,15 @@ const electronMock = vi.hoisted(() => ({
   }>
 }));
 
+const bundleStoreMock = vi.hoisted(() => ({
+  scheduleRepack: vi.fn<(captureId: string) => void>()
+}));
+
+vi.mock("../persistence/bundle-store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../persistence/bundle-store")>()),
+  scheduleRepack: bundleStoreMock.scheduleRepack
+}));
+
 vi.mock("electron", () => ({
   app: {
     getPath: () => join(tempRoot, "Documents")
@@ -237,6 +246,7 @@ describe("Codex handlers", () => {
     resetCodexCompatibilityAlertForTests();
     electronMock.sentEvents = [];
     electronMock.windows = [];
+    bundleStoreMock.scheduleRepack.mockReset();
     tempRoot = join(tmpdir(), `pwrsnap-codex-handlers-test-${process.pid}-${Date.now()}`);
     await mkdir(tempRoot, { recursive: true });
     testDb = new Database(":memory:");
@@ -286,6 +296,34 @@ describe("Codex handlers", () => {
     );
 
     expect(result).toEqual({ ok: true, value: alert });
+  });
+
+  test("accepted descriptions and bulk description drafts schedule bundle repacks", async () => {
+    registerCodexHandlers();
+
+    const description = await bus.dispatch(
+      "codex:acceptDescription",
+      { captureId: "cap_1", description: "Portable description" },
+      { principal: "ipc" }
+    );
+    const bulk = await bus.dispatch(
+      "codex:acceptAllDrafts",
+      { captureId: "cap_1", title: "Title", description: "Bulk portable description" },
+      { principal: "ipc" }
+    );
+    const titleOnly = await bus.dispatch(
+      "codex:acceptAllDrafts",
+      { captureId: "cap_1", title: "Title only" },
+      { principal: "ipc" }
+    );
+
+    expect(description.ok).toBe(true);
+    expect(bulk.ok).toBe(true);
+    expect(titleOnly.ok).toBe(true);
+    expect(bundleStoreMock.scheduleRepack.mock.calls).toEqual([
+      ["cap_1"],
+      ["cap_1"]
+    ]);
   });
 
   test("codex:enrich queues and completes a capture enrichment run", async () => {

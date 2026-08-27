@@ -54,6 +54,17 @@ import {
 } from "./captures-repo";
 import { getCacheSourcePath, getCapturesRoot, getTrashRoot } from "./paths";
 import { sourceBufferHasAlpha } from "./source-alpha";
+import { getCaptureEnrichment } from "./enrichment-repo";
+import {
+  canonicalPortableTagKeys,
+  readPortableBundleCarrier,
+  writePortableBundleCarrier
+} from "./bundle-carrier-repo";
+import {
+  applyPortableBundleMetadata,
+  emptyPortableBundleMetadata,
+  type PortableBundleMetadata
+} from "./portable-bundle-metadata";
 import {
   deletePendingSourcesForCapture,
   PendingSourceMissingError,
@@ -228,6 +239,8 @@ export async function buildCompositeThumbnail(
 export type PackBundleV2Args = {
   manifest: BundleManifestV2;
   document: BundleDocumentV2;
+  /** Bounded portable_* fields extracted at the verified import boundary. */
+  portableMetadata?: PortableBundleMetadata;
   /**
    * Map sha256 → bytes. Content-addressable; the writer stores each
    * entry at `sources/<sha>.png` and the reader verifies sha256 on
@@ -280,9 +293,14 @@ export type PackBundleV2Args = {
 export async function packBundleV2(args: PackBundleV2Args): Promise<Buffer> {
   const validatedManifest = BundleManifestV2.parse(args.manifest);
   const validatedDocument = BundleDocumentV2.parse(args.document);
+  const portable = applyPortableBundleMetadata(
+    validatedManifest,
+    validatedDocument,
+    args.portableMetadata ?? emptyPortableBundleMetadata()
+  );
 
-  const manifestBuf = Buffer.from(JSON.stringify(validatedManifest));
-  const documentBuf = Buffer.from(JSON.stringify(validatedDocument));
+  const manifestBuf = Buffer.from(JSON.stringify(portable.manifestJson));
+  const documentBuf = Buffer.from(JSON.stringify(portable.documentJson));
 
   return new Promise<Buffer>((resolve, reject) => {
     const zip = new yazl.ZipFile();
@@ -553,6 +571,46 @@ export async function readBundleDocument(bundlePath: string): Promise<BundleDocu
   }
 }
 
+export type PortableBundleState = {
+  document: BundleDocumentV2;
+  sources: Map<string, Buffer>;
+  layerBytes: Map<string, Buffer>;
+};
+
+/** Read the document and every portable source/payload in one validated ZIP. */
+export async function readPortableBundleState(
+  bundlePath: string
+): Promise<PortableBundleState> {
+  const handle = await openAndValidateBundle(bundlePath);
+  try {
+    const documentEntry = handle.entries.get("document.json");
+    if (documentEntry === undefined) {
+      throw new Error("bundle-store: validated v2 bundle missing document.json");
+    }
+    const document = BundleDocumentV2.parse(
+      JSON.parse((await readEntryToBuffer(handle.zipFile, documentEntry)).toString("utf8"))
+    );
+    const sources = new Map<string, Buffer>();
+    const layerBytes = new Map<string, Buffer>();
+    for (const [name, entry] of handle.entries) {
+      if (name.startsWith("sources/") && name.endsWith(".png")) {
+        const sha = name.slice("sources/".length, -".png".length);
+        const bytes = await readEntryToBuffer(handle.zipFile, entry);
+        if (createHash("sha256").update(bytes).digest("hex") !== sha) {
+          throw new Error("bundle-store: portable source failed content hash validation");
+        }
+        sources.set(sha, bytes);
+      } else if (name.startsWith("layers/") && name.endsWith(".png")) {
+        const id = name.slice("layers/".length, -".png".length);
+        layerBytes.set(id, await readEntryToBuffer(handle.zipFile, entry));
+      }
+    }
+    return { document, sources, layerBytes };
+  } finally {
+    handle.zipFile.close();
+  }
+}
+
 /**
  * Extract `sources/<sha>.png` from a v2 bundle with content-integrity
  * verification. Recomputes sha256(zipEntryBytes) and rejects on
@@ -751,8 +809,17 @@ export function scheduleRepack(captureId: string): void {
       return;
     }
     if (record === null) return;
-    // v2 is the only bundle format — every live capture re-packs via
-    // the tree-walking compositor.
+    // Only image captures own v2 layer-tree bundles. Metadata handlers also
+    // accept video captures, whose vestigial bundle_format_version=1 must
+    // never route into this repacker.
+    if (
+      record.kind !== "image" ||
+      record.bundle_format_version !== 2 ||
+      record.bundle_path === null ||
+      record.deleted_at !== null
+    ) {
+      return;
+    }
     void runRepackV2(captureId).catch((err: unknown) => {
       log.error("bundle-store: repack failed", {
         captureId,
@@ -1154,7 +1221,7 @@ async function runRepackV2(captureId: string): Promise<void> {
     await existing;
   }
 
-  const { listLayerTree } = await import("./layers-repo");
+  const { listAllLayersForBundle } = await import("./layers-repo");
   const { composeV2 } = await import("../render/compose-tree");
 
   const promise = runExclusiveBundleFileOperation(captureId, async () => {
@@ -1181,24 +1248,25 @@ async function runRepackV2(captureId: string): Promise<void> {
     });
     const compositePng = await readFile(composeResult.cachePath);
 
-    // Re-collect sources: every raster layer in the live tree
-    // references a source by sha. Read each from the cache (we
-    // materialized them at capture time / on first read via
-    // readSourceFromBundle).
-    const layers = listLayerTree(captureId);
-    const sources = new Map<string, Buffer>();
+    // Start from the complete portable carrier, then overlay any pending
+    // sources introduced by edits. This retains rejected/superseded history,
+    // orphan historical sources, and opaque layers/<id>.png payloads.
+    const portable = await readPortableBundleState(record.bundle_path);
+    const layers = listAllLayersForBundle(captureId);
+    const sources = new Map(portable.sources);
     for (const node of layers) {
       if (node.kind === "raster" && !sources.has(node.source_ref.sha256)) {
-        try {
-          const bytes = await readSourceForCapture(captureId, record.bundle_path, node.source_ref.sha256);
-          sources.set(node.source_ref.sha256, bytes);
-        } catch (cause) {
-          log.warn("bundle-store: v2 repack failed to read source", {
-            captureId,
-            sha: node.source_ref.sha256.slice(0, 8),
-            message: cause instanceof Error ? cause.message : String(cause)
-          });
-        }
+        // Every raster retained in the document must have bytes in the same
+        // archive. Older repackers omitted rejected history while SQLite kept
+        // its rows, so recovery can legitimately fail here. Propagate that
+        // failure before atomicWriteBundle rather than replacing a healthy
+        // bundle with one the strict reader will reject as source_missing.
+        const bytes = await readSourceForCapture(
+          captureId,
+          record.bundle_path,
+          node.source_ref.sha256
+        );
+        sources.set(node.source_ref.sha256, bytes);
       }
     }
 
@@ -1212,13 +1280,29 @@ async function runRepackV2(captureId: string): Promise<void> {
       created_at: record.captured_at,
       bundle_modified_at: now
     };
+    const enrichment = getCaptureEnrichment(captureId);
+    const carrier = readPortableBundleCarrier(captureId);
+    const acceptedDescription = enrichment?.acceptedDescription ?? null;
+    const acceptedTags = enrichment?.acceptedTags ?? [];
+    const tags =
+      carrier !== null &&
+      JSON.stringify(canonicalPortableTagKeys(acceptedTags)) ===
+        JSON.stringify(carrier.projectedTagKeys)
+        ? portable.document.tags
+        : (enrichment?.acceptedTags ?? portable.document.tags);
+    const description =
+      carrier !== null
+        ? acceptedDescription === carrier.projectedDescription
+          ? portable.document.description
+          : acceptedDescription
+        : (acceptedDescription ?? portable.document.description);
     const document: BundleDocumentV2 = {
       document_format_version: 1,
       edits_version: record.edits_version,
       layers,
-      tags: [],
-      description: null,
-      ai_runs: []
+      tags,
+      description,
+      ai_runs: carrier?.aiRuns ?? portable.document.ai_runs
     };
 
     const thumbnailJpg = await buildCompositeThumbnail(compositePng);
@@ -1226,8 +1310,9 @@ async function runRepackV2(captureId: string): Promise<void> {
     const bundleBuf = await packBundleV2({
       manifest,
       document,
+      ...(carrier === null ? {} : { portableMetadata: carrier.portableMetadata }),
       sources,
-      layerBytes: new Map(), // v2.0: no rasterized effects yet
+      layerBytes: portable.layerBytes,
       thumbnailJpg
     });
 
@@ -1237,6 +1322,7 @@ async function runRepackV2(captureId: string): Promise<void> {
       bundle_modified_at: now,
       bundle_edits_version: record.edits_version
     });
+    writePortableBundleCarrier(captureId, document, carrier?.portableMetadata);
     await deletePendingSourcesForCapture(captureId, sources.keys()).catch((cause) => {
       log.warn("bundle-store: v2 repack pending-source cleanup failed", {
         captureId,
@@ -1257,6 +1343,11 @@ async function runRepackV2(captureId: string): Promise<void> {
   } finally {
     repackInFlight.delete(captureId);
   }
+}
+
+/** Run the same v2 repack used by the edit debounce and await durability. */
+export async function repackCaptureNow(captureId: string): Promise<void> {
+  await runRepackV2(captureId);
 }
 
 // ---------------------------------------------------------------------------

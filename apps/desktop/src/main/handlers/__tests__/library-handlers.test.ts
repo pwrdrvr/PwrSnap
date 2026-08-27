@@ -41,6 +41,7 @@ const mocks = vi.hoisted(() => ({
   listEnrichmentsByCaptureIds: vi.fn<
     (ids: readonly string[]) => Map<string, CaptureEnrichment | null>
   >(),
+  scheduleRepack: vi.fn(),
   send: vi.fn()
 }));
 
@@ -97,7 +98,8 @@ vi.mock("../../persistence/enrichment-repo", () => ({
 vi.mock("../../persistence/bundle-store", () => ({
   moveBundlePairToTrash: vi.fn(),
   purgeBundlePairFromTrash: vi.fn(),
-  restoreBundlePairFromTrash: vi.fn()
+  restoreBundlePairFromTrash: vi.fn(),
+  scheduleRepack: mocks.scheduleRepack
 }));
 
 vi.mock("../../persistence/source-store", () => ({
@@ -180,6 +182,7 @@ beforeEach(() => {
   mocks.discoverCaptureSearchFacets.mockReset();
   mocks.searchCaptures.mockReset();
   mocks.listEnrichmentsByCaptureIds.mockReset();
+  mocks.scheduleRepack.mockReset();
   mocks.send.mockReset();
 });
 
@@ -541,6 +544,8 @@ describe("library tag mutation handlers", () => {
 
     expect(mocks.addUserTag).toHaveBeenCalledOnce();
     expect(mocks.addUserTag).toHaveBeenCalledWith("cap-1", "Triage");
+    expect(mocks.scheduleRepack).toHaveBeenCalledOnce();
+    expect(mocks.scheduleRepack).toHaveBeenCalledWith("cap-1");
     expect(result).toEqual({ ok: true, value: enrichment });
     expect(mocks.send).toHaveBeenCalledWith(EVENT_CHANNELS.aiRunUpdated, {
       run: null,
@@ -568,6 +573,7 @@ describe("library tag mutation handlers", () => {
         message: "capture not found or deleted: cap-1"
       }
     });
+    expect(mocks.scheduleRepack).not.toHaveBeenCalled();
     expect(mocks.send).not.toHaveBeenCalled();
   });
 
@@ -584,6 +590,8 @@ describe("library tag mutation handlers", () => {
 
     expect(mocks.removeTag).toHaveBeenCalledOnce();
     expect(mocks.removeTag).toHaveBeenCalledWith("cap-1", "Triage");
+    expect(mocks.scheduleRepack).toHaveBeenCalledOnce();
+    expect(mocks.scheduleRepack).toHaveBeenCalledWith("cap-1");
     expect(result).toEqual({ ok: true, value: enrichment });
     expect(mocks.send).toHaveBeenCalledWith(EVENT_CHANNELS.aiRunUpdated, {
       run: null,
@@ -611,6 +619,7 @@ describe("library tag mutation handlers", () => {
         message: "capture not found: cap-1"
       }
     });
+    expect(mocks.scheduleRepack).not.toHaveBeenCalled();
     expect(mocks.send).not.toHaveBeenCalled();
   });
 });

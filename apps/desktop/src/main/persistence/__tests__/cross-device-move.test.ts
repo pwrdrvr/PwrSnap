@@ -72,6 +72,10 @@ describe("moveFileWithExdevFallback", () => {
         expect(dirname(path)).toBe(destinationDir);
         expect(basename(path).startsWith(".")).toBe(true);
       },
+      syncDirectory: async (path) => {
+        events.push("sync-destination-directory");
+        expect(path).toBe(destinationDir);
+      },
       unlink: async (path) => {
         events.push(path === sourcePath ? "unlink-source" : "unlink-other");
         await unlink(path);
@@ -83,6 +87,7 @@ describe("moveFileWithExdevFallback", () => {
       "rename-source",
       "sync-staging",
       "rename-staging",
+      "sync-destination-directory",
       "unlink-source"
     ]);
     expect(existsSync(sourcePath)).toBe(false);
@@ -157,6 +162,47 @@ describe("moveFileWithExdevFallback", () => {
       })
     ).rejects.toMatchObject({ code: "EPERM" });
 
+    expect(await readFile(sourcePath, "utf8")).toBe("video-bytes");
+    expect(await readFile(destinationPath, "utf8")).toBe("video-bytes");
+    expect(await readdir(destinationDir)).toEqual(["clip.mp4"]);
+  });
+
+  test("retains both completed copies when destination directory sync fails", async () => {
+    const sourcePath = join(sourceDir, "clip.mp4");
+    const destinationPath = join(destinationDir, "clip.mp4");
+    await writeFile(sourcePath, "video-bytes");
+    const events: string[] = [];
+    let firstRename = true;
+
+    await expect(
+      moveFileWithExdevFallback(sourcePath, destinationPath, {
+        rename: async (from, to) => {
+          if (firstRename) {
+            firstRename = false;
+            events.push("rename-source");
+            throw fileError("EXDEV");
+          }
+          events.push("rename-staging");
+          await rename(from, to);
+        },
+        syncDirectory: async (path) => {
+          events.push("sync-destination-directory");
+          expect(path).toBe(destinationDir);
+          throw fileError("EIO", "destination directory sync failed");
+        },
+        unlink: async (path) => {
+          events.push(path === sourcePath ? "unlink-source" : "unlink-other");
+          await unlink(path);
+        },
+        uniqueSuffix: () => "directory-sync-failure"
+      })
+    ).rejects.toMatchObject({ code: "EIO" });
+
+    expect(events).toEqual([
+      "rename-source",
+      "rename-staging",
+      "sync-destination-directory"
+    ]);
     expect(await readFile(sourcePath, "utf8")).toBe("video-bytes");
     expect(await readFile(destinationPath, "utf8")).toBe("video-bytes");
     expect(await readdir(destinationDir)).toEqual(["clip.mp4"]);

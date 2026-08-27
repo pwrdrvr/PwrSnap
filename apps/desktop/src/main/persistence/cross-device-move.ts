@@ -4,13 +4,15 @@
 // behavior used throughout persistence. Node does not fall back to copy+unlink
 // when `rename` crosses a filesystem boundary: it rejects with EXDEV. Only for
 // that error, stage a copy beside the destination, fsync it, atomically rename
-// the completed staging file into place, and delete the source last.
+// the completed staging file into place, fsync the destination directory, and
+// delete the source last.
 //
 // Crash/failure posture: the source is never deleted before the destination is
-// complete. A failure before the staging rename removes only the staging file.
-// If deleting the source fails after the destination is installed, both copies
-// are deliberately retained; preserving user data is more important than
-// trying to manufacture move-like cleanup after the durable copy exists.
+// complete and its directory entry is durable. A failure before the staging
+// rename removes only the staging file. If syncing the destination directory or
+// deleting the source fails after the destination is installed, both copies are
+// deliberately retained; preserving user data is more important than trying to
+// manufacture move-like cleanup after the installed copy exists.
 
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
@@ -21,6 +23,7 @@ export type FileMoveOperations = {
   rename: (sourcePath: string, destinationPath: string) => Promise<void>;
   copyFile: (sourcePath: string, destinationPath: string, mode: number) => Promise<void>;
   syncFile: (path: string) => Promise<void>;
+  syncDirectory: (path: string) => Promise<void>;
   unlink: (path: string) => Promise<void>;
   uniqueSuffix: () => string;
 };
@@ -36,10 +39,23 @@ async function syncFile(path: string): Promise<void> {
   }
 }
 
+async function syncDirectory(path: string): Promise<void> {
+  // libuv opens directories with FILE_FLAG_BACKUP_SEMANTICS on Windows, but
+  // FlushFileBuffers requires GENERIC_WRITE there. POSIX directories reject
+  // O_RDWR, so select the least privilege mode each platform accepts.
+  const handle = await open(path, process.platform === "win32" ? "r+" : "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
 const DEFAULT_OPERATIONS: FileMoveOperations = {
   rename,
   copyFile,
   syncFile,
+  syncDirectory,
   unlink,
   uniqueSuffix: randomUUID
 };
@@ -80,6 +96,10 @@ export async function moveFileWithExdevFallback(
     await operations.syncFile(stagingPath);
     await operations.rename(stagingPath, destinationPath);
     stagingInstalled = true;
+    // The rename is atomic but not necessarily durable. Do not remove the only
+    // already-durable source until the destination directory entry itself has
+    // reached stable storage. If this fails, propagate and retain both copies.
+    await operations.syncDirectory(dirname(destinationPath));
   } finally {
     if (!stagingInstalled) {
       await operations.unlink(stagingPath).catch(() => undefined);

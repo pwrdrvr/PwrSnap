@@ -14,10 +14,9 @@
 import { expect, launchPwrSnapWindowless, test } from "./fixtures/electron-app";
 
 /** Count live library windows in main — same predicate as the launch
- *  fixture's `waitForLibraryWindow` (renderer index.html, no
- *  `stage=region` hash from the pre-warmed selectors), but evaluated
- *  over Electron's BrowserWindow list so it sees windows Playwright
- *  hasn't attached to yet. */
+ *  fixture's `waitForLibraryWindow` (renderer index.html with no
+ *  auxiliary `stage=` hash), but evaluated over Electron's BrowserWindow
+ *  list so it sees windows Playwright hasn't attached to yet. */
 async function countLibraryWindows(
   electronApp: Awaited<ReturnType<typeof launchPwrSnapWindowless>>["electronApp"]
 ): Promise<number> {
@@ -25,7 +24,7 @@ async function countLibraryWindows(
     return BrowserWindow.getAllWindows().filter((win) => {
       if (win.isDestroyed()) return false;
       const url = win.webContents.getURL();
-      return url.includes("/renderer/index.html") && !url.includes("stage=region");
+      return url.includes("/renderer/index.html") && !url.includes("stage=");
     }).length;
   });
 }

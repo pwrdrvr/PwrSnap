@@ -382,10 +382,24 @@ describe("DetailRail", () => {
     );
     expect(title?.textContent).toBe(windowTitle);
     expect(title?.classList.contains("psl__detail-window-title")).toBe(true);
+    expect(title?.getAttribute("dir")).toBe("auto");
   });
 
   test("omits the source window title line when the title is null", async () => {
     const { el } = await renderDetailRail(enrichment());
+
+    expect(
+      el.querySelector('[data-testid="detail-window-title"]')
+    ).toBeNull();
+  });
+
+  test("omits the source window title line for a legacy absent field", async () => {
+    const { el } = await renderDetailRail(enrichment(), undefined, {
+      record: {
+        ...record,
+        source_window_title: undefined as unknown as null
+      }
+    });
 
     expect(
       el.querySelector('[data-testid="detail-window-title"]')

@@ -185,7 +185,7 @@ describe("0017_capture_search_fts — migration shape", () => {
     expect(row).toBeDefined();
   });
 
-  test("0029 indexes source window titles alongside existing search fields", () => {
+  test("0031 indexes source window titles alongside existing search fields", () => {
     const columns = mocks.db!
       .prepare("PRAGMA table_info(capture_search_fts)")
       .all() as Array<{ name: string }>;

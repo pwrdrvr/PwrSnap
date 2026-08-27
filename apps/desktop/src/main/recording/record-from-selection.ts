@@ -27,6 +27,7 @@ import {
 } from "../capture/region-selector";
 import { releaseSnapshot } from "../capture/screen-snapshot";
 import {
+  findWindowById,
   resolveSelectionSourceApp,
   shouldConsiderRaisingOurWindows,
 } from "../capture/source-app";
@@ -37,6 +38,7 @@ import {
   scheduleDockReclaim,
 } from "../window";
 import { getRecordingState } from "./recording-state";
+import { attachTrustedRecordingWindowIdentity } from "./recording-service";
 
 /** A selector result the user actually committed. */
 export type CommittedSelection = Extract<SelectorResult, { ok: true }>;
@@ -166,6 +168,10 @@ export async function startRecordingFromSelection(
     //     any visible BrowserWindow (e.g. that window just closed) →
     //     fall through to the previous-app activation; nothing to raise.
     const cachedSnapshot = getLastWindowListSnapshot();
+    const selectedWindow = findWindowById(selection.snappedWindowId, cachedSnapshot);
+    const trustedWindowIdentity = selectedWindow === null
+      ? null
+      : { windowId: selectedWindow.windowId, pid: selectedWindow.pid };
     const shouldRaise = shouldConsiderRaisingOurWindows(
       selection.snappedWindowId,
       cachedSnapshot,
@@ -286,6 +292,9 @@ export async function startRecordingFromSelection(
       },
       { principal: "ipc" },
     );
+    if (result.ok && trustedWindowIdentity !== null) {
+      attachTrustedRecordingWindowIdentity(result.value.sessionId, trustedWindowIdentity);
+    }
     if (!result.ok && result.error.code !== "cancelled") {
       log.warn("recording:start failed", {
         code: result.error.code,

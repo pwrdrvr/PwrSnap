@@ -43,17 +43,36 @@ import { getVideoMetadata, listVideoMetadata } from "./video-repo";
 /** Persisted window titles are metadata, not unbounded document content. */
 export const SOURCE_WINDOW_TITLE_MAX_CODE_POINTS = 512;
 
+const DEFAULT_IGNORABLE = /\p{Default_Ignorable_Code_Point}/gu;
+
+function preserveTitleJoinerOrVariationSelector(value: string): boolean {
+  const codePoint = value.codePointAt(0);
+  return (
+    codePoint === 0x200c ||
+    codePoint === 0x200d ||
+    (codePoint !== undefined && codePoint >= 0xfe00 && codePoint <= 0xfe0f) ||
+    (codePoint !== undefined && codePoint >= 0xe0100 && codePoint <= 0xe01ef)
+  );
+}
+
 /**
- * Normalize only whitespace and Unicode control characters, preserving the
- * platform-provided title otherwise. The code-point bound avoids splitting a
- * surrogate pair; a title that contains no displayable content becomes NULL.
+ * Normalize whitespace/control text and remove invisible formatting controls,
+ * while retaining joiners/variation selectors inside visible Unicode titles.
+ * The code-point bound avoids splitting a surrogate pair; a title that contains
+ * no displayable content becomes NULL.
  */
 export function normalizeSourceWindowTitle(
-  value: string | null | undefined
+  value: unknown
 ): string | null {
-  if (value === null || value === undefined) return null;
-  const normalized = value.replace(/[\p{White_Space}\p{Cc}]+/gu, " ").trim();
-  if (normalized.length === 0) return null;
+  if (typeof value !== "string") return null;
+  const safeFormatCharacters = value.replace(DEFAULT_IGNORABLE, (character) =>
+    preserveTitleJoinerOrVariationSelector(character) ? character : ""
+  );
+  const normalized = safeFormatCharacters
+    .replace(/[\p{White_Space}\p{Cc}]+/gu, " ")
+    .trim();
+  const visibleContent = normalized.replace(DEFAULT_IGNORABLE, "");
+  if (visibleContent.length === 0) return null;
   return [...normalized]
     .slice(0, SOURCE_WINDOW_TITLE_MAX_CODE_POINTS)
     .join("")
@@ -613,7 +632,7 @@ export function listCaptures(filter: ListCapturesArgs): ListCapturesResult {
  * Two query plans share one filter spec:
  *
  *   - `query` set → JOIN `capture_search_fts` (FTS5 virtual table
- *     populated by migration 0029), MATCH the sanitized query,
+ *     populated by migration 0031), MATCH the sanitized query,
  *     extract `snippet(...)` for the matched fragment. Results default
  *     to FTS5 rank (relevance), with explicit chronological overrides.
  *   - `query` absent → no JOIN. Filter-only scan ordered by

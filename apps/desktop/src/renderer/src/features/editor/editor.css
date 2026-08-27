@@ -1170,6 +1170,7 @@
 }
 
 .pse-info-window-title {
+  unicode-bidi: isolate;
   overflow-wrap: anywhere;
 }
 

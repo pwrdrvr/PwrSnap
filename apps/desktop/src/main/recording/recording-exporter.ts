@@ -22,8 +22,9 @@
 //   HIGH: source resolution · 6 Mbps · compressed master
 
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, stat } from "node:fs/promises";
+import { mkdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type {
   CaptureRecord,
@@ -555,6 +556,11 @@ async function encodeAndRecord(
       ext
     ].join(".")
   );
+  // FFmpeg must never write directly to the cache pathname. A cancelled or
+  // failed child can leave a non-empty, truncated artifact behind, and a
+  // pre-existing cache row would then accept it on the next lookup. Keep the
+  // real extension last so FFmpeg can infer the muxer from the staging name.
+  const stagingPath = `${outputPath}.${process.pid}.${randomUUID()}.partial.${ext}`;
 
   // Video captures always carry a legacy_src_path (the recorded .mp4
   // lives at ~/Documents/PwrSnap/<id>.mp4 — the bundle-flow rewire
@@ -567,84 +573,110 @@ async function encodeAndRecord(
     );
   }
 
-  await acquireEncodeSlot(signal);
-  const startMs = Date.now();
   try {
-    if (input.format === "gif") {
-      // palettegen must consume the selected range before paletteuse can
-      // produce output timestamps. Keep that work honestly indeterminate.
-      onProgress({ phase: "palette", ratio: null });
-      await encodeGif(
-        ffmpeg,
-        input.record.legacy_src_path,
-        input.range,
-        GIF_PRESETS[input.preset],
-        outputPath,
-        signal,
-        onProgress
-      );
-    } else {
-      // Stay indeterminate until FFmpeg reports its first usable output
-      // timestamp. A known duration alone cannot prove forward movement.
-      onProgress({ phase: "encoding", ratio: null });
-      await encodeMp4(
-        ffmpeg,
-        input.record.legacy_src_path,
-        input.video,
-        input.range,
-        input.audio,
-        MP4_PRESETS[input.preset],
-        {
-          sourceWidthPx: input.record.width_px,
-          sourceHeightPx: input.record.height_px,
-          outputWidthPx: widthPx,
-          outputHeightPx: heightPx
-        },
-        outputPath,
-        signal,
-        onProgress
-      );
+    await acquireEncodeSlot(signal);
+    const startMs = Date.now();
+    try {
+      if (input.format === "gif") {
+        // palettegen must consume the selected range before paletteuse can
+        // produce output timestamps. Keep that work honestly indeterminate.
+        onProgress({ phase: "palette", ratio: null });
+        await encodeGif(
+          ffmpeg,
+          input.record.legacy_src_path,
+          input.range,
+          GIF_PRESETS[input.preset],
+          stagingPath,
+          signal,
+          onProgress
+        );
+      } else {
+        // Stay indeterminate until FFmpeg reports its first usable output
+        // timestamp. A known duration alone cannot prove forward movement.
+        onProgress({ phase: "encoding", ratio: null });
+        await encodeMp4(
+          ffmpeg,
+          input.record.legacy_src_path,
+          input.video,
+          input.range,
+          input.audio,
+          MP4_PRESETS[input.preset],
+          {
+            sourceWidthPx: input.record.width_px,
+            sourceHeightPx: input.record.height_px,
+            outputWidthPx: widthPx,
+            outputHeightPx: heightPx
+          },
+          stagingPath,
+          signal,
+          onProgress
+        );
+      }
+    } finally {
+      releaseEncodeSlot();
     }
-  } finally {
-    releaseEncodeSlot();
-  }
 
-  throwIfAborted(signal);
-  onProgress({ phase: "finalizing", ratio: 0.99 });
-  const sizeInfo = await stat(outputPath);
-  throwIfAborted(signal);
-  recordExport({
-    captureId: input.record.id,
-    range: input.range,
-    format: input.format,
-    preset: input.preset,
-    audio: input.audio,
-    path: outputPath,
-    byteSize: sizeInfo.size
-  });
-  // Capture actual encode duration + byte size for offline estimator
-  // tuning. The renderer's pre-click size labels come from
-  // `estimateVideoByteSize` in recording-handlers.ts — those numbers
-  // were calibrated by hand and want a feedback loop once we have
-  // real data. Grep `video export encoded` in logs to compare.
-  log.info("video export encoded", {
-    captureId: input.record.id,
-    format: input.format,
-    preset: input.preset,
-    widthPx,
-    heightPx,
-    byteSize: sizeInfo.size,
-    durationSec: input.range.end - input.range.start,
-    encodeMs: Date.now() - startMs
-  });
-  return {
-    path: outputPath,
-    byteSize: sizeInfo.size,
-    durationSec: input.range.end - input.range.start,
-    widthPx,
-    heightPx,
-    fromCache: false
-  };
+    throwIfAborted(signal);
+    onProgress({ phase: "finalizing", ratio: 0.99 });
+    const sizeInfo = await stat(stagingPath);
+    throwIfAborted(signal);
+    await publishCompletedExport(stagingPath, outputPath);
+    if (signal.aborted) {
+      await rm(outputPath, { force: true }).catch(() => undefined);
+      throw abortError();
+    }
+    recordExport({
+      captureId: input.record.id,
+      range: input.range,
+      format: input.format,
+      preset: input.preset,
+      audio: input.audio,
+      path: outputPath,
+      byteSize: sizeInfo.size
+    });
+    // Capture actual encode duration + byte size for offline estimator
+    // tuning. The renderer's pre-click size labels come from
+    // `estimateVideoByteSize` in recording-handlers.ts — those numbers
+    // were calibrated by hand and want a feedback loop once we have
+    // real data. Grep `video export encoded` in logs to compare.
+    log.info("video export encoded", {
+      captureId: input.record.id,
+      format: input.format,
+      preset: input.preset,
+      widthPx,
+      heightPx,
+      byteSize: sizeInfo.size,
+      durationSec: input.range.end - input.range.start,
+      encodeMs: Date.now() - startMs
+    });
+    return {
+      path: outputPath,
+      byteSize: sizeInfo.size,
+      durationSec: input.range.end - input.range.start,
+      widthPx,
+      heightPx,
+      fromCache: false
+    };
+  } finally {
+    await rm(stagingPath, { force: true }).catch(() => undefined);
+  }
+}
+
+async function publishCompletedExport(
+  stagingPath: string,
+  outputPath: string
+): Promise<void> {
+  try {
+    await rename(stagingPath, outputPath);
+  } catch (cause) {
+    const code = (cause as NodeJS.ErrnoException | null)?.code;
+    if (code !== "EEXIST" && code !== "EPERM") throw cause;
+    // POSIX rename replaces atomically. Windows rejects an existing target,
+    // so remove only the old final artifact and retry with the completed
+    // staging file. FFmpeg never observes or writes the final pathname.
+    await rm(outputPath, { force: true });
+    await rename(stagingPath, outputPath);
+  }
 }
 
 async function encodeGif(

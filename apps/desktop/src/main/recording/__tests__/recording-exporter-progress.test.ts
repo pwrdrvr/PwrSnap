@@ -46,6 +46,13 @@ vi.mock("node:fs", () => ({
 
 vi.mock("node:fs/promises", () => ({
   mkdir: async () => undefined,
+  rename: async (from: string, to: string) => {
+    existingPaths.delete(from);
+    existingPaths.add(to);
+  },
+  rm: async (path: string) => {
+    existingPaths.delete(path);
+  },
   stat: async () => ({ size: 12_345 })
 }));
 
@@ -401,6 +408,55 @@ describe("recording exporter progress", () => {
     close(call, 0);
     await vi.advanceTimersByTimeAsync(1_000);
     expect(updates).toHaveLength(countAfterAbort);
+  });
+
+  test("a cancelled stale-row re-encode never exposes its partial file as a cache hit", async () => {
+    const id = "mp4-stale-row";
+    const finalPath =
+      `/tmp/pwrsnap-progress-test/video/${id}/` +
+      "r0.000-10.000.med.gop60.s0m0.mp4";
+    cachedExport = {
+      path: finalPath,
+      byteSize: 99,
+      durationSec: 10,
+      widthPx: 1_280,
+      heightPx: 720,
+      fromCache: true
+    };
+    // Clear/Trim Render Cache removed the file but deliberately retained
+    // the row, so this request must encode again.
+    expect(existingPaths.has(finalPath)).toBe(false);
+
+    const controller = new AbortController();
+    const first = exportVideoRange(
+      input({ id, signal: controller.signal, runId: "run-stale-cancel" })
+    );
+    await waitForSpawnCount(1);
+    const firstCall = spawnCalls[0]!;
+    const stagingPath = firstCall.args.at(-1);
+    expect(stagingPath).toMatch(/\.partial\.mp4$/);
+    expect(stagingPath).not.toBe(finalPath);
+
+    // Model FFmpeg having written a non-empty partial artifact before the
+    // renderer cancels. Only the private staging path may exist.
+    existingPaths.add(stagingPath!);
+    controller.abort();
+    await expect(first).rejects.toMatchObject({ name: "AbortError" });
+    close(firstCall, 0);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(existingPaths.has(stagingPath!)).toBe(false);
+    expect(existingPaths.has(finalPath)).toBe(false);
+
+    const retry = exportVideoRange(input({ id, runId: "run-stale-retry" }));
+    await waitForSpawnCount(2);
+    expect(spawnCalls[1]!.args.at(-1)).not.toBe(finalPath);
+    close(spawnCalls[1]!, 0);
+    await expect(retry).resolves.toMatchObject({
+      path: finalPath,
+      fromCache: false
+    });
+    expect(existingPaths.has(finalPath)).toBe(true);
   });
 
   test("an immediate same-key retry waits for the cancelled FFmpeg close", async () => {

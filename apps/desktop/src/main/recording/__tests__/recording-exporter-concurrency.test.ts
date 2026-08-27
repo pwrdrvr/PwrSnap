@@ -56,6 +56,8 @@ vi.mock("node:fs", () => ({
 
 vi.mock("node:fs/promises", () => ({
   mkdir: async () => undefined,
+  rename: async () => undefined,
+  rm: async () => undefined,
   stat: async () => ({ size: 12345 })
 }));
 

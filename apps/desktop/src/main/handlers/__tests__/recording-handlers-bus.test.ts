@@ -180,7 +180,7 @@ describe("permissions:* command-bus surface", () => {
     expect(result.error.code).toBe("unknown_permission");
   });
 
-  test("permissions:request reports unknown without prompting off Darwin", async () => {
+  test("permissions:request reports unavailable video-only audio on Windows", async () => {
     Object.defineProperty(process, "platform", {
       value: "win32",
       configurable: true
@@ -194,7 +194,7 @@ describe("permissions:* command-bus surface", () => {
 
       expect(result.ok).toBe(true);
       if (!result.ok) throw new Error("expected ok");
-      expect(result.value).toEqual({ status: "unknown" });
+      expect(result.value).toEqual({ status: "unavailable" });
     } finally {
       Object.defineProperty(process, "platform", {
         value: originalPlatform,

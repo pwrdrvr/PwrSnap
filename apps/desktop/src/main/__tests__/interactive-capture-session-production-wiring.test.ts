@@ -32,8 +32,8 @@ describe("interactive capture session production wiring", () => {
     );
     const video = sourceBetween(
       indexSource,
-      "async function runInteractiveRecord(",
-      "/**\n * Protocol resolver"
+      "async function runInteractiveRecordAttempt(",
+      "const runInteractiveRecord = createInteractiveRecordingSingleFlight({"
     );
     const hotkeyHandlers = sourceBetween(
       indexSource,
@@ -60,7 +60,7 @@ describe("interactive capture session production wiring", () => {
     expect(occurrences(video, 'acquireInteractiveCaptureSession("video")')).toBe(1);
     expect(occurrences(video, "releaseInteractiveCaptureSession(session.token)")).toBe(1);
     expect(video.indexOf('acquireInteractiveCaptureSession("video")')).toBeLessThan(
-      video.indexOf("guardScreenCapture()")
+      video.indexOf('"recording:preflight"')
     );
     expect(video).not.toContain("new DesktopSettingsService");
     expect(video.indexOf("const settings = cachedRecordingSettings")).toBeLessThan(

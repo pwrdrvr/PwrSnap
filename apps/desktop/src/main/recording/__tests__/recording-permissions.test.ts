@@ -245,10 +245,10 @@ describe("requestPermission", () => {
     expect(electronMock.shellOpenUrls).toEqual([]);
   });
 
-  test("Windows request reports unknown and never calls a prompt API", async () => {
+  test("Windows audio request reports backend unavailability without prompting", async () => {
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });
     const { requestPermission } = await import("../recording-permissions");
-    expect(await requestPermission("microphone")).toEqual({ status: "unknown" });
+    expect(await requestPermission("microphone")).toEqual({ status: "unavailable" });
     expect(electronMock.askCalls).toBe(0);
     expect(electronMock.desktopCapturerCalls).toBe(0);
   });

@@ -123,6 +123,56 @@
   white-space: nowrap;
 }
 
+.szl__failure-stack {
+  position: absolute;
+  z-index: 20;
+  top: 60px;
+  left: 50%;
+  width: min(680px, calc(100% - 32px));
+  transform: translateX(-50%);
+  display: grid;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.szl__failure-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel-elevated);
+  box-shadow: var(--shadow-md);
+  color: var(--danger-text);
+  font: 500 12px/1.35 var(--font-sans);
+  pointer-events: auto;
+}
+
+.szl__failure-notice > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.szl__failure-action,
+.szl__failure-dismiss,
+.szl__save-retry {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: 650 11px/1 var(--font-sans);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.szl__failure-dismiss {
+  color: var(--text-muted);
+}
+
 /* Left rail — projects list. With NO reel open it is the left grid
    column (you need the list to pick one). With a reel open (`.szl--
    rail-popover`) the column collapses to 0 and the rail becomes a
@@ -205,8 +255,13 @@
   text-align: left;
 }
 
-.szl__new:hover {
+.szl__new:not(:disabled):hover {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.szl__new:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .szl__list {
@@ -464,6 +519,40 @@
   font: 500 11px/1 var(--font-mono);
   color: var(--text-muted);
   letter-spacing: 0.02em;
+}
+
+.szl__save-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  max-width: 320px;
+  color: var(--text-muted);
+  font: 550 11px/1.2 var(--font-sans);
+}
+
+.szl__save-state--dirty,
+.szl__save-state--saving {
+  color: var(--warn-text);
+}
+
+.szl__save-state--saved {
+  color: var(--success-text);
+}
+
+.szl__save-state--error {
+  color: var(--danger-text);
+}
+
+.szl__save-message {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.szl__save-state--error .szl__save-retry {
+  flex: 0 0 auto;
 }
 
 .szl__spacer {

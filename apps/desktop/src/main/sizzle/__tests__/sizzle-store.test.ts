@@ -1,9 +1,10 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   SizzleProjectNotFoundError,
+  SizzleStoreCorruptError,
   SizzleStore
 } from "../sizzle-store";
 
@@ -409,21 +410,73 @@ describe("SizzleStore", () => {
     expect([p.name, "renamed"]).toContain(readResult!.name);
   });
 
-  it("parse-fail quarantines the corrupt file and returns defaults", async () => {
-    await writeFile(filePath, "this is not valid json", "utf8");
+  it.each([
+    ["a zero-byte file", ""],
+    ["invalid JSON", "this is not valid json"],
+    ["a valid-JSON wrong-shape file", JSON.stringify({ schemaVersion: 1, projects: {} })]
+  ])("refuses %s instead of caching an empty library", async (_label, raw) => {
+    await writeFile(filePath, raw, "utf8");
     const store = makeStore();
-    const projects = await store.list();
-    expect(projects).toEqual([]);
-    // The corrupt file was renamed aside, not deleted.
-    const entries = await readdir(tmpDir);
-    const quarantined = entries.filter((e) => e.includes(".corrupt-"));
-    expect(quarantined).toHaveLength(1);
+
+    await expect(store.list()).rejects.toBeInstanceOf(SizzleStoreCorruptError);
+    expect(await readFile(filePath, "utf8")).toBe(raw);
+    let backups = (await readdir(tmpDir)).filter((entry) => entry.includes(".corrupt-"));
+    expect(backups).toHaveLength(1);
+    expect(await readFile(join(tmpDir, backups[0]!), "utf8")).toBe(raw);
+
+    // A mutation must not reinterpret the existing file as a new library.
+    await expect(store.create("Must not overwrite")).rejects.toBeInstanceOf(
+      SizzleStoreCorruptError
+    );
+    expect(await readFile(filePath, "utf8")).toBe(raw);
+    backups = (await readdir(tmpDir)).filter((entry) => entry.includes(".corrupt-"));
+    expect(backups).toHaveLength(1);
+
+    // Retry uses the same store instance and succeeds once the original is repaired.
+    await writeFile(filePath, JSON.stringify({ schemaVersion: 1, projects: [] }), "utf8");
+    await expect(store.list()).resolves.toEqual([]);
   });
 
   it("missing file returns empty list", async () => {
     const store = makeStore();
     expect(await store.list()).toEqual([]);
     expect(await store.get("sz_anything")).toBeNull();
+  });
+
+  it("does not cache a transient non-ENOENT read failure as an empty library", async () => {
+    const store = makeStore();
+
+    await mkdir(filePath);
+    await expect(store.list()).rejects.toMatchObject({ code: "EISDIR" });
+
+    await rm(filePath, { recursive: true, force: true });
+    await writeFile(
+      filePath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        projects: [
+          {
+            id: "sz_recovered",
+            name: "Recovered project",
+            createdAt: "2026-08-23T10:00:00.000Z",
+            modifiedAt: "2026-08-23T10:00:00.000Z",
+            coverCaptureId: null,
+            scenes: [],
+            voice: "onyx",
+            ttsModel: "tts-1-hd",
+            ttsProvider: "openai",
+            resolution: "1080p",
+            outputPath: null,
+            lastRenderedAt: null
+          }
+        ]
+      })}\n`,
+      "utf8"
+    );
+
+    await expect(store.list()).resolves.toEqual([
+      expect.objectContaining({ id: "sz_recovered", name: "Recovered project" })
+    ]);
   });
 
   it("write does not include the .tmp sibling — atomic rename leaves only the final file", async () => {

@@ -1635,12 +1635,95 @@ describe("characterization — shell surfaces", () => {
     expect(el.querySelector(".szl__editor")).toBeNull();
   });
 
+  test("an invalid project file is visible and Retry load recovers after repair", async () => {
+    const loaded = project({ name: "Recovered Reel" });
+    let attempts = 0;
+    const { el, dispatch } = await renderApp([loaded], {
+      "sizzle:list": () => {
+        attempts += 1;
+        return attempts === 1
+          ? {
+              ok: false,
+              error: {
+                kind: "persistence",
+                code: "sizzle_project_file_invalid",
+                message: "the original was preserved in a corrupt-file backup"
+              }
+            }
+          : { ok: true, value: { projects: [loaded] } };
+      }
+    });
+
+    const firstAlert = el.querySelector<HTMLElement>('[role="alert"].szl__failure-notice');
+    expect(firstAlert?.textContent).toContain(
+      "Could not load Sizzle Reels: the original was preserved in a corrupt-file backup"
+    );
+    expect(findButton(el, "+ New Sizzle Reel").disabled).toBe(true);
+    expect(el.querySelector(".szl__list--recents")?.textContent).toContain(
+      "Projects are unavailable."
+    );
+
+    await act(async () => {
+      findButton(el, "Retry load").click();
+    });
+    await drain();
+
+    expect(
+      dispatch.mock.calls.filter(([name]) => name === "sizzle:list")
+    ).toHaveLength(2);
+    expect(el.querySelector('[role="alert"].szl__failure-notice')).toBeNull();
+    expect(titleValue(el)).toBe("Recovered Reel");
+    expect(findButton(el, "+ New Sizzle Reel").disabled).toBe(false);
+  });
+
+  test("a failed create is actionable and Try again creates the reel", async () => {
+    const fresh = project({ id: "sz_new", name: "Untitled Sizzle" });
+    let attempts = 0;
+    const { el, dispatch } = await renderApp([], {
+      "sizzle:create": () => {
+        attempts += 1;
+        return attempts === 1
+          ? {
+              ok: false,
+              error: {
+                kind: "persistence",
+                code: "sizzle_create_failed",
+                message: "project directory is read-only"
+              }
+            }
+          : { ok: true, value: fresh };
+      }
+    });
+
+    await act(async () => {
+      findButton(el, "+ New Sizzle Reel").click();
+    });
+    await drain();
+
+    const alert = el.querySelector<HTMLElement>('[role="alert"].szl__failure-notice');
+    expect(alert?.textContent).toContain(
+      "Could not create the reel: project directory is read-only"
+    );
+    expect(el.querySelector(".szl__editor")).toBeNull();
+
+    await act(async () => {
+      findButton(el, "Try again").click();
+    });
+    await drain();
+
+    expect(
+      dispatch.mock.calls.filter(([name]) => name === "sizzle:create")
+    ).toHaveLength(2);
+    expect(el.querySelector('[role="alert"].szl__failure-notice')).toBeNull();
+    expect(titleValue(el)).toBe("Untitled Sizzle");
+  });
+
   test("+ New Sizzle Reel creates, selects, and focuses the title of the new reel", async () => {
     const fresh = project({ id: "sz_new", name: "Untitled Sizzle" });
     const store = [project()];
     const { el, dispatch } = await renderApp(store, {
-      // The create persists: the next sizzle:list (the shell reloads on
-      // selection change) must include the new reel, as it would on disk.
+      // Mirror the committed store even though this harness does not emit
+      // the main process's projects-changed broadcast for create.
       "sizzle:create": () => {
         store.unshift(fresh);
         return { ok: true, value: fresh };
@@ -1688,6 +1771,121 @@ describe("characterization — shell surfaces", () => {
     expect(titleValue(el)).toBe("Demo Reel copy");
   });
 
+  test("a failed duplicate preserves the source reel and Try again selects the copy", async () => {
+    const copy = project({ id: "sz_copy", name: "Demo Reel copy" });
+    let attempts = 0;
+    const { el, dispatch } = await renderApp(project(), {
+      "sizzle:duplicate": () => {
+        attempts += 1;
+        return attempts === 1
+          ? {
+              ok: false,
+              error: {
+                kind: "persistence",
+                code: "sizzle_duplicate_failed",
+                message: "copy could not be written"
+              }
+            }
+          : { ok: true, value: copy };
+      }
+    });
+
+    await act(async () => {
+      findButton(el, "Duplicate").click();
+    });
+    await drain();
+
+    expect(titleValue(el)).toBe("Demo Reel");
+    expect(
+      el.querySelector<HTMLElement>('[role="alert"].szl__failure-notice')?.textContent
+    ).toContain("Could not duplicate the reel: copy could not be written");
+
+    await act(async () => {
+      findButton(el, "Try again").click();
+    });
+    await drain();
+
+    expect(
+      dispatch.mock.calls.filter(([name]) => name === "sizzle:duplicate")
+    ).toHaveLength(2);
+    expect(el.querySelector('[role="alert"].szl__failure-notice')).toBeNull();
+    expect(titleValue(el)).toBe("Demo Reel copy");
+  });
+
+  test("the editor exposes dirty, saving, failed, and recovered save states", async () => {
+    const initial = project();
+    const pendingUpdates: Array<(result: unknown) => void> = [];
+    const { el, dispatch } = await renderApp(initial, {
+      "sizzle:update": () =>
+        new Promise<unknown>((resolve) => {
+          pendingUpdates.push(resolve);
+        })
+    });
+    const title = el.querySelector<HTMLInputElement>(".szl__editor-title");
+    if (title === null) throw new Error("editor title not found");
+
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value"
+      )!.set!;
+      setter.call(title, "Unsaved title");
+      title.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(el.querySelector('[data-testid="sizzle-save-state"]')?.textContent).toBe(
+      "Unsaved changes"
+    );
+
+    await act(async () => {
+      findButton(el, "Duplicate").click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(pendingUpdates).toHaveLength(1);
+    expect(el.querySelector('[data-testid="sizzle-save-state"]')?.textContent).toBe(
+      "Saving…"
+    );
+
+    await act(async () => {
+      pendingUpdates[0]!({
+        ok: false,
+        error: {
+          kind: "persistence",
+          code: "sizzle_update_failed",
+          message: "project file is locked"
+        }
+      });
+      for (let index = 0; index < 6; index += 1) await Promise.resolve();
+    });
+    expect(
+      el.querySelector<HTMLElement>('[data-testid="sizzle-save-state"]')?.textContent
+    ).toContain("Save failed: project file is locked");
+    expect(
+      dispatch.mock.calls.filter(([name]) => name === "sizzle:duplicate")
+    ).toHaveLength(0);
+
+    await act(async () => {
+      findButton(el, "Retry save").click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(pendingUpdates).toHaveLength(2);
+    expect(el.querySelector('[data-testid="sizzle-save-state"]')?.textContent).toBe(
+      "Saving…"
+    );
+
+    await act(async () => {
+      pendingUpdates[1]!({
+        ok: true,
+        value: { ...initial, name: "Unsaved title", modifiedAt: "2026-08-23T12:01:00.000Z" }
+      });
+      for (let index = 0; index < 6; index += 1) await Promise.resolve();
+    });
+    expect(el.querySelector('[data-testid="sizzle-save-state"]')?.textContent).toBe(
+      "Saved"
+    );
+  });
+
   test("the editor's Delete confirms, dispatches, and falls back to another reel", async () => {
     const confirm = vi.spyOn(window, "confirm").mockImplementation(() => true);
     try {
@@ -1701,6 +1899,52 @@ describe("characterization — shell surfaces", () => {
       await drain();
       expect(confirm).toHaveBeenCalled();
       expect(dispatch).toHaveBeenCalledWith("sizzle:delete", { id: "sz_1" });
+      expect(titleValue(el)).toBe("Reel 2");
+    } finally {
+      confirm.mockRestore();
+    }
+  });
+
+  test("a failed delete preserves the active reel and Try again deletes it", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockImplementation(() => true);
+    let attempts = 0;
+    try {
+      const { el, dispatch } = await renderApp(projects(2), {
+        "sizzle:delete": () => {
+          attempts += 1;
+          return attempts === 1
+            ? {
+                ok: false,
+                error: {
+                  kind: "persistence",
+                  code: "sizzle_delete_failed",
+                  message: "project file is locked"
+                }
+              }
+            : { ok: true, value: undefined };
+        }
+      });
+
+      await act(async () => {
+        findButton(el, "Delete").click();
+      });
+      await drain();
+
+      expect(titleValue(el)).toBe("Reel 1");
+      expect(
+        el.querySelector<HTMLElement>('[role="alert"].szl__failure-notice')?.textContent
+      ).toContain("Could not delete the reel: project file is locked");
+
+      await act(async () => {
+        findButton(el, "Try again").click();
+      });
+      await drain();
+
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(
+        dispatch.mock.calls.filter(([name]) => name === "sizzle:delete")
+      ).toHaveLength(2);
+      expect(el.querySelector('[role="alert"].szl__failure-notice')).toBeNull();
       expect(titleValue(el)).toBe("Reel 2");
     } finally {
       confirm.mockRestore();
@@ -1737,6 +1981,49 @@ describe("characterization — shell surfaces", () => {
       findButton(el, "Reveal in Finder").click();
     });
     expect(dispatch).toHaveBeenCalledWith("sizzle:revealOutput", { id: "sz_1" });
+  });
+
+  test("a failed reveal is actionable and Try again clears the alert on success", async () => {
+    let attempts = 0;
+    const { el, dispatch } = await renderApp(
+      project({ outputPath: "/tmp/out.mp4", scenes: [scene({ scriptLine: "hi" })] }),
+      {
+        "sizzle:revealOutput": () => {
+          attempts += 1;
+          return attempts === 1
+            ? {
+                ok: false,
+                error: {
+                  kind: "persistence",
+                  code: "sizzle_reveal_failed",
+                  message: "rendered output is missing"
+                }
+              }
+            : { ok: true, value: undefined };
+        }
+      }
+    );
+
+    await act(async () => {
+      findButton(el, "Reveal in Finder").click();
+    });
+    await drain();
+
+    expect(
+      el.querySelector<HTMLElement>('[role="alert"].szl__failure-notice')?.textContent
+    ).toContain("Could not reveal the rendered output: rendered output is missing");
+    expect(titleValue(el)).toBe("Demo Reel");
+
+    await act(async () => {
+      findButton(el, "Try again").click();
+    });
+    await drain();
+
+    expect(
+      dispatch.mock.calls.filter(([name]) => name === "sizzle:revealOutput")
+    ).toHaveLength(2);
+    expect(el.querySelector('[role="alert"].szl__failure-notice')).toBeNull();
+    expect(titleValue(el)).toBe("Demo Reel");
   });
 
   test("+ Add scene opens the capture picker; picking a capture appends a sequence scene", async () => {

@@ -4476,6 +4476,11 @@ export type Commands = {
     res: SizzleProject;
   };
   "sizzle:delete": { req: { id: string }; res: void };
+  "sizzle:closeResponse": {
+    req: { requestId: number; action: "close" | "cancel" };
+    res: void;
+  };
+  "sizzle:closeReady": { req: Record<string, never>; res: void };
   "sizzle:render": {
     req: { id: string; mode?: "preview" | "full" };
     res: {

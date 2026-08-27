@@ -88,7 +88,7 @@ export type SequencePlanState = {
 
 export function useSequencePlan(args: {
   project: SizzleProject;
-  onFlushPending: () => Promise<void>;
+  onFlushPending: () => Promise<boolean>;
 }): SequencePlanState {
   const { project, onFlushPending } = args;
 
@@ -269,7 +269,14 @@ export function useSequencePlan(args: {
     setPreviewLoadingSceneId(sceneId);
     // Flush pending text edits so the preview synthesizes what's on
     // screen, not what was last flushed to disk.
-    await onFlushPending();
+    const saved = await onFlushPending();
+    if (!saved) {
+      if (isPreviewCurrent(sceneId, gen)) {
+        setPreviewLoadingSceneId(null);
+        setPreviewError("Save the reel successfully before previewing it.");
+      }
+      return;
+    }
     if (!isPreviewCurrent(sceneId, gen)) return;
     let previewAudio: {
       audioBase64: string;

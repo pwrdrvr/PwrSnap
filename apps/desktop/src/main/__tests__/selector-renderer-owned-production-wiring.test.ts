@@ -23,25 +23,34 @@ describe("renderer-owned selector capture production wiring", () => {
     expect(broker).not.toContain("toPNG(");
     expect(broker).not.toContain("toJPEG(");
     expect(selector).not.toContain("captureWindowsPickerSnapshot");
+    expect(selector).toContain("payload.fullWindow === true && trustedWindow !== undefined");
+    expect(selector).not.toContain(
+      'selectorMode === "window" && payload.fullWindow === true'
+    );
     expect(screencapture).not.toContain("captureWindowsPickerSnapshot");
     expect(screencapture).not.toContain("WINDOWS_PICKER_PREVIEW");
   });
 
   test("the renderer freezes/stops one track and encodes only the committed crop", async () => {
-    const [component, frozenFrame, preload] = await Promise.all([
+    const [component, frozenFrame, cropStream, preload] = await Promise.all([
       source("../../renderer/src/features/region/RegionSelector.tsx"),
       source("../../renderer/src/features/region/frozen-frame.ts"),
+      source("../../renderer/src/features/region/crop-stream.ts"),
       source("../../preload/index.ts")
     ]);
 
     expect(frozenFrame).toContain("navigator.mediaDevices.getDisplayMedia");
     expect(frozenFrame).toContain("audio: false");
+    expect(frozenFrame).toContain('cursor: "never"');
     expect(frozenFrame).toContain("createImageBitmap(video)");
     expect(frozenFrame).toContain("stopDisplayStream(stream)");
     expect(frozenFrame).toContain("encodeFrozenCrop");
     expect(component).toContain("frameAcquisitionStartedRef.current");
     expect(component).toContain("encodeFrozenCrop(frozen, r, viewport())");
-    expect(component).toContain("[crop.bytes]");
+    expect(component).toContain("streamEncodedCrop(currentInvocationId, crop");
+    expect(cropStream).toContain("SELECTOR_CROP_CHUNK_BYTES");
+    expect(cropStream).toContain(".slice(offset,");
+    expect(component).not.toContain("[crop.bytes]");
     expect(preload).toContain("event.ports");
     expect(preload).toContain('type: "pwrsnap-selector-frame-port"');
   });

@@ -36,6 +36,7 @@
 // global virtual coords + display id before screencapture.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { SelectorCropStreamReply } from "@pwrsnap/shared/selector-crop-stream";
 import type { WindowSnapEntry } from "../../preload-types";
 import {
   ALL_HANDLES,
@@ -55,6 +56,7 @@ import {
   encodeFrozenCrop,
   type FrozenFrame
 } from "./frozen-frame";
+import { streamEncodedCrop } from "./crop-stream";
 
 const HASH_PARAM_DISPLAY_ID = "displayId";
 const NUDGE_PX = 1;
@@ -86,7 +88,7 @@ type CaptureSource =
 
 type CropAcknowledgement = {
   invocationId: number;
-  resolve: () => void;
+  resolve: (reply: SelectorCropStreamReply) => void;
   reject: (cause: Error) => void;
 };
 
@@ -207,8 +209,8 @@ export function RegionSelector() {
   // devicePixelRatio, e.g. 2.629), `window.innerWidth` is NOT equal
   // to `display.bounds.width` even though both are nominally "DIP".
   // Main ships rects in display logical px; we render in CSS px;
-  // this scale bridges them. Default 1 until the first snapshot
-  // arrives with displayBounds.
+  // this scale bridges them. Renderer-owned capture supplies displayBounds
+  // with the invocation, before window enumeration can finish or fail.
   const cssToLogicalRef = useRef(1);
   // Last-known cursor position. Updated on every mousemove so
   // keyboard handlers (Tab cycle in particular) know where to
@@ -317,7 +319,11 @@ export function RegionSelector() {
       windowsRef.current = [];
       lastMouseRef.current = null;
       windowListStateRef.current = nextListState;
-      cssToLogicalRef.current = 1;
+      cssToLogicalRef.current =
+        nextCaptureSource.kind === "renderer-display-media" &&
+        nextCaptureSource.displayBounds.width > 0
+          ? window.innerWidth / nextCaptureSource.displayBounds.width
+          : 1;
       modeRef.current = payload.mode;
       snapTargetRef.current = { kind: "display" };
       interactionRef.current = { kind: "snap" };
@@ -451,9 +457,13 @@ export function RegionSelector() {
         if (acknowledgement === null || acknowledgement.invocationId !== expectedInvocationId) {
           return;
         }
-        if (message.type === "crop-accepted") {
+        if (
+          message.type === "crop-started" ||
+          message.type === "crop-chunk-accepted" ||
+          message.type === "crop-accepted"
+        ) {
           cropAcknowledgementRef.current = null;
-          acknowledgement.resolve();
+          acknowledgement.resolve(message as SelectorCropStreamReply);
         } else if (message.type === "crop-rejected") {
           cropAcknowledgementRef.current = null;
           acknowledgement.reject(
@@ -781,36 +791,29 @@ export function RegionSelector() {
       commitBusyRef.current = true;
       try {
         const crop = await encodeFrozenCrop(frozen, r, viewport());
-        await new Promise<void>((resolve, reject) => {
-          const timeout = window.setTimeout(() => {
-            if (cropAcknowledgementRef.current?.invocationId === currentInvocationId) {
-              cropAcknowledgementRef.current = null;
-            }
-            reject(new Error("committed crop transfer timed out"));
-          }, 10_000);
-          cropAcknowledgementRef.current = {
-            invocationId: currentInvocationId,
-            resolve: () => {
-              window.clearTimeout(timeout);
-              resolve();
-            },
-            reject: (cause) => {
-              window.clearTimeout(timeout);
-              reject(cause);
-            }
-          };
-          port.postMessage(
-            {
-              type: "crop",
+        await streamEncodedCrop(currentInvocationId, crop, (message, transfer) =>
+          new Promise<SelectorCropStreamReply>((resolve, reject) => {
+            const timeout = window.setTimeout(() => {
+              if (cropAcknowledgementRef.current?.invocationId === currentInvocationId) {
+                cropAcknowledgementRef.current = null;
+              }
+              reject(new Error("committed crop transfer timed out"));
+            }, 10_000);
+            cropAcknowledgementRef.current = {
               invocationId: currentInvocationId,
-              width: crop.width,
-              height: crop.height,
-              mimeType: crop.mimeType,
-              bytes: crop.bytes
-            },
-            [crop.bytes]
-          );
-        });
+              resolve: (reply) => {
+                window.clearTimeout(timeout);
+                resolve(reply);
+              },
+              reject: (cause) => {
+                window.clearTimeout(timeout);
+                reject(cause);
+              }
+            };
+            if (transfer === undefined) port.postMessage(message);
+            else port.postMessage(message, transfer);
+          })
+        );
       } catch {
         if (invocationIdRef.current === currentInvocationId) {
           snapshotStateRef.current = "error";

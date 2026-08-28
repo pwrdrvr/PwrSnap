@@ -85,7 +85,7 @@ function installSelectorApi(): void {
     transferMode: "bitmaprenderer" as const
   }));
   frozenFrameMocks.encode.mockResolvedValue({
-    bytes: new ArrayBuffer(16),
+    blob: new Blob([new Uint8Array(16)], { type: "image/png" }),
     width: 640,
     height: 480,
     mimeType: "image/png" as const
@@ -963,7 +963,7 @@ describe("U7 — renderer-owned frozen frame transport", () => {
       captureSource: {
         kind: "renderer-display-media",
         displayId: 9,
-        displayBounds: { width: 1920, height: 1080 }
+        displayBounds: { width: window.innerWidth * 2, height: window.innerHeight * 2 }
       }
     });
 
@@ -1020,18 +1020,51 @@ describe("U7 — renderer-owned frozen frame transport", () => {
       expect(frozenFrameMocks.encode).toHaveBeenCalledTimes(1);
       expect(port.postMessage).toHaveBeenCalledWith(
         expect.objectContaining({
-          type: "crop",
+          type: "crop-start",
           invocationId: DEFAULT_INVOCATION_ID,
           width: 640,
           height: 480,
           mimeType: "image/png",
+          totalBytes: 16
+        })
+      );
+    });
+    expect(submitRegion).not.toHaveBeenCalled();
+
+    await act(async () => {
+      port.onmessage?.({
+        data: { type: "crop-started", invocationId: DEFAULT_INVOCATION_ID }
+      } as MessageEvent);
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => {
+      expect(port.postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "crop-chunk",
+          invocationId: DEFAULT_INVOCATION_ID,
+          sequence: 0,
           bytes: expect.any(ArrayBuffer)
         }),
         [expect.any(ArrayBuffer)]
       );
     });
-    expect(submitRegion).not.toHaveBeenCalled();
-
+    await act(async () => {
+      port.onmessage?.({
+        data: {
+          type: "crop-chunk-accepted",
+          invocationId: DEFAULT_INVOCATION_ID,
+          sequence: 0
+        }
+      } as MessageEvent);
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => {
+      expect(port.postMessage).toHaveBeenCalledWith({
+        type: "crop-end",
+        invocationId: DEFAULT_INVOCATION_ID,
+        chunks: 1
+      });
+    });
     await act(async () => {
       port.onmessage?.({
         data: { type: "crop-accepted", invocationId: DEFAULT_INVOCATION_ID }
@@ -1041,7 +1074,13 @@ describe("U7 — renderer-owned frozen frame transport", () => {
     expect(submitRegion).toHaveBeenCalledWith(
       expect.objectContaining({
         ok: true,
-        invocationId: DEFAULT_INVOCATION_ID
+        invocationId: DEFAULT_INVOCATION_ID,
+        rect: {
+          x: 0,
+          y: 0,
+          w: window.innerWidth * 2,
+          h: window.innerHeight * 2
+        }
       })
     );
   });

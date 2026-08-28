@@ -1,5 +1,17 @@
 import { describe, expect, test, vi } from "vitest";
-import { acquireFrozenDisplayFrame, physicalCropRect, stopDisplayStream } from "../frozen-frame";
+import {
+  acquireFrozenDisplayFrame,
+  FROZEN_DISPLAY_MEDIA_CONSTRAINTS,
+  physicalCropRect,
+  stopDisplayStream
+} from "../frozen-frame";
+
+test("requests a cursor-free display track", () => {
+  expect(FROZEN_DISPLAY_MEDIA_CONSTRAINTS).toEqual({
+    video: { cursor: "never" },
+    audio: false
+  });
+});
 
 describe("frozen frame coordinate mapping", () => {
   test("maps CSS selection to the actual physical frame dimensions", () => {

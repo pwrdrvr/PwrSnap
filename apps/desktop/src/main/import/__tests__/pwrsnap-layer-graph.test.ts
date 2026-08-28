@@ -91,6 +91,50 @@ function expectGraphError(
   throw new Error(`expected graph validation to fail with ${code}`);
 }
 
+function graphErrorCode(
+  validate: (layers: readonly BundleLayerNode[]) => void,
+  layers: readonly BundleLayerNode[]
+): string | null {
+  try {
+    validate(layers);
+    return null;
+  } catch (cause) {
+    return typeof cause === "object" && cause !== null && "code" in cause
+      ? String(cause.code)
+      : "unexpected_error";
+  }
+}
+
+/** Exact replacement-chain behavior from before suffix memoization. */
+function legacyReplacementErrorCode(
+  layers: readonly BundleLayerNode[]
+): string | null {
+  const byId = new Map(layers.map((layer) => [layer.id, layer]));
+  for (const layer of layers) {
+    if (layer.superseded_by !== null) {
+      if (layer.superseded_by === layer.id || !byId.has(layer.superseded_by)) {
+        return "layer_superseded_invalid";
+      }
+    }
+    const seen = new Set<string>([layer.id]);
+    let replacement = layer.superseded_by;
+    while (replacement !== null) {
+      if (seen.has(replacement)) return "layer_superseded_cycle";
+      seen.add(replacement);
+      replacement = byId.get(replacement)?.superseded_by ?? null;
+    }
+  }
+  return null;
+}
+
+function deterministicRandom(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+    return state / 0x1_0000_0000;
+  };
+}
+
 const validators = [
   ["external import", validatePwrsnapLayerGraph],
   ["installed repack", validateInstalledPwrsnapLayerGraph]
@@ -251,5 +295,35 @@ describe.each(validators)("%s graph characterization", (_name, validate) => {
       [root(), source(), ...chain],
       "layer_depth_limit"
     );
+  });
+
+  test("matches legacy replacement outcomes across deterministic mixed graphs", () => {
+    const random = deterministicRandom(0x504);
+    for (let caseIndex = 0; caseIndex < 500; caseIndex += 1) {
+      const count = 1 + Math.floor(random() * 12);
+      const ids = Array.from({ length: count }, (_, index) => historyId(index));
+      const history = ids.map((id) => {
+        const choice = random();
+        const supersededBy =
+          choice < 0.25
+            ? null
+            : choice < 0.4
+              ? id
+              : choice < 0.85
+                ? ids[Math.floor(random() * ids.length)]!
+                : "graphmissing0001";
+        return historical(id, supersededBy);
+      });
+      for (let index = history.length - 1; index > 0; index -= 1) {
+        const swapIndex = Math.floor(random() * (index + 1));
+        [history[index], history[swapIndex]] = [history[swapIndex]!, history[index]!];
+      }
+      const layers = [root(), source(), ...history];
+      const expected = legacyReplacementErrorCode(layers);
+      expect(
+        graphErrorCode(validate, layers),
+        `case ${caseIndex}: ${history.map((layer) => `${layer.id}->${layer.superseded_by}`).join(",")}`
+      ).toBe(expected);
+    }
   });
 });

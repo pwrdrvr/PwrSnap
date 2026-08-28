@@ -510,6 +510,47 @@ describe("imported v2 ordinary repack", () => {
     );
   }, 15_000);
 
+  test("repackages rejected raster history whose transform exceeds live render limits", async () => {
+    const captureId = "repackoversized1";
+    const fixture = await seedMinimalRepack(captureId);
+    const sourceLayer = fixture.document.layers.find(
+      (layer) => layer.id === fixture.sourceId && layer.kind === "raster"
+    );
+    if (sourceLayer?.kind !== "raster") throw new Error("source raster missing");
+
+    const rejectedId = "oversizedhistory";
+    const { insertLayer, listLayerTree } = await import(
+      "../../persistence/layers-repo"
+    );
+    insertLayer({
+      captureId,
+      node: {
+        ...sourceLayer,
+        id: rejectedId,
+        name: "Rejected oversized raster",
+        transform: [2_000, 0, 0, 2_000, 0, 0],
+        z_index: 1_000,
+        rejected_at: "2026-08-23T14:01:00.000Z"
+      }
+    });
+
+    const { repackCaptureNow } = await import("../../persistence/bundle-store");
+    await repackCaptureNow(captureId);
+
+    const { validatePwrsnapBundleBytes } = await import("../pwrsnap-import-reader");
+    const repacked = await validatePwrsnapBundleBytes(await fs.readFile(fixture.bundlePath));
+    expect(repacked.document.layers.find((layer) => layer.id === rejectedId)).toMatchObject({
+      transform: [2_000, 0, 0, 2_000, 0, 0],
+      rejected_at: "2026-08-23T14:01:00.000Z"
+    });
+    expect(listLayerTree(captureId).map((layer) => layer.id)).not.toContain(rejectedId);
+    expect(
+      mocks.db!
+        .prepare("SELECT edits_version, bundle_edits_version FROM captures WHERE id = ?")
+        .get(captureId)
+    ).toEqual({ edits_version: 4, bundle_edits_version: 4 });
+  });
+
   test("does not overwrite a bundle when rejected raster history has no recoverable source", async () => {
     const captureId = "repackmissing001";
     const createdAt = "2026-08-23T15:00:00.000Z";

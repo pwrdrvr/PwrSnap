@@ -24,10 +24,12 @@ import type {
   Result,
   ScrollProbeRequest,
   Settings,
+  ShortcutPlatform,
   AcpAgentDiscovery,
   DesktopCodexDiscoverySnapshot
 } from "@pwrsnap/shared";
 import {
+  acceleratorToDisplayText,
   EVENT_CHANNELS,
   capturesFolderDisplayPath,
   GRID_ZOOM_DEFAULT,
@@ -125,7 +127,7 @@ import { useVideoTrimRange } from "../shared/useVideoTrimRange";
 import { AppMenuBar } from "../shared/AppMenuBar";
 import { LayoutToggleButtons } from "../shared/LayoutToggleButtons";
 import "../shared/LayoutToggleButtons.css";
-import { acceleratorToDisplayKeys } from "../../lib/format-hotkey";
+import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import { AiConsentDialog } from "../shared/AiConsentDialog";
 import { enrichmentBackendLabel } from "../shared/CodexStatusPill";
 import { isEnrichmentProviderAvailable } from "../shared/enrichment-provider-availability";
@@ -767,7 +769,12 @@ function appendHistoryLocation(
   return [...stack, location].slice(-50);
 }
 
-export function Library() {
+export type LibraryProps = {
+  /** Explicit host semantics keep shortcut presentation deterministic in tests. */
+  readonly shortcutPlatform?: ShortcutPlatform;
+};
+
+export function Library({ shortcutPlatform = rendererShortcutPlatform() }: LibraryProps) {
   // Composable sidebar filter — scope (radio) + types (include-set) +
   // source apps (include/exclude facet). See library-filters.ts for
   // the model and the gesture table. Types used to live in their own
@@ -1418,15 +1425,15 @@ export function Library() {
   // identically when the user explicitly unbinds the chord.
   const hotkeys = useHotkeys();
   const quickCaptureChord = useMemo(
-    () => acceleratorToDisplayKeys(hotkeys.quickCapture).join(""),
-    [hotkeys.quickCapture]
+    () => acceleratorToDisplayText(hotkeys.quickCapture, shortcutPlatform),
+    [hotkeys.quickCapture, shortcutPlatform]
   );
   // Record Video shares the same live-chord treatment (default ⌘⌥C,
   // editable in Settings → Hotkeys). Sits left of Quick Capture as the
   // app's second headline verb so the header advertises both.
   const videoCaptureChord = useMemo(
-    () => acceleratorToDisplayKeys(hotkeys.videoCapture).join(""),
-    [hotkeys.videoCapture]
+    () => acceleratorToDisplayText(hotkeys.videoCapture, shortcutPlatform),
+    [hotkeys.videoCapture, shortcutPlatform]
   );
 
   // Responsive toolbar. The right cluster (search + sidebar toggles +

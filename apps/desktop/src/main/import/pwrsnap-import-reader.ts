@@ -643,6 +643,7 @@ function validatePwrsnapLayerGraphWithLimit(
   maxImagePixels: number
 ): void {
   const byId = new Map<string, BundleLayerNode>();
+  const validatedReplacementChains = new Set<string>();
   for (const layer of layers) {
     if (byId.has(layer.id)) {
       throw corrupt("layer_id_duplicate", "The layer document contains a duplicate layer ID.");
@@ -711,16 +712,41 @@ function validatePwrsnapLayerGraphWithLimit(
       }
     }
 
-    const seenReplacements = new Set<string>([layer.id]);
-    let replacement = layer.superseded_by;
-    while (replacement !== null) {
-      if (seenReplacements.has(replacement)) {
-        throw corrupt("layer_superseded_cycle", "The layer history contains a replacement cycle.");
-      }
-      seenReplacements.add(replacement);
-      replacement = byId.get(replacement)?.superseded_by ?? null;
-    }
+    assertReplacementChainAcyclic(layer.id, byId, validatedReplacementChains);
   }
+}
+
+/**
+ * Validate one replacement chain while memoizing every acyclic suffix already
+ * proven by an earlier layer. Keeping this call at the original per-layer
+ * validation point preserves error precedence for malformed rows, while the
+ * shared suffix set turns converging and linear histories from O(n²) into O(n).
+ */
+function assertReplacementChainAcyclic(
+  startId: string,
+  byId: ReadonlyMap<string, BundleLayerNode>,
+  validated: Set<string>
+): void {
+  if (validated.has(startId)) return;
+
+  const path: string[] = [];
+  const inPath = new Set<string>();
+  let currentId: string | null = startId;
+  while (currentId !== null && !validated.has(currentId)) {
+    if (inPath.has(currentId)) {
+      throw corrupt("layer_superseded_cycle", "The layer history contains a replacement cycle.");
+    }
+    const current = byId.get(currentId);
+    // Dangling targets retain the existing error precedence: the owning row's
+    // direct-reference check reports layer_superseded_invalid when its turn in
+    // document order arrives.
+    if (current === undefined) break;
+    inPath.add(currentId);
+    path.push(currentId);
+    currentId = current.superseded_by;
+  }
+
+  for (const id of path) validated.add(id);
 }
 
 function assertLayerNumbersBounded(

@@ -2,7 +2,6 @@ import { BrowserWindow, shell } from "electron";
 import { readdir } from "node:fs/promises";
 import {
   EVENT_CHANNELS,
-  capturesFolderDisplayPath,
   err,
   ok,
   type CapturesLocationStatus
@@ -29,6 +28,7 @@ import {
   reportCapturesAccessFailure,
   reportCapturesAccessSuccess
 } from "../storage/captures-access-health";
+import { moveBackBlockedMessage } from "./capture-storage-copy";
 
 const log = getMainLogger("pwrsnap:capture-storage-handlers");
 const ACCESS_PROBE_NAME = ".pwrsnap-access-probe";
@@ -166,25 +166,6 @@ async function countHomeDirectoryEntries(root: string): Promise<number> {
     }
     throw cause;
   }
-}
-
-export function moveBackBlockedMessage(
-  status: CapturesLocationStatus,
-  platform: string = process.platform
-): string {
-  if (status.overridden) {
-    return "The captures root is controlled by PWRSNAP_DATA_ROOT and can't be changed here.";
-  }
-  if (status.location !== "home") {
-    return "PwrSnap is already saving new captures to Documents.";
-  }
-  if (status.documentsAccess !== "confirmed") {
-    return "Check Documents access successfully before moving new captures back.";
-  }
-  return `${capturesFolderDisplayPath(
-    platform,
-    "home"
-  )} still contains captures or database references. Move them into the active captures folder before switching roots.`;
 }
 
 function registerCaptureStorageEventBroadcast(): void {

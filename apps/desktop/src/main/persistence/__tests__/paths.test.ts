@@ -110,14 +110,18 @@ describe("paths.getDataRoot", () => {
 
 describe("paths.assertSameVolume", () => {
   test("throws when both roots exist on different devices", async () => {
-    process.env[ENV_KEY] = "/tmp/pwrsnap-override";
+    const overrideRoot = "/tmp/pwrsnap-override";
+    process.env[ENV_KEY] = overrideRoot;
     mocks.statSync
       .mockReturnValueOnce({ dev: 101 })
       .mockReturnValueOnce({ dev: 202 });
     const { assertSameVolume } = await import("../paths");
 
     expect(() => assertSameVolume()).toThrow(
-      "paths invariant violated: captures (/tmp/pwrsnap-override/captures) and trash (/tmp/pwrsnap-override/.trash) on different volumes"
+      `paths invariant violated: captures (${join(
+        overrideRoot,
+        "captures"
+      )}) and trash (${join(overrideRoot, ".trash")}) on different volumes`
     );
   });
 

@@ -55,6 +55,7 @@ import {
 import { getCacheSourcePath, getCapturesRoot, getTrashRoot } from "./paths";
 import { sourceBufferHasAlpha } from "./source-alpha";
 import { getCaptureEnrichment } from "./enrichment-repo";
+import { getDb } from "./db";
 import {
   canonicalPortableTagKeys,
   readPortableBundleCarrier,
@@ -566,46 +567,6 @@ export async function readBundleDocument(bundlePath: string): Promise<BundleDocu
     const buf = await readEntryToBuffer(handle.zipFile, documentEntry);
     const json = JSON.parse(buf.toString("utf8"));
     return BundleDocumentV2.parse(json);
-  } finally {
-    handle.zipFile.close();
-  }
-}
-
-export type PortableBundleState = {
-  document: BundleDocumentV2;
-  sources: Map<string, Buffer>;
-  layerBytes: Map<string, Buffer>;
-};
-
-/** Read the document and every portable source/payload in one validated ZIP. */
-export async function readPortableBundleState(
-  bundlePath: string
-): Promise<PortableBundleState> {
-  const handle = await openAndValidateBundle(bundlePath);
-  try {
-    const documentEntry = handle.entries.get("document.json");
-    if (documentEntry === undefined) {
-      throw new Error("bundle-store: validated v2 bundle missing document.json");
-    }
-    const document = BundleDocumentV2.parse(
-      JSON.parse((await readEntryToBuffer(handle.zipFile, documentEntry)).toString("utf8"))
-    );
-    const sources = new Map<string, Buffer>();
-    const layerBytes = new Map<string, Buffer>();
-    for (const [name, entry] of handle.entries) {
-      if (name.startsWith("sources/") && name.endsWith(".png")) {
-        const sha = name.slice("sources/".length, -".png".length);
-        const bytes = await readEntryToBuffer(handle.zipFile, entry);
-        if (createHash("sha256").update(bytes).digest("hex") !== sha) {
-          throw new Error("bundle-store: portable source failed content hash validation");
-        }
-        sources.set(sha, bytes);
-      } else if (name.startsWith("layers/") && name.endsWith(".png")) {
-        const id = name.slice("layers/".length, -".png".length);
-        layerBytes.set(id, await readEntryToBuffer(handle.zipFile, entry));
-      }
-    }
-    return { document, sources, layerBytes };
   } finally {
     handle.zipFile.close();
   }
@@ -1223,118 +1184,181 @@ async function runRepackV2(captureId: string): Promise<void> {
 
   const { listAllLayersForBundle } = await import("./layers-repo");
   const { composeV2 } = await import("../render/compose-tree");
+  const {
+    readAndValidateInstalledPwrsnapBundle,
+    validateInstalledPwrsnapLayerGraph
+  } = await import("../import/pwrsnap-import-reader");
 
   const promise = runExclusiveBundleFileOperation(captureId, async () => {
-    const record = getCaptureById(captureId);
-    if (record === null) {
+    const initialRecord = getCaptureById(captureId);
+    if (initialRecord === null) {
       log.warn("bundle-store: v2 repack target missing", { captureId });
       return;
     }
-    if (record.bundle_path === null) {
+    if (initialRecord.bundle_path === null) {
       log.warn("bundle-store: v2 repack skipped; no bundle path on row", { captureId });
       return;
     }
-
-    // Walk the layer tree to produce a fresh composite at canvas
-    // resolution. composeV2 writes to its own cache dir; we read the
-    // resulting bytes back to derive the in-bundle thumbnail.
-    const composeResult = await composeV2({
-      captureId,
-      bundlePath: record.bundle_path,
-      canvasWidthPx: record.width_px,
-      canvasHeightPx: record.height_px,
-      width: record.width_px, // no resize for the bundle's composite
-      format: "png"
-    });
-    const compositePng = await readFile(composeResult.cachePath);
-
-    // Start from the complete portable carrier, then overlay any pending
-    // sources introduced by edits. This retains rejected/superseded history,
-    // orphan historical sources, and opaque layers/<id>.png payloads.
-    const portable = await readPortableBundleState(record.bundle_path);
-    const layers = listAllLayersForBundle(captureId);
-    const sources = new Map(portable.sources);
-    for (const node of layers) {
-      if (node.kind === "raster" && !sources.has(node.source_ref.sha256)) {
-        // Every raster retained in the document must have bytes in the same
-        // archive. Older repackers omitted rejected history while SQLite kept
-        // its rows, so recovery can legitimately fail here. Propagate that
-        // failure before atomicWriteBundle rather than replacing a healthy
-        // bundle with one the strict reader will reject as source_missing.
-        const bytes = await readSourceForCapture(
-          captureId,
-          record.bundle_path,
-          node.source_ref.sha256
-        );
-        sources.set(node.source_ref.sha256, bytes);
+    const installedBundlePath = initialRecord.bundle_path;
+    // Repack uses the import boundary's verified descriptor lease and bounded
+    // schema/image/graph validation. Installed bundles are not subject to the
+    // external import carrier's aggregate 128 MiB ceiling: local edits can
+    // legitimately produce a larger archive from individually valid assets.
+    // The raw errno hook runs before VerifiedFileError sanitization so a TCC
+    // denial still drives captures-folder health; success clears recovery.
+    const portable = await readAndValidateInstalledPwrsnapBundle(
+      installedBundlePath,
+      {
+        onFileSystemError: (cause) => {
+          reportCapturesAccessFailure(installedBundlePath, cause);
+        },
+        onFileSystemSuccess: () => {
+          reportCapturesAccessSuccess(installedBundlePath);
+        }
       }
+    );
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const composeRecord = getCaptureById(captureId);
+      if (composeRecord === null || composeRecord.bundle_path === null) return;
+      if (composeRecord.bundle_path !== initialRecord.bundle_path) {
+        throw new Error("bundle-store: capture bundle path changed during repack");
+      }
+
+      const composeResult = await composeV2({
+        captureId,
+        bundlePath: composeRecord.bundle_path,
+        canvasWidthPx: composeRecord.width_px,
+        canvasHeightPx: composeRecord.height_px,
+        width: composeRecord.width_px,
+        format: "png"
+      });
+      const compositePng = await readFile(composeResult.cachePath);
+
+      // Bind every synchronous DB projection to one edit checkpoint. If an
+      // edit landed while composeV2 was awaiting, discard that composite and
+      // retry instead of claiming the newer version with older pixels.
+      const snapshot = getDb().transaction(() => {
+        const record = getCaptureById(captureId);
+        if (record === null || record.bundle_path === null) return null;
+        const layers = listAllLayersForBundle(captureId);
+        validateInstalledPwrsnapLayerGraph(layers);
+        return {
+          record,
+          layers,
+          enrichment: getCaptureEnrichment(captureId),
+          carrier: readPortableBundleCarrier(captureId)
+        };
+      })();
+      if (snapshot === null) return;
+      if (
+        snapshot.record.bundle_path !== composeRecord.bundle_path ||
+        snapshot.record.edits_version !== composeRecord.edits_version
+      ) {
+        continue;
+      }
+
+      const preferredOrder =
+        snapshot.carrier?.layerOrder ?? portable.document.layers.map((layer) => layer.id);
+      const layers = orderBundleLayers(snapshot.layers, preferredOrder);
+      const referencedSources = new Set(
+        layers
+          .filter((layer) => layer.kind === "raster")
+          .map((layer) => layer.source_ref.sha256)
+      );
+      const sources = new Map<string, Buffer>();
+      for (const sha of referencedSources) {
+        const installed = portable.sources.get(sha);
+        sources.set(sha, installed ?? (await readPendingOrCachedSource(captureId, sha)));
+      }
+      const layerIds = new Set(layers.map((layer) => layer.id));
+      const layerBytes = new Map(
+        [...portable.layerBytes].filter(([layerId]) => layerIds.has(layerId))
+      );
+
+      const now = new Date().toISOString();
+      const filenameStem = bundleStemFromPath(snapshot.record.bundle_path);
+      const manifest: BundleManifestV2 = {
+        bundle_format_version: 2,
+        capture_id: captureId,
+        canvas_dimensions: {
+          width_px: snapshot.record.width_px,
+          height_px: snapshot.record.height_px
+        },
+        paired_png_filename: `${filenameStem}.png`,
+        created_at: snapshot.record.captured_at,
+        bundle_modified_at: now
+      };
+      const acceptedDescription = snapshot.enrichment?.acceptedDescription ?? null;
+      const acceptedTags = snapshot.enrichment?.acceptedTags ?? [];
+      const carrierProjectionMatches =
+        snapshot.carrier !== null &&
+        arraysEqual(
+          canonicalPortableTagKeys(acceptedTags),
+          snapshot.carrier.projectedTagKeys
+        );
+      const tags = carrierProjectionMatches
+        ? (snapshot.carrier!.fullTags ?? portable.document.tags)
+        : acceptedTags;
+      const description =
+        snapshot.carrier !== null &&
+        acceptedDescription === snapshot.carrier.projectedDescription
+          ? snapshot.carrier.fullDescription
+          : acceptedDescription;
+      const document: BundleDocumentV2 = {
+        document_format_version: 1,
+        edits_version: snapshot.record.edits_version,
+        layers,
+        tags,
+        description,
+        ai_runs: snapshot.carrier?.aiRuns ?? portable.document.ai_runs
+      };
+      const portableMetadata =
+        snapshot.carrier?.portableMetadata ?? portable.portableMetadata;
+
+      const thumbnailJpg = await buildCompositeThumbnail(compositePng);
+      const bundleBuf = await packBundleV2({
+        manifest,
+        document,
+        portableMetadata,
+        sources,
+        layerBytes,
+        thumbnailJpg
+      });
+
+      const latest = getCaptureById(captureId);
+      if (
+        latest === null ||
+        latest.bundle_path !== snapshot.record.bundle_path ||
+        latest.edits_version !== snapshot.record.edits_version
+      ) {
+        continue;
+      }
+
+      await atomicWriteBundle(snapshot.record.bundle_path, bundleBuf);
+      getDb().transaction(() => {
+        updateCaptureBundleAfterRepack(captureId, {
+          bundle_modified_at: now,
+          bundle_edits_version: snapshot.record.edits_version
+        });
+        writePortableBundleCarrier(captureId, document, portableMetadata);
+      })();
+      await deletePendingSourcesForCapture(captureId, sources.keys()).catch((cause) => {
+        log.warn("bundle-store: v2 repack pending-source cleanup failed", {
+          captureId,
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+      });
+
+      log.info("bundle-store: v2 repacked", {
+        captureId,
+        layerCount: layers.length,
+        bundleBytes: bundleBuf.length
+      });
+      return;
     }
 
-    const now = new Date().toISOString();
-    const filenameStem = bundleStemFromPath(record.bundle_path);
-    const manifest: BundleManifestV2 = {
-      bundle_format_version: 2,
-      capture_id: captureId,
-      canvas_dimensions: { width_px: record.width_px, height_px: record.height_px },
-      paired_png_filename: `${filenameStem}.png`,
-      created_at: record.captured_at,
-      bundle_modified_at: now
-    };
-    const enrichment = getCaptureEnrichment(captureId);
-    const carrier = readPortableBundleCarrier(captureId);
-    const acceptedDescription = enrichment?.acceptedDescription ?? null;
-    const acceptedTags = enrichment?.acceptedTags ?? [];
-    const tags =
-      carrier !== null &&
-      JSON.stringify(canonicalPortableTagKeys(acceptedTags)) ===
-        JSON.stringify(carrier.projectedTagKeys)
-        ? portable.document.tags
-        : (enrichment?.acceptedTags ?? portable.document.tags);
-    const description =
-      carrier !== null
-        ? acceptedDescription === carrier.projectedDescription
-          ? portable.document.description
-          : acceptedDescription
-        : (acceptedDescription ?? portable.document.description);
-    const document: BundleDocumentV2 = {
-      document_format_version: 1,
-      edits_version: record.edits_version,
-      layers,
-      tags,
-      description,
-      ai_runs: carrier?.aiRuns ?? portable.document.ai_runs
-    };
-
-    const thumbnailJpg = await buildCompositeThumbnail(compositePng);
-
-    const bundleBuf = await packBundleV2({
-      manifest,
-      document,
-      ...(carrier === null ? {} : { portableMetadata: carrier.portableMetadata }),
-      sources,
-      layerBytes: portable.layerBytes,
-      thumbnailJpg
-    });
-
-    await atomicWriteBundle(record.bundle_path, bundleBuf);
-
-    updateCaptureBundleAfterRepack(captureId, {
-      bundle_modified_at: now,
-      bundle_edits_version: record.edits_version
-    });
-    writePortableBundleCarrier(captureId, document, carrier?.portableMetadata);
-    await deletePendingSourcesForCapture(captureId, sources.keys()).catch((cause) => {
-      log.warn("bundle-store: v2 repack pending-source cleanup failed", {
-        captureId,
-        message: cause instanceof Error ? cause.message : String(cause)
-      });
-    });
-
-    log.info("bundle-store: v2 repacked", {
-      captureId,
-      layerCount: layers.length,
-      bundleBytes: bundleBuf.length
-    });
+    throw new Error("bundle-store: capture kept changing during repack; retry deferred");
   });
 
   repackInFlight.set(captureId, promise);
@@ -1343,6 +1367,40 @@ async function runRepackV2(captureId: string): Promise<void> {
   } finally {
     repackInFlight.delete(captureId);
   }
+}
+
+function arraysEqual(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function orderBundleLayers(
+  layers: readonly BundleDocumentV2["layers"][number][],
+  preferredOrder: readonly string[]
+): BundleDocumentV2["layers"] {
+  const byId = new Map(layers.map((layer) => [layer.id, layer]));
+  const ordered: BundleDocumentV2["layers"] = [];
+  for (const id of preferredOrder) {
+    const layer = byId.get(id);
+    if (layer === undefined) continue;
+    ordered.push(layer);
+    byId.delete(id);
+  }
+  ordered.push(...byId.values());
+  return ordered;
+}
+
+async function readPendingOrCachedSource(captureId: string, sha: string): Promise<Buffer> {
+  try {
+    return await readPendingSourceForCapture(captureId, sha);
+  } catch (cause) {
+    if (!(cause instanceof PendingSourceMissingError)) throw cause;
+  }
+  const cacheSourcePath = getCacheSourcePath(captureId).replace(/source\.png$/, `${sha}.png`);
+  const bytes = await readFile(cacheSourcePath);
+  if (createHash("sha256").update(bytes).digest("hex") !== sha) {
+    throw new Error("bundle-store: cached source content-hash mismatch");
+  }
+  return bytes;
 }
 
 /** Run the same v2 repack used by the edit debounce and await durability. */

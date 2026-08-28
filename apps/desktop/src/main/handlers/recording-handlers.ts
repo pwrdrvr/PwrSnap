@@ -33,7 +33,8 @@ import {
   openSystemSettingsFor,
   readRecordingPermissionEvidence,
   readRecordingReadiness,
-  requestPermission
+  requestPermission,
+  UnsupportedPermissionSettingsError
 } from "../recording/recording-permissions";
 import {
   guardScreenCapture,
@@ -216,6 +217,11 @@ export function registerRecordingHandlers(): void {
       await openSystemSettingsFor(req.permission);
       return ok(undefined);
     } catch (cause) {
+      if (cause instanceof UnsupportedPermissionSettingsError) {
+        return err(
+          permissionError("permission_settings_unsupported", cause.message)
+        );
+      }
       log.warn("permissions:openSystemSettings failed", {
         permission: req.permission,
         message: cause instanceof Error ? cause.message : String(cause)

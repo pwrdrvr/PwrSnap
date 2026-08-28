@@ -4064,7 +4064,9 @@ export type Commands = {
   /**
    * Open the platform-owned privacy page for the requested permission. The
    * permission enum is validated and the URI is selected in main; renderers
-   * cannot supply an arbitrary external URL.
+   * cannot supply an arbitrary external URL. A known permission with no page
+   * relevant to the active platform/backend returns the typed
+   * `permission_settings_unsupported` error instead of succeeding as a no-op.
    */
   "permissions:openSystemSettings": {
     req: { permission: RecordingPermission };

@@ -253,16 +253,28 @@ describe("openSystemSettingsFor", () => {
     ]);
   });
 
-  test("uses fixed Windows privacy URIs and offers no fictitious system-audio action", async () => {
+  test("opens only the Windows microphone privacy page", async () => {
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });
     const { openSystemSettingsFor } = await import("../recording-permissions");
-    await openSystemSettingsFor("screen");
     await openSystemSettingsFor("microphone");
-    await openSystemSettingsFor("systemAudio");
 
-    expect(electronMock.shellOpenUrls).toEqual([
-      "ms-settings:privacy-graphicscaptureprogrammatic",
-      "ms-settings:privacy-microphone"
-    ]);
+    expect(electronMock.shellOpenUrls).toEqual(["ms-settings:privacy-microphone"]);
   });
+
+  test.each(["screen", "systemAudio"] as const)(
+    "rejects the unsupported Windows %s settings action",
+    async (permission) => {
+      Object.defineProperty(process, "platform", {
+        value: "win32",
+        configurable: true
+      });
+      const { openSystemSettingsFor, UnsupportedPermissionSettingsError } =
+        await import("../recording-permissions");
+
+      await expect(openSystemSettingsFor(permission)).rejects.toBeInstanceOf(
+        UnsupportedPermissionSettingsError
+      );
+      expect(electronMock.shellOpenUrls).toEqual([]);
+    }
+  );
 });

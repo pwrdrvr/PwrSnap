@@ -281,11 +281,13 @@ export function SystemPermissionsPage(): ReactElement {
     [refresh]
   );
 
-  const openWindowsPrivacy = useCallback(
-    async (permission: "screen" | "microphone"): Promise<void> => {
-      setBusyPermission(permission);
+  const openWindowsMicrophonePrivacy = useCallback(
+    async (): Promise<void> => {
+      setBusyPermission("microphone");
       try {
-        const result = await dispatch("permissions:openSystemSettings", { permission });
+        const result = await dispatch("permissions:openSystemSettings", {
+          permission: "microphone"
+        });
         if (!result.ok) setLastError(result.error.message);
       } finally {
         setBusyPermission(null);
@@ -305,6 +307,9 @@ export function SystemPermissionsPage(): ReactElement {
   const windowsMicrophoneToneValue = windowsMicrophoneTone(
     windowsMicrophoneStatus
   );
+  const windowsMicrophoneActionable =
+    windowsMicrophoneStatus !== "restricted" &&
+    windowsMicrophoneStatus !== "unavailable";
 
   return (
     <>
@@ -445,39 +450,21 @@ export function SystemPermissionsPage(): ReactElement {
         <Card eyebrow="STATUS" title="Windows privacy controls">
           <Row
             label="Screen capture"
-            sub="Not reported — Electron always reports screen capture as allowed on Windows, so PwrSnap cannot verify a separate per-app setting. Access is tested only when you start a capture."
+            sub="Not reported — Electron always reports screen capture as allowed on Windows, so PwrSnap cannot verify a separate per-app setting. The active FFmpeg recorder tests access only when you start a capture."
             tag="screen"
           >
-            <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-              <span
-                data-permission-status="not-inspectable"
-                data-tone="neutral"
-                style={{
-                  font: "500 11px/1 var(--font-sans)",
-                  color: statusColor("neutral"),
-                  textTransform: "uppercase",
-                  letterSpacing: "0.04em"
-                }}
-              >
-                Not reported
-              </span>
-              <button
-                type="button"
-                onClick={() => void openWindowsPrivacy("screen")}
-                disabled={busyPermission === "screen"}
-                style={{
-                  padding: "6px 12px",
-                  borderRadius: 6,
-                  border: "1px solid var(--border)",
-                  background: "var(--surface)",
-                  color: "var(--text)",
-                  cursor: busyPermission === "screen" ? "wait" : "pointer",
-                  font: "500 12px/1 var(--font-sans)"
-                }}
-              >
-                {busyPermission === "screen" ? "Opening…" : "Review capture privacy"}
-              </button>
-            </div>
+            <span
+              data-permission-status="not-inspectable"
+              data-tone="neutral"
+              style={{
+                font: "500 11px/1 var(--font-sans)",
+                color: statusColor("neutral"),
+                textTransform: "uppercase",
+                letterSpacing: "0.04em"
+              }}
+            >
+              Not reported
+            </span>
           </Row>
           <Row
             label="Microphone privacy"
@@ -499,25 +486,27 @@ export function SystemPermissionsPage(): ReactElement {
               >
                 {windowsMicrophoneLabel(windowsMicrophoneStatus)}
               </span>
-              <button
-                type="button"
-                onClick={() => void openWindowsPrivacy("microphone")}
-                disabled={busyPermission === "microphone" || readiness === null}
-                style={{
-                  padding: "6px 12px",
-                  borderRadius: 6,
-                  border: "1px solid var(--border)",
-                  background: "var(--surface)",
-                  color: "var(--text)",
-                  cursor:
-                    busyPermission === "microphone" ? "wait" : "pointer",
-                  font: "500 12px/1 var(--font-sans)"
-                }}
-              >
-                {busyPermission === "microphone"
-                  ? "Opening…"
-                  : "Open microphone privacy"}
-              </button>
+              {windowsMicrophoneActionable && (
+                <button
+                  type="button"
+                  onClick={() => void openWindowsMicrophonePrivacy()}
+                  disabled={busyPermission === "microphone" || readiness === null}
+                  style={{
+                    padding: "6px 12px",
+                    borderRadius: 6,
+                    border: "1px solid var(--border)",
+                    background: "var(--surface)",
+                    color: "var(--text)",
+                    cursor:
+                      busyPermission === "microphone" ? "wait" : "pointer",
+                    font: "500 12px/1 var(--font-sans)"
+                  }}
+                >
+                  {busyPermission === "microphone"
+                    ? "Opening…"
+                    : "Open microphone privacy"}
+                </button>
+              )}
             </div>
           </Row>
         </Card>
@@ -539,6 +528,7 @@ export function SystemPermissionsPage(): ReactElement {
         {(() => {
           const activeLocation = capturesLocation?.location ?? "documents";
           const isHome = activeLocation === "home";
+          const overridden = capturesLocation?.overridden === true;
           const documentsDenied =
             capturesHealth?.denied === true ||
             capturesLocation?.documentsAccess === "denied";
@@ -553,7 +543,29 @@ export function SystemPermissionsPage(): ReactElement {
           let hint: string;
           let checkLabel: string;
 
-          if (isDarwin) {
+          if (loadingLocation) {
+            label = "Checking…";
+            tone = "neutral";
+            hint = "Reading the configured captures location and its current access state.";
+            checkLabel = "Check folder access";
+          } else if (overridden) {
+            label = documentsDenied
+              ? "Blocked"
+              : documentsConfirmed
+              ? "Writable"
+              : "Not checked";
+            tone = documentsDenied
+              ? "warn"
+              : documentsConfirmed
+              ? "ok"
+              : "neutral";
+            hint = documentsDenied
+              ? `${capturesHealth?.deniedPathCount ?? 0} capture path(s) in the custom PWRSNAP_DATA_ROOT can't be accessed. Check that folder's filesystem and security permissions, then try again.`
+              : documentsConfirmed
+              ? "PwrSnap completed a write check in the custom captures folder configured by PWRSNAP_DATA_ROOT."
+              : "PwrSnap has not run a write check in the custom captures folder configured by PWRSNAP_DATA_ROOT this session.";
+            checkLabel = "Check folder access";
+          } else if (isDarwin) {
             label = loadingLocation
               ? "Checking…"
               : isHome
@@ -629,15 +641,23 @@ export function SystemPermissionsPage(): ReactElement {
           }
           return (
             <Row
-              label={`Captures Folder (${isHome ? "Home" : "Documents"})`}
+              label={`Captures Folder (${
+                overridden ? "Custom" : isHome ? "Home" : "Documents"
+              })`}
               sub={`${label} — ${hint}`}
-              tag={isHome ? "home" : "documents"}
+              tag={overridden ? "custom" : isHome ? "home" : "documents"}
             >
               <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
                 <span
                   data-captures-access={
                     loadingLocation
                       ? "unknown"
+                      : overridden
+                      ? documentsDenied
+                        ? "denied"
+                        : documentsConfirmed
+                        ? "ok"
+                        : "unknown"
                       : isHome
                       ? "home"
                       : documentsDenied
@@ -658,7 +678,7 @@ export function SystemPermissionsPage(): ReactElement {
                 >
                   {label}
                 </span>
-                {documentsDenied && isDarwin && (
+                {!overridden && documentsDenied && isDarwin && (
                   <button
                     type="button"
                     onClick={() => void openCapturesSettings()}
@@ -693,7 +713,7 @@ export function SystemPermissionsPage(): ReactElement {
                     ? "Checking…"
                     : checkLabel}
                 </button>
-                {capturesLocation?.canMoveToDocuments === true && (
+                {!overridden && capturesLocation?.canMoveToDocuments === true && (
                   <button
                     type="button"
                     onClick={() => void moveCapturesToDocuments()}

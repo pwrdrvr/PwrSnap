@@ -39,6 +39,7 @@ type FakeApiOpts = {
   documentsAccess?: "unknown" | "confirmed" | "denied";
   homeCaptureReferences?: number;
   homeDirectoryEntryCount?: number;
+  overridden?: boolean;
 };
 
 function installFakeApi(
@@ -62,11 +63,12 @@ function installFakeApi(
     homeCaptureReferences: opts.homeCaptureReferences ?? 0,
     homeDirectoryEntryCount: opts.homeDirectoryEntryCount ?? 0,
     canMoveToDocuments:
+      opts.overridden !== true &&
       opts.capturesLocation === "home" &&
       opts.documentsAccess === "confirmed" &&
       (opts.homeCaptureReferences ?? 0) === 0 &&
       (opts.homeDirectoryEntryCount ?? 0) === 0,
-    overridden: false
+    overridden: opts.overridden ?? false
   } as const;
   Object.defineProperty(window, "pwrsnapApi", {
     configurable: true,
@@ -377,31 +379,36 @@ describe("SystemPermissionsPage — Windows permission evidence", () => {
 
   test("Windows privacy actions use only the guarded settings command", async () => {
     const { calls } = await render(windowsReport("denied"), { platform: "win32" });
-    const screenButton = Array.from(rowByTag("screen").querySelectorAll("button")).find(
-      (button) => button.textContent === "Review capture privacy"
-    );
+    expect(rowByTag("screen").querySelector("button")).toBeNull();
     const microphoneButton = Array.from(
       rowByTag("microphone").querySelectorAll("button")
     ).find((button) => button.textContent === "Open microphone privacy");
 
     await act(async () => {
-      screenButton?.click();
       microphoneButton?.click();
     });
 
     const permissionCalls = calls.filter((call) => call.name.startsWith("permissions:"));
     expect(permissionCalls).toContainEqual({
       name: "permissions:openSystemSettings",
-      req: { permission: "screen" }
-    });
-    expect(permissionCalls).toContainEqual({
-      name: "permissions:openSystemSettings",
       req: { permission: "microphone" }
+    });
+    expect(permissionCalls).not.toContainEqual({
+      name: "permissions:openSystemSettings",
+      req: { permission: "screen" }
     });
     expect(permissionCalls.map((call) => call.name)).not.toContain(
       "permissions:request"
     );
   });
+
+  test.each(["restricted", "unavailable"] as const)(
+    "does not offer microphone settings when the Windows status is %s",
+    async (status) => {
+      await render(windowsReport(status), { platform: "win32" });
+      expect(rowByTag("microphone").querySelector("button")).toBeNull();
+    }
+  );
 
   test("unknown Windows folder access is Not checked until a real write probe", async () => {
     const { calls } = await render(windowsReport(), {
@@ -419,6 +426,26 @@ describe("SystemPermissionsPage — Windows permission evidence", () => {
       checkButton?.click();
     });
     expect(calls.map((call) => call.name)).toContain("storage:checkCapturesAccess");
+  });
+
+  test("custom capture roots suppress Documents and Home recovery copy", async () => {
+    await render(windowsReport(), {
+      platform: "win32",
+      overridden: true,
+      documentsAccess: "confirmed"
+    });
+
+    const row = rowByTag("custom");
+    expect(row.textContent).toContain("Captures Folder (Custom)");
+    expect(row.textContent).toContain("PWRSNAP_DATA_ROOT");
+    expect(row.textContent).toContain("Writable");
+    expect(row.textContent).not.toMatch(
+      /Windows Documents|Home fallback|File Explorer|OneDrive|Controlled Folder Access/
+    );
+    const buttons = Array.from(row.querySelectorAll("button")).map(
+      (button) => button.textContent
+    );
+    expect(buttons).toEqual(["Check folder access"]);
   });
 
   test("Windows rendering contains no Mac, Finder, TCC, or Unix-home copy", async () => {

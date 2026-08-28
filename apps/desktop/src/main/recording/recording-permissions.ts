@@ -308,6 +308,20 @@ export async function requestPermission(
  * supplies only the permission enum; every URI stays hardcoded here so this
  * command cannot become an arbitrary-navigation gadget.
  */
+export class UnsupportedPermissionSettingsError extends Error {
+  readonly permission: RecordingPermission;
+
+  constructor(permission: RecordingPermission) {
+    const permissionLabel =
+      permission === "systemAudio" ? "system audio" : permission;
+    super(
+      `PwrSnap has no ${permissionLabel} privacy-settings action for ${process.platform}.`
+    );
+    this.name = "UnsupportedPermissionSettingsError";
+    this.permission = permission;
+  }
+}
+
 export async function openSystemSettingsFor(
   permission: RecordingPermission
 ): Promise<void> {
@@ -323,15 +337,17 @@ export async function openSystemSettingsFor(
   }
 
   if (process.platform === "win32") {
-    if (permission === "screen") {
-      // Windows does not expose this state through Electron. This is the
-      // official Windows 11 programmatic-screen-capture privacy page, so the
-      // UI presents it as troubleshooting rather than a per-app grant.
-      await shell.openExternal("ms-settings:privacy-graphicscaptureprogrammatic");
-    } else if (permission === "microphone") {
+    if (permission === "microphone") {
       // Controls the global "desktop apps" microphone switch that Electron's
       // getMediaAccessStatus('microphone') reports on Windows 10+.
       await shell.openExternal("ms-settings:privacy-microphone");
+      return;
     }
   }
+
+  // The active Windows recorder uses FFmpeg gdigrab, not
+  // Windows.Graphics.Capture, and Windows system audio is not implemented.
+  // Treat both as unsupported instead of reporting success for a no-op or
+  // opening an unrelated Settings page.
+  throw new UnsupportedPermissionSettingsError(permission);
 }

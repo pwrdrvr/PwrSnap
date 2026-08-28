@@ -29,7 +29,6 @@ import type {
   DesktopCodexDiscoverySnapshot
 } from "@pwrsnap/shared";
 import {
-  acceleratorToDisplayText,
   EVENT_CHANNELS,
   capturesFolderDisplayPath,
   GRID_ZOOM_DEFAULT,

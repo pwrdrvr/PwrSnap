@@ -230,6 +230,50 @@ describe("computeTextHtmlStyle — glyph style", () => {
   });
 });
 
+describe("computeTextHtmlStyle — Border (contrast outline)", () => {
+  const base = {
+    point: { x: 0, y: 0 },
+    size: "medium" as const,
+    weight: 600,
+    storedSizePx: undefined,
+    colorHex: "#000",
+    sourceWidthPx: 1920,
+    sourceHeightPx: 1080,
+    canvasWidthPx: 1920,
+    canvasHeightPx: 1080,
+    canvasCssHeight: 1080
+  };
+
+  test("omitted outline and explicit legacy both keep the historical stroke", () => {
+    const omitted = computeTextHtmlStyle(base);
+    const legacy = computeTextHtmlStyle({ ...base, outline: { kind: "legacy" } });
+    expect(omitted.glyph.WebkitTextStroke).toBe("2.88px rgba(0,0,0,0.6)");
+    expect(legacy.glyph).toEqual(omitted.glyph);
+  });
+
+  test("solid black/white swap the stroke color at the same width", () => {
+    const black = computeTextHtmlStyle({
+      ...base,
+      outline: { kind: "solid", color: "black" }
+    });
+    expect(black.glyph.WebkitTextStroke).toBe("2.88px #000000");
+    expect(black.glyph.paintOrder).toBe("stroke");
+    const white = computeTextHtmlStyle({
+      ...base,
+      outline: { kind: "solid", color: "white" }
+    });
+    expect(white.glyph.WebkitTextStroke).toBe("2.88px #ffffff");
+  });
+
+  test("none drops the stroke + paint-order properties entirely", () => {
+    const none = computeTextHtmlStyle({ ...base, outline: { kind: "none" } });
+    expect(none.glyph.WebkitTextStroke).toBeUndefined();
+    expect(none.glyph.paintOrder).toBeUndefined();
+    // Everything else is untouched.
+    expect(none.glyph.fontSize).toBe(computeTextHtmlStyle(base).glyph.fontSize);
+  });
+});
+
 describe("serializeStyleAttribute — React-camelCase → CSS-kebab", () => {
   test("plain camelCase → kebab-case", () => {
     expect(serializeStyleAttribute({ fontSize: "16px" })).toBe("font-size: 16px");

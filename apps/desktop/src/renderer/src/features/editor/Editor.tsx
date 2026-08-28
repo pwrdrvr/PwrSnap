@@ -1045,6 +1045,26 @@ export function previousStylePatchFromQueuedUpdate(
     };
   }
 
+  // Border edits write outline + outlineAuto together (Auto stores the
+  // sampled pick alongside the mode). Restore both from the queued
+  // predecessor so undoing Auto→White brings the old sampled color back
+  // with the mode.
+  if (
+    (previous.kind === "arrow" ||
+      previous.kind === "shape" ||
+      previous.kind === "text") &&
+    previous.kind === nextPatch.kind &&
+    field === "outline"
+  ) {
+    return {
+      kind: previous.kind,
+      ...(previous.outline !== undefined ? { outline: previous.outline } : {}),
+      ...(previous.outlineAuto !== undefined
+        ? { outlineAuto: previous.outlineAuto }
+        : {})
+    } as Partial<Overlay>;
+  }
+
   return {
     kind: previous.kind,
     [field]: (previous as Record<string, unknown>)[field]

@@ -336,6 +336,59 @@ describe("ToolStylePopover", () => {
     expect(popover.querySelector('[data-testid="blur-mode"]')).toBeNull();
   });
 
+  test("Border row: arrow offers all five modes and reflects the active one", () => {
+    render(
+      createElement(Harness, {
+        tool: "arrow",
+        style: { ...DEFAULT_ARROW_STYLE, outline: "auto" }
+      })
+    );
+    const popover = queryPopover();
+    const row = popover.querySelector('[data-testid="outline-row"]');
+    expect(row).not.toBeNull();
+    for (const mode of ["none", "auto", "white", "black", "stripe"]) {
+      expect(row!.querySelector(`[data-testid="outline-${mode}"]`)).not.toBeNull();
+    }
+    expect(
+      row!.querySelector('[data-testid="outline-auto"]')!.getAttribute("aria-checked")
+    ).toBe("true");
+    expect(
+      row!.querySelector('[data-testid="outline-black"]')!.getAttribute("aria-checked")
+    ).toBe("false");
+  });
+
+  test("Border row: text hides the stripe option", () => {
+    render(
+      createElement(Harness, {
+        tool: "text",
+        style: DEFAULT_TEXT_STYLE
+      })
+    );
+    const row = queryPopover().querySelector('[data-testid="outline-row"]');
+    expect(row).not.toBeNull();
+    expect(row!.querySelector('[data-testid="outline-stripe"]')).toBeNull();
+    expect(row!.querySelector('[data-testid="outline-black"]')).not.toBeNull();
+  });
+
+  test("Border row: shape emits onStyleFieldChange('outline', mode) on click", () => {
+    const onChange = vi.fn();
+    render(
+      createElement(Harness, {
+        tool: "shape",
+        style: DEFAULT_RECT_STYLE,
+        onStyleFieldChange: onChange
+      })
+    );
+    const row = queryPopover().querySelector('[data-testid="outline-row"]');
+    expect(row).not.toBeNull();
+    fireClick(row!.querySelector('[data-testid="outline-black"]')!);
+    expect(onChange).toHaveBeenCalledWith("outline", "black");
+    fireClick(row!.querySelector('[data-testid="outline-none"]')!);
+    expect(onChange).toHaveBeenCalledWith("outline", "none");
+    fireClick(row!.querySelector('[data-testid="outline-stripe"]')!);
+    expect(onChange).toHaveBeenCalledWith("outline", "stripe");
+  });
+
   test("2. blur kind: no color row; 2 groups (mode, radius)", () => {
     render(
       createElement(Harness, {

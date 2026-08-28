@@ -11,7 +11,6 @@ import {
 import { mkdtemp, open, rm, type FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import sharp from "sharp";
 
 type ReceivingCrop = {
   dir: string;
@@ -50,6 +49,11 @@ async function validateCommittedPng(
   path: string,
   declared: { width: number; height: number }
 ): Promise<void> {
+  // Load the native decoder only when a crop is ready for validation. The
+  // selector's platform-behavior tests intentionally override process.platform
+  // before importing region-selector; a static sharp import would then select
+  // a foreign native binary on the Linux CI host.
+  const { default: sharp } = await import("sharp");
   const metadata = await sharp(path, SHARP_CROP_OPTIONS).metadata();
   if (
     metadata.format !== "png" ||

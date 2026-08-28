@@ -113,14 +113,16 @@ function makeSettings(overrides?: {
           thickness: overrides?.arrowThickness ?? "auto",
           endStyle: "filled-triangle",
           stemStyle: "solid",
-          doubleEnded: false
+          doubleEnded: false,
+          outline: "auto"
         },
         text: {
           color: overrides?.textColor ?? "accent",
           fontSize: overrides?.textFontSize ?? "auto",
-          weight: "regular"
+          weight: "regular",
+          outline: "auto"
         },
-        shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15 },
+        shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15, outline: "auto" },
         blur: { mode: "gaussian", radius: { mode: "auto" } },
         highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
       },

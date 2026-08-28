@@ -21,17 +21,21 @@ import type { ArrowEndStyle, OverlayRow } from "@pwrsnap/shared";
 import {
   computeArrowGeometry,
   computeStemDashArray,
+  outlineStripeDashArray,
+  outlineStripeDashArrayForStemDash,
   readArrowDoubleEnded,
   readArrowEndStyle,
   readArrowStemStyle,
   readHighlightBlend,
   readHighlightColor,
   readHighlightOpacity,
+  readOverlayOutline,
   readOverlayRotation,
   readOverlayThickness,
   readShapeFilled,
   readShapeKind,
   readShapeSkewDeg,
+  readTextOverlayOutline,
   readTextWeight
 } from "@pwrsnap/shared";
 
@@ -172,10 +176,17 @@ function arrowSvg(
   // the requested override so a Large thickness on a tiny arrow
   // still renders proportionally.
   const strokeWidthPx = headGeom.strokeWidthPx;
-  // White outline always drawn (per plan §"Smart arrow algorithm"):
-  // legibility on busy images. The outline is a slightly thicker
-  // pass underneath the accent.
+  // Contrast border (outline) under the colored glyph. Legacy rows —
+  // no `outline` field — resolve to the historical always-white halo
+  // and must bake byte-identically; the new modes swap the color,
+  // stripe it, or drop it. The width formula is unchanged in every
+  // mode (no independent border sizing by design).
   const outlineWidth = Math.max(1.5, strokeWidthPx * 0.25);
+  const resolvedOutline = readOverlayOutline(data, "white");
+  const haloColor =
+    resolvedOutline.kind === "solid" && resolvedOutline.color === "black"
+      ? "black"
+      : "white";
 
   // Stem endpoints depend on the head style (see live editor's
   // `stemEndpointFor` — keep this in sync). Filled / open triangles
@@ -200,19 +211,47 @@ function arrowSvg(
   const stemDashRaw = computeStemDashArray(stemStyle, stemLengthPx, strokeWidthPx);
   const stemDashAttr = stemDashRaw === null ? "" : ` stroke-dasharray="${stemDashRaw}"`;
 
-  const halo = arrowHeadHaloSvg(endStyle, headGeom, imageWidthPx, imageHeightPx, outlineWidth, strokeWidthPx);
+  // Stripe: black dash pattern painted over the (solid-or-stem-dashed)
+  // white halo. On dashed / dotted stems the black phase splits each
+  // stem dash in half so black never lands in a stem gap; the head
+  // glyphs use the plain halo-width-scaled pattern.
+  const haloWidthPx = strokeWidthPx + outlineWidth * 2;
+  const headStripeDash =
+    resolvedOutline.kind === "stripe" ? outlineStripeDashArray(haloWidthPx) : null;
+  const stemStripeDash =
+    resolvedOutline.kind !== "stripe"
+      ? null
+      : stemDashRaw !== null
+        ? outlineStripeDashArrayForStemDash(stemDashRaw)
+        : outlineStripeDashArray(haloWidthPx);
+
+  const hasOutline = resolvedOutline.kind !== "none";
+  const halo = hasOutline
+    ? arrowHeadHaloSvg(endStyle, headGeom, imageWidthPx, imageHeightPx, outlineWidth, strokeWidthPx, haloColor, headStripeDash)
+    : "";
   const head = arrowHeadSvg(endStyle, headGeom, imageWidthPx, imageHeightPx, strokeWidthPx, fillColor);
-  const haloTail = tailGeom !== null
-    ? arrowHeadHaloSvg(endStyle, tailGeom, imageWidthPx, imageHeightPx, outlineWidth, strokeWidthPx)
+  const haloTail = tailGeom !== null && hasOutline
+    ? arrowHeadHaloSvg(endStyle, tailGeom, imageWidthPx, imageHeightPx, outlineWidth, strokeWidthPx, haloColor, headStripeDash)
     : "";
   const headTail = tailGeom !== null
     ? arrowHeadSvg(endStyle, tailGeom, imageWidthPx, imageHeightPx, strokeWidthPx, fillColor)
     : "";
 
+  // Stem halo — same two-line layout the pre-outline template used so
+  // legacy rows (haloColor="white", no stripe) emit byte-identical SVG.
+  const stemHalo = !hasOutline
+    ? ""
+    : `<line x1="${stemEndAtFrom.x}" y1="${stemEndAtFrom.y}" x2="${stemEndAtTo.x}" y2="${stemEndAtTo.y}"
+          stroke="${haloColor}" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linecap="round"${stemDashAttr} fill="none" />` +
+      (stemStripeDash === null
+        ? ""
+        : `
+    <line x1="${stemEndAtFrom.x}" y1="${stemEndAtFrom.y}" x2="${stemEndAtTo.x}" y2="${stemEndAtTo.y}"
+          stroke="black" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linecap="round" stroke-dasharray="${stemStripeDash}" fill="none" />`);
+
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
   <g stroke-linejoin="round">
-    <line x1="${stemEndAtFrom.x}" y1="${stemEndAtFrom.y}" x2="${stemEndAtTo.x}" y2="${stemEndAtTo.y}"
-          stroke="white" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linecap="round"${stemDashAttr} fill="none" />
+    ${stemHalo}
     ${halo}
     ${haloTail}
     <line x1="${stemEndAtFrom.x}" y1="${stemEndAtFrom.y}" x2="${stemEndAtTo.x}" y2="${stemEndAtTo.y}"
@@ -254,7 +293,14 @@ function arrowHeadHaloSvg(
   imageWidthPx: number,
   imageHeightPx: number,
   outlineWidth: number,
-  strokeWidthPx: number
+  strokeWidthPx: number,
+  /** Border color for the halo pass. Legacy rows resolve to "white"
+   *  and must emit byte-identical SVG to the pre-outline template. */
+  haloColor: string,
+  /** Non-null for striped borders: a black twin of the halo element
+   *  is appended with this dash pattern; the colored glyph on top
+   *  leaves only the outline band showing the alternation. */
+  stripeDash: string | null
 ): string {
   const toPx = pxOf(geom.to, imageWidthPx, imageHeightPx);
   const baseLeftPx = pxOf(geom.baseLeft, imageWidthPx, imageHeightPx);
@@ -262,26 +308,39 @@ function arrowHeadHaloSvg(
   switch (style) {
     case "filled-triangle": {
       // Filled head: interior is colored, halo only needs to peek
-      // at the rim. fill="white" works because the colored polygon
+      // at the rim. Solid fill works because the colored polygon
       // on top covers everything but the rim.
       const polygon = `${toPx.x},${toPx.y} ${baseLeftPx.x},${baseLeftPx.y} ${baseRightPx.x},${baseRightPx.y}`;
-      return `<polygon points="${polygon}" fill="white" stroke="white" stroke-width="${outlineWidth * 2}" stroke-linejoin="round" />`;
+      const base = `<polygon points="${polygon}" fill="${haloColor}" stroke="${haloColor}" stroke-width="${outlineWidth * 2}" stroke-linejoin="round" />`;
+      if (stripeDash === null) return base;
+      return `${base}
+    <polygon points="${polygon}" fill="none" stroke="black" stroke-width="${outlineWidth * 2}" stroke-linejoin="round" stroke-dasharray="${stripeDash}" />`;
     }
     case "open-triangle": {
       // Hollow head: interior must stay transparent. fill="none" +
-      // wider stroke so the white peeks `outlineWidth` past the
+      // wider stroke so the halo peeks `outlineWidth` past the
       // colored stroke on BOTH sides (outside edge for legibility
       // against the background, inside edge for legibility against
       // whatever shows through the hollow). Mirrors the live editor's
       // ArrowHeadHalo open-triangle case — keep in sync.
       const polygon = `${toPx.x},${toPx.y} ${baseLeftPx.x},${baseLeftPx.y} ${baseRightPx.x},${baseRightPx.y}`;
-      return `<polygon points="${polygon}" fill="none" stroke="white" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linejoin="round" />`;
+      const base = `<polygon points="${polygon}" fill="none" stroke="${haloColor}" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linejoin="round" />`;
+      if (stripeDash === null) return base;
+      return `${base}
+    <polygon points="${polygon}" fill="none" stroke="black" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linejoin="round" stroke-dasharray="${stripeDash}" />`;
     }
-    case "line":
-      return `<line x1="${baseLeftPx.x}" y1="${baseLeftPx.y}" x2="${baseRightPx.x}" y2="${baseRightPx.y}" stroke="white" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linecap="round" />`;
+    case "line": {
+      const base = `<line x1="${baseLeftPx.x}" y1="${baseLeftPx.y}" x2="${baseRightPx.x}" y2="${baseRightPx.y}" stroke="${haloColor}" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linecap="round" />`;
+      if (stripeDash === null) return base;
+      return `${base}
+    <line x1="${baseLeftPx.x}" y1="${baseLeftPx.y}" x2="${baseRightPx.x}" y2="${baseRightPx.y}" stroke="black" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linecap="round" stroke-dasharray="${stripeDash}" />`;
+    }
     case "dot": {
       const r = strokeWidthPx * 1.5;
-      return `<circle cx="${toPx.x}" cy="${toPx.y}" r="${r + outlineWidth}" fill="white" stroke="white" stroke-width="${outlineWidth * 2}" />`;
+      const base = `<circle cx="${toPx.x}" cy="${toPx.y}" r="${r + outlineWidth}" fill="${haloColor}" stroke="${haloColor}" stroke-width="${outlineWidth * 2}" />`;
+      if (stripeDash === null) return base;
+      return `${base}
+    <circle cx="${toPx.x}" cy="${toPx.y}" r="${r + outlineWidth}" fill="none" stroke="black" stroke-width="${outlineWidth * 2}" stroke-dasharray="${stripeDash}" />`;
     }
   }
 }
@@ -349,6 +408,18 @@ function shapeSvg(
   const fillColor = data.color === "auto" ? AUTO_ACCENT_HEX : data.color;
   const filled = readShapeFilled(data);
   const shape = readShapeKind(data);
+  // Contrast border resolution — legacy stroked shapes keep the
+  // always-white halo (byte-identical emit); legacy filled shapes
+  // keep no rim. See `readOverlayOutline` in @pwrsnap/shared.
+  const resolvedOutline = readOverlayOutline(data, "white");
+  const haloColor =
+    resolvedOutline.kind === "solid" && resolvedOutline.color === "black"
+      ? "black"
+      : "white";
+  const stripeDash =
+    resolvedOutline.kind === "stripe"
+      ? outlineStripeDashArray(strokeWidthPx + outlinePx * 2)
+      : null;
   // Rotation transform — same convention as ShapeGlyph (live editor):
   // SVG `rotate(deg cx cy)` in pixel-space with cx/cy at the bbox
   // geometric center. `transform` is omitted entirely when rotation
@@ -362,11 +433,17 @@ function shapeSvg(
   // Per-shape primitive emitters. Stroke + halo branches share the
   // same primitive choice so editor preview = baked output for every
   // shape kind.
-  function strokedPrimitive(stroke: string, strokeWidth: number): string {
+  function strokedPrimitive(
+    stroke: string,
+    strokeWidth: number,
+    dasharray: string | null = null
+  ): string {
+    // Empty for solid strokes so legacy rows emit byte-identical SVG.
+    const dashAttr = dasharray === null ? "" : ` stroke-dasharray="${dasharray}"`;
     switch (shape) {
       case "circle":
       case "oval":
-        return `<ellipse cx="${cx}" cy="${cy}" rx="${wPx / 2}" ry="${hPx / 2}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" />`;
+        return `<ellipse cx="${cx}" cy="${cy}" rx="${wPx / 2}" ry="${hPx / 2}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}"${dashAttr} />`;
       case "parallelogram": {
         const skewRad = (readShapeSkewDeg(data) * Math.PI) / 180;
         const shearPx = (hPx / 2) * Math.tan(skewRad);
@@ -376,12 +453,12 @@ function shapeSvg(
         const yB = yPx + hPx;
         const points =
           `${xL + shearPx},${yT} ${xR + shearPx},${yT} ${xR - shearPx},${yB} ${xL - shearPx},${yB}`;
-        return `<polygon points="${points}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" />`;
+        return `<polygon points="${points}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}"${dashAttr} />`;
       }
       case "rect":
       case "square":
       default:
-        return `<rect x="${xPx}" y="${yPx}" width="${wPx}" height="${hPx}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" />`;
+        return `<rect x="${xPx}" y="${yPx}" width="${wPx}" height="${hPx}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}"${dashAttr} />`;
     }
   }
 
@@ -409,20 +486,45 @@ function shapeSvg(
   }
 
   if (filled) {
-    // Solid fill — single primitive, no stroke / halo. A halo around
-    // a solid fill would just visually expand the same color outward
-    // by a stroke-width without adding contrast.
+    // Solid fill. Legacy rows (and Border = Off) draw the bare
+    // primitive — a same-color halo would just expand the fill without
+    // adding contrast. The explicit border modes draw a contrast RIM
+    // under the fill: a centered stroke of 2×outlinePx, whose inner
+    // half the fill covers, leaving outlinePx of rim visible — the
+    // same reach as a stroked shape's halo.
+    const rim =
+      resolvedOutline.kind === "legacy" || resolvedOutline.kind === "none"
+        ? ""
+        : resolvedOutline.kind === "stripe"
+          ? `${strokedPrimitive("white", outlinePx * 2)}
+    ${strokedPrimitive("black", outlinePx * 2, outlineStripeDashArray(outlinePx * 2))}
+    `
+          : `${strokedPrimitive(haloColor, outlinePx * 2)}
+    `;
     return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
   <g${groupTransform}>
-    ${filledPrimitive()}
+    ${rim}${filledPrimitive()}
   </g>
 </svg>`;
   }
 
+  if (resolvedOutline.kind === "none") {
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
+  <g stroke-linejoin="round"${groupTransform}>
+    ${strokedPrimitive(fillColor, strokeWidthPx)}
+  </g>
+</svg>`;
+  }
+
+  const stripeHalo =
+    stripeDash === null
+      ? ""
+      : `${strokedPrimitive("black", strokeWidthPx + outlinePx * 2, stripeDash)}
+    `;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
   <g stroke-linejoin="round"${groupTransform}>
-    ${strokedPrimitive("white", strokeWidthPx + outlinePx * 2)}
-    ${strokedPrimitive(fillColor, strokeWidthPx)}
+    ${strokedPrimitive(haloColor, strokeWidthPx + outlinePx * 2)}
+    ${stripeHalo}${strokedPrimitive(fillColor, strokeWidthPx)}
   </g>
 </svg>`;
 }
@@ -567,15 +669,32 @@ function textSvg(
       ? `<g transform="rotate(${rotateDeg} ${cxPivot} ${cyPivot})">`
       : "";
   const textCloseG = rotateDeg !== 0 ? "</g>" : "";
+  // Contrast border → glyph stroke. Legacy rows keep the historical
+  // translucent rgba(0,0,0,0.7) (byte-identical attrs); the solid
+  // modes swap the color; "none" drops the stroke block entirely.
+  // Stripe is coerced to solid black by readTextOverlayOutline.
+  const resolvedOutline = readTextOverlayOutline(data);
+  const strokeColor =
+    resolvedOutline.kind === "legacy"
+      ? "rgba(0,0,0,0.7)"
+      : resolvedOutline.kind === "solid"
+        ? resolvedOutline.color === "black"
+          ? "#000000"
+          : "#ffffff"
+        : null;
+  const strokeAttrs =
+    strokeColor === null
+      ? ""
+      : `
+        stroke="${strokeColor}"
+        stroke-width="${fontSizePx * 0.08}"
+        paint-order="stroke"`;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
   ${textOpenG}<text x="${xPx}" y="${yPx}"
         font-family="Helvetica, Arial, sans-serif"
         font-size="${fontSizePx}"
         font-weight="${fontWeight}"
-        fill="${accent}"
-        stroke="rgba(0,0,0,0.7)"
-        stroke-width="${fontSizePx * 0.08}"
-        paint-order="stroke"
+        fill="${accent}"${strokeAttrs}
         dominant-baseline="central">${lines}</text>${textCloseG}
 </svg>`;
 }

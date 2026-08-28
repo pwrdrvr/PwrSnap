@@ -135,10 +135,11 @@ function makeSettings(overrides?: {
           thickness: "auto",
           endStyle: "filled-triangle",
           stemStyle: "solid",
-          doubleEnded: false
+          doubleEnded: false,
+          outline: "auto"
         },
-        text: { color: "accent", fontSize: "auto", weight: "regular" },
-        shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15 },
+        text: { color: "accent", fontSize: "auto", weight: "regular", outline: "auto" },
+        shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15, outline: "auto" },
         blur: { mode: "gaussian", radius: { mode: "auto" } },
         highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
       },
@@ -170,17 +171,20 @@ const DEFAULT_ARROW_STYLE: ArrowToolStyle = {
   thickness: "auto",
   endStyle: "filled-triangle",
   stemStyle: "solid",
-  doubleEnded: false
+  doubleEnded: false,
+  outline: "auto"
 };
 const DEFAULT_TEXT_STYLE: TextToolStyle = {
   color: "accent",
   fontSize: "auto",
-  weight: "regular"
+  weight: "regular",
+  outline: "auto"
 };
 const DEFAULT_RECT_STYLE: ShapeToolStyle = {
   color: "accent",
   thickness: "auto",
-  filled: false, shape: "rect", skewDeg: 15
+  filled: false, shape: "rect", skewDeg: 15,
+  outline: "auto"
 };
 const DEFAULT_BLUR_STYLE: BlurToolStyle = {
   mode: "gaussian",

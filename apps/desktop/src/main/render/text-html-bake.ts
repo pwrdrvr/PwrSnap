@@ -59,6 +59,7 @@ import type { Overlay } from "@pwrsnap/shared";
 import {
   computeTextHtmlStyle,
   readOverlayRotation,
+  readTextOverlayOutline,
   readTextWeight,
   serializeStyleAttribute
 } from "@pwrsnap/shared";
@@ -176,7 +177,11 @@ export function buildBakeHtml(args: {
     // horizontal text while the editor showed it rotated. 0 is a no-op
     // in the helper (it skips the rotate fragment), so unrotated rows
     // bake bit-identically to before.
-    rotation: readOverlayRotation(data)
+    rotation: readOverlayRotation(data),
+    // Contrast-border → glyph stroke. Legacy rows (no outline field)
+    // resolve to the historical translucent-black stroke inside the
+    // helper, so pre-outline captures bake bit-identically.
+    outline: readTextOverlayOutline(data)
   });
   const wrapperCss = serializeStyleAttribute(style.wrapper);
   const glyphCss = serializeStyleAttribute(style.glyph);

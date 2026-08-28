@@ -150,7 +150,16 @@ export async function fileResponse(
     etag,
     "last-modified": lastModified,
     "accept-ranges": "bytes",
-    "cache-control": cacheControl
+    "cache-control": cacheControl,
+    // The renderer's document origin (dev server / file://) differs
+    // from the pwrsnap-* schemes, so a canvas that draws a capture
+    // <img> is tainted unless the load is a CORS one. The editor's
+    // auto contrast-border sampler reads pixels via a
+    // crossorigin="anonymous" image; this header is what lets that
+    // read succeed. All of these schemes serve the user's own local
+    // content into our own sandboxed renderers, so a wildcard grants
+    // nothing new.
+    "access-control-allow-origin": "*"
   } as const;
 
   // Conditional GET → 304 (no body, no file open). If-None-Match wins

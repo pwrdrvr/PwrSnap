@@ -29,6 +29,7 @@
 import { useLayoutEffect, useRef, type CSSProperties, type ReactElement } from "react";
 import {
   computeTextHtmlStyle,
+  type ResolvedTextOutline,
   type TextSizeBucket
 } from "@pwrsnap/shared";
 import { clearGlyphSize, reportGlyphSize } from "./text-measure-registry";
@@ -74,6 +75,10 @@ export interface TextHtmlProps {
    *  the wrapper's CSS transform. Pivot is the visible body-box
    *  center (see computeTextHtmlStyle for the math). */
   rotation?: number | undefined;
+  /** Resolved contrast-border for the glyph stroke. Omitted →
+   *  legacy translucent-black stroke (see computeTextHtmlStyle).
+   *  Callers resolve rows via `readTextOverlayOutline`. */
+  outline?: ResolvedTextOutline | undefined;
   /** Optional CSS z-index applied to the wrapper div. Persisted
    *  text overlays pass `row.z_index` for cross-kind stacking
    *  against blur / arrow / rect / highlight — all participate
@@ -100,6 +105,7 @@ export function TextHtml(props: TextHtmlProps): ReactElement {
     canvasWidthPx: props.imageWidthPx,
     canvasHeightPx: props.imageHeightPx,
     canvasCssHeight: props.canvasCssHeight,
+    ...(props.outline !== undefined ? { outline: props.outline } : {}),
     ...(props.rotation !== undefined ? { rotation: props.rotation } : {})
   });
   // pointer-events: none on the wrapper so clicks fall through to the

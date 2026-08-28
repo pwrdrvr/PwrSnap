@@ -2533,10 +2533,16 @@ export type ToolSizePreset = "auto" | "small" | "medium" | "large" | "x-large";
 // the on-disk overlay field share the same value space by design —
 // picking "open-triangle" in the popover writes "open-triangle" into
 // the overlay row.
-export type { ArrowEndStyle, ArrowStemStyle, ShapeKind } from "./overlay-schemas";
+export type {
+  ArrowEndStyle,
+  ArrowStemStyle,
+  OverlayOutlineMode,
+  ShapeKind
+} from "./overlay-schemas";
 import type {
   ArrowEndStyle,
   ArrowStemStyle,
+  OverlayOutlineMode,
   ShapeKind
 } from "./overlay-schemas";
 export type TextFontWeight = "regular" | "bold";
@@ -2555,12 +2561,21 @@ export type ArrowToolStyle = {
   endStyle: ArrowEndStyle;
   stemStyle: ArrowStemStyle;
   doubleEnded: boolean;
+  /** Contrast-border mode written verbatim into the overlay row's
+   *  `outline` field at commit ("auto" additionally samples + stamps
+   *  `outlineAuto`). Same value space as the persisted field by
+   *  design — see `OverlayOutlineMode` in overlay-schemas.ts. */
+  outline: OverlayOutlineMode;
 };
 
 export type TextToolStyle = {
   color: ToolColor;
   fontSize: ToolSizePreset | number;
   weight: TextFontWeight;
+  /** See ArrowToolStyle.outline. The text picker doesn't offer
+   *  "stripe" (illegible at glyph stroke widths); renderers coerce a
+   *  stray stripe value to a solid stroke. */
+  outline: OverlayOutlineMode;
 };
 
 export type ShapeToolStyle = {
@@ -2576,6 +2591,8 @@ export type ShapeToolStyle = {
    *  Ignored for every other shape kind, but persisted so that picking
    *  Parallelogram later restores the user's last-used skew. */
   skewDeg: number;
+  /** See ArrowToolStyle.outline. */
+  outline: OverlayOutlineMode;
 };
 
 export type BlurToolStyle = {

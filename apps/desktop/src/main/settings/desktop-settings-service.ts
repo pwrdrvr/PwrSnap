@@ -41,6 +41,7 @@ import type {
   LocalAgentClientGrant,
   LocalAgentRoleProfile,
   LocalAgentRoleBudgets,
+  OverlayOutlineMode,
   ShapeKind,
   ShapeToolStyle,
   SensitiveDataPattern,
@@ -281,19 +282,25 @@ function defaultEditorSettings(): EditorSettings {
         thickness: "auto",
         endStyle: "filled-triangle",
         stemStyle: "solid",
-        doubleEnded: false
+        doubleEnded: false,
+        // Contrast border defaults to Auto (sample the background,
+        // pick black on light pages / white elsewhere) — the fixed
+        // always-white halo is exactly what Auto fixes.
+        outline: "auto"
       },
       text: {
         color: "accent",
         fontSize: "auto",
-        weight: "regular"
+        weight: "regular",
+        outline: "auto"
       },
       shape: {
         color: "accent",
         thickness: "auto",
         filled: false,
         shape: DEFAULT_SHAPE_KIND,
-        skewDeg: DEFAULT_PARALLELOGRAM_SKEW_DEG
+        skewDeg: DEFAULT_PARALLELOGRAM_SKEW_DEG,
+        outline: "auto"
       },
       blur: {
         mode: "gaussian",
@@ -453,6 +460,22 @@ function pickTextFontWeight(value: unknown, fallback: TextFontWeight): TextFontW
   return fallback;
 }
 
+function pickOverlayOutlineMode(
+  value: unknown,
+  fallback: OverlayOutlineMode
+): OverlayOutlineMode {
+  if (
+    value === "auto" ||
+    value === "white" ||
+    value === "black" ||
+    value === "stripe" ||
+    value === "none"
+  ) {
+    return value;
+  }
+  return fallback;
+}
+
 function pickBlurEffectMode(value: unknown, fallback: BlurEffectMode): BlurEffectMode {
   if (value === "gaussian" || value === "pixelate" || value === "redact") return value;
   return fallback;
@@ -483,7 +506,8 @@ function parseArrowToolStyle(raw: unknown, defaults: ArrowToolStyle): ArrowToolS
     thickness: pickToolSizePreset(raw.thickness, defaults.thickness),
     endStyle: pickArrowEndStyle(raw.endStyle, defaults.endStyle),
     stemStyle: pickArrowStemStyle(raw.stemStyle, defaults.stemStyle),
-    doubleEnded: pickBoolean(raw.doubleEnded, defaults.doubleEnded)
+    doubleEnded: pickBoolean(raw.doubleEnded, defaults.doubleEnded),
+    outline: pickOverlayOutlineMode(raw.outline, defaults.outline)
   };
 }
 
@@ -492,7 +516,8 @@ function parseTextToolStyle(raw: unknown, defaults: TextToolStyle): TextToolStyl
   return {
     color: pickToolColor(raw.color, defaults.color),
     fontSize: pickToolSizePreset(raw.fontSize, defaults.fontSize),
-    weight: pickTextFontWeight(raw.weight, defaults.weight)
+    weight: pickTextFontWeight(raw.weight, defaults.weight),
+    outline: pickOverlayOutlineMode(raw.outline, defaults.outline)
   };
 }
 
@@ -520,7 +545,8 @@ function parseShapeToolStyle(raw: unknown, defaults: ShapeToolStyle): ShapeToolS
     thickness: pickToolSizePreset(raw.thickness, defaults.thickness),
     filled: pickBoolean(raw.filled, defaults.filled),
     shape: pickShapeKind(raw.shape, defaults.shape),
-    skewDeg: pickFiniteNumber(raw.skewDeg, defaults.skewDeg)
+    skewDeg: pickFiniteNumber(raw.skewDeg, defaults.skewDeg),
+    outline: pickOverlayOutlineMode(raw.outline, defaults.outline)
   };
 }
 

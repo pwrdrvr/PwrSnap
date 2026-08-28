@@ -43,6 +43,8 @@ import type {
   CaptureRecord,
   HighlightToolStyle,
   Overlay,
+  OverlayOutlineAutoColor,
+  OverlayOutlineMode,
   OverlayRow,
   PwrSnapError,
   Result,
@@ -75,6 +77,11 @@ import { RasterResizeHandles } from "./RasterResizeHandles";
 import { affineTransformsEqual, HOME_SNAP_SCREEN_PX, snapToHome } from "./raster-resize";
 import { computeEditorImageStyle } from "./editor-image-style";
 import { resolveToolColor, storedColorToToolColor } from "./resolveToolColor";
+import {
+  sampleOutlineAutoColor,
+  warmOutlineSampler,
+  type OutlineSampleContext
+} from "./outline-auto-sampler";
 import { shapeStrokeGeometry } from "./shape-stroke-geometry";
 import { TOOLS, type Tool } from "./editor-tools";
 import { useZoomPan, type ZoomMode } from "./useZoomPan";
@@ -266,7 +273,8 @@ function resolveDraftStyleForActiveTool(
         endStyle: activeStyle.style.endStyle,
         stemStyle: activeStyle.style.stemStyle,
         doubleEnded: activeStyle.style.doubleEnded,
-        thickness: activeStyle.style.thickness
+        thickness: activeStyle.style.thickness,
+        outline: activeStyle.style.outline
       };
     case "shape":
       return {
@@ -274,7 +282,8 @@ function resolveDraftStyleForActiveTool(
         thickness: activeStyle.style.thickness,
         filled: activeStyle.style.filled,
         shape: activeStyle.style.shape,
-        skewDeg: activeStyle.style.skewDeg
+        skewDeg: activeStyle.style.skewDeg,
+        outline: activeStyle.style.outline
       };
     case "highlight":
       return {
@@ -287,6 +296,49 @@ function resolveDraftStyleForActiveTool(
     default:
       return undefined;
   }
+}
+
+/** Live auto-border resolution for the in-flight draft. When the
+ *  active tool's Border is "auto", sample the background under the
+ *  draft's CURRENT geometry each render (the draft state updates per
+ *  pointermove, so the border flips black/white live as the drag
+ *  crosses light/dark regions — and the commit persists the same
+ *  pick). Probe overlays are minimal: only geometry matters to the
+ *  sample-ring generator. The shape probe uses the raw drag bbox
+ *  rather than rectFromDrag's 1:1-locked rect — close enough for a
+ *  luminance ring; the commit samples the real rect. */
+function draftStyleWithLiveOutline(
+  style: DraftStyle | undefined,
+  draft: Draft | null,
+  resolve: (data: Overlay) => OverlayOutlineAutoColor | null
+): DraftStyle | undefined {
+  if (style === undefined || style.outline !== "auto" || draft === null) {
+    return style;
+  }
+  let probe: Overlay | null = null;
+  if (draft.kind === "arrow") {
+    probe = {
+      kind: "arrow",
+      from: { x: draft.fromXn, y: draft.fromYn },
+      to: { x: draft.toXn, y: draft.toYn },
+      color: "auto"
+    };
+  } else if (draft.kind === "shape-drag" && draft.tool === "shape") {
+    probe = {
+      kind: "shape",
+      rect: {
+        x: Math.min(draft.startXn, draft.curXn),
+        y: Math.min(draft.startYn, draft.curYn),
+        w: Math.abs(draft.curXn - draft.startXn),
+        h: Math.abs(draft.curYn - draft.startYn)
+      },
+      color: "auto"
+    };
+  }
+  if (probe === null) return style;
+  const sampled = resolve(probe);
+  if (sampled === null) return style;
+  return { ...style, outlineAuto: sampled };
 }
 
 /** Phase 3.5 — extract a GeometryUpdate from an overlay's `data`,
@@ -468,7 +520,11 @@ function selectedOverlayToToolStyle(
         endStyle: data.endStyle ?? defaults.arrow.endStyle,
         stemStyle: data.stemStyle ?? defaults.arrow.stemStyle,
         doubleEnded: data.doubleEnded ?? defaults.arrow.doubleEnded,
-        thickness: data.thickness ?? defaults.arrow.thickness
+        thickness: data.thickness ?? defaults.arrow.thickness,
+        // Legacy rows render the always-white halo — highlight the
+        // control that matches what's actually painted, not the
+        // active tool's default.
+        outline: data.outline ?? "white"
       }
     };
   }
@@ -484,7 +540,10 @@ function selectedOverlayToToolStyle(
         skewDeg:
           readShapeKind(data) === "parallelogram"
             ? readShapeSkewDeg(data)
-            : defaults.shape.skewDeg
+            : defaults.shape.skewDeg,
+        // Legacy stroked shapes paint the white halo; legacy filled
+        // shapes paint no rim (Off is the honest projection).
+        outline: data.outline ?? (readShapeFilled(data) ? "none" : "white")
       }
     };
   }
@@ -520,7 +579,10 @@ function selectedOverlayToToolStyle(
         fontSize: data.size,
         // Legacy rows render at the historic semi-bold fallback when the
         // optional field is absent. Bold is the closest editable control.
-        weight: data.weight ?? "bold"
+        weight: data.weight ?? "bold",
+        // Legacy text renders the translucent black stroke — Black is
+        // the closest editable control.
+        outline: data.outline ?? "black"
       }
     };
   }
@@ -641,6 +703,16 @@ function placedBlurRadius(
  * the standalone popover, Properties tab, and manual Layers accordions share
  * one correct persistence and undo path.
  */
+function isOverlayOutlineMode(value: unknown): value is OverlayOutlineMode {
+  return (
+    value === "auto" ||
+    value === "white" ||
+    value === "black" ||
+    value === "stripe" ||
+    value === "none"
+  );
+}
+
 export function layerStyleUpdate(
   current: OverlayRow,
   field: string,
@@ -650,8 +722,44 @@ export function layerStyleUpdate(
     sourceHeightPx: number;
     canvasWidthPx: number;
     canvasHeightPx: number;
+    /** Samples the background under `data`'s border path for the
+     *  `outline: "auto"` resolution. Optional — panel surfaces
+     *  without a sampler omit it and the row persists auto without a
+     *  resolved pick (renderers fall back to the legacy-look color). */
+    resolveOutlineAuto?: (data: Overlay) => OverlayOutlineAutoColor | null;
   }
 ): LayerStyleUpdate | null {
+  // Border edits patch outline + outlineAuto TOGETHER: picking Auto
+  // stores the sampled pick alongside the mode (the bake reads the
+  // stored pick, never re-samples), and the undo patch restores both
+  // fields so Auto→White→undo brings the old sampled color back.
+  if (
+    (current.data.kind === "arrow" ||
+      current.data.kind === "shape" ||
+      current.data.kind === "text") &&
+    field === "outline"
+  ) {
+    if (!isOverlayOutlineMode(value)) return null;
+    const sampled =
+      value === "auto" ? dims.resolveOutlineAuto?.(current.data) ?? null : null;
+    return {
+      patch: {
+        kind: current.data.kind,
+        outline: value,
+        ...(sampled !== null ? { outlineAuto: sampled } : {})
+      } as Partial<Overlay>,
+      fallbackPreviousPatch: {
+        kind: current.data.kind,
+        ...(current.data.outline !== undefined
+          ? { outline: current.data.outline }
+          : {}),
+        ...(current.data.outlineAuto !== undefined
+          ? { outlineAuto: current.data.outlineAuto }
+          : {})
+      } as Partial<Overlay>,
+      undoField: "outline"
+    };
+  }
   // The text popover's "fontSize" field maps to TextOverlay's `size` +
   // `sizePx` fields. Recompute sizePx for the current canvas so an explicit
   // bucket choice exits "Custom".
@@ -1761,6 +1869,30 @@ export function Editor({
     sourceWidthPx: number;
     sourceHeightPx: number;
   } | null>(null);
+  // Sampling context for the auto contrast-border ("Border: Auto") —
+  // canvas/source dims + the base raster's crop translate, written in
+  // the same render block as `textHitDimsRef` so the commit handlers
+  // (outer scope, run at event time) sample against the dims of the
+  // model currently on screen. Null until the model resolves.
+  const outlineSampleCtxRef = useRef<OutlineSampleContext | null>(null);
+  // Resolve an overlay's auto border pick against the capture's base
+  // raster. Null when the sampler isn't warmed yet (or the capture's
+  // pixels can't be read) — callers omit `outlineAuto` and the
+  // renderers fall back to the legacy-look color.
+  const sampleOutlineAutoForData = useCallback(
+    (data: Overlay): OverlayOutlineAutoColor | null => {
+      const ctx = outlineSampleCtxRef.current;
+      if (ctx === null) return null;
+      return sampleOutlineAutoColor(captureSrcUrl(captureId), data, ctx);
+    },
+    [captureId]
+  );
+  // Warm the sampler's pixel cache as soon as the capture is known so
+  // the first commit (and the live draft preview) can sample
+  // synchronously. Cheap no-op once cached.
+  useEffect(() => {
+    warmOutlineSampler(captureSrcUrl(captureId));
+  }, [captureId]);
   // Zoom/pan bridge — `zoom` (useZoomPan) lives inside EditorLoaded,
   // but the pointer-tool miss branch of the OUTER onPointerDown needs
   // to fall back to drag-to-pan on empty canvas while zoomed in.
@@ -2816,6 +2948,15 @@ export function Editor({
         arrowOverlay.stemStyle = arrowStyleSrc.stemStyle;
         arrowOverlay.doubleEnded = arrowStyleSrc.doubleEnded;
         arrowOverlay.thickness = arrowStyleSrc.thickness;
+        // Border: persist the mode, and for Auto also the sampled
+        // black/white pick — the bake reads the stored pick and never
+        // re-samples (WYSIWYG + deterministic render cache). A cold
+        // sampler omits the pick; renderers fall back to white.
+        arrowOverlay.outline = arrowStyleSrc.outline;
+        if (arrowStyleSrc.outline === "auto") {
+          const sampled = sampleOutlineAutoForData(arrowOverlay);
+          if (sampled !== null) arrowOverlay.outlineAuto = sampled;
+        }
       }
       // Capture the arrow tail in canvas-px so the matching-text
       // affordance can position itself; this lookup needs the live
@@ -2885,6 +3026,12 @@ export function Editor({
           // dead state on every other shape's row.
           if (shapeStyleSrc.shape === "parallelogram") {
             shapeOverlay.skewDeg = shapeStyleSrc.skewDeg;
+          }
+          // Border mode + sampled Auto pick — see the arrow commit.
+          shapeOverlay.outline = shapeStyleSrc.outline;
+          if (shapeStyleSrc.outline === "auto") {
+            const sampled = sampleOutlineAutoForData(shapeOverlay);
+            if (sampled !== null) shapeOverlay.outlineAuto = sampled;
           }
         }
         overlay = shapeOverlay;
@@ -3076,9 +3223,17 @@ export function Editor({
       // so every committed glyph rendered at the hardcoded 600. Now
       // the popover's "weight" field actually changes what gets baked.
       ...(textStyleSrc !== null ? { weight: textStyleSrc.weight } : {}),
+      // Border mode — see the arrow commit; the Auto pick is sampled
+      // below once the full overlay (body included — it sizes the
+      // sampled ring) is assembled.
+      ...(textStyleSrc !== null ? { outline: textStyleSrc.outline } : {}),
       color:
         textStyleSrc !== null ? resolveToolColor(textStyleSrc.color) : "auto"
     };
+    if (textStyleSrc !== null && textStyleSrc.outline === "auto") {
+      const sampled = sampleOutlineAutoForData(overlay);
+      if (sampled !== null) overlay.outlineAuto = sampled;
+    }
     const editingId = draft.editingId;
     setDraft(null);
     if (editingId !== undefined) {
@@ -4126,6 +4281,18 @@ export function Editor({
     sourceWidthPx,
     sourceHeightPx
   };
+  // Same discipline for the auto contrast-border sampler — dims +
+  // crop translate of the model currently on screen (the virtual
+  // uncropped projection when the crop is hidden), so sampling maps
+  // overlay coords the same way the canvas paints them.
+  outlineSampleCtxRef.current = {
+    canvasWidthPx: model.record.width_px,
+    canvasHeightPx: model.record.height_px,
+    sourceWidthPx,
+    sourceHeightPx,
+    rasterTranslateXPx,
+    rasterTranslateYPx
+  };
 
   // RAW (stored / cropped-space) values the Layers panel's `uncrop`
   // needs — it must invert the REAL cropped dims even while the editor
@@ -4579,6 +4746,31 @@ function EditorLoaded({
   // mosaic algorithm operates on the same source bytes so the editor
   // and bake now agree visually block-for-block.
   const editorImageRef = useRef<HTMLImageElement | null>(null);
+
+  // Auto contrast-border resolver for THIS component's surfaces (the
+  // selected-layer style path, the post-move recompute, and the live
+  // draft preview). Mirrors the outer Editor's ref-backed variant but
+  // can be a plain useCallback because every input is a prop here.
+  const resolveOutlineAuto = useCallback(
+    (data: Overlay): OverlayOutlineAutoColor | null =>
+      sampleOutlineAutoColor(captureSrcUrl(record.id), data, {
+        canvasWidthPx: record.width_px,
+        canvasHeightPx: record.height_px,
+        sourceWidthPx,
+        sourceHeightPx,
+        rasterTranslateXPx,
+        rasterTranslateYPx
+      }),
+    [
+      record.id,
+      record.width_px,
+      record.height_px,
+      sourceWidthPx,
+      sourceHeightPx,
+      rasterTranslateXPx,
+      rasterTranslateYPx
+    ]
+  );
 
   const zoom = useZoomPan({
     devicePixelRatio: record.device_pixel_ratio,
@@ -5772,9 +5964,39 @@ function EditorLoaded({
             });
           }
         }
+        // Border: Auto — the stored pick was sampled where the layer
+        // USED to sit. Re-sample at the committed geometry and, if the
+        // background flipped light↔dark, silently persist the new pick
+        // (derived state; deliberately not an undo entry — undoing the
+        // MOVE is what restores the old context).
+        if (
+          (preDrag.data.kind === "arrow" ||
+            preDrag.data.kind === "shape" ||
+            preDrag.data.kind === "text") &&
+          preDrag.data.outline === "auto"
+        ) {
+          const moved = applyGeometryLocally(preDrag.data, geometry);
+          const sampled = moved !== null ? resolveOutlineAuto(moved) : null;
+          if (sampled !== null && sampled !== preDrag.data.outlineAuto) {
+            void dispatchEdit({
+              kind: "updateOverlay",
+              layerId: newId,
+              patch: {
+                kind: preDrag.data.kind,
+                outlineAuto: sampled
+              } as Partial<Overlay>
+            });
+          }
+        }
       })();
     },
-    [dispatchEdit, setSelectionTrustingDispatch, recordStoredGeometry, undoApplyingRef]
+    [
+      dispatchEdit,
+      resolveOutlineAuto,
+      setSelectionTrustingDispatch,
+      recordStoredGeometry,
+      undoApplyingRef
+    ]
   );
 
   // Cleanup effect — drop each live-drag override once the persisted
@@ -5815,7 +6037,8 @@ function EditorLoaded({
         sourceWidthPx,
         sourceHeightPx,
         canvasWidthPx: record.width_px,
-        canvasHeightPx: record.height_px
+        canvasHeightPx: record.height_px,
+        resolveOutlineAuto
       });
       if (update === null) return;
       void (async (): Promise<void> => {
@@ -5854,6 +6077,7 @@ function EditorLoaded({
       dispatchEdit,
       record.height_px,
       record.width_px,
+      resolveOutlineAuto,
       setSelectionTrustingDispatch,
       sourceHeightPx,
       sourceWidthPx,
@@ -6506,7 +6730,11 @@ function EditorLoaded({
             // tools whose draft kind doesn't carry a color (blur is
             // rendered separately by BlurOverlays), this is a no-op.
             // Falls back to undefined → glyph's own --accent default.
-            draftStyle={resolveDraftStyleForActiveTool(toolState.activeStyle)}
+            draftStyle={draftStyleWithLiveOutline(
+              resolveDraftStyleForActiveTool(toolState.activeStyle),
+              draft,
+              resolveOutlineAuto
+            )}
             imageWidthPx={record.width_px}
             imageHeightPx={record.height_px}
             // pwrdrvr/PwrSnap#110: source raster dims drive text
@@ -6620,8 +6848,28 @@ function EditorLoaded({
                 toolState.activeStyle.tool === "text"
                   ? toolState.activeStyle.style
                   : null;
-              const { colorHex, size, weight, storedSizePx, rotation } =
-                resolveTextDraftStyle({ editingOverlay, activeToolStyle });
+              // Border: Auto on a fresh placement samples at the draft's
+              // anchor (body sizes the ring; empty body probes a
+              // one-glyph box). Re-edits read the row's stored pick
+              // inside resolveTextDraftStyle instead.
+              const sampledAutoOutline =
+                editingOverlay === null &&
+                activeToolStyle !== null &&
+                activeToolStyle.outline === "auto"
+                  ? resolveOutlineAuto({
+                      kind: "text",
+                      point: { x: draft.xn, y: draft.yn },
+                      body: draft.body.length > 0 ? draft.body : "M",
+                      size: resolveTextSize(activeToolStyle.fontSize),
+                      color: "auto"
+                    })
+                  : null;
+              const { colorHex, size, weight, storedSizePx, rotation, outline } =
+                resolveTextDraftStyle({
+                  editingOverlay,
+                  activeToolStyle,
+                  sampledAutoOutline
+                });
               return (
                 <TextDraftInput
                   draft={draft}
@@ -6636,6 +6884,7 @@ function EditorLoaded({
                   size={size}
                   weight={weight}
                   rotation={rotation}
+                  outline={outline}
                   onChange={(body) => setDraft({ ...draft, body })}
                   onCommit={() => void commitText()}
                   onCancel={() => setDraft(null)}
@@ -6784,10 +7033,10 @@ function EditorLoaded({
             {
               arrow: toolState.activeStyle.tool === "arrow"
                 ? toolState.activeStyle.style
-                : { color: "accent", thickness: "auto", endStyle: "filled-triangle", stemStyle: "solid", doubleEnded: false },
+                : { color: "accent", thickness: "auto", endStyle: "filled-triangle", stemStyle: "solid", doubleEnded: false, outline: "auto" },
               text: toolState.activeStyle.tool === "text"
                 ? toolState.activeStyle.style
-                : { color: "accent", fontSize: "auto", weight: "regular" },
+                : { color: "accent", fontSize: "auto", weight: "regular", outline: "auto" },
               shape: toolState.activeStyle.tool === "shape"
                 ? toolState.activeStyle.style
                 : {
@@ -6795,7 +7044,8 @@ function EditorLoaded({
                     thickness: "auto",
                     filled: false,
                     shape: "rect",
-                    skewDeg: 15
+                    skewDeg: 15,
+                    outline: "auto"
                   },
               blur: toolState.activeStyle.tool === "blur"
                 ? toolState.activeStyle.style

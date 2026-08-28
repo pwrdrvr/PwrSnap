@@ -185,6 +185,204 @@ export const ArrowStemStyle = z.enum(["solid", "dashed", "dotted"]);
 export type ArrowStemStyle = z.infer<typeof ArrowStemStyle>;
 export const DEFAULT_ARROW_STEM_STYLE: ArrowStemStyle = "solid";
 
+/** Contrast-border ("outline") mode carried by arrow / shape / text
+ *  overlays. The border is the halo painted UNDER the colored glyph so
+ *  it stays legible on busy or same-colored backgrounds.
+ *
+ *    auto   — the editor samples the pixels under the border's own
+ *             path and resolves to black (light background) or white
+ *             (everything else); the resolved pick is persisted in
+ *             `outlineAuto` so the bake never re-samples (WYSIWYG +
+ *             deterministic render cache).
+ *    white  — always white (the historical arrow/shape halo).
+ *    black  — always black.
+ *    stripe — white base with black dashes; reads on any background.
+ *             Arrow + shape only; text renderers coerce it to a solid
+ *             stroke via `readOverlayOutline`'s fallback color.
+ *    none   — no border at all.
+ *
+ *  The field is OPTIONAL for back-compat: rows without it keep their
+ *  historical per-kind behavior (arrow/shape: solid white halo; text:
+ *  the translucent rgba(0,0,0,0.6) glyph stroke), resolved as
+ *  `{ kind: "legacy" }` by `readOverlayOutline` — existing captures
+ *  render byte-identically. */
+export const OverlayOutlineMode = z.enum(["auto", "white", "black", "stripe", "none"]);
+export type OverlayOutlineMode = z.infer<typeof OverlayOutlineMode>;
+
+/** Plain predicate over the enum's value space — the ONE list every
+ *  boundary shares (editor style routing, settings validators, and
+ *  the settings parser all consume this instead of hand-rolling the
+ *  five literals). Kept as a hand-written predicate rather than
+ *  `OverlayOutlineMode.safeParse` because the main-process settings
+ *  validator deliberately avoids runtime zod (see the header of
+ *  settings-validators.ts). */
+export function isOverlayOutlineMode(value: unknown): value is OverlayOutlineMode {
+  return (
+    value === "auto" ||
+    value === "white" ||
+    value === "black" ||
+    value === "stripe" ||
+    value === "none"
+  );
+}
+
+/** Resolved color persisted alongside `outline: "auto"` (see above). */
+export const OverlayOutlineAutoColor = z.enum(["white", "black"]);
+export type OverlayOutlineAutoColor = z.infer<typeof OverlayOutlineAutoColor>;
+
+/** What a renderer should actually paint for an overlay's border.
+ *  `legacy` = the pre-outline-field behavior for that overlay kind
+ *  (arrow/shape: white halo; text: translucent black stroke) — kept
+ *  distinct from `solid` so legacy rows stay byte-identical. */
+export type ResolvedOverlayOutline =
+  | { kind: "legacy" }
+  | { kind: "none" }
+  | { kind: "solid"; color: OverlayOutlineAutoColor }
+  | { kind: "stripe" };
+
+/** Resolve the persisted outline fields into a paint decision.
+ *
+ *  @param autoFallback The color an unresolved `outline: "auto"` (no
+ *  stored `outlineAuto`, e.g. an AI-injected row the editor never
+ *  touched) falls back to. Callers pass the color closest to that
+ *  kind's legacy halo — "white" for arrow/shape, "black" for text —
+ *  so the degenerate case degrades to the familiar look.
+ *
+ *  Text renderers cannot paint a striped glyph stroke
+ *  (`-webkit-text-stroke` is single-color), so they coerce a `stripe`
+ *  result to `{ kind: "solid", color: autoFallback }` at the call
+ *  site — the mode is never offered for text in the UI, this is
+ *  defense against hand-edited rows. */
+export function readOverlayOutline(
+  data: {
+    outline?: OverlayOutlineMode | undefined;
+    outlineAuto?: OverlayOutlineAutoColor | undefined;
+  },
+  autoFallback: OverlayOutlineAutoColor
+): ResolvedOverlayOutline {
+  switch (data.outline) {
+    case undefined:
+      return { kind: "legacy" };
+    case "none":
+      return { kind: "none" };
+    case "white":
+      return { kind: "solid", color: "white" };
+    case "black":
+      return { kind: "solid", color: "black" };
+    case "stripe":
+      return { kind: "stripe" };
+    case "auto":
+      return { kind: "solid", color: data.outlineAuto ?? autoFallback };
+  }
+}
+
+/** Stripe geometry — shared by the live editor (OverlaySvg) and the
+ *  bake (compose.ts) so both paint identical stripes. The stripe is a
+ *  solid WHITE under-stroke plus a BLACK twin with this dash pattern;
+ *  the colored glyph paints on top, so only the outline band shows
+ *  the alternation. Segment length scales with the halo width so
+ *  thick borders get chunky, readable stripes rather than fizz. */
+export function outlineStripeDashArray(haloWidthPx: number): string {
+  const seg = Math.max(4, haloWidthPx * 1.75);
+  return `${seg} ${seg}`;
+}
+
+/** Black-twin stroke pattern for a dashed / dotted stem's striped
+ *  border. `dashoffset` is 0 for the half-dash mode; the dot-alternate
+ *  mode needs a non-zero `stroke-dashoffset` on the black twin. */
+export interface OutlineStripeStemDash {
+  dasharray: string;
+  dashoffset: number;
+}
+
+/** Stripe phase for a dashed / dotted arrow stem. The white halo
+ *  mirrors the stem's own dash pattern (so halo never fills the
+ *  gaps); the black twin must then stripe WITHIN the painted dashes —
+ *  the plain stripe pattern would drop black marks into the empty
+ *  gaps. Two regimes:
+ *
+ *    • Dash-like stems (D ≥ G, e.g. "dashed" at 4×stroke): split each
+ *      dash in half — `D/2` black, then a `D/2 + G` hole — so every
+ *      black segment sits inside a painted white dash.
+ *    • Dot-like stems (D < G, e.g. "dotted" at 0.01×stroke): the
+ *      half-dash degenerates — round linecaps at halo width render a
+ *      near-zero dash as a full-diameter disc that exactly covers the
+ *      white dot, turning the whole stem black. Alternate WHOLE dots
+ *      instead: double the cycle and shift the black dash onto every
+ *      second dot via `stroke-dashoffset = D + G` (pattern position at
+ *      the path start ⇒ black covers dots 1, 3, 5…), yielding
+ *      alternating white/black dots.
+ *
+ *  Input is `computeStemDashArray`'s `"D G"` output; returns null when
+ *  it can't be parsed (caller skips the black pass — the white halo
+ *  alone is the legacy look). */
+export function outlineStripeDashArrayForStemDash(
+  stemDash: string
+): OutlineStripeStemDash | null {
+  const parts = stemDash.trim().split(/\s+/).map(Number);
+  const d = parts[0];
+  const g = parts[1];
+  if (parts.length !== 2 || d === undefined || g === undefined) return null;
+  if (!Number.isFinite(d) || !Number.isFinite(g) || d <= 0 || g < 0) return null;
+  if (d < g) {
+    const cycle = d + g;
+    return { dasharray: `${d} ${2 * cycle - d}`, dashoffset: cycle };
+  }
+  return { dasharray: `${d / 2} ${d / 2 + g}`, dashoffset: 0 };
+}
+
+/** Halo (under-stroke) color for a resolved border, as SVG color
+ *  keywords. The single mapping behind the editor/bake WYSIWYG pair —
+ *  ArrowGlyph/ShapeGlyph (live preview) and arrowSvg/shapeSvg (bake)
+ *  all consume this, so the mapping cannot drift between surfaces.
+ *  Legacy and unresolved-auto both land on the historical white. */
+export function outlineHaloColor(
+  resolved: ResolvedOverlayOutline
+): "white" | "black" {
+  return resolved.kind === "solid" && resolved.color === "black"
+    ? "black"
+    : "white";
+}
+
+/** Solid-mode glyph-stroke hex for a resolved TEXT border, or null
+ *  when the mode isn't solid. The two text surfaces (HTML style via
+ *  computeTextHtmlStyle, and the SVG fallback in compose.ts) share
+ *  this arm; their legacy/none arms deliberately stay local (the
+ *  historical translucent constants differ by surface). */
+export function outlineSolidStrokeHex(
+  resolved: ResolvedOverlayOutline
+): "#000000" | "#ffffff" | null {
+  if (resolved.kind !== "solid") return null;
+  return resolved.color === "black" ? "#000000" : "#ffffff";
+}
+
+/** Auto stroke band for SHAPE glyphs, in the same px space as
+ *  `shortSidePx` — ≈1.2% of the short side, floored at 8px, clamped
+ *  down to ≈0.3%. Single source of truth consumed by the editor's
+ *  `shapeStrokeGeometry` (paint + hit-test + drag rect) and by the
+ *  bake's NEW filled-shape rim, so the rim width matches the preview.
+ *  (The bake's legacy stroked-shape band predates this helper and
+ *  deliberately stays byte-stable — see compose.ts shapeSvg.) */
+export function shapeAutoStrokeWidthPx(shortSidePx: number): number {
+  return Math.min(shortSidePx * 0.012, Math.max(shortSidePx * 0.003, 8));
+}
+
+/** Text can't paint a striped glyph stroke, so its resolved outline
+ *  never carries the stripe branch. */
+export type ResolvedTextOutline = Exclude<ResolvedOverlayOutline, { kind: "stripe" }>;
+
+/** Text-specific resolution: black is the auto fallback (closest to
+ *  the legacy translucent-black stroke), and a stray `stripe` value
+ *  coerces to solid black. */
+export function readTextOverlayOutline(data: {
+  outline?: OverlayOutlineMode | undefined;
+  outlineAuto?: OverlayOutlineAutoColor | undefined;
+}): ResolvedTextOutline {
+  const resolved = readOverlayOutline(data, "black");
+  if (resolved.kind === "stripe") return { kind: "solid", color: "black" };
+  return resolved;
+}
+
 export const ArrowOverlay = z.object({
   kind: z.literal("arrow"),
   from: NormalizedPoint,
@@ -212,7 +410,14 @@ export const ArrowOverlay = z.object({
    *  retroactively rewrite existing captures. See the
    *  `ARROW_STYLE_VERSIONS` table in `arrow.ts` for the recipe per
    *  version. */
-  styleVersion: z.number().int().positive().optional()
+  styleVersion: z.number().int().positive().optional(),
+  /** Contrast-border mode (see `OverlayOutlineMode`). Optional for
+   *  back-compat — legacy rows render the historical solid white
+   *  halo via `readOverlayOutline`'s `legacy` branch. */
+  outline: OverlayOutlineMode.optional(),
+  /** Resolved color for `outline: "auto"`, sampled + persisted by the
+   *  editor at placement/move time so the bake never re-samples. */
+  outlineAuto: OverlayOutlineAutoColor.optional()
 });
 
 /** Mirror of readBlurStyle — applies the legacy default for arrows
@@ -282,7 +487,13 @@ export const ShapeOverlay = z.object({
    *  other shape kind. Read via `readShapeSkewDeg`, which defaults to
    *  DEFAULT_PARALLELOGRAM_SKEW_DEG (15°) for legacy parallelogram rows
    *  without the field. */
-  skewDeg: z.number().finite().optional()
+  skewDeg: z.number().finite().optional(),
+  /** Contrast-border mode (see `OverlayOutlineMode` / ArrowOverlay.outline).
+   *  Legacy stroked shapes render the historical white halo; legacy
+   *  FILLED shapes render no rim (both via the `legacy` branch). */
+  outline: OverlayOutlineMode.optional(),
+  /** Resolved color for `outline: "auto"` (see ArrowOverlay.outlineAuto). */
+  outlineAuto: OverlayOutlineAutoColor.optional()
 });
 
 /** Resolve the persisted shape kind, applying the default for rows
@@ -500,7 +711,14 @@ export const TextOverlay = z.object({
   sizePx: z.number().positive().finite().optional(),
   /** Clockwise rotation in radians around the anchor point. See
    *  RectOverlay.rotation. */
-  rotation: z.number().finite().optional()
+  rotation: z.number().finite().optional(),
+  /** Contrast-border mode (see `OverlayOutlineMode`). Legacy text rows
+   *  render the historical translucent rgba(0,0,0,0.6) glyph stroke
+   *  via the `legacy` branch. `stripe` is not offered for text in the
+   *  UI; renderers coerce it to a solid stroke. */
+  outline: OverlayOutlineMode.optional(),
+  /** Resolved color for `outline: "auto"` (see ArrowOverlay.outlineAuto). */
+  outlineAuto: OverlayOutlineAutoColor.optional()
 });
 
 /** Map the optional `weight` field to a CSS font-weight number.

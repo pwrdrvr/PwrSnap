@@ -47,6 +47,7 @@ import type {
   BlurToolStyle,
   ColorToken,
   HighlightToolStyle,
+  OverlayOutlineMode,
   ShapeKind,
   ShapeToolStyle,
   TextFontWeight,
@@ -191,6 +192,17 @@ const TEXT_WEIGHTS: ReadonlyArray<{ id: TextFontWeight; label: string }> = [
   { id: "regular", label: "Regular" },
   { id: "bold", label: "Bold" }
 ];
+
+/** Border (contrast outline) picker labels. `stripe` is offered for
+ *  arrow + shape only — a striped glyph stroke on text is illegible
+ *  at text stroke widths, so TextBody renders without it. */
+const OUTLINE_LABELS: Record<OverlayOutlineMode, string> = {
+  none: "No border",
+  auto: "Auto border",
+  white: "White border",
+  black: "Black border",
+  stripe: "Striped border"
+};
 
 /** Blur mode picker — full rich-card shape (icon + label + hint copy)
  *  rather than a compact segmented control. Brought back from the pre-
@@ -816,6 +828,11 @@ function ArrowBody({ style, onStyleFieldChange }: ArrowBodyProps): ReactElement 
           <span>Double-ended</span>
         </label>
       </FieldGroup>
+      <OutlineRow
+        value={style.outline}
+        allowStripe
+        onChange={(mode) => onStyleFieldChange("outline", mode)}
+      />
     </>
   );
 }
@@ -893,6 +910,11 @@ function TextBody({
         value={style.weight}
         onChange={(v) => onStyleFieldChange("weight", v)}
       />
+      <OutlineRow
+        value={style.outline}
+        allowStripe={false}
+        onChange={(mode) => onStyleFieldChange("outline", mode)}
+      />
     </>
   );
 }
@@ -958,6 +980,11 @@ function ShapeBody({ style, onStyleFieldChange }: ShapeBodyProps): ReactElement 
           <span>Filled</span>
         </label>
       </FieldGroup>
+      <OutlineRow
+        value={style.outline}
+        allowStripe
+        onChange={(mode) => onStyleFieldChange("outline", mode)}
+      />
       {style.shape === "parallelogram" ? (
         <FieldGroup label={`Skew: ${Math.round(skewDeg)}°`} testid="shape-skew">
           <input
@@ -1302,6 +1329,104 @@ function Segmented<T extends string>({
               onClick={() => onChange(opt.id)}
             >
               {opt.label}
+            </button>
+          );
+        })}
+      </div>
+    </FieldGroup>
+  );
+}
+
+/** Circle glyphs for the White / Black / Stripe border options. Kept
+ *  as inline SVG (matches the icon-row discipline elsewhere in this
+ *  file); the stripe variant needs a per-instance clipPath id so
+ *  several popovers/panels in one DOM don't share a `url(#…)` ref. */
+function OutlineSwatchIcon({
+  variant
+}: {
+  variant: "white" | "black" | "stripe";
+}): ReactElement {
+  const clipId = useId();
+  // Colors come from the same --swatch-* tokens the ColorRow swatches
+  // paint with, so a palette retune moves both rows together. SVG
+  // presentation ATTRIBUTES don't substitute custom properties
+  // (fill="var(--x)" is invalid per SVG2), so the tokens ride on
+  // style={} like the ColorRow's background does. The ring stroke is
+  // the shared --border-strong hairline.
+  const ring: CSSProperties = { stroke: "var(--border-strong)" };
+  if (variant === "white") {
+    return (
+      <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+        <circle cx="7" cy="7" r="6" style={{ fill: "var(--swatch-white)", ...ring }} strokeWidth="1" />
+      </svg>
+    );
+  }
+  if (variant === "black") {
+    return (
+      <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+        <circle cx="7" cy="7" r="6" style={{ fill: "var(--swatch-black)", ...ring }} strokeWidth="1" />
+      </svg>
+    );
+  }
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+      <defs>
+        <clipPath id={clipId}>
+          <circle cx="7" cy="7" r="6" />
+        </clipPath>
+      </defs>
+      <g clipPath={`url(#${clipId})`}>
+        <rect x="0" y="0" width="14" height="14" style={{ fill: "var(--swatch-white)" }} />
+        <rect x="0" y="0" width="3.5" height="14" style={{ fill: "var(--swatch-black)" }} />
+        <rect x="7" y="0" width="3.5" height="14" style={{ fill: "var(--swatch-black)" }} />
+      </g>
+      <circle cx="7" cy="7" r="6" fill="none" style={ring} strokeWidth="1" />
+    </svg>
+  );
+}
+
+interface OutlineRowProps {
+  value: OverlayOutlineMode;
+  /** Text hides the stripe option (illegible at glyph stroke widths). */
+  allowStripe: boolean;
+  onChange(mode: OverlayOutlineMode): void;
+}
+
+/** Border (contrast outline) picker — Off / Auto plus the White /
+ *  Black / Stripe swatches. One shared row for arrow, shape, and text
+ *  so the control reads identically across the annotation kinds. */
+function OutlineRow({ value, allowStripe, onChange }: OutlineRowProps): ReactElement {
+  const options: readonly OverlayOutlineMode[] = allowStripe
+    ? ["none", "auto", "white", "black", "stripe"]
+    : ["none", "auto", "white", "black"];
+  return (
+    <FieldGroup label="Border" testid="outline-row">
+      <div className="pse-seg" role="radiogroup" aria-label="Border">
+        {options.map((mode) => {
+          const active = mode === value;
+          return (
+            <button
+              key={mode}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              aria-label={OUTLINE_LABELS[mode]}
+              title={OUTLINE_LABELS[mode]}
+              data-testid={`outline-${mode}`}
+              className={
+                "pse-seg-btn" +
+                (mode !== "none" && mode !== "auto" ? " pse-outline-sw-btn" : "") +
+                (active ? " is-on" : "")
+              }
+              onClick={() => onChange(mode)}
+            >
+              {mode === "none" ? (
+                "Off"
+              ) : mode === "auto" ? (
+                "Auto"
+              ) : (
+                <OutlineSwatchIcon variant={mode} />
+              )}
             </button>
           );
         })}

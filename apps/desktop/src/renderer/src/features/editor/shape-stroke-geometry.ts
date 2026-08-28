@@ -1,4 +1,8 @@
-import { readOverlayThickness, type OverlayThickness } from "@pwrsnap/shared";
+import {
+  readOverlayThickness,
+  shapeAutoStrokeWidthPx,
+  type OverlayThickness
+} from "@pwrsnap/shared";
 
 /** Stroke geometry for a stroked shape glyph, in the SAME px space as
  *  `shortSidePx`. Single source of truth shared by three call sites that
@@ -33,10 +37,7 @@ export function shapeStrokeGeometry(
   thickness: OverlayThickness | undefined,
   shortSidePx: number
 ): ShapeStrokeGeometry {
-  const autoStrokeWidthPx = Math.min(
-    shortSidePx * 0.012,
-    Math.max(shortSidePx * 0.003, 8)
-  );
+  const autoStrokeWidthPx = shapeAutoStrokeWidthPx(shortSidePx);
   const strokeWidthPx = readOverlayThickness(
     thickness,
     autoStrokeWidthPx,

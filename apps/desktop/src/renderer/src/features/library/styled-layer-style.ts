@@ -29,18 +29,25 @@ import {
 } from "@pwrsnap/shared";
 import { storedColorToToolColor } from "../editor/resolveToolColor";
 
+// Layer-projection outline defaults describe what a LEGACY row (no
+// `outline` field) actually renders, so the panel's Border control
+// highlights the truth: arrows + stroked shapes paint a solid white
+// halo, text paints a (translucent) black stroke, filled shapes paint
+// no rim at all. See the per-branch `outline:` mappings below.
 const DEFAULT_LAYER_ARROW_STYLE: ArrowToolStyle = {
   color: "accent",
   thickness: "auto",
   endStyle: "filled-triangle",
   stemStyle: "solid",
-  doubleEnded: false
+  doubleEnded: false,
+  outline: "white"
 };
 
 const DEFAULT_LAYER_TEXT_STYLE: TextToolStyle = {
   color: "accent",
   fontSize: "auto",
-  weight: "regular"
+  weight: "regular",
+  outline: "black"
 };
 
 const DEFAULT_LAYER_SHAPE_STYLE: ShapeToolStyle = {
@@ -48,7 +55,8 @@ const DEFAULT_LAYER_SHAPE_STYLE: ShapeToolStyle = {
   thickness: "auto",
   filled: false,
   shape: "rect",
-  skewDeg: DEFAULT_PARALLELOGRAM_SKEW_DEG
+  skewDeg: DEFAULT_PARALLELOGRAM_SKEW_DEG,
+  outline: "white"
 };
 
 const DEFAULT_LAYER_BLUR_STYLE: BlurToolStyle = {
@@ -155,7 +163,8 @@ export function styledLayerStyle(
           thickness: arrow.thickness ?? DEFAULT_LAYER_ARROW_STYLE.thickness,
           endStyle: readArrowEndStyle(arrow),
           stemStyle: readArrowStemStyle(arrow),
-          doubleEnded: readArrowDoubleEnded(arrow)
+          doubleEnded: readArrowDoubleEnded(arrow),
+          outline: arrow.outline ?? DEFAULT_LAYER_ARROW_STYLE.outline
         }
       };
     }
@@ -170,7 +179,10 @@ export function styledLayerStyle(
           fontSize: text.size,
           // Old text rows have no explicit field but render at the historic
           // semi-bold weight. Bold is the closest editable representation.
-          weight: text.weight ?? "bold"
+          weight: text.weight ?? "bold",
+          // Legacy text renders the translucent black stroke; Black is
+          // the closest editable representation.
+          outline: text.outline ?? DEFAULT_LAYER_TEXT_STYLE.outline
         }
       };
     }
@@ -189,7 +201,11 @@ export function styledLayerStyle(
           skewDeg:
             kind === "parallelogram"
               ? readShapeSkewDeg(shape)
-              : DEFAULT_LAYER_SHAPE_STYLE.skewDeg
+              : DEFAULT_LAYER_SHAPE_STYLE.skewDeg,
+          // Legacy stroked shapes paint the white halo; legacy FILLED
+          // shapes paint no rim, so Off is the honest projection there.
+          outline:
+            shape.outline ?? (readShapeFilled(shape) ? "none" : DEFAULT_LAYER_SHAPE_STYLE.outline)
         }
       };
     }

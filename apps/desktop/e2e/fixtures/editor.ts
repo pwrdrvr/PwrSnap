@@ -25,6 +25,11 @@ export interface SeedImageCaptureOptions {
   /** Prefix for the generated capture id (e.g. "text-outline"). Helps
    *  identify which spec seeded a row when debugging a shared DB. */
   idPrefix?: string;
+  /** Hex-encoded PNG bytes for the seeded source raster. Defaults to
+   *  the historical 1×1 transparent pixel; specs that exercise
+   *  background-dependent behavior (e.g. the Border Auto sampler,
+   *  which needs OPAQUE pixels to vote) pass a solid-color PNG. */
+  pngHex?: string;
   /** `source_app_name` written on the row. Defaults to "E2E Spec". */
   sourceAppName?: string;
   /** Canvas pixel dims. Default 800×600. */
@@ -41,11 +46,12 @@ export async function seedImageCapture(
     idPrefix = "e2e",
     sourceAppName = "E2E Spec",
     widthPx = 800,
-    heightPx = 600
+    heightPx = 600,
+    pngHex = ONE_BY_ONE_PNG_HEX
   } = opts;
   const dir = await mkdtemp(path.join(os.tmpdir(), `pwrsnap-${idPrefix}-spec-`));
   const pngPath = path.join(dir, "fixture.png");
-  const pngBytes = Buffer.from(ONE_BY_ONE_PNG_HEX, "hex");
+  const pngBytes = Buffer.from(pngHex, "hex");
   await writeFile(pngPath, pngBytes);
 
   const captureId = `${idPrefix}-${Date.now().toString(36)}-${Math.random()

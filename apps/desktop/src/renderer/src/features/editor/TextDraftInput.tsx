@@ -50,6 +50,7 @@ import {
 } from "react";
 import {
   computeTextHtmlStyle,
+  type ResolvedTextOutline,
   type TextSizeBucket
 } from "@pwrsnap/shared";
 import type { DraftText } from "./editor-types";
@@ -68,6 +69,7 @@ export function TextDraftInput({
   size,
   weight,
   rotation,
+  outline,
   onChange,
   onCommit,
   onCancel
@@ -97,6 +99,10 @@ export function TextDraftInput({
    *  yet). Threaded into computeTextHtmlStyle which appends rotate()
    *  on the wrapper transform. */
   rotation?: number | undefined;
+  /** Resolved contrast-border for the glyph stroke — mirrors the
+   *  display surface (TextHtml). Omitted → legacy translucent-black
+   *  stroke. Resolved by `resolveTextDraftStyle`. */
+  outline?: ResolvedTextOutline | undefined;
   onChange: (body: string) => void;
   onCommit: () => void;
   onCancel: () => void;
@@ -116,6 +122,7 @@ export function TextDraftInput({
     canvasWidthPx: imageWidthPx,
     canvasHeightPx: imageHeightPx,
     canvasCssHeight,
+    ...(outline !== undefined ? { outline } : {}),
     ...(rotation !== undefined ? { rotation } : {})
   });
   const wrapperStyle: CSSProperties = {

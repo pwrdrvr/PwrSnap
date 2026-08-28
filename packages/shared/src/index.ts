@@ -18,6 +18,7 @@ export * from "./clipboard-layer-fragment";
 export * from "./clipboard-placement";
 export * from "./clipboard-copy-verbs";
 export * from "./text-glyph-size";
+export * from "./outline-auto";
 export * from "./text-html-style";
 export * from "./sizzle-video-fit";
 export * from "./sizzle-media-trim";

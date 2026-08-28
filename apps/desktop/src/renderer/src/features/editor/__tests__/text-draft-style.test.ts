@@ -41,6 +41,7 @@ function toolStyle(overrides: Partial<TextToolStyle> = {}): TextToolStyle {
     color: "auto",
     fontSize: "medium",
     weight: "bold",
+    outline: "auto",
     ...overrides
   };
 }

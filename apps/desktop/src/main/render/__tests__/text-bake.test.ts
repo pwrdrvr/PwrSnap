@@ -124,3 +124,45 @@ describe("textSvg (bake) — rotation", () => {
     expect(svg).not.toContain("rotate(");
   });
 });
+
+
+describe("textSvg (bake) — Border (contrast outline) modes", () => {
+  test("legacy rows keep the historical translucent-black stroke attrs byte-identically", () => {
+    const svg = textSvgForV2(baseText(), 800, 600, 800, 600);
+    expect(svg).toContain('stroke="rgba(0,0,0,0.7)"');
+    expect(svg).toContain('paint-order="stroke"');
+  });
+
+  test("outline:'black'/'white' swap the stroke to a solid color; width formula unchanged", () => {
+    const black = textSvgForV2({ ...baseText(), outline: "black" }, 800, 600, 800, 600);
+    expect(black).toContain('stroke="#000000"');
+    expect(black).toMatch(/stroke-width="1.6"/); // 20px font × 0.08
+    const white = textSvgForV2({ ...baseText(), outline: "white" }, 800, 600, 800, 600);
+    expect(white).toContain('stroke="#ffffff"');
+  });
+
+  test("outline:'auto' resolves via the stored pick with a black fallback for text", () => {
+    const stored = textSvgForV2(
+      { ...baseText(), outline: "auto", outlineAuto: "white" },
+      800,
+      600,
+      800,
+      600
+    );
+    expect(stored).toContain('stroke="#ffffff"');
+    const fallback = textSvgForV2({ ...baseText(), outline: "auto" }, 800, 600, 800, 600);
+    expect(fallback).toContain('stroke="#000000"');
+  });
+
+  test("outline:'none' drops the stroke block entirely", () => {
+    const svg = textSvgForV2({ ...baseText(), outline: "none" }, 800, 600, 800, 600);
+    expect(svg).not.toContain("stroke=");
+    expect(svg).not.toContain("paint-order");
+  });
+
+  test("outline:'stripe' coerces to solid black (text can't stripe a glyph stroke)", () => {
+    const svg = textSvgForV2({ ...baseText(), outline: "stripe" }, 800, 600, 800, 600);
+    expect(svg).toContain('stroke="#000000"');
+    expect(svg).not.toContain("stroke-dasharray");
+  });
+});

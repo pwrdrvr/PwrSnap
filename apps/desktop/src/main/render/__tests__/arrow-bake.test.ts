@@ -600,3 +600,109 @@ describe("arrowSvg (bake) — combined variants (matrix smoke)", () => {
     });
   }
 });
+
+
+describe("arrowSvg (bake) — Border (contrast outline) modes", () => {
+  test("legacy rows (no outline field) match outline:'white' — the historical halo", () => {
+    const legacy = arrowSvgForV2(baseArrow(), W, H);
+    const white = arrowSvgForV2({ ...baseArrow(), outline: "white" }, W, H);
+    expect(white).toBe(legacy);
+    expect(legacy).toMatch(/stroke="white"/);
+  });
+
+  test("outline:'black' paints the halo passes in black", () => {
+    const svg = arrowSvgForV2({ ...baseArrow(), outline: "black" }, W, H);
+    expect(svg).toMatch(/<line[^>]+stroke="black"/);
+    expect(svg).toMatch(/<polygon[^>]+fill="black" stroke="black"/);
+    expect(svg).not.toMatch(/stroke="white"/);
+  });
+
+  test("outline:'auto' uses the stored outlineAuto pick; unresolved auto falls back to white", () => {
+    const black = arrowSvgForV2(
+      { ...baseArrow(), outline: "auto", outlineAuto: "black" },
+      W,
+      H
+    );
+    expect(black).toBe(arrowSvgForV2({ ...baseArrow(), outline: "black" }, W, H));
+    const unresolved = arrowSvgForV2({ ...baseArrow(), outline: "auto" }, W, H);
+    expect(unresolved).toBe(arrowSvgForV2(baseArrow(), W, H));
+  });
+
+  test("outline:'none' drops every halo element — only the colored stem + head remain", () => {
+    const svg = arrowSvgForV2({ ...baseArrow(), outline: "none" }, W, H);
+    expect(svg).not.toMatch(/stroke="white"/);
+    expect(svg).not.toMatch(/stroke="black"/);
+    const lines = svg.match(/<line/g) ?? [];
+    expect(lines.length).toBe(1);
+    expect(svg).toMatch(/<polygon points="[^"]+" fill="#ff8a1f"\s*\/>/);
+  });
+
+  test("outline:'stripe' layers a black dashed twin over the white halo", () => {
+    const svg = arrowSvgForV2({ ...baseArrow(), outline: "stripe" }, W, H);
+    // White solid halo stem + black dashed stem + colored stem = 3 lines.
+    const lines = svg.match(/<line[^/]+\/>/g) ?? [];
+    expect(lines.length).toBe(3);
+    expect(lines.some((l) => l.includes('stroke="white"') && !l.includes("stroke-dasharray"))).toBe(true);
+    expect(lines.some((l) => l.includes('stroke="black"') && l.includes("stroke-dasharray"))).toBe(true);
+    // Head: white halo polygon + black dashed rim polygon.
+    expect(svg).toMatch(/<polygon[^>]+fill="white" stroke="white"/);
+    expect(svg).toMatch(/<polygon[^>]+stroke="black"[^>]+stroke-dasharray/);
+  });
+
+  test("stripe on a DOTTED stem alternates whole dots (black twin offset by one cycle)", () => {
+    // Regression: the half-dash phase degenerates on dotted stems —
+    // both strokes render round-cap discs of identical diameter at the
+    // same centers and black fully covers white (solid black dots).
+    // The dot-like regime alternates whole dots instead.
+    const svg = arrowSvgForV2(
+      { ...baseArrow(), outline: "stripe", stemStyle: "dotted" },
+      W,
+      H
+    );
+    const black = (svg.match(/<line[^/]+\/>/g) ?? []).find((l) =>
+      l.includes('stroke="black"')
+    );
+    expect(black).toBeDefined();
+    expect(black).toContain("stroke-dashoffset=");
+    const white = (svg.match(/<line[^/]+\/>/g) ?? []).find(
+      (l) => l.includes('stroke="white"') && l.includes("stroke-dasharray")
+    );
+    const dashOf = (l: string): number[] =>
+      (l.match(/stroke-dasharray="([^"]+)"/)?.[1] ?? "").split(" ").map(Number);
+    const [wd, wg] = dashOf(white!);
+    const [bd, bg] = dashOf(black!);
+    const offset = Number(black!.match(/stroke-dashoffset="([^"]+)"/)?.[1]);
+    // Black dash = one whole dot, cycle doubled, offset = one white cycle.
+    expect(bd).toBeCloseTo(wd!);
+    expect(bg).toBeCloseTo(2 * (wd! + wg!) - wd!);
+    expect(offset).toBeCloseTo(wd! + wg!);
+  });
+
+  test("stripe on a dashed stem keeps black inside the stem dashes (half-dash phase)", () => {
+    const svg = arrowSvgForV2(
+      { ...baseArrow(), outline: "stripe", stemStyle: "dashed" },
+      W,
+      H
+    );
+    const stemLines = (svg.match(/<line[^/]+\/>/g) ?? []).filter((l) =>
+      l.includes("stroke-dasharray")
+    );
+    // White halo stem (stem dash pattern), black stripe stem (half-dash
+    // phase), colored stem (stem dash pattern).
+    expect(stemLines.length).toBe(3);
+    const black = stemLines.find((l) => l.includes('stroke="black"'));
+    const white = stemLines.find((l) => l.includes('stroke="white"'));
+    expect(black).toBeDefined();
+    expect(white).toBeDefined();
+    const dashOf = (l: string): number[] =>
+      (l.match(/stroke-dasharray="([^"]+)"/)?.[1] ?? "")
+        .split(" ")
+        .map(Number);
+    const [whiteDash, whiteGap] = dashOf(white!);
+    const [blackDash, blackGap] = dashOf(black!);
+    // Black covers exactly half of each white dash, then holes through
+    // the rest of the dash plus the gap.
+    expect(blackDash).toBeCloseTo(whiteDash! / 2);
+    expect(blackGap).toBeCloseTo(whiteDash! / 2 + whiteGap!);
+  });
+});

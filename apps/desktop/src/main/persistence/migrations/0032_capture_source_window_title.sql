@@ -1,4 +1,4 @@
--- 0031_capture_source_window_title — retain the title of the exact source
+-- 0032_capture_source_window_title — retain the title of the exact source
 -- window selected for a window capture. NULL means the capture did not target
 -- a window, the platform did not expose a title, or the selected window could
 -- no longer be resolved when capture began.
@@ -186,7 +186,7 @@ FROM captures
 LEFT JOIN capture_enrichments ON capture_enrichments.capture_id = captures.id;
 
 -- Keep the exact source-application facet index from 0027 present even when
--- 0031 repairs a database whose derived search schema drifted.
+-- 0032 repairs a database whose derived search schema drifted.
 CREATE INDEX IF NOT EXISTS idx_captures_live_source_app_name
   ON captures (source_app_name, captured_at DESC, id DESC)
   WHERE deleted_at IS NULL

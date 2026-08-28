@@ -632,7 +632,7 @@ export function listCaptures(filter: ListCapturesArgs): ListCapturesResult {
  * Two query plans share one filter spec:
  *
  *   - `query` set → JOIN `capture_search_fts` (FTS5 virtual table
- *     populated by migration 0031), MATCH the sanitized query,
+ *     populated by migration 0032), MATCH the sanitized query,
  *     extract `snippet(...)` for the matched fragment. Results default
  *     to FTS5 rank (relevance), with explicit chronological overrides.
  *   - `query` absent → no JOIN. Filter-only scan ordered by

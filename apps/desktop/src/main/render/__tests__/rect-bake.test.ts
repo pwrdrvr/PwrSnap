@@ -4,7 +4,7 @@
 
 import { describe, expect, test } from "vitest";
 import type { OverlayRow } from "@pwrsnap/shared";
-import { shapeSvgForV2 } from "../compose";
+import { rasterizeSvgForV2, shapeSvgForV2 } from "../compose";
 
 const W = 800;
 const H = 600;
@@ -146,5 +146,32 @@ describe("rectSvg (bake) — Border (contrast outline) modes", () => {
     );
     expect((striped.match(/<rect[^/]+\/>/g) ?? []).length).toBe(3);
     expect(striped).toMatch(/stroke="black"[^>]+stroke-dasharray/);
+  });
+});
+
+
+describe("rectSvg (bake) — stripe rasterizes for real", () => {
+  test("striped border produces BOTH black and white pixels along the top edge", async () => {
+    // String-level tests can't prove resvg accepts the layered dash
+    // strokes — rasterize a striped rect and scan the outline band.
+    // Geometry: 200×150 canvas, rect top edge at y=15; stroke 4px +
+    // outline 1.5px each side → the stripe band (outside the colored
+    // stroke) sits around y≈12.
+    const svg = shapeSvgForV2({ ...baseRect(), outline: "stripe" }, 200, 150);
+    const layer = await rasterizeSvgForV2(svg, 200, 150);
+    const raw = layer.input as Buffer;
+    let black = 0;
+    let white = 0;
+    for (const y of [12, 13]) {
+      for (let x = 25; x <= 115; x += 1) {
+        const o = (y * 200 + x) * 4;
+        const [r, g, b, a] = [raw[o]!, raw[o + 1]!, raw[o + 2]!, raw[o + 3]!];
+        if (a < 200) continue;
+        if (r > 220 && g > 220 && b > 220) white += 1;
+        if (r < 40 && g < 40 && b < 40) black += 1;
+      }
+    }
+    expect(white).toBeGreaterThan(5);
+    expect(black).toBeGreaterThan(5);
   });
 });

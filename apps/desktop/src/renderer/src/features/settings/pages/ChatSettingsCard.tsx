@@ -29,7 +29,7 @@ const USER_GUIDANCE_MAX = 8192;
 export function ChatSettingsCard(): ReactElement | null {
   const { settings, patch } = useSettingsContext();
   const capturesDisplay = useCapturesLocationDisplayState(
-    settings?.storage.capturesLocation ?? "documents"
+    settings?.storage?.capturesLocation ?? "documents"
   );
   if (settings === null) return null;
   return (

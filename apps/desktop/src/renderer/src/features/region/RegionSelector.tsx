@@ -79,6 +79,7 @@ type SelectorMode = "auto" | "region" | "window";
 type SelectorInvocationId = number;
 type WindowListState = "idle" | "loading" | "ready" | "empty" | "error";
 type SnapshotState = "idle" | "loading" | "ready" | "error";
+type SelectorPresentationSurface = "frozen-frame" | "window-loading" | "error";
 type CaptureSource =
   | {
       kind: "renderer-display-media";
@@ -369,6 +370,78 @@ export function RegionSelector() {
     };
   }, []);
 
+  // Main arms this barrier only after it has shown, focused (when
+  // applicable), and raised the selector window. Hidden prepaint is a
+  // separate readiness contract: it must never release a caller's HUD.
+  // The generation check also prevents a delayed frame from an old show of
+  // this reused renderer from acknowledging a newer invocation.
+  useLayoutEffect(() => {
+    let armedGeneration: number | null = null;
+    let firstFrame: number | null = null;
+    let secondFrame: number | null = null;
+
+    const cancelFrames = (): void => {
+      if (firstFrame !== null) window.cancelAnimationFrame(firstFrame);
+      if (secondFrame !== null) window.cancelAnimationFrame(secondFrame);
+      firstFrame = null;
+      secondFrame = null;
+    };
+    const surfaceIsTruthful = (surface: SelectorPresentationSurface): boolean => {
+      if (surface === "frozen-frame") {
+        return modeRef.current !== "window" && snapshotStateRef.current === "ready";
+      }
+      if (surface === "window-loading") {
+        return modeRef.current === "window" && windowListStateRef.current === "loading";
+      }
+      return snapshotStateRef.current === "error";
+    };
+
+    const unsubscribe = window.pwrsnapApi?.onSelectorPresentationArm((payload) => {
+      if (
+        !isSelectorInvocationId(payload.invocationId) ||
+        payload.invocationId !== invocationIdRef.current ||
+        !Number.isSafeInteger(payload.generation) ||
+        payload.generation <= 0 ||
+        (payload.surface !== "frozen-frame" &&
+          payload.surface !== "window-loading" &&
+          payload.surface !== "error") ||
+        !surfaceIsTruthful(payload.surface)
+      ) {
+        return;
+      }
+
+      cancelFrames();
+      const expectedInvocationId = payload.invocationId;
+      const expectedGeneration = payload.generation;
+      const expectedSurface = payload.surface;
+      armedGeneration = expectedGeneration;
+      firstFrame = window.requestAnimationFrame(() => {
+        firstFrame = null;
+        secondFrame = window.requestAnimationFrame(() => {
+          secondFrame = null;
+          if (
+            armedGeneration !== expectedGeneration ||
+            invocationIdRef.current !== expectedInvocationId ||
+            !surfaceIsTruthful(expectedSurface)
+          ) {
+            return;
+          }
+          window.pwrsnapApi?.notifySelectorPresented({
+            invocationId: expectedInvocationId,
+            generation: expectedGeneration,
+            surface: expectedSurface
+          });
+        });
+      });
+    });
+
+    return () => {
+      armedGeneration = null;
+      cancelFrames();
+      unsubscribe?.();
+    };
+  }, []);
+
   useLayoutEffect(() => {
     const notifyPainted = (expectedInvocationId: number, status: "painted" | "error"): void => {
       const snapshotKey = `renderer-display-media:${expectedInvocationId}`;
@@ -493,10 +566,8 @@ export function RegionSelector() {
     };
   }, []);
 
-  // Two animation frames are intentional: the first lets React's committed
-  // invocation state reach Chromium's frame pipeline; the second reports
-  // only after that shell had a paint opportunity. Main uses this as an
-  // ordering barrier before it starts expensive HWND enumeration on Windows.
+  // Diagnostic only. This can run while the prewarmed selector is hidden, so
+  // it is deliberately not the public presentation lifecycle contract.
   useEffect(() => {
     if (invocationId === null) return;
     const expectedInvocationId = invocationId;

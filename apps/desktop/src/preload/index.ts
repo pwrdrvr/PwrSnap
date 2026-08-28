@@ -96,6 +96,8 @@ const REGION_SELECTOR_FRAME_PORT_CHANNEL = "region-selector:frame-port";
 // empty transparent overlay flashing the live screen behind it.
 const REGION_SELECTOR_PAINTED_CHANNEL = "region-selector:painted";
 const REGION_SELECTOR_PERFORMANCE_CHANNEL = "region-selector:performance";
+const REGION_SELECTOR_PRESENTATION_ARM_CHANNEL = "region-selector:presentation-arm";
+const REGION_SELECTOR_PRESENTED_CHANNEL = "region-selector:presented";
 
 // MessagePortMain cannot be exposed through contextBridge directly. Forward
 // the one invocation-scoped port into the selector's main world using the
@@ -236,6 +238,13 @@ const pwrsnapApi = {
     status: "painted" | "error";
   }): void {
     ipcRenderer.send(REGION_SELECTOR_PAINTED_CHANNEL, payload);
+  },
+  notifySelectorPresented(payload: {
+    invocationId: number;
+    generation: number;
+    surface: "frozen-frame" | "window-loading" | "error";
+  }): void {
+    ipcRenderer.send(REGION_SELECTOR_PRESENTED_CHANNEL, payload);
   },
   /**
    * Subscribe to the snap-to-window window-list snapshot main pushes
@@ -411,6 +420,24 @@ const pwrsnapApi = {
       );
     ipcRenderer.on(REGION_SELECTOR_MODE_CHANNEL, wrapped);
     return () => ipcRenderer.off(REGION_SELECTOR_MODE_CHANNEL, wrapped);
+  },
+  onSelectorPresentationArm(
+    handler: (payload: {
+      invocationId: number;
+      generation: number;
+      surface: "frozen-frame" | "window-loading" | "error";
+    }) => void
+  ): () => void {
+    const wrapped = (_event: unknown, payload: unknown) =>
+      handler(
+        payload as {
+          invocationId: number;
+          generation: number;
+          surface: "frozen-frame" | "window-loading" | "error";
+        }
+      );
+    ipcRenderer.on(REGION_SELECTOR_PRESENTATION_ARM_CHANNEL, wrapped);
+    return () => ipcRenderer.off(REGION_SELECTOR_PRESENTATION_ARM_CHANNEL, wrapped);
   },
   /**
    * Diagnostic — region selector renderer → main. Ships the

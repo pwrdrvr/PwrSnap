@@ -69,9 +69,10 @@ const deferredLoadResolvers: (() => void)[] = [];
 let deferSelectorLoads = false;
 // When true, the window spy stops auto-acking `region-selector:painted`
 // on a mode push — lets a test simulate a renderer that never paints
-// (timeout fallback) or drive the ack manually (stale-URL rejection).
+// (fail-closed timeout) or drive the ack manually (stale-URL rejection).
 let suppressPaintAck = false;
 let suppressPerformanceAck = false;
+let suppressPresentationAck = false;
 const screenSnapshotMocks = vi.hoisted(() => ({
   captureAndRegister: vi.fn(),
   releaseSnapshot: vi.fn()
@@ -143,8 +144,8 @@ function makeWindowSpy(options: Record<string, unknown>): WindowSpy {
       // has registered its paint waiter) so the gated show proceeds
       // without a real renderer/image decode.
       send: vi.fn((channel: string, payload: unknown) => {
+        currentIpcSender = spy.webContents;
         if (channel === "region-selector:mode" && payload !== null && typeof payload === "object") {
-          currentIpcSender = spy.webContents;
           const modePayload = payload as {
             screenUrl?: unknown;
             invocationId?: unknown;
@@ -176,6 +177,21 @@ function makeWindowSpy(options: Record<string, unknown>): WindowSpy {
               )
             );
           }
+        }
+        if (
+          channel === "region-selector:presentation-arm" &&
+          !suppressPresentationAck &&
+          payload !== null &&
+          typeof payload === "object"
+        ) {
+          queueMicrotask(() =>
+            queueMicrotask(() =>
+              ipcListeners.get("region-selector:presented")?.(
+                { sender: spy.webContents },
+                payload
+              )
+            )
+          );
         }
       }),
       focus: vi.fn()
@@ -297,6 +313,7 @@ beforeEach(() => {
   deferSelectorLoads = false;
   suppressPaintAck = false;
   suppressPerformanceAck = false;
+  suppressPresentationAck = false;
   screenSnapshotMocks.captureAndRegister.mockReset();
   screenSnapshotMocks.releaseSnapshot.mockReset();
   selectorShortcutMocks.callbacks.clear();
@@ -408,10 +425,15 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
 
   test("re-raises the visible selector with moveTop after show/focus without activating the app", async () => {
     const { pickRegion } = await import("../capture/region-selector");
-    const pick = pickRegion();
+    const onSelectorPresented = vi.fn();
+    const pick = pickRegion({ onSelectorPresented });
 
     await vi.waitFor(() => {
       expect(constructed[0]?.moveTop).toHaveBeenCalledTimes(1);
+      expect(onSelectorPresented).toHaveBeenCalledWith({
+        invocationId: 1,
+        surface: "frozen-frame"
+      });
     });
 
     const spy = constructed[0]!;
@@ -419,14 +441,20 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
     const focusOrder = spy.focus.mock.invocationCallOrder[0];
     const webFocusOrder = spy.webContents.focus.mock.invocationCallOrder[0];
     const moveTopOrder = spy.moveTop.mock.invocationCallOrder[0];
+    const armCallIndex = spy.webContents.send.mock.calls.findIndex(
+      ([channel]) => channel === "region-selector:presentation-arm"
+    );
+    const armOrder = spy.webContents.send.mock.invocationCallOrder[armCallIndex];
 
     expect(showOrder).toBeDefined();
     expect(focusOrder).toBeDefined();
     expect(webFocusOrder).toBeDefined();
     expect(moveTopOrder).toBeDefined();
+    expect(armOrder).toBeDefined();
     expect(moveTopOrder!).toBeGreaterThan(showOrder!);
     expect(moveTopOrder!).toBeGreaterThan(focusOrder!);
     expect(moveTopOrder!).toBeGreaterThan(webFocusOrder!);
+    expect(armOrder!).toBeGreaterThan(moveTopOrder!);
 
     ipcListeners.get("region-selector:result")?.({}, { ok: false, invocationId: 1 });
     await expect(pick).resolves.toMatchObject({
@@ -671,7 +699,7 @@ describe("region-selector — Windows shell-first latency contract", () => {
       value: "win32",
       configurable: true
     });
-    suppressPerformanceAck = true;
+    suppressPresentationAck = true;
     const { setFloatOverState } = await import("../float-over");
     vi.mocked(setFloatOverState).mockClear();
     let resolveWindowList!: (value: {
@@ -686,28 +714,65 @@ describe("region-selector — Windows shell-first latency contract", () => {
     );
 
     const { pickRegion } = await import("../capture/region-selector");
-    const pick = pickRegion({ mode: "window", keepPwrSnapChrome: true });
+    const onSelectorPresented = vi.fn(() => {
+      throw new Error("HUD callback failed");
+    });
+    const pick = pickRegion({
+      mode: "window",
+      keepPwrSnapChrome: true,
+      onSelectorPresented
+    });
 
     await vi.waitFor(() => expect(constructed[0]?.showInactive).toHaveBeenCalledTimes(1));
     expect(windowListMocks.listWindowsSnapshot).not.toHaveBeenCalled();
+    expect(onSelectorPresented).not.toHaveBeenCalled();
 
+    const armCallIndex = constructed[0]?.webContents.send.mock.calls.findIndex(
+      ([channel]) => channel === "region-selector:presentation-arm"
+    );
+    expect(armCallIndex).toBeGreaterThanOrEqual(0);
+    const armPayload = constructed[0]?.webContents.send.mock.calls[armCallIndex!]?.[1];
+    expect(armPayload).toEqual({
+      invocationId: 1,
+      generation: expect.any(Number),
+      surface: "window-loading"
+    });
+
+    // The hidden diagnostic paint mark is not a presentation acknowledgement.
     ipcListeners.get("region-selector:performance")?.(
-      { sender: { id: 999_999 } },
+      {},
       { invocationId: 1, mark: "shell-painted" }
     );
     await Promise.resolve();
     expect(windowListMocks.listWindowsSnapshot).not.toHaveBeenCalled();
+    expect(onSelectorPresented).not.toHaveBeenCalled();
 
-    ipcListeners.get("region-selector:performance")?.(
-      {},
-      {
-        invocationId: 1,
-        mark: "shell-painted"
-      }
+    ipcListeners.get("region-selector:presented")?.(
+      { sender: { id: 999_999 } },
+      armPayload
     );
+    await Promise.resolve();
+    expect(windowListMocks.listWindowsSnapshot).not.toHaveBeenCalled();
+
+    ipcListeners.get("region-selector:presented")?.(
+      {},
+      { ...(armPayload as object), generation: -1 }
+    );
+    await Promise.resolve();
+    expect(windowListMocks.listWindowsSnapshot).not.toHaveBeenCalled();
+
+    ipcListeners.get("region-selector:presented")?.({}, armPayload);
     await vi.waitFor(() => {
       expect(windowListMocks.listWindowsSnapshot).toHaveBeenCalledTimes(1);
     });
+    expect(onSelectorPresented).toHaveBeenCalledTimes(1);
+    expect(onSelectorPresented).toHaveBeenCalledWith({
+      invocationId: 1,
+      surface: "window-loading"
+    });
+    ipcListeners.get("region-selector:presented")?.({}, armPayload);
+    expect(onSelectorPresented).toHaveBeenCalledTimes(1);
+    expect(windowListMocks.listWindowsSnapshot).toHaveBeenCalledTimes(1);
 
     const modeSend = constructed[0]?.webContents.send.mock.calls.find(
       ([channel]) => channel === "region-selector:mode"
@@ -717,8 +782,10 @@ describe("region-selector — Windows shell-first latency contract", () => {
     expect(screenSnapshotMocks.captureAndRegister).not.toHaveBeenCalled();
 
     const showOrder = constructed[0]?.showInactive.mock.invocationCallOrder[0];
+    const armOrder = constructed[0]?.webContents.send.mock.invocationCallOrder[armCallIndex!];
     const enumerateOrder = windowListMocks.listWindowsSnapshot.mock.invocationCallOrder[0];
     expect(showOrder).toBeDefined();
+    expect(armOrder).toBeDefined();
     expect(enumerateOrder).toBeDefined();
     const focusableOffIndex = constructed[0]?.setFocusable.mock.calls.findIndex(
       ([focusable]) => focusable === false
@@ -727,7 +794,8 @@ describe("region-selector — Windows shell-first latency contract", () => {
     expect(constructed[0]?.setFocusable.mock.invocationCallOrder[focusableOffIndex!]).toBeLessThan(
       showOrder!
     );
-    expect(showOrder!).toBeLessThan(enumerateOrder!);
+    expect(showOrder!).toBeLessThan(armOrder!);
+    expect(armOrder!).toBeLessThan(enumerateOrder!);
     expect(constructed[0]?.setIgnoreMouseEvents).not.toHaveBeenCalled();
     expect(constructed[0]?.focus).not.toHaveBeenCalled();
     expect(setFloatOverState).toHaveBeenCalledWith({ kind: "cancel" });
@@ -1013,13 +1081,14 @@ describe("region-selector — Windows shell-first latency contract", () => {
     });
   });
 
-  test("starts pure-window enumeration from the shell-paint mark without display pixels", async () => {
+  test("starts pure-window enumeration only from the post-show presentation ack", async () => {
     Object.defineProperty(process, "platform", {
       value: "win32",
       configurable: true
     });
     suppressPaintAck = true;
     suppressPerformanceAck = true;
+    suppressPresentationAck = true;
     vi.useFakeTimers();
     try {
       const { pickRegion } = await import("../capture/region-selector");
@@ -1039,6 +1108,12 @@ describe("region-selector — Windows shell-first latency contract", () => {
       );
       expect(constructed[0]?.showInactive).toHaveBeenCalledTimes(1);
       expect(screenSnapshotMocks.captureAndRegister).not.toHaveBeenCalled();
+      const armPayload = constructed[0]?.webContents.send.mock.calls.find(
+        ([channel]) => channel === "region-selector:presentation-arm"
+      )?.[1];
+      expect(armPayload).toEqual(
+        expect.objectContaining({ invocationId: 1, surface: "window-loading" })
+      );
       ipcListeners.get("region-selector:performance")?.(
         {},
         {
@@ -1048,8 +1123,10 @@ describe("region-selector — Windows shell-first latency contract", () => {
       );
       expect(windowListMocks.listWindowsSnapshot).not.toHaveBeenCalled();
 
-      // Flush promise continuations only. The 100ms fallback remains pending;
-      // enumeration must start from the latched mark without advancing it.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(windowListMocks.listWindowsSnapshot).not.toHaveBeenCalled();
+
+      ipcListeners.get("region-selector:presented")?.({}, armPayload);
       await vi.advanceTimersByTimeAsync(0);
       expect(windowListMocks.listWindowsSnapshot).toHaveBeenCalledTimes(1);
 
@@ -1058,6 +1135,47 @@ describe("region-selector — Windows shell-first latency contract", () => {
         ok: false,
         reason: "cancelled"
       });
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  test("terminates instead of lying when post-show presentation is never acknowledged", async () => {
+    Object.defineProperty(process, "platform", {
+      value: "win32",
+      configurable: true
+    });
+    suppressPresentationAck = true;
+    vi.useFakeTimers();
+    try {
+      const { pickRegion } = await import("../capture/region-selector");
+      const onSelectorPresented = vi.fn();
+      const pick = pickRegion({
+        mode: "window",
+        keepPwrSnapChrome: true,
+        onSelectorPresented
+      });
+      let settled = false;
+      void pick.then(() => {
+        settled = true;
+      });
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(constructed[0]?.showInactive).toHaveBeenCalledTimes(1);
+      expect(constructed[0]?.webContents.send).toHaveBeenCalledWith(
+        "region-selector:presentation-arm",
+        expect.objectContaining({ invocationId: 1, surface: "window-loading" })
+      );
+      expect(windowListMocks.listWindowsSnapshot).not.toHaveBeenCalled();
+      expect(onSelectorPresented).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(pick).resolves.toMatchObject({ ok: false, reason: "destroyed" });
+      expect(onSelectorPresented).not.toHaveBeenCalled();
+      expect(windowListMocks.listWindowsSnapshot).not.toHaveBeenCalled();
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();
@@ -1278,15 +1396,23 @@ describe("region-selector — Windows shell-first latency contract", () => {
     });
     const { pickRegion } = await import("../capture/region-selector");
     const first = pickRegion({ mode: "window", keepPwrSnapChrome: true });
+    const busyPresented = vi.fn();
 
     await vi.waitFor(() => expect(constructed[0]?.showInactive).toHaveBeenCalledTimes(1));
-    await expect(pickRegion({ mode: "window", keepPwrSnapChrome: true })).resolves.toEqual({
+    await expect(
+      pickRegion({
+        mode: "window",
+        keepPwrSnapChrome: true,
+        onSelectorPresented: busyPresented
+      })
+    ).resolves.toEqual({
       ok: false,
       reason: "busy",
       previousAppOrigin: "unknown",
       previousAppPid: null
     });
 
+    expect(busyPresented).not.toHaveBeenCalled();
     expect(constructed[0]?.hide).not.toHaveBeenCalled();
     expect(screenSnapshotMocks.captureAndRegister).not.toHaveBeenCalled();
     expect(windowListMocks.listWindowsSnapshot).toHaveBeenCalledTimes(1);
@@ -1303,7 +1429,12 @@ describe("region-selector — snapshot-paint gate before show()", () => {
   test("reveals a safe error shell and remains cancellable when snapshot decode fails", async () => {
     suppressPaintAck = true;
     const { pickRegion } = await import("../capture/region-selector");
-    const pick = pickRegion({ mode: "region", keepPwrSnapChrome: true });
+    const onSelectorPresented = vi.fn();
+    const pick = pickRegion({
+      mode: "region",
+      keepPwrSnapChrome: true,
+      onSelectorPresented
+    });
     let settled = false;
     void pick.then(() => {
       settled = true;
@@ -1329,6 +1460,10 @@ describe("region-selector — snapshot-paint gate before show()", () => {
 
     await vi.waitFor(() => {
       expect(constructed[0]?.show).toHaveBeenCalledTimes(1);
+      expect(onSelectorPresented).toHaveBeenCalledWith({
+        invocationId: 1,
+        surface: "error"
+      });
     });
     expect(settled).toBe(false);
 
@@ -1341,36 +1476,42 @@ describe("region-selector — snapshot-paint gate before show()", () => {
     });
   });
 
-  test("reveals via the timeout fallback when the renderer never acks the paint", async () => {
+  test("terminates without presenting when the renderer never acks hidden paint", async () => {
     // Simulate a wedged renderer: the mode/snapshot is pushed (so it
     // COULD paint) but the `region-selector:painted` ack never fires.
     suppressPaintAck = true;
-    const { pickRegion } = await import("../capture/region-selector");
-    const pick = pickRegion();
+    vi.useFakeTimers();
+    try {
+      const { pickRegion } = await import("../capture/region-selector");
+      const pick = pickRegion();
 
-    // The mode + snapshot URL reaches the renderer...
-    await vi.waitFor(() => {
+      // Advance the existing compositor-flush timer; this is test setup, not
+      // a picker presentation delay.
+      await vi.advanceTimersByTimeAsync(50);
+      for (let i = 0; i < 10 && constructed[0]?.webContents.send.mock.calls.length === 0; i += 1) {
+        await Promise.resolve();
+      }
       expect(constructed[0]?.webContents.send).toHaveBeenCalledWith(
         "region-selector:mode",
         expect.objectContaining({ screenUrl: "pwrsnap-screen://r/snapshot-1" })
       );
-    });
 
-    // ...and even with no paint ack, the selector still shows once the
-    // SHOW_AFTER_PAINT_TIMEOUT_MS safety net elapses (identical to the
-    // pre-gate behavior — never hangs the picker).
-    await vi.waitFor(
-      () => {
-        expect(constructed[0]?.show).toHaveBeenCalledTimes(1);
-      },
-      { timeout: 2000 }
-    );
-
-    ipcListeners.get("region-selector:result")?.({}, { ok: false, invocationId: 1 });
-    await expect(pick).resolves.toMatchObject({
-      ok: false,
-      reason: "cancelled"
-    });
+      // A timeout cannot truthfully claim that frozen pixels were presented.
+      // Fail closed so the caller's finally block clears its handoff HUD.
+      await vi.advanceTimersByTimeAsync(12_000);
+      await expect(pick).resolves.toMatchObject({
+        ok: false,
+        reason: "destroyed"
+      });
+      expect(constructed[0]?.show).not.toHaveBeenCalled();
+      expect(constructed[0]?.webContents.send).not.toHaveBeenCalledWith(
+        "region-selector:presentation-arm",
+        expect.anything()
+      );
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 
   test("ignores a painted ack with a stale screenUrl, then reveals on the matching one", async () => {
@@ -1434,6 +1575,39 @@ describe("region-selector — snapshot-paint gate before show()", () => {
 });
 
 describe("region-selector — active lifecycle teardown", () => {
+  test("teardown drops a pending presentation callback and rejects its late ack", async () => {
+    Object.defineProperty(process, "platform", {
+      value: "win32",
+      configurable: true
+    });
+    suppressPresentationAck = true;
+    const { pickRegion } = await import("../capture/region-selector");
+    const onSelectorPresented = vi.fn();
+    const pick = pickRegion({
+      mode: "window",
+      keepPwrSnapChrome: true,
+      onSelectorPresented
+    });
+
+    await vi.waitFor(() => expect(constructed[0]?.showInactive).toHaveBeenCalledTimes(1));
+    const armPayload = constructed[0]?.webContents.send.mock.calls.find(
+      ([channel]) => channel === "region-selector:presentation-arm"
+    )?.[1];
+    const closed = constructed[0]?.once.mock.calls.find(
+      ([channel]) => channel === "closed"
+    )?.[1] as (() => void) | undefined;
+    if (closed === undefined) throw new Error("missing selector closed listener");
+
+    closed();
+    await expect(pick).resolves.toMatchObject({ ok: false, reason: "destroyed" });
+    ipcListeners.get("region-selector:presented")?.(
+      { sender: constructed[0]?.webContents },
+      armPayload
+    );
+    expect(onSelectorPresented).not.toHaveBeenCalled();
+    expect(windowListMocks.listWindowsSnapshot).not.toHaveBeenCalled();
+  });
+
   test("close settles during a deferred capture and releases the late snapshot once", async () => {
     let resolveCapture!: (value: { id: string; filePath: string; displayId: number }) => void;
     screenSnapshotMocks.captureAndRegister.mockReturnValueOnce(
@@ -1667,6 +1841,7 @@ describe("region-selector — active lifecycle teardown", () => {
     expect(ipcMain.removeAllListeners).toHaveBeenCalledWith("region-selector:painted");
     expect(ipcMain.removeAllListeners).toHaveBeenCalledWith("region-selector:diagnostics");
     expect(ipcMain.removeAllListeners).toHaveBeenCalledWith("region-selector:performance");
+    expect(ipcMain.removeAllListeners).toHaveBeenCalledWith("region-selector:presented");
     expect(screen.removeListener).toHaveBeenCalledWith(
       "display-metrics-changed",
       expect.any(Function)

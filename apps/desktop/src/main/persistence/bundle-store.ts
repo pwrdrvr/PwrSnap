@@ -1184,8 +1184,10 @@ async function runRepackV2(captureId: string): Promise<void> {
 
   const { listAllLayersForBundle } = await import("./layers-repo");
   const { composeV2 } = await import("../render/compose-tree");
-  const { readAndValidateInstalledPwrsnapBundle, validatePwrsnapLayerGraph } =
-    await import("../import/pwrsnap-import-reader");
+  const {
+    readAndValidateInstalledPwrsnapBundle,
+    validateInstalledPwrsnapLayerGraph
+  } = await import("../import/pwrsnap-import-reader");
 
   const promise = runExclusiveBundleFileOperation(captureId, async () => {
     const initialRecord = getCaptureById(captureId);
@@ -1240,7 +1242,7 @@ async function runRepackV2(captureId: string): Promise<void> {
         const record = getCaptureById(captureId);
         if (record === null || record.bundle_path === null) return null;
         const layers = listAllLayersForBundle(captureId);
-        validatePwrsnapLayerGraph(layers);
+        validateInstalledPwrsnapLayerGraph(layers);
         return {
           record,
           layers,

@@ -28,15 +28,23 @@ import {
 } from "../persistence/portable-bundle-metadata";
 
 // The archive, expanded assets, repacked output, and image decode can coexist
-// briefly in Electron's main process. Keep each carrier bounded so a valid-at-
-// the-limit hostile bundle cannot amplify into multi-gigabyte resident memory.
+// briefly in Electron's main process. Keep each external-import carrier bounded
+// so a valid-at-the-limit hostile bundle cannot amplify into multi-gigabyte
+// resident memory.
 const MAX_ARCHIVE_BYTES = 128 * 1024 * 1024;
 const MAX_EXPANDED_BYTES = 128 * 1024 * 1024;
 // 4096 layers + one payload and unique source per layer + fixed v2 entries.
 const MAX_ENTRY_COUNT = 12_300;
 const MAX_MANIFEST_BYTES = 1024 * 1024;
 const MAX_DOCUMENT_BYTES = 16 * 1024 * 1024;
-const MAX_IMAGE_PIXELS = 64 * 1024 * 1024;
+const MAX_EXTERNAL_IMAGE_PIXELS = 64 * 1024 * 1024;
+// `persistCaptureFromTempV2` reads the source and builds its thumbnail through
+// sharp's default input ceiling (0x3fff squared). Installed repacks must accept
+// every image that boundary can create, while still keeping full decode and
+// transformed-raster allocations bounded. Do not replace this with the
+// stricter external-import ceiling: stitched/all-screens captures can exceed
+// 64 Mi pixels legitimately.
+const MAX_INSTALLED_IMAGE_PIXELS = 0x3fff * 0x3fff;
 const MAX_TREE_DEPTH = 32;
 const MAX_COMPRESSION_RATIO = 1_000;
 const MAX_LAYER_NUMERIC_MAGNITUDE = 10_000_000;
@@ -110,10 +118,10 @@ export async function readAndValidatePwrsnapBundle(
         }
         const sourceBytes = await readExactHandleSnapshot(handle, openedStat);
         const openedZip = await openBoundedZipFromFd(handle.fd, MAX_EXPANDED_BYTES);
-        const validated = await validateOpenedPwrsnapBundle(
-          openedZip,
-          MAX_EXPANDED_BYTES
-        );
+        const validated = await validateOpenedPwrsnapBundle(openedZip, {
+          maxAssetBytes: MAX_EXPANDED_BYTES,
+          maxImagePixels: MAX_EXTERNAL_IMAGE_PIXELS
+        });
         return {
           ...validated,
           sourceBytes,
@@ -162,7 +170,10 @@ export async function readAndValidateInstalledPwrsnapBundle(
           throw corrupt("archive_size_invalid", "The PwrSnap bundle is empty.");
         }
         const openedZip = await openBoundedZipFromFd(handle.fd, null);
-        return await validateOpenedPwrsnapBundle(openedZip, null);
+        return await validateOpenedPwrsnapBundle(openedZip, {
+          maxAssetBytes: null,
+          maxImagePixels: MAX_INSTALLED_IMAGE_PIXELS
+        });
       }
     );
   } catch (cause) {
@@ -182,7 +193,10 @@ export async function validatePwrsnapBundleBytes(
     MAX_EXPANDED_BYTES
   );
   return {
-    ...(await validateOpenedPwrsnapBundle(openedZip, MAX_EXPANDED_BYTES)),
+    ...(await validateOpenedPwrsnapBundle(openedZip, {
+      maxAssetBytes: MAX_EXPANDED_BYTES,
+      maxImagePixels: MAX_EXTERNAL_IMAGE_PIXELS
+    })),
     sourceBytes,
     openedFileIdentity: null
   };
@@ -190,7 +204,10 @@ export async function validatePwrsnapBundleBytes(
 
 async function validateOpenedPwrsnapBundle(
   openedZip: OpenedBoundedZip,
-  maxAssetBytes: number | null
+  limits: {
+    maxAssetBytes: number | null;
+    maxImagePixels: number;
+  }
 ): Promise<ValidatedPwrsnapContents> {
   const { zipFile, entries, names, closeWhenDone } = openedZip;
   try {
@@ -232,7 +249,7 @@ async function validateOpenedPwrsnapBundle(
     } catch (cause) {
       throw corrupt("manifest_schema_invalid", "The bundle manifest is malformed.", cause);
     }
-    validatePortableManifest(manifest);
+    validatePortableManifest(manifest, limits.maxImagePixels);
 
     const documentEntry = entries.get("document.json");
     if (documentEntry === undefined) {
@@ -275,7 +292,7 @@ async function validateOpenedPwrsnapBundle(
       }
       throw cause;
     }
-    validatePwrsnapLayerGraph(document.layers);
+    validatePwrsnapLayerGraphWithLimit(document.layers, limits.maxImagePixels);
     validateAiRunIds(document);
 
     const sources = new Map<string, Buffer>();
@@ -287,24 +304,35 @@ async function validateOpenedPwrsnapBundle(
     for (const [name, entry] of entries) {
       if (name.startsWith("sources/")) {
         const sha = name.slice("sources/".length, -".png".length);
-        const bytes = await readEntryToBuffer(zipFile, entry, maxAssetBytes);
+        const bytes = await readEntryToBuffer(zipFile, entry, limits.maxAssetBytes);
         const actualSha = sha256(bytes);
         if (actualSha !== sha) {
           throw corrupt("source_hash_mismatch", "A bundle source failed its integrity check.");
         }
         sources.set(sha, bytes);
-        sourceInfo.set(sha, await inspectImage(bytes, "png"));
+        sourceInfo.set(
+          sha,
+          await inspectImage(bytes, "png", limits.maxImagePixels)
+        );
       } else if (name.startsWith("layers/")) {
         const id = name.slice("layers/".length, -".png".length);
-        const bytes = await readEntryToBuffer(zipFile, entry, maxAssetBytes);
-        await inspectImage(bytes, "png");
+        const bytes = await readEntryToBuffer(zipFile, entry, limits.maxAssetBytes);
+        await inspectImage(bytes, "png", limits.maxImagePixels);
         layerBytes.set(id, bytes);
       } else if (name === "composite_thumbnail.jpg") {
-        thumbnailJpg = await readEntryToBuffer(zipFile, entry, maxAssetBytes);
-        await inspectImage(thumbnailJpg, "jpeg");
+        thumbnailJpg = await readEntryToBuffer(zipFile, entry, limits.maxAssetBytes);
+        await inspectImage(thumbnailJpg, "jpeg", limits.maxImagePixels);
       } else if (name === "composite.png") {
-        legacyCompositePng = await readEntryToBuffer(zipFile, entry, maxAssetBytes);
-        const composite = await inspectImage(legacyCompositePng, "png");
+        legacyCompositePng = await readEntryToBuffer(
+          zipFile,
+          entry,
+          limits.maxAssetBytes
+        );
+        const composite = await inspectImage(
+          legacyCompositePng,
+          "png",
+          limits.maxImagePixels
+        );
         if (
           composite.widthPx !== manifest.canvas_dimensions.width_px ||
           composite.heightPx !== manifest.canvas_dimensions.height_px
@@ -575,7 +603,10 @@ function readEntryToBuffer(
   });
 }
 
-function validatePortableManifest(manifest: BundleManifest): void {
+function validatePortableManifest(
+  manifest: BundleManifest,
+  maxImagePixels: number
+): void {
   if (!/^[A-Za-z0-9_-]{8,32}$/.test(manifest.capture_id)) {
     throw corrupt("capture_id_unsafe", "The bundle capture ID is not portable.");
   }
@@ -591,12 +622,26 @@ function validatePortableManifest(manifest: BundleManifest): void {
   }
   const pixels =
     manifest.canvas_dimensions.width_px * manifest.canvas_dimensions.height_px;
-  if (!Number.isSafeInteger(pixels) || pixels > MAX_IMAGE_PIXELS) {
+  if (!Number.isSafeInteger(pixels) || pixels > maxImagePixels) {
     throw corrupt("canvas_pixel_limit", "The bundle canvas exceeds the pixel limit.");
   }
 }
 
 export function validatePwrsnapLayerGraph(layers: readonly BundleLayerNode[]): void {
+  validatePwrsnapLayerGraphWithLimit(layers, MAX_EXTERNAL_IMAGE_PIXELS);
+}
+
+/** Validate locally persisted history with the same image ceiling as capture. */
+export function validateInstalledPwrsnapLayerGraph(
+  layers: readonly BundleLayerNode[]
+): void {
+  validatePwrsnapLayerGraphWithLimit(layers, MAX_INSTALLED_IMAGE_PIXELS);
+}
+
+function validatePwrsnapLayerGraphWithLimit(
+  layers: readonly BundleLayerNode[],
+  maxImagePixels: number
+): void {
   const byId = new Map<string, BundleLayerNode>();
   for (const layer of layers) {
     if (byId.has(layer.id)) {
@@ -617,7 +662,7 @@ export function validatePwrsnapLayerGraph(layers: readonly BundleLayerNode[]): v
   }
 
   for (const layer of layers) {
-    assertLayerNumbersBounded(layer);
+    assertLayerNumbersBounded(layer, maxImagePixels);
     if (layer.parent_id !== null) {
       const parent = byId.get(layer.parent_id);
       if (parent === undefined || parent.kind !== "group") {
@@ -678,7 +723,10 @@ export function validatePwrsnapLayerGraph(layers: readonly BundleLayerNode[]): v
   }
 }
 
-function assertLayerNumbersBounded(layer: BundleLayerNode): void {
+function assertLayerNumbersBounded(
+  layer: BundleLayerNode,
+  maxImagePixels: number
+): void {
   const visit = (value: unknown): void => {
     if (typeof value === "number") {
       if (!Number.isFinite(value) || Math.abs(value) > MAX_LAYER_NUMERIC_MAGNITUDE) {
@@ -712,7 +760,7 @@ function assertLayerNumbersBounded(layer: BundleLayerNode): void {
       !Number.isFinite(transformedPixels) ||
       transformedWidth > MAX_IMAGE_DIM_PX ||
       transformedHeight > MAX_IMAGE_DIM_PX ||
-      transformedPixels > MAX_IMAGE_PIXELS
+      transformedPixels > maxImagePixels
     ) {
       throw corrupt(
         "raster_transform_limit",
@@ -811,12 +859,13 @@ function isLiveLayer(layer: BundleLayerNode): boolean {
 
 async function inspectImage(
   bytes: Buffer,
-  expectedFormat: "png" | "jpeg"
+  expectedFormat: "png" | "jpeg",
+  maxImagePixels: number
 ): Promise<ValidatedImageAsset> {
   try {
     const options = {
       failOn: "error",
-      limitInputPixels: MAX_IMAGE_PIXELS
+      limitInputPixels: maxImagePixels
     } as const;
     const metadata = await sharp(bytes, options).metadata();
     const widthPx = metadata.width ?? 0;
@@ -829,7 +878,7 @@ async function inspectImage(
       widthPx > MAX_IMAGE_DIM_PX ||
       heightPx > MAX_IMAGE_DIM_PX ||
       !Number.isSafeInteger(pixels) ||
-      pixels > MAX_IMAGE_PIXELS
+      pixels > maxImagePixels
     ) {
       throw new Error("image metadata outside supported bounds");
     }

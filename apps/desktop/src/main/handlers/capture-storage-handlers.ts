@@ -28,6 +28,7 @@ import {
   reportCapturesAccessFailure,
   reportCapturesAccessSuccess
 } from "../storage/captures-access-health";
+import { moveBackBlockedMessage } from "./capture-storage-copy";
 
 const log = getMainLogger("pwrsnap:capture-storage-handlers");
 const ACCESS_PROBE_NAME = ".pwrsnap-access-probe";
@@ -165,19 +166,6 @@ async function countHomeDirectoryEntries(root: string): Promise<number> {
     }
     throw cause;
   }
-}
-
-function moveBackBlockedMessage(status: CapturesLocationStatus): string {
-  if (status.overridden) {
-    return "The captures root is controlled by PWRSNAP_DATA_ROOT and can't be changed here.";
-  }
-  if (status.location !== "home") {
-    return "PwrSnap is already saving new captures to Documents.";
-  }
-  if (status.documentsAccess !== "confirmed") {
-    return "Check Documents access successfully before moving new captures back.";
-  }
-  return "~/PwrSnap still contains captures or database references. Remove or relocate them before switching roots.";
 }
 
 function registerCaptureStorageEventBroadcast(): void {

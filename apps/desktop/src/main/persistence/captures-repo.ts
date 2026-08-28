@@ -30,8 +30,12 @@ import type {
   LibraryKindStat
 } from "@pwrsnap/shared";
 import { normalizeTagLabel } from "@pwrsnap/shared";
-import { sep } from "node:path";
 import { getDb } from "./db";
+import {
+  capturePathReferencePredicate,
+  capturePathReferencePrefix,
+  registerCapturePathReferenceFunctions
+} from "./capture-path-references";
 import { prepareCached } from "./prepare-cached";
 import { listEnrichmentsByCaptureIds } from "./enrichment-repo";
 import { getVideoMetadata, listVideoMetadata } from "./video-repo";
@@ -255,17 +259,26 @@ export function updateCaptureBundlePath(captureId: string, bundlePath: string): 
  * Boundary-safe `substr` matching avoids LIKE wildcard escaping and prevents
  * `/Users/me/PwrSnap-old` from matching `/Users/me/PwrSnap`.
  */
-export function countCapturePathReferencesUnder(root: string): number {
-  const prefix = root.endsWith(sep) ? root : `${root}${sep}`;
-  const row = getDb()
+export function countCapturePathReferencesUnder(
+  root: string,
+  platform: string = process.platform
+): number {
+  const db = getDb();
+  if (platform === "win32") {
+    registerCapturePathReferenceFunctions(db);
+  }
+  const bundlePredicate = capturePathReferencePredicate("bundle_path", platform);
+  const flatPngPredicate = capturePathReferencePredicate("flat_png_path", platform);
+  const legacyPredicate = capturePathReferencePredicate("legacy_src_path", platform);
+  const row = db
     .prepare(
       `SELECT COUNT(*) AS count
        FROM captures
-       WHERE (bundle_path IS NOT NULL AND substr(bundle_path, 1, length(@prefix)) = @prefix)
-          OR (flat_png_path IS NOT NULL AND substr(flat_png_path, 1, length(@prefix)) = @prefix)
-          OR (legacy_src_path IS NOT NULL AND substr(legacy_src_path, 1, length(@prefix)) = @prefix)`
+       WHERE (bundle_path IS NOT NULL AND ${bundlePredicate})
+          OR (flat_png_path IS NOT NULL AND ${flatPngPredicate})
+          OR (legacy_src_path IS NOT NULL AND ${legacyPredicate})`
     )
-    .get({ prefix }) as { count: number };
+    .get({ prefix: capturePathReferencePrefix(root, platform) }) as { count: number };
   return row.count;
 }
 

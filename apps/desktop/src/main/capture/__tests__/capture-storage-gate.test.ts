@@ -246,4 +246,22 @@ describe("ensureCapturesDirReady", () => {
     expect(persistedRoot).toBe(ROOT);
     expect(order).toEqual(["switch-start", "switch-end", `persist:${ROOT}`]);
   });
+
+  test("uses truthful Windows and macOS denial remediation", async () => {
+    const { capturesDirectoryDeniedMessage } = await import(
+      "../capture-storage-gate"
+    );
+    const windows = capturesDirectoryDeniedMessage("documents", "win32");
+    expect(windows).toContain("Controlled Folder Access");
+    expect(windows).toContain("OneDrive");
+    expect(windows).not.toContain("System Settings");
+    expect(windows).not.toContain("TCC");
+
+    const darwin = capturesDirectoryDeniedMessage("documents", "darwin");
+    expect(darwin).toContain("System Settings");
+    expect(darwin).toContain("Privacy & Security");
+    expect(
+      capturesDirectoryDeniedMessage("home", "win32")
+    ).toContain(String.raw`%USERPROFILE%\PwrSnap`);
+  });
 });

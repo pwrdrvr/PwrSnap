@@ -4,7 +4,7 @@
 // soft-delete + restore; this test fails loud if that regression
 // returns.
 
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -61,6 +61,34 @@ afterEach(async () => {
 });
 
 describe("source-store extension generalization", () => {
+  test("sweeps stale files and recorder directories from the supplied OS temp root", async () => {
+    const { sweepStaleTempFiles } = await import("../source-store");
+    const windowsStyleTempRoot = join(tempRoot, "Windows", "Temp");
+    const staleFile = join(windowsStyleTempRoot, "pwrsnap-stale.png");
+    const staleRecordingDir = join(
+      windowsStyleTempRoot,
+      "pwrsnap-recording-leaked"
+    );
+    const recentFile = join(windowsStyleTempRoot, "pwrsnap-recent.png");
+    const unrelated = join(windowsStyleTempRoot, "other-app.tmp");
+    await mkdir(staleRecordingDir, { recursive: true });
+    await writeFile(join(staleRecordingDir, "recording.mp4"), "video");
+    await writeFile(staleFile, "image");
+    await writeFile(recentFile, "image");
+    await writeFile(unrelated, "other");
+    const staleTime = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    await utimes(staleFile, staleTime, staleTime);
+    await utimes(staleRecordingDir, staleTime, staleTime);
+
+    await expect(sweepStaleTempFiles(windowsStyleTempRoot)).resolves.toEqual({
+      removedFiles: 2
+    });
+    expect(existsSync(staleFile)).toBe(false);
+    expect(existsSync(staleRecordingDir)).toBe(false);
+    expect(existsSync(recentFile)).toBe(true);
+    expect(existsSync(unrelated)).toBe(true);
+  });
+
   test("moveSourceToTrash + restoreSourceFromTrash preserves .png", async () => {
     const { moveSourceToTrash, restoreSourceFromTrash, effectiveSrcPathFor } = await import(
       "../source-store"

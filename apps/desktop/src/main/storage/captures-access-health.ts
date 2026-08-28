@@ -63,6 +63,39 @@ export function isPermissionDenial(cause: unknown): boolean {
   return code === "EPERM" || code === "EACCES";
 }
 
+export function capturesAccessDenialLogCopy(platform: string): {
+  first: string;
+  repeat: string;
+} {
+  if (platform === "darwin") {
+    return {
+      first:
+        `macOS is denying reads of the captures folder (TCC). The file exists and is user-owned, but open() returns EPERM because this process's TCC client lacks Files & Folders → Documents access and the file has no per-file com.apple.macl grant. ${capturesAccessRemediationCopy(platform)} Until then, any capture without a warm render-cache entry shows a broken thumbnail.`,
+      repeat: "captures-folder read denied (macOS TCC)"
+    };
+  }
+  if (platform === "win32") {
+    return {
+      first: `Windows is denying reads of the captures folder. ${capturesAccessRemediationCopy(platform)}`,
+      repeat: "captures-folder read denied (Windows permissions)"
+    };
+  }
+  return {
+    first: `The operating system is denying reads of the captures folder. ${capturesAccessRemediationCopy(platform)}`,
+    repeat: "captures-folder read denied (filesystem permissions)"
+  };
+}
+
+export function capturesAccessRemediationCopy(platform: string): string {
+  if (platform === "darwin") {
+    return "Fix: System Settings → Privacy & Security → Files & Folders → enable Documents for PwrSnap — for dev runs, for the TERMINAL app that launched it — then relaunch.";
+  }
+  if (platform === "win32") {
+    return "Check Controlled Folder Access, antivirus protection, OneDrive folder permissions, and the file's Security permissions, then retry.";
+  }
+  return "Check the folder's permissions and any application sandbox policy, then retry.";
+}
+
 export function getCapturesAccessHealth(): CapturesAccessHealth {
   return {
     denied: deniedPaths.size > 0,
@@ -89,7 +122,11 @@ export function onCapturesAccessHealthChanged(listener: Listener): () => void {
  * unless `cause` is a permission denial. Safe to call from multiple
  * layers for the same failure — paths dedupe.
  */
-export function reportCapturesAccessFailure(path: string, cause: unknown): boolean {
+export function reportCapturesAccessFailure(
+  path: string,
+  cause: unknown,
+  platform: string = process.platform
+): boolean {
   if (!isPermissionDenial(cause)) return false;
   const now = new Date().toISOString();
   lastDeniedAt = now;
@@ -101,19 +138,11 @@ export function reportCapturesAccessFailure(path: string, cause: unknown): boole
   if (firstDeniedAt === null) firstDeniedAt = now;
 
   if (firstEver) {
-    log.error(
-      "macOS is denying reads of the captures folder (TCC). " +
-        "The file exists and is user-owned, but open() returns EPERM because this " +
-        "process's TCC client lacks Files & Folders → Documents access and the file " +
-        "has no per-file com.apple.macl grant. Fix: System Settings → Privacy & " +
-        "Security → Files & Folders → enable Documents for PwrSnap — for dev runs, " +
-        "for the TERMINAL app that launched it — then relaunch. Until then, any " +
-        "capture without a warm render-cache entry shows a broken thumbnail.",
-      { path, code: (cause as NodeJS.ErrnoException).code }
-    );
+    const copy = capturesAccessDenialLogCopy(platform);
+    log.error(copy.first, { path, code: (cause as NodeJS.ErrnoException).code });
   } else if (pathWarnCount < MAX_PER_PATH_WARNS) {
     pathWarnCount += 1;
-    log.warn("captures-folder read denied (TCC)", {
+    log.warn(capturesAccessDenialLogCopy(platform).repeat, {
       path,
       deniedPathCount: deniedPaths.size,
       ...(pathWarnCount === MAX_PER_PATH_WARNS

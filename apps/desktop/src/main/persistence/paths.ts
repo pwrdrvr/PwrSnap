@@ -25,11 +25,10 @@
 //   perf          → <root>/perf
 //
 // The override flattens everything under one root so the dev seeder
-// + integration tests get a self-contained tree they can wipe with
-// `rm -rf`. The atomic-rename invariant between captures and trash
-// (soft-delete relies on it) holds by construction in both modes —
-// override mode keeps both on the override volume; default mode
-// keeps both under the user's home volume.
+// + integration tests get a self-contained tree they can wipe. In default
+// mode Documents may be redirected to OneDrive, another drive, or a UNC
+// share while trash remains under userData. File moves between those roots
+// must therefore use the cross-volume-safe persistence move helper.
 //
 // Invariant: `app.getPath("userData")` and `app.getPath("documents")`
 // are referenced ONLY here. Any new persistence path must compose
@@ -37,7 +36,7 @@
 
 import { app } from "electron";
 import { statSync } from "node:fs";
-import { join } from "node:path";
+import { join, posix, win32 } from "node:path";
 import type { CapturesLocation } from "@pwrsnap/shared";
 
 const ENV_KEY = "PWRSNAP_DATA_ROOT";
@@ -72,9 +71,22 @@ export function getDataRoot(): string {
 
 /** True when `PWRSNAP_DATA_ROOT` overrides the default. The dev seeder
  *  refuses to run any wipe operation unless this returns true — keeps
- *  the user's real Library safe. */
-export function isOverriddenDataRoot(): boolean {
-  return getDataRoot() !== app.getPath("userData");
+ *  the user's real Library safe.
+ *
+ *  This is deliberately a lexical comparison instead of `realpath`: the
+ *  override often does not exist until the seeder creates it, and the safety
+ *  gate must not depend on filesystem access. `resolve` canonicalizes dot
+ *  segments and trailing separators; `relative` supplies the selected platform's
+ *  path identity rules (notably case-insensitive drive and UNC paths on
+ *  Windows, while preserving case-sensitive POSIX semantics).
+ */
+export function isOverriddenDataRoot(
+  platform: NodeJS.Platform = process.platform
+): boolean {
+  const pathApi = platform === "win32" ? win32 : posix;
+  const dataRoot = pathApi.resolve(getDataRoot());
+  const userData = pathApi.resolve(app.getPath("userData"));
+  return pathApi.relative(dataRoot, userData) !== "";
 }
 
 export function getDbPath(): string {
@@ -231,27 +243,38 @@ export function getPerfRoot(): string {
 export const SEEDER_SENTINEL = ".pwrsnap-perf-root";
 
 /**
- * Invariant: getCapturesRoot() and getTrashRoot() must live on the
- * same filesystem so soft-delete's atomic `rename` succeeds. Compose-
- * from-getDataRoot() shape enforces this by construction; this is a
- * defensive smoke test for future code that might route trash through
- * a different path.
+ * Development diagnostic for call sites that still require a same-volume
+ * `rename`. A redirected Documents folder can legitimately differ from
+ * userData/.trash in production, so callers must not treat this as a layout
+ * invariant or substitute it for cross-volume-safe move handling.
  *
  * Dev-only — production code paths trust the construction.
  */
 export function assertSameVolume(): void {
   if (!import.meta.env.DEV) return;
+
+  const capturesRoot = getCapturesRoot();
+  const trashRoot = getTrashRoot();
+
+  let capturesStat: ReturnType<typeof statSync>;
   try {
-    const captures = statSync(getCapturesRoot()).dev;
-    const trash = statSync(getTrashRoot()).dev;
-    if (captures !== trash) {
-      throw new Error(
-        `paths invariant violated: captures (${getCapturesRoot()}) and trash (${getTrashRoot()}) on different volumes`
-      );
-    }
+    capturesStat = statSync(capturesRoot);
   } catch {
-    // Either path may not exist yet on a fresh install; both are
-    // created under the same data root, so the invariant holds by
-    // construction once they materialize.
+    // The path may not exist yet on a fresh install.
+    return;
+  }
+
+  let trashStat: ReturnType<typeof statSync>;
+  try {
+    trashStat = statSync(trashRoot);
+  } catch {
+    // The path may not exist yet on a fresh install.
+    return;
+  }
+
+  if (capturesStat.dev !== trashStat.dev) {
+    throw new Error(
+      `paths invariant violated: captures (${capturesRoot}) and trash (${trashRoot}) on different volumes`
+    );
   }
 }

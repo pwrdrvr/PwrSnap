@@ -10,6 +10,7 @@ vi.mock("../../log", () => ({
 }));
 
 const {
+  capturesAccessDenialLogCopy,
   getCapturesAccessHealth,
   isPermissionDenial,
   onCapturesAccessHealthChanged,
@@ -52,6 +53,23 @@ describe("isPermissionDenial", () => {
     expect(isPermissionDenial(new Error("plain"))).toBe(false);
     expect(isPermissionDenial(null)).toBe(false);
     expect(isPermissionDenial("EPERM")).toBe(false);
+  });
+});
+
+describe("captures access denial diagnostics", () => {
+  test("uses Windows remediation without claiming macOS TCC", () => {
+    const copy = capturesAccessDenialLogCopy("win32");
+    expect(copy.first).toContain("Controlled Folder Access");
+    expect(copy.first).toContain("OneDrive");
+    expect(copy.first).not.toContain("TCC");
+    expect(copy.first).not.toContain("System Settings");
+  });
+
+  test("preserves macOS TCC remediation", () => {
+    const copy = capturesAccessDenialLogCopy("darwin");
+    expect(copy.first).toContain("TCC");
+    expect(copy.first).toContain("System Settings");
+    expect(copy.first).toContain("Files & Folders");
   });
 });
 

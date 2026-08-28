@@ -8,18 +8,31 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { join } from "node:path";
 
+const mocks = vi.hoisted(() => ({
+  appPaths: {
+    userData: "/tmp/pwrsnap-test-userData",
+    documents: "/tmp/pwrsnap-test-documents",
+    home: "/tmp/pwrsnap-test-home"
+  },
+  statSync: vi.fn()
+}));
+
 // `paths.ts` imports `electron`'s `app` for the default-fallback case.
 // Stub it with a fixed userData path so the tests don't need an
 // actual Electron runtime.
 vi.mock("electron", () => ({
   app: {
     getPath: (name: string): string => {
-      if (name === "userData") return "/tmp/pwrsnap-test-userData";
-      if (name === "documents") return "/tmp/pwrsnap-test-documents";
-      if (name === "home") return "/tmp/pwrsnap-test-home";
+      if (name === "userData") return mocks.appPaths.userData;
+      if (name === "documents") return mocks.appPaths.documents;
+      if (name === "home") return mocks.appPaths.home;
       throw new Error(`unexpected app.getPath: ${name}`);
     }
   }
+}));
+
+vi.mock("node:fs", () => ({
+  statSync: mocks.statSync
 }));
 
 const ENV_KEY = "PWRSNAP_DATA_ROOT";
@@ -27,6 +40,10 @@ const originalEnv = process.env[ENV_KEY];
 
 beforeEach(() => {
   delete process.env[ENV_KEY];
+  mocks.appPaths.userData = "/tmp/pwrsnap-test-userData";
+  mocks.appPaths.documents = "/tmp/pwrsnap-test-documents";
+  mocks.appPaths.home = "/tmp/pwrsnap-test-home";
+  mocks.statSync.mockReset();
   vi.resetModules();
 });
 
@@ -54,6 +71,74 @@ describe("paths.getDataRoot", () => {
     const { getDataRoot, isOverriddenDataRoot } = await import("../paths");
     expect(getDataRoot()).toBe("/tmp/pwrsnap-test-userData");
     expect(isOverriddenDataRoot()).toBe(false);
+  });
+
+  test("keeps the seeder wipe gate closed for the same Windows drive path with different case and trailing separators", async () => {
+    mocks.appPaths.userData = String.raw`C:\Users\Test\AppData\Roaming\PwrSnap`;
+    process.env[ENV_KEY] = String.raw`c:\users\test\appdata\roaming\pwrsnap\\`;
+    const { isOverriddenDataRoot } = await import("../paths");
+
+    expect(isOverriddenDataRoot("win32")).toBe(false);
+  });
+
+  test("keeps the seeder wipe gate closed for the same Windows UNC path with different case and trailing separators", async () => {
+    mocks.appPaths.userData = String.raw`\\Server\Share\PwrSnap`;
+    process.env[ENV_KEY] = String.raw`\\server\share\pwrsnap\\`;
+    const { isOverriddenDataRoot } = await import("../paths");
+
+    expect(isOverriddenDataRoot("win32")).toBe(false);
+  });
+
+  test("opens the seeder wipe gate for a distinct Windows override", async () => {
+    mocks.appPaths.userData = String.raw`C:\Users\Test\AppData\Roaming\PwrSnap`;
+    process.env[ENV_KEY] = String.raw`D:\PwrSnap\Seed`;
+    const { isOverriddenDataRoot } = await import("../paths");
+
+    expect(isOverriddenDataRoot("win32")).toBe(true);
+  });
+
+  test("preserves POSIX case sensitivity while ignoring a trailing separator", async () => {
+    mocks.appPaths.userData = "/Users/test/Library/Application Support/PwrSnap";
+    process.env[ENV_KEY] = "/Users/test/Library/Application Support/PwrSnap/";
+    const { isOverriddenDataRoot } = await import("../paths");
+    expect(isOverriddenDataRoot("darwin")).toBe(false);
+
+    process.env[ENV_KEY] = "/Users/test/Library/Application Support/pwrsnap";
+    expect(isOverriddenDataRoot("darwin")).toBe(true);
+  });
+});
+
+describe("paths.assertSameVolume", () => {
+  test("throws when both roots exist on different devices", async () => {
+    const overrideRoot = "/tmp/pwrsnap-override";
+    process.env[ENV_KEY] = overrideRoot;
+    mocks.statSync
+      .mockReturnValueOnce({ dev: 101 })
+      .mockReturnValueOnce({ dev: 202 });
+    const { assertSameVolume } = await import("../paths");
+
+    expect(() => assertSameVolume()).toThrow(
+      `paths invariant violated: captures (${join(
+        overrideRoot,
+        "captures"
+      )}) and trash (${join(overrideRoot, ".trash")}) on different volumes`
+    );
+  });
+
+  test("allows a fresh install when either root cannot be statted", async () => {
+    process.env[ENV_KEY] = "/tmp/pwrsnap-override";
+    mocks.statSync.mockImplementationOnce(() => {
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+    const { assertSameVolume } = await import("../paths");
+
+    expect(() => assertSameVolume()).not.toThrow();
+
+    mocks.statSync.mockReset();
+    mocks.statSync.mockReturnValueOnce({ dev: 101 }).mockImplementationOnce(() => {
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+    expect(() => assertSameVolume()).not.toThrow();
   });
 });
 

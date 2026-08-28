@@ -63,9 +63,12 @@ vi.mock("../bundle-store", async (importOriginal) => {
   };
 });
 
-const { buildCaptureBundleFilenameStem } = await import("../bundle-filename");
+const { buildCaptureBundleFilenameStem, bundleStemFromPath } = await import(
+  "../bundle-filename"
+);
 const { packBundleV2, runExclusiveBundleFileOperation } = await import("../bundle-store");
 const {
+  bundleFilenamePermissionWarning,
   expectedBundleStemForCapture,
   renameBundleToEffectiveFilename,
   runBundleFilenameMaintenanceOnBoot
@@ -185,6 +188,23 @@ afterEach(async () => {
 });
 
 describe("bundle filename policy", () => {
+  test("permission warning uses platform-specific remediation", () => {
+    const windows = bundleFilenamePermissionWarning("win32");
+    expect(windows).toContain("Windows denied filesystem access");
+    expect(windows).toContain("Controlled Folder Access");
+    expect(windows).not.toContain("TCC");
+    expect(windows).not.toContain("System Settings");
+
+    const darwin = bundleFilenamePermissionWarning("darwin");
+    expect(darwin).toContain("macOS denied access (TCC)");
+    expect(darwin).toContain("System Settings");
+    expect(darwin).toContain("Files & Folders");
+  });
+
+  test("strips uppercase bundle extensions from paired filename stems", () => {
+    expect(bundleStemFromPath("/captures/Checkout.PWRSNAP")).toBe("Checkout");
+  });
+
   test("builds ISO-time source-app effective-stem short-hash filenames", () => {
     expect(
       buildCaptureBundleFilenameStem({
@@ -215,6 +235,96 @@ describe("bundle filename policy", () => {
 });
 
 describe("bundle filename maintenance", () => {
+  test("normalizes a case-only bundle name and uppercase .PWRSNAP extension", async () => {
+    const captureId = "cap_case_only";
+    const lowerName =
+      "2026-05-29T18-38-12_safari_checkout-flow_a1b2c3d4.pwrsnap";
+    const currentPath = join(
+      workDir,
+      "2026-05-29T18-38-12_SAFARI_CHECKOUT-FLOW_A1B2C3D4.PWRSNAP"
+    );
+    await writeBundleFixture(currentPath, captureId);
+    insertCapture({
+      id: captureId,
+      bundlePath: currentPath,
+      sourceAppName: "Safari",
+      sha256: "a1b2c3d4".repeat(8)
+    });
+    insertEnrichment({
+      captureId,
+      suggested: "checkout-flow",
+      accepted: null
+    });
+
+    await expect(renameBundleToEffectiveFilename(captureId)).resolves.toBe(
+      "renamed"
+    );
+    expect(readdirSync(workDir)).toContain(lowerName);
+    const row = mocks.db!
+      .prepare("SELECT bundle_path FROM captures WHERE id = ?")
+      .get(captureId) as { bundle_path: string };
+    expect(row.bundle_path).toBe(join(workDir, lowerName));
+  });
+
+  test("recovers an extension-preserving case-rename intermediate on boot", async () => {
+    const captureId = "cap_case_recovery";
+    const recoveryPath = join(
+      workDir,
+      ".pwrsnap-case-rename-crash.PWRSNAP"
+    );
+    const stalePath = join(workDir, "missing-before-case-rename.PWRSNAP");
+    await writeBundleFixture(recoveryPath, captureId);
+    insertCapture({
+      id: captureId,
+      bundlePath: stalePath,
+      sourceAppName: "Safari",
+      sha256: "a1b2c3d4".repeat(8)
+    });
+    insertEnrichment({ captureId, suggested: "checkout-flow", accepted: null });
+
+    const result = await runBundleFilenameMaintenanceOnBoot();
+    const expected = join(
+      workDir,
+      "2026-05-29T18-38-12_safari_checkout-flow_a1b2c3d4.pwrsnap"
+    );
+    expect(result.renamed).toBe(1);
+    expect(existsSync(recoveryPath)).toBe(false);
+    expect(existsSync(expected)).toBe(true);
+    const row = mocks.db!
+      .prepare("SELECT bundle_path FROM captures WHERE id = ?")
+      .get(captureId) as { bundle_path: string };
+    expect(row.bundle_path).toBe(expected);
+  });
+
+  test("preserves a distinct occupied bundle and chooses a collision suffix", async () => {
+    const captureId = "cap_distinct_collision";
+    const oldPath = join(workDir, "random-current.pwrsnap");
+    const occupiedPath = join(
+      workDir,
+      "2026-05-29T18-38-12_safari_checkout-flow_a1b2c3d4.pwrsnap"
+    );
+    await writeBundleFixture(oldPath, captureId);
+    await writeBundleFixture(occupiedPath, "other_capture");
+    const occupiedBytes = readFileSync(occupiedPath);
+    insertCapture({
+      id: captureId,
+      bundlePath: oldPath,
+      sourceAppName: "Safari",
+      sha256: "a1b2c3d4".repeat(8)
+    });
+    insertEnrichment({ captureId, suggested: "checkout-flow", accepted: null });
+
+    await expect(renameBundleToEffectiveFilename(captureId)).resolves.toBe(
+      "renamed"
+    );
+    const suffixed = join(
+      workDir,
+      "2026-05-29T18-38-12_safari_checkout-flow_a1b2c3d4-2.pwrsnap"
+    );
+    expect(readFileSync(occupiedPath)).toEqual(occupiedBytes);
+    expect(existsSync(suffixed)).toBe(true);
+  });
+
   test("renames random bundle files using suggested filename when no override exists", async () => {
     const captureId = "cap_random_name";
     const oldPath = join(workDir, "nanoid-trash.pwrsnap");

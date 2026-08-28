@@ -149,6 +149,97 @@ afterEach(async () => {
 });
 
 describe("video filename maintenance", () => {
+  test("normalizes a case-only video name without treating it as a duplicate", async () => {
+    const captureId = "vid_case_only";
+    const bytes = Buffer.from("fake-case-only-video");
+    const shortHash = sha256(bytes).slice(0, 8);
+    const lowerName = `2026-05-29T18-38-12_safari_checkout-flow_${shortHash}.mp4`;
+    const currentPath = join(
+      workDir,
+      `2026-05-29T18-38-12_SAFARI_CHECKOUT-FLOW_${shortHash.toUpperCase()}.MP4`
+    );
+    await writeFile(currentPath, bytes);
+    insertVideoCapture({
+      id: captureId,
+      sourcePath: currentPath,
+      sourceAppName: "Safari",
+      sha256: sha256(bytes)
+    });
+    insertEnrichment({
+      captureId,
+      suggested: "checkout-flow",
+      accepted: null
+    });
+
+    await expect(renameVideoSourceToEffectiveFilename(captureId)).resolves.toBe(
+      "renamed"
+    );
+    expect(readdirSync(workDir)).toContain(lowerName);
+    const row = mocks.db!
+      .prepare("SELECT legacy_src_path FROM captures WHERE id = ?")
+      .get(captureId) as { legacy_src_path: string };
+    expect(row.legacy_src_path).toBe(join(workDir, lowerName));
+  });
+
+  test("recovers an extension-preserving case-rename intermediate on boot", async () => {
+    const captureId = "vid_case_recovery";
+    const bytes = Buffer.from("fake-case-recovery-video");
+    const recoveryPath = join(workDir, ".pwrsnap-case-rename-crash.MP4");
+    const stalePath = join(workDir, "missing-before-case-rename.MP4");
+    await writeFile(recoveryPath, bytes);
+    insertVideoCapture({
+      id: captureId,
+      sourcePath: stalePath,
+      sourceAppName: "Safari",
+      sha256: sha256(bytes)
+    });
+    insertEnrichment({ captureId, suggested: "checkout-flow", accepted: null });
+
+    const result = await runVideoFilenameMaintenanceOnBoot();
+    const expected = join(
+      workDir,
+      `2026-05-29T18-38-12_safari_checkout-flow_${sha256(bytes).slice(0, 8)}.mp4`
+    );
+    expect(result.renamed).toBe(1);
+    expect(existsSync(recoveryPath)).toBe(false);
+    expect(existsSync(expected)).toBe(true);
+    const row = mocks.db!
+      .prepare("SELECT legacy_src_path FROM captures WHERE id = ?")
+      .get(captureId) as { legacy_src_path: string };
+    expect(row.legacy_src_path).toBe(expected);
+  });
+
+  test("preserves a distinct occupied video and chooses a collision suffix", async () => {
+    const captureId = "vid_distinct_collision";
+    const bytes = Buffer.from("capture-video");
+    const occupiedBytes = Buffer.from("other-video");
+    const shortHash = sha256(bytes).slice(0, 8);
+    const oldPath = join(workDir, "random-current.mp4");
+    const occupiedPath = join(
+      workDir,
+      `2026-05-29T18-38-12_safari_checkout-flow_${shortHash}.mp4`
+    );
+    await writeFile(oldPath, bytes);
+    await writeFile(occupiedPath, occupiedBytes);
+    insertVideoCapture({
+      id: captureId,
+      sourcePath: oldPath,
+      sourceAppName: "Safari",
+      sha256: sha256(bytes)
+    });
+    insertEnrichment({ captureId, suggested: "checkout-flow", accepted: null });
+
+    await expect(renameVideoSourceToEffectiveFilename(captureId)).resolves.toBe(
+      "renamed"
+    );
+    const suffixed = join(
+      workDir,
+      `2026-05-29T18-38-12_safari_checkout-flow_${shortHash}-2.mp4`
+    );
+    expect(readFileSync(occupiedPath)).toEqual(occupiedBytes);
+    expect(existsSync(suffixed)).toBe(true);
+  });
+
   test("renames random video files using suggested filename when no override exists", async () => {
     const captureId = "vid_random_name";
     const oldPath = join(workDir, "nanoid-trash.mp4");

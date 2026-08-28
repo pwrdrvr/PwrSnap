@@ -1,11 +1,12 @@
 import { existsSync } from "node:fs";
-import { lstat, readdir, rename } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { lstat, readdir } from "node:fs/promises";
+import { dirname, extname, join } from "node:path";
 
 import type { FilenameTimestampZone } from "@pwrsnap/shared";
 
 import { getMainLogger } from "../log";
 import {
+  capturesAccessRemediationCopy,
   isPermissionDenial,
   reportCapturesAccessFailure
 } from "../storage/captures-access-health";
@@ -14,6 +15,7 @@ import { readBundleFilenameTimestampZone } from "./bundle-filename-settings";
 import { getDb } from "./db";
 import { readBundleManifest, runExclusiveBundleFileOperation } from "./bundle-store";
 import { updateCaptureBundlePath } from "./captures-repo";
+import { inspectRenameDestination, renameWithCaseSupport } from "./platform-path";
 
 const log = getMainLogger("pwrsnap:bundle-filename-maintenance");
 
@@ -36,7 +38,7 @@ export type BundleFilenameMaintenanceResult = {
   repaired: number;
   skipped: number;
   failed: number;
-  /** Rows whose bundle read was denied by macOS (TCC EPERM/EACCES).
+  /** Rows whose bundle read was denied by the OS (EPERM/EACCES).
    *  Tracked separately from `failed` — a denial is an environment
    *  problem reported via captures-access-health, not a per-row error,
    *  and must not burn the boot error budget. */
@@ -119,15 +121,23 @@ export async function runBundleFilenameMaintenanceOnBoot(): Promise<BundleFilena
   }
 
   if (result.permissionDenied > 0) {
-    log.warn(
-      "bundle filename maintenance: some bundles are unreadable — macOS denied " +
-        "access (TCC). Grant Files & Folders → Documents access — for dev runs, " +
-        "to the terminal that launched PwrSnap — then relaunch.",
-      { permissionDenied: result.permissionDenied, attempted: result.attempted }
-    );
+    log.warn(bundleFilenamePermissionWarning(process.platform), {
+      permissionDenied: result.permissionDenied,
+      attempted: result.attempted
+    });
   }
   log.info("bundle filename maintenance complete", result);
   return result;
+}
+
+export function bundleFilenamePermissionWarning(platform: string): string {
+  const cause =
+    platform === "darwin"
+      ? "macOS denied access (TCC)."
+      : platform === "win32"
+        ? "Windows denied filesystem access."
+        : "the operating system denied filesystem access.";
+  return `bundle filename maintenance: some bundles are unreadable — ${cause} ${capturesAccessRemediationCopy(platform)}`;
 }
 
 function getFilenameRow(captureId: string): FilenameRow | null {
@@ -187,7 +197,7 @@ async function renameBundleRowLocked(
   }
 
   await assertBundleBelongsToCapture(currentPath, row.id);
-  await rename(currentPath, desiredPath);
+  await renameWithCaseSupport(currentPath, desiredPath);
   updateCaptureBundlePath(row.id, desiredPath);
 
   log.info("bundle renamed", {
@@ -227,8 +237,14 @@ async function resolveAvailableTargetPath(
   for (let suffix = 0; suffix <= MAX_COLLISION_SUFFIX; suffix += 1) {
     const stem = suffix === 0 ? desiredStem : `${desiredStem}-${suffix + 1}`;
     const candidate = join(dir, `${stem}.pwrsnap`);
-    if (candidate === currentPath) return candidate;
-    if (!existsSync(candidate)) return candidate;
+    const destination = await inspectRenameDestination(currentPath, candidate);
+    if (
+      destination.kind === "same-path" ||
+      destination.kind === "same-entry" ||
+      destination.kind === "absent"
+    ) {
+      return candidate;
+    }
     if ((await bundlePathCaptureId(candidate)) === captureId) {
       throw new Error(`duplicate bundle files exist for ${captureId}`);
     }
@@ -244,7 +260,7 @@ async function findBundleByManifestCaptureId(dir: string, captureId: string): Pr
     return null;
   }
   for (const name of names) {
-    if (!name.endsWith(".pwrsnap")) continue;
+    if (extname(name).toLowerCase() !== ".pwrsnap") continue;
     const candidate = join(dir, name);
     if ((await bundlePathCaptureId(candidate)) === captureId) return candidate;
   }

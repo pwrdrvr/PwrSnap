@@ -36,6 +36,7 @@ import { isEnrichmentProviderAvailable } from "../shared/enrichment-provider-ava
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
 import { copyImagePreset, copyImagePresetPath } from "../../lib/clipboard-copy";
+import { useCapturesLocationDisplayState } from "../../lib/useCapturesLocationDisplayState";
 
 type HostState =
   | { kind: "idle" }
@@ -74,6 +75,13 @@ export function FloatOverHost(): React.ReactElement {
   // Qwen) counts as available even when Codex is absent — see
   // isEnrichmentProviderAvailable.
   const [acpDiscovery, setAcpDiscovery] = useState<AcpAgentDiscovery | undefined>(undefined);
+  const fallbackCapturesLocation =
+    state.kind === "loaded"
+      ? state.settings?.storage.capturesLocation ?? "documents"
+      : "documents";
+  const capturesDisplay = useCapturesLocationDisplayState(
+    fallbackCapturesLocation
+  );
   // capture:presetMetrics returns empty for video captures (the
   // sharp render pipeline is image-only); only request the hook for
   // image-kind captures so we don't fire a no-op IPC on every video
@@ -483,7 +491,8 @@ export function FloatOverHost(): React.ReactElement {
         srcBytes={record.byte_size}
         srcDpr={record.device_pixel_ratio}
         exportStrategy={exportStrategyFromSettings(settings)}
-        capturesLocation={settings?.storage?.capturesLocation ?? "documents"}
+        capturesLocation={capturesDisplay.location}
+        capturesRootOverridden={capturesDisplay.overridden}
         copyMetrics={copyMetrics}
         copyPulses={copyPulses}
         onDragFile={() => startCaptureDrag(record.id, "high")}

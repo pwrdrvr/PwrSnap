@@ -7,15 +7,18 @@ import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import type { AcpAgentDiscovery } from "@pwrsnap/shared";
 import type { Settings } from "@pwrsnap/shared";
 import {
+  AcpAgentList,
   AiSurfaceDefaultControl,
   type AiSurfaceDefaultControlProps,
   buildAcpProviderOptions,
+  buildAcpOverridePatch,
   enabledAcpAgentIdsForModelProbes,
   formatCostMicros,
   formatLastSetAt,
   formatNextTokenAt,
   formatTokenCount,
   formatUsageTokenBreakdown,
+  CodexCandidates,
   SecretKeyControl
 } from "../AIProvidersPage";
 
@@ -34,6 +37,7 @@ afterEach(async () => {
   container?.remove();
   container = null;
   root = null;
+  Reflect.deleteProperty(window, "pwrsnapApi");
 });
 
 async function renderSecretKeyControl(configured: boolean): Promise<{
@@ -611,6 +615,278 @@ describe("buildAcpProviderOptions", () => {
     } as unknown as AcpAgentDiscovery;
     const opts = buildAcpProviderOptions(["gemini"], discovery);
     expect(opts[0]?.label).toBe("Gemini CLI (v0.4)");
+  });
+});
+
+describe("ACP manual executable paths", () => {
+  test("an enabled but currently missing agent can still be disabled", async () => {
+    Object.defineProperty(window, "pwrsnapApi", {
+      configurable: true,
+      value: { platform: "win32" }
+    });
+    const onToggle = vi.fn();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        createElement(AcpAgentList, {
+          discovery: {
+            agents: [
+              {
+                id: "qwen",
+                displayName: "Qwen Code",
+                installed: false,
+                detail: "Configured path was not found",
+                instances: []
+              }
+            ]
+          },
+          loading: false,
+          error: null,
+          enabledAgentIds: ["qwen"],
+          agents: { qwen: { overridePath: String.raw`C:\missing\qwen.cmd` } },
+          modelErrors: {},
+          onToggle,
+          onPickInstance: vi.fn(),
+          onRevertAuto: vi.fn(),
+          onSetOverride: vi.fn(async () => undefined),
+          onClearOverride: vi.fn()
+        })
+      );
+    });
+    const toggle = container.querySelector<HTMLInputElement>(
+      '[aria-label="Enable Qwen Code"]'
+    )!;
+    expect(toggle.checked).toBe(true);
+    expect(toggle.disabled).toBe(false);
+    await act(async () => {
+      toggle.click();
+    });
+    expect(onToggle).toHaveBeenCalledWith("qwen", false);
+  });
+
+  test("Save & enable forwards the enable intent for an undiscovered Windows path", async () => {
+    Object.defineProperty(window, "pwrsnapApi", {
+      configurable: true,
+      value: { platform: "win32" }
+    });
+    const onSetOverride = vi.fn(async () => undefined);
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        createElement(AcpAgentList, {
+          discovery: {
+            agents: [
+              {
+                id: "qwen",
+                displayName: "Qwen Code",
+                installed: false,
+                detail: "Not found",
+                instances: []
+              }
+            ]
+          },
+          loading: false,
+          error: null,
+          enabledAgentIds: [],
+          agents: {},
+          modelErrors: {},
+          onToggle: vi.fn(),
+          onPickInstance: vi.fn(),
+          onRevertAuto: vi.fn(),
+          onSetOverride,
+          onClearOverride: vi.fn()
+        })
+      );
+    });
+
+    const input = container.querySelector<HTMLInputElement>(
+      '[aria-label="Manual override path"]'
+    );
+    const save = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Save & enable"
+    );
+    expect(input?.placeholder).toContain(
+      String.raw`C:\Users\you\AppData\Roaming\npm\qwen.cmd`
+    );
+    expect(save).toBeDefined();
+    typeIntoInput(input!, String.raw`\\agent-share\agents\qwen.cmd`);
+    await act(async () => {
+      save!.click();
+      await Promise.resolve();
+    });
+    expect(onSetOverride).toHaveBeenCalledWith(
+      "qwen",
+      String.raw`\\agent-share\agents\qwen.cmd`,
+      true
+    );
+  });
+
+  test("keeps the previous ACP path and shows a rejected settings write", async () => {
+    Object.defineProperty(window, "pwrsnapApi", {
+      configurable: true,
+      value: { platform: "win32" }
+    });
+    const onSetOverride = vi.fn(async () => {
+      throw new Error("Settings could not be written");
+    });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        createElement(AcpAgentList, {
+          discovery: {
+            agents: [
+              {
+                id: "qwen",
+                displayName: "Qwen Code",
+                installed: true,
+                version: "1.0.0",
+                activeCommand: String.raw`C:\old\qwen.cmd`,
+                instances: [
+                  {
+                    command: String.raw`C:\old\qwen.cmd`,
+                    source: "path",
+                    version: "1.0.0"
+                  }
+                ]
+              }
+            ]
+          },
+          loading: false,
+          error: null,
+          enabledAgentIds: ["qwen"],
+          agents: { qwen: { overridePath: String.raw`C:\old\qwen.cmd` } },
+          modelErrors: {},
+          onToggle: vi.fn(),
+          onPickInstance: vi.fn(),
+          onRevertAuto: vi.fn(),
+          onSetOverride,
+          onClearOverride: vi.fn()
+        })
+      );
+    });
+    const input = container.querySelector<HTMLInputElement>(
+      '[aria-label="Manual override path"]'
+    )!;
+    typeIntoInput(input, String.raw`C:\new\qwen.cmd`);
+    const save = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Save"
+    )!;
+    await act(async () => {
+      save.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "Settings could not be written"
+    );
+    expect(input.value).toBe(String.raw`C:\new\qwen.cmd`);
+  });
+
+  test("the saved patch atomically enables an undiscovered override", () => {
+    expect(
+      buildAcpOverridePatch(
+        ["gemini"],
+        "qwen",
+        String.raw`C:\tools\qwen.cmd`,
+        true
+      )
+    ).toEqual({
+      ai: {
+        acp: {
+          enabledAgentIds: ["gemini", "qwen"],
+          agents: {
+            qwen: { overridePath: String.raw`C:\tools\qwen.cmd` }
+          }
+        }
+      }
+    });
+  });
+});
+
+describe("Codex manual executable path submission", () => {
+  async function renderCodex(onPin: (path: string) => Promise<void>) {
+    Object.defineProperty(window, "pwrsnapApi", {
+      configurable: true,
+      value: { platform: "win32" }
+    });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        createElement(CodexCandidates, {
+          snapshot: null,
+          loading: false,
+          onPin
+        })
+      );
+    });
+    return {
+      input: container.querySelector<HTMLInputElement>(
+        '[aria-label="Manual Codex path"]'
+      )!,
+      button: Array.from(container.querySelectorAll("button")).find(
+        (candidate) => candidate.textContent === "Use path"
+      )!
+    };
+  }
+
+  test("rejects relative and wrong-platform paths next to the field", async () => {
+    const onPin = vi.fn(async () => undefined);
+    const { input, button } = await renderCodex(onPin);
+    typeIntoInput(input, "codex.cmd");
+    await act(async () => {
+      button.click();
+    });
+    expect(container?.querySelector('[role="alert"]')?.textContent).toContain(
+      "drive-absolute"
+    );
+    typeIntoInput(input, "/opt/homebrew/bin/codex");
+    await act(async () => {
+      button.click();
+    });
+    expect(onPin).not.toHaveBeenCalled();
+    expect(container?.querySelector('[role="alert"]')?.textContent).toContain(
+      "drive-absolute"
+    );
+  });
+
+  test("strips one Explorer quote pair before a successful save", async () => {
+    const onPin = vi.fn(async () => undefined);
+    const { input, button } = await renderCodex(onPin);
+    typeIntoInput(input, String.raw`"C:\Program Files\Codex\codex.exe"`);
+    await act(async () => {
+      button.click();
+      await Promise.resolve();
+    });
+    expect(onPin).toHaveBeenCalledWith(
+      String.raw`C:\Program Files\Codex\codex.exe`
+    );
+    expect(input.value).toBe(String.raw`C:\Program Files\Codex\codex.exe`);
+    expect(container?.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  test("surfaces a bus failure and leaves the attempted path in place", async () => {
+    const onPin = vi.fn(async () => {
+      throw new Error("Codex settings write failed");
+    });
+    const { input, button } = await renderCodex(onPin);
+    typeIntoInput(input, String.raw`C:\tools\codex.exe`);
+    await act(async () => {
+      button.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container?.querySelector('[role="alert"]')?.textContent).toContain(
+      "Codex settings write failed"
+    );
+    expect(input.value).toBe(String.raw`C:\tools\codex.exe`);
   });
 });
 

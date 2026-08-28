@@ -10,6 +10,7 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { capturesFolderDisplayPath } from "@pwrsnap/shared";
 import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 
 test("library window boots and renders the brand mark", async () => {
@@ -33,7 +34,9 @@ test("library storage popover exposes cache controls", async () => {
     await expect(popover.getByText("App Cache")).toBeVisible();
     await expect(popover.getByText("Render Sizes Cache")).toBeVisible();
     await expect(popover.getByRole("button", { name: "Trim" })).toBeVisible();
-    await expect(popover.getByText("Documents/PwrSnap")).toBeVisible();
+    await expect(
+      popover.getByText(capturesFolderDisplayPath(process.platform, "documents"))
+    ).toBeVisible();
   } finally {
     await app.close();
   }

@@ -121,6 +121,13 @@ afterEach(async () => {
 });
 
 describe("AIProvidersPage — enrichment consent", () => {
+  test("renders existing partial settings without a storage section", async () => {
+    const page = await renderPage(null);
+
+    expect(page.textContent).toContain("Library Chat");
+    expect(page.textContent).toContain("Where your chats live.");
+  });
+
   test("does not advertise unavailable semantic search routing", async () => {
     const page = await renderPage(null);
 

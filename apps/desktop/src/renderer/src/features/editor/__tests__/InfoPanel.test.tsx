@@ -419,4 +419,24 @@ describe("InfoPanel", () => {
       q('[data-testid="info-source-app-icon-fallback"]')
     ).not.toBeNull();
   });
+
+  test("14. Windows executable identifiers use the canonical encoded app-icon URL", async () => {
+    const executable = String.raw`C:\Program Files\Acme & Co\Acme.exe`;
+    dispatchMock.mockImplementation(async (name: string) => {
+      if (name === "library:byId") {
+        return {
+          ok: true,
+          value: makeRecord({ source_app_bundle_id: executable })
+        };
+      }
+      if (name === "codex:enrichment") return { ok: true, value: null };
+      return { ok: true, value: undefined };
+    });
+    render(createElement(InfoPanel, { captureId: "cap_1" }));
+    await flush();
+
+    expect(
+      q('[data-testid="info-source-app-icon"]')?.getAttribute("src")
+    ).toBe(`pwrsnap-app-icon://r/${encodeURIComponent(executable)}`);
+  });
 });

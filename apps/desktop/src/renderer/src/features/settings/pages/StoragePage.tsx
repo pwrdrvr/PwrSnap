@@ -1,7 +1,11 @@
 import type { ReactElement } from "react";
-import type { FilenameTimestampZone } from "@pwrsnap/shared";
+import {
+  capturesFolderDisplayPath,
+  type FilenameTimestampZone
+} from "@pwrsnap/shared";
 import { Card, Row, SegmentedControl, Switch, type SegmentOption } from "../components";
 import { formatBytes } from "../../../lib/format-bytes";
+import { useCapturesLocationDisplayState } from "../../../lib/useCapturesLocationDisplayState";
 import { useStorageSnapshot } from "../../../lib/useStorageSnapshot";
 import { useSettingsContext } from "../SettingsContext";
 
@@ -34,8 +38,15 @@ export function StoragePage(): ReactElement {
     settings?.storage.filenameTimestampZone ?? "local";
   const ready = settings !== null;
   const confirmBeforeTrash = settings?.library.confirmBeforeTrash ?? true;
+  const capturesDisplay = useCapturesLocationDisplayState(
+    settings?.storage.capturesLocation ?? "documents"
+  );
   const activeCapturesPath =
-    settings?.storage.capturesLocation === "home" ? "~/PwrSnap" : "~/Documents/PwrSnap";
+    capturesFolderDisplayPath(
+      window.pwrsnapApi?.platform,
+      capturesDisplay.location,
+      capturesDisplay.overridden
+    );
 
   const onTimestampZoneChange = ready
     ? (next: FilenameTimestampZone): void => {
@@ -84,9 +95,15 @@ export function StoragePage(): ReactElement {
           detail={
             snapshot === null
               ? "—"
-              : `${formatBytes(snapshot.sourceCaptures.documentsBytes)} in ~/Documents/PwrSnap · ${formatBytes(
+              : `${formatBytes(snapshot.sourceCaptures.documentsBytes)} in ${capturesFolderDisplayPath(
+                  window.pwrsnapApi?.platform,
+                  "documents"
+                )} · ${formatBytes(
                   snapshot.sourceCaptures.homeBytes
-                )} in ~/PwrSnap · ${formatBytes(snapshot.sourceCaptures.appSupportBytes)} legacy`
+                )} in ${capturesFolderDisplayPath(
+                  window.pwrsnapApi?.platform,
+                  "home"
+                )} · ${formatBytes(snapshot.sourceCaptures.appSupportBytes)} legacy`
           }
         />
         <StorageRow

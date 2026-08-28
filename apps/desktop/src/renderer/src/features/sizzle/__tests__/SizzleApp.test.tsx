@@ -210,6 +210,7 @@ function installApi(
   (globalThis as unknown as { window: Window }).window.pwrsnapApi = {
     dispatch,
     on,
+    platform: "darwin",
     startCaptureDrag: () => undefined
   } as unknown as NonNullable<Window["pwrsnapApi"]>;
   return { dispatch, emit };

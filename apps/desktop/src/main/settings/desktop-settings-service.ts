@@ -3,10 +3,8 @@
 // force eager migrations on read — we rewrite on the next `write`.
 // Concurrent writes serialize through a single promise chain.
 
-import { execFile as execFileCallback } from "node:child_process";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { promisify } from "node:util";
 import type {
   AcpAgentPreference,
   AcpSettings,
@@ -99,8 +97,7 @@ import {
   selectResolvedCodexCommand
 } from "./codex-discovery";
 import { getMainLogger } from "../log";
-
-const execFile = promisify(execFileCallback);
+import { execAgentCommand } from "../ai/agent-command";
 
 /** Per-probe timeout for Codex `--version` in `testCodex`. Mirrors
  *  PwrAgnt's `DEFAULT_PROBE_TIMEOUT_MS`. */
@@ -1663,8 +1660,9 @@ export class DesktopSettingsService {
 
     const probeStart = Date.now();
     try {
-      const { stdout, stderr } = await execFile(resolvedCommand, ["--version"], {
-        timeout: CODEX_TEST_TIMEOUT_MS
+      const { stdout, stderr } = await execAgentCommand(resolvedCommand, ["--version"], {
+        env: process.env,
+        timeoutMs: CODEX_TEST_TIMEOUT_MS
       });
       const durationMs = Date.now() - probeStart;
       const testedAt = new Date().toISOString();

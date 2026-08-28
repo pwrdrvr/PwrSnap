@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import {
   estimateSizzleReelDurationSec,
   formatSizzleDuration,
+  revealInFileManagerLabel,
   resolveSizzleAudioSource,
   type CaptureRecord,
   type SizzleProject,
@@ -704,7 +705,7 @@ export function Editor(props: EditorProps): ReactElement {
             onClick={onReveal}
             title={project.outputPath}
           >
-            Reveal in Finder
+            {revealInFileManagerLabel(window.pwrsnapApi?.platform)}
           </button>
         ) : null}
         {/* Render lives with the reel (in the player's transport), not down

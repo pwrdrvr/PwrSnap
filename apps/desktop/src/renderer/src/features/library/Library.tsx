@@ -29,9 +29,11 @@ import type {
 } from "@pwrsnap/shared";
 import {
   EVENT_CHANNELS,
+  capturesFolderDisplayPath,
   GRID_ZOOM_DEFAULT,
   GRID_ZOOM_MAX,
   GRID_ZOOM_MIN,
+  revealInFileManagerLabel,
   resolveSizzleProjectCoverCaptureId,
   type SettingsChangedEvent,
   type SizzleProject
@@ -42,7 +44,11 @@ import {
   useVirtualizer,
   type Range
 } from "@tanstack/react-virtual";
-import { AppIcon, AppTag } from "../shared/AppIcons";
+import {
+  AppIcon,
+  AppTag,
+  appIdentifierDisplayLabel
+} from "../shared/AppIcons";
 import { DeleteConfirm } from "../shared/DeleteConfirm";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import type { CopyPreset } from "../shared/CopyButton";
@@ -113,6 +119,7 @@ import { resolveColumnCount } from "../../lib/gridColumns";
 import { useGridPinchZoom } from "../../lib/useGridPinchZoom";
 import { registerCaptureUndoFallback } from "../../lib/editMenuBridge";
 import { useStorageSnapshot } from "../../lib/useStorageSnapshot";
+import { useCapturesLocationDisplayState } from "../../lib/useCapturesLocationDisplayState";
 import { useHotkeys } from "../shared/useHotkeys";
 import { useVideoTrimRange } from "../shared/useVideoTrimRange";
 import { AppMenuBar } from "../shared/AppMenuBar";
@@ -685,20 +692,6 @@ function formatDurationLabel(seconds: number): string {
 }
 
 /**
- * Derive a display label from a bundle id when no curated name is
- * registered (`com.pwrsnap.synth.air-table` → "Air Table"). Takes the
- * last dotted segment, splits on hyphens, and Title-Cases each word.
- */
-function labelFromBundleId(bundleId: string): string {
-  const tail = bundleId.split(".").pop() ?? bundleId;
-  return tail
-    .split(/[-_]+/)
-    .filter((w) => w.length > 0)
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(" ");
-}
-
-/**
  * Local-day stamp as "YYYY-MM-DD@tzOffsetMinutes". Used as a memo key
  * so date-derived UI (the "Today" filter, day-bucket headers, cached
  * date formatters) rebuilds when the local date changes — across
@@ -969,6 +962,7 @@ export function Library() {
   const [settingsHydrated, setSettingsHydrated] = useState<boolean>(false);
   const [capturesLocation, setCapturesLocationState] =
     useState<CapturesLocation>("documents");
+  const capturesDisplay = useCapturesLocationDisplayState(capturesLocation);
   const userTouchedRailRef = useRef<boolean>(false);
   // Mirror of `rightPinned` kept in a ref so `toggleRightPinned` can
   // compute `!current` without subscribing to the state and triggering
@@ -2192,7 +2186,7 @@ export function Library() {
         labels[appId] = stat.sourceAppName;
         capturedStatLabels.add(appId);
       } else if (stat.bundleId !== null) {
-        labels[appId] = labelFromBundleId(stat.bundleId);
+        labels[appId] = appIdentifierDisplayLabel(stat.bundleId);
       } else {
         labels[appId] = "Unknown app";
       }
@@ -5208,9 +5202,12 @@ export function Library() {
                   <div>
                     <span>Capture folders</span>
                     <small>
-                      {sourceSnapCount} snaps · new → {capturesLocation === "home"
-                        ? "~/PwrSnap"
-                        : "~/Documents/PwrSnap"}
+                      {sourceSnapCount} snaps · new →{" "}
+                      {capturesFolderDisplayPath(
+                        window.pwrsnapApi?.platform,
+                        capturesDisplay.location,
+                        capturesDisplay.overridden
+                      )}
                     </small>
                   </div>
                   <b>
@@ -5714,7 +5711,7 @@ function LibraryCaptureContextMenu({
             className="psl__context-menu-row"
             onClick={run(onReveal)}
           >
-            Reveal in Finder
+            {revealInFileManagerLabel(window.pwrsnapApi?.platform)}
           </button>
           <div className="psl__context-menu-sep" role="separator" />
           <button
@@ -5778,7 +5775,7 @@ function LibraryCaptureContextMenu({
             className="psl__context-menu-row"
             onClick={run(onReveal)}
           >
-            Reveal in Finder
+            {revealInFileManagerLabel(window.pwrsnapApi?.platform)}
           </button>
           <button
             type="button"

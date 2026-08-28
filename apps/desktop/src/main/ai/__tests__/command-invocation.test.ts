@@ -8,15 +8,15 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { createCommandInvocation } from "@pwrdrvr/agent-transport";
 import { describe, expect, it } from "vitest";
+import { createAgentCommandInvocation } from "../agent-command";
 
 const execFile = promisify(execFileCallback);
 
-describe("createCommandInvocation", () => {
-  it("preserves direct argv launches for native executables", () => {
+describe("createAgentCommandInvocation", () => {
+  it("preserves direct argv launches for Windows drive-absolute executables", () => {
     expect(
-      createCommandInvocation({
+      createAgentCommandInvocation({
         command: "C:\\tools\\codex.exe",
         args: ["app-server", "value & whoami"],
         env: {},
@@ -29,7 +29,7 @@ describe("createCommandInvocation", () => {
   });
 
   it("escapes Windows batch commands and arguments for ComSpec", () => {
-    const invocation = createCommandInvocation({
+    const invocation = createAgentCommandInvocation({
       command: "C:\\nvm4w & tools\\nodejs\\codex.cmd",
       args: ["app-server", "value & whoami"],
       env: { COMSPEC: "C:\\Windows\\System32\\cmd.exe" },
@@ -43,6 +43,37 @@ describe("createCommandInvocation", () => {
     );
     expect(invocation.args[3]).toContain("^\"value^ ^&^ whoami^\"");
     expect(invocation.windowsVerbatimArguments).toBe(true);
+  });
+
+  it("routes a UNC-hosted Windows batch shim through escaped ComSpec", () => {
+    const invocation = createAgentCommandInvocation({
+      command: String.raw`\\agent-share\tools & models\codex.cmd`,
+      args: ["--version"],
+      env: { ComSpec: String.raw`C:\Windows\System32\cmd.exe` },
+      platform: "win32"
+    });
+
+    expect(invocation.command).toBe(String.raw`C:\Windows\System32\cmd.exe`);
+    expect(invocation.args.slice(0, 3)).toEqual(["/d", "/s", "/c"]);
+    expect(invocation.args[3]).toContain(
+      String.raw`\\agent-share\tools^ ^&^ models\codex.cmd`
+    );
+    expect(invocation.args[3]).toContain('^"--version^"');
+    expect(invocation.windowsVerbatimArguments).toBe(true);
+  });
+
+  it("preserves direct argv launches for macOS executables", () => {
+    expect(
+      createAgentCommandInvocation({
+        command: "/opt/homebrew/bin/codex",
+        args: ["login", "status"],
+        env: {},
+        platform: "darwin"
+      })
+    ).toEqual({
+      command: "/opt/homebrew/bin/codex",
+      args: ["login", "status"]
+    });
   });
 
   it.runIf(process.platform === "win32")(
@@ -68,7 +99,7 @@ describe("createCommandInvocation", () => {
           ...process.env,
           NODE_EXE: process.execPath
         };
-        const invocation = createCommandInvocation({
+        const invocation = createAgentCommandInvocation({
           command: shimPath,
           args: ["app-server", injectionShapedArgument],
           env

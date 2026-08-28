@@ -27,3 +27,4 @@ export * from "./sizzle-sequence-timeline";
 export * from "./export-ladder";
 export * from "./local-agent-policy";
 export * from "./selector-crop-stream";
+export * from "./desktop-platform";

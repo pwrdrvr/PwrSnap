@@ -31,6 +31,7 @@ import {
 import {
   EVENT_CHANNELS,
   exportStrategyFromSettings,
+  desktopFileManagerName,
   resolveExportLadder,
   rungForPreset,
   sizzleProjectHasCapture,
@@ -1024,15 +1025,15 @@ export function DetailRail({
                 type="button"
                 title={
                   isVideo
-                    ? "Click to reveal in Finder"
-                    : "Drag PNG file or click to reveal in Finder"
+                    ? `Click to reveal in ${desktopFileManagerName(window.pwrsnapApi?.platform)}`
+                    : `Drag PNG file or click to reveal in ${desktopFileManagerName(window.pwrsnapApi?.platform)}`
                 }
                 // Image: this is the only drag affordance in the
                 // rail, so it carries `draggable` + HIGH preset.
                 // Video: drag-out lives in the 6-card grid above
                 // (each card drags its own format/preset combo via
                 // `startVideoDrag`). The action-row button stays a
-                // simple "click to reveal in Finder" affordance —
+                // simple click-to-reveal affordance —
                 // no drag for video, no encoding triggered here.
                 draggable={!isVideo}
                 onClick={() => {

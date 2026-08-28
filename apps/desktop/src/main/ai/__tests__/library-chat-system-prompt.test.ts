@@ -35,4 +35,12 @@ describe("buildLibrarySystemPrompt — verify-after-edit guidance", () => {
   test("teaches that replacing a box is TWO edits (delete + add), both confirmed", () => {
     expect(prompt).toContain("Replacing a box = TWO edits");
   });
+
+  test("keeps cross-platform sharing guidance free of macOS-only nouns", () => {
+    expect(prompt).toContain("cross-platform screenshot");
+    expect(prompt).toContain("file manager");
+    expect(prompt).toContain("operating system's sharing flow");
+    expect(prompt).not.toContain("Reveal-in-Finder");
+    expect(prompt).not.toContain("AirDrop");
+  });
 });

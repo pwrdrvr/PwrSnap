@@ -27,7 +27,12 @@
 
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
-import { err, type PwrSnapError, type Result } from "@pwrsnap/shared";
+import {
+  capturesFolderDisplayPath,
+  err,
+  type PwrSnapError,
+  type Result
+} from "@pwrsnap/shared";
 import type { CapturesLocation } from "@pwrsnap/shared";
 import {
   getCapturesLocation,
@@ -162,7 +167,12 @@ async function persistHomeFallback(): Promise<
     // fallback also runs in E2E/profiling modes where the broader settings
     // listener may not be installed. Switch synchronously before retrying.
     setCapturesLocation("home");
-    log.warn("Documents access denied — switched new captures to ~/PwrSnap");
+    log.warn(
+      `Documents access denied — switched new captures to ${capturesFolderDisplayPath(
+        process.platform,
+        "home"
+      )}`
+    );
     return { ok: true };
   })();
 
@@ -242,8 +252,10 @@ export async function ensureCapturesDirReady(
     force?: boolean | undefined;
     location?: CapturesLocation | undefined;
     fallbackOnDenial?: boolean | undefined;
+    platform?: string | undefined;
   } = {}
 ): Promise<Result<never, PwrSnapError> | null> {
+  const platform = opts.platform ?? process.platform;
   const location = opts.location ?? getCapturesLocation();
   const root = getCapturesRootForLocation(location);
   if (!opts.force && rootAccessStates.get(root) === "confirmed") return null;
@@ -277,7 +289,8 @@ export async function ensureCapturesDirReady(
         return ensureCapturesDirReady({
           force: true,
           location: "home",
-          fallbackOnDenial: false
+          fallbackOnDenial: false,
+          platform
         });
       }
       if (fallback.kind === "failed") return err(fallback.error);
@@ -286,11 +299,28 @@ export async function ensureCapturesDirReady(
       kind: "capture",
       code: denied ? "captures_dir_denied" : "captures_dir_unwritable",
       message: denied
-        ? location === "documents"
-          ? "PwrSnap needs access to your Documents folder to save captures. Allow it in System Settings → Privacy & Security → Files & Folders → Documents, then capture again."
-          : "PwrSnap couldn't write to its fallback folder (~/PwrSnap). Make sure your home folder is writable, then capture again."
+        ? capturesDirectoryDeniedMessage(location, platform)
         : `PwrSnap couldn't write to its captures folder (${root}). Make sure it's writable, then capture again.`,
       cause
     });
   }
+}
+
+export function capturesDirectoryDeniedMessage(
+  location: CapturesLocation,
+  platform: string
+): string {
+  if (location === "home") {
+    return `PwrSnap couldn't write to its fallback folder (${capturesFolderDisplayPath(
+      platform,
+      "home"
+    )}). Make sure your home folder is writable, then capture again.`;
+  }
+  if (platform === "darwin") {
+    return "PwrSnap needs access to your Documents folder to save captures. Allow it in System Settings → Privacy & Security → Files & Folders → Documents, then capture again.";
+  }
+  if (platform === "win32") {
+    return "Windows blocked PwrSnap from writing to Documents. Allow PwrSnap through Controlled Folder Access or antivirus protection, and check OneDrive folder permissions, then capture again.";
+  }
+  return "PwrSnap couldn't write to Documents. Check the folder permissions or sandbox access, then capture again.";
 }

@@ -6,6 +6,7 @@
 
 import { describe, expect, test } from "vitest";
 import {
+  appIdentifierDisplayLabel,
   appIconUrl,
   initialsFor,
   isResolvableAppIdentifier,
@@ -30,6 +31,16 @@ describe("native app-icon identifiers", () => {
   test("percent-encodes Windows paths for the custom protocol", () => {
     expect(appIconUrl("C:\\Windows\\System32\\Taskmgr.exe")).toBe(
       "pwrsnap-app-icon://r/C%3A%5CWindows%5CSystem32%5CTaskmgr.exe"
+    );
+  });
+
+  test("labels old Windows records from the executable basename", () => {
+    const partialRecordBundleId =
+      String.raw`C:\Program Files\Google\Chrome\Application\chrome.exe`;
+    expect(appIdentifierDisplayLabel(partialRecordBundleId)).toBe("Chrome");
+    expect(initialsFor(undefined, partialRecordBundleId)).toBe("CH");
+    expect(appIdentifierDisplayLabel("com.pwrsnap.synth.air-table")).toBe(
+      "Air Table"
     );
   });
 });

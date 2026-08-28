@@ -15,31 +15,53 @@
 // (§Storage layout banner copy, §F3 Phase 3, §F4 H3 secret sniff).
 
 import { useEffect, useRef, useState, type ReactElement } from "react";
-import type { SensitiveDataPattern } from "@pwrsnap/shared";
+import {
+  chatsFolderDisplayPath,
+  chatStoragePlatformCopy,
+  type SensitiveDataPattern
+} from "@pwrsnap/shared";
 import { Card, Row } from "../components";
 import { useSettingsContext } from "../SettingsContext";
+import { useCapturesLocationDisplayState } from "../../../lib/useCapturesLocationDisplayState";
 
 const USER_GUIDANCE_MAX = 8192;
 
 export function ChatSettingsCard(): ReactElement | null {
   const { settings, patch } = useSettingsContext();
+  const capturesDisplay = useCapturesLocationDisplayState(
+    settings?.storage?.capturesLocation ?? "documents"
+  );
   if (settings === null) return null;
-  return <ChatSettingsCardBody key="chat-settings" patch={patch} chat={settings.ai.chat} />;
+  return (
+    <ChatSettingsCardBody
+      key="chat-settings"
+      patch={patch}
+      chat={settings.ai.chat}
+      capturesLocation={capturesDisplay.location}
+      capturesRootOverridden={capturesDisplay.overridden}
+    />
+  );
 }
 
 type PatchFn = ReturnType<typeof useSettingsContext>["patch"];
 
 function ChatSettingsCardBody({
   chat,
-  patch
+  patch,
+  capturesLocation,
+  capturesRootOverridden
 }: {
   chat: import("@pwrsnap/shared").ChatSettings;
   patch: PatchFn;
+  capturesLocation: "documents" | "home";
+  capturesRootOverridden: boolean;
 }): ReactElement {
   return (
     <Card eyebrow="PROVIDER" title="Library Chat">
       {!chat.firstLaunchBannerDismissed ? (
         <DisclosureBanner
+          capturesLocation={capturesLocation}
+          capturesRootOverridden={capturesRootOverridden}
           onDismiss={() => {
             void patch({ ai: { chat: { firstLaunchBannerDismissed: true } } });
           }}
@@ -71,16 +93,34 @@ function ChatSettingsCardBody({
   );
 }
 
-function DisclosureBanner({ onDismiss }: { onDismiss: () => void }): ReactElement {
+function DisclosureBanner({
+  capturesLocation,
+  capturesRootOverridden,
+  onDismiss
+}: {
+  capturesLocation: "documents" | "home";
+  capturesRootOverridden: boolean;
+  onDismiss: () => void;
+}): ReactElement {
+  const platform = window.pwrsnapApi?.platform;
+  const storageCopy = chatStoragePlatformCopy(
+    platform,
+    capturesLocation,
+    capturesRootOverridden
+  );
+  const chatsPath = chatsFolderDisplayPath(
+    platform,
+    capturesLocation,
+    capturesRootOverridden
+  );
   return (
     <div className="pss__chat-banner" role="note">
       <div className="pss__chat-banner-body">
         <b>Where your chats live.</b> Chat transcripts and PNG snapshots of
         your captures are saved as plain text under{" "}
-        <code>~/Documents/PwrSnap/Chats/</code> so you can find and share
-        them. If you have iCloud Drive “Desktop &amp; Documents” enabled,
-        these files sync to iCloud. Spotlight indexing is disabled for this
-        folder. Turn on FileVault for at-rest encryption.
+        {capturesRootOverridden ? chatsPath : <code>{chatsPath}</code>} so you can
+        find and share them. {storageCopy.cloudSync} {storageCopy.indexing}{" "}
+        {storageCopy.encryption}
       </div>
       <button type="button" className="pss__key-btn" onClick={onDismiss}>
         Got it

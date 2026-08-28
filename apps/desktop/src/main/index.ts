@@ -15,7 +15,7 @@ import {
   Notification,
   shell
 } from "electron";
-import { EVENT_CHANNELS } from "@pwrsnap/shared";
+import { EVENT_CHANNELS, revealInFileManagerLabel } from "@pwrsnap/shared";
 import type { RecordingSubject, Settings, SettingsChangedEvent } from "@pwrsnap/shared";
 import {
   disposeRegionSelector,
@@ -983,7 +983,7 @@ async function runExportLibrary(): Promise<void> {
     type: "info",
     message: "Library exported",
     detail: `Snapshot at ${dispatched.value.destDir}`,
-    buttons: ["Reveal in Finder", "OK"],
+    buttons: [revealInFileManagerLabel(process.platform), "OK"],
     defaultId: 0
   }).then((response) => {
     if (response.response === 0) shell.showItemInFolder(dispatched.value.manifestPath);

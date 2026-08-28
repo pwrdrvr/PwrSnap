@@ -38,7 +38,7 @@ export function buildCaptureBundleFilenameStem(parts: BundleFilenameParts): stri
 export function bundleStemFromPath(bundlePath: string): string {
   const name = basename(bundlePath);
   const ext = extname(name);
-  return ext === ".pwrsnap" ? name.slice(0, -ext.length) : name;
+  return ext.toLowerCase() === ".pwrsnap" ? name.slice(0, -ext.length) : name;
 }
 
 function formatCaptureTimestamp(

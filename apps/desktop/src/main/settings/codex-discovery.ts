@@ -34,12 +34,10 @@
 // that lives somewhere launchd's sparse PATH misses must be covered by an
 // explicit filesystem candidate above, or pinned in Settings → AI.
 
-import { execFile as execFileCallback } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
 import { access, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 
 import {
   compareCodexCliVersions as kitCompareCodexCliVersions,
@@ -55,8 +53,7 @@ import {
   CodexCliTooOldError,
   reportCodexCliTooOld
 } from "./codex-compatibility-alert";
-
-const execFile = promisify(execFileCallback);
+import { execAgentCommand } from "../ai/agent-command";
 
 /** Minimum Codex CLI version PwrSnap will spawn. The protocol package version
  *  tracks the target CLI release; older binaries cannot consume its tool wire
@@ -136,9 +133,9 @@ export async function probeCodexAuth(
   const startedAt = Date.now();
   const testedAt = new Date().toISOString();
   try {
-    const result = await execFile(command, ["login", "status"], {
+    const result = await execAgentCommand(command, ["login", "status"], {
       env,
-      timeout: AUTH_PROBE_TIMEOUT_MS
+      timeoutMs: AUTH_PROBE_TIMEOUT_MS
     });
     const output = trimProbeMessage(`${result.stdout}\n${result.stderr ?? ""}`);
     return {
@@ -193,16 +190,18 @@ export async function assertCodexCliVersion(
 ): Promise<string> {
   const notFoundMessage =
     `Codex CLI not found: ${command}. Install the Codex CLI ` +
-    `(Codex Desktop / ChatGPT Desktop or \`brew install codex\`), or pin its ` +
+    (process.platform === "darwin"
+      ? `(Codex Desktop / ChatGPT Desktop or \`brew install codex\`), or pin its `
+      : `(Codex Desktop / ChatGPT Desktop or another supported CLI install), or pin its `) +
     `full path in Settings → AI.`;
   if (path.isAbsolute(command) && !(await kitPathIsExecutable(command))) {
     throw new Error(notFoundMessage);
   }
   let result: { stdout: string; stderr: string };
   try {
-    result = await execFile(command, ["--version"], {
+    result = await execAgentCommand(command, ["--version"], {
       env,
-      timeout: VERSION_PROBE_TIMEOUT_MS
+      timeoutMs: VERSION_PROBE_TIMEOUT_MS
     });
   } catch (cause) {
     if (isSpawnNotFoundError(cause)) throw new Error(notFoundMessage);

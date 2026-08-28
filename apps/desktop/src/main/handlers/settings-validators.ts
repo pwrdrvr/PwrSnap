@@ -32,6 +32,7 @@ import {
   GRID_ZOOM_MIN,
   isHotCpuProfileStartDelayMs,
   isHotCpuProfileTriggerMode,
+  isAbsoluteExecutablePath,
   LIBRARY_SIDEBAR_TABS,
   MAX_HIGHLIGHT_OPACITY,
   REDACTION_STYLES
@@ -113,7 +114,8 @@ const ACCELERATOR_SHAPE =
  *  declared type. `undefined` is always fine (means "untouched"); the
  *  service-level merge skips undefined keys. */
 export function validateSettingsWrite(
-  patch: unknown
+  patch: unknown,
+  platform: string = process.platform
 ): ValidationResult<SettingsPatch> {
   if (typeof patch !== "object" || patch === null || Array.isArray(patch)) {
     return {
@@ -138,6 +140,21 @@ export function validateSettingsWrite(
         error: validationError(
           "invalid_codex_pinnedPath",
           "settings:write: codex.pinnedPath must be a string"
+        )
+      };
+    }
+    if (
+      typeof codex.pinnedPath === "string" &&
+      codex.pinnedPath.length > 0 &&
+      !isAbsoluteExecutablePath(platform, codex.pinnedPath)
+    ) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_codex_pinnedPath",
+          platform === "win32"
+            ? "settings:write: codex.pinnedPath must be a drive-absolute or UNC executable path"
+            : "settings:write: codex.pinnedPath must be an absolute executable path beginning with /"
         )
       };
     }
@@ -235,7 +252,7 @@ export function validateSettingsWrite(
       if (defaultsErr) return { ok: false, error: defaultsErr };
     }
     if (!isUndefined(ai.acp)) {
-      const acpErr = validateAcpPatch(ai.acp);
+      const acpErr = validateAcpPatch(ai.acp, platform);
       if (acpErr) return { ok: false, error: acpErr };
     }
   }
@@ -1025,7 +1042,7 @@ function validateAiDefaultsPatch(raw: unknown): PwrSnapError | null {
  *  bounded so a forged patch can't stash a huge blob. */
 const ACP_AGENT_PATH_MAX = 4096;
 
-function validateAcpPatch(raw: unknown): PwrSnapError | null {
+function validateAcpPatch(raw: unknown, platform: string): PwrSnapError | null {
   if (!isObject(raw)) {
     return validationError(
       "invalid_ai_acp",
@@ -1055,7 +1072,7 @@ function validateAcpPatch(raw: unknown): PwrSnapError | null {
     }
   }
   if (!isUndefined(raw.agents)) {
-    const agentsErr = validateAcpAgentsPatch(raw.agents);
+    const agentsErr = validateAcpAgentsPatch(raw.agents, platform);
     if (agentsErr) return agentsErr;
   }
   return null;
@@ -1064,7 +1081,7 @@ function validateAcpPatch(raw: unknown): PwrSnapError | null {
 /** Validate `ai.acp.agents` — a map of built-in agent id → `{ overridePath?,
  *  selectedPath? }`. Rejects unknown ids and non-string / oversize path leaves.
  *  `null` / `""` are allowed (they clear the leaf at merge time). */
-function validateAcpAgentsPatch(raw: unknown): PwrSnapError | null {
+function validateAcpAgentsPatch(raw: unknown, platform: string): PwrSnapError | null {
   if (!isObject(raw)) {
     return validationError(
       "invalid_ai_acp_agents",
@@ -1097,6 +1114,18 @@ function validateAcpAgentsPatch(raw: unknown): PwrSnapError | null {
         return validationError(
           "invalid_ai_acp_agent_pref",
           `settings:write: ai.acp.agents.${id}.${key} exceeds ${ACP_AGENT_PATH_MAX} chars`
+        );
+      }
+      if (
+        key === "overridePath" &&
+        leaf.length > 0 &&
+        !isAbsoluteExecutablePath(platform, leaf)
+      ) {
+        return validationError(
+          "invalid_ai_acp_agent_pref",
+          platform === "win32"
+            ? `settings:write: ai.acp.agents.${id}.overridePath must be a drive-absolute or UNC executable path`
+            : `settings:write: ai.acp.agents.${id}.overridePath must be an absolute executable path beginning with /`
         );
       }
     }

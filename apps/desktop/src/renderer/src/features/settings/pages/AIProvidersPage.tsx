@@ -22,7 +22,8 @@ import type {
   DesktopCodexAuthProfileList,
   DesktopCodexDiscoveryCandidate,
   DesktopCodexDiscoverySnapshot,
-  Settings
+  Settings,
+  SettingsPatch
 } from "@pwrsnap/shared";
 import {
   AI_REASONING_EFFORTS,
@@ -31,7 +32,9 @@ import {
   DEFAULT_CODEX_CAPTION_MODEL,
   DEFAULT_ENRICHMENT_REASONING_EFFORT,
   EVENT_CHANNELS,
-  isAiReasoningEffort
+  executablePathExample,
+  isAiReasoningEffort,
+  normalizeManualExecutablePath
 } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "../../../lib/pwrsnap";
 import {
@@ -49,6 +52,26 @@ const CODEX_MODE_OPTIONS: readonly SegmentOption<"auto" | "pinned">[] = [
   { id: "auto", label: "Auto Discovery — Use Newest" },
   { id: "pinned", label: "Specified Path" }
 ];
+
+export function buildAcpOverridePatch(
+  currentEnabledAgentIds: readonly string[],
+  id: string,
+  path: string,
+  enable: boolean
+): SettingsPatch {
+  const enabledAgentIds =
+    enable && !currentEnabledAgentIds.includes(id)
+      ? [...currentEnabledAgentIds, id]
+      : [...currentEnabledAgentIds];
+  return {
+    ai: {
+      acp: {
+        ...(enable ? { enabledAgentIds } : {}),
+        agents: { [id]: { overridePath: path } }
+      }
+    }
+  };
+}
 
 /** Friendly model name for a picker option. Prefer the display name; only fall
  *  back to the raw id when there's no friendlier name. (We used to append the id
@@ -436,8 +459,9 @@ export function AIProvidersPage(): ReactElement {
           <CodexCandidates
             snapshot={snapshot}
             loading={snapshotLoading}
-            onPin={(path) => {
-              void patch({ codex: { mode: "pinned", pinnedPath: path } });
+            onPin={async (path) => {
+              await patch({ codex: { mode: "pinned", pinnedPath: path } });
+              await onRefresh();
             }}
           />
           {snapshot !== null && snapshot.resolvedPath !== null ? (
@@ -538,8 +562,10 @@ export function AIProvidersPage(): ReactElement {
             ai: { acp: { agents: { [id]: { selectedPath: "", overridePath: "" } } } }
           });
         }}
-        onSetOverride={(id, path) => {
-          void patch({ ai: { acp: { agents: { [id]: { overridePath: path } } } } });
+        onSetOverride={async (id, path, enable) => {
+          const current = settings?.ai.acp.enabledAgentIds ?? [];
+          await patch(buildAcpOverridePatch(current, id, path, enable));
+          if (enable) await refreshAcpDiscovery();
         }}
         onClearOverride={(id) => {
           void patch({ ai: { acp: { agents: { [id]: { overridePath: "" } } } } });
@@ -582,7 +608,7 @@ export function AIProvidersPage(): ReactElement {
 type CodexCandidatesProps = {
   snapshot: DesktopCodexDiscoverySnapshot | null;
   loading: boolean;
-  onPin: (path: string) => void;
+  onPin: (path: string) => Promise<void>;
 };
 
 type AiUsagePanelProps = {
@@ -722,15 +748,72 @@ function usageTaskLabel(task: string, triggerSource: string): string {
   return task === "enrich" ? "Capture enrichment" : task;
 }
 
-function CodexCandidates({
+export function CodexCandidates({
   snapshot,
   loading,
   onPin
 }: CodexCandidatesProps): ReactElement {
   const [manualPath, setManualPath] = useState("");
+  const [manualError, setManualError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const platform = window.pwrsnapApi?.platform;
+  const stillSearching = snapshot === null && loading;
+  const trimmed = manualPath.trim();
+  const persistPath = async (path: string, updateDraft: boolean): Promise<void> => {
+    setSubmitting(true);
+    setManualError(null);
+    try {
+      await onPin(path);
+      if (updateDraft) setManualPath(path);
+    } catch (cause) {
+      setManualError(
+        cause instanceof Error ? cause.message : "Could not save this Codex path."
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
+  const submitManualPath = async (): Promise<void> => {
+    const normalized = normalizeManualExecutablePath(platform, manualPath);
+    if (!normalized.ok) {
+      setManualError(normalized.error);
+      return;
+    }
+    await persistPath(normalized.path, true);
+  };
+  const manualControl = stillSearching ? null : (
+    <div className="pss__acp-override">
+      <input
+        className="pss__acp-override-input"
+        type="text"
+        value={manualPath}
+        spellCheck={false}
+        placeholder={`Manual path — e.g. ${executablePathExample(platform, "codex")}`}
+        aria-label="Manual Codex path"
+        aria-invalid={manualError !== null}
+        onChange={(e) => {
+          setManualPath(e.currentTarget.value);
+          setManualError(null);
+        }}
+      />
+      <button
+        className="pss__top-btn"
+        type="button"
+        disabled={trimmed.length === 0 || submitting}
+        onClick={() => {
+          void submitManualPath();
+        }}
+      >
+        {submitting ? "Saving…" : "Use path"}
+      </button>
+      {manualError !== null ? (
+        <p className="pss__opt-sub pss__opt-sub--error" role="alert">
+          {manualError}
+        </p>
+      ) : null}
+    </div>
+  );
   if (snapshot === null || snapshot.candidates.length === 0) {
-    const stillSearching = snapshot === null && loading;
-    const trimmed = manualPath.trim();
     return (
       <>
         <div className="pss__opt">
@@ -742,32 +825,21 @@ function CodexCandidates({
                 : "Codex not found on this machine"}
             </span>
             <span className="pss__opt-sub">
-              Install Codex Desktop or run <code>brew install codex</code>, then
-              Refresh — or pin the binary&apos;s full path below.
+              {platform === "darwin" ? (
+                <>
+                  Install Codex Desktop or run <code>brew install codex</code>, then
+                  Refresh — or pin the binary&apos;s full path below.
+                </>
+              ) : (
+                <>
+                  Install Codex Desktop or the Codex CLI, then Refresh — or pin
+                  the binary&apos;s full path below.
+                </>
+              )}
             </span>
           </div>
         </div>
-        {stillSearching ? null : (
-          <div className="pss__acp-override">
-            <input
-              className="pss__acp-override-input"
-              type="text"
-              value={manualPath}
-              spellCheck={false}
-              placeholder="Manual path — e.g. /opt/homebrew/bin/codex"
-              aria-label="Manual Codex path"
-              onChange={(e) => setManualPath(e.currentTarget.value)}
-            />
-            <button
-              className="pss__top-btn"
-              type="button"
-              disabled={trimmed.length === 0}
-              onClick={() => onPin(trimmed)}
-            >
-              Use path
-            </button>
-          </div>
-        )}
+        {manualControl}
       </>
     );
   }
@@ -778,9 +850,12 @@ function CodexCandidates({
           key={c.path}
           candidate={c}
           using={c.path === snapshot.resolvedPath}
-          onPin={() => onPin(c.path)}
+          onPin={() => {
+            void persistPath(c.path, false);
+          }}
         />
       ))}
+      {manualControl}
     </>
   );
 }
@@ -1121,7 +1196,7 @@ type AcpAgentsCardProps = {
   onToggle: (id: string, enabled: boolean) => void;
   onPickInstance: (id: string, command: string) => void;
   onRevertAuto: (id: string) => void;
-  onSetOverride: (id: string, path: string) => void;
+  onSetOverride: (id: string, path: string, enable: boolean) => Promise<void>;
   onClearOverride: (id: string) => void;
 };
 
@@ -1187,11 +1262,11 @@ type AcpAgentListProps = {
   onToggle: (id: string, enabled: boolean) => void;
   onPickInstance: (id: string, command: string) => void;
   onRevertAuto: (id: string) => void;
-  onSetOverride: (id: string, path: string) => void;
+  onSetOverride: (id: string, path: string, enable: boolean) => Promise<void>;
   onClearOverride: (id: string) => void;
 };
 
-function AcpAgentList({
+export function AcpAgentList({
   discovery,
   loading,
   error,
@@ -1234,7 +1309,7 @@ function AcpAgentList({
           onToggle={(next) => onToggle(agent.id, next)}
           onPickInstance={(command) => onPickInstance(agent.id, command)}
           onRevertAuto={() => onRevertAuto(agent.id)}
-          onSetOverride={(path) => onSetOverride(agent.id, path)}
+          onSetOverride={(path, enable) => onSetOverride(agent.id, path, enable)}
           onClearOverride={() => onClearOverride(agent.id)}
         />
       ))}
@@ -1260,7 +1335,7 @@ function AcpAgentRow({
   onToggle: (enabled: boolean) => void;
   onPickInstance: (command: string) => void;
   onRevertAuto: () => void;
-  onSetOverride: (path: string) => void;
+  onSetOverride: (path: string, enable: boolean) => Promise<void>;
   onClearOverride: () => void;
 }): ReactElement {
   const instanceCount = agent.instances.length;
@@ -1299,7 +1374,7 @@ function AcpAgentRow({
             <input
               type="checkbox"
               checked={enabled}
-              disabled={!agent.installed}
+              disabled={!agent.installed && !enabled}
               aria-label={`Enable ${agent.displayName}`}
               onChange={(e) => {
                 onToggle(e.target.checked);
@@ -1309,8 +1384,8 @@ function AcpAgentRow({
           </label>
         }
       />
-      {agent.installed ? (
-        <div className="pss__acp-detail">
+      <div className="pss__acp-detail">
+        {agent.installed ? (
           <div className="pss__acp-instances" role="list">
             {agent.instances.map((inst) => {
               const active = inst.command === agent.activeCommand;
@@ -1348,13 +1423,15 @@ function AcpAgentRow({
               );
             })}
           </div>
-          <AcpOverrideInput
-            overridePath={pref?.overridePath ?? ""}
-            onSave={onSetOverride}
-            onClear={onClearOverride}
-          />
-        </div>
-      ) : null}
+        ) : null}
+        <AcpOverrideInput
+          executableName={agent.id}
+          overridePath={pref?.overridePath ?? ""}
+          saveLabel={agent.installed ? "Save" : "Save & enable"}
+          onSave={(path) => onSetOverride(path, !agent.installed)}
+          onClear={onClearOverride}
+        />
+      </div>
     </div>
   );
 }
@@ -1364,15 +1441,21 @@ function AcpAgentRow({
  *  Refresh and, when valid, becomes the active instance); Clear reverts to
  *  discovery + any pinned instance. */
 function AcpOverrideInput({
+  executableName,
   overridePath,
+  saveLabel,
   onSave,
   onClear
 }: {
+  executableName: string;
   overridePath: string;
-  onSave: (path: string) => void;
+  saveLabel: string;
+  onSave: (path: string) => Promise<void>;
   onClear: () => void;
 }): ReactElement {
   const [draft, setDraft] = useState<string>(overridePath);
+  const [submissionError, setSubmissionError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   // Re-sync the draft when the persisted value changes out from under us
   // (e.g. a settings broadcast from another window).
   useEffect(() => {
@@ -1380,6 +1463,28 @@ function AcpOverrideInput({
   }, [overridePath]);
   const trimmed = draft.trim();
   const dirty = trimmed !== overridePath;
+  const submit = async (): Promise<void> => {
+    const normalized = normalizeManualExecutablePath(
+      window.pwrsnapApi?.platform,
+      draft
+    );
+    if (!normalized.ok) {
+      setSubmissionError(normalized.error);
+      return;
+    }
+    setSubmitting(true);
+    setSubmissionError(null);
+    try {
+      await onSave(normalized.path);
+      setDraft(normalized.path);
+    } catch (cause) {
+      setSubmissionError(
+        cause instanceof Error ? cause.message : "Could not save this agent path."
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
   return (
     <div className="pss__acp-override">
       <input
@@ -1387,17 +1492,23 @@ function AcpOverrideInput({
         type="text"
         value={draft}
         spellCheck={false}
-        placeholder="Manual path — e.g. /Users/you/.nvm/versions/node/vXX/bin/qwen"
+        placeholder={`Manual path — e.g. ${executablePathExample(window.pwrsnapApi?.platform, executableName)}`}
         aria-label="Manual override path"
-        onChange={(e) => setDraft(e.currentTarget.value)}
+        aria-invalid={submissionError !== null}
+        onChange={(e) => {
+          setDraft(e.currentTarget.value);
+          setSubmissionError(null);
+        }}
       />
       <button
         className="pss__top-btn"
         type="button"
-        disabled={!dirty || trimmed.length === 0}
-        onClick={() => onSave(trimmed)}
+        disabled={!dirty || trimmed.length === 0 || submitting}
+        onClick={() => {
+          void submit();
+        }}
       >
-        Save
+        {submitting ? "Saving…" : saveLabel}
       </button>
       <button
         className="pss__top-btn is-muted"
@@ -1410,6 +1521,11 @@ function AcpOverrideInput({
       >
         Clear
       </button>
+      {submissionError !== null ? (
+        <p className="pss__opt-sub pss__opt-sub--error" role="alert">
+          {submissionError}
+        </p>
+      ) : null}
     </div>
   );
 }

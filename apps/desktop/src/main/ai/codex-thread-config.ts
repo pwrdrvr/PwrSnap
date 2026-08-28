@@ -19,7 +19,7 @@
 // Codex build changes the schema; the detector is a token measurement (see
 // docs/solutions/2026-06-04-codex-thread-config-token-bloat.md).
 
-import { execFileSync } from "node:child_process";
+import { execAgentCommandSync } from "./agent-command";
 
 const SHARED_INCLUDES = {
   // Top-level STRING lever. `web_search = false` (boolean) FAILS config
@@ -249,13 +249,11 @@ export type CodexVersionProbe = (
 const defaultVersionProbe: CodexVersionProbe = (command, env) => {
   try {
     const out = String(
-      execFileSync(command, ["--version"], {
-        timeout: 5_000,
+      execAgentCommandSync(command, ["--version"], {
+        timeoutMs: 5_000,
         // MERGE over process.env — passing only { CODEX_HOME } would drop PATH
         // and a bare `codex` command would fail to resolve.
-        env: env !== undefined ? { ...process.env, ...env } : process.env,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"]
+        env: env !== undefined ? { ...process.env, ...env } : process.env
       })
     );
     return out.match(/\d+\.\d+\.\d+(?:[-+][\w.-]+)?/)?.[0] ?? null;

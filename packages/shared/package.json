@@ -13,6 +13,7 @@
     "./result": "./src/result.ts",
     "./ipc": "./src/ipc.ts",
     "./appearance-arg": "./src/appearance-arg.ts",
+    "./desktop-platform": "./src/desktop-platform.ts",
     "./bundle-manifest-v2": "./src/bundle-manifest-schema-v2.ts",
     "./clipboard-layer-fragment": "./src/clipboard-layer-fragment.ts",
     "./selector-crop-stream": "./src/selector-crop-stream.ts"

@@ -63,7 +63,8 @@ import {
   readShapeSkewDeg,
   readHighlightOpacity,
   readTextWeight,
-  resolveCropViewport
+  resolveCropViewport,
+  revealInFileManagerLabel
 } from "@pwrsnap/shared";
 import { nanoid } from "nanoid";
 import { dispatch, captureSrcUrl } from "../../lib/pwrsnap";
@@ -7101,7 +7102,11 @@ function EditorToolbar({
           ↷ Redo
         </button>
         <ZoomMenu zoom={zoom} />
-        <button type="button" onClick={onReveal} title="Reveal in Finder">
+        <button
+          type="button"
+          onClick={onReveal}
+          title={revealInFileManagerLabel(window.pwrsnapApi?.platform)}
+        >
           Reveal
         </button>
       </div>

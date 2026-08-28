@@ -773,7 +773,12 @@ function assertLayerNumbersBounded(
   };
   visit(layer);
 
-  if (layer.kind === "raster") {
+  // Historical rows are retained for portability but never enter composeV2.
+  // Their transform still receives the finite/magnitude checks above; only
+  // live rasters need to fit a render allocation. This lets a previously
+  // oversized raster remain durably rejected without making every later
+  // repack fail, while keeping the allocation bound on anything renderable.
+  if (layer.kind === "raster" && isLiveLayer(layer)) {
     const [a, b, c, d] = layer.transform;
     const transformedWidth =
       Math.abs(a) * layer.natural_width_px +

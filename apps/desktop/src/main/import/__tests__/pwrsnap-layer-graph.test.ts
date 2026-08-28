@@ -228,6 +228,31 @@ describe.each(validators)("%s graph characterization", (_name, validate) => {
     expect(() => validate([root(), source(), rejectedParent, rejectedChild])).not.toThrow();
   });
 
+  test("applies raster allocation limits to live content but not rejected history", () => {
+    const oversizedTransform: [number, number, number, number, number, number] = [
+      1_000,
+      0,
+      0,
+      1_000,
+      0,
+      0
+    ];
+    expectGraphError(
+      validate,
+      [root(), { ...source(), transform: oversizedTransform }],
+      "raster_transform_limit"
+    );
+
+    const rejectedRaster = {
+      ...source(),
+      id: "graphhistory0001",
+      name: "Rejected oversized raster",
+      transform: oversizedTransform,
+      rejected_at: CREATED_AT
+    };
+    expect(() => validate([root(), source(), rejectedRaster])).not.toThrow();
+  });
+
   test("rejects a live layer beneath non-live ancestry", () => {
     const rejectedParent = {
       ...group("graphgroup000001", ROOT_ID),

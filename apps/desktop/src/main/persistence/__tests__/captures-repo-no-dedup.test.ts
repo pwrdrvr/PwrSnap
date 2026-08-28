@@ -218,4 +218,36 @@ describe("captures-repo no-dedup", () => {
       .run(join(`${root}-old`, "capture.pwrsnap"), "home-path-capture");
     expect(countCapturePathReferencesUnder(root)).toBe(0);
   });
+
+  test("counts Windows references below Unicode user profiles", async () => {
+    const { countCapturePathReferencesUnder, insertCapture } = await import(
+      "../captures-repo"
+    );
+    const storedRoot = String.raw`C:\Users\ÉLODIE\PwrSnap`;
+
+    insertCapture({
+      id: "unicode-windows-path",
+      kind: "image",
+      captured_at: "2026-08-27T10:00:00.000Z",
+      source_app_bundle_id: null,
+      source_app_name: null,
+      legacy_src_path: null,
+      bundle_path: `${storedRoot}\\capture.pwrsnap`,
+      bundle_modified_at: "2026-08-27T10:00:00.000Z",
+      bundle_format_version: 2,
+      bundle_edits_version: 0,
+      width_px: 100,
+      height_px: 100,
+      device_pixel_ratio: 1,
+      byte_size: 100,
+      sha256: "d".repeat(64)
+    });
+
+    expect(
+      countCapturePathReferencesUnder(
+        String.raw`c:\users\élodie\pwrsnap`,
+        "win32"
+      )
+    ).toBe(1);
+  });
 });

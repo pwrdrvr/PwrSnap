@@ -1,14 +1,17 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
+  CAPTURE_PATH_HAS_PREFIX_SQL_FUNCTION,
   capturePathReferencePredicate,
-  capturePathReferencePrefix
+  capturePathReferencePrefix,
+  registerCapturePathReferenceFunctions
 } from "../capture-path-references";
 
 let db: Database.Database;
 
 beforeEach(() => {
   db = new Database(":memory:");
+  registerCapturePathReferenceFunctions(db);
   db.exec("CREATE TABLE path_rows (id TEXT PRIMARY KEY, stored_path TEXT NOT NULL)");
 });
 
@@ -40,6 +43,20 @@ describe("capture path reference queries", () => {
         "win32"
       )
     ).toEqual(["backslash", "mixed"]);
+  });
+
+  test("uses the same Unicode case folding for Windows roots and stored paths", () => {
+    db.prepare("INSERT INTO path_rows (id, stored_path) VALUES (?, ?)").run(
+      "unicode",
+      String.raw`C:\Users\ÉLODIE\PwrSnap\capture.pwrsnap`
+    );
+
+    expect(
+      matchingIds(String.raw`c:\users\élodie\pwrsnap`, "win32")
+    ).toEqual(["unicode"]);
+    expect(capturePathReferencePredicate("stored_path", "win32")).toContain(
+      CAPTURE_PATH_HAS_PREFIX_SQL_FUNCTION
+    );
   });
 
   test("matches UNC roots without accepting a textual prefix collision", () => {

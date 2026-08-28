@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   updates: [] as Array<{ path: string; id: string }>,
   selectSql: "",
   selectParams: null as { prefix: string } | null,
+  registeredFunctions: [] as string[],
   renameError: null as NodeJS.ErrnoException | null
 }));
 
@@ -27,6 +28,9 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 
 vi.mock("../db", () => ({
   getDb: () => ({
+    function: (name: string) => {
+      mocks.registeredFunctions.push(name);
+    },
     prepare: (sql: string) => {
       if (sql.startsWith("SELECT")) {
         mocks.selectSql = sql;
@@ -64,6 +68,7 @@ beforeEach(async () => {
   mocks.updates = [];
   mocks.selectSql = "";
   mocks.selectParams = null;
+  mocks.registeredFunctions = [];
   mocks.renameError = null;
 });
 
@@ -105,7 +110,7 @@ describe("migrateLegacyCaptureSources", () => {
   });
 
   test("queries Windows legacy rows across native and historical separators", async () => {
-    mocks.legacyRoot = String.raw`C:\Users\Me\AppData\Roaming\PwrSnap\captures`;
+    mocks.legacyRoot = String.raw`C:\Users\Élodie\AppData\Roaming\PwrSnap\captures`;
     mocks.currentRoot = String.raw`D:\Documents\PwrSnap`;
     const { migrateLegacyCaptureSources } = await import("../capture-source-maintenance");
 
@@ -116,10 +121,13 @@ describe("migrateLegacyCaptureSources", () => {
       deferredCrossVolumeRows: 0
     });
     expect(mocks.selectSql).toContain(
-      "lower(replace(legacy_src_path, char(92), '/'))"
+      "pwrsnap_capture_path_has_prefix(legacy_src_path, @prefix)"
     );
+    expect(mocks.registeredFunctions).toEqual([
+      "pwrsnap_capture_path_has_prefix"
+    ]);
     expect(mocks.selectParams).toEqual({
-      prefix: "c:/users/me/appdata/roaming/pwrsnap/captures/"
+      prefix: "c:/users/élodie/appdata/roaming/pwrsnap/captures/"
     });
   });
 

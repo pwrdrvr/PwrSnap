@@ -10,7 +10,8 @@ import {
 } from "./paths";
 import {
   capturePathReferencePredicate,
-  capturePathReferencePrefix
+  capturePathReferencePrefix,
+  registerCapturePathReferenceFunctions
 } from "./capture-path-references";
 
 const log = getMainLogger("pwrsnap:capture-source-maintenance");
@@ -59,6 +60,9 @@ export async function migrateLegacyCaptureSources(
   }
 
   const db = getDb();
+  if (platform === "win32") {
+    registerCapturePathReferenceFunctions(db);
+  }
   const legacyPathPredicate = capturePathReferencePredicate(
     "legacy_src_path",
     platform

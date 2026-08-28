@@ -33,7 +33,8 @@ import { normalizeTagLabel } from "@pwrsnap/shared";
 import { getDb } from "./db";
 import {
   capturePathReferencePredicate,
-  capturePathReferencePrefix
+  capturePathReferencePrefix,
+  registerCapturePathReferenceFunctions
 } from "./capture-path-references";
 import { prepareCached } from "./prepare-cached";
 import { listEnrichmentsByCaptureIds } from "./enrichment-repo";
@@ -262,10 +263,14 @@ export function countCapturePathReferencesUnder(
   root: string,
   platform: string = process.platform
 ): number {
+  const db = getDb();
+  if (platform === "win32") {
+    registerCapturePathReferenceFunctions(db);
+  }
   const bundlePredicate = capturePathReferencePredicate("bundle_path", platform);
   const flatPngPredicate = capturePathReferencePredicate("flat_png_path", platform);
   const legacyPredicate = capturePathReferencePredicate("legacy_src_path", platform);
-  const row = getDb()
+  const row = db
     .prepare(
       `SELECT COUNT(*) AS count
        FROM captures

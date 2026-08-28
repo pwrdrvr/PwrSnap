@@ -8,7 +8,7 @@ export type FrozenFrame = {
 };
 
 export type EncodedFrozenCrop = {
-  bytes: ArrayBuffer;
+  blob: Blob;
   width: number;
   height: number;
   mimeType: "image/png";
@@ -26,6 +26,10 @@ export function stopDisplayStream(stream: MediaStream): void {
 }
 
 const DISPLAY_MEDIA_ACQUISITION_TIMEOUT_MS = 10_000;
+export const FROZEN_DISPLAY_MEDIA_CONSTRAINTS = {
+  video: { cursor: "never" } as MediaTrackConstraints,
+  audio: false
+} satisfies DisplayMediaStreamOptions;
 
 async function acquireDisplayStream(
   getDisplayMedia: () => Promise<MediaStream>,
@@ -112,7 +116,7 @@ function waitForVideoFrame(video: HTMLVideoElement): Promise<void> {
 export async function acquireFrozenDisplayFrame(
   canvas: HTMLCanvasElement,
   getDisplayMedia: () => Promise<MediaStream> = () =>
-    navigator.mediaDevices.getDisplayMedia({ video: true, audio: false }),
+    navigator.mediaDevices.getDisplayMedia(FROZEN_DISPLAY_MEDIA_CONSTRAINTS),
   timeoutMs = DISPLAY_MEDIA_ACQUISITION_TIMEOUT_MS
 ): Promise<FrozenFrame> {
   const stream = await acquireDisplayStream(getDisplayMedia, timeoutMs);
@@ -194,11 +198,10 @@ export async function encodeFrozenCrop(
     crop.height
   );
   const blob = await canvasPng(output);
-  const bytes = await blob.arrayBuffer();
   output.width = 0;
   output.height = 0;
   return {
-    bytes,
+    blob,
     width: crop.width,
     height: crop.height,
     mimeType: "image/png"

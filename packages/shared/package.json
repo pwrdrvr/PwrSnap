@@ -16,7 +16,8 @@
     "./desktop-platform": "./src/desktop-platform.ts",
     "./shortcut-semantics": "./src/shortcut-semantics.ts",
     "./bundle-manifest-v2": "./src/bundle-manifest-schema-v2.ts",
-    "./clipboard-layer-fragment": "./src/clipboard-layer-fragment.ts"
+    "./clipboard-layer-fragment": "./src/clipboard-layer-fragment.ts",
+    "./selector-crop-stream": "./src/selector-crop-stream.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"

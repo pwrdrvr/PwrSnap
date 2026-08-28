@@ -26,8 +26,7 @@ import {
   type MessagePortMain,
   type WebContents
 } from "electron";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { getMainLogger } from "../log";
 import { getPreloadPath } from "../window";
@@ -41,6 +40,7 @@ import {
 import { hideTrayPopoverIfVisible } from "../tray";
 import { setFloatOverState, ensureFloatOverTopmost } from "../float-over";
 import { hotkeyRecorderSuspension } from "../hotkeys/hotkey-recorder-suspension-instance";
+import { SelectorCropReceiver } from "./selector-crop-receiver";
 
 const MIN_AREA_PX = 400; // 20×20 — anything smaller isn't a meaningful snap target.
 const SELECTOR_WINDOW_TITLE = "PwrSnap Region Selector";
@@ -76,11 +76,18 @@ type ActiveSelectorLifecycle = {
   targetDisplayId: number | null;
   previousApp: PreviousAppContext;
   windowCandidatesReady: boolean;
-  allowedWindowCandidates: Map<number, { rect: { x: number; y: number; w: number; h: number } }>;
+  allowedWindowCandidates: Map<
+    number,
+    {
+      rect: { x: number; y: number; w: number; h: number };
+      rawRect: { x: number; y: number; w: number; h: number };
+    }
+  >;
   snapshotDecodeFailed: boolean;
   frameReady: boolean;
   framePort: MessagePortMain | null;
   framePortClosed: boolean;
+  cropReceiver: SelectorCropReceiver | null;
   committedCropPath: string | null;
   captureStrategy: SelectorDisplayMediaStrategy;
   settled: boolean;
@@ -90,20 +97,9 @@ type ActiveSelectorLifecycle = {
   stopAsyncWork: (() => void) | null;
 };
 
-type CommittedCropMessage = {
-  type: "crop";
-  invocationId: number;
-  width: number;
-  height: number;
-  mimeType: "image/png";
-  bytes: ArrayBuffer;
-};
-
 let activeSelectorLifecycle: ActiveSelectorLifecycle | null = null;
 
 const SELECTOR_FRAME_PORT_CHANNEL = "region-selector:frame-port";
-const MAX_COMMITTED_CROP_BYTES = 256 * 1024 * 1024;
-const MAX_COMMITTED_CROP_DIMENSION = 32_768;
 
 /** The capture currently waiting for its snapshot to paint before the
  *  selector is shown. Resolved by the SELECTOR_PAINTED_CHANNEL ack
@@ -428,47 +424,15 @@ function closeRendererFrameSession(
     lifecycle.framePort?.close();
     lifecycle.framePort = null;
   }
+  if (lifecycle.cropReceiver !== null) {
+    const receiver = lifecycle.cropReceiver;
+    lifecycle.cropReceiver = null;
+    void receiver.dispose();
+  }
   if (removeCommittedCrop && lifecycle.committedCropPath !== null) {
     const path = lifecycle.committedCropPath;
     lifecycle.committedCropPath = null;
     void rm(join(path, ".."), { recursive: true, force: true });
-  }
-}
-
-function validCommittedCropMessage(value: unknown): value is CommittedCropMessage {
-  if (value === null || typeof value !== "object") return false;
-  const message = value as Record<string, unknown>;
-  return (
-    message.type === "crop" &&
-    typeof message.invocationId === "number" &&
-    Number.isSafeInteger(message.invocationId) &&
-    typeof message.width === "number" &&
-    Number.isInteger(message.width) &&
-    message.width > 0 &&
-    message.width <= MAX_COMMITTED_CROP_DIMENSION &&
-    typeof message.height === "number" &&
-    Number.isInteger(message.height) &&
-    message.height > 0 &&
-    message.height <= MAX_COMMITTED_CROP_DIMENSION &&
-    message.mimeType === "image/png" &&
-    message.bytes instanceof ArrayBuffer &&
-    message.bytes.byteLength > 0 &&
-    message.bytes.byteLength <= MAX_COMMITTED_CROP_BYTES
-  );
-}
-
-async function storeCommittedRendererCrop(
-  lifecycle: ActiveSelectorLifecycle,
-  message: CommittedCropMessage
-): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "pwrsnap-selector-crop-"));
-  const path = join(dir, `${lifecycle.invocationId}.png`);
-  try {
-    await writeFile(path, Buffer.from(message.bytes));
-    return path;
-  } catch (cause) {
-    await rm(dir, { recursive: true, force: true });
-    throw cause;
   }
 }
 
@@ -479,8 +443,10 @@ function installRendererFramePort(
 ): void {
   selectorDisplayMediaBroker.install(win.webContents.session);
   const { port1, port2 } = new MessageChannelMain();
+  const cropReceiver = new SelectorCropReceiver(lifecycle.invocationId);
   lifecycle.framePort = port2;
   lifecycle.framePortClosed = false;
+  lifecycle.cropReceiver = cropReceiver;
 
   port2.on("message", (event) => {
     const message = event.data as Record<string, unknown> | null;
@@ -535,12 +501,18 @@ function installRendererFramePort(
       });
       return;
     }
-    if (message.type !== "crop") return;
+    if (
+      message.type !== "crop-start" &&
+      message.type !== "crop-chunk" &&
+      message.type !== "crop-end"
+    ) {
+      return;
+    }
     if (
       lifecycle.intent !== "snap" ||
       !lifecycle.frameReady ||
       lifecycle.committedCropPath !== null ||
-      !validCommittedCropMessage(message)
+      lifecycle.cropReceiver !== cropReceiver
     ) {
       port2.postMessage({
         type: "crop-rejected",
@@ -549,20 +521,23 @@ function installRendererFramePort(
       });
       return;
     }
-    void storeCommittedRendererCrop(lifecycle, message)
-      .then((path) => {
+    void cropReceiver
+      .accept(message)
+      .then((result) => {
         if (
           lifecycle.settled ||
           activeSelectorLifecycle !== lifecycle ||
-          lifecycle.committedCropPath !== null
+          lifecycle.committedCropPath !== null ||
+          lifecycle.cropReceiver !== cropReceiver
         ) {
-          return rm(join(path, ".."), { recursive: true, force: true });
+          return cropReceiver.dispose();
         }
-        lifecycle.committedCropPath = path;
-        port2.postMessage({
-          type: "crop-accepted",
-          invocationId: lifecycle.invocationId
-        });
+        if (result.completedPath !== undefined) {
+          const path = cropReceiver.takeCompletedPath();
+          if (path === null) return cropReceiver.dispose();
+          lifecycle.committedCropPath = path;
+        }
+        port2.postMessage(result.reply);
         return undefined;
       })
       .catch((cause) => {
@@ -570,11 +545,13 @@ function installRendererFramePort(
           invocationId: lifecycle.invocationId,
           message: cause instanceof Error ? cause.message : String(cause)
         });
+        lifecycle.cropReceiver = null;
+        void cropReceiver.dispose();
         if (!lifecycle.framePortClosed) {
           port2.postMessage({
             type: "crop-rejected",
             invocationId: lifecycle.invocationId,
-            code: "write_failed"
+            code: "invalid_crop"
           });
         }
       });
@@ -883,10 +860,10 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
           return;
         }
 
-        // Rect/auto commits require the trigger-time snapshot. Pure window
-        // mode may omit it only for a validated full-window candidate.
+        // Any allowlisted full-window commit is sourced from the native
+        // window backing store and therefore does not require frozen pixels.
         const commitsWithoutSnapshot =
-          selectorMode === "window" && payload.fullWindow === true && trustedWindow !== undefined;
+          payload.fullWindow === true && trustedWindow !== undefined;
         const commitsVideoCoordinates = lifecycle.intent === "video";
         const requiresCommittedRendererCrop =
           lifecycle.intent === "snap" &&
@@ -911,7 +888,10 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
           // caller may restore only the `external` arm; `unknown` must never
           // be interpreted as "PwrSnap was frontmost".
           const previousApp = takePreviousApp(lifecycle);
-          const selectedRect = trustedWindow?.rect ?? payload.rect;
+          // The allowlist authenticates the window id, not renderer geometry.
+          // payload.rect may be the candidate's raw full-window bounds or a
+          // user-adjusted region and must survive validation unchanged.
+          const selectedRect = payload.rect;
           const result: SelectorResult = {
             ok: true,
             rect: {
@@ -1037,6 +1017,7 @@ export async function pickRegion(
     frameReady: false,
     framePort: null,
     framePortClosed: true,
+    cropReceiver: null,
     committedCropPath: null,
     captureStrategy: selectorDisplayMediaStrategy(process.platform),
     settled: false,
@@ -1312,10 +1293,14 @@ export async function pickRegion(
                   candidate.rect.w > 0 &&
                   candidate.rect.h > 0
               )
-              .map((candidate): [number, { rect: typeof candidate.rect }] => [
-                candidate.windowId,
-                { rect: candidate.rect }
-              ])
+              .map(
+                (
+                  candidate
+                ): [number, { rect: typeof candidate.rect; rawRect: typeof candidate.rawRect }] => [
+                  candidate.windowId,
+                  { rect: candidate.rect, rawRect: candidate.rawRect }
+                ]
+              )
           );
           lifecycle.windowCandidatesReady = true;
           windowListPayload = {

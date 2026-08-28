@@ -945,7 +945,7 @@ describe("region-selector — Windows shell-first latency contract", () => {
     hideSelector();
   });
 
-  test("keeps float-over hidden until live enumeration completes and preserves the external candidate", async () => {
+  test("keeps float-over hidden and preserves committed geometry after validating the candidate", async () => {
     Object.defineProperty(process, "platform", {
       value: "win32",
       configurable: true
@@ -995,8 +995,9 @@ describe("region-selector — Windows shell-first latency contract", () => {
       {
         ok: true,
         invocationId: 1,
-        // Main must ignore renderer geometry for an HWND-backed result.
-        rect: { x: 999, y: 999, w: 1, h: 1 },
+        // This may be raw full-window or user-adjusted geometry. The id is
+        // authenticated against the candidate list without replacing it.
+        rect: { x: 120, y: 60, w: 1100, h: 700 },
         displayId: 1,
         snappedWindowId: 20,
         fullWindow: true
@@ -1004,7 +1005,7 @@ describe("region-selector — Windows shell-first latency contract", () => {
     );
     await expect(pick).resolves.toMatchObject({
       ok: true,
-      rect: { x: 100, y: 50, w: 1200, h: 800 },
+      rect: { x: 120, y: 60, w: 1100, h: 700 },
       snappedWindowId: 20,
       fullWindow: true,
       previousAppOrigin: "external",

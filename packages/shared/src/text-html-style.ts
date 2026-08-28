@@ -20,6 +20,7 @@
 // inline `style="..."` attribute string on the bake's HTML div.
 
 import { computeTextGlyphSize, type TextSizeBucket } from "./text-glyph-size";
+import { outlineSolidStrokeHex } from "./overlay-schemas";
 import type { ResolvedTextOutline } from "./overlay-schemas";
 
 /** Inputs the helper needs to produce a fully-resolved style object.
@@ -158,11 +159,7 @@ export function computeTextHtmlStyle(args: TextHtmlStyleArgs): TextHtmlStyle {
   const strokeColor =
     outline === undefined || outline.kind === "legacy"
       ? "rgba(0,0,0,0.6)"
-      : outline.kind === "solid"
-        ? outline.color === "black"
-          ? "#000000"
-          : "#ffffff"
-        : null;
+      : outlineSolidStrokeHex(outline);
 
   // Wrapper — absolute-positioned at the click point. translateY(-50%)
   // centers the wrapper's vertical midpoint on the anchor; lineHeight:1

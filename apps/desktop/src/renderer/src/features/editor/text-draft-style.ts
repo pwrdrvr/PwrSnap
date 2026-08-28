@@ -113,27 +113,6 @@ const DEFAULT_SIZE: TextSizeBucket = "medium";
  *  renders identically to a row persisted before that field existed. */
 const DEFAULT_WEIGHT = 600;
 
-/** Fresh-placement outline resolution from the tool style's mode.
- *  Mirrors what commitText persists: auto → sampled pick (black
- *  fallback, the text auto default), stripe → coerced solid black
- *  (text can't stripe a glyph stroke). */
-function outlineForToolStyle(
-  style: TextToolStyle,
-  sampledAutoOutline: OverlayOutlineAutoColor | null
-): ResolvedTextOutline {
-  switch (style.outline) {
-    case "none":
-      return { kind: "none" };
-    case "white":
-      return { kind: "solid", color: "white" };
-    case "black":
-    case "stripe":
-      return { kind: "solid", color: "black" };
-    case "auto":
-      return { kind: "solid", color: sampledAutoOutline ?? "black" };
-  }
-}
-
 export function resolveTextDraftStyle(
   args: ResolveTextDraftStyleArgs
 ): ResolvedTextDraftStyle {
@@ -182,6 +161,13 @@ export function resolveTextDraftStyle(
     weight: readTextWeight({ weight: activeToolStyle.weight }),
     storedSizePx: undefined,
     rotation: undefined,
-    outline: outlineForToolStyle(activeToolStyle, sampledAutoOutline)
+    // Same resolution the committed row will get: the shared helper
+    // applies the text auto fallback (black) and coerces the
+    // text-unsupported stripe mode — one policy, no drift between the
+    // draft preview and what commit persists.
+    outline: readTextOverlayOutline({
+      outline: activeToolStyle.outline,
+      outlineAuto: sampledAutoOutline ?? undefined
+    })
   };
 }

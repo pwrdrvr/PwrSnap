@@ -1347,17 +1347,24 @@ function OutlineSwatchIcon({
   variant: "white" | "black" | "stripe";
 }): ReactElement {
   const clipId = useId();
+  // Colors come from the same --swatch-* tokens the ColorRow swatches
+  // paint with, so a palette retune moves both rows together. SVG
+  // presentation ATTRIBUTES don't substitute custom properties
+  // (fill="var(--x)" is invalid per SVG2), so the tokens ride on
+  // style={} like the ColorRow's background does. The ring stroke is
+  // the shared --border-strong hairline.
+  const ring: CSSProperties = { stroke: "var(--border-strong)" };
   if (variant === "white") {
     return (
       <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
-        <circle cx="7" cy="7" r="6" fill="#f5efe3" stroke="rgba(247,243,235,0.25)" strokeWidth="1" />
+        <circle cx="7" cy="7" r="6" style={{ fill: "var(--swatch-white)", ...ring }} strokeWidth="1" />
       </svg>
     );
   }
   if (variant === "black") {
     return (
       <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
-        <circle cx="7" cy="7" r="6" fill="#000000" stroke="rgba(247,243,235,0.35)" strokeWidth="1" />
+        <circle cx="7" cy="7" r="6" style={{ fill: "var(--swatch-black)", ...ring }} strokeWidth="1" />
       </svg>
     );
   }
@@ -1369,11 +1376,11 @@ function OutlineSwatchIcon({
         </clipPath>
       </defs>
       <g clipPath={`url(#${clipId})`}>
-        <rect x="0" y="0" width="14" height="14" fill="#f5efe3" />
-        <rect x="0" y="0" width="3.5" height="14" fill="#000000" />
-        <rect x="7" y="0" width="3.5" height="14" fill="#000000" />
+        <rect x="0" y="0" width="14" height="14" style={{ fill: "var(--swatch-white)" }} />
+        <rect x="0" y="0" width="3.5" height="14" style={{ fill: "var(--swatch-black)" }} />
+        <rect x="7" y="0" width="3.5" height="14" style={{ fill: "var(--swatch-black)" }} />
       </g>
-      <circle cx="7" cy="7" r="6" fill="none" stroke="rgba(247,243,235,0.35)" strokeWidth="1" />
+      <circle cx="7" cy="7" r="6" fill="none" style={ring} strokeWidth="1" />
     </svg>
   );
 }

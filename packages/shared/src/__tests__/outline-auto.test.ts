@@ -148,13 +148,38 @@ describe("outlineSamplePointsForOverlay", () => {
       dims
     );
     expect(pts).not.toBeNull();
-    // Box top edge sits half a glyph above the anchor (first-line
-    // vertical centering): y = 0.5 − (40/2)/500 = 0.46.
+    // Single line: box height = sizePx, centered on the anchor →
+    // top = 0.5 − (40/2)/500 = 0.46.
     const minY = Math.min(...pts!.map((p) => p.yn));
     expect(minY).toBeCloseTo(0.5 - 20 / 500, 5);
     // Box starts at the anchor's x (left edge).
     const minX = Math.min(...pts!.map((p) => p.xn));
     expect(minX).toBeCloseTo(0.5, 5);
+  });
+
+  test("multi-line text ring centers the FULL block on the anchor", () => {
+    // The rendered text (TextHtml + HTML bake) centers the whole
+    // multi-line block on the anchor via translateY(-50%); the ring
+    // must bracket that block symmetrically, not hang below it
+    // (first-line-centered was the old SVG-fallback model).
+    const pts = outlineSamplePointsForOverlay(
+      {
+        kind: "text",
+        point: { x: 0.5, y: 0.5 },
+        body: "one\ntwo\nthree\nfour",
+        size: "medium",
+        color: "auto",
+        sizePx: 40
+      },
+      dims
+    );
+    expect(pts).not.toBeNull();
+    const minY = Math.min(...pts!.map((p) => p.yn));
+    const maxY = Math.max(...pts!.map((p) => p.yn));
+    // Symmetric around the anchor.
+    expect((minY + maxY) / 2).toBeCloseTo(0.5, 5);
+    // Estimated height = 40 × (4×1.2 − 0.2) = 184px on a 500px canvas.
+    expect(maxY - minY).toBeCloseTo(184 / 500, 5);
   });
 
   test("kinds without an outline return null", () => {
@@ -228,10 +253,26 @@ describe("stripe dash helpers", () => {
     expect(outlineStripeDashArray(10)).toBe("17.5 17.5");
   });
 
-  test("outlineStripeDashArrayForStemDash splits each stem dash in half", () => {
+  test("dash-like stems (D >= G) split each dash in half, no offset", () => {
     // Stem pattern "20 10": black covers the first 10px of every
     // 20px dash, then holes through the back half + the 10px gap.
-    expect(outlineStripeDashArrayForStemDash("20 10")).toBe("10 20");
+    expect(outlineStripeDashArrayForStemDash("20 10")).toEqual({
+      dasharray: "10 20",
+      dashoffset: 0
+    });
+  });
+
+  test("dot-like stems (D < G) alternate WHOLE dots via a dashoffset", () => {
+    // Dotted stems have near-zero dashes; a half-dash black twin would
+    // render as a round-cap disc exactly covering the white dot. The
+    // alternate-dot pattern doubles the cycle and offsets the black
+    // dash onto every second dot: dasharray "D (2C−D)" with
+    // dashoffset C paints dots 1, 3, 5… black and leaves 0, 2, 4…
+    // white.
+    expect(outlineStripeDashArrayForStemDash("0.06 10.8")).toEqual({
+      dasharray: `0.06 ${2 * (0.06 + 10.8) - 0.06}`,
+      dashoffset: 0.06 + 10.8
+    });
   });
 
   test("unparseable stem dash returns null (caller skips the black pass)", () => {

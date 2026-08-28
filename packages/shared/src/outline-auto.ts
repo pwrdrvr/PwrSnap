@@ -131,12 +131,15 @@ export function outlineSamplePointsForRectPerimeter(
   return points;
 }
 
-// Text body-box estimate constants — mirror the pivot math in
-// compose.ts `textSvg` (charAdvance 0.55, line-height 1.2em,
-// dominant-baseline central ⇒ box top = anchor − fontSize/2). The
-// estimate only feeds background SAMPLING, so metric drift vs the
-// real laid-out glyph is tolerable; keeping the constants identical
-// to the bake's rotation-pivot math means one place to re-tune.
+// Text body-box estimate constants (charAdvance 0.55, 1.2em line
+// spacing). The estimate only feeds background SAMPLING, so metric
+// drift vs the real laid-out glyph is tolerable. The box is centered
+// VERTICALLY on the anchor to match what is actually painted: both
+// text surfaces (TextHtml display and the HTML bake, via
+// computeTextHtmlStyle's `translateY(-50%)` wrapper) center the FULL
+// multi-line block on the anchor — not the first line, which is the
+// legacy SVG-fallback convention. Sampling with the first-line model
+// displaced a multi-line ring ~(N−1)·fontPx·0.6 below the glyph.
 const TEXT_SAMPLE_CHAR_ADVANCE = 0.55;
 const TEXT_SAMPLE_LINE_HEIGHT = 1.2;
 
@@ -170,7 +173,10 @@ export function outlineSamplePointsForOverlay(
     const heightPx =
       sizePx * (lines.length * TEXT_SAMPLE_LINE_HEIGHT - (TEXT_SAMPLE_LINE_HEIGHT - 1));
     const xPx = data.point.x * dims.canvasWidthPx;
-    const topPx = data.point.y * dims.canvasHeightPx - sizePx / 2;
+    // Full-block vertical centering (see the constants comment above).
+    // Single-line output is unchanged: heightPx === sizePx there, so
+    // top = anchor − sizePx/2 either way.
+    const topPx = data.point.y * dims.canvasHeightPx - heightPx / 2;
     return outlineSamplePointsForRectPerimeter(
       {
         x: xPx / dims.canvasWidthPx,

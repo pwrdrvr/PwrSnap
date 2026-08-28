@@ -649,6 +649,35 @@ describe("arrowSvg (bake) — Border (contrast outline) modes", () => {
     expect(svg).toMatch(/<polygon[^>]+stroke="black"[^>]+stroke-dasharray/);
   });
 
+  test("stripe on a DOTTED stem alternates whole dots (black twin offset by one cycle)", () => {
+    // Regression: the half-dash phase degenerates on dotted stems —
+    // both strokes render round-cap discs of identical diameter at the
+    // same centers and black fully covers white (solid black dots).
+    // The dot-like regime alternates whole dots instead.
+    const svg = arrowSvgForV2(
+      { ...baseArrow(), outline: "stripe", stemStyle: "dotted" },
+      W,
+      H
+    );
+    const black = (svg.match(/<line[^/]+\/>/g) ?? []).find((l) =>
+      l.includes('stroke="black"')
+    );
+    expect(black).toBeDefined();
+    expect(black).toContain("stroke-dashoffset=");
+    const white = (svg.match(/<line[^/]+\/>/g) ?? []).find(
+      (l) => l.includes('stroke="white"') && l.includes("stroke-dasharray")
+    );
+    const dashOf = (l: string): number[] =>
+      (l.match(/stroke-dasharray="([^"]+)"/)?.[1] ?? "").split(" ").map(Number);
+    const [wd, wg] = dashOf(white!);
+    const [bd, bg] = dashOf(black!);
+    const offset = Number(black!.match(/stroke-dashoffset="([^"]+)"/)?.[1]);
+    // Black dash = one whole dot, cycle doubled, offset = one white cycle.
+    expect(bd).toBeCloseTo(wd!);
+    expect(bg).toBeCloseTo(2 * (wd! + wg!) - wd!);
+    expect(offset).toBeCloseTo(wd! + wg!);
+  });
+
   test("stripe on a dashed stem keeps black inside the stem dashes (half-dash phase)", () => {
     const svg = arrowSvgForV2(
       { ...baseArrow(), outline: "stripe", stemStyle: "dashed" },

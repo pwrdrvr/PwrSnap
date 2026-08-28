@@ -59,6 +59,7 @@ import {
   DEFAULT_BLUR_STYLE,
   computeTextGlyphSize,
   deriveBlurRadiusPx,
+  isOverlayOutlineMode,
   matchBucket,
   readShapeFilled,
   readShapeKind,
@@ -78,6 +79,7 @@ import { affineTransformsEqual, HOME_SNAP_SCREEN_PX, snapToHome } from "./raster
 import { computeEditorImageStyle } from "./editor-image-style";
 import { resolveToolColor, storedColorToToolColor } from "./resolveToolColor";
 import {
+  ensureOutlineSampler,
   sampleOutlineAutoColor,
   warmOutlineSampler,
   type OutlineSampleContext
@@ -703,16 +705,6 @@ function placedBlurRadius(
  * the standalone popover, Properties tab, and manual Layers accordions share
  * one correct persistence and undo path.
  */
-function isOverlayOutlineMode(value: unknown): value is OverlayOutlineMode {
-  return (
-    value === "auto" ||
-    value === "white" ||
-    value === "black" ||
-    value === "stripe" ||
-    value === "none"
-  );
-}
-
 export function layerStyleUpdate(
   current: OverlayRow,
   field: string,
@@ -746,16 +738,20 @@ export function layerStyleUpdate(
       patch: {
         kind: current.data.kind,
         outline: value,
-        ...(sampled !== null ? { outlineAuto: sampled } : {})
+        // Explicit undefined (not omission) when auto has no sample:
+        // switching Auto→Auto after a move must not leave a stale
+        // pick, and the shallow merge only clears keys it SEES.
+        outlineAuto: sampled !== null ? sampled : undefined
       } as Partial<Overlay>,
+      // ALWAYS carry both keys — explicitly undefined when the row
+      // lacked them. A legacy row's first Border edit must be
+      // undoable back to the field-absent state, and the shallow
+      // merge + JSON persistence only clear a field for a key that is
+      // PRESENT with an undefined value ({kind}-only would no-op).
       fallbackPreviousPatch: {
         kind: current.data.kind,
-        ...(current.data.outline !== undefined
-          ? { outline: current.data.outline }
-          : {}),
-        ...(current.data.outlineAuto !== undefined
-          ? { outlineAuto: current.data.outlineAuto }
-          : {})
+        outline: current.data.outline,
+        outlineAuto: current.data.outlineAuto
       } as Partial<Overlay>,
       undoField: "outline"
     };
@@ -1056,12 +1052,14 @@ export function previousStylePatchFromQueuedUpdate(
     previous.kind === nextPatch.kind &&
     field === "outline"
   ) {
+    // Both keys, explicitly undefined when absent — the undo patch
+    // must be able to CLEAR the fields back to the legacy no-field
+    // state (shallow merge + JSON persistence drop present-undefined
+    // keys; an omitted key would silently no-op the undo).
     return {
       kind: previous.kind,
-      ...(previous.outline !== undefined ? { outline: previous.outline } : {}),
-      ...(previous.outlineAuto !== undefined
-        ? { outlineAuto: previous.outlineAuto }
-        : {})
+      outline: previous.outline,
+      outlineAuto: previous.outlineAuto
     } as Partial<Overlay>;
   }
 
@@ -1907,12 +1905,84 @@ export function Editor({
     },
     [captureId]
   );
-  // Warm the sampler's pixel cache as soon as the capture is known so
-  // the first commit (and the live draft preview) can sample
-  // synchronously. Cheap no-op once cached.
+  // The display-space dispatcher for the current model, mirrored into a
+  // ref (same pattern as textHitDimsRef) so the auto-border dispatch
+  // wrapper below keeps ONE stable identity across refetches — its
+  // consumers hang it in dependency arrays.
+  const modelDispatchEditRef = useRef<
+    ((op: LayerEditOp) => Promise<Result<EditOpResult, PwrSnapError>>) | null
+  >(null);
+  // Every geometry commit that flows through the DISPLAY dispatcher —
+  // transform-handle drags, keyboard nudges, multi-select drags, and
+  // undo/redo replays while the crop is visible — funnels through this
+  // wrapper: after a successful `updateGeometry` on a Border:Auto row,
+  // re-sample at the new position and silently persist a flipped pick.
+  // Derived state, deliberately NOT an undo entry: undoing the move
+  // itself re-enters this wrapper and re-samples at the restored
+  // position. (Hidden-crop undo replays use the RAW stored-space
+  // dispatcher and skip the re-sample — display-space sampling doesn't
+  // apply there.)
+  const dispatchEditWithAutoBorder = useCallback(
+    async (op: LayerEditOp): Promise<Result<EditOpResult, PwrSnapError>> => {
+      const base = modelDispatchEditRef.current;
+      if (base === null) {
+        return {
+          ok: false,
+          error: {
+            kind: "validation",
+            code: "record_not_loaded",
+            message: "dispatchEdit: model not loaded"
+          }
+        };
+      }
+      const pre =
+        op.kind === "updateGeometry"
+          ? overlaysRef.current.find((row) => row.id === op.layerId)
+          : undefined;
+      const result = await base(op);
+      if (
+        op.kind === "updateGeometry" &&
+        result.ok &&
+        result.value.kind === "update" &&
+        pre !== undefined &&
+        (pre.data.kind === "arrow" ||
+          pre.data.kind === "shape" ||
+          pre.data.kind === "text") &&
+        pre.data.outline === "auto"
+      ) {
+        const moved = applyGeometryLocally(pre.data, op.geometry);
+        if (moved !== null) {
+          await ensureOutlineSampler(captureSrcUrl(captureId));
+          const sampled = sampleOutlineAutoForData(moved);
+          if (sampled !== null && sampled !== pre.data.outlineAuto) {
+            void base({
+              kind: "updateOverlay",
+              layerId: result.value.artifact.node.id,
+              patch: {
+                kind: pre.data.kind,
+                outlineAuto: sampled
+              } as Partial<Overlay>
+            });
+          }
+        }
+      }
+      return result;
+    },
+    [captureId, sampleOutlineAutoForData]
+  );
+  // Warm the sampler's pixel cache lazily — when a border-capable
+  // tool is armed (drafts imply an armed tool), not on every editor
+  // mount: the library focus view mounts an <Editor> per focused
+  // capture, and an eager warm would pay a second full-resolution
+  // decode per arrow-key press for a sampler most focuses never use.
+  // Commit paths additionally `await ensureOutlineSampler(...)`, so a
+  // cold cache can delay a first sample but never lose it.
+  const warmForTool = effectiveToolState.activeTool;
   useEffect(() => {
-    warmOutlineSampler(captureSrcUrl(captureId));
-  }, [captureId]);
+    if (warmForTool === "arrow" || warmForTool === "shape" || warmForTool === "text") {
+      warmOutlineSampler(captureSrcUrl(captureId));
+    }
+  }, [captureId, warmForTool]);
   // Zoom/pan bridge — `zoom` (useZoomPan) lives inside EditorLoaded,
   // but the pointer-tool miss branch of the OUTER onPointerDown needs
   // to fall back to drag-to-pan on empty canvas while zoomed in.
@@ -2974,6 +3044,10 @@ export function Editor({
         // sampler omits the pick; renderers fall back to white.
         arrowOverlay.outline = arrowStyleSrc.outline;
         if (arrowStyleSrc.outline === "auto") {
+          // Await the (usually already-finished) decode: a draw racing
+          // the warm-up would otherwise persist auto-without-pick
+          // forever — nothing re-samples an unmoved row.
+          await ensureOutlineSampler(captureSrcUrl(captureId));
           const sampled = sampleOutlineAutoForData(arrowOverlay);
           if (sampled !== null) arrowOverlay.outlineAuto = sampled;
         }
@@ -3050,6 +3124,9 @@ export function Editor({
           // Border mode + sampled Auto pick — see the arrow commit.
           shapeOverlay.outline = shapeStyleSrc.outline;
           if (shapeStyleSrc.outline === "auto") {
+            // See the arrow commit — cold-cache draws must wait, not
+            // silently persist a pickless auto.
+            await ensureOutlineSampler(captureSrcUrl(captureId));
             const sampled = sampleOutlineAutoForData(shapeOverlay);
             if (sampled !== null) shapeOverlay.outlineAuto = sampled;
           }
@@ -3251,6 +3328,9 @@ export function Editor({
         textStyleSrc !== null ? resolveToolColor(textStyleSrc.color) : "auto"
     };
     if (textStyleSrc !== null && textStyleSrc.outline === "auto") {
+      // See the arrow commit — cold-cache draws must wait, not
+      // silently persist a pickless auto.
+      await ensureOutlineSampler(captureSrcUrl(captureId));
       const sampled = sampleOutlineAutoForData(overlay);
       if (sampled !== null) overlay.outlineAuto = sampled;
     }
@@ -3507,7 +3587,24 @@ export function Editor({
     try {
       const newIds: string[] = [];
       for (const item of items) {
-        const translated = translateOverlayData(item, dxn, dyn);
+        let translated = translateOverlayData(item, dxn, dyn);
+        // Border: Auto — the stored pick was sampled where the SOURCE
+        // layer sat (possibly in another capture entirely, for
+        // cross-capture fragment paste). Re-sample at the paste
+        // position; keep the carried pick when the sampler can't
+        // answer (better than dropping to the fallback color).
+        if (
+          (translated.kind === "arrow" ||
+            translated.kind === "shape" ||
+            translated.kind === "text") &&
+          translated.outline === "auto"
+        ) {
+          await ensureOutlineSampler(captureSrcUrl(captureId));
+          const sampled = sampleOutlineAutoForData(translated);
+          if (sampled !== null) {
+            translated = { ...translated, outlineAuto: sampled };
+          }
+        }
         const wrote = await persistOverlay(translated, {
           opKind: "create",
           layerId: "kbd-paste",
@@ -4244,6 +4341,7 @@ export function Editor({
   // ... />`.
 
   const dispatchEditErased = model.dispatchEdit;
+  modelDispatchEditRef.current = dispatchEditErased;
 
   // Source raster natural dims — separate from the capture's
   // `width_px`/`height_px` which are the CANVAS (cropped) dims.
@@ -4385,10 +4483,18 @@ export function Editor({
       isSourceHidden={isSourceHidden}
       sourceHasAlpha={model.record.has_alpha}
       toStoredGeometry={toStoredGeometry}
-      dispatchEdit={dispatchEditErased}
+      dispatchEdit={dispatchEditWithAutoBorder}
       rawDispatchEdit={
-        rawModel.kind === "loaded" ? rawModel.dispatchEdit : dispatchEditErased
+        // Stored-space dispatcher for undo/redo replays. While the crop
+        // is visible, raw ≡ display, so the auto-border wrapper covers
+        // undo/redo geometry replays too; in the hidden-crop view the
+        // raw dispatcher speaks stored space and skips the (display-
+        // space) re-sample on purpose.
+        rawModel.kind === "loaded" && isUncroppedView
+          ? rawModel.dispatchEdit
+          : dispatchEditWithAutoBorder
       }
+      resolveOutlineAuto={sampleOutlineAutoForData}
       sourceWidthPx={sourceWidthPx}
       sourceHeightPx={sourceHeightPx}
       rasterTranslateXPx={rasterTranslateXPx}
@@ -4470,6 +4576,7 @@ function EditorLoaded({
   rasterTranslateXPx,
   rasterTranslateYPx,
   onRequestEditOverlay,
+  resolveOutlineAuto,
   pasteNotice,
   setPasteNotice,
   formatPasteError
@@ -4754,6 +4861,11 @@ function EditorLoaded({
    *  body; commit replaces the overlay's body rather than creating
    *  a new one. */
   onRequestEditOverlay: (overlay: OverlayRow) => void;
+  /** Auto contrast-border sampler, owned by the outer Editor (one
+   *  resolver + one sampling context for every surface: commits, the
+   *  selected-layer Border edit, the post-move re-sample wrapper, and
+   *  the live draft previews below). */
+  resolveOutlineAuto: (data: Overlay) => OverlayOutlineAutoColor | null;
   pasteNotice: { text: string; tone: "error" | "info" } | null;
   setPasteNotice: React.Dispatch<
     React.SetStateAction<{ text: string; tone: "error" | "info" } | null>
@@ -4766,31 +4878,6 @@ function EditorLoaded({
   // mosaic algorithm operates on the same source bytes so the editor
   // and bake now agree visually block-for-block.
   const editorImageRef = useRef<HTMLImageElement | null>(null);
-
-  // Auto contrast-border resolver for THIS component's surfaces (the
-  // selected-layer style path, the post-move recompute, and the live
-  // draft preview). Mirrors the outer Editor's ref-backed variant but
-  // can be a plain useCallback because every input is a prop here.
-  const resolveOutlineAuto = useCallback(
-    (data: Overlay): OverlayOutlineAutoColor | null =>
-      sampleOutlineAutoColor(captureSrcUrl(record.id), data, {
-        canvasWidthPx: record.width_px,
-        canvasHeightPx: record.height_px,
-        sourceWidthPx,
-        sourceHeightPx,
-        rasterTranslateXPx,
-        rasterTranslateYPx
-      }),
-    [
-      record.id,
-      record.width_px,
-      record.height_px,
-      sourceWidthPx,
-      sourceHeightPx,
-      rasterTranslateXPx,
-      rasterTranslateYPx
-    ]
-  );
 
   const zoom = useZoomPan({
     devicePixelRatio: record.device_pixel_ratio,
@@ -4825,6 +4912,26 @@ function EditorLoaded({
   // ~11% font-size delta between display and edit. One source = zero
   // drift by construction.
   const [canvasCssHeight, setCanvasCssHeight] = useState<number>(0);
+  // Fresh-text-draft Border:Auto pick, memoized on the draft's anchor
+  // + body + text style. The TextDraftInput site renders on EVERY
+  // EditorLoaded commit (zoom/pan ticks at display refresh while the
+  // input is open); recomputing the 100-point ring + pixel reads +
+  // median sort per frame for identical inputs was pure waste. Typing
+  // and moving the anchor still re-sample (the draft object's identity
+  // changes), which is the live behavior we want.
+  const textDraftAutoOutline = useMemo((): OverlayOutlineAutoColor | null => {
+    if (draft?.kind !== "text" || draft.editingId !== undefined) return null;
+    const style =
+      toolState.activeStyle.tool === "text" ? toolState.activeStyle.style : null;
+    if (style === null || style.outline !== "auto") return null;
+    return resolveOutlineAuto({
+      kind: "text",
+      point: { x: draft.xn, y: draft.yn },
+      body: draft.body.length > 0 ? draft.body : "M",
+      size: resolveTextSize(style.fontSize),
+      color: "auto"
+    });
+  }, [draft, toolState.activeStyle, resolveOutlineAuto]);
   useLayoutEffect(() => {
     const el = canvasRef.current;
     if (el === null) return;
@@ -5984,39 +6091,9 @@ function EditorLoaded({
             });
           }
         }
-        // Border: Auto — the stored pick was sampled where the layer
-        // USED to sit. Re-sample at the committed geometry and, if the
-        // background flipped light↔dark, silently persist the new pick
-        // (derived state; deliberately not an undo entry — undoing the
-        // MOVE is what restores the old context).
-        if (
-          (preDrag.data.kind === "arrow" ||
-            preDrag.data.kind === "shape" ||
-            preDrag.data.kind === "text") &&
-          preDrag.data.outline === "auto"
-        ) {
-          const moved = applyGeometryLocally(preDrag.data, geometry);
-          const sampled = moved !== null ? resolveOutlineAuto(moved) : null;
-          if (sampled !== null && sampled !== preDrag.data.outlineAuto) {
-            void dispatchEdit({
-              kind: "updateOverlay",
-              layerId: newId,
-              patch: {
-                kind: preDrag.data.kind,
-                outlineAuto: sampled
-              } as Partial<Overlay>
-            });
-          }
-        }
       })();
     },
-    [
-      dispatchEdit,
-      resolveOutlineAuto,
-      setSelectionTrustingDispatch,
-      recordStoredGeometry,
-      undoApplyingRef
-    ]
+    [dispatchEdit, setSelectionTrustingDispatch, recordStoredGeometry, undoApplyingRef]
   );
 
   // Cleanup effect — drop each live-drag override once the persisted
@@ -6053,15 +6130,21 @@ function EditorLoaded({
   // a new-tool default.
   const updateOverlayStyleField = useCallback(
     (current: OverlayRow, field: string, value: unknown): void => {
-      const update = layerStyleUpdate(current, field, value, {
-        sourceWidthPx,
-        sourceHeightPx,
-        canvasWidthPx: record.width_px,
-        canvasHeightPx: record.height_px,
-        resolveOutlineAuto
-      });
-      if (update === null) return;
       void (async (): Promise<void> => {
+        // Border=Auto needs pixels: wait for the sampler's decode
+        // (usually already finished) so a click on Auto right after
+        // the editor opens still stores a real pick.
+        if (field === "outline" && value === "auto") {
+          await ensureOutlineSampler(captureSrcUrl(record.id));
+        }
+        const update = layerStyleUpdate(current, field, value, {
+          sourceWidthPx,
+          sourceHeightPx,
+          canvasWidthPx: record.width_px,
+          canvasHeightPx: record.height_px,
+          resolveOutlineAuto
+        });
+        if (update === null) return;
         const result = await dispatchEdit({
           kind: "updateOverlay",
           layerId: current.id,
@@ -6870,25 +6953,15 @@ function EditorLoaded({
                   : null;
               // Border: Auto on a fresh placement samples at the draft's
               // anchor (body sizes the ring; empty body probes a
-              // one-glyph box). Re-edits read the row's stored pick
-              // inside resolveTextDraftStyle instead.
-              const sampledAutoOutline =
-                editingOverlay === null &&
-                activeToolStyle !== null &&
-                activeToolStyle.outline === "auto"
-                  ? resolveOutlineAuto({
-                      kind: "text",
-                      point: { x: draft.xn, y: draft.yn },
-                      body: draft.body.length > 0 ? draft.body : "M",
-                      size: resolveTextSize(activeToolStyle.fontSize),
-                      color: "auto"
-                    })
-                  : null;
+              // one-glyph box) — memoized above as textDraftAutoOutline
+              // so zoom/pan re-renders don't re-sample. Re-edits read
+              // the row's stored pick inside resolveTextDraftStyle.
               const { colorHex, size, weight, storedSizePx, rotation, outline } =
                 resolveTextDraftStyle({
                   editingOverlay,
                   activeToolStyle,
-                  sampledAutoOutline
+                  sampledAutoOutline:
+                    editingOverlay === null ? textDraftAutoOutline : null
                 });
               return (
                 <TextDraftInput

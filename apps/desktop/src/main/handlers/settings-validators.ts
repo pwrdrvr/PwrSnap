@@ -14,6 +14,7 @@
 // treatment, revisit.
 
 import {
+  isOverlayOutlineMode,
   AI_REASONING_EFFORTS,
   AI_SURFACE_IDS,
   BUILT_IN_ACP_AGENT_IDS,
@@ -1165,15 +1166,7 @@ function isToolSizePreset(value: unknown): boolean {
   );
 }
 
-function isOverlayOutlineMode(value: unknown): boolean {
-  return (
-    value === "auto" ||
-    value === "white" ||
-    value === "black" ||
-    value === "stripe" ||
-    value === "none"
-  );
-}
+
 
 function validateArrowStyle(raw: Record<string, unknown>): PwrSnapError | null {
   if (!isUndefined(raw.color) && !isToolColor(raw.color)) {
@@ -1216,8 +1209,16 @@ function validateTextStyle(raw: Record<string, unknown>): PwrSnapError | null {
       return validationError("invalid_editor_text_weight", "settings:write: editor.toolStyles.text.weight must be regular or bold");
     }
   }
-  if (!isUndefined(raw.outline) && !isOverlayOutlineMode(raw.outline)) {
-    return validationError("invalid_editor_text_outline", "settings:write: editor.toolStyles.text.outline must be auto/white/black/stripe/none");
+  // Text deliberately has NO stripe option — a striped glyph stroke is
+  // illegible at text stroke widths, the picker hides it, and a
+  // persisted "stripe" would leave the Border row with no selectable
+  // state. Reject it at the gate instead of storing a value the UI
+  // cannot represent.
+  if (
+    !isUndefined(raw.outline) &&
+    (!isOverlayOutlineMode(raw.outline) || raw.outline === "stripe")
+  ) {
+    return validationError("invalid_editor_text_outline", "settings:write: editor.toolStyles.text.outline must be auto/white/black/none");
   }
   return null;
 }

@@ -35,6 +35,7 @@ import {
   computeArrowGeometry,
   computeStemDashArray,
   DEFAULT_PARALLELOGRAM_SKEW_DEG,
+  outlineHaloColor,
   outlineStripeDashArray,
   outlineStripeDashArrayForStemDash,
   readArrowDoubleEnded,
@@ -580,10 +581,7 @@ function ArrowGlyph({
   // modes swap the color, stripe it, or drop it. Width is unchanged
   // in every mode.
   const resolvedOutline = readOverlayOutline({ outline, outlineAuto }, "white");
-  const haloColor =
-    resolvedOutline.kind === "solid" && resolvedOutline.color === "black"
-      ? "black"
-      : "white";
+  const haloColor = outlineHaloColor(resolvedOutline);
   const hasOutline = resolvedOutline.kind !== "none";
   // Resolution: explicit color → use it; "auto" / undefined → fall back
   // to the theme accent token. Draft variant uses --accent-strong for
@@ -637,12 +635,12 @@ function ArrowGlyph({
   const haloWidthPx = stroke + outlineWidth * 2;
   const headStripeDash =
     resolvedOutline.kind === "stripe" ? outlineStripeDashArray(haloWidthPx) : null;
-  const stemStripeDash =
+  const stemStripe =
     resolvedOutline.kind !== "stripe"
       ? null
       : dashStem !== null
         ? outlineStripeDashArrayForStemDash(dashStem)
-        : outlineStripeDashArray(haloWidthPx);
+        : { dasharray: outlineStripeDashArray(haloWidthPx), dashoffset: 0 };
 
   return (
     <g strokeLinejoin="round">
@@ -666,7 +664,7 @@ function ArrowGlyph({
         />
       )}
       {/* Striped border — black twin over the white stem halo. */}
-      {stemStripeDash !== null && (
+      {stemStripe !== null && (
         <line
           x1={fromPoint.x}
           y1={fromPoint.y}
@@ -675,7 +673,10 @@ function ArrowGlyph({
           stroke="black"
           strokeWidth={stroke + outlineWidth * 2}
           strokeLinecap="round"
-          strokeDasharray={stemStripeDash}
+          strokeDasharray={stemStripe.dasharray}
+          strokeDashoffset={
+            stemStripe.dashoffset !== 0 ? stemStripe.dashoffset : undefined
+          }
           fill="none"
         />
       )}
@@ -1044,14 +1045,7 @@ function ShapeGlyph({
   // sync). Legacy stroked shapes resolve to the white halo; legacy
   // filled shapes draw no rim.
   const resolvedOutline = readOverlayOutline({ outline, outlineAuto }, "white");
-  const haloColor =
-    resolvedOutline.kind === "solid" && resolvedOutline.color === "black"
-      ? "black"
-      : "white";
-  const stripeDash =
-    resolvedOutline.kind === "stripe"
-      ? outlineStripeDashArray(strokeWidthPx + outlineWidthPx * 2)
-      : null;
+  const haloColor = outlineHaloColor(resolvedOutline);
   // Pixel-space bbox.
   const rx = rect.x * imageWidthPx;
   const ry = rect.y * imageHeightPx;
@@ -1220,6 +1214,10 @@ function ShapeGlyph({
   if (resolvedOutline.kind === "none") {
     return <g {...wrapperProps}>{strokedPrimitive(accent, strokeWidthPx)}</g>;
   }
+  const stripeDash =
+    resolvedOutline.kind === "stripe"
+      ? outlineStripeDashArray(strokeWidthPx + outlineWidthPx * 2)
+      : null;
   return (
     <g {...wrapperProps}>
       {strokedPrimitive(haloColor, strokeWidthPx + outlineWidthPx * 2)}

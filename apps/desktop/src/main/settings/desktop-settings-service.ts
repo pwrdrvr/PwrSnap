@@ -55,6 +55,7 @@ import type {
   UpdateTrain
 } from "@pwrsnap/shared";
 import {
+  isOverlayOutlineMode,
   DEFAULT_AI_SURFACE_DEFAULTS,
   DEFAULT_CHAT_SETTINGS,
   DEFAULT_CODEX_CAPTION_MODEL,
@@ -464,16 +465,7 @@ function pickOverlayOutlineMode(
   value: unknown,
   fallback: OverlayOutlineMode
 ): OverlayOutlineMode {
-  if (
-    value === "auto" ||
-    value === "white" ||
-    value === "black" ||
-    value === "stripe" ||
-    value === "none"
-  ) {
-    return value;
-  }
-  return fallback;
+  return isOverlayOutlineMode(value) ? value : fallback;
 }
 
 function pickBlurEffectMode(value: unknown, fallback: BlurEffectMode): BlurEffectMode {
@@ -517,7 +509,13 @@ function parseTextToolStyle(raw: unknown, defaults: TextToolStyle): TextToolStyl
     color: pickToolColor(raw.color, defaults.color),
     fontSize: pickToolSizePreset(raw.fontSize, defaults.fontSize),
     weight: pickTextFontWeight(raw.weight, defaults.weight),
-    outline: pickOverlayOutlineMode(raw.outline, defaults.outline)
+    // Stripe is not offered for text (the picker hides it); a stored
+    // stripe (older file / out-of-band write) parses back to the
+    // default so the Border row always shows a selectable state.
+    outline:
+      raw.outline === "stripe"
+        ? defaults.outline
+        : pickOverlayOutlineMode(raw.outline, defaults.outline)
   };
 }
 

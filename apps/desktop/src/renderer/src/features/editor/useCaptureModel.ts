@@ -1364,6 +1364,25 @@ export function useCaptureModel(captureId: string): CaptureModel {
             layer: merged
           });
           if (!insResult.ok) return err(insResult.error);
+          // Seed the per-layer style lane with the freshly persisted
+          // node. An updateOverlay that fires before the broadcast
+          // refetch lands — e.g. the auto-border re-sample right after
+          // a drag/nudge commit — must merge against THIS node; without
+          // the seed its fallback base is the STALE layersRef entry
+          // (same id — updateGeometry preserves it) and the patch would
+          // delete+upsert the pre-move geometry back into the DB. The
+          // render-time prune drops the seeded lane once the refetch
+          // catches up, exactly like a lane seeded by updateOverlay.
+          const styleLane = overlayUpdateQueuesRef.current.get(op.layerId);
+          if (styleLane !== undefined) {
+            styleLane.current = insResult.value;
+          } else {
+            overlayUpdateQueuesRef.current.set(op.layerId, {
+              current: insResult.value,
+              pending: 0,
+              tail: Promise.resolve()
+            });
+          }
           return {
             ok: true,
             value: {

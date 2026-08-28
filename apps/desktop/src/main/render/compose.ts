@@ -21,6 +21,8 @@ import type { ArrowEndStyle, OverlayRow } from "@pwrsnap/shared";
 import {
   computeArrowGeometry,
   computeStemDashArray,
+  outlineHaloColor,
+  outlineSolidStrokeHex,
   outlineStripeDashArray,
   outlineStripeDashArrayForStemDash,
   readArrowDoubleEnded,
@@ -36,7 +38,8 @@ import {
   readShapeKind,
   readShapeSkewDeg,
   readTextOverlayOutline,
-  readTextWeight
+  readTextWeight,
+  shapeAutoStrokeWidthPx
 } from "@pwrsnap/shared";
 
 // Main process can't read CSS vars, so the overlay-render default
@@ -183,10 +186,7 @@ function arrowSvg(
   // mode (no independent border sizing by design).
   const outlineWidth = Math.max(1.5, strokeWidthPx * 0.25);
   const resolvedOutline = readOverlayOutline(data, "white");
-  const haloColor =
-    resolvedOutline.kind === "solid" && resolvedOutline.color === "black"
-      ? "black"
-      : "white";
+  const haloColor = outlineHaloColor(resolvedOutline);
 
   // Stem endpoints depend on the head style (see live editor's
   // `stemEndpointFor` — keep this in sync). Filled / open triangles
@@ -218,12 +218,12 @@ function arrowSvg(
   const haloWidthPx = strokeWidthPx + outlineWidth * 2;
   const headStripeDash =
     resolvedOutline.kind === "stripe" ? outlineStripeDashArray(haloWidthPx) : null;
-  const stemStripeDash =
+  const stemStripe =
     resolvedOutline.kind !== "stripe"
       ? null
       : stemDashRaw !== null
         ? outlineStripeDashArrayForStemDash(stemDashRaw)
-        : outlineStripeDashArray(haloWidthPx);
+        : { dasharray: outlineStripeDashArray(haloWidthPx), dashoffset: 0 };
 
   const hasOutline = resolvedOutline.kind !== "none";
   const halo = hasOutline
@@ -243,11 +243,11 @@ function arrowSvg(
     ? ""
     : `<line x1="${stemEndAtFrom.x}" y1="${stemEndAtFrom.y}" x2="${stemEndAtTo.x}" y2="${stemEndAtTo.y}"
           stroke="${haloColor}" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linecap="round"${stemDashAttr} fill="none" />` +
-      (stemStripeDash === null
+      (stemStripe === null
         ? ""
         : `
     <line x1="${stemEndAtFrom.x}" y1="${stemEndAtFrom.y}" x2="${stemEndAtTo.x}" y2="${stemEndAtTo.y}"
-          stroke="black" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linecap="round" stroke-dasharray="${stemStripeDash}" fill="none" />`);
+          stroke="black" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linecap="round" stroke-dasharray="${stemStripe.dasharray}"${stemStripe.dashoffset !== 0 ? ` stroke-dashoffset="${stemStripe.dashoffset}"` : ""} fill="none" />`);
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
   <g stroke-linejoin="round">
@@ -412,14 +412,7 @@ function shapeSvg(
   // always-white halo (byte-identical emit); legacy filled shapes
   // keep no rim. See `readOverlayOutline` in @pwrsnap/shared.
   const resolvedOutline = readOverlayOutline(data, "white");
-  const haloColor =
-    resolvedOutline.kind === "solid" && resolvedOutline.color === "black"
-      ? "black"
-      : "white";
-  const stripeDash =
-    resolvedOutline.kind === "stripe"
-      ? outlineStripeDashArray(strokeWidthPx + outlinePx * 2)
-      : null;
+  const haloColor = outlineHaloColor(resolvedOutline);
   // Rotation transform — same convention as ShapeGlyph (live editor):
   // SVG `rotate(deg cx cy)` in pixel-space with cx/cy at the bbox
   // geometric center. `transform` is omitted entirely when rotation
@@ -489,20 +482,37 @@ function shapeSvg(
     // Solid fill. Legacy rows (and Border = Off) draw the bare
     // primitive — a same-color halo would just expand the fill without
     // adding contrast. The explicit border modes draw a contrast RIM
-    // under the fill: a centered stroke of 2×outlinePx, whose inner
-    // half the fill covers, leaving outlinePx of rim visible — the
-    // same reach as a stroked shape's halo.
+    // under the fill: a centered stroke of 2×rim width, whose inner
+    // half the fill covers — the same reach as a stroked shape's halo.
+    //
+    // The rim sizes itself from the EDITOR's stroke band
+    // (shapeAutoStrokeWidthPx via readOverlayThickness), NOT this
+    // file's legacy clamp band above: a filled shape draws no stroke
+    // in the bake, so nothing forces the two bands to agree here, and
+    // using the editor band is what makes the exported rim match the
+    // preview pixel-for-pixel. (The stroked path keeps the legacy
+    // band — its bytes predate this feature.)
+    const rimStrokeWidthPx = readOverlayThickness(
+      data.thickness,
+      shapeAutoStrokeWidthPx(shortSidePx),
+      shortSidePx
+    );
+    const rimPx = Math.max(1.5, rimStrokeWidthPx * 0.25);
     const rim =
       resolvedOutline.kind === "legacy" || resolvedOutline.kind === "none"
         ? ""
         : resolvedOutline.kind === "stripe"
-          ? `${strokedPrimitive("white", outlinePx * 2)}
-    ${strokedPrimitive("black", outlinePx * 2, outlineStripeDashArray(outlinePx * 2))}
+          ? `${strokedPrimitive("white", rimPx * 2)}
+    ${strokedPrimitive("black", rimPx * 2, outlineStripeDashArray(rimPx * 2))}
     `
-          : `${strokedPrimitive(haloColor, outlinePx * 2)}
+          : `${strokedPrimitive(haloColor, rimPx * 2)}
     `;
+    // Round joins only when a rim is painted — the legacy filled emit
+    // (`<g${groupTransform}>`, no stroke anywhere) must stay
+    // byte-identical.
+    const rimJoin = rim === "" ? "" : ` stroke-linejoin="round"`;
     return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
-  <g${groupTransform}>
+  <g${rimJoin}${groupTransform}>
     ${rim}${filledPrimitive()}
   </g>
 </svg>`;
@@ -516,6 +526,10 @@ function shapeSvg(
 </svg>`;
   }
 
+  const stripeDash =
+    resolvedOutline.kind === "stripe"
+      ? outlineStripeDashArray(strokeWidthPx + outlinePx * 2)
+      : null;
   const stripeHalo =
     stripeDash === null
       ? ""
@@ -677,11 +691,7 @@ function textSvg(
   const strokeColor =
     resolvedOutline.kind === "legacy"
       ? "rgba(0,0,0,0.7)"
-      : resolvedOutline.kind === "solid"
-        ? resolvedOutline.color === "black"
-          ? "#000000"
-          : "#ffffff"
-        : null;
+      : outlineSolidStrokeHex(resolvedOutline);
   const strokeAttrs =
     strokeColor === null
       ? ""

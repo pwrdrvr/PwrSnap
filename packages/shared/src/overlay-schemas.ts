@@ -209,6 +209,23 @@ export const DEFAULT_ARROW_STEM_STYLE: ArrowStemStyle = "solid";
 export const OverlayOutlineMode = z.enum(["auto", "white", "black", "stripe", "none"]);
 export type OverlayOutlineMode = z.infer<typeof OverlayOutlineMode>;
 
+/** Plain predicate over the enum's value space — the ONE list every
+ *  boundary shares (editor style routing, settings validators, and
+ *  the settings parser all consume this instead of hand-rolling the
+ *  five literals). Kept as a hand-written predicate rather than
+ *  `OverlayOutlineMode.safeParse` because the main-process settings
+ *  validator deliberately avoids runtime zod (see the header of
+ *  settings-validators.ts). */
+export function isOverlayOutlineMode(value: unknown): value is OverlayOutlineMode {
+  return (
+    value === "auto" ||
+    value === "white" ||
+    value === "black" ||
+    value === "stripe" ||
+    value === "none"
+  );
+}
+
 /** Resolved color persisted alongside `outline: "auto"` (see above). */
 export const OverlayOutlineAutoColor = z.enum(["white", "black"]);
 export type OverlayOutlineAutoColor = z.infer<typeof OverlayOutlineAutoColor>;
@@ -270,24 +287,84 @@ export function outlineStripeDashArray(haloWidthPx: number): string {
   return `${seg} ${seg}`;
 }
 
+/** Black-twin stroke pattern for a dashed / dotted stem's striped
+ *  border. `dashoffset` is 0 for the half-dash mode; the dot-alternate
+ *  mode needs a non-zero `stroke-dashoffset` on the black twin. */
+export interface OutlineStripeStemDash {
+  dasharray: string;
+  dashoffset: number;
+}
+
 /** Stripe phase for a dashed / dotted arrow stem. The white halo
  *  mirrors the stem's own dash pattern (so halo never fills the
- *  gaps); the black twin must then stripe WITHIN each stem dash —
- *  painting the plain stripe pattern would drop black marks into the
- *  empty gaps. Splitting each dash in half (`D/2` black, then a
- *  `D/2 + G` hole) keeps every black segment inside a painted white
- *  dash. Input is `computeStemDashArray`'s `"D G"` output; returns
- *  null when it can't be parsed (caller skips the black pass — the
- *  white halo alone is the legacy look). */
+ *  gaps); the black twin must then stripe WITHIN the painted dashes —
+ *  the plain stripe pattern would drop black marks into the empty
+ *  gaps. Two regimes:
+ *
+ *    • Dash-like stems (D ≥ G, e.g. "dashed" at 4×stroke): split each
+ *      dash in half — `D/2` black, then a `D/2 + G` hole — so every
+ *      black segment sits inside a painted white dash.
+ *    • Dot-like stems (D < G, e.g. "dotted" at 0.01×stroke): the
+ *      half-dash degenerates — round linecaps at halo width render a
+ *      near-zero dash as a full-diameter disc that exactly covers the
+ *      white dot, turning the whole stem black. Alternate WHOLE dots
+ *      instead: double the cycle and shift the black dash onto every
+ *      second dot via `stroke-dashoffset = D + G` (pattern position at
+ *      the path start ⇒ black covers dots 1, 3, 5…), yielding
+ *      alternating white/black dots.
+ *
+ *  Input is `computeStemDashArray`'s `"D G"` output; returns null when
+ *  it can't be parsed (caller skips the black pass — the white halo
+ *  alone is the legacy look). */
 export function outlineStripeDashArrayForStemDash(
   stemDash: string
-): string | null {
+): OutlineStripeStemDash | null {
   const parts = stemDash.trim().split(/\s+/).map(Number);
   const d = parts[0];
   const g = parts[1];
   if (parts.length !== 2 || d === undefined || g === undefined) return null;
   if (!Number.isFinite(d) || !Number.isFinite(g) || d <= 0 || g < 0) return null;
-  return `${d / 2} ${d / 2 + g}`;
+  if (d < g) {
+    const cycle = d + g;
+    return { dasharray: `${d} ${2 * cycle - d}`, dashoffset: cycle };
+  }
+  return { dasharray: `${d / 2} ${d / 2 + g}`, dashoffset: 0 };
+}
+
+/** Halo (under-stroke) color for a resolved border, as SVG color
+ *  keywords. The single mapping behind the editor/bake WYSIWYG pair —
+ *  ArrowGlyph/ShapeGlyph (live preview) and arrowSvg/shapeSvg (bake)
+ *  all consume this, so the mapping cannot drift between surfaces.
+ *  Legacy and unresolved-auto both land on the historical white. */
+export function outlineHaloColor(
+  resolved: ResolvedOverlayOutline
+): "white" | "black" {
+  return resolved.kind === "solid" && resolved.color === "black"
+    ? "black"
+    : "white";
+}
+
+/** Solid-mode glyph-stroke hex for a resolved TEXT border, or null
+ *  when the mode isn't solid. The two text surfaces (HTML style via
+ *  computeTextHtmlStyle, and the SVG fallback in compose.ts) share
+ *  this arm; their legacy/none arms deliberately stay local (the
+ *  historical translucent constants differ by surface). */
+export function outlineSolidStrokeHex(
+  resolved: ResolvedOverlayOutline
+): "#000000" | "#ffffff" | null {
+  if (resolved.kind !== "solid") return null;
+  return resolved.color === "black" ? "#000000" : "#ffffff";
+}
+
+/** Auto stroke band for SHAPE glyphs, in the same px space as
+ *  `shortSidePx` — ≈1.2% of the short side, floored at 8px, clamped
+ *  down to ≈0.3%. Single source of truth consumed by the editor's
+ *  `shapeStrokeGeometry` (paint + hit-test + drag rect) and by the
+ *  bake's NEW filled-shape rim, so the rim width matches the preview.
+ *  (The bake's legacy stroked-shape band predates this helper and
+ *  deliberately stays byte-stable — see compose.ts shapeSvg.) */
+export function shapeAutoStrokeWidthPx(shortSidePx: number): number {
+  return Math.min(shortSidePx * 0.012, Math.max(shortSidePx * 0.003, 8));
 }
 
 /** Text can't paint a striped glyph stroke, so its resolved outline

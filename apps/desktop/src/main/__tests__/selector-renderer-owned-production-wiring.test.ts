@@ -55,6 +55,28 @@ describe("renderer-owned selector capture production wiring", () => {
     expect(preload).toContain('type: "pwrsnap-selector-frame-port"');
   });
 
+  test("presentation uses a dedicated post-show generation-bound acknowledgement", async () => {
+    const [selector, component, preload] = await Promise.all([
+      source("../capture/region-selector.ts"),
+      source("../../renderer/src/features/region/RegionSelector.tsx"),
+      source("../../preload/index.ts")
+    ]);
+
+    const show = selector.indexOf("win.show();");
+    const moveTop = selector.indexOf("win.moveTop();", show);
+    const arm = selector.indexOf("win.webContents.send(SELECTOR_PRESENTATION_ARM_CHANNEL", moveTop);
+    expect(show).toBeGreaterThanOrEqual(0);
+    expect(moveTop).toBeGreaterThan(show);
+    expect(arm).toBeGreaterThan(moveTop);
+    expect(selector).toContain("onSelectorPresented?: (event: SelectorPresentedEvent) => void");
+    expect(selector).toContain("isActiveSelectorSender(event.sender, presented.invocationId)");
+    expect(component).toContain("onSelectorPresentationArm");
+    expect(component).toContain("notifySelectorPresented");
+    expect(component).toContain("expectedGeneration");
+    expect(preload).toContain('"region-selector:presentation-arm"');
+    expect(preload).toContain('"region-selector:presented"');
+  });
+
   test("the image handler consumes the committed crop before the explicit Linux fallback", async () => {
     const handler = await source("../handlers/capture-handlers.ts");
     const committed = handler.indexOf("committedCropPath !== undefined");

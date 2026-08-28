@@ -53,6 +53,11 @@ type SnapshotPayload = {
   cursor?: { x: number; y: number };
   status?: "ready" | "error";
 };
+type PresentationArmPayload = {
+  invocationId: number;
+  generation: number;
+  surface: "frozen-frame" | "window-loading" | "error";
+};
 
 const DEFAULT_INVOCATION_ID = 1001;
 
@@ -62,8 +67,10 @@ let root: Root | null = null;
 let modeHandler: ((p: ModePayload) => void) | null = null;
 let snapshotHandler: ((p: SnapshotPayload) => void) | null = null;
 let keyHandler: ((p: { key: string }) => void) | null = null;
+let presentationArmHandler: ((p: PresentationArmPayload) => void) | null = null;
 const submitRegion = vi.fn();
 const notifySelectorSnapshotPainted = vi.fn();
+const notifySelectorPresented = vi.fn();
 const reportSelectorPerformance = vi.fn();
 let nextAnimationFrameId = 1;
 let animationFrames = new Map<number, FrameRequestCallback>();
@@ -72,8 +79,10 @@ function installSelectorApi(): void {
   modeHandler = null;
   snapshotHandler = null;
   keyHandler = null;
+  presentationArmHandler = null;
   submitRegion.mockReset();
   notifySelectorSnapshotPainted.mockReset();
+  notifySelectorPresented.mockReset();
   reportSelectorPerformance.mockReset();
   frozenFrameMocks.acquire.mockReset();
   frozenFrameMocks.encode.mockReset();
@@ -97,6 +106,7 @@ function installSelectorApi(): void {
     on: vi.fn(() => () => undefined),
     submitRegion,
     notifySelectorSnapshotPainted,
+    notifySelectorPresented,
     onWindowListSnapshot: (h: (p: SnapshotPayload) => void) => {
       snapshotHandler = h;
       return () => undefined;
@@ -107,6 +117,10 @@ function installSelectorApi(): void {
     },
     onSelectorMode: (h: (p: ModePayload) => void) => {
       modeHandler = h;
+      return () => undefined;
+    },
+    onSelectorPresentationArm: (h: (p: PresentationArmPayload) => void) => {
+      presentationArmHandler = h;
       return () => undefined;
     },
     requestTrayResize: vi.fn(),
@@ -197,6 +211,12 @@ async function emitMode(p: ModePayload): Promise<void> {
 async function emitSnapshot(p: SnapshotPayload): Promise<void> {
   await act(async () => {
     snapshotHandler?.(p);
+  });
+}
+
+async function emitPresentationArm(p: PresentationArmPayload): Promise<void> {
+  await act(async () => {
+    presentationArmHandler?.(p);
   });
 }
 
@@ -841,6 +861,71 @@ describe("U5 — window-picker loading and invocation correctness", () => {
 });
 
 describe("U6 — snapshot and paint feedback", () => {
+  test("acknowledges a truthful post-show window shell only after two frames", async () => {
+    await mount();
+    await emitMode({ mode: "window", invocationId: 19 });
+    await flushDoubleAnimationFrame();
+
+    // Hidden diagnostic prepaint does not satisfy the public contract.
+    expect(reportSelectorPerformance).toHaveBeenCalledWith({
+      invocationId: 19,
+      mark: "shell-painted"
+    });
+    expect(notifySelectorPresented).not.toHaveBeenCalled();
+
+    await emitPresentationArm({
+      invocationId: 19,
+      generation: 7,
+      surface: "window-loading"
+    });
+    expect(notifySelectorPresented).not.toHaveBeenCalled();
+    await flushAnimationFrame();
+    expect(notifySelectorPresented).not.toHaveBeenCalled();
+    await flushAnimationFrame();
+    expect(notifySelectorPresented).toHaveBeenCalledWith({
+      invocationId: 19,
+      generation: 7,
+      surface: "window-loading"
+    });
+  });
+
+  test("ignores untruthful arms and superseded presentation generations", async () => {
+    await mount();
+    await emitMode({ mode: "window", invocationId: 18 });
+
+    await emitPresentationArm({
+      invocationId: 999,
+      generation: 1,
+      surface: "window-loading"
+    });
+    await emitPresentationArm({
+      invocationId: 18,
+      generation: 2,
+      surface: "frozen-frame"
+    });
+    await flushDoubleAnimationFrame();
+    expect(notifySelectorPresented).not.toHaveBeenCalled();
+
+    await emitPresentationArm({
+      invocationId: 18,
+      generation: 3,
+      surface: "window-loading"
+    });
+    await flushAnimationFrame();
+    await emitPresentationArm({
+      invocationId: 18,
+      generation: 4,
+      surface: "window-loading"
+    });
+    await flushDoubleAnimationFrame();
+    expect(notifySelectorPresented).toHaveBeenCalledTimes(1);
+    expect(notifySelectorPresented).toHaveBeenCalledWith({
+      invocationId: 18,
+      generation: 4,
+      surface: "window-loading"
+    });
+  });
+
   test("acknowledges a decoded snapshot only after a guarded paint opportunity", async () => {
     await mount();
     await emitMode({

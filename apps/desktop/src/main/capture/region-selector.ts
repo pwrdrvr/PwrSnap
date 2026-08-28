@@ -67,6 +67,11 @@ export type PreviousAppContext = {
   previousAppPid: number | null;
 };
 
+export type SelectorPresentedEvent = {
+  invocationId: number;
+  surface: "frozen-frame" | "window-loading" | "error";
+};
+
 type ActiveSelectorLifecycle = {
   invocationId: number;
   mode: SelectorMode;
@@ -88,6 +93,12 @@ type ActiveSelectorLifecycle = {
   framePortClosed: boolean;
   cropReceiver: SelectorCropReceiver | null;
   committedCropPath: string | null;
+  onSelectorPresented: ((event: SelectorPresentedEvent) => void) | null;
+  presentationGeneration: number | null;
+  presentationSurface: SelectorPresentedEvent["surface"] | null;
+  presentationAcknowledged: boolean;
+  presentationTimeout: ReturnType<typeof setTimeout> | null;
+  onPresentationAcknowledged: (() => void) | null;
   captureStrategy: SelectorDisplayMediaStrategy;
   settled: boolean;
   terminationResult: Extract<SelectorResult, { ok: false }> | null;
@@ -97,6 +108,7 @@ type ActiveSelectorLifecycle = {
 };
 
 let activeSelectorLifecycle: ActiveSelectorLifecycle | null = null;
+let nextPresentationGeneration = 1;
 
 const SELECTOR_FRAME_PORT_CHANNEL = "region-selector:frame-port";
 
@@ -109,11 +121,6 @@ let pendingPaintWait: {
   invocationId: number;
   resolve: (outcome: SnapshotPaintOutcome) => void;
 } | null = null;
-let pendingShellPaintWait: {
-  invocationId: number;
-  resolve: (outcome: "painted" | "timeout" | "superseded") => void;
-} | null = null;
-const paintedSelectorShellInvocations = new Set<number>();
 
 /**
  * Resolve once the renderer acks that the snapshot for `screenUrl` has
@@ -142,32 +149,6 @@ function waitForSnapshotPainted(
     const settleResolve = finish;
     const timer = setTimeout(() => finish("timeout"), timeoutMs);
     pendingPaintWait = { screenUrl, invocationId, resolve: settleResolve };
-  });
-}
-
-function waitForSelectorShellPainted(
-  invocationId: number,
-  timeoutMs: number
-): Promise<"painted" | "timeout" | "superseded"> {
-  if (paintedSelectorShellInvocations.delete(invocationId)) {
-    return Promise.resolve("painted");
-  }
-  if (pendingShellPaintWait !== null) {
-    const stale = pendingShellPaintWait;
-    pendingShellPaintWait = null;
-    stale.resolve("superseded");
-  }
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (outcome: "painted" | "timeout" | "superseded"): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (pendingShellPaintWait?.resolve === finish) pendingShellPaintWait = null;
-      resolve(outcome);
-    };
-    const timer = setTimeout(() => finish("timeout"), timeoutMs);
-    pendingShellPaintWait = { invocationId, resolve: finish };
   });
 }
 
@@ -320,15 +301,17 @@ const SELECTOR_MODE_CHANNEL = "region-selector:mode";
 // current wait.
 const SELECTOR_PAINTED_CHANNEL = "region-selector:painted";
 const SELECTOR_PERFORMANCE_CHANNEL = "region-selector:performance";
+const SELECTOR_PRESENTATION_ARM_CHANNEL = "region-selector:presentation-arm";
+const SELECTOR_PRESENTED_CHANNEL = "region-selector:presented";
 
-/** How long to wait for the renderer's "snapshot painted" ack before
- *  showing the selector anyway. Decode of a full-screen PNG is well
- *  under this; the timeout only fires if the renderer is wedged, in
- *  which case we fall back to the pre-fix behavior (show immediately)
- *  — no hang, no regression. */
-const SHOW_AFTER_PAINT_TIMEOUT_MS = 250;
+/** Failure deadlines for the renderer's hidden "snapshot painted" ack.
+ *  These do not delay the happy path. A timeout terminates rather than
+ *  revealing unverified pixels; the explicit legacy fallback gets the same
+ *  generous budget as renderer-owned acquisition so a slow Linux PNG decode
+ *  does not become a new 250ms hard failure. */
+const LEGACY_SNAPSHOT_PAINT_TIMEOUT_MS = 12_000;
 const RENDERER_FRAME_PAINT_TIMEOUT_MS = 12_000;
-const WINDOW_ENUMERATION_AFTER_SHELL_TIMEOUT_MS = 100;
+const SELECTOR_PRESENTATION_ACK_TIMEOUT_MS = 2_000;
 
 export type SelectorMode = "auto" | "region" | "window";
 
@@ -378,25 +361,12 @@ function takePreviousApp(lifecycle: ActiveSelectorLifecycle): PreviousAppContext
 }
 
 function supersedeSelectorWaiters(invocationId?: number): void {
-  if (invocationId === undefined) {
-    paintedSelectorShellInvocations.clear();
-  } else {
-    paintedSelectorShellInvocations.delete(invocationId);
-  }
   if (
     pendingPaintWait !== null &&
     (invocationId === undefined || pendingPaintWait.invocationId === invocationId)
   ) {
     const waiter = pendingPaintWait;
     pendingPaintWait = null;
-    waiter.resolve("superseded");
-  }
-  if (
-    pendingShellPaintWait !== null &&
-    (invocationId === undefined || pendingShellPaintWait.invocationId === invocationId)
-  ) {
-    const waiter = pendingShellPaintWait;
-    pendingShellPaintWait = null;
     waiter.resolve("superseded");
   }
 }
@@ -412,6 +382,14 @@ function closeRendererFrameSession(
   lifecycle: ActiveSelectorLifecycle,
   removeCommittedCrop: boolean
 ): void {
+  if (lifecycle.presentationTimeout !== null) {
+    clearTimeout(lifecycle.presentationTimeout);
+    lifecycle.presentationTimeout = null;
+  }
+  lifecycle.onSelectorPresented = null;
+  lifecycle.presentationGeneration = null;
+  lifecycle.presentationSurface = null;
+  lifecycle.onPresentationAcknowledged = null;
   if (lifecycle.targetWindow !== null && !lifecycle.targetWindow.isDestroyed()) {
     selectorDisplayMediaBroker.revoke(
       lifecycle.targetWindow.webContents.session,
@@ -581,6 +559,8 @@ function teardownActiveSelectorLifecycle(
     | "render_process_gone"
     | "display_metrics_changed"
     | "display_removed"
+    | "snapshot_paint_timeout"
+    | "presentation_timeout"
     | "dispose",
   match: { window?: BrowserWindow; displayId?: number } = {}
 ): boolean {
@@ -745,16 +725,60 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
         invocationId: mark.invocationId,
         mark: mark.mark
       });
+    });
+    ipcMain.on(SELECTOR_PRESENTED_CHANNEL, (event, payload: unknown) => {
+      const presented =
+        payload !== null && typeof payload === "object"
+          ? (payload as {
+              invocationId?: unknown;
+              generation?: unknown;
+              surface?: unknown;
+            })
+          : null;
       if (
-        mark.mark === "shell-painted" &&
-        pendingShellPaintWait?.invocationId === mark.invocationId
+        presented === null ||
+        typeof presented.invocationId !== "number" ||
+        typeof presented.generation !== "number" ||
+        (presented.surface !== "frozen-frame" &&
+          presented.surface !== "window-loading" &&
+          presented.surface !== "error") ||
+        !isActiveSelectorSender(event.sender, presented.invocationId)
       ) {
-        const waiter = pendingShellPaintWait;
-        pendingShellPaintWait = null;
-        waiter.resolve("painted");
-      } else if (mark.mark === "shell-painted") {
-        paintedSelectorShellInvocations.add(mark.invocationId);
+        return;
       }
+      const lifecycle = activeSelectorLifecycle;
+      if (
+        lifecycle === null ||
+        lifecycle.presentationAcknowledged ||
+        lifecycle.presentationGeneration !== presented.generation ||
+        lifecycle.presentationSurface !== presented.surface
+      ) {
+        return;
+      }
+      lifecycle.presentationAcknowledged = true;
+      if (lifecycle.presentationTimeout !== null) {
+        clearTimeout(lifecycle.presentationTimeout);
+        lifecycle.presentationTimeout = null;
+      }
+      const callback = lifecycle.onSelectorPresented;
+      lifecycle.onSelectorPresented = null;
+      if (callback !== null) {
+        try {
+          callback({
+            invocationId: lifecycle.invocationId,
+            surface: presented.surface
+          });
+        } catch (cause) {
+          log.error("selector presented callback failed", {
+            invocationId: lifecycle.invocationId,
+            surface: presented.surface,
+            message: cause instanceof Error ? cause.message : String(cause)
+          });
+        }
+      }
+      const onAcknowledged = lifecycle.onPresentationAcknowledged;
+      lifecycle.onPresentationAcknowledged = null;
+      onAcknowledged?.();
     });
     ipcMain.on(SELECTOR_PAINTED_CHANNEL, (event, payload: unknown) => {
       // Renderer acked that the frozen snapshot finished painting.
@@ -981,6 +1005,9 @@ export async function pickRegion(
      *  the renderer in the mode signal; the committed value rides back
      *  on the result as `captureCursor`. */
     cursorDefault?: boolean;
+    /** Called synchronously once the accepted invocation's truthful selector
+     *  surface has been presented and acknowledged after show. */
+    onSelectorPresented?: (event: SelectorPresentedEvent) => void;
   } = {}
 ): Promise<SelectorResult> {
   const mode: SelectorMode = opts.mode ?? "auto";
@@ -1018,6 +1045,12 @@ export async function pickRegion(
     framePortClosed: true,
     cropReceiver: null,
     committedCropPath: null,
+    onSelectorPresented: opts.onSelectorPresented ?? null,
+    presentationGeneration: null,
+    presentationSurface: null,
+    presentationAcknowledged: false,
+    presentationTimeout: null,
+    onPresentationAcknowledged: null,
     captureStrategy: selectorDisplayMediaStrategy(process.platform),
     settled: false,
     terminationResult: null,
@@ -1557,29 +1590,59 @@ export async function pickRegion(
           durationFromDisplayRequestedMs: Date.now() - displayRequestedAt,
           durationFromUserRequestMs: elapsedFromRequest()
         });
-        scheduleStandbySelectorWarm(targetDisplay);
         selectorVisible = true;
         if (windowListPayload !== null) {
           deliverWindowListPayload(windowListPayload);
         }
-        if (mode === "window" && !lifecycle.snapshotDecodeFailed) {
-          void waitForSelectorShellPainted(
+        const surface: SelectorPresentedEvent["surface"] = lifecycle.snapshotDecodeFailed
+          ? "error"
+          : mode === "window"
+            ? "window-loading"
+            : "frozen-frame";
+        const generation = nextPresentationGeneration;
+        nextPresentationGeneration += 1;
+        lifecycle.presentationGeneration = generation;
+        lifecycle.presentationSurface = surface;
+        lifecycle.presentationAcknowledged = false;
+        lifecycle.onPresentationAcknowledged =
+          surface === "window-loading"
+            ? () => {
+                log.info("picker latency stage", {
+                  invocationId,
+                  mode,
+                  stage: "selector_presentation_acknowledged",
+                  surface,
+                  durationFromUserRequestMs: elapsedFromRequest()
+                });
+                requestWindowList();
+              }
+            : null;
+        lifecycle.presentationTimeout = setTimeout(() => {
+          if (
+            activeSelectorLifecycle !== lifecycle ||
+            lifecycle.settled ||
+            lifecycle.presentationAcknowledged ||
+            lifecycle.presentationGeneration !== generation
+          ) {
+            return;
+          }
+          log.warn("selector presentation acknowledgement timed out", {
             invocationId,
-            WINDOW_ENUMERATION_AFTER_SHELL_TIMEOUT_MS
-          ).then((shellPaintOutcome) => {
-            log.info("picker latency stage", {
-              invocationId,
-              mode,
-              stage: "shell_paint_gate_completed",
-              outcome: shellPaintOutcome,
-              durationFromUserRequestMs: elapsedFromRequest()
-            });
-            if (shellPaintOutcome === "superseded" || lifecycle.terminationResult !== null) {
-              return;
-            }
-            requestWindowList();
+            mode,
+            surface,
+            generation
           });
-        }
+          teardownActiveSelectorLifecycle("presentation_timeout", { window: win });
+        }, SELECTOR_PRESENTATION_ACK_TIMEOUT_MS);
+        // This dedicated arm is intentionally after show/showInactive,
+        // focus (where applicable), and moveTop. Hidden prepaint and the
+        // diagnostic shell-painted mark cannot satisfy presentation.
+        win.webContents.send(SELECTOR_PRESENTATION_ARM_CHANNEL, {
+          invocationId,
+          generation,
+          surface
+        });
+        scheduleStandbySelectorWarm(targetDisplay);
         // No mode re-send here: the renderer already received the mode +
         // snapshot at the pre-gate send above — that's precisely what it
         // loaded/decoded to fire the paint ack we just waited on. Showing
@@ -1589,15 +1652,17 @@ export async function pickRegion(
 
       // Gate the reveal on the snapshot actually painting in the
       // (still-hidden) renderer, so the window never appears empty. The
-      // timeout is the safety net: if the ack never comes (renderer
-      // wedged), show anyway — identical to the pre-fix behavior.
+      // timeout fails closed: if the renderer is wedged, do not reveal an
+      // unverified surface or falsely release the caller's handoff HUD.
       if (paintKey === null) {
         reveal();
       } else {
         void waitForSnapshotPainted(
           paintKey,
           invocationId,
-          usesRendererDisplayMedia ? RENDERER_FRAME_PAINT_TIMEOUT_MS : SHOW_AFTER_PAINT_TIMEOUT_MS
+          usesRendererDisplayMedia
+            ? RENDERER_FRAME_PAINT_TIMEOUT_MS
+            : LEGACY_SNAPSHOT_PAINT_TIMEOUT_MS
         ).then((paintOutcome) => {
           restoreTemporarilyHiddenProtectedWindows();
           liftSnapshotContentProtection();
@@ -1608,6 +1673,11 @@ export async function pickRegion(
             outcome: paintOutcome,
             durationFromUserRequestMs: elapsedFromRequest()
           });
+          if (paintOutcome === "timeout") {
+            teardownActiveSelectorLifecycle("snapshot_paint_timeout", { window: win });
+            return;
+          }
+          if (paintOutcome === "superseded") return;
           if (paintOutcome === "error") {
             // The renderer sends `error` only after its opaque error shell has
             // painted. Reveal that safe, cancellable shell instead of leaving a
@@ -2558,6 +2628,7 @@ export function disposeRegionSelector(): void {
     ipcMain.removeAllListeners(SELECTOR_PAINTED_CHANNEL);
     ipcMain.removeAllListeners(SELECTOR_DIAGNOSTICS_CHANNEL);
     ipcMain.removeAllListeners(SELECTOR_PERFORMANCE_CHANNEL);
+    ipcMain.removeAllListeners(SELECTOR_PRESENTED_CHANNEL);
     resultListenerAttached = false;
   }
   if (displayListenersAttached) {
@@ -2572,3 +2643,5 @@ export const REGION_SELECTOR_RESULT_CHANNEL = SELECTOR_RESULT_CHANNEL;
 export const REGION_SELECTOR_WINDOW_LIST_CHANNEL = SELECTOR_WINDOW_LIST_CHANNEL;
 export const REGION_SELECTOR_KEY_CHANNEL = SELECTOR_KEY_CHANNEL;
 export const REGION_SELECTOR_MODE_CHANNEL = SELECTOR_MODE_CHANNEL;
+export const REGION_SELECTOR_PRESENTATION_ARM_CHANNEL = SELECTOR_PRESENTATION_ARM_CHANNEL;
+export const REGION_SELECTOR_PRESENTED_CHANNEL = SELECTOR_PRESENTED_CHANNEL;

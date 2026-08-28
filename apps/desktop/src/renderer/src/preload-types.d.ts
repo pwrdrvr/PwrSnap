@@ -57,6 +57,11 @@ declare global {
         invocationId: number;
         status: "painted" | "error";
       }): void;
+      notifySelectorPresented(payload: {
+        invocationId: number;
+        generation: number;
+        surface: "frozen-frame" | "window-loading" | "error";
+      }): void;
       onWindowListSnapshot(
         handler: (payload: {
           invocationId: number;
@@ -81,6 +86,13 @@ declare global {
             | { kind: "none" };
           intent?: "snap" | "video";
           cursor?: boolean;
+        }) => void
+      ): () => void;
+      onSelectorPresentationArm(
+        handler: (payload: {
+          invocationId: number;
+          generation: number;
+          surface: "frozen-frame" | "window-loading" | "error";
         }) => void
       ): () => void;
       requestTrayResize(payload: { width: number; height: number }): void;

@@ -31,8 +31,10 @@ import {
 } from "../persistence/video-repo";
 import {
   openSystemSettingsFor,
+  readRecordingPermissionEvidence,
   readRecordingReadiness,
-  requestPermission
+  requestPermission,
+  UnsupportedPermissionSettingsError
 } from "../recording/recording-permissions";
 import {
   guardScreenCapture,
@@ -170,8 +172,10 @@ export function registerRecordingHandlers(): void {
     // triggered the screen-capture prompt, so the System Permissions page
     // can distinguish "Not yet requested" from "Denied" (macOS can't —
     // see screen-permission-gate.ts).
+    const readiness = readRecordingReadiness();
     return ok({
-      ...readRecordingReadiness(),
+      ...readiness,
+      permissionEvidence: readRecordingPermissionEvidence(readiness),
       screenCapturePrompted: await readScreenCapturePrompted()
     });
   });
@@ -193,8 +197,8 @@ export function registerRecordingHandlers(): void {
       // We just drove the macOS screen-capture prompt (which also
       // registers PwrSnap in the Privacy pane). Remember it so the UI
       // switches to the "Open System Settings" path next time — macOS
-      // won't prompt twice. darwin-only: off-darwin `requestPermission`
-      // is a no-op that never prompts, so there's nothing to remember.
+      // won't prompt twice. Off Darwin, `requestPermission` is unsupported
+      // and returns `unknown`, so there is no prompt attempt to remember.
       await markScreenCapturePrompted();
     }
     return ok(result);
@@ -213,6 +217,11 @@ export function registerRecordingHandlers(): void {
       await openSystemSettingsFor(req.permission);
       return ok(undefined);
     } catch (cause) {
+      if (cause instanceof UnsupportedPermissionSettingsError) {
+        return err(
+          permissionError("permission_settings_unsupported", cause.message)
+        );
+      }
       log.warn("permissions:openSystemSettings failed", {
         permission: req.permission,
         message: cause instanceof Error ? cause.message : String(cause)

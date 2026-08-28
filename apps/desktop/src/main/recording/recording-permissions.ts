@@ -22,8 +22,14 @@
 //      check. Older macOS reports `unavailable` so the System
 //      Permissions row can disable the toggle with a clear reason.
 //
+// Windows is different: its current recorder is screen-only and the capture
+// pipeline has no reliable permission preflight. Operational readiness stays
+// permissive so a real capture can run, while `readRecordingPermissionEvidence`
+// gives Settings the truthful model (uninspectable screen, global microphone,
+// unsupported system audio). Never present the readiness fallback as a grant.
+//
 // The fingerprint is a stable SHA-1 of `(screen, mic, systemAudio,
-// backend, appVersion)`. Settings persists the last fingerprint that
+// backend)`. Settings persists the last fingerprint that
 // triggered routing to System Permissions; startup routes only when
 // the current fingerprint differs AND any permission needs attention.
 
@@ -31,6 +37,7 @@ import { createHash } from "node:crypto";
 import { desktopCapturer, shell, systemPreferences } from "electron";
 import type {
   RecordingPermission,
+  RecordingPermissionEvidenceReport,
   RecordingPermissionStatus,
   RecordingReadiness
 } from "@pwrsnap/shared";
@@ -142,6 +149,58 @@ export function readRecordingReadiness(): RecordingReadiness {
   };
 }
 
+/**
+ * Presentation-safe evidence for Settings. Keep this separate from
+ * `readRecordingReadiness`: off macOS, readiness deliberately lets the real
+ * capture operation run when no preflight API exists. That fallback is not
+ * proof that Windows inspected or granted a permission.
+ *
+ * Electron exposes one useful Windows signal here: the global microphone
+ * control for classic desktop apps. Its Windows screen value is always
+ * `granted`, so reporting it as an OS check would be fictitious. The current
+ * Windows recorder is screen-only, making system-audio permission unsupported.
+ */
+export function readRecordingPermissionEvidence(
+  readiness: RecordingReadiness
+): RecordingPermissionEvidenceReport {
+  if (process.platform === "darwin") {
+    return {
+      platform: "darwin",
+      screen: { kind: "os-status", status: readiness.screenRecording },
+      microphone: { kind: "os-status", status: readiness.microphone },
+      // ScreenCaptureKit system audio shares the screen grant, so this is
+      // derived readiness rather than a separately inspected permission.
+      systemAudio: { kind: "derived", status: readiness.systemAudio }
+    };
+  }
+
+  if (process.platform === "win32") {
+    let microphone: RecordingPermissionStatus = "unknown";
+    try {
+      microphone = fromElectronStatus(
+        systemPreferences.getMediaAccessStatus("microphone")
+      );
+    } catch (cause) {
+      log.warn("permissions:readiness: Windows microphone status unavailable", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
+    return {
+      platform: "win32",
+      screen: { kind: "not-inspectable" },
+      microphone: { kind: "os-status", status: microphone },
+      systemAudio: { kind: "unsupported" }
+    };
+  }
+
+  return {
+    platform: "other",
+    screen: { kind: "not-inspectable" },
+    microphone: { kind: "not-inspectable" },
+    systemAudio: { kind: "unsupported" }
+  };
+}
+
 /** Predicate the startup-routing decision uses. True when any
  *  capability is in a non-`granted`, non-`unavailable` state (i.e.
  *  the user can do something about it). `unavailable` is excluded
@@ -203,7 +262,10 @@ export async function requestPermission(
   permission: RecordingPermission
 ): Promise<{ status: RecordingPermissionStatus }> {
   if (process.platform !== "darwin") {
-    return { status: "granted" };
+    // Electron exposes no cross-platform prompt API here. Returning a
+    // synthetic grant would falsely imply that this command inspected or
+    // changed an OS permission, so unsupported platforms report no evidence.
+    return { status: "unknown" };
   }
 
   switch (permission) {
@@ -242,19 +304,50 @@ export async function requestPermission(
 }
 
 /**
- * Open System Settings to the appropriate Privacy & Security pane.
- * The `x-apple.systempreferences:` URL scheme has been stable since
- * Ventura and continues to work on macOS 14 / 15 / 26.
+ * Open the platform-owned privacy page for a known permission. The renderer
+ * supplies only the permission enum; every URI stays hardcoded here so this
+ * command cannot become an arbitrary-navigation gadget.
  */
+export class UnsupportedPermissionSettingsError extends Error {
+  readonly permission: RecordingPermission;
+
+  constructor(permission: RecordingPermission) {
+    const permissionLabel =
+      permission === "systemAudio" ? "system audio" : permission;
+    super(
+      `PwrSnap has no ${permissionLabel} privacy-settings action for ${process.platform}.`
+    );
+    this.name = "UnsupportedPermissionSettingsError";
+    this.permission = permission;
+  }
+}
+
 export async function openSystemSettingsFor(
   permission: RecordingPermission
 ): Promise<void> {
-  if (process.platform !== "darwin") return;
-  const anchor =
-    permission === "microphone"
-      ? "Privacy_Microphone"
-      : "Privacy_ScreenCapture";
-  await shell.openExternal(
-    `x-apple.systempreferences:com.apple.preference.security?${anchor}`
-  );
+  if (process.platform === "darwin") {
+    const anchor =
+      permission === "microphone"
+        ? "Privacy_Microphone"
+        : "Privacy_ScreenCapture";
+    await shell.openExternal(
+      `x-apple.systempreferences:com.apple.preference.security?${anchor}`
+    );
+    return;
+  }
+
+  if (process.platform === "win32") {
+    if (permission === "microphone") {
+      // Controls the global "desktop apps" microphone switch that Electron's
+      // getMediaAccessStatus('microphone') reports on Windows 10+.
+      await shell.openExternal("ms-settings:privacy-microphone");
+      return;
+    }
+  }
+
+  // The active Windows recorder uses FFmpeg gdigrab, not
+  // Windows.Graphics.Capture, and Windows system audio is not implemented.
+  // Treat both as unsupported instead of reporting success for a no-op or
+  // opening an unrelated Settings page.
+  throw new UnsupportedPermissionSettingsError(permission);
 }

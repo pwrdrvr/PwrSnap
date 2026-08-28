@@ -15,7 +15,7 @@
 // command-bus.ts (Phase 1.4) for the renderer-side helper.
 
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
-import { shortcutPlatformFromString } from "@pwrsnap/shared";
+import { shortcutPlatformFromString } from "@pwrsnap/shared/shortcut-semantics";
 
 // **Re-enable pinch gestures.** Electron disables visual zoom by
 // default, and "disabled" here means more than "no zooming

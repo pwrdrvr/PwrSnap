@@ -159,6 +159,42 @@ measurement (it gets combined with `offsetWidth`, a layout measure). For
 are post-transform too — it was merely STALE. Same root cause, two different
 correct fixes.
 
+## Aside: the three "pre-existing" visual-regression failures were mine
+
+While verifying this fix I ran `visual-regression.spec.ts` and got three
+failures (3, 4 and 14 pixels). I twice reported them as a pre-existing
+local-baseline mismatch against the CI goldens. That was wrong, and the
+reasoning that produced it — "they fail identically on pristine HEAD, so
+they are not mine" — is only half an argument: it establishes the change
+did not cause them, not that they are expected.
+
+They were operator error. CI runs the whole macOS desktop suite with
+`PWRSNAP_E2E_DISABLE_GPU: "1"` (ci.yml), i.e. software rendering, and
+`pnpm test:desktop-e2e` does not set it. Skia's software path and a real
+Apple GPU do not composite antialiased geometry identically. Every flagged
+pixel sat on the crossing of two SVG strokes — the Focus close button's
+`<path d="M5 5l14 14M19 5L5 19">` at `stroke-width: 2.2` — where the
+golden has a grey crossing and the GPU produces a solid black one.
+
+The suite now pins `PWRSNAP_E2E_DISABLE_GPU` itself in
+`launchVisualPwrSnap` and asserts the pin landed
+(`expectPinnedRasterizer`), mirroring what `expectPinnedDeviceScale`
+already did for the backing scale factor. A plain `npx playwright test
+visual-regression` now passes on a GPU machine.
+
+Two things worth keeping from how this went wrong:
+
+- **Device scale was already pinned and asserted**, so "it is just a
+  Retina display" was ruled out from the start — and checking that is what
+  made the real cause findable. `--force-color-profile=srgb` and
+  `--disable-lcd-text` also changed nothing, which narrowed it to the
+  rasterizer.
+- **Read the diff mask, not the pixel count.** A raw comparison showed
+  85,220 differing pixels in library-grid, which looks catastrophic; 84,750
+  of those differ by 1–3 per channel and are filtered by Playwright's
+  perceptual threshold. Only pixelmatch's own 14 flagged pixels pointed at
+  the stroke crossings.
+
 ## Rules this leaves behind
 
 - **Never read a size from `getBoundingClientRect()` when you are going to

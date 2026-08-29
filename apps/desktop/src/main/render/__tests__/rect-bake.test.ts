@@ -4,6 +4,7 @@
 
 import { describe, expect, test } from "vitest";
 import type { OverlayRow } from "@pwrsnap/shared";
+import { annotationBasisPx, shapeAutoStrokeWidthPx } from "@pwrsnap/shared";
 import { rasterizeSvgForV2, shapeSvgForV2 } from "../compose";
 
 const W = 800;
@@ -63,29 +64,41 @@ describe("rectSvg (bake) — thickness", () => {
     expect(explicit).toBe(baseline);
   });
 
-  test("thickness 'large' renders ~2× the auto stroke width", () => {
-    const autoSvg = shapeSvgForV2({ ...baseRect(), thickness: "auto" }, W, H);
-    const largeSvg = shapeSvgForV2({ ...baseRect(), thickness: "large" }, W, H);
-    const autoStroke = Number(
-      autoSvg.match(/stroke="#ff8a1f" stroke-width="([\d.]+)"/)?.[1] ?? ""
-    );
-    const largeStroke = Number(
-      largeSvg.match(/stroke="#ff8a1f" stroke-width="([\d.]+)"/)?.[1] ?? ""
-    );
-    expect(autoStroke).toBeGreaterThan(0);
-    expect(largeStroke / autoStroke).toBeCloseTo(2, 1);
+  const strokeOf = (svg: string): number =>
+    Number(svg.match(/stroke="#ff8a1f" stroke-width="([\d.]+)"/)?.[1] ?? "");
+
+  test("presets land on the shared annotation ladder's rungs", () => {
+    // Shapes ride the SAME ladder as arrows now — an auto shape and an
+    // auto arrow paint the same weight. The bake also used to run its
+    // own `clamp(shortSide / 220, 4, 14)` band here, which disagreed
+    // with the editor's `shapeAutoStrokeWidthPx`: an auto stroked shape
+    // previewed at 8 px on 1080p and exported at 4.9 px.
+    const basis = annotationBasisPx(W, H);
+    expect(strokeOf(shapeSvgForV2({ ...baseRect(), thickness: "small" }, W, H)))
+      .toBeCloseTo(basis / 160, 4);
+    expect(strokeOf(shapeSvgForV2({ ...baseRect(), thickness: "medium" }, W, H)))
+      .toBeCloseTo(basis / 105, 4);
+    expect(strokeOf(shapeSvgForV2({ ...baseRect(), thickness: "large" }, W, H)))
+      .toBeCloseTo(basis / 68, 4);
+    expect(strokeOf(shapeSvgForV2({ ...baseRect(), thickness: "x-large" }, W, H)))
+      .toBeCloseTo(basis / 44, 4);
   });
 
-  test("thickness 'small' renders ~0.5× the auto stroke width", () => {
-    const autoSvg = shapeSvgForV2({ ...baseRect(), thickness: "auto" }, W, H);
-    const smallSvg = shapeSvgForV2({ ...baseRect(), thickness: "small" }, W, H);
-    const autoStroke = Number(
-      autoSvg.match(/stroke="#ff8a1f" stroke-width="([\d.]+)"/)?.[1] ?? ""
-    );
-    const smallStroke = Number(
-      smallSvg.match(/stroke="#ff8a1f" stroke-width="([\d.]+)"/)?.[1] ?? ""
-    );
-    expect(smallStroke / autoStroke).toBeCloseTo(0.5, 1);
+  test("auto renders the same stroke as an explicit Medium", () => {
+    expect(strokeOf(shapeSvgForV2({ ...baseRect(), thickness: "auto" }, W, H)))
+      .toBeCloseTo(
+        strokeOf(shapeSvgForV2({ ...baseRect(), thickness: "medium" }, W, H)),
+        4
+      );
+  });
+
+  test("the bake's auto stroke matches the editor's shapeAutoStrokeWidthPx", () => {
+    // The WYSIWYG contract, pinned directly: ShapeGlyph in the editor
+    // resolves auto through `shapeAutoStrokeWidthPx`, so the bake must
+    // land on exactly the same number or the export silently differs
+    // from the preview.
+    expect(strokeOf(shapeSvgForV2({ ...baseRect(), thickness: "auto" }, W, H)))
+      .toBeCloseTo(shapeAutoStrokeWidthPx(annotationBasisPx(W, H)), 4);
   });
 });
 
@@ -154,15 +167,28 @@ describe("rectSvg (bake) — stripe rasterizes for real", () => {
   test("striped border produces BOTH black and white pixels along the top edge", async () => {
     // String-level tests can't prove resvg accepts the layered dash
     // strokes — rasterize a striped rect and scan the outline band.
-    // Geometry: 200×150 canvas, rect top edge at y=15; stroke 4px +
-    // outline 1.5px each side → the stripe band (outside the colored
-    // stroke) sits around y≈12.
+    //
+    // The scan rows are DERIVED from the emitted stroke widths rather
+    // than hardcoded: the stripe band is the part of the halo that the
+    // colored stroke doesn't cover, and both widths move whenever the
+    // annotation ladder is retuned. (They previously were y = 12/13,
+    // which silently stopped intersecting the band once the ladder
+    // widened the auto stroke.)
     const svg = shapeSvgForV2({ ...baseRect(), outline: "stripe" }, 200, 150);
+    const coloredW = Number(
+      svg.match(/stroke="#ff8a1f" stroke-width="([\d.]+)"/)?.[1] ?? ""
+    );
+    const haloW = Number(svg.match(/stroke="white" stroke-width="([\d.]+)"/)?.[1] ?? "");
+    expect(haloW).toBeGreaterThan(coloredW);
+    const topEdgeY = 0.1 * 150;
+    // Midpoint of the band between the colored stroke's outer edge and
+    // the halo's outer edge.
+    const bandMidY = topEdgeY - (coloredW / 2 + haloW / 2) / 2;
     const layer = await rasterizeSvgForV2(svg, 200, 150);
     const raw = layer.input as Buffer;
     let black = 0;
     let white = 0;
-    for (const y of [12, 13]) {
+    for (const y of [Math.floor(bandMidY), Math.ceil(bandMidY)]) {
       for (let x = 25; x <= 115; x += 1) {
         const o = (y * 200 + x) * 4;
         const [r, g, b, a] = [raw[o]!, raw[o + 1]!, raw[o + 2]!, raw[o + 3]!];

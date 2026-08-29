@@ -12,6 +12,7 @@
 
 import { describe, expect, test } from "vitest";
 import type { OverlayRow } from "@pwrsnap/shared";
+import { annotationBasisPx } from "@pwrsnap/shared";
 import { arrowSvgForV2 } from "../compose";
 
 const W = 800;
@@ -198,75 +199,72 @@ describe("arrowSvg (bake) — thickness", () => {
     expect(explicit).toBe(baseline);
   });
 
-  test("thickness 'large' renders ~2× the auto stroke width", () => {
-    const autoSvg = arrowSvgForV2({ ...baseArrow(), thickness: "auto" }, W, H);
-    const largeSvg = arrowSvgForV2({ ...baseArrow(), thickness: "large" }, W, H);
-    // Pull the colored stem's stroke-width from each (matches
-    // `stroke="#ff8a1f"`; the halo is `stroke="white"`).
-    const autoStroke = Number(
-      autoSvg
-        .match(/stroke="#ff8a1f" stroke-width="([\d.]+)"/)
-        ?.[1] ?? ""
-    );
-    const largeStroke = Number(
-      largeSvg
-        .match(/stroke="#ff8a1f" stroke-width="([\d.]+)"/)
-        ?.[1] ?? ""
-    );
-    expect(autoStroke).toBeGreaterThan(0);
-    expect(largeStroke).toBeGreaterThan(0);
-    expect(largeStroke / autoStroke).toBeCloseTo(2, 1);
+  const stemStrokeOf = (svg: string): number =>
+    Number(svg.match(/stroke="#ff8a1f" stroke-width="([\d.]+)"/)?.[1] ?? "");
+
+  test("presets land on the shared annotation ladder's rungs", () => {
+    // W×H = 800×600 → basis = max(900, 600, 1000/2=500) = 900 (the
+    // floor branch). Pre-recalibration this capture's auto stroke
+    // clamped to an absolute 4 px, which dragged Small to 2 px and
+    // Medium to 4 px — the two presets users reported as "basically
+    // useless ratios".
+    const basis = annotationBasisPx(W, H);
+    expect(basis).toBe(900);
+    expect(stemStrokeOf(arrowSvgForV2({ ...baseArrow(), thickness: "small" }, W, H)))
+      .toBeCloseTo(basis / 160, 4);
+    expect(stemStrokeOf(arrowSvgForV2({ ...baseArrow(), thickness: "medium" }, W, H)))
+      .toBeCloseTo(basis / 105, 4);
+    expect(stemStrokeOf(arrowSvgForV2({ ...baseArrow(), thickness: "large" }, W, H)))
+      .toBeCloseTo(basis / 68, 4);
+    expect(stemStrokeOf(arrowSvgForV2({ ...baseArrow(), thickness: "x-large" }, W, H)))
+      .toBeCloseTo(basis / 44, 4);
   });
 
-  test("thickness 'small' renders ~0.5× the auto stroke width", () => {
-    const autoSvg = arrowSvgForV2({ ...baseArrow(), thickness: "auto" }, W, H);
-    const smallSvg = arrowSvgForV2({ ...baseArrow(), thickness: "small" }, W, H);
-    const autoStroke = Number(
-      autoSvg
-        .match(/stroke="#ff8a1f" stroke-width="([\d.]+)"/)
-        ?.[1] ?? ""
-    );
-    const smallStroke = Number(
-      smallSvg
-        .match(/stroke="#ff8a1f" stroke-width="([\d.]+)"/)
-        ?.[1] ?? ""
-    );
-    expect(smallStroke / autoStroke).toBeCloseTo(0.5, 1);
+  test("auto renders the same stroke as an explicit Medium", () => {
+    expect(stemStrokeOf(arrowSvgForV2({ ...baseArrow(), thickness: "auto" }, W, H)))
+      .toBeCloseTo(
+        stemStrokeOf(arrowSvgForV2({ ...baseArrow(), thickness: "medium" }, W, H)),
+        4
+      );
   });
 
-  test("thickness 'x-large' lifts past auto × 3 on Retina-scale captures (floor wins)", () => {
-    // X-Large's whole purpose: on high-DPI captures the auto stroke
-    // clamps at STROKE_MAX_PX = 14, so multiplier-only XL caps at 42.
-    // The floor-fraction formula `max(auto × 3, shortSide × 0.020)`
-    // lifts that on 4K+ images. At W=800, shortSide=600 → floor
-    // wins on this test image: 600 × 0.020 = 12 px which is below
-    // the multiplier (auto × 3 ≈ a much bigger number) — so this
-    // test image isn't dramatic enough to show the floor. Use a
-    // bigger image to demonstrate.
+  test("X-Large keeps scaling on Retina captures instead of capping", () => {
+    // The old ladder capped the auto stroke at STROKE_MAX_PX = 14 and
+    // rescued X-Large with a `shortSide × 0.020` floor, which topped
+    // out at 56 px on this image. Now XL is basis/44 and rises with
+    // the capture.
     const bigW = 4000;
     const bigH = 2800;
-    const xlSvg = arrowSvgForV2({ ...baseArrow(), thickness: "x-large" }, bigW, bigH);
-    const xlStroke = Number(
-      xlSvg.match(/stroke="#ff8a1f" stroke-width="([\d.]+)"/)?.[1] ?? ""
+    const basis = annotationBasisPx(bigW, bigH);
+    const xlStroke = stemStrokeOf(
+      arrowSvgForV2({ ...baseArrow(), thickness: "x-large" }, bigW, bigH, basis)
     );
-    // shortSide × 0.020 = 2800 × 0.020 = 56. auto × 3 = 14 × 3 = 42.
-    // Floor wins → expect ≈ 56.
-    expect(xlStroke).toBeGreaterThan(50);
-    expect(xlStroke).toBeLessThan(60);
+    expect(xlStroke).toBeCloseTo(basis / 44, 4);
+    expect(xlStroke).toBeGreaterThan(56); // strictly beats the old floor
   });
 
-  test("numeric thickness: 0.02 fraction expands to ≈ 0.02 × shortSide pixels", () => {
+  test("numeric thickness: 0.02 fraction expands to 0.02 × basis pixels", () => {
     // Regression for the previously-broken numeric path. Pre-fix the
     // bake passed pixel autoStroke into readOverlayThickness's
     // numeric branch (which expected a fraction) — silent
     // unit-mismatch bug. Now we go through the three-arg form so
     // numeric thickness expands cleanly to pixels.
     const svg = arrowSvgForV2({ ...baseArrow(), thickness: 0.02 }, W, H);
-    const stroke = Number(
-      svg.match(/stroke="#ff8a1f" stroke-width="([\d.]+)"/)?.[1] ?? ""
+    expect(stemStrokeOf(svg)).toBeCloseTo(0.02 * annotationBasisPx(W, H), 1);
+  });
+
+  test("an explicit basisPx overrides the dims — the scaled-bake contract", () => {
+    // compose-tree-vector passes annotationBasisPx(SOURCE) × renderScale
+    // so an upscaled export keeps the preview's proportions. Without
+    // the override, a 473×178 capture would floor at 900 whether baked
+    // at 1× or at the 800-wide LOW tier and export proportionally thin.
+    const scaled = stemStrokeOf(
+      arrowSvgForV2({ ...baseArrow(), thickness: "large" }, W, H, 1800)
     );
-    // shortSide = 600 (min of 800 × 600). 0.02 × 600 = 12.
-    expect(stroke).toBeCloseTo(12, 1);
+    const unscaled = stemStrokeOf(
+      arrowSvgForV2({ ...baseArrow(), thickness: "large" }, W, H, 900)
+    );
+    expect(scaled / unscaled).toBeCloseTo(2, 5);
   });
 });
 
@@ -339,33 +337,33 @@ describe("arrowSvg (bake) — head scales with thickness override", () => {
     return Math.max(...ys) - Math.min(...ys);
   }
 
-  test("thickness 'large' scales the head ~2× alongside the stem", () => {
-    const autoSvg = arrowSvgForV2(
-      { ...baseArrow(), endStyle: "filled-triangle", thickness: "auto" },
-      W,
-      H
-    );
-    const largeSvg = arrowSvgForV2(
-      { ...baseArrow(), endStyle: "filled-triangle", thickness: "large" },
-      W,
-      H
-    );
-    expect(headPerpExtent(largeSvg) / headPerpExtent(autoSvg)).toBeCloseTo(2, 1);
-  });
+  const stemStroke = (svg: string): number =>
+    Number(svg.match(/stroke="#ff8a1f" stroke-width="([\d.]+)"/)?.[1] ?? "");
 
-  test("thickness 'small' scales the head ~0.5× alongside the stem", () => {
-    const autoSvg = arrowSvgForV2(
-      { ...baseArrow(), endStyle: "filled-triangle", thickness: "auto" },
-      W,
-      H
-    );
-    const smallSvg = arrowSvgForV2(
-      { ...baseArrow(), endStyle: "filled-triangle", thickness: "small" },
-      W,
-      H
-    );
-    expect(headPerpExtent(smallSvg) / headPerpExtent(autoSvg)).toBeCloseTo(0.5, 1);
-  });
+  // Asserts the RATIO the head grows by equals the ratio the stem grew
+  // by, rather than a hardcoded 2× / 0.5×. That's the actual invariant
+  // (head follows stem); pinning the ladder's step size here would
+  // just duplicate the ladder test in overlay-schemas.test.ts.
+  for (const preset of ["small", "large", "x-large"] as const) {
+    test(`thickness '${preset}' scales the head in lockstep with the stem`, () => {
+      const autoSvg = arrowSvgForV2(
+        { ...baseArrow(), endStyle: "filled-triangle", thickness: "auto" },
+        W,
+        H
+      );
+      const presetSvg = arrowSvgForV2(
+        { ...baseArrow(), endStyle: "filled-triangle", thickness: preset },
+        W,
+        H
+      );
+      const stemRatio = stemStroke(presetSvg) / stemStroke(autoSvg);
+      expect(stemRatio).not.toBeCloseTo(1, 2); // the preset actually moved
+      expect(headPerpExtent(presetSvg) / headPerpExtent(autoSvg)).toBeCloseTo(
+        stemRatio,
+        4
+      );
+    });
+  }
 });
 
 describe("arrowSvg (bake) — styleVersion", () => {

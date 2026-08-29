@@ -30,7 +30,8 @@ import type { BundleLayerNode, Overlay, OverlayRow } from "@pwrsnap/shared";
 import {
   readHighlightColor,
   readHighlightOpacity,
-  resolveCropViewport
+  resolveCropViewport,
+  selectBaseRaster
 } from "@pwrsnap/shared";
 
 import { listLayerTree } from "../persistence/layers-repo";
@@ -75,14 +76,18 @@ export async function composeV2(req: ComposeTreeRequest): Promise<ComposeTreeRes
   // the crop is visible or absent this is the IDENTITY (same node refs,
   // same dims), so existing captures hash + bake byte-for-byte as before.
   const rawLayers = listLayerTree(req.captureId);
+  // Cheap indexed row read next to the listLayerTree read above. Used
+  // twice: to identify the BASE raster for the crop projection, and
+  // again below for the annotation-sizing basis.
+  const sourceSha256 = getCaptureById(req.captureId)?.sha256;
   const viewport = resolveCropViewport({
     layers: rawLayers,
     canvasWidthPx: req.canvasWidthPx,
     canvasHeightPx: req.canvasHeightPx,
     // Identifies the BASE raster for the projection (sha-matched) so
     // pasted/cursor rasters keep their real positions in the uncropped
-    // view. Cheap indexed row read next to the listLayerTree read above.
-    sourceSha256: getCaptureById(req.captureId)?.sha256
+    // view.
+    sourceSha256
   });
   const layers = viewport.layers;
   const canvasWidthPx = viewport.widthPx;
@@ -165,22 +170,24 @@ export async function composeV2(req: ComposeTreeRequest): Promise<ComposeTreeRes
   // opacity (deferred — needs a separate accumulator per group).
   const flattened = flattenTreeInZOrder(layers);
 
-  // SOURCE raster dims — captured once up-front so text vector layers
-  // can derive fontSize from the source's shortSide rather than the
-  // (cropped) canvas's. Matches the editor's commit `881cff0` behavior
-  // for the bake. Picks the FIRST raster child of the root group; v2.0
-  // ships with a single raster per capture, so this is unambiguous.
-  // (Phase 5 paste-image flow with multiple rasters would revisit;
-  // until then we treat the root raster as canonical.)
-  let sourceWidthPx: number | undefined;
-  let sourceHeightPx: number | undefined;
-  for (const node of flattened) {
-    if (node.kind === "raster") {
-      sourceWidthPx = node.natural_width_px;
-      sourceHeightPx = node.natural_height_px;
-      break;
-    }
-  }
+  // SOURCE raster dims — captured once up-front so vector layers can
+  // derive their annotation basis (text fontSize, arrow + shape stroke
+  // widths) from the source raster rather than the (cropped) canvas.
+  // Matches the editor's commit `881cff0` behavior for the bake.
+  //
+  // MUST go through `selectBaseRaster`, the same helper the editor's
+  // `<img>`, the crop projection, and the hit-test resolve with. A
+  // capture can carry more than one raster (pasted images, the captured
+  // cursor), so "first raster in tree order" is NOT necessarily the
+  // base — and a second implementation of the pick is exactly what that
+  // helper exists to prevent. This used to scan for the first raster
+  // node, which only mattered for the rare text row with no stored
+  // sizePx; once the basis started driving arrow + shape strokes (which
+  // have no per-row absolute fallback) a disagreement here would export
+  // every stroke at the wrong width on a multi-raster capture.
+  const baseRaster = selectBaseRaster(flattened, sourceSha256 ?? "");
+  const sourceWidthPx = baseRaster?.natural_width_px;
+  const sourceHeightPx = baseRaster?.natural_height_px;
 
   for (const node of flattened) {
     accumulator = await renderNode(
@@ -323,7 +330,8 @@ async function renderNode(
         canvasWidthPx,
         canvasHeightPx,
         sourceWidthPx,
-        sourceHeightPx
+        sourceHeightPx,
+        renderScale
       );
 
     case "effect":
@@ -486,7 +494,12 @@ async function compositeVectorOntoAccumulator(
    *  to keep callers that don't have a raster (synthetic test trees,
    *  legacy v1-as-v2 fixtures) working. */
   sourceWidthPx?: number,
-  sourceHeightPx?: number
+  sourceHeightPx?: number,
+  /** `renderDims / canvasDims` as computed in `composeV2` (from WIDTH,
+   *  before the render dims were rounded). Threaded so the annotation
+   *  basis scales by exactly that factor instead of being re-derived
+   *  from rounded dims on a different axis. */
+  renderScale: number = 1
 ): Promise<Buffer> {
   // v2 VectorLayer.shape is the same Overlay discriminated union as
   // v1 OverlayRow.data. We adapt to v1's buildCompositeLayers
@@ -539,7 +552,11 @@ async function compositeVectorOntoAccumulator(
     canvasWidthPx,
     canvasHeightPx,
     sourceWidthPx,
-    sourceHeightPx
+    sourceHeightPx,
+    // Defined from WIDTH up in composeV2 and threaded through rather
+    // than re-derived, so the annotation basis scales by exactly the
+    // factor the render dims were computed with.
+    renderScale
   });
   if (layers.length === 0) return accumulator;
   return sharp(accumulator, { raw: canvasInfo })

@@ -16,6 +16,11 @@
 
 import { z } from "zod";
 
+import {
+  annotationStrokeWidthPx,
+  type AnnotationSizePreset
+} from "./annotation-scale";
+
 /** Thickness preset shared by ArrowOverlay + RectOverlay. Mirrors the
  *  `ToolSizePreset` value space in `protocol.ts` (the editor's tool-
  *  style memory) — picking "large" in the popover writes "large" into
@@ -32,95 +37,67 @@ export const OverlayThickness = z.union([
 ]);
 export type OverlayThickness = z.infer<typeof OverlayThickness>;
 
-/**
- * Multiplier × auto-stroke + optional short-side floor for each
- * thickness preset. Hoisted to module scope so the object isn't
- * re-allocated on every call to `readOverlayThickness` — called once
- * per arrow/rect render, and renders can be hot during drag.
- *
- * Tuning notes (read before changing these — they affect every
- * arrow / rect overlay rendered, present and future):
- *
- *   • `small` floor = 0.003 of short side. On 1080p that's 3.24 px;
- *     on 4K 6.48 px. Calibrated to keep small arrows from collapsing
- *     to sub-pixel hairlines on high-DPI captures while still being
- *     visibly thinner than Medium on every resolution.
- *
- *   • `medium` floor = 0 (intentional — see below). Medium IS the
- *     auto stroke; applying a floor would silently push it past
- *     "auto" on big images and surprise users who picked Medium
- *     because they wanted the default.
- *
- *   • `large` floor = 0.012 of short side. On 1080p that's 12.96 px,
- *     auto × 2 wins at any reasonable image size. On 4K the floor
- *     starts matching (auto × 2 = 28 px ≈ floor = 25.92 px). On 5K+
- *     the floor decisively wins — this is the Retina rescue point.
- *
- *   • `x-large` floor = 0.020 of short side. On 1080p 21.6 px (still
- *     a bump over Large's 13 px). On 4K 43.2 px, on 5K 57.6 px —
- *     the "chonker" preset, deliberately disproportionate at any
- *     resolution.
- *
- * If you change these, every existing arrow at that preset re-bakes
- * at next load. That's the trade-off for "preset behavior is
- * consistent across captures regardless of when they were drawn"
- * (the version-table mechanism handles HEAD GEOMETRY but not user-
- * picked presets — see arrow.ts's `ARROW_STYLE_VERSIONS` comment).
- */
-const THICKNESS_PRESETS: Readonly<
-  Record<"small" | "medium" | "large" | "x-large", { multiplier: number; floorFraction: number }>
-> = {
-  small: { multiplier: 0.5, floorFraction: 0.003 },
-  medium: { multiplier: 1, floorFraction: 0 },
-  large: { multiplier: 2, floorFraction: 0.012 },
-  "x-large": { multiplier: 3, floorFraction: 0.02 }
-};
+/** Fallback multipliers for the legacy two-arg call shape (no
+ *  `basisPx`). Production paths all pass a basis. */
+const LEGACY_THICKNESS_MULTIPLIERS: Readonly<
+  Record<AnnotationSizePreset, number>
+> = { small: 0.5, medium: 1, large: 2, "x-large": 3 };
 
 /**
  * Resolve a thickness preset (or numeric override / "auto") to a
- * concrete stroke value.
+ * concrete stroke width in pixels.
  *
- * Two call shapes — the third argument toggles between them:
- *   • Legacy two-arg (no shortSidePx): multiplier-only. Returns
- *     output in WHATEVER UNIT the auto value was passed in. Numeric
- *     thickness passes through verbatim (treated as a [0,1] fraction
- *     of short side; caller multiplies up if they want pixels).
- *   • Three-arg (with shortSidePx, in the same units as autoFraction):
- *     applies the floor formula `max(autoStroke × multiplier,
- *     shortSidePx × floorFraction)`. Numeric thickness is treated as
- *     a normalized fraction and expanded to pixels via shortSidePx.
+ * Presets are absolute rungs on the shared annotation ladder —
+ * `basisPx / ANNOTATION_STROKE_DIVISORS[preset]` — NOT multipliers on
+ * whatever the caller's auto stroke happened to be. Only `"auto"`
+ * (and a missing field) passes `autoStrokePx` through.
  *
- * The two shapes exist because not all callers want the floor (it
- * changes the output for existing rows when added). The three-arg
- * form is the recommended new-code shape — it produces the Retina-
- * proportional Large/XL strokes the floor is calibrated for.
+ * That inversion is the point of the 2026-08 recalibration. The old
+ * shape was `max(autoStroke × multiplier, shortSide × floorFraction)`
+ * over `autoStroke = clamp(shortSide / 220, 4, 14)`. Because the auto
+ * stroke was pinned to an absolute 4 px for EVERY capture under an
+ * 880 px short side — which is most window grabs — Small and Medium
+ * both resolved to 2 px and 4 px on a 777×207 grab, a 1200×800 grab,
+ * and a 473×178 grab alike: two presets, one behavior, no scaling.
+ * Large and X-Large meanwhile escaped the clamp through their short-
+ * side floor fractions and landed 2.7× away, so the ladder read
+ * 3.2 / 4.9 / 13.0 / 21.6 px on 1080p. Sizing every rung off the
+ * basis directly gives a uniform ~1.53× step at every resolution,
+ * and makes Auto identical to Medium by construction rather than by
+ * coincidence.
+ *
+ * Changing `ANNOTATION_STROKE_DIVISORS` re-bakes every existing
+ * arrow / shape at that preset on next load. That is the deliberate
+ * trade-off for "a preset means the same thing on every capture
+ * regardless of when it was drawn" — the arrow style-version table
+ * pins HEAD SHAPE across time, not user-picked sizes.
  *
  * @param thickness    The persisted preset / numeric override / "auto".
- * @param autoFraction The geometry's auto-derived stroke value, in
- *                     the same unit space (fraction or pixels) the
- *                     caller wants the output in. `medium` and
- *                     `auto` pass this through verbatim.
- * @param shortSidePx  Optional. Image short-side in the SAME unit
- *                     space as autoFraction. Enables the floor;
- *                     enables pixel expansion for numeric thickness.
- *                     Omit only when matching legacy behavior is
- *                     required.
+ * @param autoStrokePx The caller's auto-derived stroke, in pixels.
+ *                     Returned verbatim for `"auto"` / missing.
+ * @param basisPx      `annotationBasisPx(sourceW, sourceH)` for the
+ *                     capture. Optional ONLY so legacy two-arg call
+ *                     sites keep compiling; when omitted, presets fall
+ *                     back to multiplying `autoStrokePx` and numeric
+ *                     overrides pass through as bare fractions. New
+ *                     code always passes it.
  */
 export function readOverlayThickness(
   thickness: OverlayThickness | undefined,
-  autoFraction: number,
-  shortSidePx?: number
+  autoStrokePx: number,
+  basisPx?: number
 ): number {
-  if (thickness === undefined || thickness === "auto") return autoFraction;
+  if (thickness === undefined || thickness === "auto") return autoStrokePx;
   if (typeof thickness === "number") {
-    // Numeric thickness is a normalized fraction of short-side. If
-    // shortSidePx is provided we expand to absolute units; otherwise
-    // fall through verbatim (legacy "fraction in, fraction out").
+    // Numeric thickness is a normalized fraction of the annotation
+    // basis. If basisPx is provided we expand to absolute pixels;
+    // otherwise fall through verbatim (legacy "fraction in, fraction
+    // out").
     //
     // Footgun guard: numeric thickness should be ≤ 1 (it's a
     // normalized fraction). A value > 1 strongly suggests a caller
     // accidentally passed a PIXEL stroke into the legacy two-arg
-    // form and is going to multiply by shortSide somewhere downstream
+    // form and is going to multiply by the basis somewhere downstream
     // — producing a stroke wider than the image. Warn (but still
     // return the value) so the broken render doesn't propagate
     // silently.
@@ -131,20 +108,23 @@ export function readOverlayThickness(
     // with an inline cast: console is present in both Node and
     // browser; if some exotic runtime lacks it, the optional-chain
     // falls back to a silent no-op rather than throwing.
-    if (thickness > 1 && shortSidePx === undefined) {
+    if (thickness > 1 && basisPx === undefined) {
       const con = (globalThis as { console?: { warn(msg: string): void } }).console;
       con?.warn(
-        `[readOverlayThickness] numeric thickness=${thickness} (> 1) passed without shortSidePx — ` +
-          `did you mean to pass shortSidePx? Numeric thickness is a normalized [0,1] fraction; ` +
+        `[readOverlayThickness] numeric thickness=${thickness} (> 1) passed without basisPx — ` +
+          `did you mean to pass basisPx? Numeric thickness is a normalized [0,1] fraction; ` +
           `pixel values must go through the three-arg form.`
       );
     }
-    return shortSidePx !== undefined ? thickness * shortSidePx : thickness;
+    return basisPx !== undefined ? thickness * basisPx : thickness;
   }
-  const p = THICKNESS_PRESETS[thickness];
-  const fromMultiplier = autoFraction * p.multiplier;
-  if (shortSidePx === undefined || p.floorFraction === 0) return fromMultiplier;
-  return Math.max(fromMultiplier, shortSidePx * p.floorFraction);
+  if (basisPx === undefined) {
+    // Pre-ladder fallback. Kept so a two-arg call still produces
+    // something ordered small < medium < large < x-large rather than
+    // silently returning the auto stroke for all four.
+    return autoStrokePx * LEGACY_THICKNESS_MULTIPLIERS[thickness];
+  }
+  return annotationStrokeWidthPx(thickness, basisPx);
 }
 
 // Overlay coords are "normalized" with respect to the SOURCE raster's
@@ -356,15 +336,19 @@ export function outlineSolidStrokeHex(
   return resolved.color === "black" ? "#000000" : "#ffffff";
 }
 
-/** Auto stroke band for SHAPE glyphs, in the same px space as
- *  `shortSidePx` — ≈1.2% of the short side, floored at 8px, clamped
- *  down to ≈0.3%. Single source of truth consumed by the editor's
- *  `shapeStrokeGeometry` (paint + hit-test + drag rect) and by the
- *  bake's NEW filled-shape rim, so the rim width matches the preview.
- *  (The bake's legacy stroked-shape band predates this helper and
- *  deliberately stays byte-stable — see compose.ts shapeSvg.) */
-export function shapeAutoStrokeWidthPx(shortSidePx: number): number {
-  return Math.min(shortSidePx * 0.012, Math.max(shortSidePx * 0.003, 8));
+/** Auto stroke width for SHAPE glyphs — the Medium rung of the shared
+ *  annotation ladder, so an auto shape, an auto arrow, and a Medium
+ *  anything all paint the same weight.
+ *
+ *  Single source of truth consumed by the editor's
+ *  `shapeStrokeGeometry` (paint + hit-test + drag rect) AND by both
+ *  bake paths (stroked band + filled rim). The bake's stroked band
+ *  used to run its own `clamp(shortSide / 220, 4, 14)` formula, which
+ *  disagreed with this one — an auto stroked shape previewed at 8 px
+ *  on 1080p and exported at 4.9 px. Routing both through here is what
+ *  closes that WYSIWYG gap. */
+export function shapeAutoStrokeWidthPx(basisPx: number): number {
+  return annotationStrokeWidthPx("medium", basisPx);
 }
 
 /** Text can't paint a striped glyph stroke, so its resolved outline
@@ -675,16 +659,25 @@ export const TextOverlay = z.object({
   kind: z.literal("text"),
   point: NormalizedPoint,
   body: z.string().max(2000),
-  /** Three sizes — small / medium / large — derived from image short-side
-   *  at render time. The ratio between buckets is intentionally ~1.7×
-   *  so they're visually distinct (the original v1 schema only had
-   *  small/large at a 2× ratio, which mapped popover "medium" to "large"
-   *  silently; users couldn't tell their picks apart). "medium" is a
-   *  back-compatible addition: legacy rows with size="small"|"large"
-   *  parse unchanged, and the renderer keeps its historical sizes for
-   *  those buckets — only "medium" lands as a new in-between value. */
+  /** Four sizes — small / medium / large / x-large — derived from the
+   *  capture's `annotationBasisPx` at render time (see
+   *  `annotation-scale.ts`). The ratio between buckets is ~1.66× so
+   *  they're visually distinct at a glance.
+   *
+   *  Both later buckets are back-compatible additions: legacy rows
+   *  with size="small"|"large" parse unchanged. "medium" landed as the
+   *  in-between value the original two-bucket v1 schema lacked (which
+   *  had silently mapped the popover's "medium" onto "large");
+   *  "x-large" continues the same ladder upward, so a big screenshot
+   *  can carry text that still reads after the image is scaled down
+   *  into a doc or a chat message. */
   size: z
-    .union([z.literal("small"), z.literal("medium"), z.literal("large")])
+    .union([
+      z.literal("small"),
+      z.literal("medium"),
+      z.literal("large"),
+      z.literal("x-large")
+    ])
     .default("medium"),
   /** Glyph weight. Optional for back-compat — legacy rows (no weight
    *  field) render at the historical "bold" weight (600) the bake

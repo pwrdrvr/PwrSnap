@@ -5,6 +5,7 @@
 
 export * from "./protocol";
 export * from "./chat-schemas";
+export * from "./annotation-scale";
 export * from "./overlay-schemas";
 export * from "./ai-enrichment-schemas";
 export * from "./result";

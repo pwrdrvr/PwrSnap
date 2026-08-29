@@ -8,6 +8,7 @@ import {
   computeTextHtmlStyle,
   serializeStyleAttribute
 } from "../text-html-style";
+import { annotationBasisPx } from "../annotation-scale";
 
 describe("computeTextHtmlStyle — geometry + sizing", () => {
   test("anchor point becomes wrapper left/top percentages", () => {
@@ -32,9 +33,12 @@ describe("computeTextHtmlStyle — geometry + sizing", () => {
   });
 
   test("fontPx is sizePx × (canvasCss / canvasPx) scale factor", () => {
-    // Uncropped capture: source == canvas == 1920×1080. Medium bucket
-    // sizePx = 1080/30 = 36 source px. Canvas CSS height matches
-    // canvas pixel height → scale factor 1 → fontPx = 36.
+    // Uncropped capture: source == canvas == 1920×1080. The medium
+    // bucket divides the annotation basis, which for 16:9 is the
+    // diagonal/2 term at ≈1101.45 (within 2% of the short side — this
+    // is the aspect range where the recalibration is a near no-op).
+    // sizePx = 1101.45/30 ≈ 36.72. Canvas CSS height matches canvas
+    // pixel height → scale factor 1 → fontPx = sizePx.
     const result = computeTextHtmlStyle({
       point: { x: 0, y: 0 },
       size: "medium",
@@ -47,8 +51,10 @@ describe("computeTextHtmlStyle — geometry + sizing", () => {
       canvasHeightPx: 1080,
       canvasCssHeight: 1080
     });
-    expect(result.fontPx).toBeCloseTo(36, 5);
-    expect(result.glyph.fontSize).toBe("36px");
+    const medium = annotationBasisPx(1920, 1080) / 30;
+    expect(medium).toBeCloseTo(36.715, 3);
+    expect(result.fontPx).toBeCloseTo(medium, 5);
+    expect(result.glyph.fontSize).toBe(`${medium}px`);
   });
 
   test("fontPx scales when canvas CSS dims are SMALLER than canvas px (editor zoomed-fit)", () => {
@@ -67,8 +73,8 @@ describe("computeTextHtmlStyle — geometry + sizing", () => {
       canvasHeightPx: 1080,
       canvasCssHeight: 270
     });
-    // sizePx = 36 source px, scale = 270/1080 = 0.25, fontPx = 9.
-    expect(result.fontPx).toBeCloseTo(9, 5);
+    // scale = 270/1080 = 0.25.
+    expect(result.fontPx).toBeCloseTo((annotationBasisPx(1920, 1080) / 30) * 0.25, 5);
   });
 
   test("storedSizePx overrides bucket math (matches TextGlyph behavior)", () => {
@@ -105,9 +111,10 @@ describe("computeTextHtmlStyle — geometry + sizing", () => {
       canvasHeightPx: 400,
       canvasCssHeight: 400
     });
-    // sizePx in image space = 36 (constant across crops).
-    // fontPx = sizePx × (canvasCssHeight / canvasHeightPx) = 36 × 1.0 = 36.
-    expect(result.fontPx).toBeCloseTo(36, 5);
+    // sizePx in image space is derived from SOURCE dims, so it stays
+    // constant across crops. fontPx = sizePx × (canvasCssHeight /
+    // canvasHeightPx) = sizePx × 1.0.
+    expect(result.fontPx).toBeCloseTo(annotationBasisPx(1920, 1080) / 30, 5);
   });
 
   test("zero-height canvas falls back to 16px (defensive — initial layout)", () => {
@@ -165,7 +172,7 @@ describe("computeTextHtmlStyle — glyph style", () => {
       canvasHeightPx: 1080,
       canvasCssHeight: 1080
     });
-    expect(big.glyph.WebkitTextStroke).toBe("2.88px rgba(0,0,0,0.6)");
+    expect(big.glyph.WebkitTextStroke).toBe(`${(annotationBasisPx(1920, 1080) / 30) * 0.08}px rgba(0,0,0,0.6)`);
 
     // 10px font → 0.8 → clamped to 1px so small text still has halo.
     const tiny = computeTextHtmlStyle({
@@ -247,7 +254,7 @@ describe("computeTextHtmlStyle — Border (contrast outline)", () => {
   test("omitted outline and explicit legacy both keep the historical stroke", () => {
     const omitted = computeTextHtmlStyle(base);
     const legacy = computeTextHtmlStyle({ ...base, outline: { kind: "legacy" } });
-    expect(omitted.glyph.WebkitTextStroke).toBe("2.88px rgba(0,0,0,0.6)");
+    expect(omitted.glyph.WebkitTextStroke).toBe(`${(annotationBasisPx(1920, 1080) / 30) * 0.08}px rgba(0,0,0,0.6)`);
     expect(legacy.glyph).toEqual(omitted.glyph);
   });
 
@@ -256,13 +263,13 @@ describe("computeTextHtmlStyle — Border (contrast outline)", () => {
       ...base,
       outline: { kind: "solid", color: "black" }
     });
-    expect(black.glyph.WebkitTextStroke).toBe("2.88px #000000");
+    expect(black.glyph.WebkitTextStroke).toBe(`${(annotationBasisPx(1920, 1080) / 30) * 0.08}px #000000`);
     expect(black.glyph.paintOrder).toBe("stroke");
     const white = computeTextHtmlStyle({
       ...base,
       outline: { kind: "solid", color: "white" }
     });
-    expect(white.glyph.WebkitTextStroke).toBe("2.88px #ffffff");
+    expect(white.glyph.WebkitTextStroke).toBe(`${(annotationBasisPx(1920, 1080) / 30) * 0.08}px #ffffff`);
   });
 
   test("none drops the stroke + paint-order properties entirely", () => {

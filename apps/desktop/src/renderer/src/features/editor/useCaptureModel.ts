@@ -39,7 +39,8 @@ import {
   type Overlay,
   type OverlayRow,
   type PwrSnapError,
-  type Result
+  type Result,
+  type TextSizeBucket
 } from "@pwrsnap/shared";
 
 export { inverseTransformOverlayByCrop, inverseCropRect, cropRectFromCanvas };
@@ -139,7 +140,7 @@ export type Point = { x: number; y: number };
 export type VectorGeometry =
   | { kind: "arrow"; from: Point; to: Point }
   | { kind: "rect"; rect: Rect }
-  | { kind: "text"; point: Point; body: string; size: "small" | "medium" | "large" }
+  | { kind: "text"; point: Point; body: string; size: TextSizeBucket }
   | { kind: "step"; point: Point; index: number };
 
 export type VectorStyle = {

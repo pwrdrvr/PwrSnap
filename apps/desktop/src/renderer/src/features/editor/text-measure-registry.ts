@@ -8,11 +8,20 @@
 // height. That estimate has to stay in lockstep with how Chromium
 // ACTUALLY lays out the glyph `<div>` (TextHtml.tsx via
 // `computeTextHtmlStyle`) — two independent code paths computing the
-// same geometry, which is a permanent source of drift. The biggest
-// offender: `canvas.getContext("2d")` does NOT resolve the
-// `-apple-system, BlinkMacSystemFont` font keywords the way the DOM
-// does, so `measureText` silently measures a fallback font and the
-// outline mis-sizes wide text.
+// same geometry, which is a permanent source of drift.
+//
+// A correction, because this comment used to assert the wrong reason
+// and cost someone a full investigation: `canvas.getContext("2d")`
+// DOES resolve `-apple-system, BlinkMacSystemFont` the way the DOM
+// does. Measured inside the packaged Electron renderer on macOS, at
+// equal font size, `measureText` and the laid-out `<div>` agree to
+// 0.013%. The analytic path is inaccurate for a different reason: it
+// measures at the IMAGE-px font size and relies on the result scaling
+// LINEARLY down to the CSS-px size the glyph renders at, and the macOS
+// system font's metrics are not linear in size (optical sizing). Same
+// string, same weight, measured at 18px and scaled to 9px: 7.3% off.
+// At 30px scaled to 18px: 2.3% off. Linux's fallback face is linear,
+// which is why the divergence is invisible in CI.
 //
 // This registry inverts the dependency: the glyph `<div>` is already a
 // live, laid-out DOM element, so TextHtml MEASURES it
@@ -30,6 +39,14 @@
 // path did. TextHtml converts its CSS-pixel `offsetWidth` to image px
 // via the canvas's uniform CSS:image scale (`canvasCssHeight /
 // imageHeightPx`).
+//
+// That scale MUST be layout-derived. `offsetWidth` is a layout measure,
+// so dividing it by a scale read from a post-transform
+// `getBoundingClientRect()` publishes a box that is wrong by whatever
+// transform was in flight — which is exactly how a 180ms entrance
+// animation on `.psl__focus` froze a ~1%-short scale into every glyph
+// box for the life of the editor. See
+// docs/solutions/2026-08-28-text-outline-stale-canvas-scale.md.
 
 import { useSyncExternalStore } from "react";
 

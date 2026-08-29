@@ -10,11 +10,18 @@
 // tracks the rendered glyph `<div>` instead of a re-derived font-metric
 // guess.
 //
-// Regression target: the outline used to size itself via
-// `canvas.measureText` with the `-apple-system` stack, which a 2D canvas
-// context resolves to a fallback font — so the box drifted from the
-// glyph (usually too wide on the right). See
-// docs/solutions/2026-06-25-text-selection-outline-measure-real-glyph.md.
+// Two regressions live here.
+//
+//   1. The outline used to size itself analytically via
+//      `canvas.measureText` instead of the glyph's real measured box.
+//      See docs/solutions/2026-06-25-text-selection-outline-measure-real-glyph.md.
+//   2. The measured box was then divided by a STALE CSS:image scale,
+//      because EditorLoaded read the canvas height from a post-transform
+//      `getBoundingClientRect()` while `.psl__focus` was mid-entrance-
+//      animation. See docs/solutions/2026-08-28-text-outline-stale-canvas-scale.md.
+//
+// (2) is why this assertion could only ever fail on macOS: it is a race
+// against a 180ms CSS animation, not a font-metric difference.
 
 import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 import { openEditor, seedImageCapture, selectTool } from "./fixtures/editor";
@@ -110,40 +117,31 @@ test("editor-text-outline: selection outline hugs the rendered glyph", async () 
       expect(inset).toBeGreaterThan(-1.5);
     }
     // Centers coincide — the outline hugs the glyph with no directional
-    // drift. A mis-measured width (the old bug) shifts the outline center
-    // off the glyph center by HALF THE WIDTH ERROR, so the meaningful
-    // bound is a fraction of the glyph's width, not an absolute pixel
-    // count. The regression this guards was tens of px on a ~300px glyph
-    // — 10%+ of the width — so 2% (floored at 3px for short strings)
-    // still catches it with an order of magnitude to spare.
+    // drift. Comparing CENTERS is what makes this sensitive: the outline
+    // is anchored at the glyph's LEFT edge and only its WIDTH can be
+    // wrong, so any width error shows up here at exactly half its size.
     //
-    // It was an absolute `< 3`, which silently encoded the glyph width
-    // this fixture happened to produce. The 2026-08 annotation-scale
-    // recalibration sizes text off `annotationBasisPx` instead of the
-    // image short side, so on this 800×600 fixture a "medium" glyph went
-    // from 600/30 = 20px to 900/30 = 30px — exactly 1.5× — and the
-    // observed macOS delta scaled with it, 2.4px → 3.6px, tripping a
-    // bound that had only ~20% headroom to begin with.
+    // 1px absolute. Once the outline consumes the published measurement
+    // AND that measurement is divided by a layout-derived (not
+    // post-transform) canvas scale, the only residual error is rounding:
+    // `offsetWidth` is an integer (≤0.25px of center error) and
+    // `canvasCssHeight` ignores sub-0.5px changes by design (~0.15px on
+    // this fixture's glyph). Measured on macOS after the fix: 0.00px.
     //
-    // That 2.4px was itself larger than this spec's author expected
-    // ("subpixel rounding keeps the real delta ~1px"). It is NOT subpixel
-    // noise: it is the analytic fallback in `textBoundsBox` being used on
-    // macOS instead of the published measurement, and `measureTextWidthPx`
-    // resolving `-apple-system` through a 2D canvas context — which does
-    // not pick the same face the DOM does, the exact divergence
-    // text-measure-registry.ts was created to eliminate. Linux can't see
-    // it (both paths fall through to the same generic sans-serif), which
-    // is why this only ever fails on the macOS runner. Tracked separately;
-    // the bound below is deliberately not tight enough to re-litigate it.
+    // Do not loosen this to a percentage of the glyph width. It was
+    // `max(3, w * 0.02)` while the stale-scale bug was open, because that
+    // bug scaled with the glyph — which is exactly the property that let
+    // it hide. A real regression here is a systematic mis-scale, and an
+    // absolute bound names the actual tolerance instead of tracking the
+    // defect.
     const glyphCx = (m.glyph.left + m.glyph.right) / 2;
     const glyphCy = (m.glyph.top + m.glyph.bottom) / 2;
     const outlineCx = (m.outline.left + m.outline.right) / 2;
     const outlineCy = (m.outline.top + m.outline.bottom) / 2;
-    const centerTolX = Math.max(3, m.glyph.w * 0.02);
     expect(
       Math.abs(outlineCx - glyphCx),
       `outline center drifted ${Math.abs(outlineCx - glyphCx).toFixed(2)}px on a ${m.glyph.w.toFixed(0)}px-wide glyph`
-    ).toBeLessThan(centerTolX);
+    ).toBeLessThan(1);
     // Vertical stays absolute: height is `fontSizePx × lineCount` in both
     // the measured and the analytic path, so there is no font-metric
     // divergence to scale with.

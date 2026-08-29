@@ -4934,14 +4934,42 @@ function EditorLoaded({
   useLayoutEffect(() => {
     const el = canvasRef.current;
     if (el === null) return;
-    const update = (): void => {
-      const rect = el.getBoundingClientRect();
+    // LAYOUT height, never `getBoundingClientRect()`. The rect is
+    // POST-TRANSFORM, and the editor mounts inside `.psl__focus`, which
+    // runs a 180ms `psl-focus-in` entrance animation from scale(0.985)
+    // to scale(1). `useZoomPan` assigns the canvas its final explicit
+    // width/height DURING that window, so the single ResizeObserver
+    // callback that the sizing triggers reads a rect that is ~1% short.
+    // The LAYOUT box never changes again — the animation only mutates a
+    // transform — so no further notification ever arrives and the stale
+    // value is permanent for the life of the editor.
+    //
+    // That mattered well beyond a cosmetic 1%: this value is the
+    // CSS:image scale that TextHtml divides its measured `offsetWidth`
+    // by before publishing the glyph box to text-measure-registry.ts.
+    // `offsetWidth` is a layout measure, so dividing it by a
+    // transform-polluted scale yields an image-px box inflated by the
+    // animation's shrink factor, and the selection outline / transform
+    // handles / hit-test all hug a box ~1% wider than the glyph. It
+    // read as a font-metric bug (see the note in
+    // editor-text-outline.spec.ts) but is purely this stale scale.
+    //
+    // `borderBoxSize` is fractional and transform-independent, matching
+    // the border-box semantics the rect used to supply. The synchronous
+    // seed has no entry to read, so it uses `offsetHeight` — integer,
+    // but within the 0.5px tolerance this setter already declares.
+    const update = (entry?: ResizeObserverEntry): void => {
+      const boxes = entry?.borderBoxSize;
+      const height =
+        boxes !== undefined && boxes.length > 0
+          ? boxes[0].blockSize
+          : el.offsetHeight;
       setCanvasCssHeight((prev) =>
-        Math.abs(prev - rect.height) < 0.5 ? prev : rect.height
+        Math.abs(prev - height) < 0.5 ? prev : height
       );
     };
     update();
-    const obs = new ResizeObserver(update);
+    const obs = new ResizeObserver((entries) => update(entries[0]));
     obs.observe(el);
     return () => obs.disconnect();
   }, [canvasRef]);

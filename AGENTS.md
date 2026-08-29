@@ -408,6 +408,51 @@ History + the `sample` recipe:
 §"Addendum (2026-08-22)". Pinned by
 [chat-thread-store-documents-access.test.ts](apps/desktop/src/main/ai/__tests__/chat-thread-store-documents-access.test.ts).
 
+## Annotation sizing — one basis, one ladder
+
+**Every sized annotation — text glyphs, arrow stems + heads, shape
+strokes — divides ONE number: `annotationBasisPx(sourceW, sourceH)`.
+No call site invents its own scale reference, and no call site sizes
+off the image's short side.** Owner:
+[packages/shared/src/annotation-scale.ts](packages/shared/src/annotation-scale.ts).
+
+```
+basis  = max(900, min(w, h), hypot(w, h) / 2)
+stroke = basis / (160 | 105 | 68 | 44)     // S / M / L / XL, ~1.53× step
+text   = basis / ( 50 |  30 | 18 | 11)     // S / M / L / XL, ~1.66× step
+```
+
+`auto` IS the Medium rung, for arrows and shapes alike.
+
+Three rules that are easy to get wrong:
+
+- **Pass SOURCE raster dims, never canvas dims.** Crop is a viewport
+  change in v2, so canvas dims shrink on every crop. Sizing off them
+  re-thins an arrow (or re-shrinks text — that was
+  pwrdrvr/PwrSnap#110) each time the user crops around it.
+- **Scaled bakes multiply the basis by `renderScale`**, they do not
+  re-derive it from render dims. The basis has a FLOOR, and a floored
+  capture would otherwise export proportionally thinner than the
+  preview painted it. `computeArrowGeometry`, `arrowSvg`, and
+  `shapeSvg` all accept an explicit `basisPx` for this.
+- **Don't reach for `device_pixel_ratio`.** It's untrustworthy (the
+  capture that prompted this work is stamped 2.0 with measurably 1×
+  content; imports and video records hardcode 1) and it isn't in the
+  `.pwrsnap` bundle, so using it would make the same bundle render
+  differently on another machine.
+
+Retuning any constant re-bakes every existing annotation at that
+preset — deliberate, per the 2026-08 recalibration. Read the printed
+size matrix in
+[annotation-scale.test.ts](packages/shared/src/__tests__/annotation-scale.test.ts)
+and run the visual harness
+(`node apps/desktop/scripts/annotation-scale-eval.mjs`) before and
+after; update the test's hardcoded table in the same commit.
+
+Full history, the measurements, and why short side + absolute px
+clamps failed:
+[docs/solutions/2026-08-28-annotation-scale-recalibration.md](docs/solutions/2026-08-28-annotation-scale-recalibration.md).
+
 ## Bake render cache — orphans are tolerated, not swept
 
 Content-addressed cache; `BAKE_PIPELINE_VERSION` is in the hash, so a

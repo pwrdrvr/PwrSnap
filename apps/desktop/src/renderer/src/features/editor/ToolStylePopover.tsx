@@ -152,19 +152,20 @@ const THICKNESS_PRESETS: ReadonlyArray<{ id: ToolSizePreset; label: string }> = 
   { id: "x-large", label: "XL" }
 ];
 
-// Text font-size presets. Three buckets only (small/medium/large +
-// auto) — we DON'T expose x-large here because the bucket curve
-// (shortSide/50, /30, /18) is already well-separated, and x-large
-// for text is a different kind of decision (more like a heading
-// style than a stroke weight) that we'd rather make explicit if it
-// ever comes up. Picking x-large for arrow/rect doesn't accidentally
-// give you "huge text" — the text path stays on its own three-bucket
-// curve.
+// Text font-size presets. Same five buttons as the thickness row —
+// text now rides the shared annotation ladder (see
+// `annotation-scale.ts`), so "L" means the same rung for a font as it
+// does for a stroke. X-Large used to be deliberately withheld here on
+// the theory that three buckets were enough; in practice a big
+// screenshot destined to be scaled down into a doc or a chat message
+// needs a rung above L, and callers were coercing "x-large" to
+// "large" behind the user's back.
 const TEXT_SIZE_PRESETS: ReadonlyArray<{ id: ToolSizePreset; label: string }> = [
   { id: "auto", label: "Auto" },
   { id: "small", label: "S" },
   { id: "medium", label: "M" },
-  { id: "large", label: "L" }
+  { id: "large", label: "L" },
+  { id: "x-large", label: "XL" }
 ];
 
 const END_STYLES: ReadonlyArray<{
@@ -844,7 +845,7 @@ interface TextBodyProps {
    *  chip above the Font size row. Signals that the selected text
    *  overlay's stored sizePx doesn't match any of the current
    *  canvas's bucket values (typically because a crop changed the
-   *  bucket math after the text was placed). Clicking S/M/L below
+   *  bucket math after the text was placed). Clicking S/M/L/XL below
    *  fires onStyleFieldChange("fontSize", value) which the caller
    *  routes through onSelectedStyleFieldChange — that handler maps
    *  to {size, sizePx} and re-snaps. */
@@ -856,17 +857,6 @@ function TextBody({
   onStyleFieldChange,
   customSizeLabel
 }: TextBodyProps): ReactElement {
-  // Defensive narrowing for the popover's "selected" highlight: if
-  // `style.fontSize` is somehow "x-large" (added to ToolSizePreset for
-  // arrow/rect thickness; not exposed to the text picker; could
-  // theoretically arrive via AI injection, JSON edit, or a future
-  // feature), the TEXT_SIZE_PRESETS table has no matching option and
-  // Segmented would render with NO button highlighted. Coerce to
-  // "large" here so the selected-state visibly matches the resolved
-  // text size — same fallback that `resolveTextSize` applies at the
-  // render layer.
-  const segmentedValue: TextToolStyle["fontSize"] =
-    style.fontSize === "x-large" ? "large" : style.fontSize;
   return (
     <>
       <ColorRow
@@ -900,7 +890,7 @@ function TextBody({
         label="Font size"
         testid="text-font-size"
         options={TEXT_SIZE_PRESETS}
-        value={segmentedValue}
+        value={style.fontSize}
         onChange={(v) => onStyleFieldChange("fontSize", v)}
       />
       <Segmented

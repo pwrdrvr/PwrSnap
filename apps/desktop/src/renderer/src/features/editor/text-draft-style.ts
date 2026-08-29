@@ -21,6 +21,7 @@
 
 import type {
   Overlay,
+  TextSizeBucket,
   OverlayOutlineAutoColor,
   ResolvedTextOutline,
   TextToolStyle
@@ -34,7 +35,7 @@ import { resolveToolColor } from "./resolveToolColor";
  *  dependency leaking into this helper. */
 type TextOverlayData = Extract<Overlay, { kind: "text" }>;
 
-export type TextSizeBucket = "small" | "medium" | "large";
+export type { TextSizeBucket } from "@pwrsnap/shared";
 
 /** Same logic as the popover-side `resolveTextSize` in Editor.tsx —
  *  inlined here so the helper is self-contained and the editor-side
@@ -44,8 +45,8 @@ export function resolveTextSizeBucket(
   fontSize: TextToolStyle["fontSize"]
 ): TextSizeBucket {
   if (typeof fontSize === "number") return "medium";
+  if (fontSize === "x-large") return "x-large";
   if (fontSize === "large") return "large";
-  if (fontSize === "x-large") return "large";
   if (fontSize === "small") return "small";
   // "auto" + "medium" both resolve to medium.
   return "medium";

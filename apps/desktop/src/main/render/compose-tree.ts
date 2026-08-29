@@ -165,10 +165,10 @@ export async function composeV2(req: ComposeTreeRequest): Promise<ComposeTreeRes
   // opacity (deferred — needs a separate accumulator per group).
   const flattened = flattenTreeInZOrder(layers);
 
-  // SOURCE raster dims — captured once up-front so text vector layers
-  // can derive fontSize from the source's shortSide rather than the
-  // (cropped) canvas's. Matches the editor's commit `881cff0` behavior
-  // for the bake. Picks the FIRST raster child of the root group; v2.0
+  // SOURCE raster dims — captured once up-front so vector layers can
+  // derive their annotation basis (text fontSize, arrow + shape stroke
+  // widths) from the source raster rather than the (cropped) canvas.
+  // Matches the editor's commit `881cff0` behavior for the bake. Picks the FIRST raster child of the root group; v2.0
   // ships with a single raster per capture, so this is unambiguous.
   // (Phase 5 paste-image flow with multiple rasters would revisit;
   // until then we treat the root raster as canonical.)

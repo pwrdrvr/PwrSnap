@@ -30,6 +30,7 @@
 import type { OverlayOptions } from "sharp";
 
 import type { OverlayRow } from "@pwrsnap/shared";
+import { annotationBasisPx } from "@pwrsnap/shared";
 
 import {
   arrowSvgForV2,
@@ -54,10 +55,11 @@ export interface BuildCompositeLayersV2Args {
    *  module-top doc-block for the rationale. */
   canvasWidthPx: number;
   canvasHeightPx: number;
-  /** SOURCE raster's natural dims — drives the bucket × shortSide
-   *  fallback for text sizePx when the row doesn't carry an explicit
-   *  storedSizePx (pwrdrvr/PwrSnap#110). Optional for synthetic test
-   *  trees that have no raster source; falls back to canvas dims. */
+  /** SOURCE raster's natural dims — drives `annotationBasisPx` for
+   *  arrow + shape stroke widths, and the bucket fallback for text
+   *  sizePx when the row doesn't carry an explicit storedSizePx
+   *  (pwrdrvr/PwrSnap#110). Optional for synthetic test trees that
+   *  have no raster source; falls back to canvas dims. */
   sourceWidthPx?: number | undefined;
   sourceHeightPx?: number | undefined;
 }
@@ -75,11 +77,35 @@ export async function buildCompositeLayersForV2(
     sourceHeightPx
   } = args;
   const data = row.data;
+  // Annotation sizing basis, expressed in RENDER pixels.
+  //
+  // Two corrections are folded in here, and both are load-bearing:
+  //
+  //   1. SOURCE dims, not canvas dims. Canvas dims shrink with every
+  //      crop (crop is a viewport change in v2), so deriving the basis
+  //      from them would re-thin an arrow each time the user cropped
+  //      around it — the stroke-width version of the text-shrink bug
+  //      pwrdrvr/PwrSnap#110 fixed.
+  //
+  //   2. × renderScale. The SVG renderers draw into a render-dims
+  //      viewBox, so the basis has to be scaled into that space too.
+  //      Re-deriving it from render dims instead would break whenever
+  //      the basis FLOOR binds on one side of the scale and not the
+  //      other: a 473×178 capture floors at 900 whether it is being
+  //      baked at 1× or upscaled to the 800-wide LOW tier, so its
+  //      arrows would export proportionally thinner than the preview
+  //      painted them.
+  const renderScale = canvasHeightPx > 0 ? renderHeightPx / canvasHeightPx : 1;
+  const annotationBasis =
+    annotationBasisPx(
+      sourceWidthPx ?? canvasWidthPx,
+      sourceHeightPx ?? canvasHeightPx
+    ) * renderScale;
   switch (data.kind) {
     case "arrow":
       return [
         await rasterizeSvgForV2(
-          arrowSvgForV2(data, renderWidthPx, renderHeightPx),
+          arrowSvgForV2(data, renderWidthPx, renderHeightPx, annotationBasis),
           renderWidthPx,
           renderHeightPx
         )
@@ -87,7 +113,7 @@ export async function buildCompositeLayersForV2(
     case "shape":
       return [
         await rasterizeSvgForV2(
-          shapeSvgForV2(data, renderWidthPx, renderHeightPx),
+          shapeSvgForV2(data, renderWidthPx, renderHeightPx, annotationBasis),
           renderWidthPx,
           renderHeightPx
         )

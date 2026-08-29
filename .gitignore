@@ -66,6 +66,8 @@ Thumbs.db
 .claude/worktrees/
 .claude/scheduled_tasks.lock
 .design-canvas.state.json
+# Output of apps/desktop/scripts/annotation-scale-eval.mjs (contact sheets).
+.annotation-scale-eval/
 
 # Design canvas iteration scraps (intermediate clipboard-paste images)
 design/uploads/

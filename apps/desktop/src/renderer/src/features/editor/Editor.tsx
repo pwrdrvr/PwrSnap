@@ -61,6 +61,8 @@ import {
   deriveBlurRadiusPx,
   isOverlayOutlineMode,
   matchBucket,
+  annotationBasisPx,
+  type TextSizeBucket,
   readShapeFilled,
   readShapeKind,
   readShapeSkewDeg,
@@ -591,30 +593,19 @@ function selectedOverlayToToolStyle(
   return null;
 }
 
-/** Map a text tool's `fontSize` preset (auto / small / medium / large)
- *  into the `TextOverlay.size` enum (small | medium | large). Three
- *  buckets with a ~1.7× ratio between each — the v1 schema originally
- *  only had small/large so "medium" silently collapsed to "large",
- *  making the popover's three sizes look identical. The schema now
- *  carries "medium" as a first-class bucket; this helper is the only
- *  place that maps the popover's "auto" sentinel — default goes to
- *  "medium" (the sweet spot for screenshot annotation) instead of the
- *  too-small "small" the v1 schema defaulted to. Numeric presets
- *  aren't reachable from the popover today but fall back to "medium"
- *  defensively. */
-function resolveTextSize(
-  fontSize: ToolSizePreset | number
-): "small" | "medium" | "large" {
+/** Map a text tool's `fontSize` preset (auto / small / medium / large /
+ *  x-large) into the `TextOverlay.size` bucket. Four rungs at a ~1.66×
+ *  ratio — see `annotation-scale.ts`.
+ *
+ *  This helper is the only place that resolves the popover's "auto"
+ *  sentinel; it lands on "medium" (the sweet spot for screenshot
+ *  annotation) rather than the too-small "small" the v1 schema
+ *  defaulted to. Numeric presets aren't reachable from the popover
+ *  today but fall back to "medium" defensively. */
+function resolveTextSize(fontSize: ToolSizePreset | number): TextSizeBucket {
   if (typeof fontSize === "number") return "medium";
+  if (fontSize === "x-large") return "x-large";
   if (fontSize === "large") return "large";
-  // The text popover doesn't expose "x-large", but the type union
-  // includes it (shared with arrow/rect thickness). Map it to
-  // "large" defensively in case it ever arrives via persisted state
-  // or AI-injected overlays. Three text buckets is enough; if we
-  // want a true XL text someday we should add a 4th bucket to the
-  // schema with its own font-size curve rather than overload the
-  // thickness preset name.
-  if (fontSize === "x-large") return "large";
   if (fontSize === "small") return "small";
   // "auto" and "medium" both resolve to medium.
   return "medium";
@@ -762,9 +753,13 @@ export function layerStyleUpdate(
   if (
     current.data.kind === "text" &&
     field === "fontSize" &&
-    (value === "auto" || value === "small" || value === "medium" || value === "large")
+    (value === "auto" ||
+      value === "small" ||
+      value === "medium" ||
+      value === "large" ||
+      value === "x-large")
   ) {
-    const newSize: "small" | "medium" | "large" = resolveTextSize(value);
+    const newSize: TextSizeBucket = resolveTextSize(value);
     const newSizePx = computeTextGlyphSize({
       size: newSize,
       sourceWidthPx: dims.sourceWidthPx,
@@ -1206,10 +1201,13 @@ export function hitTestOverlays(
       // stroke to reach for, so they get the forgiveness pad only.
       const hasStrokeLine = o.kind === "shape" && !readShapeFilled(o);
       const strokeReachPx =
-        hasStrokeLine && imageDims !== undefined
+        hasStrokeLine && textDims !== undefined
           ? shapeStrokeGeometry(
               o.thickness,
-              Math.min(imageDims.widthPx, imageDims.heightPx)
+              // SOURCE dims, matching what ShapeGlyph paints with.
+              // Canvas dims here would make the grabbable region
+              // drift from the painted line on any cropped capture.
+              annotationBasisPx(textDims.sourceWidthPx, textDims.sourceHeightPx)
             ).outerReachPx
           : 0;
       const padXN =
@@ -1335,9 +1333,7 @@ export function hitTestOverlays(
         textDims;
       // sizePx in canvas/source pixel space — same precedence as
       // every other text-sizing call site (storedSizePx wins, then
-      // bucket × source-shortSide). Inlined here so we don't have to
-      // import @pwrsnap/shared into hitTestOverlays (the helper
-      // requires more args than the rest of this function uses).
+      // bucket ÷ the source raster's annotationBasisPx).
       // Preferred path: the glyph's REAL measured box (canvas px),
       // published by TextHtml — the same source the selection outline
       // reads, so the click target covers exactly what the user sees.
@@ -1362,22 +1358,19 @@ export function hitTestOverlays(
         // Chromium: the hover hit-test runs per frame over every
         // overlay, and splitting/reducing every text body per frame
         // was pure GC pressure for values the fast path discards.
-        const sourceShort = Math.max(
-          1,
-          Math.min(sourceWidthPx, sourceHeightPx)
-        );
-        const bucketSizePx =
-          o.size === "large"
-            ? sourceShort / 18
-            : o.size === "medium"
-              ? sourceShort / 30
-              : sourceShort / 50;
-        const sizePx =
-          o.sizePx !== undefined &&
-          Number.isFinite(o.sizePx) &&
-          o.sizePx > 0
-            ? o.sizePx
-            : bucketSizePx;
+        //
+        // Routed through the shared helper rather than a local copy of
+        // the divisor table: this used to inline `sourceShort / 18|30|50`,
+        // which silently became a fourth place the ladder had to be
+        // kept in sync (and had no x-large arm at all).
+        const sizePx = computeTextGlyphSize({
+          size: o.size,
+          sourceWidthPx,
+          sourceHeightPx,
+          canvasWidthPx,
+          canvasHeightPx,
+          storedSizePx: o.sizePx
+        }).sizePx;
         const lines = o.body.split("\n");
         const lineCount = Math.max(1, lines.length);
         const maxChars = lines.reduce((m, l) => Math.max(m, l.length), 1);

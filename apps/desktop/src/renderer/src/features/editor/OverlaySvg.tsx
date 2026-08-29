@@ -32,6 +32,7 @@ import type {
 } from "@pwrsnap/shared";
 import {
   CURRENT_ARROW_STYLE_VERSION,
+  annotationBasisPx,
   computeArrowGeometry,
   computeStemDashArray,
   DEFAULT_PARALLELOGRAM_SKEW_DEG,
@@ -186,6 +187,12 @@ export function OverlaySvg({
   // preserveAspectRatio="xMidYMid meet" fits the viewBox exactly
   // into the rendered area without distortion.
   const viewBox = `0 0 ${imageWidthPx} ${imageHeightPx}`;
+  // Every sized annotation on this canvas divides ONE number. Derived
+  // from SOURCE raster dims, not the canvas dims in the viewBox above,
+  // so a crop (which is a viewport change in v2, not a resample) can't
+  // re-scale strokes the user already placed — the same invariant
+  // pwrdrvr/PwrSnap#110 established for text.
+  const annotationBasis = annotationBasisPx(sourceWidthPx, sourceHeightPx);
   // Project the live-drag override (if any) onto the matching row's
   // `data`. Every downstream split reads from `effectiveOverlays`
   // so the override participates uniformly in the kind-buckets and
@@ -323,6 +330,7 @@ export function OverlaySvg({
                 outlineAuto={data.outlineAuto}
                 imageWidthPx={imageWidthPx}
                 imageHeightPx={imageHeightPx}
+            basisPx={annotationBasis}
               />
             )}
             {data.kind === "arrow" && (
@@ -341,6 +349,7 @@ export function OverlaySvg({
                 outlineAuto={data.outlineAuto}
                 imageWidthPx={imageWidthPx}
                 imageHeightPx={imageHeightPx}
+            basisPx={annotationBasis}
               />
             )}
           </svg>
@@ -410,6 +419,7 @@ export function OverlaySvg({
             outlineAuto={draftStyle?.outlineAuto}
             imageWidthPx={imageWidthPx}
             imageHeightPx={imageHeightPx}
+            basisPx={annotationBasis}
             isDraft
           />
         )}
@@ -439,6 +449,7 @@ export function OverlaySvg({
                 outlineAuto={draftStyle?.outlineAuto}
                 imageWidthPx={imageWidthPx}
                 imageHeightPx={imageHeightPx}
+            basisPx={annotationBasis}
                 isDraft
               />
             )}
@@ -464,6 +475,7 @@ function ArrowGlyph({
   toYn,
   imageWidthPx,
   imageHeightPx,
+  basisPx,
   color,
   endStyle,
   stemStyle,
@@ -480,6 +492,11 @@ function ArrowGlyph({
   toYn: number;
   imageWidthPx: number;
   imageHeightPx: number;
+  /** The capture's `annotationBasisPx`, derived from SOURCE raster
+   *  dims by the OverlaySvg root. Sizing must not come from the
+   *  canvas dims above — those shrink on every crop, which would
+   *  re-thin an arrow each time the user cropped around it. */
+  basisPx: number;
   /** Persisted overlay's color (or live-drag's chosen color). When
    *  `"auto"` or undefined, falls back to the theme `--accent` token so
    *  legacy rows + draft-without-style render with the original
@@ -535,17 +552,16 @@ function ArrowGlyph({
     to: { x: toXn, y: toYn },
     imageWidthPx,
     imageHeightPx,
+    basisPx,
     styleVersion
   });
-  const shortSidePx = Math.max(1, Math.min(imageWidthPx, imageHeightPx));
-  // Pass autoStrokeWidthPx + shortSidePx so the floor-fraction
-  // formula activates (Large/X-Large lift the stroke off the
-  // STROKE_MAX_PX cap on high-DPI captures). Output is in pixels,
-  // no trailing multiplication needed.
+  // Presets resolve to absolute rungs on the annotation ladder (see
+  // readOverlayThickness); only "auto" passes the geometry's own
+  // stroke through. Output is in pixels — no trailing multiplication.
   const strokeWidthOverridePx =
     thickness === undefined || thickness === "auto"
       ? undefined
-      : readOverlayThickness(thickness, autoGeom.strokeWidthPx, shortSidePx);
+      : readOverlayThickness(thickness, autoGeom.strokeWidthPx, basisPx);
   const headGeom =
     strokeWidthOverridePx === undefined
       ? autoGeom
@@ -554,6 +570,7 @@ function ArrowGlyph({
           to: { x: toXn, y: toYn },
           imageWidthPx,
           imageHeightPx,
+          basisPx,
           strokeWidthOverridePx,
           styleVersion
         });
@@ -566,6 +583,7 @@ function ArrowGlyph({
         to: { x: fromXn, y: fromYn },
         imageWidthPx,
         imageHeightPx,
+        basisPx,
         strokeWidthOverridePx,
         styleVersion
       })
@@ -984,6 +1002,7 @@ function ShapeGlyph({
   rotation = 0,
   imageWidthPx,
   imageHeightPx,
+  basisPx,
   color,
   thickness,
   filled = false,
@@ -1014,6 +1033,8 @@ function ShapeGlyph({
   rotation?: number;
   imageWidthPx: number;
   imageHeightPx: number;
+  /** See ArrowGlyph.basisPx. */
+  basisPx: number;
   /** See ArrowGlyph.color for the resolution rationale. Same shape. */
   color?: "auto" | string | undefined;
   /** Optional stroke-thickness override. See ArrowGlyph.thickness. */
@@ -1030,16 +1051,14 @@ function ShapeGlyph({
   outlineAuto?: OverlayOutlineAutoColor | undefined;
   isDraft?: boolean;
 }): ReactElement {
-  // Stroke width + halo scaled by image short-side. Same band as
-  // ArrowGlyph — see ArrowGlyph for the calibration rationale. Pixel-
-  // space: the shared helper applies the floor-fraction formula on
-  // Large/X-Large so high-DPI captures don't get a hairline shape, and
-  // it's the SAME source of truth the click hit-test + drag rect read
-  // so the painted line and the grabbable region can't drift apart.
-  const shortSide = Math.min(imageWidthPx, imageHeightPx);
+  // Stroke width + halo off the shared annotation ladder — the SAME
+  // rungs ArrowGlyph paints, so an auto shape and an auto arrow are
+  // the same weight. `shapeStrokeGeometry` is also what the click
+  // hit-test and the drag rect read, so the painted line and the
+  // grabbable region can't drift apart.
   const { strokeWidthPx, outline: outlineWidthPx } = shapeStrokeGeometry(
     thickness,
-    shortSide
+    basisPx
   );
   // Contrast-border resolution — mirrors compose.ts shapeSvg (keep in
   // sync). Legacy stroked shapes resolve to the white halo; legacy
@@ -1291,8 +1310,9 @@ function HighlightGlyph({
  *  on-the-text behavior covers the same area.
  *
  *  Math mirrors TextGlyph's render:
- *    • fontSizePx — bucket on image short-side (small=shortSide/50,
- *      medium=/30, large=/18)
+ *    • fontSizePx — bucket ÷ the SOURCE raster's annotationBasisPx
+ *      (small=/50, medium=/30, large=/18, x-large=/11); see
+ *      `annotation-scale.ts`
  *    • Width in pixels: maxChars × fontSizePx × 0.55 (avg em-advance
  *      for SF Pro), normalized by imageWidth so callers can place a
  *      hit-rect via CSS `%`.
@@ -2691,7 +2711,7 @@ export function TransformHandles({
               d.kind === "shape" && !readShapeFilled(d)
                 ? shapeStrokeGeometry(
                     d.thickness,
-                    Math.min(imageWidthPx, imageHeightPx)
+                    annotationBasisPx(sourceWidthPx, sourceHeightPx)
                   ).outerReachPx
                 : 0;
             const padXN = reachPx / imageWidthPx;

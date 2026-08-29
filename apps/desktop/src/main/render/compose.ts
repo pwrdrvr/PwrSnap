@@ -19,8 +19,10 @@
 import sharp, { type OverlayOptions } from "sharp";
 import type { ArrowEndStyle, OverlayRow } from "@pwrsnap/shared";
 import {
+  annotationBasisPx,
   computeArrowGeometry,
   computeStemDashArray,
+  computeTextGlyphSize,
   outlineHaloColor,
   outlineSolidStrokeHex,
   outlineStripeDashArray,
@@ -112,7 +114,14 @@ async function rasterize(svg: string, width: number, height: number): Promise<Ov
 function arrowSvg(
   data: Extract<OverlayRow["data"], { kind: "arrow" }>,
   imageWidthPx: number,
-  imageHeightPx: number
+  imageHeightPx: number,
+  /** The capture's `annotationBasisPx` in the SAME pixel space as
+   *  `imageWidthPx` / `imageHeightPx` (i.e. already multiplied by the
+   *  render scale). Callers that have the SOURCE raster dims must
+   *  pass this — see `computeArrowGeometry`'s `basisPx` doc for why
+   *  re-deriving it from the dims above is wrong under crop and under
+   *  a scaled bake. Omitted → derived from the dims above. */
+  basisPx?: number
 ): string {
   const endStyle = readArrowEndStyle(data);
   const stemStyle = readArrowStemStyle(data);
@@ -131,21 +140,26 @@ function arrowSvg(
   // get stamped with `CURRENT_ARROW_STYLE_VERSION` at commit time
   // in Editor.tsx.
   const styleVersion = data.styleVersion;
+  const resolvedBasisPx =
+    basisPx !== undefined ? basisPx : annotationBasisPx(imageWidthPx, imageHeightPx);
   const autoGeom = computeArrowGeometry({
     from: data.from,
     to: data.to,
     imageWidthPx,
     imageHeightPx,
+    basisPx: resolvedBasisPx,
     styleVersion
   });
-  const shortSidePx = Math.max(1, Math.min(imageWidthPx, imageHeightPx));
-  // Pass autoStrokeWidthPx + shortSidePx so readOverlayThickness's
-  // floor-fraction formula activates on Large/X-Large for high-DPI
-  // captures. Output is in pixels.
+  // Presets resolve to absolute rungs on the annotation ladder; only
+  // "auto" passes the geometry's own stroke through. Output is px.
   const strokeWidthOverridePx =
     data.thickness === undefined || data.thickness === "auto"
       ? undefined
-      : readOverlayThickness(data.thickness, autoGeom.strokeWidthPx, shortSidePx);
+      : readOverlayThickness(
+          data.thickness,
+          autoGeom.strokeWidthPx,
+          resolvedBasisPx
+        );
   const headGeom =
     strokeWidthOverridePx === undefined
       ? autoGeom
@@ -154,6 +168,7 @@ function arrowSvg(
           to: data.to,
           imageWidthPx,
           imageHeightPx,
+          basisPx: resolvedBasisPx,
           strokeWidthOverridePx,
           styleVersion
         });
@@ -168,6 +183,7 @@ function arrowSvg(
         to: data.from,
         imageWidthPx,
         imageHeightPx,
+        basisPx: resolvedBasisPx,
         strokeWidthOverridePx,
         styleVersion
       })
@@ -387,22 +403,27 @@ function pxOf(
 function shapeSvg(
   data: Extract<OverlayRow["data"], { kind: "shape" }>,
   imageWidthPx: number,
-  imageHeightPx: number
+  imageHeightPx: number,
+  /** See `arrowSvg`'s `basisPx`. */
+  basisPx?: number
 ): string {
   const xPx = data.rect.x * imageWidthPx;
   const yPx = data.rect.y * imageHeightPx;
   const wPx = data.rect.w * imageWidthPx;
   const hPx = data.rect.h * imageHeightPx;
-  const shortSidePx = Math.min(imageWidthPx, imageHeightPx);
-  const autoStrokeWidthPx = clamp(shortSidePx / 220, 4, 14);
-  // Pass shortSidePx so the floor-fraction formula activates on
-  // Large/X-Large — same Retina rescue as the arrow path. Numeric
-  // thickness values are normalized fractions in the schema; the
-  // helper expands them when shortSidePx is provided.
+  const resolvedBasisPx =
+    basisPx !== undefined ? basisPx : annotationBasisPx(imageWidthPx, imageHeightPx);
+  // Auto = the ladder's Medium rung, via the SAME helper the editor's
+  // ShapeGlyph reads. This used to run its own `clamp(shortSide / 220,
+  // 4, 14)` band, which disagreed with the editor's — an auto stroked
+  // shape previewed at 8 px on 1080p and exported at 4.9 px. The
+  // divergence was invisible in the editor and only showed up in the
+  // exported PNG.
+  const autoStrokeWidthPx = shapeAutoStrokeWidthPx(resolvedBasisPx);
   const strokeWidthPx = readOverlayThickness(
     data.thickness,
     autoStrokeWidthPx,
-    shortSidePx
+    resolvedBasisPx
   );
   const outlinePx = Math.max(1.5, strokeWidthPx * 0.25);
   const fillColor = data.color === "auto" ? AUTO_ACCENT_HEX : data.color;
@@ -485,17 +506,12 @@ function shapeSvg(
     // under the fill: a centered stroke of 2×rim width, whose inner
     // half the fill covers — the same reach as a stroked shape's halo.
     //
-    // The rim sizes itself from the EDITOR's stroke band
-    // (shapeAutoStrokeWidthPx via readOverlayThickness), NOT this
-    // file's legacy clamp band above: a filled shape draws no stroke
-    // in the bake, so nothing forces the two bands to agree here, and
-    // using the editor band is what makes the exported rim match the
-    // preview pixel-for-pixel. (The stroked path keeps the legacy
-    // band — its bytes predate this feature.)
+    // Rim width comes from the same ladder as the stroked path above
+    // (they used to disagree; see the note on `autoStrokeWidthPx`).
     const rimStrokeWidthPx = readOverlayThickness(
       data.thickness,
-      shapeAutoStrokeWidthPx(shortSidePx),
-      shortSidePx
+      shapeAutoStrokeWidthPx(resolvedBasisPx),
+      resolvedBasisPx
     );
     const rimPx = Math.max(1.5, rimStrokeWidthPx * 0.25);
     const rim =
@@ -611,33 +627,27 @@ function textSvg(
   const xPx = data.point.x * imageWidthPx;
   const yPx = data.point.y * imageHeightPx;
   // When the row carries an explicit sizePx (pwrdrvr/PwrSnap#110),
-  // that value wins — bucket math is bypassed. Otherwise fall back to
-  // bucket × source-shortSide (with canvas-shortSide as the legacy
-  // fallback when source dims aren't known). Same precedence as
-  // `computeTextGlyphSize` in @pwrsnap/shared — the renderer and the
-  // bake walk the same decision tree so the live preview and the
-  // export always agree.
+  // that value wins — bucket math is bypassed. Otherwise the bucket
+  // divides the source raster's `annotationBasisPx`.
   //
-  //   small  ≈ shortSide / 50
-  //   medium ≈ shortSide / 30
-  //   large  ≈ shortSide / 18
-  const shortSideForSizing =
+  // Delegated to `computeTextGlyphSize` rather than reimplemented:
+  // this used to inline its own copy of the divisor table, which made
+  // it a place the ladder could silently drift from the editor's. The
+  // live preview and the export must walk the same decision tree or
+  // WYSIWYG is a coincidence.
+  const hasSourceDims =
     sourceWidthPx !== undefined &&
     sourceHeightPx !== undefined &&
     sourceWidthPx > 0 &&
-    sourceHeightPx > 0
-      ? Math.min(sourceWidthPx, sourceHeightPx)
-      : Math.min(imageWidthPx, imageHeightPx);
-  const bucketSizePx =
-    data.size === "large"
-      ? shortSideForSizing / 18
-      : data.size === "medium"
-        ? shortSideForSizing / 30
-        : shortSideForSizing / 50;
-  const fontSizePx =
-    data.sizePx !== undefined && Number.isFinite(data.sizePx) && data.sizePx > 0
-      ? data.sizePx
-      : bucketSizePx;
+    sourceHeightPx > 0;
+  const fontSizePx = computeTextGlyphSize({
+    size: data.size,
+    sourceWidthPx: hasSourceDims ? sourceWidthPx : imageWidthPx,
+    sourceHeightPx: hasSourceDims ? sourceHeightPx : imageHeightPx,
+    canvasWidthPx: imageWidthPx,
+    canvasHeightPx: imageHeightPx,
+    storedSizePx: data.sizePx
+  }).sizePx;
   const accent = data.color === "auto" ? AUTO_ACCENT_HEX : data.color;
   // Multi-line: split body on "\n" and emit one tspan per line, each
   // advancing the baseline by 1.2em. dominant-baseline="central" puts

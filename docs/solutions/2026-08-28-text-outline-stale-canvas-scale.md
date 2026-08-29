@@ -47,29 +47,38 @@ overlays rendered ~1% smaller than intended. That half of the bug was invisible
 Diagnostic run in the packaged Electron renderer on macOS (800×600 fixture,
 `"Inject WWWW message yqg"`, medium bucket):
 
+All rows below are ONE run each — the "before" column is the worst of the runs
+observed. Do not mix rows across runs: the drift magnitude varies with where in
+the animation the observer happened to fire (see the spread note below).
+
 | quantity | before | after |
 |---|---|---|
-| `canvasCssHeight` state | 776.405 | 783.75 |
+| `canvasCssHeight` state | 771.994 | 783.75 |
 | `.editor-canvas` layout height (`style.height`) | 783.75px | 783.75px |
 | glyph width | 469.945 | 477.0 |
 | outline inner width | 477.157 | 477.0 |
-| **outline center drift** | **2.42px** | **0.00px** |
+| **outline center drift** | **3.61px** | **0.00px** |
 
-`477.157 / 470 = 1.015228` and `783.75 / 776.405 = 1.015228` — the width error
-is exactly the staleness ratio.
+`477.157 / 469.945 = 1.015347` and `783.75 / 771.994 = 1.015228` — the width
+error is the staleness ratio, to within `offsetWidth`'s integer rounding
+(the published box came from `offsetWidth` = 470, and `477.157 / 470` is
+1.015228 exactly).
 
-The `ResizeObserver` log confirms the mechanism. Only two callbacks ever fire,
-and the second one already sees the final layout height while the rect lags:
+The `ResizeObserver` log confirms the mechanism. Only two `update()` calls ever
+run — the synchronous seed and a SINGLE observer callback — and that one
+callback already sees the final layout height while the rect lags:
 
 ```
 { ev: "effect-run", h: 0 }
-{ ev: "update", h: 0,       offsetH: 0,   clientH: 0,   styleH: ""        }
+{ ev: "update", h: 0,       offsetH: 0,   clientH: 0,   styleH: ""        }   ← synchronous seed
 { ev: "update", h: 776.405, offsetH: 784, clientH: 784, styleH: "783.75px" }   ← rect ≠ layout
 ```
 
-`776.405 / 783.75 = 0.9906`, i.e. mid-way through `scale(0.985) → scale(1)`.
-Forcing a real window resize later delivers a third callback, the state
-corrects, and the drift falls to 0.005px — which is what made "it never
+That log is from a different run than the table (state 776.405, drift 2.42px).
+`776.405 / 783.75 = 0.9906`, i.e. mid-way through `scale(0.985) → scale(1)`;
+the table's run froze earlier, at `771.994 / 783.75 = 0.985` — the animation's
+start value. Forcing a real window resize later delivers a third callback, the
+state corrects, and the drift falls to 0.005px — which is what made "it never
 self-heals, but any resize fixes it" the tell.
 
 The magnitude varies run to run (observed 2.415, 2.417, 3.606) because it is a
@@ -80,8 +89,7 @@ race against the animation clock.
 Recorded because they were each load-bearing in a comment somewhere, and both
 survived review by sounding right.
 
-### 1. "A 2D canvas can't resolve `-apple-system`, so `measureText` silently
-picks a different face."
+### 1. "A 2D canvas can't resolve `-apple-system`"
 
 This claim lived in `text-measure-registry.ts`'s module doc and in
 `editor-text-outline.spec.ts`. **It is false.** Measured on macOS, at equal
@@ -89,8 +97,7 @@ font size, `measureText` and the laid-out `<div>` agree to **0.013%** inside
 Electron and **0.002%** in standalone Chromium, across 16–40px and weights
 400/600.
 
-### 2. "The analytic fallback is being used instead of the published
-measurement."
+### 2. "The analytic fallback is being used, not the published measurement"
 
 Also false — the measured path was live the whole time. This one was disproved
 arithmetically before the repro: the outline pads symmetrically, so a live
@@ -127,6 +134,31 @@ the fallback ever needs to be accurate, measure at the **CSS-px** size the
 glyph actually renders at and divide by the scale — do not measure at image px
 and scale the result.
 
+## A second instance, in the same file
+
+`canvasRect` (the `DOMRect` EditorLoaded caches for CropTool) had the identical
+defect and was found by this fix's review. Its effect deps are
+`[canvasRef, canvasStyle.width/height/transform]` — all of which last change
+while the animation is still running — so it too froze mid-animation and never
+re-measured. Measured with the `canvasCssHeight` fix already applied:
+
+| | cached `canvasRect` | live |
+|---|---|---|
+| width | 1029.33 | 1045 |
+| left | 25.34 | 17.5 |
+
+Because the animation scales about the CENTER, the origin is off by 7.8px on
+top of the 1.5% scale error, and `CropTool.viewportToSource` runs every pointer
+event through it — a crop drag landed ~6 source px from where the user dragged.
+Fixed by adding `tool` to the effect's deps, so the rect is re-measured when
+the tool that consumes it appears (long after the 180ms animation).
+
+Note the asymmetry: for `canvasCssHeight` the rect was the WRONG KIND of
+measurement (it gets combined with `offsetWidth`, a layout measure). For
+`canvasRect` the post-transform rect is the RIGHT kind — pointer coordinates
+are post-transform too — it was merely STALE. Same root cause, two different
+correct fixes.
+
 ## Rules this leaves behind
 
 - **Never read a size from `getBoundingClientRect()` when you are going to
@@ -137,6 +169,10 @@ and scale the result.
   box changes. An ancestor animating `transform` fires nothing, so a bad value
   read inside a callback is not merely transient — it is permanent until an
   unrelated real resize happens to occur.
+- **A cached `DOMRect` is only valid until something moves.** A
+  `ResizeObserver` does not tell you the element MOVED, only that it resized.
+  Either re-read at the moment of use, or make the cache's deps include
+  whatever brings the consumer on screen.
 - **`PWRSNAP_E2E=1` green on Linux proves nothing about animation races.**
   Entrance-animation timing differs per platform, and this class of bug is a
   race, not a font or layout difference.

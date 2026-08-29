@@ -4955,18 +4955,26 @@ function EditorLoaded({
     // editor-text-outline.spec.ts) but is purely this stale scale.
     //
     // `borderBoxSize` is fractional and transform-independent, matching
-    // the border-box semantics the rect used to supply. The synchronous
-    // seed has no entry to read, so it uses `offsetHeight` — integer,
-    // but within the 0.5px tolerance this setter already declares.
+    // the border-box semantics the rect used to supply. `blockSize` is
+    // the BLOCK-axis size, which is the height only under a horizontal
+    // writing mode — true for every PwrSnap surface. A vertical
+    // writing-mode ancestor would silently hand back the WIDTH here.
+    //
+    // The synchronous seed has no entry to read and falls back to
+    // integer `offsetHeight`. `seeded` then lets the FIRST observer
+    // delivery replace that integer unconditionally: without it, a
+    // re-mount whose canvas is already laid out seeds 784, the observer
+    // answers 783.75, and the 0.5px guard below pins the rounded value
+    // for the life of the editor.
+    let seeded = false;
     const update = (entry?: ResizeObserverEntry): void => {
-      const boxes = entry?.borderBoxSize;
-      const height =
-        boxes !== undefined && boxes.length > 0
-          ? boxes[0].blockSize
-          : el.offsetHeight;
-      setCanvasCssHeight((prev) =>
-        Math.abs(prev - height) < 0.5 ? prev : height
-      );
+      const height = entry?.borderBoxSize?.[0]?.blockSize ?? el.offsetHeight;
+      const fromObserver = entry !== undefined;
+      setCanvasCssHeight((prev) => {
+        if (fromObserver && !seeded) return height;
+        return Math.abs(prev - height) < 0.5 ? prev : height;
+      });
+      if (fromObserver) seeded = true;
     };
     update();
     const obs = new ResizeObserver((entries) => update(entries[0]));
@@ -6434,6 +6442,19 @@ function EditorLoaded({
     return () => {
       ro.disconnect();
     };
+    // `tool` is in the deps because this rect is POST-TRANSFORM and its
+    // only consumer (CropTool) needs it correct at pointer time. Every
+    // other dep last changes while `.psl__focus` is still running its
+    // 180ms scale(0.985)→scale(1) entrance animation, and a finishing
+    // transform fires no ResizeObserver notification — so without this
+    // the cached rect stayed frozen mid-animation for the life of the
+    // editor. Measured: {left: 25.34, width: 1029.33} against a live
+    // {left: 17.5, width: 1045}, which `viewportToSource` turns into a
+    // ~6 source-px origin error on every crop drag. Re-measuring when
+    // the tool changes lands a fresh rect before CropTool can be
+    // dragged. `tool` is a stable string, so this cannot loop the way
+    // an unstable object dep would (see below).
+    //
     // Use the primitive components of canvasStyle, NOT the object
     // reference itself. `useZoomPan` rebuilds the canvasStyle object
     // on every render (no useMemo); depending on the object reference
@@ -6444,6 +6465,7 @@ function EditorLoaded({
     // actually change the canvas layout.
   }, [
     canvasRef,
+    tool,
     zoom.canvasStyle?.width,
     zoom.canvasStyle?.height,
     zoom.canvasStyle?.transform

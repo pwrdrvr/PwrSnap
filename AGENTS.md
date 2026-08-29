@@ -408,6 +408,60 @@ History + the `sample` recipe:
 §"Addendum (2026-08-22)". Pinned by
 [chat-thread-store-documents-access.test.ts](apps/desktop/src/main/ai/__tests__/chat-thread-store-documents-access.test.ts).
 
+## Never mix a post-transform rect with a layout measure
+
+**`getBoundingClientRect()` is POST-TRANSFORM. `offsetWidth` /
+`offsetHeight` / `clientWidth` / `clientHeight` and
+`ResizeObserverEntry.borderBoxSize` are LAYOUT. Combining one with the
+other silently bakes in whatever transform happened to be in flight.**
+
+The editor mounts inside `.psl__focus`, which runs a 180ms
+`psl-focus-in` entrance animation from `scale(0.985)` to `scale(1)`
+([library.css](apps/desktop/src/renderer/src/styles/library.css)).
+`useZoomPan` assigns the canvas its final explicit width/height DURING
+that window, so anything that measures the canvas at that moment gets a
+rect ~1% short.
+
+**And a `ResizeObserver` will not rescue you.** It reports LAYOUT box
+changes. A finishing transform changes no layout box, so no further
+notification ever arrives — a bad value read inside a callback is not
+transient, it is permanent until some unrelated real resize happens.
+That is what makes this class so hard to spot: it never self-heals, but
+it always disappears the moment you resize the window to look at it.
+
+Two confirmed instances, both in
+[Editor.tsx](apps/desktop/src/renderer/src/features/editor/Editor.tsx):
+
+- `canvasCssHeight` — the rect was the WRONG KIND. It is divided into
+  `TextHtml`'s `offsetWidth` before publishing to
+  `text-measure-registry.ts`, so a transform-polluted scale published a
+  glyph box ~1% too wide and the selection outline / transform handles /
+  hit-test all mis-hugged. Fixed by reading `borderBoxSize`.
+- `canvasRect` — the post-transform rect is the RIGHT kind (pointer
+  coordinates are post-transform too), it was merely STALE: cached
+  `{left: 25.34, width: 1029.33}` against a live `{left: 17.5, width:
+  1045}`, so `CropTool.viewportToSource` put every crop drag ~6 source px
+  off. Fixed by re-measuring when the consuming tool appears.
+
+Rules:
+
+- Sizing something that will be compared against a layout measure? Use a
+  layout measure. `ResizeObserverEntry.borderBoxSize[0].blockSize` is the
+  fractional, transform-independent equivalent of `rect.height` (block
+  axis — height only under a horizontal writing mode).
+- Mapping pointer coordinates? The post-transform rect is correct — but
+  **a cached `DOMRect` is only valid until something moves**, and a
+  ResizeObserver never tells you an element MOVED. Re-read at the moment
+  of use, or make the cache's deps include whatever brings the consumer
+  on screen.
+- **Linux E2E green proves nothing here.** This is a race against a CSS
+  animation; xvfb timing wins it and macOS loses it. Only the macOS
+  runner can catch a recurrence.
+
+Full investigation, measurements, and the two wrong hypotheses it
+replaced:
+[docs/solutions/2026-08-28-text-outline-stale-canvas-scale.md](docs/solutions/2026-08-28-text-outline-stale-canvas-scale.md).
+
 ## Annotation sizing — one basis, one ladder
 
 **Every sized annotation — text glyphs, arrow stems + heads, shape

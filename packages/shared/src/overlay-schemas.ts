@@ -341,8 +341,10 @@ export function outlineSolidStrokeHex(
  *  anything all paint the same weight.
  *
  *  Single source of truth consumed by the editor's
- *  `shapeStrokeGeometry` (paint + hit-test + drag rect) AND by both
- *  bake paths (stroked band + filled rim). The bake's stroked band
+ *  `shapeStrokeGeometry` (paint + hit-test + drag rect) and by the
+ *  bake's `shapeSvg`. The filled rim reaches it transitively — the
+ *  rim IS the stroked path's halo, so it reads `outlinePx` rather
+ *  than calling here again. The bake's stroked band
  *  used to run its own `clamp(shortSide / 220, 4, 14)` formula, which
  *  disagreed with this one — an auto stroked shape previewed at 8 px
  *  on 1080p and exported at 4.9 px. Routing both through here is what

@@ -22,7 +22,8 @@ export interface ShapeStrokeGeometry {
   /** Colored stroke width. Centered on the shape's path. */
   strokeWidthPx: number;
   /** White halo (under-stroke) extension beyond the colored stroke on
-   *  EACH side. The halo is painted as `strokeWidthPx + outline * 2`. */
+   *  EACH side — `outlineHaloWidthPx(strokeWidthPx)`. The painted halo
+   *  stroke is `outlineHaloStrokeWidthPx(strokeWidthPx)`. */
   outline: number;
   /** Outer reach from the path to the outside edge of the painted
    *  pixels — half the colored stroke plus the halo
@@ -33,7 +34,8 @@ export interface ShapeStrokeGeometry {
 /** Resolve a shape's stroke geometry from its thickness preset/override
  *  and the capture's `annotationBasisPx`. Auto lands on the ladder's
  *  Medium rung (same as an auto arrow); presets land on their own
- *  rungs. Halo is `max(stroke * 0.25, 1.5)`. */
+ *  rungs. Halo comes from `outlineHaloWidthPx` — quoting the formula
+ *  here would just be a fifth hand-written copy of it. */
 export function shapeStrokeGeometry(
   thickness: OverlayThickness | undefined,
   basisPx: number

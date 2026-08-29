@@ -28,12 +28,12 @@ import {
   readOverlayThickness,
   readShapeKind,
   readShapeSkewDeg,
+  outlineHaloStrokeWidthPx,
+  outlineHaloWidthPx,
   shapeAutoStrokeWidthPx,
   ShapeOverlay,
   StepOverlay,
-  TextOverlay,
-  outlineHaloWidthPx,
-  outlineHaloStrokeWidthPx
+  TextOverlay
 } from "../overlay-schemas";
 import { annotationBasisPx } from "../annotation-scale";
 

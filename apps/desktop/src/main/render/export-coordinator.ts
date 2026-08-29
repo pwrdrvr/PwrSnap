@@ -25,8 +25,8 @@ import sharp from "sharp";
 import { getCaptureById } from "../persistence/captures-repo";
 import { getCacheRoot } from "../persistence/paths";
 import { ensureEffectiveSrcPath } from "../persistence/source-store";
-import { renderViaCoordinator } from "./coordinator";
 import { BAKE_PIPELINE_VERSION } from "./compose-tree";
+import { renderViaCoordinator } from "./coordinator";
 
 const MAX_EDGE_PX = 16_384;
 const MAX_PIXELS = 100_000_000;
@@ -98,9 +98,14 @@ export async function exportCapture(
     // a BAKE_PIPELINE_VERSION bump forever: `edits_version` only moves
     // when the user edits, so an untouched capture keeps returning
     // pre-bump pixels while every composeV2 surface (clipboard,
-    // Library thumbnails) renders the new ones. `original` exports
-    // bypass the compositor, so they stay keyed without it.
-    pipelineVersion: variant === "composite" ? BAKE_PIPELINE_VERSION : ""
+    // Library thumbnails) renders the new ones.
+    //
+    // Spread rather than a `: ""` branch so an `original` export —
+    // which bypasses the compositor entirely — keeps the key it
+    // already had. A always-present field would change the hashed
+    // JSON for originals too and orphan their cached files on this
+    // bump, for a value that can never affect their bytes.
+    ...(variant === "composite" ? { pipelineVersion: BAKE_PIPELINE_VERSION } : {})
   };
   const exportId = createHash("sha256")
     .update(JSON.stringify(normalized))

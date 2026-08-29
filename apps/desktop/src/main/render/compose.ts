@@ -24,6 +24,8 @@ import {
   computeStemDashArray,
   computeTextGlyphSize,
   outlineHaloColor,
+  outlineHaloStrokeWidthPx,
+  outlineHaloWidthPx,
   outlineSolidStrokeHex,
   outlineStripeDashArray,
   outlineStripeDashArrayForStemDash,
@@ -41,8 +43,7 @@ import {
   readShapeSkewDeg,
   readTextOverlayOutline,
   readTextWeight,
-  shapeAutoStrokeWidthPx,
-  outlineHaloWidthPx
+  shapeAutoStrokeWidthPx
 } from "@pwrsnap/shared";
 
 // Main process can't read CSS vars, so the overlay-render default
@@ -232,7 +233,7 @@ function arrowSvg(
   // white halo. On dashed / dotted stems the black phase splits each
   // stem dash in half so black never lands in a stem gap; the head
   // glyphs use the plain halo-width-scaled pattern.
-  const haloWidthPx = strokeWidthPx + outlineWidth * 2;
+  const haloWidthPx = outlineHaloStrokeWidthPx(strokeWidthPx);
   const headStripeDash =
     resolvedOutline.kind === "stripe" ? outlineStripeDashArray(haloWidthPx) : null;
   const stemStripe =
@@ -259,12 +260,12 @@ function arrowSvg(
   const stemHalo = !hasOutline
     ? ""
     : `<line x1="${stemEndAtFrom.x}" y1="${stemEndAtFrom.y}" x2="${stemEndAtTo.x}" y2="${stemEndAtTo.y}"
-          stroke="${haloColor}" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linecap="round"${stemDashAttr} fill="none" />` +
+          stroke="${haloColor}" stroke-width="${haloWidthPx}" stroke-linecap="round"${stemDashAttr} fill="none" />` +
       (stemStripe === null
         ? ""
         : `
     <line x1="${stemEndAtFrom.x}" y1="${stemEndAtFrom.y}" x2="${stemEndAtTo.x}" y2="${stemEndAtTo.y}"
-          stroke="black" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linecap="round" stroke-dasharray="${stemStripe.dasharray}"${stemStripe.dashoffset !== 0 ? ` stroke-dashoffset="${stemStripe.dashoffset}"` : ""} fill="none" />`);
+          stroke="black" stroke-width="${haloWidthPx}" stroke-linecap="round" stroke-dasharray="${stemStripe.dasharray}"${stemStripe.dashoffset !== 0 ? ` stroke-dashoffset="${stemStripe.dashoffset}"` : ""} fill="none" />`);
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
   <g stroke-linejoin="round">
@@ -322,6 +323,10 @@ function arrowHeadHaloSvg(
   const toPx = pxOf(geom.to, imageWidthPx, imageHeightPx);
   const baseLeftPx = pxOf(geom.baseLeft, imageWidthPx, imageHeightPx);
   const baseRightPx = pxOf(geom.baseRight, imageWidthPx, imageHeightPx);
+  // Derived from the PASSED outlineWidth, not re-read from the shared
+  // helper: this function's contract is "halo at the width my caller
+  // resolved", and every branch below paints exactly that width.
+  const haloWidthPx = strokeWidthPx + outlineWidth * 2;
   switch (style) {
     case "filled-triangle": {
       // Filled head: interior is colored, halo only needs to peek
@@ -341,16 +346,16 @@ function arrowHeadHaloSvg(
       // whatever shows through the hollow). Mirrors the live editor's
       // ArrowHeadHalo open-triangle case — keep in sync.
       const polygon = `${toPx.x},${toPx.y} ${baseLeftPx.x},${baseLeftPx.y} ${baseRightPx.x},${baseRightPx.y}`;
-      const base = `<polygon points="${polygon}" fill="none" stroke="${haloColor}" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linejoin="round" />`;
+      const base = `<polygon points="${polygon}" fill="none" stroke="${haloColor}" stroke-width="${haloWidthPx}" stroke-linejoin="round" />`;
       if (stripeDash === null) return base;
       return `${base}
-    <polygon points="${polygon}" fill="none" stroke="black" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linejoin="round" stroke-dasharray="${stripeDash}" />`;
+    <polygon points="${polygon}" fill="none" stroke="black" stroke-width="${haloWidthPx}" stroke-linejoin="round" stroke-dasharray="${stripeDash}" />`;
     }
     case "line": {
-      const base = `<line x1="${baseLeftPx.x}" y1="${baseLeftPx.y}" x2="${baseRightPx.x}" y2="${baseRightPx.y}" stroke="${haloColor}" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linecap="round" />`;
+      const base = `<line x1="${baseLeftPx.x}" y1="${baseLeftPx.y}" x2="${baseRightPx.x}" y2="${baseRightPx.y}" stroke="${haloColor}" stroke-width="${haloWidthPx}" stroke-linecap="round" />`;
       if (stripeDash === null) return base;
       return `${base}
-    <line x1="${baseLeftPx.x}" y1="${baseLeftPx.y}" x2="${baseRightPx.x}" y2="${baseRightPx.y}" stroke="black" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linecap="round" stroke-dasharray="${stripeDash}" />`;
+    <line x1="${baseLeftPx.x}" y1="${baseLeftPx.y}" x2="${baseRightPx.x}" y2="${baseRightPx.y}" stroke="black" stroke-width="${haloWidthPx}" stroke-linecap="round" stroke-dasharray="${stripeDash}" />`;
     }
     case "dot": {
       const r = strokeWidthPx * 1.5;
@@ -427,6 +432,10 @@ function shapeSvg(
     resolvedBasisPx
   );
   const outlinePx = outlineHaloWidthPx(strokeWidthPx);
+  // Width of the painted halo stroke (colored stroke + halo on both
+  // sides) — what the halo primitive is stroked at, and what the
+  // stripe cadence phases against.
+  const haloStrokeWidthPx = outlineHaloStrokeWidthPx(strokeWidthPx);
   const fillColor = data.color === "auto" ? AUTO_ACCENT_HEX : data.color;
   const filled = readShapeFilled(data);
   const shape = readShapeKind(data);
@@ -544,16 +553,16 @@ function shapeSvg(
 
   const stripeDash =
     resolvedOutline.kind === "stripe"
-      ? outlineStripeDashArray(strokeWidthPx + outlinePx * 2)
+      ? outlineStripeDashArray(haloStrokeWidthPx)
       : null;
   const stripeHalo =
     stripeDash === null
       ? ""
-      : `${strokedPrimitive("black", strokeWidthPx + outlinePx * 2, stripeDash)}
+      : `${strokedPrimitive("black", haloStrokeWidthPx, stripeDash)}
     `;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
   <g stroke-linejoin="round"${groupTransform}>
-    ${strokedPrimitive(haloColor, strokeWidthPx + outlinePx * 2)}
+    ${strokedPrimitive(haloColor, haloStrokeWidthPx)}
     ${stripeHalo}${strokedPrimitive(fillColor, strokeWidthPx)}
   </g>
 </svg>`;

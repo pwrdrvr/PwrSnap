@@ -341,14 +341,43 @@ export function outlineSolidStrokeHex(
  *  anything all paint the same weight.
  *
  *  Single source of truth consumed by the editor's
- *  `shapeStrokeGeometry` (paint + hit-test + drag rect) AND by both
- *  bake paths (stroked band + filled rim). The bake's stroked band
+ *  `shapeStrokeGeometry` (paint + hit-test + drag rect) and by the
+ *  bake's `shapeSvg`. The filled rim reaches it transitively — the
+ *  rim IS the stroked path's halo, so it reads `outlinePx` rather
+ *  than calling here again. The bake's stroked band
  *  used to run its own `clamp(shortSide / 220, 4, 14)` formula, which
  *  disagreed with this one — an auto stroked shape previewed at 8 px
  *  on 1080p and exported at 4.9 px. Routing both through here is what
  *  closes that WYSIWYG gap. */
 export function shapeAutoStrokeWidthPx(basisPx: number): number {
   return annotationStrokeWidthPx("medium", basisPx);
+}
+
+/** Contrast-border (halo / rim) width for ONE side of a glyph, given
+ *  the colored stroke it sits under — a quarter of the stroke, never
+ *  thinner than 1.5px so a hairline glyph still reads against a busy
+ *  background.
+ *
+ *  Same rule as the stroke ladder above, for the same reason: this is
+ *  a DERIVED quantity the editor and the bake must agree on
+ *  pixel-for-pixel, so it is read, not recomputed. Consumed by
+ *  `shapeStrokeGeometry` + `ArrowGlyph` (editor) and by `arrowSvg` +
+ *  `shapeSvg` (bake).
+ *
+ *  Four hand-written copies of this formula existed before it was
+ *  hoisted — two of them with the arguments flipped
+ *  (`Math.max(stroke * 0.25, 1.5)`), which is how you can tell they
+ *  were typed independently rather than shared. Don't add a fifth. */
+export function outlineHaloWidthPx(strokeWidthPx: number): number {
+  return Math.max(1.5, strokeWidthPx * 0.25);
+}
+
+/** Total width of the painted halo stroke under a colored glyph
+ *  stroke — the colored stroke plus `outlineHaloWidthPx` on each
+ *  side. This is the width the halo primitive is stroked at, and the
+ *  value `outlineStripeDashArray` phases the stripe against. */
+export function outlineHaloStrokeWidthPx(strokeWidthPx: number): number {
+  return strokeWidthPx + outlineHaloWidthPx(strokeWidthPx) * 2;
 }
 
 /** Text can't paint a striped glyph stroke, so its resolved outline

@@ -37,6 +37,8 @@ import {
   computeStemDashArray,
   DEFAULT_PARALLELOGRAM_SKEW_DEG,
   outlineHaloColor,
+  outlineHaloStrokeWidthPx,
+  outlineHaloWidthPx,
   outlineStripeDashArray,
   outlineStripeDashArrayForStemDash,
   readArrowDoubleEnded,
@@ -593,7 +595,7 @@ function ArrowGlyph({
   // override (so a Large thickness on a tiny arrow still renders
   // proportionally).
   const stroke = headGeom.strokeWidthPx;
-  const outlineWidth = Math.max(stroke * 0.25, 1.5);
+  const outlineWidth = outlineHaloWidthPx(stroke);
   // Contrast-border resolution — mirrors compose.ts arrowSvg (keep in
   // sync). Legacy rows resolve to the historical white halo; the new
   // modes swap the color, stripe it, or drop it. Width is unchanged
@@ -650,7 +652,7 @@ function ArrowGlyph({
   // / dotted stems the black phase splits each stem dash in half so
   // black never lands in a stem gap; the head glyphs use the plain
   // halo-width-scaled pattern. Mirrors compose.ts arrowSvg.
-  const haloWidthPx = stroke + outlineWidth * 2;
+  const haloWidthPx = outlineHaloStrokeWidthPx(stroke);
   const headStripeDash =
     resolvedOutline.kind === "stripe" ? outlineStripeDashArray(haloWidthPx) : null;
   const stemStripe =
@@ -675,7 +677,7 @@ function ArrowGlyph({
           x2={stemEndAtTo.x}
           y2={stemEndAtTo.y}
           stroke={haloColor}
-          strokeWidth={stroke + outlineWidth * 2}
+          strokeWidth={haloWidthPx}
           strokeLinecap="round"
           strokeDasharray={dashStem ?? undefined}
           fill="none"
@@ -689,7 +691,7 @@ function ArrowGlyph({
           x2={stemEndAtTo.x}
           y2={stemEndAtTo.y}
           stroke="black"
-          strokeWidth={stroke + outlineWidth * 2}
+          strokeWidth={haloWidthPx}
           strokeLinecap="round"
           strokeDasharray={stemStripe.dasharray}
           strokeDashoffset={
@@ -818,6 +820,10 @@ function ArrowHeadHalo({
   imageWidthPx: number;
   imageHeightPx: number;
 }): ReactElement {
+  // Derived from the PASSED outlineWidth, not re-read from the shared
+  // helper: this component paints the halo at the width its caller
+  // resolved. Mirrors compose.ts arrowHeadHaloSvg.
+  const haloWidthPx = stroke + outlineWidth * 2;
   const toX = geom.to.x * imageWidthPx;
   const toY = geom.to.y * imageHeightPx;
   const blX = geom.baseLeft.x * imageWidthPx;
@@ -870,7 +876,7 @@ function ArrowHeadHalo({
             points={polygon}
             fill="none"
             stroke={haloColor}
-            strokeWidth={stroke + outlineWidth * 2}
+            strokeWidth={haloWidthPx}
             strokeLinejoin="round"
           />
           {stripeDash !== null && (
@@ -878,7 +884,7 @@ function ArrowHeadHalo({
               points={polygon}
               fill="none"
               stroke="black"
-              strokeWidth={stroke + outlineWidth * 2}
+              strokeWidth={haloWidthPx}
               strokeLinejoin="round"
               strokeDasharray={stripeDash}
             />
@@ -894,7 +900,7 @@ function ArrowHeadHalo({
             x2={brX}
             y2={brY}
             stroke={haloColor}
-            strokeWidth={stroke + outlineWidth * 2}
+            strokeWidth={haloWidthPx}
             strokeLinecap="round"
           />
           {stripeDash !== null && (
@@ -904,7 +910,7 @@ function ArrowHeadHalo({
               x2={brX}
               y2={brY}
               stroke="black"
-              strokeWidth={stroke + outlineWidth * 2}
+              strokeWidth={haloWidthPx}
               strokeLinecap="round"
               strokeDasharray={stripeDash}
             />

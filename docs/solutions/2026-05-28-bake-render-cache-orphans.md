@@ -148,6 +148,15 @@ Do NOT bump when:
 If unsure: bake a known capture before and after the change, sha256
 the resulting PNG. If the hashes match, don't bump.
 
+**Bumping the constant is necessary, not sufficient.** It re-keys every
+cache that feeds `BAKE_PIPELINE_VERSION` into its own key — today the
+render cache (`computeTreeRenderHash`) and the local-agent export cache
+(`exportCapture`'s `exportId`). Any other store that holds bake output
+and keys on something else keeps serving pre-bump pixels: the
+`composite_thumbnail.jpg` packed inside each `.pwrsnap` is one such
+store today (regenerated only by the edit-driven repack path). Walk the
+table below before assuming a bump reached everything.
+
 ---
 
 ## User-facing escape hatches
@@ -195,6 +204,7 @@ now.
 |---|---|
 | `apps/desktop/src/main/render/compose-tree.ts` | `BAKE_PIPELINE_VERSION` constant, `computeTreeRenderHash`, the cache-hit check in `composeV2` |
 | `apps/desktop/src/main/render/coordinator.ts` | `renderViaCoordinator` — the main entry point for all bake callers (clipboard, library thumbnails, etc.) |
+| `apps/desktop/src/main/render/export-coordinator.ts` | `exportCapture` — folds `BAKE_PIPELINE_VERSION` into `exportId` so the `local-agent-exports/` file cache re-keys on a bump too (composite variants only; `original` bypasses the compositor) |
 | `apps/desktop/src/main/persistence/paths.ts` | `getCacheRoot()` — `<userData>/render-cache/` |
 | `apps/desktop/src/main/persistence/render-cache-maintenance.ts` | `clearRenderCache` (Settings action), `trimRenderCache` (Settings action), `migrateLegacyRenderCache` (one-time migration from Chromium's cache bucket) |
 | `apps/desktop/src/main/storage/accounting.ts` | `getStorageSnapshot` — measures cache dir size for the Storage popover |

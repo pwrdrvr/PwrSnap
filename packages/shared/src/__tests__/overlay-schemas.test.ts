@@ -28,6 +28,8 @@ import {
   readOverlayThickness,
   readShapeKind,
   readShapeSkewDeg,
+  outlineHaloStrokeWidthPx,
+  outlineHaloWidthPx,
   shapeAutoStrokeWidthPx,
   ShapeOverlay,
   StepOverlay,
@@ -570,5 +572,39 @@ describe("deriveBlurRadiusPx — sigma derivation contract", () => {
     expect(deriveBlurRadiusPx({ width: 3000, height: 600 })).toBe(9); // round(600*0.015)
     // Tall capture (width is short side)
     expect(deriveBlurRadiusPx({ width: 600, height: 3000 })).toBe(9);
+  });
+});
+
+describe("outline halo width — one derivation for both surfaces", () => {
+  // The halo is DERIVED from the colored stroke, so it inherits any
+  // error in the stroke. It used to be hand-written in four production
+  // places (arrow + shape, bake + editor), two of them with the
+  // arguments flipped — the tell that they were typed independently
+  // rather than shared. Pinned here, where it now lives.
+
+  test("a quarter of the stroke, floored at 1.5px", () => {
+    expect(outlineHaloWidthPx(8)).toBe(2);
+    expect(outlineHaloWidthPx(24)).toBe(6);
+    // Floor binds below a 6px stroke.
+    expect(outlineHaloWidthPx(6)).toBe(1.5);
+    expect(outlineHaloWidthPx(4)).toBe(1.5);
+    expect(outlineHaloWidthPx(0)).toBe(1.5);
+  });
+
+  test("the painted halo stroke adds the halo on BOTH sides", () => {
+    expect(outlineHaloStrokeWidthPx(8)).toBe(8 + 2 * 2);
+    expect(outlineHaloStrokeWidthPx(24)).toBe(24 + 6 * 2);
+    expect(outlineHaloStrokeWidthPx(4)).toBe(4 + 1.5 * 2);
+  });
+
+  test("the stripe cadence never degenerates to its 4px floor", () => {
+    // `outlineStripeDashArray` floors the segment at 4px. That floor
+    // would bind — collapsing the stripe rhythm to a constant — only
+    // for a painted halo under 4/1.75 = 2.29px, and the halo's own
+    // 1.5px-per-side floor puts the minimum at 3px (stroke 0), so
+    // 5.25px is the shortest segment reachable. Pinned so a future
+    // change to either floor can't silently flatten the stripe.
+    expect(outlineHaloStrokeWidthPx(0)).toBe(3);
+    expect(outlineHaloStrokeWidthPx(0) * 1.75).toBeGreaterThan(4);
   });
 });

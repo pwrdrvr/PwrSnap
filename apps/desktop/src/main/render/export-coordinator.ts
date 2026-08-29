@@ -26,6 +26,7 @@ import { getCaptureById } from "../persistence/captures-repo";
 import { getCacheRoot } from "../persistence/paths";
 import { ensureEffectiveSrcPath } from "../persistence/source-store";
 import { renderViaCoordinator } from "./coordinator";
+import { BAKE_PIPELINE_VERSION } from "./compose-tree";
 
 const MAX_EDGE_PX = 16_384;
 const MAX_PIXELS = 100_000_000;
@@ -90,7 +91,16 @@ export async function exportCapture(
     quality,
     background: request.background ?? "#ffffff",
     sourceHash: record.sha256,
-    editsVersion: variant === "composite" ? record.edits_version : 0
+    editsVersion: variant === "composite" ? record.edits_version : 0,
+    // A composite export IS bake output, so it has to re-key when the
+    // bake pipeline changes — same reason `computeTreeRenderHash`
+    // hashes the version. Without this the cached file below outlives
+    // a BAKE_PIPELINE_VERSION bump forever: `edits_version` only moves
+    // when the user edits, so an untouched capture keeps returning
+    // pre-bump pixels while every composeV2 surface (clipboard,
+    // Library thumbnails) renders the new ones. `original` exports
+    // bypass the compositor, so they stay keyed without it.
+    pipelineVersion: variant === "composite" ? BAKE_PIPELINE_VERSION : ""
   };
   const exportId = createHash("sha256")
     .update(JSON.stringify(normalized))

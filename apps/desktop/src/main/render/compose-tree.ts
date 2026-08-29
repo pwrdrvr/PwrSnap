@@ -983,8 +983,22 @@ function flattenTreeInZOrder(layers: readonly BundleLayerNode[]): BundleLayerNod
  *           semantics so dark UI captures do not look like the
  *           highlight was dropped.
  *    "8" — highlight EffectLayer rotation is honored in the bake via
- *           the same rotated-AABB extraction + mask path as blur. */
-const BAKE_PIPELINE_VERSION = "8";
+ *           the same rotated-AABB extraction + mask path as blur.
+ *    "9" — annotation sizing recalibrated onto the shared ladder
+ *           (#520) and the stroked-shape band routed through
+ *           `shapeAutoStrokeWidthPx` — the same layer tree at the
+ *           same dims now bakes DIFFERENT bytes for every arrow,
+ *           shape, and text glyph. #520 made that change without
+ *           bumping this constant and without adding anything to
+ *           `computeTreeRenderHash`'s inputs, so a capture baked
+ *           before it kept matching its old hash and kept being
+ *           served from cache at the old sizes, while a freshly
+ *           baked one got the new ones — the exact stale-hit the
+ *           version exists to prevent. Bumping here re-keys every
+ *           entry so the next request re-bakes at the current
+ *           ladder. Cache entries at version "8" are orphaned, per
+ *           `docs/solutions/2026-05-28-bake-render-cache-orphans.md`. */
+export const BAKE_PIPELINE_VERSION = "9";
 
 export function computeTreeRenderHash(input: {
   layers: readonly BundleLayerNode[];

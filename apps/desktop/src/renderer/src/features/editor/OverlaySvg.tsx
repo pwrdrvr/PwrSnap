@@ -34,6 +34,7 @@ import {
   CURRENT_ARROW_STYLE_VERSION,
   annotationBasisPx,
   computeArrowGeometry,
+  outlineHaloWidthPx,
   computeStemDashArray,
   DEFAULT_PARALLELOGRAM_SKEW_DEG,
   outlineHaloColor,
@@ -593,7 +594,7 @@ function ArrowGlyph({
   // override (so a Large thickness on a tiny arrow still renders
   // proportionally).
   const stroke = headGeom.strokeWidthPx;
-  const outlineWidth = Math.max(stroke * 0.25, 1.5);
+  const outlineWidth = outlineHaloWidthPx(stroke);
   // Contrast-border resolution — mirrors compose.ts arrowSvg (keep in
   // sync). Legacy rows resolve to the historical white halo; the new
   // modes swap the color, stripe it, or drop it. Width is unchanged

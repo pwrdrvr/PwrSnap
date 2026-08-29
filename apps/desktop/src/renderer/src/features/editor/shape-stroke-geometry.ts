@@ -1,4 +1,5 @@
 import {
+  outlineHaloWidthPx,
   readOverlayThickness,
   shapeAutoStrokeWidthPx,
   type OverlayThickness
@@ -43,6 +44,6 @@ export function shapeStrokeGeometry(
     autoStrokeWidthPx,
     basisPx
   );
-  const outline = Math.max(strokeWidthPx * 0.25, 1.5);
+  const outline = outlineHaloWidthPx(strokeWidthPx);
   return { strokeWidthPx, outline, outerReachPx: strokeWidthPx / 2 + outline };
 }

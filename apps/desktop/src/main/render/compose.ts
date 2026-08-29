@@ -41,7 +41,8 @@ import {
   readShapeSkewDeg,
   readTextOverlayOutline,
   readTextWeight,
-  shapeAutoStrokeWidthPx
+  shapeAutoStrokeWidthPx,
+  outlineHaloWidthPx
 } from "@pwrsnap/shared";
 
 // Main process can't read CSS vars, so the overlay-render default
@@ -200,7 +201,7 @@ function arrowSvg(
   // and must bake byte-identically; the new modes swap the color,
   // stripe it, or drop it. The width formula is unchanged in every
   // mode (no independent border sizing by design).
-  const outlineWidth = Math.max(1.5, strokeWidthPx * 0.25);
+  const outlineWidth = outlineHaloWidthPx(strokeWidthPx);
   const resolvedOutline = readOverlayOutline(data, "white");
   const haloColor = outlineHaloColor(resolvedOutline);
 
@@ -425,7 +426,7 @@ function shapeSvg(
     autoStrokeWidthPx,
     resolvedBasisPx
   );
-  const outlinePx = Math.max(1.5, strokeWidthPx * 0.25);
+  const outlinePx = outlineHaloWidthPx(strokeWidthPx);
   const fillColor = data.color === "auto" ? AUTO_ACCENT_HEX : data.color;
   const filled = readShapeFilled(data);
   const shape = readShapeKind(data);
@@ -506,22 +507,21 @@ function shapeSvg(
     // under the fill: a centered stroke of 2×rim width, whose inner
     // half the fill covers — the same reach as a stroked shape's halo.
     //
-    // Rim width comes from the same ladder as the stroked path above
-    // (they used to disagree; see the note on `autoStrokeWidthPx`).
-    const rimStrokeWidthPx = readOverlayThickness(
-      data.thickness,
-      shapeAutoStrokeWidthPx(resolvedBasisPx),
-      resolvedBasisPx
-    );
-    const rimPx = Math.max(1.5, rimStrokeWidthPx * 0.25);
+    // The rim IS the stroked path's halo — `outlinePx`, used directly.
+    // This branch used to re-derive the whole chain
+    // (readOverlayThickness -> shapeAutoStrokeWidthPx -> quarter) to
+    // reach the identical number, back when the stroked band above was
+    // a different formula and the two genuinely had to be computed
+    // apart. They come off one ladder now, so re-deriving only creates
+    // a seam where they could drift again.
     const rim =
       resolvedOutline.kind === "legacy" || resolvedOutline.kind === "none"
         ? ""
         : resolvedOutline.kind === "stripe"
-          ? `${strokedPrimitive("white", rimPx * 2)}
-    ${strokedPrimitive("black", rimPx * 2, outlineStripeDashArray(rimPx * 2))}
+          ? `${strokedPrimitive("white", outlinePx * 2)}
+    ${strokedPrimitive("black", outlinePx * 2, outlineStripeDashArray(outlinePx * 2))}
     `
-          : `${strokedPrimitive(haloColor, rimPx * 2)}
+          : `${strokedPrimitive(haloColor, outlinePx * 2)}
     `;
     // Round joins only when a rim is painted — the legacy filled emit
     // (`<g${groupTransform}>`, no stroke anywhere) must stay

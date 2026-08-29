@@ -1115,6 +1115,14 @@ export function hitTestOverlays(
     textDims !== undefined
       ? { widthPx: textDims.canvasWidthPx, heightPx: textDims.canvasHeightPx }
       : undefined;
+  // Hoisted out of the per-overlay loop below: this function also runs
+  // per FRAME for the hover cursor affordance (see the allocation note
+  // on `hitTestCanvasPoint`), and the basis is the same for every
+  // overlay on the capture.
+  const annotationBasis =
+    textDims !== undefined
+      ? annotationBasisPx(textDims.sourceWidthPx, textDims.sourceHeightPx)
+      : 0;
   // ~10px hit radius on a 1000px short-side canvas → 0.01 in
   // normalized coords. Scales inversely with size for a roughly
   // constant pixel tolerance.
@@ -1202,13 +1210,11 @@ export function hitTestOverlays(
       const hasStrokeLine = o.kind === "shape" && !readShapeFilled(o);
       const strokeReachPx =
         hasStrokeLine && textDims !== undefined
-          ? shapeStrokeGeometry(
-              o.thickness,
-              // SOURCE dims, matching what ShapeGlyph paints with.
-              // Canvas dims here would make the grabbable region
-              // drift from the painted line on any cropped capture.
-              annotationBasisPx(textDims.sourceWidthPx, textDims.sourceHeightPx)
-            ).outerReachPx
+          ? // `annotationBasis` is SOURCE-derived, matching what
+            // ShapeGlyph paints with. Canvas dims here would make the
+            // grabbable region drift from the painted line on any
+            // cropped capture.
+            shapeStrokeGeometry(o.thickness, annotationBasis).outerReachPx
           : 0;
       const padXN =
         (imageDims !== undefined ? strokeReachPx / imageDims.widthPx : 0) +

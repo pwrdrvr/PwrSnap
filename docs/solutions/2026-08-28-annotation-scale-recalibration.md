@@ -159,9 +159,10 @@ It writes one before/after PNG per capture shape plus an `index.html`.
 
 Floors of 800 / 1000 / 1200 were rendered across the 1× Slack strip and a
 2× dialog crop. 800 read well at 1× and slightly small at 2×; 1000 was
-the reverse; 900 is the midpoint that works in both, and maps to a
-memorable reference — *annotate anything smaller than a 1600×900 window
-as if it were one.*
+the reverse; 900 is the midpoint that works in both — roughly
+*annotate anything smaller than a ~900-px-tall window as if it were one*
+(a literal 1600×900 capture resolves to 918 via the diagonal/2 term, so
+it sits just above the floor rather than exactly on it).
 
 ## Two subtleties in the wiring
 

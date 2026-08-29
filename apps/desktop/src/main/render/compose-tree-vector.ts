@@ -62,6 +62,13 @@ export interface BuildCompositeLayersV2Args {
    *  have no raster source; falls back to canvas dims. */
   sourceWidthPx?: number | undefined;
   sourceHeightPx?: number | undefined;
+  /** The caller's render scale — `renderDims / canvasDims`. Passed in
+   *  rather than re-derived here because `composeV2` defines it from
+   *  WIDTH and then ROUNDS both render dims; recomputing it from the
+   *  rounded height picks a different axis and reintroduces the
+   *  rounding error (0.1% on a 187px canvas). Defaults to 1 for
+   *  unscaled callers and tests. */
+  renderScale?: number | undefined;
 }
 
 export async function buildCompositeLayersForV2(
@@ -74,7 +81,8 @@ export async function buildCompositeLayersForV2(
     canvasWidthPx,
     canvasHeightPx,
     sourceWidthPx,
-    sourceHeightPx
+    sourceHeightPx,
+    renderScale = 1
   } = args;
   const data = row.data;
   // Annotation sizing basis, expressed in RENDER pixels.
@@ -89,13 +97,12 @@ export async function buildCompositeLayersForV2(
   //
   //   2. × renderScale. The SVG renderers draw into a render-dims
   //      viewBox, so the basis has to be scaled into that space too.
-  //      Re-deriving it from render dims instead would break whenever
+  //      Deriving it from the render dims instead would break whenever
   //      the basis FLOOR binds on one side of the scale and not the
   //      other: a 473×178 capture floors at 900 whether it is being
   //      baked at 1× or upscaled to the 800-wide LOW tier, so its
   //      arrows would export proportionally thinner than the preview
   //      painted them.
-  const renderScale = canvasHeightPx > 0 ? renderHeightPx / canvasHeightPx : 1;
   const annotationBasis =
     annotationBasisPx(
       sourceWidthPx ?? canvasWidthPx,

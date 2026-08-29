@@ -93,6 +93,33 @@ describe("computeArrowGeometry", () => {
     }
   });
 
+  it("the short-arrow floor scales with the basis instead of a flat 2px", () => {
+    // The short-arrow correction shrinks head + stroke together so the
+    // head fits inside a tiny arrow, then floors the stroke. That floor
+    // used to be an absolute 2px — the last absolute constant left after
+    // the recalibration, so its meaning drifted with resolution (23% of
+    // the auto stroke at the basis floor, 7% on a 5K capture). It is now
+    // `basis / SHORT_ARROW_STROKE_MIN_DIVISOR`.
+    const tiny = (w: number, h: number) =>
+      computeArrowGeometry({
+        from: { x: 0.5, y: 0.5 },
+        to: { x: 0.5005, y: 0.5 }, // a couple of px — well inside the head
+        imageWidthPx: w,
+        imageHeightPx: h,
+        styleVersion: 2
+      }).strokeWidthPx;
+
+    // At the basis floor it lands within a quarter-pixel of the old 2px.
+    expect(tiny(200, 80)).toBeCloseTo(900 / 400, 5);
+    // On a big capture it keeps the same RATIO to the auto stroke
+    // instead of collapsing to a hairline.
+    const bigBasis = annotationBasisPx(5120, 2880);
+    expect(tiny(5120, 2880)).toBeCloseTo(bigBasis / 400, 5);
+    const ratioSmall = tiny(200, 80) / annotationStrokeWidthPx("medium", 900);
+    const ratioBig = tiny(5120, 2880) / annotationStrokeWidthPx("medium", bigBasis);
+    expect(ratioBig).toBeCloseTo(ratioSmall, 5);
+  });
+
   it("honors an explicit basisPx so a cropped / scaled caller controls sizing", () => {
     // The bake passes annotationBasisPx(SOURCE) × renderScale; the
     // editor passes annotationBasisPx(SOURCE). Either way the caller's

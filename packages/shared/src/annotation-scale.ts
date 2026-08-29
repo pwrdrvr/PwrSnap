@@ -100,8 +100,10 @@
  * small crop's annotations legible against UI text that doesn't get
  * smaller just because the crop rectangle did.
  *
- * Read it as "annotate anything smaller than a 1600×900 window as if
- * it were a 1600×900 window".
+ * Roughly: "annotate anything smaller than a ~900-px-tall window as if
+ * it were one". Not exactly a 1600×900 window — that shape resolves to
+ * 918 via the diagonal/2 term, just above the floor; the floor binds
+ * only below it.
  */
 export const ANNOTATION_BASIS_FLOOR_PX = 900;
 

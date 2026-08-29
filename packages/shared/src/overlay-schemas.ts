@@ -37,6 +37,12 @@ export const OverlayThickness = z.union([
 ]);
 export type OverlayThickness = z.infer<typeof OverlayThickness>;
 
+/** Fallback multipliers for the legacy two-arg call shape (no
+ *  `basisPx`). Production paths all pass a basis. */
+const LEGACY_THICKNESS_MULTIPLIERS: Readonly<
+  Record<AnnotationSizePreset, number>
+> = { small: 0.5, medium: 1, large: 2, "x-large": 3 };
+
 /**
  * Resolve a thickness preset (or numeric override / "auto") to a
  * concrete stroke width in pixels.
@@ -120,13 +126,6 @@ export function readOverlayThickness(
   }
   return annotationStrokeWidthPx(thickness, basisPx);
 }
-
-/** Fallback multipliers for the legacy two-arg call shape (no
- *  `basisPx`). Production paths all pass a basis. */
-const LEGACY_THICKNESS_MULTIPLIERS: Readonly<
-  Record<AnnotationSizePreset, number>
-> = { small: 0.5, medium: 1, large: 2, "x-large": 3 };
-
 
 // Overlay coords are "normalized" with respect to the SOURCE raster's
 // natural dims, NOT the current canvas dims. Before crop-as-layer

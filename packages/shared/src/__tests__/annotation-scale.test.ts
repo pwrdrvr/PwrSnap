@@ -247,32 +247,23 @@ describe("size matrix (hardcoded — re-read this table when retuning)", () => {
         PRESETS.map((p) => round(annotationStrokeWidthPx(p, basis)))
       ] as const;
     });
-    expect(rows).toEqual(EXPECTED);
+    expect(rows, renderMatrix()).toEqual(EXPECTED);
   });
 
-  test("prints the matrix (read it on failure, or with --reporter=verbose)", () => {
-    const lines = CAPTURES.map(({ name, w, h, uiTextPx }) => {
-      const basis = annotationBasisPx(w, h);
-      const text = PRESETS.map((p) =>
-        round(annotationTextSizePx(p, basis)).toFixed(1).padStart(6)
-      ).join("");
-      const stroke = PRESETS.map((p) =>
-        round(annotationStrokeWidthPx(p, basis)).toFixed(1).padStart(6)
-      ).join("");
-      return `${name.padEnd(30)}${`${w}x${h}`.padEnd(11)}ui=${String(uiTextPx).padStart(2)}  basis=${round(basis).toFixed(0).padStart(5)}  text:${text}  stroke:${stroke}`;
-    });
-    // packages/shared compiles with `"types": []` (no Node, no DOM), so
-    // `console` isn't a declared global here — reach it the same way
-    // `readOverlayThickness` does.
-    const con = (globalThis as { console?: { log(msg: string): void } }).console;
-    con?.log(
-      [
-        "",
-        `${"capture".padEnd(30)}${"dims".padEnd(11)}       ${"".padEnd(13)}   S     M     L    XL`,
-        ...lines,
-        ""
-      ].join("\n")
-    );
-    expect(lines.length).toBe(CAPTURES.length);
-  });
+  /** The same table, formatted — attached to the assertion below so it
+   *  shows up in the failure output when a constant moves, instead of
+   *  being logged on every green run. */
+  const renderMatrix = (): string =>
+    [
+      "",
+      `${"capture".padEnd(30)}${"dims".padEnd(11)}ui  basis    S     M     L    XL (text)   S     M     L    XL (stroke)`,
+      ...CAPTURES.map(({ name, w, h, uiTextPx }) => {
+        const basis = annotationBasisPx(w, h);
+        const cols = (resolve: (p: AnnotationSizePreset, b: number) => number): string =>
+          PRESETS.map((p) => round(resolve(p, basis)).toFixed(1).padStart(6)).join("");
+        return `${name.padEnd(30)}${`${w}x${h}`.padEnd(11)}${String(uiTextPx).padStart(2)}${round(basis).toFixed(0).padStart(7)}${cols(annotationTextSizePx)}${cols(annotationStrokeWidthPx)}`;
+      }),
+      ""
+    ].join("\n");
+
 });

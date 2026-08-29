@@ -728,10 +728,6 @@ function escapeXml(s: string): string {
     .replace(/'/g, "&apos;");
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
-
 // ── v2 reuse exports ────────────────────────────────────────────────
 // The v2 tree-walking compositor (render/compose-tree-vector.ts)
 // reuses the SVG-rasterize discipline for arrow / rect / text /

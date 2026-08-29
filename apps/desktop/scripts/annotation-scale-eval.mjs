@@ -2,6 +2,7 @@
 // Visual eval harness for the annotation size ladder.
 //
 //   node apps/desktop/scripts/annotation-scale-eval.mjs [--out DIR] [--only NAME]
+//   node apps/desktop/scripts/annotation-scale-eval.mjs --base shot.png --dims 777x207 [--ui 15]
 //
 // Renders every text bucket and every arrow/shape thickness preset over
 // a synthetic UI screenshot at each of the capture shapes users
@@ -21,11 +22,22 @@
 //
 // The background is synthetic on purpose. Real captures are the user's
 // private screenshots; a committed harness must not depend on them.
-// To spot-check against a real one, pass --base /path/to.png --dims WxH.
+// To spot-check against a real one, pass --base /path/to.png --dims WxH
+// (and --ui with that capture's UI text height, default 15).
 //
 // Chromium comes from @playwright/test (already a desktop devDependency
-// for the E2E suite) — it is also the renderer the editor actually paints
-// text through, so the glyphs here are the glyphs users see.
+// for the E2E suite) — the same ENGINE the editor and the HTML text bake
+// render through, so font metrics match production.
+//
+// Fidelity caveat, so nobody over-trusts these pictures: the harness
+// draws SVG `<text>` with `stroke` + `paint-order`, whereas the editor
+// and the bake render text as HTML with `-webkit-text-stroke` via
+// `computeTextHtmlStyle`. Glyph SIZE (what this harness exists to
+// judge) is identical; halo geometry differs slightly. Likewise the
+// arrow markup here is a compact stand-in for `arrowSvgForV2` — that
+// lives in apps/desktop/src/main and drags in sharp + Electron, which a
+// bare-Node diagnostic script can't load. Stroke widths and head
+// geometry come from the real `computeArrowGeometry`.
 
 import { registerHooks } from "node:module";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -219,8 +231,20 @@ async function main() {
     if (dims === null) {
       throw new Error("--base requires --dims WxH (the raster's natural size)");
     }
-    const [w, h] = dims.split("x").map(Number);
-    scenarios = [{ name: "custom", w, h, ui: 15, base: basePath }];
+    const parsed = /^(\d+)x(\d+)$/.exec(dims.trim());
+    if (parsed === null) {
+      throw new Error(`--dims must look like 1920x1080 (got "${dims}")`);
+    }
+    const w = Number(parsed[1]);
+    const h = Number(parsed[2]);
+    if (w <= 0 || h <= 0) {
+      throw new Error(`--dims must be positive (got "${dims}")`);
+    }
+    // `--ui` lets the caller say what UI text size the real capture
+    // contains (~15 for a 1x grab, ~30 for a 2x one) — that is the
+    // reference the annotation has to hold its own against.
+    const ui = Number(flag("ui") ?? 15);
+    scenarios = [{ name: "custom", w, h, ui, base: basePath }];
   } else if (only !== null) {
     scenarios = SCENARIOS.filter((s) => s.name.includes(only));
     if (scenarios.length === 0) {

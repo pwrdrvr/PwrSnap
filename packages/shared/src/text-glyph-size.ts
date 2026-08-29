@@ -22,7 +22,6 @@
 // sub-UI-text annotations. See `annotation-scale.ts` for the why.
 
 import {
-  ANNOTATION_TEXT_DIVISORS,
   annotationBasisPx,
   annotationTextSizePx,
   type AnnotationSizePreset
@@ -159,8 +158,3 @@ export function matchBucket(
   }
   return null;
 }
-
-/** Re-exported so the (many) call sites that already import from this
- *  module don't have to reach into `annotation-scale` for the divisor
- *  table when they only want to reason about text. */
-export { ANNOTATION_TEXT_DIVISORS };

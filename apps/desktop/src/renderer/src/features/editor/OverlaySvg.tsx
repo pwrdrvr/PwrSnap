@@ -330,7 +330,7 @@ export function OverlaySvg({
                 outlineAuto={data.outlineAuto}
                 imageWidthPx={imageWidthPx}
                 imageHeightPx={imageHeightPx}
-            basisPx={annotationBasis}
+                basisPx={annotationBasis}
               />
             )}
             {data.kind === "arrow" && (
@@ -349,7 +349,7 @@ export function OverlaySvg({
                 outlineAuto={data.outlineAuto}
                 imageWidthPx={imageWidthPx}
                 imageHeightPx={imageHeightPx}
-            basisPx={annotationBasis}
+                basisPx={annotationBasis}
               />
             )}
           </svg>
@@ -449,7 +449,7 @@ export function OverlaySvg({
                 outlineAuto={draftStyle?.outlineAuto}
                 imageWidthPx={imageWidthPx}
                 imageHeightPx={imageHeightPx}
-            basisPx={annotationBasis}
+                basisPx={annotationBasis}
                 isDraft
               />
             )}
@@ -2338,6 +2338,12 @@ export function TransformHandles({
   // the overlay's persisted data when not dragging.
   const [liveData, setLiveData] = useState<OverlayRow["data"] | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  // Same SOURCE-derived basis the OverlaySvg root computes — the drag
+  // rect below has to pad by the reach of the line ShapeGlyph actually
+  // painted, so both must divide the same number. Hoisted out of the
+  // per-layer style callback: this component re-renders on every
+  // pointermove during a drag.
+  const annotationBasis = annotationBasisPx(sourceWidthPx, sourceHeightPx);
   // Pointerdown snapshot: the data we use to interpret subsequent
   // pointermove deltas. Kept in a ref since pointermove fires faster
   // than React state can keep up.
@@ -2709,10 +2715,7 @@ export function TransformHandles({
             // so no pad.
             const reachPx =
               d.kind === "shape" && !readShapeFilled(d)
-                ? shapeStrokeGeometry(
-                    d.thickness,
-                    annotationBasisPx(sourceWidthPx, sourceHeightPx)
-                  ).outerReachPx
+                ? shapeStrokeGeometry(d.thickness, annotationBasis).outerReachPx
                 : 0;
             const padXN = reachPx / imageWidthPx;
             const padYN = reachPx / imageHeightPx;

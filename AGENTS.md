@@ -32,6 +32,14 @@
   tray, menu-bar, screen-capture, and AppKit windowing specs are expected to be
   skipped. Add `--platform linux/amd64` only when investigating
   architecture-specific GHA parity.
+- **The macOS GHA Desktop E2E job runs the whole suite with
+  `PWRSNAP_E2E_DISABLE_GPU=1`** (software rendering — see `.github/workflows/ci.yml`),
+  and `pnpm test:desktop-e2e` does not set it. A plain local run is therefore a
+  DIFFERENT environment than the one every screenshot golden was recorded in;
+  check that before concluding a local-only failure is a stale golden, a flake,
+  or "just this machine". Suites sensitive to rasterization should pin the env
+  themselves and assert the pin rather than trust the caller —
+  `visual-regression.spec.ts` does both.
 - **Ask before running disruptive headed desktop E2E on the operator's
   machine.** The operator may have an off-desktop lab for Windows or macOS
   testing; ask them for a pointer to the appropriate lab repository or skill.

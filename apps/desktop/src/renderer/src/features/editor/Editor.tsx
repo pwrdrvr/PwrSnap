@@ -4934,14 +4934,50 @@ function EditorLoaded({
   useLayoutEffect(() => {
     const el = canvasRef.current;
     if (el === null) return;
-    const update = (): void => {
-      const rect = el.getBoundingClientRect();
-      setCanvasCssHeight((prev) =>
-        Math.abs(prev - rect.height) < 0.5 ? prev : rect.height
-      );
+    // LAYOUT height, never `getBoundingClientRect()`. The rect is
+    // POST-TRANSFORM, and the editor mounts inside `.psl__focus`, which
+    // runs a 180ms `psl-focus-in` entrance animation from scale(0.985)
+    // to scale(1). `useZoomPan` assigns the canvas its final explicit
+    // width/height DURING that window, so the single ResizeObserver
+    // callback that the sizing triggers reads a rect that is ~1% short.
+    // The LAYOUT box never changes again — the animation only mutates a
+    // transform — so no further notification ever arrives and the stale
+    // value is permanent for the life of the editor.
+    //
+    // That mattered well beyond a cosmetic 1%: this value is the
+    // CSS:image scale that TextHtml divides its measured `offsetWidth`
+    // by before publishing the glyph box to text-measure-registry.ts.
+    // `offsetWidth` is a layout measure, so dividing it by a
+    // transform-polluted scale yields an image-px box inflated by the
+    // animation's shrink factor, and the selection outline / transform
+    // handles / hit-test all hug a box ~1% wider than the glyph. It
+    // read as a font-metric bug (see the note in
+    // editor-text-outline.spec.ts) but is purely this stale scale.
+    //
+    // `borderBoxSize` is fractional and transform-independent, matching
+    // the border-box semantics the rect used to supply. `blockSize` is
+    // the BLOCK-axis size, which is the height only under a horizontal
+    // writing mode — true for every PwrSnap surface. A vertical
+    // writing-mode ancestor would silently hand back the WIDTH here.
+    //
+    // The synchronous seed has no entry to read and falls back to
+    // integer `offsetHeight`. `seeded` then lets the FIRST observer
+    // delivery replace that integer unconditionally: without it, a
+    // re-mount whose canvas is already laid out seeds 784, the observer
+    // answers 783.75, and the 0.5px guard below pins the rounded value
+    // for the life of the editor.
+    let seeded = false;
+    const update = (entry?: ResizeObserverEntry): void => {
+      const height = entry?.borderBoxSize?.[0]?.blockSize ?? el.offsetHeight;
+      const fromObserver = entry !== undefined;
+      setCanvasCssHeight((prev) => {
+        if (fromObserver && !seeded) return height;
+        return Math.abs(prev - height) < 0.5 ? prev : height;
+      });
+      if (fromObserver) seeded = true;
     };
     update();
-    const obs = new ResizeObserver(update);
+    const obs = new ResizeObserver((entries) => update(entries[0]));
     obs.observe(el);
     return () => obs.disconnect();
   }, [canvasRef]);
@@ -6406,6 +6442,27 @@ function EditorLoaded({
     return () => {
       ro.disconnect();
     };
+    // `tool` is in the deps because this rect is POST-TRANSFORM and its
+    // only consumer (CropTool) needs it correct at pointer time. Every
+    // other dep last changes while `.psl__focus` is still running its
+    // 180ms scale(0.985)→scale(1) entrance animation, and a finishing
+    // transform fires no ResizeObserver notification — so without this
+    // the cached rect stayed frozen mid-animation for the life of the
+    // editor. Measured: {left: 25.34, width: 1029.33} against a live
+    // {left: 17.5, width: 1045}. Note the failure mode precisely: crop
+    // DRAGS are unaffected — every CropTool gesture is delta-based, and
+    // a delta maps screen→source→screen through the same cached width,
+    // so the staleness cancels exactly. What a stale rect breaks is the
+    // RENDER: the selection + dim tiles draw at the cached scale inside
+    // the live-sized canvas, so the highlighted region covers ~1.5%
+    // different image content than the commit keeps (~12px at the far
+    // corner) and the dim overlay stops short of the canvas edge — the
+    // visible corner gap that exposed this. Re-measuring when the tool
+    // changes lands a fresh rect before CropTool renders. `tool` is a
+    // stable string, so this cannot loop the way an unstable object dep
+    // would (see below). Pinned by editor-crop-drag.spec.ts, which
+    // recreates the staleness deterministically.
+    //
     // Use the primitive components of canvasStyle, NOT the object
     // reference itself. `useZoomPan` rebuilds the canvasStyle object
     // on every render (no useMemo); depending on the object reference
@@ -6416,6 +6473,7 @@ function EditorLoaded({
     // actually change the canvas layout.
   }, [
     canvasRef,
+    tool,
     zoom.canvasStyle?.width,
     zoom.canvasStyle?.height,
     zoom.canvasStyle?.transform

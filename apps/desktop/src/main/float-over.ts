@@ -20,7 +20,7 @@
 // reveals the already-painted toast — no post-hoc show race with
 // previous-app activation.
 
-import { app, BrowserWindow, globalShortcut, ipcMain, screen } from "electron";
+import { BrowserWindow, globalShortcut, ipcMain, screen } from "electron";
 import {
   EVENT_CHANNELS,
   IMAGE_PRESET_COPY_VERB,
@@ -86,7 +86,6 @@ let everShown = false;
 /** One bounded Windows topmost retry chain. Disposal cancels it so no
  *  float-over-owned timer survives app teardown. */
 let topmostRetryTimer: ReturnType<typeof setTimeout> | null = null;
-let copyShortcutFocusRestoreTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** Where we park the float-over between uses. Far enough off-screen that
  *  no real display layout includes it, even on a 16K virtual workspace. */
@@ -105,16 +104,9 @@ function clearTopmostRetryTimer(): void {
   topmostRetryTimer = null;
 }
 
-function clearCopyShortcutFocusRestoreTimer(): void {
-  if (copyShortcutFocusRestoreTimer === null) return;
-  clearTimeout(copyShortcutFocusRestoreTimer);
-  copyShortcutFocusRestoreTimer = null;
-}
-
 function resetFloatOverRuntimeState(): void {
   clearRendererReadyTimer();
   clearTopmostRetryTimer();
-  clearCopyShortcutFocusRestoreTimer();
   singleton = null;
   state = { kind: "hidden" };
   anchoredDisplayId = null;
@@ -264,7 +256,6 @@ function wireFloatOverResizeChannel(): void {
 
 function getOrCreate(): BrowserWindow {
   if (singleton !== null && !singleton.isDestroyed()) return singleton;
-  wireCopyShortcutFocusListeners();
   wireFloatOverResizeChannel();
   const window = createFloatOverWindow();
   singleton = window;
@@ -388,9 +379,22 @@ function emitCopyPulse(preset: RenderPreset): void {
   singleton.webContents.send(EVENT_CHANNELS.floatOverCopyPulse, { preset });
 }
 
+function emitVideoCopyShortcut(
+  captureId: string,
+  format: "gif" | "mp4",
+  preset: RenderPreset
+): void {
+  if (singleton === null || singleton.isDestroyed()) return;
+  singleton.webContents.send(EVENT_CHANNELS.floatOverVideoCopyShortcut, {
+    captureId,
+    format,
+    preset
+  });
+}
+
 function armCopyShortcuts(captureId: string): void {
   disarmCopyShortcuts();
-  if (copyShortcutsSuspended || BrowserWindow.getFocusedWindow() !== null) return;
+  if (copyShortcutsSuspended) return;
   const generation = copyShortcutGeneration;
   void bus.dispatch("library:byId", { id: captureId }, { principal: "ipc" }).then((result) => {
     if (
@@ -433,7 +437,7 @@ function armCopyShortcuts(captureId: string): void {
         const registered = globalShortcut.register(
           accelerator,
           () => {
-            if (copyShortcutsSuspended || BrowserWindow.getFocusedWindow() !== null) return;
+            if (copyShortcutsSuspended) return;
             if (format === "image") {
               emitCopyPulse(preset);
               void bus.dispatch(
@@ -443,11 +447,7 @@ function armCopyShortcuts(captureId: string): void {
               );
               return;
             }
-            void bus.dispatch(
-              "clipboard:copyVideoFile",
-              { captureId, format, preset },
-              { principal: "ipc" }
-            );
+            emitVideoCopyShortcut(captureId, format, preset);
           }
         );
         if (registered) {
@@ -491,40 +491,6 @@ hotkeyRecorderSuspension.registerParticipant({
     if (state.kind === "loaded") armCopyShortcuts(state.captureId);
   }
 });
-
-let copyShortcutFocusListenersWired = false;
-const onPwrSnapWindowFocus = (): void => {
-  clearCopyShortcutFocusRestoreTimer();
-  disarmCopyShortcuts();
-};
-const onPwrSnapWindowBlur = (): void => {
-  clearCopyShortcutFocusRestoreTimer();
-  copyShortcutFocusRestoreTimer = setTimeout(() => {
-    copyShortcutFocusRestoreTimer = null;
-    if (BrowserWindow.getFocusedWindow() === null && state.kind === "loaded") {
-      armCopyShortcuts(state.captureId);
-    }
-  }, 0);
-};
-
-// A focused PwrSnap window owns its local numbered chords. The float-over is
-// non-activating, so its global owner is useful only while another app is
-// frontmost; otherwise it would swallow Library/Tray keydown before their
-// active asset can handle it. Wiring follows the singleton lifecycle so test
-// doubles that only import this module need not implement Electron app events.
-function wireCopyShortcutFocusListeners(): void {
-  if (copyShortcutFocusListenersWired || typeof app.on !== "function") return;
-  app.on("browser-window-focus", onPwrSnapWindowFocus);
-  app.on("browser-window-blur", onPwrSnapWindowBlur);
-  copyShortcutFocusListenersWired = true;
-}
-
-function unwireCopyShortcutFocusListeners(): void {
-  if (!copyShortcutFocusListenersWired) return;
-  app.removeListener("browser-window-focus", onPwrSnapWindowFocus);
-  app.removeListener("browser-window-blur", onPwrSnapWindowBlur);
-  copyShortcutFocusListenersWired = false;
-}
 
 /**
  * The single entry point for the rest of the main process to drive the
@@ -699,8 +665,6 @@ export function getFloatOverWindowIdForE2E(): number | null {
  */
 export function disposeFloatOver(): void {
   disarmCopyShortcuts();
-  clearCopyShortcutFocusRestoreTimer();
-  unwireCopyShortcutFocusListeners();
   clearRendererReadyTimer();
   clearTopmostRetryTimer();
   if (resizeChannelWired) {

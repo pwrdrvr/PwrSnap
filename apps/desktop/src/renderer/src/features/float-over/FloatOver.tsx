@@ -27,7 +27,10 @@ import { AiConsentDialog } from "../shared/AiConsentDialog";
 import { useFieldEditor } from "../shared/useFieldEditor";
 import { HoverAutoplayVideo } from "../shared/HoverAutoplayVideo";
 import type { PresetMetricMap } from "../shared/usePresetRenderMetrics";
-import { VideoExportPresetsPanel } from "../shared/VideoExportPresetsPanel";
+import {
+  VideoExportPresetsPanel,
+  type VideoCopyShortcutRequest
+} from "../shared/VideoExportPresetsPanel";
 import { VideoTimeline } from "../shared/VideoTimeline";
 import { useVideoTimelineAssets } from "../shared/useVideoTimelineAssets";
 import { useVideoTrimRange } from "../shared/useVideoTrimRange";
@@ -279,6 +282,7 @@ export function FloatOver({
   capturesRootOverridden = false,
   copyMetrics,
   copyPulses,
+  videoCopyShortcut,
   onDismiss,
   onEdit,
   onCopy,
@@ -333,6 +337,7 @@ export function FloatOver({
   capturesRootOverridden?: boolean;
   copyMetrics?: PresetMetricMap | undefined;
   copyPulses?: Readonly<Record<CopyPreset, number>> | undefined;
+  videoCopyShortcut?: VideoCopyShortcutRequest | null | undefined;
   onDismiss?: () => void;
   onEdit?: () => void;
   /** Fired when the user clicks Low / Med / High in the toast. The
@@ -950,6 +955,7 @@ export function FloatOver({
         <div className="fo__export-grid">
           <FloatOverVideoExport
             asset={asset}
+            copyShortcut={videoCopyShortcut}
             onTrimDraggingChange={setTrimDragging}
             previewVideoRef={previewVideoRef}
           />
@@ -1311,10 +1317,12 @@ export function FoDesktopFrame({
  */
 function FloatOverVideoExport({
   asset,
+  copyShortcut,
   onTrimDraggingChange,
   previewVideoRef
 }: {
   asset: Extract<FloatOverAsset, { kind: "video" }>;
+  copyShortcut?: VideoCopyShortcutRequest | null | undefined;
   onTrimDraggingChange: (dragging: boolean) => void;
   previewVideoRef: React.RefObject<HTMLVideoElement | null>;
 }) {
@@ -1359,7 +1367,11 @@ function FloatOverVideoExport({
           label="Trim recording"
         />
       </div>
-      <VideoExportPresetsPanel captureId={asset.captureId} range={trim.range} />
+      <VideoExportPresetsPanel
+        captureId={asset.captureId}
+        range={trim.range}
+        copyShortcut={copyShortcut}
+      />
     </>
   );
 }

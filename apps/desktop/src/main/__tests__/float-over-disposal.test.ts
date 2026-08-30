@@ -256,7 +256,7 @@ describe("disposeFloatOver", () => {
     );
   });
 
-  it("registers one video shortcut owner and dispatches the matching video export once", async () => {
+  it("routes a video shortcut to the renderer that owns the live trim range", async () => {
     mocks.dispatch.mockImplementation(async (name: string, request: { id?: string }) => {
       if (name === "library:byId") {
         return { ok: true, value: { id: request.id, kind: "video" } };
@@ -274,33 +274,36 @@ describe("disposeFloatOver", () => {
     expect(mediumMp4Callback).toBeTypeOf("function");
 
     mocks.dispatch.mockClear();
+    const window = mocks.windows[0]!;
+    window.webContents.send.mockClear();
     mediumMp4Callback?.();
 
-    expect(mocks.dispatch).toHaveBeenCalledTimes(1);
-    expect(mocks.dispatch).toHaveBeenCalledWith(
-      "clipboard:copyVideoFile",
-      { captureId: "cap_video", format: "mp4", preset: "med" },
-      { principal: "ipc" }
+    expect(mocks.dispatch).not.toHaveBeenCalled();
+    expect(window.webContents.send).toHaveBeenCalledTimes(1);
+    expect(window.webContents.send).toHaveBeenCalledWith(
+      "events:float-over:video-copy-shortcut",
+      { captureId: "cap_video", format: "mp4", preset: "med" }
     );
-    expect(mocks.dispatch.mock.calls.some(([name]) => name === "clipboard:copy")).toBe(false);
   });
 
-  it("yields numbered chords to a focused PwrSnap surface and restores on app blur", async () => {
+  it("retains numbered shortcuts while a PwrSnap window is focused", async () => {
     setFloatOverState({ kind: "show-loaded", captureId: "cap_focus" });
     await flushShortcutLookup();
     expect(mocks.globalShortcut.register).toHaveBeenCalledTimes(3);
 
-    mocks.globalShortcut.register.mockClear();
-    mocks.globalShortcut.unregister.mockClear();
     mocks.setFocusedWindow({ id: 99 });
-    mocks.app.emit("browser-window-focus");
-    expect(mocks.globalShortcut.unregister).toHaveBeenCalledTimes(3);
+    const lowCallback = mocks.globalShortcut.register.mock.calls.find(
+      ([accelerator]) => accelerator === "CommandOrControl+1"
+    )?.[1] as (() => void) | undefined;
+    mocks.dispatch.mockClear();
+    lowCallback?.();
 
-    mocks.setFocusedWindow(null);
-    mocks.app.emit("browser-window-blur");
-    await vi.advanceTimersByTimeAsync(0);
-    await flushShortcutLookup();
-    expect(mocks.globalShortcut.register).toHaveBeenCalledTimes(3);
+    expect(mocks.globalShortcut.unregister).not.toHaveBeenCalled();
+    expect(mocks.dispatch).toHaveBeenCalledWith(
+      "clipboard:copy",
+      { captureId: "cap_focus", preset: "low" },
+      { principal: "ipc" }
+    );
   });
 
   it("does not register shortcuts when a capture lookup resolves after dismissal", async () => {

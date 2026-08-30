@@ -26,11 +26,13 @@ import {
   type CaptureRecord,
   type DesktopCodexDiscoverySnapshot,
   type FloatOverEvent,
+  type FloatOverVideoCopyShortcutEvent,
   type RenderPreset,
   type Settings,
   type SettingsChangedEvent
 } from "@pwrsnap/shared";
 import { FloatOver } from "./FloatOver";
+import type { VideoCopyShortcutRequest } from "../shared/VideoExportPresetsPanel";
 import { enrichmentBackendLabel } from "../shared/CodexStatusPill";
 import { isEnrichmentProviderAvailable } from "../shared/enrichment-provider-availability";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
@@ -70,6 +72,9 @@ type AiRunUpdatedPayload = {
 export function FloatOverHost(): React.ReactElement {
   const [state, setState] = useState<HostState>({ kind: "idle" });
   const [copyPulses, setCopyPulses] = useState(INITIAL_COPY_PULSES);
+  const [videoCopyShortcut, setVideoCopyShortcut] =
+    useState<VideoCopyShortcutRequest | null>(null);
+  const videoCopyShortcutSequenceRef = useRef(0);
   const [codexAvailable, setCodexAvailable] = useState<boolean | undefined>(undefined);
   // ACP-agent install status, so an ACP enrichment backend (Kimi/Gemini/Grok/
   // Qwen) counts as available even when Codex is absent — see
@@ -152,6 +157,9 @@ export function FloatOverHost(): React.ReactElement {
   useEffect(() => {
     const unsubscribe = window.pwrsnapApi?.on(EVENT_CHANNELS.floatOverState, (payload) => {
       const event = payload as FloatOverEvent;
+      // A shortcut is a one-shot action for the currently mounted toast.
+      // Do not replay the last action if the same capture is re-shown later.
+      setVideoCopyShortcut(null);
       switch (event.kind) {
         case "show-idle":
           setState({ kind: "idle" });
@@ -180,6 +188,32 @@ export function FloatOverHost(): React.ReactElement {
           return;
       }
     });
+    return () => {
+      unsubscribe?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = window.pwrsnapApi?.on(
+      EVENT_CHANNELS.floatOverVideoCopyShortcut,
+      (payload) => {
+        const event = payload as Partial<FloatOverVideoCopyShortcutEvent>;
+        if (
+          typeof event.captureId !== "string" ||
+          (event.format !== "gif" && event.format !== "mp4") ||
+          (event.preset !== "low" && event.preset !== "med" && event.preset !== "high")
+        ) {
+          return;
+        }
+        videoCopyShortcutSequenceRef.current += 1;
+        setVideoCopyShortcut({
+          captureId: event.captureId,
+          format: event.format,
+          preset: event.preset,
+          sequence: videoCopyShortcutSequenceRef.current
+        });
+      }
+    );
     return () => {
       unsubscribe?.();
     };
@@ -495,6 +529,7 @@ export function FloatOverHost(): React.ReactElement {
         capturesRootOverridden={capturesDisplay.overridden}
         copyMetrics={copyMetrics}
         copyPulses={copyPulses}
+        videoCopyShortcut={videoCopyShortcut}
         onDragFile={() => startCaptureDrag(record.id, "high")}
         onDragPreset={(preset) => startCaptureDrag(record.id, preset)}
         enrichment={enrichment}

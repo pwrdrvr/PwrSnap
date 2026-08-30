@@ -10,15 +10,32 @@ const log = getMainLogger("pwrsnap:selector-display-media");
 
 export type SelectorDisplayMediaStrategy = "renderer-display-media" | "legacy-file";
 
+// Runtime experiment state is fail-safe: startup, settings-read failures, E2E,
+// and any process that never wires settings all retain the shipping legacy
+// path. The settings listener updates this synchronously for the next picker;
+// an already-active invocation keeps the strategy it resolved at acceptance.
+let rendererOwnedSelectorCaptureEnabled = false;
+
+export function setRendererOwnedSelectorCaptureEnabled(enabled: boolean): void {
+  rendererOwnedSelectorCaptureEnabled = enabled;
+}
+
+export function isRendererOwnedSelectorCaptureEnabled(): boolean {
+  return rendererOwnedSelectorCaptureEnabled;
+}
+
 /**
  * Electron's programmatic getDisplayMedia source selection is deterministic on
  * Windows and macOS. PipeWire exposes one portal-selected source on Linux, so
  * PwrSnap cannot truthfully bind that source to an Electron Display id there.
  */
 export function selectorDisplayMediaStrategy(
-  platform: NodeJS.Platform
+  platform: NodeJS.Platform,
+  rendererOwnedEnabled: boolean
 ): SelectorDisplayMediaStrategy {
-  return platform === "win32" || platform === "darwin" ? "renderer-display-media" : "legacy-file";
+  return rendererOwnedEnabled && (platform === "win32" || platform === "darwin")
+    ? "renderer-display-media"
+    : "legacy-file";
 }
 
 export function selectExactDisplaySource(

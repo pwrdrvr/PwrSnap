@@ -33,6 +33,7 @@ import { getPreloadPath } from "../window";
 import { boundsApproxEqual, listWindowsSnapshot, selfPidSet, type WindowInfo } from "./window-list";
 import { captureAndRegister, releaseSnapshot, type ScreenSnapshot } from "./screen-snapshot";
 import {
+  isRendererOwnedSelectorCaptureEnabled,
   selectorDisplayMediaBroker,
   selectorDisplayMediaStrategy,
   type SelectorDisplayMediaStrategy
@@ -1027,6 +1028,11 @@ export async function pickRegion(
   pickerInvocationActive = true;
   const invocationId = nextInvocationId;
   nextInvocationId += 1;
+  const rendererOwnedExperimentEnabled = isRendererOwnedSelectorCaptureEnabled();
+  const captureStrategy = selectorDisplayMediaStrategy(
+    process.platform,
+    rendererOwnedExperimentEnabled
+  );
   let resolveTermination!: (result: Extract<SelectorResult, { ok: false }>) => void;
   const terminationPromise = new Promise<Extract<SelectorResult, { ok: false }>>((resolve) => {
     resolveTermination = resolve;
@@ -1052,7 +1058,7 @@ export async function pickRegion(
     presentationAcknowledged: false,
     presentationTimeout: null,
     onPresentationAcknowledged: null,
-    captureStrategy: selectorDisplayMediaStrategy(process.platform),
+    captureStrategy,
     settled: false,
     terminationResult: null,
     terminationPromise,
@@ -1128,8 +1134,6 @@ export async function pickRegion(
     // path. It shows a truthful live loading shell and starts enumeration
     // only after that shell is visible.
     const needsFrozenSnapshot = mode !== "window";
-    const captureStrategy = selectorDisplayMediaStrategy(process.platform);
-    lifecycle.captureStrategy = captureStrategy;
     const usesRendererDisplayMedia =
       needsFrozenSnapshot && captureStrategy === "renderer-display-media";
     const usesLegacyFileSnapshot = needsFrozenSnapshot && captureStrategy === "legacy-file";
@@ -1138,6 +1142,7 @@ export async function pickRegion(
       mode,
       platform: process.platform,
       strategy: needsFrozenSnapshot ? captureStrategy : "none",
+      rendererOwnedExperimentEnabled,
       fallback: usesLegacyFileSnapshot
     });
     releaseActiveScreenSnapshot();

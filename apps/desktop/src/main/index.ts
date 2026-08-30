@@ -28,6 +28,7 @@ import {
   pickRegion,
   preWarmRegionSelector
 } from "./capture/region-selector";
+import { setRendererOwnedSelectorCaptureEnabled } from "./capture/selector-display-media";
 import {
   CAPTURE_TRIGGER_DEBOUNCE_MS,
   createCaptureTriggerGate
@@ -848,9 +849,15 @@ async function wireHotkeyRegistrations(): Promise<void> {
   });
   let currentChannel: Settings["updates"]["channel"] = "latest";
   let currentTrain: Settings["updates"]["train"] = "stable";
+  // Fail safe even if this initializer is ever re-entered after a prior
+  // opt-in: a settings read must positively re-enable the experiment.
+  setRendererOwnedSelectorCaptureEnabled(false);
   try {
     const settings = await service.read();
     cachedRecordingSettings = settings.recording;
+    setRendererOwnedSelectorCaptureEnabled(
+      settings.experimental.rendererOwnedSelectorCapture
+    );
     hotkeyRegistrationManager.initialize(settings.hotkeys);
     setTrayHotkeys(settings.hotkeys, () => hotkeyRegistrationManager.statusSnapshot());
     // Pick up the persisted developer-mode flag and re-install the menu
@@ -872,6 +879,9 @@ async function wireHotkeyRegistrations(): Promise<void> {
   }));
   onSettingsChanged((settings) => {
     cachedRecordingSettings = settings.recording;
+    setRendererOwnedSelectorCaptureEnabled(
+      settings.experimental.rendererOwnedSelectorCapture
+    );
     setTrayHotkeys(settings.hotkeys, () => hotkeyRegistrationManager.statusSnapshot());
     if (settings.general.developerMode !== lastKnownDeveloperMode) {
       installApplicationMenu(settings.general.developerMode);

@@ -56,7 +56,12 @@ const baseSettings: Settings = {
     hotCpuProfilingHeapSnapshotLimit: 2,
     launchAtLogin: false
   },
-  experimental: { processSplit: false, dpiAwareExport: false, allowRetinaExport: true },
+  experimental: {
+    processSplit: false,
+    rendererOwnedSelectorCapture: false,
+    dpiAwareExport: false,
+    allowRetinaExport: true
+  },
   appearance: { theme: "system" },
   updates: { channel: "latest", train: "stable" },
   storage: { filenameTimestampZone: "local", capturesLocation: "documents" },
@@ -151,17 +156,30 @@ describe("ExperimentalPage — platform gating", () => {
     await renderExperimental(baseSettings, "darwin");
     expect(container?.textContent).toContain("Two-process mode");
     expect(container?.textContent).toContain("DPI-aware export");
+    expect(container?.textContent).toContain("Selector capture engine");
   });
 
   test("hides the Two-process card off macOS, keeps DPI-aware export", async () => {
     await renderExperimental(baseSettings, "win32");
     expect(container?.textContent).not.toContain("Two-process mode");
     expect(container?.textContent).toContain("DPI-aware export");
+    expect(container?.textContent).toContain("Selector capture engine");
+  });
+
+  test("hides the unsupported selector experiment on Linux", async () => {
+    await renderExperimental(baseSettings, "linux");
+    expect(container?.textContent).not.toContain("Selector capture engine");
+    expect(container?.textContent).toContain("DPI-aware export");
   });
 
   test("uses High DPI wording instead of Retina on Windows", async () => {
     await renderExperimental(
-      withExperimental({ processSplit: false, dpiAwareExport: true, allowRetinaExport: true }),
+      withExperimental({
+        processSplit: false,
+        rendererOwnedSelectorCapture: false,
+        dpiAwareExport: true,
+        allowRetinaExport: true
+      }),
       "win32"
     );
     expect(container?.textContent).toContain("Allow High DPI export");
@@ -172,20 +190,42 @@ describe("ExperimentalPage — platform gating", () => {
 describe("ExperimentalPage — Allow Retina gating", () => {
   test("hidden when DPI-aware export is off", async () => {
     await renderExperimental(
-      withExperimental({ processSplit: false, dpiAwareExport: false, allowRetinaExport: true })
+      withExperimental({
+        processSplit: false,
+        rendererOwnedSelectorCapture: false,
+        dpiAwareExport: false,
+        allowRetinaExport: true
+      })
     );
     expect(container?.textContent).not.toContain("Allow Retina export");
   });
 
   test("shown when DPI-aware export is on", async () => {
     await renderExperimental(
-      withExperimental({ processSplit: false, dpiAwareExport: true, allowRetinaExport: true })
+      withExperimental({
+        processSplit: false,
+        rendererOwnedSelectorCapture: false,
+        dpiAwareExport: true,
+        allowRetinaExport: true
+      })
     );
     expect(container?.textContent).toContain("Allow Retina export");
   });
 });
 
 describe("ExperimentalPage — toggles patch the substrate", () => {
+  test("renderer-owned selector capture is visibly off and patches its live gate", async () => {
+    await renderExperimental(baseSettings, "darwin");
+    const toggle = findSwitchIn("Use renderer-owned selector capture");
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    await act(async () => {
+      toggle.click();
+    });
+    expect(patchMock).toHaveBeenCalledWith({
+      experimental: { rendererOwnedSelectorCapture: true }
+    });
+  });
+
   test("DPI-aware export patches experimental.dpiAwareExport", async () => {
     await renderExperimental(baseSettings);
     const toggle = findSwitchIn("Scale exports by display resolution");
@@ -207,7 +247,12 @@ describe("ExperimentalPage — toggles patch the substrate", () => {
 
   test("Allow Retina export patches experimental.allowRetinaExport", async () => {
     await renderExperimental(
-      withExperimental({ processSplit: false, dpiAwareExport: true, allowRetinaExport: true })
+      withExperimental({
+        processSplit: false,
+        rendererOwnedSelectorCapture: false,
+        dpiAwareExport: true,
+        allowRetinaExport: true
+      })
     );
     const toggle = findSwitchIn("Allow Retina export");
     expect(toggle.getAttribute("aria-checked")).toBe("true");

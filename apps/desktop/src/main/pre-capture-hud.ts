@@ -282,7 +282,7 @@ export function beginPreCaptureHud(intent: PreCaptureHudIntent): PreCaptureHudSe
     },
     finish: () => {
       if (active?.runId !== runId || active.terminal) return;
-      hideWindow();
+      if (active.presenting) hideWindow();
       latestState = null;
       active = null;
     }

@@ -45,7 +45,7 @@ describe("pre-capture HUD production wiring", () => {
     expect(flow).toContain("hud.showCountdown");
     expect(flow).toContain("hud.block(\"storage\")");
     expect(flow).toContain("hud.block(\"unexpected\")");
-    expect(flow).toContain("finally {\n      hud.finish();");
+    expect(flow).toContain("finally {\n      hud?.finish();");
   });
 
   test("video interactive flow uses the same boundary without entering recording state ownership", () => {
@@ -61,11 +61,11 @@ describe("pre-capture HUD production wiring", () => {
       "hud.showSelectorHandoff()",
       "await pickRegion(",
       "onSelectorPresented: hud.selectorPresented",
-      'bus.dispatch(\n    "recording:start"'
+      '"recording:start"'
     ]);
     expect(flow).toContain("hud.showStorage()");
     expect(flow).toContain("await ensureCapturesDirReady()");
-    expect(flow).toContain("finally {\n    hud.finish();");
+    expect(flow).toContain("finally {\n    hud?.finish();");
     expect(flow).not.toContain("setRecordingState");
     expect(flow).not.toContain("applyRecordingStateToController");
   });

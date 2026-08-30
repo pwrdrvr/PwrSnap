@@ -271,19 +271,18 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       });
     }
     const hud = beginPreCaptureHud("snap");
-    if (hud === null) {
-      releaseInteractiveCaptureSession(session.token);
-      return err({
-        kind: "capture",
-        code: "capture_in_progress",
-        message: "An interactive capture is already in progress."
-      });
-    }
     // Claim synchronously before the first permission/storage await. This is
     // the command-bus backstop for tray/IPC double dispatches; the hotkey has
     // its own leading-edge debounce one layer earlier.
     const handlerStartedAt = Date.now();
     try {
+      if (hud === null) {
+        return err({
+          kind: "capture",
+          code: "capture_in_progress",
+          message: "An interactive capture is already in progress."
+        });
+      }
       // Gate BEFORE pickRegion: the selector freezes a screen snapshot on
       // show(), which is all-black on a Mac without Screen Recording. On a
       // first-ever attempt the gate fires the macOS prompt instead; on a
@@ -677,10 +676,10 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
         await tearDownSelector();
       }
     } catch (cause) {
-      hud.block("unexpected");
+      hud?.block("unexpected");
       throw cause;
     } finally {
-      hud.finish();
+      hud?.finish();
       releaseInteractiveCaptureSession(session.token);
     }
   });

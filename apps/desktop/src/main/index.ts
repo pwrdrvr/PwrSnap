@@ -1166,12 +1166,11 @@ async function runInteractiveRecord(protectWindowIds: readonly number[] = []): P
     return;
   }
   const hud = beginPreCaptureHud("video");
-  if (hud === null) {
-    releaseInteractiveCaptureSession(session.token);
-    log.info("video capture ignored while another interactive capture owns the HUD");
-    return;
-  }
   try {
+    if (hud === null) {
+      log.info("video capture ignored while another interactive capture owns the HUD");
+      return;
+    }
     // Gate BEFORE pickRegion, exactly like `capture:interactive`. The
     // selector freezes a screen snapshot on show(), which is all-black on
     // a Mac without Screen Recording permission — so on a first-ever (or
@@ -1445,10 +1444,10 @@ async function runInteractiveRecord(protectWindowIds: readonly number[] = []): P
       }
     });
   } catch (cause) {
-    hud.block("unexpected");
+    hud?.block("unexpected");
     throw cause;
   } finally {
-    hud.finish();
+    hud?.finish();
     releaseInteractiveCaptureSession(session.token);
   }
 }

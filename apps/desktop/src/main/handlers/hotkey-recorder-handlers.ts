@@ -39,7 +39,10 @@ function rendererOwner(
       "The hotkey recorder lease must come from a PwrSnap Settings window."
     );
   }
-  if (!isLiveSettingsOwner(ctx.sourceWindowId, ctx.sourceDocumentId)) {
+  if (
+    ctx.sourceSettingsHotkeyRecorderOwner !== true &&
+    !isLiveSettingsOwner(ctx.sourceWindowId, ctx.sourceDocumentId)
+  ) {
     return failure(
       "permission",
       "hotkey_recorder_settings_window_only",

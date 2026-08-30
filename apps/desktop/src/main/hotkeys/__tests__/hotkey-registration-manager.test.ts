@@ -423,6 +423,36 @@ describe("HotkeyRegistrationManager", () => {
     });
   });
 
+  test("a platform-canonical reset does not retry a physically unchanged boot failure", () => {
+    const fake = makeRegistrar();
+    const manager = makeManager(fake.registrar);
+    const current = blankHotkeys({
+      quickCapture: "CommandOrControl+Shift+C",
+      region: "Control+Alt+R"
+    });
+    fake.unavailable.add("Control+Shift+C");
+    manager.initialize(current);
+
+    const transaction = manager.prepare(current, {
+      ...current,
+      quickCapture: "Control+Shift+C",
+      region: "Control+Alt+X"
+    });
+
+    expect(
+      vi.mocked(fake.registrar.register).mock.calls.filter(
+        ([accelerator]) => accelerator === "Control+Shift+C"
+      )
+    ).toHaveLength(1);
+    transaction.commit();
+    expect([...fake.live.keys()]).toEqual(["Control+Alt+X"]);
+    expect(manager.statusSnapshot().quickCapture).toMatchObject({
+      accelerator: "CommandOrControl+Shift+C",
+      state: "inactive",
+      failure: { code: "unavailable" }
+    });
+  });
+
   test("native suspension restores only prior ownership, never an untouched boot failure", () => {
     const fake = makeRegistrar();
     const manager = makeManager(fake.registrar);

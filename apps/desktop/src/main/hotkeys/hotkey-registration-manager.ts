@@ -1,6 +1,7 @@
 import {
   DEFAULT_HOTKEYS,
   acceleratorToDisplayText,
+  acceleratorsAreEquivalent,
   canonicalAcceleratorForPlatform,
   type HotkeyRegistrationFailure,
   type HotkeyRegistrationStatusSnapshot,
@@ -205,7 +206,12 @@ export class HotkeyRegistrationManager implements HotkeyRegistrationCoordinator 
 
     const changed = new Set<HotkeyKind>();
     for (const kind of HOTKEY_KINDS) {
-      if (currentHotkeys[kind] !== nextHotkeys[kind]) {
+      const current = currentHotkeys[kind];
+      const next = nextHotkeys[kind];
+      if (
+        current !== next &&
+        !acceleratorsAreEquivalent(current, next, this.platform)
+      ) {
         changed.add(kind);
       }
     }

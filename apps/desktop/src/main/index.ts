@@ -130,7 +130,10 @@ import {
 } from "./hotkeys/hotkey-registration-manager";
 import { hotkeyRecorderSuspension } from "./hotkeys/hotkey-recorder-suspension-instance";
 import { createHotkeyRecorderInputScope } from "./hotkeys/hotkey-recorder-input-scope";
-import { isLiveSettingsHotkeyRecorderOwner } from "./hotkeys/hotkey-recorder-owner";
+import {
+  attestSettingsHotkeyRecorderOwnerForBridge,
+  isLiveSettingsHotkeyRecorderOwner
+} from "./hotkeys/hotkey-recorder-owner";
 import { registerHotkeyRecorderSuspensionHandlers } from "./handlers/hotkey-recorder-handlers";
 import {
   checkForAppUpdatesNow,
@@ -2004,7 +2007,16 @@ export function bootstrapApp(): void {
       connectAgentBridge();
       bus.installRemoteForwarder({
         canForward: (name) => isAgentBridgeConnected() && peerOwnsCommand("library", name),
-        forward: (name, req, context) => dispatchToAgentProcess(name, req, context)
+        forward: (name, req, context) =>
+          dispatchToAgentProcess(
+            name,
+            req,
+            attestSettingsHotkeyRecorderOwnerForBridge(
+              name,
+              context,
+              findSettingsWindow()
+            )
+          )
       });
       installRendererEventForwarder(forwardRendererEventToAgent);
       installCancellationForwarder(forwardCancellationToAgent);

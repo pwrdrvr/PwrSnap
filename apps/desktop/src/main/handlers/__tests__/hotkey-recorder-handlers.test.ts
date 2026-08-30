@@ -220,6 +220,26 @@ describe("hotkey recorder suspension commands", () => {
     expect(suspension.isSuspended()).toBe(false);
   });
 
+  test("accepts Settings ownership attested by the split library process", async () => {
+    isLiveSettingsOwner.mockReturnValue(false);
+
+    const result = await bus.dispatch(
+      "settings:beginHotkeyRecording",
+      { sessionId: "split_settings_recorder", generation: 1 },
+      {
+        ...ipcContext(88, DOCUMENT_B),
+        sourceSettingsHotkeyRecorderOwner: true
+      }
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      value: expect.objectContaining({ accepted: true, ownerWindowId: 88 })
+    });
+    expect(isLiveSettingsOwner).not.toHaveBeenCalled();
+    expect(suspension.isSuspended()).toBe(true);
+  });
+
   test("rejects a delayed lower-generation begin without replacing the current row", async () => {
     const current = await bus.dispatch(
       "settings:beginHotkeyRecording",

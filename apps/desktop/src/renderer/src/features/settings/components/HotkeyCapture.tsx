@@ -33,6 +33,8 @@ export type HotkeyCaptureProps = {
   recording: boolean;
   onStart: () => void;
   onCancel: () => void;
+  /** Lets the page block modal actions while the native lease is arming. */
+  onPreparingChange?: (preparing: boolean) => void;
   /** Resolves only after main has accepted and activated the binding. */
   onCommit: (next: string) => void | Promise<void>;
   /** Explicit Clear action. Keyboard input never calls this callback. */
@@ -292,6 +294,7 @@ export function HotkeyCapture({
   recording,
   onStart,
   onCancel,
+  onPreparingChange,
   onCommit,
   onUnbind
 }: HotkeyCaptureProps): ReactElement {
@@ -317,11 +320,18 @@ export function HotkeyCapture({
   >(() => undefined);
   const onCancelRef = useRef(onCancel);
   const onCommitRef = useRef(onCommit);
+  const onPreparingChangeRef = useRef(onPreparingChange);
   // Page/context updates can replace callback identities while a transactional
   // save is in flight. Keep the listener stable and invoke the latest callback
   // so an unrelated render cannot dispose the rejection/error path.
   onCancelRef.current = onCancel;
   onCommitRef.current = onCommit;
+  onPreparingChangeRef.current = onPreparingChange;
+
+  const setPreparing = useCallback((next: boolean): void => {
+    setArming(next);
+    onPreparingChangeRef.current?.(next);
+  }, []);
 
   const releaseLease = useCallback((specific?: {
     sessionId: string;
@@ -555,7 +565,7 @@ export function HotkeyCapture({
     const startSequence = ++recorderStartSequence;
     const sessionId = newRecorderSessionId();
     pendingLeaseSession.current = sessionId;
-    setArming(true);
+    setPreparing(true);
     setError(null);
     restoreFocus.current = false;
     let result: Awaited<ReturnType<typeof dispatch<"settings:beginHotkeyRecording">>>;
@@ -567,7 +577,7 @@ export function HotkeyCapture({
     } catch (cause) {
       if (pendingLeaseSession.current === sessionId) {
         pendingLeaseSession.current = null;
-        setArming(false);
+        setPreparing(false);
         setError(
           `PwrSnap could not pause its current shortcuts for recording. ${
             cause instanceof Error ? cause.message : String(cause)
@@ -582,7 +592,7 @@ export function HotkeyCapture({
     ) {
       if (pendingLeaseSession.current === sessionId) {
         pendingLeaseSession.current = null;
-        setArming(false);
+        setPreparing(false);
       }
       if (result.ok && result.value.accepted) {
         releaseLease({ sessionId, generation: startSequence });
@@ -590,7 +600,7 @@ export function HotkeyCapture({
       return;
     }
     pendingLeaseSession.current = null;
-    setArming(false);
+    setPreparing(false);
     if (!result.ok) {
       setError(
         `PwrSnap could not pause its current shortcuts for recording. ${result.error.message}`

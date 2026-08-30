@@ -34,6 +34,17 @@ function deferredSignal(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
+function deferredValue<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 function settingsWith(
   hotkeys: Settings["hotkeys"] = defaultHotkeysForPlatform("win32")
 ): Settings {
@@ -152,6 +163,14 @@ describe("HotkeysPage recorder ownership", () => {
     const view = await renderPage();
     expect(view.textContent).toContain("Ctrl");
     expect(view.textContent).not.toMatch(/Cmd|⌘/);
+  });
+
+  test("describes Windows-only unbound defaults without an empty keycap label", async () => {
+    const view = await renderPage();
+    expect(
+      view.textContent?.match(/Unbound by default on this platform/g)
+    ).toHaveLength(2);
+    expect(view.textContent).not.toMatch(/Defaults to\s+[—(]/);
   });
 
   test("treats canonical Windows spelling as the unchanged platform default", async () => {
@@ -322,6 +341,61 @@ describe("HotkeysPage recorder ownership", () => {
     expect(view.querySelector("[role='dialog']")).toBeNull();
     expect(patchMock).not.toHaveBeenCalled();
     expect(view.textContent).toContain("Ctrl");
+  });
+
+  test("keeps Reset disabled while a recorder lease is still preparing", async () => {
+    const custom = settingsWith({
+      ...defaultHotkeysForPlatform("win32"),
+      quickCapture: "Control+Alt+K"
+    });
+    const view = await renderPage(custom);
+    const priorDispatch = dispatchMock.getMockImplementation();
+    if (priorDispatch === undefined) throw new Error("Missing dispatch implementation");
+    const begin = deferredValue<{
+      ok: true;
+      value: {
+        sessionId: string;
+        generation: number;
+        accepted: true;
+        expiresAt: number;
+      };
+    }>();
+    dispatchMock.mockImplementation((name: string, req: Record<string, unknown>) =>
+      name === "settings:beginHotkeyRecording"
+        ? begin.promise
+        : priorDispatch(name, req)
+    );
+
+    await act(async () => buttonByName("Change Quick Capture").click());
+    const reset = Array.from(view.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent === "Reset to defaults"
+    );
+    if (reset === undefined) throw new Error("Missing reset button");
+    expect(reset.disabled).toBe(true);
+    await act(async () => reset.click());
+    expect(view.querySelector("[role='dialog']")).toBeNull();
+
+    const beginCall = dispatchMock.mock.calls.find(
+      ([name]) => name === "settings:beginHotkeyRecording"
+    );
+    const req = beginCall?.[1] as
+      | { sessionId: string; generation: number }
+      | undefined;
+    if (req === undefined) throw new Error("Missing begin request");
+    await act(async () => {
+      begin.resolve({
+        ok: true,
+        value: {
+          ...req,
+          accepted: true,
+          expiresAt: Date.now() + 120_000
+        }
+      });
+      await begin.promise;
+      await Promise.resolve();
+    });
+    expect(view.querySelector(".pss__hk-capture.is-recording")).not.toBeNull();
+    expect(view.querySelector("[role='dialog']")).toBeNull();
   });
 
   test("a failed reset remains open and explains that existing shortcuts survived", async () => {

@@ -3,7 +3,10 @@ import {
   admitHotkeyRecorderDocument,
   fenceHotkeyRecorderDocument
 } from "../hotkey-recorder-document";
-import { isLiveSettingsHotkeyRecorderOwner } from "../hotkey-recorder-owner";
+import {
+  attestSettingsHotkeyRecorderOwnerForBridge,
+  isLiveSettingsHotkeyRecorderOwner
+} from "../hotkey-recorder-owner";
 
 const DOCUMENT_A = "documentepoch0001";
 
@@ -57,5 +60,37 @@ describe("isLiveSettingsHotkeyRecorderOwner", () => {
     expect(fenceHotkeyRecorderDocument(settings.webContents.id)).toBe(DOCUMENT_A);
 
     expect(isLiveSettingsHotkeyRecorderOwner(settings, 41, DOCUMENT_A)).toBe(false);
+  });
+
+  test("attests a bridged recorder command only while Settings owns the document", () => {
+    const settings = settingsWindow({ webContentsId: 4103 });
+    expect(admitHotkeyRecorderDocument(settings.webContents.id, DOCUMENT_A)).toBe(
+      DOCUMENT_A
+    );
+    const context = {
+      principal: "ipc" as const,
+      sourceWindowId: 41,
+      sourceDocumentId: DOCUMENT_A
+    };
+
+    expect(
+      attestSettingsHotkeyRecorderOwnerForBridge(
+        "settings:beginHotkeyRecording",
+        context,
+        settings
+      )
+    ).toEqual({ ...context, sourceSettingsHotkeyRecorderOwner: true });
+    expect(
+      attestSettingsHotkeyRecorderOwnerForBridge("settings:read", context, settings)
+    ).toBe(context);
+
+    fenceHotkeyRecorderDocument(settings.webContents.id);
+    expect(
+      attestSettingsHotkeyRecorderOwnerForBridge(
+        "settings:beginHotkeyRecording",
+        context,
+        settings
+      )
+    ).toBe(context);
   });
 });

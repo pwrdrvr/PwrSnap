@@ -54,6 +54,9 @@ export function HotkeysPage(): ReactElement {
   const platform = shortcutPlatformFromString(window.pwrsnapApi?.platform);
   const hotkeyDefaults = useMemo(() => defaultHotkeysForPlatform(platform), [platform]);
   const [recordingKey, setRecordingKey] = useState<HotkeyKey | null>(null);
+  const [preparingKeys, setPreparingKeys] = useState<ReadonlySet<HotkeyKey>>(
+    () => new Set()
+  );
   const [confirmingReset, setConfirmingReset] = useState<boolean>(false);
   const [registrationStatus, setRegistrationStatus] =
     useState<HotkeyRegistrationStatusSnapshot | null>(null);
@@ -99,12 +102,23 @@ export function HotkeysPage(): ReactElement {
     setRecordingKey((current) => (current === key ? null : current));
   };
   const onUnbind = (key: HotkeyKey) => (): Promise<void> => writeOne(key, "");
+  const onPreparingChange =
+    (key: HotkeyKey) =>
+    (preparing: boolean): void => {
+      setPreparingKeys((current) => {
+        const next = new Set(current);
+        if (preparing) next.add(key);
+        else next.delete(key);
+        return next;
+      });
+    };
   const recorderProps = (key: HotkeyKey) => ({
     label: HOTKEY_LABELS[key],
     platform,
     recording: recordingKey === key,
     onStart: (): void => setRecordingKey(key),
     onCancel: (): void => setRecordingKey((current) => (current === key ? null : current)),
+    onPreparingChange: onPreparingChange(key),
     onCommit: onCommit(key),
     onUnbind: onUnbind(key)
   });
@@ -180,6 +194,12 @@ export function HotkeysPage(): ReactElement {
 
   const count = pendingChanges.length;
   const customizedNoun = count === 1 ? "customization" : "customizations";
+  const recorderPreparing = preparingKeys.size > 0;
+
+  const defaultDescription = (accelerator: string): string =>
+    accelerator === ""
+      ? "Unbound by default on this platform"
+      : `Defaults to ${acceleratorToDisplayText(accelerator, platform)}`;
 
   return (
     <>
@@ -202,8 +222,9 @@ export function HotkeysPage(): ReactElement {
           <button
             type="button"
             className="pss__top-btn"
-            disabled={count === 0 || hotkeyMutationBusy}
+            disabled={count === 0 || hotkeyMutationBusy || recorderPreparing}
             onClick={() => {
+              if (recorderPreparing) return;
               setRecordingKey(null);
               setConfirmingReset(true);
             }}
@@ -264,13 +285,16 @@ export function HotkeysPage(): ReactElement {
         </Row>
         <Row
           label="Video Capture"
-          sub={`Pick a region/window, then record. Defaults to ${acceleratorToDisplayText(
-            hotkeyDefaults.videoCapture,
-            platform
-          )} (not ${acceleratorToDisplayText(
-            "CommandOrControl+Shift+V",
-            platform
-          )} — that's Paste & Match Style system-wide).`}
+          sub={`Pick a region/window, then record. ${defaultDescription(
+            hotkeyDefaults.videoCapture
+          )}${
+            hotkeyDefaults.videoCapture === ""
+              ? ". Choose a combination to enable it."
+              : ` (not ${acceleratorToDisplayText(
+                  "CommandOrControl+Shift+V",
+                  platform
+                )} — that's Paste & Match Style system-wide).`
+          }`}
           tag="global"
         >
           {hotkeyControl("videoCapture", hk?.videoCapture ?? "")}
@@ -280,10 +304,13 @@ export function HotkeysPage(): ReactElement {
       <Card eyebrow="APP" title="Library & surfaces">
         <Row
           label="Re-show last Float-Over"
-          sub={`Pops the most recent capture back over the screen. Defaults to ${acceleratorToDisplayText(
-            hotkeyDefaults.reshowFloatOver,
-            platform
-          )} — rebind or unbind any time.`}
+          sub={`Pops the most recent capture back over the screen. ${defaultDescription(
+            hotkeyDefaults.reshowFloatOver
+          )} — ${
+            hotkeyDefaults.reshowFloatOver === ""
+              ? "choose a combination to enable it."
+              : "rebind or unbind any time."
+          }`}
           tag="global"
         >
           {hotkeyControl("reshowFloatOver", hk?.reshowFloatOver ?? "")}

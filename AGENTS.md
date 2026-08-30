@@ -114,8 +114,22 @@ being guessed at.
 | Script | Checks |
 |---|---|
 | `check-package-license-policy.mjs` | OUR four workspace `package.json` files declare MIT. Never looks at a dependency. |
-| `check-third-party-license-allowlist.mjs` | Every SHIPPED dependency's license is allowlisted. |
+| `check-third-party-license-allowlist.mjs` | Three of the four sources the notice is built from (below) are allowlisted. |
 | `generate-third-party-licenses.mjs` | Transcribes the tree into `THIRD_PARTY_LICENSES`. **Judges nothing.** |
+
+**Know exactly what the gate covers** — it reads the npm production tree, the
+devDependencies the notice discloses anyway (`NOTICE_DEV_DEPENDENCIES`, i.e.
+Electron, which `--prod` never reports), and the located
+`SHIPPED_PLATFORM_PACKAGES` slices. It does **not** cover optional dependencies
+beyond those slices — `--no-optional` is what makes the notice platform-
+identical, so the report cannot enumerate them — nor `BUNDLED_FFMPEG`, whose
+license is a hand-written constant. **A new optional dependency that ships must
+be added to `SHIPPED_PLATFORM_PACKAGES` to be disclosed AND gated; neither
+script can discover one on its own.**
+
+`NOTICE_DEV_DEPENDENCIES` mirrors the `record.name === "electron"` special case
+in `buildThirdPartyLicenseNotice`. Keep the two in step — a name the generator
+discloses but the set omits is a shipped component with an ungated license.
 
 That last row is the reason the gate exists. The generator groups records by
 whatever license string pnpm hands it, so before the gate a dep flipping

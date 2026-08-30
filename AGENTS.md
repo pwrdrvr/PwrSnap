@@ -99,6 +99,43 @@ MIT, BSD (2-clause / 3-clause), Apache-2.0, MPL-2.0, ISC, 0BSD, Unlicense,
 CC0. Anything else: **pause and confirm with the user** before reading the
 project's source or adding the dep.
 
+### The gate that enforces this
+
+[scripts/check-third-party-license-allowlist.mjs](scripts/check-third-party-license-allowlist.mjs),
+run by `pnpm licenses:check` (so, by `pnpm lint`, so by CI). It evaluates every
+declared license in the shipped tree against `ALLOWED_LICENSE_IDS` as a real
+SPDX expression — `OR` satisfied by either side, `AND` by both — so
+`(MIT OR WTFPL)` passes on its MIT half while `Apache-2.0 AND GPL-3.0` fails.
+An unparseable string (`UNLICENSED`, `SEE LICENSE IN ...`) fails rather than
+being guessed at.
+
+**Do not confuse it with the other two license scripts:**
+
+| Script | Checks |
+|---|---|
+| `check-package-license-policy.mjs` | OUR four workspace `package.json` files declare MIT. Never looks at a dependency. |
+| `check-third-party-license-allowlist.mjs` | Every SHIPPED dependency's license is allowlisted. |
+| `generate-third-party-licenses.mjs` | Transcribes the tree into `THIRD_PARTY_LICENSES`. **Judges nothing.** |
+
+That last row is the reason the gate exists. The generator groups records by
+whatever license string pnpm hands it, so before the gate a dep flipping
+MIT → GPL-3.0 wrote a new `GPL-3.0` section into the notice and
+`licenses:generate --check` then PASSED — committed file matches generated
+file, green CI, copyleft shipped, nobody told. The only safety was that a
+human might spot a new heading in the diff, which is worth nothing once
+regeneration is automated on Dependabot branches.
+
+Weak copyleft (LGPL) is permitted **only** for a `SHIPPED_PLATFORM_PACKAGES`
+entry carrying an `lgpl` descriptor — the thing that puts its FSF text and
+written source offer in the notice. Strong copyleft (GPL/AGPL) and
+source-available terms (BSL, SSPL, Commons Clause) are permitted nowhere.
+
+Adding an id to `ALLOWED_LICENSE_IDS` is a legal decision. Make it in a commit
+that says why — **never to make CI green.** Note that the seeded list is wider
+than the paragraph above: `BlueOak-1.0.0`, `OFL-1.1` and `Python-2.0` were
+already in the tree, undocumented, when the gate was written. That drift is
+exactly what an unenforced policy accumulates.
+
 ## Codex App Server is the AI brain
 
 **All AI features in PwrSnap go through the user's installed Codex CLI / Codex

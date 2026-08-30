@@ -1,0 +1,290 @@
+name: Dependabot Licenses
+
+# Regenerate THIRD_PARTY_LICENSES on a Dependabot PR and push the result.
+#
+# WHY THIS EXISTS
+#
+# `pnpm licenses:check` hashes the dependency tree, so ANY dependency change
+# makes the committed notice stale. Dependabot only edits package.json and
+# pnpm-lock.yaml — it cannot run `pnpm licenses:generate` — so every Dependabot
+# PR arrives with `Lint` and `Windows (lint + build + test)` red, on that one
+# line and nothing else, and cannot merge until a human checks the branch out
+# and pushes the regenerated notice by hand.
+#
+# WHY IT IS SAFE TO AUTOMATE *NOW* AND WAS NOT BEFORE
+#
+# `generate-third-party-licenses.mjs` is a transcriber: it writes whatever
+# license string pnpm reports into the notice and judges none of it. Before
+# scripts/check-third-party-license-allowlist.mjs existed, an unattended
+# regeneration would have silently laundered a dependency that flipped to
+# GPL — the notice would gain a "GPL-3.0" section, `licenses:check` would then
+# pass because committed matched generated, and CI would go green. The only
+# safety was a human maybe noticing a new heading in the diff, which is exactly
+# what this workflow removes.
+#
+# So this job runs the allowlist gate FIRST and pushes nothing if it fails. A
+# bad license stops here, loudly, instead of being committed by a bot.
+#
+# SECURITY NOTES — read before editing
+#
+# `pull_request_target` runs the BASE branch's copy of this file with a
+# privileged token. That is what makes the Actions secret store and a
+# write-capable token reachable at all (a Dependabot-triggered `pull_request`
+# run gets a read-only token and Dependabot secrets instead). It also means
+# every guard below must live here, in the base copy, because nothing the PR
+# head contains can change this file for the run that judges it.
+#
+# Three controls, all load-bearing:
+#
+#   1. The `if` pins the actor to dependabot[bot] and the head to this repo,
+#      so a fork PR can never reach the privileged path.
+#   2. "Verify the pull request only touches dependency manifests" refuses to
+#      continue if the branch changes anything but package.json / the lockfile
+#      / the notice. A Dependabot branch that somehow carried a script or
+#      workflow edit does not get an install.
+#   3. `pnpm install --ignore-scripts`. A dependency bump is by definition
+#      new third-party code, and a normal install would run its lifecycle
+#      scripts with a token that can push to main's repo. Measured: the
+#      generator produces a byte-identical notice with scripts skipped, so
+#      there is nothing to trade away here.
+#
+# TOKEN
+#
+# A push made with the default GITHUB_TOKEN does NOT trigger new workflow runs
+# ("events triggered by the GITHUB_TOKEN will not create a new workflow run").
+# Pushing with it would leave the PR showing the stale red checks forever,
+# which defeats the point. So this prefers a GitHub App token, then
+# RELEASES_PAT, and warns loudly if it has to fall back to GITHUB_TOKEN.
+#
+# To provision the App path, set repository variable LICENSES_BOT_APP_CLIENT_ID
+# and secret LICENSES_BOT_APP_PRIVATE_KEY for an App installed on this repo
+# with contents: write. (The existing FFMPEG_BUILDS_* App cannot be reused —
+# it is scoped read-only to pwrsnap-ffmpeg-builds.)
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - synchronize
+      - reopened
+    paths:
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "apps/*/package.json"
+      - "packages/*/package.json"
+  workflow_dispatch:
+    inputs:
+      pull-request:
+        description: "PR number to regenerate THIRD_PARTY_LICENSES for"
+        required: true
+        type: string
+
+# Least privilege by default. The job below needs no more than this: the push
+# uses a separate token, not GITHUB_TOKEN's permissions.
+permissions:
+  contents: read
+
+concurrency:
+  group: dependabot-licenses-${{ github.event.pull_request.number || inputs.pull-request }}
+  cancel-in-progress: true
+
+jobs:
+  regenerate:
+    name: Regenerate THIRD_PARTY_LICENSES
+    runs-on: ubuntu-latest
+    # Guard 1. workflow_dispatch is a human deliberately naming a PR; every
+    # automatic run must be Dependabot's own branch in this repo.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.actor == 'dependabot[bot]'
+          && github.event.pull_request.head.repo.full_name == github.repository)
+    permissions:
+      contents: read
+      pull-requests: read
+    # The `secrets` context is NOT available in a step-level `if` (only
+    # github/needs/strategy/matrix/job/runner/env/vars/steps/inputs are), and an
+    # unavailable context reads as empty — so `if: secrets.RELEASES_PAT == ''`
+    # silently evaluates true even when the secret IS set, and the "no token"
+    # warning fires on every run. Job-level `env` CAN read secrets, so the
+    # presence test happens here and the steps below branch on the booleans.
+    env:
+      HAS_APP_TOKEN: ${{ vars.LICENSES_BOT_APP_CLIENT_ID != '' }}
+      HAS_RELEASES_PAT: ${{ secrets.RELEASES_PAT != '' }}
+    steps:
+      - name: Resolve the pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # One code path for both triggers: read the head off the API rather
+          # than off the event payload, so a dispatched run behaves identically.
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pull-request }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          pr_json="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}")"
+          head_sha="$(jq -r '.head.sha' <<<"$pr_json")"
+          head_ref="$(jq -r '.head.ref' <<<"$pr_json")"
+          head_repo="$(jq -r '.head.repo.full_name' <<<"$pr_json")"
+          state="$(jq -r '.state' <<<"$pr_json")"
+
+          if [ "$state" != "open" ]; then
+            echo "::notice::PR #${PR_NUMBER} is ${state}; nothing to do."
+            echo "skip=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$head_repo" != "$REPO" ]; then
+            echo "::error::PR #${PR_NUMBER} head is ${head_repo}, not ${REPO}. Refusing to run a" \
+              "privileged job against a fork."
+            exit 1
+          fi
+
+          {
+            echo "number=${PR_NUMBER}"
+            echo "head-sha=${head_sha}"
+            echo "head-ref=${head_ref}"
+            echo "skip=false"
+          } >>"$GITHUB_OUTPUT"
+
+      # Guard 2. The privileged half of this job installs third-party code, so
+      # it may only ever see a branch that changes dependency manifests. A
+      # Dependabot branch never legitimately touches anything else; one that
+      # does is either a bug or an attempt to get code onto this path.
+      - name: Verify the pull request only touches dependency manifests
+        if: steps.pr.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          allowed='^(package\.json|pnpm-lock\.yaml|THIRD_PARTY_LICENSES|(apps|packages)/[^/]+/package\.json)$'
+          unexpected="$(
+            gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/files" --jq '.[].filename' \
+              | { grep -Ev "$allowed" || true; }
+          )"
+          if [ -n "$unexpected" ]; then
+            echo "::error::PR #${PR_NUMBER} changes files outside the dependency manifests, so it" \
+              "will not be given a privileged install. Unexpected:"
+            printf '%s\n' "$unexpected"
+            exit 1
+          fi
+          echo "Only dependency manifests changed."
+
+      - name: Mint a push token
+        id: app-token
+        # Skipped when the App is not provisioned; the fallback chain below
+        # covers that, and the warning step says what it cost.
+        if: steps.pr.outputs.skip != 'true' && env.HAS_APP_TOKEN == 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.LICENSES_BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.LICENSES_BOT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+
+      - name: Warn when no re-triggering token is available
+        if: >-
+          steps.pr.outputs.skip != 'true'
+          && env.HAS_APP_TOKEN != 'true'
+          && env.HAS_RELEASES_PAT != 'true'
+        run: |
+          echo "::warning::No GitHub App token or RELEASES_PAT is configured, so the notice will" \
+            "be pushed with GITHUB_TOKEN. That push will NOT re-run CI, and the PR will keep" \
+            "showing its stale failing checks until someone pushes or closes/reopens it." \
+            "Provision LICENSES_BOT_APP_CLIENT_ID + LICENSES_BOT_APP_PRIVATE_KEY to fix this."
+          {
+            echo "### :warning: Pushed without a re-triggering token"
+            echo
+            echo "CI will not re-run on the regenerated commit. See the workflow header for setup."
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Check out the pull request branch
+        if: steps.pr.outputs.skip != 'true'
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.pr.outputs.head-ref }}
+          token: ${{ steps.app-token.outputs.token || secrets.RELEASES_PAT || github.token }}
+          persist-credentials: true
+
+      - name: Confirm the branch still points at the reviewed commit
+        id: race
+        if: steps.pr.outputs.skip != 'true'
+        env:
+          EXPECTED: ${{ steps.pr.outputs.head-sha }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          if [ "$actual" != "$EXPECTED" ]; then
+            # Dependabot force-pushed while we were setting up. The file guard
+            # above judged $EXPECTED, so working on $actual would install code
+            # nothing checked. A newer run is already queued for it.
+            echo "::notice::Branch moved from ${EXPECTED} to ${actual}; leaving it to the newer run."
+            echo "skip=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node.js
+        if: steps.pr.outputs.skip != 'true' && steps.race.outputs.skip != 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+
+      # Deliberate divergence from pwrdrvr/configure-nodejs, which the rest of
+      # CI uses: it always runs a full `pnpm install` and exposes no way to pass
+      # --ignore-scripts. This job installs third-party code with a token that
+      # can write to the repo, so skipping lifecycle scripts is worth losing the
+      # shared pnpm cache for. The generator's output is unaffected — verified
+      # byte-identical with and without scripts.
+      #
+      # ⚠️  The resulting tree can ONLY be used for reading package metadata.
+      # Skipping scripts means electron's postinstall never downloads its
+      # binary, so anything that require()s electron dies with "Electron failed
+      # to install correctly" — measured, it takes out most of the desktop-main
+      # suite. Do NOT add a build, test, or typecheck step to this job; the PR's
+      # own CI run covers those, on a normal install, with no privileged token.
+      - name: Install dependencies without lifecycle scripts
+        if: steps.pr.outputs.skip != 'true' && steps.race.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          corepack enable
+          pnpm install --frozen-lockfile --ignore-scripts
+
+      # Runs BEFORE regeneration and gates it. If the bump dragged in a license
+      # we do not ship, the right outcome is a red PR a human reads — not a bot
+      # committing a notice that makes the new license look reviewed.
+      - name: Gate the new dependency tree against the license allowlist
+        if: steps.pr.outputs.skip != 'true' && steps.race.outputs.skip != 'true'
+        run: node ./scripts/check-third-party-license-allowlist.mjs
+
+      - name: Regenerate THIRD_PARTY_LICENSES
+        if: steps.pr.outputs.skip != 'true' && steps.race.outputs.skip != 'true'
+        run: pnpm licenses:generate
+
+      - name: Commit and push if the notice changed
+        if: steps.pr.outputs.skip != 'true' && steps.race.outputs.skip != 'true'
+        env:
+          HEAD_REF: ${{ steps.pr.outputs.head-ref }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- THIRD_PARTY_LICENSES; then
+            echo "THIRD_PARTY_LICENSES is already current; nothing to push."
+            echo "\`THIRD_PARTY_LICENSES\` was already current." >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add THIRD_PARTY_LICENSES
+          git commit -m "chore(deps): regenerate THIRD_PARTY_LICENSES" \
+            -m "Dependabot cannot run \`pnpm licenses:generate\`, so \`licenses:check\` fails on
+          every dependency PR. Regenerated automatically for #${PR_NUMBER}."
+
+          # Plain push: if the branch moved since the race check, this is
+          # rejected and the newer run handles it. Never force-push a branch
+          # somebody else owns.
+          git push origin "HEAD:${HEAD_REF}"
+          echo "Pushed a regenerated \`THIRD_PARTY_LICENSES\` to \`${HEAD_REF}\`." \
+            >>"$GITHUB_STEP_SUMMARY"

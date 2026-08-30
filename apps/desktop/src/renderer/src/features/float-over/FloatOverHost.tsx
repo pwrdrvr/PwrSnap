@@ -37,6 +37,7 @@ import type { VideoCopyShortcutRequest } from "../shared/VideoExportPresetsPanel
 import { enrichmentBackendLabel } from "../shared/CodexStatusPill";
 import { isEnrichmentProviderAvailable } from "../shared/enrichment-provider-availability";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
+import { useSurfaceCopyShortcuts } from "../shared/useSurfaceCopyShortcuts";
 import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
 import { copyImagePreset, copyImagePresetPath } from "../../lib/clipboard-copy";
 import { useCapturesLocationDisplayState } from "../../lib/useCapturesLocationDisplayState";
@@ -104,6 +105,25 @@ export function FloatOverHost({
     state.kind === "loaded" && state.record.kind === "image" ? state.record.id : null,
     state.kind === "loaded" && state.record.kind === "image" ? state.record.edits_version : null
   );
+  const activeImageRecord =
+    state.kind === "loaded" && state.record.kind === "image" ? state.record : null;
+  // Main owns these chords globally for the non-activating toast. Keep a
+  // renderer owner as well so a focused toast still honors its visible
+  // keycaps when the OS delivers the chord locally instead of through the
+  // transient global registration.
+  useSurfaceCopyShortcuts({
+    assetKind: activeImageRecord === null ? null : "image",
+    enabled: activeImageRecord !== null,
+    platform: shortcutPlatform,
+    onShortcut: (shortcut) => {
+      if (shortcut.kind !== "image" || activeImageRecord === null) return;
+      copyImagePreset(activeImageRecord.id, shortcut.preset);
+      setCopyPulses((current) => ({
+        ...current,
+        [shortcut.preset]: current[shortcut.preset] + 1
+      }));
+    }
+  });
 
   // ResizeObserver → main: shrink the BrowserWindow to fit the visible
   // toast. Same pattern as TrayMenu.tsx's `pwrsnap:tray:resize`

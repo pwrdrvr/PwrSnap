@@ -287,6 +287,26 @@ describe("RightActivityBar", () => {
     expect(el.querySelector('[data-testid="rab-test-panel-hover"]')).toBeNull();
   });
 
+  test("Escape still closes a hover-popped panel when primary shortcuts are disabled", async () => {
+    const { el } = await renderBar({
+      active: "info",
+      pinned: true,
+      keyboardEnabled: false
+    });
+    await act(async () => {
+      getTab(el, "info").click();
+      await Promise.resolve();
+    });
+    expect(el.querySelector('[data-testid="rab-test-panel-hover"]')).not.toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+      await Promise.resolve();
+    });
+
+    expect(el.querySelector('[data-testid="rab-test-panel-hover"]')).toBeNull();
+  });
+
   test("typing in an input does not consume Cmd+N shortcut handler's number key (only modifier-less editable check)", async () => {
     const { onTabChange } = await renderBar({ active: "info" });
     const input = document.createElement("input");

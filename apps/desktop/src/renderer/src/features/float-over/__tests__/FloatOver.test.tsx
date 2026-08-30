@@ -582,6 +582,46 @@ describe("FloatOver asset mode", () => {
 });
 
 describe("FloatOverHost", () => {
+  test("focused image toast keeps primary+digits as a local copy owner", async () => {
+    const api = installHostApi();
+    const dispatchMock = window.pwrsnapApi!.dispatch as ReturnType<typeof vi.fn>;
+    dispatchMock.mockImplementation(async (name: string) => defaultHostDispatchResult(name));
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(createElement(FloatOverHost, { shortcutPlatform: "win32" }));
+    });
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.floatOverState, {
+        kind: "show-loaded",
+        captureId: imageRecord.id,
+        record: imageRecord
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    dispatchMock.mockClear();
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "2",
+          ctrlKey: true,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+      await Promise.resolve();
+    });
+
+    expect(dispatchMock).toHaveBeenCalledWith("clipboard:copy", {
+      captureId: imageRecord.id,
+      preset: "med"
+    });
+  });
+
   test("reads settings from settings-change event payload", async () => {
     const api = installHostApi();
     container = document.createElement("div");

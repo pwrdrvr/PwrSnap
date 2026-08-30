@@ -303,7 +303,6 @@ export function RightActivityBar<Id extends string>(
   }, []);
 
   useEffect(() => {
-    if (!keyboardEnabled) return undefined;
     const handler = (event: KeyboardEvent): void => {
       const target = event.target as HTMLElement | null;
       const inEditable =
@@ -321,6 +320,10 @@ export function RightActivityBar<Id extends string>(
         }
         return;
       }
+      // A parent can reserve the primary-modifier chords for another active
+      // surface (Grid reserves the numbered keys for copy/export). Escape is
+      // still owned here so an unpinned hover panel remains dismissible.
+      if (!keyboardEnabled) return;
       if (inEditable) return;
       if (!isPrimaryAccel(event, shortcutPlatform)) return;
 

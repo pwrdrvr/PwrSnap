@@ -216,6 +216,31 @@ describe("settings:open", () => {
 });
 
 describe("settings:* validation", () => {
+  test("settings:write accepts the renderer-owned selector experiment boolean", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      { experimental: { rendererOwnedSelectorCapture: true } },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value.experimental.rendererOwnedSelectorCapture).toBe(true);
+  });
+
+  test("settings:write rejects a non-boolean renderer-owned selector gate", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      { experimental: { rendererOwnedSelectorCapture: "yes" } } as unknown as Record<
+        string,
+        never
+      >,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("invalid_experimental_rendererOwnedSelectorCapture");
+  });
+
   test("settings:write rejects null over a non-nullable string field", async () => {
     const result = await bus.dispatch(
       "settings:write",

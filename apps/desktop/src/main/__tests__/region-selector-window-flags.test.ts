@@ -271,6 +271,7 @@ vi.mock("../capture/screen-snapshot", () => ({
 // intentionally exercises the explicit file fallback. Authorization and port
 // behavior have focused tests in capture/__tests__/selector-display-media.
 vi.mock("../capture/selector-display-media", () => ({
+  isRendererOwnedSelectorCaptureEnabled: () => false,
   selectorDisplayMediaStrategy: () => "legacy-file",
   selectorDisplayMediaBroker: {
     install: vi.fn(),

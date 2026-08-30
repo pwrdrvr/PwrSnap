@@ -59,7 +59,12 @@ const baseSettings: Settings = {
     hotCpuProfilingHeapSnapshotLimit: 2,
     launchAtLogin: false
   },
-  experimental: { processSplit: true, dpiAwareExport: false, allowRetinaExport: true },
+  experimental: {
+    processSplit: true,
+    rendererOwnedSelectorCapture: false,
+    dpiAwareExport: false,
+    allowRetinaExport: true
+  },
   appearance: { theme: "system" },
   updates: { channel: "latest", train: "stable" },
   storage: { filenameTimestampZone: "local", capturesLocation: "documents" },

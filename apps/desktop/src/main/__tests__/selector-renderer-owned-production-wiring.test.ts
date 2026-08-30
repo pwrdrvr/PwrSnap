@@ -7,7 +7,26 @@ async function source(relativeUrl: string): Promise<string> {
 }
 
 describe("renderer-owned selector capture production wiring", () => {
-  test("macOS and Windows arm display media instead of capturing a main-process bitmap", async () => {
+  test("the experiment defaults off and updates live from the settings substrate", async () => {
+    const [settings, broker, selector, bootstrap, page] = await Promise.all([
+      source("../settings/desktop-settings-service.ts"),
+      source("../capture/selector-display-media.ts"),
+      source("../capture/region-selector.ts"),
+      source("../index.ts"),
+      source("../../renderer/src/features/settings/pages/ExperimentalPage.tsx")
+    ]);
+
+    expect(settings).toContain("rendererOwnedSelectorCapture: false");
+    expect(broker).toContain("let rendererOwnedSelectorCaptureEnabled = false");
+    expect(selector).toContain("isRendererOwnedSelectorCaptureEnabled()");
+    expect(bootstrap).toContain("setRendererOwnedSelectorCaptureEnabled(");
+    expect(bootstrap).toContain("setRendererOwnedSelectorCaptureEnabled(false)");
+    expect(bootstrap).toContain("settings.experimental.rendererOwnedSelectorCapture");
+    expect(page).toContain("Use renderer-owned selector capture");
+    expect(page).toContain("changes apply to the next capture");
+  });
+
+  test("opted-in macOS and Windows use display media without a main-process bitmap", async () => {
     const [selector, broker, screencapture] = await Promise.all([
       source("../capture/region-selector.ts"),
       source("../capture/selector-display-media.ts"),

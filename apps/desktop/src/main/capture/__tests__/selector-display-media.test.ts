@@ -2,8 +2,10 @@ import { describe, expect, test, vi } from "vitest";
 import type { DesktopCapturerSource, WebFrameMain } from "electron";
 import {
   createSelectorDisplayMediaBroker,
+  isRendererOwnedSelectorCaptureEnabled,
   selectExactDisplaySource,
-  selectorDisplayMediaStrategy
+  selectorDisplayMediaStrategy,
+  setRendererOwnedSelectorCaptureEnabled
 } from "../selector-display-media";
 
 function source(id: string, displayId: string): DesktopCapturerSource {
@@ -17,12 +19,23 @@ function source(id: string, displayId: string): DesktopCapturerSource {
 }
 
 describe("selector display-media strategy", () => {
+  test("runtime experiment starts off and can be rolled back without restart", () => {
+    expect(isRendererOwnedSelectorCaptureEnabled()).toBe(false);
+    setRendererOwnedSelectorCaptureEnabled(true);
+    expect(isRendererOwnedSelectorCaptureEnabled()).toBe(true);
+    setRendererOwnedSelectorCaptureEnabled(false);
+    expect(isRendererOwnedSelectorCaptureEnabled()).toBe(false);
+  });
+
   test.each([
-    ["win32", "renderer-display-media"],
-    ["darwin", "renderer-display-media"],
-    ["linux", "legacy-file"]
-  ] as const)("uses %s strategy", (platform, expected) => {
-    expect(selectorDisplayMediaStrategy(platform)).toBe(expected);
+    ["win32", false, "legacy-file"],
+    ["darwin", false, "legacy-file"],
+    ["win32", true, "renderer-display-media"],
+    ["darwin", true, "renderer-display-media"],
+    ["linux", false, "legacy-file"],
+    ["linux", true, "legacy-file"]
+  ] as const)("uses %s strategy when experiment=%s", (platform, enabled, expected) => {
+    expect(selectorDisplayMediaStrategy(platform, enabled)).toBe(expected);
   });
 
   test("matches the exact Electron display id without relying on ordering", () => {

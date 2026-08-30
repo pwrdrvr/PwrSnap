@@ -648,7 +648,12 @@ function validateExperimentalPatch(raw: unknown): PwrSnapError | null {
       "settings:write: experimental must be an object"
     );
   }
-  for (const key of ["processSplit", "dpiAwareExport", "allowRetinaExport"] as const) {
+  for (const key of [
+    "processSplit",
+    "rendererOwnedSelectorCapture",
+    "dpiAwareExport",
+    "allowRetinaExport"
+  ] as const) {
     if (!isUndefined(raw[key]) && !isBoolean(raw[key])) {
       return validationError(
         `invalid_experimental_${key}`,

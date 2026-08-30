@@ -148,10 +148,24 @@ re-measured. Measured with the `canvasCssHeight` fix already applied:
 | left | 25.34 | 17.5 |
 
 Because the animation scales about the CENTER, the origin is off by 7.8px on
-top of the 1.5% scale error, and `CropTool.viewportToSource` runs every pointer
-event through it — a crop drag landed ~6 source px from where the user dragged.
-Fixed by adding `tool` to the effect's deps, so the rect is re-measured when
-the tool that consumes it appears (long after the 180ms animation).
+top of the 1.5% scale error. A correction to this section's first draft, which
+claimed "a crop drag landed ~6 source px from where the user dragged": it did
+NOT — that number was arithmetic from the stale rect, never an observed drag.
+Every CropTool gesture is DELTA-based, and a delta maps screen→source→screen
+through the same cached width, so the staleness cancels exactly; a
+drag-tracking assertion passed 8/8 against the un-fixed build. What the stale
+rect actually breaks is the RENDER: the selection and dim tiles draw at the
+cached scale inside the live-sized canvas, so the highlighted region covers
+~1.5% different image content than the commit keeps (~12px at the far
+corner), and the dim overlay stops short of the canvas edge — the visible
+corner gap that exposed the bug. Fixed by adding `tool` to the effect's deps,
+so the rect is re-measured when the tool that consumes it appears (long after
+the 180ms animation). Pinned by `editor-crop-drag.spec.ts`, which recreates
+the staleness deterministically (re-apply the entrance transform, force
+re-measures under it via a zoom round-trip, wait out the trailing
+ResizeObserver delivery, remove the transform) and asserts the rendered
+selection against the live rect — measured bite: 12.5px, 4/4 runs, vs 0.00px
+with the fix.
 
 Note the asymmetry: for `canvasCssHeight` the rect was the WRONG KIND of
 measurement (it gets combined with `offsetWidth`, a layout measure). For

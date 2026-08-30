@@ -448,8 +448,16 @@ Two confirmed instances, both in
 - `canvasRect` — the post-transform rect is the RIGHT kind (pointer
   coordinates are post-transform too), it was merely STALE: cached
   `{left: 25.34, width: 1029.33}` against a live `{left: 17.5, width:
-  1045}`, so `CropTool.viewportToSource` put every crop drag ~6 source px
-  off. Fixed by re-measuring when the consuming tool appears.
+  1045}`. Crop DRAGS shrugged this off — CropTool gestures are
+  delta-based, and a delta round-trips through the same cached width, so
+  the staleness cancels exactly (a drag-tracking test is TAUTOLOGICAL
+  here; one passed 8/8 against the un-fixed build). What broke was the
+  RENDER: selection + dim drawn at the stale scale inside the live-sized
+  canvas — highlighted region ≠ committed region by ~1.5%, dim stopping
+  short of the canvas corner. Fixed by re-measuring when the consuming
+  tool appears; pinned by `editor-crop-drag.spec.ts` via a deterministic
+  replay of the staleness (it re-applies the entrance transform, forces
+  re-measures under it, removes it, then asserts render-vs-live).
 
 Rules:
 

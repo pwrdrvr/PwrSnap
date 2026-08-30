@@ -6449,11 +6449,19 @@ function EditorLoaded({
     // transform fires no ResizeObserver notification — so without this
     // the cached rect stayed frozen mid-animation for the life of the
     // editor. Measured: {left: 25.34, width: 1029.33} against a live
-    // {left: 17.5, width: 1045}, which `viewportToSource` turns into a
-    // ~6 source-px origin error on every crop drag. Re-measuring when
-    // the tool changes lands a fresh rect before CropTool can be
-    // dragged. `tool` is a stable string, so this cannot loop the way
-    // an unstable object dep would (see below).
+    // {left: 17.5, width: 1045}. Note the failure mode precisely: crop
+    // DRAGS are unaffected — every CropTool gesture is delta-based, and
+    // a delta maps screen→source→screen through the same cached width,
+    // so the staleness cancels exactly. What a stale rect breaks is the
+    // RENDER: the selection + dim tiles draw at the cached scale inside
+    // the live-sized canvas, so the highlighted region covers ~1.5%
+    // different image content than the commit keeps (~12px at the far
+    // corner) and the dim overlay stops short of the canvas edge — the
+    // visible corner gap that exposed this. Re-measuring when the tool
+    // changes lands a fresh rect before CropTool renders. `tool` is a
+    // stable string, so this cannot loop the way an unstable object dep
+    // would (see below). Pinned by editor-crop-drag.spec.ts, which
+    // recreates the staleness deterministically.
     //
     // Use the primitive components of canvasStyle, NOT the object
     // reference itself. `useZoomPan` rebuilds the canvasStyle object

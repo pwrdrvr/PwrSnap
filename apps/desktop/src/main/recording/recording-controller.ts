@@ -3,7 +3,8 @@
 //
 //   • Creates + shows the window when state leaves `idle`.
 //   • Anchors it at the top-center of the active display.
-//   • Hides + destroys when state returns to `idle` / `ready` / `failed`.
+//   • Keeps failures visible until Retry or Dismiss, and destroys on
+//     `idle` / `ready` or app shutdown.
 //
 // The window itself is wired in `window.ts`; the React side lives in
 // `apps/desktop/src/renderer/src/features/recording/RecordingController.tsx`
@@ -16,19 +17,58 @@ import { appWindowsOverlappingRect } from "../capture/rect-overlap";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
 import { createRecordingControllerWindow } from "../window";
-import { subscribeToRecordingState } from "./recording-state";
+import { getRecordingState, subscribeToRecordingState } from "./recording-state";
 
 const log = getMainLogger("pwrsnap:recording-controller");
 
 let window: BrowserWindow | null = null;
 let installed = false;
 let escapeShortcutArmed = false;
+let unsubscribe: (() => void) | null = null;
+let disposing = false;
+let replacingFailedWindow = false;
+let failedWindowRecreateTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearFailedWindowRecreateTimer(): void {
+  if (failedWindowRecreateTimer === null) return;
+  clearTimeout(failedWindowRecreateTimer);
+  failedWindowRecreateTimer = null;
+}
+
+function scheduleFailedWindowRecreate(crashedWindow: BrowserWindow): void {
+  if (disposing || window !== crashedWindow || getRecordingState().phase !== "failed") return;
+  replacingFailedWindow = true;
+  try {
+    window = null;
+    if (!crashedWindow.isDestroyed()) crashedWindow.destroy();
+  } finally {
+    replacingFailedWindow = false;
+  }
+  clearFailedWindowRecreateTimer();
+  failedWindowRecreateTimer = setTimeout(() => {
+    failedWindowRecreateTimer = null;
+    if (disposing) return;
+    const liveState = getRecordingState();
+    if (liveState.phase === "failed") applyRecordingStateToController(liveState);
+  }, 100);
+}
 
 function ensureWindow(): BrowserWindow {
   if (window !== null && !window.isDestroyed()) return window;
   window = createRecordingControllerWindow();
+  const createdWindow = window;
+  window.on("close", (event) => {
+    if (!disposing && !replacingFailedWindow && getRecordingState().phase === "failed") {
+      event.preventDefault();
+      window?.show();
+      window?.focus();
+    }
+  });
   window.on("closed", () => {
     window = null;
+  });
+  window.webContents.on("render-process-gone", () => {
+    scheduleFailedWindowRecreate(createdWindow);
   });
   return window;
 }
@@ -218,6 +258,7 @@ export function applyRecordingStateToController(state: RecordingState): void {
     case "starting": {
       const win = ensureWindow();
       armLeadInEscapeShortcut();
+      win.setFocusable(false);
       // Countdown overlay sits over the user's content; clicks
       // should fall through to the recorded surface so they don't
       // accidentally hit our window. setIgnoreMouseEvents enables
@@ -265,9 +306,7 @@ export function applyRecordingStateToController(state: RecordingState): void {
       }
       break;
     }
-    case "recording":
-    case "stopping":
-    case "processing": {
+    case "recording": {
       const win = ensureWindow();
       disarmLeadInEscapeShortcut();
       // Recording-phase pill is compact; tuck it top-center of the
@@ -275,18 +314,13 @@ export function applyRecordingStateToController(state: RecordingState): void {
       // pixels. Width fits the three-button row (Stop / Restart /
       // Cancel); height accommodates the "not visible in recording"
       // reassurance caption underneath.
+      win.setFocusable(false);
       win.setIgnoreMouseEvents(false);
       win.setContentSize(420, 80, false);
-      // Only the `recording` phase carries `displayId`; stopping/
-      // processing arms fall back to the primary display via
-      // anchorTopCenter. In practice these phases are very brief and
-      // the pill stays anchored from the recording transition.
-      const recordedDisplayId =
-        state.phase === "recording" ? state.displayId : undefined;
-      if (process.platform === "win32" && state.phase === "recording") {
+      if (process.platform === "win32") {
         anchorAwayFromRecordedRect(win, state.rect, state.displayId);
       } else {
-        anchorTopCenter(win, recordedDisplayId);
+        anchorTopCenter(win, state.displayId);
       }
       if (!win.isVisible()) {
         win.showInactive();
@@ -295,9 +329,35 @@ export function applyRecordingStateToController(state: RecordingState): void {
       }
       break;
     }
-    case "idle":
-    case "ready":
+    case "stopping":
+    case "processing": {
+      const win = ensureWindow();
+      disarmLeadInEscapeShortcut();
+      win.setFocusable(false);
+      win.setIgnoreMouseEvents(false);
+      win.setContentSize(420, 80, false);
+      // Preserve the recording-phase position. On Windows the HUD may be
+      // outside the captured rect; moving it while FFmpeg is still exiting
+      // can paint it into the final frames.
+      if (!win.isVisible()) win.showInactive();
+      else win.moveTop();
+      break;
+    }
     case "failed": {
+      const win = ensureWindow();
+      disarmLeadInEscapeShortcut();
+      win.setIgnoreMouseEvents(false);
+      win.setFocusable(true);
+      win.setContentSize(480, 176, false);
+      anchorTopCenter(win, state.displayId);
+      win.show();
+      win.focus();
+      win.moveTop();
+      break;
+    }
+    case "idle":
+    case "ready": {
+      clearFailedWindowRecreateTimer();
       disarmLeadInEscapeShortcut();
       if (window !== null && !window.isDestroyed()) {
         window.hide();
@@ -320,5 +380,20 @@ export function applyRecordingStateToController(state: RecordingState): void {
 export function installRecordingController(): void {
   if (installed) return;
   installed = true;
-  subscribeToRecordingState(applyRecordingStateToController);
+  unsubscribe = subscribeToRecordingState(applyRecordingStateToController);
+}
+
+export function disposeRecordingController(): void {
+  unsubscribe?.();
+  unsubscribe = null;
+  installed = false;
+  clearFailedWindowRecreateTimer();
+  disarmLeadInEscapeShortcut();
+  disposing = true;
+  try {
+    if (window !== null && !window.isDestroyed()) window.destroy();
+    window = null;
+  } finally {
+    disposing = false;
+  }
 }

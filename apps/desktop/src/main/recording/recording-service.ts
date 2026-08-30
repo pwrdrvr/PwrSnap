@@ -19,6 +19,7 @@ import { app, Notification, screen } from "electron";
 import { nanoid } from "nanoid";
 import type {
   RecordingCapabilities,
+  RecordingFailureCode,
   RecordingSubject
 } from "@pwrsnap/shared";
 import { getMainLogger } from "../log";
@@ -35,6 +36,7 @@ import { insertVideoMetadata } from "../persistence/video-repo";
 import { renameVideoSourceToEffectiveFilename } from "../persistence/video-filename-maintenance";
 import { getRecordingControllerPid } from "./recording-controller";
 import {
+  getRecordingState,
   isRecordingActive,
   setRecordingState
 } from "./recording-state";
@@ -42,6 +44,40 @@ import { resolveFfmpegPath } from "./ffmpeg-resolver";
 import { planWindowsFfmpegCapture } from "./windows-ffmpeg-capture";
 
 const log = getMainLogger("pwrsnap:recording-service");
+
+function snapshotStartOptions(opts: StartOptions): StartOptions {
+  return {
+    subject:
+      opts.subject.kind === "display"
+        ? { ...opts.subject }
+        : { ...opts.subject, rect: { ...opts.subject.rect } },
+    capabilities: { ...opts.capabilities },
+    countdownSeconds: opts.countdownSeconds,
+    captureCursor: opts.captureCursor
+  };
+}
+
+function publishRecordingFailure(input: {
+  sessionId: string;
+  code: RecordingFailureCode;
+  displayId: number;
+  cause: unknown;
+  canRetry?: boolean;
+}): void {
+  const message = input.cause instanceof Error ? input.cause.message : String(input.cause);
+  log.error("recording lifecycle failed", {
+    sessionId: input.sessionId,
+    code: input.code,
+    message
+  });
+  setRecordingState({
+    phase: "failed",
+    sessionId: input.sessionId,
+    code: input.code,
+    canRetry: input.canRetry ?? true,
+    displayId: input.displayId
+  });
+}
 
 export type StartOptions = {
   subject: RecordingSubject;
@@ -61,6 +97,8 @@ export type RecordingService = {
    *  one with the same subject + capabilities. Throws
    *  `not_recording` if no session is active. */
   restart(): Promise<{ sessionId: string }>;
+  retry(sessionId: string): Promise<{ sessionId: string }>;
+  dismissFailure(sessionId: string): Promise<void>;
   /** True when this service has an active session. Used by the
    *  app-quit hook to cancel before exit. */
   isActive(): boolean;
@@ -128,20 +166,45 @@ class NativeRecorderService implements RecordingService {
   private stopResolve: ((evt: RecorderStoppedEvent) => void) | null = null;
   private stopReject: ((err: Error) => void) | null = null;
   private inboundBuffer = "";
+  private stopRequested = false;
+  private retryOptions: StartOptions | null = null;
+  private retryInFlight = false;
 
   isActive(): boolean {
     return this.child !== null && this.sessionId !== null;
   }
 
   async start(opts: StartOptions): Promise<{ sessionId: string }> {
+    return this.startAttempt(opts, false);
+  }
+
+  private async startAttempt(
+    opts: StartOptions,
+    retryingFailure: boolean
+  ): Promise<{ sessionId: string }> {
+    if (getRecordingState().phase === "failed" && !retryingFailure) {
+      throw new Error("failure_action_required");
+    }
     if (isRecordingActive() || this.child !== null) {
       throw new Error("already_recording");
     }
+    const sessionId = nanoid(12);
+    const options = snapshotStartOptions(opts);
+    const physicalRect = subjectToPhysicalRect(options.subject);
+    const displayId = subjectDisplayId(options.subject);
+    this.retryOptions = options;
     const binary = resolveRecorderBinary();
     if (binary === null) {
-      throw new Error(
+      const cause = new Error(
         "native recorder binary not available — Fast Video Capture requires macOS 13+ and the bundled PwrSnapRecorder helper"
       );
+      publishRecordingFailure({
+        sessionId,
+        code: "recorder_unavailable",
+        displayId,
+        cause
+      });
+      throw cause;
     }
     // Log the binary path + mtime + size on every spawn so we can
     // tell from a user's session log whether they're running a
@@ -160,18 +223,27 @@ class NativeRecorderService implements RecordingService {
     } catch {
       /* stat is informational; ignore failures */
     }
-    const sessionId = nanoid(12);
-    const tmpDir = await mkdtemp(join(tmpdir(), "pwrsnap-recording-"));
-    const outputPath = join(tmpDir, `${sessionId}.mp4`);
+    let outputPath: string;
+    try {
+      const tmpDir = await mkdtemp(join(tmpdir(), "pwrsnap-recording-"));
+      outputPath = join(tmpDir, `${sessionId}.mp4`);
+    } catch (cause) {
+      this.cleanup();
+      publishRecordingFailure({
+        sessionId,
+        code: "recorder_start_failed",
+        displayId,
+        cause
+      });
+      throw cause;
+    }
 
     this.sessionId = sessionId;
-    this.subject = opts.subject;
-    this.capabilities = opts.capabilities;
-    this.captureCursor = opts.captureCursor;
+    this.subject = options.subject;
+    this.capabilities = options.capabilities;
+    this.captureCursor = options.captureCursor;
     this.outputPath = outputPath;
-
-    const physicalRect = subjectToPhysicalRect(opts.subject);
-    const displayId = subjectDisplayId(opts.subject);
+    this.stopRequested = false;
 
     setRecordingState({ phase: "preflight", sessionId, rect: physicalRect, displayId });
 
@@ -182,7 +254,19 @@ class NativeRecorderService implements RecordingService {
     // before spawning, the user would see "1" frozen for that whole
     // cold-load period. Overlapping the spawn + setup with the
     // visible countdown hides the cost.
-    const child = spawn(binary, [], { stdio: ["pipe", "pipe", "pipe"] });
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = spawn(binary, [], { stdio: ["pipe", "pipe", "pipe"] });
+    } catch (cause) {
+      this.cleanup();
+      publishRecordingFailure({
+        sessionId,
+        code: "recorder_spawn_failed",
+        displayId,
+        cause
+      });
+      throw cause;
+    }
     this.child = child;
 
     this.startedPromise = new Promise<void>((resolve, reject) => {
@@ -210,10 +294,42 @@ class NativeRecorderService implements RecordingService {
     child.stderr.on("data", (chunk: string) => {
       log.warn("recorder stderr", { chunk: chunk.trim() });
     });
+    let startFailureCode: RecordingFailureCode = "recorder_start_failed";
+    child.on("error", (cause) => {
+      if (this.sessionId !== sessionId) return;
+      if (this.startReject !== null) {
+        startFailureCode = "recorder_spawn_failed";
+        this.startReject(cause);
+        this.startReject = null;
+        this.startResolve = null;
+        return;
+      }
+      if (this.stopRequested) return;
+      this.cleanup();
+      publishRecordingFailure({
+        sessionId,
+        code: "recorder_exited",
+        displayId,
+        cause
+      });
+    });
     child.on("exit", (code, signal) => {
       log.info("recorder exited", { code, signal });
       if (this.startReject !== null && this.startedPromise !== null) {
         this.startReject(new Error(`recorder exited before start ack (code=${code})`));
+        this.startReject = null;
+        this.startResolve = null;
+      } else if (!this.stopRequested && this.sessionId === sessionId) {
+        const cause = new Error(
+          `recorder exited unexpectedly (code=${code ?? "null"}, signal=${signal ?? "null"})`
+        );
+        this.cleanup();
+        publishRecordingFailure({
+          sessionId,
+          code: "recorder_exited",
+          displayId,
+          cause
+        });
       }
     });
 
@@ -228,23 +344,34 @@ class NativeRecorderService implements RecordingService {
     // so the captured pixels never contain our countdown overlay or
     // Stop/Restart/Cancel pill. See collectOurPids() for why we
     // narrowed this to JUST the HUD instead of every PwrSnap PID.
-    const captureAtMs = Date.now() + opts.countdownSeconds * 1000;
+    const captureAtMs = Date.now() + options.countdownSeconds * 1000;
     const excludePids = collectOurPids();
-    child.stdin.write(
-      JSON.stringify({
-        type: "start",
+    try {
+      child.stdin.write(
+        JSON.stringify({
+          type: "start",
+          displayId,
+          rect: physicalRect,
+          outputPath,
+          systemAudio: options.capabilities.systemAudio,
+          microphone: options.capabilities.microphone,
+          // Omitted when undefined (JSON.stringify drops it), so the
+          // recorder falls back to its `showsCursor ?? true` default.
+          showsCursor: options.captureCursor,
+          captureAtMs,
+          excludePids
+        }) + "\n"
+      );
+    } catch (cause) {
+      this.cleanup();
+      publishRecordingFailure({
+        sessionId,
+        code: "recorder_start_failed",
         displayId,
-        rect: physicalRect,
-        outputPath,
-        systemAudio: opts.capabilities.systemAudio,
-        microphone: opts.capabilities.microphone,
-        // Omitted when undefined (JSON.stringify drops it), so the
-        // recorder falls back to its `showsCursor ?? true` default.
-        showsCursor: opts.captureCursor,
-        captureAtMs,
-        excludePids
-      }) + "\n"
-    );
+        cause
+      });
+      throw cause;
+    }
 
     // Render the visible countdown in parallel with Swift's setup.
     //
@@ -257,8 +384,8 @@ class NativeRecorderService implements RecordingService {
     // second. The `this.sessionId !== sessionId` check catches that
     // race: each iteration verifies the captured `sessionId` is
     // still the active session and bails immediately if not.
-    if (opts.countdownSeconds > 0) {
-      for (let n = opts.countdownSeconds; n > 0; n--) {
+    if (options.countdownSeconds > 0) {
+      for (let n = options.countdownSeconds; n > 0; n--) {
         if (this.sessionId !== sessionId) {
           throw new Error("cancelled");
         }
@@ -283,12 +410,16 @@ class NativeRecorderService implements RecordingService {
     // 15s — but bounded, so a wedged Swift process can't trap the
     // app in a permanent non-idle state.
     setRecordingState({ phase: "starting", sessionId, rect: physicalRect, displayId });
+    let startTimeout: ReturnType<typeof setTimeout> | null = null;
     try {
       await Promise.race([
         this.startedPromise,
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("recorder_start_timeout")), 15_000)
-        )
+        new Promise<never>((_, reject) => {
+          startTimeout = setTimeout(
+            () => reject(new Error("recorder_start_timeout")),
+            15_000
+          );
+        })
       ]);
     } catch (cause) {
       // Recorder failed to ack `started`. Kill it, clean up state,
@@ -298,21 +429,16 @@ class NativeRecorderService implements RecordingService {
       } catch {
         /* ignore */
       }
-      const message = cause instanceof Error ? cause.message : String(cause);
       this.cleanup();
-      setRecordingState({
-        phase: "failed",
+      publishRecordingFailure({
         sessionId,
-        code: "recorder_start_failed",
-        message
+        code: startFailureCode,
+        displayId,
+        cause
       });
-      // Settle back to idle a moment after the failure surfaces so
-      // the HUD vanishes and the tray clears its REC indicator.
-      setTimeout(() => {
-        // Only revert if no new session has started in the meantime.
-        if (!this.isActive()) setRecordingState({ phase: "idle" });
-      }, 1_500);
       throw cause;
+    } finally {
+      if (startTimeout !== null) clearTimeout(startTimeout);
     }
 
     setRecordingState({
@@ -330,101 +456,48 @@ class NativeRecorderService implements RecordingService {
       throw new Error("no_active_recording");
     }
     const sessionId = this.sessionId;
+    const displayId = subjectDisplayId(this.subject!);
+    this.stopRequested = true;
     setRecordingState({ phase: "stopping", sessionId });
-    this.child.stdin.write(JSON.stringify({ type: "stop" }) + "\n");
     let stopped: RecorderStoppedEvent;
     try {
+      this.child.stdin.write(JSON.stringify({ type: "stop" }) + "\n");
       stopped = await this.stoppedPromise!;
     } catch (cause) {
       this.cleanup();
-      setRecordingState({
-        phase: "failed",
+      publishRecordingFailure({
         sessionId,
         code: "stop_failed",
-        message: cause instanceof Error ? cause.message : String(cause)
+        displayId,
+        cause
       });
       throw cause;
     }
     setRecordingState({ phase: "processing", sessionId });
-
-    // Adopt the file into the source store + record the metadata row.
-    const stored = await runWithCapturesDirFallback((outputDir) =>
-      adoptExistingFileAsSource(stopped.outputPath, outputDir)
-    );
-    const sizeInfo = await statSource(stored.srcPath);
-    const subject = this.subject!;
-    const rect = subjectToPhysicalRect(subject);
-
-    // Pull source-app metadata off the window subject when present.
-    // Image captures populate the same two columns from a
-    // CaptureSource resolved at handler time; matching that lets the
-    // Library's "Microsoft Edge" badge work uniformly across image
-    // and video rows. Region/display subjects don't have a single
-    // source app — leave the fields null and the Library renders
-    // "Unknown App" the same way it does for image region captures.
-    const sourceAppBundleId =
-      subject.kind === "window" ? subject.appBundleId ?? null : null;
-    const sourceAppName =
-      subject.kind === "window" ? subject.appName ?? null : null;
-
-    const { record } = insertCapture({
-      id: stored.id,
-      kind: "video",
-      captured_at: new Date().toISOString(),
-      source_app_bundle_id: sourceAppBundleId,
-      source_app_name: sourceAppName,
-      legacy_src_path: stored.srcPath,
-      width_px: rect.w,
-      height_px: rect.h,
-      device_pixel_ratio: 1,
-      byte_size: sizeInfo.byteSize,
-      sha256: stored.sha256
-    });
-    insertVideoMetadata({
-      captureId: record.id,
-      durationSec: stopped.durationSec,
-      containerFormat: stopped.containerFormat,
-      hasSystemAudio: stopped.hasSystemAudio,
-      hasMicrophoneAudio: stopped.hasMicrophoneAudio,
-      subject
-    });
     try {
-      await renameVideoSourceToEffectiveFilename(record.id);
-    } catch (cause) {
-      log.warn("recording source rename skipped", {
-        captureId: record.id,
-        message: cause instanceof Error ? cause.message : String(cause)
+      const stored = await persistStoppedRecording({
+        outputPath: stopped.outputPath,
+        durationSec: stopped.durationSec,
+        containerFormat: stopped.containerFormat,
+        hasSystemAudio: stopped.hasSystemAudio,
+        hasMicrophoneAudio: stopped.hasMicrophoneAudio,
+        subject: this.subject!
       });
+      setRecordingState({ phase: "ready", sessionId, captureId: stored.captureId });
+      this.retryOptions = null;
+      this.cleanup();
+      return stored;
+    } catch (cause) {
+      this.cleanup();
+      publishRecordingFailure({
+        sessionId,
+        code: "processing_failed",
+        displayId,
+        cause,
+        canRetry: false
+      });
+      throw cause;
     }
-
-    // Re-read through getCaptureById so the record we ship to the
-    // float-over has `record.video` populated. `insertCapture`
-    // returns a bare row (rowToRecord defaults video to null), and
-    // FloatOverHost's `record.video !== null` branch falls through
-    // to the image FloatOver when null — silently producing the
-    // "video doesn't show in the popover" bug we hit earlier.
-    const hydrated = getCaptureById(record.id) ?? record;
-
-    broadcastCapturesChanged([record.id]);
-    setFloatOverState({ kind: "show-loaded", captureId: record.id, record: hydrated });
-    setRecordingState({ phase: "ready", sessionId, captureId: record.id });
-    maybeEnqueueCaptureEnrichment(record.id);
-    // Best-effort system notification — not every platform / build
-    // supports Notification.isSupported(), so fail open if it
-    // doesn't. Mirrors the existing post-capture toast pattern.
-    try {
-      if (Notification.isSupported()) {
-        new Notification({
-          title: "Recording saved",
-          body: `${stopped.durationSec.toFixed(1)}s clip added to your Library.`
-        }).show();
-      }
-    } catch {
-      /* notifications are decorative; never block on them */
-    }
-
-    this.cleanup();
-    return { captureId: record.id };
   }
 
   /**
@@ -446,6 +519,35 @@ class NativeRecorderService implements RecordingService {
     return this.start({ subject, capabilities, captureCursor, countdownSeconds: 3 });
   }
 
+  async retry(sessionId: string): Promise<{ sessionId: string }> {
+    const state = getRecordingState();
+    if (
+      this.retryInFlight ||
+      state.phase !== "failed" ||
+      state.sessionId !== sessionId ||
+      !state.canRetry ||
+      this.retryOptions === null
+    ) {
+      throw new Error("stale_failure");
+    }
+    this.retryInFlight = true;
+    try {
+      return await this.startAttempt(snapshotStartOptions(this.retryOptions), true);
+    } finally {
+      this.retryInFlight = false;
+    }
+  }
+
+  async dismissFailure(sessionId: string): Promise<void> {
+    const state = getRecordingState();
+    if (this.retryInFlight || state.phase !== "failed" || state.sessionId !== sessionId) {
+      throw new Error("stale_failure");
+    }
+    this.cleanup();
+    this.retryOptions = null;
+    setRecordingState({ phase: "idle" });
+  }
+
   async cancel(): Promise<void> {
     // ALWAYS reset state on cancel — even if the internal session
     // bookkeeping is wedged (e.g. spawn raced with another action
@@ -456,6 +558,7 @@ class NativeRecorderService implements RecordingService {
     // app, which is exactly the bug the prior version hit.
     const sessionId = this.sessionId;
     const child = this.child;
+    this.stopRequested = true;
     if (child !== null) {
       try {
         // Best-effort: send stop and discard the output. If the
@@ -475,6 +578,7 @@ class NativeRecorderService implements RecordingService {
       }
     }
     this.cleanup();
+    this.retryOptions = null;
     setRecordingState({ phase: "idle" });
     log.info("recording cancelled", { sessionId });
   }
@@ -510,12 +614,22 @@ class NativeRecorderService implements RecordingService {
             this.startReject(err);
             this.startReject = null;
             this.startResolve = null;
-          } else if (this.stopReject !== null) {
+          } else if (this.stopRequested && this.stopReject !== null) {
             this.stopReject(err);
             this.stopReject = null;
             this.stopResolve = null;
           } else {
-            log.warn("recorder error after lifecycle", { code: parsed.code, message: parsed.message });
+            const sessionId = this.sessionId;
+            const subject = this.subject;
+            if (sessionId !== null && subject !== null) {
+              this.cleanup();
+              publishRecordingFailure({
+                sessionId,
+                code: "recorder_exited",
+                displayId: subjectDisplayId(subject),
+                cause: err
+              });
+            }
           }
           break;
         }
@@ -555,6 +669,7 @@ class NativeRecorderService implements RecordingService {
     this.stopResolve = null;
     this.stopReject = null;
     this.inboundBuffer = "";
+    this.stopRequested = false;
   }
 }
 
@@ -641,52 +756,85 @@ class WindowsFfmpegRecorderService implements RecordingService {
   private stopRequested = false;
   private exitPromise: Promise<{ code: number | null; signal: NodeJS.Signals | null }> | null = null;
   private stderrTail: string[] = [];
+  private retryOptions: StartOptions | null = null;
+  private retryInFlight = false;
 
   isActive(): boolean {
     return this.child !== null && this.sessionId !== null;
   }
 
   async start(opts: StartOptions): Promise<{ sessionId: string }> {
+    return this.startAttempt(opts, false);
+  }
+
+  private async startAttempt(
+    opts: StartOptions,
+    retryingFailure: boolean
+  ): Promise<{ sessionId: string }> {
+    if (getRecordingState().phase === "failed" && !retryingFailure) {
+      throw new Error("failure_action_required");
+    }
     if (isRecordingActive() || this.child !== null) {
       throw new Error("already_recording");
     }
+    const sessionId = nanoid(12);
+    const options = snapshotStartOptions(opts);
+    const hudRect = subjectToPhysicalRect(options.subject);
+    const displayId = subjectDisplayId(options.subject);
+    this.retryOptions = options;
     const ffmpeg = resolveFfmpegPath();
     if (ffmpeg === null) {
-      throw new Error(
+      const cause = new Error(
         "ffmpeg_not_available: Windows video recording requires PwrSnapFFmpeg.exe in the packaged app, or PWRSNAP_FFMPEG_PATH / ffmpeg.exe on PATH in development."
       );
+      publishRecordingFailure({
+        sessionId,
+        code: "recorder_unavailable",
+        displayId,
+        cause
+      });
+      throw cause;
     }
 
-    if (opts.capabilities.microphone || opts.capabilities.systemAudio) {
+    if (options.capabilities.microphone || options.capabilities.systemAudio) {
       log.warn("Windows recording currently captures screen video only; audio toggles ignored", {
-        microphone: opts.capabilities.microphone,
-        systemAudio: opts.capabilities.systemAudio
+        microphone: options.capabilities.microphone,
+        systemAudio: options.capabilities.systemAudio
       });
     }
 
-    const sessionId = nanoid(12);
-    const tmpDir = await mkdtemp(join(tmpdir(), "pwrsnap-recording-"));
-    const outputPath = join(tmpDir, `${sessionId}.mp4`);
-    const hudRect = subjectToPhysicalRect(opts.subject);
-    const displayId = subjectDisplayId(opts.subject);
-    const captureRect = subjectToWindowsDesktopRect(opts.subject);
+    let outputPath: string;
+    try {
+      const tmpDir = await mkdtemp(join(tmpdir(), "pwrsnap-recording-"));
+      outputPath = join(tmpDir, `${sessionId}.mp4`);
+    } catch (cause) {
+      this.cleanup();
+      publishRecordingFailure({
+        sessionId,
+        code: "recorder_start_failed",
+        displayId,
+        cause
+      });
+      throw cause;
+    }
+    const captureRect = subjectToWindowsDesktopRect(options.subject);
     const capturePlan = planWindowsFfmpegCapture({
       rect: captureRect,
       outputPath,
-      captureCursor: opts.captureCursor
+      captureCursor: options.captureCursor
     });
 
     this.sessionId = sessionId;
-    this.subject = opts.subject;
-    this.captureCursor = opts.captureCursor;
+    this.subject = options.subject;
+    this.captureCursor = options.captureCursor;
     this.outputPath = outputPath;
     this.stderrTail = [];
     this.stopRequested = false;
 
     setRecordingState({ phase: "preflight", sessionId, rect: hudRect, displayId });
 
-    if (opts.countdownSeconds > 0) {
-      for (let n = opts.countdownSeconds; n > 0; n--) {
+    if (options.countdownSeconds > 0) {
+      for (let n = options.countdownSeconds; n > 0; n--) {
         if (this.sessionId !== sessionId) {
           throw new Error("cancelled");
         }
@@ -719,13 +867,12 @@ class WindowsFfmpegRecorderService implements RecordingService {
         windowsHide: true
       });
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
       this.cleanup();
-      setRecordingState({
-        phase: "failed",
+      publishRecordingFailure({
         sessionId,
         code: "recorder_spawn_failed",
-        message
+        displayId,
+        cause
       });
       throw cause;
     }
@@ -738,10 +885,12 @@ class WindowsFfmpegRecorderService implements RecordingService {
         if (!this.stopRequested && this.sessionId === sessionId) {
           const message = windowsFfmpegFailureMessage(this.stderrTail, code, signal);
           this.cleanup();
-          setRecordingState({ phase: "failed", sessionId, code: "recorder_exited", message });
-          setTimeout(() => {
-            if (!this.isActive()) setRecordingState({ phase: "idle" });
-          }, 1_500);
+          publishRecordingFailure({
+            sessionId,
+            code: "recorder_exited",
+            displayId,
+            cause: message
+          });
         }
       });
     });
@@ -753,9 +902,13 @@ class WindowsFfmpegRecorderService implements RecordingService {
     child.stdout.setEncoding("utf8");
     child.on("error", (cause) => {
       if (this.sessionId !== sessionId) return;
-      const message = cause instanceof Error ? cause.message : String(cause);
       this.cleanup();
-      setRecordingState({ phase: "failed", sessionId, code: "recorder_spawn_failed", message });
+      publishRecordingFailure({
+        sessionId,
+        code: "recorder_spawn_failed",
+        displayId,
+        cause
+      });
     });
 
     setRecordingState({
@@ -775,6 +928,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
     const sessionId = this.sessionId;
     const outputPath = this.outputPath!;
     const subject = this.subject!;
+    const displayId = subjectDisplayId(subject);
     const startedAtMs = this.startedAtMs;
     const child = this.child;
     const exitPromise = this.exitPromise;
@@ -799,29 +953,52 @@ class WindowsFfmpegRecorderService implements RecordingService {
     if (exit === null) {
       const message = "ffmpeg recorder did not exit after stop timeout";
       this.cleanup();
-      setRecordingState({ phase: "failed", sessionId, code: "stop_timeout", message });
+      publishRecordingFailure({
+        sessionId,
+        code: "stop_timeout",
+        displayId,
+        cause: message
+      });
       throw new Error(message);
     }
     if (exit.code !== 0 || exit.signal !== null) {
       const message = windowsFfmpegFailureMessage(this.stderrTail, exit.code, exit.signal);
       this.cleanup();
-      setRecordingState({ phase: "failed", sessionId, code: "stop_failed", message });
+      publishRecordingFailure({
+        sessionId,
+        code: "stop_failed",
+        displayId,
+        cause: message
+      });
       throw new Error(message);
     }
 
     setRecordingState({ phase: "processing", sessionId });
     const durationSec = Math.max(0.1, (Date.now() - startedAtMs) / 1000);
-    const stored = await persistStoppedRecording({
-      outputPath,
-      durationSec,
-      containerFormat: "mp4",
-      hasSystemAudio: false,
-      hasMicrophoneAudio: false,
-      subject
-    });
-    setRecordingState({ phase: "ready", sessionId, captureId: stored.captureId });
-    this.cleanup();
-    return stored;
+    try {
+      const stored = await persistStoppedRecording({
+        outputPath,
+        durationSec,
+        containerFormat: "mp4",
+        hasSystemAudio: false,
+        hasMicrophoneAudio: false,
+        subject
+      });
+      setRecordingState({ phase: "ready", sessionId, captureId: stored.captureId });
+      this.retryOptions = null;
+      this.cleanup();
+      return stored;
+    } catch (cause) {
+      this.cleanup();
+      publishRecordingFailure({
+        sessionId,
+        code: "processing_failed",
+        displayId,
+        cause,
+        canRetry: false
+      });
+      throw cause;
+    }
   }
 
   async restart(): Promise<{ sessionId: string }> {
@@ -837,6 +1014,35 @@ class WindowsFfmpegRecorderService implements RecordingService {
       captureCursor,
       countdownSeconds: 3
     });
+  }
+
+  async retry(sessionId: string): Promise<{ sessionId: string }> {
+    const state = getRecordingState();
+    if (
+      this.retryInFlight ||
+      state.phase !== "failed" ||
+      state.sessionId !== sessionId ||
+      !state.canRetry ||
+      this.retryOptions === null
+    ) {
+      throw new Error("stale_failure");
+    }
+    this.retryInFlight = true;
+    try {
+      return await this.startAttempt(snapshotStartOptions(this.retryOptions), true);
+    } finally {
+      this.retryInFlight = false;
+    }
+  }
+
+  async dismissFailure(sessionId: string): Promise<void> {
+    const state = getRecordingState();
+    if (this.retryInFlight || state.phase !== "failed" || state.sessionId !== sessionId) {
+      throw new Error("stale_failure");
+    }
+    this.cleanup();
+    this.retryOptions = null;
+    setRecordingState({ phase: "idle" });
   }
 
   async cancel(): Promise<void> {
@@ -860,6 +1066,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
       }
     }
     this.cleanup();
+    this.retryOptions = null;
     setRecordingState({ phase: "idle" });
     log.info("recording cancelled", { sessionId });
   }

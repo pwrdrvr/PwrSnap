@@ -18,37 +18,60 @@ const mocks = vi.hoisted(() => ({
   }),
   dispatch: vi.fn(async () => ({ ok: true, value: undefined })),
   overlappingWindows: [] as WindowSpy[],
-  createdWindows: [] as WindowSpy[]
+  createdWindows: [] as WindowSpy[],
+  currentState: { phase: "idle" } as Record<string, unknown>
 }));
 const originalPlatform = process.platform;
 
 type WindowSpy = {
   isDestroyed: ReturnType<typeof vi.fn>;
   setIgnoreMouseEvents: ReturnType<typeof vi.fn>;
+  setFocusable: ReturnType<typeof vi.fn>;
   setContentSize: ReturnType<typeof vi.fn>;
   setPosition: ReturnType<typeof vi.fn>;
   getSize: ReturnType<typeof vi.fn>;
   isVisible: ReturnType<typeof vi.fn>;
   showInactive: ReturnType<typeof vi.fn>;
+  show: ReturnType<typeof vi.fn>;
+  focus: ReturnType<typeof vi.fn>;
   moveTop: ReturnType<typeof vi.fn>;
   hide: ReturnType<typeof vi.fn>;
   destroy: ReturnType<typeof vi.fn>;
   on: ReturnType<typeof vi.fn>;
+  listeners: Map<string, (...args: unknown[]) => void>;
+  webContents: {
+    on: ReturnType<typeof vi.fn>;
+    listeners: Map<string, (...args: unknown[]) => void>;
+  };
 };
 
 function makeWindowSpy(): WindowSpy {
+  const listeners = new Map<string, (...args: unknown[]) => void>();
+  const webContentsListeners = new Map<string, (...args: unknown[]) => void>();
   return {
     isDestroyed: vi.fn(() => false),
     setIgnoreMouseEvents: vi.fn(),
+    setFocusable: vi.fn(),
     setContentSize: vi.fn(),
     setPosition: vi.fn(),
     getSize: vi.fn(() => [420, 80]),
     isVisible: vi.fn(() => false),
     showInactive: vi.fn(),
+    show: vi.fn(),
+    focus: vi.fn(),
     moveTop: vi.fn(),
     hide: vi.fn(),
     destroy: vi.fn(),
-    on: vi.fn()
+    on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+      listeners.set(event, listener);
+    }),
+    listeners,
+    webContents: {
+      on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+        webContentsListeners.set(event, listener);
+      }),
+      listeners: webContentsListeners
+    }
   };
 }
 
@@ -93,7 +116,8 @@ vi.mock("../../window", () => ({
 }));
 
 vi.mock("../recording-state", () => ({
-  subscribeToRecordingState: vi.fn()
+  getRecordingState: () => mocks.currentState,
+  subscribeToRecordingState: vi.fn(() => vi.fn())
 }));
 
 vi.mock("../../log", () => ({
@@ -114,6 +138,7 @@ beforeEach(() => {
   mocks.dispatch.mockClear();
   mocks.overlappingWindows.length = 0;
   mocks.createdWindows.length = 0;
+  mocks.currentState = { phase: "idle" };
 });
 
 describe("recording-controller lead-in Escape shortcut", () => {
@@ -174,5 +199,95 @@ describe("recording-controller lead-in Escape shortcut", () => {
 
     const win = mocks.createdWindows[0];
     expect(win?.setPosition).toHaveBeenCalledWith(510, 16, false);
+  });
+
+  test("failed state remains visible, interactive, and cannot be closed without dismissal", async () => {
+    const { applyRecordingStateToController } = await import("../recording-controller");
+    const failure = {
+      phase: "failed" as const,
+      sessionId: "failed-1",
+      code: "recorder_exited" as const,
+      canRetry: true,
+      displayId: 1
+    };
+    mocks.currentState = failure;
+
+    applyRecordingStateToController(failure);
+
+    const win = mocks.createdWindows[0]!;
+    expect(win.setContentSize).toHaveBeenCalledWith(480, 176, false);
+    expect(win.setIgnoreMouseEvents).toHaveBeenCalledWith(false);
+    expect(win.setFocusable).toHaveBeenCalledWith(true);
+    expect(win.show).toHaveBeenCalled();
+    expect(win.focus).toHaveBeenCalled();
+    expect(win.destroy).not.toHaveBeenCalled();
+
+    const closeEvent = { preventDefault: vi.fn() };
+    win.listeners.get("close")?.(closeEvent);
+    expect(closeEvent.preventDefault).toHaveBeenCalled();
+    expect(win.destroy).not.toHaveBeenCalled();
+  });
+
+  test("a crashed failed renderer is recreated only while the failure is still live", async () => {
+    vi.useFakeTimers();
+    const { applyRecordingStateToController } = await import("../recording-controller");
+    const failure = {
+      phase: "failed" as const,
+      sessionId: "failed-1",
+      code: "recorder_exited" as const,
+      canRetry: true,
+      displayId: 1
+    };
+    mocks.currentState = failure;
+    applyRecordingStateToController(failure);
+
+    const crashed = mocks.createdWindows[0]!;
+    crashed.webContents.listeners.get("render-process-gone")?.();
+    expect(crashed.destroy).toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(mocks.createdWindows).toHaveLength(2);
+    expect(mocks.createdWindows[1]!.show).toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  test("a failed renderer is not recreated after dismissal wins the crash race", async () => {
+    vi.useFakeTimers();
+    const { applyRecordingStateToController } = await import("../recording-controller");
+    const failure = {
+      phase: "failed" as const,
+      sessionId: "failed-1",
+      code: "recorder_exited" as const,
+      canRetry: true,
+      displayId: 1
+    };
+    mocks.currentState = failure;
+    applyRecordingStateToController(failure);
+    mocks.createdWindows[0]!.webContents.listeners.get("render-process-gone")?.();
+
+    mocks.currentState = { phase: "idle" };
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(mocks.createdWindows).toHaveLength(1);
+    vi.useRealTimers();
+  });
+
+  test("stopping and processing preserve the Windows safe HUD position", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    const { applyRecordingStateToController } = await import("../recording-controller");
+    applyRecordingStateToController({
+      phase: "recording",
+      sessionId: "rec-1",
+      startedAt: new Date(0).toISOString(),
+      rect: { x: 100, y: 100, w: 400, h: 300 },
+      displayId: 1
+    });
+    const win = mocks.createdWindows[0]!;
+    win.setPosition.mockClear();
+
+    applyRecordingStateToController({ phase: "stopping", sessionId: "rec-1" });
+    applyRecordingStateToController({ phase: "processing", sessionId: "rec-1" });
+
+    expect(win.setPosition).not.toHaveBeenCalled();
   });
 });

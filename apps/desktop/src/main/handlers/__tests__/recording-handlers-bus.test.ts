@@ -21,7 +21,7 @@
 // systemPreferences + the recording service so we don't touch macOS TCC
 // or spawn the Swift recorder binary.
 
-import { describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
 // Full RecordingService surface — only `cancel` and `restart` are
 // exercised by the 5 tests in this file. `start`, `stop`, `isActive`
@@ -37,6 +37,8 @@ const mocks = vi.hoisted(() => ({
   }),
   start: vi.fn(),
   stop: vi.fn(),
+  retry: vi.fn(async () => ({ sessionId: "retry-session" })),
+  dismissFailure: vi.fn(async () => undefined),
   isActive: vi.fn(() => false)
 }));
 
@@ -87,9 +89,19 @@ vi.mock("../../recording/recording-service", () => ({
 
 const { bus } = await import("../../command-bus");
 const { registerRecordingHandlers } = await import("../recording-handlers");
+const { setRecordingState } = await import("../../recording/recording-state");
 const originalPlatform = process.platform;
 
 registerRecordingHandlers();
+
+beforeEach(() => {
+  setRecordingState({ phase: "idle" });
+  mocks.cancel.mockClear();
+  mocks.restart.mockClear();
+  mocks.start.mockClear();
+  mocks.retry.mockClear();
+  mocks.dismissFailure.mockClear();
+});
 
 describe("recording:* command-bus surface", () => {
   // Note: `recording-state.ts` holds module-level state. None of the
@@ -128,6 +140,76 @@ describe("recording:* command-bus surface", () => {
     if (result.ok) throw new Error("expected error");
     expect(result.error.kind).toBe("validation");
     expect(result.error.code).toBe("not_recording");
+  });
+
+  test("failed state blocks generic start/cancel/restart and allows only session recovery", async () => {
+    setRecordingState({
+      phase: "failed",
+      sessionId: "failed-session",
+      code: "recorder_exited",
+      canRetry: true,
+      displayId: 1
+    });
+
+    const start = await bus.dispatch(
+      "recording:start",
+      {
+        subject: { kind: "display", displayId: 1 },
+        capabilities: { microphone: false, systemAudio: false },
+        countdownSeconds: 0
+      },
+      { principal: "ipc" }
+    );
+    const cancel = await bus.dispatch("recording:cancel", {}, { principal: "ipc" });
+    const restart = await bus.dispatch("recording:restart", {}, { principal: "ipc" });
+
+    expect(start.ok).toBe(false);
+    expect(cancel.ok).toBe(false);
+    expect(restart.ok).toBe(false);
+    expect(mocks.start).not.toHaveBeenCalled();
+    expect(mocks.cancel).not.toHaveBeenCalled();
+    expect(mocks.restart).not.toHaveBeenCalled();
+
+    const retry = await bus.dispatch(
+      "recording:retry",
+      { sessionId: "failed-session" },
+      { principal: "ipc" }
+    );
+    expect(retry).toEqual({ ok: true, value: { sessionId: "retry-session" } });
+    expect(mocks.retry).toHaveBeenCalledWith("failed-session");
+
+    const dismiss = await bus.dispatch(
+      "recording:dismissFailure",
+      { sessionId: "failed-session" },
+      { principal: "ipc" }
+    );
+    expect(dismiss).toEqual({ ok: true, value: undefined });
+    expect(mocks.dismissFailure).toHaveBeenCalledWith("failed-session");
+  });
+
+  test("retry failures return fixed safe copy instead of raw process detail", async () => {
+    setRecordingState({
+      phase: "failed",
+      sessionId: "failed-session",
+      code: "recorder_spawn_failed",
+      canRetry: true,
+      displayId: 1
+    });
+    mocks.retry.mockRejectedValueOnce(
+      new Error("C:\\Users\\private\\PwrSnapFFmpeg.exe --token secret")
+    );
+
+    const result = await bus.dispatch(
+      "recording:retry",
+      { sessionId: "failed-session" },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected error");
+    expect(result.error.message).toBe("The video recorder couldn't start.");
+    expect(JSON.stringify(result)).not.toContain("PwrSnapFFmpeg.exe");
+    expect(JSON.stringify(result)).not.toContain("--token");
   });
 });
 

@@ -11,9 +11,10 @@
 
 import { copyFile, mkdir, rename, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { ok, err } from "@pwrsnap/shared";
+import { ok, err, recordingFailureSummary } from "@pwrsnap/shared";
 import type {
   PwrSnapError,
+  RecordingFailureCode,
   RecordingPermission,
   Result,
   VideoExportRequest,
@@ -89,6 +90,19 @@ function validationError(code: string, message: string): PwrSnapError {
 
 function recordingError(code: string, message: string, cause?: unknown): PwrSnapError {
   return { kind: "capture", code, message, cause };
+}
+
+function safeFailureSummary(fallback: RecordingFailureCode): string {
+  const state = getRecordingState();
+  return recordingFailureSummary(state.phase === "failed" ? state.code : fallback);
+}
+
+function failedSessionId(req: unknown): string | null {
+  if (typeof req !== "object" || req === null || !("sessionId" in req)) return null;
+  const value = (req as { sessionId?: unknown }).sessionId;
+  return typeof value === "string" && value.length > 0 && value.length <= 128
+    ? value
+    : null;
 }
 
 /** Filename of the extracted full-clip audio under the video asset dir.
@@ -238,6 +252,14 @@ export function registerRecordingHandlers(): void {
   // ---- recording lifecycle ----
 
   bus.register("recording:start", async (req) => {
+    if (getRecordingState().phase === "failed") {
+      return err(
+        validationError(
+          "failure_action_required",
+          "Retry or dismiss the current recording failure before starting another recording."
+        )
+      );
+    }
     // Preflight permissions before the countdown so the user is
     // never staring at "3, 2, 1, …" only to hit a permission wall.
     // Screen Recording is required: the gate fires the macOS prompt on
@@ -299,7 +321,12 @@ export function registerRecordingHandlers(): void {
         });
       }
       log.error("recording:start failed", { message });
-      return err(recordingError("recording_start_failed", message, cause));
+      return err(
+        recordingError(
+          "recording_start_failed",
+          safeFailureSummary("recorder_start_failed")
+        )
+      );
     }
   });
 
@@ -310,11 +337,21 @@ export function registerRecordingHandlers(): void {
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
       log.error("recording:stop failed", { message });
-      return err(recordingError("recording_stop_failed", message, cause));
+      return err(
+        recordingError("recording_stop_failed", safeFailureSummary("stop_failed"))
+      );
     }
   });
 
   bus.register("recording:cancel", async () => {
+    if (getRecordingState().phase === "failed") {
+      return err(
+        validationError(
+          "failure_action_required",
+          "Use the failed recording's Dismiss action instead of Cancel."
+        )
+      );
+    }
     try {
       await getService().cancel();
       return ok(undefined);
@@ -326,6 +363,14 @@ export function registerRecordingHandlers(): void {
   });
 
   bus.register("recording:restart", async () => {
+    if (getRecordingState().phase === "failed") {
+      return err(
+        validationError(
+          "failure_action_required",
+          "Use the failed recording's Retry action instead of Restart."
+        )
+      );
+    }
     try {
       const { sessionId } = await getService().restart();
       return ok({ sessionId });
@@ -338,6 +383,51 @@ export function registerRecordingHandlers(): void {
       }
       log.error("recording:restart failed", { message });
       return err(recordingError("recording_restart_failed", message, cause));
+    }
+  });
+
+  bus.register("recording:retry", async (req) => {
+    const sessionId = failedSessionId(req);
+    if (sessionId === null) {
+      return err(validationError("invalid_session", "A failed recording session is required."));
+    }
+    try {
+      return ok(await getService().retry(sessionId));
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      if (message === "stale_failure") {
+        return err(validationError("stale_failure", "That recording failure is no longer current."));
+      }
+      log.error("recording:retry failed", { message });
+      return err(
+        recordingError(
+          "recording_retry_failed",
+          safeFailureSummary("recorder_start_failed")
+        )
+      );
+    }
+  });
+
+  bus.register("recording:dismissFailure", async (req) => {
+    const sessionId = failedSessionId(req);
+    if (sessionId === null) {
+      return err(validationError("invalid_session", "A failed recording session is required."));
+    }
+    try {
+      await getService().dismissFailure(sessionId);
+      return ok(undefined);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      if (message === "stale_failure") {
+        return err(validationError("stale_failure", "That recording failure is no longer current."));
+      }
+      log.error("recording:dismissFailure failed", { message });
+      return err(
+        recordingError(
+          "recording_dismiss_failed",
+          "PwrSnap couldn't dismiss the recording failure. Open the log file for details."
+        )
+      );
     }
   });
 

@@ -10,8 +10,11 @@
 // in exactly one place. The controller's neutral decision type differs from
 // PwrSnap's; `toKitApprovalDecision` maps between them at the verb boundary.
 
-import { ChatThreadController } from "@pwrdrvr/agent-client";
-import type { ChatBackend, ChatThreadControllerDeps } from "@pwrdrvr/agent-client";
+import type {
+  ChatBackend,
+  ChatThreadController,
+  ChatThreadControllerDeps
+} from "@pwrdrvr/agent-client";
 import type { AgentBackend, NormalizedApprovalDecision } from "@pwrdrvr/agent-core";
 import {
   AcpAgentClient,
@@ -51,6 +54,7 @@ import {
 import { toAgentKitLogger, PWRSNAP_SERVICE_NAME } from "./agent-kit-bindings";
 import type { ChatApprovalBroker } from "./chat-approval-broker";
 import type { ChatThreadAccess } from "./chat-thread-access";
+import { PwrSnapChatSessionController } from "./chat-session-controller";
 
 type InterruptAcknowledgement = (threadId: string) => Promise<void>;
 
@@ -86,36 +90,6 @@ export async function interruptChatThreadAcknowledged(
   await injected.interruptAcknowledged(threadId);
 }
 
-function acknowledgedInterruptBackend(client: AgentBackend): {
-  backend: AgentBackend;
-  acknowledge: InterruptAcknowledgement;
-  clear: (threadId: string) => void;
-} {
-  const acknowledged = new Set<string>();
-  const backend = new Proxy(client, {
-    get(target, property, receiver) {
-      if (property === "interruptTurn") {
-        return async (threadId: string): Promise<void> => {
-          if (acknowledged.delete(threadId)) return;
-          await target.interruptTurn(threadId);
-        };
-      }
-      const value = Reflect.get(target, property, receiver) as unknown;
-      return typeof value === "function" ? value.bind(target) : value;
-    }
-  }) as AgentBackend;
-  return {
-    backend,
-    acknowledge: async (threadId) => {
-      await client.interruptTurn(threadId);
-      acknowledged.add(threadId);
-    },
-    clear: (threadId) => {
-      acknowledged.delete(threadId);
-    }
-  };
-}
-
 /** PwrSnap's approval decision union → the kit's neutral decision. PwrSnap
  *  distinguishes "reject-layer" / "reject-run" at the renderer for the layer-
  *  level undo affordances, but at the Codex protocol boundary every non-approve
@@ -145,6 +119,8 @@ export type ChatSurfaceConfig = {
   threadAccess?: ChatThreadAccess;
   /** Optional producer-side terminal status seam consumed by Editor #471. */
   messageStatusFor?: ChatEventAdapterOptions["messageStatusFor"];
+  /** Release exact per-turn host state after the backend settles that turn. */
+  onTurnTerminal?: (threadId: string, turnId: string) => void;
   /** Usage-accounting surface. */
   usageSurface: AiUsageThreadSurface;
   /** L1 + L2 system prompt builder. */
@@ -457,7 +433,6 @@ export async function buildChatSurface(
   });
   const resolved = await resolveChatBackend(config, deps);
   const client: AgentBackend = resolved.client;
-  const controllerBackend = acknowledgedInterruptBackend(client);
 
   // The kit controller swallows `thread_settings` into a private map and only
   // forwards `model` on recordUsage. Tee the backend's settings events into
@@ -468,6 +443,16 @@ export async function buildChatSurface(
         modelProvider: event.settings.modelProvider ?? null,
         serviceTier: event.settings.serviceTier ?? null
       });
+    }
+    if (event.kind === "turn_completed") {
+      config.onTurnTerminal?.(event.threadId, event.turnId);
+    } else if (
+      event.kind === "error" &&
+      event.threadId !== undefined &&
+      event.turnId !== undefined &&
+      event.willRetry !== true
+    ) {
+      config.onTurnTerminal?.(event.threadId, event.turnId);
     }
     if (config.approvalBroker !== undefined && event.kind === "turn_started") {
       config.approvalBroker.openThread(event.threadId);
@@ -541,8 +526,8 @@ export async function buildChatSurface(
     ...(config.messageStatusFor !== undefined ? { messageStatusFor: config.messageStatusFor } : {})
   });
 
-  controller = new ChatThreadController<Settings>({
-    client: controllerBackend.backend,
+  const sessionController = new PwrSnapChatSessionController<Settings>({
+    client,
     store: adapter,
     readSettings: config.readSettings,
     broadcast,
@@ -591,17 +576,14 @@ export async function buildChatSurface(
     ...(config.model !== undefined ? { model: config.model } : {}),
     logger: toAgentKitLogger(config.loggerScope)
   });
-  acknowledgedInterrupts.set(controller, async (threadId) => {
-    // First call the original backend directly so its rejection propagates.
-    // Then let the kit perform its local finalization while its otherwise
-    // duplicate backend call consumes the one-shot acknowledgement above.
-    await controllerBackend.acknowledge(threadId);
-    try {
-      await controller.interrupt(threadId);
-    } finally {
-      controllerBackend.clear(threadId);
-    }
-  });
+  controller = sessionController;
+  // The PwrSnap controller already waits for and propagates backend
+  // cancellation acknowledgement before finalizing the partial assistant
+  // message. Reuse that truthful operation for #489's archive/approval
+  // quiescence seam instead of wrapping the backend a second time.
+  acknowledgedInterrupts.set(controller, (threadId) =>
+    sessionController.interruptAcknowledged(threadId)
+  );
   controller.wire();
 
   const dispose = async (): Promise<void> => {
@@ -610,7 +592,7 @@ export async function buildChatSurface(
     // old private pending entry.
     if (config.approvalBroker !== undefined) {
       try {
-        await config.approvalBroker.closeOwner(approvalOwner);
+        config.approvalBroker.closeOwner(approvalOwner);
       } catch (cause) {
         // Teardown must still silence the stale controller and close its
         // backend even if a lifecycle observer misbehaves.

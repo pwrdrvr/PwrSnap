@@ -50,6 +50,10 @@ import { dispatchLibraryToolCall } from "../ai/library-tool-catalog";
 import { getChatsRoot } from "../persistence/paths";
 import { ChatApprovalBroker } from "../ai/chat-approval-broker";
 import { ChatThreadAccess } from "../ai/chat-thread-access";
+import {
+  ChatTurnToolContextStore,
+  missingChatToolContext
+} from "../ai/chat-turn-tool-context";
 
 const log = getMainLogger("pwrsnap:library-chat-handlers");
 
@@ -178,6 +182,8 @@ function codexCommandForSettings(settings: Settings): string {
 export function registerLibraryChatHandlers(params?: {
   controller?: ChatThreadController<Settings>;
   settingsReader?: LibraryChatSettingsReader;
+  /** Unit-test seam for exact turn-origin assertions. */
+  toolContexts?: ChatTurnToolContextStore;
 }): void {
   const settingsReader = params?.settingsReader ?? defaultSettingsReader;
   // Reads each thread's persisted backend config (for routing) + writes it on
@@ -210,9 +216,9 @@ export function registerLibraryChatHandlers(params?: {
       }
     }
   });
-  // sendMessage returns at turn start; backend tool calls arrive later. Keep
-  // the last turn origin per thread until a subsequent send replaces it.
-  const activeToolContexts = new Map<string, CommandDispatchOptions>();
+  // Tool callbacks outlive sendMessage(). Bind authorization to the exact
+  // successful turn so a rejected duplicate send cannot steal its context.
+  const activeToolContexts = params?.toolContexts ?? new ChatTurnToolContextStore();
 
   // ONE controller per distinct (provider, model, reasoning) config. Each thread
   // routes to the controller matching ITS config, so different threads on this
@@ -251,12 +257,13 @@ export function registerLibraryChatHandlers(params?: {
         buildTurnContext: buildCurrentCaptureContext,
         toolLabels: LIBRARY_TOOL_LABELS,
         catalog: buildLibraryToolCatalog(),
-        dispatchToolCall: (toolCall) =>
-          dispatchLibraryToolCall(
-            toolCall,
-            undefined,
-            activeToolContexts.get(toolCall.threadId) ?? { principal: "ipc" }
-          ),
+        dispatchToolCall: (toolCall) => {
+          const context = activeToolContexts.forToolCall(toolCall);
+          return context === undefined
+            ? Promise.resolve(missingChatToolContext())
+            : dispatchLibraryToolCall(toolCall, undefined, context);
+        },
+        onTurnTerminal: (threadId, turnId) => activeToolContexts.clearTurn(threadId, turnId),
         threadConfig: resolveCodexThreadConfigForCommand(command, env),
         threadEnvironments: LIBRARY_CHAT_THREAD_ENVIRONMENTS,
         // The THREAD's chosen config (not the surface default) — null leaves
@@ -372,12 +379,12 @@ export function registerLibraryChatHandlers(params?: {
         ...(ctx.sourceWindowId !== undefined ? { sourceWindowId: ctx.sourceWindowId } : {}),
         ...(ctx.sourceBounds !== undefined ? { sourceBounds: ctx.sourceBounds } : {})
       };
-      activeToolContexts.set(req.threadId, commandContext);
       const result = await c.sendMessage({
         threadId: req.threadId,
         text: req.text,
         ...(req.anchorCaptureId !== undefined ? { anchorId: req.anchorCaptureId } : {})
       });
+      activeToolContexts.commit(req.threadId, result.turnId, commandContext);
       return ok(result);
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
@@ -474,7 +481,11 @@ export function registerLibraryChatHandlers(params?: {
         await approvalBroker.closeThread(req.threadId);
       }
       const view = await c.archive(req.threadId, req.archived);
-      if (!req.archived) approvalBroker.openThread(req.threadId);
+      if (req.archived) {
+        activeToolContexts.clearThread(req.threadId);
+      } else {
+        approvalBroker.openThread(req.threadId);
+      }
       return ok(approvalBroker.decorateThread(toLibraryThreadView(view, config)));
     } catch (cause) {
       return codexUnreachable(cause);
@@ -493,7 +504,8 @@ export function registerLibraryChatHandlers(params?: {
       }
       // Do not deny or terminalize the pending approval unless interruption
       // was acknowledged by the controller.
-      await approvalBroker.closeThread(req.threadId);
+      approvalBroker.closeThread(req.threadId);
+      activeToolContexts.clearThread(req.threadId);
       return ok(undefined);
     } catch (cause) {
       return codexUnreachable(cause);

@@ -155,15 +155,15 @@ function approvalBrokerDouble(overrides: {
     owner: object,
     resolve: ChatApprovalResolver
   ) => boolean;
-  closeOwner?: (owner: object) => Promise<void>;
-  closeThread?: (threadId: string) => Promise<void>;
+  closeOwner?: (owner: object) => void | Promise<void>;
+  closeThread?: (threadId: string) => void | Promise<void>;
   openThread?: (threadId: string) => void;
 } = {}): ChatApprovalBroker {
   return {
     register: overrides.register ?? (() => true),
     decorateThread: (view: LibraryChatThreadView) => view,
-    closeOwner: overrides.closeOwner ?? (async () => undefined),
-    closeThread: overrides.closeThread ?? (async () => undefined),
+    closeOwner: overrides.closeOwner ?? (() => undefined),
+    closeThread: overrides.closeThread ?? (() => undefined),
     openThread: overrides.openThread ?? (() => undefined)
   } as unknown as ChatApprovalBroker;
 }
@@ -566,6 +566,41 @@ describe("buildChatSurface — dispose", () => {
     }
   });
 
+  test("releases exact host turn state on terminal backend events", async () => {
+    const controlled = controllableBackend();
+    const onTurnTerminal = vi.fn();
+    const surface = await buildChatSurface(
+      baseConfig({ provider: "codex", onTurnTerminal }),
+      { makeCodexClient: () => controlled.backend }
+    );
+
+    controlled.emit({
+      kind: "turn_completed",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      status: "completed"
+    });
+    controlled.emit({
+      kind: "error",
+      threadId: "thread-2",
+      turnId: "turn-2",
+      message: "failed",
+      willRetry: false
+    });
+    controlled.emit({
+      kind: "error",
+      threadId: "thread-3",
+      turnId: "turn-3",
+      message: "retrying",
+      willRetry: true
+    });
+
+    expect(onTurnTerminal).toHaveBeenCalledTimes(2);
+    expect(onTurnTerminal).toHaveBeenNthCalledWith(1, "thread-1", "turn-1");
+    expect(onTurnTerminal).toHaveBeenNthCalledWith(2, "thread-2", "turn-2");
+    await surface.dispose();
+  });
+
   test("registers an approval resolver bound to the exact originating controller", async () => {
     // The kit publishes awaiting/idle thread status around its private approval
     // promise. This factory-level test has no app database, so keep that
@@ -720,7 +755,7 @@ describe("buildChatSurface — dispose", () => {
     vi.mocked(controlled.backend.close).mockImplementation(async () => {
       order.push("backend.close");
     });
-    const closeOwner = vi.fn(async () => {
+    const closeOwner = vi.fn(() => {
       order.push("broker.closeOwner");
       controlled.emit({
         kind: "tool_call",
@@ -765,7 +800,7 @@ describe("buildChatSurface — dispose", () => {
 
   test("still closes the exclusive backend when broker-owner cleanup fails", async () => {
     const codexBackend = stubBackend();
-    const closeOwner = vi.fn(async () => {
+    const closeOwner = vi.fn(() => {
       throw new Error("deny callback failed");
     });
     const surface = await buildChatSurface(

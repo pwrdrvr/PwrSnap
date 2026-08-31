@@ -78,6 +78,7 @@ const { bus } = await import("../../command-bus");
 const { registerLibraryChatHandlers } = await import("../library-chat-handlers");
 const { ChatThreadAccess } = await import("../../ai/chat-thread-access");
 const { ChatApprovalBroker } = await import("../../ai/chat-approval-broker");
+const { ChatTurnToolContextStore } = await import("../../ai/chat-turn-tool-context");
 
 const kitView = {
   threadId: "th1",
@@ -109,6 +110,7 @@ const controller = {
 
 let access: InstanceType<typeof ChatThreadAccess>;
 let approvalBroker: InstanceType<typeof ChatApprovalBroker>;
+const toolContexts = new ChatTurnToolContextStore();
 
 beforeAll(() => {
   bus.installLocalAgentAuthorizer(async (clientId) => ({
@@ -119,7 +121,8 @@ beforeAll(() => {
     controller: controller as never,
     settingsReader: async () => ({
       ai: { defaults: { libraryChat: { provider: "codex" } } }
-    }) as never
+    }) as never,
+    toolContexts
   });
   access = harness.accesses[0] as InstanceType<typeof ChatThreadAccess>;
   approvalBroker = harness.brokers[0] as InstanceType<typeof ChatApprovalBroker>;
@@ -174,6 +177,64 @@ describe("codex:libraryChat handlers", () => {
         createdAt: "1970-01-01T00:00:00.001Z"
       }
     ]);
+  });
+
+  test("a rejected duplicate send from another window cannot reroute the active turn's tools", async () => {
+    controller.sendMessage
+      .mockResolvedValueOnce({ turnId: "turn-window-one" })
+      .mockRejectedValueOnce(new Error("turn already in progress"));
+    try {
+      const first = await bus.dispatch(
+        "codex:libraryChat:send",
+        { threadId: "th1", text: "first", anchorCaptureId: "cap_1" },
+        { principal: "ipc", sourceWindowId: 101 }
+      );
+      const duplicate = await bus.dispatch(
+        "codex:libraryChat:send",
+        { threadId: "th1", text: "duplicate", anchorCaptureId: "cap_1" },
+        { principal: "ipc", sourceWindowId: 202 }
+      );
+
+      expect(first).toEqual({ ok: true, value: { turnId: "turn-window-one" } });
+      expect(duplicate.ok).toBe(false);
+      expect(
+        toolContexts.forToolCall({ threadId: "th1", turnId: "turn-window-one" })
+      ).toMatchObject({ principal: "ipc", sourceWindowId: 101 });
+      toolContexts.clearTurn("th1", "turn-window-one");
+      expect(toolContexts.forToolCall({ threadId: "th1", turnId: "turn-window-one" }))
+        .toBeUndefined();
+    } finally {
+      controller.sendMessage.mockImplementation(async () => ({ turnId: "turn1" }));
+    }
+  });
+
+  test("interrupt does not wait for a stuck approval submission", async () => {
+    approvalBroker.openThread("th1");
+    const request = {
+      threadId: "th1",
+      turnId: "turn-stuck",
+      approvalId: "approval-stuck",
+      summary: "Run tool"
+    };
+    approvalBroker.register(request, {}, () => new Promise<void>(() => undefined));
+    void approvalBroker.resolve({ ...request, decision: "approve" });
+    controller.interrupt.mockClear();
+    controller.interruptAcknowledged.mockClear();
+
+    try {
+      const result = await bus.dispatch(
+        "codex:libraryChat:interrupt",
+        { threadId: "th1" },
+        { principal: "ipc" }
+      );
+
+      expect(result).toEqual({ ok: true, value: undefined });
+      expect(controller.interruptAcknowledged).toHaveBeenCalledWith("th1");
+      expect(controller.interrupt).not.toHaveBeenCalled();
+      expect(approvalBroker.pendingForThread("th1")).toBeNull();
+    } finally {
+      approvalBroker.openThread("th1");
+    }
   });
 
   test("approval failure keeps the exact request pending and exact retry succeeds", async () => {

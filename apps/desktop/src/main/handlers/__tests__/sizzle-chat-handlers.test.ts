@@ -27,6 +27,7 @@ const {
 } = await import("../sizzle-chat-handlers");
 const { ChatApprovalBroker } = await import("../../ai/chat-approval-broker");
 const { ChatThreadAccess } = await import("../../ai/chat-thread-access");
+const { ChatTurnToolContextStore } = await import("../../ai/chat-turn-tool-context");
 
 /** What the kit controller returns: a `NormalizedThreadView` (anchorId). */
 const kitView = {
@@ -110,6 +111,7 @@ const approvalBroker = new ChatApprovalBroker({
   emitResolved: vi.fn(),
   emitSuperseded: vi.fn()
 });
+const toolContexts = new ChatTurnToolContextStore();
 
 beforeAll(() => {
   bus.installLocalAgentAuthorizer(async (clientId) => ({
@@ -121,7 +123,8 @@ beforeAll(() => {
     settingsReader: async () => ({}) as never,
     store: store as never,
     access: threadAccess,
-    approvalBroker
+    approvalBroker,
+    toolContexts
   });
 });
 
@@ -204,6 +207,61 @@ describe("codex:sizzleChat verbs", () => {
       anchorId: "sz_1"
     });
     expect(r).toEqual({ ok: true, value: { turnId: "turn1" } });
+  });
+
+  test("a rejected duplicate Sizzle send cannot replace another window's turn context", async () => {
+    controller.sendMessage
+      .mockResolvedValueOnce({ turnId: "turn-window-one" })
+      .mockRejectedValueOnce(new Error("turn already in progress"));
+    try {
+      await bus.dispatch(
+        "codex:sizzleChat:send",
+        { threadId: "th1", text: "first", anchorCaptureId: "sz_1" },
+        { principal: "ipc", sourceWindowId: 301 }
+      );
+      const duplicate = await bus.dispatch(
+        "codex:sizzleChat:send",
+        { threadId: "th1", text: "duplicate", anchorCaptureId: "sz_1" },
+        { principal: "ipc", sourceWindowId: 302 }
+      );
+
+      expect(duplicate.ok).toBe(false);
+      expect(
+        toolContexts.forToolCall({ threadId: "th1", turnId: "turn-window-one" })
+      ).toMatchObject({ principal: "ipc", sourceWindowId: 301 });
+    } finally {
+      toolContexts.clearThread("th1");
+      controller.sendMessage.mockImplementation(async () => ({ turnId: "turn1" }));
+    }
+  });
+
+  test("Sizzle interrupt bypasses a stuck approval submission", async () => {
+    approvalBroker.openThread("th1");
+    const request = {
+      threadId: "th1",
+      turnId: "turn-stuck",
+      approvalId: "approval-stuck",
+      summary: "Run tool"
+    };
+    approvalBroker.register(request, {}, () => new Promise<void>(() => undefined));
+    void approvalBroker.resolve({ ...request, decision: "approve" });
+    controller.interrupt.mockClear();
+    controller.interruptAcknowledged.mockClear();
+
+    try {
+      const result = await bus.dispatch(
+        "codex:sizzleChat:interrupt",
+        { threadId: "th1" },
+        { principal: "ipc" }
+      );
+
+      expect(result).toEqual({ ok: true, value: undefined });
+      expect(controller.interruptAcknowledged).toHaveBeenCalledWith("th1");
+      expect(controller.interrupt).not.toHaveBeenCalled();
+      expect(approvalBroker.pendingForThread("th1")).toBeNull();
+    } finally {
+      approvalBroker.openThread("th1");
+    }
   });
 
   test("approval forwards the full (threadId, turnId, approvalId, decision)", async () => {

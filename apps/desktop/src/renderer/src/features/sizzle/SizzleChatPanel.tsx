@@ -14,12 +14,20 @@ import type {
   LibraryChatStreamDeltaEvent,
   LibraryChatMessageCommittedEvent,
   LibraryChatToolCallEvent,
+  LibraryChatTurnInterruptedEvent,
   LibraryChatThreadView
 } from "@pwrsnap/shared";
 import { acpAgentIdFromThreadId, EVENT_CHANNELS } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "../../lib/pwrsnap";
 import { MessageList, type ChatActivityChip } from "../shared/chat/MessageList";
-import { Composer, type ComposerAttachment } from "../shared/chat/Composer";
+import { Composer } from "../shared/chat/Composer";
+import {
+  chatDraftKey,
+  clearChatDraftAtRevision,
+  moveChatDraft,
+  readChatDraftSnapshot,
+  writeChatDraft
+} from "../shared/chat/chat-draft-store";
 import { ChatApprovalModal } from "../shared/chat/ChatApprovalModal";
 import { useChatApprovalSession } from "../shared/chat/useChatApprovalSession";
 import {
@@ -36,7 +44,32 @@ export interface SizzleChatPanelProps {
 }
 
 type StreamEntry = { full: string; listeners: Set<(t: string) => void> };
+type ThreadStreamState = Map<string, Map<string, StreamEntry>>;
 type ChatPanelError = { message: string; showSettingsHint: boolean };
+
+function streamsForThread(
+  state: ThreadStreamState,
+  threadId: string
+): Map<string, StreamEntry> {
+  let streams = state.get(threadId);
+  if (streams === undefined) {
+    streams = new Map();
+    state.set(threadId, streams);
+  }
+  return streams;
+}
+
+function latestStreamMessageId(
+  state: ThreadStreamState,
+  threadId: string | null
+): string | null {
+  if (threadId === null) return null;
+  const ids = state.get(threadId)?.keys();
+  if (ids === undefined) return null;
+  let latest: string | null = null;
+  for (const id of ids) latest = id;
+  return latest;
+}
 
 export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactElement {
   const [threads, setThreads] = useState<LibraryChatThreadView[]>([]);
@@ -44,8 +77,11 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [codexError, setCodexError] = useState<ChatPanelError | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [draftResetVersion, setDraftResetVersion] = useState(0);
   const [loading, setLoading] = useState<boolean>(true);
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
+  const [stoppingTurnId, setStoppingTurnId] = useState<string | null>(null);
   const [activityByMsg, setActivityByMsg] = useState<Record<string, ChatActivityChip[]>>({});
   const [pendingChips, setPendingChips] = useState<ChatActivityChip[]>([]);
   // New-chat backend draft (editable chips until the first message locks it).
@@ -65,10 +101,14 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
   activeThreadRef.current = activeThreadId;
   const activeTurnRef = useRef<string | null>(null);
   activeTurnRef.current = activeTurnId;
+  const stoppingTurnRef = useRef<string | null>(null);
+  stoppingTurnRef.current = stoppingTurnId;
+  const stopInFlightRef = useRef<string | null>(null);
   const pendingChipsRef = useRef<ChatActivityChip[]>(pendingChips);
   pendingChipsRef.current = pendingChips;
   const turnMsgRef = useRef<Map<string, string>>(new Map());
-  const streamState = useRef<Map<string, StreamEntry>>(new Map());
+  const terminalStatusRef = useRef<Map<string, ChatMessage["status"]>>(new Map());
+  const streamState = useRef<ThreadStreamState>(new Map());
 
   const submitApproval = useCallback(
     (request: ChatApprovalRequest, decision: ChatApprovalDecision) =>
@@ -92,6 +132,37 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
     submit: submitApproval
   });
 
+  const updatePendingChips = useCallback(
+    (
+      update:
+        | ChatActivityChip[]
+        | ((previous: ChatActivityChip[]) => ChatActivityChip[])
+    ): void => {
+      setPendingChips((previous) => {
+        const next = typeof update === "function" ? update(previous) : update;
+        pendingChipsRef.current = next;
+        return next;
+      });
+    },
+    []
+  );
+
+  const updateActiveTurn = useCallback((turnId: string | null): void => {
+    activeTurnRef.current = turnId;
+    setActiveTurnId(turnId);
+  }, []);
+
+  const updateStoppingTurn = useCallback((turnId: string | null): void => {
+    stoppingTurnRef.current = turnId;
+    setStoppingTurnId(turnId);
+  }, []);
+
+  const clearTurnTracking = useCallback((): void => {
+    updateActiveTurn(null);
+    updateStoppingTurn(null);
+    stopInFlightRef.current = null;
+  }, [updateActiveTurn, updateStoppingTurn]);
+
   const appendActivity = useCallback((messageId: string, chip: ChatActivityChip): void => {
     setActivityByMsg((prev) => {
       const existing = prev[messageId] ?? [];
@@ -110,8 +181,8 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
       }
       return { ...prev, [messageId]: merged };
     });
-    setPendingChips([]);
-  }, []);
+    updatePendingChips([]);
+  }, [updatePendingChips]);
 
   // Provider options + new-chat draft defaults from Settings → AI (sizzleChat).
   useEffect(() => {
@@ -138,10 +209,11 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
     let cancelled = false;
     setActiveThreadId(null);
     setMessages([]);
-    setActiveTurnId(null);
+    clearTurnTracking();
     setActivityByMsg({});
-    setPendingChips([]);
-    turnMsgRef.current.clear();
+    updatePendingChips([]);
+    setStreamingMessageId(null);
+    setActionError(null);
     setLoading(true);
     void (async () => {
       const result = await dispatch("codex:sizzleChat:list", { anchorCaptureId: projectId });
@@ -163,15 +235,33 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
     return () => {
       cancelled = true;
     };
-  }, [projectId]);
+  }, [projectId, clearTurnTracking, updatePendingChips]);
 
-  // Load history when the active thread changes.
+  // Activity chips are view-local, but live stream buffers and turn identity
+  // stay partitioned by thread across navigation until a terminal event lands.
   useEffect(() => {
+    const bufferedMessageId = latestStreamMessageId(streamState.current, activeThreadId);
+    setMessages(
+      bufferedMessageId === null
+        ? []
+        : [{
+            id: bufferedMessageId,
+            role: "assistant",
+            content: [{ kind: "text", text: "" }],
+            status: "streaming",
+            createdAt: new Date().toISOString()
+          }]
+    );
     setActivityByMsg({});
-    setPendingChips([]);
-    setActiveTurnId(null);
-    setStreamingMessageId(null);
-    turnMsgRef.current.clear();
+    updatePendingChips([]);
+    updateStoppingTurn(null);
+    stopInFlightRef.current = null;
+    setStreamingMessageId(bufferedMessageId);
+    setActionError(null);
+    const selected = threadsRef.current.find((thread) => thread.threadId === activeThreadId);
+    updateActiveTurn(
+      selected?.status.kind === "streaming" ? selected.status.turnId : null
+    );
     if (activeThreadId === null) {
       setMessages([]);
       return;
@@ -180,12 +270,29 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
     void (async () => {
       const result = await dispatch("codex:sizzleChat:history", { threadId: activeThreadId });
       if (cancelled || !result.ok) return;
-      setMessages(result.value.messages);
+      for (const message of result.value.messages) {
+        if (message.status === "streaming") continue;
+        streamsForThread(streamState.current, activeThreadId).delete(message.id);
+        setStreamingMessageId((current) => current === message.id ? null : current);
+        const matchingTurn = [...turnMsgRef.current].find(
+          ([, messageId]) => messageId === message.id
+        )?.[0];
+        if (matchingTurn === undefined) continue;
+        terminalStatusRef.current.set(matchingTurn, message.status);
+        if (activeTurnRef.current === matchingTurn) updateActiveTurn(null);
+        if (
+          stoppingTurnRef.current === matchingTurn &&
+          stopInFlightRef.current !== matchingTurn
+        ) {
+          updateStoppingTurn(null);
+        }
+      }
+      setMessages((current) => mergeHistoryWithLive(result.value.messages, current));
     })();
     return () => {
       cancelled = true;
     };
-  }, [activeThreadId]);
+  }, [activeThreadId, updateActiveTurn, updatePendingChips, updateStoppingTurn]);
 
   // Subscribe to the chat event stream.
   useEffect(() => {
@@ -195,6 +302,13 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
       subscribe(EVENT_CHANNELS.sizzleChatThreadUpdated, (payload) => {
         const { thread } = payload as { thread: LibraryChatThreadView };
         if (thread.anchorCaptureId !== projectId) return;
+        if (
+          thread.threadId === activeThreadRef.current &&
+          thread.status.kind === "streaming" &&
+          terminalStatusRef.current.has(thread.status.turnId)
+        ) {
+          return;
+        }
         setThreads((prev) => {
           if (thread.archived) return prev.filter((t) => t.threadId !== thread.threadId);
           const idx = prev.findIndex((t) => t.threadId === thread.threadId);
@@ -203,24 +317,35 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
           next[idx] = thread;
           return sortChatThreads(next);
         });
+        if (
+          thread.threadId === activeThreadRef.current &&
+          thread.status.kind === "streaming"
+        ) {
+          updateActiveTurn(thread.status.turnId);
+        }
       })
     );
 
     unsubs.push(
       subscribe(EVENT_CHANNELS.sizzleChatStreamDelta, (payload) => {
         const e = payload as LibraryChatStreamDeltaEvent;
-        if (e.threadId !== activeThreadRef.current) return;
-        if (turnMsgRef.current.get(e.turnId) !== e.messageId) {
-          turnMsgRef.current.set(e.turnId, e.messageId);
-          flushPendingTo(e.messageId);
+        const isActiveThread = e.threadId === activeThreadRef.current;
+        if (!isActiveThread && !threadsRef.current.some((thread) => thread.threadId === e.threadId)) {
+          return;
         }
-        let entry = streamState.current.get(e.messageId);
+        if (terminalStatusRef.current.has(e.turnId)) return;
+        let entry = streamsForThread(streamState.current, e.threadId).get(e.messageId);
         if (entry === undefined) {
           entry = { full: "", listeners: new Set() };
-          streamState.current.set(e.messageId, entry);
+          streamsForThread(streamState.current, e.threadId).set(e.messageId, entry);
         }
         entry.full += e.delta;
         for (const listener of entry.listeners) listener(entry.full);
+        const learnedMessageId = turnMsgRef.current.get(e.turnId) !== e.messageId;
+        if (learnedMessageId) turnMsgRef.current.set(e.turnId, e.messageId);
+        if (!isActiveThread) return;
+        if (activeTurnRef.current === null) updateActiveTurn(e.turnId);
+        if (learnedMessageId) flushPendingTo(e.messageId);
         setStreamingMessageId(e.messageId);
         setMessages((prev) =>
           prev.some((m) => m.id === e.messageId)
@@ -243,13 +368,14 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
       subscribe(EVENT_CHANNELS.sizzleChatToolCall, (payload) => {
         const e = payload as LibraryChatToolCallEvent;
         if (e.threadId !== activeThreadRef.current) return;
-        if (activeTurnRef.current === null) setActiveTurnId(e.turnId);
+        const terminal = terminalStatusRef.current.has(e.turnId);
+        if (!terminal && activeTurnRef.current === null) updateActiveTurn(e.turnId);
         const chip: ChatActivityChip = { callId: e.callId, summary: e.summary, ok: e.ok };
         const msgId = turnMsgRef.current.get(e.turnId);
         if (msgId !== undefined) {
           appendActivity(msgId, chip);
-        } else {
-          setPendingChips((prev) =>
+        } else if (!terminal) {
+          updatePendingChips((prev) =>
             prev.some((c) => c.callId === chip.callId) ? prev : [...prev, chip]
           );
         }
@@ -259,51 +385,132 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
     unsubs.push(
       subscribe(EVENT_CHANNELS.sizzleChatMessageCommitted, (payload) => {
         const e = payload as LibraryChatMessageCommittedEvent;
-        if (e.threadId !== activeThreadRef.current) return;
-        if (streamState.current.has(e.message.id)) {
-          streamState.current.delete(e.message.id);
+        if (
+          e.threadId !== activeThreadRef.current &&
+          !threadsRef.current.some((thread) => thread.threadId === e.threadId)
+        ) {
+          return;
         }
+        streamState.current.get(e.threadId)?.delete(e.message.id);
+        if (e.threadId !== activeThreadRef.current) return;
+        let turnId: string | null = e.turnId ?? null;
+        if (turnId === null) {
+          for (const [candidateTurnId, messageId] of turnMsgRef.current) {
+            if (messageId === e.message.id) {
+              turnId = candidateTurnId;
+              break;
+            }
+          }
+        }
+        if (e.message.role === "assistant" && turnId === null) {
+          const unassigned = [...terminalStatusRef.current.keys()]
+            .reverse()
+            .find((candidate) => !turnMsgRef.current.has(candidate));
+          turnId = unassigned ?? activeTurnRef.current;
+        }
+        if (e.message.role === "assistant" && turnId !== null) {
+          turnMsgRef.current.set(turnId, e.message.id);
+        }
+        const override = turnId !== null ? terminalStatusRef.current.get(turnId) : undefined;
+        const committed =
+          override === "interrupted" ? { ...e.message, status: "interrupted" as const } : e.message;
         setStreamingMessageId((cur) => (cur === e.message.id ? null : cur));
         setMessages((prev) => {
           const idx = prev.findIndex((m) => m.id === e.message.id);
-          if (idx === -1) return [...prev, e.message];
+          if (idx === -1) return [...prev, committed];
           const next = [...prev];
-          next[idx] = e.message;
+          next[idx] = committed;
           return next;
         });
-        if (e.message.role === "assistant" && e.message.status !== "streaming") {
-          flushPendingTo(e.message.id);
-          setActiveTurnId(null);
+        if (committed.role === "assistant" && committed.status !== "streaming") {
+          setActionError(null);
+          if (turnId !== null && activeTurnRef.current === turnId) {
+            flushPendingTo(committed.id);
+          }
+          if (turnId !== null) terminalStatusRef.current.set(turnId, committed.status);
+          if (turnId !== null && activeTurnRef.current === turnId) {
+            updateActiveTurn(null);
+          }
+          if (turnId !== null && stoppingTurnRef.current === turnId) {
+            if (stopInFlightRef.current !== turnId) updateStoppingTurn(null);
+          }
         }
       })
     );
 
     unsubs.push(
       subscribe(EVENT_CHANNELS.sizzleChatTurnInterrupted, (payload) => {
-        const e = payload as { threadId: string };
+        const e = payload as LibraryChatTurnInterruptedEvent;
         if (e.threadId !== activeThreadRef.current) return;
-        setStreamingMessageId(null);
-        setActiveTurnId(null);
-        setPendingChips([]);
+        const currentTurn = activeTurnRef.current;
+        if (currentTurn !== null && currentTurn !== e.turnId) return;
+        const existingTerminal = terminalStatusRef.current.get(e.turnId);
+        if (
+          currentTurn === null &&
+          (existingTerminal === "complete" || existingTerminal === "failed") &&
+          stoppingTurnRef.current !== e.turnId &&
+          stopInFlightRef.current !== e.turnId
+        ) {
+          return;
+        }
+
+        terminalStatusRef.current.set(e.turnId, "interrupted");
+        setActionError(null);
+        const messageId = turnMsgRef.current.get(e.turnId);
+        if (messageId !== undefined) {
+          const partial = streamState.current.get(e.threadId)?.get(messageId)?.full ?? "";
+          setMessages((prev) =>
+            prev.map((message) => {
+              if (message.id !== messageId) return message;
+              const hasText = message.content.some(
+                (block) => block.kind === "text" && block.text.length > 0
+              );
+              return {
+                ...message,
+                content:
+                  !hasText && partial.length > 0
+                    ? [{ kind: "text" as const, text: partial }]
+                    : message.content,
+                status: "interrupted"
+              };
+            })
+          );
+          streamState.current.get(e.threadId)?.delete(messageId);
+          setStreamingMessageId((cur) => cur === messageId ? null : cur);
+        }
+        if (currentTurn === e.turnId) updateActiveTurn(null);
+        if (
+          stoppingTurnRef.current === e.turnId &&
+          stopInFlightRef.current !== e.turnId
+        ) {
+          updateStoppingTurn(null);
+        }
+        updatePendingChips([]);
       })
     );
 
     return () => {
       for (const u of unsubs) u();
+      streamState.current.clear();
+      turnMsgRef.current.clear();
+      terminalStatusRef.current.clear();
     };
-  }, [appendActivity, flushPendingTo, projectId]);
+  }, [appendActivity, flushPendingTo, projectId, updateActiveTurn, updatePendingChips, updateStoppingTurn]);
 
   const subscribeToStream = useCallback(
     (messageId: string, onDelta: (fullText: string) => void): (() => void) => {
-      let entry = streamState.current.get(messageId);
+      const threadId = activeThreadRef.current;
+      if (threadId === null) return () => undefined;
+      const streams = streamsForThread(streamState.current, threadId);
+      let entry = streams.get(messageId);
       if (entry === undefined) {
         entry = { full: "", listeners: new Set() };
-        streamState.current.set(messageId, entry);
+        streams.set(messageId, entry);
       }
       entry.listeners.add(onDelta);
       onDelta(entry.full);
       return () => {
-        streamState.current.get(messageId)?.listeners.delete(onDelta);
+        entry.listeners.delete(onDelta);
       };
     },
     []
@@ -312,22 +519,36 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
   // "New" opens a DRAFT — no thread until the first message, so the backend
   // chips stay editable (provider unlocked) until the turn starts.
   const onNewChat = useCallback(() => {
+    activeThreadRef.current = null;
     setActiveThreadId(null);
     setMessages([]);
     setActivityByMsg({});
-    setPendingChips([]);
+    updatePendingChips([]);
     setDraftHint(null);
-    turnMsgRef.current.clear();
-  }, []);
+    setActionError(null);
+    setStreamingMessageId(null);
+    clearTurnTracking();
+  }, [clearTurnTracking, updatePendingChips]);
 
   const onSubmit = useCallback(
-    async (text: string, _attachments: readonly ComposerAttachment[]): Promise<void> => {
+    async (text: string): Promise<void> => {
+      if (activeTurnRef.current !== null || stoppingTurnRef.current !== null) {
+        throw new Error("A response is already in progress.");
+      }
+      setActionError(null);
       let threadId = activeThreadRef.current;
+      let migratedDraft: {
+        key: string;
+        revision: number;
+        isSubmittedSnapshot: boolean;
+      } | null = null;
       if (threadId === null) {
+        const sourceDraftKey = chatDraftKey("sizzle", projectId, null);
+        const submittedDraftRevision = readChatDraftSnapshot(sourceDraftKey)?.revision ?? null;
         const cfg = draftConfigRef.current;
         if (cfg.model === null || cfg.model === "") {
           setDraftHint("Choose a model to start this chat.");
-          return;
+          throw new Error("Choose a model to start this chat.");
         }
         setDraftHint(null);
         const created = await dispatch("codex:sizzleChat:create", {
@@ -337,10 +558,17 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
           ...(cfg.reasoning !== null && cfg.reasoning !== "" ? { reasoning: cfg.reasoning } : {})
         });
         if (!created.ok) {
-          setCodexError(errorFor(created.error));
-          return;
+          setActionError(`Message not sent: ${errorFor(created.error).message}`);
+          throw new Error(created.error.message);
         }
         threadId = created.value.threadId;
+        const targetDraftKey = chatDraftKey("sizzle", projectId, threadId);
+        const movedDraft = moveChatDraft(sourceDraftKey, targetDraftKey, text);
+        migratedDraft = {
+          key: targetDraftKey,
+          revision: movedDraft.revision,
+          isSubmittedSnapshot: movedDraft.sourceRevision === submittedDraftRevision
+        };
         // Dedup: the controller also broadcasts threadUpdated for this new
         // thread, which can land before this optimistic add — without the
         // filter the same thread shows as two tiles.
@@ -350,22 +578,70 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
             ...prev.filter((t) => t.threadId !== created.value.threadId)
           ])
         );
+        activeThreadRef.current = threadId;
         setActiveThreadId(threadId);
       }
-      setPendingChips([]);
+      updatePendingChips([]);
       const result = await dispatch("codex:sizzleChat:send", {
         threadId,
         text,
         anchorCaptureId: projectId
       });
       if (!result.ok) {
-        setCodexError(errorFor(result.error));
-        return;
+        setActionError(`Message not sent: ${errorFor(result.error).message}`);
+        throw new Error(result.error.message);
       }
-      setActiveTurnId(result.value.turnId);
+      if (migratedDraft?.isSubmittedSnapshot === true) {
+        if (clearChatDraftAtRevision(migratedDraft.key, migratedDraft.revision)) {
+          setDraftResetVersion((version) => version + 1);
+        }
+      }
+      if (
+        activeThreadRef.current === threadId &&
+        !terminalStatusRef.current.has(result.value.turnId)
+      ) {
+        updateActiveTurn(result.value.turnId);
+      }
     },
-    [projectId]
+    [projectId, updateActiveTurn, updatePendingChips]
   );
+
+  const onStop = useCallback(async (): Promise<void> => {
+    const threadId = activeThreadRef.current;
+    const turnId = activeTurnRef.current;
+    if (threadId === null || turnId === null) return;
+    if (stopInFlightRef.current !== null) return;
+
+    stopInFlightRef.current = turnId;
+    updateStoppingTurn(turnId);
+    setActionError(null);
+    try {
+      const result = await dispatch("codex:sizzleChat:interrupt", { threadId });
+      if (!result.ok) {
+        if (activeTurnRef.current === turnId) {
+          updateStoppingTurn(null);
+          setActionError(`Couldn’t stop the response: ${result.error.message}`);
+        }
+      }
+    } catch (cause) {
+      if (activeTurnRef.current === turnId) {
+        updateStoppingTurn(null);
+        setActionError(
+          `Couldn’t stop the response: ${cause instanceof Error ? cause.message : String(cause)}`
+        );
+      }
+    } finally {
+      if (stopInFlightRef.current === turnId) {
+        stopInFlightRef.current = null;
+        if (
+          stoppingTurnRef.current === turnId &&
+          activeTurnRef.current !== turnId
+        ) {
+          updateStoppingTurn(null);
+        }
+      }
+    }
+  }, [updateStoppingTurn]);
 
   const onCloseThread = useCallback(async (threadId: string): Promise<void> => {
     const result = await dispatch("codex:sizzleChat:archive", { threadId, archived: true });
@@ -419,6 +695,8 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
   }
 
   const showGreeting = activeThreadId === null;
+  const composerDraftKey = chatDraftKey("sizzle", projectId, activeThreadId);
+  const composerDraft = readChatDraftSnapshot(composerDraftKey);
   const activeThread =
     activeThreadId !== null ? (threads.find((t) => t.threadId === activeThreadId) ?? null) : null;
   const lockedChoice: ChatBackendChoice | null =
@@ -511,7 +789,31 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
             />
           </>
         )}
-        <Composer onSubmit={onSubmit} placeholder="Describe the reel, or ask for an edit…" />
+        {actionError !== null ? (
+          <div className="ps-libchat-action-error" role="alert">
+            {actionError}
+          </div>
+        ) : null}
+        <Composer
+          key={`${composerDraftKey}:${draftResetVersion}`}
+          attachmentsEnabled={false}
+          initialText={composerDraft?.text ?? ""}
+          initialDraftRevision={composerDraft?.revision ?? null}
+          onDraftChange={(text) => writeChatDraft(composerDraftKey, text)}
+          onDraftClear={(revision) => {
+            clearChatDraftAtRevision(composerDraftKey, revision);
+          }}
+          onSubmit={onSubmit}
+          onStop={onStop}
+          turnState={
+            stoppingTurnId !== null
+              ? "stopping"
+              : activeTurnId !== null
+                ? "active"
+                : "idle"
+          }
+          placeholder="Describe the reel, or ask for an edit…"
+        />
       </div>
 
       {approvalSession.request !== null ? (
@@ -538,6 +840,25 @@ function errorFor(error: { code?: string; message: string }): ChatPanelError {
       : error.message,
     showSettingsHint: !staleThread
   };
+}
+
+/** A delayed history read must not replace fresher live/terminal messages. */
+function mergeHistoryWithLive(
+  history: ChatMessage[],
+  live: ChatMessage[]
+): ChatMessage[] {
+  const liveById = new Map(live.map((message) => [message.id, message]));
+  const historyIds = new Set(history.map((message) => message.id));
+  return [
+    ...history.map((message) => {
+      const liveMessage = liveById.get(message.id);
+      if (liveMessage === undefined) return message;
+      return liveMessage.status === "streaming" && message.status !== "streaming"
+        ? message
+        : liveMessage;
+    }),
+    ...live.filter((message) => !historyIds.has(message.id))
+  ];
 }
 
 function sortChatThreads(threads: LibraryChatThreadView[]): LibraryChatThreadView[] {

@@ -6,13 +6,16 @@
 //   countdown phase  →  "Starting in 3…"  (big number)
 //   recording phase  →  ●  00:00:00   [Stop]   [Cancel]
 //
-// The window is hidden when state.phase === 'idle' / 'ready' /
-// 'failed' so the user only sees it while something is happening.
-// Recording phase shows a live duration timer driven from
-// state.startedAt.
+// The window is hidden for idle/ready. A failed session remains as
+// a safe, actionable card until the user retries or dismisses it.
+// Recording phase shows a live duration timer driven from state.startedAt.
 
-import { useEffect, useState, type ReactElement } from "react";
-import { EVENT_CHANNELS, type RecordingState } from "@pwrsnap/shared";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactElement } from "react";
+import {
+  EVENT_CHANNELS,
+  recordingFailureSummary,
+  type RecordingState
+} from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
 
 function formatHMS(seconds: number): string {
@@ -69,7 +72,11 @@ export function RecordingController(): ReactElement {
   const isRecording = state.phase === "recording";
   const isStopping = state.phase === "stopping" || state.phase === "processing";
 
-  if (state.phase === "idle" || state.phase === "ready" || state.phase === "failed") {
+  if (state.phase === "failed") {
+    return <RecordingFailureCard state={state} />;
+  }
+
+  if (state.phase === "idle" || state.phase === "ready") {
     return <div data-recording-phase={state.phase} />;
   }
 
@@ -242,6 +249,172 @@ export function RecordingController(): ReactElement {
         50% { opacity: 0.45; }
         100% { opacity: 1; }
       }`}</style>
+    </div>
+  );
+}
+
+function RecordingFailureCard({
+  state
+}: {
+  state: Extract<RecordingState, { phase: "failed" }>;
+}): ReactElement {
+  const [pending, setPending] = useState<"retry" | "dismiss" | "logs" | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const primaryRef = useRef<HTMLButtonElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    primaryRef.current?.focus();
+  }, []);
+
+  useLayoutEffect(() => {
+    const el = contentRef.current;
+    if (el === null) return;
+    let postedHeight = -1;
+    const post = (force = false): void => {
+      const rect = el.getBoundingClientRect();
+      const height = Math.ceil(rect.height);
+      if (!force && height === postedHeight) return;
+      postedHeight = height;
+      window.pwrsnapApi?.requestRecordingControllerResize?.({ height });
+    };
+    post();
+    const observer = new ResizeObserver(() => post());
+    observer.observe(el);
+
+    // Page zoom is shared by origin, so a View-menu zoom change in the
+    // Library also changes this renderer. ResizeObserver can stay silent when
+    // the CSS dimensions do not move; devicePixelRatio is the reliable page-
+    // visible signal, matching the tray and float-over sizing machinery.
+    let dprQuery: MediaQueryList | null = null;
+    const onDprChange = (): void => {
+      armDprQuery();
+      post(true);
+    };
+    const armDprQuery = (): void => {
+      if (typeof window.matchMedia !== "function") return;
+      dprQuery?.removeEventListener("change", onDprChange);
+      dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+      dprQuery.addEventListener("change", onDprChange);
+    };
+    armDprQuery();
+    return () => {
+      observer.disconnect();
+      dprQuery?.removeEventListener("change", onDprChange);
+    };
+  }, []);
+
+  const run = async (action: "retry" | "dismiss" | "logs"): Promise<void> => {
+    if (pending !== null) return;
+    setPending(action);
+    setActionError(null);
+    const result =
+      action === "retry"
+        ? await dispatch("recording:retry", { sessionId: state.sessionId })
+        : action === "dismiss"
+          ? await dispatch("recording:dismissFailure", { sessionId: state.sessionId })
+          : await dispatch("renderer:revealLogFile", {});
+    if (!result.ok) {
+      setActionError(
+        action === "logs"
+          ? "PwrSnap couldn't reveal the log file."
+          : "That recovery action couldn't be completed."
+      );
+    }
+    setPending(null);
+  };
+
+  const buttonStyle: React.CSSProperties = {
+    padding: "7px 11px",
+    borderRadius: 6,
+    border: "1px solid rgba(255,255,255,0.24)",
+    background: "transparent",
+    color: "#fff",
+    font: "600 12px/1 'Geist', system-ui, sans-serif",
+    cursor: pending === null ? "pointer" : "default",
+    boxSizing: "border-box",
+    maxWidth: "100%",
+    whiteSpace: "normal"
+  };
+
+  return (
+    <div
+      ref={contentRef}
+      style={{
+        display: "inline-block",
+        width: "100%"
+      } as React.CSSProperties}
+    >
+      <div
+        role="alert"
+        data-recording-phase="failed"
+        style={{
+          boxSizing: "border-box",
+          width: "100%",
+          padding: "18px 20px",
+          borderRadius: 12,
+          background: "rgba(0, 0, 0, 0.94)",
+          color: "#fff",
+          display: "flex",
+          flexDirection: "column",
+          gap: 12,
+          font: "500 13px/1.35 'Geist', system-ui, sans-serif",
+          WebkitAppRegion: "drag",
+          userSelect: "none"
+        } as React.CSSProperties}
+      >
+        <div>
+          <div style={{ color: "#ff8a1f", fontWeight: 700, marginBottom: 6 }}>
+            Recording failed
+          </div>
+          <div>{recordingFailureSummary(state.code)}</div>
+          {actionError !== null && (
+            <div data-recording-action-error style={{ color: "#fca5a5", marginTop: 6 }}>
+              {actionError}
+            </div>
+          )}
+        </div>
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 8,
+            WebkitAppRegion: "no-drag"
+          } as React.CSSProperties}
+        >
+          {state.canRetry && (
+            <button
+              ref={primaryRef}
+              type="button"
+              data-recording-action="retry"
+              disabled={pending !== null}
+              onClick={() => void run("retry")}
+              style={{ ...buttonStyle, borderColor: "#ff8a1f", color: "#ff8a1f" }}
+            >
+              {pending === "retry" ? "Retrying…" : "Retry"}
+            </button>
+          )}
+          <button
+            ref={state.canRetry ? undefined : primaryRef}
+            type="button"
+            data-recording-action="reveal-logs"
+            disabled={pending !== null}
+            onClick={() => void run("logs")}
+            style={buttonStyle}
+          >
+            {pending === "logs" ? "Opening…" : "Reveal Log File"}
+          </button>
+          <button
+            type="button"
+            data-recording-action="dismiss"
+            disabled={pending !== null}
+            onClick={() => void run("dismiss")}
+            style={buttonStyle}
+          >
+            Dismiss
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

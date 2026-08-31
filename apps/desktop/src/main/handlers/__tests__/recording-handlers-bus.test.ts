@@ -21,7 +21,8 @@
 // systemPreferences + the recording service so we don't touch macOS TCC
 // or spawn the Swift recorder binary.
 
-import { describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
+import type { PwrSnapError, Result } from "@pwrsnap/shared";
 
 // Full RecordingService surface — only `cancel` and `restart` are
 // exercised by the 5 tests in this file. `start`, `stop`, `isActive`
@@ -37,7 +38,20 @@ const mocks = vi.hoisted(() => ({
   }),
   start: vi.fn(),
   stop: vi.fn(),
-  isActive: vi.fn(() => false)
+  retryCapabilities: vi.fn(() => ({ microphone: false, systemAudio: false })),
+  retry: vi.fn(async () => ({ sessionId: "retry-session" })),
+  dismissFailure: vi.fn(async () => undefined),
+  isActive: vi.fn(() => false),
+  guardScreenCapture: vi.fn<() => Promise<Result<never, PwrSnapError> | null>>(
+    async () => null
+  ),
+  ensureCapturesDirReady: vi.fn<() => Promise<Result<never, PwrSnapError> | null>>(
+    async () => null
+  ),
+  mediaAccess: {
+    screen: "granted",
+    microphone: "granted"
+  } as Record<string, string>
 }));
 
 vi.mock("electron", (): Partial<typeof import("electron")> => ({
@@ -47,7 +61,7 @@ vi.mock("electron", (): Partial<typeof import("electron")> => ({
   // is deterministic regardless of the host. Tests that need to assert
   // a specific status can override process.platform locally.
   systemPreferences: {
-    getMediaAccessStatus: () => "granted"
+    getMediaAccessStatus: (permission: string) => mocks.mediaAccess[permission] ?? "granted"
   } as unknown as typeof import("electron").systemPreferences,
   shell: {
     openExternal: async () => undefined
@@ -85,11 +99,39 @@ vi.mock("../../recording/recording-service", () => ({
   getRecordingService: () => mocks
 }));
 
+vi.mock("../../capture/screen-permission-gate", () => ({
+  guardScreenCapture: () => mocks.guardScreenCapture(),
+  markScreenCapturePrompted: vi.fn(async () => undefined),
+  readScreenCapturePrompted: vi.fn(async () => false)
+}));
+
+vi.mock("../../capture/capture-storage-gate", () => ({
+  ensureCapturesDirReady: () => mocks.ensureCapturesDirReady()
+}));
+
 const { bus } = await import("../../command-bus");
 const { registerRecordingHandlers } = await import("../recording-handlers");
+const { setRecordingState } = await import("../../recording/recording-state");
 const originalPlatform = process.platform;
 
 registerRecordingHandlers();
+
+beforeEach(() => {
+  setRecordingState({ phase: "idle" });
+  mocks.cancel.mockClear();
+  mocks.restart.mockClear();
+  mocks.start.mockClear();
+  mocks.retryCapabilities.mockReset();
+  mocks.retryCapabilities.mockReturnValue({ microphone: false, systemAudio: false });
+  mocks.retry.mockClear();
+  mocks.dismissFailure.mockClear();
+  mocks.guardScreenCapture.mockReset();
+  mocks.guardScreenCapture.mockResolvedValue(null);
+  mocks.ensureCapturesDirReady.mockReset();
+  mocks.ensureCapturesDirReady.mockResolvedValue(null);
+  mocks.mediaAccess.screen = "granted";
+  mocks.mediaAccess.microphone = "granted";
+});
 
 describe("recording:* command-bus surface", () => {
   // Note: `recording-state.ts` holds module-level state. None of the
@@ -128,6 +170,155 @@ describe("recording:* command-bus surface", () => {
     if (result.ok) throw new Error("expected error");
     expect(result.error.kind).toBe("validation");
     expect(result.error.code).toBe("not_recording");
+  });
+
+  test("failed state blocks generic start/cancel/restart and allows only session recovery", async () => {
+    setRecordingState({
+      phase: "failed",
+      sessionId: "failed-session",
+      code: "recorder_exited",
+      canRetry: true,
+      displayId: 1
+    });
+
+    const start = await bus.dispatch(
+      "recording:start",
+      {
+        subject: { kind: "display", displayId: 1 },
+        capabilities: { microphone: false, systemAudio: false },
+        countdownSeconds: 0
+      },
+      { principal: "ipc" }
+    );
+    const cancel = await bus.dispatch("recording:cancel", {}, { principal: "ipc" });
+    const restart = await bus.dispatch("recording:restart", {}, { principal: "ipc" });
+
+    expect(start.ok).toBe(false);
+    expect(cancel.ok).toBe(false);
+    expect(restart.ok).toBe(false);
+    expect(mocks.start).not.toHaveBeenCalled();
+    expect(mocks.cancel).not.toHaveBeenCalled();
+    expect(mocks.restart).not.toHaveBeenCalled();
+
+    const retry = await bus.dispatch(
+      "recording:retry",
+      { sessionId: "failed-session" },
+      { principal: "ipc" }
+    );
+    expect(retry).toEqual({ ok: true, value: { sessionId: "retry-session" } });
+    expect(mocks.retryCapabilities).toHaveBeenCalledWith("failed-session");
+    expect(mocks.guardScreenCapture).toHaveBeenCalledTimes(1);
+    expect(mocks.ensureCapturesDirReady).toHaveBeenCalledTimes(1);
+    expect(mocks.retry).toHaveBeenCalledWith("failed-session");
+
+    const dismiss = await bus.dispatch(
+      "recording:dismissFailure",
+      { sessionId: "failed-session" },
+      { principal: "ipc" }
+    );
+    expect(dismiss).toEqual({ ok: true, value: undefined });
+    expect(mocks.dismissFailure).toHaveBeenCalledWith("failed-session");
+  });
+
+  test("retry stops at the shared screen and storage preflight gates", async () => {
+    setRecordingState({
+      phase: "failed",
+      sessionId: "failed-session",
+      code: "recorder_exited",
+      canRetry: true,
+      displayId: 1
+    });
+    mocks.guardScreenCapture.mockResolvedValueOnce({
+      ok: false,
+      error: { kind: "permission", code: "screen_not_granted", message: "Grant screen access." }
+    });
+
+    const screenBlocked = await bus.dispatch(
+      "recording:retry",
+      { sessionId: "failed-session" },
+      { principal: "ipc" }
+    );
+    expect(screenBlocked).toMatchObject({
+      ok: false,
+      error: { code: "screen_not_granted" }
+    });
+    expect(mocks.ensureCapturesDirReady).not.toHaveBeenCalled();
+    expect(mocks.retry).not.toHaveBeenCalled();
+
+    mocks.ensureCapturesDirReady.mockResolvedValueOnce({
+      ok: false,
+      error: { kind: "persistence", code: "captures_not_writable", message: "Choose storage." }
+    });
+    const storageBlocked = await bus.dispatch(
+      "recording:retry",
+      { sessionId: "failed-session" },
+      { principal: "ipc" }
+    );
+    expect(storageBlocked).toMatchObject({
+      ok: false,
+      error: { code: "captures_not_writable" }
+    });
+    expect(mocks.retry).not.toHaveBeenCalled();
+  });
+
+  test("retry rechecks revoked audio permission from the original capability snapshot", async () => {
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    try {
+      setRecordingState({
+        phase: "failed",
+        sessionId: "failed-session",
+        code: "recorder_exited",
+        canRetry: true,
+        displayId: 1
+      });
+      mocks.retryCapabilities.mockReturnValueOnce({
+        microphone: true,
+        systemAudio: false
+      });
+      mocks.mediaAccess.microphone = "denied";
+
+      const result = await bus.dispatch(
+        "recording:retry",
+        { sessionId: "failed-session" },
+        { principal: "ipc" }
+      );
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "microphone_not_granted" }
+      });
+      expect(mocks.retry).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, "platform", {
+        value: originalPlatform,
+        configurable: true
+      });
+    }
+  });
+
+  test("retry failures return fixed safe copy instead of raw process detail", async () => {
+    setRecordingState({
+      phase: "failed",
+      sessionId: "failed-session",
+      code: "recorder_spawn_failed",
+      canRetry: true,
+      displayId: 1
+    });
+    mocks.retry.mockRejectedValueOnce(
+      new Error("C:\\Users\\private\\PwrSnapFFmpeg.exe --token secret")
+    );
+
+    const result = await bus.dispatch(
+      "recording:retry",
+      { sessionId: "failed-session" },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected error");
+    expect(result.error.message).toBe("The video recorder couldn't start.");
+    expect(JSON.stringify(result)).not.toContain("PwrSnapFFmpeg.exe");
+    expect(JSON.stringify(result)).not.toContain("--token");
   });
 });
 

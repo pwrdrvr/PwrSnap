@@ -45,6 +45,7 @@ import type {
   TextToolStyle,
   ToolColor
 } from "@pwrsnap/shared";
+import { defaultEditorToolStyles } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
 import { useSettings } from "../settings/useSettings";
 import type { Tool } from "./editor-tools";
@@ -130,6 +131,16 @@ export interface UseEditorToolStateReturn {
   matchingText: MatchingTextState;
   clickMatchingTextAffordance(): void;
   dismissMatchingTextAffordance(): void;
+  /** The merged tool styles for a PERSISTING commit, awaited so a
+   *  draw racing `settings:read` stamps the user's configured styles
+   *  rather than the pre-settle defaults (the toolbar is interactive
+   *  before settings resolve). Resolves as soon as settings land —
+   *  immediately when they already have — and after a bounded wait
+   *  (with factory defaults) if the read never resolves. Always reads
+   *  the LIVE styles at resolve time; never reuse a render-closure
+   *  `activeStyle` after awaiting this. History:
+   *  docs/solutions/2026-08-31-editor-border-outline-settings-race.md */
+  settledToolStyles(): Promise<EditorToolStyles>;
 }
 
 // ---- Tunables -------------------------------------------------------
@@ -144,6 +155,14 @@ const MATCHING_TEXT_AUTO_DISMISS_MS = 8000;
  *  Settings substrate already serializes writes — this debounce is a
  *  pure-performance batch, not a race-safety mechanism. */
 const STYLE_WRITE_DEBOUNCE_MS = 500;
+
+/** Bound on `settledToolStyles`. Settings resolve in one local IPC
+ *  round-trip, so the settle normally fires in milliseconds; the
+ *  bound only exists so a failed `settings:read` can't wedge a draft
+ *  commit forever. On timeout callers get the factory defaults, and
+ *  later calls short-circuit (no repeated 3s parks) until settings
+ *  actually land. */
+const TOOL_STYLES_SETTLE_WAIT_MS = 3000;
 
 // ---- Internal helpers -----------------------------------------------
 
@@ -160,20 +179,25 @@ type LocalStyleOverrides = {
 };
 
 /** Layered style read: prefer the per-tool override from `local`, fall
- *  back to settings defaults. Shape-only merge — does NOT deep-merge
- *  nested objects beyond one level (none of the tool styles have
- *  recursive shapes today). */
+ *  back to settings defaults, and — while `settings:read` is still in
+ *  flight — to the shared factory defaults. NEVER null: the toolbar is
+ *  interactive before settings resolve, and a null here used to fan
+ *  out as a lying pointer-placeholder `activeStyle` that made a fast
+ *  draw commit with its whole style block dropped (see
+ *  docs/solutions/2026-08-31-editor-border-outline-settings-race.md).
+ *  Shape-only merge — does NOT deep-merge nested objects beyond one
+ *  level (none of the tool styles have recursive shapes today). */
 function readEffectiveStyles(
   fromSettings: EditorToolStyles | null,
   local: LocalStyleOverrides
-): EditorToolStyles | null {
-  if (fromSettings === null) return null;
+): EditorToolStyles {
+  const base = fromSettings ?? defaultEditorToolStyles();
   return {
-    arrow: { ...fromSettings.arrow, ...(local.arrow ?? {}) },
-    text: { ...fromSettings.text, ...(local.text ?? {}) },
-    shape: { ...fromSettings.shape, ...(local.shape ?? {}) },
-    blur: { ...fromSettings.blur, ...(local.blur ?? {}) },
-    highlight: { ...fromSettings.highlight, ...(local.highlight ?? {}) }
+    arrow: { ...base.arrow, ...(local.arrow ?? {}) },
+    text: { ...base.text, ...(local.text ?? {}) },
+    shape: { ...base.shape, ...(local.shape ?? {}) },
+    blur: { ...base.blur, ...(local.blur ?? {}) },
+    highlight: { ...base.highlight, ...(local.highlight ?? {}) }
   };
 }
 
@@ -189,17 +213,18 @@ function isStyledTool(tool: Tool): tool is StyledTool {
 
 /** Build the discriminated `ActiveStyle` from the merged tool styles.
  *  Pointer + crop return their own no-style branches; styled tools
- *  read their per-tool block. */
+ *  read their per-tool block. `styles` is never null (factory-default
+ *  fallback while settings load), so a styled tool always carries a
+ *  real style — rendering reads (draft previews, popover targets) may
+ *  briefly see defaults during the one settings round-trip; anything
+ *  that PERSISTS style data awaits `settledToolStyles()` instead so
+ *  it stamps the user's configured values. */
 function selectActiveStyle(
   tool: Tool,
-  styles: EditorToolStyles | null
+  styles: EditorToolStyles
 ): ActiveStyle {
   if (tool === "pointer") return { tool: "pointer" };
   if (tool === "crop") return { tool: "crop" };
-  // styles can be null while settings load — return pointer-style
-  // placeholder; the editor's toolbar is disabled until settings
-  // resolve so the user never observes this mid-state.
-  if (styles === null) return { tool: "pointer" };
   switch (tool) {
     case "arrow":
       return { tool: "arrow", style: styles.arrow };
@@ -266,6 +291,25 @@ export function useEditorToolState(
   // same act() batch sees the latest value without React's state-
   // batching reordering it.
   const singleShotRef = useRef<boolean>(false);
+
+  // Live mirrors for callbacks that outlive their render closure —
+  // an async commit invokes `onAnnotationPlaced` (and reads styles)
+  // AFTER awaiting `settledToolStyles`, by which point the closure's
+  // `settingsToolStyles` / `matchingTextEnabled` may be a settings
+  // round-trip stale. Written during render (see the Selectors
+  // section); read at call time.
+  const effectiveStylesRef = useRef<EditorToolStyles | null>(null);
+  const matchingTextEnabledRef = useRef<boolean>(true);
+  // Settle bookkeeping for `settledToolStyles` — one shared deferred
+  // + one bounded-wait timer per unsettled window, and a latch that
+  // stops repeat 3s parks once a timeout has fired.
+  const settingsLoadedRef = useRef<boolean>(false);
+  const settleTimedOutRef = useRef<boolean>(false);
+  const pendingSettleRef = useRef<{
+    promise: Promise<void>;
+    resolve: () => void;
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
 
   // ---- Matching-text auto-dismiss timer (5 cancel sites) ---------
   //
@@ -486,19 +530,22 @@ export function useEditorToolState(
       // Arrow placement with matching-text enabled → spawn the
       // affordance. Otherwise: clear any in-flight matching-text from
       // a prior arrow (defense-in-depth; setActiveTool already does
-      // this on tool change).
+      // this on tool change). The enabled flag and the style are read
+      // through refs, not the closure — a commit that awaited
+      // `settledToolStyles` invokes a callback instance minted a
+      // settings round-trip ago, and its closure would still say
+      // "settings not loaded".
       if (
         placement.tool === "arrow" &&
-        matchingTextEnabled &&
-        placement.anchorPoint !== undefined &&
-        settingsToolStyles !== null
+        matchingTextEnabledRef.current &&
+        placement.anchorPoint !== undefined
       ) {
-        // Read the effective arrow style (settings + local overrides)
-        // so the affordance captures what the user is currently
-        // working with.
-        const effective = readEffectiveStyles(settingsToolStyles, localStyles);
-        const baseStyle =
-          effective !== null ? effective.arrow : settingsToolStyles.arrow;
+        // Live effective arrow style (settings + local overrides) so
+        // the affordance captures what the user is currently working
+        // with; factory defaults during the brief pre-settle window.
+        const baseStyle = (
+          effectiveStylesRef.current ?? defaultEditorToolStyles()
+        ).arrow;
         const expiresAt = Date.now() + MATCHING_TEXT_AUTO_DISMISS_MS;
         clearAutoDismissTimer();
         autoDismissTimerRef.current = setTimeout(() => {
@@ -523,13 +570,7 @@ export function useEditorToolState(
         setMatchingText({ kind: "idle" });
       }
     },
-    [
-      clearAutoDismissTimer,
-      localStyles,
-      matchingText.kind,
-      matchingTextEnabled,
-      settingsToolStyles
-    ]
+    [clearAutoDismissTimer, matchingText.kind]
   );
 
   // ---- Selectors --------------------------------------------------
@@ -544,6 +585,65 @@ export function useEditorToolState(
     [activeTool, effectiveStyles]
   );
 
+  // ---- Commit-time style access (see the interface docs) ----------
+  //
+  // Ref-mirrored so an async commit handler (and onAnnotationPlaced
+  // above) reads the LIVE merged styles — a render closure captured
+  // before an await still holds the pre-settle value. Written during
+  // render on purpose: an event handler firing between a commit and
+  // its passive effects must see this render's values, not the
+  // previous one's.
+  effectiveStylesRef.current = effectiveStyles;
+  settingsLoadedRef.current = settingsToolStyles !== null;
+  matchingTextEnabledRef.current = matchingTextEnabled;
+
+  // One shared deferred for every settled-styles waiter, with one
+  // bounded-wait timer, both torn down when settings land. Sequential
+  // commits against a WEDGED settings read only park once: the first
+  // timeout flips `settleTimedOutRef` and later calls short-circuit
+  // to the factory defaults instead of re-parking 3s per draw. The
+  // flag resets if settings ever do land.
+  useEffect(() => {
+    if (settingsToolStyles === null) return;
+    settleTimedOutRef.current = false;
+    const pending = pendingSettleRef.current;
+    if (pending === null) return;
+    pendingSettleRef.current = null;
+    clearTimeout(pending.timer);
+    pending.resolve();
+  }, [settingsToolStyles]);
+
+  const settledToolStyles = useCallback((): Promise<EditorToolStyles> => {
+    const current = (): EditorToolStyles =>
+      effectiveStylesRef.current ?? defaultEditorToolStyles();
+    if (settingsLoadedRef.current || settleTimedOutRef.current) {
+      return Promise.resolve(current());
+    }
+    if (pendingSettleRef.current === null) {
+      let resolve: () => void = () => undefined;
+      const promise = new Promise<void>((res) => {
+        resolve = res;
+      });
+      const timer = setTimeout(() => {
+        // Bounded degrade: settings never landed. Resolve everyone
+        // with the factory defaults and stop future calls from
+        // re-parking. Warn once so a chronically slow / failed
+        // settings read is diagnosable from the log, not just from
+        // default-styled annotations.
+        settleTimedOutRef.current = true;
+        pendingSettleRef.current = null;
+        // eslint-disable-next-line no-console
+        console.warn(
+          "settledToolStyles: settings did not land within " +
+            `${TOOL_STYLES_SETTLE_WAIT_MS}ms; committing factory defaults`
+        );
+        resolve();
+      }, TOOL_STYLES_SETTLE_WAIT_MS);
+      pendingSettleRef.current = { promise, resolve, timer };
+    }
+    return pendingSettleRef.current.promise.then(current);
+  }, []);
+
   return {
     activeTool,
     activeStyle,
@@ -552,7 +652,8 @@ export function useEditorToolState(
     onAnnotationPlaced,
     matchingText,
     clickMatchingTextAffordance,
-    dismissMatchingTextAffordance
+    dismissMatchingTextAffordance,
+    settledToolStyles
   };
 }
 

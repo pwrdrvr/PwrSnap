@@ -15,6 +15,8 @@
 // transparent pixels don't get a vote (unknowable export backdrop),
 // so these specs seed solid-color rasters via `pngHex`.
 
+import { writeFile } from "node:fs/promises";
+import path from "node:path";
 import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 import { openEditor, seedImageCapture, selectTool } from "./fixtures/editor";
 
@@ -131,6 +133,75 @@ test("editor-border-outline: Auto samples a WHITE background into a black border
         { timeout: 15_000 }
       )
       .toEqual(["black", "white"]);
+  } finally {
+    await app.close();
+  }
+});
+
+// Deterministic replay of the race behind this spec's one-in-ten
+// local flake (2026-08-29): the toolbar is interactive before
+// `settings:read` resolves, and a draw committed inside that window
+// used to drop its whole style block (legacy white halo + an
+// unresolved `color: "auto"` stem — the original failure received
+// [["white", "var(--accent, #ff8a1f)"]]). The env knob holds every
+// settings read open so the draw lands inside the window; the
+// commit-side `settledToolStyles()` await is what makes this pass.
+//
+// The seeded settings file flips the arrow Border default (auto) to
+// an explicit WHITE so the pin proves the commit waited for the
+// USER'S settings rather than stamping the in-memory factory
+// defaults: with the await regressed, defaults sample the white
+// background into a BLACK halo — visibly wrong here. Full revert to
+// the pre-fix style-drop instead renders the un-resolved
+// var(--accent) stem — also wrong. Timing corridor: the knob's
+// countdown starts at the LIBRARY WINDOW's settings read (the lifted
+// tool-state hook mounts with the window, at launch), so the delay
+// must sit ABOVE launch→draw (~1.5s locally) and BELOW the hook's
+// 3s bounded settle wait, past which the commit deliberately
+// degrades to factory defaults (black — failing this pin loudly)
+// rather than wedging. On a runner slow enough that the draw misses
+// the hold entirely, the test still passes but stops exercising the
+// race — the annotation below makes that visible in the report.
+test("editor-border-outline: a draw racing settings load still gets the user's configured border", async () => {
+  const t0 = Date.now();
+  const app = await launchPwrSnap({
+    env: { PWRSNAP_E2E_SETTINGS_READ_DELAY_MS: "2500" },
+    seedUserData: async (homeRoot) => {
+      await writeFile(
+        path.join(homeRoot, "pwrsnap-settings.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          editor: { toolStyles: { arrow: { outline: "white" } } }
+        })
+      );
+    }
+  });
+  try {
+    const captureId = await seedImageCapture(app, {
+      idPrefix: "border-settings-race",
+      sourceAppName: "Border Outline Spec",
+      pngHex: WHITE_8X8_PNG_HEX
+    });
+    const win = await openEditor(app, captureId);
+    await waitForEditorImage(win);
+    await selectTool(win, "arrow");
+    await drawArrow(win, { x: 0.2, y: 0.3 }, { x: 0.7, y: 0.6 });
+    const drawAtMs = Date.now() - t0;
+    test.info().annotations.push({
+      type: "settings-race-window",
+      description:
+        `draw finished ${drawAtMs}ms after launch start; the settings hold is ` +
+        `2500ms from the window's settings:read — if drawAtMs approaches the ` +
+        `hold, this pin is going vacuous on this runner (raise the delay, ` +
+        `keeping it under the 3s settle bound).`
+    });
+
+    // User-configured WHITE border, not the factory-default sampled
+    // black — see the header comment for why each regression path
+    // lands on a different value.
+    await expect
+      .poll(async () => persistedArrowStrokes(win), { timeout: 15_000 })
+      .toEqual([["white", "#ff8a1f"]]);
   } finally {
     await app.close();
   }

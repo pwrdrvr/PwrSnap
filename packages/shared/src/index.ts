@@ -4,6 +4,7 @@
 // tight.
 
 export * from "./protocol";
+export * from "./editor-tool-defaults";
 export * from "./chat-schemas";
 export * from "./annotation-scale";
 export * from "./overlay-schemas";

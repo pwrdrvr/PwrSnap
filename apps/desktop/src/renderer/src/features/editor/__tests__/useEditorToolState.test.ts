@@ -24,7 +24,7 @@ import {
   test,
   vi
 } from "vitest";
-import type { Settings } from "@pwrsnap/shared";
+import type { EditorToolStyles, Settings } from "@pwrsnap/shared";
 
 // ---- Mocks ----------------------------------------------------------
 //
@@ -645,5 +645,106 @@ describe("useEditorToolState", () => {
       editor?: { toolStyles?: { arrow?: { color?: string } } };
     };
     expect(payload.editor?.toolStyles?.arrow?.color).toBe("gray");
+  });
+
+  // Tests 15–17: the commit-time settle surface. Draft commits await
+  // `settledToolStyles()` so a draw racing the settings load stamps
+  // the user's configured styles, degrading to factory defaults only
+  // when settings never land (the editor-border-outline flake).
+
+  test("15. settledToolStyles resolves immediately once settings are loaded", async () => {
+    installSettingsMock(makeSettings({ arrowColor: "red" }));
+    let api: UseEditorToolStateReturn | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-15",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+
+    const styles = await api!.settledToolStyles();
+    // User-configured settings, not the factory defaults.
+    expect(styles.arrow.color).toBe("red");
+  });
+
+  test("16. settledToolStyles: pending while settings load, resolves promptly when they land", async () => {
+    installSettingsMock(null);
+    let api: UseEditorToolStateReturn | null = null;
+    const probe = (): React.ReactElement =>
+      createElement(Probe, {
+        captureId: "cap-16",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      });
+    render(probe());
+
+    let styles: EditorToolStyles | null = null;
+    const wait = api!.settledToolStyles().then((s) => {
+      styles = s;
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(styles).toBeNull();
+
+    // Settings land (broadcast/read resolution → hook re-render). The
+    // promise must resolve off the settle EFFECT, promptly — this test
+    // runs on REAL timers, so if it only resolved via the 3s bounded
+    // backstop the microtask flush below would still see null and fail.
+    installSettingsMock(makeSettings({ arrowColor: "gray" }));
+    rerender(probe());
+    await act(async () => {
+      await wait;
+    });
+    expect(styles).not.toBeNull();
+    // The resolved value is the USER's settings, not factory defaults —
+    // even though the caller's render closure predates the settle.
+    expect(styles!.arrow.color).toBe("gray");
+  });
+
+  test("17. settledToolStyles is bounded: factory defaults ~3s in if settings never land, then short-circuits", async () => {
+    vi.useFakeTimers();
+    installSettingsMock(null);
+    let api: UseEditorToolStateReturn | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-17",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+
+    let styles: EditorToolStyles | null = null;
+    void api!.settledToolStyles().then((s) => {
+      styles = s;
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2999);
+    });
+    expect(styles).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    // Timed-out settle degrades to the factory defaults (never a
+    // style-less null) so the commit persists a sane overlay.
+    expect(styles).not.toBeNull();
+    expect(styles!.arrow.color).toBe("accent");
+    expect(styles!.arrow.outline).toBe("auto");
+
+    // Later commits against the still-wedged settings read must NOT
+    // re-park 3s each — the timeout latches and subsequent calls
+    // resolve immediately.
+    let second: EditorToolStyles | null = null;
+    void api!.settledToolStyles().then((s) => {
+      second = s;
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(second).not.toBeNull();
   });
 });

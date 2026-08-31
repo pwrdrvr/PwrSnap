@@ -130,6 +130,21 @@ export interface UseEditorToolStateReturn {
   matchingText: MatchingTextState;
   clickMatchingTextAffordance(): void;
   dismissMatchingTextAffordance(): void;
+  /** Resolves once the merged tool styles are available (settings
+   *  loaded), or after a bounded wait if the settings read never
+   *  lands. Draft COMMITS await this before reading styles: the
+   *  toolbar is interactive before `settings:read` resolves, so a
+   *  fast draw could otherwise commit against the pointer-placeholder
+   *  activeStyle and silently drop every style field — including the
+   *  Border block, which is how an Auto arrow persisted the legacy
+   *  white halo on a busy machine (editor-border-outline flake). */
+  whenToolStylesSettled(): Promise<void>;
+  /** Ref-read of the merged (settings + local overrides) tool styles
+   *  — the post-`whenToolStylesSettled` companion. Render-closure
+   *  reads of `activeStyle` see the value from BEFORE the await;
+   *  this reads the live one. Null only while settings are loading
+   *  (or after the bounded settle wait timed out). */
+  readEffectiveToolStyles(): EditorToolStyles | null;
 }
 
 // ---- Tunables -------------------------------------------------------
@@ -144,6 +159,13 @@ const MATCHING_TEXT_AUTO_DISMISS_MS = 8000;
  *  Settings substrate already serializes writes — this debounce is a
  *  pure-performance batch, not a race-safety mechanism. */
 const STYLE_WRITE_DEBOUNCE_MS = 500;
+
+/** Bound on `whenToolStylesSettled`. Settings resolve in one local
+ *  IPC round-trip, so the settle normally fires in milliseconds; the
+ *  bound only exists so a failed `settings:read` can't wedge a draft
+ *  commit forever. On timeout the caller reads null styles and gets
+ *  the pre-fix behavior (style-less overlay) — degraded, not stuck. */
+const TOOL_STYLES_SETTLE_WAIT_MS = 3000;
 
 // ---- Internal helpers -----------------------------------------------
 
@@ -544,6 +566,50 @@ export function useEditorToolState(
     [activeTool, effectiveStyles]
   );
 
+  // ---- Commit-time style access (see the interface docs) ----------
+  //
+  // Ref-mirrored so an async commit handler can `await
+  // whenToolStylesSettled()` and then read the LIVE merged styles —
+  // its render closure still holds the pre-await value.
+  const effectiveStylesRef = useRef<EditorToolStyles | null>(null);
+  effectiveStylesRef.current = effectiveStyles;
+
+  // Pending settle waiters. A resolver left in the list after its
+  // bounded timeout already resolved it is harmless — resolving a
+  // settled Promise is a no-op — so the list is only ever flushed,
+  // never pruned per-entry.
+  const settleResolversRef = useRef<Array<() => void>>([]);
+  useEffect(() => {
+    if (effectiveStyles === null || settleResolversRef.current.length === 0) {
+      return;
+    }
+    const resolvers = settleResolversRef.current;
+    settleResolversRef.current = [];
+    for (const resolve of resolvers) resolve();
+  }, [effectiveStyles]);
+  // Unmount: release any waiters so an in-flight commit proceeds (with
+  // whatever the ref holds) instead of dangling until its timeout.
+  useEffect(() => {
+    return () => {
+      const resolvers = settleResolversRef.current;
+      settleResolversRef.current = [];
+      for (const resolve of resolvers) resolve();
+    };
+  }, []);
+
+  const whenToolStylesSettled = useCallback((): Promise<void> => {
+    if (effectiveStylesRef.current !== null) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      settleResolversRef.current.push(resolve);
+      setTimeout(resolve, TOOL_STYLES_SETTLE_WAIT_MS);
+    });
+  }, []);
+
+  const readEffectiveToolStyles = useCallback(
+    (): EditorToolStyles | null => effectiveStylesRef.current,
+    []
+  );
+
   return {
     activeTool,
     activeStyle,
@@ -552,7 +618,9 @@ export function useEditorToolState(
     onAnnotationPlaced,
     matchingText,
     clickMatchingTextAffordance,
-    dismissMatchingTextAffordance
+    dismissMatchingTextAffordance,
+    whenToolStylesSettled,
+    readEffectiveToolStyles
   };
 }
 

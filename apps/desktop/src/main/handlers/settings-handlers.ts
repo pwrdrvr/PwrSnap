@@ -288,6 +288,19 @@ export function registerSettingsDataHandlers(options: {
   readLocalAgentMcpListenerStatus?: () => LocalAgentMcpListenerStatus;
 } = {}): void {
   bus.register("settings:read", async () => {
+    // E2E-only fault injection: hold the first settings read so specs
+    // can deterministically replay the "renderer mounted, settings not
+    // yet resolved" window. A busy machine produces the same window
+    // organically (the editor toolbar mounts and the user can draw
+    // before `settings:read` resolves), which is exactly the race the
+    // editor-border-outline flake rode in on — see
+    // editor-border-outline.spec.ts "before settings resolve".
+    if (process.env.PWRSNAP_E2E === "1") {
+      const delayMs = Number(process.env.PWRSNAP_E2E_SETTINGS_READ_DELAY_MS ?? "0");
+      if (Number.isFinite(delayMs) && delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
     const { service } = ensureServices();
     try {
       const settings = await service.read();

@@ -3007,17 +3007,22 @@ export function Editor({
       }
       // Phase 3.1 fix #2/#4 + Phase 3.2 lift: thread the active arrow
       // style (color + endStyle + stemStyle + doubleEnded) into the
-      // overlay shape so the popover's choices actually stick. The
-      // pre-3.2 guard `!isControlled` skipped style reads in Library
-      // Focus because there was no shared hook to read from; the 3.2
-      // lift gives us one (toolStateProp), so we can now read
-      // activeStyle in BOTH paths. `effectiveToolState` is the lifted
-      // hook in Library Focus and our own hook in standalone — both
-      // reflect the popover picks live.
+      // overlay shape so the popover's choices actually stick.
+      // `effectiveToolState` is the lifted hook in Library Focus and
+      // our own hook in standalone — both reflect the popover picks
+      // live.
+      //
+      // AWAIT the styles, don't read the render closure: the toolbar
+      // is clickable before `settings:read` resolves, and in that
+      // window `activeStyle` is the pointer placeholder — a commit
+      // that read it dropped EVERY style field (Border included, so
+      // an Auto arrow persisted the legacy white halo, and `color:
+      // "auto"` skipped resolveToolColor). The settle is one IPC
+      // round-trip; on a loaded machine the draw could win that race
+      // roughly once per ten runs (editor-border-outline flake).
+      await effectiveToolState.whenToolStylesSettled();
       const arrowStyleSrc =
-        effectiveToolState.activeStyle.tool === "arrow"
-          ? effectiveToolState.activeStyle.style
-          : null;
+        effectiveToolState.readEffectiveToolStyles()?.arrow ?? null;
       const arrowOverlay: Extract<Overlay, { kind: "arrow" }> = {
         kind: "arrow",
         from: { x: draft.fromXn, y: draft.fromYn },
@@ -3075,6 +3080,11 @@ export function Editor({
     }
 
     if (draft.kind === "shape-drag") {
+      // Same settle-await as the arrow commit — a commit racing the
+      // settings read must not silently drop the shape / highlight
+      // style block.
+      await effectiveToolState.whenToolStylesSettled();
+      const settledStyles = effectiveToolState.readEffectiveToolStyles();
       // Compute canvas aspect from the live canvas element's bounding
       // rect so rectFromDrag's 1:1 lock (square / circle) produces a
       // pixel-square box rather than a canvas-aspect-shaped one. The
@@ -3099,10 +3109,7 @@ export function Editor({
       // to defaults regardless of popover choices.
       let overlay: Overlay;
       if (placedKind === "shape") {
-        const shapeStyleSrc =
-          effectiveToolState.activeStyle.tool === "shape"
-            ? effectiveToolState.activeStyle.style
-            : null;
+        const shapeStyleSrc = settledStyles?.shape ?? null;
         const shapeOverlay: Extract<Overlay, { kind: "shape" }> = {
           kind: "shape",
           rect,
@@ -3132,10 +3139,7 @@ export function Editor({
         }
         overlay = shapeOverlay;
       } else if (placedKind === "highlight") {
-        const hlStyleSrc =
-          effectiveToolState.activeStyle.tool === "highlight"
-            ? effectiveToolState.activeStyle.style
-            : null;
+        const hlStyleSrc = settledStyles?.highlight ?? null;
         const hlOverlay: Extract<Overlay, { kind: "highlight" }> = {
           kind: "highlight",
           rect
@@ -3276,10 +3280,11 @@ export function Editor({
     // (color + fontSize mapped to v1's two-bucket size enum). Reads
     // from effectiveToolState so Library Focus picks up the lifted
     // hook's live style; standalone uses its own hook the same way.
-    const textStyleSrc =
-      effectiveToolState.activeStyle.tool === "text"
-        ? effectiveToolState.activeStyle.style
-        : null;
+    // Settle-await first — same race as the arrow commit: a commit
+    // racing `settings:read` must not silently drop the text style
+    // block (weight, Border, color).
+    await effectiveToolState.whenToolStylesSettled();
+    const textStyleSrc = effectiveToolState.readEffectiveToolStyles()?.text ?? null;
     const resolvedSize =
       textStyleSrc !== null ? resolveTextSize(textStyleSrc.fontSize) : "medium";
     // pwrdrvr/PwrSnap#110: every new text overlay persists an

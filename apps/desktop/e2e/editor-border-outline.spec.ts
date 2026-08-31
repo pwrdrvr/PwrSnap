@@ -136,6 +136,43 @@ test("editor-border-outline: Auto samples a WHITE background into a black border
   }
 });
 
+// Deterministic replay of the race behind this spec's one-in-ten
+// local flake (2026-08-29): the Library Focus toolbar is clickable
+// before `settings:read` resolves, and in that window the tool-state
+// hook's activeStyle degrades to the pointer placeholder — so a fast
+// draw used to commit with the WHOLE style block dropped: no
+// `outline` field (→ legacy white halo despite the white background)
+// and an unresolved `color: "auto"` stem. The env knob holds the
+// settings read open so the draw always lands inside the window; the
+// commit-side `whenToolStylesSettled()` await is what makes this
+// pass. The delay must stay comfortably ABOVE the time it takes this
+// spec to reach the draw (~1s) and BELOW the hook's bounded settle
+// wait (3s) — past the bound the commit deliberately degrades to the
+// style-less overlay rather than wedging.
+test("editor-border-outline: a draw racing settings load still gets the sampled border", async () => {
+  const app = await launchPwrSnap({
+    env: { PWRSNAP_E2E_SETTINGS_READ_DELAY_MS: "2000" }
+  });
+  try {
+    const captureId = await seedImageCapture(app, {
+      idPrefix: "border-settings-race",
+      sourceAppName: "Border Outline Spec",
+      pngHex: WHITE_8X8_PNG_HEX
+    });
+    const win = await openEditor(app, captureId);
+    await waitForEditorImage(win);
+    await selectTool(win, "arrow");
+    await drawArrow(win, { x: 0.2, y: 0.3 }, { x: 0.7, y: 0.6 });
+
+    // Pre-fix this received [["white", "var(--accent, #ff8a1f)"]].
+    await expect
+      .poll(async () => persistedArrowStrokes(win), { timeout: 15_000 })
+      .toEqual([["black", "#ff8a1f"]]);
+  } finally {
+    await app.close();
+  }
+});
+
 test("editor-border-outline: Auto keeps the white border on a DARK background", async () => {
   const app = await launchPwrSnap();
   try {

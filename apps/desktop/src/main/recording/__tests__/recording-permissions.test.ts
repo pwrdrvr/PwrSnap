@@ -150,7 +150,7 @@ describe("readRecordingReadiness", () => {
     expect(needsAttention(r)).toBe(false);
   });
 
-  test("Windows keeps operational readiness permissive but reports explicit permission evidence", async () => {
+  test("Windows reports video-only audio readiness and separate OS evidence", async () => {
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });
     electronMock.status = { screen: "granted", microphone: "denied" };
     const { readRecordingPermissionEvidence, readRecordingReadiness } = await import(
@@ -158,12 +158,10 @@ describe("readRecordingReadiness", () => {
     );
     const readiness = readRecordingReadiness();
 
-    // Preflight remains unchanged: the Windows recorder owns its current
-    // screen-only behavior and this Settings fix must not rewrite that flow.
     expect(readiness).toMatchObject({
       screenRecording: "granted",
-      microphone: "granted",
-      systemAudio: "granted"
+      microphone: "unavailable",
+      systemAudio: "unavailable"
     });
     expect(readRecordingPermissionEvidence(readiness)).toEqual({
       platform: "win32",

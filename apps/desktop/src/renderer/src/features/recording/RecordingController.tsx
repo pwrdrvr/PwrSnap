@@ -17,6 +17,7 @@ import {
   type RecordingState
 } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
+import { RecordingPermissionDialog } from "./RecordingPermissionDialog";
 
 function formatHMS(seconds: number): string {
   const total = Math.max(0, Math.floor(seconds));
@@ -78,6 +79,10 @@ export function RecordingController(): ReactElement {
 
   if (state.phase === "idle" || state.phase === "ready") {
     return <div data-recording-phase={state.phase} />;
+  }
+
+  if (state.phase === "permission") {
+    return <RecordingPermissionDialog prompt={state.prompt} />;
   }
 
   // Pre-capture phases (preflight / countdown / starting): transparent

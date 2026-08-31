@@ -22,11 +22,10 @@
 //      check. Older macOS reports `unavailable` so the System
 //      Permissions row can disable the toggle with a clear reason.
 //
-// Windows is different: its current recorder is screen-only and the capture
-// pipeline has no reliable permission preflight. Operational readiness stays
-// permissive so a real capture can run, while `readRecordingPermissionEvidence`
-// gives Settings the truthful model (uninspectable screen, global microphone,
-// unsupported system audio). Never present the readiness fallback as a grant.
+// Windows is different: its current gdigrab recorder is video-only. Screen
+// remains attemptable because Windows exposes no useful preflight for that
+// backend; microphone and system audio are operationally unavailable so a
+// requested audio source can be explicitly dropped for the current take.
 //
 // The fingerprint is a stable SHA-1 of `(screen, mic, systemAudio,
 // backend)`. Settings persists the last fingerprint that
@@ -48,7 +47,11 @@ const log = getMainLogger("pwrsnap:recording-permissions");
 /** Recorder backend identity feeds the fingerprint so a future
  *  backend swap (e.g. ScreenCaptureKit → CoreAudio Tap) re-routes
  *  the user once to confirm the new permission surface. */
-const RECORDER_BACKEND = "screencapturekit" as const;
+function recorderBackend(): string {
+  if (process.platform === "darwin") return "screencapturekit";
+  if (process.platform === "win32") return "ffmpeg-gdigrab-video-only";
+  return "desktop-capture";
+}
 
 /** Minimum macOS version that exposes ScreenCaptureKit's
  *  `SCStreamConfiguration.capturesAudio`. Below this we report
@@ -90,6 +93,7 @@ export function readScreenStatus(): RecordingPermissionStatus {
 }
 
 function readMicrophoneStatus(): RecordingPermissionStatus {
+  if (process.platform === "win32") return "unavailable";
   if (process.platform !== "darwin") return "granted";
   return fromElectronStatus(systemPreferences.getMediaAccessStatus("microphone"));
 }
@@ -99,6 +103,7 @@ function readMicrophoneStatus(): RecordingPermissionStatus {
  *  microphone path only and `systemAudio: "unavailable"` so the
  *  Settings UI can hide the toggle. */
 function readSystemAudioStatus(): RecordingPermissionStatus {
+  if (process.platform === "win32") return "unavailable";
   if (process.platform !== "darwin") return "granted";
   const release = process.getSystemVersion?.() ?? "";
   const majorStr = release.split(".")[0];
@@ -130,7 +135,7 @@ function fingerprintOf(
   mic: RecordingPermissionStatus,
   systemAudio: RecordingPermissionStatus
 ): string {
-  const material = `${screen}|${mic}|${systemAudio}|${RECORDER_BACKEND}`;
+  const material = `${screen}|${mic}|${systemAudio}|${recorderBackend()}`;
   return createHash("sha1").update(material).digest("hex").slice(0, 16);
 }
 
@@ -151,9 +156,9 @@ export function readRecordingReadiness(): RecordingReadiness {
 
 /**
  * Presentation-safe evidence for Settings. Keep this separate from
- * `readRecordingReadiness`: off macOS, readiness deliberately lets the real
- * capture operation run when no preflight API exists. That fallback is not
- * proof that Windows inspected or granted a permission.
+ * `readRecordingReadiness`: Windows screen readiness deliberately remains
+ * attemptable because gdigrab has no useful preflight API. That fallback is
+ * not proof that Windows inspected or granted a permission.
  *
  * Electron exposes one useful Windows signal here: the global microphone
  * control for classic desktop apps. Its Windows screen value is always

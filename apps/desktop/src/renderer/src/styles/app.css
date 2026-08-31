@@ -10,6 +10,7 @@
 @import "./documents.css";
 @import "./logs.css";
 @import "./local-agent-consent.css";
+@import "./recording-permission.css";
 
 /* Thin, themed scrollbars on every scroll container — sidebar, grid,
    inspector rail, reel, chat transcript, settings, dropdowns, … — in

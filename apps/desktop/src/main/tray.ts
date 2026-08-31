@@ -1011,6 +1011,7 @@ function applyRecordingStateToTray(activeTray: Tray, state: RecordingState): voi
       activeTray.setTitle("● ⏳");
       activeTray.setToolTip("PwrSnap — processing recording");
       return;
+    case "permission":
     case "idle":
     case "ready":
     case "failed":

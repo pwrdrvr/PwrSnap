@@ -66,7 +66,6 @@ const SAFE_WINDOWS_ENVIRONMENT_KEYS = new Set([
   "PROGRAMFILES",
   "PROGRAMFILES(X86)",
   "PROGRAMW6432",
-  "PSMODULEPATH",
   "SYSTEMDRIVE",
   "SYSTEMROOT",
   "TEMP",
@@ -614,6 +613,12 @@ export function validateRuntimeEvidence({
 export function sanitizedWindowsBaseEnvironment(baseEnvironment) {
   const environment = {};
   for (const [key, value] of Object.entries(baseEnvironment)) {
+    // The GitHub job starts under PowerShell 7, but the signature probes use
+    // inbox Windows PowerShell 5.1 (`powershell.exe`). Inheriting pwsh's
+    // PSModulePath makes 5.1 discover the incompatible PowerShell 7 copy of
+    // Microsoft.PowerShell.Security and fail before Get-AuthenticodeSignature.
+    // Leave it unset so each powershell.exe child constructs its own system
+    // module path. Neither the installer nor PwrSnap needs this variable.
     if (SAFE_WINDOWS_ENVIRONMENT_KEYS.has(key.toUpperCase())) {
       environment[key] = value;
     }

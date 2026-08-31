@@ -258,6 +258,7 @@ describe("isolated updater environment", () => {
       {
         Path: "C:\\Windows\\System32",
         SystemRoot: "C:\\Windows",
+        PSModulePath: "C:\\Program Files\\PowerShell\\7\\Modules",
         NODE_ENV: "development",
         PWRSNAP_E2E: "1",
         PWRSNAP_DATA_ROOT: "C:\\real-data",
@@ -301,7 +302,8 @@ describe("isolated updater environment", () => {
       "DATABASE_PASSWORD",
       "KEEP_ME",
       "PWRSNAP_TRACE",
-      "ELECTRON_RUN_AS_NODE"
+      "ELECTRON_RUN_AS_NODE",
+      "PSModulePath"
     ]) {
       expect(environment).not.toHaveProperty(key);
     }

@@ -339,18 +339,6 @@ export function useUndoRedo(opts: {
     token: InteractionToken;
     opKind: string;
     layerId: string;
-    /** True only while the stack-top entry is this bracket's OWN
-     *  coalesced entry: armed by a push carrying the bracket's key,
-     *  DISARMED by any other push (untagged, or tagged with a
-     *  different key). Only matching pushes made while armed coalesce
-     *  — otherwise the first write of a fresh interaction would merge
-     *  with whatever the previous interaction left on top of the
-     *  stack, and (the PR #531-review op-loss bug) an unrelated push
-     *  landing mid-bracket — e.g. an async annotation commit
-     *  resolving while a ⌫ multi-delete bracket is open — would arm
-     *  the bracket and make the next tagged push coalesce against the
-     *  interloper's entry instead of starting its own. */
-    hasPushed: boolean;
   } | null>(null);
   const lastCoalesceRef = useRef<{
     opKind: string;
@@ -389,20 +377,43 @@ export function useUndoRedo(opts: {
     //       key matches.
     // Both require opKind + layerId to be provided; legacy calls with
     // neither always start a fresh entry.
+    // A bracket may only coalesce while the stack-top entry is its
+    // OWN — i.e. the PREVIOUS push also carried this bracket's key.
+    // `lastCoalesceRef` already records exactly that, and unlike a
+    // separately-tracked "hasPushed" flag it is cleared at EVERY
+    // boundary that changes the stack top: beginInteraction,
+    // endInteraction, an untagged or differently-keyed push, and
+    // undo/redo. Deriving the armed state from it instead of syncing
+    // a second field by hand is what keeps those in step — the
+    // hand-synced flag missed the undo/redo case, so a ⌘Z landing
+    // inside an open bracket (the async multi-delete loop awaits IPC
+    // per row) left the bracket armed and folded the loop's next
+    // delete into an unrelated older entry.
+    //
+    // No timestamp check here on purpose: a bracket coalesces however
+    // long the interaction runs. Only the un-bracketed grace window
+    // below is time-bounded.
+    const bracket = openInteractionRef.current;
+    const lastCoalesce = lastCoalesceRef.current;
+    const bracketOwnsStackTop =
+      bracket !== null &&
+      lastCoalesce !== null &&
+      lastCoalesce.opKind === bracket.opKind &&
+      lastCoalesce.layerId === bracket.layerId;
     const insideInteraction =
-      openInteractionRef.current !== null &&
-      openInteractionRef.current.hasPushed &&
+      bracket !== null &&
+      bracketOwnsStackTop &&
       opKind !== undefined &&
       layerId !== undefined &&
-      openInteractionRef.current.opKind === opKind &&
-      openInteractionRef.current.layerId === layerId;
+      bracket.opKind === opKind &&
+      bracket.layerId === layerId;
     const insideGraceWindow =
-      lastCoalesceRef.current !== null &&
+      lastCoalesce !== null &&
       opKind !== undefined &&
       layerId !== undefined &&
-      lastCoalesceRef.current.opKind === opKind &&
-      lastCoalesceRef.current.layerId === layerId &&
-      now - lastCoalesceRef.current.timestamp <= COALESCE_WINDOW_MS;
+      lastCoalesce.opKind === opKind &&
+      lastCoalesce.layerId === layerId &&
+      now - lastCoalesce.timestamp <= COALESCE_WINDOW_MS;
 
     const shouldCoalesce = insideInteraction || insideGraceWindow;
 
@@ -477,27 +488,10 @@ export function useUndoRedo(opts: {
       // tagged write doesn't accidentally fold into it.
       lastCoalesceRef.current = null;
     }
-    // Arm the open bracket (if any) ONLY when this push carried the
-    // bracket's key — subsequent matching pushes can then coalesce.
-    // A push that DIDN'T match (untagged, or tagged with a different
-    // key — e.g. an async annotation commit resolving while a
-    // keyboard bracket is open) lands its own entry on top of the
-    // stack, so it DISARMS the bracket instead: coalescing across
-    // the interloper would fold unrelated ops together and, under
-    // the default "replace" mergeMode, silently drop the
-    // interloper's data. The next matching push then starts a fresh
-    // entry and re-arms.
-    if (openInteractionRef.current !== null) {
-      const bracket = openInteractionRef.current;
-      const matchesBracket =
-        opKind !== undefined &&
-        layerId !== undefined &&
-        bracket.opKind === opKind &&
-        bracket.layerId === layerId;
-      if (bracket.hasPushed !== matchesBracket) {
-        openInteractionRef.current = { ...bracket, hasPushed: matchesBracket };
-      }
-    }
+    // NOTE: the open bracket's armed state needs no update here — it
+    // is derived from `lastCoalesceRef` above, which the two branches
+    // immediately above have already set (tagged) or cleared
+    // (untagged) for this push.
   }, []);
 
   const recordCreate = useCallback(
@@ -592,10 +586,12 @@ export function useUndoRedo(opts: {
       // Fresh object identity per call so an interaction can't be
       // accidentally re-entered or merged across pointer cycles.
       const token = {} as InteractionToken;
-      openInteractionRef.current = { token, opKind, layerId, hasPushed: false };
+      openInteractionRef.current = { token, opKind, layerId };
       // pointerdown is a hard boundary — clear any lingering grace
       // window from the previous burst so the first push inside this
-      // bracket can't fold into an unrelated stack entry.
+      // bracket can't fold into an unrelated stack entry. This also
+      // leaves the new bracket UNARMED (its armed state is derived
+      // from this ref), so its first push starts a fresh entry.
       lastCoalesceRef.current = null;
       return token;
     },
@@ -797,6 +793,12 @@ export function useUndoRedo(opts: {
     setFuture((prev) => [...prev, op]);
     // After an undo, drop the grace window — a fresh edit shouldn't
     // be coalesced into an entry that's no longer on the past stack.
+    // LOAD-BEARING for an OPEN bracket too, not just the grace
+    // window: push() derives the bracket's armed state from this ref,
+    // so clearing it here is what stops the next matching push from
+    // folding into whatever entry this pop exposed. A ⌘Z can land
+    // mid-bracket — `deleteSelected` awaits an IPC round-trip per
+    // selected row with the bracket held open.
     lastCoalesceRef.current = null;
   }, [past, applyInverse, wrapApplying]);
 
@@ -809,6 +811,9 @@ export function useUndoRedo(opts: {
     });
     setFuture((prev) => prev.slice(0, -1));
     setPast((prev) => [...prev, op]);
+    // Same reasoning as undo() above: this also disarms an open
+    // bracket, so a later matching push can't coalesce into the entry
+    // this redo just pushed.
     lastCoalesceRef.current = null;
   }, [future, applyInverse, wrapApplying]);
 

@@ -24,20 +24,29 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import type {
   ArrowEndStyle,
   ArrowStemStyle,
+  OverlayOutlineAutoColor,
+  OverlayOutlineMode,
   OverlayRow,
   OverlayThickness,
   ShapeKind
 } from "@pwrsnap/shared";
 import {
   CURRENT_ARROW_STYLE_VERSION,
+  annotationBasisPx,
   computeArrowGeometry,
   computeStemDashArray,
   DEFAULT_PARALLELOGRAM_SKEW_DEG,
+  outlineHaloColor,
+  outlineHaloStrokeWidthPx,
+  outlineHaloWidthPx,
+  outlineStripeDashArray,
+  outlineStripeDashArrayForStemDash,
   readArrowDoubleEnded,
   readArrowEndStyle,
   readArrowStemStyle,
   readHighlightColor,
   readHighlightOpacity,
+  readOverlayOutline,
   readOverlayRotation,
   readOverlayThickness,
   readShapeFilled,
@@ -94,6 +103,14 @@ export interface DraftStyle {
    *  the persisted overlay's `opacity` field so the drag preview and
    *  committed glyph do not jump on pointerup. */
   highlightOpacity?: number;
+  /** Contrast-border mode for the live-drag preview. Mirrors the
+   *  persisted overlay's `outline` field. */
+  outline?: OverlayOutlineMode;
+  /** Live-sampled auto border pick for the in-flight draft. Editor.tsx
+   *  resamples this per drag frame when `outline === "auto"` so the
+   *  border flips black/white as the drag crosses light/dark regions —
+   *  the same value gets persisted as `outlineAuto` on commit. */
+  outlineAuto?: OverlayOutlineAutoColor;
 }
 
 export function OverlaySvg({
@@ -172,6 +189,12 @@ export function OverlaySvg({
   // preserveAspectRatio="xMidYMid meet" fits the viewBox exactly
   // into the rendered area without distortion.
   const viewBox = `0 0 ${imageWidthPx} ${imageHeightPx}`;
+  // Every sized annotation on this canvas divides ONE number. Derived
+  // from SOURCE raster dims, not the canvas dims in the viewBox above,
+  // so a crop (which is a viewport change in v2, not a resample) can't
+  // re-scale strokes the user already placed — the same invariant
+  // pwrdrvr/PwrSnap#110 established for text.
+  const annotationBasis = annotationBasisPx(sourceWidthPx, sourceHeightPx);
   // Project the live-drag override (if any) onto the matching row's
   // `data`. Every downstream split reads from `effectiveOverlays`
   // so the override participates uniformly in the kind-buckets and
@@ -305,8 +328,11 @@ export function OverlaySvg({
                 color={data.color}
                 thickness={data.thickness}
                 filled={readShapeFilled(data)}
+                outline={data.outline}
+                outlineAuto={data.outlineAuto}
                 imageWidthPx={imageWidthPx}
                 imageHeightPx={imageHeightPx}
+                basisPx={annotationBasis}
               />
             )}
             {data.kind === "arrow" && (
@@ -321,8 +347,11 @@ export function OverlaySvg({
                 doubleEnded={readArrowDoubleEnded(data)}
                 thickness={data.thickness}
                 styleVersion={data.styleVersion}
+                outline={data.outline}
+                outlineAuto={data.outlineAuto}
                 imageWidthPx={imageWidthPx}
                 imageHeightPx={imageHeightPx}
+                basisPx={annotationBasis}
               />
             )}
           </svg>
@@ -388,8 +417,11 @@ export function OverlaySvg({
             // undefined) and then jump to the current version
             // proportions on pointerup.
             styleVersion={CURRENT_ARROW_STYLE_VERSION}
+            outline={draftStyle?.outline}
+            outlineAuto={draftStyle?.outlineAuto}
             imageWidthPx={imageWidthPx}
             imageHeightPx={imageHeightPx}
+            basisPx={annotationBasis}
             isDraft
           />
         )}
@@ -415,8 +447,11 @@ export function OverlaySvg({
                 color={draftStyle?.color}
                 thickness={draftStyle?.thickness}
                 filled={draftStyle?.filled ?? false}
+                outline={draftStyle?.outline}
+                outlineAuto={draftStyle?.outlineAuto}
                 imageWidthPx={imageWidthPx}
                 imageHeightPx={imageHeightPx}
+                basisPx={annotationBasis}
                 isDraft
               />
             )}
@@ -442,12 +477,15 @@ function ArrowGlyph({
   toYn,
   imageWidthPx,
   imageHeightPx,
+  basisPx,
   color,
   endStyle,
   stemStyle,
   doubleEnded = false,
   thickness,
   styleVersion,
+  outline,
+  outlineAuto,
   isDraft = false
 }: {
   fromXn: number;
@@ -456,6 +494,11 @@ function ArrowGlyph({
   toYn: number;
   imageWidthPx: number;
   imageHeightPx: number;
+  /** The capture's `annotationBasisPx`, derived from SOURCE raster
+   *  dims by the OverlaySvg root. Sizing must not come from the
+   *  canvas dims above — those shrink on every crop, which would
+   *  re-thin an arrow each time the user cropped around it. */
+  basisPx: number;
   /** Persisted overlay's color (or live-drag's chosen color). When
    *  `"auto"` or undefined, falls back to the theme `--accent` token so
    *  legacy rows + draft-without-style render with the original
@@ -481,6 +524,11 @@ function ArrowGlyph({
    *  did before the table existed. New committed rows stamp
    *  `CURRENT_ARROW_STYLE_VERSION`. */
   styleVersion?: number | undefined;
+  /** Contrast-border mode from the row (or the draft style). Missing
+   *  → legacy always-white halo via `readOverlayOutline`. */
+  outline?: OverlayOutlineMode | undefined;
+  /** Persisted (or live-sampled, for drafts) auto border pick. */
+  outlineAuto?: OverlayOutlineAutoColor | undefined;
   isDraft?: boolean;
 }): ReactElement {
   const resolvedEndStyle: ArrowEndStyle = endStyle ?? "filled-triangle";
@@ -506,17 +554,16 @@ function ArrowGlyph({
     to: { x: toXn, y: toYn },
     imageWidthPx,
     imageHeightPx,
+    basisPx,
     styleVersion
   });
-  const shortSidePx = Math.max(1, Math.min(imageWidthPx, imageHeightPx));
-  // Pass autoStrokeWidthPx + shortSidePx so the floor-fraction
-  // formula activates (Large/X-Large lift the stroke off the
-  // STROKE_MAX_PX cap on high-DPI captures). Output is in pixels,
-  // no trailing multiplication needed.
+  // Presets resolve to absolute rungs on the annotation ladder (see
+  // readOverlayThickness); only "auto" passes the geometry's own
+  // stroke through. Output is in pixels — no trailing multiplication.
   const strokeWidthOverridePx =
     thickness === undefined || thickness === "auto"
       ? undefined
-      : readOverlayThickness(thickness, autoGeom.strokeWidthPx, shortSidePx);
+      : readOverlayThickness(thickness, autoGeom.strokeWidthPx, basisPx);
   const headGeom =
     strokeWidthOverridePx === undefined
       ? autoGeom
@@ -525,6 +572,7 @@ function ArrowGlyph({
           to: { x: toXn, y: toYn },
           imageWidthPx,
           imageHeightPx,
+          basisPx,
           strokeWidthOverridePx,
           styleVersion
         });
@@ -537,6 +585,7 @@ function ArrowGlyph({
         to: { x: fromXn, y: fromYn },
         imageWidthPx,
         imageHeightPx,
+        basisPx,
         strokeWidthOverridePx,
         styleVersion
       })
@@ -546,7 +595,14 @@ function ArrowGlyph({
   // override (so a Large thickness on a tiny arrow still renders
   // proportionally).
   const stroke = headGeom.strokeWidthPx;
-  const outline = Math.max(stroke * 0.25, 1.5);
+  const outlineWidth = outlineHaloWidthPx(stroke);
+  // Contrast-border resolution — mirrors compose.ts arrowSvg (keep in
+  // sync). Legacy rows resolve to the historical white halo; the new
+  // modes swap the color, stripe it, or drop it. Width is unchanged
+  // in every mode.
+  const resolvedOutline = readOverlayOutline({ outline, outlineAuto }, "white");
+  const haloColor = outlineHaloColor(resolvedOutline);
+  const hasOutline = resolvedOutline.kind !== "none";
   // Resolution: explicit color → use it; "auto" / undefined → fall back
   // to the theme accent token. Draft variant uses --accent-strong for
   // the pre-Phase-3.1 visual cue, but ONLY when color is "auto"/missing
@@ -592,41 +648,80 @@ function ArrowGlyph({
   );
   const dashStem = computeStemDashArray(resolvedStemStyle, stemLengthPx, stroke);
 
+  // Stripe: black dash pattern painted over the white halo. On dashed
+  // / dotted stems the black phase splits each stem dash in half so
+  // black never lands in a stem gap; the head glyphs use the plain
+  // halo-width-scaled pattern. Mirrors compose.ts arrowSvg.
+  const haloWidthPx = outlineHaloStrokeWidthPx(stroke);
+  const headStripeDash =
+    resolvedOutline.kind === "stripe" ? outlineStripeDashArray(haloWidthPx) : null;
+  const stemStripe =
+    resolvedOutline.kind !== "stripe"
+      ? null
+      : dashStem !== null
+        ? outlineStripeDashArrayForStemDash(dashStem)
+        : { dasharray: outlineStripeDashArray(haloWidthPx), dashoffset: 0 };
+
   return (
     <g strokeLinejoin="round">
-      {/* Stem halo — white under-stroke for legibility on busy
+      {/* Stem halo — contrast under-stroke for legibility on busy
           backgrounds. Mirrors the SAME dash pattern as the colored
           stem so the gaps line up: a dashed colored stem over a
-          solid halo would show solid-white "ghost" dashes through
-          the gaps. With matching dash patterns the halo just widens
+          solid halo would show solid "ghost" dashes through the
+          gaps. With matching dash patterns the halo just widens
           each dash, never fills the gaps. */}
-      <line
-        x1={fromPoint.x}
-        y1={fromPoint.y}
-        x2={stemEndAtTo.x}
-        y2={stemEndAtTo.y}
-        stroke="white"
-        strokeWidth={stroke + outline * 2}
-        strokeLinecap="round"
-        strokeDasharray={dashStem ?? undefined}
-        fill="none"
-      />
+      {hasOutline && (
+        <line
+          x1={fromPoint.x}
+          y1={fromPoint.y}
+          x2={stemEndAtTo.x}
+          y2={stemEndAtTo.y}
+          stroke={haloColor}
+          strokeWidth={haloWidthPx}
+          strokeLinecap="round"
+          strokeDasharray={dashStem ?? undefined}
+          fill="none"
+        />
+      )}
+      {/* Striped border — black twin over the white stem halo. */}
+      {stemStripe !== null && (
+        <line
+          x1={fromPoint.x}
+          y1={fromPoint.y}
+          x2={stemEndAtTo.x}
+          y2={stemEndAtTo.y}
+          stroke="black"
+          strokeWidth={haloWidthPx}
+          strokeLinecap="round"
+          strokeDasharray={stemStripe.dasharray}
+          strokeDashoffset={
+            stemStripe.dashoffset !== 0 ? stemStripe.dashoffset : undefined
+          }
+          fill="none"
+        />
+      )}
       {/* Head halo at the `to` endpoint. */}
-      <ArrowHeadHalo
-        style={resolvedEndStyle}
-        geom={headGeom}
-        outline={outline}
-        stroke={stroke}
-        imageWidthPx={imageWidthPx}
-        imageHeightPx={imageHeightPx}
-      />
+      {hasOutline && (
+        <ArrowHeadHalo
+          style={resolvedEndStyle}
+          geom={headGeom}
+          outlineWidth={outlineWidth}
+          stroke={stroke}
+          haloColor={haloColor}
+          stripeDash={headStripeDash}
+          imageWidthPx={imageWidthPx}
+          imageHeightPx={imageHeightPx}
+        />
+      )}
       {/* Mirrored head halo at the `from` endpoint (double-ended). */}
-      {tailGeom !== null && (
+      {tailGeom !== null && hasOutline && (
         <ArrowHeadHalo
           style={resolvedEndStyle}
           geom={tailGeom}
-          outline={outline}
+          outlineWidth={outlineWidth}
           stroke={stroke}
+          haloColor={haloColor}
+          stripeDash={headStripeDash}
           imageWidthPx={imageWidthPx}
           imageHeightPx={imageHeightPx}
         />
@@ -700,25 +795,35 @@ function stemEndpointFor(
 // for the algorithm; the bake (compose.ts) uses the same helper so
 // renderer + thumbnail stay byte-aligned on the dash math.
 
-/** White halo behind the arrow head — drawn underneath the colored
+/** Contrast halo behind the arrow head — drawn underneath the colored
  *  head so the entire glyph reads on busy backgrounds. Geometry is
  *  normalized; pixel conversion happens here so all coords + strokes
- *  land in the parent SVG's pixel-space viewBox. */
+ *  land in the parent SVG's pixel-space viewBox. `haloColor` comes
+ *  from the row's Border setting (legacy = white); `stripeDash`
+ *  non-null appends a black dashed twin for the striped border. */
 function ArrowHeadHalo({
   style,
   geom,
-  outline,
+  outlineWidth,
   stroke,
+  haloColor,
+  stripeDash,
   imageWidthPx,
   imageHeightPx
 }: {
   style: ArrowEndStyle;
   geom: ReturnType<typeof computeArrowGeometry>;
-  outline: number;
+  outlineWidth: number;
   stroke: number;
+  haloColor: string;
+  stripeDash: string | null;
   imageWidthPx: number;
   imageHeightPx: number;
 }): ReactElement {
+  // Derived from the PASSED outlineWidth, not re-read from the shared
+  // helper: this component paints the halo at the width its caller
+  // resolved. Mirrors compose.ts arrowHeadHaloSvg.
+  const haloWidthPx = stroke + outlineWidth * 2;
   const toX = geom.to.x * imageWidthPx;
   const toY = geom.to.y * imageHeightPx;
   const blX = geom.baseLeft.x * imageWidthPx;
@@ -729,61 +834,113 @@ function ArrowHeadHalo({
   switch (style) {
     case "filled-triangle":
       // Filled head: interior is colored, so the halo only needs to
-      // peek out at the edges. A filled white polygon under the
+      // peek out at the edges. A solid-fill polygon under the
       // colored fill works (the colored fill covers everything but
       // the rim).
       return (
-        <polygon
-          points={polygon}
-          fill="white"
-          stroke="white"
-          strokeWidth={outline * 2}
-          strokeLinejoin="round"
-        />
+        <>
+          <polygon
+            points={polygon}
+            fill={haloColor}
+            stroke={haloColor}
+            strokeWidth={outlineWidth * 2}
+            strokeLinejoin="round"
+          />
+          {stripeDash !== null && (
+            <polygon
+              points={polygon}
+              fill="none"
+              stroke="black"
+              strokeWidth={outlineWidth * 2}
+              strokeLinejoin="round"
+              strokeDasharray={stripeDash}
+            />
+          )}
+        </>
       );
     case "open-triangle":
       // Hollow head: interior must stay transparent so the image
-      // shows through. Use a fill="none" white polygon with a stroke
-      // wide enough that it extends `outline` past the colored stroke
-      // on BOTH sides — the outside edge (legibility against the
-      // background) AND the inside edge (legibility against whatever
-      // the hollow exposes). Centered strokes split width equally:
-      // a strokeWidth=(stroke + outline*2) halo over a strokeWidth=
-      // stroke colored line yields `outline` of white visible on
-      // each side. Without this fix the interior reads as solid
-      // white — the very thing the open style was meant to avoid.
+      // shows through. Use a fill="none" polygon with a stroke
+      // wide enough that it extends `outlineWidth` past the colored
+      // stroke on BOTH sides — the outside edge (legibility against
+      // the background) AND the inside edge (legibility against
+      // whatever the hollow exposes). Centered strokes split width
+      // equally: a strokeWidth=(stroke + outlineWidth*2) halo over a
+      // strokeWidth=stroke colored line yields `outlineWidth` of halo
+      // visible on each side. Without this fix the interior reads as
+      // solid white — the very thing the open style was meant to
+      // avoid.
       return (
-        <polygon
-          points={polygon}
-          fill="none"
-          stroke="white"
-          strokeWidth={stroke + outline * 2}
-          strokeLinejoin="round"
-        />
+        <>
+          <polygon
+            points={polygon}
+            fill="none"
+            stroke={haloColor}
+            strokeWidth={haloWidthPx}
+            strokeLinejoin="round"
+          />
+          {stripeDash !== null && (
+            <polygon
+              points={polygon}
+              fill="none"
+              stroke="black"
+              strokeWidth={haloWidthPx}
+              strokeLinejoin="round"
+              strokeDasharray={stripeDash}
+            />
+          )}
+        </>
       );
     case "line":
       return (
-        <line
-          x1={blX}
-          y1={blY}
-          x2={brX}
-          y2={brY}
-          stroke="white"
-          strokeWidth={stroke + outline * 2}
-          strokeLinecap="round"
-        />
+        <>
+          <line
+            x1={blX}
+            y1={blY}
+            x2={brX}
+            y2={brY}
+            stroke={haloColor}
+            strokeWidth={haloWidthPx}
+            strokeLinecap="round"
+          />
+          {stripeDash !== null && (
+            <line
+              x1={blX}
+              y1={blY}
+              x2={brX}
+              y2={brY}
+              stroke="black"
+              strokeWidth={haloWidthPx}
+              strokeLinecap="round"
+              strokeDasharray={stripeDash}
+            />
+          )}
+        </>
       );
     case "dot": {
       const r = stroke * 1.5;
       return (
-        <circle
-          cx={toX}
-          cy={toY}
-          r={r + outline}
-          fill="white"
-          stroke="white"
-          strokeWidth={outline * 2}
-        />
+        <>
+          <circle
+            cx={toX}
+            cy={toY}
+            r={r + outlineWidth}
+            fill={haloColor}
+            stroke={haloColor}
+            strokeWidth={outlineWidth * 2}
+          />
+          {stripeDash !== null && (
+            <circle
+              cx={toX}
+              cy={toY}
+              r={r + outlineWidth}
+              fill="none"
+              stroke="black"
+              strokeWidth={outlineWidth * 2}
+              strokeDasharray={stripeDash}
+            />
+          )}
+        </>
       );
     }
   }
@@ -851,9 +1008,12 @@ function ShapeGlyph({
   rotation = 0,
   imageWidthPx,
   imageHeightPx,
+  basisPx,
   color,
   thickness,
   filled = false,
+  outline,
+  outlineAuto,
   isDraft = false
 }: {
   rect: { x: number; y: number; w: number; h: number };
@@ -879,24 +1039,38 @@ function ShapeGlyph({
   rotation?: number;
   imageWidthPx: number;
   imageHeightPx: number;
+  /** See ArrowGlyph.basisPx. */
+  basisPx: number;
   /** See ArrowGlyph.color for the resolution rationale. Same shape. */
   color?: "auto" | string | undefined;
   /** Optional stroke-thickness override. See ArrowGlyph.thickness. */
   thickness?: OverlayThickness | undefined;
   /** When true, the shape renders as a solid fill in `accent` rather
-   *  than a stroke-only outline. The halo (white under-stroke) is
-   *  skipped because a solid fill already reads at full contrast. */
+   *  than a stroke-only outline. Legacy filled shapes skip the halo;
+   *  an explicit Border setting draws a contrast RIM under the fill. */
   filled?: boolean | undefined;
+  /** Contrast-border mode from the row (or the draft style). Missing
+   *  → legacy behavior via `readOverlayOutline` (stroked: white halo;
+   *  filled: no rim). */
+  outline?: OverlayOutlineMode | undefined;
+  /** Persisted (or live-sampled, for drafts) auto border pick. */
+  outlineAuto?: OverlayOutlineAutoColor | undefined;
   isDraft?: boolean;
 }): ReactElement {
-  // Stroke width + halo scaled by image short-side. Same band as
-  // ArrowGlyph — see ArrowGlyph for the calibration rationale. Pixel-
-  // space: the shared helper applies the floor-fraction formula on
-  // Large/X-Large so high-DPI captures don't get a hairline shape, and
-  // it's the SAME source of truth the click hit-test + drag rect read
-  // so the painted line and the grabbable region can't drift apart.
-  const shortSide = Math.min(imageWidthPx, imageHeightPx);
-  const { strokeWidthPx, outline } = shapeStrokeGeometry(thickness, shortSide);
+  // Stroke width + halo off the shared annotation ladder — the SAME
+  // rungs ArrowGlyph paints, so an auto shape and an auto arrow are
+  // the same weight. `shapeStrokeGeometry` is also what the click
+  // hit-test and the drag rect read, so the painted line and the
+  // grabbable region can't drift apart.
+  const { strokeWidthPx, outline: outlineWidthPx } = shapeStrokeGeometry(
+    thickness,
+    basisPx
+  );
+  // Contrast-border resolution — mirrors compose.ts shapeSvg (keep in
+  // sync). Legacy stroked shapes resolve to the white halo; legacy
+  // filled shapes draw no rim.
+  const resolvedOutline = readOverlayOutline({ outline, outlineAuto }, "white");
+  const haloColor = outlineHaloColor(resolvedOutline);
   // Pixel-space bbox.
   const rx = rect.x * imageWidthPx;
   const ry = rect.y * imageHeightPx;
@@ -921,10 +1095,14 @@ function ShapeGlyph({
     ? { transform: groupTransform }
     : {};
 
-  // Per-shape primitive renderers. Halo (white under-stroke) +
+  // Per-shape primitive renderers. Halo (contrast under-stroke) +
   // colored stroke are produced as a 2-element array so we can share
   // the wrapping <g> + filled-branch fork.
-  function strokedPrimitive(stroke: string, strokeWidth: number): ReactElement {
+  function strokedPrimitive(
+    stroke: string,
+    strokeWidth: number,
+    dasharray?: string
+  ): ReactElement {
     switch (shape) {
       case "circle":
       case "oval":
@@ -941,6 +1119,7 @@ function ShapeGlyph({
             stroke={stroke}
             strokeWidth={strokeWidth}
             strokeLinejoin="round"
+            strokeDasharray={dasharray}
           />
         );
       case "parallelogram": {
@@ -968,6 +1147,7 @@ function ShapeGlyph({
             stroke={stroke}
             strokeWidth={strokeWidth}
             strokeLinejoin="round"
+            strokeDasharray={dasharray}
           />
         );
       }
@@ -984,6 +1164,7 @@ function ShapeGlyph({
             stroke={stroke}
             strokeWidth={strokeWidth}
             strokeLinejoin="round"
+            strokeDasharray={dasharray}
           />
         );
     }
@@ -1028,14 +1209,45 @@ function ShapeGlyph({
   }
 
   if (filled) {
-    // Solid fill — single primitive, no halo. The fill IS the glyph;
-    // a halo around a solid fill would just shrink-wrap the same color
-    // and add nothing.
-    return <g {...wrapperProps}>{filledPrimitive()}</g>;
+    // Solid fill. Legacy rows (and Border = Off) draw the bare
+    // primitive — a same-color halo would add nothing. An explicit
+    // Border setting draws a contrast RIM under the fill: a centered
+    // stroke of 2×outlineWidthPx whose inner half the fill covers,
+    // leaving outlineWidthPx of rim visible — the same reach as a
+    // stroked shape's halo. Mirrors compose.ts shapeSvg.
+    if (resolvedOutline.kind === "legacy" || resolvedOutline.kind === "none") {
+      return <g {...wrapperProps}>{filledPrimitive()}</g>;
+    }
+    return (
+      <g {...wrapperProps}>
+        {resolvedOutline.kind === "stripe" ? (
+          <>
+            {strokedPrimitive("white", outlineWidthPx * 2)}
+            {strokedPrimitive(
+              "black",
+              outlineWidthPx * 2,
+              outlineStripeDashArray(outlineWidthPx * 2)
+            )}
+          </>
+        ) : (
+          strokedPrimitive(haloColor, outlineWidthPx * 2)
+        )}
+        {filledPrimitive()}
+      </g>
+    );
   }
+  if (resolvedOutline.kind === "none") {
+    return <g {...wrapperProps}>{strokedPrimitive(accent, strokeWidthPx)}</g>;
+  }
+  const stripeDash =
+    resolvedOutline.kind === "stripe"
+      ? outlineStripeDashArray(strokeWidthPx + outlineWidthPx * 2)
+      : null;
   return (
     <g {...wrapperProps}>
-      {strokedPrimitive("white", strokeWidthPx + outline * 2)}
+      {strokedPrimitive(haloColor, strokeWidthPx + outlineWidthPx * 2)}
+      {stripeDash !== null &&
+        strokedPrimitive("black", strokeWidthPx + outlineWidthPx * 2, stripeDash)}
       {strokedPrimitive(accent, strokeWidthPx)}
     </g>
   );
@@ -1104,8 +1316,9 @@ function HighlightGlyph({
  *  on-the-text behavior covers the same area.
  *
  *  Math mirrors TextGlyph's render:
- *    • fontSizePx — bucket on image short-side (small=shortSide/50,
- *      medium=/30, large=/18)
+ *    • fontSizePx — bucket ÷ the SOURCE raster's annotationBasisPx
+ *      (small=/50, medium=/30, large=/18, x-large=/11); see
+ *      `annotation-scale.ts`
  *    • Width in pixels: maxChars × fontSizePx × 0.55 (avg em-advance
  *      for SF Pro), normalized by imageWidth so callers can place a
  *      hit-rect via CSS `%`.
@@ -2131,6 +2344,12 @@ export function TransformHandles({
   // the overlay's persisted data when not dragging.
   const [liveData, setLiveData] = useState<OverlayRow["data"] | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  // Same SOURCE-derived basis the OverlaySvg root computes — the drag
+  // rect below has to pad by the reach of the line ShapeGlyph actually
+  // painted, so both must divide the same number. Hoisted out of the
+  // per-layer style callback: this component re-renders on every
+  // pointermove during a drag.
+  const annotationBasis = annotationBasisPx(sourceWidthPx, sourceHeightPx);
   // Pointerdown snapshot: the data we use to interpret subsequent
   // pointermove deltas. Kept in a ref since pointermove fires faster
   // than React state can keep up.
@@ -2502,10 +2721,7 @@ export function TransformHandles({
             // so no pad.
             const reachPx =
               d.kind === "shape" && !readShapeFilled(d)
-                ? shapeStrokeGeometry(
-                    d.thickness,
-                    Math.min(imageWidthPx, imageHeightPx)
-                  ).outerReachPx
+                ? shapeStrokeGeometry(d.thickness, annotationBasis).outerReachPx
                 : 0;
             const padXN = reachPx / imageWidthPx;
             const padYN = reachPx / imageHeightPx;

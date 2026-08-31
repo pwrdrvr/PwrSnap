@@ -47,6 +47,7 @@ import type {
   BlurToolStyle,
   ColorToken,
   HighlightToolStyle,
+  OverlayOutlineMode,
   ShapeKind,
   ShapeToolStyle,
   TextFontWeight,
@@ -151,19 +152,20 @@ const THICKNESS_PRESETS: ReadonlyArray<{ id: ToolSizePreset; label: string }> = 
   { id: "x-large", label: "XL" }
 ];
 
-// Text font-size presets. Three buckets only (small/medium/large +
-// auto) — we DON'T expose x-large here because the bucket curve
-// (shortSide/50, /30, /18) is already well-separated, and x-large
-// for text is a different kind of decision (more like a heading
-// style than a stroke weight) that we'd rather make explicit if it
-// ever comes up. Picking x-large for arrow/rect doesn't accidentally
-// give you "huge text" — the text path stays on its own three-bucket
-// curve.
+// Text font-size presets. Same five buttons as the thickness row —
+// text now rides the shared annotation ladder (see
+// `annotation-scale.ts`), so "L" means the same rung for a font as it
+// does for a stroke. X-Large used to be deliberately withheld here on
+// the theory that three buckets were enough; in practice a big
+// screenshot destined to be scaled down into a doc or a chat message
+// needs a rung above L, and callers were coercing "x-large" to
+// "large" behind the user's back.
 const TEXT_SIZE_PRESETS: ReadonlyArray<{ id: ToolSizePreset; label: string }> = [
   { id: "auto", label: "Auto" },
   { id: "small", label: "S" },
   { id: "medium", label: "M" },
-  { id: "large", label: "L" }
+  { id: "large", label: "L" },
+  { id: "x-large", label: "XL" }
 ];
 
 const END_STYLES: ReadonlyArray<{
@@ -191,6 +193,17 @@ const TEXT_WEIGHTS: ReadonlyArray<{ id: TextFontWeight; label: string }> = [
   { id: "regular", label: "Regular" },
   { id: "bold", label: "Bold" }
 ];
+
+/** Border (contrast outline) picker labels. `stripe` is offered for
+ *  arrow + shape only — a striped glyph stroke on text is illegible
+ *  at text stroke widths, so TextBody renders without it. */
+const OUTLINE_LABELS: Record<OverlayOutlineMode, string> = {
+  none: "No border",
+  auto: "Auto border",
+  white: "White border",
+  black: "Black border",
+  stripe: "Striped border"
+};
 
 /** Blur mode picker — full rich-card shape (icon + label + hint copy)
  *  rather than a compact segmented control. Brought back from the pre-
@@ -816,6 +829,11 @@ function ArrowBody({ style, onStyleFieldChange }: ArrowBodyProps): ReactElement 
           <span>Double-ended</span>
         </label>
       </FieldGroup>
+      <OutlineRow
+        value={style.outline}
+        allowStripe
+        onChange={(mode) => onStyleFieldChange("outline", mode)}
+      />
     </>
   );
 }
@@ -827,7 +845,7 @@ interface TextBodyProps {
    *  chip above the Font size row. Signals that the selected text
    *  overlay's stored sizePx doesn't match any of the current
    *  canvas's bucket values (typically because a crop changed the
-   *  bucket math after the text was placed). Clicking S/M/L below
+   *  bucket math after the text was placed). Clicking S/M/L/XL below
    *  fires onStyleFieldChange("fontSize", value) which the caller
    *  routes through onSelectedStyleFieldChange — that handler maps
    *  to {size, sizePx} and re-snaps. */
@@ -839,17 +857,6 @@ function TextBody({
   onStyleFieldChange,
   customSizeLabel
 }: TextBodyProps): ReactElement {
-  // Defensive narrowing for the popover's "selected" highlight: if
-  // `style.fontSize` is somehow "x-large" (added to ToolSizePreset for
-  // arrow/rect thickness; not exposed to the text picker; could
-  // theoretically arrive via AI injection, JSON edit, or a future
-  // feature), the TEXT_SIZE_PRESETS table has no matching option and
-  // Segmented would render with NO button highlighted. Coerce to
-  // "large" here so the selected-state visibly matches the resolved
-  // text size — same fallback that `resolveTextSize` applies at the
-  // render layer.
-  const segmentedValue: TextToolStyle["fontSize"] =
-    style.fontSize === "x-large" ? "large" : style.fontSize;
   return (
     <>
       <ColorRow
@@ -883,7 +890,7 @@ function TextBody({
         label="Font size"
         testid="text-font-size"
         options={TEXT_SIZE_PRESETS}
-        value={segmentedValue}
+        value={style.fontSize}
         onChange={(v) => onStyleFieldChange("fontSize", v)}
       />
       <Segmented
@@ -892,6 +899,11 @@ function TextBody({
         options={TEXT_WEIGHTS}
         value={style.weight}
         onChange={(v) => onStyleFieldChange("weight", v)}
+      />
+      <OutlineRow
+        value={style.outline}
+        allowStripe={false}
+        onChange={(mode) => onStyleFieldChange("outline", mode)}
       />
     </>
   );
@@ -958,6 +970,11 @@ function ShapeBody({ style, onStyleFieldChange }: ShapeBodyProps): ReactElement 
           <span>Filled</span>
         </label>
       </FieldGroup>
+      <OutlineRow
+        value={style.outline}
+        allowStripe
+        onChange={(mode) => onStyleFieldChange("outline", mode)}
+      />
       {style.shape === "parallelogram" ? (
         <FieldGroup label={`Skew: ${Math.round(skewDeg)}°`} testid="shape-skew">
           <input
@@ -1302,6 +1319,104 @@ function Segmented<T extends string>({
               onClick={() => onChange(opt.id)}
             >
               {opt.label}
+            </button>
+          );
+        })}
+      </div>
+    </FieldGroup>
+  );
+}
+
+/** Circle glyphs for the White / Black / Stripe border options. Kept
+ *  as inline SVG (matches the icon-row discipline elsewhere in this
+ *  file); the stripe variant needs a per-instance clipPath id so
+ *  several popovers/panels in one DOM don't share a `url(#…)` ref. */
+function OutlineSwatchIcon({
+  variant
+}: {
+  variant: "white" | "black" | "stripe";
+}): ReactElement {
+  const clipId = useId();
+  // Colors come from the same --swatch-* tokens the ColorRow swatches
+  // paint with, so a palette retune moves both rows together. SVG
+  // presentation ATTRIBUTES don't substitute custom properties
+  // (fill="var(--x)" is invalid per SVG2), so the tokens ride on
+  // style={} like the ColorRow's background does. The ring stroke is
+  // the shared --border-strong hairline.
+  const ring: CSSProperties = { stroke: "var(--border-strong)" };
+  if (variant === "white") {
+    return (
+      <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+        <circle cx="7" cy="7" r="6" style={{ fill: "var(--swatch-white)", ...ring }} strokeWidth="1" />
+      </svg>
+    );
+  }
+  if (variant === "black") {
+    return (
+      <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+        <circle cx="7" cy="7" r="6" style={{ fill: "var(--swatch-black)", ...ring }} strokeWidth="1" />
+      </svg>
+    );
+  }
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+      <defs>
+        <clipPath id={clipId}>
+          <circle cx="7" cy="7" r="6" />
+        </clipPath>
+      </defs>
+      <g clipPath={`url(#${clipId})`}>
+        <rect x="0" y="0" width="14" height="14" style={{ fill: "var(--swatch-white)" }} />
+        <rect x="0" y="0" width="3.5" height="14" style={{ fill: "var(--swatch-black)" }} />
+        <rect x="7" y="0" width="3.5" height="14" style={{ fill: "var(--swatch-black)" }} />
+      </g>
+      <circle cx="7" cy="7" r="6" fill="none" style={ring} strokeWidth="1" />
+    </svg>
+  );
+}
+
+interface OutlineRowProps {
+  value: OverlayOutlineMode;
+  /** Text hides the stripe option (illegible at glyph stroke widths). */
+  allowStripe: boolean;
+  onChange(mode: OverlayOutlineMode): void;
+}
+
+/** Border (contrast outline) picker — Off / Auto plus the White /
+ *  Black / Stripe swatches. One shared row for arrow, shape, and text
+ *  so the control reads identically across the annotation kinds. */
+function OutlineRow({ value, allowStripe, onChange }: OutlineRowProps): ReactElement {
+  const options: readonly OverlayOutlineMode[] = allowStripe
+    ? ["none", "auto", "white", "black", "stripe"]
+    : ["none", "auto", "white", "black"];
+  return (
+    <FieldGroup label="Border" testid="outline-row">
+      <div className="pse-seg" role="radiogroup" aria-label="Border">
+        {options.map((mode) => {
+          const active = mode === value;
+          return (
+            <button
+              key={mode}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              aria-label={OUTLINE_LABELS[mode]}
+              title={OUTLINE_LABELS[mode]}
+              data-testid={`outline-${mode}`}
+              className={
+                "pse-seg-btn" +
+                (mode !== "none" && mode !== "auto" ? " pse-outline-sw-btn" : "") +
+                (active ? " is-on" : "")
+              }
+              onClick={() => onChange(mode)}
+            >
+              {mode === "none" ? (
+                "Off"
+              ) : mode === "auto" ? (
+                "Auto"
+              ) : (
+                <OutlineSwatchIcon variant={mode} />
+              )}
             </button>
           );
         })}

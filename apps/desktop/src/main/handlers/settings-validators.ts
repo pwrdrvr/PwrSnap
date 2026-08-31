@@ -14,6 +14,7 @@
 // treatment, revisit.
 
 import {
+  isOverlayOutlineMode,
   AI_REASONING_EFFORTS,
   AI_SURFACE_IDS,
   BUILT_IN_ACP_AGENT_IDS,
@@ -1170,6 +1171,8 @@ function isToolSizePreset(value: unknown): boolean {
   );
 }
 
+
+
 function validateArrowStyle(raw: Record<string, unknown>): PwrSnapError | null {
   if (!isUndefined(raw.color) && !isToolColor(raw.color)) {
     return validationError("invalid_editor_arrow_color", "settings:write: editor.toolStyles.arrow.color must be a color token or string");
@@ -1192,6 +1195,9 @@ function validateArrowStyle(raw: Record<string, unknown>): PwrSnapError | null {
   if (!isUndefined(raw.doubleEnded) && !isBoolean(raw.doubleEnded)) {
     return validationError("invalid_editor_arrow_doubleEnded", "settings:write: editor.toolStyles.arrow.doubleEnded must be a boolean");
   }
+  if (!isUndefined(raw.outline) && !isOverlayOutlineMode(raw.outline)) {
+    return validationError("invalid_editor_arrow_outline", "settings:write: editor.toolStyles.arrow.outline must be auto/white/black/stripe/none");
+  }
   return null;
 }
 
@@ -1207,6 +1213,17 @@ function validateTextStyle(raw: Record<string, unknown>): PwrSnapError | null {
     if (v !== "regular" && v !== "bold") {
       return validationError("invalid_editor_text_weight", "settings:write: editor.toolStyles.text.weight must be regular or bold");
     }
+  }
+  // Text deliberately has NO stripe option — a striped glyph stroke is
+  // illegible at text stroke widths, the picker hides it, and a
+  // persisted "stripe" would leave the Border row with no selectable
+  // state. Reject it at the gate instead of storing a value the UI
+  // cannot represent.
+  if (
+    !isUndefined(raw.outline) &&
+    (!isOverlayOutlineMode(raw.outline) || raw.outline === "stripe")
+  ) {
+    return validationError("invalid_editor_text_outline", "settings:write: editor.toolStyles.text.outline must be auto/white/black/none");
   }
   return null;
 }
@@ -1235,6 +1252,9 @@ function validateShapeStyle(raw: Record<string, unknown>): PwrSnapError | null {
   }
   if (!isUndefined(raw.skewDeg) && !isFiniteNumber(raw.skewDeg)) {
     return validationError("invalid_editor_shape_skewDeg", "settings:write: editor.toolStyles.shape.skewDeg must be a finite number");
+  }
+  if (!isUndefined(raw.outline) && !isOverlayOutlineMode(raw.outline)) {
+    return validationError("invalid_editor_shape_outline", "settings:write: editor.toolStyles.shape.outline must be auto/white/black/stripe/none");
   }
   return null;
 }

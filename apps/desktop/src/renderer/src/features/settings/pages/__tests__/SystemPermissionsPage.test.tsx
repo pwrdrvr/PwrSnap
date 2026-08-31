@@ -1,11 +1,14 @@
-// SystemPermissionsPage — the screen-permission disambiguation that is
-// the user-facing heart of the first-run fix:
+// SystemPermissionsPage platform contract. macOS keeps the screen-permission
+// disambiguation that is the user-facing heart of the first-run fix:
 //   • screen not granted + screenCapturePrompted=false → synthesized
 //     "Not yet requested" + a "Request access" button (fires the prompt);
 //   • screen not granted + screenCapturePrompted=true → "Denied" + an
 //     "Open System Settings" button (macOS won't re-prompt).
 // macOS itself can't tell these apart (getMediaAccessStatus('screen') is
 // `denied` in both cases) — the page leans on `screenCapturePrompted`.
+// Windows instead consumes explicit permission evidence: screen is not
+// inspectable, microphone is a global desktop-app control, and unsupported
+// system audio never becomes a fictitious Granted row.
 
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -24,6 +27,8 @@ beforeAll(() => {
 type AnyResult = { ok: true; value: unknown } | { ok: false; error: { message: string } };
 
 type FakeApiOpts = {
+  platform?: NodeJS.Platform;
+  readinessReports?: readonly PermissionReadinessReport[];
   // Status that `permissions:request` (the real screen-capture probe)
   // reports back. Defaults to the report's screen status (probe didn't
   // change anything); pass "granted" to simulate the user approving.
@@ -34,6 +39,7 @@ type FakeApiOpts = {
   documentsAccess?: "unknown" | "confirmed" | "denied";
   homeCaptureReferences?: number;
   homeDirectoryEntryCount?: number;
+  overridden?: boolean;
 };
 
 function installFakeApi(
@@ -43,6 +49,7 @@ function installFakeApi(
   calls: { name: string; req: unknown }[];
 } {
   const calls: { name: string; req: unknown }[] = [];
+  let readinessReads = 0;
   const health = {
     denied: opts.capturesDenied === true,
     deniedPathCount: opts.capturesDenied === true ? 2 : 0,
@@ -56,20 +63,29 @@ function installFakeApi(
     homeCaptureReferences: opts.homeCaptureReferences ?? 0,
     homeDirectoryEntryCount: opts.homeDirectoryEntryCount ?? 0,
     canMoveToDocuments:
+      opts.overridden !== true &&
       opts.capturesLocation === "home" &&
       opts.documentsAccess === "confirmed" &&
       (opts.homeCaptureReferences ?? 0) === 0 &&
       (opts.homeDirectoryEntryCount ?? 0) === 0,
-    overridden: false
+    overridden: opts.overridden ?? false
   } as const;
   Object.defineProperty(window, "pwrsnapApi", {
     configurable: true,
     value: {
-      platform: "darwin",
+      platform: opts.platform ?? "darwin",
       on: () => () => undefined,
       dispatch: async (name: string, req: unknown): Promise<AnyResult> => {
         calls.push({ name, req });
-        if (name === "permissions:readiness") return { ok: true, value: report };
+        if (name === "permissions:readiness") {
+          const reports = opts.readinessReports;
+          const value =
+            reports === undefined || reports.length === 0
+              ? report
+              : reports[Math.min(readinessReads, reports.length - 1)];
+          readinessReads += 1;
+          return { ok: true, value };
+        }
         if (name === "permissions:request") {
           return { ok: true, value: { status: opts.requestStatus ?? report.screenRecording } };
         }
@@ -138,8 +154,34 @@ const baseReport: PermissionReadinessReport = {
   microphone: "not-determined",
   systemAudio: "denied",
   fingerprint: "0123456789abcdef",
-  screenCapturePrompted: false
+  screenCapturePrompted: false,
+  permissionEvidence: {
+    platform: "darwin",
+    screen: { kind: "os-status", status: "denied" },
+    microphone: { kind: "os-status", status: "not-determined" },
+    systemAudio: { kind: "derived", status: "denied" }
+  }
 };
+
+function windowsReport(
+  microphone: RecordingPermissionStatus = "granted"
+): PermissionReadinessReport {
+  // Operational readiness remains permissive on Windows so capture can try
+  // the real backend. The separate evidence is what the page may present.
+  return {
+    screenRecording: "granted",
+    microphone: "granted",
+    systemAudio: "granted",
+    fingerprint: "fedcba9876543210",
+    screenCapturePrompted: false,
+    permissionEvidence: {
+      platform: "win32",
+      screen: { kind: "not-inspectable" },
+      microphone: { kind: "os-status", status: microphone },
+      systemAudio: { kind: "unsupported" }
+    }
+  };
+}
 
 describe("SystemPermissionsPage — screen permission disambiguation", () => {
   test("never prompted: denied screen shows 'Not yet requested' + Request access", async () => {
@@ -166,6 +208,15 @@ describe("SystemPermissionsPage — screen permission disambiguation", () => {
     const row = rowByTag("screen");
     expect(row.textContent).toContain("Granted");
     expect(row.querySelector("button")).toBeNull();
+  });
+
+  test("fingerprint diagnostics name the actual four inputs", async () => {
+    await render(baseReport);
+    const row = rowByTag("fingerprint");
+    expect(row.textContent).toContain(
+      "screen, microphone, system audio, recorder backend"
+    );
+    expect(row.textContent).not.toContain("app version");
   });
 
   test("Request access (first ask) probes but does NOT open System Settings", async () => {
@@ -278,6 +329,135 @@ describe("SystemPermissionsPage — screen permission disambiguation", () => {
     });
     expect(calls.map((call) => call.name)).toContain(
       "storage:moveCapturesToDocuments"
+    );
+  });
+});
+
+describe("SystemPermissionsPage — Windows permission evidence", () => {
+  test("does not present synthesized screen or system-audio grants", async () => {
+    await render(windowsReport("granted"), { platform: "win32" });
+
+    const screen = rowByTag("screen");
+    expect(screen.textContent).toContain("Not reported");
+    expect(screen.textContent).toContain("cannot verify a separate per-app setting");
+    expect(screen.querySelector("[data-permission-status]")?.textContent).toBe(
+      "Not reported"
+    );
+
+    const tags = Array.from(container!.querySelectorAll(".pss__row-tag")).map(
+      (tag) => tag.textContent
+    );
+    expect(tags).not.toContain("systemAudio");
+    expect(container!.textContent).not.toContain("Granted");
+    expect(container!.textContent).not.toContain("Permission fingerprint");
+  });
+
+  test("surfaces the real global Windows microphone status without calling it a PwrSnap grant", async () => {
+    await render(windowsReport("denied"), { platform: "win32" });
+
+    const microphone = rowByTag("microphone");
+    expect(microphone.textContent).toContain("Blocked by Windows");
+    expect(microphone.textContent).toContain("global microphone control");
+    expect(microphone.textContent).toContain("not a PwrSnap-specific grant");
+    expect(microphone.textContent).toContain("screen-only");
+  });
+
+  test("refreshes the Windows microphone status when PwrSnap regains focus", async () => {
+    await render(windowsReport("denied"), {
+      platform: "win32",
+      readinessReports: [windowsReport("denied"), windowsReport("granted")]
+    });
+    expect(rowByTag("microphone").textContent).toContain("Blocked by Windows");
+
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await Promise.resolve();
+    });
+
+    expect(rowByTag("microphone").textContent).toContain("Allowed by Windows");
+  });
+
+  test("Windows privacy actions use only the guarded settings command", async () => {
+    const { calls } = await render(windowsReport("denied"), { platform: "win32" });
+    expect(rowByTag("screen").querySelector("button")).toBeNull();
+    const microphoneButton = Array.from(
+      rowByTag("microphone").querySelectorAll("button")
+    ).find((button) => button.textContent === "Open microphone privacy");
+
+    await act(async () => {
+      microphoneButton?.click();
+    });
+
+    const permissionCalls = calls.filter((call) => call.name.startsWith("permissions:"));
+    expect(permissionCalls).toContainEqual({
+      name: "permissions:openSystemSettings",
+      req: { permission: "microphone" }
+    });
+    expect(permissionCalls).not.toContainEqual({
+      name: "permissions:openSystemSettings",
+      req: { permission: "screen" }
+    });
+    expect(permissionCalls.map((call) => call.name)).not.toContain(
+      "permissions:request"
+    );
+  });
+
+  test.each(["restricted", "unavailable"] as const)(
+    "does not offer microphone settings when the Windows status is %s",
+    async (status) => {
+      await render(windowsReport(status), { platform: "win32" });
+      expect(rowByTag("microphone").querySelector("button")).toBeNull();
+    }
+  );
+
+  test("unknown Windows folder access is Not checked until a real write probe", async () => {
+    const { calls } = await render(windowsReport(), {
+      platform: "win32",
+      documentsAccess: "unknown"
+    });
+    const row = rowByTag("documents");
+    expect(row.textContent).toContain("Not checked");
+    expect(row.textContent).not.toContain("OK");
+
+    const checkButton = Array.from(row.querySelectorAll("button")).find(
+      (button) => button.textContent === "Check folder access"
+    );
+    await act(async () => {
+      checkButton?.click();
+    });
+    expect(calls.map((call) => call.name)).toContain("storage:checkCapturesAccess");
+  });
+
+  test("custom capture roots suppress Documents and Home recovery copy", async () => {
+    await render(windowsReport(), {
+      platform: "win32",
+      overridden: true,
+      documentsAccess: "confirmed"
+    });
+
+    const row = rowByTag("custom");
+    expect(row.textContent).toContain("Captures Folder (Custom)");
+    expect(row.textContent).toContain("PWRSNAP_DATA_ROOT");
+    expect(row.textContent).toContain("Writable");
+    expect(row.textContent).not.toMatch(
+      /Windows Documents|Home fallback|File Explorer|OneDrive|Controlled Folder Access/
+    );
+    const buttons = Array.from(row.querySelectorAll("button")).map(
+      (button) => button.textContent
+    );
+    expect(buttons).toEqual(["Check folder access"]);
+  });
+
+  test("Windows rendering contains no Mac, Finder, TCC, or Unix-home copy", async () => {
+    await render(windowsReport("granted"), {
+      platform: "win32",
+      documentsAccess: "confirmed"
+    });
+    const text = container!.textContent ?? "";
+    expect(text).toContain("Windows privacy controls");
+    expect(text).toContain("File Explorer");
+    expect(text).not.toMatch(
+      /macOS|\bMac\b|Finder|TCC|System Settings|Privacy & Security|Files & Folders|macOS 13|~\//i
     );
   });
 });

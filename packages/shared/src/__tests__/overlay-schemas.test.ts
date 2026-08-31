@@ -28,10 +28,14 @@ import {
   readOverlayThickness,
   readShapeKind,
   readShapeSkewDeg,
+  outlineHaloStrokeWidthPx,
+  outlineHaloWidthPx,
+  shapeAutoStrokeWidthPx,
   ShapeOverlay,
   StepOverlay,
   TextOverlay
 } from "../overlay-schemas";
+import { annotationBasisPx } from "../annotation-scale";
 
 describe("CropOverlay", () => {
   test("accepts a rect inside [0, 1]^2", () => {
@@ -338,77 +342,124 @@ describe("Overlay smoke — the variants we ship in Phase 1 + Phase 2", () => {
 
 describe("OverlayThickness + readOverlayThickness", () => {
   // The thickness preset table is the user-facing knob for stroke
-  // weight. These tests cover:
-  //   * x-large lands in the type union (added for Retina rescue)
-  //   * legacy two-arg call (no shortSide) preserves byte-identical
-  //     multiplier-only behavior
-  //   * three-arg call (with shortSide) activates the floor formula
-  //     on Large/X-Large so high-DPI captures don't get hairline
-  //     strokes
+  // weight. Since the 2026-08 annotation-scale recalibration, presets
+  // are ABSOLUTE rungs on the shared ladder rather than multipliers on
+  // whatever auto stroke the caller derived. These tests cover:
+  //   * x-large lands in the type union
+  //   * three-arg call resolves each preset off the basis
+  //   * the ladder is evenly spaced at every resolution (the specific
+  //     property the old multiplier+floor scheme did NOT have)
+  //   * auto === medium
   //   * numeric thickness path scales correctly under both shapes
+  //   * legacy two-arg call still orders the presets
 
   test("OverlayThickness accepts x-large", () => {
     expect(OverlayThickness.parse("x-large")).toBe("x-large");
   });
 
-  test("legacy two-arg form: multiplier-only, no floor applied", () => {
-    // 200 short-side, auto=4 → small=2, medium=4, large=8, xl=12.
-    // With NO shortSidePx the floor never activates regardless of
-    // image dims. This preserves byte-identical pre-floor output
-    // so call sites that haven't opted in stay unchanged.
+  test("presets resolve off the basis, ignoring the caller's auto stroke", () => {
+    const basis = annotationBasisPx(1920, 1080); // ≈ 1101.5
+    // The auto argument is deliberately absurd — a preset must not
+    // read it at all. Pre-recalibration every preset was a multiple
+    // of it, which is how the absolute 4px auto clamp leaked into
+    // Small and Medium on every small capture.
+    for (const bogusAuto of [1, 5, 500]) {
+      expect(readOverlayThickness("small", bogusAuto, basis)).toBeCloseTo(
+        basis / 160,
+        5
+      );
+      expect(readOverlayThickness("medium", bogusAuto, basis)).toBeCloseTo(
+        basis / 105,
+        5
+      );
+      expect(readOverlayThickness("large", bogusAuto, basis)).toBeCloseTo(
+        basis / 68,
+        5
+      );
+      expect(readOverlayThickness("x-large", bogusAuto, basis)).toBeCloseTo(
+        basis / 44,
+        5
+      );
+    }
+  });
+
+  test("the ladder steps evenly (~1.5x) at EVERY capture size", () => {
+    // The bug this pins: the old ladder read 3.2 / 4.9 / 13.0 / 21.6
+    // on 1080p — a 1.5x step, then a 2.7x step, then 1.7x — because
+    // Small/Medium were pinned to the auto stroke's absolute clamp
+    // while Large/X-Large escaped through short-side floor fractions.
+    // On anything under an 880px short side it was worse still:
+    // Small and Medium were LITERALLY the same 2px and 4px for every
+    // capture, so neither preset scaled at all.
+    for (const [w, h] of [
+      [777, 207], // the Slack-strip grab that prompted this work
+      [200, 80],
+      [473, 178],
+      [1200, 800],
+      [1920, 1080],
+      [2212, 249],
+      [2880, 1800],
+      [5120, 2880]
+    ] as const) {
+      const basis = annotationBasisPx(w, h);
+      const rungs = (["small", "medium", "large", "x-large"] as const).map((p) =>
+        readOverlayThickness(p, 0, basis)
+      );
+      for (let i = 1; i < rungs.length; i += 1) {
+        const step = (rungs[i] as number) / (rungs[i - 1] as number);
+        expect(step).toBeGreaterThan(1.45);
+        expect(step).toBeLessThan(1.6);
+      }
+    }
+  });
+
+  test("auto === medium: picking M never changes what Auto drew", () => {
+    // Auto and Medium are the same rung by construction now, not by
+    // coincidence — `shapeAutoStrokeWidthPx` and the arrow's auto path
+    // both resolve to the ladder's Medium.
+    for (const [w, h] of [
+      [777, 207],
+      [1200, 800],
+      [1920, 1080],
+      [5120, 2880]
+    ] as const) {
+      const basis = annotationBasisPx(w, h);
+      const auto = shapeAutoStrokeWidthPx(basis);
+      expect(readOverlayThickness("auto", auto, basis)).toBeCloseTo(auto, 5);
+      expect(readOverlayThickness(undefined, auto, basis)).toBeCloseTo(auto, 5);
+      expect(readOverlayThickness("medium", auto, basis)).toBeCloseTo(auto, 5);
+    }
+  });
+
+  test("small captures no longer collapse Small and Medium onto one width", () => {
+    // Pre-fix these all produced small=2px, medium=4px regardless of
+    // dimensions, because the auto stroke clamped to 4 for every one.
+    const sizes = [
+      [200, 80],
+      [473, 178],
+      [777, 207],
+      [1200, 800]
+    ] as const;
+    for (const [w, h] of sizes) {
+      const basis = annotationBasisPx(w, h);
+      const small = readOverlayThickness("small", 0, basis);
+      const medium = readOverlayThickness("medium", 0, basis);
+      expect(medium).toBeGreaterThan(small);
+      // And Small is a real, visible stroke — not a 2px hairline.
+      expect(small).toBeGreaterThan(4);
+    }
+  });
+
+  test("legacy two-arg form still orders the presets", () => {
+    // No basis → fall back to multiplying the auto stroke. Only
+    // reachable from call sites that predate the ladder.
     expect(readOverlayThickness("small", 4)).toBeCloseTo(2, 5);
     expect(readOverlayThickness("medium", 4)).toBeCloseTo(4, 5);
     expect(readOverlayThickness("large", 4)).toBeCloseTo(8, 5);
     expect(readOverlayThickness("x-large", 4)).toBeCloseTo(12, 5);
   });
 
-  test("three-arg form: low-res image — floor is below multiplier, no-op", () => {
-    // 1080 short-side. auto stroke ≈ 5 (1080/220, clamped within
-    // [4,14]). Pass autoStrokeWidthPx=5 + shortSide=1080.
-    //   small  = max(5 × 0.5,  1080 × 0.003)  = max(2.5,  3.24)  = 3.24
-    //   medium = 5  (no floor)
-    //   large  = max(5 × 2,    1080 × 0.012)  = max(10,   12.96) = 12.96
-    //   xl     = max(5 × 3,    1080 × 0.020)  = max(15,   21.6)  = 21.6
-    // Note: on this image the floor IS active for small/large/xl
-    // — the auto path is clamped down at MIN_PX so floors do help
-    // even at 1080p for the bigger presets. Medium stays at auto.
-    expect(readOverlayThickness("medium", 5, 1080)).toBeCloseTo(5, 5);
-    expect(readOverlayThickness("large", 5, 1080)).toBeCloseTo(12.96, 1);
-    expect(readOverlayThickness("x-large", 5, 1080)).toBeCloseTo(21.6, 1);
-  });
-
-  test("three-arg form: Retina image — floor lifts Large/XL off STROKE_MAX_PX cap", () => {
-    // 4K-ish short side (2160). auto stroke is clamped to STROKE_MAX_PX=14.
-    // Pre-fix: large = 14 × 2 = 28 px (≈ 1.3% of short side — thin).
-    // Post-fix: large = max(28, 2160 × 0.012) = max(28, 25.92) = 28
-    //   (still wins via multiplier on this size)
-    //          x-large = max(14 × 3, 2160 × 0.020) = max(42, 43.2) = 43.2
-    //   (floor wins, lifting XL past the multiplier-only ceiling)
-    expect(readOverlayThickness("large", 14, 2160)).toBeCloseTo(28, 1);
-    expect(readOverlayThickness("x-large", 14, 2160)).toBeCloseTo(43.2, 1);
-  });
-
-  test("three-arg form: 5K Retina — floor decisively wins for Large", () => {
-    // 5K short side (2880). auto = 14 (capped).
-    //   large  = max(14 × 2, 2880 × 0.012) = max(28, 34.56) = 34.56
-    //   x-large= max(14 × 3, 2880 × 0.020) = max(42, 57.6)  = 57.6
-    // The whole point of the floor: at 5K, Large goes from a 28px
-    // multiplier-only stroke (visually thin) to a 34.56px floor-
-    // driven stroke (visually present).
-    expect(readOverlayThickness("large", 14, 2880)).toBeCloseTo(34.56, 1);
-    expect(readOverlayThickness("x-large", 14, 2880)).toBeCloseTo(57.6, 1);
-  });
-
-  test("medium has no floor — picking M never silently bumps past auto", () => {
-    // Medium IS auto by design. The floor formula must NOT lift
-    // medium on huge images; otherwise users who picked M because
-    // they wanted "the default" would get surprised on Retina.
-    for (const shortSide of [720, 1080, 1440, 2160, 2880, 4320]) {
-      expect(readOverlayThickness("medium", 10, shortSide)).toBeCloseTo(10, 5);
-    }
-  });
-
-  test("auto / undefined pass through regardless of shortSide", () => {
+  test("auto / undefined pass the caller's stroke through regardless of basis", () => {
     expect(readOverlayThickness(undefined, 7)).toBeCloseTo(7, 5);
     expect(readOverlayThickness(undefined, 7, 1080)).toBeCloseTo(7, 5);
     expect(readOverlayThickness("auto", 7, 2880)).toBeCloseTo(7, 5);
@@ -416,10 +467,9 @@ describe("OverlayThickness + readOverlayThickness", () => {
 
   test("numeric thickness: legacy two-arg passes through; three-arg expands to pixels", () => {
     // Legacy: numeric is a normalized fraction returned verbatim
-    // (caller multiplies by shortSide if they want pixels).
+    // (caller multiplies by the basis if they want pixels).
     expect(readOverlayThickness(0.02, 5)).toBeCloseTo(0.02, 5);
-    // New: with shortSide, numeric is expanded to pixels. On a
-    // 1080-px image, thickness=0.02 → 21.6 px.
+    // New: with a basis, numeric expands to pixels.
     expect(readOverlayThickness(0.02, 5, 1080)).toBeCloseTo(21.6, 1);
   });
 
@@ -522,5 +572,39 @@ describe("deriveBlurRadiusPx — sigma derivation contract", () => {
     expect(deriveBlurRadiusPx({ width: 3000, height: 600 })).toBe(9); // round(600*0.015)
     // Tall capture (width is short side)
     expect(deriveBlurRadiusPx({ width: 600, height: 3000 })).toBe(9);
+  });
+});
+
+describe("outline halo width — one derivation for both surfaces", () => {
+  // The halo is DERIVED from the colored stroke, so it inherits any
+  // error in the stroke. It used to be hand-written in four production
+  // places (arrow + shape, bake + editor), two of them with the
+  // arguments flipped — the tell that they were typed independently
+  // rather than shared. Pinned here, where it now lives.
+
+  test("a quarter of the stroke, floored at 1.5px", () => {
+    expect(outlineHaloWidthPx(8)).toBe(2);
+    expect(outlineHaloWidthPx(24)).toBe(6);
+    // Floor binds below a 6px stroke.
+    expect(outlineHaloWidthPx(6)).toBe(1.5);
+    expect(outlineHaloWidthPx(4)).toBe(1.5);
+    expect(outlineHaloWidthPx(0)).toBe(1.5);
+  });
+
+  test("the painted halo stroke adds the halo on BOTH sides", () => {
+    expect(outlineHaloStrokeWidthPx(8)).toBe(8 + 2 * 2);
+    expect(outlineHaloStrokeWidthPx(24)).toBe(24 + 6 * 2);
+    expect(outlineHaloStrokeWidthPx(4)).toBe(4 + 1.5 * 2);
+  });
+
+  test("the stripe cadence never degenerates to its 4px floor", () => {
+    // `outlineStripeDashArray` floors the segment at 4px. That floor
+    // would bind — collapsing the stripe rhythm to a constant — only
+    // for a painted halo under 4/1.75 = 2.29px, and the halo's own
+    // 1.5px-per-side floor puts the minimum at 3px (stroke 0), so
+    // 5.25px is the shortest segment reachable. Pinned so a future
+    // change to either floor can't silently flatten the stripe.
+    expect(outlineHaloStrokeWidthPx(0)).toBe(3);
+    expect(outlineHaloStrokeWidthPx(0) * 1.75).toBeGreaterThan(4);
   });
 });

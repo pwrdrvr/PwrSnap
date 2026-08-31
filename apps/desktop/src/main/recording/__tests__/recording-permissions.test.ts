@@ -8,21 +8,26 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 const electronMock = vi.hoisted(() => ({
   status: { screen: "granted", microphone: "granted" } as Record<string, string>,
   askResolved: true as boolean,
+  askCalls: 0,
+  appVersion: "1.2.3",
   systemVersion: "14.0.0",
   desktopCapturerCalls: 0,
-  shellOpenCalls: 0
+  shellOpenUrls: [] as string[]
 }));
 
 vi.mock("electron", () => ({
-  app: { getVersion: () => "1.2.3" },
+  app: { getVersion: () => electronMock.appVersion },
   shell: {
-    openExternal: vi.fn().mockImplementation(async () => {
-      electronMock.shellOpenCalls += 1;
+    openExternal: vi.fn().mockImplementation(async (url: string) => {
+      electronMock.shellOpenUrls.push(url);
     })
   },
   systemPreferences: {
     getMediaAccessStatus: (perm: string): string => electronMock.status[perm] ?? "unknown",
-    askForMediaAccess: vi.fn().mockImplementation(async () => electronMock.askResolved)
+    askForMediaAccess: vi.fn().mockImplementation(async () => {
+      electronMock.askCalls += 1;
+      return electronMock.askResolved;
+    })
   },
   desktopCapturer: {
     getSources: vi.fn().mockImplementation(async () => {
@@ -48,8 +53,10 @@ beforeEach(() => {
   vi.resetModules();
   electronMock.status = { screen: "granted", microphone: "granted" };
   electronMock.askResolved = true;
+  electronMock.askCalls = 0;
+  electronMock.appVersion = "1.2.3";
   electronMock.desktopCapturerCalls = 0;
-  electronMock.shellOpenCalls = 0;
+  electronMock.shellOpenUrls = [];
   Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
   (process as { getSystemVersion?: () => string }).getSystemVersion = () => electronMock.systemVersion;
 });
@@ -102,7 +109,7 @@ describe("readRecordingReadiness", () => {
     expect(needsAttention(r)).toBe(false);
   });
 
-  test("fingerprint changes when any input changes", async () => {
+  test("fingerprint changes when a permission-status input changes", async () => {
     electronMock.status = { screen: "granted", microphone: "granted" };
     electronMock.systemVersion = "14.0.0";
     const mod1 = await import("../recording-permissions");
@@ -116,6 +123,21 @@ describe("readRecordingReadiness", () => {
     expect(a.fingerprint).not.toBe(b.fingerprint);
   });
 
+  test("fingerprint excludes app version", async () => {
+    electronMock.status = { screen: "granted", microphone: "granted" };
+    electronMock.systemVersion = "14.0.0";
+    electronMock.appVersion = "1.2.3";
+    const mod1 = await import("../recording-permissions");
+    const a = mod1.readRecordingReadiness();
+
+    vi.resetModules();
+    electronMock.appVersion = "9.9.9";
+    const mod2 = await import("../recording-permissions");
+    const b = mod2.readRecordingReadiness();
+
+    expect(a.fingerprint).toBe(b.fingerprint);
+  });
+
   test("non-darwin returns granted for everything", async () => {
     Object.defineProperty(process, "platform", { value: "linux", configurable: true });
     const { readRecordingReadiness, needsAttention } = await import(
@@ -126,6 +148,29 @@ describe("readRecordingReadiness", () => {
     expect(r.microphone).toBe("granted");
     expect(r.systemAudio).toBe("granted");
     expect(needsAttention(r)).toBe(false);
+  });
+
+  test("Windows keeps operational readiness permissive but reports explicit permission evidence", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    electronMock.status = { screen: "granted", microphone: "denied" };
+    const { readRecordingPermissionEvidence, readRecordingReadiness } = await import(
+      "../recording-permissions"
+    );
+    const readiness = readRecordingReadiness();
+
+    // Preflight remains unchanged: the Windows recorder owns its current
+    // screen-only behavior and this Settings fix must not rewrite that flow.
+    expect(readiness).toMatchObject({
+      screenRecording: "granted",
+      microphone: "granted",
+      systemAudio: "granted"
+    });
+    expect(readRecordingPermissionEvidence(readiness)).toEqual({
+      platform: "win32",
+      screen: { kind: "not-inspectable" },
+      microphone: { kind: "os-status", status: "denied" },
+      systemAudio: { kind: "unsupported" }
+    });
   });
 });
 
@@ -158,7 +203,7 @@ describe("requestPermission", () => {
     const { requestPermission } = await import("../recording-permissions");
     const res = await requestPermission("screen");
     expect(electronMock.desktopCapturerCalls).toBe(1);
-    expect(electronMock.shellOpenCalls).toBe(0);
+    expect(electronMock.shellOpenUrls).toEqual([]);
     // User hasn't granted yet — status read back is still denied.
     expect(res.status).toBe("denied");
   });
@@ -172,7 +217,7 @@ describe("requestPermission", () => {
     const { requestPermission } = await import("../recording-permissions");
     const res = await requestPermission("screen");
     expect(electronMock.desktopCapturerCalls).toBe(1);
-    expect(electronMock.shellOpenCalls).toBe(0);
+    expect(electronMock.shellOpenUrls).toEqual([]);
     // User hasn't clicked Allow yet — status still not-determined.
     expect(res.status).toBe("not-determined");
   });
@@ -182,6 +227,54 @@ describe("requestPermission", () => {
     const { requestPermission } = await import("../recording-permissions");
     const res = await requestPermission("systemAudio");
     expect(electronMock.desktopCapturerCalls).toBe(1);
-    expect(electronMock.shellOpenCalls).toBe(0);
+    expect(electronMock.shellOpenUrls).toEqual([]);
   });
+
+  test("Windows request reports unknown and never calls a prompt API", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    const { requestPermission } = await import("../recording-permissions");
+    expect(await requestPermission("microphone")).toEqual({ status: "unknown" });
+    expect(electronMock.askCalls).toBe(0);
+    expect(electronMock.desktopCapturerCalls).toBe(0);
+  });
+});
+
+describe("openSystemSettingsFor", () => {
+  test("retains the macOS privacy anchors", async () => {
+    const { openSystemSettingsFor } = await import("../recording-permissions");
+    await openSystemSettingsFor("screen");
+    await openSystemSettingsFor("microphone");
+    await openSystemSettingsFor("systemAudio");
+
+    expect(electronMock.shellOpenUrls).toEqual([
+      "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+      "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+      "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+    ]);
+  });
+
+  test("opens only the Windows microphone privacy page", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    const { openSystemSettingsFor } = await import("../recording-permissions");
+    await openSystemSettingsFor("microphone");
+
+    expect(electronMock.shellOpenUrls).toEqual(["ms-settings:privacy-microphone"]);
+  });
+
+  test.each(["screen", "systemAudio"] as const)(
+    "rejects the unsupported Windows %s settings action",
+    async (permission) => {
+      Object.defineProperty(process, "platform", {
+        value: "win32",
+        configurable: true
+      });
+      const { openSystemSettingsFor, UnsupportedPermissionSettingsError } =
+        await import("../recording-permissions");
+
+      await expect(openSystemSettingsFor(permission)).rejects.toBeInstanceOf(
+        UnsupportedPermissionSettingsError
+      );
+      expect(electronMock.shellOpenUrls).toEqual([]);
+    }
+  );
 });

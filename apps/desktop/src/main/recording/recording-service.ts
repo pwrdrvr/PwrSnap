@@ -39,6 +39,7 @@ import {
   setRecordingState
 } from "./recording-state";
 import { resolveFfmpegPath } from "./ffmpeg-resolver";
+import { planWindowsFfmpegCapture } from "./windows-ffmpeg-capture";
 
 const log = getMainLogger("pwrsnap:recording-service");
 
@@ -46,10 +47,9 @@ export type StartOptions = {
   subject: RecordingSubject;
   capabilities: RecordingCapabilities;
   countdownSeconds: number;
-  /** Whether the recording bakes in the mouse cursor. Omitted = the
-   *  native recorder's default (`showsCursor ?? true`). `| undefined`
-   *  is explicit so restart() can forward a possibly-unset snapshot
-   *  under exactOptionalPropertyTypes. */
+  /** Whether the recording bakes in the mouse cursor. Omitted = true on every
+   *  backend. `| undefined` is explicit so restart() can forward a possibly-unset
+   *  snapshot under exactOptionalPropertyTypes. */
   captureCursor?: boolean | undefined;
 };
 
@@ -633,6 +633,9 @@ class WindowsFfmpegRecorderService implements RecordingService {
   private child: ChildProcessWithoutNullStreams | null = null;
   private sessionId: string | null = null;
   private subject: RecordingSubject | null = null;
+  /** Raw request snapshot. `undefined` intentionally preserves the documented
+   *  default-on behavior when restart() plans the replacement FFmpeg process. */
+  private captureCursor: boolean | undefined = undefined;
   private outputPath: string | null = null;
   private startedAtMs = 0;
   private stopRequested = false;
@@ -667,9 +670,15 @@ class WindowsFfmpegRecorderService implements RecordingService {
     const hudRect = subjectToPhysicalRect(opts.subject);
     const displayId = subjectDisplayId(opts.subject);
     const captureRect = subjectToWindowsDesktopRect(opts.subject);
+    const capturePlan = planWindowsFfmpegCapture({
+      rect: captureRect,
+      outputPath,
+      captureCursor: opts.captureCursor
+    });
 
     this.sessionId = sessionId;
     this.subject = opts.subject;
+    this.captureCursor = opts.captureCursor;
     this.outputPath = outputPath;
     this.stderrTail = [];
     this.stopRequested = false;
@@ -697,12 +706,29 @@ class WindowsFfmpegRecorderService implements RecordingService {
 
     setRecordingState({ phase: "starting", sessionId, rect: hudRect, displayId });
 
-    const args = windowsFfmpegCaptureArgs(captureRect, outputPath);
-    log.info("starting Windows ffmpeg recorder", { ffmpeg, captureRect, outputPath });
-    const child = spawn(ffmpeg, args, {
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true
+    log.info("starting Windows ffmpeg recorder", {
+      ffmpeg,
+      captureRect,
+      outputPath,
+      captureCursor: capturePlan.effectiveCaptureCursor
     });
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = spawn(ffmpeg, capturePlan.args, {
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true
+      });
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      this.cleanup();
+      setRecordingState({
+        phase: "failed",
+        sessionId,
+        code: "recorder_spawn_failed",
+        message
+      });
+      throw cause;
+    }
     this.child = child;
     this.startedAtMs = Date.now();
     this.exitPromise = new Promise((resolve) => {
@@ -803,10 +829,12 @@ class WindowsFfmpegRecorderService implements RecordingService {
       throw new Error("not_recording");
     }
     const subject = this.subject;
+    const captureCursor = this.captureCursor;
     await this.cancel();
     return this.start({
       subject,
       capabilities: { systemAudio: false, microphone: false },
+      captureCursor,
       countdownSeconds: 3
     });
   }
@@ -855,6 +883,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
     this.child = null;
     this.sessionId = null;
     this.subject = null;
+    this.captureCursor = undefined;
     this.outputPath = null;
     this.startedAtMs = 0;
     this.stopRequested = false;
@@ -871,42 +900,6 @@ async function waitForWindowsFfmpegExit(
     exitPromise,
     new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs))
   ]);
-}
-
-function windowsFfmpegCaptureArgs(
-  rect: { x: number; y: number; w: number; h: number },
-  outputPath: string
-): string[] {
-  return [
-    "-hide_banner",
-    "-loglevel",
-    "warning",
-    "-y",
-    "-f",
-    "gdigrab",
-    "-framerate",
-    "30",
-    "-offset_x",
-    String(rect.x),
-    "-offset_y",
-    String(rect.y),
-    "-video_size",
-    `${rect.w}x${rect.h}`,
-    "-draw_mouse",
-    "1",
-    "-i",
-    "desktop",
-    "-an",
-    "-c:v",
-    "h264_mf",
-    "-b:v",
-    "8M",
-    "-pix_fmt",
-    "yuv420p",
-    "-movflags",
-    "+faststart",
-    outputPath
-  ];
 }
 
 function windowsFfmpegFailureMessage(

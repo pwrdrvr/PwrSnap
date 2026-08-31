@@ -32,6 +32,14 @@
   tray, menu-bar, screen-capture, and AppKit windowing specs are expected to be
   skipped. Add `--platform linux/amd64` only when investigating
   architecture-specific GHA parity.
+- **The macOS GHA Desktop E2E job runs the whole suite with
+  `PWRSNAP_E2E_DISABLE_GPU=1`** (software rendering — see `.github/workflows/ci.yml`),
+  and `pnpm test:desktop-e2e` does not set it. A plain local run is therefore a
+  DIFFERENT environment than the one every screenshot golden was recorded in;
+  check that before concluding a local-only failure is a stale golden, a flake,
+  or "just this machine". Suites sensitive to rasterization should pin the env
+  themselves and assert the pin rather than trust the caller —
+  `visual-regression.spec.ts` does both.
 - **Ask before running disruptive headed desktop E2E on the operator's
   machine.** The operator may have an off-desktop lab for Windows or macOS
   testing; ask them for a pointer to the appropriate lab repository or skill.
@@ -98,6 +106,57 @@ Extend this table whenever a new candidate hits the same problem class.
 MIT, BSD (2-clause / 3-clause), Apache-2.0, MPL-2.0, ISC, 0BSD, Unlicense,
 CC0. Anything else: **pause and confirm with the user** before reading the
 project's source or adding the dep.
+
+### The gate that enforces this
+
+[scripts/check-third-party-license-allowlist.mjs](scripts/check-third-party-license-allowlist.mjs),
+run by `pnpm licenses:check` (so, by `pnpm lint`, so by CI). It evaluates every
+declared license in the shipped tree against `ALLOWED_LICENSE_IDS` as a real
+SPDX expression — `OR` satisfied by either side, `AND` by both — so
+`(MIT OR WTFPL)` passes on its MIT half while `Apache-2.0 AND GPL-3.0` fails.
+An unparseable string (`UNLICENSED`, `SEE LICENSE IN ...`) fails rather than
+being guessed at.
+
+**Do not confuse it with the other two license scripts:**
+
+| Script | Checks |
+|---|---|
+| `check-package-license-policy.mjs` | OUR four workspace `package.json` files declare MIT. Never looks at a dependency. |
+| `check-third-party-license-allowlist.mjs` | Three of the four sources the notice is built from (below) are allowlisted. |
+| `generate-third-party-licenses.mjs` | Transcribes the tree into `THIRD_PARTY_LICENSES`. **Judges nothing.** |
+
+**Know exactly what the gate covers** — it reads the npm production tree, the
+devDependencies the notice discloses anyway (`NOTICE_DEV_DEPENDENCIES`, i.e.
+Electron, which `--prod` never reports), and the located
+`SHIPPED_PLATFORM_PACKAGES` slices. It does **not** cover optional dependencies
+beyond those slices — `--no-optional` is what makes the notice platform-
+identical, so the report cannot enumerate them — nor `BUNDLED_FFMPEG`, whose
+license is a hand-written constant. **A new optional dependency that ships must
+be added to `SHIPPED_PLATFORM_PACKAGES` to be disclosed AND gated; neither
+script can discover one on its own.**
+
+`NOTICE_DEV_DEPENDENCIES` mirrors the `record.name === "electron"` special case
+in `buildThirdPartyLicenseNotice`. Keep the two in step — a name the generator
+discloses but the set omits is a shipped component with an ungated license.
+
+That last row is the reason the gate exists. The generator groups records by
+whatever license string pnpm hands it, so before the gate a dep flipping
+MIT → GPL-3.0 wrote a new `GPL-3.0` section into the notice and
+`licenses:generate --check` then PASSED — committed file matches generated
+file, green CI, copyleft shipped, nobody told. The only safety was that a
+human might spot a new heading in the diff, which is worth nothing once
+regeneration is automated on Dependabot branches.
+
+Weak copyleft (LGPL) is permitted **only** for a `SHIPPED_PLATFORM_PACKAGES`
+entry carrying an `lgpl` descriptor — the thing that puts its FSF text and
+written source offer in the notice. Strong copyleft (GPL/AGPL) and
+source-available terms (BSL, SSPL, Commons Clause) are permitted nowhere.
+
+Adding an id to `ALLOWED_LICENSE_IDS` is a legal decision. Make it in a commit
+that says why — **never to make CI green.** Note that the seeded list is wider
+than the paragraph above: `BlueOak-1.0.0`, `OFL-1.1` and `Python-2.0` were
+already in the tree, undocumented, when the gate was written. That drift is
+exactly what an unenforced policy accumulates.
 
 ## Codex App Server is the AI brain
 
@@ -407,6 +466,113 @@ History + the `sample` recipe:
 [docs/solutions/2026-06-12-macos-tcc-captures-folder-denials.md](docs/solutions/2026-06-12-macos-tcc-captures-folder-denials.md)
 §"Addendum (2026-08-22)". Pinned by
 [chat-thread-store-documents-access.test.ts](apps/desktop/src/main/ai/__tests__/chat-thread-store-documents-access.test.ts).
+
+## Never mix a post-transform rect with a layout measure
+
+**`getBoundingClientRect()` is POST-TRANSFORM. `offsetWidth` /
+`offsetHeight` / `clientWidth` / `clientHeight` and
+`ResizeObserverEntry.borderBoxSize` are LAYOUT. Combining one with the
+other silently bakes in whatever transform happened to be in flight.**
+
+The editor mounts inside `.psl__focus`, which runs a 180ms
+`psl-focus-in` entrance animation from `scale(0.985)` to `scale(1)`
+([library.css](apps/desktop/src/renderer/src/styles/library.css)).
+`useZoomPan` assigns the canvas its final explicit width/height DURING
+that window, so anything that measures the canvas at that moment gets a
+rect ~1% short.
+
+**And a `ResizeObserver` will not rescue you.** It reports LAYOUT box
+changes. A finishing transform changes no layout box, so no further
+notification ever arrives — a bad value read inside a callback is not
+transient, it is permanent until some unrelated real resize happens.
+That is what makes this class so hard to spot: it never self-heals, but
+it always disappears the moment you resize the window to look at it.
+
+Two confirmed instances, both in
+[Editor.tsx](apps/desktop/src/renderer/src/features/editor/Editor.tsx):
+
+- `canvasCssHeight` — the rect was the WRONG KIND. It is divided into
+  `TextHtml`'s `offsetWidth` before publishing to
+  `text-measure-registry.ts`, so a transform-polluted scale published a
+  glyph box ~1% too wide and the selection outline / transform handles /
+  hit-test all mis-hugged. Fixed by reading `borderBoxSize`.
+- `canvasRect` — the post-transform rect is the RIGHT kind (pointer
+  coordinates are post-transform too), it was merely STALE: cached
+  `{left: 25.34, width: 1029.33}` against a live `{left: 17.5, width:
+  1045}`. Crop DRAGS shrugged this off — CropTool gestures are
+  delta-based, and a delta round-trips through the same cached width, so
+  the staleness cancels exactly (a drag-tracking test is TAUTOLOGICAL
+  here; one passed 8/8 against the un-fixed build). What broke was the
+  RENDER: selection + dim drawn at the stale scale inside the live-sized
+  canvas — highlighted region ≠ committed region by ~1.5%, dim stopping
+  short of the canvas corner. Fixed by re-measuring when the consuming
+  tool appears; pinned by `editor-crop-drag.spec.ts` via a deterministic
+  replay of the staleness (it re-applies the entrance transform, forces
+  re-measures under it, removes it, then asserts render-vs-live).
+
+Rules:
+
+- Sizing something that will be compared against a layout measure? Use a
+  layout measure. `ResizeObserverEntry.borderBoxSize[0].blockSize` is the
+  fractional, transform-independent equivalent of `rect.height` (block
+  axis — height only under a horizontal writing mode).
+- Mapping pointer coordinates? The post-transform rect is correct — but
+  **a cached `DOMRect` is only valid until something moves**, and a
+  ResizeObserver never tells you an element MOVED. Re-read at the moment
+  of use, or make the cache's deps include whatever brings the consumer
+  on screen.
+- **Linux E2E green proves nothing here.** This is a race against a CSS
+  animation; xvfb timing wins it and macOS loses it. Only the macOS
+  runner can catch a recurrence.
+
+Full investigation, measurements, and the two wrong hypotheses it
+replaced:
+[docs/solutions/2026-08-28-text-outline-stale-canvas-scale.md](docs/solutions/2026-08-28-text-outline-stale-canvas-scale.md).
+
+## Annotation sizing — one basis, one ladder
+
+**Every sized annotation — text glyphs, arrow stems + heads, shape
+strokes — divides ONE number: `annotationBasisPx(sourceW, sourceH)`.
+No call site invents its own scale reference, and no call site sizes
+off the image's short side.** Owner:
+[packages/shared/src/annotation-scale.ts](packages/shared/src/annotation-scale.ts).
+
+```
+basis  = max(900, min(w, h), hypot(w, h) / 2)
+stroke = basis / (160 | 105 | 68 | 44)     // S / M / L / XL, ~1.53× step
+text   = basis / ( 50 |  30 | 18 | 11)     // S / M / L / XL, ~1.66× step
+```
+
+`auto` IS the Medium rung, for arrows and shapes alike.
+
+Three rules that are easy to get wrong:
+
+- **Pass SOURCE raster dims, never canvas dims.** Crop is a viewport
+  change in v2, so canvas dims shrink on every crop. Sizing off them
+  re-thins an arrow (or re-shrinks text — that was
+  pwrdrvr/PwrSnap#110) each time the user crops around it.
+- **Scaled bakes multiply the basis by `renderScale`**, they do not
+  re-derive it from render dims. The basis has a FLOOR, and a floored
+  capture would otherwise export proportionally thinner than the
+  preview painted it. `computeArrowGeometry`, `arrowSvg`, and
+  `shapeSvg` all accept an explicit `basisPx` for this.
+- **Don't reach for `device_pixel_ratio`.** It's untrustworthy (the
+  capture that prompted this work is stamped 2.0 with measurably 1×
+  content; imports and video records hardcode 1) and it isn't in the
+  `.pwrsnap` bundle, so using it would make the same bundle render
+  differently on another machine.
+
+Retuning any constant re-bakes every existing annotation at that
+preset — deliberate, per the 2026-08 recalibration. Read the printed
+size matrix in
+[annotation-scale.test.ts](packages/shared/src/__tests__/annotation-scale.test.ts)
+and run the visual harness
+(`node apps/desktop/scripts/annotation-scale-eval.mjs`) before and
+after; update the test's hardcoded table in the same commit.
+
+Full history, the measurements, and why short side + absolute px
+clamps failed:
+[docs/solutions/2026-08-28-annotation-scale-recalibration.md](docs/solutions/2026-08-28-annotation-scale-recalibration.md).
 
 ## Bake render cache — orphans are tolerated, not swept
 

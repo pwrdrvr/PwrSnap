@@ -1,7 +1,12 @@
-import { readOverlayThickness, type OverlayThickness } from "@pwrsnap/shared";
+import {
+  outlineHaloWidthPx,
+  readOverlayThickness,
+  shapeAutoStrokeWidthPx,
+  type OverlayThickness
+} from "@pwrsnap/shared";
 
 /** Stroke geometry for a stroked shape glyph, in the SAME px space as
- *  `shortSidePx`. Single source of truth shared by three call sites that
+ *  `basisPx`. Single source of truth shared by three call sites that
  *  must agree pixel-for-pixel:
  *    • the renderer (`ShapeGlyph` in OverlaySvg.tsx) — paints the line,
  *    • the click hit-test (`hitTestOverlays` in Editor.tsx) — decides
@@ -17,7 +22,8 @@ export interface ShapeStrokeGeometry {
   /** Colored stroke width. Centered on the shape's path. */
   strokeWidthPx: number;
   /** White halo (under-stroke) extension beyond the colored stroke on
-   *  EACH side. The halo is painted as `strokeWidthPx + outline * 2`. */
+   *  EACH side — `outlineHaloWidthPx(strokeWidthPx)`. The painted halo
+   *  stroke is `outlineHaloStrokeWidthPx(strokeWidthPx)`. */
   outline: number;
   /** Outer reach from the path to the outside edge of the painted
    *  pixels — half the colored stroke plus the halo
@@ -26,22 +32,20 @@ export interface ShapeStrokeGeometry {
 }
 
 /** Resolve a shape's stroke geometry from its thickness preset/override
- *  and the image short side. Mirrors the auto band ShapeGlyph uses
- *  (≈1.2% of the short side, floored at 8px, clamped down to ≈0.3%) and
- *  the halo width (`max(stroke * 0.25, 1.5)`). */
+ *  and the capture's `annotationBasisPx`. Auto lands on the ladder's
+ *  Medium rung (same as an auto arrow); presets land on their own
+ *  rungs. Halo comes from `outlineHaloWidthPx` — quoting the formula
+ *  here would just be a fifth hand-written copy of it. */
 export function shapeStrokeGeometry(
   thickness: OverlayThickness | undefined,
-  shortSidePx: number
+  basisPx: number
 ): ShapeStrokeGeometry {
-  const autoStrokeWidthPx = Math.min(
-    shortSidePx * 0.012,
-    Math.max(shortSidePx * 0.003, 8)
-  );
+  const autoStrokeWidthPx = shapeAutoStrokeWidthPx(basisPx);
   const strokeWidthPx = readOverlayThickness(
     thickness,
     autoStrokeWidthPx,
-    shortSidePx
+    basisPx
   );
-  const outline = Math.max(strokeWidthPx * 0.25, 1.5);
+  const outline = outlineHaloWidthPx(strokeWidthPx);
   return { strokeWidthPx, outline, outerReachPx: strokeWidthPx / 2 + outline };
 }

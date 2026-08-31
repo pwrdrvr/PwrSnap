@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { deflateSync } from "node:zlib";
 import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
@@ -12,6 +13,7 @@ import type { PortableBundleMetadata } from "../../persistence/portable-bundle-m
 import { packBundleV2 } from "../../persistence/bundle-store";
 import { __setVerifiedFileBeforeOpenHookForTest } from "../../security/verified-file";
 import {
+  readAndValidateInstalledPwrsnapBundle,
   readAndValidatePwrsnapBundle,
   validatePwrsnapBundleBytes
 } from "../pwrsnap-import-reader";
@@ -39,6 +41,67 @@ async function png(width: number, height: number, color: string): Promise<Buffer
 
 function sha(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+function crc32(bytes: Buffer): number {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type: string, data: Buffer): Buffer {
+  const typeBytes = Buffer.from(type, "ascii");
+  const chunk = Buffer.alloc(12 + data.length);
+  chunk.writeUInt32BE(data.length, 0);
+  typeBytes.copy(chunk, 4);
+  data.copy(chunk, 8);
+  chunk.writeUInt32BE(crc32(Buffer.concat([typeBytes, data])), 8 + data.length);
+  return chunk;
+}
+
+/** Build a compact 1-bit grayscale PNG without allocating one byte per pixel. */
+function oneBitPng(width: number, height: number): Buffer {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 1; // bit depth
+  ihdr[9] = 0; // grayscale
+  const encodedRowBytes = Math.ceil(width / 8);
+  // Every zero-filled row starts with PNG filter 0, followed by black pixels.
+  const scanlines = Buffer.alloc((encodedRowBytes + 1) * height);
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", deflateSync(scanlines)),
+    pngChunk("IEND", Buffer.alloc(0))
+  ]);
+}
+
+async function writeSparseOversizeZip(filePath: string, bytes: Buffer): Promise<void> {
+  const eocdSignature = Buffer.from([0x50, 0x4b, 0x05, 0x06]);
+  const eocdOffset = bytes.lastIndexOf(eocdSignature);
+  if (eocdOffset < 0) throw new Error("test ZIP has no end-of-central-directory record");
+  const centralDirectoryOffset = bytes.readUInt32LE(eocdOffset + 16);
+  const sparseGapBytes = 128 * 1024 * 1024 + 1;
+  const suffix = Buffer.from(bytes.subarray(centralDirectoryOffset));
+  suffix.writeUInt32LE(
+    centralDirectoryOffset + sparseGapBytes,
+    eocdOffset - centralDirectoryOffset + 16
+  );
+
+  const handle = await fs.open(filePath, "w");
+  try {
+    const prefix = bytes.subarray(0, centralDirectoryOffset);
+    await handle.write(prefix, 0, prefix.length, 0);
+    await handle.write(suffix, 0, suffix.length, centralDirectoryOffset + sparseGapBytes);
+  } finally {
+    await handle.close();
+  }
 }
 
 async function validBundle(overrides: {
@@ -681,4 +744,66 @@ describe("readAndValidatePwrsnapBundle", () => {
       code: "verified_file_file_changed"
     });
   });
+
+  test("keeps installed bundle reads outside the external archive-size ceiling", async () => {
+    const fixture = await validBundle();
+    const source = join(workDir, "installed-large-carrier.pwrsnap");
+    await writeSparseOversizeZip(source, fixture.bytes);
+
+    await expect(readAndValidatePwrsnapBundle(source)).rejects.toMatchObject({
+      code: "archive_size_invalid"
+    });
+    const installed = await readAndValidateInstalledPwrsnapBundle(source);
+    expect(installed.manifest).toEqual(fixture.manifest);
+    expect(installed.document).toEqual(fixture.document);
+    expect(installed.sources.get(fixture.sourceASha)).toEqual(fixture.sourceA);
+    expect("sourceBytes" in installed).toBe(false);
+  });
+
+  test("keeps locally valid canvases above the external pixel ceiling repackable", async () => {
+    const fixture = await validBundle();
+    // 8,193 × 8,192 is one row above the 64 Mi-pixel external import cap,
+    // but well inside sharp's bounded local-capture ceiling.
+    const width = 8_193;
+    const height = 8_192;
+    const source = oneBitPng(width, height);
+    const sourceSha = sha(source);
+    const layers = fixture.document.layers.map((layer) =>
+      layer.id === "base000000000001" && layer.kind === "raster"
+        ? {
+            ...layer,
+            source_ref: { kind: "embedded" as const, sha256: sourceSha },
+            natural_width_px: width,
+            natural_height_px: height
+          }
+        : layer
+    );
+    const bytes = await packBundleV2({
+      manifest: {
+        ...fixture.manifest,
+        canvas_dimensions: { width_px: width, height_px: height }
+      },
+      document: { ...fixture.document, layers },
+      sources: new Map([
+        [sourceSha, source],
+        [fixture.sourceBSha, fixture.sourceB]
+      ]),
+      layerBytes: new Map()
+    });
+    const bundlePath = join(workDir, "installed-large-canvas.pwrsnap");
+    await fs.writeFile(bundlePath, bytes);
+
+    await expect(readAndValidatePwrsnapBundle(bundlePath)).rejects.toMatchObject({
+      code: "canvas_pixel_limit"
+    });
+    const installed = await readAndValidateInstalledPwrsnapBundle(bundlePath);
+    expect(installed.manifest.canvas_dimensions).toEqual({
+      width_px: width,
+      height_px: height
+    });
+    expect(installed.sourceInfo.get(sourceSha)).toMatchObject({
+      widthPx: width,
+      heightPx: height
+    });
+  }, 30_000);
 });

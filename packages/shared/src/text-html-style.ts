@@ -20,6 +20,8 @@
 // inline `style="..."` attribute string on the bake's HTML div.
 
 import { computeTextGlyphSize, type TextSizeBucket } from "./text-glyph-size";
+import { outlineSolidStrokeHex } from "./overlay-schemas";
+import type { ResolvedTextOutline } from "./overlay-schemas";
 
 /** Inputs the helper needs to produce a fully-resolved style object.
  *  Caller resolves the editing-vs-tool-style decision (size bucket,
@@ -57,6 +59,12 @@ export interface TextHtmlStyleArgs {
    *  • Bake:    canvasHeightPx (the hidden BrowserWindow is sized to
    *             the canvas's pixel dims, so CSS-px == image-px). */
   canvasCssHeight: number;
+  /** Resolved contrast-border for the glyph stroke. Optional —
+   *  omitted means `{ kind: "legacy" }`: the historical translucent
+   *  rgba(0,0,0,0.6) stroke, byte-identical for existing callers.
+   *  Callers resolve rows via `readTextOverlayOutline` (which also
+   *  coerces the text-unsupported stripe mode to solid black). */
+  outline?: ResolvedTextOutline | undefined;
   /** Clockwise rotation in radians. Optional — omitted / 0 means no
    *  rotation, and the wrapper's transform stays bit-identical to
    *  the pre-rotation `translateY(-50%)` for legacy / unrotated rows.
@@ -117,6 +125,7 @@ export function computeTextHtmlStyle(args: TextHtmlStyleArgs): TextHtmlStyle {
     canvasWidthPx,
     canvasHeightPx,
     canvasCssHeight,
+    outline,
     rotation = 0
   } = args;
 
@@ -141,6 +150,16 @@ export function computeTextHtmlStyle(args: TextHtmlStyleArgs): TextHtmlStyle {
   // centered stroke; paint-order:stroke makes the fill cover the
   // inside half. Net visible halo = fontPx * 0.04 outside the glyph.
   const strokePx = Math.max(1, fontPx * 0.08);
+  // Border → stroke color. Legacy (no outline field on the row, or an
+  // omitted arg) keeps the historical translucent black so existing
+  // captures render byte-identically; the new solid modes swap the
+  // color; "none" drops the stroke properties entirely. Width stays
+  // the same fontPx-derived value in every mode — deliberately no
+  // independent sizing control.
+  const strokeColor =
+    outline === undefined || outline.kind === "legacy"
+      ? "rgba(0,0,0,0.6)"
+      : outlineSolidStrokeHex(outline);
 
   // Wrapper — absolute-positioned at the click point. translateY(-50%)
   // centers the wrapper's vertical midpoint on the anchor; lineHeight:1
@@ -200,8 +219,12 @@ export function computeTextHtmlStyle(args: TextHtmlStyleArgs): TextHtmlStyle {
     fontKerning: "normal",
     fontFeatureSettings: "normal",
     fontVariantLigatures: "normal",
-    WebkitTextStroke: `${strokePx}px rgba(0,0,0,0.6)`,
-    paintOrder: "stroke",
+    ...(strokeColor !== null
+      ? {
+          WebkitTextStroke: `${strokePx}px ${strokeColor}`,
+          paintOrder: "stroke"
+        }
+      : {}),
     // pre = preserve whitespace + newlines without wrapping. The user
     // controls line breaks explicitly (Shift+Enter in edit mode); we
     // don't want the bake / display surfaces to wrap differently than

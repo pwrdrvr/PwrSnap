@@ -14,8 +14,8 @@
 //   • recording:state idle on a fresh launch (default RecordingState)
 //   • recording:cancel always succeeds (unconditional reset contract)
 //   • recording:restart from idle returns validation/not_recording
-//   • permissions:readiness shape (status strings + 16-char hex fingerprint)
-//   • permissions:request rejects unknown permission names
+//   • permissions:readiness shape (status strings + explicit evidence + fingerprint)
+//   • permission actions reject unknown permission names
 //
 // Strategy mirrors editor-handlers.test.ts: vi.mock electron's
 // systemPreferences + the recording service so we don't touch macOS TCC
@@ -87,6 +87,7 @@ vi.mock("../../recording/recording-service", () => ({
 
 const { bus } = await import("../../command-bus");
 const { registerRecordingHandlers } = await import("../recording-handlers");
+const originalPlatform = process.platform;
 
 registerRecordingHandlers();
 
@@ -148,6 +149,10 @@ describe("permissions:* command-bus surface", () => {
     expect(validStatuses).toContain(r.screenRecording);
     expect(validStatuses).toContain(r.microphone);
     expect(validStatuses).toContain(r.systemAudio);
+    expect(["darwin", "win32", "other"]).toContain(r.permissionEvidence.platform);
+    expect(r.permissionEvidence).toHaveProperty("screen.kind");
+    expect(r.permissionEvidence).toHaveProperty("microphone.kind");
+    expect(r.permissionEvidence).toHaveProperty("systemAudio.kind");
     // Superset field over RecordingReadiness: whether PwrSnap has ever
     // triggered the screen prompt. Settings handlers aren't registered in
     // this file, so the gate's settings:read returns unknown_command and
@@ -174,4 +179,67 @@ describe("permissions:* command-bus surface", () => {
     expect(result.error.kind).toBe("validation");
     expect(result.error.code).toBe("unknown_permission");
   });
+
+  test("permissions:request reports unknown without prompting off Darwin", async () => {
+    Object.defineProperty(process, "platform", {
+      value: "win32",
+      configurable: true
+    });
+    try {
+      const result = await bus.dispatch(
+        "permissions:request",
+        { permission: "microphone" },
+        { principal: "ipc" }
+      );
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("expected ok");
+      expect(result.value).toEqual({ status: "unknown" });
+    } finally {
+      Object.defineProperty(process, "platform", {
+        value: originalPlatform,
+        configurable: true
+      });
+    }
+  });
+
+  test("permissions:openSystemSettings rejects unknown permission names", async () => {
+    const result = await bus.dispatch(
+      "permissions:openSystemSettings",
+      { permission: "bogus" } as never,
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected error");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("unknown_permission");
+  });
+
+  test.each(["screen", "systemAudio"] as const)(
+    "permissions:openSystemSettings rejects unsupported Windows %s settings",
+    async (permission) => {
+      Object.defineProperty(process, "platform", {
+        value: "win32",
+        configurable: true
+      });
+      try {
+        const result = await bus.dispatch(
+          "permissions:openSystemSettings",
+          { permission },
+          { principal: "ipc" }
+        );
+
+        expect(result.ok).toBe(false);
+        if (result.ok) throw new Error("expected error");
+        expect(result.error.kind).toBe("permission");
+        expect(result.error.code).toBe("permission_settings_unsupported");
+      } finally {
+        Object.defineProperty(process, "platform", {
+          value: originalPlatform,
+          configurable: true
+        });
+      }
+    }
+  );
 });

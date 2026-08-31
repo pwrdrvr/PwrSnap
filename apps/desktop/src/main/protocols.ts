@@ -210,7 +210,10 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
           return new Response("not found", { status: 404 });
         }
         return await fileResponse(filePath, request, {
-          cacheControl: CAPTURE_SOURCE_CACHE_CONTROL
+          cacheControl: CAPTURE_SOURCE_CACHE_CONTROL,
+          // CORS-readable: the Border Auto sampler draws capture
+          // rasters into a canvas via crossorigin="anonymous".
+          cors: true
         });
       } catch (cause) {
         log.error("capture source handler threw", {
@@ -234,7 +237,9 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
         return new Response("not found", { status: 404 });
       }
       const response = await fileResponse(filePath, request, {
-        cacheControl: CAPTURE_SOURCE_CACHE_CONTROL
+        cacheControl: CAPTURE_SOURCE_CACHE_CONTROL,
+        // CORS-readable — see the layer-source handler above.
+        cors: true
       });
       if (profiling) {
         markStartup(`protocol capture ${captureId} ${Date.now() - startedAt}ms`);

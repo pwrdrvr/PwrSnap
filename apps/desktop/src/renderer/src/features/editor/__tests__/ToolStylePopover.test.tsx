@@ -140,10 +140,11 @@ function makeSettings(overrides?: {
           thickness: "auto",
           endStyle: "filled-triangle",
           stemStyle: "solid",
-          doubleEnded: false
+          doubleEnded: false,
+          outline: "auto"
         },
-        text: { color: "accent", fontSize: "auto", weight: "regular" },
-        shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15 },
+        text: { color: "accent", fontSize: "auto", weight: "regular", outline: "auto" },
+        shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15, outline: "auto" },
         blur: { mode: "gaussian", radius: { mode: "auto" } },
         highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
       },
@@ -175,17 +176,20 @@ const DEFAULT_ARROW_STYLE: ArrowToolStyle = {
   thickness: "auto",
   endStyle: "filled-triangle",
   stemStyle: "solid",
-  doubleEnded: false
+  doubleEnded: false,
+  outline: "auto"
 };
 const DEFAULT_TEXT_STYLE: TextToolStyle = {
   color: "accent",
   fontSize: "auto",
-  weight: "regular"
+  weight: "regular",
+  outline: "auto"
 };
 const DEFAULT_RECT_STYLE: ShapeToolStyle = {
   color: "accent",
   thickness: "auto",
-  filled: false, shape: "rect", skewDeg: 15
+  filled: false, shape: "rect", skewDeg: 15,
+  outline: "auto"
 };
 const DEFAULT_BLUR_STYLE: BlurToolStyle = {
   mode: "gaussian",
@@ -335,6 +339,59 @@ describe("ToolStylePopover", () => {
     expect(popover.querySelector('[data-testid="arrow-double-ended"]')).not.toBeNull();
     // Blur's mode picker should NOT be present.
     expect(popover.querySelector('[data-testid="blur-mode"]')).toBeNull();
+  });
+
+  test("Border row: arrow offers all five modes and reflects the active one", () => {
+    render(
+      createElement(Harness, {
+        tool: "arrow",
+        style: { ...DEFAULT_ARROW_STYLE, outline: "auto" }
+      })
+    );
+    const popover = queryPopover();
+    const row = popover.querySelector('[data-testid="outline-row"]');
+    expect(row).not.toBeNull();
+    for (const mode of ["none", "auto", "white", "black", "stripe"]) {
+      expect(row!.querySelector(`[data-testid="outline-${mode}"]`)).not.toBeNull();
+    }
+    expect(
+      row!.querySelector('[data-testid="outline-auto"]')!.getAttribute("aria-checked")
+    ).toBe("true");
+    expect(
+      row!.querySelector('[data-testid="outline-black"]')!.getAttribute("aria-checked")
+    ).toBe("false");
+  });
+
+  test("Border row: text hides the stripe option", () => {
+    render(
+      createElement(Harness, {
+        tool: "text",
+        style: DEFAULT_TEXT_STYLE
+      })
+    );
+    const row = queryPopover().querySelector('[data-testid="outline-row"]');
+    expect(row).not.toBeNull();
+    expect(row!.querySelector('[data-testid="outline-stripe"]')).toBeNull();
+    expect(row!.querySelector('[data-testid="outline-black"]')).not.toBeNull();
+  });
+
+  test("Border row: shape emits onStyleFieldChange('outline', mode) on click", () => {
+    const onChange = vi.fn();
+    render(
+      createElement(Harness, {
+        tool: "shape",
+        style: DEFAULT_RECT_STYLE,
+        onStyleFieldChange: onChange
+      })
+    );
+    const row = queryPopover().querySelector('[data-testid="outline-row"]');
+    expect(row).not.toBeNull();
+    fireClick(row!.querySelector('[data-testid="outline-black"]')!);
+    expect(onChange).toHaveBeenCalledWith("outline", "black");
+    fireClick(row!.querySelector('[data-testid="outline-none"]')!);
+    expect(onChange).toHaveBeenCalledWith("outline", "none");
+    fireClick(row!.querySelector('[data-testid="outline-stripe"]')!);
+    expect(onChange).toHaveBeenCalledWith("outline", "stripe");
   });
 
   test("2. blur kind: no color row; 2 groups (mode, radius)", () => {

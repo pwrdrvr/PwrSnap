@@ -1,53 +1,137 @@
 import { describe, expect, it } from "vitest";
 import { computeArrowGeometry, computeStemDashArray } from "../arrow";
+import { annotationBasisPx, annotationStrokeWidthPx } from "../annotation-scale";
 
 const SQUARE_2K = { imageWidthPx: 2000, imageHeightPx: 2000 };
 
 describe("computeArrowGeometry", () => {
-  it("derives stroke width from image short-side", () => {
-    // 2000 / 220 ≈ 9.09 → clamped within [4, 14] → ~9.09
+  it("derives the auto stroke from the annotation basis (= the ladder's Medium rung)", () => {
+    // basis = max(900, 2000, 2828/2) = 2000 → 2000 / 105 ≈ 19.05.
     const geom = computeArrowGeometry({
       from: { x: 0.2, y: 0.2 },
       to: { x: 0.8, y: 0.8 },
       ...SQUARE_2K
     });
-    expect(geom.strokeWidthPx).toBeGreaterThan(8);
-    expect(geom.strokeWidthPx).toBeLessThan(11);
+    expect(geom.strokeWidthPx).toBeCloseTo(
+      annotationStrokeWidthPx("medium", annotationBasisPx(2000, 2000)),
+      5
+    );
+    expect(geom.strokeWidthPx).toBeCloseTo(19.05, 2);
   });
 
-  it("clamps stroke to a minimum of 4px on tiny images", () => {
-    // 100 / 220 ≈ 0.45 → clamps up to 4.
+  it("holds the stroke at the basis floor on tiny images instead of an absolute 4px clamp", () => {
+    // A 100×100 crop has no extent to scale from, but the UI text
+    // inside it is the same size as in any other screenshot — so the
+    // basis floors at 900 and the stroke lands on the ladder's Medium
+    // rung (900/105 ≈ 8.57) rather than the old hardcoded 4px.
     const geom = computeArrowGeometry({
       from: { x: 0.1, y: 0.1 },
       to: { x: 0.9, y: 0.9 },
       imageWidthPx: 100,
       imageHeightPx: 100
     });
-    expect(geom.strokeWidthPx).toBe(4);
+    expect(geom.strokeWidthPx).toBeCloseTo(900 / 105, 5);
   });
 
-  it("clamps stroke to a maximum of 14px on giant images", () => {
-    // 8000 / 220 ≈ 36.4 → clamps down to 14.
+  it("keeps scaling on giant images instead of capping at 14px", () => {
+    // The old STROKE_MAX_PX = 14 made an 8000px capture's auto arrow
+    // render at 0.18% of its short side — a hairline once the export
+    // was scaled down into a doc. Now it stays proportional.
     const geom = computeArrowGeometry({
       from: { x: 0.1, y: 0.1 },
       to: { x: 0.9, y: 0.9 },
       imageWidthPx: 8000,
       imageHeightPx: 8000
     });
-    expect(geom.strokeWidthPx).toBe(14);
+    expect(geom.strokeWidthPx).toBeCloseTo(8000 / 105, 5);
   });
 
-  it("image-derived stroke floor uses the SHORT side (the floor, not the cap)", () => {
-    // Wide image with a SHORT arrow: short side = 600 → image-derived
-    // base = 4. The arrow is small (~80px) so the length-derived stroke
-    // (80/250 = 0.32) is below the floor, and the image-derived 4 wins.
+  it("does not collapse on a wide-short image (the basis takes the diagonal branch)", () => {
+    // 4000×600: short side is 600, which used to drive the stroke to
+    // the 4px clamp floor. basis = max(900, 600, 4044/2 = 2022) = 2022,
+    // so the arrow is sized as the big image it actually is.
     const wide = computeArrowGeometry({
       from: { x: 0.5, y: 0.5 },
       to: { x: 0.52, y: 0.5 }, // 80px on a 4000-wide image
       imageWidthPx: 4000,
       imageHeightPx: 600
     });
-    expect(wide.strokeWidthPx).toBe(4);
+    const basis = annotationBasisPx(4000, 600);
+    expect(basis).toBeCloseTo(Math.hypot(4000, 600) / 2, 5);
+    expect(wide.strokeWidthPx).toBeCloseTo(
+      annotationStrokeWidthPx("medium", basis),
+      5
+    );
+    // ~19px vs the old 4px clamp floor, and the 67px head still fits
+    // inside the 80px arrow so no short-arrow correction is needed.
+    expect(wide.strokeWidthPx).toBeGreaterThan(4);
+    expect(wide.headLengthPx).toBeLessThan(80);
+  });
+
+  it("the length term can no longer beat the basis for any in-image arrow", () => {
+    // The length bump existed because the short-side basis collapsed
+    // on wide-short images. It is now provably dominated for anything
+    // that fits inside the canvas: basis >= diagonal/2, so the auto
+    // stroke is >= diagonal/210 while the length term is at most
+    // diagonal/250.
+    for (const [w, h] of [
+      [4000, 600],
+      [1920, 1080],
+      [777, 207],
+      [200, 5000]
+    ] as const) {
+      const corner = computeArrowGeometry({
+        from: { x: 0, y: 0 },
+        to: { x: 1, y: 1 }, // the full diagonal — the longest in-image arrow
+        imageWidthPx: w,
+        imageHeightPx: h
+      });
+      expect(corner.strokeWidthPx).toBeCloseTo(
+        annotationStrokeWidthPx("medium", annotationBasisPx(w, h)),
+        5
+      );
+    }
+  });
+
+  it("the short-arrow floor scales with the basis instead of a flat 2px", () => {
+    // The short-arrow correction shrinks head + stroke together so the
+    // head fits inside a tiny arrow, then floors the stroke. That floor
+    // used to be an absolute 2px — the last absolute constant left after
+    // the recalibration, so its meaning drifted with resolution (23% of
+    // the auto stroke at the basis floor, 7% on a 5K capture). It is now
+    // `basis / SHORT_ARROW_STROKE_MIN_DIVISOR`.
+    const tiny = (w: number, h: number) =>
+      computeArrowGeometry({
+        from: { x: 0.5, y: 0.5 },
+        to: { x: 0.5005, y: 0.5 }, // a couple of px — well inside the head
+        imageWidthPx: w,
+        imageHeightPx: h,
+        styleVersion: 2
+      }).strokeWidthPx;
+
+    // At the basis floor it lands within a quarter-pixel of the old 2px.
+    expect(tiny(200, 80)).toBeCloseTo(900 / 400, 5);
+    // On a big capture it keeps the same RATIO to the auto stroke
+    // instead of collapsing to a hairline.
+    const bigBasis = annotationBasisPx(5120, 2880);
+    expect(tiny(5120, 2880)).toBeCloseTo(bigBasis / 400, 5);
+    const ratioSmall = tiny(200, 80) / annotationStrokeWidthPx("medium", 900);
+    const ratioBig = tiny(5120, 2880) / annotationStrokeWidthPx("medium", bigBasis);
+    expect(ratioBig).toBeCloseTo(ratioSmall, 5);
+  });
+
+  it("honors an explicit basisPx so a cropped / scaled caller controls sizing", () => {
+    // The bake passes annotationBasisPx(SOURCE) × renderScale; the
+    // editor passes annotationBasisPx(SOURCE). Either way the caller's
+    // number must win over one re-derived from the dims passed in.
+    const geom = computeArrowGeometry({
+      from: { x: 0.1, y: 0.5 },
+      to: { x: 0.9, y: 0.5 },
+      imageWidthPx: 400,
+      imageHeightPx: 300,
+      basisPx: 3000
+    });
+    expect(geom.strokeWidthPx).toBeCloseTo(3000 / 105, 5);
   });
 
   it("scales head dimensions proportionally to stroke (v1 default)", () => {

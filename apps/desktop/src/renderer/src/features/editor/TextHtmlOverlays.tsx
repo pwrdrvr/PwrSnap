@@ -15,7 +15,7 @@
 
 import { type ReactElement, useMemo } from "react";
 import type { OverlayRow } from "@pwrsnap/shared";
-import { readOverlayRotation, readTextWeight } from "@pwrsnap/shared";
+import { readOverlayRotation, readTextOverlayOutline, readTextWeight } from "@pwrsnap/shared";
 import { resolveToolColor } from "./resolveToolColor";
 import { TextHtml } from "./TextHtml";
 import { applyGeometryLocally, type GeometryUpdate } from "./geometry-projection";
@@ -110,6 +110,7 @@ export function TextHtmlOverlays(props: TextHtmlOverlaysProps): ReactElement {
             weight={readTextWeight(data)}
             colorHex={colorHex}
             storedSizePx={data.sizePx}
+            outline={readTextOverlayOutline(data)}
             imageWidthPx={props.imageWidthPx}
             imageHeightPx={props.imageHeightPx}
             sourceWidthPx={props.sourceWidthPx}

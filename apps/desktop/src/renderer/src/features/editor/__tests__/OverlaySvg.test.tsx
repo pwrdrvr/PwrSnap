@@ -12,9 +12,11 @@ import { act, createElement, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import type { OverlayRow } from "@pwrsnap/shared";
+import { annotationBasisPx } from "@pwrsnap/shared";
 
 import { OverlaySvg, TransformHandles } from "../OverlaySvg";
 import { clearGlyphSize, reportGlyphSize } from "../text-measure-registry";
+import { shapeStrokeGeometry } from "../shape-stroke-geometry";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -172,9 +174,11 @@ describe("OverlaySvg text selection outline — measured glyph box", () => {
   });
 
   test("falls back to the analytic box before any measurement lands", async () => {
-    // No reportGlyphSize for this id → analytic estimate. medium bucket
-    // on a 600px short side = 20px font; "hello" (5 chars) has no canvas
-    // measureText in jsdom, so width = 5·20·0.55 = 55px, height = 20px.
+    // No reportGlyphSize for this id → analytic estimate. The medium
+    // bucket on an 800×600 capture divides the annotation basis, which
+    // floors at 900 here → 30px font. "hello" (5 chars) has no canvas
+    // measureText in jsdom, so width = 5·30·0.55 = 82.5px, height = 30px.
+    const fontPx = annotationBasisPx(800, 600) / 30;
     const container = await renderOverlaySvg(
       [textRow("t_analytic", { body: "hello" })],
       { imageWidthPx: 800, imageHeightPx: 600 },
@@ -185,8 +189,8 @@ describe("OverlaySvg text selection outline — measured glyph box", () => {
       ?.querySelector("[data-testid='selection-outline']")
       ?.querySelector("rect");
     expect(rect).not.toBeNull();
-    const analyticW = (55 / 800 + OUTLINE_PAD_N * 2) * 800;
-    const analyticH = (20 / 600 + OUTLINE_PAD_N * 2) * 600;
+    const analyticW = ((5 * fontPx * 0.55) / 800 + OUTLINE_PAD_N * 2) * 800;
+    const analyticH = (fontPx / 600 + OUTLINE_PAD_N * 2) * 600;
     expect(Number(rect!.getAttribute("width"))).toBeCloseTo(analyticW, 1);
     expect(Number(rect!.getAttribute("height"))).toBeCloseTo(analyticH, 1);
   });
@@ -313,33 +317,26 @@ describe("OverlaySvg ArrowGlyph — thickness", () => {
     expect(Number(coloredStem!.getAttribute("stroke-width"))).toBeGreaterThan(0);
   });
 
-  test("thickness 'large' renders ~2× the auto stroke width", async () => {
-    const autoSvg = await renderOverlaySvg([arrowRow({ thickness: "auto" })]);
-    const largeSvg = await renderOverlaySvg([arrowRow({ thickness: "large" })]);
-    const autoStem = Array.from(autoSvg.querySelectorAll("line")).find(
-      (l) => l.getAttribute("stroke") !== "white"
-    )!;
-    const largeStem = Array.from(largeSvg.querySelectorAll("line")).find(
-      (l) => l.getAttribute("stroke") !== "white"
-    )!;
-    const autoW = Number(autoStem.getAttribute("stroke-width"));
-    const largeW = Number(largeStem.getAttribute("stroke-width"));
-    expect(largeW / autoW).toBeCloseTo(2, 1);
-  });
-
-  test("thickness 'small' renders ~0.5× the auto stroke width", async () => {
-    const autoSvg = await renderOverlaySvg([arrowRow({ thickness: "auto" })]);
-    const smallSvg = await renderOverlaySvg([arrowRow({ thickness: "small" })]);
-    const autoStem = Array.from(autoSvg.querySelectorAll("line")).find(
-      (l) => l.getAttribute("stroke") !== "white"
-    )!;
-    const smallStem = Array.from(smallSvg.querySelectorAll("line")).find(
-      (l) => l.getAttribute("stroke") !== "white"
-    )!;
-    expect(
-      Number(smallStem.getAttribute("stroke-width")) /
-        Number(autoStem.getAttribute("stroke-width"))
-    ).toBeCloseTo(0.5, 1);
+  test("every preset lands on the shared annotation ladder's rungs", async () => {
+    // The live editor must resolve the exact same rungs the bake does
+    // (arrow-bake.test.ts pins the other side) — WYSIWYG depends on it.
+    const basis = annotationBasisPx(800, 600);
+    const stemWidth = async (
+      thickness: "small" | "medium" | "large" | "x-large" | "auto"
+    ): Promise<number> => {
+      const svg = await renderOverlaySvg([arrowRow({ thickness })]);
+      const stem = Array.from(svg.querySelectorAll("line")).find(
+        (l) => l.getAttribute("stroke") !== "white"
+      )!;
+      return Number(stem.getAttribute("stroke-width"));
+    };
+    expect(await stemWidth("small")).toBeCloseTo(basis / 160, 4);
+    expect(await stemWidth("medium")).toBeCloseTo(basis / 105, 4);
+    expect(await stemWidth("large")).toBeCloseTo(basis / 68, 4);
+    expect(await stemWidth("x-large")).toBeCloseTo(basis / 44, 4);
+    // Auto is the Medium rung, not a parallel curve that happens to
+    // land nearby.
+    expect(await stemWidth("auto")).toBeCloseTo(await stemWidth("medium"), 4);
   });
 
   test("thickness 'large' scales the HEAD triangle too, not just the stem", async () => {
@@ -371,9 +368,22 @@ describe("OverlaySvg ArrowGlyph — thickness", () => {
     const largeSvg = await renderOverlaySvg([
       arrowRow({ endStyle: "filled-triangle", thickness: "large" })
     ]);
-    const autoExtent = headPerpExtent(autoSvg);
-    const largeExtent = headPerpExtent(largeSvg);
-    expect(largeExtent / autoExtent).toBeCloseTo(2, 1);
+    const autoStem = Number(
+      Array.from(autoSvg.querySelectorAll("line"))
+        .find((l) => l.getAttribute("stroke") !== "white")!
+        .getAttribute("stroke-width")
+    );
+    const largeStem = Number(
+      Array.from(largeSvg.querySelectorAll("line"))
+        .find((l) => l.getAttribute("stroke") !== "white")!
+        .getAttribute("stroke-width")
+    );
+    // The head must grow by exactly the ratio the stem grew by.
+    expect(largeStem / autoStem).toBeGreaterThan(1.2);
+    expect(headPerpExtent(largeSvg) / headPerpExtent(autoSvg)).toBeCloseTo(
+      largeStem / autoStem,
+      4
+    );
   });
 });
 
@@ -490,18 +500,36 @@ describe("OverlaySvg HighlightGlyph — opacity", () => {
 });
 
 describe("OverlaySvg ShapeGlyph — thickness", () => {
-  test("thickness 'large' renders ~2× the auto stroke width", async () => {
-    const autoSvg = await renderOverlaySvg([rectRow({ thickness: "auto" })]);
-    const largeSvg = await renderOverlaySvg([rectRow({ thickness: "large" })]);
-    const autoStroke = Array.from(autoSvg.querySelectorAll("rect")).find(
+  const shapeStroke = async (
+    thickness: "small" | "medium" | "large" | "x-large" | "auto"
+  ): Promise<number> => {
+    const svg = await renderOverlaySvg([rectRow({ thickness })]);
+    const stroked = Array.from(svg.querySelectorAll("rect")).find(
       (r) => r.getAttribute("stroke") !== "white" && r.getAttribute("stroke") !== "none"
     )!;
-    const largeStroke = Array.from(largeSvg.querySelectorAll("rect")).find(
-      (r) => r.getAttribute("stroke") !== "white" && r.getAttribute("stroke") !== "none"
-    )!;
-    const autoW = Number(autoStroke.getAttribute("stroke-width"));
-    const largeW = Number(largeStroke.getAttribute("stroke-width"));
-    expect(largeW / autoW).toBeCloseTo(2, 1);
+    return Number(stroked.getAttribute("stroke-width"));
+  };
+
+  test("every preset lands on the shared annotation ladder's rungs", async () => {
+    const basis = annotationBasisPx(800, 600);
+    expect(await shapeStroke("small")).toBeCloseTo(basis / 160, 4);
+    expect(await shapeStroke("medium")).toBeCloseTo(basis / 105, 4);
+    expect(await shapeStroke("large")).toBeCloseTo(basis / 68, 4);
+    expect(await shapeStroke("x-large")).toBeCloseTo(basis / 44, 4);
+  });
+
+  test("an auto shape paints the same weight as an auto arrow", async () => {
+    // Shapes and arrows used to run separate auto bands
+    // (`min(short×0.012, max(short×0.003, 8))` vs
+    // `clamp(short/220, 4, 14)`), so on 1080p an auto shape drew 8px
+    // next to an auto arrow's 4.9px. Same ladder now.
+    const arrowSvg = await renderOverlaySvg([arrowRow({ thickness: "auto" })]);
+    const arrowStroke = Number(
+      Array.from(arrowSvg.querySelectorAll("line"))
+        .find((l) => l.getAttribute("stroke") !== "white")!
+        .getAttribute("stroke-width")
+    );
+    expect(await shapeStroke("auto")).toBeCloseTo(arrowStroke, 4);
   });
 });
 
@@ -1152,9 +1180,11 @@ describe("TransformHandles — body drag rect stroke-reach pad", () => {
   // hit-test pad for selection). The resize/rotate handles still anchor
   // on the un-padded bodyBox. These tests assert the body rect's
   // measured geometry: a square 1000×1000 image keeps px↔normalized 1:1
-  // so the expected percentages are easy to reason about — an auto
-  // stroke is 8px wide with a 2px halo → outer reach 6px → 0.006
-  // normalized → 0.6 percentage points of pad on each side.
+  // so the expected percentages are easy to reason about. The pad is
+  // derived from `shapeStrokeGeometry` rather than hardcoded — it moves
+  // whenever the annotation ladder is retuned, and the property under
+  // test is that the grabbable region tracks the PAINTED line, not any
+  // particular width.
   async function renderTransformHandles(
     selectedOverlay: OverlayRow,
     dims = { imageWidthPx: 1000, imageHeightPx: 1000 }
@@ -1210,12 +1240,18 @@ describe("TransformHandles — body drag rect stroke-reach pad", () => {
 
   test("stroked rect: body rect is grown outward by the stroke reach", async () => {
     const body = await renderTransformHandles(shapeRow());
-    // bodyBox is (0.2, 0.2, 0.4, 0.4) → 20% / 40%. With 0.6pp of pad on
-    // each side the body rect spans 19.4% .. (19.4 + 41.2)%.
-    expect(parseFloat(body.style.left)).toBeCloseTo(19.4, 1);
-    expect(parseFloat(body.style.top)).toBeCloseTo(19.4, 1);
-    expect(parseFloat(body.style.width)).toBeCloseTo(41.2, 1);
-    expect(parseFloat(body.style.height)).toBeCloseTo(41.2, 1);
+    // bodyBox is (0.2, 0.2, 0.4, 0.4) → 20% / 40%, padded on each side
+    // by the auto stroke's outer reach (half the colored stroke plus
+    // the halo), expressed in percentage points of the 1000px canvas.
+    const padPp =
+      (shapeStrokeGeometry(undefined, annotationBasisPx(1000, 1000)).outerReachPx /
+        1000) *
+      100;
+    expect(padPp).toBeGreaterThan(0);
+    expect(parseFloat(body.style.left)).toBeCloseTo(20 - padPp, 4);
+    expect(parseFloat(body.style.top)).toBeCloseTo(20 - padPp, 4);
+    expect(parseFloat(body.style.width)).toBeCloseTo(40 + padPp * 2, 4);
+    expect(parseFloat(body.style.height)).toBeCloseTo(40 + padPp * 2, 4);
   });
 
   test("FILLED shape: no stroke line → body rect is the un-padded bbox", async () => {

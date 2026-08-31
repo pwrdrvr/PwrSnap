@@ -41,6 +41,7 @@ function toolStyle(overrides: Partial<TextToolStyle> = {}): TextToolStyle {
     color: "auto",
     fontSize: "medium",
     weight: "bold",
+    outline: "auto",
     ...overrides
   };
 }
@@ -171,7 +172,7 @@ describe("resolveTextSizeBucket — popover preset → bucket", () => {
     ["small", "small"],
     ["medium", "medium"],
     ["large", "large"],
-    ["x-large", "large"], // collapses to large defensively
+    ["x-large", "x-large"], // a first-class bucket since the 2026-08 ladder
     ["auto", "medium"]
   ] as const)("'%s' resolves to '%s'", (input, expected) => {
     expect(resolveTextSizeBucket(input)).toBe(expected);

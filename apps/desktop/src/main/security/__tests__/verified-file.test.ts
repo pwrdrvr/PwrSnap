@@ -189,4 +189,20 @@ describe("verified external files", () => {
     expect(caught.message).not.toContain(missing);
     expect(Object.values(caught)).not.toContain(missing);
   });
+
+  test("reports raw filesystem failures before returning a path-free typed error", async () => {
+    const missing = join(dir, "accounting-only-private-name.bin");
+    const observed: unknown[] = [];
+
+    await expect(
+      withVerifiedFileHandle(
+        missing,
+        { onFileSystemError: (cause) => observed.push(cause) },
+        () => undefined
+      )
+    ).rejects.toMatchObject({ code: "stat_failed" });
+
+    expect(observed).toHaveLength(1);
+    expect(observed[0]).toMatchObject({ code: "ENOENT" });
+  });
 });

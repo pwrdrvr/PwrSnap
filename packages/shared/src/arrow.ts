@@ -4,21 +4,27 @@
 //
 // Per the Phase-1 plan §"Smart arrow algorithm", the goal is to never
 // look like a needle (too thin) or a crayola box (too thick). Stroke
-// width is a function of the source image's short side; head size is
-// a function of stroke width; short arrows get a thicker tail to keep
-// proportions sane.
+// width is a function of the capture's `annotationBasisPx`; head size
+// is a function of stroke width; short arrows get a thinner tail so
+// the head still fits.
 //
-// All inputs/outputs are in NORMALIZED coordinates ([0,1]^2 fractions
-// of the source image's W×H). Both consumers convert to pixels at
-// their natural resolution:
-//   • Renderer SVG: viewBox 0..1, strokeWidth = strokeFraction.
-//   • Sharp bake: strokeWidth_px = strokeFraction * shortSide_px;
-//     SVG buffer has viewBox = full image pixels.
+// Point outputs are in NORMALIZED coordinates ([0,1]^2 fractions of
+// the source image's W×H); both consumers multiply by their own image
+// dims to place them. Stroke and head sizes come back in PIXELS
+// (`strokeWidthPx` / `headLengthPx` / `headWidthPx`) — read those
+// directly. They are NOT reconstructible as `strokeFraction ×
+// shortSide`: since the 2026-08 recalibration the stroke derives from
+// `annotationBasisPx`, which the caller may also override outright.
 //
 // Color is decided in main only (we sample the source image under
 // `to`); the renderer just uses the fixed accent without sampling.
 // `colorMode` in the output describes WHAT to draw, not HOW (the
 // caller applies the chosen palette).
+
+import {
+  annotationBasisPx,
+  annotationStrokeWidthPx
+} from "./annotation-scale";
 
 export type Point = { x: number; y: number };
 
@@ -54,6 +60,29 @@ export type ArrowInput = {
    */
   strokeWidthOverridePx?: number | undefined;
   /**
+   * The capture's `annotationBasisPx`, in the SAME pixel space as
+   * `imageWidthPx` / `imageHeightPx`.
+   *
+   * Pass this whenever the caller knows the SOURCE raster's dims (or
+   * is rendering at a scale other than 1:1) — both are cases where
+   * deriving the basis from the image dims handed to this function
+   * would be wrong:
+   *
+   *   • Crop. Canvas dims shrink with every crop; source dims don't.
+   *     Without an explicit basis, cropping around an arrow would
+   *     re-thin it, the same way it used to re-shrink text before
+   *     pwrdrvr/PwrSnap#110.
+   *   • Scaled bakes. The export ladder rasterizes at render dims;
+   *     the basis must be `annotationBasisPx(source) × renderScale`
+   *     so the exported stroke matches the preview proportionally.
+   *     Re-deriving from render dims breaks that whenever the
+   *     basis floor binds on one side of the scale and not the other.
+   *
+   * Omitted → `annotationBasisPx(imageWidthPx, imageHeightPx)`, which
+   * is correct for uncropped 1:1 callers and for tests.
+   */
+  basisPx?: number | undefined;
+  /**
    * Which version of the arrow style table to use. The table holds
    * head proportions + stroke clamps; freezing a version per overlay
    * row lets us tune future arrows without retroactively rewriting
@@ -86,10 +115,17 @@ export type ArrowGeometry = {
   baseLeft: Point;
   baseRight: Point;
   /**
-   * Stroke width as fraction of `min(imageWidth, imageHeight)`. Both
-   * consumers multiply by their image short-side (in their target
-   * px space) to get the actual pixel stroke. Renderer uses canvas
-   * short-side; bake uses image short-side.
+   * `strokeWidthPx / min(imageWidth, imageHeight)`, retained only as a
+   * descriptive ratio.
+   *
+   * DO NOT reconstruct a pixel stroke from this. It used to be the
+   * canonical output — callers multiplied it by their own short side —
+   * but the stroke now derives from `annotationBasisPx` (which the
+   * caller may override via `basisPx`), so `strokeFraction × shortSide`
+   * only reproduces `strokeWidthPx` when the basis happens to equal the
+   * short side of the dims passed in. It does not on a cropped, a
+   * floored, or a scale-baked capture. Use `strokeWidthPx`; both
+   * production consumers already do.
    */
   strokeFraction: number;
   /**
@@ -115,40 +151,41 @@ export type ArrowGeometry = {
  * extending this shape and bumping `CURRENT_ARROW_STYLE_VERSION`.
  */
 interface ArrowStyleParams {
-  /**
-   * Auto-stroke divisor against image short-side. `strokeFromShortSide
-   * = clamp(shortSidePx / STROKE_DIVISOR, STROKE_MIN_PX, STROKE_MAX_PX)`.
-   */
-  STROKE_DIVISOR: number;
-  /** Lower clamp on auto-derived stroke (px). */
-  STROKE_MIN_PX: number;
-  /** Upper clamp on auto-derived stroke (px). */
-  STROKE_MAX_PX: number;
   /** Head triangle length as a multiple of stroke width. */
   HEAD_LENGTH_RATIO: number;
   /** Head triangle base width as a multiple of stroke width. */
   HEAD_WIDTH_RATIO: number;
   /**
-   * Long arrows traversing a large fraction of the image need a
-   * thicker stroke to avoid looking like a hair, especially on tall-
-   * skinny or wide-short images where the short-side-derived base
-   * stroke clamps to STROKE_MIN_PX. Scale the stroke by `lengthPx /
-   * LENGTH_DIVISOR`, take the max with the image-derived base, and
-   * re-clamp.
+   * Long arrows get a thicker stroke so a full-width arrow doesn't
+   * read as a hair. Scale by `lengthPx / LENGTH_DIVISOR` and take the
+   * max with the basis-derived auto stroke.
    *
-   * A 3000px-long arrow → 3000/250 = 12px stroke (capped at MAX 14).
-   * A 200px arrow → 200/250 = 0.8 → falls below short-side floor;
-   * the image-derived stroke wins.
+   * Since the 2026-08 recalibration this term is very nearly inert:
+   * `annotationBasisPx >= diagonal / 2`, so the auto stroke is at
+   * least `diagonal / 210` while this term is at most `diagonal / 250`
+   * for any arrow that fits inside the image. It survives to cover the
+   * one case that CAN exceed the diagonal — an arrow whose endpoints
+   * sit outside the canvas after a crop (overlay coords are allowed
+   * outside [0,1]; see NormalizedScalar in overlay-schemas.ts).
    */
   LENGTH_DIVISOR: number;
   /**
-   * Hard floor for short-arrow strokes after the short-arrow
-   * correction shrinks head + stroke together. Smaller than
-   * `STROKE_MIN_PX` because for very short arrows we'd rather have
-   * a thin-but-proportional silhouette than a normal stroke with a
-   * missing head.
+   * Floor for short-arrow strokes after the short-arrow correction
+   * shrinks head + stroke together — for very short arrows we'd rather
+   * have a thin-but-proportional silhouette than a normal stroke with
+   * a missing head.
+   *
+   * Expressed as a DIVISOR of the annotation basis, not an absolute
+   * pixel count. It was 2 px flat, which left it as the last absolute
+   * constant after the 2026-08 recalibration: at basis 900 that read
+   * as 23% of the auto stroke, but on a 5K capture (basis 2937, auto
+   * 28 px) the same 2 px was 7% — the floor's calibration silently
+   * drifted with resolution, the exact failure mode the recalibration
+   * removed everywhere else. `basis / 400` holds it at ~26% of auto on
+   * every capture and lands at 2.25 px on a floored one, within a
+   * quarter-pixel of the old value.
    */
-  SHORT_ARROW_STROKE_MIN_PX: number;
+  SHORT_ARROW_STROKE_MIN_DIVISOR: number;
 }
 
 /**
@@ -173,22 +210,16 @@ interface ArrowStyleParams {
  */
 const ARROW_STYLE_VERSIONS: Readonly<Record<number, ArrowStyleParams>> = {
   1: {
-    STROKE_DIVISOR: 220,
-    STROKE_MIN_PX: 4,
-    STROKE_MAX_PX: 14,
     HEAD_LENGTH_RATIO: 3.5,
     HEAD_WIDTH_RATIO: 2.6,
     LENGTH_DIVISOR: 250,
-    SHORT_ARROW_STROKE_MIN_PX: 2
+    SHORT_ARROW_STROKE_MIN_DIVISOR: 400
   },
   2: {
-    STROKE_DIVISOR: 220,
-    STROKE_MIN_PX: 4,
-    STROKE_MAX_PX: 14,
     HEAD_LENGTH_RATIO: 5,
     HEAD_WIDTH_RATIO: 3,
     LENGTH_DIVISOR: 250,
-    SHORT_ARROW_STROKE_MIN_PX: 2
+    SHORT_ARROW_STROKE_MIN_DIVISOR: 400
   }
 };
 
@@ -226,6 +257,10 @@ function resolveArrowStyleParams(version: number | undefined): ArrowStyleParams 
 export function computeArrowGeometry(input: ArrowInput): ArrowGeometry {
   const params = resolveArrowStyleParams(input.styleVersion);
   const shortSidePx = Math.max(1, Math.min(input.imageWidthPx, input.imageHeightPx));
+  const basisPx =
+    input.basisPx !== undefined && Number.isFinite(input.basisPx) && input.basisPx > 0
+      ? input.basisPx
+      : annotationBasisPx(input.imageWidthPx, input.imageHeightPx);
 
   // Step 1: arrow length in image pixels. Needed for the
   // length-aware stroke scaling below.
@@ -244,16 +279,22 @@ export function computeArrowGeometry(input: ArrowInput): ArrowGeometry {
   if (input.strokeWidthOverridePx !== undefined && input.strokeWidthOverridePx > 0) {
     strokeWidthPx = input.strokeWidthOverridePx;
   } else {
-    const strokeFromShortSide = clamp(
-      shortSidePx / params.STROKE_DIVISOR,
-      params.STROKE_MIN_PX,
-      params.STROKE_MAX_PX
-    );
+    // Auto IS the Medium rung of the shared annotation ladder — not a
+    // separate curve that happens to land nearby. Pre-recalibration
+    // this was `clamp(shortSide / 220, 4, 14)`, whose absolute clamps
+    // pinned auto to exactly 4 px for every capture under an 880 px
+    // short side (most window grabs) and to 14 px on anything past 4K.
+    //
+    // No absolute clamps here on purpose: the basis already carries a
+    // floor (ANNOTATION_BASIS_FLOOR_PX), so the stroke cannot collapse
+    // on a small capture, and it scales cleanly upward on a 5K one.
+    // The only bound left is the length term's ceiling — a monster
+    // arrow may thicken up to the X-Large rung, no further.
+    const strokeFromBasis = annotationStrokeWidthPx("medium", basisPx);
     const strokeFromLength = lengthPx / params.LENGTH_DIVISOR;
-    strokeWidthPx = clamp(
-      Math.max(strokeFromShortSide, strokeFromLength),
-      params.STROKE_MIN_PX,
-      params.STROKE_MAX_PX
+    strokeWidthPx = Math.min(
+      Math.max(strokeFromBasis, strokeFromLength),
+      annotationStrokeWidthPx("x-large", basisPx)
     );
   }
 
@@ -268,14 +309,18 @@ export function computeArrowGeometry(input: ArrowInput): ArrowGeometry {
   //
   // Fix: shrink the head + stroke together so headLength ≤ lengthPx.
   // Preserve the head's length/width ratio so it stays a recognizable
-  // arrowhead. Cap the lower bound on stroke at SHORT_ARROW_STROKE_MIN_PX
-  // (2px) — thinner than the normal floor because for short arrows the
-  // silhouette is dominated by the head, not the line.
+  // arrowhead. Cap the lower bound on stroke at
+  // `basis / SHORT_ARROW_STROKE_MIN_DIVISOR` — thinner than the normal
+  // Medium rung because for short arrows the silhouette is dominated by
+  // the head, not the line.
   if (headLengthPx > lengthPx && lengthPx > 0) {
     const scale = lengthPx / headLengthPx;
     headLengthPx = lengthPx; // exactly fills the segment
     headWidthPx *= scale;
-    strokeWidthPx = Math.max(params.SHORT_ARROW_STROKE_MIN_PX, strokeWidthPx * scale);
+    strokeWidthPx = Math.max(
+      basisPx / params.SHORT_ARROW_STROKE_MIN_DIVISOR,
+      strokeWidthPx * scale
+    );
   }
 
   // Compute the head triangle's three corners. The triangle's apex
@@ -329,10 +374,6 @@ export function computeArrowGeometry(input: ArrowInput): ArrowGeometry {
     headWidthPx,
     lengthPx
   };
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
 }
 
 /**

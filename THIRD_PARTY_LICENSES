@@ -101,8 +101,8 @@ MIT
 - @pwrdrvr/codex-app-server-protocol@0.144.0 | https://github.com/pwrdrvr/codex-app-server-protocol
 - @pwrdrvr/codex-discovery@0.4.0 | https://github.com/pwrdrvr/agent-kit
 - @shutterstock/p-map-iterable@1.1.2 | https://github.com/shutterstock/p-map-iterable
-- @tanstack/react-virtual@3.14.9 | https://github.com/TanStack/virtual
-- @tanstack/virtual-core@3.17.7 | https://github.com/TanStack/virtual
+- @tanstack/react-virtual@3.14.10 | https://github.com/TanStack/virtual
+- @tanstack/virtual-core@3.17.8 | https://github.com/TanStack/virtual
 - accepts@2.0.0 | jshttp/accepts
 - aggregate-error@3.1.0 | sindresorhus/aggregate-error
 - ajv@8.20.0 | ajv-validator/ajv
@@ -160,7 +160,7 @@ MIT
 - gopd@1.2.0 | https://github.com/ljharb/gopd
 - has-symbols@1.1.0 | https://github.com/inspect-js/has-symbols
 - hasown@2.0.4 | https://github.com/inspect-js/hasOwn
-- hono@4.12.33 | https://github.com/honojs/hono
+- hono@4.13.3 | https://github.com/honojs/hono
 - http-errors@2.0.1 | jshttp/http-errors
 - iconv-lite@0.7.3 | https://github.com/pillarjs/iconv-lite
 - indent-string@4.0.0 | sindresorhus/indent-string
@@ -168,7 +168,7 @@ MIT
 - ipaddr.js@1.9.1 | https://github.com/whitequark/ipaddr.js
 - is-promise@4.0.0 | https://github.com/then/is-promise
 - jose@6.2.7 | panva/jose
-- js-yaml@4.2.0 | nodeca/js-yaml
+- js-yaml@4.3.1 | nodeca/js-yaml
 - json-schema-traverse@1.0.0 | https://github.com/epoberezkin/json-schema-traverse
 - jsonfile@6.2.1 | https://github.com/jprichardson/node-jsonfile
 - lazy-val@1.0.5 | develar/lazy-val
@@ -1306,14 +1306,14 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-@tanstack/react-virtual@3.14.9 (MIT)
-------------------------------------
+@tanstack/react-virtual@3.14.10 (MIT)
+-------------------------------------
 
 Applies to:
-- @tanstack/react-virtual@3.14.9 (MIT)
-- @tanstack/virtual-core@3.17.7 (MIT)
+- @tanstack/react-virtual@3.14.10 (MIT)
+- @tanstack/virtual-core@3.17.8 (MIT)
 
-Representative file: @tanstack/react-virtual@3.14.9/LICENSE
+Representative file: @tanstack/react-virtual@3.14.10/LICENSE
 
 MIT License
 
@@ -3422,13 +3422,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-hono@4.12.33 (MIT)
-------------------
+hono@4.13.3 (MIT)
+-----------------
 
 Applies to:
-- hono@4.12.33 (MIT)
+- hono@4.13.3 (MIT)
 
-Representative file: hono@4.12.33/LICENSE
+Representative file: hono@4.13.3/LICENSE
 
 MIT License
 
@@ -3670,13 +3670,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-js-yaml@4.2.0 (MIT)
+js-yaml@4.3.1 (MIT)
 -------------------
 
 Applies to:
-- js-yaml@4.2.0 (MIT)
+- js-yaml@4.3.1 (MIT)
 
-Representative file: js-yaml@4.2.0/LICENSE
+Representative file: js-yaml@4.3.1/LICENSE
 
 (The MIT License)
 

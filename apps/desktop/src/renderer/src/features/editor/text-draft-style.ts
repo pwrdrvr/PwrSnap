@@ -19,8 +19,14 @@
 // is null (first-placement), fall through to the tool style so the
 // draft input shows what the commit will produce.
 
-import type { Overlay, TextToolStyle } from "@pwrsnap/shared";
-import { readTextWeight } from "@pwrsnap/shared";
+import type {
+  Overlay,
+  TextSizeBucket,
+  OverlayOutlineAutoColor,
+  ResolvedTextOutline,
+  TextToolStyle
+} from "@pwrsnap/shared";
+import { readTextOverlayOutline, readTextWeight } from "@pwrsnap/shared";
 import { resolveToolColor } from "./resolveToolColor";
 
 /** TextOverlay type — narrowed off the discriminated `Overlay` union.
@@ -29,7 +35,7 @@ import { resolveToolColor } from "./resolveToolColor";
  *  dependency leaking into this helper. */
 type TextOverlayData = Extract<Overlay, { kind: "text" }>;
 
-export type TextSizeBucket = "small" | "medium" | "large";
+export type { TextSizeBucket } from "@pwrsnap/shared";
 
 /** Same logic as the popover-side `resolveTextSize` in Editor.tsx —
  *  inlined here so the helper is self-contained and the editor-side
@@ -39,8 +45,8 @@ export function resolveTextSizeBucket(
   fontSize: TextToolStyle["fontSize"]
 ): TextSizeBucket {
   if (typeof fontSize === "number") return "medium";
+  if (fontSize === "x-large") return "x-large";
   if (fontSize === "large") return "large";
-  if (fontSize === "x-large") return "large";
   if (fontSize === "small") return "small";
   // "auto" + "medium" both resolve to medium.
   return "medium";
@@ -67,6 +73,11 @@ export interface ResolvedTextDraftStyle {
    *  edit text rotates with the visible glyph beneath. Undefined for
    *  first placements (no row yet) or for unrotated rows. */
   rotation: number | undefined;
+  /** Resolved contrast-border for the draft glyph. Re-edit path:
+   *  resolved straight off the row via `readTextOverlayOutline`.
+   *  Fresh placement: from the tool style's `outline` mode, with the
+   *  caller-sampled auto pick when the mode is "auto". */
+  outline: ResolvedTextOutline;
 }
 
 export interface ResolveTextDraftStyleArgs {
@@ -81,6 +92,12 @@ export interface ResolveTextDraftStyleArgs {
    *  text right now, and re-edit flows where we already have the
    *  overlay's values and don't care about the tool style. */
   activeToolStyle: TextToolStyle | null;
+  /** Live-sampled auto border pick for a FRESH placement whose tool
+   *  outline mode is "auto" — the caller samples the background at
+   *  the draft's anchor and threads the result. `null` when sampling
+   *  is unavailable (falls back to solid black, the text auto
+   *  fallback) or when the mode isn't auto. Ignored on re-edits. */
+  sampledAutoOutline?: OverlayOutlineAutoColor | null;
 }
 
 /** Auto-resolved colorHex constant — kept inline so the helper stays
@@ -100,7 +117,7 @@ const DEFAULT_WEIGHT = 600;
 export function resolveTextDraftStyle(
   args: ResolveTextDraftStyleArgs
 ): ResolvedTextDraftStyle {
-  const { editingOverlay, activeToolStyle } = args;
+  const { editingOverlay, activeToolStyle, sampledAutoOutline = null } = args;
 
   // Re-edit path — mirror the row, ignore the tool. This is the load-
   // bearing branch the original inline code missed.
@@ -113,7 +130,8 @@ export function resolveTextDraftStyle(
       size: data.size,
       weight: readTextWeight(data),
       storedSizePx: data.sizePx,
-      rotation: data.rotation
+      rotation: data.rotation,
+      outline: readTextOverlayOutline(data)
     };
   }
 
@@ -128,7 +146,11 @@ export function resolveTextDraftStyle(
       size: DEFAULT_SIZE,
       weight: DEFAULT_WEIGHT,
       storedSizePx: undefined,
-      rotation: undefined
+      rotation: undefined,
+      // No tool style to read a mode from — render the legacy stroke,
+      // matching what a tool-less commit would produce (no outline
+      // field on the row).
+      outline: { kind: "legacy" }
     };
   }
 
@@ -139,6 +161,14 @@ export function resolveTextDraftStyle(
     size: resolveTextSizeBucket(activeToolStyle.fontSize),
     weight: readTextWeight({ weight: activeToolStyle.weight }),
     storedSizePx: undefined,
-    rotation: undefined
+    rotation: undefined,
+    // Same resolution the committed row will get: the shared helper
+    // applies the text auto fallback (black) and coerces the
+    // text-unsupported stripe mode — one policy, no drift between the
+    // draft preview and what commit persists.
+    outline: readTextOverlayOutline({
+      outline: activeToolStyle.outline,
+      outlineAuto: sampledAutoOutline ?? undefined
+    })
   };
 }

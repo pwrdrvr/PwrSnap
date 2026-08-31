@@ -19,7 +19,13 @@
 // what the underlying image content shows.
 
 import { describe, expect, test } from "vitest";
-import { computeTextGlyphSize } from "../text-glyph-size";
+import {
+  TEXT_SIZE_BUCKETS,
+  bucketSizePxForCanvas,
+  computeTextGlyphSize,
+  matchBucket
+} from "../text-glyph-size";
+import { annotationBasisPx } from "../annotation-scale";
 
 describe("computeTextGlyphSize storedSizePx override (TextOverlay.sizePx → render)", () => {
   // pwrdrvr/PwrSnap#110: when a row carries an explicit sizePx, that
@@ -108,9 +114,11 @@ describe("computeTextGlyphSize", () => {
     expect(result.fontSize).toBeCloseTo(64 / 1239, 5); // ≈ 0.0517
   });
 
-  test("portrait canvas: sourceShortSide is the WIDTH, not the height", () => {
-    // A portrait-oriented capture (e.g., from a phone screenshot).
-    // Source shortSide = min(width, height) = width.
+  test("portrait canvas: the basis takes the diagonal branch, not the width", () => {
+    // A portrait-oriented capture (e.g. a phone screenshot). Its short
+    // side is the WIDTH (1080), but at 2.2:1 the image is well past the
+    // ~1.73:1 point where short side stops describing how big it reads,
+    // so `annotationBasisPx` hands over to diagonal/2 (≈ 1316).
     const result = computeTextGlyphSize({
       size: "medium",
       sourceWidthPx: 1080,
@@ -118,8 +126,10 @@ describe("computeTextGlyphSize", () => {
       canvasWidthPx: 1080,
       canvasHeightPx: 2400
     });
-    expect(result.sizePx).toBeCloseTo(1080 / 30, 5); // = 36
-    expect(result.fontSize).toBeCloseTo(36 / 1080, 5); // = 1/30
+    const basis = annotationBasisPx(1080, 2400);
+    expect(basis).toBeCloseTo(Math.hypot(1080, 2400) / 2, 5);
+    expect(result.sizePx).toBeCloseTo(basis / 30, 5); // ≈ 43.9, not 36
+    expect(result.fontSize).toBeCloseTo(result.sizePx / 1080, 5);
   });
 
   test("small / medium / large at the canonical ratios", () => {
@@ -153,5 +163,45 @@ describe("computeTextGlyphSize", () => {
     });
     expect(Number.isFinite(result.sizePx)).toBe(true);
     expect(Number.isFinite(result.fontSize)).toBe(true);
+  });
+});
+
+describe("matchBucket — in-bucket vs Custom", () => {
+  const SOURCE = { w: 1920, h: 1080 } as const;
+
+  test("an exact bucket value matches its own bucket", () => {
+    for (const bucket of TEXT_SIZE_BUCKETS) {
+      const px = bucketSizePxForCanvas(bucket, SOURCE.w, SOURCE.h);
+      expect(matchBucket(px, SOURCE.w, SOURCE.h)).toBe(bucket);
+    }
+  });
+
+  test("a value between two buckets is Custom", () => {
+    const small = bucketSizePxForCanvas("small", SOURCE.w, SOURCE.h);
+    const medium = bucketSizePxForCanvas("medium", SOURCE.w, SOURCE.h);
+    expect(matchBucket((small + medium) / 2, SOURCE.w, SOURCE.h)).toBeNull();
+  });
+
+  test("the relative tolerance keeps near-miss legacy rows in-bucket", () => {
+    // A row written before the 2026-08 recalibration on a 1080p capture
+    // stored medium as shortSide/30 = 36; the ladder now puts medium at
+    // basis/30 ≈ 36.7. Visually identical — it must not read as Custom.
+    expect(matchBucket(1080 / 30, SOURCE.w, SOURCE.h)).toBe("medium");
+    // Same story at 5K, where a flat 1px window was too tight: old
+    // medium 96 vs new ≈ 97.9.
+    expect(matchBucket(2880 / 30, 5120, 2880)).toBe("medium");
+  });
+
+  test("a genuinely wrong size is still Custom, not snapped", () => {
+    // The reported bug's row: 6.9 px on a 777×207 capture. Nowhere near
+    // any rung (small is 18) — the popover must say Custom so the user
+    // can see the row is off-ladder and one click re-snaps it.
+    expect(matchBucket(6.9, 777, 207)).toBeNull();
+  });
+
+  test("an explicit tolerance still overrides the relative default", () => {
+    const medium = bucketSizePxForCanvas("medium", 5120, 2880);
+    expect(matchBucket(medium + 1.5, 5120, 2880, 1)).toBeNull();
+    expect(matchBucket(medium + 1.5, 5120, 2880)).toBe("medium");
   });
 });

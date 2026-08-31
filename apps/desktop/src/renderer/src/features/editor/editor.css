@@ -633,6 +633,17 @@
   width: 48px;
 }
 
+/* Border (contrast outline) picker — the White / Black / Stripe cells
+   render a 14px circle glyph instead of text; center it and keep the
+   cell narrow so all five options fit the 280px popover width. */
+.pse-outline-sw-btn {
+  padding: 0 8px;
+}
+
+.pse-outline-sw-btn svg {
+  display: block;
+}
+
 .pse-checkbox {
   display: inline-flex;
   align-items: center;

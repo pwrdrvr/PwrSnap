@@ -19,20 +19,31 @@
 import sharp, { type OverlayOptions } from "sharp";
 import type { ArrowEndStyle, OverlayRow } from "@pwrsnap/shared";
 import {
+  annotationBasisPx,
   computeArrowGeometry,
   computeStemDashArray,
+  computeTextGlyphSize,
+  outlineHaloColor,
+  outlineHaloStrokeWidthPx,
+  outlineHaloWidthPx,
+  outlineSolidStrokeHex,
+  outlineStripeDashArray,
+  outlineStripeDashArrayForStemDash,
   readArrowDoubleEnded,
   readArrowEndStyle,
   readArrowStemStyle,
   readHighlightBlend,
   readHighlightColor,
   readHighlightOpacity,
+  readOverlayOutline,
   readOverlayRotation,
   readOverlayThickness,
   readShapeFilled,
   readShapeKind,
   readShapeSkewDeg,
-  readTextWeight
+  readTextOverlayOutline,
+  readTextWeight,
+  shapeAutoStrokeWidthPx
 } from "@pwrsnap/shared";
 
 // Main process can't read CSS vars, so the overlay-render default
@@ -105,7 +116,14 @@ async function rasterize(svg: string, width: number, height: number): Promise<Ov
 function arrowSvg(
   data: Extract<OverlayRow["data"], { kind: "arrow" }>,
   imageWidthPx: number,
-  imageHeightPx: number
+  imageHeightPx: number,
+  /** The capture's `annotationBasisPx` in the SAME pixel space as
+   *  `imageWidthPx` / `imageHeightPx` (i.e. already multiplied by the
+   *  render scale). Callers that have the SOURCE raster dims must
+   *  pass this — see `computeArrowGeometry`'s `basisPx` doc for why
+   *  re-deriving it from the dims above is wrong under crop and under
+   *  a scaled bake. Omitted → derived from the dims above. */
+  basisPx?: number
 ): string {
   const endStyle = readArrowEndStyle(data);
   const stemStyle = readArrowStemStyle(data);
@@ -124,21 +142,26 @@ function arrowSvg(
   // get stamped with `CURRENT_ARROW_STYLE_VERSION` at commit time
   // in Editor.tsx.
   const styleVersion = data.styleVersion;
+  const resolvedBasisPx =
+    basisPx !== undefined ? basisPx : annotationBasisPx(imageWidthPx, imageHeightPx);
   const autoGeom = computeArrowGeometry({
     from: data.from,
     to: data.to,
     imageWidthPx,
     imageHeightPx,
+    basisPx: resolvedBasisPx,
     styleVersion
   });
-  const shortSidePx = Math.max(1, Math.min(imageWidthPx, imageHeightPx));
-  // Pass autoStrokeWidthPx + shortSidePx so readOverlayThickness's
-  // floor-fraction formula activates on Large/X-Large for high-DPI
-  // captures. Output is in pixels.
+  // Presets resolve to absolute rungs on the annotation ladder; only
+  // "auto" passes the geometry's own stroke through. Output is px.
   const strokeWidthOverridePx =
     data.thickness === undefined || data.thickness === "auto"
       ? undefined
-      : readOverlayThickness(data.thickness, autoGeom.strokeWidthPx, shortSidePx);
+      : readOverlayThickness(
+          data.thickness,
+          autoGeom.strokeWidthPx,
+          resolvedBasisPx
+        );
   const headGeom =
     strokeWidthOverridePx === undefined
       ? autoGeom
@@ -147,6 +170,7 @@ function arrowSvg(
           to: data.to,
           imageWidthPx,
           imageHeightPx,
+          basisPx: resolvedBasisPx,
           strokeWidthOverridePx,
           styleVersion
         });
@@ -161,6 +185,7 @@ function arrowSvg(
         to: data.from,
         imageWidthPx,
         imageHeightPx,
+        basisPx: resolvedBasisPx,
         strokeWidthOverridePx,
         styleVersion
       })
@@ -172,10 +197,14 @@ function arrowSvg(
   // the requested override so a Large thickness on a tiny arrow
   // still renders proportionally.
   const strokeWidthPx = headGeom.strokeWidthPx;
-  // White outline always drawn (per plan §"Smart arrow algorithm"):
-  // legibility on busy images. The outline is a slightly thicker
-  // pass underneath the accent.
-  const outlineWidth = Math.max(1.5, strokeWidthPx * 0.25);
+  // Contrast border (outline) under the colored glyph. Legacy rows —
+  // no `outline` field — resolve to the historical always-white halo
+  // and must bake byte-identically; the new modes swap the color,
+  // stripe it, or drop it. The width formula is unchanged in every
+  // mode (no independent border sizing by design).
+  const outlineWidth = outlineHaloWidthPx(strokeWidthPx);
+  const resolvedOutline = readOverlayOutline(data, "white");
+  const haloColor = outlineHaloColor(resolvedOutline);
 
   // Stem endpoints depend on the head style (see live editor's
   // `stemEndpointFor` — keep this in sync). Filled / open triangles
@@ -200,19 +229,47 @@ function arrowSvg(
   const stemDashRaw = computeStemDashArray(stemStyle, stemLengthPx, strokeWidthPx);
   const stemDashAttr = stemDashRaw === null ? "" : ` stroke-dasharray="${stemDashRaw}"`;
 
-  const halo = arrowHeadHaloSvg(endStyle, headGeom, imageWidthPx, imageHeightPx, outlineWidth, strokeWidthPx);
+  // Stripe: black dash pattern painted over the (solid-or-stem-dashed)
+  // white halo. On dashed / dotted stems the black phase splits each
+  // stem dash in half so black never lands in a stem gap; the head
+  // glyphs use the plain halo-width-scaled pattern.
+  const haloWidthPx = outlineHaloStrokeWidthPx(strokeWidthPx);
+  const headStripeDash =
+    resolvedOutline.kind === "stripe" ? outlineStripeDashArray(haloWidthPx) : null;
+  const stemStripe =
+    resolvedOutline.kind !== "stripe"
+      ? null
+      : stemDashRaw !== null
+        ? outlineStripeDashArrayForStemDash(stemDashRaw)
+        : { dasharray: outlineStripeDashArray(haloWidthPx), dashoffset: 0 };
+
+  const hasOutline = resolvedOutline.kind !== "none";
+  const halo = hasOutline
+    ? arrowHeadHaloSvg(endStyle, headGeom, imageWidthPx, imageHeightPx, outlineWidth, strokeWidthPx, haloColor, headStripeDash)
+    : "";
   const head = arrowHeadSvg(endStyle, headGeom, imageWidthPx, imageHeightPx, strokeWidthPx, fillColor);
-  const haloTail = tailGeom !== null
-    ? arrowHeadHaloSvg(endStyle, tailGeom, imageWidthPx, imageHeightPx, outlineWidth, strokeWidthPx)
+  const haloTail = tailGeom !== null && hasOutline
+    ? arrowHeadHaloSvg(endStyle, tailGeom, imageWidthPx, imageHeightPx, outlineWidth, strokeWidthPx, haloColor, headStripeDash)
     : "";
   const headTail = tailGeom !== null
     ? arrowHeadSvg(endStyle, tailGeom, imageWidthPx, imageHeightPx, strokeWidthPx, fillColor)
     : "";
 
+  // Stem halo — same two-line layout the pre-outline template used so
+  // legacy rows (haloColor="white", no stripe) emit byte-identical SVG.
+  const stemHalo = !hasOutline
+    ? ""
+    : `<line x1="${stemEndAtFrom.x}" y1="${stemEndAtFrom.y}" x2="${stemEndAtTo.x}" y2="${stemEndAtTo.y}"
+          stroke="${haloColor}" stroke-width="${haloWidthPx}" stroke-linecap="round"${stemDashAttr} fill="none" />` +
+      (stemStripe === null
+        ? ""
+        : `
+    <line x1="${stemEndAtFrom.x}" y1="${stemEndAtFrom.y}" x2="${stemEndAtTo.x}" y2="${stemEndAtTo.y}"
+          stroke="black" stroke-width="${haloWidthPx}" stroke-linecap="round" stroke-dasharray="${stemStripe.dasharray}"${stemStripe.dashoffset !== 0 ? ` stroke-dashoffset="${stemStripe.dashoffset}"` : ""} fill="none" />`);
+
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
   <g stroke-linejoin="round">
-    <line x1="${stemEndAtFrom.x}" y1="${stemEndAtFrom.y}" x2="${stemEndAtTo.x}" y2="${stemEndAtTo.y}"
-          stroke="white" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linecap="round"${stemDashAttr} fill="none" />
+    ${stemHalo}
     ${halo}
     ${haloTail}
     <line x1="${stemEndAtFrom.x}" y1="${stemEndAtFrom.y}" x2="${stemEndAtTo.x}" y2="${stemEndAtTo.y}"
@@ -254,34 +311,58 @@ function arrowHeadHaloSvg(
   imageWidthPx: number,
   imageHeightPx: number,
   outlineWidth: number,
-  strokeWidthPx: number
+  strokeWidthPx: number,
+  /** Border color for the halo pass. Legacy rows resolve to "white"
+   *  and must emit byte-identical SVG to the pre-outline template. */
+  haloColor: string,
+  /** Non-null for striped borders: a black twin of the halo element
+   *  is appended with this dash pattern; the colored glyph on top
+   *  leaves only the outline band showing the alternation. */
+  stripeDash: string | null
 ): string {
   const toPx = pxOf(geom.to, imageWidthPx, imageHeightPx);
   const baseLeftPx = pxOf(geom.baseLeft, imageWidthPx, imageHeightPx);
   const baseRightPx = pxOf(geom.baseRight, imageWidthPx, imageHeightPx);
+  // Derived from the PASSED outlineWidth, not re-read from the shared
+  // helper: this function's contract is "halo at the width my caller
+  // resolved", and every branch below paints exactly that width.
+  const haloWidthPx = strokeWidthPx + outlineWidth * 2;
   switch (style) {
     case "filled-triangle": {
       // Filled head: interior is colored, halo only needs to peek
-      // at the rim. fill="white" works because the colored polygon
+      // at the rim. Solid fill works because the colored polygon
       // on top covers everything but the rim.
       const polygon = `${toPx.x},${toPx.y} ${baseLeftPx.x},${baseLeftPx.y} ${baseRightPx.x},${baseRightPx.y}`;
-      return `<polygon points="${polygon}" fill="white" stroke="white" stroke-width="${outlineWidth * 2}" stroke-linejoin="round" />`;
+      const base = `<polygon points="${polygon}" fill="${haloColor}" stroke="${haloColor}" stroke-width="${outlineWidth * 2}" stroke-linejoin="round" />`;
+      if (stripeDash === null) return base;
+      return `${base}
+    <polygon points="${polygon}" fill="none" stroke="black" stroke-width="${outlineWidth * 2}" stroke-linejoin="round" stroke-dasharray="${stripeDash}" />`;
     }
     case "open-triangle": {
       // Hollow head: interior must stay transparent. fill="none" +
-      // wider stroke so the white peeks `outlineWidth` past the
+      // wider stroke so the halo peeks `outlineWidth` past the
       // colored stroke on BOTH sides (outside edge for legibility
       // against the background, inside edge for legibility against
       // whatever shows through the hollow). Mirrors the live editor's
       // ArrowHeadHalo open-triangle case — keep in sync.
       const polygon = `${toPx.x},${toPx.y} ${baseLeftPx.x},${baseLeftPx.y} ${baseRightPx.x},${baseRightPx.y}`;
-      return `<polygon points="${polygon}" fill="none" stroke="white" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linejoin="round" />`;
+      const base = `<polygon points="${polygon}" fill="none" stroke="${haloColor}" stroke-width="${haloWidthPx}" stroke-linejoin="round" />`;
+      if (stripeDash === null) return base;
+      return `${base}
+    <polygon points="${polygon}" fill="none" stroke="black" stroke-width="${haloWidthPx}" stroke-linejoin="round" stroke-dasharray="${stripeDash}" />`;
     }
-    case "line":
-      return `<line x1="${baseLeftPx.x}" y1="${baseLeftPx.y}" x2="${baseRightPx.x}" y2="${baseRightPx.y}" stroke="white" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linecap="round" />`;
+    case "line": {
+      const base = `<line x1="${baseLeftPx.x}" y1="${baseLeftPx.y}" x2="${baseRightPx.x}" y2="${baseRightPx.y}" stroke="${haloColor}" stroke-width="${haloWidthPx}" stroke-linecap="round" />`;
+      if (stripeDash === null) return base;
+      return `${base}
+    <line x1="${baseLeftPx.x}" y1="${baseLeftPx.y}" x2="${baseRightPx.x}" y2="${baseRightPx.y}" stroke="black" stroke-width="${haloWidthPx}" stroke-linecap="round" stroke-dasharray="${stripeDash}" />`;
+    }
     case "dot": {
       const r = strokeWidthPx * 1.5;
-      return `<circle cx="${toPx.x}" cy="${toPx.y}" r="${r + outlineWidth}" fill="white" stroke="white" stroke-width="${outlineWidth * 2}" />`;
+      const base = `<circle cx="${toPx.x}" cy="${toPx.y}" r="${r + outlineWidth}" fill="${haloColor}" stroke="${haloColor}" stroke-width="${outlineWidth * 2}" />`;
+      if (stripeDash === null) return base;
+      return `${base}
+    <circle cx="${toPx.x}" cy="${toPx.y}" r="${r + outlineWidth}" fill="none" stroke="black" stroke-width="${outlineWidth * 2}" stroke-dasharray="${stripeDash}" />`;
     }
   }
 }
@@ -328,27 +409,41 @@ function pxOf(
 function shapeSvg(
   data: Extract<OverlayRow["data"], { kind: "shape" }>,
   imageWidthPx: number,
-  imageHeightPx: number
+  imageHeightPx: number,
+  /** See `arrowSvg`'s `basisPx`. */
+  basisPx?: number
 ): string {
   const xPx = data.rect.x * imageWidthPx;
   const yPx = data.rect.y * imageHeightPx;
   const wPx = data.rect.w * imageWidthPx;
   const hPx = data.rect.h * imageHeightPx;
-  const shortSidePx = Math.min(imageWidthPx, imageHeightPx);
-  const autoStrokeWidthPx = clamp(shortSidePx / 220, 4, 14);
-  // Pass shortSidePx so the floor-fraction formula activates on
-  // Large/X-Large — same Retina rescue as the arrow path. Numeric
-  // thickness values are normalized fractions in the schema; the
-  // helper expands them when shortSidePx is provided.
+  const resolvedBasisPx =
+    basisPx !== undefined ? basisPx : annotationBasisPx(imageWidthPx, imageHeightPx);
+  // Auto = the ladder's Medium rung, via the SAME helper the editor's
+  // ShapeGlyph reads. This used to run its own `clamp(shortSide / 220,
+  // 4, 14)` band, which disagreed with the editor's — an auto stroked
+  // shape previewed at 8 px on 1080p and exported at 4.9 px. The
+  // divergence was invisible in the editor and only showed up in the
+  // exported PNG.
+  const autoStrokeWidthPx = shapeAutoStrokeWidthPx(resolvedBasisPx);
   const strokeWidthPx = readOverlayThickness(
     data.thickness,
     autoStrokeWidthPx,
-    shortSidePx
+    resolvedBasisPx
   );
-  const outlinePx = Math.max(1.5, strokeWidthPx * 0.25);
+  const outlinePx = outlineHaloWidthPx(strokeWidthPx);
+  // Width of the painted halo stroke (colored stroke + halo on both
+  // sides) — what the halo primitive is stroked at, and what the
+  // stripe cadence phases against.
+  const haloStrokeWidthPx = outlineHaloStrokeWidthPx(strokeWidthPx);
   const fillColor = data.color === "auto" ? AUTO_ACCENT_HEX : data.color;
   const filled = readShapeFilled(data);
   const shape = readShapeKind(data);
+  // Contrast border resolution — legacy stroked shapes keep the
+  // always-white halo (byte-identical emit); legacy filled shapes
+  // keep no rim. See `readOverlayOutline` in @pwrsnap/shared.
+  const resolvedOutline = readOverlayOutline(data, "white");
+  const haloColor = outlineHaloColor(resolvedOutline);
   // Rotation transform — same convention as ShapeGlyph (live editor):
   // SVG `rotate(deg cx cy)` in pixel-space with cx/cy at the bbox
   // geometric center. `transform` is omitted entirely when rotation
@@ -362,11 +457,17 @@ function shapeSvg(
   // Per-shape primitive emitters. Stroke + halo branches share the
   // same primitive choice so editor preview = baked output for every
   // shape kind.
-  function strokedPrimitive(stroke: string, strokeWidth: number): string {
+  function strokedPrimitive(
+    stroke: string,
+    strokeWidth: number,
+    dasharray: string | null = null
+  ): string {
+    // Empty for solid strokes so legacy rows emit byte-identical SVG.
+    const dashAttr = dasharray === null ? "" : ` stroke-dasharray="${dasharray}"`;
     switch (shape) {
       case "circle":
       case "oval":
-        return `<ellipse cx="${cx}" cy="${cy}" rx="${wPx / 2}" ry="${hPx / 2}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" />`;
+        return `<ellipse cx="${cx}" cy="${cy}" rx="${wPx / 2}" ry="${hPx / 2}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}"${dashAttr} />`;
       case "parallelogram": {
         const skewRad = (readShapeSkewDeg(data) * Math.PI) / 180;
         const shearPx = (hPx / 2) * Math.tan(skewRad);
@@ -376,12 +477,12 @@ function shapeSvg(
         const yB = yPx + hPx;
         const points =
           `${xL + shearPx},${yT} ${xR + shearPx},${yT} ${xR - shearPx},${yB} ${xL - shearPx},${yB}`;
-        return `<polygon points="${points}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" />`;
+        return `<polygon points="${points}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}"${dashAttr} />`;
       }
       case "rect":
       case "square":
       default:
-        return `<rect x="${xPx}" y="${yPx}" width="${wPx}" height="${hPx}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" />`;
+        return `<rect x="${xPx}" y="${yPx}" width="${wPx}" height="${hPx}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}"${dashAttr} />`;
     }
   }
 
@@ -409,20 +510,60 @@ function shapeSvg(
   }
 
   if (filled) {
-    // Solid fill — single primitive, no stroke / halo. A halo around
-    // a solid fill would just visually expand the same color outward
-    // by a stroke-width without adding contrast.
+    // Solid fill. Legacy rows (and Border = Off) draw the bare
+    // primitive — a same-color halo would just expand the fill without
+    // adding contrast. The explicit border modes draw a contrast RIM
+    // under the fill: a centered stroke of 2×rim width, whose inner
+    // half the fill covers — the same reach as a stroked shape's halo.
+    //
+    // The rim IS the stroked path's halo — `outlinePx`, used directly.
+    // This branch used to re-derive the whole chain
+    // (readOverlayThickness -> shapeAutoStrokeWidthPx -> quarter) to
+    // reach the identical number, back when the stroked band above was
+    // a different formula and the two genuinely had to be computed
+    // apart. They come off one ladder now, so re-deriving only creates
+    // a seam where they could drift again.
+    const rim =
+      resolvedOutline.kind === "legacy" || resolvedOutline.kind === "none"
+        ? ""
+        : resolvedOutline.kind === "stripe"
+          ? `${strokedPrimitive("white", outlinePx * 2)}
+    ${strokedPrimitive("black", outlinePx * 2, outlineStripeDashArray(outlinePx * 2))}
+    `
+          : `${strokedPrimitive(haloColor, outlinePx * 2)}
+    `;
+    // Round joins only when a rim is painted — the legacy filled emit
+    // (`<g${groupTransform}>`, no stroke anywhere) must stay
+    // byte-identical.
+    const rimJoin = rim === "" ? "" : ` stroke-linejoin="round"`;
     return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
-  <g${groupTransform}>
-    ${filledPrimitive()}
+  <g${rimJoin}${groupTransform}>
+    ${rim}${filledPrimitive()}
   </g>
 </svg>`;
   }
 
+  if (resolvedOutline.kind === "none") {
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
+  <g stroke-linejoin="round"${groupTransform}>
+    ${strokedPrimitive(fillColor, strokeWidthPx)}
+  </g>
+</svg>`;
+  }
+
+  const stripeDash =
+    resolvedOutline.kind === "stripe"
+      ? outlineStripeDashArray(haloStrokeWidthPx)
+      : null;
+  const stripeHalo =
+    stripeDash === null
+      ? ""
+      : `${strokedPrimitive("black", haloStrokeWidthPx, stripeDash)}
+    `;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
   <g stroke-linejoin="round"${groupTransform}>
-    ${strokedPrimitive("white", strokeWidthPx + outlinePx * 2)}
-    ${strokedPrimitive(fillColor, strokeWidthPx)}
+    ${strokedPrimitive(haloColor, haloStrokeWidthPx)}
+    ${stripeHalo}${strokedPrimitive(fillColor, strokeWidthPx)}
   </g>
 </svg>`;
 }
@@ -495,33 +636,27 @@ function textSvg(
   const xPx = data.point.x * imageWidthPx;
   const yPx = data.point.y * imageHeightPx;
   // When the row carries an explicit sizePx (pwrdrvr/PwrSnap#110),
-  // that value wins — bucket math is bypassed. Otherwise fall back to
-  // bucket × source-shortSide (with canvas-shortSide as the legacy
-  // fallback when source dims aren't known). Same precedence as
-  // `computeTextGlyphSize` in @pwrsnap/shared — the renderer and the
-  // bake walk the same decision tree so the live preview and the
-  // export always agree.
+  // that value wins — bucket math is bypassed. Otherwise the bucket
+  // divides the source raster's `annotationBasisPx`.
   //
-  //   small  ≈ shortSide / 50
-  //   medium ≈ shortSide / 30
-  //   large  ≈ shortSide / 18
-  const shortSideForSizing =
+  // Delegated to `computeTextGlyphSize` rather than reimplemented:
+  // this used to inline its own copy of the divisor table, which made
+  // it a place the ladder could silently drift from the editor's. The
+  // live preview and the export must walk the same decision tree or
+  // WYSIWYG is a coincidence.
+  const hasSourceDims =
     sourceWidthPx !== undefined &&
     sourceHeightPx !== undefined &&
     sourceWidthPx > 0 &&
-    sourceHeightPx > 0
-      ? Math.min(sourceWidthPx, sourceHeightPx)
-      : Math.min(imageWidthPx, imageHeightPx);
-  const bucketSizePx =
-    data.size === "large"
-      ? shortSideForSizing / 18
-      : data.size === "medium"
-        ? shortSideForSizing / 30
-        : shortSideForSizing / 50;
-  const fontSizePx =
-    data.sizePx !== undefined && Number.isFinite(data.sizePx) && data.sizePx > 0
-      ? data.sizePx
-      : bucketSizePx;
+    sourceHeightPx > 0;
+  const fontSizePx = computeTextGlyphSize({
+    size: data.size,
+    sourceWidthPx: hasSourceDims ? sourceWidthPx : imageWidthPx,
+    sourceHeightPx: hasSourceDims ? sourceHeightPx : imageHeightPx,
+    canvasWidthPx: imageWidthPx,
+    canvasHeightPx: imageHeightPx,
+    storedSizePx: data.sizePx
+  }).sizePx;
   const accent = data.color === "auto" ? AUTO_ACCENT_HEX : data.color;
   // Multi-line: split body on "\n" and emit one tspan per line, each
   // advancing the baseline by 1.2em. dominant-baseline="central" puts
@@ -567,15 +702,28 @@ function textSvg(
       ? `<g transform="rotate(${rotateDeg} ${cxPivot} ${cyPivot})">`
       : "";
   const textCloseG = rotateDeg !== 0 ? "</g>" : "";
+  // Contrast border → glyph stroke. Legacy rows keep the historical
+  // translucent rgba(0,0,0,0.7) (byte-identical attrs); the solid
+  // modes swap the color; "none" drops the stroke block entirely.
+  // Stripe is coerced to solid black by readTextOverlayOutline.
+  const resolvedOutline = readTextOverlayOutline(data);
+  const strokeColor =
+    resolvedOutline.kind === "legacy"
+      ? "rgba(0,0,0,0.7)"
+      : outlineSolidStrokeHex(resolvedOutline);
+  const strokeAttrs =
+    strokeColor === null
+      ? ""
+      : `
+        stroke="${strokeColor}"
+        stroke-width="${fontSizePx * 0.08}"
+        paint-order="stroke"`;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
   ${textOpenG}<text x="${xPx}" y="${yPx}"
         font-family="Helvetica, Arial, sans-serif"
         font-size="${fontSizePx}"
         font-weight="${fontWeight}"
-        fill="${accent}"
-        stroke="rgba(0,0,0,0.7)"
-        stroke-width="${fontSizePx * 0.08}"
-        paint-order="stroke"
+        fill="${accent}"${strokeAttrs}
         dominant-baseline="central">${lines}</text>${textCloseG}
 </svg>`;
 }
@@ -587,10 +735,6 @@ function escapeXml(s: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;");
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
 }
 
 // ── v2 reuse exports ────────────────────────────────────────────────

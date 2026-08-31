@@ -187,6 +187,63 @@ describe("previousStylePatchFromQueuedUpdate", () => {
     ).toEqual({ kind: "blur", radiusPx: 24 });
   });
 
+  test("Border edits patch outline + outlineAuto together with a sampled Auto pick", () => {
+    const dims = {
+      sourceWidthPx: 1600,
+      sourceHeightPx: 900,
+      canvasWidthPx: 1600,
+      canvasHeightPx: 900,
+      resolveOutlineAuto: () => "black" as const
+    };
+    const row = shapeRow({ x: 0.1, y: 0.1, w: 0.4, h: 0.4 });
+    const autoUpdate = layerStyleUpdate(row, "outline", "auto", dims);
+    expect(autoUpdate).toEqual({
+      patch: { kind: "shape", outline: "auto", outlineAuto: "black" },
+      fallbackPreviousPatch: { kind: "shape" },
+      undoField: "outline"
+    });
+
+    // Undo recovers BOTH fields from the queued predecessor.
+    const previousNode = shapeLayer("rect", { x: 0.1, y: 0.1, w: 0.4, h: 0.4 });
+    (previousNode as unknown as { shape: Record<string, unknown> }).shape = {
+      ...(previousNode as unknown as { shape: Record<string, unknown> }).shape,
+      outline: "auto",
+      outlineAuto: "white"
+    };
+    expect(
+      previousStylePatchFromQueuedUpdate(
+        previousNode,
+        "outline",
+        { kind: "shape", outline: "black" },
+        { kind: "shape" },
+        { widthPx: 1600, heightPx: 900 }
+      )
+    ).toEqual({ kind: "shape", outline: "auto", outlineAuto: "white" });
+  });
+
+  test("Border edits without a sampler omit outlineAuto (renderers fall back)", () => {
+    const dims = {
+      sourceWidthPx: 1600,
+      sourceHeightPx: 900,
+      canvasWidthPx: 1600,
+      canvasHeightPx: 900
+    };
+    const update = layerStyleUpdate(
+      shapeRow({ x: 0.1, y: 0.1, w: 0.4, h: 0.4 }),
+      "outline",
+      "auto",
+      dims
+    );
+    expect(update?.patch).toEqual({ kind: "shape", outline: "auto" });
+    const explicit = layerStyleUpdate(
+      shapeRow({ x: 0.1, y: 0.1, w: 0.4, h: 0.4 }),
+      "outline",
+      "stripe",
+      dims
+    );
+    expect(explicit?.patch).toEqual({ kind: "shape", outline: "stripe" });
+  });
+
   test("switching a rectangle to Circle atomically stores pixel-square bounds and undo", () => {
     const originalRect = { x: 0.1, y: 0.2, w: 0.6, h: 0.3 };
     // A 2:1 canvas makes equal normalized dimensions visibly wrong. The

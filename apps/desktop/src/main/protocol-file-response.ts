@@ -122,6 +122,14 @@ function fileStream(
 export type FileResponseOptions = {
   /** Applied verbatim to 200, 206, AND 304 responses. */
   cacheControl?: string;
+  /** When true, responses carry `access-control-allow-origin: *` so a
+   *  crossorigin="anonymous" load can be read back from a canvas
+   *  (the editor's auto contrast-border sampler). Opt-in PER CALL
+   *  SITE and enabled only for the capture scheme — the other
+   *  pwrsnap-* schemes (screen snapshots, render cache, sizzle
+   *  output, app icons) have no CORS consumer and keep the default
+   *  same-origin read barrier. */
+  cors?: boolean;
 };
 
 /**
@@ -142,6 +150,7 @@ export async function fileResponse(
   options: FileResponseOptions = {}
 ): Promise<Response> {
   const cacheControl = options.cacheControl ?? "private, max-age=300";
+  const cors = options.cors === true;
   const stats = await stat(filePath);
   const total = stats.size;
   const etag = strongEtag(total, stats.mtimeMs);
@@ -150,8 +159,17 @@ export async function fileResponse(
     etag,
     "last-modified": lastModified,
     "accept-ranges": "bytes",
-    "cache-control": cacheControl
-  } as const;
+    "cache-control": cacheControl,
+    // The renderer's document origin (dev server / file://) differs
+    // from the pwrsnap-* schemes, so a canvas that draws a capture
+    // <img> is tainted unless the load is a CORS one. The editor's
+    // auto contrast-border sampler reads pixels via a
+    // crossorigin="anonymous" image; the opt-in header is what lets
+    // that read succeed. Scoped to the call sites that need it (the
+    // capture scheme) rather than blanket-weakening the same-origin
+    // read barrier of every scheme this helper serves.
+    ...(cors ? { "access-control-allow-origin": "*" } : {})
+  };
 
   // Conditional GET → 304 (no body, no file open). If-None-Match wins
   // over If-Modified-Since when both are present (RFC 7232 §6).

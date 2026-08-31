@@ -78,10 +78,11 @@ const baseSettings: Settings = {
         thickness: "auto",
         endStyle: "filled-triangle",
         stemStyle: "solid",
-        doubleEnded: false
+        doubleEnded: false,
+        outline: "auto"
       },
-      text: { color: "accent", fontSize: "auto", weight: "regular" },
-      shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15 },
+      text: { color: "accent", fontSize: "auto", weight: "regular", outline: "auto" },
+      shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15, outline: "auto" },
       blur: { mode: "gaussian", radius: { mode: "auto" } },
       highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
     },

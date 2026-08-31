@@ -219,8 +219,13 @@ function selectActiveStyle(
   if (tool === "pointer") return { tool: "pointer" };
   if (tool === "crop") return { tool: "crop" };
   // styles can be null while settings load — return pointer-style
-  // placeholder; the editor's toolbar is disabled until settings
-  // resolve so the user never observes this mid-state.
+  // placeholder. NOTE the toolbar is NOT disabled during that window
+  // (tool buttons are clickable and a draw can start), so anything
+  // that PERSISTS style data must not read this placeholder: draft
+  // commits go through `whenToolStylesSettled()` +
+  // `readEffectiveToolStyles()` instead. Reading activeStyle for
+  // rendering (draft previews, popover targets) is fine — the
+  // placeholder lasts one settings round-trip.
   if (styles === null) return { tool: "pointer" };
   switch (tool) {
     case "arrow":

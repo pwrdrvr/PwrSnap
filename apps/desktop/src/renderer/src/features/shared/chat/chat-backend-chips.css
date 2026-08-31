@@ -67,6 +67,13 @@
 .ps-bchip--muted {
   color: var(--text-muted);
 }
+button.ps-bchip {
+  cursor: pointer;
+}
+button.ps-bchip:hover {
+  border-color: var(--accent-border);
+  color: var(--text-primary);
+}
 .ps-bchip-dot {
   width: 6px;
   height: 6px;

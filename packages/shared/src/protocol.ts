@@ -4372,7 +4372,6 @@ export type Commands = {
     res: { runId: string };
   };
   "codex:cancel": { req: { runId: string }; res: void };
-  "codex:ask": { req: { captureId: string; message: string }; res: { threadId: string } };
 
   // ---- Library Chat (Phase 0) — long-lived, tool-equipped chat threads ----
   //
@@ -4409,16 +4408,17 @@ export type Commands = {
     };
     res: LibraryChatThreadView;
   };
-  /** Send a user message + (optionally) attached image paths. Returns
-   *  the turnId; streaming deltas + the committed assistant message
-   *  arrive via `events:libraryChat:*`. `anchorCaptureId` lets the
-   *  renderer pin the thread to whatever the user is currently viewing
-   *  so the per-turn context is accurate. */
+  /** Send a user message. Returns the turnId; streaming deltas + the
+   *  committed assistant message arrive via `events:libraryChat:*`.
+   *  `anchorCaptureId` lets the renderer pin the thread to whatever the
+   *  user is currently viewing so the per-turn context is accurate. The
+   *  active capture is available through the bounded `render_composite`
+   *  tool; arbitrary renderer-provided image paths are intentionally not
+   *  accepted. */
   "codex:libraryChat:send": {
     req: {
       threadId: string;
       text: string;
-      imageAttachmentPaths?: string[];
       anchorCaptureId?: string | null;
     };
     res: { turnId: string };

@@ -43,6 +43,7 @@ function makeThread(
 type ApiOptions = {
   create?: () => Promise<unknown>;
   interrupt?: () => Promise<unknown>;
+  models?: unknown[];
   send?: () => Promise<unknown>;
   history?: () => Promise<unknown>;
   settings?: unknown;
@@ -60,6 +61,9 @@ function installApi(
   const dispatch = vi.fn(async (name: string, req?: { threadId?: string }) => {
     if (name === "settings:read" && options.settings !== undefined) {
       return { ok: true, value: options.settings };
+    }
+    if (name === "codex:models" && options.models !== undefined) {
+      return { ok: true, value: { models: options.models } };
     }
     if (name === "codex:libraryChat:list") return { ok: true, value: { threads: seedThreads } };
     if (name === "codex:libraryChat:create") return options.create?.();
@@ -135,6 +139,18 @@ async function typeInto(textarea: HTMLTextAreaElement, value: string): Promise<v
   });
 }
 
+async function selectValue(select: HTMLSelectElement, value: string): Promise<void> {
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLSelectElement.prototype,
+    "value"
+  )?.set;
+  await act(async () => {
+    setter?.call(select, value);
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await Promise.resolve();
+  });
+}
+
 function deferred<T>(): {
   promise: Promise<T>;
   resolve: (value: T) => void;
@@ -162,6 +178,71 @@ describe("LibraryChatPanel", () => {
     const { el } = await renderPanel([]);
     expect(el.querySelector('[data-testid="chat-backend-chips-draft"]')).not.toBeNull();
     expect(el.querySelector('[data-testid="chat-backend-chips-locked"]')).toBeNull();
+  });
+
+  test("keeps a discovered default provider available across model and reasoning changes", async () => {
+    const created = makeThread("created", "Created chat");
+    const { el, dispatch } = await renderPanel([], {
+      settings: {},
+      models: [
+        {
+          id: "gpt-default",
+          model: "gpt-default",
+          displayName: "GPT Default",
+          description: "",
+          hidden: false,
+          inputModalities: ["text", "image"],
+          defaultServiceTier: null,
+          isDefault: true,
+          supportedReasoningEfforts: ["low", "medium", "high"],
+          defaultReasoningEffort: "medium"
+        },
+        {
+          id: "gpt-alternate",
+          model: "gpt-alternate",
+          displayName: "GPT Alternate",
+          description: "",
+          hidden: false,
+          inputModalities: ["text", "image"],
+          defaultServiceTier: null,
+          isDefault: false,
+          supportedReasoningEfforts: ["low", "medium", "high"],
+          defaultReasoningEffort: "low"
+        }
+      ],
+      create: async () => ({ ok: true, value: created })
+    });
+
+    const composer = el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!;
+    const model = el.querySelector<HTMLSelectElement>('select[aria-label="New chat model"]')!;
+    const reasoning = el.querySelector<HTMLSelectElement>(
+      'select[aria-label="New chat reasoning"]'
+    )!;
+
+    expect(model.value).toBe("gpt-default");
+    expect(composer.disabled).toBe(false);
+
+    await selectValue(model, "gpt-alternate");
+    expect(composer.disabled).toBe(false);
+
+    await selectValue(reasoning, "high");
+    expect(composer.disabled).toBe(false);
+
+    await typeInto(composer, "use the alternate model");
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="composer-send"]')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(dispatch).toHaveBeenCalledWith(
+      "codex:libraryChat:create",
+      expect.objectContaining({
+        provider: "codex",
+        model: "gpt-alternate",
+        reasoning: "high"
+      })
+    );
   });
 
   test("ignores thread updates scoped to another capture", async () => {

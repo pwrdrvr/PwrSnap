@@ -34,6 +34,7 @@ import { useChatApprovalSession } from "../../shared/chat/useChatApprovalSession
 import {
   NewChatConfigChips,
   LockedBackendChips,
+  type ChatBackendAvailability,
   type ChatBackendChoice
 } from "../../shared/chat/ChatBackendChips";
 import "../../shared/chat/chat-panel.css";
@@ -42,6 +43,8 @@ export interface LibraryChatPanelProps {
   /** The capture the user is currently viewing, passed as the thread
    *  anchor on send. Null when viewing the Library grid. */
   anchorCaptureId?: string | null;
+  /** Surface-specific root test id. */
+  testId?: string;
 }
 
 type StreamEntry = { full: string; listeners: Set<(t: string) => void> };
@@ -72,7 +75,10 @@ function latestStreamMessageId(
   return latest;
 }
 
-export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelProps): ReactElement {
+export function LibraryChatPanel({
+  anchorCaptureId = null,
+  testId = "library-chat-panel"
+}: LibraryChatPanelProps): ReactElement {
   const [threads, setThreads] = useState<LibraryChatThreadView[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -89,6 +95,8 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     reasoning: "medium"
   });
   const [draftHint, setDraftHint] = useState<string | null>(null);
+  const [backendAvailability, setBackendAvailability] =
+    useState<ChatBackendAvailability | null>(null);
   const draftConfigRef = useRef<ChatBackendChoice>(draftConfig);
   draftConfigRef.current = draftConfig;
   // Tool-activity lives IN the transcript flow, not a fixed bar:
@@ -594,6 +602,13 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
           setDraftHint("Choose a model to start this chat.");
           throw new Error("Choose a model to start this chat.");
         }
+        if (backendAvailability?.status !== "available") {
+          const message =
+            backendAvailability?.message ??
+            "The configured AI provider is not ready. Retry model discovery before sending.";
+          setDraftHint(message);
+          throw new Error(message);
+        }
         setDraftHint(null);
         const created = await dispatch("codex:libraryChat:create", {
           anchorCaptureId,
@@ -649,7 +664,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
         updateActiveTurn(result.value.turnId);
       }
     },
-    [anchorCaptureId, updateActiveTurn, updatePendingChips]
+    [anchorCaptureId, backendAvailability, updateActiveTurn, updatePendingChips]
   );
 
   const onStop = useCallback(async (): Promise<void> => {
@@ -704,7 +719,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
 
   if (codexError !== null) {
     return (
-      <div className="ps-libchat ps-libchat--empty" data-testid="library-chat-panel">
+      <div className="ps-libchat ps-libchat--empty" data-testid={testId}>
         <div className="ps-libchat-empty-title">Chat is unavailable</div>
         <p className="ps-libchat-empty-body">{codexError.message}</p>
         {codexError.showSettingsHint ? (
@@ -734,7 +749,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
 
   if (loading) {
     return (
-      <div className="ps-libchat ps-libchat--empty" data-testid="library-chat-panel">
+      <div className="ps-libchat ps-libchat--empty" data-testid={testId}>
         Loading…
       </div>
     );
@@ -761,7 +776,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
       : null;
 
   return (
-    <div className="ps-libchat" data-testid="library-chat-panel">
+    <div className="ps-libchat" data-testid={testId}>
       <div className="ps-libchat-threads">
         <button
           type="button"
@@ -814,7 +829,23 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
               your library, and answer “how do I…”. Pick a provider + model, then
               type below to start.
             </p>
-            <NewChatConfigChips providers={providers} value={draftConfig} onChange={setDraftConfig} />
+            <NewChatConfigChips
+              providers={providers}
+              value={draftConfig}
+              onChange={(next) => {
+                setDraftHint(null);
+                // Model discovery belongs to the provider, not to an
+                // individual model/reasoning selection. NewChatConfigChips
+                // can choose a default model immediately after reporting the
+                // provider available; clearing that result here would disable
+                // the composer until some unrelated provider refresh.
+                if (next.provider !== draftConfigRef.current.provider) {
+                  setBackendAvailability(null);
+                }
+                setDraftConfig(next);
+              }}
+              onAvailabilityChange={setBackendAvailability}
+            />
             {draftHint !== null ? (
               <p className="ps-libchat-empty-body" style={{ color: "var(--accent)" }}>
                 {draftHint}
@@ -852,6 +883,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
             clearChatDraftAtRevision(composerDraftKey, revision);
           }}
           onSubmit={onSubmit}
+          disabled={showGreeting && backendAvailability?.status !== "available"}
           onStop={onStop}
           turnState={
             stoppingTurnId !== null

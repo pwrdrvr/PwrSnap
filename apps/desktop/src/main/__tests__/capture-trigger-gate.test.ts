@@ -69,6 +69,30 @@ describe("capture trigger gate", () => {
     });
   });
 
+  test("a backward wall-clock correction cannot disable future hotkeys", () => {
+    let monotonicMs = 1_000;
+    let wallMs = 50_000;
+    const gate = createCaptureTriggerGate({
+      monotonicNow: () => monotonicMs,
+      wallNow: () => wallMs
+    });
+    const first = gate.acquire();
+    expect(first.status).toBe("accepted");
+    if (first.status !== "accepted") throw new Error("expected first trigger");
+    expect(gate.release(first.token)).toBe(true);
+
+    // NTP/manual correction moves civil time far behind the timestamp used
+    // for logging the first trigger. Debounce age follows monotonic time.
+    wallMs = 1_000;
+    monotonicMs += CAPTURE_TRIGGER_DEBOUNCE_MS;
+    expect(gate.acquire()).toMatchObject({
+      status: "accepted",
+      reason: "leading_edge",
+      ageMs: CAPTURE_TRIGGER_DEBOUNCE_MS,
+      acceptedAtMs: 1_000
+    });
+  });
+
   test("release is token-safe against a stale interaction finally", () => {
     let nowMs = 0;
     const gate = createCaptureTriggerGate({ now: () => nowMs });

@@ -25,7 +25,7 @@ export function stopDisplayStream(stream: MediaStream): void {
   for (const track of stream.getTracks()) track.stop();
 }
 
-const DISPLAY_MEDIA_ACQUISITION_TIMEOUT_MS = 10_000;
+const FROZEN_FRAME_ACQUISITION_TIMEOUT_MS = 10_000;
 export const FROZEN_DISPLAY_MEDIA_CONSTRAINTS = {
   video: { cursor: "never" } as MediaTrackConstraints,
   audio: false
@@ -33,27 +33,24 @@ export const FROZEN_DISPLAY_MEDIA_CONSTRAINTS = {
 
 async function acquireDisplayStream(
   getDisplayMedia: () => Promise<MediaStream>,
-  timeoutMs: number
+  signal: AbortSignal
 ): Promise<MediaStream> {
-  let timedOut = false;
-  const pending = getDisplayMedia().then((stream) => {
-    if (timedOut) stopDisplayStream(stream);
-    return stream;
-  });
-  let timeout: ReturnType<typeof setTimeout> | null = null;
-  try {
-    return await Promise.race([
-      pending,
-      new Promise<MediaStream>((_resolve, reject) => {
-        timeout = setTimeout(() => {
-          timedOut = true;
-          reject(new Error("display media acquisition timed out"));
-        }, timeoutMs);
-      })
-    ]);
-  } finally {
-    if (timeout !== null) clearTimeout(timeout);
+  const stream = await getDisplayMedia();
+  if (signal.aborted) {
+    stopDisplayStream(stream);
+    throw abortReason(signal);
   }
+  return stream;
+}
+
+function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new Error("display media acquisition aborted");
+}
+
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw abortReason(signal);
 }
 
 export function physicalCropRect(
@@ -84,51 +81,100 @@ export function physicalCropRect(
   return { x, y, width, height };
 }
 
-function waitForVideoFrame(video: HTMLVideoElement): Promise<void> {
+function waitForVideoFrame(video: HTMLVideoElement, signal: AbortSignal): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     let settled = false;
+    let frameScheduled = false;
+    let videoFrameCallbackId: number | null = null;
+    let animationFrameId: number | null = null;
+    const cleanup = (): void => {
+      video.onloadeddata = null;
+      video.onerror = null;
+      signal.removeEventListener("abort", onAbort);
+      if (
+        videoFrameCallbackId !== null &&
+        typeof video.cancelVideoFrameCallback === "function"
+      ) {
+        video.cancelVideoFrameCallback(videoFrameCallbackId);
+      }
+      if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
+      videoFrameCallbackId = null;
+      animationFrameId = null;
+    };
     const finish = (cause?: unknown): void => {
       if (settled) return;
       settled = true;
-      video.onloadeddata = null;
-      video.onerror = null;
+      cleanup();
       if (cause === undefined) resolve();
       else reject(cause);
     };
+    const onAbort = (): void => finish(abortReason(signal));
     const afterLoaded = (): void => {
+      if (settled || frameScheduled) return;
+      frameScheduled = true;
       if (typeof video.requestVideoFrameCallback === "function") {
-        video.requestVideoFrameCallback(() => finish());
+        videoFrameCallbackId = video.requestVideoFrameCallback(() => {
+          videoFrameCallbackId = null;
+          finish();
+        });
       } else {
-        requestAnimationFrame(() => finish());
+        animationFrameId = requestAnimationFrame(() => {
+          animationFrameId = null;
+          finish();
+        });
       }
     };
     video.onloadeddata = afterLoaded;
     video.onerror = () => finish(new Error("display media video failed to decode"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
     if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) afterLoaded();
   });
 }
 
 /**
  * Freeze one display-media frame into renderer-owned storage. The track is
- * stopped in every exit path before the promise settles. bitmaprenderer keeps
- * the ImageBitmap as the canvas backing store without a second full-frame draw.
+ * stopped in every exit path before the promise settles. The deadline spans
+ * source acquisition, playback, first-frame delivery, and ImageBitmap creation.
+ * bitmaprenderer keeps the ImageBitmap as the canvas backing store without a
+ * second full-frame draw.
  */
 export async function acquireFrozenDisplayFrame(
   canvas: HTMLCanvasElement,
   getDisplayMedia: () => Promise<MediaStream> = () =>
     navigator.mediaDevices.getDisplayMedia(FROZEN_DISPLAY_MEDIA_CONSTRAINTS),
-  timeoutMs = DISPLAY_MEDIA_ACQUISITION_TIMEOUT_MS
+  timeoutMs = FROZEN_FRAME_ACQUISITION_TIMEOUT_MS
 ): Promise<FrozenFrame> {
-  const stream = await acquireDisplayStream(getDisplayMedia, timeoutMs);
-  const video = document.createElement("video");
-  video.muted = true;
-  video.playsInline = true;
-  video.autoplay = true;
-  video.srcObject = stream;
-  try {
+  const controller = new AbortController();
+  let stream: MediaStream | null = null;
+  let streamStopped = false;
+  const videoState: { current: HTMLVideoElement | null } = { current: null };
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  const stopActiveStream = (): void => {
+    if (stream === null || streamStopped) return;
+    streamStopped = true;
+    stopDisplayStream(stream);
+  };
+  const produceFrame = async (): Promise<FrozenFrame> => {
+    stream = await acquireDisplayStream(getDisplayMedia, controller.signal);
+    throwIfAborted(controller.signal);
+    const video = document.createElement("video");
+    videoState.current = video;
+    video.muted = true;
+    video.playsInline = true;
+    video.autoplay = true;
+    video.srcObject = stream;
     const play = video.play();
-    await Promise.all([play, waitForVideoFrame(video)]);
+    await Promise.all([play, waitForVideoFrame(video, controller.signal)]);
+    throwIfAborted(controller.signal);
     const bitmap = await createImageBitmap(video);
+    if (controller.signal.aborted) {
+      bitmap.close();
+      throw abortReason(controller.signal);
+    }
     if (bitmap.width <= 0 || bitmap.height <= 0) {
       bitmap.close();
       throw new Error("display media returned an empty frame");
@@ -158,10 +204,30 @@ export async function acquireFrozenDisplayFrame(
       height: canvas.height,
       transferMode: "2d"
     };
+  };
+  try {
+    return await Promise.race([
+      produceFrame(),
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          const cause = new Error("display media acquisition timed out");
+          stopActiveStream();
+          controller.abort(cause);
+          reject(cause);
+        }, timeoutMs);
+      })
+    ]);
   } finally {
-    stopDisplayStream(stream);
-    video.pause();
-    video.srcObject = null;
+    if (timeout !== null) clearTimeout(timeout);
+    stopActiveStream();
+    if (!controller.signal.aborted) {
+      controller.abort(new Error("display media acquisition ended"));
+    }
+    const activeVideo = videoState.current;
+    if (activeVideo !== null) {
+      activeVideo.pause();
+      activeVideo.srcObject = null;
+    }
   }
 }
 

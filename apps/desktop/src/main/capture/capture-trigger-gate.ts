@@ -41,43 +41,52 @@ export type CaptureTriggerGate = {
 };
 
 export type CaptureTriggerGateOptions = {
+  /** Backwards-compatible deterministic clock used for both monotonic age and
+   *  reported wall timestamps when the two explicit clocks are omitted. */
   now?: (() => number) | undefined;
+  monotonicNow?: (() => number) | undefined;
+  wallNow?: (() => number) | undefined;
   debounceMs?: number | undefined;
 };
 
 function elapsedMs(nowMs: number, startedAtMs: number): number {
-  // Date.now() can move backwards when the system clock is corrected. Treat
-  // that as zero elapsed rather than accidentally bypassing the debounce.
+  // A monotonic source should not move backwards. Keep this clamp as defense
+  // against a malformed injected test/runtime clock without using wall time
+  // for debounce state.
   return Math.max(0, nowMs - startedAtMs);
 }
 
 export function createCaptureTriggerGate(
   options: CaptureTriggerGateOptions = {}
 ): CaptureTriggerGate {
-  const now = options.now ?? Date.now;
+  const monotonicNow = options.monotonicNow ?? options.now ?? (() => performance.now());
+  const wallNow = options.wallNow ?? options.now ?? Date.now;
   const debounceMs = options.debounceMs ?? CAPTURE_TRIGGER_DEBOUNCE_MS;
   if (!Number.isFinite(debounceMs) || debounceMs < 0) {
     throw new RangeError("capture trigger debounce must be a finite non-negative number");
   }
 
   let sequence = 0;
-  let active: { token: CaptureTriggerToken; acceptedAtMs: number } | null = null;
-  let lastAcceptedAtMs: number | null = null;
+  let active: { token: CaptureTriggerToken; acceptedAtMonotonicMs: number } | null = null;
+  let lastAcceptedAtMonotonicMs: number | null = null;
 
   return {
     acquire(): CaptureTriggerDecision {
-      const observedAtMs = now();
+      const observedAtMonotonicMs = monotonicNow();
+      const observedAtMs = wallNow();
       if (active !== null) {
         return {
           status: "suppressed",
           reason: "active",
-          ageMs: elapsedMs(observedAtMs, active.acceptedAtMs),
+          ageMs: elapsedMs(observedAtMonotonicMs, active.acceptedAtMonotonicMs),
           observedAtMs
         };
       }
 
       const ageMs =
-        lastAcceptedAtMs === null ? null : elapsedMs(observedAtMs, lastAcceptedAtMs);
+        lastAcceptedAtMonotonicMs === null
+          ? null
+          : elapsedMs(observedAtMonotonicMs, lastAcceptedAtMonotonicMs);
       if (ageMs !== null && ageMs < debounceMs) {
         return {
           status: "suppressed",
@@ -88,8 +97,8 @@ export function createCaptureTriggerGate(
       }
 
       const token = Object.freeze({ sequence: ++sequence });
-      active = { token, acceptedAtMs: observedAtMs };
-      lastAcceptedAtMs = observedAtMs;
+      active = { token, acceptedAtMonotonicMs: observedAtMonotonicMs };
+      lastAcceptedAtMonotonicMs = observedAtMonotonicMs;
       return {
         status: "accepted",
         reason: "leading_edge",

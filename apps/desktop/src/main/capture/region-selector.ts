@@ -1177,11 +1177,15 @@ export async function pickRegion(
       snapshotContentProtectionActive = true;
       setSnapshotContentProtection(protectWindowIds, true);
     }
-    if (usesRendererDisplayMedia && process.platform === "darwin") {
-      // ScreenCaptureKit may include content-protected windows on current
-      // macOS releases. Hide only the explicitly protected PwrSnap windows
-      // until the renderer has frozen its one frame, then restore them
-      // without activation. This is scoped to the active invocation.
+    const hidesProtectedWindows =
+      mode === "window" || (usesRendererDisplayMedia && process.platform === "darwin");
+    if (hidesProtectedWindows) {
+      // A live pure-window picker must not visibly leave an excluded PwrSnap
+      // window over the allowlisted window behind it: the hover surface and
+      // candidate geometry would disagree. Renderer-owned ScreenCaptureKit
+      // also needs this on macOS because it may include content-protected
+      // windows. Keep only windows that were actually visible, and restore
+      // them without activation after selection/frame acquisition.
       for (const windowId of protectWindowIds) {
         const protectedWindow = BrowserWindow.fromId(windowId);
         if (
@@ -1194,7 +1198,10 @@ export async function pickRegion(
         }
       }
     }
-    if (needsFrozenSnapshot && (!keepPwrSnapChrome || protectWindowIds.length > 0)) {
+    if (
+      (needsFrozenSnapshot && (!keepPwrSnapChrome || protectWindowIds.length > 0)) ||
+      temporarilyHiddenProtectedWindows.length > 0
+    ) {
       // Compositor flush — let the hide / content-protection toggle
       // reach the window server before we snapshot, otherwise the
       // frozen background can race ahead of the state change.

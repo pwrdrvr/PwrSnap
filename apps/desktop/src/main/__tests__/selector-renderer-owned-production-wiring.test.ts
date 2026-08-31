@@ -63,6 +63,9 @@ describe("renderer-owned selector capture production wiring", () => {
     expect(frozenFrame).toContain('cursor: "never"');
     expect(frozenFrame).toContain("createImageBitmap(video)");
     expect(frozenFrame).toContain("stopDisplayStream(stream)");
+    expect(frozenFrame).toContain("FROZEN_FRAME_ACQUISITION_TIMEOUT_MS");
+    expect(frozenFrame).toContain("waitForVideoFrame(video, controller.signal)");
+    expect(frozenFrame).toContain("controller.abort(cause)");
     expect(frozenFrame).toContain("encodeFrozenCrop");
     expect(component).toContain("frameAcquisitionStartedRef.current");
     expect(component).toContain("encodeFrozenCrop(frozen, r, viewport())");

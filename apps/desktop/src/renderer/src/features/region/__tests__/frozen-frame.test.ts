@@ -82,3 +82,124 @@ test("stops a display stream that resolves after the bounded acquisition timeout
     vi.useRealTimers();
   }
 });
+
+test("stops an opened display stream when no video frame arrives", async () => {
+  vi.useFakeTimers();
+  const play = vi
+    .spyOn(HTMLMediaElement.prototype, "play")
+    .mockReturnValue(new Promise<void>(() => undefined));
+  const pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => undefined);
+  try {
+    const stop = vi.fn();
+    const stream = { getTracks: () => [{ stop }] } as unknown as MediaStream;
+    const acquire = acquireFrozenDisplayFrame(
+      {} as HTMLCanvasElement,
+      async () => stream,
+      5
+    );
+    const rejection = expect(acquire).rejects.toThrow("timed out");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(play).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(5);
+    await rejection;
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(pause).toHaveBeenCalledTimes(1);
+  } finally {
+    play.mockRestore();
+    pause.mockRestore();
+    vi.useRealTimers();
+  }
+});
+
+test("stops the stream and closes a late bitmap when bitmap creation times out", async () => {
+  vi.useFakeTimers();
+  const readyStateDescriptor = Object.getOwnPropertyDescriptor(
+    HTMLMediaElement.prototype,
+    "readyState"
+  );
+  const requestFrameDescriptor = Object.getOwnPropertyDescriptor(
+    HTMLVideoElement.prototype,
+    "requestVideoFrameCallback"
+  );
+  const cancelFrameDescriptor = Object.getOwnPropertyDescriptor(
+    HTMLVideoElement.prototype,
+    "cancelVideoFrameCallback"
+  );
+  Object.defineProperty(HTMLMediaElement.prototype, "readyState", {
+    configurable: true,
+    get: () => HTMLMediaElement.HAVE_CURRENT_DATA
+  });
+  Object.defineProperty(HTMLVideoElement.prototype, "requestVideoFrameCallback", {
+    configurable: true,
+    value: (callback: VideoFrameRequestCallback): number => {
+      queueMicrotask(() => callback(0, {} as VideoFrameCallbackMetadata));
+      return 1;
+    }
+  });
+  Object.defineProperty(HTMLVideoElement.prototype, "cancelVideoFrameCallback", {
+    configurable: true,
+    value: vi.fn()
+  });
+  const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+  const pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => undefined);
+  let resolveBitmap!: (bitmap: ImageBitmap) => void;
+  const bitmapPromise = new Promise<ImageBitmap>((resolve) => {
+    resolveBitmap = resolve;
+  });
+  const createBitmap = vi.fn(() => bitmapPromise);
+  vi.stubGlobal("createImageBitmap", createBitmap);
+  const close = vi.fn();
+  try {
+    const stop = vi.fn();
+    const stream = { getTracks: () => [{ stop }] } as unknown as MediaStream;
+    const acquire = acquireFrozenDisplayFrame(
+      {} as HTMLCanvasElement,
+      async () => stream,
+      5
+    );
+    const rejection = expect(acquire).rejects.toThrow("timed out");
+    for (let i = 0; i < 5 && createBitmap.mock.calls.length === 0; i += 1) {
+      await Promise.resolve();
+    }
+    expect(createBitmap).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(5);
+    await rejection;
+    expect(stop).toHaveBeenCalledTimes(1);
+
+    resolveBitmap({ width: 100, height: 100, close } as unknown as ImageBitmap);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(close).toHaveBeenCalledTimes(1);
+  } finally {
+    play.mockRestore();
+    pause.mockRestore();
+    vi.unstubAllGlobals();
+    if (readyStateDescriptor === undefined) {
+      Reflect.deleteProperty(HTMLMediaElement.prototype, "readyState");
+    } else {
+      Object.defineProperty(HTMLMediaElement.prototype, "readyState", readyStateDescriptor);
+    }
+    if (requestFrameDescriptor === undefined) {
+      Reflect.deleteProperty(HTMLVideoElement.prototype, "requestVideoFrameCallback");
+    } else {
+      Object.defineProperty(
+        HTMLVideoElement.prototype,
+        "requestVideoFrameCallback",
+        requestFrameDescriptor
+      );
+    }
+    if (cancelFrameDescriptor === undefined) {
+      Reflect.deleteProperty(HTMLVideoElement.prototype, "cancelVideoFrameCallback");
+    } else {
+      Object.defineProperty(
+        HTMLVideoElement.prototype,
+        "cancelVideoFrameCallback",
+        cancelFrameDescriptor
+      );
+    }
+    vi.useRealTimers();
+  }
+});

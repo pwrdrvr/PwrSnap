@@ -622,6 +622,80 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
   });
 });
 
+describe("region-selector — protected live window picker", () => {
+  test("hides the protected Library until a macOS pure-window picker finishes", async () => {
+    const protectedLibrary = {
+      isDestroyed: vi.fn().mockReturnValue(false),
+      isVisible: vi.fn().mockReturnValue(true),
+      hide: vi.fn(),
+      showInactive: vi.fn(),
+      setContentProtection: vi.fn(),
+      getBounds: vi.fn().mockReturnValue({ x: 240, y: 30, width: 1000, height: 700 })
+    };
+    browserWindowFromId.mockImplementation((id: number) => (id === 91 ? protectedLibrary : null));
+    windowListMocks.selfPidSet.mockReturnValue(new Set([4242]));
+    windowListMocks.listWindowsSnapshot.mockResolvedValueOnce({
+      windows: [
+        {
+          windowId: 10,
+          pid: 4242,
+          bundleId: "com.pwrdrvr.pwrsnap",
+          appName: "PwrSnap",
+          title: "PwrSnap Library",
+          bounds: { x: 240, y: 30, width: 1000, height: 700 },
+          layer: 0,
+          alpha: 1,
+          isFrontmostInApp: true
+        },
+        {
+          windowId: 20,
+          pid: 5555,
+          bundleId: "com.anthropic.claude",
+          appName: "Claude",
+          title: "Claude",
+          bounds: { x: 100, y: 50, width: 1200, height: 800 },
+          layer: 0,
+          alpha: 1,
+          isFrontmostInApp: true
+        }
+      ],
+      frontmostPid: 4242,
+      frontmostBundleId: "com.pwrdrvr.pwrsnap"
+    });
+
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({
+      mode: "window",
+      keepPwrSnapChrome: true,
+      protectWindowIds: [91]
+    });
+
+    await vi.waitFor(() => {
+      expect(constructed[0]?.show).toHaveBeenCalledTimes(1);
+      expect(constructed[0]?.webContents.send).toHaveBeenCalledWith(
+        "region-selector:window-list",
+        expect.objectContaining({
+          invocationId: 1,
+          windows: [expect.objectContaining({ windowId: 20 })]
+        })
+      );
+    });
+    expect(protectedLibrary.hide).toHaveBeenCalledTimes(1);
+    expect(protectedLibrary.setContentProtection).not.toHaveBeenCalled();
+    expect(protectedLibrary.hide.mock.invocationCallOrder[0]).toBeLessThan(
+      constructed[0]?.show.mock.invocationCallOrder[0]!
+    );
+    expect(protectedLibrary.hide.mock.invocationCallOrder[0]).toBeLessThan(
+      windowListMocks.listWindowsSnapshot.mock.invocationCallOrder[0]!
+    );
+    expect(protectedLibrary.showInactive).not.toHaveBeenCalled();
+
+    ipcListeners.get("region-selector:result")?.({}, { ok: false, invocationId: 1 });
+    await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
+    expect(protectedLibrary.showInactive).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("region-selector — Windows shell-first latency contract", () => {
   test("paints and shows loading feedback before starting native window enumeration", async () => {
     Object.defineProperty(process, "platform", {
@@ -774,6 +848,9 @@ describe("region-selector — Windows shell-first latency contract", () => {
     vi.mocked(setFloatOverState).mockClear();
     const protectedLibrary = {
       isDestroyed: vi.fn().mockReturnValue(false),
+      isVisible: vi.fn().mockReturnValue(true),
+      hide: vi.fn(),
+      showInactive: vi.fn(),
       setContentProtection: vi.fn(),
       getNativeWindowHandle: vi.fn().mockReturnValue(Buffer.from([10, 0, 0, 0, 0, 0, 0, 0])),
       getBounds: vi.fn().mockReturnValue({ x: 240, y: 30, width: 1000, height: 700 })
@@ -835,6 +912,7 @@ describe("region-selector — Windows shell-first latency contract", () => {
     // display frame, even when the trigger window must be excluded.
     expect(screenSnapshotMocks.captureAndRegister).not.toHaveBeenCalled();
     expect(protectedLibrary.setContentProtection).not.toHaveBeenCalled();
+    expect(protectedLibrary.hide).toHaveBeenCalledTimes(1);
     expect(constructed[0]?.webContents.send).toHaveBeenCalledWith(
       "region-selector:mode",
       expect.objectContaining({
@@ -864,6 +942,7 @@ describe("region-selector — Windows shell-first latency contract", () => {
       previousAppOrigin: "pwrsnap",
       previousAppPid: null
     });
+    expect(protectedLibrary.showInactive).toHaveBeenCalledTimes(1);
   });
 
   test("rejects a spoofed protected HWND on an auto-mode non-full-window result", async () => {

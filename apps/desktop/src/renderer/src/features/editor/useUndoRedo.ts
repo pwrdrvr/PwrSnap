@@ -339,11 +339,17 @@ export function useUndoRedo(opts: {
     token: InteractionToken;
     opKind: string;
     layerId: string;
-    /** Becomes true on the FIRST push made inside this bracket. Only
-     *  subsequent pushes coalesce — otherwise the first write of a
-     *  fresh interaction would accidentally merge with whatever the
-     *  previous interaction left on top of the stack (different
-     *  layer, same opKind, etc.). */
+    /** True only while the stack-top entry is this bracket's OWN
+     *  coalesced entry: armed by a push carrying the bracket's key,
+     *  DISARMED by any other push (untagged, or tagged with a
+     *  different key). Only matching pushes made while armed coalesce
+     *  — otherwise the first write of a fresh interaction would merge
+     *  with whatever the previous interaction left on top of the
+     *  stack, and (the PR #531-review op-loss bug) an unrelated push
+     *  landing mid-bracket — e.g. an async annotation commit
+     *  resolving while a ⌫ multi-delete bracket is open — would arm
+     *  the bracket and make the next tagged push coalesce against the
+     *  interloper's entry instead of starting its own. */
     hasPushed: boolean;
   } | null>(null);
   const lastCoalesceRef = useRef<{
@@ -403,11 +409,13 @@ export function useUndoRedo(opts: {
     const mergeMode = recordOpts?.mergeMode ?? "replace";
     setPast((prev) => {
       if (shouldCoalesce && prev.length > 0) {
-        const next = prev.slice(0, -1);
         const lastEntry = prev[prev.length - 1]!;
         // Coalesce only when both entries are the SAME op kind
-        // (mixing create/delete/geometry inside one bracket would
-        // be a programming bug — push standalone for safety).
+        // (mixing create/delete/geometry under one coalescing key
+        // would be a programming bug — push standalone for safety;
+        // a kind mismatch falls through to the standalone push below
+        // rather than discarding the new op, which is how the
+        // PR #531-review interleave lost a delete op).
         // Within the matching-kind branches the merge SHAPE depends
         // on mergeMode:
         //
@@ -426,7 +434,7 @@ export function useUndoRedo(opts: {
         //     rather than restoring only the most-recent and
         //     dropping the rest (the user-reported "one of two
         //     deleted layers cannot be recovered" bug).
-        let merged: EditOp = lastEntry;
+        let merged: EditOp | null = null;
         if (lastEntry.kind === "create" && op.kind === "create") {
           merged = {
             kind: "create",
@@ -447,7 +455,13 @@ export function useUndoRedo(opts: {
         // multi-X bracket for them in the editor today, and
         // crop's inverse depends on previous canvas dims which
         // can't be merged.
-        return [...next, merged];
+        if (merged !== null) {
+          return [...prev.slice(0, -1), merged];
+        }
+        // Kind mismatch: fall through to the standalone push. The
+        // pre-fix shape returned `[...prev.slice(0, -1), lastEntry]`
+        // here — a no-op rewrite of the stack that silently DROPPED
+        // the new op.
       }
       const trimmed = prev.length >= MAX_DEPTH ? prev.slice(1) : prev;
       return [...trimmed, op];
@@ -463,13 +477,26 @@ export function useUndoRedo(opts: {
       // tagged write doesn't accidentally fold into it.
       lastCoalesceRef.current = null;
     }
-    // Mark the open bracket (if any) as having pushed at least
-    // once — subsequent pushes inside it can now coalesce.
+    // Arm the open bracket (if any) ONLY when this push carried the
+    // bracket's key — subsequent matching pushes can then coalesce.
+    // A push that DIDN'T match (untagged, or tagged with a different
+    // key — e.g. an async annotation commit resolving while a
+    // keyboard bracket is open) lands its own entry on top of the
+    // stack, so it DISARMS the bracket instead: coalescing across
+    // the interloper would fold unrelated ops together and, under
+    // the default "replace" mergeMode, silently drop the
+    // interloper's data. The next matching push then starts a fresh
+    // entry and re-arms.
     if (openInteractionRef.current !== null) {
-      openInteractionRef.current = {
-        ...openInteractionRef.current,
-        hasPushed: true
-      };
+      const bracket = openInteractionRef.current;
+      const matchesBracket =
+        opKind !== undefined &&
+        layerId !== undefined &&
+        bracket.opKind === opKind &&
+        bracket.layerId === layerId;
+      if (bracket.hasPushed !== matchesBracket) {
+        openInteractionRef.current = { ...bracket, hasPushed: matchesBracket };
+      }
     }
   }, []);
 

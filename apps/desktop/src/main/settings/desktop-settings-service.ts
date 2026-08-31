@@ -68,8 +68,7 @@ import {
   GRID_ZOOM_MAX,
   GRID_ZOOM_MIN,
   MAX_HIGHLIGHT_OPACITY,
-  DEFAULT_PARALLELOGRAM_SKEW_DEG,
-  DEFAULT_SHAPE_KIND,
+  defaultEditorToolStyles,
   isAiReasoningEffort,
   isAppearanceTheme,
   isBuiltInAcpAgentId,
@@ -272,51 +271,11 @@ function defaultLibrarySettings(): Settings["library"] {
  *  fallback when an older file lacks the `editor` field entirely. */
 function defaultEditorSettings(): EditorSettings {
   return {
-    toolStyles: {
-      // Default to the brand accent (tangerine) rather than picking a
-      // stoplight color — neutral choice for a first-time user who
-      // hasn't established a personal pattern yet. The shared-COLOR-
-      // slot pattern means the first swatch they pick will propagate
-      // across all tools.
-      arrow: {
-        color: "accent",
-        thickness: "auto",
-        endStyle: "filled-triangle",
-        stemStyle: "solid",
-        doubleEnded: false,
-        // Contrast border defaults to Auto (sample the background,
-        // pick black on light pages / white elsewhere) — the fixed
-        // always-white halo is exactly what Auto fixes.
-        outline: "auto"
-      },
-      text: {
-        color: "accent",
-        fontSize: "auto",
-        weight: "regular",
-        outline: "auto"
-      },
-      shape: {
-        color: "accent",
-        thickness: "auto",
-        filled: false,
-        shape: DEFAULT_SHAPE_KIND,
-        skewDeg: DEFAULT_PARALLELOGRAM_SKEW_DEG,
-        outline: "auto"
-      },
-      blur: {
-        mode: "gaussian",
-        radius: { mode: "auto" }
-      },
-      highlight: {
-        // Yellow is the canonical highlight color (same as a yellow
-        // marker on paper); not part of the cross-tool shared COLOR
-        // slot because highlight is the one tool whose semantic is
-        // "color = visual emphasis" rather than "color = severity".
-        color: "yellow",
-        opacity: 0.3,
-        blend: "multiply"
-      }
-    },
+    // Factory defaults live in @pwrsnap/shared (defaultEditorToolStyles)
+    // so the renderer's tool-state hook falls back to the SAME values
+    // while `settings:read` is in flight — a fresh install's persisted
+    // defaults and the pre-settle in-memory defaults cannot drift.
+    toolStyles: defaultEditorToolStyles(),
     coachmarks: {
       // Flips true the first time the user opens any tool style popover
       // and the 3s stoplight micro-coachmark auto-dismisses.

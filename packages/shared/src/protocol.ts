@@ -2658,6 +2658,13 @@ export type EditorToolStyles = {
   highlight: HighlightToolStyle;
 };
 
+// Factory defaults for EditorToolStyles live in
+// ./editor-tool-defaults.ts (`defaultEditorToolStyles`), NOT here:
+// protocol.ts is reached at RUNTIME by the sandboxed preload (via
+// appearance-arg), so it must not gain runtime imports of
+// overlay-schemas — that drags zod into the preload bundle as an
+// un-requirable external and kills `pwrsnapApi` for every window.
+
 /** One-time UI hint flags. `stoplightSeen` flips true the first time
  *  the user opens any tool style popover and the 3s stoplight palette
  *  micro-coachmark dismisses; never shown again in any popover. Mirror

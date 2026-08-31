@@ -557,6 +557,12 @@ async function launchPwrSnapCore(
   // packaged main entry must NOT see it or it will try to load from a
   // dead localhost dev server.
   delete env.ELECTRON_RENDERER_URL;
+  // Fault-injection knobs must be opt-in PER LAUNCH via options.env —
+  // never inherited from the runner's shell. A stray export (say, left
+  // over from a debugging session) would otherwise delay every
+  // settings read in every spec of the run and fail dozens of
+  // unrelated specs with baffling default-styled-annotation diffs.
+  delete env.PWRSNAP_E2E_SETTINGS_READ_DELAY_MS;
 
   for (const [key, value] of Object.entries(options.env ?? {})) {
     if (value === undefined) {

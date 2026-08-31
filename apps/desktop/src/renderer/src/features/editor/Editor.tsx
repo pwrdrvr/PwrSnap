@@ -57,6 +57,7 @@ import type {
 import {
   CURRENT_ARROW_STYLE_VERSION,
   DEFAULT_BLUR_STYLE,
+  defaultEditorToolStyles,
   computeTextGlyphSize,
   deriveBlurRadiusPx,
   isOverlayOutlineMode,
@@ -3005,62 +3006,57 @@ export function Editor({
         closeInteraction();
         return;
       }
+      // Capture everything the commit needs from the draft, then clear
+      // it BEFORE the first await. The awaits below can park for real
+      // time when `settings:read` is slow, and a deferred
+      // `setDraft(null)` would wipe a second gesture's in-progress
+      // draft when this commit resumed. The tail lookup also wants the
+      // live canvas rect at release time, so it happens here too.
+      const from = { x: draft.fromXn, y: draft.fromYn };
+      const to = { x: draft.toXn, y: draft.toYn };
+      const tailCanvasPx = normalizedToCanvasPx(to.x, to.y);
+      setDraft(null);
       // Phase 3.1 fix #2/#4 + Phase 3.2 lift: thread the active arrow
       // style (color + endStyle + stemStyle + doubleEnded) into the
       // overlay shape so the popover's choices actually stick.
       // `effectiveToolState` is the lifted hook in Library Focus and
       // our own hook in standalone — both reflect the popover picks
-      // live.
-      //
-      // AWAIT the styles, don't read the render closure: the toolbar
-      // is clickable before `settings:read` resolves, and in that
-      // window `activeStyle` is the pointer placeholder — a commit
-      // that read it dropped EVERY style field (Border included, so
-      // an Auto arrow persisted the legacy white halo, and `color:
-      // "auto"` skipped resolveToolColor). The settle is one IPC
-      // round-trip; on a loaded machine the draw could win that race
-      // roughly once per ten runs (editor-border-outline flake).
-      await effectiveToolState.whenToolStylesSettled();
-      const arrowStyleSrc =
-        effectiveToolState.readEffectiveToolStyles()?.arrow ?? null;
+      // live. AWAIT the styles rather than reading the render
+      // closure's activeStyle — a draw racing `settings:read` must
+      // stamp the user's configured styles, and the arrow block is
+      // deliberately read regardless of the CURRENT active tool (the
+      // draft's kind, not a mid-await tool switch, decides which
+      // styles a committed arrow carries). See
+      // docs/solutions/2026-08-31-editor-border-outline-settings-race.md.
+      const arrowStyleSrc = (await effectiveToolState.settledToolStyles()).arrow;
       const arrowOverlay: Extract<Overlay, { kind: "arrow" }> = {
         kind: "arrow",
-        from: { x: draft.fromXn, y: draft.fromYn },
-        to: { x: draft.toXn, y: draft.toYn },
-        color:
-          arrowStyleSrc !== null
-            ? resolveToolColor(arrowStyleSrc.color)
-            : "auto",
+        from,
+        to,
+        color: resolveToolColor(arrowStyleSrc.color),
         // Pin the style version at commit time so future tweaks to
         // head proportions / stroke clamps don't retroactively rewrite
         // this row. See `ARROW_STYLE_VERSIONS` in
         // `packages/shared/src/arrow.ts` for the recipe per version.
-        styleVersion: CURRENT_ARROW_STYLE_VERSION
-      };
-      if (arrowStyleSrc !== null) {
-        arrowOverlay.endStyle = arrowStyleSrc.endStyle;
-        arrowOverlay.stemStyle = arrowStyleSrc.stemStyle;
-        arrowOverlay.doubleEnded = arrowStyleSrc.doubleEnded;
-        arrowOverlay.thickness = arrowStyleSrc.thickness;
+        styleVersion: CURRENT_ARROW_STYLE_VERSION,
+        endStyle: arrowStyleSrc.endStyle,
+        stemStyle: arrowStyleSrc.stemStyle,
+        doubleEnded: arrowStyleSrc.doubleEnded,
+        thickness: arrowStyleSrc.thickness,
         // Border: persist the mode, and for Auto also the sampled
         // black/white pick — the bake reads the stored pick and never
         // re-samples (WYSIWYG + deterministic render cache). A cold
         // sampler omits the pick; renderers fall back to white.
-        arrowOverlay.outline = arrowStyleSrc.outline;
-        if (arrowStyleSrc.outline === "auto") {
-          // Await the (usually already-finished) decode: a draw racing
-          // the warm-up would otherwise persist auto-without-pick
-          // forever — nothing re-samples an unmoved row.
-          await ensureOutlineSampler(captureSrcUrl(captureId));
-          const sampled = sampleOutlineAutoForData(arrowOverlay);
-          if (sampled !== null) arrowOverlay.outlineAuto = sampled;
-        }
+        outline: arrowStyleSrc.outline
+      };
+      if (arrowStyleSrc.outline === "auto") {
+        // Await the (usually already-finished) decode: a draw racing
+        // the warm-up would otherwise persist auto-without-pick
+        // forever — nothing re-samples an unmoved row.
+        await ensureOutlineSampler(captureSrcUrl(captureId));
+        const sampled = sampleOutlineAutoForData(arrowOverlay);
+        if (sampled !== null) arrowOverlay.outlineAuto = sampled;
       }
-      // Capture the arrow tail in canvas-px so the matching-text
-      // affordance can position itself; this lookup needs the live
-      // canvas rect, so do it BEFORE the await.
-      const tailCanvasPx = normalizedToCanvasPx(draft.toXn, draft.toYn);
-      setDraft(null);
       const wrote = await persistOverlay(arrowOverlay);
       closeInteraction();
       if (wrote.ok && !isControlled) {
@@ -3080,18 +3076,16 @@ export function Editor({
     }
 
     if (draft.kind === "shape-drag") {
-      // Same settle-await as the arrow commit — a commit racing the
-      // settings read must not silently drop the shape / highlight
-      // style block.
-      await effectiveToolState.whenToolStylesSettled();
-      const settledStyles = effectiveToolState.readEffectiveToolStyles();
       // Compute canvas aspect from the live canvas element's bounding
       // rect so rectFromDrag's 1:1 lock (square / circle) produces a
       // pixel-square box rather than a canvas-aspect-shaped one. The
       // canvas DOM size mirrors the source image's aspect (the editor
       // uses CSS aspect-ratio), so this matches the bake's notion of
       // a "square" without needing the image-dims state in scope.
-      // Falls back to 1 when the canvas hasn't measured yet.
+      // Falls back to 1 when the canvas hasn't measured yet. Rect +
+      // bail run BEFORE the settle await: a sub-threshold click must
+      // not park on a pending settings read just to be discarded, and
+      // the rect must be measured at release time.
       const canvasRect = canvasRef.current?.getBoundingClientRect();
       const canvasAspect =
         canvasRect !== undefined && canvasRect.height > 0
@@ -3104,65 +3098,68 @@ export function Editor({
         return;
       }
       const placedKind = draft.tool;
-      // Phase 3.1 fix #2: thread the active style into shape / highlight
-      // / blur overlays. Pre-fix, shape + highlight dropped everything
-      // to defaults regardless of popover choices.
+      // Clear the draft BEFORE the settle await — see the arrow
+      // commit: a deferred setDraft(null) would wipe a second
+      // gesture's in-progress draft when this commit resumed.
+      setDraft(null);
+      // Phase 3.1 fix #2: thread the active style into shape /
+      // highlight / blur overlays — awaited so a commit racing the
+      // settings read stamps the user's configured styles (see the
+      // arrow commit).
+      const settledStyles = await effectiveToolState.settledToolStyles();
       let overlay: Overlay;
       if (placedKind === "shape") {
-        const shapeStyleSrc = settledStyles?.shape ?? null;
+        const shapeStyleSrc = settledStyles.shape;
         const shapeOverlay: Extract<Overlay, { kind: "shape" }> = {
           kind: "shape",
           rect,
-          color:
-            shapeStyleSrc !== null
-              ? resolveToolColor(shapeStyleSrc.color)
-              : "auto"
-        };
-        if (shapeStyleSrc !== null) {
-          shapeOverlay.thickness = shapeStyleSrc.thickness;
-          shapeOverlay.filled = shapeStyleSrc.filled;
-          shapeOverlay.shape = shapeStyleSrc.shape;
-          // Persist skewDeg only for parallelogram so we don't carry
-          // dead state on every other shape's row.
-          if (shapeStyleSrc.shape === "parallelogram") {
-            shapeOverlay.skewDeg = shapeStyleSrc.skewDeg;
-          }
+          color: resolveToolColor(shapeStyleSrc.color),
+          thickness: shapeStyleSrc.thickness,
+          filled: shapeStyleSrc.filled,
+          shape: shapeStyleSrc.shape,
           // Border mode + sampled Auto pick — see the arrow commit.
-          shapeOverlay.outline = shapeStyleSrc.outline;
-          if (shapeStyleSrc.outline === "auto") {
-            // See the arrow commit — cold-cache draws must wait, not
-            // silently persist a pickless auto.
-            await ensureOutlineSampler(captureSrcUrl(captureId));
-            const sampled = sampleOutlineAutoForData(shapeOverlay);
-            if (sampled !== null) shapeOverlay.outlineAuto = sampled;
-          }
+          outline: shapeStyleSrc.outline
+        };
+        // Persist skewDeg only for parallelogram so we don't carry
+        // dead state on every other shape's row.
+        if (shapeStyleSrc.shape === "parallelogram") {
+          shapeOverlay.skewDeg = shapeStyleSrc.skewDeg;
+        }
+        if (shapeStyleSrc.outline === "auto") {
+          // See the arrow commit — cold-cache draws must wait, not
+          // silently persist a pickless auto.
+          await ensureOutlineSampler(captureSrcUrl(captureId));
+          const sampled = sampleOutlineAutoForData(shapeOverlay);
+          if (sampled !== null) shapeOverlay.outlineAuto = sampled;
         }
         overlay = shapeOverlay;
       } else if (placedKind === "highlight") {
-        const hlStyleSrc = settledStyles?.highlight ?? null;
-        const hlOverlay: Extract<Overlay, { kind: "highlight" }> = {
+        const hlStyleSrc = settledStyles.highlight;
+        overlay = {
           kind: "highlight",
-          rect
+          rect,
+          color: resolveToolColor(hlStyleSrc.color),
+          opacity: hlStyleSrc.opacity,
+          blend: hlStyleSrc.blend
         };
-        if (hlStyleSrc !== null) {
-          const resolved = resolveToolColor(hlStyleSrc.color);
-          hlOverlay.color = resolved;
-          hlOverlay.opacity = hlStyleSrc.opacity;
-          hlOverlay.blend = hlStyleSrc.blend;
-        }
-        overlay = hlOverlay;
       } else {
         // blur — thread both mode and optional custom radius through
         // the committed overlay so the v2 EffectLayer doesn't silently
-        // fall back to auto radius.
+        // fall back to auto radius. Read from the SETTLED styles like
+        // the shape/highlight arms: the render-closure `blurStyle` /
+        // `blurRadiusPx` memos degrade to defaults during the settings
+        // race, which silently downgraded e.g. a configured redact to
+        // gaussian (the memos still back the draft preview).
+        const blurStyleSrc = settledStyles.blur;
         overlay = {
           kind: "blur",
           rect,
-          style: blurStyle,
-          ...(blurRadiusPx !== undefined ? { radiusPx: blurRadiusPx } : {})
+          style: blurStyleSrc.mode,
+          ...(blurStyleSrc.radius.mode === "px"
+            ? { radiusPx: blurStyleSrc.radius.value }
+            : {})
         };
       }
-      setDraft(null);
       const wrote = await persistOverlay(overlay);
       closeInteraction();
       if (wrote.ok && !isControlled) {
@@ -3276,17 +3273,22 @@ export function Editor({
     // loaded model. Re-check so the TS narrowing below holds without
     // a non-null assertion.
     if (model.kind !== "loaded") return;
+    // Capture the draft's fields and clear it BEFORE the first await.
+    // TextDraftInput fires onCommit on Enter AND on blur; with the
+    // draft still set across a parked await, a second trigger
+    // (Enter-then-click-away) would pass the entry guard too and
+    // persist a duplicate. Clearing here makes any re-entrant call
+    // hit the `draft?.kind !== "text"` guard. It also unmounts the
+    // input immediately — the pre-await UX.
+    const point = { x: draft.xn, y: draft.yn };
+    const editingId = draft.editingId;
+    setDraft(null);
     // Phase 3.1 fix #2 + Phase 3.2 lift: thread the active text style
-    // (color + fontSize mapped to v1's two-bucket size enum). Reads
-    // from effectiveToolState so Library Focus picks up the lifted
-    // hook's live style; standalone uses its own hook the same way.
-    // Settle-await first — same race as the arrow commit: a commit
-    // racing `settings:read` must not silently drop the text style
-    // block (weight, Border, color).
-    await effectiveToolState.whenToolStylesSettled();
-    const textStyleSrc = effectiveToolState.readEffectiveToolStyles()?.text ?? null;
-    const resolvedSize =
-      textStyleSrc !== null ? resolveTextSize(textStyleSrc.fontSize) : "medium";
+    // (color + fontSize mapped to v1's two-bucket size enum) —
+    // awaited so a commit racing `settings:read` stamps the user's
+    // configured weight / Border / color (see the arrow commit).
+    const textStyleSrc = (await effectiveToolState.settledToolStyles()).text;
+    const resolvedSize = resolveTextSize(textStyleSrc.fontSize);
     // pwrdrvr/PwrSnap#110: every new text overlay persists an
     // absolute `sizePx` resolved at PLACEMENT time using the current
     // source raster's shortSide. From this point on the row's
@@ -3315,7 +3317,7 @@ export function Editor({
     }).sizePx;
     const overlay: Overlay = {
       kind: "text",
-      point: { x: draft.xn, y: draft.yn },
+      point,
       body,
       size: resolvedSize,
       sizePx: sizePxAtPlacement,
@@ -3323,23 +3325,20 @@ export function Editor({
       // wasn't written at all — the schema didn't even carry weight —
       // so every committed glyph rendered at the hardcoded 600. Now
       // the popover's "weight" field actually changes what gets baked.
-      ...(textStyleSrc !== null ? { weight: textStyleSrc.weight } : {}),
+      weight: textStyleSrc.weight,
       // Border mode — see the arrow commit; the Auto pick is sampled
       // below once the full overlay (body included — it sizes the
       // sampled ring) is assembled.
-      ...(textStyleSrc !== null ? { outline: textStyleSrc.outline } : {}),
-      color:
-        textStyleSrc !== null ? resolveToolColor(textStyleSrc.color) : "auto"
+      outline: textStyleSrc.outline,
+      color: resolveToolColor(textStyleSrc.color)
     };
-    if (textStyleSrc !== null && textStyleSrc.outline === "auto") {
+    if (textStyleSrc.outline === "auto") {
       // See the arrow commit — cold-cache draws must wait, not
       // silently persist a pickless auto.
       await ensureOutlineSampler(captureSrcUrl(captureId));
       const sampled = sampleOutlineAutoForData(overlay);
       if (sampled !== null) overlay.outlineAuto = sampled;
     }
-    const editingId = draft.editingId;
-    setDraft(null);
     if (editingId !== undefined) {
       // Re-edit path: the user double-clicked an existing text
       // overlay, edited the body, hit Enter. Write back to the
@@ -7183,31 +7182,29 @@ function EditorLoaded({
         // Selected-overlay mode takes precedence: if an overlay is
         // selected AND it maps to a styled tool, render that style.
         if (selectedOverlayForHandles !== null) {
+          // Non-active tools fall back to the SHARED factory defaults
+          // (@pwrsnap/shared defaultEditorToolStyles) — these used to
+          // be hand-inlined literals that could drift from main's
+          // defaultSettings().
+          const fallbackStyles = defaultEditorToolStyles();
           const projection = selectedOverlayToToolStyle(
             selectedOverlayForHandles.data,
             {
               arrow: toolState.activeStyle.tool === "arrow"
                 ? toolState.activeStyle.style
-                : { color: "accent", thickness: "auto", endStyle: "filled-triangle", stemStyle: "solid", doubleEnded: false, outline: "auto" },
+                : fallbackStyles.arrow,
               text: toolState.activeStyle.tool === "text"
                 ? toolState.activeStyle.style
-                : { color: "accent", fontSize: "auto", weight: "regular", outline: "auto" },
+                : fallbackStyles.text,
               shape: toolState.activeStyle.tool === "shape"
                 ? toolState.activeStyle.style
-                : {
-                    color: "accent",
-                    thickness: "auto",
-                    filled: false,
-                    shape: "rect",
-                    skewDeg: 15,
-                    outline: "auto"
-                  },
+                : fallbackStyles.shape,
               blur: toolState.activeStyle.tool === "blur"
                 ? toolState.activeStyle.style
-                : { mode: "gaussian", radius: { mode: "auto" } },
+                : fallbackStyles.blur,
               highlight: toolState.activeStyle.tool === "highlight"
                 ? toolState.activeStyle.style
-                : { color: "yellow", opacity: 0.3, blend: "multiply" }
+                : fallbackStyles.highlight
             }
           );
           if (projection === null) return null;

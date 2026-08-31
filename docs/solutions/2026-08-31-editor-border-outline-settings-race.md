@@ -6,18 +6,22 @@ background into a black border" failed roughly once per ten local runs
 on a busy macOS desktop (observed 2026-08-29, branch
 `claude/nice-hofstadter-436476`), passing on immediate retry. The
 failing run's error output was not captured at the time.
-**Fixed in:** the commit series landing this doc (`whenToolStylesSettled`).
+**Fixed in:** the commit series landing this doc (`settledToolStyles`).
 
 ## Root cause
 
-The Library Focus edit toolbar is fully interactive before the
-window's `settings:read` IPC resolves. `useEditorToolState` reads tool
-styles from `useSettings()`, which starts `null` on **every mount**
-(the hook instance mounts with the toolbar, not with the window), and
-`selectActiveStyle` degrades to the pointer placeholder while styles
-are null. Its comment claimed "the editor's toolbar is disabled until
-settings resolve" — **no such disable exists**; a `data-tool` button
-click and a canvas drag both work in that window.
+The edit toolbar is fully interactive before the window's
+`settings:read` IPC resolves. `useEditorToolState` reads tool styles
+from `useSettings()`, which starts `null` on every hook mount. For
+Library Focus the relevant instance is the LIFTED one created at the
+Library window root (`Library.tsx` — it mounts once per window, at
+app start, and is passed down through Stage → Editor/EditToolbar), so
+the race window opens once per window launch — NOT on every Focus
+entry; standalone editor windows open their own window per mount.
+While styles were null, `selectActiveStyle` degraded to a pointer
+placeholder. Its comment claimed "the editor's toolbar is disabled
+until settings resolve" — **no such disable exists**; a `data-tool`
+button click and a canvas drag both work in that window.
 
 A drawing-tool commit then read `effectiveToolState.activeStyle` from
 its render closure:
@@ -45,42 +49,67 @@ that arrow — the 15s `expect.poll` cannot converge. The same skip
 exists (existed) in the shape, highlight, and text commits.
 
 The window is one local IPC round-trip (~5–20 ms idle), and the spec
-reaches its first draw ~1 s after the toolbar mounts — which is why
+reaches its first draw ~1.5 s after the window's settings read
+dispatches — which is why
 the flake needed a *busy* machine and never reproduced organically in
 this investigation: 0/300 across an idle desktop run (60), a desktop
 run under 12 CPU spinners (90), the Tart macOS VM serial + 4-worker
 runs (120), and Docker/xvfb (30).
 
-## The fix
+## The fix (two layers)
 
-Draft commits must not read the render-closure `activeStyle`. The hook
-now exposes:
+**1. `activeStyle` never lies.** Factory tool-style defaults were
+hoisted into `@pwrsnap/shared` (`defaultEditorToolStyles()` — now also
+the source for main's `defaultSettings()` and the editor's
+selection→style projection fallbacks, which used to be hand-inlined
+drift-prone copies), and the hook's merged styles fall back to them
+while `settings:read` is in flight. There is no pointer-placeholder
+`activeStyle` anymore: every consumer — draft previews, the blur
+memos, `shapeKind` capture at pointerdown, `onAnnotationPlaced` —
+sees real (default) styles from the first frame. A future call site
+that forgets the settle-await commits factory defaults, not a
+style-less corrupted row.
 
-- `whenToolStylesSettled(): Promise<void>` — resolves once merged tool
-  styles exist; bounded at 3 s (`TOOL_STYLES_SETTLE_WAIT_MS`) so a
-  failed `settings:read` degrades to the old style-less commit instead
-  of wedging the gesture.
-- `readEffectiveToolStyles(): EditorToolStyles | null` — ref-backed
-  read of the live merged (settings + local overrides) styles, for use
-  *after* the await; the render closure still holds the pre-await
-  value.
+**2. Commits await the user's settings.** The hook exposes
+`settledToolStyles(): Promise<EditorToolStyles>` — resolves with the
+live merged styles as soon as settings land (immediately when
+loaded), bounded at 3 s (`TOOL_STYLES_SETTLE_WAIT_MS`), after which
+it resolves factory defaults, warns once, and LATCHES so later
+commits against a wedged `settings:read` don't re-park 3 s each. One
+shared deferred + one timer per unsettled window, both torn down when
+settings land. The arrow / shape / highlight / blur / text commits in
+`Editor.tsx` await it — and they capture their draft fields and
+`setDraft(null)` BEFORE the first await, so a parked commit can't
+wipe a second in-flight gesture's draft, and a re-entrant
+`commitText` (Enter then blur) hits the null-draft guard instead of
+persisting a duplicate.
 
-The arrow / shape / highlight / text commits in `Editor.tsx` await the
-settle and read through the ref. Behavior in the common case is
-unchanged (the promise resolves synchronously once settings are
-loaded); in the race window the commit now waits milliseconds and
-persists the styles the user actually configured.
+Behavior in the common case is unchanged (settings are loaded; the
+promise resolves in a microtask); in the race window the commit waits
+milliseconds and persists the styles the user actually configured.
 
 ## Deterministic replay + fault injection
 
 `settings:read` honors **`PWRSNAP_E2E_SETTINGS_READ_DELAY_MS`** (only
-under `PWRSNAP_E2E=1`) — it holds the read open so a spec can land a
-draw inside the race window every time. The pin is
-`editor-border-outline.spec.ts` › "a draw racing settings load still
-gets the sampled border" (delay 2000 ms: comfortably after the spec's
-draw at ~1 s, comfortably under the 3 s settle bound — past the bound
-the commit *deliberately* degrades and the pin would fail). Verified
-red on the pre-fix build and green on the fixed one.
+under `PWRSNAP_E2E=1`; the E2E launch fixture strips it from
+inherited shell env so it is opt-in per launch) — it holds EVERY
+settings read open so a spec can land a draw inside the race window.
+The pin is `editor-border-outline.spec.ts` › "a draw racing settings
+load still gets the user's configured border": it seeds a settings
+file with the arrow Border set to WHITE and asserts the committed
+halo is white — the awaited USER value. Every regression path lands
+elsewhere: without the settle-await the commit stamps factory
+defaults, which sample the white background into a BLACK halo; a full
+revert to the pre-fix style-drop renders the unresolved
+`var(--accent, #ff8a1f)` stem. Timing corridor: the knob's countdown
+starts at the LIBRARY WINDOW's `settings:read` (launch), so the
+2500 ms delay sits above launch→draw (~1.5 s locally) and below the
+3 s settle bound (past which the commit deliberately degrades to
+defaults — black — failing the pin loudly). On a runner too slow to
+land the draw inside the hold the pin passes without exercising the
+race; the spec annotates the measured launch→draw time so that
+vacuity is visible in reports. The original single-method pin was
+verified red on the pre-fix build.
 
 The knob generalizes: any "renderer surface is interactive before
 settings resolve" hypothesis can now be tested deterministically

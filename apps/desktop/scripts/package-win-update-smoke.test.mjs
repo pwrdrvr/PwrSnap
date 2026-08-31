@@ -9,7 +9,7 @@ import {
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, win32 } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   assertTargetLatestYml,
@@ -293,9 +293,15 @@ describe("signed Windows updater-smoke package pair", () => {
 
   test("package-win confines its internal output seam away from real release dist", () => {
     const packageWin = readFileSync(resolve(import.meta.dirname, "package-win.mjs"), "utf8");
+    const crossVolumeRelative = win32.relative(
+      "D:\\stage\\update-smoke-input\\.work",
+      "E:\\outside"
+    );
+    expect(win32.isAbsolute(crossVolumeRelative)).toBe(true);
     expect(packageWin).toContain(
       'const updateSmokeWorkRoot = join(stageDir, "update-smoke-input", ".work");'
     );
+    expect(packageWin).toContain("isAbsolute(fromWorkRoot)");
     expect(packageWin).toContain(
       "PWRSNAP_WINDOWS_PACKAGE_OUTPUT_DIR is restricted to --sign-stage-only"
     );

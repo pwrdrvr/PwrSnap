@@ -37,7 +37,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pruneSharpNativePackages } from "./sharp-platform-packages.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -77,8 +77,11 @@ function resolvePackageDistDir() {
 
   const candidate = resolve(stageDir, requested);
   const fromWorkRoot = relative(updateSmokeWorkRoot, candidate);
+  // On Windows, path.relative returns the absolute target when the two paths
+  // are on different volumes. Treat that as outside the confined work root.
   if (
     fromWorkRoot.length === 0 ||
+    isAbsolute(fromWorkRoot) ||
     fromWorkRoot === ".." ||
     fromWorkRoot.startsWith(`..${sep}`) ||
     resolve(candidate) === resolve(defaultDistDir)

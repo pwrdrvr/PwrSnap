@@ -1364,7 +1364,11 @@ export function readAppUpdateStatus(): AppUpdateStatus {
   return updateStatus;
 }
 
-export async function installDownloadedAppUpdate(): Promise<AppUpdateInstallResult> {
+type DownloadedUpdateInstallMode = "user" | "windows-update-smoke";
+
+async function installDownloadedAppUpdateForMode(
+  mode: DownloadedUpdateInstallMode
+): Promise<AppUpdateInstallResult> {
   const retrySelection = installRetrySelection();
   const currentSelection = currentUpdateSelection();
   const eligibleDownload = downloadedUpdateMatchesSelection(currentUpdateSelectionKey());
@@ -1378,6 +1382,18 @@ export async function installDownloadedAppUpdate(): Promise<AppUpdateInstallResu
     };
   }
   const smoke = windowsUpdateSmokeConfig();
+  if (mode === "windows-update-smoke" && smoke === undefined) {
+    return {
+      status: "error",
+      message: "Windows updater smoke install requires validated smoke configuration."
+    };
+  }
+  if (mode === "user" && smoke !== undefined) {
+    return {
+      status: "error",
+      message: "Windows updater smoke must use its dedicated silent install path."
+    };
+  }
   if (smoke !== undefined && version !== smoke.targetVersion) {
     return {
       status: "error",
@@ -1420,7 +1436,7 @@ export async function installDownloadedAppUpdate(): Promise<AppUpdateInstallResu
       }
       version = refreshedResult.version;
     }
-    log.info("installing downloaded update", { version });
+    log.info("installing downloaded update", { version, mode });
     const recordedAttempt = recordInstallAttempt(
       version,
       retrySelection ?? currentSelection
@@ -1432,7 +1448,16 @@ export async function installDownloadedAppUpdate(): Promise<AppUpdateInstallResu
           "Windows updater smoke could not persist its install-attempt marker; refusing to restart."
       };
     }
-    autoUpdater().quitAndInstall();
+    if (mode === "windows-update-smoke") {
+      // PwrSnap ships assisted NSIS (`oneClick: false`). The default
+      // quitAndInstall() call displays that installer and waits for user input,
+      // which a credential-free hosted smoke runner cannot provide. Keep the
+      // user-facing path interactive, but make this marker-gated headless path
+      // silent and explicitly relaunch the signed target after installation.
+      autoUpdater().quitAndInstall(true, true);
+    } else {
+      autoUpdater().quitAndInstall();
+    }
     return { status: "restarting" };
   } catch (err) {
     return {
@@ -1440,6 +1465,14 @@ export async function installDownloadedAppUpdate(): Promise<AppUpdateInstallResu
       message: err instanceof Error ? err.message : String(err)
     };
   }
+}
+
+export async function installDownloadedAppUpdate(): Promise<AppUpdateInstallResult> {
+  return await installDownloadedAppUpdateForMode("user");
+}
+
+export async function installDownloadedWindowsUpdateSmoke(): Promise<AppUpdateInstallResult> {
+  return await installDownloadedAppUpdateForMode("windows-update-smoke");
 }
 
 export function initAppUpdater(): void {

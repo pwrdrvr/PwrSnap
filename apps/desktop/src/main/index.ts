@@ -148,7 +148,7 @@ import {
 import {
   checkForAppUpdatesNow,
   initAppUpdater,
-  installDownloadedAppUpdate,
+  installDownloadedWindowsUpdateSmoke,
   readAppUpdateStatus,
   reconcileAppUpdateSelection,
   setUpdateSelectionResolver,
@@ -1571,9 +1571,10 @@ export function bootstrapApp(): void {
   app.whenReady().then(async () => {
     if (windowsUpdateSmokeConfig !== null) {
       // Purpose-built headless boot: open the real packaged DB, wire only the
-      // updater, and let the signed baseline exercise electron-updater's
-      // ordinary download/install/relaunch path. No tray, hotkeys, Codex,
-      // local server, BrowserWindow, or boot maintenance is started.
+      // updater, and let the signed baseline exercise electron-updater's real
+      // download plus marker-gated silent NSIS install/relaunch path. No tray,
+      // hotkeys, Codex, local server, BrowserWindow, or boot maintenance is
+      // started.
       app.on("will-quit", closeDatabase);
       try {
         await openDatabase();
@@ -1583,7 +1584,7 @@ export function bootstrapApp(): void {
           config: windowsUpdateSmokeConfig,
           checkForUpdates: () => checkForAppUpdatesNow("startup"),
           readUpdateStatus: readAppUpdateStatus,
-          installDownloadedUpdate: installDownloadedAppUpdate,
+          installDownloadedUpdate: installDownloadedWindowsUpdateSmoke,
           exit: (code) => {
             closeDatabase();
             app.exit(code);

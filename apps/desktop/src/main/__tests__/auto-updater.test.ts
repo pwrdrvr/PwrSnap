@@ -429,12 +429,42 @@ describe("auto updater selection", () => {
       throw new Error("simulated marker write failure");
     });
 
-    await expect(updater.installDownloadedAppUpdate()).resolves.toEqual({
+    await expect(updater.installDownloadedWindowsUpdateSmoke()).resolves.toEqual({
       status: "error",
       message:
         "Windows updater smoke could not persist its install-attempt marker; refusing to restart."
     });
     expect(mocks.autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+  });
+
+  test("Windows smoke installs silently and forces the signed target relaunch", async () => {
+    process.env.PWRSNAP_UPDATE_SMOKE = "1";
+    const baselineVersion = "1.1.0-update-smoke.42.1.1";
+    const targetVersion = "1.1.0-update-smoke.42.1.2";
+    mocks.autoUpdater.currentVersion = { version: baselineVersion };
+    mocks.autoUpdater.checkForUpdates.mockResolvedValue({
+      updateInfo: { version: targetVersion }
+    });
+    const updater = await importAutoUpdater();
+    updater.setWindowsUpdateSmokeConfig({
+      baselineVersion,
+      currentVersion: baselineVersion,
+      targetVersion,
+      runId: "gha-42.1",
+      feedUrl: "http://127.0.0.1:43123/",
+      userDataDir: "D:\\pwrsnap-smoke\\user-data"
+    });
+    updater.initAppUpdater();
+    await expect(updater.checkForAppUpdatesNow("startup")).resolves.toEqual({
+      status: "available",
+      version: targetVersion
+    });
+    mocks.emit("update-downloaded", { version: targetVersion });
+
+    await expect(updater.installDownloadedWindowsUpdateSmoke()).resolves.toEqual({
+      status: "restarting"
+    });
+    expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledWith(true, true);
   });
 
   test("pins the beta train to the smoke-checked main-train tag", async () => {

@@ -77,7 +77,8 @@ The runner validates, in order:
 - a silent baseline install under the isolated smoke root;
 - the baseline executable signature and exact packaged marker;
 - real update check, availability, download, install-attempt persistence,
-  `quitAndInstall`, NSIS replacement, and target relaunch;
+  marker-gated silent `quitAndInstall(true, true)`, NSIS replacement, and
+  target relaunch;
 - the target executable signature and marker;
 - exact target `app.getVersion()`, the same userData path and random continuity
   sentinel, a surviving `pwrsnap.db`, and a cleared

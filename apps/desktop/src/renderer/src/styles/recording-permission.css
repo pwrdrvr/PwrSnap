@@ -1,0 +1,104 @@
+.recording-permission {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  border-radius: 12px;
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-lg);
+  color: var(--text-primary);
+}
+
+.recording-permission__header {
+  padding: 20px 22px 14px;
+}
+
+.recording-permission__eyebrow {
+  color: var(--accent);
+  font: 650 10px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.recording-permission h1,
+.recording-permission h2,
+.recording-permission p {
+  margin: 0;
+}
+
+.recording-permission h1 {
+  margin-top: 8px;
+  font: 650 19px/1.2 var(--font-sans);
+}
+
+.recording-permission__header p,
+.recording-permission__row p {
+  margin-top: 6px;
+  color: var(--text-secondary);
+  font: 450 12px/1.45 var(--font-sans);
+}
+
+.recording-permission__list {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0 22px;
+  overflow: auto;
+}
+
+.recording-permission__row {
+  display: grid;
+  gap: 12px;
+  padding: 14px 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.recording-permission__row h2 {
+  font: 600 14px/1.2 var(--font-sans);
+}
+
+.recording-permission__actions,
+.recording-permission__footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.recording-permission__error {
+  margin: 10px 22px 0 !important;
+  color: var(--danger-text);
+  font: 500 11px/1.4 var(--font-sans);
+}
+
+.recording-permission__footer {
+  justify-content: flex-end;
+  margin-top: auto;
+  padding: 14px 22px 18px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.recording-permission__button {
+  min-height: 32px;
+  padding: 7px 11px;
+  border-radius: 6px;
+  font: 600 11px/1 var(--font-sans);
+  cursor: pointer;
+}
+
+.recording-permission__button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.recording-permission__button--primary {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--button-text-on-accent);
+}
+
+.recording-permission__button--secondary {
+  border: 1px solid var(--border-default);
+  background: transparent;
+  color: var(--text-primary);
+}

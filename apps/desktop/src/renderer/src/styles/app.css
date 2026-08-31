@@ -9,6 +9,7 @@
 @import "./documents.css";
 @import "./logs.css";
 @import "./local-agent-consent.css";
+@import "./recording-permission.css";
 
 * {
   box-sizing: border-box;

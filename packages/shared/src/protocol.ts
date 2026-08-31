@@ -148,6 +148,7 @@ export type VideoRange = {
  */
 export type RecordingState =
   | { phase: "idle" }
+  | { phase: "permission"; prompt: RecordingPermissionPrompt }
   | { phase: "preflight"; sessionId: string; rect: Rect; displayId: number }
   | {
       phase: "countdown";
@@ -220,6 +221,30 @@ export type RecordingCapabilities = {
   systemAudio: boolean;
   microphone: boolean;
 };
+
+export type RecordingPermissionGap = {
+  permission: RecordingPermission;
+  status: RecordingPermissionStatus;
+};
+
+/** One in-context decision for a recording attempt. Screen is implicit and
+ * required; audio capabilities are the user's per-take request and may be
+ * disabled only for this attempt. */
+export type RecordingPermissionPrompt = {
+  requestId: string;
+  displayId: number;
+  platform: "darwin" | "win32" | "other";
+  capabilities: RecordingCapabilities;
+  missing: RecordingPermissionGap[];
+};
+
+export type RecordingPermissionAction =
+  | { requestId: string; action: "recheck" | "cancel" }
+  | {
+      requestId: string;
+      action: "openSettings" | "continueWithout";
+      permission: RecordingPermission;
+    };
 
 /**
  * Subject of the recording. `window` seeds a fixed rect from the
@@ -4147,6 +4172,12 @@ export type Commands = {
       captureCursor?: boolean | undefined;
     };
     res: { sessionId: string };
+  };
+  /** Resolve the currently visible recording-permission prompt. The random
+   * request id binds late renderer clicks to the prompt that produced them. */
+  "recording:permissionAction": {
+    req: RecordingPermissionAction;
+    res: void;
   };
   /**
    * Stop the active recording. Persists the source clip as a Library

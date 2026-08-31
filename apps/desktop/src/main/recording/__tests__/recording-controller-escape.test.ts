@@ -28,7 +28,9 @@ const originalPlatform = process.platform;
 type WindowSpy = {
   isDestroyed: ReturnType<typeof vi.fn>;
   setIgnoreMouseEvents: ReturnType<typeof vi.fn>;
+  setClosable: ReturnType<typeof vi.fn>;
   setFocusable: ReturnType<typeof vi.fn>;
+  setAlwaysOnTop: ReturnType<typeof vi.fn>;
   setMinimumSize: ReturnType<typeof vi.fn>;
   setContentSize: ReturnType<typeof vi.fn>;
   getContentSize: ReturnType<typeof vi.fn>;
@@ -38,6 +40,7 @@ type WindowSpy = {
   showInactive: ReturnType<typeof vi.fn>;
   show: ReturnType<typeof vi.fn>;
   focus: ReturnType<typeof vi.fn>;
+  blur: ReturnType<typeof vi.fn>;
   moveTop: ReturnType<typeof vi.fn>;
   hide: ReturnType<typeof vi.fn>;
   destroy: ReturnType<typeof vi.fn>;
@@ -57,7 +60,9 @@ function makeWindowSpy(): WindowSpy {
   return {
     isDestroyed: vi.fn(() => false),
     setIgnoreMouseEvents: vi.fn(),
+    setClosable: vi.fn(),
     setFocusable: vi.fn(),
+    setAlwaysOnTop: vi.fn(),
     setMinimumSize: vi.fn(),
     setContentSize: vi.fn(),
     getContentSize: vi.fn(() => [420, 80]),
@@ -67,6 +72,7 @@ function makeWindowSpy(): WindowSpy {
     showInactive: vi.fn(),
     show: vi.fn(),
     focus: vi.fn(),
+    blur: vi.fn(),
     moveTop: vi.fn(),
     hide: vi.fn(),
     destroy: vi.fn(),
@@ -166,6 +172,68 @@ beforeEach(() => {
 });
 
 describe("recording-controller lead-in Escape shortcut", () => {
+  test("permission decisions stay raised until explicitly lowered for System Settings", async () => {
+    const {
+      applyRecordingStateToController,
+      lowerRecordingPermissionController
+    } = await import("../recording-controller");
+
+    applyRecordingStateToController({
+      phase: "permission",
+      prompt: {
+        requestId: "permission-1",
+        displayId: 1,
+        platform: "darwin",
+        capabilities: { microphone: true, systemAudio: false },
+        missing: [{ permission: "microphone", status: "denied" }]
+      }
+    });
+
+    const win = mocks.createdWindows[0]!;
+    expect(win.setClosable).toHaveBeenCalledWith(false);
+    expect(win.setFocusable).toHaveBeenCalledWith(true);
+    expect(win.setIgnoreMouseEvents).toHaveBeenCalledWith(false);
+    expect(win.setAlwaysOnTop).toHaveBeenCalledWith(true, "floating");
+    expect(win.show).toHaveBeenCalledTimes(1);
+    expect(win.moveTop).toHaveBeenCalledTimes(1);
+    expect(win.focus).toHaveBeenCalledTimes(1);
+
+    lowerRecordingPermissionController();
+    expect(win.setAlwaysOnTop).toHaveBeenLastCalledWith(false);
+    expect(win.blur).toHaveBeenCalledTimes(1);
+    expect(win.moveTop).toHaveBeenCalledTimes(1);
+    expect(win.focus).toHaveBeenCalledTimes(1);
+  });
+
+  test("closing or losing the permission renderer notifies the prompt broker", async () => {
+    const {
+      applyRecordingStateToController,
+      subscribeToRecordingPermissionControllerUnavailable
+    } = await import("../recording-controller");
+    const unavailable = vi.fn();
+    const unsubscribe = subscribeToRecordingPermissionControllerUnavailable(unavailable);
+
+    applyRecordingStateToController({
+      phase: "permission",
+      prompt: {
+        requestId: "permission-1",
+        displayId: 1,
+        platform: "darwin",
+        capabilities: { microphone: true, systemAudio: false },
+        missing: [{ permission: "microphone", status: "denied" }]
+      }
+    });
+
+    const win = mocks.createdWindows[0]!;
+    win.listeners.get("closed")?.();
+    win.webContents.listeners.get("render-process-gone")?.();
+    win.webContents.listeners.get("did-fail-load")?.({}, -1, "failed", "", true);
+    win.webContents.listeners.get("did-fail-load")?.({}, -1, "subframe", "", false);
+
+    expect(unavailable).toHaveBeenCalledTimes(3);
+    unsubscribe();
+  });
+
   test("Escape during countdown dispatches recording:cancel through the command bus", async () => {
     const { applyRecordingStateToController } = await import("../recording-controller");
 
@@ -241,6 +309,7 @@ describe("recording-controller lead-in Escape shortcut", () => {
     const win = mocks.createdWindows[0]!;
     expect(win.setContentSize).toHaveBeenCalledWith(480, 176, false);
     expect(win.setIgnoreMouseEvents).toHaveBeenCalledWith(false);
+    expect(win.setClosable).toHaveBeenCalledWith(false);
     expect(win.setFocusable).toHaveBeenCalledWith(true);
     expect(win.show).toHaveBeenCalled();
     expect(win.focus).toHaveBeenCalled();

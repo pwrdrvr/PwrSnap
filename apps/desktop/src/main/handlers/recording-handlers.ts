@@ -17,6 +17,7 @@ import type {
   RecordingCapabilities,
   RecordingFailureCode,
   RecordingPermission,
+  RecordingPermissionAction,
   Result,
   VideoExportRequest,
   VideoPreset,
@@ -45,10 +46,23 @@ import {
 } from "../capture/screen-permission-gate";
 import { ensureCapturesDirReady } from "../capture/capture-storage-gate";
 import {
+  actOnRecordingPermissionPrompt,
+  cancelRecordingPermissionPrompt,
+  RecordingPermissionPromptError,
+  requestRecordingPermissions
+} from "../recording/recording-permission-prompt";
+import {
   getRecordingService,
   type RecordingService
 } from "../recording/recording-service";
-import { getRecordingState } from "../recording/recording-state";
+import {
+  getRecordingState,
+  isRecordingActive
+} from "../recording/recording-state";
+import {
+  snapshotRecordingForeground,
+  type RecordingForegroundRestorer
+} from "../recording/recording-foreground";
 import {
   computeOutputDimensions,
   exportVideoRange,
@@ -81,6 +95,17 @@ function isKnownPermission(value: unknown): value is RecordingPermission {
   return typeof value === "string" && (KNOWN_PERMISSIONS as readonly string[]).includes(value);
 }
 
+function isRecordingPermissionAction(value: unknown): value is RecordingPermissionAction {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.requestId !== "string") return false;
+  if (candidate.action === "cancel" || candidate.action === "recheck") return true;
+  return (
+    (candidate.action === "openSettings" || candidate.action === "continueWithout") &&
+    isKnownPermission(candidate.permission)
+  );
+}
+
 function permissionError(code: string, message: string): PwrSnapError {
   return { kind: "permission", code, message };
 }
@@ -110,9 +135,12 @@ function failedSessionId(req: unknown): string | null {
  * the service-owned capability snapshot, so permission/storage changes while
  * a durable failure card is open are caught before another countdown begins. */
 async function guardRecordingAttempt(
-  capabilities: RecordingCapabilities
+  capabilities: RecordingCapabilities,
+  options: { routeScreenToSettings?: boolean } = {}
 ): Promise<Result<never, PwrSnapError> | null> {
-  const blocked = await guardScreenCapture();
+  const blocked = await guardScreenCapture({
+    routeToSettings: options.routeScreenToSettings ?? true
+  });
   if (blocked) return blocked;
   const storageBlocked = await ensureCapturesDirReady();
   if (storageBlocked) return storageBlocked;
@@ -282,7 +310,35 @@ export function registerRecordingHandlers(): void {
 
   // ---- recording lifecycle ----
 
-  bus.register("recording:start", async (req) => {
+  bus.register("recording:permissionAction", async (req) => {
+    if (!isRecordingPermissionAction(req)) {
+      return err(
+        validationError(
+          "invalid_permission_action",
+          "recording:permissionAction received an invalid action."
+        )
+      );
+    }
+    try {
+      await actOnRecordingPermissionPrompt(req);
+      return ok(undefined);
+    } catch (cause) {
+      if (cause instanceof RecordingPermissionPromptError) {
+        return err(permissionError(cause.code, cause.message));
+      }
+      if (cause instanceof UnsupportedPermissionSettingsError) {
+        return err(permissionError("permission_settings_unsupported", cause.message));
+      }
+      return err(
+        permissionError(
+          "permission_action_failed",
+          cause instanceof Error ? cause.message : String(cause)
+        )
+      );
+    }
+  });
+
+  bus.register("recording:start", async (req, ctx) => {
     if (getRecordingState().phase === "failed") {
       return err(
         validationError(
@@ -291,18 +347,57 @@ export function registerRecordingHandlers(): void {
         )
       );
     }
-    // Preflight permissions before the countdown so the user is
-    // never staring at "3, 2, 1, …" only to hit a permission wall.
-    // Screen Recording is required: the gate fires the macOS prompt on
-    // the first-ever attempt and routes to System Settings thereafter
-    // (see screen-permission-gate.ts). Missing audio is a degraded
-    // continuation that the selector dialog handled before calling us.
-    const blocked = await guardRecordingAttempt(req.capabilities);
-    if (blocked) return blocked;
+    // Reject before publishing the permission phase. Otherwise a second
+    // start can replace the active recording HUD with a prompt and a prompt
+    // cancellation can falsely publish idle while the recorder keeps going.
+    if (isRecordingActive()) {
+      return err(
+        recordingError("already_recording", "A recording is already in progress.")
+      );
+    }
+
+    let foreground: RecordingForegroundRestorer | null = null;
     try {
+      let capabilities = { ...req.capabilities };
+      if (ctx.principal === "ipc") {
+        // The permission panel is intentionally focusable. Preserve the app
+        // that was foreground at command entry and put it back before native
+        // capture starts so our own UI cannot change the selected pixels.
+        foreground = await snapshotRecordingForeground();
+        const permissionOutcome = await requestRecordingPermissions(
+          capabilities,
+          req.subject.displayId
+        );
+        if (permissionOutcome.status === "busy") {
+          return err(
+            validationError(
+              "permission_prompt_active",
+              "A recording permission prompt is already active."
+            )
+          );
+        }
+        if (permissionOutcome.status === "cancelled") {
+          return err({
+            kind: "validation",
+            code: "cancelled",
+            message: "Recording cancelled before capture started."
+          });
+        }
+        capabilities = permissionOutcome.capabilities;
+      }
+
+      // The interactive prompt owns OS-settings routing. Non-renderer
+      // callers retain the legacy guard behavior without opening a UI they
+      // cannot control.
+      const blocked = await guardRecordingAttempt(capabilities, {
+        routeScreenToSettings: ctx.principal !== "ipc"
+      });
+      if (blocked) return blocked;
+
+      await foreground?.restore();
       const session = await getService().start({
         subject: req.subject,
-        capabilities: req.capabilities,
+        capabilities,
         captureCursor: req.captureCursor,
         countdownSeconds: req.countdownSeconds ?? 3
       });
@@ -330,6 +425,8 @@ export function registerRecordingHandlers(): void {
           safeFailureSummary("recorder_start_failed")
         )
       );
+    } finally {
+      await foreground?.restore();
     }
   });
 
@@ -355,6 +452,7 @@ export function registerRecordingHandlers(): void {
         )
       );
     }
+    if (cancelRecordingPermissionPrompt()) return ok(undefined);
     try {
       await getService().cancel();
       return ok(undefined);

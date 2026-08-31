@@ -44,6 +44,28 @@ let failedWindowCrashCount = 0;
 let failedRendererDisabledSessionId: string | null = null;
 let failedFallbackInFlight = false;
 let resizeChannelWired = false;
+const permissionControllerUnavailableSubscribers = new Set<() => void>();
+
+function notifyPermissionControllerUnavailable(): void {
+  for (const subscriber of permissionControllerUnavailableSubscribers) {
+    try {
+      subscriber();
+    } catch (cause) {
+      log.warn("recording permission controller close subscriber threw", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
+  }
+}
+
+/** Observe loss of the interactive permission surface. The prompt broker uses
+ * this to resolve its pending request instead of leaving recording:start hung. */
+export function subscribeToRecordingPermissionControllerUnavailable(
+  handler: () => void
+): () => void {
+  permissionControllerUnavailableSubscribers.add(handler);
+  return () => permissionControllerUnavailableSubscribers.delete(handler);
+}
 
 function clearFailedWindowRecreateTimer(): void {
   if (failedWindowRecreateTimer === null) return;
@@ -178,10 +200,18 @@ function ensureWindow(): BrowserWindow {
   });
   window.on("closed", () => {
     if (window === createdWindow) window = null;
+    notifyPermissionControllerUnavailable();
   });
   window.webContents.on("render-process-gone", () => {
+    notifyPermissionControllerUnavailable();
     scheduleFailedWindowRecreate(createdWindow);
   });
+  window.webContents.on(
+    "did-fail-load",
+    (_event, _errorCode, _errorDescription, _validatedUrl, isMainFrame) => {
+      if (isMainFrame) notifyPermissionControllerUnavailable();
+    }
+  );
   return window;
 }
 
@@ -272,6 +302,16 @@ function anchorTopCenter(win: BrowserWindow, recordedDisplayId?: number): void {
   const x = Math.round(wa.x + (wa.width - w) / 2);
   const y = Math.round(wa.y + 16);
   win.setPosition(x, y, false);
+}
+
+function sizePermissionPanel(win: BrowserWindow, displayId: number): void {
+  const display =
+    screen.getAllDisplays().find((candidate) => candidate.id === displayId) ??
+    screen.getPrimaryDisplay();
+  const width = Math.min(520, Math.max(1, display.workArea.width - 32));
+  const height = Math.min(500, Math.max(1, display.workArea.height - 32));
+  win.setContentSize(width, height, false);
+  anchorTopCenter(win, displayId);
 }
 
 
@@ -404,18 +444,44 @@ function disarmLeadInEscapeShortcut(): void {
   escapeShortcutArmed = false;
 }
 
+/** Let the platform Settings window own focus while the user changes access.
+ * A genuine return-to-app event or an explicit Check republishes the prompt
+ * and raises the panel again. */
+export function lowerRecordingPermissionController(): void {
+  if (window === null || window.isDestroyed()) return;
+  window.setAlwaysOnTop(false);
+  window.blur();
+}
+
 /**
  * React to a recording-state transition. Idempotent — called from
  * the broadcast pipeline on every transition, branches on phase.
  */
 export function applyRecordingStateToController(state: RecordingState): void {
   switch (state.phase) {
+    case "permission": {
+      const win = ensureWindow();
+      disarmLeadInEscapeShortcut();
+      // The permission decision must stay available until an explicit action;
+      // native close shortcuts would otherwise orphan the pending command.
+      win.setClosable(false);
+      win.setFocusable(true);
+      win.setIgnoreMouseEvents(false);
+      win.setAlwaysOnTop(true, "floating");
+      sizePermissionPanel(win, state.prompt.displayId);
+      if (!win.isVisible()) win.show();
+      win.moveTop();
+      win.focus();
+      break;
+    }
     case "preflight":
     case "countdown":
     case "starting": {
       const win = ensureWindow();
       armLeadInEscapeShortcut();
+      win.setClosable(true);
       win.setFocusable(false);
+      win.setAlwaysOnTop(true, "floating");
       // Countdown overlay sits over the user's content; clicks
       // should fall through to the recorded surface so they don't
       // accidentally hit our window. setIgnoreMouseEvents enables
@@ -471,7 +537,9 @@ export function applyRecordingStateToController(state: RecordingState): void {
       // pixels. Width fits the three-button row (Stop / Restart /
       // Cancel); height accommodates the "not visible in recording"
       // reassurance caption underneath.
+      win.setClosable(true);
       win.setFocusable(false);
+      win.setAlwaysOnTop(true, "floating");
       win.setIgnoreMouseEvents(false);
       win.setContentSize(420, 80, false);
       if (process.platform === "win32") {
@@ -490,7 +558,9 @@ export function applyRecordingStateToController(state: RecordingState): void {
     case "processing": {
       const win = ensureWindow();
       disarmLeadInEscapeShortcut();
+      win.setClosable(true);
       win.setFocusable(false);
+      win.setAlwaysOnTop(true, "floating");
       win.setIgnoreMouseEvents(false);
       win.setContentSize(420, 80, false);
       // Preserve the recording-phase position. On Windows the HUD may be
@@ -509,6 +579,7 @@ export function applyRecordingStateToController(state: RecordingState): void {
       }
       const win = ensureWindow();
       disarmLeadInEscapeShortcut();
+      win.setClosable(false);
       win.setIgnoreMouseEvents(false);
       win.setFocusable(true);
       resizeFailedWindow(win, FAILED_INITIAL_HEIGHT_CSS, state.displayId);

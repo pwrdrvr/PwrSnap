@@ -123,6 +123,9 @@ const TRAY_RESIZE_CHANNEL = "tray:resize";
 // "tail" (its box-shadow bleeding into transparent space) and from
 // extending the window's bottom edge into the Dock area.
 const FLOAT_OVER_RESIZE_CHANNEL = "float-over:resize";
+// Failed recording cards are content-sized as well. This channel is accepted
+// only from the live recording-controller webContents in main.
+const RECORDING_CONTROLLER_RESIZE_CHANNEL = "recording-controller:resize";
 // Windows custom title-bar menu bar. The renderer fetches the top-level menu
 // labels (`app-menu:model`) and, on click / Alt-mnemonic, asks main to pop the
 // real native submenu at the button's location (`app-menu:popup`). See
@@ -283,6 +286,11 @@ const pwrsnapApi = {
    */
   requestFloatOverResize(payload: { width: number; height: number }): void {
     ipcRenderer.send(FLOAT_OVER_RESIZE_CHANNEL, payload);
+  },
+  /** Failed recording HUD renderer → main content measurement. Main converts
+   * CSS pixels through the inherited page zoom before resizing the window. */
+  requestRecordingControllerResize(payload: { height: number }): void {
+    ipcRenderer.send(RECORDING_CONTROLLER_RESIZE_CHANNEL, payload);
   },
   /**
    * Windows custom menu bar → main: fetch the current top-level application

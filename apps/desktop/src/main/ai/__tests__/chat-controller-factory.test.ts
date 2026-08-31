@@ -155,15 +155,15 @@ function approvalBrokerDouble(overrides: {
     owner: object,
     resolve: ChatApprovalResolver
   ) => boolean;
-  closeOwner?: (owner: object) => Promise<void>;
-  closeThread?: (threadId: string) => Promise<void>;
+  closeOwner?: (owner: object) => void | Promise<void>;
+  closeThread?: (threadId: string) => void | Promise<void>;
   openThread?: (threadId: string) => void;
 } = {}): ChatApprovalBroker {
   return {
     register: overrides.register ?? (() => true),
     decorateThread: (view: LibraryChatThreadView) => view,
-    closeOwner: overrides.closeOwner ?? (async () => undefined),
-    closeThread: overrides.closeThread ?? (async () => undefined),
+    closeOwner: overrides.closeOwner ?? (() => undefined),
+    closeThread: overrides.closeThread ?? (() => undefined),
     openThread: overrides.openThread ?? (() => undefined)
   } as unknown as ChatApprovalBroker;
 }
@@ -325,7 +325,7 @@ describe("buildChatSurface — backend selection", () => {
     );
   });
 
-  test("does not discover or spawn a disabled acp provider", async () => {
+  test("rejects a disabled explicit ACP provider without falling back to Codex", async () => {
     const makeCodexClient = vi.fn(() => stubBackend());
     const makeAcpClient = vi.fn(() => stubAcpResult());
     const discoverAcpAgentInstances = vi.fn(async () => [discoveredGeminiGroup()]);
@@ -335,20 +335,28 @@ describe("buildChatSurface — backend selection", () => {
       discoverAcpAgentInstances
     };
 
-    await buildChatSurface(
-      baseConfig({
-        provider: "acp:gemini",
-        readSettings: settingsWithAcpPref("gemini", { overridePath: "/custom/gemini" }, false)
-      }),
-      deps
+    await expect(
+      buildChatSurface(
+        baseConfig({
+          provider: "acp:gemini",
+          readSettings: settingsWithAcpPref(
+            "gemini",
+            { overridePath: "/custom/gemini" },
+            false
+          )
+        }),
+        deps
+      )
+    ).rejects.toThrow(
+      'Configured chat provider "acp:gemini" is unavailable because Gemini CLI is disabled'
     );
 
     expect(discoverAcpAgentInstances).not.toHaveBeenCalled();
     expect(makeAcpClient).not.toHaveBeenCalled();
-    expect(makeCodexClient).toHaveBeenCalledTimes(1);
+    expect(makeCodexClient).not.toHaveBeenCalled();
   });
 
-  test("falls back to Codex when the ACP agent is not installed", async () => {
+  test("rejects a missing explicit ACP provider without falling back to Codex", async () => {
     const makeCodexClient = vi.fn(() => stubBackend());
     const makeAcpClient = vi.fn(() => stubAcpResult());
     const discoverAcpAgentInstances = vi.fn(async () => [] as DiscoveredAcpAgentGroup[]);
@@ -358,14 +366,18 @@ describe("buildChatSurface — backend selection", () => {
       discoverAcpAgentInstances
     };
 
-    await buildChatSurface(baseConfig({ provider: "acp:gemini" }), deps);
+    await expect(
+      buildChatSurface(baseConfig({ provider: "acp:gemini" }), deps)
+    ).rejects.toThrow(
+      'Configured chat provider "acp:gemini" is unavailable because Gemini CLI is not installed or could not be found'
+    );
 
     expect(discoverAcpAgentInstances).toHaveBeenCalledTimes(1);
     expect(makeAcpClient).not.toHaveBeenCalled();
-    expect(makeCodexClient).toHaveBeenCalledTimes(1);
+    expect(makeCodexClient).not.toHaveBeenCalled();
   });
 
-  test("falls back to Codex when ACP discovery throws", async () => {
+  test("rejects when explicit ACP discovery fails without falling back to Codex", async () => {
     const makeCodexClient = vi.fn(() => stubBackend());
     const makeAcpClient = vi.fn(() => stubAcpResult());
     const discoverAcpAgentInstances = vi.fn(async () => {
@@ -377,11 +389,38 @@ describe("buildChatSurface — backend selection", () => {
       discoverAcpAgentInstances
     };
 
-    await buildChatSurface(baseConfig({ provider: "acp:gemini" }), deps);
+    await expect(
+      buildChatSurface(baseConfig({ provider: "acp:gemini" }), deps)
+    ).rejects.toThrow(
+      'Configured chat provider "acp:gemini" is unavailable because Gemini CLI discovery failed: probe blew up'
+    );
 
     expect(makeAcpClient).not.toHaveBeenCalled();
-    expect(makeCodexClient).toHaveBeenCalledTimes(1);
+    expect(makeCodexClient).not.toHaveBeenCalled();
   });
+
+  test.each(["openai", "acp:not-a-real-agent"])(
+    'rejects unknown explicit provider "%s" without falling back to Codex',
+    async (provider) => {
+      const makeCodexClient = vi.fn(() => stubBackend());
+      const makeAcpClient = vi.fn(() => stubAcpResult());
+      const discoverAcpAgentInstances = vi.fn(
+        async () => [] as DiscoveredAcpAgentGroup[]
+      );
+
+      await expect(
+        buildChatSurface(baseConfig({ provider }), {
+          makeCodexClient,
+          makeAcpClient,
+          discoverAcpAgentInstances
+        })
+      ).rejects.toThrow(`Configured chat provider "${provider}" is not supported`);
+
+      expect(discoverAcpAgentInstances).not.toHaveBeenCalled();
+      expect(makeAcpClient).not.toHaveBeenCalled();
+      expect(makeCodexClient).not.toHaveBeenCalled();
+    }
+  );
 });
 
 // ---- chatControllerSignature — what triggers a controller rebuild --------
@@ -566,6 +605,41 @@ describe("buildChatSurface — dispose", () => {
     }
   });
 
+  test("releases exact host turn state on terminal backend events", async () => {
+    const controlled = controllableBackend();
+    const onTurnTerminal = vi.fn();
+    const surface = await buildChatSurface(
+      baseConfig({ provider: "codex", onTurnTerminal }),
+      { makeCodexClient: () => controlled.backend }
+    );
+
+    controlled.emit({
+      kind: "turn_completed",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      status: "completed"
+    });
+    controlled.emit({
+      kind: "error",
+      threadId: "thread-2",
+      turnId: "turn-2",
+      message: "failed",
+      willRetry: false
+    });
+    controlled.emit({
+      kind: "error",
+      threadId: "thread-3",
+      turnId: "turn-3",
+      message: "retrying",
+      willRetry: true
+    });
+
+    expect(onTurnTerminal).toHaveBeenCalledTimes(2);
+    expect(onTurnTerminal).toHaveBeenNthCalledWith(1, "thread-1", "turn-1");
+    expect(onTurnTerminal).toHaveBeenNthCalledWith(2, "thread-2", "turn-2");
+    await surface.dispose();
+  });
+
   test("registers an approval resolver bound to the exact originating controller", async () => {
     // The kit publishes awaiting/idle thread status around its private approval
     // promise. This factory-level test has no app database, so keep that
@@ -720,7 +794,7 @@ describe("buildChatSurface — dispose", () => {
     vi.mocked(controlled.backend.close).mockImplementation(async () => {
       order.push("backend.close");
     });
-    const closeOwner = vi.fn(async () => {
+    const closeOwner = vi.fn(() => {
       order.push("broker.closeOwner");
       controlled.emit({
         kind: "tool_call",
@@ -765,7 +839,7 @@ describe("buildChatSurface — dispose", () => {
 
   test("still closes the exclusive backend when broker-owner cleanup fails", async () => {
     const codexBackend = stubBackend();
-    const closeOwner = vi.fn(async () => {
+    const closeOwner = vi.fn(() => {
       throw new Error("deny callback failed");
     });
     const surface = await buildChatSurface(

@@ -94,6 +94,14 @@ function getSend(el: HTMLElement): HTMLButtonElement {
   return btn;
 }
 
+function getStop(el: HTMLElement): HTMLButtonElement {
+  const btn = el.querySelector<HTMLButtonElement>(
+    '[data-testid="composer-stop"]'
+  );
+  if (btn === null) throw new Error("stop button not found");
+  return btn;
+}
+
 // Set the controlled textarea value via the native setter + an input
 // event so React's onChange fires (the React-controlled input idiom).
 async function typeInto(ta: HTMLTextAreaElement, value: string): Promise<void> {
@@ -308,5 +316,210 @@ describe("Composer", () => {
     });
     expect(onSubmit).toHaveBeenCalledWith("click submit", []);
     expect(ta.value).toBe("");
+  });
+
+  test("shows an accessible Stop only during an active turn and blocks Enter sends", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const onStop = vi.fn().mockResolvedValue(undefined);
+    const el = await renderComposer({ onSubmit, onStop, turnState: "active" });
+    const ta = getTextarea(el);
+    await typeInto(ta, "next-message draft");
+
+    expect(el.querySelector('[data-testid="composer-send"]')).toBeNull();
+    expect(getStop(el).getAttribute("aria-label")).toBe("Stop response");
+    expect(ta.disabled).toBe(false);
+
+    await pressKey(ta, { key: "Enter" });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(ta.value).toBe("next-message draft");
+  });
+
+  test("double-clicking Stop invokes the cancellation callback once", async () => {
+    const stop = deferred<void>();
+    const onStop = vi.fn().mockReturnValue(stop.promise);
+    const el = await renderComposer({
+      onSubmit: vi.fn().mockResolvedValue(undefined),
+      onStop,
+      turnState: "active"
+    });
+
+    await act(async () => {
+      getStop(el).click();
+      getStop(el).click();
+      await Promise.resolve();
+    });
+    expect(onStop).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      stop.resolve();
+      await stop.promise;
+    });
+  });
+
+  test("stopping disables Stop and lifecycle changes preserve a typed draft", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const onStop = vi.fn().mockResolvedValue(undefined);
+    const el = await renderComposer({ onSubmit, onStop, turnState: "active" });
+    const ta = getTextarea(el);
+    await typeInto(ta, "keep this draft");
+
+    await act(async () => {
+      root?.render(createElement(Composer, { onSubmit, onStop, turnState: "stopping" }));
+      await Promise.resolve();
+    });
+    expect(getStop(el).disabled).toBe(true);
+    expect(getTextarea(el).value).toBe("keep this draft");
+
+    await act(async () => {
+      root?.render(createElement(Composer, { onSubmit, onStop, turnState: "idle" }));
+      await Promise.resolve();
+    });
+    expect(el.querySelector('[data-testid="composer-stop"]')).toBeNull();
+    expect(getSend(el)).not.toBeNull();
+    expect(getTextarea(el).value).toBe("keep this draft");
+  });
+
+  test("a rejected send keeps the draft for retry", async () => {
+    const onSubmit = vi.fn().mockRejectedValue(new Error("offline"));
+    const el = await renderComposer({ onSubmit });
+    const ta = getTextarea(el);
+    await typeInto(ta, "retry me");
+
+    await pressKey(ta, { key: "Enter" });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(ta.value).toBe("retry me");
+    expect(getSend(el).disabled).toBe(false);
+  });
+
+  test("a synchronous submit throw releases the latch and keeps the draft", async () => {
+    const onSubmit = vi.fn(() => {
+      throw new Error("offline");
+    }) as unknown as ComposerProps["onSubmit"];
+    const el = await renderComposer({ onSubmit });
+    const ta = getTextarea(el);
+    await typeInto(ta, "retry sync failure");
+
+    await pressKey(ta, { key: "Enter" });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(ta.value).toBe("retry sync failure");
+    expect(getSend(el).disabled).toBe(false);
+  });
+
+  test("hydrates an opt-in external draft and reports edits without clearing on rejection", async () => {
+    const onDraftChange = vi.fn();
+    const onSubmit = vi.fn().mockRejectedValue(new Error("offline"));
+    const el = await renderComposer({
+      onSubmit,
+      initialText: "restored draft",
+      onDraftChange
+    });
+    const ta = getTextarea(el);
+    expect(ta.value).toBe("restored draft");
+
+    await typeInto(ta, "updated draft");
+    expect(onDraftChange).toHaveBeenLastCalledWith("updated draft");
+    await pressKey(ta, { key: "Enter" });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(ta.value).toBe("updated draft");
+    expect(onDraftChange).not.toHaveBeenCalledWith("");
+  });
+
+  test("reports an empty external draft after a successful submit", async () => {
+    const onDraftChange = vi.fn();
+    const el = await renderComposer({
+      onSubmit: vi.fn().mockResolvedValue(undefined),
+      initialText: "send me",
+      onDraftChange
+    });
+    await pressKey(getTextarea(el), { key: "Enter" });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(onDraftChange).toHaveBeenLastCalledWith("");
+  });
+
+  test("does not clear a newer draft typed while the submitted message settles", async () => {
+    const sending = deferred<void>();
+    const onDraftChange = vi.fn();
+    const el = await renderComposer({
+      onSubmit: vi.fn().mockReturnValue(sending.promise),
+      onDraftChange
+    });
+    const textarea = getTextarea(el);
+    await typeInto(textarea, "first message");
+    await pressKey(textarea, { key: "Enter" });
+    await typeInto(textarea, "next message");
+
+    await act(async () => {
+      sending.resolve();
+      await sending.promise;
+      await Promise.resolve();
+    });
+
+    expect(textarea.value).toBe("next message");
+    expect(onDraftChange).toHaveBeenLastCalledWith("next message");
+  });
+
+  test("does not clear a newer external draft written after the submitting composer unmounts", async () => {
+    const sending = deferred<void>();
+    let nextRevision = 2;
+    let storedDraft: { text: string; revision: number } | null = {
+      text: "first message",
+      revision: 1
+    };
+    const onDraftChange = vi.fn((text: string): number => {
+      const revision = nextRevision++;
+      storedDraft = text === "" ? null : { text, revision };
+      return revision;
+    });
+    const onDraftClear = vi.fn((revision: number): void => {
+      if (storedDraft?.revision === revision) storedDraft = null;
+    });
+
+    const el = await renderComposer({
+      onSubmit: vi.fn().mockReturnValue(sending.promise),
+      initialText: "first message",
+      initialDraftRevision: 1,
+      onDraftChange,
+      onDraftClear
+    });
+    await pressKey(getTextarea(el), { key: "Enter" });
+
+    await act(async () => {
+      root?.render(
+        createElement(Composer, {
+          key: "remounted",
+          onSubmit: vi.fn().mockResolvedValue(undefined),
+          initialText: "first message",
+          initialDraftRevision: 1,
+          onDraftChange,
+          onDraftClear
+        })
+      );
+      await Promise.resolve();
+    });
+    await typeInto(getTextarea(el), "newer remounted draft");
+
+    await act(async () => {
+      sending.resolve();
+      await sending.promise;
+      await Promise.resolve();
+    });
+
+    expect(storedDraft).toEqual({ text: "newer remounted draft", revision: 2 });
+    expect(onDraftClear).toHaveBeenCalledWith(1);
+    expect(getTextarea(el).value).toBe("newer remounted draft");
   });
 });

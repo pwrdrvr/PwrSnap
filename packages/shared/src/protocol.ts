@@ -143,7 +143,8 @@ export type VideoRange = {
  * surface the new capture; the float-over loads on `ready`.
  *
  * Carries the optional `captureId` once a row is persisted (`ready`)
- * and an `error` payload on the `failed` arm.
+ * and a renderer-safe failure code on the `failed` arm. Raw recorder
+ * errors remain in the main-process log.
  */
 export type RecordingState =
   | { phase: "idle" }
@@ -172,7 +173,41 @@ export type RecordingState =
   | { phase: "stopping"; sessionId: string }
   | { phase: "processing"; sessionId: string }
   | { phase: "ready"; sessionId: string; captureId: string }
-  | { phase: "failed"; sessionId: string; code: string; message: string };
+  | {
+      phase: "failed";
+      sessionId: string;
+      code: RecordingFailureCode;
+      canRetry: boolean;
+      displayId: number;
+    };
+
+export type RecordingFailureCode =
+  | "recorder_unavailable"
+  | "recorder_start_failed"
+  | "recorder_spawn_failed"
+  | "recorder_exited"
+  | "stop_timeout"
+  | "stop_failed"
+  | "processing_failed";
+
+/** Fixed renderer-safe copy. Raw helper errors, stderr, argv, and paths stay
+ * in the owning main-process log and never cross the recording-state event. */
+export function recordingFailureSummary(code: RecordingFailureCode): string {
+  switch (code) {
+    case "recorder_unavailable":
+      return "PwrSnap couldn't find the video recorder.";
+    case "recorder_start_failed":
+    case "recorder_spawn_failed":
+      return "The video recorder couldn't start.";
+    case "recorder_exited":
+      return "The video recorder stopped unexpectedly.";
+    case "stop_timeout":
+    case "stop_failed":
+      return "The video recorder couldn't finish the recording.";
+    case "processing_failed":
+      return "The recording stopped, but PwrSnap couldn't add it to your Library.";
+  }
+}
 
 /**
  * Capabilities the user wanted included in this recording session.
@@ -4141,6 +4176,12 @@ export type Commands = {
    * is in flight.
    */
   "recording:restart": { req: Record<string, never>; res: { sessionId: string } };
+  /** Retry only the currently displayed failed session with its original
+   * subject/capabilities. A stale failure card cannot start a new take. */
+  "recording:retry": { req: { sessionId: string }; res: { sessionId: string } };
+  /** Dismiss only the currently displayed failed session. This is separate
+   * from cancel so a stale failure card cannot cancel a newer recording. */
+  "recording:dismissFailure": { req: { sessionId: string }; res: void };
   /**
    * Current recording state. Renderers that mount mid-flight (the
    * Library window opened after a recording started) call this once
@@ -4378,7 +4419,6 @@ export type Commands = {
     res: { runId: string };
   };
   "codex:cancel": { req: { runId: string }; res: void };
-  "codex:ask": { req: { captureId: string; message: string }; res: { threadId: string } };
 
   // ---- Library Chat (Phase 0) — long-lived, tool-equipped chat threads ----
   //
@@ -4415,16 +4455,17 @@ export type Commands = {
     };
     res: LibraryChatThreadView;
   };
-  /** Send a user message + (optionally) attached image paths. Returns
-   *  the turnId; streaming deltas + the committed assistant message
-   *  arrive via `events:libraryChat:*`. `anchorCaptureId` lets the
-   *  renderer pin the thread to whatever the user is currently viewing
-   *  so the per-turn context is accurate. */
+  /** Send a user message. Returns the turnId; streaming deltas + the
+   *  committed assistant message arrive via `events:libraryChat:*`.
+   *  `anchorCaptureId` lets the renderer pin the thread to whatever the
+   *  user is currently viewing so the per-turn context is accurate. The
+   *  active capture is available through the bounded `render_composite`
+   *  tool; arbitrary renderer-provided image paths are intentionally not
+   *  accepted. */
   "codex:libraryChat:send": {
     req: {
       threadId: string;
       text: string;
-      imageAttachmentPaths?: string[];
       anchorCaptureId?: string | null;
     };
     res: { turnId: string };

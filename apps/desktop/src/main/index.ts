@@ -104,10 +104,13 @@ import {
   registerLibraryWindowHandlers
 } from "./handlers/library-handlers";
 import { registerRecordingHandlers } from "./handlers/recording-handlers";
-import { installRecordingController } from "./recording/recording-controller";
+import {
+  disposeRecordingController,
+  installRecordingController
+} from "./recording/recording-controller";
 import { readRecordingReadiness } from "./recording/recording-permissions";
 import { getRecordingService } from "./recording/recording-service";
-import { isRecordingActive } from "./recording/recording-state";
+import { getRecordingState, isRecordingActive } from "./recording/recording-state";
 import { videoAssetDir } from "./recording/video-frames";
 import {
   getDesktopSettingsServices,
@@ -1145,6 +1148,10 @@ function pickFocusTargetForRecording(overlapping: BrowserWindow[]): BrowserWindo
  */
 async function runInteractiveRecord(protectWindowIds: readonly number[] = []): Promise<void> {
   const log = getMainLogger("pwrsnap:shortcut");
+  if (getRecordingState().phase === "failed") {
+    log.info("recording start ignored while a failure awaits Retry or Dismiss");
+    return;
+  }
   const session = acquireInteractiveCaptureSession("video");
   if (session.status === "busy") {
     log.info("video picker invocation suppressed", {
@@ -1401,6 +1408,7 @@ async function runInteractiveRecord(protectWindowIds: readonly number[] = []): P
             code: result.error.code,
             message: result.error.message
           });
+          if (getRecordingState().phase === "failed") return;
           try {
             if (Notification.isSupported()) {
               new Notification({
@@ -1574,6 +1582,7 @@ export function bootstrapApp(): void {
     {
       disposeTray,
       disposeFloatOver,
+      disposeRecordingController,
       disposeRegionSelector,
       disposeFocusSink,
       destroyTextBakePool

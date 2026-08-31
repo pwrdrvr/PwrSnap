@@ -120,8 +120,7 @@ function unregisterCodexHandlers(): void {
     "codex:describe",
     "codex:tag",
     "codex:filename",
-    "codex:sensitiveScan",
-    "codex:ask"
+    "codex:sensitiveScan"
   ] as const) {
     bus.unregister(name);
   }
@@ -283,6 +282,12 @@ describe("Codex handlers", () => {
     resetCodexCompatibilityAlertForTests();
     testDb.close();
     await rm(tempRoot, { force: true, recursive: true });
+  });
+
+  test("does not register the obsolete codex:ask placeholder", () => {
+    registerCodexHandlers();
+
+    expect(bus.isRegistered("codex:ask")).toBe(false);
   });
 
   test("codex:compatibilityAlert returns the durable guard snapshot", async () => {

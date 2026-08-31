@@ -11,6 +11,7 @@ import {
 } from "../library-tool-catalog";
 import type { DynamicToolCallParams } from "@pwrdrvr/codex-app-server-protocol/v2";
 import { currentChatToolCommandContext } from "../chat-tool-command-context";
+import { bus } from "../../command-bus";
 
 const logMocks = vi.hoisted(() => ({
   debug: vi.fn(),
@@ -154,6 +155,53 @@ describe("buildLibraryToolCatalog", () => {
 });
 
 describe("dispatchLibraryToolCall", () => {
+  it("keeps capture image input behind the bounded render_composite tool", async () => {
+    const renderTool = LIBRARY_TOOL_ALLOWLIST.find((tool) => tool.name === "render_composite");
+    if (renderTool === undefined) throw new Error("render_composite tool missing");
+    const dispatchSpy = vi.spyOn(bus, "dispatch").mockResolvedValue({
+      ok: true,
+      value: {
+        base64: "bounded-png",
+        mimeType: "image/png",
+        widthPx: 1200,
+        heightPx: 800
+      }
+    } as never);
+
+    try {
+      const oversized = await dispatchLibraryToolCall(
+        makeCallParams({
+          tool: "render_composite",
+          arguments: { capture_id: "cap-42", max_edge_px: 2001 }
+        }),
+        [renderTool]
+      );
+      expect(oversized.success).toBe(false);
+      expect(dispatchSpy).not.toHaveBeenCalled();
+
+      const bounded = await dispatchLibraryToolCall(
+        makeCallParams({
+          tool: "render_composite",
+          arguments: { capture_id: "cap-42", max_edge_px: 2000 }
+        }),
+        [renderTool]
+      );
+      expect(dispatchSpy.mock.calls[0]?.slice(0, 2)).toEqual([
+        "render:composite",
+        { captureId: "cap-42", maxEdgePx: 2000 }
+      ]);
+      expect(bounded).toMatchObject({
+        success: true,
+        contentItems: [
+          { type: "inputImage", imageUrl: "data:image/png;base64,bounded-png" },
+          { type: "inputText" }
+        ]
+      });
+    } finally {
+      dispatchSpy.mockRestore();
+    }
+  });
+
   it("retains the originating authenticated local-agent context", async () => {
     const dispatch = vi.fn(async () => ({
       ok: true as const,

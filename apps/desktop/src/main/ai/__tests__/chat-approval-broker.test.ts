@@ -367,6 +367,28 @@ describe("ChatApprovalBroker", () => {
     ).toMatchObject({ status: { kind: "streaming", turnId: "turn-2" } });
   });
 
+  it("retires and broadcasts synchronously while an approval resolver is stuck", () => {
+    const { broker, superseded } = harness();
+    const request = approval({ approvalId: "approval-stuck" });
+    broker.register(request, {}, () => new Promise<void>(() => undefined));
+    void broker.resolve({ ...request, decision: "approve" });
+
+    broker.closeThread(request.threadId);
+
+    expect(broker.pendingForThread(request.threadId)).toBeNull();
+    expect(superseded).toContainEqual({
+      threadId: request.threadId,
+      turnId: request.turnId,
+      approvalId: request.approvalId,
+      reason: "thread_closed"
+    });
+    expect(
+      broker.decorateThread(
+        threadView({ status: { kind: "awaiting_approval", approvalId: request.approvalId } })
+      )
+    ).toMatchObject({ status: { kind: "idle" }, pendingApproval: null });
+  });
+
   it("denies and suppresses late requests after their owner or thread has closed", async () => {
     const { broker, resolved, superseded } = harness();
     const owner = {};

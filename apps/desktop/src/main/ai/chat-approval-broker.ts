@@ -12,6 +12,7 @@ import { err, ok } from "@pwrsnap/shared";
 import { getMainLogger } from "../log";
 
 const MAX_TOMBSTONES = 256;
+const DENIAL_OBSERVE_MS = 1_000;
 
 export type ChatApprovalOwner = object;
 export type ChatApprovalResolver = (decision: ChatApprovalDecision) => Promise<void>;
@@ -102,11 +103,7 @@ export class ChatApprovalBroker {
       // omits it. Such a request cannot round-trip through the strict exact-ID
       // response contract, so fail closed instead of displaying an approval
       // the user can never resolve.
-      void resolve("deny").catch((cause: unknown) => {
-        this.log.warn("failed to deny approval with incomplete identity", {
-          message: cause instanceof Error ? cause.message : String(cause)
-        });
-      });
+      this.denyBestEffort(resolve, "failed to deny approval with incomplete identity", {});
       return false;
     }
     const key = approvalKey(this.options.surface, request);
@@ -119,13 +116,10 @@ export class ChatApprovalBroker {
       // A duplicate/stale request must not strand a fresh backend callback.
       // Deny it on the originating controller, but never show it or reuse a
       // prior approval decision.
-      void resolve("deny").catch((cause: unknown) => {
-        this.log.warn("failed to deny stale approval callback", {
-          threadId: request.threadId,
-          turnId: request.turnId,
-          approvalId: request.approvalId,
-          message: cause instanceof Error ? cause.message : String(cause)
-        });
+      this.denyBestEffort(resolve, "failed to deny stale approval callback", {
+        threadId: request.threadId,
+        turnId: request.turnId,
+        approvalId: request.approvalId
       });
       return false;
     }
@@ -138,13 +132,10 @@ export class ChatApprovalBroker {
       this.pending.delete(otherKey);
       this.addTombstone(otherKey, { kind: "superseded", reason: "request_replaced" });
       if (entry.submission === null) {
-        void entry.resolve("deny").catch((cause: unknown) => {
-          this.log.warn("failed to deny superseded approval", {
-            threadId: entry.request.threadId,
-            turnId: entry.request.turnId,
-            approvalId: entry.request.approvalId,
-            message: cause instanceof Error ? cause.message : String(cause)
-          });
+        this.denyBestEffort(entry.resolve, "failed to deny superseded approval", {
+          threadId: entry.request.threadId,
+          turnId: entry.request.turnId,
+          approvalId: entry.request.approvalId
         });
       }
       this.emitSuperseded({
@@ -272,7 +263,7 @@ export class ChatApprovalBroker {
 
   /** Safely retire every approval owned by a controller that is about to be
    *  replaced/closed. The deny closure is bound to that original controller. */
-  async closeOwner(owner: ChatApprovalOwner): Promise<void> {
+  closeOwner(owner: ChatApprovalOwner): void {
     this.closingOwners.add(owner);
     const entries = [...this.pending.entries()].filter(
       ([, entry]) => entry.owner === owner
@@ -283,24 +274,23 @@ export class ChatApprovalBroker {
         sticky: true
       });
     }
-    await Promise.all(
-      entries.map(([key, entry]) =>
-        this.terminate(key, entry, "controller_disposed")
-      )
-    );
+    for (const [key, entry] of entries) {
+      this.terminate(key, entry, "controller_disposed");
+    }
   }
 
-  /** Safely retire a thread's approval before archive/interrupt/delete. */
-  async closeThread(
+  /** Retire a thread's approval synchronously before archive/interrupt/delete.
+   *  Backend denial is best-effort and never gates the destructive action. */
+  closeThread(
     threadId: string,
     reason: ChatApprovalSupersededEvent["reason"] = "thread_closed"
-  ): Promise<void> {
+  ): void {
     this.closingThreads.add(threadId);
     this.postTerminalStatus.set(threadId, { status: { kind: "idle" }, sticky: true });
     const entries = [...this.pending.entries()].filter(
       ([, entry]) => entry.request.threadId === threadId
     );
-    await Promise.all(entries.map(([key, entry]) => this.terminate(key, entry, reason)));
+    for (const [key, entry] of entries) this.terminate(key, entry, reason);
   }
 
   /** A later user turn/unarchive re-opens the thread after its prior turn was
@@ -362,18 +352,12 @@ export class ChatApprovalBroker {
     return ok(undefined);
   }
 
-  private async terminate(
+  private terminate(
     key: string,
     entry: PendingEntry,
     reason: ChatApprovalSupersededEvent["reason"]
-  ): Promise<void> {
+  ): void {
     if (this.pending.get(key) !== entry) return;
-
-    if (entry.submission !== null) {
-      await entry.submission.result;
-      const current = this.pending.get(key);
-      if (current !== entry) return;
-    }
 
     this.pending.delete(key);
     this.postTerminalStatus.set(entry.request.threadId, {
@@ -381,14 +365,14 @@ export class ChatApprovalBroker {
       sticky: true
     });
     this.addTombstone(key, { kind: "superseded", reason });
-    try {
-      await entry.resolve("deny");
-    } catch (cause) {
-      this.log.warn("failed to deny closing approval", {
+    // Do not serialize Stop/archive behind a resolver already submitting a
+    // decision. A resolver that has not started is denied in the background;
+    // either path is retired from renderer authority before this method returns.
+    if (entry.submission === null) {
+      this.denyBestEffort(entry.resolve, "failed to deny closing approval", {
         threadId: entry.request.threadId,
         turnId: entry.request.turnId,
-        approvalId: entry.request.approvalId,
-        message: cause instanceof Error ? cause.message : String(cause)
+        approvalId: entry.request.approvalId
       });
     }
     this.emitSuperseded({
@@ -398,6 +382,31 @@ export class ChatApprovalBroker {
       reason
     });
     this.notifyPendingChanged(entry.request.threadId);
+  }
+
+  private denyBestEffort(
+    resolver: ChatApprovalResolver,
+    failureMessage: string,
+    fields: Record<string, unknown>
+  ): void {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      this.log.warn("approval denial did not settle before cleanup deadline", fields);
+    }, DENIAL_OBSERVE_MS);
+    timer.unref?.();
+    void Promise.resolve()
+      .then(() => resolver("deny"))
+      .catch((cause: unknown) => {
+        this.log.warn(failureMessage, {
+          ...fields,
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+      })
+      .finally(() => {
+        settled = true;
+        clearTimeout(timer);
+      });
   }
 
   private staleResult(message: string): Result<never, PwrSnapError> {

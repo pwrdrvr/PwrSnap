@@ -10,14 +10,16 @@
 // in exactly one place. The controller's neutral decision type differs from
 // PwrSnap's; `toKitApprovalDecision` maps between them at the verb boundary.
 
-import { ChatThreadController } from "@pwrdrvr/agent-client";
-import type { ChatBackend, ChatThreadControllerDeps } from "@pwrdrvr/agent-client";
+import type {
+  ChatBackend,
+  ChatThreadController,
+  ChatThreadControllerDeps
+} from "@pwrdrvr/agent-client";
 import type { AgentBackend, NormalizedApprovalDecision } from "@pwrdrvr/agent-core";
 import {
   AcpAgentClient,
   discoverLocalAcpAgentInstances,
   strategyByBackendId,
-  strategyById,
   type AcpMcpServerConfig,
   type DiscoveredAcpAgent,
   type DiscoveredAcpAgentGroup,
@@ -51,6 +53,7 @@ import {
 import { toAgentKitLogger, PWRSNAP_SERVICE_NAME } from "./agent-kit-bindings";
 import type { ChatApprovalBroker } from "./chat-approval-broker";
 import type { ChatThreadAccess } from "./chat-thread-access";
+import { PwrSnapChatSessionController } from "./chat-session-controller";
 
 type InterruptAcknowledgement = (threadId: string) => Promise<void>;
 
@@ -86,36 +89,6 @@ export async function interruptChatThreadAcknowledged(
   await injected.interruptAcknowledged(threadId);
 }
 
-function acknowledgedInterruptBackend(client: AgentBackend): {
-  backend: AgentBackend;
-  acknowledge: InterruptAcknowledgement;
-  clear: (threadId: string) => void;
-} {
-  const acknowledged = new Set<string>();
-  const backend = new Proxy(client, {
-    get(target, property, receiver) {
-      if (property === "interruptTurn") {
-        return async (threadId: string): Promise<void> => {
-          if (acknowledged.delete(threadId)) return;
-          await target.interruptTurn(threadId);
-        };
-      }
-      const value = Reflect.get(target, property, receiver) as unknown;
-      return typeof value === "function" ? value.bind(target) : value;
-    }
-  }) as AgentBackend;
-  return {
-    backend,
-    acknowledge: async (threadId) => {
-      await client.interruptTurn(threadId);
-      acknowledged.add(threadId);
-    },
-    clear: (threadId) => {
-      acknowledged.delete(threadId);
-    }
-  };
-}
-
 /** PwrSnap's approval decision union → the kit's neutral decision. PwrSnap
  *  distinguishes "reject-layer" / "reject-run" at the renderer for the layer-
  *  level undo affordances, but at the Codex protocol boundary every non-approve
@@ -145,6 +118,8 @@ export type ChatSurfaceConfig = {
   threadAccess?: ChatThreadAccess;
   /** Optional producer-side terminal status seam consumed by Editor #471. */
   messageStatusFor?: ChatEventAdapterOptions["messageStatusFor"];
+  /** Release exact per-turn host state after the backend settles that turn. */
+  onTurnTerminal?: (threadId: string, turnId: string) => void;
   /** Usage-accounting surface. */
   usageSurface: AiUsageThreadSurface;
   /** L1 + L2 system prompt builder. */
@@ -162,12 +137,12 @@ export type ChatSurfaceConfig = {
   /** Thread environments. `[]` disables exec-environment access. */
   threadEnvironments: unknown[];
   /** The surface's configured chat BACKEND selector
-   *  (`ai.defaults.<surface>.provider`). `"codex"` / `""` / `undefined` /
-   *  any unknown value → the Codex backend (`CodexThreadClient`).
-   *  `"acp:<id>"` → the matching discovered ACP agent
-   *  (`AcpAgentClient`), falling back to Codex when that agent isn't
-   *  installed. NOT a Codex `modelProvider` token — chat surfaces use the
-   *  provider value to pick the backend, not to set a Codex sub-provider. */
+   *  (`ai.defaults.<surface>.provider`). `"codex"` / `""` / `undefined` use
+   *  the Codex backend (`CodexThreadClient`). `"acp:<id>"` requires that exact
+   *  ACP agent to be enabled and locally available; unknown or unavailable
+   *  explicit selections fail rather than silently changing providers. NOT a
+   *  Codex `modelProvider` token — chat surfaces use the provider value to pick
+   *  the backend, not to set a Codex sub-provider. */
   provider?: string;
   /** Per-surface default model id for thread/start. Omit / undefined =
    *  use the Codex default (no `model` sent). Driven by Settings → AI's
@@ -322,10 +297,9 @@ async function defaultMakeAcpClient(input: {
 }
 
 /** Resolve the surface's `AgentBackend` from its configured provider.
- *  `codex` / `""` / `undefined` / unknown → Codex. `acp:<id>` → the matching
- *  discovered ACP agent, falling back to Codex with a warning when that agent
- *  isn't installed (so the surface never crashes on a stale/uninstalled
- *  selection). */
+ *  `codex` / `""` / `undefined` → Codex. An explicit `acp:<id>` selection is
+ *  fail-closed: disabled, undiscoverable, or missing agents remain truthfully
+ *  unavailable instead of silently sending the user's prompt to Codex. */
 type ResolvedChatBackend = {
   client: ChatBackend;
   /** Per-thread MCP servers (ACP shared client); absent for Codex. */
@@ -333,9 +307,9 @@ type ResolvedChatBackend = {
   /** True when `client` is a shared (pooled) ACP process — the controller skips
    *  single-handler registration to avoid clobbering a sibling surface. */
   shared: boolean;
-  /** True when the resolved backend is an ACP agent (not a Codex fallback).
-   *  Drives reasoning-effort normalization: ACP honors only Fast/Thinking, so
-   *  the per-surface effort is collapsed before it reaches the agent. */
+  /** True when the resolved backend is an ACP agent. Drives reasoning-effort
+   *  normalization: ACP honors only Fast/Thinking, so the per-surface effort
+   *  is collapsed before it reaches the agent. */
   isAcp: boolean;
 };
 
@@ -359,14 +333,21 @@ async function resolveChatBackend(
     return codex();
   }
   if (!provider.startsWith("acp:")) {
-    // Unknown / legacy free-text provider — treat as Codex (the chat surface
-    // never sends a non-`acp:` value as a Codex modelProvider anymore).
-    return codex();
+    throw new Error(
+      `Configured chat provider "${provider}" is not supported. ` +
+        "Choose Codex or a supported ACP provider in Settings → AI."
+    );
   }
 
-  const log = toAgentKitLogger(config.loggerScope);
   const discover = deps.discoverAcpAgentInstances ?? discoverLocalAcpAgentInstances;
-  const strategyId = provider.slice("acp:".length);
+  const strategy = strategyByBackendId(provider);
+  if (strategy === undefined) {
+    throw new Error(
+      `Configured chat provider "${provider}" is not supported. ` +
+        "Choose Codex or a supported ACP provider in Settings → AI."
+    );
+  }
+  const strategyId = strategy.id;
 
   // Honor the user's per-agent path choice (Settings → AI → ACP agents): a
   // manual override is fed into discovery so it's probed even outside PATH; the
@@ -376,30 +357,32 @@ async function resolveChatBackend(
   const pref = settings.ai.acp.agents?.[strategyId];
   const discoveryOptions = acpDiscoveryOptionsForEnabledAgent(settings, strategyId);
   if (discoveryOptions === null) {
-    log.warn("chat backend: ACP agent is disabled; falling back to Codex", {
-      provider
-    });
-    return codex();
+    throw new Error(
+      `Configured chat provider "${provider}" is unavailable because ` +
+        `${strategy.displayName} is disabled. Enable it in Settings → AI or choose another provider.`
+    );
   }
 
   let groups: DiscoveredAcpAgentGroup[];
   try {
     groups = await discover(discoveryOptions);
   } catch (cause) {
-    log.warn("chat backend: ACP discovery failed; falling back to Codex", {
-      provider,
-      message: cause instanceof Error ? cause.message : String(cause)
-    });
-    return codex();
+    const message = cause instanceof Error ? cause.message : String(cause);
+    throw new Error(
+      `Configured chat provider "${provider}" is unavailable because ` +
+        `${strategy.displayName} discovery failed: ${message}. ` +
+        "Check its configuration in Settings → AI or choose another provider."
+    );
   }
   const group = groups.find(
     (g) => g.backendId === provider || g.strategyId === strategyId
   );
   if (group === undefined || group.instances.length === 0) {
-    log.warn("chat backend: ACP agent not installed; falling back to Codex", {
-      provider
-    });
-    return codex();
+    throw new Error(
+      `Configured chat provider "${provider}" is unavailable because ` +
+        `${strategy.displayName} is not installed or could not be found. ` +
+        "Install or configure it in Settings → AI, or choose another provider."
+    );
   }
   const active = resolveActiveAcpInstance(group.instances, pref);
   const agent: DiscoveredAcpAgent = {
@@ -457,7 +440,6 @@ export async function buildChatSurface(
   });
   const resolved = await resolveChatBackend(config, deps);
   const client: AgentBackend = resolved.client;
-  const controllerBackend = acknowledgedInterruptBackend(client);
 
   // The kit controller swallows `thread_settings` into a private map and only
   // forwards `model` on recordUsage. Tee the backend's settings events into
@@ -468,6 +450,16 @@ export async function buildChatSurface(
         modelProvider: event.settings.modelProvider ?? null,
         serviceTier: event.settings.serviceTier ?? null
       });
+    }
+    if (event.kind === "turn_completed") {
+      config.onTurnTerminal?.(event.threadId, event.turnId);
+    } else if (
+      event.kind === "error" &&
+      event.threadId !== undefined &&
+      event.turnId !== undefined &&
+      event.willRetry !== true
+    ) {
+      config.onTurnTerminal?.(event.threadId, event.turnId);
     }
     if (config.approvalBroker !== undefined && event.kind === "turn_started") {
       config.approvalBroker.openThread(event.threadId);
@@ -541,8 +533,8 @@ export async function buildChatSurface(
     ...(config.messageStatusFor !== undefined ? { messageStatusFor: config.messageStatusFor } : {})
   });
 
-  controller = new ChatThreadController<Settings>({
-    client: controllerBackend.backend,
+  const sessionController = new PwrSnapChatSessionController<Settings>({
+    client,
     store: adapter,
     readSettings: config.readSettings,
     broadcast,
@@ -583,25 +575,21 @@ export async function buildChatSurface(
     // ACP honors only Fast/Thinking, so for an ACP backend the effort is
     // collapsed: the "medium" default → Thinking (on), and any stale Codex
     // "medium" left on the surface never reaches the agent verbatim. A Codex
-    // backend (incl. an ACP-selected-but-uninstalled fallback) keeps graded
-    // low/medium/high.
+    // backend keeps graded low/medium/high.
     effort: resolved.isAcp
       ? acpReasoningEffort(config.effort ?? "medium")
       : config.effort ?? "medium",
     ...(config.model !== undefined ? { model: config.model } : {}),
     logger: toAgentKitLogger(config.loggerScope)
   });
-  acknowledgedInterrupts.set(controller, async (threadId) => {
-    // First call the original backend directly so its rejection propagates.
-    // Then let the kit perform its local finalization while its otherwise
-    // duplicate backend call consumes the one-shot acknowledgement above.
-    await controllerBackend.acknowledge(threadId);
-    try {
-      await controller.interrupt(threadId);
-    } finally {
-      controllerBackend.clear(threadId);
-    }
-  });
+  controller = sessionController;
+  // The PwrSnap controller already waits for and propagates backend
+  // cancellation acknowledgement before finalizing the partial assistant
+  // message. Reuse that truthful operation for #489's archive/approval
+  // quiescence seam instead of wrapping the backend a second time.
+  acknowledgedInterrupts.set(controller, (threadId) =>
+    sessionController.interruptAcknowledged(threadId)
+  );
   controller.wire();
 
   const dispose = async (): Promise<void> => {
@@ -610,7 +598,7 @@ export async function buildChatSurface(
     // old private pending entry.
     if (config.approvalBroker !== undefined) {
       try {
-        await config.approvalBroker.closeOwner(approvalOwner);
+        config.approvalBroker.closeOwner(approvalOwner);
       } catch (cause) {
         // Teardown must still silence the stale controller and close its
         // backend even if a lifecycle observer misbehaves.

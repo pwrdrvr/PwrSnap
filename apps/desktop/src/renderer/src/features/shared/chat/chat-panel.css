@@ -118,6 +118,14 @@
   min-height: 0;
 }
 .ps-libchat-greeting { flex: 1 1 auto; padding: 18px; display: flex; flex-direction: column; gap: 8px; }
+.ps-libchat-action-error {
+  flex: 0 0 auto;
+  padding: 7px 12px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--danger-text);
+  background: var(--bg-panel);
+  font: 500 11px/1.4 var(--font-sans);
+}
 
 /* Provider chip: which backend (Codex / Gemini CLI / …) this thread is bound
    to — derived from the thread id, so it's stable even if the surface's

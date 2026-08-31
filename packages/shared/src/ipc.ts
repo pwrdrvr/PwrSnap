@@ -468,6 +468,9 @@ export type LibraryChatToolCallEvent = {
  *  landed (user message persisted, or assistant message finalized). */
 export type LibraryChatMessageCommittedEvent = {
   threadId: string;
+  /** Present for an assistant message finalized from a live turn. Optional for
+   *  user/history compatibility with older senders. */
+  turnId?: string;
   message: ChatMessage;
 };
 

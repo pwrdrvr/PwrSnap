@@ -5,6 +5,7 @@ type BeforeQuitRegistrar = {
 export type TransientWindowDisposers = Readonly<{
   disposeTray: () => void;
   disposeFloatOver: () => void;
+  disposeRecordingController: () => void;
   disposeRegionSelector: () => void;
   disposeFocusSink: () => void;
   destroyTextBakePool: () => void;
@@ -28,6 +29,7 @@ export function installTransientWindowTeardown(
     disposed = true;
     disposers.disposeTray();
     disposers.disposeFloatOver();
+    disposers.disposeRecordingController();
     disposers.disposeRegionSelector();
     disposers.disposeFocusSink();
     disposers.destroyTextBakePool();

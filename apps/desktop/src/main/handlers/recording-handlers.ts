@@ -11,9 +11,11 @@
 
 import { copyFile, mkdir, rename, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { ok, err } from "@pwrsnap/shared";
+import { ok, err, recordingFailureSummary } from "@pwrsnap/shared";
 import type {
   PwrSnapError,
+  RecordingCapabilities,
+  RecordingFailureCode,
   RecordingPermission,
   Result,
   VideoExportRequest,
@@ -89,6 +91,49 @@ function validationError(code: string, message: string): PwrSnapError {
 
 function recordingError(code: string, message: string, cause?: unknown): PwrSnapError {
   return { kind: "capture", code, message, cause };
+}
+
+function safeFailureSummary(fallback: RecordingFailureCode): string {
+  const state = getRecordingState();
+  return recordingFailureSummary(state.phase === "failed" ? state.code : fallback);
+}
+
+function failedSessionId(req: unknown): string | null {
+  if (typeof req !== "object" || req === null || !("sessionId" in req)) return null;
+  const value = (req as { sessionId?: unknown }).sessionId;
+  return typeof value === "string" && value.length > 0 && value.length <= 128
+    ? value
+    : null;
+}
+
+/** Shared gate for both a fresh start and a session-scoped retry. Retry uses
+ * the service-owned capability snapshot, so permission/storage changes while
+ * a durable failure card is open are caught before another countdown begins. */
+async function guardRecordingAttempt(
+  capabilities: RecordingCapabilities
+): Promise<Result<never, PwrSnapError> | null> {
+  const blocked = await guardScreenCapture();
+  if (blocked) return blocked;
+  const storageBlocked = await ensureCapturesDirReady();
+  if (storageBlocked) return storageBlocked;
+  const readiness = readRecordingReadiness();
+  if (capabilities.microphone && readiness.microphone !== "granted") {
+    return err(
+      permissionError(
+        "microphone_not_granted",
+        "Microphone permission is required for the selected recording options."
+      )
+    );
+  }
+  if (capabilities.systemAudio && readiness.systemAudio !== "granted") {
+    return err(
+      permissionError(
+        "system_audio_not_granted",
+        "System Audio capture requires Screen Recording permission on macOS 13 or newer."
+      )
+    );
+  }
+  return null;
 }
 
 /** Filename of the extracted full-clip audio under the video asset dir.
@@ -238,42 +283,22 @@ export function registerRecordingHandlers(): void {
   // ---- recording lifecycle ----
 
   bus.register("recording:start", async (req) => {
+    if (getRecordingState().phase === "failed") {
+      return err(
+        validationError(
+          "failure_action_required",
+          "Retry or dismiss the current recording failure before starting another recording."
+        )
+      );
+    }
     // Preflight permissions before the countdown so the user is
     // never staring at "3, 2, 1, …" only to hit a permission wall.
     // Screen Recording is required: the gate fires the macOS prompt on
     // the first-ever attempt and routes to System Settings thereafter
     // (see screen-permission-gate.ts). Missing audio is a degraded
     // continuation that the selector dialog handled before calling us.
-    const blocked = await guardScreenCapture();
+    const blocked = await guardRecordingAttempt(req.capabilities);
     if (blocked) return blocked;
-    // Pre-warm the captures-folder (Documents) TCC grant before the
-    // countdown HUD so the "Allow Documents" dialog lands on a clean
-    // screen, not under recording chrome when the clip is saved.
-    const storageBlocked = await ensureCapturesDirReady();
-    if (storageBlocked) return storageBlocked;
-    const readiness = readRecordingReadiness();
-    if (
-      req.capabilities.microphone &&
-      readiness.microphone !== "granted"
-    ) {
-      return err(
-        permissionError(
-          "microphone_not_granted",
-          "Microphone permission is required for the selected recording options."
-        )
-      );
-    }
-    if (
-      req.capabilities.systemAudio &&
-      readiness.systemAudio !== "granted"
-    ) {
-      return err(
-        permissionError(
-          "system_audio_not_granted",
-          "System Audio capture requires Screen Recording permission on macOS 13 or newer."
-        )
-      );
-    }
     try {
       const session = await getService().start({
         subject: req.subject,
@@ -299,7 +324,12 @@ export function registerRecordingHandlers(): void {
         });
       }
       log.error("recording:start failed", { message });
-      return err(recordingError("recording_start_failed", message, cause));
+      return err(
+        recordingError(
+          "recording_start_failed",
+          safeFailureSummary("recorder_start_failed")
+        )
+      );
     }
   });
 
@@ -310,11 +340,21 @@ export function registerRecordingHandlers(): void {
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
       log.error("recording:stop failed", { message });
-      return err(recordingError("recording_stop_failed", message, cause));
+      return err(
+        recordingError("recording_stop_failed", safeFailureSummary("stop_failed"))
+      );
     }
   });
 
   bus.register("recording:cancel", async () => {
+    if (getRecordingState().phase === "failed") {
+      return err(
+        validationError(
+          "failure_action_required",
+          "Use the failed recording's Dismiss action instead of Cancel."
+        )
+      );
+    }
     try {
       await getService().cancel();
       return ok(undefined);
@@ -326,6 +366,14 @@ export function registerRecordingHandlers(): void {
   });
 
   bus.register("recording:restart", async () => {
+    if (getRecordingState().phase === "failed") {
+      return err(
+        validationError(
+          "failure_action_required",
+          "Use the failed recording's Retry action instead of Restart."
+        )
+      );
+    }
     try {
       const { sessionId } = await getService().restart();
       return ok({ sessionId });
@@ -338,6 +386,69 @@ export function registerRecordingHandlers(): void {
       }
       log.error("recording:restart failed", { message });
       return err(recordingError("recording_restart_failed", message, cause));
+    }
+  });
+
+  bus.register("recording:retry", async (req) => {
+    const sessionId = failedSessionId(req);
+    if (sessionId === null) {
+      return err(validationError("invalid_session", "A failed recording session is required."));
+    }
+    let capabilities: RecordingCapabilities;
+    try {
+      capabilities = getService().retryCapabilities(sessionId);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      if (message === "stale_failure") {
+        return err(validationError("stale_failure", "That recording failure is no longer current."));
+      }
+      log.error("recording:retry preflight snapshot failed", { message });
+      return err(
+        recordingError(
+          "recording_retry_failed",
+          safeFailureSummary("recorder_start_failed")
+        )
+      );
+    }
+    const blocked = await guardRecordingAttempt(capabilities);
+    if (blocked) return blocked;
+    try {
+      return ok(await getService().retry(sessionId));
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      if (message === "stale_failure") {
+        return err(validationError("stale_failure", "That recording failure is no longer current."));
+      }
+      log.error("recording:retry failed", { message });
+      return err(
+        recordingError(
+          "recording_retry_failed",
+          safeFailureSummary("recorder_start_failed")
+        )
+      );
+    }
+  });
+
+  bus.register("recording:dismissFailure", async (req) => {
+    const sessionId = failedSessionId(req);
+    if (sessionId === null) {
+      return err(validationError("invalid_session", "A failed recording session is required."));
+    }
+    try {
+      await getService().dismissFailure(sessionId);
+      return ok(undefined);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      if (message === "stale_failure") {
+        return err(validationError("stale_failure", "That recording failure is no longer current."));
+      }
+      log.error("recording:dismissFailure failed", { message });
+      return err(
+        recordingError(
+          "recording_dismiss_failed",
+          "PwrSnap couldn't dismiss the recording failure. Open the log file for details."
+        )
+      );
     }
   });
 

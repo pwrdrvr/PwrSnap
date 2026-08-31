@@ -16,11 +16,14 @@ const mocks = vi.hoisted(() => {
     spawnCalls: [] as Array<{ command: string; args: string[] }>,
     nextSpawnError: null as Error | null,
     binaryPath: "/fake/PwrSnapRecorder",
+    binaryExists: true,
+    isPackaged: false,
     stateLog: [] as Array<{ phase: string }>,
     /** Full broadcast log including rect/displayId payloads — used
      *  by the multi-monitor translation test to verify the rect
      *  reaches the HUD in display-local coords. */
     stateLogFull: [] as Array<Record<string, unknown>>,
+    currentState: { phase: "idle" } as Record<string, unknown>,
     infoLogs: [] as Array<{
       message: string;
       context: Record<string, unknown> | undefined;
@@ -70,7 +73,7 @@ vi.mock("node:child_process", () => ({
 }));
 
 vi.mock("node:fs", () => ({
-  existsSync: () => true
+  existsSync: () => mocks.binaryExists
 }));
 
 vi.mock("node:fs/promises", () => ({
@@ -79,6 +82,9 @@ vi.mock("node:fs/promises", () => ({
 
 vi.mock("electron", () => ({
   app: {
+    get isPackaged() {
+      return mocks.isPackaged;
+    },
     getAppPath: () => "/fake/appPath",
     getPath: () => "/fake/userData"
   },
@@ -136,10 +142,15 @@ vi.mock("../recording-state", async () => {
   return {
     ...real,
     setRecordingState: (next: Record<string, unknown>) => {
+      mocks.currentState = next;
       mocks.stateLog.push({ phase: next.phase as string });
       mocks.stateLogFull.push(next);
     },
-    isRecordingActive: () => false
+    getRecordingState: () => mocks.currentState,
+    isRecordingActive: () =>
+      ["preflight", "countdown", "starting", "recording", "stopping", "processing"].includes(
+        mocks.currentState.phase as string
+      )
   };
 });
 
@@ -205,8 +216,11 @@ beforeEach(() => {
   mocks.spawnedChildren.length = 0;
   mocks.spawnCalls.length = 0;
   mocks.nextSpawnError = null;
+  mocks.binaryExists = true;
+  mocks.isPackaged = false;
   mocks.stateLog.length = 0;
   mocks.stateLogFull.length = 0;
+  mocks.currentState = { phase: "idle" };
   mocks.infoLogs.length = 0;
   mocks.pendingTimeouts.length = 0;
   // resolveRecorderBinary() returns null off-darwin AND probes
@@ -340,6 +354,41 @@ describe("RecordingService.start concurrent guard", () => {
     await vi.advanceTimersByTimeAsync(1100);
     await first;
     expect(firstOutcome).toBeInstanceOf(Error);
+  });
+});
+
+describe("RecordingService unavailable packaged recorder", () => {
+  test.each([
+    { platform: "darwin", expectedCommand: "native" },
+    { platform: "win32", expectedCommand: "ffmpeg" }
+  ])("marks a missing packaged $expectedCommand backend as non-retryable", async ({
+    platform
+  }) => {
+    Object.defineProperty(process, "platform", { value: platform, configurable: true });
+    (process as { resourcesPath?: string }).resourcesPath =
+      platform === "win32" ? "C:\\fake" : "/fake";
+    mocks.binaryExists = false;
+    mocks.isPackaged = true;
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    await expect(
+      service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 })
+    ).rejects.toThrow();
+
+    expect(mocks.currentState).toMatchObject({
+      phase: "failed",
+      code: "recorder_unavailable",
+      canRetry: false
+    });
+    await expect(
+      Promise.resolve().then(() =>
+        service.retryCapabilities(mocks.currentState.sessionId as string)
+      )
+    ).rejects.toThrow("stale_failure");
   });
 });
 
@@ -697,6 +746,36 @@ describe("RecordingService.start startedPromise timeout", () => {
     // State path includes a `failed` transition for the HUD/tray.
     expect(mocks.stateLog.map((s) => s.phase)).toContain("failed");
   });
+
+  test("native recorder exit after start becomes a durable safe failure", async () => {
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    const started = service.start({
+      subject: SUBJECT,
+      capabilities: CAPS,
+      countdownSeconds: 0
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const child = mocks.spawnedChildren[0]!;
+    child.emitLine({ event: "started", physicalRect: SUBJECT.rect });
+    await started;
+
+    child.emit("exit", 7, null);
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(service.isActive()).toBe(false);
+    expect(mocks.currentState).toMatchObject({
+      phase: "failed",
+      code: "recorder_exited",
+      canRetry: true,
+      displayId: 1
+    });
+    expect(mocks.currentState).not.toHaveProperty("message");
+  });
 });
 
 describe("Windows FFmpeg recorder", () => {
@@ -836,7 +915,7 @@ describe("Windows FFmpeg recorder", () => {
     await cancelAndExit(service, mocks.spawnedChildren[0]!);
   });
 
-  test("a synchronous spawn failure does not leak cursor state into retry or restart", async () => {
+  test("a synchronous spawn failure stays actionable and retry preserves cursor state", async () => {
     const service = await loadWindowsService();
     mocks.nextSpawnError = new Error("synthetic spawn failure");
 
@@ -850,14 +929,53 @@ describe("Windows FFmpeg recorder", () => {
     ).rejects.toThrow("synthetic spawn failure");
     expect(service.isActive()).toBe(false);
     await expect(service.restart()).rejects.toThrow("not_recording");
+    expect(mocks.currentState).toMatchObject({
+      phase: "failed",
+      code: "recorder_spawn_failed",
+      canRetry: true,
+      displayId: 1
+    });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mocks.currentState).toMatchObject({ phase: "failed" });
 
-    await service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
-    expect(argAfter(mocks.spawnCalls[1]!.args, "-draw_mouse")).toBe("1");
+    mocks.nextSpawnError = new Error("C:\\private\\secret retry --token=hidden");
+    await expect(service.retry(mocks.currentState.sessionId as string)).rejects.toThrow(
+      "secret retry"
+    );
+    expect(mocks.currentState).toMatchObject({
+      phase: "failed",
+      code: "recorder_spawn_failed"
+    });
+    expect(mocks.currentState).not.toHaveProperty("message");
+
+    await service.retry(mocks.currentState.sessionId as string);
+    expect(argAfter(mocks.spawnCalls[2]!.args, "-draw_mouse")).toBe("0");
 
     await cancelAndExit(service, mocks.spawnedChildren[0]!);
   });
 
-  test("an asynchronous spawn failure clears cursor state before a fresh session", async () => {
+  test("an unexpected exit remains failed until the matching session is dismissed", async () => {
+    const service = await loadWindowsService();
+    await service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
+
+    mocks.spawnedChildren[0]!.emit("exit", 9, null);
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(service.isActive()).toBe(false);
+    expect(mocks.currentState).toMatchObject({
+      phase: "failed",
+      code: "recorder_exited",
+      canRetry: true,
+      displayId: 1
+    });
+    expect(mocks.currentState).not.toHaveProperty("message");
+    await expect(service.dismissFailure("stale-session")).rejects.toThrow("stale_failure");
+
+    await service.dismissFailure(mocks.currentState.sessionId as string);
+    expect(mocks.currentState).toEqual({ phase: "idle" });
+  });
+
+  test("an asynchronous spawn failure blocks a fresh start until session retry", async () => {
     const service = await loadWindowsService();
     await service.start({
       subject: SUBJECT,
@@ -871,9 +989,15 @@ describe("Windows FFmpeg recorder", () => {
 
     expect(service.isActive()).toBe(false);
     await expect(service.restart()).rejects.toThrow("not_recording");
+    await expect(
+      service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 })
+    ).rejects.toThrow("failure_action_required");
 
-    await service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
-    expect(argAfter(mocks.spawnCalls[1]!.args, "-draw_mouse")).toBe("1");
+    const failedSessionId = mocks.currentState.sessionId as string;
+    const retryPromise = service.retry(failedSessionId);
+    await expect(service.dismissFailure(failedSessionId)).rejects.toThrow("stale_failure");
+    await retryPromise;
+    expect(argAfter(mocks.spawnCalls[1]!.args, "-draw_mouse")).toBe("0");
 
     await cancelAndExit(service, mocks.spawnedChildren[1]!);
   });

@@ -60,6 +60,24 @@ const DEFAULT_OPERATIONS: FileMoveOperations = {
   uniqueSuffix: randomUUID
 };
 
+/**
+ * Re-establish the durability precondition required before an older source
+ * copy can be removed. This is also used to reconcile the intentional
+ * dual-copy state left when an EXDEV move fails after destination promotion.
+ */
+export async function syncFileAndContainingDirectory(
+  filePath: string,
+  operationOverrides: Partial<
+    Pick<FileMoveOperations, "syncFile" | "syncDirectory">
+  > = {}
+): Promise<void> {
+  const syncFileOperation = operationOverrides.syncFile ?? DEFAULT_OPERATIONS.syncFile;
+  const syncDirectoryOperation =
+    operationOverrides.syncDirectory ?? DEFAULT_OPERATIONS.syncDirectory;
+  await syncFileOperation(filePath);
+  await syncDirectoryOperation(dirname(filePath));
+}
+
 function isCrossDeviceError(cause: unknown): boolean {
   return (cause as NodeJS.ErrnoException | null)?.code === "EXDEV";
 }

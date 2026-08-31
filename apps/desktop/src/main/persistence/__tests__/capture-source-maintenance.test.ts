@@ -6,6 +6,7 @@ import {
   readdir,
   rename,
   rm,
+  unlink as unlinkFile,
   writeFile
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -121,6 +122,89 @@ describe("migrateLegacyCaptureSources", () => {
     expect(existsSync(oldPath)).toBe(false);
     await expect(readFile(nextPath, "utf8")).resolves.toBe("cross-volume-png");
     await expect(readdir(mocks.currentRoot)).resolves.toEqual(["abc.png"]);
+  });
+
+  test("reconciles matching dual copies after a destination directory sync failure", async () => {
+    const oldPath = join(mocks.legacyRoot, "2026", "05", "abc.png");
+    const nextPath = join(mocks.currentRoot, "abc.png");
+    await mkdir(dirname(oldPath), { recursive: true });
+    await writeFile(oldPath, "recoverable-png");
+    mocks.rows = [{ id: "abc", legacy_src_path: oldPath, deleted_at: null }];
+    let renameCalls = 0;
+
+    const { migrateLegacyCaptureSources } = await import("../capture-source-maintenance");
+    const interrupted = await migrateLegacyCaptureSources({
+      moveFile: async (sourcePath, destinationPath) =>
+        moveFileWithExdevFallback(sourcePath, destinationPath, {
+          rename: async (from, to) => {
+            renameCalls += 1;
+            if (renameCalls === 1) {
+              throw Object.assign(new Error("cross-device"), { code: "EXDEV" });
+            }
+            await rename(from, to);
+          },
+          syncDirectory: async () => {
+            throw Object.assign(new Error("directory sync interrupted"), { code: "EIO" });
+          },
+          uniqueSuffix: () => "directory-sync-retry"
+        })
+    });
+
+    expect(interrupted).toEqual({ movedFiles: 0, updatedRows: 0, skippedRows: 1 });
+    await expect(readFile(oldPath, "utf8")).resolves.toBe("recoverable-png");
+    await expect(readFile(nextPath, "utf8")).resolves.toBe("recoverable-png");
+    expect(mocks.updates).toEqual([]);
+
+    const retried = await migrateLegacyCaptureSources();
+
+    expect(retried).toEqual({ movedFiles: 1, updatedRows: 1, skippedRows: 0 });
+    expect(existsSync(oldPath)).toBe(false);
+    await expect(readFile(nextPath, "utf8")).resolves.toBe("recoverable-png");
+    expect(mocks.updates).toEqual([{ path: nextPath, id: "abc" }]);
+  });
+
+  test("reconciles matching dual copies after a source unlink failure", async () => {
+    const oldPath = join(mocks.legacyRoot, "2026", "05", "abc.png");
+    const nextPath = join(mocks.currentRoot, "abc.png");
+    await mkdir(dirname(oldPath), { recursive: true });
+    await writeFile(oldPath, "recoverable-png");
+    mocks.rows = [{ id: "abc", legacy_src_path: oldPath, deleted_at: null }];
+    let renameCalls = 0;
+
+    const { migrateLegacyCaptureSources } = await import("../capture-source-maintenance");
+    const interrupted = await migrateLegacyCaptureSources({
+      moveFile: async (sourcePath, destinationPath) =>
+        moveFileWithExdevFallback(sourcePath, destinationPath, {
+          rename: async (from, to) => {
+            renameCalls += 1;
+            if (renameCalls === 1) {
+              throw Object.assign(new Error("cross-device"), { code: "EXDEV" });
+            }
+            await rename(from, to);
+          },
+          unlink: async (path) => {
+            if (path === oldPath) {
+              throw Object.assign(new Error("source is temporarily busy"), {
+                code: "EPERM"
+              });
+            }
+            await unlinkFile(path);
+          },
+          uniqueSuffix: () => "source-unlink-retry"
+        })
+    });
+
+    expect(interrupted).toEqual({ movedFiles: 0, updatedRows: 0, skippedRows: 1 });
+    await expect(readFile(oldPath, "utf8")).resolves.toBe("recoverable-png");
+    await expect(readFile(nextPath, "utf8")).resolves.toBe("recoverable-png");
+    expect(mocks.updates).toEqual([]);
+
+    const retried = await migrateLegacyCaptureSources();
+
+    expect(retried).toEqual({ movedFiles: 1, updatedRows: 1, skippedRows: 0 });
+    expect(existsSync(oldPath)).toBe(false);
+    await expect(readFile(nextPath, "utf8")).resolves.toBe("recoverable-png");
+    expect(mocks.updates).toEqual([{ path: nextPath, id: "abc" }]);
   });
 
   test("never overwrites an existing Documents source and preserves the legacy source", async () => {

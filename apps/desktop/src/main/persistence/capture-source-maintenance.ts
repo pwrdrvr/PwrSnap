@@ -1,8 +1,12 @@
-import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { createReadStream, existsSync } from "node:fs";
+import { mkdir, stat, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getMainLogger } from "../log";
-import { moveFileWithExdevFallback } from "./cross-device-move";
+import {
+  moveFileWithExdevFallback,
+  syncFileAndContainingDirectory
+} from "./cross-device-move";
 import { getDb } from "./db";
 import {
   getCapturesRoot,
@@ -40,6 +44,31 @@ export type LegacyCaptureSourceMigrationOptions = {
   /** Deterministic seam for Windows path-identity tests. */
   platform?: string;
 };
+
+async function fileSha256(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) {
+    hash.update(chunk as Buffer);
+  }
+  return hash.digest("hex");
+}
+
+async function filesHaveMatchingContents(
+  sourcePath: string,
+  destinationPath: string
+): Promise<boolean> {
+  const [sourceStat, destinationStat] = await Promise.all([
+    stat(sourcePath),
+    stat(destinationPath)
+  ]);
+  if (!sourceStat.isFile() || !destinationStat.isFile()) return false;
+  if (sourceStat.size !== destinationStat.size) return false;
+  const [sourceHash, destinationHash] = await Promise.all([
+    fileSha256(sourcePath),
+    fileSha256(destinationPath)
+  ]);
+  return sourceHash === destinationHash;
+}
 
 /**
  * Early builds stored source captures under Application Support. The
@@ -109,8 +138,28 @@ export async function migrateLegacyCaptureSources(
         continue;
       }
       if (existsSync(nextPath)) {
-        skippedRows += 1;
-        log.warn("legacy capture migration target already exists", {
+        if (!(await filesHaveMatchingContents(row.legacy_src_path, nextPath))) {
+          skippedRows += 1;
+          log.warn("legacy capture migration target differs from source", {
+            captureId: row.id,
+            srcPath: row.legacy_src_path,
+            nextPath
+          });
+          continue;
+        }
+
+        // A late EXDEV failure can intentionally leave the installed target
+        // beside its original source. Re-establish destination durability,
+        // then finish the same delete-before-DB-update order as a successful
+        // move. If unlink is transiently blocked, both copies and the legacy DB
+        // path remain for another startup retry. If the DB update fails after
+        // unlink, the existing source-missing repair branch completes next run.
+        await syncFileAndContainingDirectory(nextPath);
+        await unlink(row.legacy_src_path);
+        updatePath.run(nextPath, row.id);
+        movedFiles += 1;
+        updatedRows += 1;
+        log.info("legacy capture source migration reconciled duplicate", {
           captureId: row.id,
           srcPath: row.legacy_src_path,
           nextPath

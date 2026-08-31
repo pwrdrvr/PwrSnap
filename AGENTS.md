@@ -158,6 +158,32 @@ than the paragraph above: `BlueOak-1.0.0`, `OFL-1.1` and `Python-2.0` were
 already in the tree, undocumented, when the gate was written. That drift is
 exactly what an unenforced policy accumulates.
 
+### Dependabot PRs regenerate the notice automatically
+
+`licenses:check` hashes the dependency tree, so **any** dependency change makes
+the committed notice stale, and Dependabot cannot run `pnpm licenses:generate`
+itself. Every Dependabot PR therefore used to land with `Lint` and
+`Windows (lint + build + test)` red on that one line and needed a hand-pushed
+follow-up commit.
+[dependabot-licenses.yml](.github/workflows/dependabot-licenses.yml) does that
+push. Read its header before editing — the `pull_request_target` trigger, the
+manifest-only file guard, and `pnpm install --ignore-scripts` are the three
+controls that keep a dependency bump from running its own install scripts with
+a token that can write to this repo.
+
+**It runs the allowlist gate first and pushes nothing if that fails.** That
+ordering is the point: unattended regeneration is only safe because a bad
+license now stops the job instead of being quietly committed by a bot.
+
+**Operational requirement:** a push made with the default `GITHUB_TOKEN` does
+not trigger new workflow runs, so without a separate token the PR keeps showing
+its stale red checks and nothing is gained. Provision repository variable
+`LICENSES_BOT_APP_CLIENT_ID` and secret `LICENSES_BOT_APP_PRIVATE_KEY` for an
+App installed here with `contents: write`; `RELEASES_PAT` is the fallback. The
+existing `FFMPEG_BUILDS_*` App **cannot** be reused — it is scoped read-only to
+`pwrsnap-ffmpeg-builds`. Until one of those exists the workflow still runs, and
+warns in the job summary that CI will not re-run.
+
 ## Codex App Server is the AI brain
 
 **All AI features in PwrSnap go through the user's installed Codex CLI / Codex

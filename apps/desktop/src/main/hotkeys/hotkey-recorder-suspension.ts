@@ -35,9 +35,9 @@ export type HotkeyRecorderSuspensionParticipant = {
 
 export type HotkeyRecorderInputScope = {
   /** Bypass application-menu accelerators for the recorder owner only. */
-  suspend(ownerWindowId: number): void;
+  suspend(ownerWindowId: number, ownerDocumentId: string): void | Promise<void>;
   /** Restore normal application-menu accelerator handling for that window. */
-  restore(ownerWindowId: number): void;
+  restore(ownerWindowId: number, ownerDocumentId: string): void | Promise<void>;
 };
 
 export type HotkeyRecorderOwnershipCoordinator = {
@@ -72,7 +72,10 @@ export class HotkeyRecorderSuspension {
   private readonly timeoutMs: number;
   private coordinator: HotkeyRecorderOwnershipCoordinator | null;
   private inputScope: HotkeyRecorderInputScope | null;
-  private inputSuspendedOwnerWindowId: number | null = null;
+  private inputSuspendedOwner: {
+    ownerWindowId: number;
+    ownerDocumentId: string;
+  } | null = null;
   private active: ActiveLease | null = null;
   private latestIntent: LeaseIntent | null = null;
   private timeout: ReturnType<typeof setTimeout> | null = null;
@@ -181,7 +184,7 @@ export class HotkeyRecorderSuspension {
     this.latestIntent = intent;
     const coordinator = this.requireCoordinator();
 
-    return coordinator.withSerializedSettings((settings) => {
+    return coordinator.withSerializedSettings(async (settings) => {
       if (
         this.closedDocuments.has(ownerDocumentKey) ||
         !this.isCurrentIntent(intent)
@@ -190,9 +193,13 @@ export class HotkeyRecorderSuspension {
       }
       coordinator.registrationManager?.initialize(settings.hotkeys);
       if (!this.nativeSuspended) {
-        this.acquireNativeSuspension(coordinator, ownerWindowId);
+        await this.acquireNativeSuspension(
+          coordinator,
+          ownerWindowId,
+          ownerDocumentId
+        );
       } else {
-        this.transferInputSuspension(ownerWindowId);
+        await this.transferInputSuspension(ownerWindowId, ownerDocumentId);
       }
       if (!this.isCurrentIntent(intent)) {
         return this.rejectedAttempt(sessionId, generation, ownerWindowId);
@@ -234,7 +241,7 @@ export class HotkeyRecorderSuspension {
       ownerDocumentId
     );
     const coordinator = this.requireCoordinator();
-    return coordinator.withSerializedSettings(() => {
+    return coordinator.withSerializedSettings(async () => {
       const current = this.active;
       if (
         current === null ||
@@ -245,7 +252,7 @@ export class HotkeyRecorderSuspension {
       ) {
         return false;
       }
-      this.releaseLocked("renderer-end", coordinator);
+      await this.releaseLocked("renderer-end", coordinator);
       return true;
     });
   }
@@ -273,16 +280,25 @@ export class HotkeyRecorderSuspension {
       this.latestIntent = null;
     }
     const coordinator = this.requireCoordinator();
-    return coordinator.withSerializedSettings(() => {
+    return coordinator.withSerializedSettings(async () => {
       if (
         this.active?.ownerWindowId !== ownerWindowId ||
         this.active.ownerDocumentId !== ownerDocumentId
       ) {
         return false;
       }
-      this.releaseLocked(reason, coordinator);
+      await this.releaseLocked(reason, coordinator);
       return true;
     });
+  }
+
+  /** Re-admit a still-live Settings document after Electron reports that its
+   * renderer recovered from an `unresponsive` interval. The lifecycle release
+   * intentionally ended the old lease; recovery only permits a fresh begin. */
+  resumeOwner(ownerWindowId: number, ownerDocumentId: string): boolean {
+    return this.closedDocuments.delete(
+      this.ownerDocumentKey(ownerWindowId, ownerDocumentId)
+    );
   }
 
   isSuspended(): boolean {
@@ -300,21 +316,22 @@ export class HotkeyRecorderSuspension {
     this.clearTimeout();
     const coordinator = this.coordinator;
     if (coordinator !== null && this.nativeSuspended) {
-      await coordinator.withSerializedSettings(() => {
-        if (this.nativeSuspended) this.restoreNativeOwnership(coordinator);
+      await coordinator.withSerializedSettings(async () => {
+        if (this.nativeSuspended) await this.restoreNativeOwnership(coordinator);
       });
     }
     this.active = null;
     this.nativeSuspended = false;
-    this.inputSuspendedOwnerWindowId = null;
+    this.inputSuspendedOwner = null;
     this.latestGenerationByDocument.clear();
     this.closedDocuments.clear();
   }
 
-  private acquireNativeSuspension(
+  private async acquireNativeSuspension(
     coordinator: HotkeyRecorderOwnershipCoordinator,
-    ownerWindowId: number
-  ): void {
+    ownerWindowId: number,
+    ownerDocumentId: string
+  ): Promise<void> {
     const manager = coordinator.registrationManager;
     const suspendedParticipants: HotkeyRecorderSuspensionParticipant[] = [];
     try {
@@ -323,19 +340,19 @@ export class HotkeyRecorderSuspension {
         participant.suspend();
         suspendedParticipants.push(participant);
       }
-      this.inputScope?.suspend(ownerWindowId);
-      this.inputSuspendedOwnerWindowId =
-        this.inputScope === null ? null : ownerWindowId;
+      await this.inputScope?.suspend(ownerWindowId, ownerDocumentId);
+      this.inputSuspendedOwner =
+        this.inputScope === null ? null : { ownerWindowId, ownerDocumentId };
       this.nativeSuspended = true;
     } catch (cause) {
       if (this.inputScope !== null) {
         try {
-          this.inputScope.restore(ownerWindowId);
+          await this.inputScope.restore(ownerWindowId, ownerDocumentId);
         } catch (restoreCause) {
           this.logInputScopeFailure("restore after failed suspension", restoreCause);
         }
       }
-      this.inputSuspendedOwnerWindowId = null;
+      this.inputSuspendedOwner = null;
       for (const participant of suspendedParticipants.reverse()) {
         try {
           participant.restore();
@@ -348,14 +365,17 @@ export class HotkeyRecorderSuspension {
     }
   }
 
-  private restoreNativeOwnership(
+  private async restoreNativeOwnership(
     coordinator: HotkeyRecorderOwnershipCoordinator
-  ): void {
-    const inputOwnerWindowId = this.inputSuspendedOwnerWindowId;
-    this.inputSuspendedOwnerWindowId = null;
-    if (inputOwnerWindowId !== null && this.inputScope !== null) {
+  ): Promise<void> {
+    const inputOwner = this.inputSuspendedOwner;
+    this.inputSuspendedOwner = null;
+    if (inputOwner !== null && this.inputScope !== null) {
       try {
-        this.inputScope.restore(inputOwnerWindowId);
+        await this.inputScope.restore(
+          inputOwner.ownerWindowId,
+          inputOwner.ownerDocumentId
+        );
       } catch (cause) {
         this.logInputScopeFailure("restore", cause);
       }
@@ -371,36 +391,47 @@ export class HotkeyRecorderSuspension {
     }
   }
 
-  private transferInputSuspension(ownerWindowId: number): void {
+  private async transferInputSuspension(
+    ownerWindowId: number,
+    ownerDocumentId: string
+  ): Promise<void> {
     const inputScope = this.inputScope;
     if (
       inputScope === null ||
-      this.inputSuspendedOwnerWindowId === ownerWindowId
+      (this.inputSuspendedOwner?.ownerWindowId === ownerWindowId &&
+        this.inputSuspendedOwner.ownerDocumentId === ownerDocumentId)
     ) {
       return;
     }
-    const previousOwnerWindowId = this.inputSuspendedOwnerWindowId;
+    const previousOwner = this.inputSuspendedOwner;
     // Arm the newer owner before releasing the old one. If arming throws, the
     // prior accepted recorder remains protected and its lease can still end.
-    inputScope.suspend(ownerWindowId);
-    this.inputSuspendedOwnerWindowId = ownerWindowId;
-    if (previousOwnerWindowId === null) return;
+    await inputScope.suspend(ownerWindowId, ownerDocumentId);
+    this.inputSuspendedOwner = { ownerWindowId, ownerDocumentId };
+    if (previousOwner === null) return;
+    // Menu-shortcut bypass is BrowserWindow-wide. A new document in the same
+    // Settings window is already covered by the `true` call above; restoring
+    // the prior document would immediately disable the new owner's scope.
+    if (previousOwner.ownerWindowId === ownerWindowId) return;
     try {
-      inputScope.restore(previousOwnerWindowId);
+      await inputScope.restore(
+        previousOwner.ownerWindowId,
+        previousOwner.ownerDocumentId
+      );
     } catch (cause) {
       this.logInputScopeFailure("restore superseded owner", cause);
     }
   }
 
-  private releaseLocked(
+  private async releaseLocked(
     reason: string,
     coordinator: HotkeyRecorderOwnershipCoordinator
-  ): void {
+  ): Promise<void> {
     const ownerWindowId = this.active?.ownerWindowId;
     this.clearTimeout();
     this.active = null;
     this.latestIntent = null;
-    if (this.nativeSuspended) this.restoreNativeOwnership(coordinator);
+    if (this.nativeSuspended) await this.restoreNativeOwnership(coordinator);
     this.logger.info("hotkey recorder native suspension lease ended", {
       ownerWindowId,
       reason
@@ -424,7 +455,7 @@ export class HotkeyRecorderSuspension {
 
   private async expire(expected: ActiveLease): Promise<void> {
     const coordinator = this.requireCoordinator();
-    await coordinator.withSerializedSettings(() => {
+    await coordinator.withSerializedSettings(async () => {
       const current = this.active;
       if (
         current === null ||
@@ -440,7 +471,7 @@ export class HotkeyRecorderSuspension {
       ) {
         return;
       }
-      this.releaseLocked("timeout", coordinator);
+      await this.releaseLocked("timeout", coordinator);
       this.logger.warn("hotkey recorder suspension lease expired", {
         ownerWindowId: expected.ownerWindowId,
         timeoutMs: this.timeoutMs

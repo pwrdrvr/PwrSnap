@@ -149,6 +149,16 @@ describe("HotkeyRecorderSuspension", () => {
     expect(h.live.size).toBe(2);
   });
 
+  test("keeps menu bypass armed when a new document takes over the same Settings window", async () => {
+    const h = makeNativeHarness();
+    await h.suspension.begin("older_document", 1, 41, DOCUMENT_A);
+    await h.suspension.begin("newer_document", 1, 41, DOCUMENT_B);
+
+    expect(h.ignoredMenuShortcutWindows).toEqual(new Set([41]));
+    expect(await h.suspension.end("newer_document", 1, 41, DOCUMENT_B)).toBe(true);
+    expect(h.ignoredMenuShortcutWindows.size).toBe(0);
+  });
+
   test("abnormal owner cleanup restores ownership and cannot clear another window", async () => {
     const h = makeNativeHarness();
     await h.suspension.begin("older_window", 1, 41, DOCUMENT_A);

@@ -204,10 +204,12 @@ export class HotkeyRegistrationManager implements HotkeyRegistrationCoordinator 
     // best-effort baseline here before staging only the actual edit.
     if (!this.initialized) this.initialize(currentHotkeys);
 
+    const rewritten = new Set<HotkeyKind>();
     const changed = new Set<HotkeyKind>();
     for (const kind of HOTKEY_KINDS) {
       const current = currentHotkeys[kind];
       const next = nextHotkeys[kind];
+      if (current !== next) rewritten.add(kind);
       if (
         current !== next &&
         !acceleratorsAreEquivalent(current, next, this.platform)
@@ -217,7 +219,12 @@ export class HotkeyRegistrationManager implements HotkeyRegistrationCoordinator 
     }
     const desired = this.normalizeChangedConfiguration(nextHotkeys, changed);
     if (this.suspended) {
-      return this.prepareWhileSuspended(nextHotkeys, changed, desired);
+      return this.prepareWhileSuspended(
+        nextHotkeys,
+        changed,
+        rewritten,
+        desired
+      );
     }
     const before = new Map(this.active);
     const failuresBefore = new Map(this.failures);
@@ -317,8 +324,13 @@ export class HotkeyRegistrationManager implements HotkeyRegistrationCoordinator 
           const accelerator = desired.get(kind) ?? "";
           if (accelerator === "") committed.delete(kind);
           else committed.set(kind, accelerator);
-          this.configured.set(kind, nextHotkeys[kind] ?? "");
           this.failures.delete(kind);
+        }
+        // A platform-canonical rewrite may preserve the exact physical chord.
+        // Keep its active/failure state, but refresh the persisted spelling so
+        // Settings can continue matching and displaying any inactive status.
+        for (const kind of rewritten) {
+          this.configured.set(kind, nextHotkeys[kind] ?? "");
         }
         this.active = committed;
         this.initialized = true;
@@ -505,6 +517,7 @@ export class HotkeyRegistrationManager implements HotkeyRegistrationCoordinator 
   private prepareWhileSuspended(
     nextHotkeys: Settings["hotkeys"],
     changed: ReadonlySet<HotkeyKind>,
+    rewritten: ReadonlySet<HotkeyKind>,
     desired: ReadonlyMap<HotkeyKind, string>
   ): HotkeyRegistrationTransaction {
     // Probe only changed candidates. The recorder already captured and
@@ -537,9 +550,10 @@ export class HotkeyRegistrationManager implements HotkeyRegistrationCoordinator 
       commit: (): void => {
         if (finished) return;
         releaseProbes();
+        for (const kind of rewritten) {
+          this.configured.set(kind, nextHotkeys[kind] ?? "");
+        }
         for (const kind of changed) {
-          const persisted = nextHotkeys[kind] ?? "";
-          this.configured.set(kind, persisted);
           this.failures.delete(kind);
           if ((desired.get(kind) ?? "") === "") {
             this.restoreAfterSuspension.delete(kind);

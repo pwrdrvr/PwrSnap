@@ -9,8 +9,16 @@ import {
 } from "vitest";
 import { bus } from "../../command-bus";
 import { HotkeyRecorderSuspension } from "../../hotkeys/hotkey-recorder-suspension";
+import {
+  admitHotkeyRecorderDocument,
+  allowNextHotkeyRecorderDocument,
+  fenceHotkeyRecorderDocument
+} from "../../hotkeys/hotkey-recorder-document";
 import { defaultSettings } from "../../settings/desktop-settings-service";
-import { registerHotkeyRecorderSuspensionHandlers } from "../hotkey-recorder-handlers";
+import {
+  registerHotkeyRecorderInputScopeHandler,
+  registerHotkeyRecorderSuspensionHandlers
+} from "../hotkey-recorder-handlers";
 
 let suspension: HotkeyRecorderSuspension;
 let isLiveSettingsOwner: Mock<
@@ -45,6 +53,7 @@ afterEach(async () => {
   await suspension.dispose();
   bus.unregister("settings:beginHotkeyRecording");
   bus.unregister("settings:endHotkeyRecording");
+  bus.unregister("settings:resumeHotkeyRecordingOwner");
 });
 
 describe("hotkey recorder suspension commands", () => {
@@ -179,6 +188,46 @@ describe("hotkey recorder suspension commands", () => {
     expect(suspension.isSuspended()).toBe(false);
   });
 
+  test("a recovered unresponsive document is explicitly re-admitted", async () => {
+    await bus.dispatch(
+      "settings:beginHotkeyRecording",
+      { sessionId: "recovering_session", generation: 1 },
+      ipcContext(41)
+    );
+    await bus.dispatch(
+      "settings:endHotkeyRecording",
+      { ownerWindowId: 41, ownerDocumentId: DOCUMENT_A, reason: "unresponsive" },
+      { principal: "bridge" }
+    );
+
+    const whileUnresponsive = await bus.dispatch(
+      "settings:beginHotkeyRecording",
+      { sessionId: "queued_heartbeat", generation: 2 },
+      ipcContext(41)
+    );
+    expect(whileUnresponsive).toEqual({
+      ok: true,
+      value: expect.objectContaining({ accepted: false })
+    });
+
+    const resumed = await bus.dispatch(
+      "settings:resumeHotkeyRecordingOwner",
+      { ownerWindowId: 41, ownerDocumentId: DOCUMENT_A },
+      { principal: "bridge" }
+    );
+    expect(resumed).toEqual({ ok: true, value: { resumed: true } });
+
+    const restarted = await bus.dispatch(
+      "settings:beginHotkeyRecording",
+      { sessionId: "recovered_session", generation: 1 },
+      ipcContext(41)
+    );
+    expect(restarted).toEqual({
+      ok: true,
+      value: expect.objectContaining({ accepted: true })
+    });
+  });
+
   test("rejects non-renderer begin and malformed session ids", async () => {
     const internal = await bus.dispatch(
       "settings:beginHotkeyRecording",
@@ -287,5 +336,44 @@ describe("hotkey recorder suspension commands", () => {
       ok: false,
       error: expect.objectContaining({ code: "invalid_hotkey_recorder_generation" })
     });
+  });
+});
+
+describe("hotkey recorder split-process input scope", () => {
+  test("changes menu handling only for the attested live Settings document", async () => {
+    const webContentsId = 901;
+    const setIgnoreMenuShortcuts = vi.fn();
+    const window = {
+      id: 41,
+      isDestroyed: () => false,
+      webContents: {
+        id: webContentsId,
+        isDestroyed: () => false,
+        setIgnoreMenuShortcuts
+      }
+    };
+    allowNextHotkeyRecorderDocument(webContentsId);
+    admitHotkeyRecorderDocument(webContentsId, DOCUMENT_A);
+    registerHotkeyRecorderInputScopeHandler(() => window);
+
+    try {
+      const suspended = await bus.dispatch(
+        "settings:setHotkeyRecorderInputScope",
+        { ownerWindowId: 41, ownerDocumentId: DOCUMENT_A, ignore: true },
+        { principal: "bridge" }
+      );
+      const restored = await bus.dispatch(
+        "settings:setHotkeyRecorderInputScope",
+        { ownerWindowId: 41, ownerDocumentId: DOCUMENT_A, ignore: false },
+        { principal: "bridge" }
+      );
+
+      expect(suspended).toEqual({ ok: true, value: { applied: true } });
+      expect(restored).toEqual({ ok: true, value: { applied: true } });
+      expect(setIgnoreMenuShortcuts.mock.calls).toEqual([[true], [false]]);
+    } finally {
+      bus.unregister("settings:setHotkeyRecorderInputScope");
+      fenceHotkeyRecorderDocument(webContentsId);
+    }
   });
 });

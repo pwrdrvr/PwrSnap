@@ -1,5 +1,9 @@
 import type { HotkeyRecorderInputScope } from "./hotkey-recorder-suspension";
 
+type InputScopeDispatchResult =
+  | { ok: true; value: { applied: boolean } }
+  | { ok: false; error: { code: string; message: string } };
+
 type RecorderWindow = {
   isDestroyed(): boolean;
   webContents: {
@@ -51,5 +55,42 @@ export function createHotkeyRecorderInputScope(
   return {
     suspend,
     restore
+  };
+}
+
+/** Agent-side half of the split-process input lease. The Settings window and
+ * its application menu live in the library process, so the agent must ask that
+ * process to mutate `setIgnoreMenuShortcuts` rather than resolving a
+ * process-local BrowserWindow id that happens to have the same number. */
+export function createRemoteHotkeyRecorderInputScope(
+  dispatch: (request: {
+    ownerWindowId: number;
+    ownerDocumentId: string;
+    ignore: boolean;
+  }) => Promise<InputScopeDispatchResult>
+): HotkeyRecorderInputScope {
+  const update = async (
+    ownerWindowId: number,
+    ownerDocumentId: string,
+    ignore: boolean
+  ): Promise<void> => {
+    const result = await dispatch({
+      ownerWindowId,
+      ownerDocumentId,
+      ignore
+    });
+    if (!result.ok) {
+      throw new Error(result.error.message);
+    }
+    if (ignore && !result.value.applied) {
+      throw new Error("hotkey recorder Settings window is no longer available");
+    }
+  };
+
+  return {
+    suspend: (ownerWindowId, ownerDocumentId) =>
+      update(ownerWindowId, ownerDocumentId, true),
+    restore: (ownerWindowId, ownerDocumentId) =>
+      update(ownerWindowId, ownerDocumentId, false)
   };
 }

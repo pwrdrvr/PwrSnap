@@ -54,3 +54,13 @@ export function isLiveHotkeyRecorderDocument(
     liveDocumentByWebContents.get(webContentsId) === documentId
   );
 }
+
+/** Read the currently admitted epoch without fencing it. Used only for the
+ * recoverable Electron `unresponsive` lifecycle: the agent lease is fenced,
+ * while the still-live renderer document may be re-admitted on `responsive`. */
+export function currentHotkeyRecorderDocument(
+  webContentsId: number
+): string | null {
+  if (navigatingWebContents.has(webContentsId)) return null;
+  return liveDocumentByWebContents.get(webContentsId) ?? null;
+}

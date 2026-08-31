@@ -3997,6 +3997,19 @@ export type Commands = {
     };
   };
   /**
+   * Bridge-only split-process half of the recorder lease. The agent owns
+   * globalShortcut registrations, while the library process owns the Settings
+   * BrowserWindow whose application-menu accelerators must be bypassed.
+   */
+  "settings:setHotkeyRecorderInputScope": {
+    req: {
+      ownerWindowId: number;
+      ownerDocumentId: string;
+      ignore: boolean;
+    };
+    res: { applied: boolean };
+  };
+  /**
    * Normal renderer cleanup names the exact session and generation. The
    * bridge-only owner arm is used by the Settings BrowserWindow lifecycle
    * when its renderer can no longer send cleanup (close, crash, navigation,
@@ -4011,6 +4024,12 @@ export type Commands = {
           reason: "window-closed" | "renderer-gone" | "navigation" | "unresponsive";
         };
     res: { ended: boolean };
+  };
+  /** Re-admit the same live Settings document after an unresponsive renderer
+   * recovers. The old recorder lease remains ended; a new begin is required. */
+  "settings:resumeHotkeyRecordingOwner": {
+    req: { ownerWindowId: number; ownerDocumentId: string };
+    res: { resumed: boolean };
   };
   /** Open (or focus, if already open) the Settings BrowserWindow. */
   "settings:open": { req: { page?: SettingsPage }; res: void };

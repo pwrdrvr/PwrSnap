@@ -7,6 +7,11 @@ import {
   type HotkeyRecorderOwnershipCoordinator
 } from "../hotkeys/hotkey-recorder-suspension";
 import { isHotkeyRecorderDocumentId } from "../hotkeys/hotkey-recorder-document";
+import { createHotkeyRecorderInputScope } from "../hotkeys/hotkey-recorder-input-scope";
+import {
+  isLiveSettingsHotkeyRecorderOwner,
+  type HotkeyRecorderSettingsWindow
+} from "../hotkeys/hotkey-recorder-owner";
 
 const SESSION_ID = /^[A-Za-z0-9_-]{8,128}$/;
 const OWNER_RELEASE_REASONS = new Set([
@@ -158,5 +163,82 @@ export function registerHotkeyRecorderSuspensionHandlers(
       "invalid_hotkey_recorder_end",
       "Hotkey recorder cleanup requires a sessionId or a main-owned window lifecycle reason."
     );
+  });
+
+  bus.register("settings:resumeHotkeyRecordingOwner", async (req, ctx) => {
+    const value = req as Record<string, unknown>;
+    if (
+      ctx.principal !== "bridge" ||
+      !Number.isSafeInteger(value.ownerWindowId) ||
+      !isHotkeyRecorderDocumentId(value.ownerDocumentId)
+    ) {
+      return failure(
+        "permission",
+        "hotkey_recorder_owner_resume_main_only",
+        "Only the live Settings window lifecycle may resume a recorder owner."
+      );
+    }
+    return ok({
+      resumed: suspension.resumeOwner(
+        value.ownerWindowId as number,
+        value.ownerDocumentId
+      )
+    });
+  });
+}
+
+/** Library/combined-process handler for the BrowserWindow-owned half of the
+ * recorder lease. Only authenticated main-process bridge traffic can call it;
+ * enabling additionally proves the exact live Settings document epoch. */
+export function registerHotkeyRecorderInputScopeHandler(
+  findSettingsWindow: () =>
+    | (HotkeyRecorderSettingsWindow & {
+        webContents: {
+          setIgnoreMenuShortcuts(ignore: boolean): void;
+        };
+      })
+    | null
+): void {
+  const scope = createHotkeyRecorderInputScope((windowId) => {
+    const window = findSettingsWindow();
+    return window?.id === windowId ? window : null;
+  });
+
+  bus.register("settings:setHotkeyRecorderInputScope", async (req, ctx) => {
+    const value = req as Record<string, unknown>;
+    if (
+      ctx.principal !== "bridge" ||
+      !Number.isSafeInteger(value.ownerWindowId) ||
+      !isHotkeyRecorderDocumentId(value.ownerDocumentId) ||
+      typeof value.ignore !== "boolean"
+    ) {
+      return failure(
+        "permission",
+        "hotkey_recorder_input_scope_main_only",
+        "Only the hotkey recorder ownership lease may change Settings menu input."
+      );
+    }
+    const ownerWindowId = value.ownerWindowId as number;
+    const ownerDocumentId = value.ownerDocumentId;
+    const window = findSettingsWindow();
+    if (value.ignore) {
+      if (
+        !isLiveSettingsHotkeyRecorderOwner(
+          window,
+          ownerWindowId,
+          ownerDocumentId
+        )
+      ) {
+        return ok({ applied: false });
+      }
+      await scope.suspend(ownerWindowId, ownerDocumentId);
+      return ok({ applied: true });
+    }
+
+    if (window === null || window.id !== ownerWindowId || window.isDestroyed()) {
+      return ok({ applied: false });
+    }
+    await scope.restore(ownerWindowId, ownerDocumentId);
+    return ok({ applied: true });
   });
 }

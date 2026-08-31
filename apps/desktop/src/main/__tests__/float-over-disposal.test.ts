@@ -56,7 +56,11 @@ const mocks = vi.hoisted(() => {
       on: vi.fn(),
       removeAllListeners: vi.fn()
     },
-    windows
+    windows,
+    recorderParticipant: null as {
+      suspend(): void;
+      restore(): void;
+    } | null
   };
 });
 
@@ -84,6 +88,18 @@ vi.mock("../command-bus", () => ({
 
 vi.mock("../log", () => ({
   getMainLogger: () => ({ info: vi.fn() })
+}));
+
+vi.mock("../hotkeys/hotkey-recorder-suspension-instance", () => ({
+  hotkeyRecorderSuspension: {
+    registerParticipant: vi.fn((participant: {
+      suspend(): void;
+      restore(): void;
+    }) => {
+      mocks.recorderParticipant = participant;
+      return vi.fn();
+    })
+  }
 }));
 
 import {
@@ -149,5 +165,16 @@ describe("disposeFloatOver", () => {
     expect(mocks.ipcMain.on).toHaveBeenCalledTimes(2);
     expect(getFloatOverState()).toEqual({ kind: "idle" });
     expect(getFloatOverWindowIdForE2E()).toBe(2);
+  });
+
+  it("releases Float-Over copy ownership for recording and restores the loaded toast", () => {
+    setFloatOverState({ kind: "show-loaded", captureId: "cap_lease" });
+    expect(mocks.globalShortcut.register).toHaveBeenCalledTimes(3);
+
+    mocks.recorderParticipant?.suspend();
+    expect(mocks.globalShortcut.unregister).toHaveBeenCalledTimes(3);
+
+    mocks.recorderParticipant?.restore();
+    expect(mocks.globalShortcut.register).toHaveBeenCalledTimes(6);
   });
 });

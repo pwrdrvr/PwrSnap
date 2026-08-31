@@ -36,6 +36,7 @@ import { DesktopSettingsService } from "./settings/desktop-settings-service";
 import { wireSizzleCloseBarrier } from "./sizzle/sizzle-close-barrier";
 import {
   allowNextHotkeyRecorderDocument,
+  currentHotkeyRecorderDocument,
   fenceHotkeyRecorderDocument
 } from "./hotkeys/hotkey-recorder-document";
 import {
@@ -959,6 +960,28 @@ function releaseSettingsHotkeyRecorderLease(
     });
 }
 
+function resumeSettingsHotkeyRecorderOwner(
+  ownerWindowId: number,
+  ownerDocumentId: string
+): void {
+  void bus
+    .dispatch(
+      "settings:resumeHotkeyRecordingOwner",
+      { ownerWindowId, ownerDocumentId },
+      { principal: "bridge" }
+    )
+    .then((result) => {
+      if (!result.ok && result.error.code !== "unknown_command") {
+        log.warn("failed to resume Settings hotkey recorder owner", {
+          ownerWindowId,
+          ownerDocumentId,
+          code: result.error.code,
+          message: result.error.message
+        });
+      }
+    });
+}
+
 /**
  * Create a dedicated PwrSnap-owned approval surface for one local-agent
  * authorization request. The consent broker binds privileged commands to this
@@ -1047,16 +1070,19 @@ export function createSettingsWindow(
     webPreferences: themedWebPreferences()
   });
   settingsWindow = window;
+  let unresponsiveDocumentId: string | null = null;
 
   const fenceCurrentDocument = (
     reason: "window-closed" | "renderer-gone" | "navigation" | "unresponsive"
   ): void => {
+    unresponsiveDocumentId = null;
     const ownerDocumentId = fenceHotkeyRecorderDocument(window.webContents.id);
     if (ownerDocumentId === null) return;
     releaseSettingsHotkeyRecorderLease(window.id, ownerDocumentId, reason);
   };
   window.webContents.on("did-finish-load", () => {
     if (window.isDestroyed() || window.webContents.isDestroyed()) return;
+    unresponsiveDocumentId = null;
     allowNextHotkeyRecorderDocument(window.webContents.id);
   });
 
@@ -1078,7 +1104,17 @@ export function createSettingsWindow(
   });
   window.webContents.on("unresponsive", () => {
     log.warn("settings window renderer unresponsive", { id: window.id });
-    fenceCurrentDocument("unresponsive");
+    const ownerDocumentId = currentHotkeyRecorderDocument(window.webContents.id);
+    if (ownerDocumentId === null) return;
+    unresponsiveDocumentId = ownerDocumentId;
+    releaseSettingsHotkeyRecorderLease(window.id, ownerDocumentId, "unresponsive");
+  });
+  window.webContents.on("responsive", () => {
+    const ownerDocumentId = unresponsiveDocumentId;
+    if (ownerDocumentId === null) return;
+    unresponsiveDocumentId = null;
+    log.info("settings window renderer responsive", { id: window.id });
+    resumeSettingsHotkeyRecorderOwner(window.id, ownerDocumentId);
   });
   window.webContents.on(
     "did-start-navigation",

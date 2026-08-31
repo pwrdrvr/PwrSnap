@@ -129,12 +129,18 @@ import {
   type HotkeyKind
 } from "./hotkeys/hotkey-registration-manager";
 import { hotkeyRecorderSuspension } from "./hotkeys/hotkey-recorder-suspension-instance";
-import { createHotkeyRecorderInputScope } from "./hotkeys/hotkey-recorder-input-scope";
+import {
+  createHotkeyRecorderInputScope,
+  createRemoteHotkeyRecorderInputScope
+} from "./hotkeys/hotkey-recorder-input-scope";
 import {
   attestSettingsHotkeyRecorderOwnerForBridge,
   isLiveSettingsHotkeyRecorderOwner
 } from "./hotkeys/hotkey-recorder-owner";
-import { registerHotkeyRecorderSuspensionHandlers } from "./handlers/hotkey-recorder-handlers";
+import {
+  registerHotkeyRecorderInputScopeHandler,
+  registerHotkeyRecorderSuspensionHandlers
+} from "./handlers/hotkey-recorder-handlers";
 import {
   checkForAppUpdatesNow,
   initAppUpdater,
@@ -167,6 +173,7 @@ import {
 } from "./process-split/event-relay";
 import {
   dispatchToLibraryProcess,
+  dispatchToRunningLibraryProcess,
   forwardCancellationToLibrary,
   forwardRendererEventToLibrary,
   stopLibraryProcess
@@ -288,16 +295,6 @@ function sendEditCommand(
 
 const isMac = process.platform === "darwin";
 const shortcutPlatform = shortcutPlatformFromString(process.platform);
-
-// Native application-menu accelerators (Undo/Redo, cut/copy/paste/select-all,
-// zoom, and developer reload keys) run ahead of renderer DOM events. During a
-// recording lease, tell Electron to bypass only those menu shortcuts for the
-// owning Settings webContents so Ctrl/Command chords still reach keydown and
-// keyup. Normal Chromium text input remains enabled; every lease exit restores
-// menu handling for that exact window.
-hotkeyRecorderSuspension.configureInputScope(
-  createHotkeyRecorderInputScope((windowId) => BrowserWindow.fromId(windowId))
-);
 
 /**
  * E2E mode. When `PWRSNAP_E2E=1`, the bootstrap skips:
@@ -1472,6 +1469,39 @@ export function bootstrapApp(): void {
     log.info("booting with process role", { role, pid: process.pid });
   }
 
+  // Native application-menu accelerators run ahead of renderer DOM events.
+  // Combined mode owns Settings locally; split mode must mutate the Settings
+  // webContents in the library process rather than interpreting its numeric
+  // BrowserWindow id inside the agent process.
+  if (role === "combined") {
+    hotkeyRecorderSuspension.configureInputScope(
+      createHotkeyRecorderInputScope((windowId) => BrowserWindow.fromId(windowId))
+    );
+  } else if (role === "agent") {
+    hotkeyRecorderSuspension.configureInputScope(
+      createRemoteHotkeyRecorderInputScope(async (request) => {
+        const dispatch = request.ignore
+          ? dispatchToLibraryProcess
+          : dispatchToRunningLibraryProcess;
+        const result = await dispatch(
+          "settings:setHotkeyRecorderInputScope",
+          request,
+          { principal: "bridge" }
+        );
+        if (!result.ok) return result;
+        return {
+          ok: true,
+          value: {
+            applied:
+              typeof result.value === "object" &&
+              result.value !== null &&
+              (result.value as { applied?: unknown }).applied === true
+          }
+        };
+      })
+    );
+  }
+
   // PwrSnap never hydrates the user's login shell to guess at PATH.
   // Binary discovery (codex / ACP agents) checks explicit install
   // locations plus the app's inherited PATH, and surfaces "not found"
@@ -1853,6 +1883,9 @@ export function bootstrapApp(): void {
     // the routing tests pin the contentious assignments.
     registerAppCommonHandlers();
     registerRendererErrorHandler();
+    if (role !== "agent") {
+      registerHotkeyRecorderInputScopeHandler(findSettingsWindow);
+    }
     // Library DATA verbs register in every role: the agent's tray and
     // float-over read + mutate captures locally against the shared WAL
     // DB — a tray preview must never resurrect the library process.

@@ -423,7 +423,7 @@ describe("HotkeyRegistrationManager", () => {
     });
   });
 
-  test("a platform-canonical reset does not retry a physically unchanged boot failure", () => {
+  test("a platform-canonical reset refreshes status text without retrying a physically unchanged boot failure", () => {
     const fake = makeRegistrar();
     const manager = makeManager(fake.registrar);
     const current = blankHotkeys({
@@ -447,7 +447,35 @@ describe("HotkeyRegistrationManager", () => {
     transaction.commit();
     expect([...fake.live.keys()]).toEqual(["Control+Alt+X"]);
     expect(manager.statusSnapshot().quickCapture).toMatchObject({
-      accelerator: "CommandOrControl+Shift+C",
+      accelerator: "Control+Shift+C",
+      state: "inactive",
+      failure: { code: "unavailable" }
+    });
+  });
+
+  test("a recorder write refreshes equivalent configured text while preserving its inactive failure", () => {
+    const fake = makeRegistrar();
+    const manager = makeManager(fake.registrar);
+    const current = blankHotkeys({
+      quickCapture: "CommandOrControl+Shift+C"
+    });
+    fake.unavailable.add("Control+Shift+C");
+    manager.initialize(current);
+    manager.suspendNative();
+
+    const transaction = manager.prepare(current, {
+      ...current,
+      quickCapture: "Control+Shift+C"
+    });
+    transaction.commit();
+
+    expect(
+      vi.mocked(fake.registrar.register).mock.calls.filter(
+        ([accelerator]) => accelerator === "Control+Shift+C"
+      )
+    ).toHaveLength(1);
+    expect(manager.statusSnapshot().quickCapture).toMatchObject({
+      accelerator: "Control+Shift+C",
       state: "inactive",
       failure: { code: "unavailable" }
     });

@@ -30,6 +30,7 @@ import {
 import { bus } from "./command-bus";
 import { getMainLogger } from "./log";
 import { createFloatOverWindow } from "./window";
+import { hotkeyRecorderSuspension } from "./hotkeys/hotkey-recorder-suspension-instance";
 
 const log = getMainLogger("pwrsnap:float-over");
 
@@ -371,12 +372,14 @@ function reanchorOnCurrentDisplay(window: BrowserWindow): void {
  * the user gets their hotkeys back.
  */
 let copyShortcutsRegistered = false;
+let copyShortcutsSuspendedForRecorder = false;
 function emitCopyPulse(preset: RenderPreset): void {
   if (singleton === null || singleton.isDestroyed()) return;
   singleton.webContents.send(EVENT_CHANNELS.floatOverCopyPulse, { preset });
 }
 
 function armCopyShortcuts(captureId: string): void {
+  if (copyShortcutsSuspendedForRecorder) return;
   if (copyShortcutsRegistered) {
     disarmCopyShortcuts();
   }
@@ -401,6 +404,18 @@ function disarmCopyShortcuts(): void {
   globalShortcut.unregister("CommandOrControl+3");
   copyShortcutsRegistered = false;
 }
+
+hotkeyRecorderSuspension.registerParticipant({
+  id: "float-over-copy-shortcuts",
+  suspend: () => {
+    copyShortcutsSuspendedForRecorder = true;
+    disarmCopyShortcuts();
+  },
+  restore: () => {
+    copyShortcutsSuspendedForRecorder = false;
+    if (state.kind === "loaded") armCopyShortcuts(state.captureId);
+  }
+});
 
 /**
  * The single entry point for the rest of the main process to drive the

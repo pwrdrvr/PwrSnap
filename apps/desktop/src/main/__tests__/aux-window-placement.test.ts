@@ -277,6 +277,64 @@ describe("settings window placement", () => {
     );
   });
 
+  test("an unresponsive Settings renderer is released and re-admitted on recovery", async () => {
+    electronMock.getPrimaryDisplay.mockReturnValue({
+      workArea: { x: 0, y: 0, width: 1920, height: 1080 }
+    });
+    const [{ createSettingsWindow }, { bus }, recorderDocument] = await Promise.all([
+      import("../window"),
+      import("../command-bus"),
+      import("../hotkeys/hotkey-recorder-document")
+    ]);
+    const dispatchSpy = vi
+      .spyOn(bus, "dispatch")
+      .mockResolvedValue({ ok: true, value: { ended: true } } as never);
+    const settings = createSettingsWindow() as unknown as WindowSpy;
+    const didFinishLoad = settings.webContents.on.mock.calls.find(
+      ([event]) => event === "did-finish-load"
+    )?.[1] as (() => void) | undefined;
+    const unresponsive = settings.webContents.on.mock.calls.find(
+      ([event]) => event === "unresponsive"
+    )?.[1] as (() => void) | undefined;
+    const responsive = settings.webContents.on.mock.calls.find(
+      ([event]) => event === "responsive"
+    )?.[1] as (() => void) | undefined;
+
+    didFinishLoad?.();
+    recorderDocument.admitHotkeyRecorderDocument(
+      settings.webContents.id,
+      "documentepoch0001"
+    );
+    unresponsive?.();
+    responsive?.();
+
+    expect(dispatchSpy).toHaveBeenNthCalledWith(
+      1,
+      "settings:endHotkeyRecording",
+      {
+        ownerWindowId: settings.id,
+        ownerDocumentId: "documentepoch0001",
+        reason: "unresponsive"
+      },
+      { principal: "bridge" }
+    );
+    expect(dispatchSpy).toHaveBeenNthCalledWith(
+      2,
+      "settings:resumeHotkeyRecordingOwner",
+      {
+        ownerWindowId: settings.id,
+        ownerDocumentId: "documentepoch0001"
+      },
+      { principal: "bridge" }
+    );
+    expect(
+      recorderDocument.isLiveHotkeyRecorderDocument(
+        settings.webContents.id,
+        "documentepoch0001"
+      )
+    ).toBe(true);
+  });
+
   test("centers a new Sizzle window on the source window display", async () => {
     const sourceWindow = makeWindowSpy({
       x: 2200,

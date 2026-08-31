@@ -30,9 +30,11 @@ export type CaptureWindowHandlerDependencies = {
   peerPwrSnapPid: () => number | null;
   boundsApproxEqual: (a: WindowBounds, b: WindowBounds) => boolean;
   captureWindow: (windowId: number) => Promise<CaptureRegionResult>;
+  displayScaleFactorForWindow: (sourceWindow: WindowInfo) => number;
   persistCapture: (
     tempPath: string,
-    sourceWindow: WindowInfo
+    sourceWindow: WindowInfo,
+    devicePixelRatio: number
   ) => Promise<Result<CaptureRecord, PwrSnapError>>;
   releaseCaptureTemp: (tempPath: string) => Promise<void>;
   reportCleanupFailure: (tempPath: string, cause: unknown) => void;
@@ -219,7 +221,8 @@ export function createCaptureWindowHandler(
 
       return await deps.persistCapture(
         captureResult.tempPath,
-        revalidatedWindow
+        revalidatedWindow,
+        deps.displayScaleFactorForWindow(revalidatedWindow)
       );
     } catch {
       return captureError(

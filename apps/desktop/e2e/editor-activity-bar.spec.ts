@@ -135,13 +135,14 @@ test.skip("editor-activity-bar: accel+1/2/3 select panels", async () => {
     await expect(
       editorWindow.locator('[data-testid="chat-panel"]')
     ).toHaveCount(1);
-    // Editor Chat reuses the real capture-scoped Library chat surface.
+    // The standalone Editor cannot borrow the Library-wide chat surface:
+    // its per-bundle controller and Editor-only catalog have not shipped.
     await expect(
       editorWindow.locator('[data-testid="chat-panel"] .ps-libchat-empty-title')
-    ).toContainText("PwrSnap chat");
+    ).toContainText("Editor chat is unavailable");
     await expect(
       editorWindow.locator('[data-testid="chat-panel"] [data-testid="composer-input"]')
-    ).toHaveCount(1);
+    ).toHaveCount(0);
 
     // ⌘3 — Tool Config.
     await editorWindow.keyboard.press(`${accel()}+3`);

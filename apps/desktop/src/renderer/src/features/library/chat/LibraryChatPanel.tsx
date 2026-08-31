@@ -834,7 +834,14 @@ export function LibraryChatPanel({
               value={draftConfig}
               onChange={(next) => {
                 setDraftHint(null);
-                setBackendAvailability(null);
+                // Model discovery belongs to the provider, not to an
+                // individual model/reasoning selection. NewChatConfigChips
+                // can choose a default model immediately after reporting the
+                // provider available; clearing that result here would disable
+                // the composer until some unrelated provider refresh.
+                if (next.provider !== draftConfigRef.current.provider) {
+                  setBackendAvailability(null);
+                }
                 setDraftConfig(next);
               }}
               onAvailabilityChange={setBackendAvailability}

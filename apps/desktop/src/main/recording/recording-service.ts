@@ -97,6 +97,9 @@ export type RecordingService = {
    *  one with the same subject + capabilities. Throws
    *  `not_recording` if no session is active. */
   restart(): Promise<{ sessionId: string }>;
+  /** Read the safe capability subset needed to preflight a retry. Validates
+   * that the supplied failure session is still current and retryable. */
+  retryCapabilities(sessionId: string): RecordingCapabilities;
   retry(sessionId: string): Promise<{ sessionId: string }>;
   dismissFailure(sessionId: string): Promise<void>;
   /** True when this service has an active session. Used by the
@@ -202,7 +205,8 @@ class NativeRecorderService implements RecordingService {
         sessionId,
         code: "recorder_unavailable",
         displayId,
-        cause
+        cause,
+        canRetry: !app.isPackaged
       });
       throw cause;
     }
@@ -520,6 +524,7 @@ class NativeRecorderService implements RecordingService {
   }
 
   async retry(sessionId: string): Promise<{ sessionId: string }> {
+    this.retryCapabilities(sessionId);
     const state = getRecordingState();
     if (
       this.retryInFlight ||
@@ -536,6 +541,19 @@ class NativeRecorderService implements RecordingService {
     } finally {
       this.retryInFlight = false;
     }
+  }
+
+  retryCapabilities(sessionId: string): RecordingCapabilities {
+    const state = getRecordingState();
+    if (
+      state.phase !== "failed" ||
+      state.sessionId !== sessionId ||
+      !state.canRetry ||
+      this.retryOptions === null
+    ) {
+      throw new Error("stale_failure");
+    }
+    return { ...this.retryOptions.capabilities };
   }
 
   async dismissFailure(sessionId: string): Promise<void> {
@@ -791,7 +809,8 @@ class WindowsFfmpegRecorderService implements RecordingService {
         sessionId,
         code: "recorder_unavailable",
         displayId,
-        cause
+        cause,
+        canRetry: !app.isPackaged
       });
       throw cause;
     }
@@ -1017,6 +1036,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
   }
 
   async retry(sessionId: string): Promise<{ sessionId: string }> {
+    this.retryCapabilities(sessionId);
     const state = getRecordingState();
     if (
       this.retryInFlight ||
@@ -1033,6 +1053,19 @@ class WindowsFfmpegRecorderService implements RecordingService {
     } finally {
       this.retryInFlight = false;
     }
+  }
+
+  retryCapabilities(sessionId: string): RecordingCapabilities {
+    const state = getRecordingState();
+    if (
+      state.phase !== "failed" ||
+      state.sessionId !== sessionId ||
+      !state.canRetry ||
+      this.retryOptions === null
+    ) {
+      throw new Error("stale_failure");
+    }
+    return { ...this.retryOptions.capabilities };
   }
 
   async dismissFailure(sessionId: string): Promise<void> {

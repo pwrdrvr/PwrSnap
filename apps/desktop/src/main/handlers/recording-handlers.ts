@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { ok, err, recordingFailureSummary } from "@pwrsnap/shared";
 import type {
   PwrSnapError,
+  RecordingCapabilities,
   RecordingFailureCode,
   RecordingPermission,
   Result,
@@ -103,6 +104,36 @@ function failedSessionId(req: unknown): string | null {
   return typeof value === "string" && value.length > 0 && value.length <= 128
     ? value
     : null;
+}
+
+/** Shared gate for both a fresh start and a session-scoped retry. Retry uses
+ * the service-owned capability snapshot, so permission/storage changes while
+ * a durable failure card is open are caught before another countdown begins. */
+async function guardRecordingAttempt(
+  capabilities: RecordingCapabilities
+): Promise<Result<never, PwrSnapError> | null> {
+  const blocked = await guardScreenCapture();
+  if (blocked) return blocked;
+  const storageBlocked = await ensureCapturesDirReady();
+  if (storageBlocked) return storageBlocked;
+  const readiness = readRecordingReadiness();
+  if (capabilities.microphone && readiness.microphone !== "granted") {
+    return err(
+      permissionError(
+        "microphone_not_granted",
+        "Microphone permission is required for the selected recording options."
+      )
+    );
+  }
+  if (capabilities.systemAudio && readiness.systemAudio !== "granted") {
+    return err(
+      permissionError(
+        "system_audio_not_granted",
+        "System Audio capture requires Screen Recording permission on macOS 13 or newer."
+      )
+    );
+  }
+  return null;
 }
 
 /** Filename of the extracted full-clip audio under the video asset dir.
@@ -266,36 +297,8 @@ export function registerRecordingHandlers(): void {
     // the first-ever attempt and routes to System Settings thereafter
     // (see screen-permission-gate.ts). Missing audio is a degraded
     // continuation that the selector dialog handled before calling us.
-    const blocked = await guardScreenCapture();
+    const blocked = await guardRecordingAttempt(req.capabilities);
     if (blocked) return blocked;
-    // Pre-warm the captures-folder (Documents) TCC grant before the
-    // countdown HUD so the "Allow Documents" dialog lands on a clean
-    // screen, not under recording chrome when the clip is saved.
-    const storageBlocked = await ensureCapturesDirReady();
-    if (storageBlocked) return storageBlocked;
-    const readiness = readRecordingReadiness();
-    if (
-      req.capabilities.microphone &&
-      readiness.microphone !== "granted"
-    ) {
-      return err(
-        permissionError(
-          "microphone_not_granted",
-          "Microphone permission is required for the selected recording options."
-        )
-      );
-    }
-    if (
-      req.capabilities.systemAudio &&
-      readiness.systemAudio !== "granted"
-    ) {
-      return err(
-        permissionError(
-          "system_audio_not_granted",
-          "System Audio capture requires Screen Recording permission on macOS 13 or newer."
-        )
-      );
-    }
     try {
       const session = await getService().start({
         subject: req.subject,
@@ -391,6 +394,24 @@ export function registerRecordingHandlers(): void {
     if (sessionId === null) {
       return err(validationError("invalid_session", "A failed recording session is required."));
     }
+    let capabilities: RecordingCapabilities;
+    try {
+      capabilities = getService().retryCapabilities(sessionId);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      if (message === "stale_failure") {
+        return err(validationError("stale_failure", "That recording failure is no longer current."));
+      }
+      log.error("recording:retry preflight snapshot failed", { message });
+      return err(
+        recordingError(
+          "recording_retry_failed",
+          safeFailureSummary("recorder_start_failed")
+        )
+      );
+    }
+    const blocked = await guardRecordingAttempt(capabilities);
+    if (blocked) return blocked;
     try {
       return ok(await getService().retry(sessionId));
     } catch (cause) {

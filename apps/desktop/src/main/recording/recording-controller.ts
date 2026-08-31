@@ -11,8 +11,15 @@
 // and binds to `events:recording:state` directly for its visuals.
 // This module is the BrowserWindow-side glue.
 
-import { BrowserWindow, globalShortcut, screen } from "electron";
-import type { RecordingState } from "@pwrsnap/shared";
+import {
+  BrowserWindow,
+  dialog,
+  globalShortcut,
+  ipcMain,
+  screen,
+  type IpcMainEvent
+} from "electron";
+import { recordingFailureSummary, type RecordingState } from "@pwrsnap/shared";
 import { appWindowsOverlappingRect } from "../capture/rect-overlap";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
@@ -20,6 +27,10 @@ import { createRecordingControllerWindow } from "../window";
 import { getRecordingState, subscribeToRecordingState } from "./recording-state";
 
 const log = getMainLogger("pwrsnap:recording-controller");
+const RECORDING_CONTROLLER_RESIZE_CHANNEL = "recording-controller:resize";
+const FAILED_WIDTH_DIP = 480;
+const FAILED_INITIAL_HEIGHT_CSS = 176;
+const FAILED_RECREATE_DELAYS_MS = [100, 500] as const;
 
 let window: BrowserWindow | null = null;
 let installed = false;
@@ -28,6 +39,11 @@ let unsubscribe: (() => void) | null = null;
 let disposing = false;
 let replacingFailedWindow = false;
 let failedWindowRecreateTimer: ReturnType<typeof setTimeout> | null = null;
+let failedSessionId: string | null = null;
+let failedWindowCrashCount = 0;
+let failedRendererDisabledSessionId: string | null = null;
+let failedFallbackInFlight = false;
+let resizeChannelWired = false;
 
 function clearFailedWindowRecreateTimer(): void {
   if (failedWindowRecreateTimer === null) return;
@@ -35,22 +51,118 @@ function clearFailedWindowRecreateTimer(): void {
   failedWindowRecreateTimer = null;
 }
 
-function scheduleFailedWindowRecreate(crashedWindow: BrowserWindow): void {
-  if (disposing || window !== crashedWindow || getRecordingState().phase !== "failed") return;
+function resetFailedWindowRecovery(): void {
+  failedSessionId = null;
+  failedWindowCrashCount = 0;
+  failedRendererDisabledSessionId = null;
+}
+
+function trackFailedSession(sessionId: string): void {
+  if (failedSessionId === sessionId) return;
+  failedSessionId = sessionId;
+  failedWindowCrashCount = 0;
+  failedRendererDisabledSessionId = null;
+  clearFailedWindowRecreateTimer();
+}
+
+function destroyFailedWindow(crashedWindow: BrowserWindow): void {
   replacingFailedWindow = true;
   try {
-    window = null;
+    if (window === crashedWindow) window = null;
     if (!crashedWindow.isDestroyed()) crashedWindow.destroy();
   } finally {
     replacingFailedWindow = false;
   }
+}
+
+async function showFailedWindowFallback(
+  failure: Extract<RecordingState, { phase: "failed" }>
+): Promise<void> {
+  if (disposing || failedFallbackInFlight) return;
+  failedFallbackInFlight = true;
+  let fallbackDialogFailed = false;
+  try {
+    while (!disposing) {
+      const live = getRecordingState();
+      if (live.phase !== "failed" || live.sessionId !== failure.sessionId) return;
+      const { response } = await dialog.showMessageBox({
+        type: "error",
+        title: "Recording failed",
+        message: recordingFailureSummary(live.code),
+        detail:
+          "The recording controls could not be displayed. Reveal the log file for details or dismiss this failure.",
+        buttons: ["Reveal Log File", "Dismiss"],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true
+      });
+      if (disposing) return;
+      const stillLive = getRecordingState();
+      if (stillLive.phase !== "failed" || stillLive.sessionId !== failure.sessionId) return;
+      if (response === 0) {
+        await bus.dispatch("renderer:revealLogFile", {}, { principal: "ipc" });
+        continue;
+      }
+      const dismissed = await bus.dispatch(
+        "recording:dismissFailure",
+        { sessionId: failure.sessionId },
+        { principal: "ipc" }
+      );
+      if (dismissed.ok) {
+        failedRendererDisabledSessionId = null;
+        return;
+      }
+    }
+  } catch (cause) {
+    fallbackDialogFailed = true;
+    log.error("recording failure native fallback failed", {
+      sessionId: failure.sessionId,
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+  } finally {
+    failedFallbackInFlight = false;
+    const live = getRecordingState();
+    if (
+      !fallbackDialogFailed &&
+      !disposing &&
+      live.phase === "failed" &&
+      live.sessionId !== failure.sessionId &&
+      failedRendererDisabledSessionId === live.sessionId
+    ) {
+      void showFailedWindowFallback(live);
+    }
+  }
+}
+
+function scheduleFailedWindowRecreate(crashedWindow: BrowserWindow): void {
+  const liveState = getRecordingState();
+  if (disposing || window !== crashedWindow || liveState.phase !== "failed") return;
+  trackFailedSession(liveState.sessionId);
+  failedWindowCrashCount += 1;
+  destroyFailedWindow(crashedWindow);
   clearFailedWindowRecreateTimer();
+  const delay = FAILED_RECREATE_DELAYS_MS[failedWindowCrashCount - 1];
+  if (delay === undefined) {
+    failedRendererDisabledSessionId = liveState.sessionId;
+    log.error("recording failure HUD renderer repeatedly crashed", {
+      sessionId: liveState.sessionId,
+      crashCount: failedWindowCrashCount
+    });
+    void showFailedWindowFallback(liveState);
+    return;
+  }
   failedWindowRecreateTimer = setTimeout(() => {
     failedWindowRecreateTimer = null;
     if (disposing) return;
-    const liveState = getRecordingState();
-    if (liveState.phase === "failed") applyRecordingStateToController(liveState);
-  }, 100);
+    const current = getRecordingState();
+    if (
+      current.phase === "failed" &&
+      current.sessionId === liveState.sessionId &&
+      failedRendererDisabledSessionId !== current.sessionId
+    ) {
+      applyRecordingStateToController(current);
+    }
+  }, delay);
 }
 
 function ensureWindow(): BrowserWindow {
@@ -65,12 +177,57 @@ function ensureWindow(): BrowserWindow {
     }
   });
   window.on("closed", () => {
-    window = null;
+    if (window === createdWindow) window = null;
   });
   window.webContents.on("render-process-gone", () => {
     scheduleFailedWindowRecreate(createdWindow);
   });
   return window;
+}
+
+function resizeFailedWindow(
+  win: BrowserWindow,
+  heightCss: number,
+  displayId: number
+): void {
+  const zoom = Number.isFinite(win.webContents.zoomFactor) && win.webContents.zoomFactor > 0
+    ? win.webContents.zoomFactor
+    : 1;
+  const display = screen.getAllDisplays().find((candidate) => candidate.id === displayId) ??
+    screen.getPrimaryDisplay();
+  const maxWidth = Math.max(320, display.workArea.width - 32);
+  const maxHeight = Math.max(120, display.workArea.height - 32);
+  const widthDip = Math.min(maxWidth, FAILED_WIDTH_DIP);
+  const heightDip = Math.min(maxHeight, Math.max(120, Math.ceil(heightCss * zoom)));
+  const [currentWidth, currentHeight] = win.getContentSize();
+  if (currentWidth !== widthDip || currentHeight !== heightDip) {
+    win.setMinimumSize(0, 0);
+    win.setContentSize(widthDip, heightDip, false);
+  }
+  anchorTopCenter(win, displayId);
+}
+
+function onRecordingControllerResize(event: IpcMainEvent, payload: unknown): void {
+  if (window === null || window.isDestroyed() || event.sender !== window.webContents) return;
+  const state = getRecordingState();
+  if (state.phase !== "failed" || payload === null || typeof payload !== "object") return;
+  const { height } = payload as { height?: unknown };
+  if (typeof height !== "number" || !Number.isFinite(height) || height <= 0) {
+    return;
+  }
+  resizeFailedWindow(window, height, state.displayId);
+}
+
+function wireRecordingControllerResizeChannel(): void {
+  if (resizeChannelWired) return;
+  resizeChannelWired = true;
+  ipcMain.on(RECORDING_CONTROLLER_RESIZE_CHANNEL, onRecordingControllerResize);
+}
+
+function unwireRecordingControllerResizeChannel(): void {
+  if (!resizeChannelWired) return;
+  ipcMain.removeListener(RECORDING_CONTROLLER_RESIZE_CHANNEL, onRecordingControllerResize);
+  resizeChannelWired = false;
 }
 
 /**
@@ -344,12 +501,17 @@ export function applyRecordingStateToController(state: RecordingState): void {
       break;
     }
     case "failed": {
+      trackFailedSession(state.sessionId);
+      if (failedRendererDisabledSessionId === state.sessionId) {
+        disarmLeadInEscapeShortcut();
+        void showFailedWindowFallback(state);
+        break;
+      }
       const win = ensureWindow();
       disarmLeadInEscapeShortcut();
       win.setIgnoreMouseEvents(false);
       win.setFocusable(true);
-      win.setContentSize(480, 176, false);
-      anchorTopCenter(win, state.displayId);
+      resizeFailedWindow(win, FAILED_INITIAL_HEIGHT_CSS, state.displayId);
       win.show();
       win.focus();
       win.moveTop();
@@ -358,6 +520,7 @@ export function applyRecordingStateToController(state: RecordingState): void {
     case "idle":
     case "ready": {
       clearFailedWindowRecreateTimer();
+      resetFailedWindowRecovery();
       disarmLeadInEscapeShortcut();
       if (window !== null && !window.isDestroyed()) {
         window.hide();
@@ -380,6 +543,7 @@ export function applyRecordingStateToController(state: RecordingState): void {
 export function installRecordingController(): void {
   if (installed) return;
   installed = true;
+  wireRecordingControllerResizeChannel();
   unsubscribe = subscribeToRecordingState(applyRecordingStateToController);
 }
 
@@ -387,7 +551,9 @@ export function disposeRecordingController(): void {
   unsubscribe?.();
   unsubscribe = null;
   installed = false;
+  unwireRecordingControllerResizeChannel();
   clearFailedWindowRecreateTimer();
+  resetFailedWindowRecovery();
   disarmLeadInEscapeShortcut();
   disposing = true;
   try {

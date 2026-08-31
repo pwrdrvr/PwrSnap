@@ -7,6 +7,7 @@ import type { RecordingState } from "@pwrsnap/shared";
 
 const mocks = vi.hoisted(() => ({
   dispatch: vi.fn(),
+  requestResize: vi.fn(),
   listeners: new Map<string, (payload: unknown) => void>()
 }));
 
@@ -19,6 +20,13 @@ import { RecordingController } from "../RecordingController";
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
     true;
+  class ResizeObserverStub {
+    constructor(_callback: ResizeObserverCallback) {}
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+  globalThis.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
 });
 
 let container: HTMLDivElement;
@@ -34,7 +42,19 @@ const failure: Extract<RecordingState, { phase: "failed" }> = {
 
 beforeEach(() => {
   mocks.dispatch.mockReset();
+  mocks.requestResize.mockReset();
   mocks.listeners.clear();
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+    x: 0,
+    y: 0,
+    top: 0,
+    right: 480,
+    bottom: 190,
+    left: 0,
+    width: 480,
+    height: 190,
+    toJSON: () => ({})
+  });
   mocks.dispatch.mockImplementation(async (name: string) => {
     if (name === "recording:state") return { ok: true, value: failure };
     return { ok: true, value: undefined };
@@ -45,7 +65,8 @@ beforeEach(() => {
       on: vi.fn((channel: string, listener: (payload: unknown) => void) => {
         mocks.listeners.set(channel, listener);
         return () => mocks.listeners.delete(channel);
-      })
+      }),
+      requestRecordingControllerResize: mocks.requestResize
     }
   });
   container = document.createElement("div");
@@ -56,6 +77,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
+  vi.restoreAllMocks();
 });
 
 async function renderController(): Promise<void> {
@@ -84,6 +106,30 @@ describe("RecordingController failed state", () => {
     expect(container.querySelector('[data-recording-action="stop"]')).toBeNull();
     expect(container.querySelector('[data-recording-action="restart"]')).toBeNull();
     expect(container.querySelector('[data-recording-action="cancel"]')).toBeNull();
+    expect(mocks.requestResize).toHaveBeenCalledWith({ height: 190 });
+  });
+
+  test("omits Retry for a non-retryable unavailable packaged recorder", async () => {
+    mocks.dispatch.mockImplementation(async (name: string) => {
+      if (name === "recording:state") {
+        return {
+          ok: true,
+          value: {
+            ...failure,
+            code: "recorder_unavailable",
+            canRetry: false
+          }
+        };
+      }
+      return { ok: true, value: undefined };
+    });
+
+    await renderController();
+
+    expect(container.textContent).toContain("PwrSnap couldn't find the video recorder.");
+    expect(container.querySelector('[data-recording-action="retry"]')).toBeNull();
+    expect(container.querySelector('[data-recording-action="reveal-logs"]')).not.toBeNull();
+    expect(container.querySelector('[data-recording-action="dismiss"]')).not.toBeNull();
   });
 
   test("retry is session-scoped and transport details never render", async () => {

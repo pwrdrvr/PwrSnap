@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => {
     spawnCalls: [] as Array<{ command: string; args: string[] }>,
     nextSpawnError: null as Error | null,
     binaryPath: "/fake/PwrSnapRecorder",
+    binaryExists: true,
+    isPackaged: false,
     stateLog: [] as Array<{ phase: string }>,
     /** Full broadcast log including rect/displayId payloads — used
      *  by the multi-monitor translation test to verify the rect
@@ -71,7 +73,7 @@ vi.mock("node:child_process", () => ({
 }));
 
 vi.mock("node:fs", () => ({
-  existsSync: () => true
+  existsSync: () => mocks.binaryExists
 }));
 
 vi.mock("node:fs/promises", () => ({
@@ -80,6 +82,9 @@ vi.mock("node:fs/promises", () => ({
 
 vi.mock("electron", () => ({
   app: {
+    get isPackaged() {
+      return mocks.isPackaged;
+    },
     getAppPath: () => "/fake/appPath",
     getPath: () => "/fake/userData"
   },
@@ -211,6 +216,8 @@ beforeEach(() => {
   mocks.spawnedChildren.length = 0;
   mocks.spawnCalls.length = 0;
   mocks.nextSpawnError = null;
+  mocks.binaryExists = true;
+  mocks.isPackaged = false;
   mocks.stateLog.length = 0;
   mocks.stateLogFull.length = 0;
   mocks.currentState = { phase: "idle" };
@@ -347,6 +354,41 @@ describe("RecordingService.start concurrent guard", () => {
     await vi.advanceTimersByTimeAsync(1100);
     await first;
     expect(firstOutcome).toBeInstanceOf(Error);
+  });
+});
+
+describe("RecordingService unavailable packaged recorder", () => {
+  test.each([
+    { platform: "darwin", expectedCommand: "native" },
+    { platform: "win32", expectedCommand: "ffmpeg" }
+  ])("marks a missing packaged $expectedCommand backend as non-retryable", async ({
+    platform
+  }) => {
+    Object.defineProperty(process, "platform", { value: platform, configurable: true });
+    (process as { resourcesPath?: string }).resourcesPath =
+      platform === "win32" ? "C:\\fake" : "/fake";
+    mocks.binaryExists = false;
+    mocks.isPackaged = true;
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    await expect(
+      service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 })
+    ).rejects.toThrow();
+
+    expect(mocks.currentState).toMatchObject({
+      phase: "failed",
+      code: "recorder_unavailable",
+      canRetry: false
+    });
+    await expect(
+      Promise.resolve().then(() =>
+        service.retryCapabilities(mocks.currentState.sessionId as string)
+      )
+    ).rejects.toThrow("stale_failure");
   });
 });
 

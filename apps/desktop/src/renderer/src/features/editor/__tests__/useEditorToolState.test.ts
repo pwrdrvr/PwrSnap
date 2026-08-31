@@ -646,4 +646,88 @@ describe("useEditorToolState", () => {
     };
     expect(payload.editor?.toolStyles?.arrow?.color).toBe("gray");
   });
+
+  // Tests 15–17: the commit-time settle surface. Draft commits await
+  // `whenToolStylesSettled()` + read `readEffectiveToolStyles()` so a
+  // draw racing the settings load can't persist a style-less overlay
+  // (the editor-border-outline white-halo flake).
+
+  test("15. whenToolStylesSettled resolves immediately once settings are loaded", async () => {
+    let api: UseEditorToolStateReturn | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-15",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+
+    expect(api!.readEffectiveToolStyles()).not.toBeNull();
+    await expect(api!.whenToolStylesSettled()).resolves.toBeUndefined();
+  });
+
+  test("16. whenToolStylesSettled: pending while settings load, resolves when they land", async () => {
+    installSettingsMock(null);
+    let api: UseEditorToolStateReturn | null = null;
+    const probe = (): React.ReactElement =>
+      createElement(Probe, {
+        captureId: "cap-16",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      });
+    render(probe());
+
+    expect(api!.readEffectiveToolStyles()).toBeNull();
+    let settled = false;
+    const wait = api!.whenToolStylesSettled().then(() => {
+      settled = true;
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(settled).toBe(false);
+
+    // Settings land (broadcast/read resolution → hook re-render).
+    installSettingsMock(makeSettings());
+    rerender(probe());
+    await act(async () => {
+      await wait;
+    });
+    expect(settled).toBe(true);
+    // The post-await ref read sees the settled styles even though the
+    // pre-await render closure saw null.
+    expect(api!.readEffectiveToolStyles()?.arrow).toBeDefined();
+  });
+
+  test("17. whenToolStylesSettled is bounded: resolves ~3s in even if settings never land", async () => {
+    vi.useFakeTimers();
+    installSettingsMock(null);
+    let api: UseEditorToolStateReturn | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-17",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+
+    let settled = false;
+    void api!.whenToolStylesSettled().then(() => {
+      settled = true;
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2999);
+    });
+    expect(settled).toBe(false);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(settled).toBe(true);
+    // Timed-out settle leaves styles null — callers degrade to the
+    // style-less overlay rather than wedging the commit.
+    expect(api!.readEffectiveToolStyles()).toBeNull();
+  });
 });

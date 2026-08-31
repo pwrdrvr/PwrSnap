@@ -89,6 +89,7 @@ function makeDependencies(
       tempPath: "/tmp/pwrsnap-handler-test/source.png",
       displayId: 0
     })),
+    displayScaleFactorForWindow: vi.fn(() => 1),
     persistCapture: vi.fn(async () => ok(persistedRecord)),
     releaseCaptureTemp: vi.fn(async () => undefined),
     reportCleanupFailure: vi.fn(),
@@ -350,7 +351,7 @@ describe("capture:window headless handler", () => {
     expect(deps.captureWindow).toHaveBeenCalledWith(42);
   });
 
-  test("darwin passes fresh source metadata and returns the attributed record", async () => {
+  test("darwin persists fresh source metadata with Retina display density", async () => {
     const target = windowInfo({
       windowId: 83,
       bundleId: "com.apple.Terminal",
@@ -362,9 +363,14 @@ describe("capture:window headless handler", () => {
       ...windows
     ]);
     const persistCapture = vi.fn(
-      async (_tempPath: string, sourceWindow: WindowInfo) =>
+      async (
+        _tempPath: string,
+        sourceWindow: WindowInfo,
+        _devicePixelRatio: number
+      ) =>
         ok(attributedRecord(sourceWindow))
     );
+    const displayScaleFactorForWindow = vi.fn(() => 2);
     const deps = makeDependencies({
       platform: "darwin",
       listWindowsSnapshot: vi
@@ -372,6 +378,7 @@ describe("capture:window headless handler", () => {
         .mockResolvedValueOnce(snapshot([target]))
         .mockResolvedValueOnce(snapshot([revalidated])),
       normalizeWindowSnapshot,
+      displayScaleFactorForWindow,
       persistCapture
     });
 
@@ -387,6 +394,10 @@ describe("capture:window headless handler", () => {
     expect(deps.captureWindow).toHaveBeenCalledExactlyOnceWith(83);
     expect(persistCapture).toHaveBeenCalledExactlyOnceWith(
       "/tmp/pwrsnap-handler-test/source.png",
+      revalidated,
+      2
+    );
+    expect(displayScaleFactorForWindow).toHaveBeenCalledExactlyOnceWith(
       revalidated
     );
     expect(deps.releaseCaptureTemp).toHaveBeenCalledExactlyOnceWith(
@@ -434,7 +445,7 @@ describe("capture:window headless handler", () => {
     expect(deps.captureWindow).not.toHaveBeenCalled();
   });
 
-  test("win32 preserves executable-path source attribution without reading it", async () => {
+  test("win32 preserves source attribution and fractional display density", async () => {
     const target = windowInfo({
       windowId: 0x30_0042,
       bundleId: "C:\\Program Files\\Browser\\browser.exe",
@@ -442,12 +453,18 @@ describe("capture:window headless handler", () => {
       title: "Docs"
     });
     const persistCapture = vi.fn(
-      async (_tempPath: string, sourceWindow: WindowInfo) =>
+      async (
+        _tempPath: string,
+        sourceWindow: WindowInfo,
+        _devicePixelRatio: number
+      ) =>
         ok(attributedRecord(sourceWindow))
     );
+    const displayScaleFactorForWindow = vi.fn(() => 1.5);
     const deps = makeDependencies({
       platform: "win32",
       listWindowsSnapshot: vi.fn(async () => snapshot([target])),
+      displayScaleFactorForWindow,
       persistCapture
     });
 
@@ -456,8 +473,10 @@ describe("capture:window headless handler", () => {
     expect(result).toEqual(ok(attributedRecord(target)));
     expect(persistCapture).toHaveBeenCalledWith(
       expect.any(String),
-      target
+      target,
+      1.5
     );
+    expect(displayScaleFactorForWindow).toHaveBeenCalledExactlyOnceWith(target);
   });
 
   test.each([

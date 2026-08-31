@@ -873,8 +873,13 @@ export function registerCaptureHandlers(options?: {
       peerPwrSnapPid: () => options?.peerPwrSnapPid?.() ?? null,
       boundsApproxEqual: (a, b) => boundsApproxEqual(a, b),
       captureWindow,
-      persistCapture: (tempPath, sourceWindow) =>
-        persistAndBroadcast(tempPath, sourceWindow),
+      displayScaleFactorForWindow: (sourceWindow) =>
+        displayScaleFactorForId(
+          screen.getAllDisplays(),
+          screen.getDisplayMatching(sourceWindow.bounds).id
+        ),
+      persistCapture: (tempPath, sourceWindow, devicePixelRatio) =>
+        persistAndBroadcast(tempPath, sourceWindow, { devicePixelRatio }),
       releaseCaptureTemp: releaseWindowCaptureTemp,
       reportCleanupFailure: (_tempPath, cause) => {
         log.warn("capture:window temp cleanup failed", {

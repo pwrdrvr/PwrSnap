@@ -209,6 +209,11 @@ export function recordingFailureSummary(code: RecordingFailureCode): string {
   }
 }
 
+/** A new selector may start only when no recording attempt owns the workflow. */
+export function canStartRecordingAttempt(state: RecordingState): boolean {
+  return state.phase === "idle" || state.phase === "ready";
+}
+
 /**
  * Capabilities the user wanted included in this recording session.
  * Screen video is always on. Audio fields are independent — degraded
@@ -219,6 +224,39 @@ export function recordingFailureSummary(code: RecordingFailureCode): string {
 export type RecordingCapabilities = {
   systemAudio: boolean;
   microphone: boolean;
+};
+
+/**
+ * Runtime capabilities of the recorder implementation selected for this
+ * platform. This is deliberately separate from {@link RecordingCapabilities},
+ * which describes the inputs requested for one take.
+ *
+ * The recording HUD uses this snapshot to avoid advertising controls or live
+ * monitoring that the active backend cannot actually perform. In particular,
+ * neither shipped backend can pause/resume, switch audio tracks mid-stream,
+ * report live RMS levels, or record a presenter camera today.
+ */
+export type RecordingBackendCapabilities = {
+  backend: "macos-native" | "windows-ffmpeg" | "unsupported";
+  controls: {
+    stop: boolean;
+    cancel: boolean;
+    restart: boolean;
+    pauseResume: boolean;
+  };
+  sources: {
+    screen: boolean;
+    systemAudio: boolean;
+    microphone: boolean;
+    webcam: boolean;
+    liveAudioLevels: boolean;
+    liveDisconnectDetection: boolean;
+    midRecordingToggles: boolean;
+  };
+  /** macOS content protection excludes the HUD from captured pixels. The
+   * Windows gdigrab backend cannot exclude a window, so its HUD must be kept
+   * outside region recordings and may appear in full-display recordings. */
+  controllerExcludedFromCapture: boolean;
 };
 
 /**
@@ -4189,6 +4227,15 @@ export type Commands = {
    * on mount to populate before the next broadcast.
    */
   "recording:state": { req: Record<string, never>; res: RecordingState };
+  /**
+   * Truthful capability snapshot for the selected platform backend. Renderers
+   * must gate controls from this response; unsupported controls are omitted,
+   * not rendered disabled as if they might work.
+   */
+  "recording:capabilities": {
+    req: Record<string, never>;
+    res: RecordingBackendCapabilities;
+  };
   /**
    * Update the persisted default range for a video capture. The
    * float-over scrubber calls this when the user picks a subrange.

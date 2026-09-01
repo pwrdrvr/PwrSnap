@@ -21,7 +21,7 @@
 // systemPreferences + the recording service so we don't touch macOS TCC
 // or spawn the Swift recorder binary.
 
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { PwrSnapError, Result } from "@pwrsnap/shared";
 
 // Full RecordingService surface — only `cancel` and `restart` are
@@ -117,10 +117,13 @@ const originalPlatform = process.platform;
 registerRecordingHandlers();
 
 beforeEach(() => {
+  Object.defineProperty(process, "platform", { value: "win32", configurable: true });
   setRecordingState({ phase: "idle" });
   mocks.cancel.mockClear();
   mocks.restart.mockClear();
   mocks.start.mockClear();
+  mocks.stop.mockReset();
+  mocks.stop.mockResolvedValue({ captureId: "cap-1" });
   mocks.retryCapabilities.mockReset();
   mocks.retryCapabilities.mockReturnValue({ microphone: false, systemAudio: false });
   mocks.retry.mockClear();
@@ -131,6 +134,10 @@ beforeEach(() => {
   mocks.ensureCapturesDirReady.mockResolvedValue(null);
   mocks.mediaAccess.screen = "granted";
   mocks.mediaAccess.microphone = "granted";
+});
+
+afterEach(() => {
+  Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
 });
 
 describe("recording:* command-bus surface", () => {
@@ -160,16 +167,81 @@ describe("recording:* command-bus surface", () => {
     expect(mocks.cancel).toHaveBeenCalledTimes(1);
   });
 
-  test("recording:restart from idle returns validation/not_recording", async () => {
-    // RecordingService.restart() throws Error("not_recording") when
-    // nothing is active. The handler must translate that into a
-    // validation error, NOT propagate it as an unknown handler-threw.
+  test("recording:restart from idle is rejected before calling the backend", async () => {
     const result = await bus.dispatch("recording:restart", {}, { principal: "ipc" });
 
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected error");
     expect(result.error.kind).toBe("validation");
-    expect(result.error.code).toBe("not_recording");
+    expect(result.error.code).toBe("control_unavailable");
+    expect(mocks.restart).not.toHaveBeenCalled();
+  });
+
+  test("recording:capabilities reports only implemented host controls", async () => {
+    const result = await bus.dispatch("recording:capabilities", {}, { principal: "ipc" });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.value.controls).toEqual({
+      stop: true,
+      cancel: true,
+      restart: true,
+      pauseResume: false
+    });
+    expect(result.value.sources.webcam).toBe(false);
+    expect(result.value.sources.liveAudioLevels).toBe(false);
+  });
+
+  test("recording:stop rejects lead-in and finalization concurrency", async () => {
+    for (const state of [
+      {
+        phase: "countdown" as const,
+        sessionId: "rec-1",
+        secondsRemaining: 2,
+        rect: { x: 0, y: 0, w: 100, h: 100 },
+        displayId: 1
+      },
+      { phase: "stopping" as const, sessionId: "rec-1" },
+      { phase: "processing" as const, sessionId: "rec-1" }
+    ]) {
+      setRecordingState(state);
+      const result = await bus.dispatch("recording:stop", {}, { principal: "ipc" });
+      expect(result).toMatchObject({
+        ok: false,
+        error: { kind: "validation", code: "control_unavailable" }
+      });
+    }
+    expect(mocks.stop).not.toHaveBeenCalled();
+  });
+
+  test("recording:cancel cannot interrupt Stop-owned finalization", async () => {
+    for (const state of [
+      { phase: "stopping" as const, sessionId: "rec-1" },
+      { phase: "processing" as const, sessionId: "rec-1" }
+    ]) {
+      setRecordingState(state);
+      const result = await bus.dispatch("recording:cancel", {}, { principal: "ipc" });
+      expect(result).toMatchObject({
+        ok: false,
+        error: { kind: "validation", code: "control_unavailable" }
+      });
+    }
+    expect(mocks.cancel).not.toHaveBeenCalled();
+  });
+
+  test("recording:stop delegates exactly once during active capture", async () => {
+    setRecordingState({
+      phase: "recording",
+      sessionId: "rec-1",
+      startedAt: new Date(0).toISOString(),
+      rect: { x: 0, y: 0, w: 100, h: 100 },
+      displayId: 1
+    });
+
+    const result = await bus.dispatch("recording:stop", {}, { principal: "ipc" });
+
+    expect(result).toEqual({ ok: true, value: { captureId: "cap-1" } });
+    expect(mocks.stop).toHaveBeenCalledTimes(1);
   });
 
   test("failed state blocks generic start/cancel/restart and allows only session recovery", async () => {

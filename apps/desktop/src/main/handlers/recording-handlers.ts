@@ -50,6 +50,10 @@ import {
 } from "../recording/recording-service";
 import { getRecordingState } from "../recording/recording-state";
 import {
+  canRunRecordingControl,
+  recordingBackendCapabilities
+} from "../recording/recording-capabilities";
+import {
   computeOutputDimensions,
   exportVideoRange,
   GIF_PRESETS,
@@ -334,6 +338,20 @@ export function registerRecordingHandlers(): void {
   });
 
   bus.register("recording:stop", async () => {
+    if (
+      !canRunRecordingControl(
+        getRecordingState(),
+        recordingBackendCapabilities(),
+        "stop"
+      )
+    ) {
+      return err(
+        validationError(
+          "control_unavailable",
+          "Stop is only available while a recording is actively capturing."
+        )
+      );
+    }
     try {
       const { captureId } = await getService().stop();
       return ok({ captureId });
@@ -347,11 +365,32 @@ export function registerRecordingHandlers(): void {
   });
 
   bus.register("recording:cancel", async () => {
-    if (getRecordingState().phase === "failed") {
+    const state = getRecordingState();
+    if (state.phase === "failed") {
       return err(
         validationError(
           "failure_action_required",
           "Use the failed recording's Dismiss action instead of Cancel."
+        )
+      );
+    }
+    if (state.phase === "stopping" || state.phase === "processing") {
+      return err(
+        validationError(
+          "control_unavailable",
+          "Cancel is unavailable while the recording is being finalized."
+        )
+      );
+    }
+    if (
+      state.phase !== "idle" &&
+      state.phase !== "ready" &&
+      !canRunRecordingControl(state, recordingBackendCapabilities(), "cancel")
+    ) {
+      return err(
+        validationError(
+          "control_unavailable",
+          "Cancel is unavailable for the active recording backend."
         )
       );
     }
@@ -371,6 +410,20 @@ export function registerRecordingHandlers(): void {
         validationError(
           "failure_action_required",
           "Use the failed recording's Retry action instead of Restart."
+        )
+      );
+    }
+    if (
+      !canRunRecordingControl(
+        getRecordingState(),
+        recordingBackendCapabilities(),
+        "restart"
+      )
+    ) {
+      return err(
+        validationError(
+          "control_unavailable",
+          "Restart is only available while a recording is actively capturing."
         )
       );
     }
@@ -454,6 +507,10 @@ export function registerRecordingHandlers(): void {
 
   bus.register("recording:state", async () => {
     return ok(getRecordingState());
+  });
+
+  bus.register("recording:capabilities", async () => {
+    return ok(recordingBackendCapabilities());
   });
 
   // ---- video metadata + export ----

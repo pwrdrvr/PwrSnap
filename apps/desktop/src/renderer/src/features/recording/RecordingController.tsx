@@ -14,6 +14,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactElement } from 
 import {
   EVENT_CHANNELS,
   recordingFailureSummary,
+  type RecordingBackendCapabilities,
   type RecordingState
 } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
@@ -31,7 +32,11 @@ function formatHMS(seconds: number): string {
 
 export function RecordingController(): ReactElement {
   const [state, setState] = useState<RecordingState>({ phase: "idle" });
+  const [backend, setBackend] = useState<RecordingBackendCapabilities | null>(null);
   const [elapsedSec, setElapsedSec] = useState(0);
+  const [armedAction, setArmedAction] = useState<"restart" | "cancel" | null>(null);
+  const [busyAction, setBusyAction] = useState<"stop" | "restart" | "cancel" | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
 
   // Snapshot on mount, then subscribe.
   useEffect(() => {
@@ -39,6 +44,10 @@ export function RecordingController(): ReactElement {
     void dispatch("recording:state", {}).then((res) => {
       if (cancelled) return;
       if (res.ok) setState(res.value);
+    });
+    void dispatch("recording:capabilities", {}).then((res) => {
+      if (cancelled || !res.ok) return;
+      setBackend(res.value);
     });
     const off = window.pwrsnapApi?.on(EVENT_CHANNELS.recordingState, (payload) => {
       setState(payload as RecordingState);
@@ -48,6 +57,40 @@ export function RecordingController(): ReactElement {
       off?.();
     };
   }, []);
+
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (el === null) return;
+    let posted = "";
+    const post = (force = false): void => {
+      const rect = el.getBoundingClientRect();
+      const width = Math.ceil(rect.width);
+      const height = Math.ceil(rect.height);
+      const next = `${width}x${height}`;
+      if (!force && next === posted) return;
+      posted = next;
+      window.pwrsnapApi?.requestRecordingControllerResize?.({ width, height });
+    };
+    post();
+    const observer = new ResizeObserver(() => post());
+    observer.observe(el);
+    let dprQuery: MediaQueryList | null = null;
+    const onDprChange = (): void => {
+      armDprQuery();
+      post(true);
+    };
+    const armDprQuery = (): void => {
+      if (state.phase !== "recording" || typeof window.matchMedia !== "function") return;
+      dprQuery?.removeEventListener("change", onDprChange);
+      dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+      dprQuery.addEventListener("change", onDprChange);
+    };
+    armDprQuery();
+    return () => {
+      observer.disconnect();
+      dprQuery?.removeEventListener("change", onDprChange);
+    };
+  }, [state.phase]);
 
   // Tick the duration timer once per second while recording. We don't
   // tick during countdown — the countdown phase carries its own
@@ -65,6 +108,40 @@ export function RecordingController(): ReactElement {
     const handle = setInterval(update, 500);
     return () => clearInterval(handle);
   }, [state]);
+
+  useEffect(() => {
+    setArmedAction(null);
+    setBusyAction(null);
+  }, [state.phase, "sessionId" in state ? state.sessionId : null]);
+
+  useEffect(() => {
+    if (armedAction === null) return;
+    const handle = setTimeout(() => setArmedAction(null), 5_000);
+    return () => clearTimeout(handle);
+  }, [armedAction]);
+
+  const runAction = async (action: "stop" | "restart" | "cancel"): Promise<void> => {
+    if (busyAction !== null) return;
+    if ((action === "restart" || action === "cancel") && armedAction !== action) {
+      setArmedAction(action);
+      return;
+    }
+    setBusyAction(action);
+    setArmedAction(null);
+    try {
+      const result =
+        action === "stop"
+          ? await dispatch("recording:stop", {})
+          : action === "restart"
+            ? await dispatch("recording:restart", {})
+            : await dispatch("recording:cancel", {});
+      // Durable failed state owns recorder/process failures. A rejected local
+      // action only re-enables controls if no authoritative transition arrived.
+      if (!result.ok) setBusyAction(null);
+    } catch {
+      setBusyAction(null);
+    }
+  };
 
   const isCountdown = state.phase === "countdown";
   const isPreCapture =
@@ -87,28 +164,44 @@ export function RecordingController(): ReactElement {
   // so they can interact with the surface they're about to record.
   return (
     <div
-      data-recording-phase={state.phase}
+      ref={containerRef}
       style={{
-        boxSizing: "border-box",
-        width: "100%",
-        height: "100%",
-        background: isPreCapture ? "transparent" : "rgba(0, 0, 0, 0.86)",
-        color: "#fff",
-        borderRadius: isPreCapture ? 0 : 12,
-        padding: isPreCapture ? 0 : "10px 14px",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: isPreCapture ? "center" : "space-between",
-        gap: 12,
-        font: "500 13px/1 'Geist', system-ui, sans-serif",
-        WebkitAppRegion: isPreCapture ? "no-drag" : "drag",
-        userSelect: "none",
-        pointerEvents: isPreCapture ? "none" : "auto",
-        position: "relative"
-      } as React.CSSProperties}
+        display: "inline-block",
+        width: isPreCapture ? "100%" : 420,
+        height: isPreCapture ? "100%" : undefined
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && armedAction !== null) {
+          event.stopPropagation();
+          setArmedAction(null);
+        }
+      }}
     >
-      {isCountdown && <CountdownLeader value={state.secondsRemaining} />}
-      {state.phase === "starting" && <StartingIndicator />}
+      <div
+        data-recording-phase={state.phase}
+        role={isPreCapture ? "status" : "region"}
+        aria-label={isPreCapture ? "Recording lead-in" : "Recording controls"}
+        style={{
+          boxSizing: "border-box",
+          width: "100%",
+          height: "100%",
+          background: isPreCapture ? "transparent" : "rgba(0, 0, 0, 0.86)",
+          color: "#fff",
+          borderRadius: isPreCapture ? 0 : 12,
+          padding: isPreCapture ? 0 : "10px 14px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: isPreCapture ? "center" : "space-between",
+          gap: 12,
+          font: "500 13px/1 'Geist', system-ui, sans-serif",
+          WebkitAppRegion: isPreCapture ? "no-drag" : "drag",
+          userSelect: "none",
+          pointerEvents: isPreCapture ? "none" : "auto",
+          position: "relative"
+        } as React.CSSProperties}
+      >
+        {isCountdown && <CountdownLeader value={state.secondsRemaining} />}
+        {state.phase === "starting" && <StartingIndicator />}
 
       {isRecording && (
         <div
@@ -141,87 +234,91 @@ export function RecordingController(): ReactElement {
                   animation: "ps-rec-pulse 1.2s ease-in-out infinite"
                 }}
               />
-              <span style={{ font: "500 12px/1 'Geist Mono', monospace" }}>
+              <span
+                role="timer"
+                aria-label={`Recording duration ${formatHMS(elapsedSec)}`}
+                style={{ font: "500 12px/1 'Geist Mono', monospace" }}
+              >
                 {formatHMS(elapsedSec)}
               </span>
             </div>
             <div style={{ display: "flex", gap: 6, WebkitAppRegion: "no-drag" } as React.CSSProperties}>
-              <button
-                type="button"
-                data-recording-action="stop"
-                onClick={() => void dispatch("recording:stop", {})}
-                style={{
-                  padding: "6px 12px",
-                  borderRadius: 6,
-                  border: "1px solid #ef4444",
-                  background: "#ef4444",
-                  color: "#fff",
-                  font: "600 12px/1 'Geist', system-ui, sans-serif",
-                  cursor: "pointer"
-                }}
-              >
-                Stop
-              </button>
-              <button
-                type="button"
-                data-recording-action="restart"
-                title="Discard the current take and start over"
-                onClick={() => {
-                  if (
-                    typeof window !== "undefined" &&
-                    !window.confirm(
-                      "Discard the current recording and start over? The clip in progress will be deleted."
-                    )
-                  ) {
-                    return;
-                  }
-                  void dispatch("recording:restart", {});
-                }}
-                style={{
-                  padding: "6px 10px",
-                  borderRadius: 6,
-                  border: "1px solid rgba(255, 138, 31, 0.6)",
-                  background: "transparent",
-                  color: "#ff8a1f",
-                  font: "500 12px/1 'Geist', system-ui, sans-serif",
-                  cursor: "pointer"
-                }}
-              >
-                Restart
-              </button>
-              <button
-                type="button"
-                data-recording-action="cancel"
-                title="Cancel the recording — clip will be discarded"
-                onClick={() => {
-                  if (
-                    typeof window !== "undefined" &&
-                    !window.confirm(
-                      "Cancel recording? The clip will be discarded. Press Stop instead if you want to keep it."
-                    )
-                  ) {
-                    return;
-                  }
-                  void dispatch("recording:cancel", {});
-                }}
-                style={{
-                  padding: "6px 10px",
-                  borderRadius: 6,
-                  border: "1px solid rgba(255,255,255,0.2)",
-                  background: "transparent",
-                  color: "#fff",
-                  font: "500 12px/1 'Geist', system-ui, sans-serif",
-                  cursor: "pointer"
-                }}
-              >
-                Cancel
-              </button>
+              {backend?.controls.stop === true && (
+                <button
+                  type="button"
+                  data-recording-action="stop"
+                  aria-label="Stop and save recording"
+                  disabled={busyAction !== null}
+                  onClick={() => void runAction("stop")}
+                  style={{
+                    padding: "6px 12px",
+                    borderRadius: 6,
+                    border: "1px solid #ef4444",
+                    background: "#ef4444",
+                    color: "#fff",
+                    font: "600 12px/1 'Geist', system-ui, sans-serif",
+                    cursor: busyAction === null ? "pointer" : "wait",
+                    opacity: busyAction === null ? 1 : 0.65
+                  }}
+                >
+                  {busyAction === "stop" ? "Stopping…" : "Stop"}
+                </button>
+              )}
+              {backend?.controls.restart === true && (
+                <button
+                  type="button"
+                  data-recording-action="restart"
+                  title="Discard the current take and start over"
+                  aria-label={armedAction === "restart" ? "Confirm restart recording" : "Restart recording"}
+                  aria-pressed={armedAction === "restart"}
+                  disabled={busyAction !== null}
+                  onClick={() => void runAction("restart")}
+                  style={{
+                    padding: "6px 10px",
+                    borderRadius: 6,
+                    border: "1px solid rgba(255, 138, 31, 0.6)",
+                    background: "transparent",
+                    color: "#ff8a1f",
+                    font: "500 12px/1 'Geist', system-ui, sans-serif",
+                    cursor: busyAction === null ? "pointer" : "wait",
+                    opacity: busyAction === null ? 1 : 0.65
+                  }}
+                >
+                  {busyAction === "restart" ? "Restarting…" : armedAction === "restart" ? "Confirm restart" : "Restart"}
+                </button>
+              )}
+              {backend?.controls.cancel === true && (
+                <button
+                  type="button"
+                  data-recording-action="cancel"
+                  title="Cancel the recording — clip will be discarded"
+                  aria-label={armedAction === "cancel" ? "Confirm cancel and discard recording" : "Cancel recording"}
+                  aria-pressed={armedAction === "cancel"}
+                  disabled={busyAction !== null}
+                  onClick={() => void runAction("cancel")}
+                  style={{
+                    padding: "6px 10px",
+                    borderRadius: 6,
+                    border: "1px solid rgba(255,255,255,0.2)",
+                    background: "transparent",
+                    color: "#fff",
+                    font: "500 12px/1 'Geist', system-ui, sans-serif",
+                    cursor: busyAction === null ? "pointer" : "wait",
+                    opacity: busyAction === null ? 1 : 0.65
+                  }}
+                >
+                  {busyAction === "cancel" ? "Cancelling…" : armedAction === "cancel" ? "Confirm cancel" : "Cancel"}
+                </button>
+              )}
             </div>
           </div>
-          {/* Reassurance caption — the HUD window's BrowserWindow PID
-              is in the recorder's `excludePids` list, so anything
-              painted here is invisible to the recorded pixels.
-              Users worry the Stop pill is in their shot. */}
+          {armedAction !== null && (
+            <div role="status" aria-live="polite" style={{ textAlign: "center", color: "#ffb36d", fontSize: 10, lineHeight: 1.3 }}>
+              {armedAction === "restart"
+                ? "Restart discards this take. Press Confirm restart again."
+                : "Cancel discards this take. Press Confirm cancel again."}
+            </div>
+          )}
           <div
             data-recording-caption
             style={{
@@ -233,7 +330,13 @@ export function RecordingController(): ReactElement {
               marginTop: 2
             }}
           >
-            this controller is not visible in the recording
+            {backend === null
+              ? "Checking recorder capabilities…"
+              : backend.controllerExcludedFromCapture
+                ? "this controller is not visible in the recording"
+                : state.rect.w === 0 && state.rect.h === 0
+                  ? "Windows full-display recordings may include this controller"
+                  : "PwrSnap keeps this controller outside the recorded region when space allows"}
           </div>
         </div>
       )}
@@ -249,6 +352,7 @@ export function RecordingController(): ReactElement {
         50% { opacity: 0.45; }
         100% { opacity: 1; }
       }`}</style>
+      </div>
     </div>
   );
 }

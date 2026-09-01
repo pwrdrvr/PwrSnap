@@ -12,7 +12,10 @@ import {
   lgplFamilyOf,
   locateShippedPlatformPackages,
   npmPackageUrl,
+  describeNoticeDrift,
+  NOTICE_PACKAGE_NAME,
   NOTICE_PNPM_ARGS,
+  NOTICE_PNPM_FILTER,
   resolvePackageDirFrom,
   SHIPPED_PACKAGE_CODE,
   SHIPPED_PLATFORM_PACKAGES,
@@ -610,6 +613,36 @@ describe("deterministic output", () => {
       "zod",
       "zwitch",
     ]);
+  });
+
+  test("the pnpm selector keeps its `...` suffix", () => {
+    // A bare `--filter @pwrsnap/desktop` selects that ONE project, so anything
+    // reached through a workspace dependency ships but is never listed and
+    // never license-checked. Dropping the three dots is a one-character edit
+    // that leaves every other test in this file passing, so pin the string.
+    expect(NOTICE_PNPM_FILTER).toBe("@pwrsnap/desktop...");
+    expect(NOTICE_PACKAGE_NAME).toBe("@pwrsnap/desktop");
+  });
+
+  test("describeNoticeDrift names the packages that appeared or vanished", () => {
+    const committed = ["- left-pad@1.0.0 | MIT", "- zod@4.0.0 | MIT"].join("\n");
+    const generated = ["- right-pad@2.0.0 | MIT", "- zod@4.0.0 | MIT"].join("\n");
+
+    const drift = describeNoticeDrift(committed, generated);
+    expect(drift).toContain("only in the generated notice: right-pad@2.0.0");
+    expect(drift).toContain("only in the committed notice: left-pad@1.0.0");
+  });
+
+  test("describeNoticeDrift falls back to the first differing line", () => {
+    // Same package set, different text — a bare "out of date" here is exactly
+    // the unactionable case this helper exists for.
+    const committed = ["Scope", "- zod@4.0.0 | MIT"].join("\n");
+    const generated = ["Scope", "- zod@4.0.0 | Apache-2.0"].join("\n");
+
+    const drift = describeNoticeDrift(committed, generated);
+    expect(drift).toContain("same package set; first difference at line 2");
+    expect(drift).toContain("committed:  - zod@4.0.0 | MIT");
+    expect(drift).toContain("generated:  - zod@4.0.0 | Apache-2.0");
   });
 
   test("generateNotice passes --no-optional on both listings", () => {

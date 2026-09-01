@@ -14,6 +14,16 @@ and Windows 11 on x64; there is no Windows Arm64 package yet.
 | Updates | Packaged releases consume the `latest.yml` metadata published beside each Windows installer |
 | Video dependency | Tagged releases bundle the controlled `PwrSnapFFmpeg.exe`; users do not install FFmpeg separately |
 
+For source development, `pnpm dev` also uses the controlled build. On the first
+Windows launch it downloads the exact release-CI-pinned controlled artifact,
+validates its target, codec/device contract, forbidden flags, and SHA-256, then
+reuses it from
+`%USERPROFILE%\.pwrsnap\dev\bin\ffmpeg\<build-sha>\windows-x64\` across
+worktrees. Maintainers authenticate once with
+`gh auth login --hostname github.com`.
+`PWRSNAP_FFMPEG_PATH` remains the explicit override for offline or diagnostic
+work and must name a native `.exe`/`.com`, never a `.cmd`/`.bat` shim.
+
 Linux builds gate the cross-platform TypeScript build in the release workflow,
 but PwrSnap does not distribute a Linux desktop package.
 

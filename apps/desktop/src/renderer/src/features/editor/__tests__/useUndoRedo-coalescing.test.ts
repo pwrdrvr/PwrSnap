@@ -129,6 +129,48 @@ function makeNode(id: string, zIndex = 0): BundleLayerNode {
   };
 }
 
+/** Pop the whole past stack, returning how many discrete undo steps
+ *  it took. The bound stops a runaway loop if an entry ever fails to
+ *  pop. Every coalescing test's terminal assertion is "how many undo
+ *  presses did the user need", so it lives here once.
+ *
+ *  Takes a GETTER, not the api object: `useUndoRedo` returns a fresh
+ *  memo each time `past.length` changes, so a captured snapshot's
+ *  `canUndo` would stay true forever and the loop would spin to the
+ *  bound. Re-read it every iteration. */
+async function drainUndo(
+  getApi: () => UseUndoRedoResult,
+  bound = 10
+): Promise<number> {
+  let undoCount = 0;
+  while (getApi().canUndo && undoCount < bound) {
+    // eslint-disable-next-line no-await-in-loop
+    await act(async () => {
+      await getApi().undo();
+    });
+    undoCount += 1;
+  }
+  return undoCount;
+}
+
+/** Ids the recorded dispatches restored (undo of a delete / redo of a
+ *  create), in call order. */
+function upsertedIds(mock: typeof dispatchEditMock): string[] {
+  return mock.mock.calls
+    .map((c) => c[0])
+    .filter((op): op is Extract<typeof op, { kind: "upsert" }> => op.kind === "upsert")
+    .map((op) => op.node.id);
+}
+
+/** Ids the recorded dispatches removed (undo of a create / redo of a
+ *  delete), in call order. */
+function deletedIds(mock: typeof dispatchEditMock): string[] {
+  return mock.mock.calls
+    .map((c) => c[0])
+    .filter((op): op is Extract<typeof op, { kind: "delete" }> => op.kind === "delete")
+    .map((op) => op.id);
+}
+
 type ProbeProps = {
   readonly captureId: string;
   readonly onSnapshot: (api: UseUndoRedoResult) => void;
@@ -1098,5 +1140,291 @@ describe("useUndoRedo coalescing (plan Alt 5)", () => {
       undoCount += 1;
     }
     expect(undoCount).toBe(2);
+  });
+
+  test("untagged push inside an open bracket + tagged kind-mismatched push → NO op lost (PR #531 review)", async () => {
+    // The op-loss interleave flagged in the PR #531 review: an async
+    // annotation commit (a draw whose recordCreate awaits
+    // settledToolStyles() / sampler decode in Editor.tsx onPointerUp)
+    // resolves while the user has a keyboard bracket open — e.g. ⌫
+    // multi-delete ("delete", "kbd-multi-delete"). Pre-fix:
+    //   1. the UNTAGGED recordCreate landed inside the bracket and
+    //      armed its hasPushed;
+    //   2. the flow's next TAGGED recordDelete then took the
+    //      insideInteraction coalesce path against the CREATE entry on
+    //      the stack top — kind mismatch, no merge branch matched, and
+    //      `[...prev.slice(0,-1), lastEntry]` silently DISCARDED the
+    //      delete op. The deleted layer became unrecoverable and ⌘Z
+    //      deleted the freshly drawn annotation instead.
+    // Post-fix, BOTH guards hold: the untagged push disarms the
+    // bracket, and a kind-mismatched coalesce pushes standalone.
+    let api: UseUndoRedoResult | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-1",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+
+    let token: ReturnType<UseUndoRedoResult["beginInteraction"]>;
+    act(() => {
+      token = api!.beginInteraction("delete", "kbd-multi-delete");
+    });
+    act(() => {
+      // The async draw commit resolves mid-bracket — untagged, like
+      // the auto-bridge recordCreate the Editor fires.
+      api!.recordCreate(makeRow("late-draw"), { node: makeNode("late-draw") });
+      advanceTime(5);
+      // The multi-delete flow's tagged push follows.
+      api!.recordDelete(makeRow("victim-row"), {
+        node: makeNode("victim-row"),
+        opKind: "delete",
+        layerId: "kbd-multi-delete",
+        mergeMode: "append"
+      });
+    });
+    act(() => {
+      api!.endInteraction(token);
+    });
+
+    dispatchEditMock.mockClear();
+
+    // Drain the stack — TWO separate entries must exist (the delete
+    // was pushed standalone, not merged-and-dropped).
+    expect(await drainUndo(() => api!)).toBe(2);
+
+    // Content check — both inverses actually went out:
+    //   undo of the delete → upsert restoring victim-row;
+    //   undo of the create → delete removing late-draw.
+    expect(upsertedIds(dispatchEditMock)).toEqual(["victim-row"]);
+    expect(deletedIds(dispatchEditMock)).toEqual(["late-draw"]);
+  });
+
+  test("untagged push BETWEEN two tagged bracket pushes → interloper's entry is not coalesced over", async () => {
+    // Variant of the interleave above where the async commit lands
+    // AFTER the bracket has already armed. Pre-fix the second tagged
+    // delete coalesced against the interloper CREATE entry (kind
+    // mismatch → dropped). Even if the kinds had MATCHED, replace-mode
+    // coalescing across the interloper would have swapped its data
+    // out of the stack. Post-fix the untagged push disarms the
+    // bracket, so the second delete starts a fresh entry and all
+    // three ops survive.
+    let api: UseUndoRedoResult | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-1",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+
+    let token: ReturnType<UseUndoRedoResult["beginInteraction"]>;
+    act(() => {
+      token = api!.beginInteraction("delete", "kbd-multi-delete");
+    });
+    act(() => {
+      api!.recordDelete(makeRow("victim-1"), {
+        node: makeNode("victim-1"),
+        opKind: "delete",
+        layerId: "kbd-multi-delete",
+        mergeMode: "append"
+      });
+      advanceTime(5);
+      api!.recordCreate(makeRow("late-draw"), { node: makeNode("late-draw") });
+      advanceTime(5);
+      api!.recordDelete(makeRow("victim-2"), {
+        node: makeNode("victim-2"),
+        opKind: "delete",
+        layerId: "kbd-multi-delete",
+        mergeMode: "append"
+      });
+    });
+    act(() => {
+      api!.endInteraction(token);
+    });
+
+    dispatchEditMock.mockClear();
+
+    // Three entries: delete(victim-1), create(late-draw),
+    // delete(victim-2). The bracket does NOT re-group across the
+    // interloper — correctness (no loss) over grouping.
+    expect(await drainUndo(() => api!)).toBe(3);
+
+    // Exactly one restore per deleted row — the length pins that
+    // neither row was restored twice (which a Set alone would hide).
+    const restoredIds = upsertedIds(dispatchEditMock);
+    expect(restoredIds).toHaveLength(2);
+    expect(new Set(restoredIds)).toEqual(new Set(["victim-1", "victim-2"]));
+    expect(deletedIds(dispatchEditMock)).toEqual(["late-draw"]);
+  });
+
+  test("interloper then TWO matching pushes → the bracket re-arms and regroups them", async () => {
+    // The other half of the disarm contract. Disarming on a
+    // non-matching push must not permanently break the bracket: the
+    // next matching push starts a fresh entry and RE-ARMS, so the one
+    // after it coalesces into that entry rather than starting a third.
+    // Without this, "an async commit interleaved once" would silently
+    // degrade the rest of a multi-delete into one undo step per row.
+    let api: UseUndoRedoResult | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-1",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+
+    let token: ReturnType<UseUndoRedoResult["beginInteraction"]>;
+    act(() => {
+      token = api!.beginInteraction("delete", "kbd-multi-delete");
+    });
+    act(() => {
+      // Interloper first, so the bracket starts out disarmed.
+      api!.recordCreate(makeRow("late-draw"), { node: makeNode("late-draw") });
+      advanceTime(5);
+      api!.recordDelete(makeRow("victim-1"), {
+        node: makeNode("victim-1"),
+        opKind: "delete",
+        layerId: "kbd-multi-delete",
+        mergeMode: "append"
+      });
+      advanceTime(5);
+      api!.recordDelete(makeRow("victim-2"), {
+        node: makeNode("victim-2"),
+        opKind: "delete",
+        layerId: "kbd-multi-delete",
+        mergeMode: "append"
+      });
+    });
+    act(() => {
+      api!.endInteraction(token);
+    });
+
+    dispatchEditMock.mockClear();
+
+    // TWO entries: create(late-draw), then ONE grouped
+    // delete(victim-1, victim-2) — not three.
+    expect(await drainUndo(() => api!)).toBe(2);
+
+    const restoredIds = upsertedIds(dispatchEditMock);
+    expect(restoredIds).toHaveLength(2);
+    expect(new Set(restoredIds)).toEqual(new Set(["victim-1", "victim-2"]));
+    expect(deletedIds(dispatchEditMock)).toEqual(["late-draw"]);
+  });
+
+  test("⌘Z landing inside an open bracket → later pushes do NOT fold into the exposed entry", async () => {
+    // `deleteSelected` holds its bracket open across an awaited IPC
+    // round-trip per selected row, so a ⌘Z can land mid-loop. Undo
+    // pops the bracket's own entry, which puts an UNRELATED older
+    // entry on top — the bracket must not still be armed against it.
+    //
+    // While the bracket tracked its armed state in a hand-synced
+    // `hasPushed` flag, undo() cleared the grace window but not that
+    // flag, so the loop's next delete coalesced into the older entry:
+    // fused into one undo step under mergeMode "append", and under
+    // the default "replace" it OVERWROTE that entry's item, making
+    // the older deletion unrecoverable. The armed state is now
+    // derived from `lastCoalesceRef`, which undo()/redo() already
+    // clear.
+    let api: UseUndoRedoResult | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-1",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+
+    // An older, unrelated delete the user made earlier.
+    act(() => {
+      api!.recordDelete(makeRow("older-unrelated"), {
+        node: makeNode("older-unrelated")
+      });
+    });
+    advanceTime(400); // well past the grace window
+
+    let token: ReturnType<UseUndoRedoResult["beginInteraction"]>;
+    act(() => {
+      token = api!.beginInteraction("delete", "kbd-multi-delete");
+    });
+    act(() => {
+      api!.recordDelete(makeRow("victim-1"), {
+        node: makeNode("victim-1"),
+        opKind: "delete",
+        layerId: "kbd-multi-delete"
+      });
+    });
+    // ⌘Z while the delete loop is still awaiting its next round-trip.
+    await act(async () => {
+      await api!.undo();
+    });
+    // The loop's next row lands after the undo.
+    act(() => {
+      api!.recordDelete(makeRow("victim-2"), {
+        node: makeNode("victim-2"),
+        opKind: "delete",
+        layerId: "kbd-multi-delete"
+      });
+    });
+    act(() => {
+      api!.endInteraction(token);
+    });
+
+    dispatchEditMock.mockClear();
+
+    // Two independent entries survive: the older unrelated delete and
+    // victim-2. Pre-fix this drained in ONE step and restored only
+    // victim-2 — `older-unrelated` was gone for good.
+    expect(await drainUndo(() => api!)).toBe(2);
+    const restoredIds = upsertedIds(dispatchEditMock);
+    expect(restoredIds).toHaveLength(2);
+    expect(new Set(restoredIds)).toEqual(
+      new Set(["older-unrelated", "victim-2"])
+    );
+  });
+
+  test("grace-window coalesce with mismatched op KINDS → both ops survive", async () => {
+    // The same discard branch was reachable without any bracket: two
+    // tagged pushes sharing an (opKind, layerId) key within the 300ms
+    // grace window but carrying DIFFERENT EditOp kinds. Pre-fix the
+    // second push was dropped on the floor; post-fix it lands
+    // standalone.
+    let api: UseUndoRedoResult | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-1",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+
+    act(() => {
+      api!.recordCreate(makeRow("burst-create"), {
+        node: makeNode("burst-create"),
+        opKind: "burst",
+        layerId: "layer-Z"
+      });
+      advanceTime(50); // well inside the 300ms window
+      api!.recordDelete(makeRow("burst-delete"), {
+        node: makeNode("burst-delete"),
+        opKind: "burst",
+        layerId: "layer-Z"
+      });
+    });
+
+    dispatchEditMock.mockClear();
+
+    expect(await drainUndo(() => api!)).toBe(2);
+
+    // Undo of the delete restores burst-delete; undo of the create
+    // removes burst-create.
+    expect(upsertedIds(dispatchEditMock)).toEqual(["burst-delete"]);
+    expect(deletedIds(dispatchEditMock)).toEqual(["burst-create"]);
   });
 });

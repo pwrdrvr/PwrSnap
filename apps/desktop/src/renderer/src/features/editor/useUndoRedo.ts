@@ -339,12 +339,6 @@ export function useUndoRedo(opts: {
     token: InteractionToken;
     opKind: string;
     layerId: string;
-    /** Becomes true on the FIRST push made inside this bracket. Only
-     *  subsequent pushes coalesce — otherwise the first write of a
-     *  fresh interaction would accidentally merge with whatever the
-     *  previous interaction left on top of the stack (different
-     *  layer, same opKind, etc.). */
-    hasPushed: boolean;
   } | null>(null);
   const lastCoalesceRef = useRef<{
     opKind: string;
@@ -383,31 +377,56 @@ export function useUndoRedo(opts: {
     //       key matches.
     // Both require opKind + layerId to be provided; legacy calls with
     // neither always start a fresh entry.
+    // A bracket may only coalesce while the stack-top entry is its
+    // OWN — i.e. the PREVIOUS push also carried this bracket's key.
+    // `lastCoalesceRef` already records exactly that, and unlike a
+    // separately-tracked "hasPushed" flag it is cleared at EVERY
+    // boundary that changes the stack top: beginInteraction,
+    // endInteraction, an untagged or differently-keyed push, and
+    // undo/redo. Deriving the armed state from it instead of syncing
+    // a second field by hand is what keeps those in step — the
+    // hand-synced flag missed the undo/redo case, so a ⌘Z landing
+    // inside an open bracket (the async multi-delete loop awaits IPC
+    // per row) left the bracket armed and folded the loop's next
+    // delete into an unrelated older entry.
+    //
+    // No timestamp check here on purpose: a bracket coalesces however
+    // long the interaction runs. Only the un-bracketed grace window
+    // below is time-bounded.
+    const bracket = openInteractionRef.current;
+    const lastCoalesce = lastCoalesceRef.current;
+    const bracketOwnsStackTop =
+      bracket !== null &&
+      lastCoalesce !== null &&
+      lastCoalesce.opKind === bracket.opKind &&
+      lastCoalesce.layerId === bracket.layerId;
     const insideInteraction =
-      openInteractionRef.current !== null &&
-      openInteractionRef.current.hasPushed &&
+      bracket !== null &&
+      bracketOwnsStackTop &&
       opKind !== undefined &&
       layerId !== undefined &&
-      openInteractionRef.current.opKind === opKind &&
-      openInteractionRef.current.layerId === layerId;
+      bracket.opKind === opKind &&
+      bracket.layerId === layerId;
     const insideGraceWindow =
-      lastCoalesceRef.current !== null &&
+      lastCoalesce !== null &&
       opKind !== undefined &&
       layerId !== undefined &&
-      lastCoalesceRef.current.opKind === opKind &&
-      lastCoalesceRef.current.layerId === layerId &&
-      now - lastCoalesceRef.current.timestamp <= COALESCE_WINDOW_MS;
+      lastCoalesce.opKind === opKind &&
+      lastCoalesce.layerId === layerId &&
+      now - lastCoalesce.timestamp <= COALESCE_WINDOW_MS;
 
     const shouldCoalesce = insideInteraction || insideGraceWindow;
 
     const mergeMode = recordOpts?.mergeMode ?? "replace";
     setPast((prev) => {
       if (shouldCoalesce && prev.length > 0) {
-        const next = prev.slice(0, -1);
         const lastEntry = prev[prev.length - 1]!;
         // Coalesce only when both entries are the SAME op kind
-        // (mixing create/delete/geometry inside one bracket would
-        // be a programming bug — push standalone for safety).
+        // (mixing create/delete/geometry under one coalescing key
+        // would be a programming bug — push standalone for safety;
+        // a kind mismatch falls through to the standalone push below
+        // rather than discarding the new op, which is how the
+        // PR #531-review interleave lost a delete op).
         // Within the matching-kind branches the merge SHAPE depends
         // on mergeMode:
         //
@@ -426,7 +445,7 @@ export function useUndoRedo(opts: {
         //     rather than restoring only the most-recent and
         //     dropping the rest (the user-reported "one of two
         //     deleted layers cannot be recovered" bug).
-        let merged: EditOp = lastEntry;
+        let merged: EditOp | null = null;
         if (lastEntry.kind === "create" && op.kind === "create") {
           merged = {
             kind: "create",
@@ -447,7 +466,13 @@ export function useUndoRedo(opts: {
         // multi-X bracket for them in the editor today, and
         // crop's inverse depends on previous canvas dims which
         // can't be merged.
-        return [...next, merged];
+        if (merged !== null) {
+          return [...prev.slice(0, -1), merged];
+        }
+        // Kind mismatch: fall through to the standalone push. The
+        // pre-fix shape returned `[...prev.slice(0, -1), lastEntry]`
+        // here — a no-op rewrite of the stack that silently DROPPED
+        // the new op.
       }
       const trimmed = prev.length >= MAX_DEPTH ? prev.slice(1) : prev;
       return [...trimmed, op];
@@ -463,14 +488,10 @@ export function useUndoRedo(opts: {
       // tagged write doesn't accidentally fold into it.
       lastCoalesceRef.current = null;
     }
-    // Mark the open bracket (if any) as having pushed at least
-    // once — subsequent pushes inside it can now coalesce.
-    if (openInteractionRef.current !== null) {
-      openInteractionRef.current = {
-        ...openInteractionRef.current,
-        hasPushed: true
-      };
-    }
+    // NOTE: the open bracket's armed state needs no update here — it
+    // is derived from `lastCoalesceRef` above, which the two branches
+    // immediately above have already set (tagged) or cleared
+    // (untagged) for this push.
   }, []);
 
   const recordCreate = useCallback(
@@ -565,10 +586,12 @@ export function useUndoRedo(opts: {
       // Fresh object identity per call so an interaction can't be
       // accidentally re-entered or merged across pointer cycles.
       const token = {} as InteractionToken;
-      openInteractionRef.current = { token, opKind, layerId, hasPushed: false };
+      openInteractionRef.current = { token, opKind, layerId };
       // pointerdown is a hard boundary — clear any lingering grace
       // window from the previous burst so the first push inside this
-      // bracket can't fold into an unrelated stack entry.
+      // bracket can't fold into an unrelated stack entry. This also
+      // leaves the new bracket UNARMED (its armed state is derived
+      // from this ref), so its first push starts a fresh entry.
       lastCoalesceRef.current = null;
       return token;
     },
@@ -770,6 +793,12 @@ export function useUndoRedo(opts: {
     setFuture((prev) => [...prev, op]);
     // After an undo, drop the grace window — a fresh edit shouldn't
     // be coalesced into an entry that's no longer on the past stack.
+    // LOAD-BEARING for an OPEN bracket too, not just the grace
+    // window: push() derives the bracket's armed state from this ref,
+    // so clearing it here is what stops the next matching push from
+    // folding into whatever entry this pop exposed. A ⌘Z can land
+    // mid-bracket — `deleteSelected` awaits an IPC round-trip per
+    // selected row with the bracket held open.
     lastCoalesceRef.current = null;
   }, [past, applyInverse, wrapApplying]);
 
@@ -782,6 +811,9 @@ export function useUndoRedo(opts: {
     });
     setFuture((prev) => prev.slice(0, -1));
     setPast((prev) => [...prev, op]);
+    // Same reasoning as undo() above: this also disarms an open
+    // bracket, so a later matching push can't coalesce into the entry
+    // this redo just pushed.
     lastCoalesceRef.current = null;
   }, [future, applyInverse, wrapApplying]);
 

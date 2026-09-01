@@ -580,7 +580,10 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
       { key: "Escape" }
     );
 
-    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    ipcListeners.get("region-selector:result")?.(
+      {},
+      { ok: false, invocationId: 1 }
+    );
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
   });
 

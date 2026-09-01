@@ -34,7 +34,7 @@ describe("interactive capture session production wiring", () => {
     const hotkeyHandlers = sourceBetween(
       indexSource,
       "function handlerFor(kind: HotkeyKind)",
-      "/** Apply `settings.hotkeys.*`"
+      "const hotkeyRegistrationManager = new HotkeyRegistrationManager"
     );
     const videoHotkey = sourceBetween(
       indexSource,

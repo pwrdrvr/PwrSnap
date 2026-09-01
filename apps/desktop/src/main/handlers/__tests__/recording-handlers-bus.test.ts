@@ -36,7 +36,7 @@ const mocks = vi.hoisted(() => ({
   restart: vi.fn(async () => {
     throw new Error("not_recording");
   }),
-  start: vi.fn(),
+  start: vi.fn(async () => ({ sessionId: "session-1" })),
   stop: vi.fn(),
   retryCapabilities: vi.fn(() => ({ microphone: false, systemAudio: false })),
   retry: vi.fn(async () => ({ sessionId: "retry-session" })),
@@ -51,7 +51,17 @@ const mocks = vi.hoisted(() => ({
   mediaAccess: {
     screen: "granted",
     microphone: "granted"
-  } as Record<string, string>
+  } as Record<string, string>,
+  permissionOutcome: {
+    status: "ready" as const,
+    capabilities: { microphone: false, systemAudio: false }
+  } as
+    | { status: "ready"; capabilities: { microphone: boolean; systemAudio: boolean } }
+    | { status: "cancelled" | "busy" },
+  requestPermissions: vi.fn(),
+  cancelPermissionPrompt: vi.fn(() => false),
+  restoreForeground: vi.fn(async () => undefined),
+  snapshotForeground: vi.fn()
 }));
 
 vi.mock("electron", (): Partial<typeof import("electron")> => ({
@@ -109,6 +119,38 @@ vi.mock("../../capture/capture-storage-gate", () => ({
   ensureCapturesDirReady: () => mocks.ensureCapturesDirReady()
 }));
 
+vi.mock("../../recording/recording-foreground", () => ({
+  snapshotRecordingForeground: mocks.snapshotForeground.mockImplementation(
+    async () => {
+      let restored = false;
+      return {
+        pid: 4242,
+        restore: async () => {
+          if (restored) return;
+          restored = true;
+          await mocks.restoreForeground();
+        }
+      };
+    }
+  )
+}));
+
+vi.mock("../../recording/recording-permission-prompt", () => {
+  class RecordingPermissionPromptError extends Error {
+    constructor(readonly code: string, message: string) {
+      super(message);
+    }
+  }
+  return {
+    RecordingPermissionPromptError,
+    requestRecordingPermissions: mocks.requestPermissions.mockImplementation(
+      async () => mocks.permissionOutcome
+    ),
+    actOnRecordingPermissionPrompt: vi.fn(async () => undefined),
+    cancelRecordingPermissionPrompt: mocks.cancelPermissionPrompt
+  };
+});
+
 const { bus } = await import("../../command-bus");
 const { registerRecordingHandlers } = await import("../recording-handlers");
 const { setRecordingState } = await import("../../recording/recording-state");
@@ -121,6 +163,7 @@ beforeEach(() => {
   mocks.cancel.mockClear();
   mocks.restart.mockClear();
   mocks.start.mockClear();
+  mocks.start.mockResolvedValue({ sessionId: "session-1" });
   mocks.retryCapabilities.mockReset();
   mocks.retryCapabilities.mockReturnValue({ microphone: false, systemAudio: false });
   mocks.retry.mockClear();
@@ -131,6 +174,15 @@ beforeEach(() => {
   mocks.ensureCapturesDirReady.mockResolvedValue(null);
   mocks.mediaAccess.screen = "granted";
   mocks.mediaAccess.microphone = "granted";
+  mocks.permissionOutcome = {
+    status: "ready",
+    capabilities: { microphone: false, systemAudio: false }
+  };
+  mocks.requestPermissions.mockClear();
+  mocks.cancelPermissionPrompt.mockReset();
+  mocks.cancelPermissionPrompt.mockReturnValue(false);
+  mocks.restoreForeground.mockClear();
+  mocks.snapshotForeground.mockClear();
 });
 
 describe("recording:* command-bus surface", () => {
@@ -170,6 +222,109 @@ describe("recording:* command-bus surface", () => {
     if (result.ok) throw new Error("expected error");
     expect(result.error.kind).toBe("validation");
     expect(result.error.code).toBe("not_recording");
+  });
+
+  test("recording:start uses the one-take capabilities returned by the prompt", async () => {
+    mocks.permissionOutcome = {
+      status: "ready",
+      capabilities: { microphone: false, systemAudio: false }
+    };
+
+    Object.defineProperty(process, "platform", {
+      value: "win32",
+      configurable: true
+    });
+    try {
+      const result = await bus.dispatch(
+        "recording:start",
+        {
+          subject: {
+            kind: "region",
+            rect: { x: 0, y: 0, w: 640, h: 360 },
+            displayId: 1
+          },
+          capabilities: { microphone: true, systemAudio: true }
+        },
+        { principal: "ipc" }
+      );
+
+      expect(result).toEqual({ ok: true, value: { sessionId: "session-1" } });
+      expect(mocks.start).toHaveBeenCalledWith(
+        expect.objectContaining({
+          capabilities: { microphone: false, systemAudio: false }
+        })
+      );
+      expect(mocks.restoreForeground).toHaveBeenCalledTimes(1);
+      expect(mocks.restoreForeground.mock.invocationCallOrder[0]).toBeLessThan(
+        mocks.start.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY
+      );
+    } finally {
+      Object.defineProperty(process, "platform", {
+        value: originalPlatform,
+        configurable: true
+      });
+    }
+  });
+
+  test("prompt cancellation restores foreground without starting the recorder", async () => {
+    mocks.permissionOutcome = { status: "cancelled" };
+
+    const result = await bus.dispatch(
+      "recording:start",
+      {
+        subject: {
+          kind: "region",
+          rect: { x: 0, y: 0, w: 640, h: 360 },
+          displayId: 1
+        },
+        capabilities: { microphone: true, systemAudio: false }
+      },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected cancelled");
+    expect(result.error.code).toBe("cancelled");
+    expect(mocks.start).not.toHaveBeenCalled();
+    expect(mocks.restoreForeground).toHaveBeenCalledTimes(1);
+  });
+
+  test("an active recording is rejected before permission state can be published", async () => {
+    setRecordingState({
+      phase: "recording",
+      sessionId: "active-session",
+      startedAt: new Date(0).toISOString(),
+      rect: { x: 0, y: 0, w: 640, h: 360 },
+      displayId: 1
+    });
+
+    const result = await bus.dispatch(
+      "recording:start",
+      {
+        subject: {
+          kind: "region",
+          rect: { x: 0, y: 0, w: 640, h: 360 },
+          displayId: 1
+        },
+        capabilities: { microphone: true, systemAudio: false }
+      },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected already_recording");
+    expect(result.error.code).toBe("already_recording");
+    expect(mocks.snapshotForeground).not.toHaveBeenCalled();
+    expect(mocks.requestPermissions).not.toHaveBeenCalled();
+  });
+
+  test("recording:cancel resolves a permission prompt before touching the service", async () => {
+    mocks.cancelPermissionPrompt.mockReturnValueOnce(true);
+
+    const result = await bus.dispatch("recording:cancel", {}, { principal: "ipc" });
+
+    expect(result.ok).toBe(true);
+    expect(mocks.cancel).not.toHaveBeenCalled();
   });
 
   test("failed state blocks generic start/cancel/restart and allows only session recovery", async () => {

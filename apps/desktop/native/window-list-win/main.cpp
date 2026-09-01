@@ -132,6 +132,45 @@
 
 namespace {
 
+struct ActivatePidContext {
+  DWORD pid;
+  HWND window;
+};
+
+BOOL CALLBACK FindActivatableWindow(HWND hwnd, LPARAM lparam) {
+  auto *context = reinterpret_cast<ActivatePidContext *>(lparam);
+  DWORD pid = 0;
+  GetWindowThreadProcessId(hwnd, &pid);
+  if (pid != context->pid || !IsWindowVisible(hwnd)) {
+    return TRUE;
+  }
+  const LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+  if ((exStyle & WS_EX_TOOLWINDOW) != 0) {
+    return TRUE;
+  }
+  context->window = hwnd;
+  return FALSE;
+}
+
+void ActivatePid(DWORD pid) {
+  ActivatePidContext context{pid, nullptr};
+  EnumWindows(FindActivatableWindow, reinterpret_cast<LPARAM>(&context));
+  if (context.window == nullptr) {
+    return;
+  }
+
+  if (IsIconic(context.window)) {
+    ShowWindowAsync(context.window, SW_RESTORE);
+  } else {
+    ShowWindowAsync(context.window, SW_SHOW);
+  }
+  // PwrSnap launches this helper while dismissing its focused permission
+  // panel, so Windows normally permits the foreground handoff. These calls
+  // remain best-effort because system foreground policy can still refuse it.
+  BringWindowToTop(context.window);
+  SetForegroundWindow(context.window);
+}
+
 struct WindowInfo {
   long long windowId;
   unsigned long pid;
@@ -555,6 +594,21 @@ void AppendJsonStringOrNull(std::string *out, const std::wstring &value) {
 }  // namespace
 
 int wmain(int argc, wchar_t *argv[]) {
+  if (argc >= 2 && std::wstring(argv[1]) == L"--activate-pid") {
+    if (argc != 3) {
+      std::fputs("usage: --activate-pid <pid>\n", stderr);
+      return 2;
+    }
+    wchar_t *end = nullptr;
+    const unsigned long parsedPid = std::wcstoul(argv[2], &end, 10);
+    if (end == argv[2] || *end != L'\0' || parsedPid == 0) {
+      std::fputs("invalid pid\n", stderr);
+      return 2;
+    }
+    ActivatePid(static_cast<DWORD>(parsedPid));
+    return 0;
+  }
+
   if (argc >= 2 && std::wstring(argv[1]) == L"--extract-app-icon") {
     if (argc != 5) {
       std::fputs(

@@ -13,6 +13,7 @@ import {
   Menu,
   nativeTheme,
   Notification,
+  screen,
   shell
 } from "electron";
 import { EVENT_CHANNELS, revealInFileManagerLabel } from "@pwrsnap/shared";
@@ -98,6 +99,8 @@ import {
   disposeRecordingController,
   installRecordingController
 } from "./recording/recording-controller";
+import { withRecordingForegroundRestored } from "./recording/recording-foreground";
+import { requestRecordingPermissions } from "./recording/recording-permission-prompt";
 import { readRecordingReadiness } from "./recording/recording-permissions";
 import { getRecordingService } from "./recording/recording-service";
 import { getRecordingState, isRecordingActive } from "./recording/recording-state";
@@ -1073,16 +1076,27 @@ async function runInteractiveRecord(
     log.info("recording start ignored while a failure awaits Retry or Dismiss");
     return;
   }
+  if (isRecordingActive()) {
+    log.info("recording setup ignored while a recording is already active");
+    return;
+  }
   // Gate BEFORE pickRegion, exactly like `capture:interactive`. The
   // selector freezes a screen snapshot on show(), which is all-black on
   // a Mac without Screen Recording permission — so on a first-ever (or
   // since-revoked) attempt we must fire the macOS prompt / route to
   // System Settings here, NOT paint an empty selector and only discover
   // the wall after the user has dragged a region and committed.
-  // `recording:start` re-checks (idempotent when granted); when blocked
-  // we bail before showing anything, so there's no selector to tear
-  // down and no focus to restore.
-  const blocked = await guardScreenCapture();
+  // Video Capture owns an explicit fix-or-cancel surface. Restore the
+  // foreground app after that focused decision so the selector freezes the
+  // pixels the user was looking at before PwrSnap asked for permission.
+  const permissionOutcome = await withRecordingForegroundRestored(() =>
+    requestRecordingPermissions(
+      { microphone: false, systemAudio: false },
+      screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).id
+    )
+  );
+  if (permissionOutcome.status !== "ready") return;
+  const blocked = await guardScreenCapture({ routeToSettings: false });
   if (blocked !== null) return;
   const storageBlocked = await ensureCapturesDirReady();
   if (storageBlocked !== null) return;

@@ -76,6 +76,7 @@ export function isRecordingActive(): boolean {
     case "stopping":
     case "processing":
       return true;
+    case "permission":
     case "idle":
     case "ready":
     case "failed":

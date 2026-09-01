@@ -207,6 +207,20 @@ const pwrsnapApi = {
     /** Video-only: whether the recording bakes in the mouse cursor,
      *  from the selector's `C` toggle. Omitted for image captures. */
     captureCursor?: boolean;
+    /** Multi-window pick. Each entry is one picked window's EXTENT —
+     *  a rectangle on the frozen screen, in the same global logical-px
+     *  space as `rect`. `rect` is ALWAYS the union bounding box of
+     *  these, so every existing consumer (rect validation, source-app
+     *  resolution, cursor placement, recording) keeps working without
+     *  knowing about extents at all. Absent for a single-target pick. */
+    extents?: { x: number; y: number; w: number; h: number }[];
+    /** What shape to keep inside the union box:
+     *    - `"windows"`   — only the pixels inside `extents`; everything
+     *                      else in the box goes transparent.
+     *    - `"rectangle"` — the whole box, opaque (what the picker has
+     *                      always produced).
+     *  Only meaningful alongside `extents`. */
+    outputMode?: "windows" | "rectangle";
   }): void {
     ipcRenderer.send(REGION_SELECTOR_RESULT_CHANNEL, payload);
   },

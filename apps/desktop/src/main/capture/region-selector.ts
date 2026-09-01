@@ -177,6 +177,21 @@ export type SelectorResult =
        *  `settings.recording.videoCaptureCursor`). Undefined for image
        *  captures, which don't consume it yet (Phase 3). */
       captureCursor?: boolean;
+      /** Multi-window pick. One entry per picked window's EXTENT, in
+       *  the same GLOBAL logical-px space as `rect` (the display offset
+       *  is applied to both together, below).
+       *
+       *  `rect` is always the union bounding box of these extents, so
+       *  every consumer that predates multi-select — validateRect,
+       *  source-app resolution, cursor-layer placement, the recording
+       *  entry point — keeps working untouched. Only the crop step
+       *  reads `extents`. */
+      extents?: { x: number; y: number; w: number; h: number }[];
+      /** What to keep inside the union box. `"windows"` masks it down
+       *  to `extents` (transparent elsewhere); `"rectangle"` keeps the
+       *  whole box, which is what the picker has always produced.
+       *  Only meaningful alongside `extents`. */
+      outputMode?: "windows" | "rectangle";
     }
   | {
       ok: false;
@@ -348,6 +363,19 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
           }
           if (typeof payload.captureCursor === "boolean") {
             result.captureCursor = payload.captureCursor;
+          }
+          if (payload.extents !== undefined && payload.extents.length > 0) {
+            // Same display → global translation the union rect above
+            // gets. Keeping the two in one coordinate space is what
+            // lets the crop step express each extent as an offset
+            // inside the union box.
+            result.extents = payload.extents.map((e) => ({
+              x: e.x + offsetX,
+              y: e.y + offsetY,
+              w: e.w,
+              h: e.h
+            }));
+            result.outputMode = payload.outputMode ?? "windows";
           }
           resolver(result);
         }
@@ -1619,6 +1647,25 @@ function rendererTarget(displayId: number): RendererTarget {
   };
 }
 
+// Upper bound on a multi-window pick. The window list itself is
+// usually well under this; the cap is here because `extents` is
+// renderer-supplied and each entry costs a sharp extract + composite
+// at commit time. A pick larger than this is a bug or an attack, not
+// a user.
+const MAX_SELECTOR_EXTENTS = 64;
+
+function isExtentRect(value: unknown): value is { x: number; y: number; w: number; h: number } {
+  if (value === null || typeof value !== "object") return false;
+  const r = value as Record<string, unknown>;
+  for (const key of ["x", "y", "w", "h"] as const) {
+    const n = r[key];
+    if (typeof n !== "number" || !Number.isFinite(n)) return false;
+  }
+  // Zero-area extents would make sharp throw on extract; reject here
+  // rather than filtering silently at crop time.
+  return (r.w as number) > 0 && (r.h as number) > 0;
+}
+
 function isSelectorPayload(value: unknown): value is {
   ok: true;
   rect: { x: number; y: number; w: number; h: number };
@@ -1626,6 +1673,8 @@ function isSelectorPayload(value: unknown): value is {
   snappedWindowId?: number;
   fullWindow?: boolean;
   captureCursor?: boolean;
+  extents?: { x: number; y: number; w: number; h: number }[];
+  outputMode?: "windows" | "rectangle";
 } {
   if (value === null || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
@@ -1649,6 +1698,18 @@ function isSelectorPayload(value: unknown): value is {
     return false;
   }
   if (v.captureCursor !== undefined && typeof v.captureCursor !== "boolean") {
+    return false;
+  }
+  if (v.extents !== undefined) {
+    if (!Array.isArray(v.extents)) return false;
+    if (v.extents.length > MAX_SELECTOR_EXTENTS) return false;
+    if (!v.extents.every(isExtentRect)) return false;
+  }
+  if (
+    v.outputMode !== undefined &&
+    v.outputMode !== "windows" &&
+    v.outputMode !== "rectangle"
+  ) {
     return false;
   }
   return true;

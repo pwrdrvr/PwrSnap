@@ -462,14 +462,30 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       //     capture — by definition, the snapshot is frozen-in-
       //     time.
       const snapshot = getLastWindowListSnapshot();
+      // Third path, for a multi-window pick in WINDOWS output mode:
+      // crop the union box out of the same frozen snapshot, but keep
+      // only the pixels inside the picked extents. `rect` is the union
+      // box either way, so RECTANGLE mode (and every single-target
+      // pick) falls through to the plain crop unchanged.
+      const maskToExtents =
+        selection.extents !== undefined &&
+        selection.extents.length > 0 &&
+        selection.outputMode !== "rectangle";
       const captureResult =
         selection.fullWindow === true && selection.snappedWindowId !== undefined
           ? await captureWindow(selection.snappedWindowId)
-          : await cropScreenSnapshot(
-              screenSnapshotPath,
-              selection.rect,
-              selection.displayId
-            );
+          : maskToExtents
+            ? await cropScreenSnapshotExtents(
+                screenSnapshotPath,
+                selection.rect,
+                selection.extents ?? [],
+                selection.displayId
+              )
+            : await cropScreenSnapshot(
+                screenSnapshotPath,
+                selection.rect,
+                selection.displayId
+              );
       // Snapshot pixels are now in `captureResult.tempPath` — release the
       // frozen snapshot immediately (idempotent; finally re-calls as a
       // safety net).
@@ -1239,6 +1255,131 @@ async function cropScreenSnapshot(
     log.warn("snapshot crop failed", {
       message: cause instanceof Error ? cause.message : String(cause),
       rect,
+      displayId
+    });
+    return {
+      ok: false,
+      reason: "error",
+      message: cause instanceof Error ? cause.message : String(cause)
+    };
+  }
+}
+
+/**
+ * Multi-window crop: the union box of `extents`, with everything
+ * OUTSIDE those extents transparent.
+ *
+ * This is a mask over the frozen screen, not a per-window capture. Each
+ * extent is a plain rectangle on the snapshot, so whatever was
+ * composited on top of a picked window at freeze time comes along —
+ * exactly what the picker showed under its dim mask. Fetching a
+ * window's own backing buffer (so it can be captured through an
+ * occluder) is a different feature and deliberately not this one.
+ *
+ * Coordinate handling is identical to `cropScreenSnapshot`: `rect` and
+ * `extents` are display-logical px in global coords, the snapshot is
+ * physical px covering `display.bounds`. Each extent is additionally
+ * clamped to the union box so a stray extent can't composite outside
+ * the canvas (sharp throws on a negative offset).
+ *
+ * Returns the same envelope as `cropScreenSnapshot` so the caller path
+ * stays identical.
+ */
+async function cropScreenSnapshotExtents(
+  snapshotPath: string,
+  rect: Rect,
+  extents: readonly Rect[],
+  displayId: number
+): Promise<
+  | { ok: true; tempPath: string; displayId: number }
+  | { ok: false; reason: "validation" | "error"; message: string }
+> {
+  const display = screen.getAllDisplays().find((d) => d.id === displayId);
+  if (display === undefined) {
+    return { ok: false, reason: "validation", message: `unknown display id: ${displayId}` };
+  }
+  if (rect.w <= 0 || rect.h <= 0) {
+    return { ok: false, reason: "validation", message: "rect.w and rect.h must be positive" };
+  }
+  if (extents.length === 0) {
+    return { ok: false, reason: "validation", message: "extents must not be empty" };
+  }
+  const scale = display.scaleFactor;
+  const toPhysical = (r: Rect) => ({
+    left: Math.round((r.x - display.bounds.x) * scale),
+    top: Math.round((r.y - display.bounds.y) * scale),
+    width: Math.max(1, Math.round(r.w * scale)),
+    height: Math.max(1, Math.round(r.h * scale))
+  });
+
+  try {
+    const meta = await sharp(snapshotPath).metadata();
+    const maxW = meta.width ?? 0;
+    const maxH = meta.height ?? 0;
+    if (maxW <= 0 || maxH <= 0) {
+      return { ok: false, reason: "error", message: "snapshot has no readable dimensions" };
+    }
+
+    // The canvas: the union box, clamped to the snapshot.
+    const box = toPhysical(rect);
+    const boxLeft = Math.min(Math.max(0, box.left), maxW - 1);
+    const boxTop = Math.min(Math.max(0, box.top), maxH - 1);
+    const boxW = Math.min(box.width, maxW - boxLeft);
+    const boxH = Math.min(box.height, maxH - boxTop);
+
+    // One extract per extent, positioned relative to the canvas origin.
+    // Intersect with the canvas first: an extent that hangs off the
+    // display edge (or off the union box, which a rounding difference
+    // can produce) contributes only its visible part.
+    const layers: { input: Buffer; left: number; top: number }[] = [];
+    for (const extent of extents) {
+      const e = toPhysical(extent);
+      const left = Math.max(e.left, boxLeft);
+      const top = Math.max(e.top, boxTop);
+      const right = Math.min(e.left + e.width, boxLeft + boxW, maxW);
+      const bottom = Math.min(e.top + e.height, boxTop + boxH, maxH);
+      const width = right - left;
+      const height = bottom - top;
+      if (width <= 0 || height <= 0) continue;
+      // eslint-disable-next-line no-await-in-loop -- serialized on purpose:
+      // a 64-extent pick issuing 64 concurrent sharp decodes of the same
+      // full-display PNG is a memory spike for no wall-clock win.
+      const input = await sharp(snapshotPath)
+        .extract({ left, top, width, height })
+        .png()
+        .toBuffer();
+      layers.push({ input, left: left - boxLeft, top: top - boxTop });
+    }
+    if (layers.length === 0) {
+      return {
+        ok: false,
+        reason: "validation",
+        message: "no extent overlapped the captured region"
+      };
+    }
+
+    const dir = await mkdtemp(join(tmpdir(), "pwrsnap-crop-"));
+    const tempPath = join(dir, `${Date.now()}.png`);
+    await sharp({
+      create: {
+        width: boxW,
+        height: boxH,
+        channels: 4,
+        background: { r: 0, g: 0, b: 0, alpha: 0 }
+      }
+    })
+      .composite(layers)
+      // palette:false forces 32-bit truecolor+alpha. An 8-bit colormap
+      // would quantize the kept pixels AND is the same trap compose-tree
+      // documents for exports.
+      .png({ palette: false })
+      .toFile(tempPath);
+    return { ok: true, tempPath, displayId };
+  } catch (cause) {
+    log.warn("snapshot extent crop failed", {
+      message: cause instanceof Error ? cause.message : String(cause),
+      rect,
+      extentCount: extents.length,
       displayId
     });
     return {

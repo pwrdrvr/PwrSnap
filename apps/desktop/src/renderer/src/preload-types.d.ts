@@ -41,22 +41,31 @@ declare global {
       versions: { chrome: string; electron: string; node: string };
       /** Electron 32+ replacement for the removed File.path extension. */
       getPathForFile(file: File): string;
-      dispatch<C extends CommandName>(
-        name: C,
-        req: Req<C>
-      ): Promise<Result<Res<C>, PwrSnapError>>;
+      dispatch<C extends CommandName>(name: C, req: Req<C>): Promise<Result<Res<C>, PwrSnapError>>;
       on(channel: string, handler: (payload: unknown) => void): () => void;
       submitRegion(payload: {
         ok: boolean;
+        invocationId: number;
         rect?: { x: number; y: number; w: number; h: number };
         displayId?: number;
         snappedWindowId?: number;
         fullWindow?: boolean;
         captureCursor?: boolean;
       }): void;
-      notifySelectorSnapshotPainted(screenUrl: string): void;
+      notifySelectorSnapshotPainted(payload: {
+        snapshotKey: string;
+        invocationId: number;
+        status: "painted" | "error";
+      }): void;
+      notifySelectorPresented(payload: {
+        invocationId: number;
+        generation: number;
+        surface: "frozen-frame" | "window-loading" | "error";
+      }): void;
       onWindowListSnapshot(
         handler: (payload: {
+          invocationId: number;
+          status?: "ready" | "error";
           windows: WindowSnapEntry[];
           displayBounds: { width: number; height: number };
           cursor?: { x: number; y: number };
@@ -65,10 +74,25 @@ declare global {
       onSelectorKey(handler: (payload: { key: string }) => void): () => void;
       onSelectorMode(
         handler: (payload: {
+          invocationId: number;
           mode: "auto" | "region" | "window";
-          screenUrl?: string;
+          captureSource:
+            | {
+                kind: "renderer-display-media";
+                displayId: number;
+                displayBounds: { width: number; height: number };
+              }
+            | { kind: "legacy-file"; screenUrl: string }
+            | { kind: "none" };
           intent?: "snap" | "video";
           cursor?: boolean;
+        }) => void
+      ): () => void;
+      onSelectorPresentationArm(
+        handler: (payload: {
+          invocationId: number;
+          generation: number;
+          surface: "frozen-frame" | "window-loading" | "error";
         }) => void
       ): () => void;
       requestTrayResize(payload: { width: number; height: number }): void;
@@ -95,6 +119,18 @@ declare global {
         devicePixelRatio: number;
         screenWidth: number;
         screenHeight: number;
+      }): void;
+      reportSelectorPerformance(payload: {
+        invocationId: number;
+        mark:
+          | "shell-painted"
+          | "window-targets-painted"
+          | "crop-encode-started"
+          | "crop-encode-completed"
+          | "crop-stream-started"
+          | "crop-stream-completed"
+          | "crop-commit-failed-encode"
+          | "crop-commit-failed-stream";
       }): void;
       perfMark(payload: PerfMarkPayload): void;
     };

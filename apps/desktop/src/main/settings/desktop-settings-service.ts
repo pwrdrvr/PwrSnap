@@ -174,6 +174,10 @@ export function defaultSettings(): Settings {
       // it soaks. Ignored off macOS. Read once at process start —
       // relaunch to apply.
       processSplit: false,
+      // Renderer-owned selector capture is intentionally opt-in while it
+      // soaks under regular macOS/Windows use. The legacy path remains the
+      // default and the immediate rollback path for a release.
+      rendererOwnedSelectorCapture: false,
       // DPI-aware export ships OFF so the default install keeps the
       // legacy 800 / 1440 / source preset widths. Power users opt in from
       // Settings → Experimental. `allowRetinaExport` only matters once the
@@ -765,10 +769,15 @@ function parseV1(raw: unknown, appVersion = ""): Settings | null {
     },
     experimental: {
       // `experimental.*` is additive — older files won't have these.
-      // pickBoolean fills the defaults (processSplit + dpiAwareExport OFF,
-      // allowRetinaExport ON) so the fields are always present in-memory.
+      // pickBoolean fills the defaults (processSplit, renderer-owned selector,
+      // and dpiAwareExport OFF; allowRetinaExport ON) so the fields are always
+      // present in-memory.
       // No `schemaVersion` bump per the additive convention.
       processSplit: pickBoolean(experimental.processSplit, defaults.experimental.processSplit),
+      rendererOwnedSelectorCapture: pickBoolean(
+        experimental.rendererOwnedSelectorCapture,
+        defaults.experimental.rendererOwnedSelectorCapture
+      ),
       dpiAwareExport: pickBoolean(
         experimental.dpiAwareExport,
         defaults.experimental.dpiAwareExport

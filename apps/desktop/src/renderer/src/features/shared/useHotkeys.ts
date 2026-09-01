@@ -23,7 +23,8 @@ const EMPTY: HotkeysSnapshot = {
   allScreens: "",
   timed: "",
   videoCapture: "",
-  reshowFloatOver: ""
+  reshowFloatOver: "",
+  openLibrary: ""
 };
 
 export function useHotkeys(): HotkeysSnapshot {

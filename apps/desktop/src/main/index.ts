@@ -15,7 +15,11 @@ import {
   Notification,
   shell
 } from "electron";
-import { EVENT_CHANNELS, revealInFileManagerLabel } from "@pwrsnap/shared";
+import {
+  DEFAULT_HOTKEYS,
+  EVENT_CHANNELS,
+  revealInFileManagerLabel
+} from "@pwrsnap/shared";
 import type { RecordingSubject, Settings, SettingsChangedEvent } from "@pwrsnap/shared";
 import {
   disposeRegionSelector,
@@ -272,25 +276,22 @@ function sendEditCommand(
 
 /** The hotkey kinds we register from `settings.hotkeys.*`. Order
  *  matters only for log readability. */
-type HotkeyKind =
-  | "quickCapture"
-  | "region"
-  | "window"
-  | "fullScreen"
-  | "allScreens"
-  | "timed"
-  | "videoCapture"
-  | "reshowFloatOver";
-const HOTKEY_KINDS: readonly HotkeyKind[] = [
-  "quickCapture",
-  "region",
-  "window",
-  "fullScreen",
-  "allScreens",
-  "timed",
-  "videoCapture",
-  "reshowFloatOver"
-];
+type HotkeyKind = keyof Settings["hotkeys"];
+/** Every kind `applyHotkeys` registers, DERIVED from the shared schema
+ *  rather than hand-listed. A hand-written `readonly HotkeyKind[]`
+ *  accepts a SHORT array, so omitting a new field was not a type error:
+ *  the chord would be bindable in Settings → Hotkeys, persisted, and
+ *  shown in the tray tooltip while `globalShortcut.register` was never
+ *  called for it — the exact fictional-chord bug `openLibrary` fixed,
+ *  one layer up. `DEFAULT_HOTKEYS` is typed as `Settings["hotkeys"]`,
+ *  so it has one entry per field, always. Order is `DEFAULT_HOTKEYS`
+ *  insertion order and matters only for log readability.
+ *
+ *  Root AGENTS.md §"Settings substrate": "Never re-declare a Settings
+ *  shape elsewhere" / "Adding a field is a one-line change." */
+const HOTKEY_KINDS: readonly HotkeyKind[] = Object.keys(
+  DEFAULT_HOTKEYS
+) as HotkeyKind[];
 const isMac = process.platform === "darwin";
 
 /**
@@ -751,6 +752,14 @@ function handlerFor(kind: HotkeyKind): () => void {
         log.info("global hotkey fired", { kind });
         return runReshowLastFloatOver();
       };
+    case "openLibrary":
+      // Bring the Library forward (creating the window if it was
+      // closed). Same `library:focus` verb the tray's folder button
+      // dispatches; unbound by default (see the schema doc).
+      return () => {
+        log.info("global hotkey fired", { kind });
+        void runOpenLibrary();
+      };
   }
 }
 
@@ -1028,6 +1037,30 @@ function runReshowLastFloatOver(): void {
     setFloatOverState({ kind: "show-loaded", captureId: last.id, record: last });
   } catch (cause) {
     log.warn("re-show last float-over failed", {
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+  }
+}
+
+/** Open Library hotkey — raise the singleton Library window, creating
+ *  it if the user closed it. Routed through the bus (not
+ *  `bringLibraryForward` directly) so two-process mode dispatches it to
+ *  whichever process owns the window, same as the tray's folder button.
+ *  Rejections are swallowed + logged for the same reason
+ *  `runReshowLastFloatOver` swallows: this runs inside a globalShortcut
+ *  callback, where a throw has nowhere to go. */
+async function runOpenLibrary(): Promise<void> {
+  const log = getMainLogger("pwrsnap:shortcut");
+  try {
+    const result = await bus.dispatch("library:focus", {}, { principal: "ipc" });
+    if (!result.ok) {
+      log.warn("library:focus failed", {
+        code: result.error.code,
+        message: result.error.message
+      });
+    }
+  } catch (cause) {
+    log.warn("library:focus threw", {
       message: cause instanceof Error ? cause.message : String(cause)
     });
   }

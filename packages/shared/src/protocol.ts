@@ -2310,6 +2310,15 @@ export type Settings = {
      *  like ⌘⇧F would shadow "Find in Files" system-wide while PwrSnap
      *  runs. Rebindable/unbindable from Settings → Hotkeys. */
     reshowFloatOver: string;
+    /** Bring the Library window forward (creating it if it was closed).
+     *  Backed by `library:focus`, the same verb the tray's folder button
+     *  dispatches. UNBOUND by default and deliberately so: the obvious
+     *  mnemonic chord (⌘⇧L) is "select all occurrences" in VS Code and
+     *  the reel-rail toggle inside PwrSnap's own Sizzle window, and a
+     *  `globalShortcut` registration wins system-wide — binding it by
+     *  default would shadow both. Bind it from Settings → Hotkeys if you
+     *  want a dedicated chord. */
+    openLibrary: string;
   };
   general: {
     /** When true, the View menu exposes Reload / Force Reload / Toggle
@@ -2508,7 +2517,11 @@ export const DEFAULT_HOTKEYS: Settings["hotkeys"] = {
   allScreens: "",
   timed: "",
   videoCapture: "CommandOrControl+Alt+C",
-  reshowFloatOver: "CommandOrControl+Alt+Shift+F"
+  reshowFloatOver: "CommandOrControl+Alt+Shift+F",
+  // Unbound: see the field doc on `Settings["hotkeys"].openLibrary` —
+  // ⌘⇧L is taken by editors and by our own Sizzle window, and a global
+  // registration would steal it from both.
+  openLibrary: ""
 };
 
 // ---- Editor user preferences (Phase 1) ----------------------------------
@@ -2674,9 +2687,10 @@ export type EditorCoachmarks = {
 };
 
 /** Matching-text affordance gate. Default ON; the user can disable it
- *  from Settings → Editor (Phase 1.5 surface, not blocking) if the
- *  "+ Add label" affordance after arrow placement feels intrusive for
- *  their workflow. */
+ *  from the EDITOR card on Settings → General if the "+ Add label"
+ *  affordance after arrow placement feels intrusive for their
+ *  workflow. (There is no Settings → Editor page — this comment used
+ *  to point at one, which left the toggle unreachable from the UI.) */
 export type EditorMatchingText = {
   enabled: boolean;
 };

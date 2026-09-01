@@ -684,6 +684,30 @@ describe("settings:* validation", () => {
     expect(good.ok).toBe(true);
   });
 
+  test("settings:write validates the newer hotkey keys (openLibrary)", async () => {
+    // `openLibrary` is the newest entry in the validator's fixed key
+    // list; without it the loop would wave through any garbage the
+    // renderer sent for the Open Library binding.
+    const bad = await bus.dispatch(
+      "settings:write",
+      { hotkeys: { openLibrary: "garbage" } } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(bad.ok).toBe(false);
+    if (bad.ok) throw new Error("unreachable");
+    expect(bad.error.code).toBe("invalid_hotkey_shape");
+
+    const good = await bus.dispatch(
+      "settings:write",
+      { hotkeys: { openLibrary: "CommandOrControl+Alt+Shift+L" } } as unknown as Record<
+        string,
+        never
+      >,
+      { principal: "ipc" }
+    );
+    expect(good.ok).toBe(true);
+  });
+
   test("settings:write rejects an invalid filename timestamp zone", async () => {
     const result = await bus.dispatch(
       "settings:write",

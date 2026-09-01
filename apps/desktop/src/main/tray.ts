@@ -794,7 +794,14 @@ export function buildTrayContextMenuTemplate(
     },
     { type: "separator" },
     {
+      // Same conditional-accelerator treatment as Quick Capture and
+      // Record Video above. `openLibrary` ships unbound, so this usually
+      // renders bare — but once the user binds a chord it has to show up
+      // here too, or the native menu goes back to hiding a real binding.
       label: "Open Library",
+      ...(currentTrayHotkeys.openLibrary !== ""
+        ? { accelerator: currentTrayHotkeys.openLibrary }
+        : {}),
       click: () => {
         void bus.dispatch("library:focus", {}, { principal: "ipc" });
       }

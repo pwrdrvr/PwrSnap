@@ -146,8 +146,10 @@ export interface UseEditorToolStateReturn {
 // ---- Tunables -------------------------------------------------------
 
 /** 8s matching-text affordance auto-dismiss. Lifted into a named
- *  constant so the test + a future Settings → Editor tuning surface
- *  can read the same number. Plan §"Hover timings": this matches the
+ *  constant so the test + any future tuning surface can read the same
+ *  number. (The affordance's on/off switch lives on the EDITOR card on
+ *  Settings → General; the DURATION is still hardcoded here.) Plan
+ *  §"Hover timings": this matches the
  *  `--pse-affordance-auto-dismiss-ms` CSS var. */
 const MATCHING_TEXT_AUTO_DISMISS_MS = 8000;
 
@@ -341,6 +343,23 @@ export function useEditorToolState(
       setMatchingText({ kind: "idle" });
     };
   }, [captureId, clearAutoDismissTimer]);
+
+  // Cancel site #6: the user turned the affordance OFF in Settings while
+  // it was live. `matchingTextEnabled` is otherwise consulted only when
+  // an annotation is placed, so without this the chip stays on screen
+  // for the rest of its 8s and — worse — an already-clicked "armed"
+  // state survives indefinitely, leaving the tool swapped to text and
+  // giving the NEXT text placement matching-text treatment from a
+  // feature the user just disabled.
+  //
+  // This became reachable when the toggle got a UI: previously the flag
+  // could only change by hand-editing pwrsnap-settings.json, which does
+  // not broadcast, so a live transition never happened.
+  useEffect(() => {
+    if (matchingTextEnabled) return;
+    clearAutoDismissTimer();
+    setMatchingText((current) => (current.kind === "idle" ? current : { kind: "idle" }));
+  }, [matchingTextEnabled, clearAutoDismissTimer]);
 
   // ---- Settings-write coalescer ----------------------------------
   //

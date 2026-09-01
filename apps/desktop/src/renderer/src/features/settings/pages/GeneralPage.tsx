@@ -13,6 +13,18 @@
 // login-item registration on the main side (launch-at-login.ts) and
 // re-reads the live OS state via `app:launchAtLoginStatus` so the card
 // can surface a macOS/Windows "disabled it OS-side" divergence.
+//
+// The two CAPTURE cards own the `settings.recording.*` defaults for new
+// captures: cursor baking (images + video) and audio sources (video).
+// Audio is the one pair with a hard dependency — `recording:start`
+// refuses to run when a requested source isn't granted — so opting in
+// surfaces a jump to System Permissions.
+//
+// The EDITOR card hosts `editor.matchingText.enabled`. There is no
+// Settings → Editor page (see settings-categories.ts), and the schema
+// comments used to point at one — so the only opt-out for the
+// "+ Add label" chip was hand-editing pwrsnap-settings.json. One card
+// here beats a page for a single toggle.
 
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import {
@@ -29,6 +41,13 @@ import {
 import { Card, Row, SegmentedControl, Switch, type SegmentOption } from "../components";
 import { dispatch, subscribe } from "../../../lib/pwrsnap";
 import { useSettingsContext } from "../SettingsContext";
+import { setActivePage } from "../useActivePage";
+
+/** Shared by both audio rows off macOS. One constant, not two literals:
+ *  only one of the two is pinned by a test, so a copy edit to the other
+ *  would ship stale. */
+const AUDIO_UNSUPPORTED_SUB =
+  "Recording audio is macOS-only for now — PwrSnap records video only on this platform. The preference is saved for when the recorder here grows audio support.";
 
 const THEME_OPTIONS: readonly SegmentOption<AppearanceTheme>[] = [
   { id: "system", label: "System" },
@@ -117,7 +136,59 @@ export function GeneralPage(): ReactElement {
   selectionRef.current = { channel, train };
   const videoCaptureCursor = settings?.recording.videoCaptureCursor ?? true;
   const imageCaptureCursor = settings?.recording.imageCaptureCursor ?? true;
+  // Audio defaults for new recordings. Both ship OFF — recording either
+  // source is privacy-relevant, so the user opts in explicitly.
+  const includeSystemAudio = settings?.recording.includeSystemAudio ?? false;
+  const includeMicrophone = settings?.recording.includeMicrophone ?? false;
+  // Matching-text affordance ("+ Add label" after an arrow lands).
+  // Defaults ON; the hook falls back to true while settings are loading,
+  // so mirror that here rather than flashing the switch off.
+  const matchingTextEnabled = settings?.editor.matchingText.enabled ?? true;
   const platform = window.pwrsnapApi?.platform;
+  // Recording audio is macOS-only, so this is a POSITIVE test. Windows
+  // records through FFmpeg, which captures screen video only and logs a
+  // warning when either toggle is on (recording-service.ts); Linux has
+  // no recorder at all (resolveRecorderBinary returns null off darwin).
+  // `platform !== "win32"` would read Linux — and an absent preload
+  // bridge — as macOS and show them Mac-specific copy.
+  const audioSupported = platform === "darwin";
+
+  // Microphone opt-in has to REQUEST the grant, not just save a flag.
+  // macOS reports `not-determined` until something calls
+  // askForMediaAccess, and nothing else in the app ever does for the mic
+  // — while `recording:start` REJECTS an ungranted microphone rather
+  // than degrading to video-only (recording-handlers.ts preflight). So
+  // persisting `true` on an un-granted mic bricks every subsequent
+  // recording, with the failure surfacing only as a best-effort
+  // notification. index.ts's own routing comment asks for exactly this:
+  // "When mic features ship, request them in-context, not here."
+  //
+  // Off darwin `permissions:request` is a no-op that returns "granted",
+  // so this costs nothing there.
+  const [micDenied, setMicDenied] = useState(false);
+  const onMicrophoneChange = (next: boolean): void => {
+    if (!ready) return;
+    if (!next) {
+      setMicDenied(false);
+      void patch({ recording: { includeMicrophone: false } });
+      return;
+    }
+    if (!audioSupported) {
+      // No recorder here can use the mic, so there is no grant to ask
+      // for — just remember the preference for when one can.
+      void patch({ recording: { includeMicrophone: true } });
+      return;
+    }
+    void (async () => {
+      const result = await dispatch("permissions:request", {
+        permission: "microphone"
+      });
+      const granted = result.ok && result.value.status === "granted";
+      setMicDenied(!granted);
+      // Only persist the opt-in once the OS has actually said yes.
+      if (granted) await patch({ recording: { includeMicrophone: true } });
+    })();
+  };
 
   // Live OS-side registration state, distinct from the saved toggle —
   // macOS/Windows let the user disable a registered login item OS-side
@@ -376,6 +447,77 @@ export function GeneralPage(): ReactElement {
             onChange={(next) => {
               if (!ready) return;
               void patch({ recording: { videoCaptureCursor: next } });
+            }}
+          />
+        </Row>
+      </Card>
+
+      <Card eyebrow="CAPTURE" title="Recording audio">
+        <Row
+          label="Include system audio"
+          sub={
+            audioSupported
+              ? "Records what your Mac is playing alongside the screen. Shares the Screen Recording grant you already gave PwrSnap — there's no separate permission to enable."
+              : AUDIO_UNSUPPORTED_SUB
+          }
+          tag="video"
+        >
+          <Switch
+            on={includeSystemAudio}
+            onChange={(next) => {
+              if (!ready) return;
+              void patch({ recording: { includeSystemAudio: next } });
+            }}
+          />
+        </Row>
+        <Row
+          label="Include your microphone"
+          sub={
+            audioSupported
+              ? "Records your voice alongside the screen — narration, walkthroughs. macOS asks for permission the first time you switch this on."
+              : AUDIO_UNSUPPORTED_SUB
+          }
+          tag="video"
+        >
+          <Switch
+            on={includeMicrophone}
+            onChange={onMicrophoneChange}
+          />
+        </Row>
+        {micDenied ? (
+          // The OS said no (or the user dismissed the prompt). We did NOT
+          // persist the toggle — `recording:start` REJECTS an ungranted
+          // microphone rather than degrading to video-only
+          // (recording-handlers.ts preflight), so saving it here would
+          // brick every subsequent recording with a failure that only
+          // surfaces as a best-effort notification.
+          <Row
+            label="Microphone is blocked"
+            sub="macOS won't prompt twice. Turn Microphone on for PwrSnap in System Settings → Privacy & Security, then switch this back on."
+            tag="action required"
+          >
+            <button
+              className="pss__top-btn"
+              type="button"
+              onClick={() => setActivePage("system-permissions")}
+            >
+              Open System Permissions
+            </button>
+          </Row>
+        ) : null}
+      </Card>
+
+      <Card eyebrow="EDITOR" title="Annotation">
+        <Row
+          label="Offer a label after placing an arrow"
+          sub="Pops a “+ Add label” chip near the arrow's tail. Click it to drop matching text in the arrow's color; ignore it and it fades on its own."
+          tag="arrows"
+        >
+          <Switch
+            on={matchingTextEnabled}
+            onChange={(next) => {
+              if (!ready) return;
+              void patch({ editor: { matchingText: { enabled: next } } });
             }}
           />
         </Row>

@@ -18,6 +18,7 @@ import {
   AI_REASONING_EFFORTS,
   AI_SURFACE_IDS,
   BUILT_IN_ACP_AGENT_IDS,
+  DEFAULT_HOTKEYS,
   isAiReasoningEffort,
   isBuiltInAcpAgentId,
   isAppearanceTheme,
@@ -41,6 +42,7 @@ import {
 import type {
   DesktopSettingsSecretName,
   PwrSnapError,
+  Settings,
   SettingsPage,
   SettingsPatch
 } from "@pwrsnap/shared";
@@ -266,16 +268,12 @@ export function validateSettingsWrite(
       };
     }
     const hotkeys = p.hotkeys as Record<string, unknown>;
-    for (const key of [
-      "quickCapture",
-      "region",
-      "window",
-      "fullScreen",
-      "allScreens",
-      "timed",
-      "videoCapture",
-      "reshowFloatOver"
-    ] as const) {
+    // Derived from the shared schema, not hand-listed: a key absent from
+    // this loop is never shape-checked, so `settings:write` would persist
+    // `"asdf"` for it. `DEFAULT_HOTKEYS` has one entry per
+    // `Settings["hotkeys"]` field (it is typed as that object), so a new
+    // field is covered the moment it exists.
+    for (const key of Object.keys(DEFAULT_HOTKEYS) as (keyof Settings["hotkeys"])[]) {
       const v = hotkeys[key];
       if (isUndefined(v)) continue;
       if (!isString(v)) {

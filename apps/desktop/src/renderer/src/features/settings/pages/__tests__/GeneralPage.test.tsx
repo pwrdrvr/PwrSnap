@@ -47,7 +47,8 @@ const baseSettings: Settings = {
     allScreens: "",
     timed: "",
     videoCapture: "CommandOrControl+Alt+C",
-    reshowFloatOver: "CommandOrControl+Alt+Shift+F"
+    reshowFloatOver: "CommandOrControl+Alt+Shift+F",
+    openLibrary: ""
   },
   general: {
     developerMode: false,
@@ -106,7 +107,8 @@ type AnyResult = { ok: true; value: unknown } | { ok: false; error: { message: s
 
 function installFakeApi(
   status: LaunchAtLoginStatus,
-  platform: NodeJS.Platform = "darwin"
+  platform: NodeJS.Platform = "darwin",
+  opts: { microphoneStatus?: "granted" | "denied" } = {}
 ): {
   calls: { name: string; req: unknown }[];
   pushEvent: (channel: string, payload: unknown) => void;
@@ -120,6 +122,9 @@ function installFakeApi(
       dispatch: async (name: string, req: unknown): Promise<AnyResult> => {
         calls.push({ name, req });
         if (name === "app:launchAtLoginStatus") return { ok: true, value: status };
+        if (name === "permissions:request") {
+          return { ok: true, value: { status: opts.microphoneStatus ?? "granted" } };
+        }
         if (name === "app:update:releases") {
           return {
             ok: true,
@@ -171,12 +176,13 @@ let root: Root | null = null;
 async function renderGeneral(
   settings: Settings,
   status: LaunchAtLoginStatus,
-  platform: NodeJS.Platform = "darwin"
+  platform: NodeJS.Platform = "darwin",
+  opts: { microphoneStatus?: "granted" | "denied" } = {}
 ): Promise<{
   calls: { name: string; req: unknown }[];
   pushEvent: (channel: string, payload: unknown) => void;
 }> {
-  const api = installFakeApi(status, platform);
+  const api = installFakeApi(status, platform, opts);
   contextValue = { settings, patch: patchMock as unknown as UseSettingsValue["patch"] };
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -201,6 +207,9 @@ afterEach(async () => {
   container = null;
   root = null;
   patchMock.mockClear();
+  // `setActivePage` writes window.location.hash; jsdom keeps it for the
+  // rest of the file, so clear it rather than leaking navigation state.
+  window.location.hash = "";
 });
 
 const healthyStatus: LaunchAtLoginStatus = {
@@ -238,6 +247,175 @@ describe("GeneralPage — cursor capture", () => {
       toggle.click();
     });
     expect(patchMock).toHaveBeenCalledWith({ recording: { videoCaptureCursor: false } });
+  });
+});
+
+describe("GeneralPage — recording audio", () => {
+  // The two `recording.include*Audio` fields have existed in the schema
+  // (and been honored by the macOS recorder) since Phase 1, but no
+  // renderer surface ever wrote them — the toggles below are the first.
+  test("system-audio toggle patches recording.includeSystemAudio", async () => {
+    await renderGeneral(baseSettings, healthyStatus);
+    const toggle = findSwitchIn("Include system audio");
+    // Defaults OFF — recording either source is privacy-relevant.
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    await act(async () => {
+      toggle.click();
+    });
+    expect(patchMock).toHaveBeenCalledWith({ recording: { includeSystemAudio: true } });
+  });
+
+  // Read path, not just the write path. Without these two, the `on={}`
+  // props could be swapped between the rows and the suite stayed green
+  // (mutation-verified) — each switch would show the other source's state.
+  test("each switch reflects its own source's saved state", async () => {
+    await renderGeneral(
+      {
+        ...baseSettings,
+        recording: {
+          ...baseSettings.recording,
+          includeSystemAudio: true,
+          includeMicrophone: false
+        }
+      },
+      healthyStatus
+    );
+    expect(findSwitchIn("Include system audio").getAttribute("aria-checked")).toBe("true");
+    expect(findSwitchIn("Include your microphone").getAttribute("aria-checked")).toBe("false");
+  });
+
+  test("each switch reflects its own source's saved state (mirrored)", async () => {
+    await renderGeneral(
+      {
+        ...baseSettings,
+        recording: {
+          ...baseSettings.recording,
+          includeSystemAudio: false,
+          includeMicrophone: true
+        }
+      },
+      healthyStatus
+    );
+    expect(findSwitchIn("Include system audio").getAttribute("aria-checked")).toBe("false");
+    expect(findSwitchIn("Include your microphone").getAttribute("aria-checked")).toBe("true");
+  });
+
+  // `recording:start` REJECTS an ungranted microphone rather than
+  // degrading to video-only, and macOS never prompts for the mic on its
+  // own — so enabling the toggle has to drive the prompt, and must NOT
+  // persist unless the OS actually says yes. Otherwise every subsequent
+  // recording fails with a notification-only error.
+  test("enabling the microphone requests the grant before persisting", async () => {
+    const api = await renderGeneral(baseSettings, healthyStatus);
+    const toggle = findSwitchIn("Include your microphone");
+    await act(async () => {
+      toggle.click();
+      await Promise.resolve();
+    });
+
+    const request = api.calls.find((c) => c.name === "permissions:request");
+    expect(request).toBeDefined();
+    expect(request?.req).toEqual({ permission: "microphone" });
+    expect(patchMock).toHaveBeenCalledWith({ recording: { includeMicrophone: true } });
+    expect(container?.textContent).not.toContain("Microphone is blocked");
+  });
+
+  test("a denied microphone is not persisted and surfaces a recovery row", async () => {
+    const api = await renderGeneral(baseSettings, healthyStatus, "darwin", {
+      microphoneStatus: "denied"
+    });
+    const toggle = findSwitchIn("Include your microphone");
+    await act(async () => {
+      toggle.click();
+      await Promise.resolve();
+    });
+
+    expect(api.calls.some((c) => c.name === "permissions:request")).toBe(true);
+    // The critical half: we must NOT write `true` for a mic the OS
+    // refused, or recording:start hard-fails on every later take.
+    expect(patchMock).not.toHaveBeenCalledWith({ recording: { includeMicrophone: true } });
+    expect(container?.textContent).toContain("Microphone is blocked");
+  });
+
+  test("turning the microphone back off clears the blocked row and persists", async () => {
+    await renderGeneral(
+      {
+        ...baseSettings,
+        recording: { ...baseSettings.recording, includeMicrophone: true }
+      },
+      healthyStatus
+    );
+    const toggle = findSwitchIn("Include your microphone");
+    await act(async () => {
+      toggle.click();
+    });
+    expect(patchMock).toHaveBeenCalledWith({ recording: { includeMicrophone: false } });
+    expect(container?.textContent).not.toContain("Microphone is blocked");
+  });
+
+  test("system audio does not request a grant — it shares Screen Recording", async () => {
+    // There is no separate System Audio TCC grant: readSystemAudioStatus
+    // returns readScreenStatus(). Prompting or warning about one would
+    // be inventing a permission that does not exist.
+    const api = await renderGeneral(baseSettings, healthyStatus);
+    await act(async () => {
+      findSwitchIn("Include system audio").click();
+      await Promise.resolve();
+    });
+    expect(api.calls.some((c) => c.name === "permissions:request")).toBe(false);
+    expect(container?.textContent).toContain("Shares the Screen Recording grant");
+    expect(container?.textContent).not.toContain("recording refuses to start");
+  });
+
+  test("non-macOS says recording audio is unsupported and never prompts", async () => {
+    // Windows records through FFmpeg (video only) and Linux has no
+    // recorder at all, so the card must not imply audio either way.
+    for (const platform of ["win32", "linux"] as const) {
+      const api = await renderGeneral(baseSettings, healthyStatus, platform);
+      expect(container?.textContent).toContain("Recording audio is macOS-only for now");
+      expect(container?.textContent).not.toContain("what your Mac is playing");
+      await act(async () => {
+        findSwitchIn("Include your microphone").click();
+        await Promise.resolve();
+      });
+      expect(api.calls.some((c) => c.name === "permissions:request")).toBe(false);
+      await act(async () => {
+        root?.unmount();
+      });
+      container?.remove();
+    }
+  });
+});
+
+describe("GeneralPage — editor annotation", () => {
+  // `editor.matchingText.enabled` was gated on a "Settings → Editor"
+  // page that settings-categories.ts never had, so the only way to turn
+  // the "+ Add label" chip off was hand-editing pwrsnap-settings.json.
+  test("matching-text toggle patches editor.matchingText.enabled", async () => {
+    await renderGeneral(baseSettings, healthyStatus);
+    const toggle = findSwitchIn("Offer a label after placing an arrow");
+    // Defaults ON.
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    await act(async () => {
+      toggle.click();
+    });
+    expect(patchMock).toHaveBeenCalledWith({ editor: { matchingText: { enabled: false } } });
+  });
+
+  test("reflects a disabled affordance", async () => {
+    await renderGeneral(
+      {
+        ...baseSettings,
+        editor: { ...baseSettings.editor, matchingText: { enabled: false } }
+      },
+      healthyStatus
+    );
+    const toggle = findSwitchIn("Offer a label after placing an arrow");
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    await act(async () => {
+      toggle.click();
+    });
+    expect(patchMock).toHaveBeenCalledWith({ editor: { matchingText: { enabled: true } } });
   });
 });
 

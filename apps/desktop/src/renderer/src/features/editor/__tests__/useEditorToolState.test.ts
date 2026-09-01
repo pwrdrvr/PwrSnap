@@ -82,7 +82,8 @@ function makeSettings(overrides?: {
       allScreens: "",
       timed: "",
       videoCapture: "CommandOrControl+Alt+C",
-      reshowFloatOver: "CommandOrControl+Alt+Shift+F"
+      reshowFloatOver: "CommandOrControl+Alt+Shift+F",
+      openLibrary: ""
     },
     general: {
     developerMode: false,
@@ -578,6 +579,44 @@ describe("useEditorToolState", () => {
         anchorPoint: { x: 1, y: 1 }
       });
     });
+
+    expect(api!.matchingText.kind).toBe("idle");
+  });
+
+  test("13b. disabling matching-text mid-session tears down live chip + armed state", () => {
+    // Regression: `matchingTextEnabled` was consulted ONLY inside
+    // onAnnotationPlaced, with no effect watching it — so flipping the
+    // Settings → General toggle off left a visible chip on screen for
+    // the rest of its 8s, and an already-clicked "armed" state alive
+    // forever (tool stuck on text, next text placement still snapping
+    // back to arrow). Unreachable before the toggle had a UI, because
+    // hand-editing pwrsnap-settings.json does not broadcast.
+    let api: UseEditorToolStateReturn | null = null;
+    const onSnapshot = (a: UseEditorToolStateReturn): void => {
+      api = a;
+    };
+    render(createElement(Probe, { captureId: "cap-1", onSnapshot }));
+
+    act(() => {
+      api!.setActiveTool("arrow");
+    });
+    act(() => {
+      api!.onAnnotationPlaced({ tool: "arrow", anchorPoint: { x: 1, y: 1 } });
+    });
+    expect(api!.matchingText.kind).toBe("available");
+
+    // Arm it, the state that used to survive indefinitely.
+    act(() => {
+      api!.clickMatchingTextAffordance();
+    });
+    expect(api!.matchingText.kind).toBe("armed");
+
+    // User flips the switch off in Settings. In production the broadcast
+    // lands via useSettings' own setState, so the component genuinely
+    // re-renders; here we hand rerender a FRESH element because React
+    // bails out on an identical element reference.
+    installSettingsMock(makeSettings({ matchingTextEnabled: false }));
+    rerender(createElement(Probe, { captureId: "cap-1", onSnapshot }));
 
     expect(api!.matchingText.kind).toBe("idle");
   });

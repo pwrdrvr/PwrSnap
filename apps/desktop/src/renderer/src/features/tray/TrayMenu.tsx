@@ -257,6 +257,20 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
   // Hotkeys, so its chip reads live from settings — same treatment as
   // Quick Capture, not a static placeholder.
   const videoHk = acceleratorToDisplayKeys(hotkeys.videoCapture);
+  // Open Library is UNBOUND by default, so the header button's tooltip
+  // has to read live from settings rather than hard-coding a chord.
+  // (It used to advertise a flat "(⌘⇧L)" that main never registered —
+  // the button worked, the chord did nothing.) Empty = no parenthetical.
+  // `?? ""` because useHotkeys stores the broadcast payload verbatim with
+  // no per-key defaulting, and acceleratorToDisplayKeys dereferences
+  // `accel.length` on line 1 — an undefined here throws and the error
+  // boundary swaps the whole tray for the failure panel. Same guard
+  // applyHotkeys and HotkeysPage already use.
+  const openLibraryHk = acceleratorToDisplayKeys(hotkeys.openLibrary ?? "");
+  const openLibraryTitle =
+    openLibraryHk.length > 0
+      ? `Open Library  (${openLibraryHk.join("")})`
+      : "Open Library";
 
   // Measure the popover's natural content height and tell main to
   // setContentSize the BrowserWindow to match. Mirrors the float-
@@ -392,7 +406,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
           <button
             className="ps-tray__hdr-btn"
             type="button"
-            title="Open Library  (⌘⇧L)"
+            title={openLibraryTitle}
             onClick={() => { void dispatch("library:focus", {}); }}
           >
             <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

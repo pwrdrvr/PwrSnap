@@ -1,9 +1,10 @@
 // Hotkeys settings page. Editable rows for the globally-registered
 // chords. Quick Capture / Region / Window / Full Screen / All Screens /
 // Timed / Video Capture all drive real capture verbs; Re-show last
-// Float-Over re-pops the most recent capture. Region / Window / Full
-// Screen / All Screens / Timed default to UNBOUND (also reachable from
-// the tray) — bind them here if you want a dedicated chord.
+// Float-Over re-pops the most recent capture and Open Library raises
+// the Library window. Region / Window / Full Screen / All Screens /
+// Timed / Open Library default to UNBOUND (all also reachable from the
+// tray) — bind them here if you want a dedicated chord.
 //
 // The EDITOR card is a read-only reference for the in-canvas tool keys
 // (V / A / S / H / B / T / C). Those are hardcoded in the editor and
@@ -42,7 +43,8 @@ const HOTKEY_LABELS: Record<HotkeyKey, string> = {
   allScreens: "All Screens",
   timed: "Timed (5 s)",
   videoCapture: "Video Capture",
-  reshowFloatOver: "Re-show last Float-Over"
+  reshowFloatOver: "Re-show last Float-Over",
+  openLibrary: "Open Library"
 };
 
 export function HotkeysPage(): ReactElement {
@@ -201,6 +203,17 @@ export function HotkeysPage(): ReactElement {
             value={hk?.reshowFloatOver ?? ""}
             onCommit={onCommit("reshowFloatOver")}
             onUnbind={onUnbind("reshowFloatOver")}
+          />
+        </Row>
+        <Row
+          label="Open Library"
+          sub="Brings the Library window forward, reopening it if you closed it. Unbound by default — ⌘⇧L is taken by editors and by PwrSnap's own Sizzle window, and a global chord would shadow both."
+          tag="global"
+        >
+          <HotkeyCapture
+            value={hk?.openLibrary ?? ""}
+            onCommit={onCommit("openLibrary")}
+            onUnbind={onUnbind("openLibrary")}
           />
         </Row>
       </Card>

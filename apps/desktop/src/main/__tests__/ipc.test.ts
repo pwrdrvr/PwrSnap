@@ -154,7 +154,11 @@ describe("IPC dispatcher", () => {
   });
 
   test("window teardown aborts a run-scoped video export locally and on the peer", async () => {
-    const sender = new EventEmitter();
+    const sender = Object.assign(new EventEmitter(), {
+      id: 9,
+      isDestroyed: () => false,
+      mainFrame: null
+    });
     const observed: { signal: AbortSignal | null } = { signal: null };
     bus.register("video:export", async (_req, ctx) => {
       observed.signal = ctx.signal;

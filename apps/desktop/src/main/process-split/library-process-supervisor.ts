@@ -182,6 +182,11 @@ export function isLibraryProcessRunning(): boolean {
   return child !== null;
 }
 
+/** Current library main-process pid for cross-process own-window guards. */
+export function getLibraryProcessPid(): number | null {
+  return child?.pid ?? null;
+}
+
 /**
  * The agent's RemoteCommandForwarder body: ensure the library process
  * exists, wait for its readiness hello, dispatch. Never rejects.

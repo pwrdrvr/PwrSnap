@@ -20,6 +20,7 @@ import { desktopCapturer, screen, type Display } from "electron";
 import sharp from "sharp";
 import { getMainLogger } from "../log";
 import { classifyCaptureError } from "./permissions";
+import { releaseWindowCaptureTemp } from "./window-capture-temp";
 
 const log = getMainLogger("pwrsnap:screencapture");
 
@@ -97,6 +98,24 @@ export type CaptureRegionResult =
   | { ok: true; tempPath: string; displayId: number }
   | { ok: false; reason: "revoked" | "cancelled" | "error" | "validation"; message: string };
 
+async function releaseFailedWindowCaptureTemp(tempPath: string): Promise<void> {
+  try {
+    await releaseWindowCaptureTemp(tempPath);
+  } catch (cause) {
+    log.warn("failed to clean unsuccessful window-capture temp directory", {
+      errorName: cause instanceof Error ? cause.name : "UnknownError"
+    });
+  }
+}
+
+function sanitizedWindowCaptureMessage(
+  reason: Extract<CaptureRegionResult, { ok: false }>["reason"]
+): string {
+  if (reason === "revoked") return "Screen-capture permission was revoked";
+  if (reason === "cancelled") return "Window capture was cancelled";
+  return "The requested window could not be captured";
+}
+
 /**
  * Validate a renderer-supplied rect against the current display
  * configuration. Rejects:
@@ -171,7 +190,7 @@ function validateRect(rect: Rect, displayId: number): { valid: boolean; message:
 export async function captureWindow(
   windowId: number
 ): Promise<CaptureRegionResult> {
-  if (!Number.isInteger(windowId) || windowId <= 0) {
+  if (!Number.isSafeInteger(windowId) || windowId <= 0) {
     return {
       ok: false,
       reason: "validation",
@@ -181,7 +200,6 @@ export async function captureWindow(
 
   const dir = await mkdtemp(join(tmpdir(), "pwrsnap-"));
   const tempPath = join(dir, `${Date.now()}.png`);
-
   // Primary: desktopCapturer in the main process. Inherits
   // Electron's Screen Recording TCC grant — no separate helper
   // TCC entry needed. With the ScreenCaptureKitMac feature flag
@@ -201,12 +219,10 @@ export async function captureWindow(
       return match !== null && Number(match[1]) === windowId;
     });
     log.info("desktopCapturer attempt", {
-      windowId,
       sourceCount: sources.length,
-      matchedSourceId: source?.id ?? null,
+      matched: source !== undefined,
       thumbnailSize: source?.thumbnail.getSize() ?? null,
-      thumbnailEmpty: source?.thumbnail.isEmpty() ?? null,
-      sourceIds: sources.slice(0, 10).map((s) => ({ id: s.id, name: s.name }))
+      thumbnailEmpty: source?.thumbnail.isEmpty() ?? null
     });
     if (source !== undefined) {
       const png = source.thumbnail.toPNG();
@@ -214,20 +230,35 @@ export async function captureWindow(
         await writeFile(tempPath, png);
         log.info("desktopCapturer wrote PNG", {
           windowId,
-          tempPath,
           byteSize: png.length
         });
         return { ok: true, tempPath, displayId: 0 };
       }
     }
-    log.warn("desktopCapturer didn't surface the requested window — falling back", {
-      windowId
+    log.warn("desktopCapturer didn't surface the requested window", {
+      windowId,
+      willUseMacFallback: process.platform === "darwin"
     });
   } catch (cause) {
-    log.warn("desktopCapturer threw — falling back", {
+    log.warn("desktopCapturer threw", {
       windowId,
-      message: cause instanceof Error ? cause.message : String(cause)
+      errorName: cause instanceof Error ? cause.name : "UnknownError",
+      willUseMacFallback: process.platform === "darwin"
     });
+  }
+
+  // `/usr/sbin/screencapture` is a macOS-only degraded fallback. A
+  // missing/empty/protected Windows source is a real capture failure, not
+  // a reason to attempt a foreign executable. Clean the private temp dir
+  // before returning because the failure result intentionally exposes no
+  // path to its caller.
+  if (process.platform !== "darwin") {
+    await releaseFailedWindowCaptureTemp(tempPath);
+    return {
+      ok: false,
+      reason: "error",
+      message: sanitizedWindowCaptureMessage("error")
+    };
   }
 
   // Fallback: `screencapture -l <id>`. Captures the screen rect
@@ -248,10 +279,11 @@ export async function captureWindow(
       typeof exitCode === "number" ? exitCode : 1,
       stderrStr
     );
+    await releaseFailedWindowCaptureTemp(tempPath);
     return {
       ok: false,
       reason,
-      message: stderrStr || (err instanceof Error ? err.message : String(err))
+      message: sanitizedWindowCaptureMessage(reason)
     };
   }
 }

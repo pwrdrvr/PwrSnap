@@ -37,10 +37,12 @@ import { bus, type CommandContext } from "../command-bus";
 import {
   pickRegion,
   getLastWindowListSnapshot,
-  hideSelector
+  hideSelector,
+  windowSnapshotInElectronDip
 } from "../capture/region-selector";
 import { captureRegion, captureScreen, captureWindow } from "../capture/screencapture";
 import { displayScaleFactorForId } from "../capture/display-density";
+import { releaseWindowCaptureTemp } from "../capture/window-capture-temp";
 import { guardScreenCapture } from "../capture/screen-permission-gate";
 import {
   CapturesLocationFallbackError,
@@ -48,7 +50,13 @@ import {
   runWithCapturesDirFallback
 } from "../capture/capture-storage-gate";
 import { releaseSnapshot } from "../capture/screen-snapshot";
-import { type WindowInfo } from "../capture/window-list";
+import {
+  boundsApproxEqual,
+  listWindowsSnapshot,
+  selfPidSet,
+  selfWindowBoundsList,
+  type WindowInfo
+} from "../capture/window-list";
 import {
   resolveSelectionSourceApp,
   resolveSourceAppByRect
@@ -85,6 +93,7 @@ import {
   UnsafePastedFileError
 } from "../security/assertSafePastedFile";
 import { validateSafeRgbaRasterDimensions } from "../image/safe-raster-decode";
+import { createCaptureWindowHandler } from "./capture-window-handler";
 
 const log = getMainLogger("pwrsnap:capture-handlers");
 
@@ -223,7 +232,10 @@ export function registerCaptureSaveAsHandler(): void {
   });
 }
 
-export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): void {
+export function registerCaptureHandlers(options?: {
+  includeSaveAs?: boolean;
+  peerPwrSnapPid?: () => number | null;
+}): void {
   bus.register("capture:region", async (req) => {
     // Headless/agent path — still trigger the OS prompt on a first-ever
     // attempt (it registers PwrSnap so captures can ever work), but don't
@@ -842,13 +854,40 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     return ok({ records: [persisted.value] });
   });
 
-  bus.register("capture:window", async () => {
-    return err({
-      kind: "validation",
-      code: "not_implemented",
-      message: "capture:window lands in Phase 1.5+"
-    });
-  });
+  bus.register(
+    "capture:window",
+    createCaptureWindowHandler({
+      platform: process.platform,
+      guardScreenCapture,
+      ensureCapturesDirReady,
+      // Keep every window-specific dependency lazy. Several capture-handler
+      // suites intentionally mock only the paths they dispatch; eagerly
+      // reading a missing mock export here would break unrelated commands.
+      listWindowsSnapshot: () => listWindowsSnapshot(),
+      normalizeWindowSnapshot: (windows, platform) =>
+        windowSnapshotInElectronDip(windows, platform, (bounds) =>
+          screen.screenToDipRect(null, bounds)
+        ),
+      selfPidSet: () => selfPidSet(),
+      selfWindowBoundsList: () => selfWindowBoundsList(),
+      peerPwrSnapPid: () => options?.peerPwrSnapPid?.() ?? null,
+      boundsApproxEqual: (a, b) => boundsApproxEqual(a, b),
+      captureWindow,
+      displayScaleFactorForWindow: (sourceWindow) =>
+        displayScaleFactorForId(
+          screen.getAllDisplays(),
+          screen.getDisplayMatching(sourceWindow.bounds).id
+        ),
+      persistCapture: (tempPath, sourceWindow, devicePixelRatio) =>
+        persistAndBroadcast(tempPath, sourceWindow, { devicePixelRatio }),
+      releaseCaptureTemp: releaseWindowCaptureTemp,
+      reportCleanupFailure: (_tempPath, cause) => {
+        log.warn("capture:window temp cleanup failed", {
+          errorName: cause instanceof Error ? cause.name : "UnknownError"
+        });
+      }
+    })
+  );
 
   bus.register("capture:reveal", async (req) => {
     const record = getCaptureById(req.captureId);

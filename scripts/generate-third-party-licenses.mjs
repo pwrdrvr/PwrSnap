@@ -17,8 +17,61 @@ import { isCliEntrypoint } from "./lib/cli-entrypoint.mjs";
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
 const outputPath = join(repoRoot, "THIRD_PARTY_LICENSES");
-const desktopFilter = "@pwrsnap/desktop";
+/**
+ * The workspace project whose production tree the notice describes, in prose.
+ * Not a pnpm selector — see NOTICE_PNPM_FILTER for that.
+ */
+export const NOTICE_PACKAGE_NAME = "@pwrsnap/desktop";
+
+/**
+ * The pnpm selector behind every `pnpm licenses list` call in this repo.
+ *
+ * **The trailing `...` is load-bearing.** A bare `--filter <pkg>` selects that
+ * ONE project, so `pnpm licenses list` reports only the dependencies declared
+ * in `apps/desktop/package.json`. Anything reached *through* a workspace
+ * dependency — today `@pwrsnap/shared`, tomorrow whatever else desktop pulls in
+ * via `workspace:*` — ships in the packaged app but is invisible to the report.
+ * `<pkg>...` selects the project PLUS its dependency projects, which is the set
+ * that actually ships.
+ *
+ * That miss is silent in both directions: the notice simply omits the packages,
+ * and check-third-party-license-allowlist.mjs never evaluates their licenses,
+ * so a GPL/AGPL dependency arriving under a workspace package would ship with
+ * green CI and no new heading in the notice diff — the exact failure the gate
+ * exists to prevent. Dropping the suffix is a one-character edit that leaves
+ * every other check passing, so third-party-licenses.test.mjs asserts this
+ * exact string.
+ *
+ * The gap is zero today (`@pwrsnap/shared`'s only production dependency, zod,
+ * is also a direct dependency of desktop at the same range). It stays zero only
+ * by accident; the selector is what makes it stay zero on purpose.
+ *
+ * Ported from pwrdrvr/PwrAgent#1905, where the same bare filter hid 71
+ * production packages beneath eight workspace packages.
+ *
+ * `...` follows devDependencies too, and pnpm has no "production dependency
+ * projects only" selector. A workspace package that desktop only devDepends on
+ * would therefore contribute its production tree to the notice without
+ * shipping. That over-discloses rather than under-discloses, which is the safe
+ * direction for both the notice and the gate; desktop has no workspace
+ * devDependencies today.
+ */
+export const NOTICE_PNPM_FILTER = `${NOTICE_PACKAGE_NAME}...`;
 const licenseTextsDir = join(scriptDir, "license-texts");
+
+/**
+ * One dependency record line in the notice: `- <name>@<version> | <license>`.
+ *
+ * Both readers of the generated text — the record count printed after a write
+ * and describeNoticeDrift — match against this, so the format lives in exactly
+ * one place. Capture group 1 is the `name@version` key; read it from the group
+ * rather than slicing fixed offsets off the full match, so changing the prefix
+ * or separator here cannot silently truncate the names reported as drift.
+ *
+ * Stateful (`g`), so every use must consume it in one pass — matchAll or match,
+ * never a bare `.test()` in a loop.
+ */
+const NOTICE_RECORD_LINE = /^- (\S+@\S*) \| /gm;
 
 // sharp publishes its native code as OS+CPU-specific optional dependencies, so
 // `pnpm licenses list --no-optional` never reports them and `--prod` (optional
@@ -559,7 +612,7 @@ export function buildBundledBinaryRecords() {
 export function runPnpmLicenses(args, options = {}) {
   const result = spawnSync(
     "pnpm",
-    ["licenses", "list", "--json", "--filter", desktopFilter, ...args],
+    ["licenses", "list", "--json", "--filter", NOTICE_PNPM_FILTER, ...args],
     {
       cwd: options.cwd ?? repoRoot,
       encoding: "utf8",
@@ -932,7 +985,7 @@ export function buildThirdPartyLicenseNotice({
   weakCopyleftBinaries,
   licenseTextsBaseDir = licenseTextsDir,
   productName = "PwrSnap",
-  packageFilter = desktopFilter,
+  packageFilter = NOTICE_PACKAGE_NAME,
 }) {
   const productionRecords = flattenLicenseReport(productionReport);
   const allRecords = flattenLicenseReport(allReport);
@@ -1117,6 +1170,58 @@ export function buildThirdPartyLicenseNotice({
 }
 
 /**
+ * Describe how a committed notice differs from a freshly generated one.
+ *
+ * `--check` used to print only "THIRD_PARTY_LICENSES is out of date", which is
+ * unactionable precisely when it matters most: the committed file and the
+ * checking machine disagree, so regenerating locally reproduces NEITHER side
+ * and there is nothing to diff against. Naming the packages that appeared or
+ * vanished turns that into an immediate answer.
+ *
+ * Package sets can also match while the text differs (a version bump inside a
+ * record, a reordered section), so fall back to the first differing line.
+ */
+export function describeNoticeDrift(committed, generated, limit = 20) {
+  const packagesIn = (text) =>
+    new Set(Array.from(text.matchAll(NOTICE_RECORD_LINE), (match) => match[1]));
+  const committedPackages = packagesIn(committed);
+  const generatedPackages = packagesIn(generated);
+
+  const summarize = (names) => {
+    const sorted = [...names].sort();
+    const shown = sorted.slice(0, limit).join(", ");
+    return sorted.length > limit ? `${shown}, … (${sorted.length} total)` : shown;
+  };
+
+  const added = summarize([...generatedPackages].filter((name) => !committedPackages.has(name)));
+  const removed = summarize([...committedPackages].filter((name) => !generatedPackages.has(name)));
+
+  const lines = [];
+  if (added) lines.push(`  only in the generated notice: ${added}`);
+  if (removed) lines.push(`  only in the committed notice: ${removed}`);
+  if (lines.length > 0) return lines.join("\n");
+
+  // Same package set — report the first line that differs so the operator can
+  // see whether this is a version bump, a license change, or pure reordering.
+  const committedLines = committed.split("\n");
+  const generatedLines = generated.split("\n");
+  const total = Math.max(committedLines.length, generatedLines.length);
+  for (let index = 0; index < total; index += 1) {
+    if (committedLines[index] === generatedLines[index]) continue;
+    return [
+      `  same package set; first difference at line ${index + 1}:`,
+      `    committed:  ${committedLines[index] ?? "<end of file>"}`,
+      `    generated:  ${generatedLines[index] ?? "<end of file>"}`,
+    ].join("\n");
+  }
+  // Unreachable from --check, which only calls this when the strings differ:
+  // split("\n") is injective, so any textual difference — trailing whitespace
+  // included — surfaces as a differing line above. Reached only by a direct
+  // call with equal strings, so say that rather than inventing a difference.
+  return "  no difference found; the two notices are identical";
+}
+
+/**
  * The pnpm invocations behind the notice.
  *
  * `--no-optional` is the determinism mechanism, not an optimization: with
@@ -1161,7 +1266,10 @@ function runCli() {
     const current = existsSync(outputPath) ? readFileSync(outputPath, "utf8") : "";
     if (current !== output) {
       console.error(
-        "THIRD_PARTY_LICENSES is out of date. Run `pnpm licenses:generate` and commit the result.",
+        [
+          "THIRD_PARTY_LICENSES is out of date. Run `pnpm licenses:generate` and commit the result.",
+          describeNoticeDrift(current, output),
+        ].join("\n"),
       );
       process.exit(1);
     }
@@ -1176,7 +1284,7 @@ function runCli() {
   // macOS and Linux CI for a notice whose whole premise is being identical on
   // both. Counted from the already-generated text so a spawn failure here
   // cannot report failure for a file that was written correctly.
-  const count = (output.match(/^- \S+@\S* \| /gm) ?? []).length;
+  const count = (output.match(NOTICE_RECORD_LINE) ?? []).length;
   console.log(
     `wrote ${relative(repoRoot, outputPath)} (${count} dependency records incl. Electron, shipped platform packages and bundled binaries)`,
   );

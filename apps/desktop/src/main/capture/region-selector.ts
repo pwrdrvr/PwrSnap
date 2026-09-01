@@ -43,7 +43,10 @@ import { hideTrayPopoverIfVisible } from "../tray";
 import { setFloatOverState, ensureFloatOverTopmost } from "../float-over";
 import { hotkeyRecorderSuspension } from "../hotkeys/hotkey-recorder-suspension-instance";
 import { SelectorCropReceiver } from "./selector-crop-receiver";
-import type { SelectorCropStreamReply } from "@pwrsnap/shared/selector-crop-stream";
+import {
+  SELECTOR_CROP_CHUNK_BYTES,
+  type SelectorCropStreamReply
+} from "@pwrsnap/shared/selector-crop-stream";
 
 const MIN_AREA_PX = 400; // 20×20 — anything smaller isn't a meaningful snap target.
 const SELECTOR_WINDOW_TITLE = "PwrSnap Region Selector";
@@ -448,9 +451,11 @@ function rejectCropPorts(ports: readonly MessagePortMain[], invocationId: number
  * authorize and freeze display media, but Electron 41 on macOS was measured
  * dropping a later crop-start request after the frame had been displayed.
  * The renderer therefore opens this second port only at commit time. Its
- * ArrayBuffer chunks are transferable (unlike ipcRenderer.invoke), bounded to
- * 256 KiB, serialized by renderer backpressure, and accepted only once from
- * the active selector webContents and invocation.
+ * ArrayBuffer chunks are bounded to 256 KiB, serialized by renderer
+ * backpressure, and accepted only once from the active selector webContents
+ * and invocation. Electron cannot transfer a renderer-owned ArrayBuffer to a
+ * MessagePortMain reliably (electron/electron#34905), so each bounded chunk is
+ * structured-cloned instead of transferring or cloning the complete crop.
  */
 function installRendererCropPort(event: IpcMainEvent, payload: unknown): void {
   const invocationId =
@@ -491,7 +496,9 @@ function installRendererCropPort(event: IpcMainEvent, payload: unknown): void {
   lifecycle.cropPortClosed = false;
   log.info("picker committed crop port connected", {
     invocationId,
-    transport: "fresh-message-port"
+    transport: "fresh-message-port",
+    binaryDelivery: "bounded-structured-clone",
+    chunkBytes: SELECTOR_CROP_CHUNK_BYTES
   });
 
   port.on("message", (portEvent) => {
@@ -1612,9 +1619,11 @@ export async function pickRegion(
       pendingSelectorMode = mode;
       windowListResolver = resolve;
       // Tell the renderer which mode + snapshot URL to use, then let it
-      // render + DECODE the frozen-snapshot <img> while the window is
-      // STILL HIDDEN. We reveal the window only once the renderer acks
-      // that paint (or a short timeout elapses) — see `reveal()` below.
+      // prepare the frozen source while the window is STILL HIDDEN. Legacy
+      // file capture decodes and paints its <img>; renderer-owned capture
+      // synchronously fills its canvas and flushes the loading-shell removal.
+      // We reveal only after that source-specific readiness acknowledgement
+      // (or fail closed on timeout) — see `reveal()` below.
       // Showing first (the old behavior) made the window appear as an
       // empty transparent overlay for a frame, flashing the live screen
       // / desktop behind the screen-saver-level selector before the
@@ -1662,7 +1671,7 @@ export async function pickRegion(
         displayId: targetDisplay.id,
         durationFromUserRequestMs: elapsedFromRequest()
       });
-      // Reveal the window once the snapshot has painted (gated below).
+      // Reveal the window once the frozen source is ready (gated below).
       const reveal = (): void => {
         if (win.isDestroyed() || pendingResolver !== resolve) return;
         // Order matters: setSimpleFullScreen(true) BEFORE show().
@@ -1793,10 +1802,14 @@ export async function pickRegion(
         // no-op.
       };
 
-      // Gate the reveal on the snapshot actually painting in the
-      // (still-hidden) renderer, so the window never appears empty. The
-      // timeout fails closed: if the renderer is wedged, do not reveal an
-      // unverified surface or falsely release the caller's handoff HUD.
+      // Gate the reveal on source readiness in the still-hidden renderer, so
+      // the window never appears empty. Legacy-file readiness includes its
+      // hidden two-rAF image paint. Renderer display-media readiness follows a
+      // synchronous canvas fill + React flush; hidden rAF runs at ~1 Hz on
+      // Windows and is not evidence of visible presentation. The dedicated
+      // arm sent by reveal() retains the post-show two-rAF presentation
+      // contract. The timeout fails closed: if the renderer is wedged, do not
+      // reveal an unverified surface or falsely release the caller's HUD.
       if (paintKey === null) {
         reveal();
       } else {

@@ -1129,7 +1129,6 @@ describe("U7 — renderer-owned frozen frame transport", () => {
         height: 2160
       })
     );
-    await flushDoubleAnimationFrame();
     expect(notifySelectorSnapshotPainted).toHaveBeenCalledWith({
       snapshotKey: `renderer-display-media:${DEFAULT_INVOCATION_ID}`,
       invocationId: DEFAULT_INVOCATION_ID,
@@ -1157,8 +1156,7 @@ describe("U7 — renderer-owned frozen frame transport", () => {
         invocationId: DEFAULT_INVOCATION_ID,
         sequence: 0,
         bytes: expect.any(ArrayBuffer)
-      }),
-      [expect.any(ArrayBuffer)]
+      })
     );
     expect(exchangeSelectorCrop).toHaveBeenNthCalledWith(3, {
         type: "crop-end",

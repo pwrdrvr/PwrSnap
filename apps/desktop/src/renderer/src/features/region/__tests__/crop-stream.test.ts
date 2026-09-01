@@ -51,9 +51,13 @@ describe("selector crop stream", () => {
       { type: "crop-chunk", bytes: SELECTOR_CROP_CHUNK_BYTES },
       { type: "crop-chunk", bytes: 13 }
     ]);
+    // Electron MessagePortMain cannot receive renderer-owned ArrayBuffers in
+    // a transfer list on Windows. Every bounded exchange must have exactly
+    // one argument so the chunk is structured-cloned instead.
+    for (const call of exchange.mock.calls) expect(call).toHaveLength(1);
   });
 
-  test("opens a fresh commit port and exchanges transferable chunks", async () => {
+  test("opens a fresh commit port and exchanges bounded copied chunks", async () => {
     const forwarded: unknown[] = [];
     const postMessage = vi.spyOn(window, "postMessage");
     postMessage.mockImplementation(

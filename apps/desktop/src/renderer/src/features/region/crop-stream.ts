@@ -6,8 +6,7 @@ import {
 import type { EncodedFrozenCrop } from "./frozen-frame";
 
 export type CropStreamExchange = (
-  message: SelectorCropStreamMessage,
-  transfer?: Transferable[]
+  message: SelectorCropStreamMessage
 ) => Promise<SelectorCropStreamReply>;
 
 export type SelectorCropStreamConnection = {
@@ -22,7 +21,11 @@ const CROP_MESSAGE_TIMEOUT_MS = 10_000;
 /**
  * Open a fresh, commit-only MessagePort and hand its peer to preload/main.
  * Exactly one request is in flight because streamEncodedCrop awaits every
- * acknowledgement before sending the next bounded chunk.
+ * acknowledgement before sending the next bounded chunk. Do not put
+ * ArrayBuffers in the transfer list: Electron's renderer-to-MessagePortMain
+ * bridge drops the containing message on Windows when a non-port transferable
+ * is supplied (electron/electron#34905). Each bounded chunk is therefore
+ * structured-cloned; the complete crop is never copied as one IPC message.
  */
 export function openSelectorCropStream(
   invocationId: number,
@@ -130,7 +133,7 @@ export function openSelectorCropStream(
 
   return {
     ready,
-    exchange(message, transfer) {
+    exchange(message) {
       if (closed) return Promise.reject(new Error("committed crop port is closed"));
       if (!connected) {
         return Promise.reject(new Error("committed crop port is not connected"));
@@ -146,8 +149,7 @@ export function openSelectorCropStream(
         }, messageTimeoutMs);
         pending = { resolve, reject, timer };
         try {
-          if (transfer === undefined) port.postMessage(message);
-          else port.postMessage(message, transfer);
+          port.postMessage(message);
         } catch (cause) {
           rejectPending(cause instanceof Error ? cause : new Error(String(cause)));
         }
@@ -203,10 +205,7 @@ export async function streamEncodedCrop(
     const bytes = await crop.blob
       .slice(offset, Math.min(offset + SELECTOR_CROP_CHUNK_BYTES, crop.blob.size))
       .arrayBuffer();
-    reply = await exchange(
-      { type: "crop-chunk", invocationId, sequence, bytes },
-      [bytes]
-    );
+    reply = await exchange({ type: "crop-chunk", invocationId, sequence, bytes });
     requireReply(reply, "crop-chunk-accepted", sequence);
     sequence += 1;
   }

@@ -38,6 +38,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { acceleratorToDisplayKeys } from "@pwrsnap/shared";
 import type { SelectorCropStreamReply } from "@pwrsnap/shared/selector-crop-stream";
+import { flushSync } from "react-dom";
 import type { WindowSnapEntry } from "../../preload-types";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import {
@@ -438,22 +439,22 @@ export function RegionSelector() {
   useLayoutEffect(() => {
     const notifyPainted = (expectedInvocationId: number, status: "painted" | "error"): void => {
       const snapshotKey = `renderer-display-media:${expectedInvocationId}`;
-      window.requestAnimationFrame(() => {
-        window.requestAnimationFrame(() => {
-          if (invocationIdRef.current !== expectedInvocationId) return;
-          window.pwrsnapApi?.notifySelectorSnapshotPainted({
-            snapshotKey,
-            invocationId: expectedInvocationId,
-            status
-          });
-        });
+      if (invocationIdRef.current !== expectedInvocationId) return;
+      window.pwrsnapApi?.notifySelectorSnapshotPainted({
+        snapshotKey,
+        invocationId: expectedInvocationId,
+        status
       });
     };
 
     const failAcquisition = (expectedInvocationId: number): void => {
       if (invocationIdRef.current !== expectedInvocationId) return;
       snapshotStateRef.current = "error";
-      setSnapshotState("error");
+      // This renderer is still hidden. Commit the opaque error shell before
+      // telling main it may show the window; hidden requestAnimationFrame is
+      // throttled to roughly 1 Hz on Windows even with backgroundThrottling
+      // disabled, and is not the public presentation contract anyway.
+      flushSync(() => setSnapshotState("error"));
       notifyPainted(expectedInvocationId, "error");
     };
 
@@ -507,7 +508,13 @@ export function RegionSelector() {
               frozenFrameRef.current = frame;
               frozenFrameInvocationIdRef.current = expectedInvocationId;
               snapshotStateRef.current = "ready";
-              setSnapshotState("ready");
+              // drawImage/createImageBitmap has already synchronously filled
+              // the renderer-owned canvas. Flush React's status-shell removal
+              // before the hidden readiness ack so main can reveal immediately
+              // instead of waiting on Windows' ~1 Hz hidden rAF cadence. The
+              // dedicated post-show two-rAF presentation arm remains the only
+              // public "selector presented" acknowledgement.
+              flushSync(() => setSnapshotState("ready"));
               port.postMessage({
                 type: "frame-ready",
                 invocationId: expectedInvocationId,

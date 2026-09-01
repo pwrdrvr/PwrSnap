@@ -78,7 +78,9 @@ describe("renderer-owned selector capture production wiring", () => {
     expect(component).toContain('"crop-commit-failed-stream"');
     expect(cropStream).toContain("SELECTOR_CROP_CHUNK_BYTES");
     expect(cropStream).toContain(".slice(offset,");
-    expect(cropStream).toContain("port.postMessage(message, transfer)");
+    expect(cropStream).toContain("port.postMessage(message)");
+    expect(cropStream).not.toContain("port.postMessage(message, transfer)");
+    expect(cropStream).not.toContain("[bytes]");
     expect(cropStream).toContain('type: "pwrsnap-selector-crop-port"');
     expect(preload).toContain("event.ports");
     expect(preload).toContain('type: "pwrsnap-selector-frame-port"');

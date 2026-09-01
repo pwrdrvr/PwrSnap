@@ -152,6 +152,15 @@ describe("initializeMainLogger", () => {
     })).toEqual(["09:08:07.006 (pwrsnap:test)", "hello"]);
   });
 
+  test("keeps Windows paths human-readable in compact structured logs", async () => {
+    const { compactStructuredLogData } = await import("../log");
+    const dbPath = String.raw`C:\Users\pwrtest\AppData\Roaming\PwrSnap\pwrsnap.db`;
+
+    expect(compactStructuredLogData(["opening database", { dbPath }])).toEqual([
+      `opening database dbPath=${dbPath}`
+    ]);
+  });
+
   test("compacts structured file messages into the live log tail", async () => {
     const { initializeMainLogger } = await import("../log");
     initializeMainLogger();

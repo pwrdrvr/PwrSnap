@@ -218,7 +218,11 @@ function quoteIfNeeded(value: string): string {
   const truncated = compact.length > MAX_COMPACT_STRING_LENGTH
     ? `${compact.slice(0, MAX_COMPACT_STRING_LENGTH - 3)}...`
     : compact;
-  return /^[A-Za-z0-9_./:@+-]+$/.test(truncated) ? truncated : JSON.stringify(truncated);
+  // A backslash is an ordinary character in this human-facing key=value
+  // format. Treating it as JSON forced every Windows path through
+  // JSON.stringify, so a correct `C:\Users\...` path was displayed as the
+  // misleading `"C:\\Users\\..."`.
+  return /^[A-Za-z0-9_./\\:@+-]+$/.test(truncated) ? truncated : JSON.stringify(truncated);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

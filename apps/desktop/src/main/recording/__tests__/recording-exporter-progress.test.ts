@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { CaptureRecord, VideoCaptureMetadata, VideoExportResult } from "@pwrsnap/shared";
 import type {
@@ -412,9 +413,12 @@ describe("recording exporter progress", () => {
 
   test("a cancelled stale-row re-encode never exposes its partial file as a cache hit", async () => {
     const id = "mp4-stale-row";
-    const finalPath =
-      `/tmp/pwrsnap-progress-test/video/${id}/` +
-      "r0.000-10.000.med.gop60.s0m0.mp4";
+    const finalPath = join(
+      "/tmp/pwrsnap-progress-test",
+      "video",
+      id,
+      "r0.000-10.000.med.gop60.s0m0.mp4"
+    );
     cachedExport = {
       path: finalPath,
       byteSize: 99,

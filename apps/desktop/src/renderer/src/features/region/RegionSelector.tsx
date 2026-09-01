@@ -89,12 +89,6 @@ type CaptureSource =
   | { kind: "legacy-file"; screenUrl: string }
   | { kind: "none" };
 
-type CropAcknowledgement = {
-  invocationId: number;
-  resolve: (reply: SelectorCropStreamReply) => void;
-  reject: (cause: Error) => void;
-};
-
 type SubmitRegionPayload = Parameters<NonNullable<Window["pwrsnapApi"]>["submitRegion"]>[0];
 
 type Interaction =
@@ -207,7 +201,6 @@ export function RegionSelector() {
   const frozenFrameRef = useRef<FrozenFrame | null>(null);
   const framePortRef = useRef<MessagePort | null>(null);
   const frameAcquisitionStartedRef = useRef(false);
-  const cropAcknowledgementRef = useRef<CropAcknowledgement | null>(null);
   const commitBusyRef = useRef(false);
   // Coord-space scale: how many CSS pixels equal one display-logical
   // pixel. On macOS "scaled" display modes (fractional
@@ -333,8 +326,6 @@ export function RegionSelector() {
       snapTargetRef.current = { kind: "display" };
       interactionRef.current = { kind: "snap" };
       const nextRect = displaySnapRect();
-      cropAcknowledgementRef.current?.reject(new Error("selector invocation superseded"));
-      cropAcknowledgementRef.current = null;
       framePortRef.current?.close();
       framePortRef.current = null;
       frameAcquisitionStartedRef.current = false;
@@ -528,24 +519,6 @@ export function RegionSelector() {
         }
         if (message.type === "authorization-denied") {
           failAcquisition(expectedInvocationId);
-          return;
-        }
-        const acknowledgement = cropAcknowledgementRef.current;
-        if (acknowledgement === null || acknowledgement.invocationId !== expectedInvocationId) {
-          return;
-        }
-        if (
-          message.type === "crop-started" ||
-          message.type === "crop-chunk-accepted" ||
-          message.type === "crop-accepted"
-        ) {
-          cropAcknowledgementRef.current = null;
-          acknowledgement.resolve(message as SelectorCropStreamReply);
-        } else if (message.type === "crop-rejected") {
-          cropAcknowledgementRef.current = null;
-          acknowledgement.reject(
-            new Error(typeof message.code === "string" ? message.code : "crop rejected")
-          );
         }
       };
       port.start();
@@ -557,8 +530,6 @@ export function RegionSelector() {
     window.addEventListener("message", onWindowMessage);
     return () => {
       window.removeEventListener("message", onWindowMessage);
-      cropAcknowledgementRef.current?.reject(new Error("selector renderer unmounted"));
-      cropAcknowledgementRef.current = null;
       framePortRef.current?.close();
       framePortRef.current = null;
       disposeFrozenFrame(frozenFrameRef.current);
@@ -861,8 +832,8 @@ export function RegionSelector() {
       !wantFull
     ) {
       const frozen = frozenFrameRef.current;
-      const port = framePortRef.current;
-      if (frozen === null || port === null) return;
+      const selectorApi = window.pwrsnapApi;
+      if (frozen === null || selectorApi === undefined) return;
       commitBusyRef.current = true;
       let commitStage: "encode" | "stream" = "encode";
       try {
@@ -880,27 +851,21 @@ export function RegionSelector() {
           invocationId: currentInvocationId,
           mark: "crop-stream-started"
         });
-        await streamEncodedCrop(currentInvocationId, crop, (message, transfer) =>
+        await streamEncodedCrop(currentInvocationId, crop, (message) =>
           new Promise<SelectorCropStreamReply>((resolve, reject) => {
             const timeout = window.setTimeout(() => {
-              if (cropAcknowledgementRef.current?.invocationId === currentInvocationId) {
-                cropAcknowledgementRef.current = null;
-              }
               reject(new Error("committed crop transfer timed out"));
             }, 10_000);
-            cropAcknowledgementRef.current = {
-              invocationId: currentInvocationId,
-              resolve: (reply) => {
+            void selectorApi
+              .exchangeSelectorCrop(message)
+              .then((reply) => {
                 window.clearTimeout(timeout);
                 resolve(reply);
-              },
-              reject: (cause) => {
+              })
+              .catch((cause: unknown) => {
                 window.clearTimeout(timeout);
                 reject(cause);
-              }
-            };
-            if (transfer === undefined) port.postMessage(message);
-            else port.postMessage(message, transfer);
+              });
           })
         );
         window.pwrsnapApi?.reportSelectorPerformance({

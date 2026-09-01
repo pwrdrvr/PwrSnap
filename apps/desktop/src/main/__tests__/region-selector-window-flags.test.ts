@@ -63,6 +63,10 @@ type WindowSpy = {
 
 const constructed: WindowSpy[] = [];
 const ipcListeners = new Map<string, (event: unknown, payload: unknown) => void>();
+const ipcHandlers = new Map<
+  string,
+  (event: unknown, payload: unknown) => Promise<unknown>
+>();
 let currentIpcSender: WindowSpy["webContents"] | null = null;
 const screenListeners = new Map<string, (...args: unknown[]) => void>();
 const deferredLoadResolvers: (() => void)[] = [];
@@ -243,6 +247,17 @@ vi.mock("electron", () => {
       unregister: selectorShortcutMocks.unregister
     },
     ipcMain: {
+      handle: vi.fn(
+        (
+          channel: string,
+          listener: (event: unknown, payload: unknown) => Promise<unknown>
+        ) => {
+          ipcHandlers.set(channel, listener);
+        }
+      ),
+      removeHandler: vi.fn((channel: string) => {
+        ipcHandlers.delete(channel);
+      }),
       on: vi.fn((channel: string, listener: (event: unknown, payload: unknown) => void) => {
         ipcListeners.set(channel, (event, payload) => {
           const hasSender = event !== null && typeof event === "object" && "sender" in event;
@@ -307,6 +322,7 @@ const realPlatform = process.platform;
 beforeEach(() => {
   constructed.length = 0;
   ipcListeners.clear();
+  ipcHandlers.clear();
   currentIpcSender = null;
   screenListeners.clear();
   availableDisplays = [primaryDisplay];

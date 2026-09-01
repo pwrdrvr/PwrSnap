@@ -51,11 +51,12 @@ describe("renderer-owned selector capture production wiring", () => {
   });
 
   test("the renderer freezes/stops one track and encodes only the committed crop", async () => {
-    const [component, frozenFrame, cropStream, preload] = await Promise.all([
+    const [component, frozenFrame, cropStream, preload, selector] = await Promise.all([
       source("../../renderer/src/features/region/RegionSelector.tsx"),
       source("../../renderer/src/features/region/frozen-frame.ts"),
       source("../../renderer/src/features/region/crop-stream.ts"),
-      source("../../preload/index.ts")
+      source("../../preload/index.ts"),
+      source("../capture/region-selector.ts")
     ]);
 
     expect(frozenFrame).toContain("navigator.mediaDevices.getDisplayMedia");
@@ -72,6 +73,7 @@ describe("renderer-owned selector capture production wiring", () => {
     expect(component).toContain("frameAcquisitionStartedRef.current");
     expect(component).toContain("encodeFrozenCrop(frozen, r, viewport())");
     expect(component).toContain("streamEncodedCrop(currentInvocationId, crop");
+    expect(component).toContain(".exchangeSelectorCrop(message)");
     expect(component).toContain('"crop-commit-failed-encode"');
     expect(component).toContain('"crop-commit-failed-stream"');
     expect(cropStream).toContain("SELECTOR_CROP_CHUNK_BYTES");
@@ -79,6 +81,14 @@ describe("renderer-owned selector capture production wiring", () => {
     expect(component).not.toContain("[crop.bytes]");
     expect(preload).toContain("event.ports");
     expect(preload).toContain('type: "pwrsnap-selector-frame-port"');
+    expect(preload).toContain(
+      "ipcRenderer.invoke(REGION_SELECTOR_CROP_STREAM_CHANNEL, message)"
+    );
+    expect(selector).toContain(
+      "ipcMain.handle(SELECTOR_CROP_STREAM_CHANNEL, exchangeRendererCrop)"
+    );
+    expect(selector).toContain("isActiveSelectorSender(event.sender, invocationId)");
+    expect(selector).toContain("ipcMain.removeHandler(SELECTOR_CROP_STREAM_CHANNEL)");
   });
 
   test("presentation uses a dedicated post-show generation-bound acknowledgement", async () => {

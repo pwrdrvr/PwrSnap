@@ -64,6 +64,10 @@ import {
 } from "@pwrsnap/shared/ipc";
 import type { RenderPreset, VideoPreset } from "@pwrsnap/shared/protocol";
 import type { PerfMarkPayload } from "@pwrsnap/shared/ipc";
+import type {
+  SelectorCropStreamMessage,
+  SelectorCropStreamReply
+} from "@pwrsnap/shared/selector-crop-stream";
 import { parseAppearanceArg } from "@pwrsnap/shared/appearance-arg";
 import { resolveDroppedFilePath } from "./dropped-file-path";
 
@@ -90,6 +94,7 @@ const REGION_SELECTOR_KEY_CHANNEL = "region-selector:key";
 // 'auto' | 'region' | 'window' before the first paint.
 const REGION_SELECTOR_MODE_CHANNEL = "region-selector:mode";
 const REGION_SELECTOR_FRAME_PORT_CHANNEL = "region-selector:frame-port";
+const REGION_SELECTOR_CROP_STREAM_CHANNEL = "region-selector:crop-stream";
 // Renderer → main: the selector acks that the frozen-snapshot <img>
 // for a given screenUrl has loaded/decoded. Main waits for this before
 // showing the (still-hidden) selector window, so it never appears as an
@@ -224,6 +229,17 @@ const pwrsnapApi = {
     captureCursor?: boolean;
   }): void {
     ipcRenderer.send(REGION_SELECTOR_RESULT_CHANNEL, payload);
+  },
+  /**
+   * Exchange one bounded committed-crop stream message with main. Main accepts
+   * calls only from the active selector webContents and matching invocation.
+   * ArrayBuffers are limited to one 256 KiB crop chunk by the shared guards;
+   * no full-screen bitmap can cross this channel.
+   */
+  exchangeSelectorCrop(message: SelectorCropStreamMessage): Promise<SelectorCropStreamReply> {
+    return ipcRenderer.invoke(REGION_SELECTOR_CROP_STREAM_CHANNEL, message) as Promise<
+      SelectorCropStreamReply
+    >;
   },
   /**
    * Region-selector renderer → main: the frozen-snapshot image for

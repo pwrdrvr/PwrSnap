@@ -23,6 +23,7 @@ import {
   MessageChannelMain,
   screen,
   type Display,
+  type IpcMainInvokeEvent,
   type MessagePortMain,
   type WebContents
 } from "electron";
@@ -42,6 +43,7 @@ import { hideTrayPopoverIfVisible } from "../tray";
 import { setFloatOverState, ensureFloatOverTopmost } from "../float-over";
 import { hotkeyRecorderSuspension } from "../hotkeys/hotkey-recorder-suspension-instance";
 import { SelectorCropReceiver } from "./selector-crop-receiver";
+import type { SelectorCropStreamReply } from "@pwrsnap/shared/selector-crop-stream";
 
 const MIN_AREA_PX = 400; // 20×20 — anything smaller isn't a meaningful snap target.
 const SELECTOR_WINDOW_TITLE = "PwrSnap Region Selector";
@@ -305,6 +307,7 @@ const SELECTOR_PAINTED_CHANNEL = "region-selector:painted";
 const SELECTOR_PERFORMANCE_CHANNEL = "region-selector:performance";
 const SELECTOR_PRESENTATION_ARM_CHANNEL = "region-selector:presentation-arm";
 const SELECTOR_PRESENTED_CHANNEL = "region-selector:presented";
+const SELECTOR_CROP_STREAM_CHANNEL = "region-selector:crop-stream";
 
 /** Failure deadlines for the renderer's hidden "snapshot painted" ack.
  *  These do not delay the happy path. A timeout terminates rather than
@@ -415,6 +418,94 @@ function closeRendererFrameSession(
   }
 }
 
+function rejectedCrop(invocationId: number): SelectorCropStreamReply {
+  return { type: "crop-rejected", invocationId, code: "invalid_crop" };
+}
+
+/**
+ * Accept one bounded committed-crop message over invocation-authenticated IPC.
+ *
+ * The renderer's long-lived MessagePort remains the narrow capability used to
+ * authorize and freeze display media, but Electron 41 on macOS was measured
+ * dropping its later crop-start request after the frame had been displayed.
+ * `ipcRenderer.invoke` is reliable across that delayed preload boundary. Each
+ * request is still at most one 256 KiB crop chunk, is serialized by renderer
+ * backpressure, and is rejected unless it comes from the active selector.
+ */
+async function exchangeRendererCrop(
+  event: IpcMainInvokeEvent,
+  message: unknown
+): Promise<SelectorCropStreamReply> {
+  const invocationId =
+    message !== null &&
+    typeof message === "object" &&
+    "invocationId" in message &&
+    typeof message.invocationId === "number" &&
+    Number.isSafeInteger(message.invocationId)
+      ? message.invocationId
+      : 0;
+  const lifecycle = activeSelectorLifecycle;
+  if (
+    invocationId <= 0 ||
+    lifecycle === null ||
+    lifecycle.invocationId !== invocationId ||
+    lifecycle.settled ||
+    !isActiveSelectorSender(event.sender, invocationId)
+  ) {
+    return rejectedCrop(invocationId);
+  }
+  const receiver = lifecycle.cropReceiver;
+  if (
+    lifecycle.intent !== "snap" ||
+    !lifecycle.frameReady ||
+    lifecycle.committedCropPath !== null ||
+    receiver === null
+  ) {
+    return rejectedCrop(invocationId);
+  }
+
+  const messageType =
+    message !== null && typeof message === "object" && "type" in message
+      ? String(message.type)
+      : "invalid";
+  if (messageType !== "crop-chunk") {
+    log.info("picker committed crop message received", {
+      invocationId,
+      messageType
+    });
+  }
+  try {
+    const result = await receiver.accept(message);
+    if (
+      lifecycle.settled ||
+      activeSelectorLifecycle !== lifecycle ||
+      lifecycle.committedCropPath !== null ||
+      lifecycle.cropReceiver !== receiver
+    ) {
+      await receiver.dispose();
+      return rejectedCrop(invocationId);
+    }
+    if (result.completedPath !== undefined) {
+      const path = receiver.takeCompletedPath();
+      if (path === null) {
+        await receiver.dispose();
+        return rejectedCrop(invocationId);
+      }
+      lifecycle.committedCropPath = path;
+    }
+    return result.reply;
+  } catch (cause) {
+    log.error("committed renderer crop write failed", {
+      invocationId,
+      messageType,
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+    if (lifecycle.cropReceiver === receiver) lifecycle.cropReceiver = null;
+    await receiver.dispose();
+    return rejectedCrop(invocationId);
+  }
+}
+
 function installRendererFramePort(
   lifecycle: ActiveSelectorLifecycle,
   win: BrowserWindow,
@@ -480,60 +571,6 @@ function installRendererFramePort(
       });
       return;
     }
-    if (
-      message.type !== "crop-start" &&
-      message.type !== "crop-chunk" &&
-      message.type !== "crop-end"
-    ) {
-      return;
-    }
-    if (
-      lifecycle.intent !== "snap" ||
-      !lifecycle.frameReady ||
-      lifecycle.committedCropPath !== null ||
-      lifecycle.cropReceiver !== cropReceiver
-    ) {
-      port2.postMessage({
-        type: "crop-rejected",
-        invocationId: lifecycle.invocationId,
-        code: "invalid_crop"
-      });
-      return;
-    }
-    void cropReceiver
-      .accept(message)
-      .then((result) => {
-        if (
-          lifecycle.settled ||
-          activeSelectorLifecycle !== lifecycle ||
-          lifecycle.committedCropPath !== null ||
-          lifecycle.cropReceiver !== cropReceiver
-        ) {
-          return cropReceiver.dispose();
-        }
-        if (result.completedPath !== undefined) {
-          const path = cropReceiver.takeCompletedPath();
-          if (path === null) return cropReceiver.dispose();
-          lifecycle.committedCropPath = path;
-        }
-        port2.postMessage(result.reply);
-        return undefined;
-      })
-      .catch((cause) => {
-        log.error("committed renderer crop write failed", {
-          invocationId: lifecycle.invocationId,
-          message: cause instanceof Error ? cause.message : String(cause)
-        });
-        lifecycle.cropReceiver = null;
-        void cropReceiver.dispose();
-        if (!lifecycle.framePortClosed) {
-          port2.postMessage({
-            type: "crop-rejected",
-            invocationId: lifecycle.invocationId,
-            code: "invalid_crop"
-          });
-        }
-      });
   });
   port2.on("close", () => {
     lifecycle.framePortClosed = true;
@@ -700,6 +737,7 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
   }
 
   if (!resultListenerAttached) {
+    ipcMain.handle(SELECTOR_CROP_STREAM_CHANNEL, exchangeRendererCrop);
     // Diagnostic listener: renderer pushes its viewport dims on every
     // window-list snapshot. Compacted to one line + deduped per
     // selector-window so we don't repeat the same dims into the dev
@@ -2683,6 +2721,7 @@ export function disposeRegionSelector(): void {
   standbyWarmScheduled.clear();
   selectorDisplaysNeedingFreshPanel.clear();
   if (resultListenerAttached) {
+    ipcMain.removeHandler(SELECTOR_CROP_STREAM_CHANNEL);
     ipcMain.removeAllListeners(SELECTOR_RESULT_CHANNEL);
     ipcMain.removeAllListeners(SELECTOR_PAINTED_CHANNEL);
     ipcMain.removeAllListeners(SELECTOR_DIAGNOSTICS_CHANNEL);

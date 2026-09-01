@@ -69,6 +69,7 @@ let snapshotHandler: ((p: SnapshotPayload) => void) | null = null;
 let keyHandler: ((p: { key: string }) => void) | null = null;
 let presentationArmHandler: ((p: PresentationArmPayload) => void) | null = null;
 const submitRegion = vi.fn();
+const exchangeSelectorCrop = vi.fn();
 const notifySelectorSnapshotPainted = vi.fn();
 const notifySelectorPresented = vi.fn();
 const reportSelectorPerformance = vi.fn();
@@ -81,6 +82,20 @@ function installSelectorApi(): void {
   keyHandler = null;
   presentationArmHandler = null;
   submitRegion.mockReset();
+  exchangeSelectorCrop.mockReset();
+  exchangeSelectorCrop.mockImplementation(async (message: { type?: string; sequence?: number }) => {
+    if (message.type === "crop-start") {
+      return { type: "crop-started", invocationId: DEFAULT_INVOCATION_ID };
+    }
+    if (message.type === "crop-chunk") {
+      return {
+        type: "crop-chunk-accepted",
+        invocationId: DEFAULT_INVOCATION_ID,
+        sequence: message.sequence
+      };
+    }
+    return { type: "crop-accepted", invocationId: DEFAULT_INVOCATION_ID };
+  });
   notifySelectorSnapshotPainted.mockReset();
   notifySelectorPresented.mockReset();
   reportSelectorPerformance.mockReset();
@@ -105,6 +120,7 @@ function installSelectorApi(): void {
     dispatch: vi.fn(),
     on: vi.fn(() => () => undefined),
     submitRegion,
+    exchangeSelectorCrop,
     notifySelectorSnapshotPainted,
     notifySelectorPresented,
     onWindowListSnapshot: (h: (p: SnapshotPayload) => void) => {
@@ -1103,59 +1119,33 @@ describe("U7 — renderer-owned frozen frame transport", () => {
     await keyDown("Enter");
     await vi.waitFor(() => {
       expect(frozenFrameMocks.encode).toHaveBeenCalledTimes(1);
-      expect(port.postMessage).toHaveBeenCalledWith(
-        expect.objectContaining({
-          type: "crop-start",
-          invocationId: DEFAULT_INVOCATION_ID,
-          width: 640,
-          height: 480,
-          mimeType: "image/png",
-          totalBytes: 16
-        })
-      );
+      expect(submitRegion).toHaveBeenCalledTimes(1);
     });
-    expect(submitRegion).not.toHaveBeenCalled();
-
-    await act(async () => {
-      port.onmessage?.({
-        data: { type: "crop-started", invocationId: DEFAULT_INVOCATION_ID }
-      } as MessageEvent);
-      await Promise.resolve();
+    expect(exchangeSelectorCrop).toHaveBeenNthCalledWith(1, {
+      type: "crop-start",
+      invocationId: DEFAULT_INVOCATION_ID,
+      width: 640,
+      height: 480,
+      mimeType: "image/png",
+      totalBytes: 16
     });
-    await vi.waitFor(() => {
-      expect(port.postMessage).toHaveBeenCalledWith(
-        expect.objectContaining({
-          type: "crop-chunk",
-          invocationId: DEFAULT_INVOCATION_ID,
-          sequence: 0,
-          bytes: expect.any(ArrayBuffer)
-        }),
-        [expect.any(ArrayBuffer)]
-      );
-    });
-    await act(async () => {
-      port.onmessage?.({
-        data: {
-          type: "crop-chunk-accepted",
-          invocationId: DEFAULT_INVOCATION_ID,
-          sequence: 0
-        }
-      } as MessageEvent);
-      await Promise.resolve();
-    });
-    await vi.waitFor(() => {
-      expect(port.postMessage).toHaveBeenCalledWith({
+    expect(exchangeSelectorCrop).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        type: "crop-chunk",
+        invocationId: DEFAULT_INVOCATION_ID,
+        sequence: 0,
+        bytes: expect.any(ArrayBuffer)
+      })
+    );
+    expect(exchangeSelectorCrop).toHaveBeenNthCalledWith(3, {
         type: "crop-end",
         invocationId: DEFAULT_INVOCATION_ID,
         chunks: 1
-      });
     });
-    await act(async () => {
-      port.onmessage?.({
-        data: { type: "crop-accepted", invocationId: DEFAULT_INVOCATION_ID }
-      } as MessageEvent);
-      await Promise.resolve();
-    });
+    expect(port.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "crop-start" })
+    );
     expect(submitRegion).toHaveBeenCalledWith(
       expect.objectContaining({
         ok: true,

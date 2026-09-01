@@ -33,7 +33,7 @@ struct Color {
   static let backAlpha: CGFloat = 0.3
 }
 
-func renderIcon(size: Int) -> NSBitmapImageRep {
+func renderIcon(size: Int, macOSCanvas: Bool = false) -> NSBitmapImageRep {
   guard let bitmap = NSBitmapImageRep(
     bitmapDataPlanes: nil,
     pixelsWide: size,
@@ -52,9 +52,12 @@ func renderIcon(size: Int) -> NSBitmapImageRep {
   NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
 
   let s = CGFloat(size)
-  let scale = s / 1024.0
+  let canvasScale = s / 1024.0
+  let tileInset = macOSCanvas ? 100 * canvasScale : 0
+  let tileSize = macOSCanvas ? 824 * canvasScale : s
+  let scale = tileSize / 1024.0
   let cg = NSGraphicsContext.current!.cgContext
-  let bounds = CGRect(x: 0, y: 0, width: s, height: s)
+  let bounds = CGRect(x: tileInset, y: tileInset, width: tileSize, height: tileSize)
 
   // Rounded-rect background — vertical gradient (warm charcoal at the top,
   // near-black at the bottom), matching the PwrAgent app icon. Filled per
@@ -62,19 +65,33 @@ func renderIcon(size: Int) -> NSBitmapImageRep {
   // output pixels; NSGradient interpolates in linear light and renders the
   // upper half too bright. The bitmap context is y-up, so image row 0 (the
   // top, lighter end) maps to the highest AppKit y.
-  let cornerRadius = 180 * scale
-  let bg = NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: s, height: s),
+  // Legacy macOS renders the ICNS canvas literally. Apple's 1024px template
+  // puts the rounded tile in an 824px square with a 100px transparent margin;
+  // macOS 26 can normalize old icons automatically, but Sequoia and earlier
+  // cannot. Keep the unpadded master for Windows/Linux and use this safe-area
+  // canvas for the ICNS and the development Dock icon.
+  let cornerRadius = macOSCanvas ? 185 * canvasScale : 180 * scale
+  let bg = NSBezierPath(roundedRect: NSRect(
+                          x: tileInset,
+                          y: tileInset,
+                          width: tileSize,
+                          height: tileSize),
                         xRadius: cornerRadius, yRadius: cornerRadius)
   NSGraphicsContext.saveGraphicsState()
   bg.addClip()
-  let rows = Int(s)
+  let rows = max(1, Int(tileSize.rounded(.up)))
   for row in 0..<rows {
     let t = rows > 1 ? Double(row) / Double(rows - 1) : 0  // 0 at top, 1 at bottom
     let r = (Color.bgTop.r + (Color.bgBottom.r - Color.bgTop.r) * t) / 255.0
     let g = (Color.bgTop.g + (Color.bgBottom.g - Color.bgTop.g) * t) / 255.0
     let b = (Color.bgTop.b + (Color.bgBottom.b - Color.bgTop.b) * t) / 255.0
     NSColor(deviceRed: CGFloat(r), green: CGFloat(g), blue: CGFloat(b), alpha: 1).setFill()
-    NSRect(x: 0, y: s - CGFloat(row) - 1, width: s, height: 1).fill()
+    NSRect(
+      x: tileInset,
+      y: tileInset + tileSize - CGFloat(row) - 1,
+      width: tileSize,
+      height: 1
+    ).fill()
   }
   NSGraphicsContext.restoreGraphicsState()
 
@@ -101,8 +118,8 @@ func renderIcon(size: Int) -> NSBitmapImageRep {
   let offsetX = 64 * scale
   let offsetY = 80 * scale
 
-  let centerX = s / 2
-  let centerY = s / 2
+  let centerX = tileInset + tileSize / 2
+  let centerY = tileInset + tileSize / 2
 
   func markPath(dx: CGFloat, dy: CGFloat) -> CGPath {
     let rect = CGRect(x: centerX - rectWidth / 2 + dx,
@@ -170,7 +187,7 @@ let outputURL = URL(fileURLWithPath: outputDir)
 try FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
 
 for (size, filename) in sizes {
-  let rep = renderIcon(size: size)
+  let rep = renderIcon(size: size, macOSCanvas: true)
   guard let pngData = rep.representation(using: .png, properties: [:]) else {
     fatalError("Unable to create PNG for \(filename)")
   }
@@ -186,5 +203,13 @@ guard let dockIconPngData = dockIconRep.representation(using: .png, properties: 
 let dockIconFile = outputURL.deletingLastPathComponent().appendingPathComponent("icon.png")
 try dockIconPngData.write(to: dockIconFile)
 print("  icon.png (1024x1024)")
+
+let macOSDockIconRep = renderIcon(size: 1024, macOSCanvas: true)
+guard let macOSDockIconPngData = macOSDockIconRep.representation(using: .png, properties: [:]) else {
+  fatalError("Unable to create PNG for icon-macos.png")
+}
+let macOSDockIconFile = outputURL.deletingLastPathComponent().appendingPathComponent("icon-macos.png")
+try macOSDockIconPngData.write(to: macOSDockIconFile)
+print("  icon-macos.png (1024x1024)")
 
 print("Generated \(sizes.count) icon variants in \(outputDir)")

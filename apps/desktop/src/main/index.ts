@@ -33,6 +33,7 @@ import { activateApp, selfPidSet } from "./capture/window-list";
 import { appWindowsOverlappingRect } from "./capture/rect-overlap";
 import { guardScreenCapture } from "./capture/screen-permission-gate";
 import { ensureCapturesDirReady } from "./capture/capture-storage-gate";
+import { dispatchInteractiveCapture } from "./capture/capture-trigger";
 import { reconcileCapturesLocationOnBoot } from "./capture/capture-location-reconciliation";
 import {
   resolveSelectionSourceApp,
@@ -692,21 +693,18 @@ function handlerFor(kind: HotkeyKind): () => void {
   switch (kind) {
     case "quickCapture":
       return () => {
-        const shortcutFiredAt = Date.now();
         log.info("global hotkey fired", { kind, mode: "auto" });
-        void runInteractiveCapture("auto", { kind, shortcutFiredAt });
+        void runInteractiveCapture("auto", "global_hotkey.quick_capture");
       };
     case "region":
       return () => {
-        const shortcutFiredAt = Date.now();
         log.info("global hotkey fired", { kind, mode: "region" });
-        void runInteractiveCapture("region", { kind, shortcutFiredAt });
+        void runInteractiveCapture("region", "global_hotkey.region");
       };
     case "window":
       return () => {
-        const shortcutFiredAt = Date.now();
         log.info("global hotkey fired", { kind, mode: "window" });
-        void runInteractiveCapture("window", { kind, shortcutFiredAt });
+        void runInteractiveCapture("window", "global_hotkey.window");
       };
     case "fullScreen":
       // Capture the display under the cursor end-to-end (no selector).
@@ -727,9 +725,8 @@ function handlerFor(kind: HotkeyKind): () => void {
       // 5-second countdown, then the auto-mode selector. Routed through
       // `capture:interactive` (mode `"timed"`), same as the tray tile.
       return () => {
-        const shortcutFiredAt = Date.now();
         log.info("global hotkey fired", { kind, mode: "timed" });
-        void runInteractiveCapture("timed", { kind, shortcutFiredAt });
+        void runInteractiveCapture("timed", "global_hotkey.timed");
       };
     case "videoCapture":
       // Fast Video Capture (issue #64). Opens the selector in auto
@@ -902,16 +899,13 @@ async function runExportLibrary(): Promise<void> {
 
 async function runInteractiveCapture(
   mode: "auto" | "region" | "window" | "timed" = "auto",
-  trace?: { kind: HotkeyKind; shortcutFiredAt: number }
+  origin:
+    | "global_hotkey.quick_capture"
+    | "global_hotkey.region"
+    | "global_hotkey.window"
+    | "global_hotkey.timed" = "global_hotkey.quick_capture"
 ): Promise<void> {
   const log = getMainLogger("pwrsnap:shortcut");
-  const handlerStartedAt = Date.now();
-  log.info("interactive capture shortcut handler started", {
-    kind: trace?.kind,
-    mode,
-    durationFromHotkeyFiredMs:
-      trace === undefined ? undefined : handlerStartedAt - trace.shortcutFiredAt
-  });
   // The Quick Capture hotkey explicitly uses 'auto' mode — snap to a
   // window if the cursor is over one, drag for a free rect otherwise.
   // The Region / Window hotkeys force the selector into pure-rect /
@@ -921,29 +915,7 @@ async function runInteractiveCapture(
   // The handler owns the full lifecycle now (pre-show / populate /
   // hide-selector / activate-prev-app). We just wait for it to
   // finish and log non-cancellation errors.
-  const dispatchStartedAt = Date.now();
-  log.info("dispatching capture:interactive", {
-    kind: trace?.kind,
-    mode,
-    durationFromHotkeyFiredMs:
-      trace === undefined ? undefined : dispatchStartedAt - trace.shortcutFiredAt,
-    durationFromShortcutHandlerMs: dispatchStartedAt - handlerStartedAt
-  });
-  const result = await bus.dispatch(
-    "capture:interactive",
-    { mode },
-    { principal: "ipc" }
-  );
-  log.info("capture:interactive dispatch completed", {
-    kind: trace?.kind,
-    mode,
-    ok: result.ok,
-    code: result.ok ? undefined : result.error.code,
-    durationFromDispatchMs: Date.now() - dispatchStartedAt,
-    durationFromShortcutHandlerMs: Date.now() - handlerStartedAt,
-    durationFromHotkeyFiredMs:
-      trace === undefined ? undefined : Date.now() - trace.shortcutFiredAt
-  });
+  const result = await dispatchInteractiveCapture(origin, mode);
   if (!result.ok && result.error.code !== "cancelled") {
     log.warn("capture:interactive failed", {
       code: result.error.code,

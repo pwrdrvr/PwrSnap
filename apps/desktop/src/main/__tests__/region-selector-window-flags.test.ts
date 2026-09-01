@@ -44,6 +44,7 @@ type WindowSpy = {
   loadURL: ReturnType<typeof vi.fn>;
   loadFile: ReturnType<typeof vi.fn>;
   webContents: {
+    id: number;
     on: ReturnType<typeof vi.fn>;
     send: ReturnType<typeof vi.fn>;
     focus: ReturnType<typeof vi.fn>;
@@ -106,6 +107,7 @@ function makeWindowSpy(options: Record<string, unknown>): WindowSpy {
     loadURL: vi.fn(() => selectorLoadPromise()),
     loadFile: vi.fn(() => selectorLoadPromise()),
     webContents: {
+      id: 100 + constructed.length,
       on: vi.fn(),
       // Simulate the selector renderer: when main pushes the per-show
       // mode with a snapshot URL, the real renderer loads the frozen
@@ -619,6 +621,154 @@ describe("region-selector — snapshot-paint gate before show()", () => {
 
     ipcListeners.get("region-selector:result")?.({}, { ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
+  });
+});
+
+describe("region-selector — authenticated post-show presentation trace", () => {
+  function invocation() {
+    return {
+      id: "trace-selector-1234",
+      origin: "global_hotkey.window" as const,
+      triggerMonotonicMs: 1000,
+      dispatchMonotonicMs: 1001,
+      triggerWallTime: "2026-09-01T12:00:00.000Z"
+    };
+  }
+
+  test("requests acknowledgement after show/focus/moveTop and rejects stale or wrong senders", async () => {
+    const entries: Array<{ message: string; fields: Record<string, unknown> }> = [];
+    let tick = 1010;
+    const { CaptureLatencyTrace } = await import(
+      "../capture/capture-latency-trace"
+    );
+    const trace = new CaptureLatencyTrace(invocation(), "window", {
+      monotonicNow: () => ++tick,
+      wallNow: () => "2026-09-01T12:00:01.000Z",
+      logger: { info: (message, fields) => entries.push({ message, fields }) }
+    });
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({ mode: "window", latencyTrace: trace });
+
+    const spy = constructed[0]!;
+    await vi.waitFor(() => {
+      expect(spy.webContents.send).toHaveBeenCalledWith(
+        "region-selector:presentation-request",
+        expect.objectContaining({
+          invocationId: invocation().id,
+          screenUrl: "pwrsnap-screen://r/snapshot-1"
+        })
+      );
+    });
+    const requestIndex = spy.webContents.send.mock.calls.findIndex(
+      ([channel]) => channel === "region-selector:presentation-request"
+    );
+    const request = spy.webContents.send.mock.calls[requestIndex]?.[1] as {
+      invocationId: string;
+      generation: number;
+      screenUrl: string;
+    };
+    const requestOrder = spy.webContents.send.mock.invocationCallOrder[requestIndex];
+    expect(requestOrder).toBeGreaterThan(spy.show.mock.invocationCallOrder[0]!);
+    expect(requestOrder).toBeGreaterThan(spy.focus.mock.invocationCallOrder[0]!);
+    expect(requestOrder).toBeGreaterThan(spy.webContents.focus.mock.invocationCallOrder[0]!);
+    expect(requestOrder).toBeGreaterThan(spy.moveTop.mock.invocationCallOrder[0]!);
+
+    const presented = ipcListeners.get("region-selector:presented");
+    presented?.({ sender: { id: spy.webContents.id + 1 } }, request);
+    presented?.(
+      { sender: { id: spy.webContents.id } },
+      { ...request, invocationId: "trace-stale-9999" }
+    );
+    presented?.(
+      { sender: { id: spy.webContents.id } },
+      { ...request, generation: request.generation - 1 }
+    );
+    presented?.(
+      { sender: { id: spy.webContents.id } },
+      { ...request, screenUrl: "pwrsnap-screen://r/stale" }
+    );
+    expect(
+      entries.filter((entry) => entry.fields.event === "capture_latency_summary")
+    ).toHaveLength(0);
+
+    presented?.({ sender: { id: spy.webContents.id } }, request);
+    const summaries = entries.filter(
+      (entry) => entry.fields.event === "capture_latency_summary"
+    );
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]?.fields).toMatchObject({
+      outcome: "presented",
+      invocationId: invocation().id,
+      generation: request.generation,
+      frameBarrier: 2
+    });
+    expect(
+      entries.find((entry) => entry.fields.stage === "first_visible_paint_ack")?.fields
+    ).toMatchObject({ authenticated: true, frameBarrier: 2 });
+
+    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
+    expect(
+      entries.filter((entry) => entry.fields.event === "capture_latency_summary")
+    ).toHaveLength(1);
+  });
+
+  test("missing diagnostic acknowledgement never gates show or cancellation", async () => {
+    const entries: Array<{ message: string; fields: Record<string, unknown> }> = [];
+    let tick = 1010;
+    const { CaptureLatencyTrace } = await import(
+      "../capture/capture-latency-trace"
+    );
+    const trace = new CaptureLatencyTrace(invocation(), "auto", {
+      monotonicNow: () => ++tick,
+      wallNow: () => "2026-09-01T12:00:01.000Z",
+      logger: { info: (message, fields) => entries.push({ message, fields }) }
+    });
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({ latencyTrace: trace });
+
+    await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalledTimes(1));
+    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
+
+    const summaries = entries.filter(
+      (entry) => entry.fields.event === "capture_latency_summary"
+    );
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]?.fields).toMatchObject({
+      outcome: "cancel",
+      reason: "cancelled"
+    });
+  });
+
+  test("screen acquisition failure emits an error summary without showing the selector", async () => {
+    screenSnapshotMocks.captureAndRegister.mockRejectedValueOnce(
+      new Error("fixture acquisition failure")
+    );
+    const entries: Array<{ message: string; fields: Record<string, unknown> }> = [];
+    let tick = 1010;
+    const { CaptureLatencyTrace } = await import(
+      "../capture/capture-latency-trace"
+    );
+    const trace = new CaptureLatencyTrace(invocation(), "auto", {
+      monotonicNow: () => ++tick,
+      wallNow: () => "2026-09-01T12:00:01.000Z",
+      logger: { info: (message, fields) => entries.push({ message, fields }) }
+    });
+    const { pickRegion } = await import("../capture/region-selector");
+
+    await expect(pickRegion({ latencyTrace: trace })).resolves.toMatchObject({
+      ok: false,
+      reason: "destroyed"
+    });
+    expect(constructed[0]?.show).not.toHaveBeenCalled();
+    expect(
+      entries.find((entry) => entry.fields.event === "capture_latency_summary")
+        ?.fields
+    ).toMatchObject({
+      outcome: "error",
+      code: "screen_frame_acquisition_failed"
+    });
   });
 });
 

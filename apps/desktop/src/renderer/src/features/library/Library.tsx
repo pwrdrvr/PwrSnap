@@ -105,6 +105,7 @@ import {
   cacheUrl,
   captureSrcUrl,
   dispatch,
+  dispatchInteractiveCapture,
   perfMark,
   sizzleOutputUrl,
   subscribe
@@ -4311,7 +4312,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
             title="Smart auto-mode · picks region, window, or full screen"
             aria-label="Quick Capture"
             onClick={() => {
-              void dispatch("capture:interactive", { mode: "auto" });
+              void dispatchInteractiveCapture("library.quick_capture", "auto");
             }}
           >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

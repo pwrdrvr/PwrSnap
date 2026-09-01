@@ -97,6 +97,8 @@ const REGION_SELECTOR_MODE_CHANNEL = "region-selector:mode";
 // showing the (still-hidden) selector window, so it never appears as an
 // empty transparent overlay flashing the live screen behind it.
 const REGION_SELECTOR_PAINTED_CHANNEL = "region-selector:painted";
+const REGION_SELECTOR_PRESENTATION_REQUEST_CHANNEL = "region-selector:presentation-request";
+const REGION_SELECTOR_PRESENTED_CHANNEL = "region-selector:presented";
 
 // One opaque epoch per preload execution. The renderer cannot choose or reuse
 // it; main binds it to the current top-level WebFrameMain before admitting a
@@ -219,6 +221,25 @@ const pwrsnapApi = {
    */
   notifySelectorSnapshotPainted(screenUrl: string): void {
     ipcRenderer.send(REGION_SELECTOR_PAINTED_CHANNEL, { screenUrl });
+  },
+  /** Diagnostic-only post-show acknowledgement. Main authenticates the
+   * sender webContents plus invocation/generation before accepting it. */
+  notifySelectorPresented(payload: {
+    invocationId: string;
+    generation: number;
+    screenUrl: string;
+  }): void {
+    ipcRenderer.send(REGION_SELECTOR_PRESENTED_CHANNEL, payload);
+  },
+  /** Main emits this only after show/focus/moveTop. The renderer crosses
+   * two animation-frame barriers before replying through the method above. */
+  onSelectorPresentationRequest(
+    handler: (payload: { invocationId: string; generation: number; screenUrl: string }) => void
+  ): () => void {
+    const wrapped = (_event: unknown, payload: unknown) =>
+      handler(payload as { invocationId: string; generation: number; screenUrl: string });
+    ipcRenderer.on(REGION_SELECTOR_PRESENTATION_REQUEST_CHANNEL, wrapped);
+    return () => ipcRenderer.off(REGION_SELECTOR_PRESENTATION_REQUEST_CHANNEL, wrapped);
   },
   /**
    * Subscribe to the snap-to-window window-list snapshot main pushes
@@ -362,6 +383,8 @@ const pwrsnapApi = {
       intent?: "snap" | "video";
       /** Video-only seed for the cursor toggle. `undefined` = ON. */
       cursor?: boolean;
+      invocationId?: string;
+      generation?: number;
     }) => void
   ): () => void {
     const wrapped = (_event: unknown, payload: unknown) =>
@@ -371,6 +394,8 @@ const pwrsnapApi = {
           screenUrl?: string;
           intent?: "snap" | "video";
           cursor?: boolean;
+          invocationId?: string;
+          generation?: number;
         }
       );
     ipcRenderer.on(REGION_SELECTOR_MODE_CHANNEL, wrapped);

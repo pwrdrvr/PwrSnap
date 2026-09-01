@@ -35,6 +35,7 @@ import {
   type ShortcutPlatform
 } from "@pwrsnap/shared";
 import { bus } from "./command-bus";
+import { dispatchInteractiveCapture } from "./capture/capture-trigger";
 import { getMainLogger } from "./log";
 import { getRuntimeProcessRole } from "./process-role";
 import {
@@ -825,7 +826,7 @@ export function buildTrayContextMenuTemplate(
           }
         : {}),
       click: () => {
-        void bus.dispatch("capture:interactive", { mode: "auto" }, { principal: "ipc" });
+        void dispatchInteractiveCapture("native_tray_menu.quick_capture", "auto");
       }
     },
     {

@@ -14,7 +14,13 @@ import { useHotkeys } from "../shared/useHotkeys";
 import { VideoExportPresetsPanel } from "../shared/VideoExportPresetsPanel";
 import { useSurfaceCopyShortcuts } from "../shared/useSurfaceCopyShortcuts";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
-import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
+import {
+  cacheUrl,
+  captureSrcUrl,
+  dispatch,
+  dispatchInteractiveCapture,
+  startCaptureDrag
+} from "../../lib/pwrsnap";
 import { copyImagePreset, copyImagePresetPath } from "../../lib/clipboard-copy";
 import { useLibrary } from "../../lib/useLibrary";
 import {
@@ -374,7 +380,15 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
   }, []);
 
   const onCapture = (mode: "auto" | "region" | "window" | "timed"): void => {
-    void dispatch("capture:interactive", { mode });
+    const origin =
+      mode === "auto"
+        ? "tray.quick_capture"
+        : mode === "region"
+          ? "tray.region"
+          : mode === "window"
+            ? "tray.window"
+            : "tray.timed";
+    void dispatchInteractiveCapture(origin, mode);
   };
   const onCaptureFullScreen = (): void => {
     // Omit displayId so main resolves to the display the cursor is on.

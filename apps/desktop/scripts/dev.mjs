@@ -3,6 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { ensureWindowsDevFfmpeg } from "./dev-ffmpeg.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -383,6 +384,17 @@ export async function main(argv = process.argv.slice(2), inputEnv = process.env)
   const { env, removed } = sanitizeDevEnv(inputEnv);
   if (removed.length > 0) {
     console.warn(`[dev] scrubbed inherited launch env: ${removed.join(", ")}`);
+  }
+
+  try {
+    const ffmpeg = ensureWindowsDevFfmpeg(env);
+    if (ffmpeg !== null) {
+      env.PWRSNAP_FFMPEG_PATH = ffmpeg.path;
+      console.log(`[dev] using controlled Windows FFmpeg (${ffmpeg.source}): ${ffmpeg.path}`);
+    }
+  } catch (cause) {
+    console.error(`[dev] ${cause instanceof Error ? cause.message : String(cause)}`);
+    return 1;
   }
 
   const electronStatus = ensureElectronInstalled(env);

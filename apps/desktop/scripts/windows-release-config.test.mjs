@@ -434,6 +434,11 @@ describe("Windows release configuration", () => {
     // pins their exact derived payloads instead.
     const found = [];
 
+    const devProvisioner = read("apps/desktop/scripts/dev-ffmpeg.mjs");
+    for (const match of devProvisioner.matchAll(/buildSha:\s*["']([0-9a-f]{40})["']/g)) {
+      found.push({ source: "apps/desktop/scripts/dev-ffmpeg.mjs", sha: match[1] });
+    }
+
     const workflowDir = resolve(repoRoot, ".github/workflows");
     for (const entry of readdirSync(workflowDir)) {
       if (!/\.ya?ml$/.test(entry)) continue;
@@ -498,6 +503,11 @@ describe("Windows release configuration", () => {
       push(`workflow-env:${entry}`, text, envPattern);
       push(`workflow-artifact:${entry}`, text, artifactPattern);
     }
+    push(
+      "script:apps/desktop/scripts/dev-ffmpeg.mjs",
+      read("apps/desktop/scripts/dev-ffmpeg.mjs"),
+      artifactPattern
+    );
 
     // Read the docs unconditionally. Wrapping these in existsSync() means a
     // rename silently drops their pins with a green build.
@@ -520,6 +530,7 @@ describe("Windows release configuration", () => {
       "workflow-env:release.yml",
       "workflow-artifact:release.yml",
       "workflow-artifact:preview-build.yml",
+      "script:apps/desktop/scripts/dev-ffmpeg.mjs",
       "doc:docs/ffmpeg-build-reference.md",
       "doc:docs/desktop-release-runbook.md",
     ]) {

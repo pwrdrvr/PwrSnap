@@ -12,6 +12,7 @@ import {
   collectBoundedDirectoryInventory,
   compareExactSemver,
   createIsolatedUpdateServer,
+  invokePowerShellJson,
   loadSmokeInput,
   parseArguments,
   parseByteRanges,
@@ -308,6 +309,44 @@ describe("isolated updater environment", () => {
       expect(environment).not.toHaveProperty(key);
     }
   });
+
+  test.runIf(process.platform === "win32" && process.env.GITHUB_ACTIONS === "true")(
+    "loads the Authenticode command under the exact isolated PowerShell host",
+    async () => {
+      const isolatedRoot = tmpdir();
+      const environment = buildIsolatedSmokeEnvironment(process.env, {
+        appDataDir: isolatedRoot,
+        localAppDataDir: isolatedRoot,
+        userProfileDir: isolatedRoot,
+        userDataDir: join(isolatedRoot, "pwrsnap-pwsh-probe-user-data"),
+        tempDir: isolatedRoot,
+        baselineVersion,
+        targetVersion,
+        runId: "7c8ae64b-e7f2-40c1-9c85-19d2cc127ad6",
+        feedUrl: "http://127.0.0.1:49321/"
+      });
+      const evidence = await invokePowerShellJson({
+        script: String.raw`
+$ErrorActionPreference = 'Stop'
+$signature = Get-AuthenticodeSignature -LiteralPath $env:PWRSNAP_PROBE_PATH
+[ordered]@{
+  status = [string]$signature.Status
+  commandSource = [string](Get-Command Get-AuthenticodeSignature).Source
+} | ConvertTo-Json -Compress
+`,
+        environment: {
+          ...environment,
+          PWRSNAP_PROBE_PATH: process.execPath
+        },
+        timeoutMs: 30_000
+      });
+
+      expect(evidence).toEqual({
+        status: expect.any(String),
+        commandSource: "Microsoft.PowerShell.Security"
+      });
+    }
+  );
 });
 
 describe("strict loopback update server", () => {

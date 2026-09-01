@@ -324,6 +324,14 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
   border-style: solid;
   box-shadow: 0 0 0 1px rgba(255, 138, 31, 0.4) inset;
 }
+/* One pick: the union box and that pick's box are the same rectangle.
+   Drawing both puts a dashed border under a solid one; the pick box
+   wins because it carries the ordinal badge. The element stays in the
+   tree — it is still the geometry the commit reads. */
+.region-rect--union-solo {
+  border-color: transparent;
+  box-shadow: none;
+}
 
 /* --- HUD ------------------------------------------------------------ */
 

@@ -653,6 +653,7 @@ describe("U5 — multi-window pick set", () => {
   test("T flips the output mode; commit carries the flipped value", async () => {
     await mountScene();
     await clickWindow(WIN, { metaKey: true });
+    await clickWindow(WIN_B);
     expect(document.body.dataset.outputMode).toBe("windows");
     await keyDown("T");
     expect(document.body.dataset.outputMode).toBe("rectangle");
@@ -660,10 +661,51 @@ describe("U5 — multi-window pick set", () => {
     expect(submitRegion.mock.calls[0]?.[0]).toMatchObject({ outputMode: "rectangle" });
   });
 
-  test("T does nothing without a pick set", async () => {
+  test("the output toggle is absent below two picks — both modes are the same pixels", async () => {
     await mountScene();
     await keyDown("T");
     expect(document.body.dataset.outputMode).toBe("windows");
+    await clickWindow(WIN, { metaKey: true });
+    expect(container?.querySelector('[data-testid="region-hud-mode-windows"]')).toBeNull();
+    await keyDown("T");
+    expect(document.body.dataset.outputMode).toBe("windows");
+    // A second pick brings it back.
+    await clickWindow(WIN_B);
+    expect(container?.querySelector('[data-testid="region-hud-mode-windows"]')).not.toBeNull();
+  });
+
+  test("a lone pick in window mode still captures the full window, not a screen crop", async () => {
+    // `window` mode has always meant the window's own backing buffer,
+    // so a covered window comes out whole. Masking is a crop of the
+    // frozen screen and cannot do that — one pick must keep the old
+    // route. Two picks have no backing-buffer option and fall through
+    // to the mask.
+    await mountScene({ mode: "window" });
+    await clickWindow(WIN);
+    await keyDown("Enter");
+    expect(submitRegion.mock.calls[0]?.[0]).toEqual({
+      ok: true,
+      rect: { x: 200, y: 150, w: 400, h: 300 },
+      displayId: 0,
+      snappedWindowId: WIN.windowId,
+      fullWindow: true
+    });
+    expect(submitRegion.mock.calls[0]?.[0]).not.toHaveProperty("extents");
+  });
+
+  test("two picks in window mode fall through to the mask", async () => {
+    await mountScene({ mode: "window" });
+    await clickWindow(WIN);
+    await clickWindow(WIN_B);
+    await keyDown("Enter");
+    expect(submitRegion.mock.calls[0]?.[0]).toMatchObject({
+      outputMode: "windows",
+      extents: [
+        { x: 200, y: 150, w: 400, h: 300 },
+        { x: 700, y: 100, w: 200, h: 150 }
+      ]
+    });
+    expect(submitRegion.mock.calls[0]?.[0]).not.toHaveProperty("fullWindow");
   });
 
   test("the mask punches one hole per extent, or one for the box", async () => {
@@ -709,6 +751,7 @@ describe("U5 — multi-window pick set", () => {
   test("a HUD press is not a canvas gesture — it never toggles a pick", async () => {
     await mountScene();
     await clickWindow(WIN, { metaKey: true });
+    await clickWindow(WIN_B);
     const before = pickBoxes().length;
     await act(async () => {
       hudButton("region-hud-mode-windows").dispatchEvent(
@@ -734,7 +777,9 @@ describe("U5 — multi-window pick set", () => {
   test("a commit clears the set — pre-warmed windows must not leak it", async () => {
     await mountScene();
     await clickWindow(WIN, { metaKey: true });
+    await clickWindow(WIN_B);
     await keyDown("T");
+    expect(document.body.dataset.outputMode).toBe("rectangle");
     await keyDown("Enter");
     expect(pickBoxes()).toHaveLength(0);
     expect(hud()).toBeNull();
@@ -780,6 +825,10 @@ describe("U5 — multi-window pick set", () => {
     await mountScene();
     await clickWindow(WIN, { metaKey: true });
     expect(regionHintText()).toContain("add / remove window");
+    // The output-shape key only appears once there is a gap to make
+    // transparent.
+    expect(regionHintText()).not.toContain("keep whole box");
+    await clickWindow(WIN_B);
     expect(regionHintText()).toContain("keep whole box");
     await keyDown("T");
     expect(regionHintText()).toContain("transparent gaps");

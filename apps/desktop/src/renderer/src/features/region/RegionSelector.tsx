@@ -528,6 +528,25 @@ export function RegionSelector() {
         w: Math.round(r.w * inv),
         h: Math.round(r.h * inv)
       });
+      // A pick set of ONE is still the old single-window capture, and
+      // in the two places that mean "full window" — `window` mode, and
+      // ⇧ in auto mode — it must keep routing to the backing-buffer
+      // path so a covered window still comes out whole. Masking is a
+      // crop of the frozen screen and cannot do that. With 2+ picks
+      // there is no backing-buffer option, so the mask is the only
+      // answer and the mode question disappears.
+      if (activePicks.length === 1 && (modeRef.current === "window" || shiftRef.current)) {
+        const only = activePicks[0]!;
+        window.pwrsnapApi?.submitRegion({
+          ok: true,
+          rect: toLogical(only.rawRect),
+          displayId,
+          snappedWindowId: only.windowId,
+          fullWindow: true
+        });
+        resetToSnap();
+        return;
+      }
       window.pwrsnapApi?.submitRegion({
         ok: true,
         rect: toLogical(union),
@@ -733,13 +752,11 @@ export function RegionSelector() {
         commit();
         return;
       }
-      if (
-        (event.key === "t" || event.key === "T") &&
-        picksRef.current.length > 0
-      ) {
-        // Flip the output shape. Only bound while a pick set is live —
-        // with a single rect there is nothing to be transparent around,
-        // so the key would be a no-op the user could not explain.
+      if ((event.key === "t" || event.key === "T") && picksRef.current.length > 1) {
+        // Flip the output shape. Only bound at two or more picks: with
+        // one, the union box IS the extent, so both modes produce the
+        // same pixels and the key would be a no-op the user could not
+        // explain.
         event.preventDefault();
         setOutputMode((prev) => (prev === "windows" ? "rectangle" : "windows"));
         return;
@@ -1228,11 +1245,15 @@ export function RegionSelector() {
           <span>
             <kbd>click</kbd>add / remove window
           </span>
-          <span className="region-hint-sep">·</span>
-          <span>
-            <kbd>T</kbd>
-            {outputMode === "windows" ? "keep whole box" : "transparent gaps"}
-          </span>
+          {picks.length > 1 && (
+            <>
+              <span className="region-hint-sep">·</span>
+              <span>
+                <kbd>T</kbd>
+                {outputMode === "windows" ? "keep whole box" : "transparent gaps"}
+              </span>
+            </>
+          )}
           <span className="region-hint-sep">·</span>
           <span>
             <kbd>tab</kbd>next window
@@ -1508,7 +1529,11 @@ export function RegionSelector() {
           // a snap target — never style it as one, or a two-window pick
           // reads as a single-window snap.
           (hasPicks
-            ? ` region-rect--union region-rect--union-${outputMode}`
+            ? ` region-rect--union region-rect--union-${outputMode}` +
+              // One pick: the union box and the pick box are the same
+              // rectangle, and drawing both makes a muddy double
+              // border. The pick box (which carries the badge) wins.
+              (picks.length === 1 ? " region-rect--union-solo" : "")
             : isSnap
               ? ` region-rect--snap-${snapTarget.kind}`
               : "")
@@ -1591,29 +1616,35 @@ export function RegionSelector() {
           pick set exists so single-selection capture is untouched. */}
       {hasPicks && (
         <div className="region-hud" data-region-hud data-testid="region-hud">
-          <div className="region-hud__seg" role="group" aria-label="Output shape">
-            <button
-              type="button"
-              className="region-hud__seg-btn"
-              data-active={outputMode === "windows"}
-              data-testid="region-hud-mode-windows"
-              onClick={() => setOutputMode("windows")}
-              title="Keep only the picked windows; the gaps between them become transparent"
-            >
-              Windows
-            </button>
-            <button
-              type="button"
-              className="region-hud__seg-btn"
-              data-active={outputMode === "rectangle"}
-              data-testid="region-hud-mode-rectangle"
-              onClick={() => setOutputMode("rectangle")}
-              title="Keep the whole bounding box, including what is between the windows"
-            >
-              Rectangle
-            </button>
-          </div>
-          <span className="region-hud__sep" />
+          {/* Output shape. Hidden at one pick, where the union box is
+              the extent and both modes produce identical pixels. */}
+          {picks.length > 1 && (
+            <>
+              <div className="region-hud__seg" role="group" aria-label="Output shape">
+                <button
+                  type="button"
+                  className="region-hud__seg-btn"
+                  data-active={outputMode === "windows"}
+                  data-testid="region-hud-mode-windows"
+                  onClick={() => setOutputMode("windows")}
+                  title="Keep only the picked windows; the gaps between them become transparent"
+                >
+                  Windows
+                </button>
+                <button
+                  type="button"
+                  className="region-hud__seg-btn"
+                  data-active={outputMode === "rectangle"}
+                  data-testid="region-hud-mode-rectangle"
+                  onClick={() => setOutputMode("rectangle")}
+                  title="Keep the whole bounding box, including what is between the windows"
+                >
+                  Rectangle
+                </button>
+              </div>
+              <span className="region-hud__sep" />
+            </>
+          )}
           <div className="region-hud__chips">
             {picks.map((p, idx) => (
               <button

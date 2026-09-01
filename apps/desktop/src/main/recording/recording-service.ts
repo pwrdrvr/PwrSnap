@@ -12,7 +12,7 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { app, Notification, screen } from "electron";
@@ -77,6 +77,20 @@ function publishRecordingFailure(input: {
     canRetry: input.canRetry ?? true,
     displayId: input.displayId
   });
+}
+
+async function removeRecorderOwnedTempDir(tempDir: string | null): Promise<void> {
+  if (tempDir === null) return;
+  try {
+    // `tempDir` is the exact directory returned by this service's mkdtemp call;
+    // never derive this recursive-delete target from a recorder event path.
+    await rm(tempDir, { recursive: true, force: true });
+  } catch (cause) {
+    log.warn("recording temp directory cleanup failed", {
+      tempDir,
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+  }
 }
 
 export type StartOptions = {
@@ -161,6 +175,7 @@ class NativeRecorderService implements RecordingService {
    *  preserve the cursor choice across the cancel→start round-trip.
    *  `undefined` lets the recorder apply its own default. */
   private captureCursor: boolean | undefined = undefined;
+  private tempDir: string | null = null;
   private outputPath: string | null = null;
   private startedPromise: Promise<void> | null = null;
   private stoppedPromise: Promise<RecorderStoppedEvent> | null = null;
@@ -227,12 +242,13 @@ class NativeRecorderService implements RecordingService {
     } catch {
       /* stat is informational; ignore failures */
     }
+    let tmpDir: string;
     let outputPath: string;
     try {
-      const tmpDir = await mkdtemp(join(tmpdir(), "pwrsnap-recording-"));
+      tmpDir = await mkdtemp(join(tmpdir(), "pwrsnap-recording-"));
       outputPath = join(tmpDir, `${sessionId}.mp4`);
     } catch (cause) {
-      this.cleanup();
+      await this.cleanup();
       publishRecordingFailure({
         sessionId,
         code: "recorder_start_failed",
@@ -246,6 +262,7 @@ class NativeRecorderService implements RecordingService {
     this.subject = options.subject;
     this.capabilities = options.capabilities;
     this.captureCursor = options.captureCursor;
+    this.tempDir = tmpDir;
     this.outputPath = outputPath;
     this.stopRequested = false;
 
@@ -262,7 +279,7 @@ class NativeRecorderService implements RecordingService {
     try {
       child = spawn(binary, [], { stdio: ["pipe", "pipe", "pipe"] });
     } catch (cause) {
-      this.cleanup();
+      await this.cleanup();
       publishRecordingFailure({
         sessionId,
         code: "recorder_spawn_failed",
@@ -309,7 +326,7 @@ class NativeRecorderService implements RecordingService {
         return;
       }
       if (this.stopRequested) return;
-      this.cleanup();
+      void this.cleanup();
       publishRecordingFailure({
         sessionId,
         code: "recorder_exited",
@@ -327,7 +344,7 @@ class NativeRecorderService implements RecordingService {
         const cause = new Error(
           `recorder exited unexpectedly (code=${code ?? "null"}, signal=${signal ?? "null"})`
         );
-        this.cleanup();
+        void this.cleanup();
         publishRecordingFailure({
           sessionId,
           code: "recorder_exited",
@@ -367,7 +384,7 @@ class NativeRecorderService implements RecordingService {
         }) + "\n"
       );
     } catch (cause) {
-      this.cleanup();
+      await this.cleanup();
       publishRecordingFailure({
         sessionId,
         code: "recorder_start_failed",
@@ -433,7 +450,7 @@ class NativeRecorderService implements RecordingService {
       } catch {
         /* ignore */
       }
-      this.cleanup();
+      await this.cleanup();
       publishRecordingFailure({
         sessionId,
         code: startFailureCode,
@@ -460,7 +477,10 @@ class NativeRecorderService implements RecordingService {
       throw new Error("no_active_recording");
     }
     const sessionId = this.sessionId;
-    const displayId = subjectDisplayId(this.subject!);
+    // Snapshot mutable session state before the first await. Temp cleanup after
+    // adoption is asynchronous, and a concurrent cancel clears `this.subject`.
+    const subject = this.subject!;
+    const displayId = subjectDisplayId(subject);
     this.stopRequested = true;
     setRecordingState({ phase: "stopping", sessionId });
     let stopped: RecorderStoppedEvent;
@@ -468,7 +488,7 @@ class NativeRecorderService implements RecordingService {
       this.child.stdin.write(JSON.stringify({ type: "stop" }) + "\n");
       stopped = await this.stoppedPromise!;
     } catch (cause) {
-      this.cleanup();
+      await this.cleanup();
       publishRecordingFailure({
         sessionId,
         code: "stop_failed",
@@ -478,6 +498,7 @@ class NativeRecorderService implements RecordingService {
       throw cause;
     }
     setRecordingState({ phase: "processing", sessionId });
+    let sourceAdopted = false;
     try {
       const stored = await persistStoppedRecording({
         outputPath: stopped.outputPath,
@@ -485,14 +506,27 @@ class NativeRecorderService implements RecordingService {
         containerFormat: stopped.containerFormat,
         hasSystemAudio: stopped.hasSystemAudio,
         hasMicrophoneAudio: stopped.hasMicrophoneAudio,
-        subject: this.subject!
+        subject,
+        onSourceAdopted: async () => {
+          sourceAdopted = true;
+          await this.cleanupTempDir();
+        }
       });
       setRecordingState({ phase: "ready", sessionId, captureId: stored.captureId });
       this.retryOptions = null;
-      this.cleanup();
+      await this.cleanup();
       return stored;
     } catch (cause) {
-      this.cleanup();
+      if (sourceAdopted) {
+        await this.cleanup();
+      } else {
+        log.warn("recording adoption failed; recorder output preserved for recovery", {
+          outputPath: stopped.outputPath,
+          tempDir: this.tempDir,
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+        await this.cleanup({ preserveTempDir: true });
+      }
       publishRecordingFailure({
         sessionId,
         code: "processing_failed",
@@ -561,7 +595,7 @@ class NativeRecorderService implements RecordingService {
     if (this.retryInFlight || state.phase !== "failed" || state.sessionId !== sessionId) {
       throw new Error("stale_failure");
     }
-    this.cleanup();
+    await this.cleanup();
     this.retryOptions = null;
     setRecordingState({ phase: "idle" });
   }
@@ -595,7 +629,7 @@ class NativeRecorderService implements RecordingService {
         /* ignore */
       }
     }
-    this.cleanup();
+    await this.cleanup();
     this.retryOptions = null;
     setRecordingState({ phase: "idle" });
     log.info("recording cancelled", { sessionId });
@@ -640,7 +674,7 @@ class NativeRecorderService implements RecordingService {
             const sessionId = this.sessionId;
             const subject = this.subject;
             if (sessionId !== null && subject !== null) {
-              this.cleanup();
+              void this.cleanup();
               publishRecordingFailure({
                 sessionId,
                 code: "recorder_exited",
@@ -655,7 +689,13 @@ class NativeRecorderService implements RecordingService {
     }
   }
 
-  private cleanup(): void {
+  private async cleanupTempDir(): Promise<void> {
+    const tempDir = this.tempDir;
+    this.tempDir = null;
+    await removeRecorderOwnedTempDir(tempDir);
+  }
+
+  private async cleanup(options: { preserveTempDir?: boolean } = {}): Promise<void> {
     // Defense in depth: the Swift recorder is supposed to exit on
     // its own after `stop` (or after we kill it on cancel/timeout),
     // but bugs in the Swift side could leave the process alive with
@@ -688,6 +728,13 @@ class NativeRecorderService implements RecordingService {
     this.stopReject = null;
     this.inboundBuffer = "";
     this.stopRequested = false;
+    if (options.preserveTempDir === true) {
+      // Detach ownership without deleting: an adoption failure may leave the
+      // only complete recording here for manual recovery.
+      this.tempDir = null;
+    } else {
+      await this.cleanupTempDir();
+    }
   }
 }
 
@@ -699,12 +746,15 @@ type PersistStoppedRecordingInput = {
   hasSystemAudio: boolean;
   hasMicrophoneAudio: boolean;
   subject: RecordingSubject;
+  /** Runs immediately after the source move is durable, before stat/DB work. */
+  onSourceAdopted?: () => Promise<void>;
 };
 
 async function persistStoppedRecording(stopped: PersistStoppedRecordingInput): Promise<{ captureId: string }> {
   const stored = await runWithCapturesDirFallback((outputDir) =>
     adoptExistingFileAsSource(stopped.outputPath, outputDir)
   );
+  await stopped.onSourceAdopted?.();
   const sizeInfo = await statSource(stored.srcPath);
   const rect = subjectToPhysicalRect(stopped.subject);
 
@@ -769,6 +819,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
   /** Raw request snapshot. `undefined` intentionally preserves the documented
    *  default-on behavior when restart() plans the replacement FFmpeg process. */
   private captureCursor: boolean | undefined = undefined;
+  private tempDir: string | null = null;
   private outputPath: string | null = null;
   private startedAtMs = 0;
   private stopRequested = false;
@@ -822,12 +873,13 @@ class WindowsFfmpegRecorderService implements RecordingService {
       });
     }
 
+    let tmpDir: string;
     let outputPath: string;
     try {
-      const tmpDir = await mkdtemp(join(tmpdir(), "pwrsnap-recording-"));
+      tmpDir = await mkdtemp(join(tmpdir(), "pwrsnap-recording-"));
       outputPath = join(tmpDir, `${sessionId}.mp4`);
     } catch (cause) {
-      this.cleanup();
+      await this.cleanup();
       publishRecordingFailure({
         sessionId,
         code: "recorder_start_failed",
@@ -846,6 +898,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
     this.sessionId = sessionId;
     this.subject = options.subject;
     this.captureCursor = options.captureCursor;
+    this.tempDir = tmpDir;
     this.outputPath = outputPath;
     this.stderrTail = [];
     this.stopRequested = false;
@@ -886,7 +939,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
         windowsHide: true
       });
     } catch (cause) {
-      this.cleanup();
+      await this.cleanup();
       publishRecordingFailure({
         sessionId,
         code: "recorder_spawn_failed",
@@ -903,7 +956,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
         resolve({ code, signal });
         if (!this.stopRequested && this.sessionId === sessionId) {
           const message = windowsFfmpegFailureMessage(this.stderrTail, code, signal);
-          this.cleanup();
+          void this.cleanup();
           publishRecordingFailure({
             sessionId,
             code: "recorder_exited",
@@ -921,7 +974,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
     child.stdout.setEncoding("utf8");
     child.on("error", (cause) => {
       if (this.sessionId !== sessionId) return;
-      this.cleanup();
+      void this.cleanup();
       publishRecordingFailure({
         sessionId,
         code: "recorder_spawn_failed",
@@ -971,7 +1024,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
     }
     if (exit === null) {
       const message = "ffmpeg recorder did not exit after stop timeout";
-      this.cleanup();
+      await this.cleanup();
       publishRecordingFailure({
         sessionId,
         code: "stop_timeout",
@@ -982,7 +1035,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
     }
     if (exit.code !== 0 || exit.signal !== null) {
       const message = windowsFfmpegFailureMessage(this.stderrTail, exit.code, exit.signal);
-      this.cleanup();
+      await this.cleanup();
       publishRecordingFailure({
         sessionId,
         code: "stop_failed",
@@ -994,6 +1047,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
 
     setRecordingState({ phase: "processing", sessionId });
     const durationSec = Math.max(0.1, (Date.now() - startedAtMs) / 1000);
+    let sourceAdopted = false;
     try {
       const stored = await persistStoppedRecording({
         outputPath,
@@ -1001,14 +1055,27 @@ class WindowsFfmpegRecorderService implements RecordingService {
         containerFormat: "mp4",
         hasSystemAudio: false,
         hasMicrophoneAudio: false,
-        subject
+        subject,
+        onSourceAdopted: async () => {
+          sourceAdopted = true;
+          await this.cleanupTempDir();
+        }
       });
       setRecordingState({ phase: "ready", sessionId, captureId: stored.captureId });
       this.retryOptions = null;
-      this.cleanup();
+      await this.cleanup();
       return stored;
     } catch (cause) {
-      this.cleanup();
+      if (sourceAdopted) {
+        await this.cleanup();
+      } else {
+        log.warn("recording adoption failed; recorder output preserved for recovery", {
+          outputPath,
+          tempDir: this.tempDir,
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+        await this.cleanup({ preserveTempDir: true });
+      }
       publishRecordingFailure({
         sessionId,
         code: "processing_failed",
@@ -1073,7 +1140,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
     if (this.retryInFlight || state.phase !== "failed" || state.sessionId !== sessionId) {
       throw new Error("stale_failure");
     }
-    this.cleanup();
+    await this.cleanup();
     this.retryOptions = null;
     setRecordingState({ phase: "idle" });
   }
@@ -1098,7 +1165,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
         /* ignore */
       }
     }
-    this.cleanup();
+    await this.cleanup();
     this.retryOptions = null;
     setRecordingState({ phase: "idle" });
     log.info("recording cancelled", { sessionId });
@@ -1111,7 +1178,13 @@ class WindowsFfmpegRecorderService implements RecordingService {
     if (this.stderrTail.length > 8) this.stderrTail.shift();
   }
 
-  private cleanup(): void {
+  private async cleanupTempDir(): Promise<void> {
+    const tempDir = this.tempDir;
+    this.tempDir = null;
+    await removeRecorderOwnedTempDir(tempDir);
+  }
+
+  private async cleanup(options: { preserveTempDir?: boolean } = {}): Promise<void> {
     const child = this.child;
     if (child !== null && !child.killed) {
       try {
@@ -1129,6 +1202,11 @@ class WindowsFfmpegRecorderService implements RecordingService {
     this.stopRequested = false;
     this.exitPromise = null;
     this.stderrTail = [];
+    if (options.preserveTempDir === true) {
+      this.tempDir = null;
+    } else {
+      await this.cleanupTempDir();
+    }
   }
 }
 

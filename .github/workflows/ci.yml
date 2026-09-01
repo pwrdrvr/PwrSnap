@@ -243,6 +243,23 @@ jobs:
       - name: Build
         run: pnpm run build
 
+      # Compile from source in this job (do not rely on a restored install
+      # artifact), then prove clipboard ownership survives the writer process:
+      # a separate helper process reopens numeric CF_HDROP and reads the exact
+      # fully-qualified temp path through DragQueryFileW.
+      - name: Build native Windows clipboard helper
+        shell: pwsh
+        run: |
+          Remove-Item -LiteralPath apps/desktop/build/native/window-list.exe -Force -ErrorAction SilentlyContinue
+          pnpm --filter @pwrsnap/desktop build:native
+
+      - name: Smoke-test native CF_HDROP round trip
+        env:
+          PWRSNAP_WINDOWS_NATIVE_CLIPBOARD_SMOKE: "1"
+        run: >-
+          pnpm exec vitest run --config vitest.workspace.ts
+          apps/desktop/src/main/clipboard/__tests__/windows-file-clipboard-native.test.ts
+
       - name: Test
         run: pnpm run test
 

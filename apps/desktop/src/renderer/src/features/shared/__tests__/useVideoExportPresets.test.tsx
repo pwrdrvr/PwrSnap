@@ -47,6 +47,7 @@ type PendingResolver = {
   name: string;
   req: unknown;
   resolve: (value: unknown) => void;
+  reject: (reason?: unknown) => void;
 };
 const pendingResolvers: PendingResolver[] = [];
 const videoDragSink: Array<{ captureId: string; format: string; preset: string; range?: unknown }> = [];
@@ -62,8 +63,8 @@ const videoDragSink: Array<{ captureId: string; format: string; preset: string; 
   (globalThis as unknown as { window?: Window }).window ?? ({} as Window);
 (globalThis as unknown as { window: { pwrsnapApi: unknown } }).window.pwrsnapApi = {
   dispatch: (_name: string, _req: unknown): Promise<unknown> =>
-    new Promise<unknown>((resolve) => {
-      pendingResolvers.push({ name: _name, req: _req, resolve });
+    new Promise<unknown>((resolve, reject) => {
+      pendingResolvers.push({ name: _name, req: _req, resolve, reject });
     }),
   on: () => () => undefined,
   startCaptureDrag: () => undefined,
@@ -83,6 +84,15 @@ async function resolveNext(value: unknown): Promise<void> {
   // state because the microtask hasn't run yet.
   await act(async () => {
     pending.resolve(value);
+    await Promise.resolve();
+  });
+}
+
+async function rejectNext(reason: unknown): Promise<void> {
+  const pending = pendingResolvers.shift();
+  if (pending === undefined) throw new Error("no pending resolver to reject");
+  await act(async () => {
+    pending.reject(reason);
     await Promise.resolve();
   });
 }
@@ -122,6 +132,7 @@ function mount(
 ): {
   snapshot: () => Snapshot;
   setCaptureId: (next: string | null) => void;
+  setRange: (next: { start: number; end: number } | undefined) => void;
 } {
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -129,13 +140,14 @@ function mount(
 
   let last: Snapshot | null = null;
   let captureId = initialCaptureId;
+  let currentRange = range;
 
   const render = (): void => {
     act(() => {
       root!.render(
         createElement(Probe, {
           captureId,
-          range,
+          range: currentRange,
           onSnapshot: (snap) => {
             last = snap;
           }
@@ -154,6 +166,10 @@ function mount(
     setCaptureId: (next) => {
       captureId = next;
       render();
+    },
+    setRange: (next) => {
+      currentRange = next;
+      render();
     }
   };
 }
@@ -169,7 +185,7 @@ describe("useVideoExportPresets", () => {
     act(() => {
       harness.snapshot().triggerCopy("mp4", "med");
     });
-    expect(harness.snapshot().states["mp4-med"]).toEqual({ kind: "running" });
+    expect(harness.snapshot().states["mp4-med"]).toEqual({ kind: "running", action: "copy" });
     // Other cells stay unset.
     expect(harness.snapshot().states["mp4-low"]).toBeUndefined();
     expect(harness.snapshot().states["gif-med"]).toBeUndefined();
@@ -177,6 +193,7 @@ describe("useVideoExportPresets", () => {
     await resolveNext({ ok: true, value: { path: "/cache/mp4-med.mp4" } });
     expect(harness.snapshot().states["mp4-med"]).toEqual({
       kind: "done",
+      action: "copy",
       path: "/cache/mp4-med.mp4"
     });
   });
@@ -186,7 +203,7 @@ describe("useVideoExportPresets", () => {
     act(() => {
       harness.snapshot().triggerCopyPath("gif", "low");
     });
-    expect(harness.snapshot().states["gif-low"]).toEqual({ kind: "running" });
+    expect(harness.snapshot().states["gif-low"]).toEqual({ kind: "running", action: "path" });
     expect(pendingResolvers[0]?.name).toBe("clipboard:copyVideoPath");
     expect(pendingResolvers[0]?.req).toEqual({
       captureId: "cap_1",
@@ -206,7 +223,53 @@ describe("useVideoExportPresets", () => {
     });
     expect(harness.snapshot().states["gif-high"]).toEqual({
       kind: "error",
+      action: "copy",
       message: "ffmpeg exited 1"
+    });
+  });
+
+  test.each([
+    {
+      label: "media copy",
+      key: "gif-low" as const,
+      action: "copy" as const,
+      trigger: (snapshot: Snapshot) => snapshot.triggerCopy("gif", "low")
+    },
+    {
+      label: "path copy",
+      key: "mp4-med" as const,
+      action: "path" as const,
+      trigger: (snapshot: Snapshot) => snapshot.triggerCopyPath("mp4", "med")
+    },
+    {
+      label: "drag export",
+      key: "mp4-high" as const,
+      action: "drag" as const,
+      trigger: (snapshot: Snapshot) => snapshot.triggerDrag("mp4", "high")
+    }
+  ])("$label bridge rejection becomes an action-specific visible error", async ({ key, action, trigger }) => {
+    const harness = mount("cap_1");
+    act(() => trigger(harness.snapshot()));
+
+    await rejectNext(new Error("agent bridge disconnected"));
+
+    expect(harness.snapshot().states[key]).toEqual({
+      kind: "error",
+      action,
+      message: "agent bridge disconnected"
+    });
+  });
+
+  test("a non-descriptive bridge rejection gets a useful fallback message", async () => {
+    const harness = mount("cap_1");
+    act(() => harness.snapshot().triggerCopy("gif", "med"));
+
+    await rejectNext(undefined);
+
+    expect(harness.snapshot().states["gif-med"]).toEqual({
+      kind: "error",
+      action: "copy",
+      message: "The PwrSnap export service did not respond."
     });
   });
 
@@ -218,6 +281,7 @@ describe("useVideoExportPresets", () => {
     await resolveNext({ ok: true, value: { path: "/cache/a.mp4" } });
     expect(harness.snapshot().states["mp4-low"]).toEqual({
       kind: "done",
+      action: "copy",
       path: "/cache/a.mp4"
     });
 
@@ -249,7 +313,7 @@ describe("useVideoExportPresets", () => {
     // Card transitions to Encoding… so the user gets visible feedback
     // during the (potentially long) ffmpeg run. Without this, the
     // drag handle "dies" silently.
-    expect(harness.snapshot().states["mp4-high"]).toEqual({ kind: "running" });
+    expect(harness.snapshot().states["mp4-high"]).toEqual({ kind: "running", action: "drag" });
     expect(pendingResolvers[0]?.name).toBe("video:export");
     expect(pendingResolvers[0]?.req).toEqual({
       captureId: "cap_1",
@@ -261,6 +325,7 @@ describe("useVideoExportPresets", () => {
     await resolveNext({ ok: true, value: { path: "/cache/dragged.mp4" } });
     expect(harness.snapshot().states["mp4-high"]).toEqual({
       kind: "done",
+      action: "drag",
       path: "/cache/dragged.mp4"
     });
   });
@@ -273,7 +338,7 @@ describe("useVideoExportPresets", () => {
     act(() => {
       harness.snapshot().triggerCopy("gif", "low");
     });
-    expect(harness.snapshot().states["gif-low"]).toEqual({ kind: "running" });
+    expect(harness.snapshot().states["gif-low"]).toEqual({ kind: "running", action: "copy" });
 
     // Navigate to a different capture while the dispatch is in flight.
     harness.setCaptureId("cap_b");
@@ -285,14 +350,49 @@ describe("useVideoExportPresets", () => {
     expect(harness.snapshot().states).toEqual({});
   });
 
+  test("trim-range change mid-encode drops the stale resolution onto the floor", async () => {
+    const harness = mount("cap_1", { start: 0, end: 10 });
+    act(() => {
+      harness.snapshot().triggerCopy("gif", "low");
+    });
+    expect(harness.snapshot().states["gif-low"]).toEqual({ kind: "running", action: "copy" });
+
+    harness.setRange({ start: 2, end: 8 });
+    expect(harness.snapshot().states).toEqual({});
+
+    await resolveNext({ ok: true, value: { path: "/cache/old-range.gif" } });
+    expect(harness.snapshot().states).toEqual({});
+  });
+
+  test("a superseded same-card request cannot overwrite the newer action", async () => {
+    const harness = mount("cap_1");
+    act(() => {
+      harness.snapshot().triggerCopy("mp4", "med");
+      harness.snapshot().triggerCopyPath("mp4", "med");
+    });
+    expect(harness.snapshot().states["mp4-med"]).toEqual({ kind: "running", action: "path" });
+
+    // The older media-copy completion is ignored because path-copy is
+    // now the latest action for this exact card.
+    await resolveNext({ ok: true, value: { path: "/cache/older-copy.mp4" } });
+    expect(harness.snapshot().states["mp4-med"]).toEqual({ kind: "running", action: "path" });
+
+    await resolveNext({ ok: true, value: { path: "/cache/newer-path.mp4" } });
+    expect(harness.snapshot().states["mp4-med"]).toEqual({
+      kind: "done",
+      action: "path",
+      path: "/cache/newer-path.mp4"
+    });
+  });
+
   test("concurrent triggers on different cells track independently", async () => {
     const harness = mount("cap_1");
     act(() => {
       harness.snapshot().triggerCopy("mp4", "low");
       harness.snapshot().triggerCopy("gif", "high");
     });
-    expect(harness.snapshot().states["mp4-low"]).toEqual({ kind: "running" });
-    expect(harness.snapshot().states["gif-high"]).toEqual({ kind: "running" });
+    expect(harness.snapshot().states["mp4-low"]).toEqual({ kind: "running", action: "copy" });
+    expect(harness.snapshot().states["gif-high"]).toEqual({ kind: "running", action: "copy" });
 
     // Resolve in FIFO order — the first pending is mp4-low (it was
     // triggered first). The test resolver returns its value to
@@ -300,13 +400,15 @@ describe("useVideoExportPresets", () => {
     await resolveNext({ ok: true, value: { path: "/cache/mp4-low.mp4" } });
     expect(harness.snapshot().states["mp4-low"]).toEqual({
       kind: "done",
+      action: "copy",
       path: "/cache/mp4-low.mp4"
     });
-    expect(harness.snapshot().states["gif-high"]).toEqual({ kind: "running" });
+    expect(harness.snapshot().states["gif-high"]).toEqual({ kind: "running", action: "copy" });
 
     await resolveNext({ ok: true, value: { path: "/cache/gif-high.gif" } });
     expect(harness.snapshot().states["gif-high"]).toEqual({
       kind: "done",
+      action: "copy",
       path: "/cache/gif-high.gif"
     });
   });

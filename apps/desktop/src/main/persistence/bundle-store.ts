@@ -74,6 +74,7 @@ import {
 import { getMainLogger } from "../log";
 import { buildCaptureBundleFilenameStem, bundleStemFromPath } from "./bundle-filename";
 import { readBundleFilenameTimestampZone } from "./bundle-filename-settings";
+import { moveFileWithExdevFallback } from "./cross-device-move";
 import { TRASH_RETENTION_DAYS } from "./trash-retention";
 
 import type { CursorLayerPlacement } from "../capture/cursor-sample";
@@ -1413,11 +1414,13 @@ export async function repackCaptureNow(captureId: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * Move a bundle + paired PNG to `<userData>/.trash/<id>/`. Two
- * atomic renames (paired PNG first, bundle second), reversed on
- * failure so a partial failure never leaves the SoR (the bundle)
- * orphaned in the live folder while the derivative (the paired
- * PNG) sits in trash.
+ * Move a bundle + paired PNG to `<userData>/.trash/<id>/`. Each move is
+ * an atomic rename when the roots share a volume; a relocated Documents
+ * folder can cross a Windows drive boundary, so EXDEV uses a completed
+ * destination-sibling copy before deleting the source. The paired PNG is
+ * moved first and reversed on bundle failure so a partial failure never
+ * leaves the SoR (the bundle) orphaned in the live folder while the
+ * derivative sits in trash.
  *
  * Idempotent: missing files are silently skipped (deleted-out-of-band
  * by Finder, already-trashed twice in a row, etc.).
@@ -1439,7 +1442,7 @@ export async function moveBundlePairToTrash(args: {
   // moved — return early; the live folder is still consistent.
   if (args.flatPngPath !== null && pngTrashPath !== null && existsSync(args.flatPngPath)) {
     try {
-      await rename(args.flatPngPath, pngTrashPath);
+      await moveFileWithExdevFallback(args.flatPngPath, pngTrashPath);
     } catch (cause) {
       log.warn("trash move: paired PNG rename failed (bailing before bundle move)", {
         captureId: args.captureId,
@@ -1454,7 +1457,7 @@ export async function moveBundlePairToTrash(args: {
   // PNG move so the live folder converges back to its prior state.
   if (args.bundlePath !== null && bundleTrashPath !== null && existsSync(args.bundlePath)) {
     try {
-      await rename(args.bundlePath, bundleTrashPath);
+      await moveFileWithExdevFallback(args.bundlePath, bundleTrashPath);
     } catch (cause) {
       log.warn("trash move: bundle rename failed; reversing paired-PNG rename", {
         captureId: args.captureId,
@@ -1467,7 +1470,7 @@ export async function moveBundlePairToTrash(args: {
         existsSync(pngTrashPath)
       ) {
         try {
-          await rename(pngTrashPath, args.flatPngPath);
+          await moveFileWithExdevFallback(pngTrashPath, args.flatPngPath);
         } catch (reverseCause) {
           log.error(
             "trash move: reverse rename also failed; bundle pair is now split — surface to user via doctor",
@@ -1499,14 +1502,14 @@ export async function restoreBundlePairFromTrash(args: {
     const pngTrashPath = join(trashDir, basename(args.flatPngPath));
     if (existsSync(pngTrashPath)) {
       await mkdir(dirname(args.flatPngPath), { recursive: true });
-      await rename(pngTrashPath, args.flatPngPath);
+      await moveFileWithExdevFallback(pngTrashPath, args.flatPngPath);
     }
   }
   if (args.bundlePath !== null) {
     const bundleTrashPath = join(trashDir, basename(args.bundlePath));
     if (existsSync(bundleTrashPath)) {
       await mkdir(dirname(args.bundlePath), { recursive: true });
-      await rename(bundleTrashPath, args.bundlePath);
+      await moveFileWithExdevFallback(bundleTrashPath, args.bundlePath);
     }
   }
 

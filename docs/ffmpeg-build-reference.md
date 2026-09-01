@@ -35,11 +35,12 @@ verified from the start, decoders never were, and a build with **no PNG
 decoder** shipped for two months. Every image-backed Sizzle reel failed with
 `Decoding requested, but no decoder found for: png`.
 
-> ⚠️ **`FFMPEG_BUILD_SHA` is pinned in three places** — the macOS job and the
-> Windows job in `release.yml`, and the macOS preview job in
-> `preview-build.yml` — plus the table above. Landing a fix in the build repo
-> does nothing until **all** are bumped to the new commit, and if they drift
-> apart, releases and preview DMGs ship ffmpegs built from different sources.
+> ⚠️ **`FFMPEG_BUILD_SHA` is pinned by three consumers** — the macOS and
+> Windows jobs in `release.yml`, plus the Windows dev provisioner in
+> `apps/desktop/scripts/dev-ffmpeg.mjs` — and is restated in the table above.
+> Landing a fix in the build repo does nothing until **all** are bumped to the
+> new commit. PR previews intentionally use digest-pinned public release
+> payloads instead of private-repo credentials.
 > `apps/desktop/scripts/windows-release-config.test.mjs` asserts every pin
 > agrees, so drift fails CI instead of shipping.
 
@@ -61,8 +62,9 @@ Bump all of these together:
 | `FFMPEG_VERSION` + `FFMPEG_ARTIFACT_NAME` | `.github/workflows/release.yml` — **both** the macOS and Windows jobs |
 | `FFMPEG_ARTIFACT_NAME` | `.github/workflows/preview-build.yml` |
 | the `ffmpeg-<version>-*-{manifest.json,SOURCE-OFFER.txt,LGPL-NOTICE.txt}` copy targets | both workflows — six shell literals, easy to miss because they are not `env:` values |
-| `FFMPEG_BUILD_SHA` | both release jobs **and** the preview job (see the warning above) |
+| `FFMPEG_BUILD_SHA` | both release jobs **and** `apps/desktop/scripts/dev-ffmpeg.mjs` (see the warning above) |
 | `FFMPEG_SOURCE_SHA256` | both release jobs only — the preview job does not pin it |
+| Windows dev artifact pin | `apps/desktop/scripts/dev-ffmpeg.mjs` (`buildSha`, `artifactName`, version/source/profile contract) |
 | the pin tables | this file, `docs/desktop-release-runbook.md`, `docs/windows/README.md` |
 
 Two independent checks catch a partial bump:
@@ -168,9 +170,14 @@ Three reasons, in order of how much damage each did:
 3. It duplicated a whole build profile that had already drifted.
 
 **Consequence to know about:** there is no longer any way to build ffmpeg from
-this repo. A local `pnpm release` needs the artifact — set
-`PWRSNAP_FFMPEG_PATH` at runtime for dev, or fetch the artifact from the build
-repo for local packaging.
+this repo. On Windows, `pnpm dev` downloads the exact pinned controlled artifact
+on first use, verifies its manifest and binary SHA-256, and caches it under
+`~/.pwrsnap/dev/bin/ffmpeg/<build-sha>/windows-x64/`. It then sets
+`PWRSNAP_FFMPEG_PATH` only in the dev child environment. The download uses the
+authenticated GitHub CLI because the build repo is private; run
+`gh auth login --hostname github.com` or provide an explicit vetted
+`PWRSNAP_FFMPEG_PATH` override. Packaged releases still receive the binary only
+through the protected release workflow.
 
 ## Testing a codec question cheaply
 

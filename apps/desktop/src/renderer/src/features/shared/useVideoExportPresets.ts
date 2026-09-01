@@ -6,8 +6,8 @@
 // requests share one run).
 //
 // Three actions per card:
-//   • triggerCopy     — encode + clipboard.writeBuffer(public.file-url)
-//                       so paste drops the file in Slack/Mail/Finder
+//   • triggerCopy     — encode + place the exported media file on
+//                       the platform clipboard
 //   • triggerCopyPath — encode + clipboard.writeText(path) for
 //                       terminal/editor paste
 //   • triggerDrag     — start native drag AND kick a parallel
@@ -21,21 +21,26 @@
 // The hook resets all 6 entries to idle when the captureId changes
 // — a new video selection shouldn't inherit the prior capture's
 // "Saved" / "Failed" badges. In-flight dispatches against the prior
-// captureId are bailed via a captureId ref check at resolution time
-// so a slow encode resolving after a navigation doesn't paint stale
-// state onto the new capture's cards.
+// captureId / range (and superseded requests for the same card) are
+// bailed at resolution time so a slow encode resolving after a
+// navigation or trim change doesn't paint stale state onto the cards.
 
-import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef } from "react";
 import type { VideoPreset, VideoRange } from "@pwrsnap/shared";
 import { dispatch, startVideoDrag } from "../../lib/pwrsnap";
 import { videoPresetKey, type VideoPresetKey } from "./useVideoPresetMetrics";
 
-/** Per-button state, keyed by (format, preset). */
+export type VideoExportAction = "copy" | "path" | "drag";
+
+/** Per-button state, keyed by (format, preset). The action tag is
+ *  intentionally retained through completion: the card uses it to
+ *  distinguish a successful clipboard-media copy from a path copy or
+ *  drag preparation, all of which share one state cell. */
 export type ExportButtonState =
   | { kind: "idle" }
-  | { kind: "running" }
-  | { kind: "done"; path: string }
-  | { kind: "error"; message: string };
+  | { kind: "running"; action: VideoExportAction }
+  | { kind: "done"; action: VideoExportAction; path: string }
+  | { kind: "error"; action: VideoExportAction; message: string };
 
 export type VideoExportPresetsState = Partial<Record<VideoPresetKey, ExportButtonState>>;
 
@@ -55,7 +60,7 @@ export type UseVideoExportPresetsResult = {
   readonly states: VideoExportPresetsState;
   /** Click-the-card: encode + copy file to clipboard. */
   readonly triggerCopy: (format: "gif" | "mp4", preset: VideoPreset) => void;
-  /** Click the FILE chip: encode + copy POSIX path. */
+  /** Click the FILE chip: encode + copy the platform-native path. */
   readonly triggerCopyPath: (format: "gif" | "mp4", preset: VideoPreset) => void;
   /** Drag the FILE chip: starts native drag + surfaces
    *  `Encoding…` on the card via a parallel `video:export` so the
@@ -74,6 +79,12 @@ function reducer(state: VideoExportPresetsState, action: Action): VideoExportPre
   return { ...state, [action.key]: action.state };
 }
 
+function bridgeRejectionMessage(cause: unknown): string {
+  if (cause instanceof Error && cause.message.trim().length > 0) return cause.message;
+  if (typeof cause === "string" && cause.trim().length > 0) return cause;
+  return "The PwrSnap export service did not respond.";
+}
+
 export function useVideoExportPresets(
   input: VideoExportPresetsInput | null
 ): UseVideoExportPresetsResult {
@@ -86,6 +97,7 @@ export function useVideoExportPresets(
   const rangeEnd = input?.range?.end;
   const rangeKey =
     rangeStart === undefined || rangeEnd === undefined ? null : `${rangeStart}|${rangeEnd}`;
+  const requestScopeKey = `${captureId ?? "<none>"}\0${rangeKey ?? "<default>"}`;
   useEffect(() => {
     dispatchAction({ kind: "reset" });
   }, [captureId, rangeKey]);
@@ -99,41 +111,65 @@ export function useVideoExportPresets(
     [rangeStart, rangeEnd]
   );
 
-  // Track the current captureId in a ref so a `.then` callback fired
-  // from a stale in-flight dispatch can bail before painting state
-  // onto the new capture's cards. Plain closure-captured `captureId`
-  // isn't enough because the *current* captureId at resolution time
-  // may differ from what the dispatch was issued against — without
-  // this guard, a slow encode for capture A resolving after the user
-  // has navigated to capture B would mark B's GIF LOW card as
-  // "Saved" with A's file path.
-  const currentCaptureIdRef = useRef<string | null>(captureId);
-  useEffect(() => {
-    currentCaptureIdRef.current = captureId;
-  }, [captureId]);
+  // Track both the visible capture/range scope and the latest request
+  // issued for each card. The scope ref updates in a layout effect so
+  // even a completion racing the trim commit is rejected, without
+  // mutating committed refs during a speculative render. The per-card
+  // sequence prevents an older action from overwriting a newer
+  // copy/path/drag action on the same cell.
+  const currentRequestScopeRef = useRef(requestScopeKey);
+  useLayoutEffect(() => {
+    currentRequestScopeRef.current = requestScopeKey;
+  }, [requestScopeKey]);
+  const nextRequestIdRef = useRef(0);
+  const latestRequestByKeyRef = useRef<Partial<Record<VideoPresetKey, number>>>({});
 
   const triggerCopy = useCallback(
     (format: "gif" | "mp4", preset: VideoPreset) => {
       if (captureId === null) return;
       const issuedFor = captureId;
       const key = videoPresetKey(format, preset);
-      dispatchAction({ kind: "set", key, state: { kind: "running" } });
+      const action = "copy" as const;
+      const issuedScope = requestScopeKey;
+      const requestId = ++nextRequestIdRef.current;
+      latestRequestByKeyRef.current[key] = requestId;
+      dispatchAction({ kind: "set", key, state: { kind: "running", action } });
       void dispatch("clipboard:copyVideoFile", {
         captureId: issuedFor,
         format,
         preset,
         range
       }).then((res) => {
-        // Bail if the user navigated to a different capture mid-encode.
-        if (currentCaptureIdRef.current !== issuedFor) return;
+        if (
+          currentRequestScopeRef.current !== issuedScope ||
+          latestRequestByKeyRef.current[key] !== requestId
+        ) return;
         if (res.ok) {
-          dispatchAction({ kind: "set", key, state: { kind: "done", path: res.value.path } });
+          dispatchAction({
+            kind: "set",
+            key,
+            state: { kind: "done", action, path: res.value.path }
+          });
         } else {
-          dispatchAction({ kind: "set", key, state: { kind: "error", message: res.error.message } });
+          dispatchAction({
+            kind: "set",
+            key,
+            state: { kind: "error", action, message: res.error.message }
+          });
         }
+      }).catch((cause: unknown) => {
+        if (
+          currentRequestScopeRef.current !== issuedScope ||
+          latestRequestByKeyRef.current[key] !== requestId
+        ) return;
+        dispatchAction({
+          kind: "set",
+          key,
+          state: { kind: "error", action, message: bridgeRejectionMessage(cause) }
+        });
       });
     },
-    [captureId, range]
+    [captureId, range, requestScopeKey]
   );
 
   const triggerCopyPath = useCallback(
@@ -141,22 +177,47 @@ export function useVideoExportPresets(
       if (captureId === null) return;
       const issuedFor = captureId;
       const key = videoPresetKey(format, preset);
-      dispatchAction({ kind: "set", key, state: { kind: "running" } });
+      const action = "path" as const;
+      const issuedScope = requestScopeKey;
+      const requestId = ++nextRequestIdRef.current;
+      latestRequestByKeyRef.current[key] = requestId;
+      dispatchAction({ kind: "set", key, state: { kind: "running", action } });
       void dispatch("clipboard:copyVideoPath", {
         captureId: issuedFor,
         format,
         preset,
         range
       }).then((res) => {
-        if (currentCaptureIdRef.current !== issuedFor) return;
+        if (
+          currentRequestScopeRef.current !== issuedScope ||
+          latestRequestByKeyRef.current[key] !== requestId
+        ) return;
         if (res.ok) {
-          dispatchAction({ kind: "set", key, state: { kind: "done", path: res.value.path } });
+          dispatchAction({
+            kind: "set",
+            key,
+            state: { kind: "done", action, path: res.value.path }
+          });
         } else {
-          dispatchAction({ kind: "set", key, state: { kind: "error", message: res.error.message } });
+          dispatchAction({
+            kind: "set",
+            key,
+            state: { kind: "error", action, message: res.error.message }
+          });
         }
+      }).catch((cause: unknown) => {
+        if (
+          currentRequestScopeRef.current !== issuedScope ||
+          latestRequestByKeyRef.current[key] !== requestId
+        ) return;
+        dispatchAction({
+          kind: "set",
+          key,
+          state: { kind: "error", action, message: bridgeRejectionMessage(cause) }
+        });
       });
     },
-    [captureId, range]
+    [captureId, range, requestScopeKey]
   );
 
   const triggerDrag = useCallback(
@@ -164,6 +225,10 @@ export function useVideoExportPresets(
       if (captureId === null) return;
       const issuedFor = captureId;
       const key = videoPresetKey(format, preset);
+      const action = "drag" as const;
+      const issuedScope = requestScopeKey;
+      const requestId = ++nextRequestIdRef.current;
+      latestRequestByKeyRef.current[key] = requestId;
       // Kick the native drag. Main does its own encode inside
       // `video:prepareDrag` (idempotent via main-side in-flight
       // de-dup with the `video:export` call below).
@@ -173,22 +238,43 @@ export function useVideoExportPresets(
       // drag handle "dies" silently during a slow encode with no
       // visible feedback. Both calls share one ffmpeg run on the
       // main side, so this is not double work.
-      dispatchAction({ kind: "set", key, state: { kind: "running" } });
+      dispatchAction({ kind: "set", key, state: { kind: "running", action } });
       void dispatch("video:export", {
         captureId: issuedFor,
         format,
         preset,
         range
       }).then((res) => {
-        if (currentCaptureIdRef.current !== issuedFor) return;
+        if (
+          currentRequestScopeRef.current !== issuedScope ||
+          latestRequestByKeyRef.current[key] !== requestId
+        ) return;
         if (res.ok) {
-          dispatchAction({ kind: "set", key, state: { kind: "done", path: res.value.path } });
+          dispatchAction({
+            kind: "set",
+            key,
+            state: { kind: "done", action, path: res.value.path }
+          });
         } else {
-          dispatchAction({ kind: "set", key, state: { kind: "error", message: res.error.message } });
+          dispatchAction({
+            kind: "set",
+            key,
+            state: { kind: "error", action, message: res.error.message }
+          });
         }
+      }).catch((cause: unknown) => {
+        if (
+          currentRequestScopeRef.current !== issuedScope ||
+          latestRequestByKeyRef.current[key] !== requestId
+        ) return;
+        dispatchAction({
+          kind: "set",
+          key,
+          state: { kind: "error", action, message: bridgeRejectionMessage(cause) }
+        });
       });
     },
-    [captureId, range]
+    [captureId, range, requestScopeKey]
   );
 
   return { states, triggerCopy, triggerCopyPath, triggerDrag };

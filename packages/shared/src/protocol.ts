@@ -3837,16 +3837,17 @@ export type Commands = {
 
   // ---- copy / share ----
   "clipboard:copy": { req: { captureId: string; preset: RenderPreset }; res: void };
-  /** Render (or reuse) the image preset cache file and copy it as an
-   *  OS file URL so paste targets receive a real PNG filename. */
+  /** Render (or reuse) the image preset cache file and copy it using the
+   *  platform's existing-file clipboard format so paste targets receive a
+   *  real PNG attachment with the friendly filename. */
   "clipboard:copy-file": {
     req: { captureId: string; preset: RenderPreset };
     res: { path: string };
   };
-  /** Render (or reuse) the cache file at `preset` and write its POSIX
-   *  path as plain text to the system clipboard. The drag affordance
-   *  on the same button hands off the file itself; this one is for
-   *  pasting the path into terminals, editors, or chat. */
+  /** Render (or reuse) the cache file at `preset` and write its
+   *  platform-native absolute path as plain text to the system clipboard.
+   *  The drag affordance on the same button hands off the file itself; this
+   *  one is for pasting the path into terminals, editors, or chat. */
   "clipboard:copy-path": {
     req: { captureId: string; preset: RenderPreset };
     res: { path: string };
@@ -4263,12 +4264,11 @@ export type Commands = {
   };
   /**
    * Encode (cache-hit if already done) and copy the resulting file
-   * to the system clipboard as a file promise — on macOS, this
-   * writes `public.file-url` to NSPasteboard so paste in
-   * Slack/Mail/Finder drops the binary using the friendly export
-   * alias basename. Sibling of `clipboard:copy` for images, but
-   * image clipboard:copy writes raw bytes via nativeImage; videos
-   * can't fit through that API so we use file-url instead.
+   * to the system clipboard as an existing file — `public.file-url` on
+   * macOS and verified CF_HDROP on Windows — so attachment-aware paste
+   * targets receive the binary using the friendly export alias basename.
+   * Sibling of `clipboard:copy` for images, but image clipboard:copy writes
+   * raw bitmap bytes; animated GIF/MP4 use a file-transfer flavor instead.
    */
   "clipboard:copyVideoFile": {
     req: VideoExportCoordinates;
@@ -4276,7 +4276,7 @@ export type Commands = {
   };
   /**
    * Encode (cache-hit if already done) and write the encoded file's
-   * POSIX path to the system clipboard as text. Sibling of
+   * platform-native absolute path to the system clipboard as text. Sibling of
    * `clipboard:copy-path` for images.
    */
   "clipboard:copyVideoPath": {

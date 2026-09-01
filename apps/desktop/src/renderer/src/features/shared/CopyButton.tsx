@@ -149,7 +149,7 @@ export type CopyButtonProps = {
   /** Fired on a drag-start gesture to drag this exact preset as a PNG file. */
   onDrag?: (preset: CopyPreset) => void;
   /** Fired on a click of the FILE chip. Caller dispatches
-   *  `clipboard:copy-path` so the rendered cache file's POSIX path
+   *  `clipboard:copy-path` so the rendered cache file's native absolute path
    *  lands on the clipboard as text. Drag still hands off the file
    *  itself; this is the keyboardless-mouse equivalent for pasting
    *  the path into a terminal / editor. */

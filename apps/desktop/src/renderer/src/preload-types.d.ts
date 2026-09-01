@@ -16,10 +16,6 @@ import type {
   ShortcutPlatform,
   VideoPreset
 } from "@pwrsnap/shared";
-import type {
-  SelectorCropStreamMessage,
-  SelectorCropStreamReply
-} from "@pwrsnap/shared/selector-crop-stream";
 
 export type WindowSnapEntry = {
   windowId: number;
@@ -57,9 +53,6 @@ declare global {
         fullWindow?: boolean;
         captureCursor?: boolean;
       }): void;
-      exchangeSelectorCrop(
-        message: SelectorCropStreamMessage
-      ): Promise<SelectorCropStreamReply>;
       notifySelectorSnapshotPainted(payload: {
         snapshotKey: string;
         invocationId: number;
@@ -102,6 +95,9 @@ declare global {
           generation: number;
           surface: "frozen-frame" | "window-loading" | "error";
         }) => void
+      ): () => void;
+      onSelectorFrameRelease(
+        handler: (payload: { invocationId: number }) => void
       ): () => void;
       requestTrayResize(payload: { width: number; height: number }): void;
       requestFloatOverResize(payload: { width: number; height: number }): void;

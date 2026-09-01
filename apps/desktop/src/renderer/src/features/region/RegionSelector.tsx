@@ -58,7 +58,7 @@ import {
   encodeFrozenCrop,
   type FrozenFrame
 } from "./frozen-frame";
-import { streamEncodedCrop } from "./crop-stream";
+import { openSelectorCropStream, streamEncodedCrop } from "./crop-stream";
 
 const HASH_PARAM_DISPLAY_ID = "displayId";
 const NUDGE_PX = 1;
@@ -199,6 +199,7 @@ export function RegionSelector() {
   const snapshotStateRef = useRef<SnapshotState>("idle");
   const frozenCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const frozenFrameRef = useRef<FrozenFrame | null>(null);
+  const frozenFrameInvocationIdRef = useRef<number | null>(null);
   const framePortRef = useRef<MessagePort | null>(null);
   const frameAcquisitionStartedRef = useRef(false);
   const commitBusyRef = useRef(false);
@@ -331,6 +332,7 @@ export function RegionSelector() {
       frameAcquisitionStartedRef.current = false;
       disposeFrozenFrame(frozenFrameRef.current);
       frozenFrameRef.current = null;
+      frozenFrameInvocationIdRef.current = null;
       rectRef.current = nextRect;
       screenUrlRef.current = nextScreenUrl;
       captureSourceRef.current = nextCaptureSource;
@@ -503,6 +505,7 @@ export function RegionSelector() {
                 return;
               }
               frozenFrameRef.current = frame;
+              frozenFrameInvocationIdRef.current = expectedInvocationId;
               snapshotStateRef.current = "ready";
               setSnapshotState("ready");
               port.postMessage({
@@ -534,7 +537,26 @@ export function RegionSelector() {
       framePortRef.current = null;
       disposeFrozenFrame(frozenFrameRef.current);
       frozenFrameRef.current = null;
+      frozenFrameInvocationIdRef.current = null;
     };
+  }, []);
+
+  // Main sends this only after the reusable selector BrowserWindow has been
+  // hidden. Keep the frame through the handoff so the visible overlay cannot
+  // flash blank, then release every full-display pixel before the hidden
+  // Windows renderer is reused for another invocation.
+  useLayoutEffect(() => {
+    return window.pwrsnapApi?.onSelectorFrameRelease((payload) => {
+      if (
+        !isSelectorInvocationId(payload.invocationId) ||
+        frozenFrameInvocationIdRef.current !== payload.invocationId
+      ) {
+        return;
+      }
+      disposeFrozenFrame(frozenFrameRef.current);
+      frozenFrameRef.current = null;
+      frozenFrameInvocationIdRef.current = null;
+    });
   }, []);
 
   // Diagnostic only. This can run while the prewarmed selector is hidden, so
@@ -832,8 +854,7 @@ export function RegionSelector() {
       !wantFull
     ) {
       const frozen = frozenFrameRef.current;
-      const selectorApi = window.pwrsnapApi;
-      if (frozen === null || selectorApi === undefined) return;
+      if (frozen === null) return;
       commitBusyRef.current = true;
       let commitStage: "encode" | "stream" = "encode";
       try {
@@ -851,23 +872,13 @@ export function RegionSelector() {
           invocationId: currentInvocationId,
           mark: "crop-stream-started"
         });
-        await streamEncodedCrop(currentInvocationId, crop, (message) =>
-          new Promise<SelectorCropStreamReply>((resolve, reject) => {
-            const timeout = window.setTimeout(() => {
-              reject(new Error("committed crop transfer timed out"));
-            }, 10_000);
-            void selectorApi
-              .exchangeSelectorCrop(message)
-              .then((reply) => {
-                window.clearTimeout(timeout);
-                resolve(reply);
-              })
-              .catch((cause: unknown) => {
-                window.clearTimeout(timeout);
-                reject(cause);
-              });
-          })
-        );
+        const connection = openSelectorCropStream(currentInvocationId);
+        try {
+          await connection.ready;
+          await streamEncodedCrop(currentInvocationId, crop, connection.exchange);
+        } finally {
+          connection.close();
+        }
         window.pwrsnapApi?.reportSelectorPerformance({
           invocationId: currentInvocationId,
           mark: "crop-stream-completed"

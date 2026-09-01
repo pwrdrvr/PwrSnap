@@ -92,6 +92,7 @@ export function createSelectorDisplayMediaBroker(deps: {
 }): SelectorDisplayMediaBroker {
   const installed = new WeakSet<Session>();
   const grants = new WeakMap<Session, SelectorDisplayMediaGrant>();
+  const lastArmedInvocation = new WeakMap<Session, number>();
 
   const deny = (
     callback: DisplayMediaCallback,
@@ -181,8 +182,16 @@ export function createSelectorDisplayMediaBroker(deps: {
     },
 
     arm(session, grant): boolean {
-      if (!isSelectorFrameUrl(grant.frameUrl) || !grant.isStillActive()) return false;
+      if (
+        grants.has(session) ||
+        lastArmedInvocation.get(session) === grant.invocationId ||
+        !isSelectorFrameUrl(grant.frameUrl) ||
+        !grant.isStillActive()
+      ) {
+        return false;
+      }
       grants.set(session, grant);
+      lastArmedInvocation.set(session, grant.invocationId);
       return true;
     },
 

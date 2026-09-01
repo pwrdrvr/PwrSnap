@@ -23,7 +23,7 @@ import {
   MessageChannelMain,
   screen,
   type Display,
-  type IpcMainInvokeEvent,
+  type IpcMainEvent,
   type MessagePortMain,
   type WebContents
 } from "electron";
@@ -53,6 +53,7 @@ const log = getMainLogger("pwrsnap:region-selector");
 const selectorWindows = new Map<number, BrowserWindow>();
 const standbySelectorWindows = new Map<number, BrowserWindow>();
 const selectorWindowLoads = new WeakMap<BrowserWindow, Promise<boolean>>();
+const selectorFrameInvocationIds = new WeakMap<BrowserWindow, number>();
 const standbyWarmScheduled = new Set<number>();
 const selectorDisplaysNeedingFreshPanel = new Set<number>();
 let pendingResolver: ((result: SelectorResult) => void) | null = null;
@@ -93,8 +94,12 @@ type ActiveSelectorLifecycle = {
   >;
   snapshotDecodeFailed: boolean;
   frameReady: boolean;
+  frameAuthorizationRequested: boolean;
   framePort: MessagePortMain | null;
   framePortClosed: boolean;
+  cropPort: MessagePortMain | null;
+  cropPortClosed: boolean;
+  cropPortOpened: boolean;
   cropReceiver: SelectorCropReceiver | null;
   committedCropPath: string | null;
   onSelectorPresented: ((event: SelectorPresentedEvent) => void) | null;
@@ -113,8 +118,10 @@ type ActiveSelectorLifecycle = {
 
 let activeSelectorLifecycle: ActiveSelectorLifecycle | null = null;
 let nextPresentationGeneration = 1;
+let pendingProtectedWindowActivationRestore: BrowserWindow | null = null;
 
 const SELECTOR_FRAME_PORT_CHANNEL = "region-selector:frame-port";
+const SELECTOR_FRAME_RELEASE_CHANNEL = "region-selector:frame-release";
 
 /** The capture currently waiting for its snapshot to paint before the
  *  selector is shown. Resolved by the SELECTOR_PAINTED_CHANNEL ack
@@ -307,7 +314,7 @@ const SELECTOR_PAINTED_CHANNEL = "region-selector:painted";
 const SELECTOR_PERFORMANCE_CHANNEL = "region-selector:performance";
 const SELECTOR_PRESENTATION_ARM_CHANNEL = "region-selector:presentation-arm";
 const SELECTOR_PRESENTED_CHANNEL = "region-selector:presented";
-const SELECTOR_CROP_STREAM_CHANNEL = "region-selector:crop-stream";
+const SELECTOR_CROP_PORT_CHANNEL = "region-selector:crop-port";
 
 /** Failure deadlines for the renderer's hidden "snapshot painted" ack.
  *  These do not delay the happy path. A timeout terminates rather than
@@ -406,6 +413,11 @@ function closeRendererFrameSession(
     lifecycle.framePort?.close();
     lifecycle.framePort = null;
   }
+  if (!lifecycle.cropPortClosed) {
+    lifecycle.cropPortClosed = true;
+    lifecycle.cropPort?.close();
+    lifecycle.cropPort = null;
+  }
   if (lifecycle.cropReceiver !== null) {
     const receiver = lifecycle.cropReceiver;
     lifecycle.cropReceiver = null;
@@ -422,37 +434,47 @@ function rejectedCrop(invocationId: number): SelectorCropStreamReply {
   return { type: "crop-rejected", invocationId, code: "invalid_crop" };
 }
 
+function rejectCropPorts(ports: readonly MessagePortMain[], invocationId: number): void {
+  for (const port of ports) {
+    port.postMessage(rejectedCrop(invocationId));
+    port.close();
+  }
+}
+
 /**
- * Accept one bounded committed-crop message over invocation-authenticated IPC.
+ * Accept one fresh, invocation-authenticated committed-crop MessagePort.
  *
  * The renderer's long-lived MessagePort remains the narrow capability used to
  * authorize and freeze display media, but Electron 41 on macOS was measured
- * dropping its later crop-start request after the frame had been displayed.
- * `ipcRenderer.invoke` is reliable across that delayed preload boundary. Each
- * request is still at most one 256 KiB crop chunk, is serialized by renderer
- * backpressure, and is rejected unless it comes from the active selector.
+ * dropping a later crop-start request after the frame had been displayed.
+ * The renderer therefore opens this second port only at commit time. Its
+ * ArrayBuffer chunks are transferable (unlike ipcRenderer.invoke), bounded to
+ * 256 KiB, serialized by renderer backpressure, and accepted only once from
+ * the active selector webContents and invocation.
  */
-async function exchangeRendererCrop(
-  event: IpcMainInvokeEvent,
-  message: unknown
-): Promise<SelectorCropStreamReply> {
+function installRendererCropPort(event: IpcMainEvent, payload: unknown): void {
   const invocationId =
-    message !== null &&
-    typeof message === "object" &&
-    "invocationId" in message &&
-    typeof message.invocationId === "number" &&
-    Number.isSafeInteger(message.invocationId)
-      ? message.invocationId
+    payload !== null &&
+    typeof payload === "object" &&
+    "invocationId" in payload &&
+    typeof payload.invocationId === "number" &&
+    Number.isSafeInteger(payload.invocationId)
+      ? payload.invocationId
       : 0;
   const lifecycle = activeSelectorLifecycle;
+  const port = event.ports.length === 1 ? event.ports[0] : null;
   if (
     invocationId <= 0 ||
+    port === null ||
     lifecycle === null ||
     lifecycle.invocationId !== invocationId ||
     lifecycle.settled ||
-    !isActiveSelectorSender(event.sender, invocationId)
+    lifecycle.cropPortOpened ||
+    !isActiveSelectorSender(event.sender, invocationId) ||
+    event.senderFrame !== lifecycle.targetWindow?.webContents.mainFrame
   ) {
-    return rejectedCrop(invocationId);
+    rejectCropPorts(event.ports, invocationId);
+    return;
   }
   const receiver = lifecycle.cropReceiver;
   if (
@@ -461,49 +483,83 @@ async function exchangeRendererCrop(
     lifecycle.committedCropPath !== null ||
     receiver === null
   ) {
-    return rejectedCrop(invocationId);
+    rejectCropPorts([port], invocationId);
+    return;
   }
+  lifecycle.cropPortOpened = true;
+  lifecycle.cropPort = port;
+  lifecycle.cropPortClosed = false;
+  log.info("picker committed crop port connected", {
+    invocationId,
+    transport: "fresh-message-port"
+  });
 
-  const messageType =
-    message !== null && typeof message === "object" && "type" in message
-      ? String(message.type)
-      : "invalid";
-  if (messageType !== "crop-chunk") {
-    log.info("picker committed crop message received", {
-      invocationId,
-      messageType
-    });
-  }
-  try {
-    const result = await receiver.accept(message);
-    if (
-      lifecycle.settled ||
-      activeSelectorLifecycle !== lifecycle ||
-      lifecycle.committedCropPath !== null ||
-      lifecycle.cropReceiver !== receiver
-    ) {
-      await receiver.dispose();
-      return rejectedCrop(invocationId);
+  port.on("message", (portEvent) => {
+    const message = portEvent.data;
+    const messageType =
+      message !== null && typeof message === "object" && "type" in message
+        ? String((message as { type?: unknown }).type)
+        : "invalid";
+    if (messageType !== "crop-chunk") {
+      log.info("picker committed crop message received", {
+        invocationId,
+        messageType,
+        ...(messageType === "crop-start" && message !== null && typeof message === "object"
+          ? {
+              width: (message as { width?: unknown }).width,
+              height: (message as { height?: unknown }).height,
+              totalBytes: (message as { totalBytes?: unknown }).totalBytes
+            }
+          : {})
+      });
     }
-    if (result.completedPath !== undefined) {
-      const path = receiver.takeCompletedPath();
-      if (path === null) {
+    void receiver
+      .accept(message)
+      .then(async (result) => {
+        if (
+          lifecycle.settled ||
+          activeSelectorLifecycle !== lifecycle ||
+          lifecycle.committedCropPath !== null ||
+          lifecycle.cropReceiver !== receiver
+        ) {
+          await receiver.dispose();
+          if (!lifecycle.cropPortClosed) port.postMessage(rejectedCrop(invocationId));
+          return;
+        }
+        if (result.completedPath !== undefined) {
+          const path = receiver.takeCompletedPath();
+          if (path === null) {
+            await receiver.dispose();
+            if (!lifecycle.cropPortClosed) port.postMessage(rejectedCrop(invocationId));
+            return;
+          }
+          lifecycle.committedCropPath = path;
+          lifecycle.cropReceiver = null;
+          await receiver.dispose();
+        }
+        if (!lifecycle.cropPortClosed) port.postMessage(result.reply);
+      })
+      .catch(async (cause: unknown) => {
+        log.error("committed renderer crop write failed", {
+          invocationId,
+          messageType,
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+        if (lifecycle.cropReceiver === receiver) lifecycle.cropReceiver = null;
         await receiver.dispose();
-        return rejectedCrop(invocationId);
-      }
-      lifecycle.committedCropPath = path;
+        if (!lifecycle.cropPortClosed) port.postMessage(rejectedCrop(invocationId));
+      });
+  });
+  port.on("close", () => {
+    lifecycle.cropPortClosed = true;
+    lifecycle.cropPort = null;
+    if (lifecycle.cropReceiver === receiver && lifecycle.committedCropPath === null) {
+      lifecycle.cropReceiver = null;
+      void receiver.dispose();
     }
-    return result.reply;
-  } catch (cause) {
-    log.error("committed renderer crop write failed", {
-      invocationId,
-      messageType,
-      message: cause instanceof Error ? cause.message : String(cause)
-    });
-    if (lifecycle.cropReceiver === receiver) lifecycle.cropReceiver = null;
-    await receiver.dispose();
-    return rejectedCrop(invocationId);
-  }
+  });
+  port.start();
+  port.postMessage({ type: "crop-port-ready", invocationId });
 }
 
 function installRendererFramePort(
@@ -517,6 +573,7 @@ function installRendererFramePort(
   lifecycle.framePort = port2;
   lifecycle.framePortClosed = false;
   lifecycle.cropReceiver = cropReceiver;
+  selectorFrameInvocationIds.set(win, lifecycle.invocationId);
 
   port2.on("message", (event) => {
     const message = event.data as Record<string, unknown> | null;
@@ -530,6 +587,14 @@ function installRendererFramePort(
       return;
     }
     if (message.type === "authorize") {
+      if (lifecycle.frameAuthorizationRequested) {
+        port2.postMessage({
+          type: "authorization-denied",
+          invocationId: lifecycle.invocationId
+        });
+        return;
+      }
+      lifecycle.frameAuthorizationRequested = true;
       const frame = win.webContents.mainFrame;
       const armed = selectorDisplayMediaBroker.arm(win.webContents.session, {
         invocationId: lifecycle.invocationId,
@@ -737,7 +802,7 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
   }
 
   if (!resultListenerAttached) {
-    ipcMain.handle(SELECTOR_CROP_STREAM_CHANNEL, exchangeRendererCrop);
+    ipcMain.on(SELECTOR_CROP_PORT_CHANNEL, installRendererCropPort);
     // Diagnostic listener: renderer pushes its viewport dims on every
     // window-list snapshot. Compacted to one line + deduped per
     // selector-window so we don't repeat the same dims into the dev
@@ -1086,8 +1151,12 @@ export async function pickRegion(
     allowedWindowCandidates: new Map(),
     snapshotDecodeFailed: false,
     frameReady: false,
+    frameAuthorizationRequested: false,
     framePort: null,
     framePortClosed: true,
+    cropPort: null,
+    cropPortClosed: true,
+    cropPortOpened: false,
     cropReceiver: null,
     committedCropPath: null,
     onSelectorPresented: opts.onSelectorPresented ?? null,
@@ -1104,16 +1173,29 @@ export async function pickRegion(
     stopAsyncWork: null
   };
   activeSelectorLifecycle = lifecycle;
+  const focusedWindowAtInvocationStart = BrowserWindow.getFocusedWindow();
+  const focusedProtectedWindowAtInvocationStart =
+    focusedWindowAtInvocationStart !== null &&
+    protectWindowIds.includes(focusedWindowAtInvocationStart.id)
+      ? focusedWindowAtInvocationStart
+      : null;
   let snapshotContentProtectionActive = false;
-  const temporarilyHiddenProtectedWindows: BrowserWindow[] = [];
+  const temporarilyHiddenProtectedWindows: Array<{
+    window: BrowserWindow;
+    restoreActivation: boolean;
+  }> = [];
   const liftSnapshotContentProtection = (): void => {
     if (!snapshotContentProtectionActive) return;
     snapshotContentProtectionActive = false;
     setSnapshotContentProtection(protectWindowIds, false);
   };
   const restoreTemporarilyHiddenProtectedWindows = (): void => {
-    for (const protectedWindow of temporarilyHiddenProtectedWindows.splice(0)) {
-      if (!protectedWindow.isDestroyed()) protectedWindow.showInactive();
+    for (const hidden of temporarilyHiddenProtectedWindows.splice(0)) {
+      if (hidden.window.isDestroyed()) continue;
+      hidden.window.showInactive();
+      if (hidden.restoreActivation) {
+        pendingProtectedWindowActivationRestore = hidden.window;
+      }
     }
   };
   try {
@@ -1232,7 +1314,10 @@ export async function pickRegion(
           protectedWindow.isVisible()
         ) {
           protectedWindow.hide();
-          temporarilyHiddenProtectedWindows.push(protectedWindow);
+          temporarilyHiddenProtectedWindows.push({
+            window: protectedWindow,
+            restoreActivation: protectedWindow === focusedProtectedWindowAtInvocationStart
+          });
         }
       }
     }
@@ -1290,7 +1375,10 @@ export async function pickRegion(
     // Never let a reused renderer or a failed helper carry source metadata
     // from the prior invocation into this one.
     lastSnapshot = [];
-    lifecycle.previousApp = unknownPreviousApp();
+    lifecycle.previousApp =
+      focusedProtectedWindowAtInvocationStart === null
+        ? unknownPreviousApp()
+        : { previousAppOrigin: "pwrsnap", previousAppPid: null };
     lifecycle.stopAsyncWork = () => {
       acceptingWindowList = false;
     };
@@ -1361,10 +1449,12 @@ export async function pickRegion(
             frontmostBundleId: snapshot.frontmostBundleId
           });
           lastSnapshot = prepared.snapshot;
-          lifecycle.previousApp = {
-            previousAppOrigin: prepared.previousAppOrigin,
-            previousAppPid: prepared.previousAppPid
-          };
+          if (focusedProtectedWindowAtInvocationStart === null) {
+            lifecycle.previousApp = {
+              previousAppOrigin: prepared.previousAppOrigin,
+              previousAppPid: prepared.previousAppPid
+            };
+          }
           lifecycle.allowedWindowCandidates = new Map(
             prepared.payload.windows
               .filter(
@@ -1404,7 +1494,9 @@ export async function pickRegion(
             message: err instanceof Error ? err.message : String(err)
           });
           lastSnapshot = [];
-          lifecycle.previousApp = unknownPreviousApp();
+          if (focusedProtectedWindowAtInvocationStart === null) {
+            lifecycle.previousApp = unknownPreviousApp();
+          }
           lifecycle.allowedWindowCandidates.clear();
           lifecycle.windowCandidatesReady = false;
           windowListPayload = {
@@ -2245,6 +2337,20 @@ function hideAllSelectors(): void {
     leaveMenuBarOverlayMode(win);
     win.blur();
     win.hide();
+    const frameInvocationId = selectorFrameInvocationIds.get(win);
+    if (frameInvocationId !== undefined) {
+      selectorFrameInvocationIds.delete(win);
+      // The renderer keeps the full frozen display only until the selector is
+      // actually hidden. Release after hide so clearing the canvas can never
+      // flash an empty surface during the capture handoff.
+      win.webContents.send(SELECTOR_FRAME_RELEASE_CHANNEL, {
+        invocationId: frameInvocationId
+      });
+      log.info("picker frozen frame release requested", {
+        invocationId: frameInvocationId,
+        displayId
+      });
+    }
     // macOS simple-fullscreen + non-activating NSPanel does not fully
     // reset to the fresh pre-warm state after one show/hide cycle. The
     // first selector after launch can cover menu bar + Dock correctly,
@@ -2257,6 +2363,12 @@ function hideAllSelectors(): void {
   }
   for (const { displayId, staleWindow } of rebuildAfterHide) {
     swapFreshSelectorForDisplay(displayId, staleWindow);
+  }
+  const activationRestore = pendingProtectedWindowActivationRestore;
+  pendingProtectedWindowActivationRestore = null;
+  if (activationRestore !== null && !activationRestore.isDestroyed()) {
+    if (!activationRestore.isVisible()) activationRestore.show();
+    activationRestore.focus();
   }
   // Note: previously-frontmost app activation moved OUT of here. The
   // capture handler now calls `activateApp(previousAppPid)` AFTER it
@@ -2416,13 +2528,10 @@ function createSelectorWindow(
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
-      // On macOS this window is intentionally hidden while it warms.
-      // Keep Chromium from throttling that hidden renderer load,
-      // otherwise the first shortcut after launch can still wait on
-      // the prewarm to finish.
-      ...(process.platform === "darwin" || process.platform === "win32"
-        ? { backgroundThrottling: false }
-        : {}),
+      // Every platform prewarms this renderer hidden. The Linux legacy-file
+      // path also waits for a hidden two-rAF decode barrier, so throttling it
+      // can stall the picker until the 12-second paint deadline.
+      backgroundThrottling: false,
       // The renderer needs the display id baked in so it can post the
       // right value back to main on commit. Pass via a query string.
       additionalArguments: [`--display-id=${display.id}`]
@@ -2705,6 +2814,7 @@ function isSelectorPayload(value: unknown): value is {
 
 export function disposeRegionSelector(): void {
   teardownActiveSelectorLifecycle("dispose");
+  pendingProtectedWindowActivationRestore = null;
   supersedeSelectorWaiters();
   uninstallSelectorGlobalShortcuts();
   releaseActiveScreenSnapshot();
@@ -2721,7 +2831,7 @@ export function disposeRegionSelector(): void {
   standbyWarmScheduled.clear();
   selectorDisplaysNeedingFreshPanel.clear();
   if (resultListenerAttached) {
-    ipcMain.removeHandler(SELECTOR_CROP_STREAM_CHANNEL);
+    ipcMain.removeAllListeners(SELECTOR_CROP_PORT_CHANNEL);
     ipcMain.removeAllListeners(SELECTOR_RESULT_CHANNEL);
     ipcMain.removeAllListeners(SELECTOR_PAINTED_CHANNEL);
     ipcMain.removeAllListeners(SELECTOR_DIAGNOSTICS_CHANNEL);

@@ -67,16 +67,16 @@ describe("selector display-media broker", () => {
     };
     const frame = frameValue as WebFrameMain;
     broker.install(session);
-    expect(
-      broker.arm(session, {
-        invocationId: 41,
-        displayId: 9,
-        displayCount: 1,
-        frame,
-        frameUrl: frameValue.url,
-        isStillActive: () => true
-      })
-    ).toBe(true);
+    const grant = {
+      invocationId: 41,
+      displayId: 9,
+      displayCount: 1,
+      frame,
+      frameUrl: frameValue.url,
+      isStillActive: () => true
+    };
+    expect(broker.arm(session, grant)).toBe(true);
+    expect(broker.arm(session, grant)).toBe(false);
 
     const callback = vi.fn();
     handler!(
@@ -98,6 +98,8 @@ describe("selector display-media broker", () => {
     expect(callback).toHaveBeenCalledWith({
       video: { id: chosen.id, name: chosen.name }
     });
+    // Consuming getDisplayMedia never makes the same invocation re-armable.
+    expect(broker.arm(session, grant)).toBe(false);
 
     const second = vi.fn();
     handler!(

@@ -28,6 +28,7 @@ import type { BrowserWindow, Display } from "electron";
 import type { WindowInfo } from "../capture/window-list";
 
 type WindowSpy = {
+  id: number;
   setTitle: ReturnType<typeof vi.fn>;
   setAlwaysOnTop: ReturnType<typeof vi.fn>;
   setVisibleOnAllWorkspaces: ReturnType<typeof vi.fn>;
@@ -45,6 +46,7 @@ type WindowSpy = {
   focus: ReturnType<typeof vi.fn>;
   blur: ReturnType<typeof vi.fn>;
   hide: ReturnType<typeof vi.fn>;
+  isVisible: ReturnType<typeof vi.fn>;
   moveTop: ReturnType<typeof vi.fn>;
   loadURL: ReturnType<typeof vi.fn>;
   loadFile: ReturnType<typeof vi.fn>;
@@ -68,6 +70,7 @@ const ipcHandlers = new Map<
   (event: unknown, payload: unknown) => Promise<unknown>
 >();
 let currentIpcSender: WindowSpy["webContents"] | null = null;
+let focusedBrowserWindow: WindowSpy | null = null;
 const screenListeners = new Map<string, (...args: unknown[]) => void>();
 const deferredLoadResolvers: (() => void)[] = [];
 let deferSelectorLoads = false;
@@ -118,6 +121,7 @@ function selectorLoadPromise(): Promise<void> {
 function makeWindowSpy(options: Record<string, unknown>): WindowSpy {
   let spy!: WindowSpy;
   spy = {
+    id: constructed.length + 1,
     setTitle: vi.fn(),
     setAlwaysOnTop: vi.fn(),
     setVisibleOnAllWorkspaces: vi.fn(),
@@ -135,6 +139,7 @@ function makeWindowSpy(options: Record<string, unknown>): WindowSpy {
     focus: vi.fn(),
     blur: vi.fn(),
     hide: vi.fn(),
+    isVisible: vi.fn().mockReturnValue(true),
     moveTop: vi.fn(),
     loadURL: vi.fn(() => selectorLoadPromise()),
     loadFile: vi.fn(() => selectorLoadPromise()),
@@ -213,6 +218,10 @@ vi.mock("electron", () => {
   class BrowserWindow {
     static fromId(id: number) {
       return browserWindowFromId(id);
+    }
+
+    static getFocusedWindow() {
+      return focusedBrowserWindow;
     }
 
     constructor(options: Record<string, unknown>) {
@@ -324,6 +333,7 @@ beforeEach(() => {
   ipcListeners.clear();
   ipcHandlers.clear();
   currentIpcSender = null;
+  focusedBrowserWindow = null;
   screenListeners.clear();
   availableDisplays = [primaryDisplay];
   deferredLoadResolvers.length = 0;
@@ -423,6 +433,44 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
     expect(constructed[0]?.options.webPreferences).toMatchObject({
       backgroundThrottling: false
     });
+  });
+
+  test("also disables background throttling for the hidden Linux decode barrier", async () => {
+    Object.defineProperty(process, "platform", {
+      value: "linux",
+      configurable: true
+    });
+    const { preWarmRegionSelector } = await import("../capture/region-selector");
+    preWarmRegionSelector();
+
+    expect(constructed[0]?.options.webPreferences).toMatchObject({
+      backgroundThrottling: false
+    });
+  });
+
+  test("rejects a committed-crop port when no matching selector invocation is active", async () => {
+    const { preWarmRegionSelector } = await import("../capture/region-selector");
+    preWarmRegionSelector();
+    const port = {
+      postMessage: vi.fn(),
+      close: vi.fn()
+    };
+
+    ipcListeners.get("region-selector:crop-port")?.(
+      {
+        sender: constructed[0]?.webContents,
+        senderFrame: {},
+        ports: [port]
+      },
+      { invocationId: 91 }
+    );
+
+    expect(port.postMessage).toHaveBeenCalledWith({
+      type: "crop-rejected",
+      invocationId: 91,
+      code: "invalid_crop"
+    });
+    expect(port.close).toHaveBeenCalledTimes(1);
   });
 
   test("setVisibleOnAllWorkspaces is called BEFORE the renderer loads — first paint must not flash on the wrong Space", async () => {
@@ -713,13 +761,17 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
 describe("region-selector — protected live window picker", () => {
   test("hides the protected Library until a macOS pure-window picker finishes", async () => {
     const protectedLibrary = {
+      id: 91,
       isDestroyed: vi.fn().mockReturnValue(false),
       isVisible: vi.fn().mockReturnValue(true),
       hide: vi.fn(),
+      show: vi.fn(),
       showInactive: vi.fn(),
+      focus: vi.fn(),
       setContentProtection: vi.fn(),
       getBounds: vi.fn().mockReturnValue({ x: 240, y: 30, width: 1000, height: 700 })
     };
+    focusedBrowserWindow = protectedLibrary as unknown as WindowSpy;
     browserWindowFromId.mockImplementation((id: number) => (id === 91 ? protectedLibrary : null));
     windowListMocks.selfPidSet.mockReturnValue(new Set([4242]));
     windowListMocks.listWindowsSnapshot.mockResolvedValueOnce({
@@ -747,11 +799,14 @@ describe("region-selector — protected live window picker", () => {
           isFrontmostInApp: true
         }
       ],
-      frontmostPid: 4242,
-      frontmostBundleId: "com.pwrdrvr.pwrsnap"
+      // Hiding the focused Library can make the native helper report the
+      // external window instead. The selector must preserve the pre-hide
+      // PwrSnap activation rather than trusting this post-hide snapshot.
+      frontmostPid: 5555,
+      frontmostBundleId: "com.anthropic.claude"
     });
 
-    const { pickRegion } = await import("../capture/region-selector");
+    const { hideSelector, pickRegion } = await import("../capture/region-selector");
     const pick = pickRegion({
       mode: "window",
       keepPwrSnapChrome: true,
@@ -779,8 +834,16 @@ describe("region-selector — protected live window picker", () => {
     expect(protectedLibrary.showInactive).not.toHaveBeenCalled();
 
     ipcListeners.get("region-selector:result")?.({}, { ok: false, invocationId: 1 });
-    await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
+    await expect(pick).resolves.toMatchObject({
+      ok: false,
+      reason: "cancelled",
+      previousAppOrigin: "pwrsnap"
+    });
     expect(protectedLibrary.showInactive).toHaveBeenCalledTimes(1);
+    expect(protectedLibrary.focus).not.toHaveBeenCalled();
+
+    hideSelector();
+    expect(protectedLibrary.focus).toHaveBeenCalledTimes(1);
   });
 });
 

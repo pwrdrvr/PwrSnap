@@ -64,10 +64,6 @@ import {
 } from "@pwrsnap/shared/ipc";
 import type { RenderPreset, VideoPreset } from "@pwrsnap/shared/protocol";
 import type { PerfMarkPayload } from "@pwrsnap/shared/ipc";
-import type {
-  SelectorCropStreamMessage,
-  SelectorCropStreamReply
-} from "@pwrsnap/shared/selector-crop-stream";
 import { parseAppearanceArg } from "@pwrsnap/shared/appearance-arg";
 import { resolveDroppedFilePath } from "./dropped-file-path";
 
@@ -94,7 +90,8 @@ const REGION_SELECTOR_KEY_CHANNEL = "region-selector:key";
 // 'auto' | 'region' | 'window' before the first paint.
 const REGION_SELECTOR_MODE_CHANNEL = "region-selector:mode";
 const REGION_SELECTOR_FRAME_PORT_CHANNEL = "region-selector:frame-port";
-const REGION_SELECTOR_CROP_STREAM_CHANNEL = "region-selector:crop-stream";
+const REGION_SELECTOR_FRAME_RELEASE_CHANNEL = "region-selector:frame-release";
+const REGION_SELECTOR_CROP_PORT_CHANNEL = "region-selector:crop-port";
 // Renderer → main: the selector acks that the frozen-snapshot <img>
 // for a given screenUrl has loaded/decoded. Main waits for this before
 // showing the (still-hidden) selector window, so it never appears as an
@@ -122,6 +119,31 @@ ipcRenderer.on(REGION_SELECTOR_FRAME_PORT_CHANNEL, (event, payload: unknown) => 
 // Settings recorder lease. This distinguishes delayed IPC from a document
 // that has already navigated away even when Chromium reuses a renderer PID.
 const rendererDocumentId = crypto.randomUUID().replaceAll("-", "");
+
+// The renderer opens a fresh MessageChannel only when the user commits a
+// frozen crop. Forward its transferred port to main without exposing Electron
+// or a generic IPC primitive. This avoids both the stale long-lived port that
+// Electron 41 dropped after the hidden acquisition phase and structured-clone
+// copies of every crop chunk through ipcRenderer.invoke.
+window.addEventListener("message", (event) => {
+  if (event.source !== window) return;
+  const payload = event.data as { type?: unknown; invocationId?: unknown } | null;
+  if (payload === null || payload.type !== "pwrsnap-selector-crop-port") return;
+  if (
+    event.ports.length !== 1 ||
+    typeof payload.invocationId !== "number" ||
+    !Number.isSafeInteger(payload.invocationId) ||
+    payload.invocationId <= 0
+  ) {
+    for (const port of event.ports) port.close();
+    return;
+  }
+  ipcRenderer.postMessage(
+    REGION_SELECTOR_CROP_PORT_CHANNEL,
+    { invocationId: payload.invocationId },
+    [event.ports[0]]
+  );
+});
 
 // Tray content auto-sizes to fit. The renderer measures itself with a
 // ResizeObserver and asks main to setContentSize so the popover never
@@ -229,17 +251,6 @@ const pwrsnapApi = {
     captureCursor?: boolean;
   }): void {
     ipcRenderer.send(REGION_SELECTOR_RESULT_CHANNEL, payload);
-  },
-  /**
-   * Exchange one bounded committed-crop stream message with main. Main accepts
-   * calls only from the active selector webContents and matching invocation.
-   * ArrayBuffers are limited to one 256 KiB crop chunk by the shared guards;
-   * no full-screen bitmap can cross this channel.
-   */
-  exchangeSelectorCrop(message: SelectorCropStreamMessage): Promise<SelectorCropStreamReply> {
-    return ipcRenderer.invoke(REGION_SELECTOR_CROP_STREAM_CHANNEL, message) as Promise<
-      SelectorCropStreamReply
-    >;
   },
   /**
    * Region-selector renderer → main: the frozen-snapshot image for
@@ -454,6 +465,13 @@ const pwrsnapApi = {
       );
     ipcRenderer.on(REGION_SELECTOR_PRESENTATION_ARM_CHANNEL, wrapped);
     return () => ipcRenderer.off(REGION_SELECTOR_PRESENTATION_ARM_CHANNEL, wrapped);
+  },
+  /** Main hid the reusable selector; drop its invocation-owned full frame. */
+  onSelectorFrameRelease(handler: (payload: { invocationId: number }) => void): () => void {
+    const wrapped = (_event: unknown, payload: unknown) =>
+      handler(payload as { invocationId: number });
+    ipcRenderer.on(REGION_SELECTOR_FRAME_RELEASE_CHANNEL, wrapped);
+    return () => ipcRenderer.off(REGION_SELECTOR_FRAME_RELEASE_CHANNEL, wrapped);
   },
   /**
    * Diagnostic — region selector renderer → main. Ships the

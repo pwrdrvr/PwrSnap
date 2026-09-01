@@ -20,10 +20,18 @@ const frozenFrameMocks = vi.hoisted(() => ({
   encode: vi.fn(),
   dispose: vi.fn()
 }));
+const cropStreamMocks = vi.hoisted(() => ({
+  open: vi.fn(),
+  close: vi.fn()
+}));
 vi.mock("../frozen-frame", () => ({
   acquireFrozenDisplayFrame: frozenFrameMocks.acquire,
   encodeFrozenCrop: frozenFrameMocks.encode,
   disposeFrozenFrame: frozenFrameMocks.dispose
+}));
+vi.mock("../crop-stream", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../crop-stream")>()),
+  openSelectorCropStream: cropStreamMocks.open
 }));
 import { RegionSelector } from "../RegionSelector";
 
@@ -68,6 +76,7 @@ let modeHandler: ((p: ModePayload) => void) | null = null;
 let snapshotHandler: ((p: SnapshotPayload) => void) | null = null;
 let keyHandler: ((p: { key: string }) => void) | null = null;
 let presentationArmHandler: ((p: PresentationArmPayload) => void) | null = null;
+let frameReleaseHandler: ((p: { invocationId: number }) => void) | null = null;
 const submitRegion = vi.fn();
 const exchangeSelectorCrop = vi.fn();
 const notifySelectorSnapshotPainted = vi.fn();
@@ -81,6 +90,7 @@ function installSelectorApi(): void {
   snapshotHandler = null;
   keyHandler = null;
   presentationArmHandler = null;
+  frameReleaseHandler = null;
   submitRegion.mockReset();
   exchangeSelectorCrop.mockReset();
   exchangeSelectorCrop.mockImplementation(async (message: { type?: string; sequence?: number }) => {
@@ -99,6 +109,13 @@ function installSelectorApi(): void {
   notifySelectorSnapshotPainted.mockReset();
   notifySelectorPresented.mockReset();
   reportSelectorPerformance.mockReset();
+  cropStreamMocks.open.mockReset();
+  cropStreamMocks.close.mockReset();
+  cropStreamMocks.open.mockReturnValue({
+    ready: Promise.resolve(),
+    exchange: exchangeSelectorCrop,
+    close: cropStreamMocks.close
+  });
   frozenFrameMocks.acquire.mockReset();
   frozenFrameMocks.encode.mockReset();
   frozenFrameMocks.dispose.mockReset();
@@ -120,7 +137,6 @@ function installSelectorApi(): void {
     dispatch: vi.fn(),
     on: vi.fn(() => () => undefined),
     submitRegion,
-    exchangeSelectorCrop,
     notifySelectorSnapshotPainted,
     notifySelectorPresented,
     onWindowListSnapshot: (h: (p: SnapshotPayload) => void) => {
@@ -137,6 +153,10 @@ function installSelectorApi(): void {
     },
     onSelectorPresentationArm: (h: (p: PresentationArmPayload) => void) => {
       presentationArmHandler = h;
+      return () => undefined;
+    },
+    onSelectorFrameRelease: (h: (p: { invocationId: number }) => void) => {
+      frameReleaseHandler = h;
       return () => undefined;
     },
     requestTrayResize: vi.fn(),
@@ -1121,6 +1141,7 @@ describe("U7 — renderer-owned frozen frame transport", () => {
       expect(frozenFrameMocks.encode).toHaveBeenCalledTimes(1);
       expect(submitRegion).toHaveBeenCalledTimes(1);
     });
+    expect(cropStreamMocks.open).toHaveBeenCalledWith(DEFAULT_INVOCATION_ID);
     expect(exchangeSelectorCrop).toHaveBeenNthCalledWith(1, {
       type: "crop-start",
       invocationId: DEFAULT_INVOCATION_ID,
@@ -1136,13 +1157,15 @@ describe("U7 — renderer-owned frozen frame transport", () => {
         invocationId: DEFAULT_INVOCATION_ID,
         sequence: 0,
         bytes: expect.any(ArrayBuffer)
-      })
+      }),
+      [expect.any(ArrayBuffer)]
     );
     expect(exchangeSelectorCrop).toHaveBeenNthCalledWith(3, {
         type: "crop-end",
         invocationId: DEFAULT_INVOCATION_ID,
-        chunks: 1
+      chunks: 1
     });
+    expect(cropStreamMocks.close).toHaveBeenCalledTimes(1);
     expect(port.postMessage).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: "crop-start" })
     );
@@ -1174,5 +1197,19 @@ describe("U7 — renderer-owned frozen frame transport", () => {
       invocationId: DEFAULT_INVOCATION_ID,
       mark: "crop-stream-completed"
     });
+
+    frozenFrameMocks.dispose.mockClear();
+    await act(async () => {
+      frameReleaseHandler?.({ invocationId: DEFAULT_INVOCATION_ID + 1 });
+      await Promise.resolve();
+    });
+    expect(frozenFrameMocks.dispose).not.toHaveBeenCalled();
+    await act(async () => {
+      frameReleaseHandler?.({ invocationId: DEFAULT_INVOCATION_ID });
+      await Promise.resolve();
+    });
+    expect(frozenFrameMocks.dispose).toHaveBeenCalledWith(
+      expect.objectContaining({ width: 3840, height: 2160 })
+    );
   });
 });

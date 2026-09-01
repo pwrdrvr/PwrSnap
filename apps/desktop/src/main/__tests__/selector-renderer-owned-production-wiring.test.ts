@@ -72,23 +72,31 @@ describe("renderer-owned selector capture production wiring", () => {
     expect(frozenFrame).toContain("encodeFrozenCrop");
     expect(component).toContain("frameAcquisitionStartedRef.current");
     expect(component).toContain("encodeFrozenCrop(frozen, r, viewport())");
+    expect(component).toContain("openSelectorCropStream(currentInvocationId)");
     expect(component).toContain("streamEncodedCrop(currentInvocationId, crop");
-    expect(component).toContain(".exchangeSelectorCrop(message)");
     expect(component).toContain('"crop-commit-failed-encode"');
     expect(component).toContain('"crop-commit-failed-stream"');
     expect(cropStream).toContain("SELECTOR_CROP_CHUNK_BYTES");
     expect(cropStream).toContain(".slice(offset,");
-    expect(component).not.toContain("[crop.bytes]");
+    expect(cropStream).toContain("port.postMessage(message, transfer)");
+    expect(cropStream).toContain('type: "pwrsnap-selector-crop-port"');
     expect(preload).toContain("event.ports");
     expect(preload).toContain('type: "pwrsnap-selector-frame-port"');
-    expect(preload).toContain(
-      "ipcRenderer.invoke(REGION_SELECTOR_CROP_STREAM_CHANNEL, message)"
-    );
-    expect(selector).toContain(
-      "ipcMain.handle(SELECTOR_CROP_STREAM_CHANNEL, exchangeRendererCrop)"
-    );
+    expect(preload).toContain("ipcRenderer.postMessage(");
+    expect(preload).toContain("REGION_SELECTOR_CROP_PORT_CHANNEL");
+    expect(selector).toContain("ipcMain.on(SELECTOR_CROP_PORT_CHANNEL, installRendererCropPort)");
     expect(selector).toContain("isActiveSelectorSender(event.sender, invocationId)");
-    expect(selector).toContain("ipcMain.removeHandler(SELECTOR_CROP_STREAM_CHANNEL)");
+    expect(selector).toContain("lifecycle.cropPortOpened");
+    expect(selector).toContain("ipcMain.removeAllListeners(SELECTOR_CROP_PORT_CHANNEL)");
+    expect(component).toContain("onSelectorFrameRelease");
+    expect(preload).toContain("REGION_SELECTOR_FRAME_RELEASE_CHANNEL");
+    const hide = selector.indexOf("win.hide();");
+    const release = selector.indexOf(
+      "win.webContents.send(SELECTOR_FRAME_RELEASE_CHANNEL",
+      hide
+    );
+    expect(hide).toBeGreaterThanOrEqual(0);
+    expect(release).toBeGreaterThan(hide);
   });
 
   test("presentation uses a dedicated post-show generation-bound acknowledgement", async () => {

@@ -13,6 +13,7 @@ import type {
   Res,
   PwrSnapError,
   Result,
+  ShortcutPlatform,
   VideoPreset
 } from "@pwrsnap/shared";
 
@@ -37,7 +38,7 @@ export type WindowSnapEntry = {
 declare global {
   interface Window {
     pwrsnapApi?: {
-      platform: string;
+      platform: ShortcutPlatform;
       versions: { chrome: string; electron: string; node: string };
       /** Electron 32+ replacement for the removed File.path extension. */
       getPathForFile(file: File): string;

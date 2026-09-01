@@ -14,6 +14,7 @@
     "./ipc": "./src/ipc.ts",
     "./appearance-arg": "./src/appearance-arg.ts",
     "./desktop-platform": "./src/desktop-platform.ts",
+    "./shortcut-semantics": "./src/shortcut-semantics.ts",
     "./bundle-manifest-v2": "./src/bundle-manifest-schema-v2.ts",
     "./clipboard-layer-fragment": "./src/clipboard-layer-fragment.ts"
   },

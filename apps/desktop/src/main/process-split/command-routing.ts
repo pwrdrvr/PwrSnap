@@ -31,6 +31,7 @@ const EXACT_OWNERS: Readonly<Record<string, CommandOwner>> = {
   // these from the agent is precisely what spawns the library process
   // on demand.
   "settings:open": "library",
+  "settings:setHotkeyRecorderInputScope": "library",
   "app:openDocumentWindow": "library",
   "logs:openWindow": "library",
   // The render and file copy are process-safe, but a native Save As sheet

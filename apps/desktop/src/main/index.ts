@@ -15,7 +15,11 @@ import {
   Notification,
   shell
 } from "electron";
-import { EVENT_CHANNELS, revealInFileManagerLabel } from "@pwrsnap/shared";
+import {
+  EVENT_CHANNELS,
+  revealInFileManagerLabel,
+  shortcutPlatformFromString
+} from "@pwrsnap/shared";
 import type { RecordingSubject, Settings, SettingsChangedEvent } from "@pwrsnap/shared";
 import {
   disposeRegionSelector,
@@ -121,6 +125,23 @@ import {
 } from "./sizzle/sizzle-close-barrier";
 import { DesktopSettingsService } from "./settings/desktop-settings-service";
 import {
+  HotkeyRegistrationManager,
+  type HotkeyKind
+} from "./hotkeys/hotkey-registration-manager";
+import { hotkeyRecorderSuspension } from "./hotkeys/hotkey-recorder-suspension-instance";
+import {
+  createHotkeyRecorderInputScope,
+  createRemoteHotkeyRecorderInputScope
+} from "./hotkeys/hotkey-recorder-input-scope";
+import {
+  attestSettingsHotkeyRecorderOwnerForBridge,
+  isLiveSettingsHotkeyRecorderOwner
+} from "./hotkeys/hotkey-recorder-owner";
+import {
+  registerHotkeyRecorderInputScopeHandler,
+  registerHotkeyRecorderSuspensionHandlers
+} from "./handlers/hotkey-recorder-handlers";
+import {
   checkForAppUpdatesNow,
   initAppUpdater,
   reconcileAppUpdateSelection,
@@ -152,6 +173,7 @@ import {
 } from "./process-split/event-relay";
 import {
   dispatchToLibraryProcess,
+  dispatchToRunningLibraryProcess,
   forwardCancellationToLibrary,
   forwardRendererEventToLibrary,
   stopLibraryProcess
@@ -213,6 +235,7 @@ import {
 import {
   createMainWindow,
   findMainLibraryWindow,
+  findSettingsWindow,
   installMainProcessHotCpuMonitor,
   reclaimDockIconIfLibraryAlive,
   scheduleDockReclaim,
@@ -270,28 +293,8 @@ function sendEditCommand(
   });
 }
 
-/** The hotkey kinds we register from `settings.hotkeys.*`. Order
- *  matters only for log readability. */
-type HotkeyKind =
-  | "quickCapture"
-  | "region"
-  | "window"
-  | "fullScreen"
-  | "allScreens"
-  | "timed"
-  | "videoCapture"
-  | "reshowFloatOver";
-const HOTKEY_KINDS: readonly HotkeyKind[] = [
-  "quickCapture",
-  "region",
-  "window",
-  "fullScreen",
-  "allScreens",
-  "timed",
-  "videoCapture",
-  "reshowFloatOver"
-];
 const isMac = process.platform === "darwin";
+const shortcutPlatform = shortcutPlatformFromString(process.platform);
 
 /**
  * E2E mode. When `PWRSNAP_E2E=1`, the bootstrap skips:
@@ -684,11 +687,6 @@ async function runPasteFromClipboard(): Promise<void> {
   }
 }
 
-/** Map of HotkeyKind → currently-registered accelerator. We hold this
- *  so we can unregister cleanly when a setting changes (the
- *  globalShortcut API doesn't track "who registered what"). */
-const registeredHotkeys = new Map<HotkeyKind, string>();
-
 function handlerFor(kind: HotkeyKind): () => void {
   const log = getMainLogger("pwrsnap:shortcut");
   switch (kind) {
@@ -754,36 +752,17 @@ function handlerFor(kind: HotkeyKind): () => void {
   }
 }
 
-/** Apply `settings.hotkeys.*` to the live globalShortcut registry.
- *  Idempotent: rebinds only the kinds whose accelerator changed. Empty
- *  string is the "unbound" sentinel and skips registration. */
-function applyHotkeys(hotkeys: Settings["hotkeys"]): void {
-  const log = getMainLogger("pwrsnap:shortcut");
-  for (const kind of HOTKEY_KINDS) {
-    const next = hotkeys[kind] ?? "";
-    const prev = registeredHotkeys.get(kind) ?? "";
-    if (next === prev) continue;
-    if (prev !== "") {
-      globalShortcut.unregister(prev);
-      registeredHotkeys.delete(kind);
-    }
-    if (next === "") continue;
-    const ok = globalShortcut.register(next, handlerFor(kind));
-    if (!ok) {
-      log.warn("failed to register hotkey (likely taken by another app)", {
-        kind,
-        accelerator: next
-      });
-      continue;
-    }
-    registeredHotkeys.set(kind, next);
-  }
-}
+const hotkeyRegistrationManager = new HotkeyRegistrationManager({
+  platform: shortcutPlatform,
+  registrar: globalShortcut,
+  callbackFor: (kind) => handlerFor(kind),
+  logger: getMainLogger("pwrsnap:shortcut")
+});
 
-/** Boot-time + on-change hotkey registration. Reads the current
- *  settings, applies them, and subscribes to main-side change events
- *  so subsequent edits (Settings → Hotkeys, or external file rewrites
- *  funneled through `settings:write`) re-bind without a restart. */
+/** Boot-time hotkey registration plus the shared settings-change listener.
+ *  Subsequent hotkey edits are staged transactionally by `settings:write`;
+ *  this listener updates the tray presentation and the unrelated runtime
+ *  settings that share the same broadcast. */
 async function wireHotkeyRegistrations(): Promise<void> {
   const log = getMainLogger("pwrsnap:shortcut");
   // The settings service is a tiny standalone class — load once,
@@ -801,8 +780,8 @@ async function wireHotkeyRegistrations(): Promise<void> {
   let currentTrain: Settings["updates"]["train"] = "stable";
   try {
     const settings = await service.read();
+    hotkeyRegistrationManager.initialize(settings.hotkeys);
     setTrayHotkeys(settings.hotkeys);
-    applyHotkeys(settings.hotkeys);
     // Pick up the persisted developer-mode flag and re-install the menu
     // so the View submenu matches the user's choice from the start of
     // this session (the early bootstrap call hit the false default).
@@ -822,7 +801,6 @@ async function wireHotkeyRegistrations(): Promise<void> {
   }));
   onSettingsChanged((settings) => {
     setTrayHotkeys(settings.hotkeys);
-    applyHotkeys(settings.hotkeys);
     if (settings.general.developerMode !== lastKnownDeveloperMode) {
       installApplicationMenu(settings.general.developerMode);
     }
@@ -1491,6 +1469,39 @@ export function bootstrapApp(): void {
     log.info("booting with process role", { role, pid: process.pid });
   }
 
+  // Native application-menu accelerators run ahead of renderer DOM events.
+  // Combined mode owns Settings locally; split mode must mutate the Settings
+  // webContents in the library process rather than interpreting its numeric
+  // BrowserWindow id inside the agent process.
+  if (role === "combined") {
+    hotkeyRecorderSuspension.configureInputScope(
+      createHotkeyRecorderInputScope((windowId) => BrowserWindow.fromId(windowId))
+    );
+  } else if (role === "agent") {
+    hotkeyRecorderSuspension.configureInputScope(
+      createRemoteHotkeyRecorderInputScope(async (request) => {
+        const dispatch = request.ignore
+          ? dispatchToLibraryProcess
+          : dispatchToRunningLibraryProcess;
+        const result = await dispatch(
+          "settings:setHotkeyRecorderInputScope",
+          request,
+          { principal: "bridge" }
+        );
+        if (!result.ok) return result;
+        return {
+          ok: true,
+          value: {
+            applied:
+              typeof result.value === "object" &&
+              result.value !== null &&
+              (result.value as { applied?: unknown }).applied === true
+          }
+        };
+      })
+    );
+  }
+
   // PwrSnap never hydrates the user's login shell to guess at PATH.
   // Binary discovery (codex / ACP agents) checks explicit install
   // locations plus the app's inherited PATH, and surfaces "not found"
@@ -1872,6 +1883,9 @@ export function bootstrapApp(): void {
     // the routing tests pin the contentious assignments.
     registerAppCommonHandlers();
     registerRendererErrorHandler();
+    if (role !== "agent") {
+      registerHotkeyRecorderInputScopeHandler(findSettingsWindow);
+    }
     // Library DATA verbs register in every role: the agent's tray and
     // float-over read + mutate captures locally against the shared WAL
     // DB — a tray preview must never resurrect the library process.
@@ -1881,8 +1895,31 @@ export function bootstrapApp(): void {
       // settings + secrets substrate, AI enrichment + discovery, updater.
       registerSettingsDataHandlers({
         readLocalAgentMcpListenerStatus: () =>
-          localAgentMcpLifecycle?.getStatus() ?? { state: "off" }
+          localAgentMcpLifecycle?.getStatus() ?? { state: "off" },
+        shortcutPlatform,
+        ...(!isE2E && !startupProfilingEnabled()
+          ? { hotkeyRegistrationManager }
+          : {})
       });
+      const { service: settingsService } = getDesktopSettingsServices();
+      registerHotkeyRecorderSuspensionHandlers(
+        hotkeyRecorderSuspension,
+        {
+          withSerializedSettings: (operation) =>
+            settingsService.withSerializedSettings(operation),
+          registrationManager:
+            !isE2E && !startupProfilingEnabled()
+              ? hotkeyRegistrationManager
+              : null
+        },
+        (windowId, documentId) => {
+          return isLiveSettingsHotkeyRecorderOwner(
+            findSettingsWindow(),
+            windowId,
+            documentId
+          );
+        }
+      );
       registerCaptureStorageHandlers();
       registerCodexHandlers();
       registerCodexProfileHandlers();
@@ -2003,7 +2040,16 @@ export function bootstrapApp(): void {
       connectAgentBridge();
       bus.installRemoteForwarder({
         canForward: (name) => isAgentBridgeConnected() && peerOwnsCommand("library", name),
-        forward: (name, req, context) => dispatchToAgentProcess(name, req, context)
+        forward: (name, req, context) =>
+          dispatchToAgentProcess(
+            name,
+            req,
+            attestSettingsHotkeyRecorderOwnerForBridge(
+              name,
+              context,
+              findSettingsWindow()
+            )
+          )
       });
       installRendererEventForwarder(forwardRendererEventToAgent);
       installCancellationForwarder(forwardCancellationToAgent);

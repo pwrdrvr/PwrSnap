@@ -26,7 +26,11 @@ import {
   DEFAULT_HOTKEYS,
   GRID_ZOOM_DEFAULT,
   GRID_ZOOM_MAX,
-  GRID_ZOOM_MIN
+  GRID_ZOOM_MIN,
+  acceleratorsAreEquivalent,
+  defaultHotkeysForPlatform,
+  shortcutPlatformFromString,
+  type Settings
 } from "@pwrsnap/shared";
 import {
   DesktopSettingsService,
@@ -35,6 +39,9 @@ import {
 } from "../desktop-settings-service";
 
 let workDir = "";
+const HOST_HOTKEY_DEFAULTS = defaultHotkeysForPlatform(
+  shortcutPlatformFromString(process.platform)
+);
 
 beforeEach(() => {
   workDir = mkdtempSync(join(tmpdir(), "pwrsnap-settings-svc-"));
@@ -47,6 +54,14 @@ afterEach(() => {
 
 function makeService(): DesktopSettingsService {
   return new DesktopSettingsService({ filePath: join(workDir, "settings.json") });
+}
+
+function deferredSignal(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = () => done();
+  });
+  return { promise, resolve };
 }
 
 describe("DesktopSettingsService.read", () => {
@@ -92,12 +107,12 @@ describe("DesktopSettingsService.write", () => {
     expect(read.codex.pinnedPath).toBe("/opt/codex");
     // Untouched fields default
     expect(read.ai.enabled).toBe(false);
-    expect(read.hotkeys.quickCapture).toBe("CommandOrControl+Shift+C");
+    expect(read.hotkeys.quickCapture).toBe(HOST_HOTKEY_DEFAULTS.quickCapture);
     // Region / window default UNBOUND now that Quick Capture covers both.
     expect(read.hotkeys.region).toBe("");
     expect(read.hotkeys.window).toBe("");
     // Video Capture is the new entry; default ⌘⇧V.
-    expect(read.hotkeys.videoCapture).toBe("CommandOrControl+Alt+C");
+    expect(read.hotkeys.videoCapture).toBe(HOST_HOTKEY_DEFAULTS.videoCapture);
   });
 
   test("undefined patch fields leave existing values untouched", async () => {
@@ -178,6 +193,87 @@ describe("DesktopSettingsService.write", () => {
     expect(read.codex.pinnedPath).toBe("/a");
     expect(read.ai.enabled).toBe(true);
   });
+
+  test("serialized settings operations wait through atomic write commit", async () => {
+    const atomicWriteEntered = deferredSignal();
+    const releaseAtomicWrite = deferredSignal();
+
+    class DeferredAtomicWriteService extends DesktopSettingsService {
+      protected override async atomicWriteJson(value: Settings): Promise<void> {
+        atomicWriteEntered.resolve();
+        await releaseAtomicWrite.promise;
+        await super.atomicWriteJson(value);
+      }
+    }
+
+    const svc = new DeferredAtomicWriteService({
+      filePath: join(workDir, "settings.json")
+    });
+    const write = svc.write({ hotkeys: { quickCapture: "Control+Alt+X" } });
+    await atomicWriteEntered.promise;
+
+    const operation = vi.fn((current: Settings) => current.hotkeys.quickCapture);
+    let operationSettled = false;
+    const serialized = svc.withSerializedSettings(operation).then((value) => {
+      operationSettled = true;
+      return value;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(operation).not.toHaveBeenCalled();
+    expect(operationSettled).toBe(false);
+
+    releaseAtomicWrite.resolve();
+    await expect(write).resolves.toMatchObject({
+      hotkeys: { quickCapture: "Control+Alt+X" }
+    });
+    await expect(serialized).resolves.toBe("Control+Alt+X");
+    expect(operation).toHaveBeenCalledTimes(1);
+  });
+
+  test("stages external state inside the write queue and commits after persistence", async () => {
+    const svc = makeService();
+    const commit = vi.fn();
+    const rollback = vi.fn();
+    const prepare = vi.fn((current: Settings, merged: Settings) => {
+      expect(current.hotkeys.quickCapture).toBe(DEFAULT_HOTKEYS.quickCapture);
+      expect(merged.hotkeys.quickCapture).toBe("Control+Alt+C");
+      return { commit, rollback };
+    });
+
+    await svc.write(
+      { hotkeys: { quickCapture: "Control+Alt+C" } },
+      { prepare }
+    );
+
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(rollback).not.toHaveBeenCalled();
+    expect(JSON.parse(readFileSync(join(workDir, "settings.json"), "utf8")).hotkeys.quickCapture)
+      .toBe("Control+Alt+C");
+  });
+
+  test("rolls back staged external state when the atomic disk write fails", async () => {
+    const blocker = join(workDir, "not-a-directory");
+    writeFileSync(blocker, "blocks mkdir", "utf8");
+    const svc = new DesktopSettingsService({
+      filePath: join(blocker, "settings.json")
+    });
+    const commit = vi.fn();
+    const rollback = vi.fn();
+
+    await expect(
+      svc.write(
+        { hotkeys: { quickCapture: "Control+Alt+C" } },
+        { prepare: () => ({ commit, rollback }) }
+      )
+    ).rejects.toBeDefined();
+
+    expect(commit).not.toHaveBeenCalled();
+    expect(rollback).toHaveBeenCalledTimes(1);
+    expect(readFileSync(blocker, "utf8")).toBe("blocks mkdir");
+  });
 });
 
 describe("DesktopSettingsService legacy-shape catalog", () => {
@@ -212,9 +308,9 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     expect(settings.codex.pinnedPath).toBe("/x");
     expect(settings.codex.mode).toBe("pinned");
     expect(settings.ai.enabled).toBe(false); // filled
-    expect(settings.hotkeys.quickCapture).toBe("CommandOrControl+Shift+C"); // filled
+    expect(settings.hotkeys.quickCapture).toBe(HOST_HOTKEY_DEFAULTS.quickCapture); // filled
     // videoCapture wasn't in the older v1 shape — service fills it.
-    expect(settings.hotkeys.videoCapture).toBe("CommandOrControl+Alt+C");
+    expect(settings.hotkeys.videoCapture).toBe(HOST_HOTKEY_DEFAULTS.videoCapture);
   });
 
   test("v1 shape missing the newer hotkeys gets the defaults filled in", async () => {
@@ -238,14 +334,14 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     );
     const svc = new DesktopSettingsService({ filePath });
     const settings = await svc.read();
-    expect(settings.hotkeys.videoCapture).toBe("CommandOrControl+Alt+C");
-    expect(settings.hotkeys.quickCapture).toBe("CommandOrControl+Shift+C");
+    expect(settings.hotkeys.videoCapture).toBe(HOST_HOTKEY_DEFAULTS.videoCapture);
+    expect(settings.hotkeys.quickCapture).toBe(HOST_HOTKEY_DEFAULTS.quickCapture);
     // Capture-mode hotkeys are unbound by default (also tray-reachable).
     expect(settings.hotkeys.fullScreen).toBe("");
     expect(settings.hotkeys.allScreens).toBe("");
     expect(settings.hotkeys.timed).toBe("");
     // Re-show last Float-Over defaults to the three-modifier ⌘⌥⇧F chord.
-    expect(settings.hotkeys.reshowFloatOver).toBe("CommandOrControl+Alt+Shift+F");
+    expect(settings.hotkeys.reshowFloatOver).toBe(HOST_HOTKEY_DEFAULTS.reshowFloatOver);
   });
 
   test("v1 shape missing `library.gridZoom` gets the default filled in; out-of-range clamps", async () => {
@@ -362,16 +458,83 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     expect(reread.general.launchAtLogin).toBe(true);
   });
 
-  test("defaultSettings() seeds hotkeys from the shared DEFAULT_HOTKEYS", () => {
+  test("defaultSettings() seeds explicit platform hotkey defaults", () => {
     // Lock the renderer/main shared source: the Hotkeys page's "Reset to
     // defaults" reads the same object, so a drift here would silently
     // make Reset write a different chord than a fresh install.
-    expect(defaultSettings().hotkeys).toEqual(DEFAULT_HOTKEYS);
+    expect(defaultSettings("darwin").hotkeys).toEqual(DEFAULT_HOTKEYS);
+    expect(defaultSettings("win32").hotkeys).toEqual(
+      defaultHotkeysForPlatform("win32")
+    );
+    expect(defaultSettings("linux").hotkeys).toEqual(
+      defaultHotkeysForPlatform("linux")
+    );
+  });
+
+  test("migrates only physical matches for AltGr-unsafe non-Mac defaults", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        lastDefaultsMigrationVersion: "1.0.0-beta.26",
+        hotkeys: {
+          quickCapture: "Control+Shift+C",
+          videoCapture: "Control+Alt+C",
+          reshowFloatOver: "Control+Alt+Shift+F",
+          region: "Control+Alt+X"
+        }
+      }),
+      "utf8"
+    );
+
+    const settings = await new DesktopSettingsService({
+      filePath,
+      shortcutPlatform: "win32"
+    }).read();
+
+    expect(settings.hotkeys).toMatchObject({
+      quickCapture: "Control+Shift+C",
+      videoCapture: "",
+      reshowFloatOver: "",
+      region: "Control+Alt+X"
+    });
+    expect(settings.lastDefaultsMigrationVersion).toBe("1.1.0-alpha.5");
+    expect(
+      acceleratorsAreEquivalent(
+        "AltGr+C",
+        "Control+Alt+C",
+        "win32"
+      )
+    ).toBe(true);
+  });
+
+  test("preserves customized non-Mac chords during the managed-default migration", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        lastDefaultsMigrationVersion: "1.0.0-beta.26",
+        hotkeys: {
+          videoCapture: "Control+Alt+V",
+          reshowFloatOver: "Super+Alt+F"
+        }
+      }),
+      "utf8"
+    );
+
+    const settings = await new DesktopSettingsService({
+      filePath,
+      shortcutPlatform: "win32"
+    }).read();
+    expect(settings.hotkeys.videoCapture).toBe("Control+Alt+V");
+    expect(settings.hotkeys.reshowFloatOver).toBe("Super+Alt+F");
   });
 
   test("defaultSettings() leaves enrichment unpinned and records the defaults ledger", () => {
     const settings = defaultSettings();
-    expect(settings.lastDefaultsMigrationVersion).toBe("1.0.0-beta.26");
+    expect(settings.lastDefaultsMigrationVersion).toBe("1.1.0-alpha.5");
     expect(settings.codex.captionModel).toBe("gpt-5.6-luna");
     expect(settings.ai.defaults.enrichment).toEqual({});
   });
@@ -393,7 +556,7 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     const settings = await svc.read();
     expect(settings.codex.captionModel).toBe("gpt-5.6-luna");
     expect(settings.ai.defaults.enrichment).toEqual({});
-    expect(settings.lastDefaultsMigrationVersion).toBe("1.0.0-beta.26");
+    expect(settings.lastDefaultsMigrationVersion).toBe("1.1.0-alpha.5");
   });
 
   test("v1 shape with a newer `codex.captionModel` preserves the model id", async () => {
@@ -480,7 +643,7 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     const settings = await svc.read();
     expect(settings.ai.defaults.libraryChat).toEqual({});
     expect(settings.ai.defaults.sizzleChat).toEqual({});
-    expect(settings.lastDefaultsMigrationVersion).toBe("1.0.0-beta.26");
+    expect(settings.lastDefaultsMigrationVersion).toBe("1.1.0-alpha.5");
     expect(settings.codex.captionModel).toBe("gpt-5.4-mini");
     expect(settings.ai.defaults.enrichment).toEqual({});
 
@@ -491,7 +654,7 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
       lastDefaultsMigrationVersion?: string;
       ai?: { defaults?: { enrichment?: unknown } };
     };
-    expect(persisted.lastDefaultsMigrationVersion).toBe("1.0.0-beta.26");
+    expect(persisted.lastDefaultsMigrationVersion).toBe("1.1.0-alpha.5");
     expect(persisted.ai?.defaults?.enrichment).toEqual({});
   });
 
@@ -548,7 +711,7 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
 
     const settings = await new DesktopSettingsService({ filePath }).read();
     expect(settings.ai.defaults.enrichment).toEqual({});
-    expect(settings.lastDefaultsMigrationVersion).toBe("1.0.0-beta.26");
+    expect(settings.lastDefaultsMigrationVersion).toBe("1.1.0-alpha.5");
   });
 
   test("preserves an explicit enrichment effort instead of treating it as the old default", async () => {
@@ -1081,7 +1244,7 @@ describe("mergeSettings", () => {
     expect(merged.hotkeys.quickCapture).toBe(""); // "" IS a write
     // Region defaults to "" (unbound) now; preserved from `current`.
     expect(merged.hotkeys.region).toBe("");
-    expect(merged.hotkeys.videoCapture).toBe("CommandOrControl+Alt+C");
+    expect(merged.hotkeys.videoCapture).toBe(HOST_HOTKEY_DEFAULTS.videoCapture);
   });
 
   test("appearance.theme patch overwrites only the specified field", () => {

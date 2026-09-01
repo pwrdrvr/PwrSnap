@@ -62,6 +62,8 @@ describe("BridgeEndpoint", () => {
       principal: "mcp" as const,
       cancellationKey: "capture-123",
       sourceWindowId: 4,
+      sourceDocumentId: "documentepoch0001",
+      sourceSettingsHotkeyRecorderOwner: true as const,
       sourceBounds: { x: 10, y: 20, width: 30, height: 40 },
       localAgent: {
         clientId: "agent-1",

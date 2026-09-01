@@ -7,7 +7,7 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { app } from "electron";
-import type { PwrSnapError, Result } from "@pwrsnap/shared";
+import { err, type PwrSnapError, type Result } from "@pwrsnap/shared";
 import { bus, type CommandDispatchOptions } from "../command-bus";
 import { broadcastRendererEventToLocalWindows } from "../events";
 import { getMainLogger } from "../log";
@@ -217,6 +217,28 @@ export async function dispatchToLibraryProcess(
     code: result.ok ? undefined : result.error.code
   });
   return result;
+}
+
+/** Dispatch only when the current library process still exists. Recorder
+ * input-scope restoration uses this after close/crash: spawning a fresh
+ * library merely to clear menu state on a window that died with the old
+ * process would be both unnecessary and visibly surprising. */
+export async function dispatchToRunningLibraryProcess(
+  name: string,
+  req: unknown,
+  context: CommandDispatchOptions
+): Promise<Result<unknown, PwrSnapError>> {
+  const ep = endpoint;
+  if (child === null || ep === null) {
+    return err({
+      kind: "unknown",
+      code: "bridge_unavailable",
+      message: `no running library process; cannot dispatch ${name}`
+    });
+  }
+  const ready = await ep.waitForPeer(LIBRARY_READY_TIMEOUT_MS);
+  if (!ready.ok) return ready;
+  return ep.dispatchRemote(name, req, context);
 }
 
 /** Renderer-event relay toward the library. Deliberately does NOT

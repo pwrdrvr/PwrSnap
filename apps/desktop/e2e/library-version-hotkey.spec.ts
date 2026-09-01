@@ -18,6 +18,10 @@
 
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
+import {
+  acceleratorToDisplayText,
+  shortcutPlatformFromString
+} from "@pwrsnap/shared";
 import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 
 // Cold start budget — matches settings.spec.ts (each test launches a
@@ -31,6 +35,9 @@ const TOPBAR_VIDEO_CAPTURE = ".psl__capture-btn--video";
 const TOPBAR_CAPTURE_LABEL = ".psl__capture-label";
 const FOOTER_VERSION = ".psl__status-r b";
 const E2E_APP_VERSION = "1.2.3-beta.1";
+const SHORTCUT_PLATFORM = shortcutPlatformFromString(process.platform);
+const displayShortcut = (accelerator: string): string =>
+  acceleratorToDisplayText(accelerator, SHORTCUT_PLATFORM);
 
 async function resizeLibrary(app: Awaited<ReturnType<typeof launchPwrSnap>>, width: number) {
   await app.electronApp.evaluate(({ BrowserWindow }, targetWidth) => {
@@ -66,7 +73,7 @@ test("library top bar reads a seeded non-default Quick Capture chord on first pa
   // boots. `useHotkeys` starts at the EMPTY snapshot and only learns
   // the real value via its initial `settings:read`, so if the renderer
   // ever forgets to dispatch that read (or drops the response), the
-  // button never reaches ⌘⌥R and the assertion times out. Seeding on
+  // button never reaches its platform-native chord and the assertion times out. Seeding on
   // disk also proves the cold-start read path works, separate from the
   // broadcast path that the next test covers.
   const app = await launchPwrSnap({
@@ -83,7 +90,7 @@ test("library top bar reads a seeded non-default Quick Capture chord on first pa
   });
   try {
     await expect(app.window.locator(TOPBAR_QUICK_CAPTURE)).toContainText(
-      "Quick Capture · ⌘⌥R"
+      `Quick Capture · ${displayShortcut("CommandOrControl+Alt+R")}`
     );
   } finally {
     await app.close();
@@ -97,7 +104,7 @@ test("library top bar updates when settings:write changes the Quick Capture hotk
     // otherwise we can race the initial settings read and assert against
     // the patched value before useHotkeys has hydrated once.
     await expect(app.window.locator(TOPBAR_QUICK_CAPTURE)).toContainText(
-      "Quick Capture · ⌘⇧C"
+      `Quick Capture · ${displayShortcut("CommandOrControl+Shift+C")}`
     );
 
     // Pick a chord with three distinct modifiers + a letter so the
@@ -110,7 +117,7 @@ test("library top bar updates when settings:write changes the Quick Capture hotk
     expect(writeResult.ok).toBe(true);
 
     await expect(app.window.locator(TOPBAR_QUICK_CAPTURE)).toContainText(
-      "Quick Capture · ⌘⌥R"
+      `Quick Capture · ${displayShortcut("CommandOrControl+Alt+R")}`
     );
   } finally {
     await app.close();
@@ -121,7 +128,7 @@ test("library top bar falls back to bare 'Quick Capture' when the hotkey is unbo
   const app = await launchPwrSnap();
   try {
     // The Settings → Hotkeys page lets the user unbind a chord, which
-    // writes the empty string back. The button should drop the "· ⌘⇧C"
+    // writes the empty string back. The button should drop the chord
     // tail rather than render a dangling separator.
     const writeResult = await app.dispatch("settings:write", {
       hotkeys: { quickCapture: "" }

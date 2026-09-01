@@ -3,6 +3,11 @@
 // the handler is pure orchestration over those two modules.
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import {
+  acceleratorsAreEquivalent,
+  defaultHotkeysForPlatform,
+  type Settings
+} from "@pwrsnap/shared";
 
 // Hoisted spies so `vi.mock` factories can close over them. `vi.hoisted`
 // guarantees the assignments run before any imports — which is critical
@@ -78,6 +83,14 @@ function makeFakeWindow(): FakeWindow {
     restore: vi.fn(),
     webContents: { send: vi.fn() }
   };
+}
+
+function deferredSignal(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = () => done();
+  });
+  return { promise, resolve };
 }
 
 describe("settings:open", () => {
@@ -798,6 +811,537 @@ describe("settings:read + settings:write round-trip (integration)", () => {
     // Unmentioned fields stay at defaults
     expect(readRes.value.ai.enabled).toBe(false);
 
+    const aliasWrite = await bus.dispatch(
+      "settings:write",
+      { hotkeys: { region: "Ctrl+Alt+R" } },
+      { principal: "ipc" }
+    );
+    expect(aliasWrite.ok).toBe(true);
+    if (!aliasWrite.ok) throw new Error("unreachable");
+    expect(aliasWrite.value.hotkeys.region).toBe("Control+Alt+R");
+    expect((await service.read()).hotkeys.region).toBe("Control+Alt+R");
+
+    __setSettingsServicesForTests({ service: null, secrets: null });
+  });
+
+  test("Windows settings:write accepts and canonically persists AltGr and numpad keys", async () => {
+    const { mkdtemp } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const path = await import("node:path");
+    const dir = await mkdtemp(path.join(tmpdir(), "pwrsnap-hotkey-grammar-"));
+    const { DesktopSettingsService } = await import(
+      "../../settings/desktop-settings-service"
+    );
+    const { DesktopSecretStore } = await import(
+      "../../settings/desktop-secret-store"
+    );
+    const {
+      __setHotkeyRegistrationManagerForTests,
+      __setSettingsServicesForTests,
+      __setShortcutPlatformForTests,
+      onSettingsChanged
+    } = await import("../settings-handlers");
+    const service = new DesktopSettingsService({
+      filePath: path.join(dir, "settings.json"),
+      shortcutPlatform: "win32"
+    });
+    const secrets = new DesktopSecretStore({
+      filePath: path.join(dir, "secrets.bin")
+    });
+    __setSettingsServicesForTests({ service, secrets });
+    __setHotkeyRegistrationManagerForTests(null);
+    __setShortcutPlatformForTests("win32");
+    const listener = vi.fn();
+    const unsubscribe = onSettingsChanged(listener);
+
+    const altGr = await bus.dispatch(
+      "settings:write",
+      { hotkeys: { region: "AltGr+Q" } },
+      { principal: "ipc" }
+    );
+    const num0 = await bus.dispatch(
+      "settings:write",
+      { hotkeys: { fullScreen: "Ctrl+Num0" } },
+      { principal: "ipc" }
+    );
+    const numAdd = await bus.dispatch(
+      "settings:write",
+      { hotkeys: { allScreens: "Control+NumAdd" } },
+      { principal: "ipc" }
+    );
+    const defaultAlias = await bus.dispatch(
+      "settings:write",
+      { hotkeys: { quickCapture: "CommandOrControl+Shift+C" } },
+      { principal: "ipc" }
+    );
+
+    expect(altGr.ok).toBe(true);
+    expect(num0.ok).toBe(true);
+    expect(numAdd.ok).toBe(true);
+    expect(defaultAlias.ok).toBe(true);
+    if (!altGr.ok || !num0.ok || !numAdd.ok || !defaultAlias.ok) {
+      throw new Error("unreachable");
+    }
+    expect(altGr.value.hotkeys.region).toBe("AltGr+Q");
+    expect(num0.value.hotkeys.fullScreen).toBe("Control+num0");
+    expect(numAdd.value.hotkeys.allScreens).toBe("Control+numadd");
+    const persisted = await service.read();
+    expect(persisted.hotkeys).toMatchObject({
+      region: "AltGr+Q",
+      fullScreen: "Control+num0",
+      allScreens: "Control+numadd",
+      quickCapture: "Control+Shift+C"
+    });
+    expect(
+      acceleratorsAreEquivalent(
+        persisted.hotkeys.quickCapture,
+        defaultHotkeysForPlatform("win32").quickCapture,
+        "win32"
+      )
+    ).toBe(true);
+    expect(listener).toHaveBeenCalledTimes(4);
+
+    unsubscribe();
+    __setShortcutPlatformForTests(null);
+    __setSettingsServicesForTests({ service: null, secrets: null });
+  });
+
+  test("Windows settings:write rejects invalid shortcut tokens without persistence or broadcast", async () => {
+    const { mkdtemp } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const path = await import("node:path");
+    const dir = await mkdtemp(path.join(tmpdir(), "pwrsnap-hotkey-invalid-"));
+    const { DesktopSettingsService } = await import(
+      "../../settings/desktop-settings-service"
+    );
+    const { DesktopSecretStore } = await import(
+      "../../settings/desktop-secret-store"
+    );
+    const {
+      __setHotkeyRegistrationManagerForTests,
+      __setSettingsServicesForTests,
+      __setShortcutPlatformForTests,
+      onSettingsChanged
+    } = await import("../settings-handlers");
+    const service = new DesktopSettingsService({
+      filePath: path.join(dir, "settings.json")
+    });
+    const secrets = new DesktopSecretStore({
+      filePath: path.join(dir, "secrets.bin")
+    });
+    await service.write({ hotkeys: { region: "Control+Alt+R" } });
+    __setSettingsServicesForTests({ service, secrets });
+    __setHotkeyRegistrationManagerForTests(null);
+    __setShortcutPlatformForTests("win32");
+    const listener = vi.fn();
+    const unsubscribe = onSettingsChanged(listener);
+
+    for (const accelerator of [
+      "Control++",
+      "Control+NumPlus",
+      "AltGr+Control+Q",
+      "Command+Shift+C",
+      "Super+Command+C"
+    ]) {
+      const result = await bus.dispatch(
+        "settings:write",
+        { hotkeys: { region: accelerator } },
+        { principal: "ipc" }
+      );
+      expect(result.ok, accelerator).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.error).toMatchObject({
+        kind: "validation",
+        code: "invalid_hotkey_shape"
+      });
+      expect(result.error.message).toContain("Windows");
+      expect(result.error.message).not.toContain("win32");
+      expect(result.error.message).not.toMatch(/Cmd|Command|⌘|Super/);
+    }
+
+    expect((await service.read()).hotkeys.region).toBe("Control+Alt+R");
+    expect(listener).not.toHaveBeenCalled();
+
+    unsubscribe();
+    __setShortcutPlatformForTests(null);
+    __setSettingsServicesForTests({ service: null, secrets: null });
+  });
+
+  test("taken hotkey preserves the prior live binding and disk state with no event", async () => {
+    const { mkdtemp } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const path = await import("node:path");
+    const dir = await mkdtemp(path.join(tmpdir(), "pwrsnap-hotkey-handler-"));
+    const { DesktopSettingsService } = await import(
+      "../../settings/desktop-settings-service"
+    );
+    const { DesktopSecretStore } = await import(
+      "../../settings/desktop-secret-store"
+    );
+    const { HotkeyRegistrationManager } = await import(
+      "../../hotkeys/hotkey-registration-manager"
+    );
+    const {
+      __setHotkeyRegistrationManagerForTests,
+      __setSettingsServicesForTests,
+      onSettingsChanged
+    } = await import("../settings-handlers");
+    const service = new DesktopSettingsService({
+      filePath: path.join(dir, "settings.json")
+    });
+    const secrets = new DesktopSecretStore({
+      filePath: path.join(dir, "secrets.bin")
+    });
+    await service.write({ hotkeys: { quickCapture: "Control+Alt+R" } });
+    const live = new Map<string, () => void>();
+    const register = vi.fn((accelerator: string, callback: () => void) => {
+      if (accelerator === "Control+Shift+C" || live.has(accelerator)) return false;
+      live.set(accelerator, callback);
+      return true;
+    });
+    const unregister = vi.fn((accelerator: string) => {
+      live.delete(accelerator);
+    });
+    const manager = new HotkeyRegistrationManager({
+      platform: "win32",
+      registrar: { register, unregister },
+      callbackFor: () => vi.fn(),
+      logger: { warn: vi.fn(), error: vi.fn() }
+    });
+    manager.initialize((await service.read()).hotkeys);
+    __setSettingsServicesForTests({ service, secrets });
+    __setHotkeyRegistrationManagerForTests(manager);
+    const listener = vi.fn();
+    const unsubscribe = onSettingsChanged(listener);
+
+    const result = await bus.dispatch(
+      "settings:write",
+      { hotkeys: { quickCapture: "Control+Shift+C" } },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error).toMatchObject({
+      kind: "settings",
+      code: "hotkey_unavailable"
+    });
+    expect((await service.read()).hotkeys.quickCapture).toBe("Control+Alt+R");
+    expect(live.has("Control+Alt+R")).toBe(true);
+    expect(live.has("Control+Shift+C")).toBe(false);
+    expect(listener).not.toHaveBeenCalled();
+    expect(register).toHaveBeenCalledWith("Control+Shift+C", expect.any(Function));
+
+    unsubscribe();
+    __setHotkeyRegistrationManagerForTests(null);
+    __setSettingsServicesForTests({ service: null, secrets: null });
+  });
+
+  test("boot status preserves a taken binding and Retry activates only it after release", async () => {
+    const { mkdtemp } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const path = await import("node:path");
+    const dir = await mkdtemp(path.join(tmpdir(), "pwrsnap-hotkey-status-"));
+    const { DesktopSettingsService } = await import(
+      "../../settings/desktop-settings-service"
+    );
+    const { DesktopSecretStore } = await import(
+      "../../settings/desktop-secret-store"
+    );
+    const { HotkeyRegistrationManager } = await import(
+      "../../hotkeys/hotkey-registration-manager"
+    );
+    const {
+      __setHotkeyRegistrationManagerForTests,
+      __setSettingsServicesForTests,
+      onSettingsChanged
+    } = await import("../settings-handlers");
+    const service = new DesktopSettingsService({
+      filePath: path.join(dir, "settings.json")
+    });
+    const secrets = new DesktopSecretStore({
+      filePath: path.join(dir, "secrets.bin")
+    });
+    await service.write({
+      hotkeys: {
+        quickCapture: "Control+Shift+C",
+        region: "Control+Alt+R"
+      }
+    });
+    const live = new Map<string, () => void>();
+    const unavailable = new Set(["Control+Shift+C"]);
+    const register = vi.fn((accelerator: string, callback: () => void) => {
+      if (unavailable.has(accelerator) || live.has(accelerator)) return false;
+      live.set(accelerator, callback);
+      return true;
+    });
+    const unregister = vi.fn((accelerator: string) => {
+      live.delete(accelerator);
+    });
+    const manager = new HotkeyRegistrationManager({
+      platform: "win32",
+      registrar: { register, unregister },
+      callbackFor: () => vi.fn(),
+      logger: { warn: vi.fn(), error: vi.fn() }
+    });
+    manager.initialize((await service.read()).hotkeys);
+    __setSettingsServicesForTests({ service, secrets });
+    __setHotkeyRegistrationManagerForTests(manager);
+    const listener = vi.fn();
+    const unsubscribe = onSettingsChanged(listener);
+
+    const bootStatus = await bus.dispatch(
+      "settings:hotkeyStatus",
+      {},
+      { principal: "ipc" }
+    );
+
+    expect(bootStatus.ok).toBe(true);
+    if (!bootStatus.ok) throw new Error("unreachable");
+    expect(bootStatus.value.quickCapture).toMatchObject({
+      accelerator: "Control+Shift+C",
+      state: "inactive",
+      failure: { code: "unavailable" }
+    });
+    expect(bootStatus.value.region).toMatchObject({
+      accelerator: "Control+Alt+R",
+      state: "active",
+      failure: null
+    });
+    expect((await service.read()).hotkeys.quickCapture).toBe("Control+Shift+C");
+
+    const liveBeforeRetry = new Map(live);
+    unavailable.delete("Control+Shift+C");
+    const retry = await bus.dispatch(
+      "settings:retryHotkey",
+      { key: "quickCapture" },
+      { principal: "ipc" }
+    );
+
+    expect(retry.ok).toBe(true);
+    if (!retry.ok) throw new Error("unreachable");
+    expect(retry.value.quickCapture).toMatchObject({
+      accelerator: "Control+Shift+C",
+      state: "active",
+      failure: null
+    });
+    expect(retry.value.region.state).toBe("active");
+    for (const [accelerator, callback] of liveBeforeRetry) {
+      expect(live.get(accelerator)).toBe(callback);
+    }
+    expect(live.has("Control+Shift+C")).toBe(true);
+    expect(live.size).toBe(liveBeforeRetry.size + 1);
+    expect(unregister).not.toHaveBeenCalled();
+    expect((await service.read()).hotkeys.quickCapture).toBe("Control+Shift+C");
+    expect(listener).not.toHaveBeenCalled();
+
+    unsubscribe();
+    __setHotkeyRegistrationManagerForTests(null);
+    __setSettingsServicesForTests({ service: null, secrets: null });
+  });
+
+  test("settings:retryHotkey rejects an unknown runtime key", async () => {
+    const result = await bus.dispatch(
+      "settings:retryHotkey",
+      { key: "future-but-not-yet-declared" } as never,
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error).toMatchObject({
+      kind: "validation",
+      code: "invalid_hotkey_key"
+    });
+  });
+
+  test("Retry waits for an in-flight atomic settings write and cannot create a ghost binding", async () => {
+    const { mkdtemp } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const path = await import("node:path");
+    const dir = await mkdtemp(path.join(tmpdir(), "pwrsnap-hotkey-retry-race-"));
+    const { DesktopSettingsService } = await import(
+      "../../settings/desktop-settings-service"
+    );
+    const { DesktopSecretStore } = await import(
+      "../../settings/desktop-secret-store"
+    );
+    const { HotkeyRegistrationManager } = await import(
+      "../../hotkeys/hotkey-registration-manager"
+    );
+    const {
+      __setHotkeyRegistrationManagerForTests,
+      __setSettingsServicesForTests,
+      onSettingsChanged
+    } = await import("../settings-handlers");
+    const atomicWriteEntered = deferredSignal();
+    const releaseAtomicWrite = deferredSignal();
+
+    class DeferredAtomicWriteService extends DesktopSettingsService {
+      private armed = false;
+
+      armNextAtomicWrite(): void {
+        this.armed = true;
+      }
+
+      protected override async atomicWriteJson(value: Settings): Promise<void> {
+        if (this.armed) {
+          this.armed = false;
+          atomicWriteEntered.resolve();
+          await releaseAtomicWrite.promise;
+        }
+        await super.atomicWriteJson(value);
+      }
+    }
+
+    const service = new DeferredAtomicWriteService({
+      filePath: path.join(dir, "settings.json")
+    });
+    const secrets = new DesktopSecretStore({
+      filePath: path.join(dir, "secrets.bin")
+    });
+    await service.write({
+      hotkeys: {
+        quickCapture: "Control+Shift+C",
+        region: "Control+Alt+R"
+      }
+    });
+    const live = new Map<string, () => void>();
+    const unavailable = new Set(["Control+Shift+C"]);
+    const register = vi.fn((accelerator: string, callback: () => void) => {
+      if (unavailable.has(accelerator) || live.has(accelerator)) return false;
+      live.set(accelerator, callback);
+      return true;
+    });
+    const unregister = vi.fn((accelerator: string) => {
+      live.delete(accelerator);
+    });
+    const manager = new HotkeyRegistrationManager({
+      platform: "win32",
+      registrar: { register, unregister },
+      callbackFor: () => vi.fn(),
+      logger: { warn: vi.fn(), error: vi.fn() }
+    });
+    manager.initialize((await service.read()).hotkeys);
+    const liveBeforeWrite = new Map(live);
+    __setSettingsServicesForTests({ service, secrets });
+    __setHotkeyRegistrationManagerForTests(manager);
+    const listener = vi.fn();
+    const unsubscribe = onSettingsChanged(listener);
+
+    service.armNextAtomicWrite();
+    const writePromise = bus.dispatch(
+      "settings:write",
+      { hotkeys: { quickCapture: "Control+Alt+X" } },
+      { principal: "ipc" }
+    );
+    await atomicWriteEntered.promise;
+    expect(live.has("Control+Alt+X")).toBe(true);
+
+    unavailable.delete("Control+Shift+C");
+    let retrySettled = false;
+    const retryPromise = bus
+      .dispatch(
+        "settings:retryHotkey",
+        { key: "quickCapture" },
+        { principal: "ipc" }
+      )
+      .then((result) => {
+        retrySettled = true;
+        return result;
+      });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(retrySettled).toBe(false);
+    expect(live.has("Control+Shift+C")).toBe(false);
+
+    releaseAtomicWrite.resolve();
+    const [write, retry] = await Promise.all([writePromise, retryPromise]);
+
+    expect(write.ok).toBe(true);
+    expect(retry.ok).toBe(true);
+    if (!retry.ok) throw new Error("unreachable");
+    expect(retry.value.quickCapture).toMatchObject({
+      accelerator: "Control+Alt+X",
+      state: "active",
+      failure: null
+    });
+    expect(live.has("Control+Alt+X")).toBe(true);
+    expect(live.has("Control+Shift+C")).toBe(false);
+    expect(
+      register.mock.calls.filter(([accelerator]) => accelerator === "Control+Shift+C")
+    ).toHaveLength(1);
+    for (const [accelerator, callback] of liveBeforeWrite) {
+      expect(live.get(accelerator)).toBe(callback);
+    }
+    expect((await service.read()).hotkeys.quickCapture).toBe("Control+Alt+X");
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+    __setHotkeyRegistrationManagerForTests(null);
+    __setSettingsServicesForTests({ service: null, secrets: null });
+  });
+
+  test("disk failure rolls back a staged hotkey and keeps the prior live binding", async () => {
+    const { mkdtemp, writeFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const path = await import("node:path");
+    const dir = await mkdtemp(path.join(tmpdir(), "pwrsnap-hotkey-disk-failure-"));
+    const blocker = path.join(dir, "not-a-directory");
+    await writeFile(blocker, "block atomic settings write", "utf8");
+    const { DesktopSettingsService, defaultSettings } = await import(
+      "../../settings/desktop-settings-service"
+    );
+    const { DesktopSecretStore } = await import(
+      "../../settings/desktop-secret-store"
+    );
+    const { HotkeyRegistrationManager } = await import(
+      "../../hotkeys/hotkey-registration-manager"
+    );
+    const {
+      __setHotkeyRegistrationManagerForTests,
+      __setSettingsServicesForTests
+    } = await import("../settings-handlers");
+    const live = new Map<string, () => void>();
+    const register = vi.fn((accelerator: string, callback: () => void) => {
+      if (live.has(accelerator)) return false;
+      live.set(accelerator, callback);
+      return true;
+    });
+    const unregister = vi.fn((accelerator: string) => {
+      live.delete(accelerator);
+    });
+    const manager = new HotkeyRegistrationManager({
+      platform: "win32",
+      registrar: { register, unregister },
+      callbackFor: () => vi.fn(),
+      logger: { warn: vi.fn(), error: vi.fn() }
+    });
+    manager.initialize(defaultSettings().hotkeys);
+    const service = new DesktopSettingsService({
+      filePath: path.join(blocker, "settings.json")
+    });
+    const secrets = new DesktopSecretStore({
+      filePath: path.join(dir, "secrets.bin")
+    });
+    __setSettingsServicesForTests({ service, secrets });
+    __setHotkeyRegistrationManagerForTests(manager);
+
+    const result = await bus.dispatch(
+      "settings:write",
+      { hotkeys: { quickCapture: "Control+Alt+X" } },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("write_failed");
+    expect(live.has("Control+Shift+C")).toBe(true);
+    expect(live.has("Control+Alt+X")).toBe(false);
+    expect(unregister).toHaveBeenCalledWith("Control+Alt+X");
+
+    __setHotkeyRegistrationManagerForTests(null);
     __setSettingsServicesForTests({ service: null, secrets: null });
   });
 

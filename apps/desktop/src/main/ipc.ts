@@ -13,6 +13,7 @@ import {
 import type { RenderPreset, VideoExportCoordinates, VideoPreset } from "@pwrsnap/shared";
 import { bus } from "./command-bus";
 import { getMainLogger } from "./log";
+import { admitHotkeyRecorderDocument } from "./hotkeys/hotkey-recorder-document";
 
 const log = getMainLogger("pwrsnap:ipc");
 
@@ -24,7 +25,7 @@ function ipcCancellationKey(name: string, req: unknown): string | undefined {
 }
 
 export function registerIpcDispatcher(): void {
-  ipcMain.handle(IPC_CMD, async (event, name: string, req: unknown) => {
+  ipcMain.handle(IPC_CMD, async (event, name: string, req: unknown, documentId: unknown) => {
     if (typeof name !== "string" || !bus.isRegistered(name)) {
       log.warn("ipc: unknown command", { name });
       return {
@@ -41,6 +42,24 @@ export function registerIpcDispatcher(): void {
     };
     if (sourceWindow !== null && sourceWindow !== undefined) {
       dispatchOptions.sourceWindowId = sourceWindow.id;
+    }
+    const senderFrame = event.senderFrame;
+    const mainFrame = event.sender.isDestroyed() ? null : event.sender.mainFrame;
+    if (
+      sourceWindow !== null &&
+      sourceWindow !== undefined &&
+      senderFrame !== null &&
+      mainFrame !== null &&
+      senderFrame.processId === mainFrame.processId &&
+      senderFrame.routingId === mainFrame.routingId
+    ) {
+      const admittedDocumentId = admitHotkeyRecorderDocument(
+        event.sender.id,
+        documentId
+      );
+      if (admittedDocumentId !== null) {
+        dispatchOptions.sourceDocumentId = admittedDocumentId;
+      }
     }
     const result = await bus.dispatch(name, req as never, dispatchOptions);
     return result;

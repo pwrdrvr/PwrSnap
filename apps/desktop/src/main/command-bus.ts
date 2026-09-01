@@ -48,6 +48,14 @@ export type CommandContext = {
   principal: CommandPrincipal;
   /** BrowserWindow id for renderer-originated commands, when known. */
   sourceWindowId?: number;
+  /** Opaque preload epoch admitted for the current renderer main document. */
+  sourceDocumentId?: string;
+  /**
+   * The library process verified that the bridged renderer identity belongs
+   * to its live Settings document. This attestation is minted only by the
+   * library main process; renderer IPC cannot supply command context fields.
+   */
+  sourceSettingsHotkeyRecorderOwner?: true;
   /** Screen-space bounds for non-window UI affordances, such as the tray icon. */
   sourceBounds?: CommandSourceBounds;
   localAgent?: {
@@ -68,6 +76,8 @@ export type CommandDispatchOptions = {
   principal: CommandPrincipal;
   cancellationKey?: string | undefined;
   sourceWindowId?: number | undefined;
+  sourceDocumentId?: string | undefined;
+  sourceSettingsHotkeyRecorderOwner?: true | undefined;
   sourceBounds?: CommandSourceBounds | undefined;
   localAgent?: CommandContext["localAgent"];
 };
@@ -223,6 +233,12 @@ class CommandBus {
       };
       if (options.sourceWindowId !== undefined) {
         ctx.sourceWindowId = options.sourceWindowId;
+      }
+      if (options.sourceDocumentId !== undefined) {
+        ctx.sourceDocumentId = options.sourceDocumentId;
+      }
+      if (options.sourceSettingsHotkeyRecorderOwner === true) {
+        ctx.sourceSettingsHotkeyRecorderOwner = true;
       }
       if (options.sourceBounds !== undefined) {
         ctx.sourceBounds = options.sourceBounds;

@@ -120,6 +120,9 @@ function isCommandDispatchOptions(value: unknown): value is CommandDispatchOptio
     isCommandPrincipal(context["principal"]) &&
     isOptionalString(context["cancellationKey"]) &&
     isOptionalInteger(context["sourceWindowId"]) &&
+    isOptionalString(context["sourceDocumentId"]) &&
+    (context["sourceSettingsHotkeyRecorderOwner"] === undefined ||
+      context["sourceSettingsHotkeyRecorderOwner"] === true) &&
     isSourceBounds(context["sourceBounds"]) &&
     isLocalAgentContext(context["localAgent"])
   );

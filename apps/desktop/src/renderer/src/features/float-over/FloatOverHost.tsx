@@ -29,16 +29,19 @@ import {
   type FloatOverVideoCopyShortcutEvent,
   type RenderPreset,
   type Settings,
-  type SettingsChangedEvent
+  type SettingsChangedEvent,
+  type ShortcutPlatform
 } from "@pwrsnap/shared";
 import { FloatOver } from "./FloatOver";
 import type { VideoCopyShortcutRequest } from "../shared/VideoExportPresetsPanel";
 import { enrichmentBackendLabel } from "../shared/CodexStatusPill";
 import { isEnrichmentProviderAvailable } from "../shared/enrichment-provider-availability";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
+import { useSurfaceCopyShortcuts } from "../shared/useSurfaceCopyShortcuts";
 import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
 import { copyImagePreset, copyImagePresetPath } from "../../lib/clipboard-copy";
 import { useCapturesLocationDisplayState } from "../../lib/useCapturesLocationDisplayState";
+import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 
 type HostState =
   | { kind: "idle" }
@@ -69,7 +72,14 @@ type AiRunUpdatedPayload = {
   enrichment?: CaptureEnrichment | null;
 };
 
-export function FloatOverHost(): React.ReactElement {
+export type FloatOverHostProps = {
+  /** Explicit host semantics keep local shortcut behavior deterministic. */
+  readonly shortcutPlatform?: ShortcutPlatform;
+};
+
+export function FloatOverHost({
+  shortcutPlatform = rendererShortcutPlatform()
+}: FloatOverHostProps): React.ReactElement {
   const [state, setState] = useState<HostState>({ kind: "idle" });
   const [copyPulses, setCopyPulses] = useState(INITIAL_COPY_PULSES);
   const [videoCopyShortcut, setVideoCopyShortcut] =
@@ -95,6 +105,25 @@ export function FloatOverHost(): React.ReactElement {
     state.kind === "loaded" && state.record.kind === "image" ? state.record.id : null,
     state.kind === "loaded" && state.record.kind === "image" ? state.record.edits_version : null
   );
+  const activeImageRecord =
+    state.kind === "loaded" && state.record.kind === "image" ? state.record : null;
+  // Main owns these chords globally for the non-activating toast. Keep a
+  // renderer owner as well so a focused toast still honors its visible
+  // keycaps when the OS delivers the chord locally instead of through the
+  // transient global registration.
+  useSurfaceCopyShortcuts({
+    assetKind: activeImageRecord === null ? null : "image",
+    enabled: activeImageRecord !== null,
+    platform: shortcutPlatform,
+    onShortcut: (shortcut) => {
+      if (shortcut.kind !== "image" || activeImageRecord === null) return;
+      copyImagePreset(activeImageRecord.id, shortcut.preset);
+      setCopyPulses((current) => ({
+        ...current,
+        [shortcut.preset]: current[shortcut.preset] + 1
+      }));
+    }
+  });
 
   // ResizeObserver → main: shrink the BrowserWindow to fit the visible
   // toast. Same pattern as TrayMenu.tsx's `pwrsnap:tray:resize`
@@ -369,48 +398,6 @@ export function FloatOverHost(): React.ReactElement {
     };
   }, [enrichmentProviderSelector]);
 
-  // ⌘1 / ⌘2 / ⌘3 → clipboard:copy. Always-mounted listener — no remount-
-  // induced gaps where the keystroke is in flight but the listener has
-  // detached. Reads the active captureId from a ref so the closure
-  // stays stable across state transitions.
-  //
-  // Previously this effect depended on `[state]` and re-subscribed
-  // every time `aiRunUpdated` arrived. Each enrichment IPC bumps the
-  // host's state object (same record.id, fresh enrichment field), so
-  // the listener was being torn down and rebuilt on every Codex tick.
-  // A keystroke in the brief detach window was lost; worse, if React
-  // batched the state update mid-keypress the captured `state.record.id`
-  // could go stale. Bug v.
-  //
-  // The fix: a ref that the host mutates whenever it transitions
-  // states. The window-level keydown listener subscribes ONCE
-  // (mount/unmount only) and always reads the current capture id
-  // from the ref. No more detach/attach churn on each enrichment
-  // broadcast.
-  const activeCaptureIdRef = useRef<string | null>(null);
-  activeCaptureIdRef.current = state.kind === "loaded" ? state.record.id : null;
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent): void {
-      if (!event.metaKey || event.shiftKey || event.altKey) return;
-      let preset: "low" | "med" | "high" | null = null;
-      if (event.key === "1") preset = "low";
-      else if (event.key === "2") preset = "med";
-      else if (event.key === "3") preset = "high";
-      if (preset === null) return;
-      // Only accept the shortcut when we have a capture loaded —
-      // pressing ⌘1 over an idle pre-show is a no-op.
-      const captureId = activeCaptureIdRef.current;
-      if (captureId === null) return;
-      event.preventDefault();
-      copyImagePreset(captureId, preset);
-      setCopyPulses((current) => ({ ...current, [preset]: current[preset] + 1 }));
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, []);
-
   // Single return path so contentRef wraps every state — the
   // ResizeObserver above always has a stable target it can observe
   // across state transitions. Inside the wrapper we branch on state.
@@ -516,6 +503,7 @@ export function FloatOverHost(): React.ReactElement {
       <FloatOver
         key={record.id}
         asset={asset}
+        shortcutPlatform={shortcutPlatform}
         src={previewSrc}
         enhancedSrc={enhancedPreviewSrc}
         onCopy={(preset) => copyImagePreset(record.id, preset)}

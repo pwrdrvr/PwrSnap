@@ -48,6 +48,8 @@ import {
   type ReactElement,
   type ReactNode
 } from "react";
+import type { ShortcutPlatform } from "@pwrsnap/shared";
+import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import { isPrimaryAccel } from "./keyboard";
 
 export interface RightActivityTab<Id extends string> {
@@ -124,6 +126,10 @@ export interface RightActivityBarProps<Id extends string> {
    *  always needs a number. Defaults to `pinnedWidthPx` when that is
    *  numeric, else 320px. */
   readonly hoverWidthPx?: number;
+  /** Explicit override for deterministic primary-modifier tests. */
+  readonly shortcutPlatform?: ShortcutPlatform;
+  /** Disable global chords when the parent surface owns the same digits. */
+  readonly keyboardEnabled?: boolean;
 }
 
 // CSS variable read with a numeric fallback (mirrors EditorChrome).
@@ -189,7 +195,9 @@ export function RightActivityBar<Id extends string>(
     className,
     testIdPrefix = "right-activity-bar",
     pinnedWidthPx = 320,
-    hoverWidthPx
+    hoverWidthPx,
+    shortcutPlatform = rendererShortcutPlatform(),
+    keyboardEnabled = true
   } = props;
 
   const [hoverPanel, setHoverPanel] = useState<Id | null>(null);
@@ -312,8 +320,12 @@ export function RightActivityBar<Id extends string>(
         }
         return;
       }
+      // A parent can reserve the primary-modifier chords for another active
+      // surface (Grid reserves the numbered keys for copy/export). Escape is
+      // still owned here so an unpinned hover panel remains dismissible.
+      if (!keyboardEnabled) return;
       if (inEditable) return;
-      if (!isPrimaryAccel(event)) return;
+      if (!isPrimaryAccel(event, shortcutPlatform)) return;
 
       if (event.key === "\\") {
         event.preventDefault();
@@ -342,7 +354,16 @@ export function RightActivityBar<Id extends string>(
     return () => {
       window.removeEventListener("keydown", handler);
     };
-  }, [hoverPanel, pinned, activeTab, onPinChange, onTabChange, tabs]);
+  }, [
+    hoverPanel,
+    pinned,
+    activeTab,
+    onPinChange,
+    onTabChange,
+    tabs,
+    shortcutPlatform,
+    keyboardEnabled
+  ]);
 
   const reducedMotion = useMemo(() => prefersReducedMotion(), []);
   const showPinnedPanel = pinned;

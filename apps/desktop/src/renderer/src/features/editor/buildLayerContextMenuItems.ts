@@ -29,7 +29,11 @@
 // each row. They're informational — clicking the row dispatches the
 // item's verb directly, the kbd accel still works independently.
 
-import type { OverlayRow } from "@pwrsnap/shared";
+import {
+  acceleratorToDisplayText,
+  type OverlayRow,
+  type ShortcutPlatform
+} from "@pwrsnap/shared";
 
 /** Identifiers used both to label the action AND to route the click
  *  back to the right callback in the caller. Kept as a string-union
@@ -74,22 +78,18 @@ export interface BuildLayerContextMenuItemsArgs {
   readonly overlays: readonly OverlayRow[];
 }
 
-/** Built-in accelerator strings — match the bindings in
- *  Editor.tsx's global keyboard handler. Cmd is rendered as ⌘ to
- *  match macOS convention; on the renderer side we use bare key
- *  glyphs because PwrSnap is macOS-first. Cross-platform variants
- *  ship in Phase 8 (per CLAUDE.md). */
-const ACCEL = {
-  editText: "↵",
-  cut: "⌘X",
-  copy: "⌘C",
-  paste: "⌘V",
-  duplicate: "⌘D",
-  delete: "⌫",
-  bringToFront: "⌘⇧]",
-  bringForward: "⌘]",
-  sendBackward: "⌘[",
-  sendToBack: "⌘⇧["
+/** Canonical accelerators matching Editor.tsx's keyboard handler. */
+const ACCELERATOR = {
+  editText: "Return",
+  cut: "CommandOrControl+X",
+  copy: "CommandOrControl+C",
+  paste: "CommandOrControl+V",
+  duplicate: "CommandOrControl+D",
+  delete: "Backspace",
+  bringToFront: "CommandOrControl+Shift+]",
+  bringForward: "CommandOrControl+]",
+  sendBackward: "CommandOrControl+[",
+  sendToBack: "CommandOrControl+Shift+["
 } as const;
 
 /** Sentinel for the separator entry. Renderer detects via
@@ -103,9 +103,12 @@ const SEPARATOR: LayerContextMenuItem = {
 };
 
 export function buildLayerContextMenuItems(
-  args: BuildLayerContextMenuItemsArgs
+  args: BuildLayerContextMenuItemsArgs,
+  shortcutPlatform: ShortcutPlatform
 ): LayerContextMenuItem[] {
   const { selectedLayerIds, overlays } = args;
+  const accel = (id: keyof typeof ACCELERATOR): string =>
+    acceleratorToDisplayText(ACCELERATOR[id], shortcutPlatform);
   const hasSelection = selectedLayerIds.length > 0;
   const isSingleSelection = selectedLayerIds.length === 1;
   // Look up the single selected layer's kind to gate "Edit Text".
@@ -126,7 +129,7 @@ export function buildLayerContextMenuItems(
     items.push({
       id: "edit-text",
       label: "Edit Text",
-      accel: ACCEL.editText,
+      accel: accel("editText"),
       enabled: true
     });
     items.push(SEPARATOR);
@@ -136,19 +139,19 @@ export function buildLayerContextMenuItems(
   items.push({
     id: "cut",
     label: "Cut",
-    accel: ACCEL.cut,
+    accel: accel("cut"),
     enabled: hasSelection
   });
   items.push({
     id: "copy",
     label: "Copy",
-    accel: ACCEL.copy,
+    accel: accel("copy"),
     enabled: hasSelection
   });
   items.push({
     id: "paste",
     label: "Paste",
-    accel: ACCEL.paste,
+    accel: accel("paste"),
     // Always-on per the issue's "no new IPC verbs" constraint —
     // we don't have a cheap "is OS clipboard non-empty for our UTI"
     // probe, and disabling based on in-memory alone would miss the
@@ -159,7 +162,7 @@ export function buildLayerContextMenuItems(
   items.push({
     id: "duplicate",
     label: "Duplicate",
-    accel: ACCEL.duplicate,
+    accel: accel("duplicate"),
     enabled: hasSelection
   });
 
@@ -173,25 +176,25 @@ export function buildLayerContextMenuItems(
   items.push({
     id: "bring-to-front",
     label: "Bring to Front",
-    accel: ACCEL.bringToFront,
+    accel: accel("bringToFront"),
     enabled: hasSelection
   });
   items.push({
     id: "bring-forward",
     label: "Bring Forward",
-    accel: ACCEL.bringForward,
+    accel: accel("bringForward"),
     enabled: hasSelection
   });
   items.push({
     id: "send-backward",
     label: "Send Backward",
-    accel: ACCEL.sendBackward,
+    accel: accel("sendBackward"),
     enabled: hasSelection
   });
   items.push({
     id: "send-to-back",
     label: "Send to Back",
-    accel: ACCEL.sendToBack,
+    accel: accel("sendToBack"),
     enabled: hasSelection
   });
 
@@ -203,7 +206,7 @@ export function buildLayerContextMenuItems(
   items.push({
     id: "delete",
     label: "Delete",
-    accel: ACCEL.delete,
+    accel: accel("delete"),
     enabled: hasSelection
   });
 

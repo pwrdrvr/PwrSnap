@@ -17,7 +17,11 @@
 // the panel is safe to mount even before a video selection lands.
 
 import { useEffect, useRef, type ReactElement } from "react";
-import type { FloatOverVideoCopyShortcutEvent, VideoRange } from "@pwrsnap/shared";
+import type {
+  FloatOverVideoCopyShortcutEvent,
+  ShortcutPlatform,
+  VideoRange
+} from "@pwrsnap/shared";
 import { useVideoExportPresets } from "./useVideoExportPresets";
 import { useVideoPresetMetrics } from "./useVideoPresetMetrics";
 import { VideoExportPresetGrid } from "./VideoExportPresetGrid";
@@ -32,6 +36,8 @@ export type VideoExportPresetsPanelProps = {
    *  sequence prevents a range update from replaying the same shortcut
    *  when `triggerCopy` is recreated with the new live range. */
   readonly copyShortcut?: VideoCopyShortcutRequest | null | undefined;
+  readonly shortcutPlatform?: ShortcutPlatform;
+  readonly showShortcutHints?: boolean;
 };
 
 export type VideoCopyShortcutRequest = FloatOverVideoCopyShortcutEvent & {
@@ -41,7 +47,9 @@ export type VideoCopyShortcutRequest = FloatOverVideoCopyShortcutEvent & {
 export function VideoExportPresetsPanel({
   captureId,
   range,
-  copyShortcut
+  copyShortcut,
+  shortcutPlatform,
+  showShortcutHints
 }: VideoExportPresetsPanelProps): ReactElement {
   const { states, triggerCopy, triggerCopyPath, triggerDrag } =
     useVideoExportPresets(captureId === null ? null : { captureId, range });
@@ -66,6 +74,8 @@ export function VideoExportPresetsPanel({
       onCopy={triggerCopy}
       onCopyPath={triggerCopyPath}
       onDrag={triggerDrag}
+      {...(shortcutPlatform === undefined ? {} : { shortcutPlatform })}
+      {...(showShortcutHints === undefined ? {} : { showShortcutHints })}
     />
   );
 }

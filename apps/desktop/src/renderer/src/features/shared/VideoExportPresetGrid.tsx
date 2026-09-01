@@ -11,7 +11,12 @@
 // `useVideoPresetMetrics`. The DetailRail composes them.
 
 import type { ReactElement } from "react";
-import type { VideoPreset } from "@pwrsnap/shared";
+import {
+  acceleratorToDisplayText,
+  type ShortcutPlatform,
+  type VideoPreset
+} from "@pwrsnap/shared";
+import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import { VideoExportCard, readMetric } from "./VideoExportCard";
 import {
   videoPresetKey,
@@ -34,6 +39,10 @@ export type VideoExportPresetGridProps = {
    *  against the source dims using the same per-preset model the
    *  main-side estimator uses. */
   readonly fallback?: Partial<Record<`${"gif" | "mp4"}-${VideoPreset}`, { dim: string; bytes: string }>>;
+  /** Explicit override for deterministic platform-presentation tests. */
+  readonly shortcutPlatform?: ShortcutPlatform;
+  /** Hide chords when the embedding surface delegates numbered keys elsewhere. */
+  readonly showShortcutHints?: boolean;
 };
 
 const PRESETS: readonly VideoPreset[] = ["low", "med", "high"] as const;
@@ -43,16 +52,15 @@ const PRESET_LABELS: Readonly<Record<VideoPreset, string>> = {
   high: "High"
 };
 
-// ⌘1 / ⌘2 / ⌘3 → GIF L/M/H ; ⌘4 / ⌘5 / ⌘6 → MP4 L/M/H. The
-// surrounding grid container binds the shortcuts via a keydown
-// handler; the kbd labels here are just visual cues.
-const KBD: Readonly<Record<`${"gif" | "mp4"}-${VideoPreset}`, string>> = {
-  "gif-low": "⌘1",
-  "gif-med": "⌘2",
-  "gif-high": "⌘3",
-  "mp4-low": "⌘4",
-  "mp4-med": "⌘5",
-  "mp4-high": "⌘6"
+// The active parent surface owns these chords. This grid only renders the
+// matching hint, so multiple grids never install duplicate listeners.
+const ACCELERATOR: Readonly<Record<`${"gif" | "mp4"}-${VideoPreset}`, string>> = {
+  "gif-low": "CommandOrControl+1",
+  "gif-med": "CommandOrControl+2",
+  "gif-high": "CommandOrControl+3",
+  "mp4-low": "CommandOrControl+4",
+  "mp4-med": "CommandOrControl+5",
+  "mp4-high": "CommandOrControl+6"
 };
 
 const EMPTY_FALLBACK = { dim: "—", bytes: "—" };
@@ -68,7 +76,9 @@ export function VideoExportPresetGrid({
   onCopy,
   onCopyPath,
   onDrag,
-  fallback
+  fallback,
+  shortcutPlatform = rendererShortcutPlatform(),
+  showShortcutHints = true
 }: VideoExportPresetGridProps): ReactElement {
   return (
     <>
@@ -81,8 +91,7 @@ export function VideoExportPresetGrid({
           {/* Format header — distinguishes the GIF row from the MP4
               row at a glance. Without this the two rows are
               visually identical (cards labeled just "Low / Med /
-              High") and the kbd hints (⌘1-3 vs ⌘4-6) are too
-              small to disambiguate. */}
+              High"). */}
           <div className="psl__copy-format-eyebrow">
             <span>{FORMAT_LABELS[format]}</span>
             <span className="psl__copy-format-eyebrow-line" />
@@ -103,7 +112,11 @@ export function VideoExportPresetGrid({
                   format={format}
                   preset={preset}
                   label={PRESET_LABELS[preset]}
-                  kbd={KBD[key]}
+                  kbd={
+                    showShortcutHints
+                      ? acceleratorToDisplayText(ACCELERATOR[key], shortcutPlatform)
+                      : null
+                  }
                   dim={dim}
                   bytes={bytes}
                   state={cellState}

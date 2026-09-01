@@ -15,7 +15,13 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactElement
 } from "react";
-import { sizzleProjectCaptureIds, type SizzleProject } from "@pwrsnap/shared";
+import {
+  acceleratorToDisplayText,
+  sizzleProjectCaptureIds,
+  type ShortcutPlatform,
+  type SizzleProject
+} from "@pwrsnap/shared";
+import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import { CapturePicker } from "./CapturePicker";
 import { ChatResizer, getSavedChatWidth, setSavedChatWidth } from "./ChatResizer";
@@ -30,6 +36,7 @@ import {
 } from "./ProjectRail";
 import { SizzleChatPanel } from "./SizzleChatPanel";
 import { isTypingTarget } from "./sizzle-helpers";
+import { isPrimaryAccel } from "../shared/keyboard";
 import { useSizzleProject } from "./useSizzleProject";
 import "./sizzle.css";
 
@@ -54,7 +61,14 @@ type PickerTarget =
   | { kind: "scene" }
   | { kind: "sequenceBeat"; sceneId: string };
 
-export function SizzleApp(): ReactElement {
+export type SizzleAppProps = {
+  /** Explicit host semantics keep shortcut behavior deterministic in tests. */
+  readonly shortcutPlatform?: ShortcutPlatform;
+};
+
+export function SizzleApp({
+  shortcutPlatform = rendererShortcutPlatform()
+}: SizzleAppProps): ReactElement {
   const {
     projects,
     active,
@@ -131,7 +145,7 @@ export function SizzleApp(): ReactElement {
     [selectProjectState]
   );
 
-  // Rail-as-dropdown: close on outside click / Esc, toggle with ⌘⇧L.
+  // Rail-as-dropdown: close on outside click / Esc, toggle with primary+Shift+L.
   const railIsPopover = active !== null;
   useEffect(() => {
     if (!railIsPopover || !railOpen) return;
@@ -163,14 +177,19 @@ export function SizzleApp(): ReactElement {
       // Popping a dropdown mid-sentence while preventDefault swallows the
       // keystroke is what makes a shortcut feel broken.
       if (isTypingTarget(event.target)) return;
-      if (event.metaKey && event.shiftKey && !event.altKey && !event.ctrlKey && event.key.toLowerCase() === "l") {
+      if (
+        isPrimaryAccel(event, shortcutPlatform) &&
+        event.shiftKey &&
+        !event.altKey &&
+        event.key.toLowerCase() === "l"
+      ) {
         event.preventDefault();
         setRailOpen((v) => !v);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [railIsPopover]);
+  }, [railIsPopover, shortcutPlatform]);
   useEffect(() => {
     setSavedChatWidth(chatWidth);
   }, [chatWidth]);
@@ -229,7 +248,7 @@ export function SizzleApp(): ReactElement {
               aria-expanded={railOpen}
               aria-controls="szl-rail"
               onClick={() => setRailOpen((v) => !v)}
-              title="Browse Sizzle Reels (⌘⇧L)"
+              title={`Browse Sizzle Reels (${acceleratorToDisplayText("CommandOrControl+Shift+L", shortcutPlatform)})`}
               data-testid="sizzle-rail-toggle"
             >
               Sizzle Reels

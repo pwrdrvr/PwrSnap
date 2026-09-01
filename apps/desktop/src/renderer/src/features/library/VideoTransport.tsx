@@ -8,9 +8,11 @@
 // root and the keyboard model keeps working after a click.
 
 import { useEffect, useRef, type ReactElement } from "react";
+import type { ShortcutPlatform } from "@pwrsnap/shared";
+import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import type { PlayheadSource } from "../shared/playhead";
 import { formatTimecode } from "../shared/video-range";
-import { KEY_HINTS } from "./video-transport-keys";
+import { videoTransportKeyHints } from "./video-transport-keys";
 
 export type VideoTransportProps = {
   playing: boolean;
@@ -27,6 +29,7 @@ export type VideoTransportProps = {
   onToggleLoop: () => void;
   onToggleMute: () => void;
   onFullscreen: () => void;
+  shortcutPlatform?: ShortcutPlatform;
 };
 
 const keepFocus = (e: { preventDefault: () => void }): void => e.preventDefault();
@@ -64,12 +67,15 @@ function TransportTimecode({
 
 export function VideoTransport(props: VideoTransportProps): ReactElement {
   const { playing, currentTime, playhead, durationSec, loopInRange, muted } = props;
+  const keyHints = videoTransportKeyHints(
+    props.shortcutPlatform ?? rendererShortcutPlatform()
+  );
   return (
     <div className="psl__vt" role="toolbar" aria-label="Video transport" data-testid="video-transport">
       <button
         type="button"
         className="psl__vt-btn is-play"
-        title={KEY_HINTS.play}
+        title={keyHints.play}
         aria-label={playing ? "Pause" : "Play"}
         aria-pressed={playing}
         onMouseDown={keepFocus}
@@ -88,7 +94,7 @@ export function VideoTransport(props: VideoTransportProps): ReactElement {
         )}
       </button>
 
-      <span className="psl__vt-time" title={KEY_HINTS.step} data-testid="video-transport-time">
+      <span className="psl__vt-time" title={keyHints.step} data-testid="video-transport-time">
         <TransportTimecode currentTime={currentTime} playhead={playhead} />
         <i>/</i>
         <span>{formatTimecode(durationSec)}</span>
@@ -99,7 +105,7 @@ export function VideoTransport(props: VideoTransportProps): ReactElement {
       <button
         type="button"
         className={`psl__vt-btn${loopInRange ? " is-on" : ""}`}
-        title={`${KEY_HINTS.loop} · ${KEY_HINTS.trim}`}
+        title={`${keyHints.loop} · ${keyHints.trim}`}
         aria-label="Loop in range"
         aria-pressed={loopInRange}
         onMouseDown={keepFocus}
@@ -128,7 +134,7 @@ export function VideoTransport(props: VideoTransportProps): ReactElement {
       <button
         type="button"
         className={`psl__vt-btn${muted ? " is-on" : ""}`}
-        title={KEY_HINTS.mute}
+        title={keyHints.mute}
         aria-label={muted ? "Unmute" : "Mute"}
         aria-pressed={muted}
         onMouseDown={keepFocus}
@@ -172,7 +178,7 @@ export function VideoTransport(props: VideoTransportProps): ReactElement {
       <button
         type="button"
         className="psl__vt-btn"
-        title={KEY_HINTS.fullscreen}
+        title={keyHints.fullscreen}
         aria-label="Fullscreen"
         onMouseDown={keepFocus}
         onClick={props.onFullscreen}

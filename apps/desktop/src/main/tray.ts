@@ -26,8 +26,13 @@ import {
 } from "electron";
 import {
   DEFAULT_HOTKEYS,
+  normalizeAccelerator,
+  shortcutPlatformFromString,
+  type HotkeyRegistrationStatusSnapshot,
+  type HotkeySettingKey,
   type RecordingState,
-  type Settings
+  type Settings,
+  type ShortcutPlatform
 } from "@pwrsnap/shared";
 import { bus } from "./command-bus";
 import { getMainLogger } from "./log";
@@ -95,16 +100,50 @@ let trayWindow: BrowserWindow | null = null;
 let lastTrayResizeRequest: { cssHeight: number; dipHeight: number } | null = null;
 let pendingDismiss: ReturnType<typeof setTimeout> | null = null;
 let currentTrayHotkeys: Settings["hotkeys"] = { ...DEFAULT_HOTKEYS };
+let resolveTrayHotkeyStatus: (() => HotkeyRegistrationStatusSnapshot) | null = null;
 
 function idleTrayTooltip(): string {
   return "PwrSnap — Quick Capture";
 }
 
-export function setTrayHotkeys(hotkeys: Settings["hotkeys"]): void {
+export function setTrayHotkeys(
+  hotkeys: Settings["hotkeys"],
+  resolveStatus: () => HotkeyRegistrationStatusSnapshot
+): void {
   currentTrayHotkeys = { ...hotkeys };
+  resolveTrayHotkeyStatus = resolveStatus;
   if (tray !== null && !isRecordingActive()) {
     tray.setToolTip(idleTrayTooltip());
   }
+}
+
+/**
+ * A native-menu label is allowed to advertise only a shortcut PwrSnap owns
+ * in the OS right now. Persisted spelling is untrusted legacy input: parse it
+ * against the explicit host platform, and omit it if runtime ownership is
+ * inactive or the spelling is no longer supported there.
+ */
+function activeTrayAccelerator(
+  kind: HotkeySettingKey,
+  platform: ShortcutPlatform
+): string | null {
+  if (resolveTrayHotkeyStatus === null) return null;
+  let status: HotkeyRegistrationStatusSnapshot;
+  try {
+    status = resolveTrayHotkeyStatus();
+  } catch (cause) {
+    log.warn("failed to read tray hotkey registration status", {
+      kind,
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+    return null;
+  }
+  const item = status[kind];
+  const persisted = currentTrayHotkeys[kind];
+  if (item.state !== "active" || item.accelerator !== persisted) return null;
+  const normalized = normalizeAccelerator(persisted, platform);
+  if (!normalized.ok || normalized.unbound) return null;
+  return normalized.normalized;
 }
 
 /**
@@ -746,8 +785,11 @@ export function setTrayCountdown(text: string | null): void {
 }
 
 export function buildTrayContextMenuTemplate(
-  trayBounds?: Electron.Rectangle
+  trayBounds?: Electron.Rectangle,
+  platform: ShortcutPlatform = shortcutPlatformFromString(process.platform)
 ): MenuItemConstructorOptions[] {
+  const quickCaptureAccelerator = activeTrayAccelerator("quickCapture", platform);
+  const videoCaptureAccelerator = activeTrayAccelerator("videoCapture", platform);
   // Top of menu changes while recording — the user almost certainly
   // came here to stop, so make Stop the first item and demote the
   // Capture row. Cancel sits next to Stop so a botched recording
@@ -772,8 +814,15 @@ export function buildTrayContextMenuTemplate(
   const baseTemplate: MenuItemConstructorOptions[] = [
     {
       label: "Quick Capture…",
-      ...(currentTrayHotkeys.quickCapture !== ""
-        ? { accelerator: currentTrayHotkeys.quickCapture }
+      ...(quickCaptureAccelerator !== null
+        ? {
+            accelerator: quickCaptureAccelerator,
+            // On Windows/Linux Electron otherwise installs a second menu-owned
+            // accelerator in addition to PwrSnap's transactional global
+            // shortcut. The native menu should display the chord only; macOS
+            // retains its native menu accelerator behavior.
+            ...(platform !== "darwin" ? { registerAccelerator: false } : {})
+          }
         : {}),
       click: () => {
         void bus.dispatch("capture:interactive", { mode: "auto" }, { principal: "ipc" });
@@ -785,8 +834,11 @@ export function buildTrayContextMenuTemplate(
       // tray popover + Library header. No sourceWindowId on a tray
       // dispatch, so the record leaves the Library as a valid target.
       label: "Record Video…",
-      ...(currentTrayHotkeys.videoCapture !== ""
-        ? { accelerator: currentTrayHotkeys.videoCapture }
+      ...(videoCaptureAccelerator !== null
+        ? {
+            accelerator: videoCaptureAccelerator,
+            ...(platform !== "darwin" ? { registerAccelerator: false } : {})
+          }
         : {}),
       click: () => {
         void bus.dispatch("capture:videoInteractive", {}, { principal: "ipc" });

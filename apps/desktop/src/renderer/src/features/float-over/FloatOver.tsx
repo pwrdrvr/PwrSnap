@@ -5,6 +5,7 @@ import type {
   ExportStrategy,
   PwrSnapError,
   Result,
+  ShortcutPlatform,
   VideoRange
 } from "@pwrsnap/shared";
 import {
@@ -34,6 +35,7 @@ import {
 import { VideoTimeline } from "../shared/VideoTimeline";
 import { useVideoTimelineAssets } from "../shared/useVideoTimelineAssets";
 import { useVideoTrimRange } from "../shared/useVideoTrimRange";
+import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import { FoIcon } from "./FoIcons";
 
 const RES_PRESETS = [
@@ -271,6 +273,7 @@ export type FloatOverAsset =
 export function FloatOver({
   variant = "standard",
   asset,
+  shortcutPlatform = rendererShortcutPlatform(),
   src,
   enhancedSrc,
   srcW = 2880,
@@ -318,6 +321,8 @@ export function FloatOver({
    *  call sites that haven't migrated stay on the image flow via
    *  `src` / `onCopy` / etc. */
   asset?: FloatOverAsset;
+  /** Explicit host semantics for the shortcut hints rendered in this toast. */
+  shortcutPlatform?: ShortcutPlatform;
   src: string;
   enhancedSrc?: string | undefined;
   srcW?: number;
@@ -958,6 +963,7 @@ export function FloatOver({
             copyShortcut={videoCopyShortcut}
             onTrimDraggingChange={setTrimDragging}
             previewVideoRef={previewVideoRef}
+            shortcutPlatform={shortcutPlatform}
           />
         </div>
       ) : (
@@ -1319,12 +1325,14 @@ function FloatOverVideoExport({
   asset,
   copyShortcut,
   onTrimDraggingChange,
-  previewVideoRef
+  previewVideoRef,
+  shortcutPlatform
 }: {
   asset: Extract<FloatOverAsset, { kind: "video" }>;
   copyShortcut?: VideoCopyShortcutRequest | null | undefined;
   onTrimDraggingChange: (dragging: boolean) => void;
   previewVideoRef: React.RefObject<HTMLVideoElement | null>;
+  shortcutPlatform: ShortcutPlatform;
 }) {
   const [stripWidth, setStripWidth] = useState(0);
   const seekPreview = useCallback(
@@ -1371,6 +1379,7 @@ function FloatOverVideoExport({
         captureId={asset.captureId}
         range={trim.range}
         copyShortcut={copyShortcut}
+        shortcutPlatform={shortcutPlatform}
       />
     </>
   );

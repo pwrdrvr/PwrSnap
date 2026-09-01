@@ -17,12 +17,26 @@
 // −20% / text input / +20% buttons. Selected row gets a checkmark.
 
 import { useCallback, useEffect, useId, useRef, useState, type ReactElement } from "react";
+import {
+  acceleratorToDisplayKeys,
+  acceleratorToDisplayText,
+  type ShortcutPlatform
+} from "@pwrsnap/shared";
+import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import type { ZoomApi } from "./Editor";
 import "./ZoomMenu.css";
 
 const ZOOM_STEP = 1.2; // 20% relative
 
-export function ZoomMenu({ zoom }: { zoom: NonNullable<ZoomApi> }): ReactElement {
+export function ZoomMenu({
+  zoom,
+  shortcutPlatform = rendererShortcutPlatform()
+}: {
+  zoom: NonNullable<ZoomApi>;
+  shortcutPlatform?: ShortcutPlatform;
+}): ReactElement {
+  const primaryModifier =
+    acceleratorToDisplayKeys("CommandOrControl", shortcutPlatform)[0] ?? "Ctrl";
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -124,7 +138,9 @@ export function ZoomMenu({ zoom }: { zoom: NonNullable<ZoomApi> }): ReactElement
             <span className="ed-zoom-row-meta">
               {zoom.fitPct === null ? "" : `${Math.round(zoom.fitPct)}%`}
             </span>
-            <span className="ed-zoom-row-key">⌘0</span>
+            <span className="ed-zoom-row-key">
+              {acceleratorToDisplayText("CommandOrControl+0", shortcutPlatform)}
+            </span>
           </button>
           <button
             type="button"
@@ -139,7 +155,6 @@ export function ZoomMenu({ zoom }: { zoom: NonNullable<ZoomApi> }): ReactElement
             <Check show={zoom.mode === "actual"} />
             <span>100%</span>
             <span className="ed-zoom-row-meta" />
-            <span className="ed-zoom-row-key">⌘1</span>
           </button>
           <div className="ed-zoom-custom">
             <button
@@ -149,7 +164,9 @@ export function ZoomMenu({ zoom }: { zoom: NonNullable<ZoomApi> }): ReactElement
               aria-label="Zoom out 20%"
             >
               <span aria-hidden="true">−</span>
-              <span className="ed-zoom-step-key">⌘-</span>
+              <span className="ed-zoom-step-key">
+                {acceleratorToDisplayText("CommandOrControl+-", shortcutPlatform)}
+              </span>
             </button>
             <div className="ed-zoom-input">
               <input
@@ -185,11 +202,13 @@ export function ZoomMenu({ zoom }: { zoom: NonNullable<ZoomApi> }): ReactElement
               aria-label="Zoom in 20%"
             >
               <span aria-hidden="true">+</span>
-              <span className="ed-zoom-step-key">⌘+</span>
+              <span className="ed-zoom-step-key">
+                {acceleratorToDisplayText("CommandOrControl+Plus", shortcutPlatform)}
+              </span>
             </button>
           </div>
           <div className="ed-zoom-hint">
-            <span><kbd>⌘</kbd>+scroll cursor zoom</span>
+            <span><kbd>{primaryModifier}</kbd>+scroll cursor zoom</span>
             <span>· two-finger scroll pans</span>
           </div>
         </div>

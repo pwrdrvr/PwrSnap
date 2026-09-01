@@ -45,6 +45,7 @@ import type {
   CaptureRecord,
   ExportStrategy,
   GridCopyPaletteAnchor,
+  ShortcutPlatform,
   Settings,
   SettingsChangedEvent
 } from "@pwrsnap/shared";
@@ -60,6 +61,7 @@ import { VideoExportPresetsPanel } from "../shared/VideoExportPresetsPanel";
 import { dispatch, startCaptureDrag, subscribe } from "../../lib/pwrsnap";
 import { copyImagePreset, copyImagePresetPath } from "../../lib/clipboard-copy";
 import { resolveFollowAnchor } from "./grid-copy-palette-anchor";
+import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 
 const COPY_PRESETS = ["low", "med", "high"] as const;
 const COPY_LABELS: Record<(typeof COPY_PRESETS)[number], string> = {
@@ -129,12 +131,14 @@ export type GridCopyPaletteProps = {
   /** Scroll the selected capture back into view. When omitted the
    *  locator is not offered. */
   readonly onLocate?: (captureId: string) => void;
+  readonly shortcutPlatform?: ShortcutPlatform;
 };
 
 export function GridCopyPalette({
   record,
   copyPulses,
-  onLocate
+  onLocate,
+  shortcutPlatform = rendererShortcutPlatform()
 }: GridCopyPaletteProps): ReactElement {
   // Two independent positions, selected by `anchor`. Keeping them apart
   // means flipping follow → pinned restores the user's last dragged
@@ -552,7 +556,10 @@ export function GridCopyPalette({
         </div>
         {isVideo ? (
           <div data-testid="psl-grid-copy-palette-video">
-            <VideoExportPresetsPanel captureId={record.id} />
+            <VideoExportPresetsPanel
+              captureId={record.id}
+              shortcutPlatform={shortcutPlatform}
+            />
           </div>
         ) : (
           <div className="psl__copy-row">
@@ -580,6 +587,7 @@ export function GridCopyPalette({
                   }
                   disabled={unavailable}
                   onCopy={(preset) => copyImagePreset(record.id, preset)}
+                  shortcutPlatform={shortcutPlatform}
                   onCopyPath={(preset) => copyImagePresetPath(record.id, preset)}
                   onDrag={(preset) => startCaptureDrag(record.id, preset)}
                   copyPulse={copyPulses?.[p] ?? 0}

@@ -168,16 +168,12 @@ test("library-right-rail: video capture footer renders the 6-card preset grid", 
       await expect(row.getByText("High", { exact: true })).toHaveCount(1);
     }
 
-    // Keyboard shortcut hints — ⌘1-⌘3 on the GIF row, ⌘4-⌘6 on
-    // the MP4 row. Each maps to the corresponding card in left-to-
-    // right order. Anchors the layout: a regression that swaps row
-    // order (MP4 on top instead of GIF) would fail here.
-    await expect(gifRow.getByText("⌘1", { exact: true })).toBeVisible();
-    await expect(gifRow.getByText("⌘2", { exact: true })).toBeVisible();
-    await expect(gifRow.getByText("⌘3", { exact: true })).toBeVisible();
-    await expect(mp4Row.getByText("⌘4", { exact: true })).toBeVisible();
-    await expect(mp4Row.getByText("⌘5", { exact: true })).toBeVisible();
-    await expect(mp4Row.getByText("⌘6", { exact: true })).toBeVisible();
+    // Focus mode deliberately does not advertise primary+1..6: the shared
+    // grid is presentational, and the Library's single numbered-shortcut
+    // owner is active only in Grid mode. A visible hint here would promise a
+    // chord that this surface does not own.
+    await expect(gifRow.locator(".fo__copy-kbd")).toHaveCount(0);
+    await expect(mp4Row.locator(".fo__copy-kbd")).toHaveCount(0);
 
     // Eyebrow flipped from "Copy to clipboard" to "Export" for video.
     const footer = win.locator('[data-testid="psl-right-footer"]');

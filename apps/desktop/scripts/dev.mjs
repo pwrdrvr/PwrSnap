@@ -8,6 +8,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const desktopRoot = resolve(__dirname, "..");
 const repoRoot = resolve(desktopRoot, "../..");
+const WINDOWS_UTF8_CHILD_ARG = "--pwrsnap-windows-utf8-child";
 
 export const ELECTRON_DEV_ENV_KEYS = [
   "ELECTRON_EXEC_PATH",
@@ -63,6 +64,27 @@ function run(command, args, env) {
     return 1;
   }
   return result.status ?? 1;
+}
+
+export function windowsUtf8DevBridge(
+  argv,
+  platform = process.platform,
+  nodePath = process.execPath
+) {
+  if (platform !== "win32" || argv[0] === WINDOWS_UTF8_CHILD_ARG) return null;
+  return {
+    command: "powershell.exe",
+    args: [
+      "-NoLogo",
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      resolve(__dirname, "dev-windows.ps1"),
+      nodePath,
+      ...argv
+    ]
+  };
 }
 
 const TERMINAL_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
@@ -416,5 +438,12 @@ export async function main(argv = process.argv.slice(2), inputEnv = process.env)
 
 const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : "";
 if (import.meta.url === invokedPath) {
-  process.exitCode = await main();
+  const argv = process.argv.slice(2);
+  const bridge = windowsUtf8DevBridge(argv);
+  if (bridge !== null) {
+    process.exitCode = run(bridge.command, bridge.args, process.env);
+  } else {
+    const mainArgs = argv[0] === WINDOWS_UTF8_CHILD_ARG ? argv.slice(1) : argv;
+    process.exitCode = await main(mainArgs);
+  }
 }

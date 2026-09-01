@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -10,7 +10,8 @@ import {
   ensureElectronInstalled,
   electronInstallState,
   runLongLived,
-  sanitizeDevEnv
+  sanitizeDevEnv,
+  windowsUtf8DevBridge
 } from "./dev.mjs";
 
 const tempDirs = [];
@@ -99,6 +100,46 @@ function createFakeChildWithoutPid() {
 }
 
 describe("dev launch environment", () => {
+  it("uses an ASCII-only UTF-8 PowerShell bridge for Windows development", () => {
+    const bridgeBytes = readFileSync(join(import.meta.dirname, "dev-windows.ps1"));
+    const bridge = bridgeBytes.toString("utf8");
+
+    // Windows PowerShell 5.1 treats a BOM-free script as the active ANSI code
+    // page, so the bridge itself must remain ASCII-only. Electron writes UTF-8
+    // to its inherited console; setting the console code page before launch
+    // prevents characters such as em dashes and multiplication signs from
+    // being decoded as OEM-437 mojibake.
+    expect(bridgeBytes.every((byte) => byte <= 0x7f)).toBe(true);
+    expect(bridge).toContain("New-Object System.Text.UTF8Encoding($false)");
+    expect(bridge).toContain("[Console]::OutputEncoding = $utf8NoBom");
+    expect(bridge).toContain("$OutputEncoding = $utf8NoBom");
+    expect(bridge).toContain("[Console]::OutputEncoding = $previousOutputEncoding");
+  });
+
+  it("routes only the outer Windows dev process through the UTF-8 bridge", () => {
+    const nodePath = String.raw`C:\nvm4w\nodejs\node.exe`;
+    const bridge = windowsUtf8DevBridge(["--host", "127.0.0.1"], "win32", nodePath);
+
+    expect(bridge).toEqual({
+      command: "powershell.exe",
+      args: [
+        "-NoLogo",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        join(import.meta.dirname, "dev-windows.ps1"),
+        nodePath,
+        "--host",
+        "127.0.0.1"
+      ]
+    });
+    expect(
+      windowsUtf8DevBridge(["--pwrsnap-windows-utf8-child"], "win32", nodePath)
+    ).toBeNull();
+    expect(windowsUtf8DevBridge([], "darwin", process.execPath)).toBeNull();
+  });
+
   it("scrubs inherited Electron and module-resolution variables", () => {
     const inherited = {
       ELECTRON_EXEC_PATH: "/other/repo/Electron",

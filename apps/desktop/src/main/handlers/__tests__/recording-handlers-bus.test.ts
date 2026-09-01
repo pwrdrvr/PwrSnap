@@ -320,6 +320,87 @@ describe("recording:* command-bus surface", () => {
     expect(JSON.stringify(result)).not.toContain("PwrSnapFFmpeg.exe");
     expect(JSON.stringify(result)).not.toContain("--token");
   });
+
+  test.each([
+    ["spoofed title", "Untrusted renderer title"],
+    ["non-string title", { nested: "value" }]
+  ])("recording:start rejects %s before touching the recorder", async (_name, windowTitle) => {
+    const result = await bus.dispatch(
+      "recording:start",
+      {
+        subject: {
+          kind: "window",
+          windowId: 77,
+          rect: { x: 0, y: 0, w: 100, h: 100 },
+          displayId: 1,
+          windowTitle
+        },
+        capabilities: { systemAudio: false, microphone: false },
+        countdownSeconds: 0
+      } as never,
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected error");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("invalid_recording_start");
+    expect(mocks.start).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["rect", { x: 0, y: 0, w: 0, h: 100 }],
+    ["displayId", 1.5],
+    ["windowId", -1],
+    ["appName", 42],
+    ["appBundleId", { path: "spoof" }]
+  ])("recording:start validates window subject field %s", async (field, invalidValue) => {
+    const subject: Record<string, unknown> = {
+      kind: "window",
+      windowId: 77,
+      rect: { x: 0, y: 0, w: 100, h: 100 },
+      displayId: 1,
+      appName: "Example",
+      appBundleId: "com.example"
+    };
+    subject[field] = invalidValue;
+    const result = await bus.dispatch(
+      "recording:start",
+      {
+        subject,
+        capabilities: { systemAudio: false, microphone: false },
+        countdownSeconds: 0
+      } as never,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    expect(mocks.start).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["capabilities", { systemAudio: "yes", microphone: false }],
+    ["countdownSeconds", 31],
+    ["captureCursor", "yes"],
+    ["unknown", true]
+  ])("recording:start validates top-level field %s", async (field, invalidValue) => {
+    const request: Record<string, unknown> = {
+      subject: {
+        kind: "region",
+        rect: { x: 0, y: 0, w: 100, h: 100 },
+        displayId: 1
+      },
+      capabilities: { systemAudio: false, microphone: false },
+      countdownSeconds: 0
+    };
+    request[field] = invalidValue;
+    const result = await bus.dispatch(
+      "recording:start",
+      request as never,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    expect(mocks.start).not.toHaveBeenCalled();
+  });
 });
 
 describe("permissions:* command-bus surface", () => {

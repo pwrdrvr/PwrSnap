@@ -13,6 +13,7 @@ import { copyFile, mkdir, rename, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { ok, err, recordingFailureSummary } from "@pwrsnap/shared";
 import type {
+  Commands,
   PwrSnapError,
   RecordingCapabilities,
   RecordingFailureCode,
@@ -134,6 +135,149 @@ async function guardRecordingAttempt(
     );
   }
   return null;
+}
+
+type RecordingStartRequest = Commands["recording:start"]["req"];
+
+const RECORDING_COUNTDOWN_MAX_SECONDS = 30;
+const RECORDING_APP_NAME_MAX_CODE_POINTS = 512;
+const RECORDING_APP_ID_MAX_CODE_POINTS = 2_048;
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKeys(
+  value: Record<string, unknown>,
+  allowed: readonly string[]
+): boolean {
+  const allowedSet = new Set(allowed);
+  return Object.keys(value).every((key) => allowedSet.has(key));
+}
+
+function isFiniteRect(value: unknown): boolean {
+  if (!isObjectRecord(value) || !hasOnlyKeys(value, ["x", "y", "w", "h"])) {
+    return false;
+  }
+  return (
+    typeof value.x === "number" &&
+    Number.isFinite(value.x) &&
+    typeof value.y === "number" &&
+    Number.isFinite(value.y) &&
+    typeof value.w === "number" &&
+    Number.isFinite(value.w) &&
+    value.w > 0 &&
+    typeof value.h === "number" &&
+    Number.isFinite(value.h) &&
+    value.h > 0
+  );
+}
+
+function isOptionalBoundedMetadata(
+  value: unknown,
+  maxCodePoints: number
+): boolean {
+  if (value === undefined || value === null) return true;
+  if (typeof value !== "string" || /\p{Cc}/u.test(value)) return false;
+  let codePoints = 0;
+  for (const _character of value) {
+    codePoints += 1;
+    if (codePoints > maxCodePoints) return false;
+  }
+  return true;
+}
+
+/** Runtime gate shared by IPC, HTTP, and future command transports. */
+export function validateRecordingStartRequest(
+  value: unknown
+): Result<RecordingStartRequest, PwrSnapError> {
+  const invalid = (): Result<RecordingStartRequest, PwrSnapError> =>
+    err(
+      validationError(
+        "invalid_recording_start",
+        "recording:start requires a valid subject, capabilities, countdown, and cursor option."
+      )
+    );
+
+  if (
+    !isObjectRecord(value) ||
+    !hasOnlyKeys(value, [
+      "subject",
+      "capabilities",
+      "countdownSeconds",
+      "captureCursor"
+    ])
+  ) {
+    return invalid();
+  }
+
+  const subject = value.subject;
+  if (!isObjectRecord(subject) || typeof subject.kind !== "string") return invalid();
+  if (!Number.isSafeInteger(subject.displayId)) return invalid();
+
+  if (subject.kind === "region") {
+    if (
+      !hasOnlyKeys(subject, ["kind", "rect", "displayId"]) ||
+      !isFiniteRect(subject.rect)
+    ) {
+      return invalid();
+    }
+  } else if (subject.kind === "window") {
+    if (
+      !hasOnlyKeys(subject, [
+        "kind",
+        "windowId",
+        "rect",
+        "displayId",
+        "appName",
+        "appBundleId"
+      ]) ||
+      !Number.isSafeInteger(subject.windowId) ||
+      (subject.windowId as number) <= 0 ||
+      !isFiniteRect(subject.rect) ||
+      !isOptionalBoundedMetadata(
+        subject.appName,
+        RECORDING_APP_NAME_MAX_CODE_POINTS
+      ) ||
+      !isOptionalBoundedMetadata(
+        subject.appBundleId,
+        RECORDING_APP_ID_MAX_CODE_POINTS
+      )
+    ) {
+      return invalid();
+    }
+  } else if (subject.kind === "display") {
+    if (!hasOnlyKeys(subject, ["kind", "displayId"])) return invalid();
+  } else {
+    return invalid();
+  }
+
+  const capabilities = value.capabilities;
+  if (
+    !isObjectRecord(capabilities) ||
+    !hasOnlyKeys(capabilities, ["systemAudio", "microphone"]) ||
+    typeof capabilities.systemAudio !== "boolean" ||
+    typeof capabilities.microphone !== "boolean"
+  ) {
+    return invalid();
+  }
+
+  if (
+    value.countdownSeconds !== undefined &&
+    (!Number.isInteger(value.countdownSeconds) ||
+      (value.countdownSeconds as number) < 0 ||
+      (value.countdownSeconds as number) > RECORDING_COUNTDOWN_MAX_SECONDS)
+  ) {
+    return invalid();
+  }
+  if (
+    value.captureCursor !== undefined &&
+    typeof value.captureCursor !== "boolean"
+  ) {
+    return invalid();
+  }
+
+  return ok(value as RecordingStartRequest);
 }
 
 /** Filename of the extracted full-clip audio under the video asset dir.
@@ -283,6 +427,9 @@ export function registerRecordingHandlers(): void {
   // ---- recording lifecycle ----
 
   bus.register("recording:start", async (req) => {
+    const validated = validateRecordingStartRequest(req);
+    if (!validated.ok) return validated;
+    const request = validated.value;
     if (getRecordingState().phase === "failed") {
       return err(
         validationError(
@@ -297,14 +444,14 @@ export function registerRecordingHandlers(): void {
     // the first-ever attempt and routes to System Settings thereafter
     // (see screen-permission-gate.ts). Missing audio is a degraded
     // continuation that the selector dialog handled before calling us.
-    const blocked = await guardRecordingAttempt(req.capabilities);
+    const blocked = await guardRecordingAttempt(request.capabilities);
     if (blocked) return blocked;
     try {
       const session = await getService().start({
-        subject: req.subject,
-        capabilities: req.capabilities,
-        captureCursor: req.captureCursor,
-        countdownSeconds: req.countdownSeconds ?? 3
+        subject: request.subject,
+        capabilities: request.capabilities,
+        captureCursor: request.captureCursor,
+        countdownSeconds: request.countdownSeconds ?? 3
       });
       return ok({ sessionId: session.sessionId });
     } catch (cause) {

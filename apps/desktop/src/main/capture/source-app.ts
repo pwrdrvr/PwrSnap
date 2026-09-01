@@ -64,6 +64,34 @@ export function resolveSelectionSourceApp(
 }
 
 /**
+ * Resolve the title for the exact window the selector snapped to.
+ *
+ * Title attribution is intentionally stricter than source-app attribution:
+ * app identity can safely fall back to the window under the selected rect,
+ * while a title from that fallback could describe a completely different
+ * document. The selector snapshot proves which process owned the selected
+ * native window id; a fresh list proves that the same id + pid still exists.
+ * Native window ids can be reused (especially HWNDs on Windows), so an id
+ * whose pid changed is treated as a miss rather than inheriting the new
+ * window's title.
+ *
+ * The live title wins when it changed between snapshots. Missing/empty titles
+ * are returned as-is and normalized at the persistence boundary.
+ */
+export function resolveSelectedWindowTitle(
+  snappedWindowId: number | undefined,
+  selectionSnapshot: readonly WindowInfo[],
+  liveWindows: readonly WindowInfo[]
+): string | null {
+  if (snappedWindowId === undefined) return null;
+  const selected = findWindowById(selectionSnapshot, snappedWindowId);
+  if (selected === null) return null;
+  const live = findWindowById(liveWindows, snappedWindowId);
+  if (live === null || live.pid !== selected.pid) return null;
+  return live.title;
+}
+
+/**
  * Decide whether the video-recording flow should consider raising our
  * own windows after the user commits a selection. The actual raise
  * looks up live `BrowserWindow` instances by intersecting the rect

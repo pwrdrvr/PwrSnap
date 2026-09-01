@@ -1169,6 +1169,11 @@
   font-weight: 500;
 }
 
+.pse-info-window-title {
+  unicode-bidi: isolate;
+  overflow-wrap: anywhere;
+}
+
 .pse-info-kind {
   display: inline-block;
   padding: 1px 6px;

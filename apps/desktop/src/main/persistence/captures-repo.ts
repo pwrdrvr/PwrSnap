@@ -40,12 +40,52 @@ import { prepareCached } from "./prepare-cached";
 import { listEnrichmentsByCaptureIds } from "./enrichment-repo";
 import { getVideoMetadata, listVideoMetadata } from "./video-repo";
 
+/** Persisted window titles are metadata, not unbounded document content. */
+export const SOURCE_WINDOW_TITLE_MAX_CODE_POINTS = 512;
+
+const DEFAULT_IGNORABLE = /\p{Default_Ignorable_Code_Point}/gu;
+
+function preserveTitleJoinerOrVariationSelector(value: string): boolean {
+  const codePoint = value.codePointAt(0);
+  return (
+    codePoint === 0x200c ||
+    codePoint === 0x200d ||
+    (codePoint !== undefined && codePoint >= 0xfe00 && codePoint <= 0xfe0f) ||
+    (codePoint !== undefined && codePoint >= 0xe0100 && codePoint <= 0xe01ef)
+  );
+}
+
+/**
+ * Normalize whitespace/control text and remove invisible formatting controls,
+ * while retaining joiners/variation selectors inside visible Unicode titles.
+ * The code-point bound avoids splitting a surrogate pair; a title that contains
+ * no displayable content becomes NULL.
+ */
+export function normalizeSourceWindowTitle(
+  value: unknown
+): string | null {
+  if (typeof value !== "string") return null;
+  const safeFormatCharacters = value.replace(DEFAULT_IGNORABLE, (character) =>
+    preserveTitleJoinerOrVariationSelector(character) ? character : ""
+  );
+  const normalized = safeFormatCharacters
+    .replace(/[\p{White_Space}\p{Cc}]+/gu, " ")
+    .trim();
+  const visibleContent = normalized.replace(DEFAULT_IGNORABLE, "");
+  if (visibleContent.length === 0) return null;
+  return [...normalized]
+    .slice(0, SOURCE_WINDOW_TITLE_MAX_CODE_POINTS)
+    .join("")
+    .trimEnd();
+}
+
 type CaptureRow = {
   id: string;
   kind: "image" | "video";
   captured_at: string;
   source_app_bundle_id: string | null;
   source_app_name: string | null;
+  source_window_title: string | null;
   legacy_src_path: string | null;
   bundle_path: string | null;
   flat_png_path: string | null;
@@ -80,6 +120,7 @@ function rowToRecord(row: CaptureRow): CaptureRecord {
     sha256: row.sha256,
     source_app_bundle_id: row.source_app_bundle_id,
     source_app_name: row.source_app_name,
+    source_window_title: row.source_window_title,
     edits_version: row.edits_version,
     deleted_at: row.deleted_at,
     has_alpha: row.has_alpha === 1,
@@ -96,6 +137,11 @@ export type InsertCapture = {
   captured_at: string;
   source_app_bundle_id: string | null;
   source_app_name: string | null;
+  /**
+   * Exact selected-window title. Omitted and null values persist as NULL;
+   * non-null values are normalized and bounded before binding to SQLite.
+   */
+  source_window_title?: string | null;
   /**
    * Pre-bundle-migration source path. New captures (post-bundle-flow
    * rewire) pass `null` here and populate `bundle_path` instead. The
@@ -182,6 +228,7 @@ function insertCaptureInTx(
     bundle_modified_at: input.bundle_modified_at ?? null,
     bundle_format_version: input.bundle_format_version ?? 1,
     bundle_edits_version: input.bundle_edits_version ?? 0,
+    source_window_title: normalizeSourceWindowTitle(input.source_window_title),
     has_alpha: input.has_alpha === true ? 1 : 0,
     legacy_composite_v2_migrated_at:
       input.bundle_path === null || input.bundle_path === undefined
@@ -192,7 +239,7 @@ function insertCaptureInTx(
     .prepare(
       `INSERT INTO captures (
         id, kind, captured_at,
-        source_app_bundle_id, source_app_name, legacy_src_path,
+        source_app_bundle_id, source_app_name, source_window_title, legacy_src_path,
         bundle_path, flat_png_path, bundle_modified_at,
         bundle_format_version, bundle_edits_version,
         legacy_composite_v2_migrated_at,
@@ -200,7 +247,7 @@ function insertCaptureInTx(
         byte_size, sha256, has_alpha, edits_version, deleted_at
       ) VALUES (
         @id, @kind, @captured_at,
-        @source_app_bundle_id, @source_app_name, @legacy_src_path,
+        @source_app_bundle_id, @source_app_name, @source_window_title, @legacy_src_path,
         @bundle_path, @flat_png_path, @bundle_modified_at,
         @bundle_format_version, @bundle_edits_version,
         @legacy_composite_v2_migrated_at,
@@ -585,7 +632,7 @@ export function listCaptures(filter: ListCapturesArgs): ListCapturesResult {
  * Two query plans share one filter spec:
  *
  *   - `query` set → JOIN `capture_search_fts` (FTS5 virtual table
- *     populated by migration 0017), MATCH the sanitized query,
+ *     populated by migration 0032), MATCH the sanitized query,
  *     extract `snippet(...)` for the matched fragment. Results default
  *     to FTS5 rank (relevance), with explicit chronological overrides.
  *   - `query` absent → no JOIN. Filter-only scan ordered by

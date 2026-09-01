@@ -102,6 +102,7 @@ function videoCapture(id: string, defaultRange = { start: 0, end: 5 }): CaptureR
     sha256: id,
     source_app_bundle_id: null,
     source_app_name: `Video ${id}`,
+    source_window_title: null,
     edits_version: 0,
     has_alpha: false,
     deleted_at: null,

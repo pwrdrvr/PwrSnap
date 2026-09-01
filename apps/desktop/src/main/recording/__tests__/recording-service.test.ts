@@ -28,7 +28,12 @@ const mocks = vi.hoisted(() => {
       message: string;
       context: Record<string, unknown> | undefined;
     }>,
-    pendingTimeouts: [] as Array<() => void>
+    pendingTimeouts: [] as Array<() => void>,
+    liveWindows: [] as Array<{
+      windowId: number;
+      pid: number;
+      title: unknown;
+    }>
   };
 });
 
@@ -166,12 +171,42 @@ vi.mock("../../handlers/codex-handlers", () => ({
   maybeEnqueueCaptureEnrichment: vi.fn()
 }));
 
-vi.mock("../../persistence/captures-repo", () => ({
-  insertCapture: vi.fn(() => ({
-    record: { id: "cap-1", kind: "video" }
-  })),
-  getCaptureById: vi.fn(() => ({ id: "cap-1", kind: "video", video: {} }))
+vi.mock("../../capture/window-list", () => ({
+  listWindows: vi.fn(async () => mocks.liveWindows)
 }));
+
+vi.mock("../../persistence/captures-repo", () => {
+  const SOURCE_WINDOW_TITLE_MAX_CODE_POINTS = 512;
+  const normalizeSourceWindowTitle = (
+    value: string | null | undefined
+  ): string | null => {
+    if (value === null || value === undefined) return null;
+    const safeFormatCharacters = value.replace(
+      /\p{Default_Ignorable_Code_Point}/gu,
+      (character) =>
+        /[\u200c\u200d\ufe00-\ufe0f]/u.test(character) ? character : ""
+    );
+    const normalized = safeFormatCharacters
+      .replace(/[\p{White_Space}\p{Cc}]+/gu, " ")
+      .trim();
+    if (normalized.replace(/\p{Default_Ignorable_Code_Point}/gu, "").length === 0) {
+      return null;
+    }
+    return [...normalized]
+      .slice(0, SOURCE_WINDOW_TITLE_MAX_CODE_POINTS)
+      .join("")
+      .trimEnd();
+  };
+
+  return {
+    SOURCE_WINDOW_TITLE_MAX_CODE_POINTS,
+    normalizeSourceWindowTitle,
+    insertCapture: vi.fn(() => ({
+      record: { id: "cap-1", kind: "video" }
+    })),
+    getCaptureById: vi.fn(() => ({ id: "cap-1", kind: "video", video: {} }))
+  };
+});
 
 vi.mock("../../persistence/source-store", () => ({
   adoptExistingFileAsSource: vi.fn(async () => ({
@@ -223,6 +258,7 @@ beforeEach(() => {
   mocks.currentState = { phase: "idle" };
   mocks.infoLogs.length = 0;
   mocks.pendingTimeouts.length = 0;
+  mocks.liveWindows.length = 0;
   // resolveRecorderBinary() returns null off-darwin AND probes
   // `process.resourcesPath/PwrSnapRecorder` via path.join — neither
   // works in a plain Node test runner. Stub both so the binary-
@@ -631,7 +667,9 @@ describe("RecordingService.stop source-app metadata → capture row", () => {
   // here long before it ships to the Library.
 
   async function runFullCapture(
-    subject: import("@pwrsnap/shared").RecordingSubject
+    subject: import("@pwrsnap/shared").RecordingSubject,
+    liveTitle?: unknown,
+    livePid = 700
   ): Promise<Record<string, unknown>> {
     const { __setRecordingServiceForTests, getRecordingService } = await import(
       "../recording-service"
@@ -639,9 +677,11 @@ describe("RecordingService.stop source-app metadata → capture row", () => {
     __setRecordingServiceForTests(null);
     const service = getRecordingService();
 
-    const startPromise = service
-      .start({ subject, capabilities: CAPS, countdownSeconds: 0 })
-      .catch(() => undefined);
+    const startPromise = service.start({
+      subject,
+      capabilities: CAPS,
+      countdownSeconds: 0
+    });
     // Let the spawn + start command write land.
     await vi.advanceTimersByTimeAsync(0);
     const child = mocks.spawnedChildren.at(-1)!;
@@ -652,7 +692,22 @@ describe("RecordingService.stop source-app metadata → capture row", () => {
       physicalRect: { x: 0, y: 0, w: 100, h: 100 }
     });
     await vi.advanceTimersByTimeAsync(0);
-    await startPromise;
+    const started = await startPromise;
+
+    if (subject.kind === "window" && liveTitle !== undefined) {
+      mocks.liveWindows.splice(0, mocks.liveWindows.length, {
+        windowId: subject.windowId,
+        pid: livePid,
+        title: liveTitle
+      });
+      expect(
+        service.attachTrustedWindowIdentity?.(started.sessionId, {
+          windowId: subject.windowId,
+          pid: 700
+        })
+      ).toBe(true);
+      await vi.advanceTimersByTimeAsync(0);
+    }
 
     // Now stop and pump the "stopped" event so the post-stop
     // pipeline (adoptExistingFileAsSource → insertCapture)
@@ -680,30 +735,90 @@ describe("RecordingService.stop source-app metadata → capture row", () => {
     return calls.at(-1)![0] as Record<string, unknown>;
   }
 
-  test("window subject with appName + appBundleId lands both on the capture row", async () => {
-    const row = await runFullCapture({
-      kind: "window",
-      windowId: 12345,
-      rect: { x: 0, y: 0, w: 100, h: 100 },
-      displayId: 1,
-      appName: "Microsoft Edge",
-      appBundleId: "com.microsoft.edgemac"
-    });
+  test("trusted live title observed after start lands on the capture row", async () => {
+    const row = await runFullCapture(
+      {
+        kind: "window",
+        windowId: 12345,
+        rect: { x: 0, y: 0, w: 100, h: 100 },
+        displayId: 1,
+        appName: "Microsoft Edge",
+        appBundleId: "com.microsoft.edgemac"
+      },
+      "設計レビュー — Edge 🚀"
+    );
     expect(row.source_app_name).toBe("Microsoft Edge");
     expect(row.source_app_bundle_id).toBe("com.microsoft.edgemac");
+    expect(row.source_window_title).toBe("設計レビュー — Edge 🚀");
   });
 
-  test("window subject without optional app fields writes null (Library falls back to 'Unknown app')", async () => {
-    const row = await runFullCapture({
+  test("normalizes controls and bounds a very long window title before insert", async () => {
+    const row = await runFullCapture(
+      {
+        kind: "window",
+        windowId: 12345,
+        rect: { x: 0, y: 0, w: 100, h: 100 },
+        displayId: 1
+      },
+      `\u0000  Quarterly\tPlan\n${"🚀".repeat(600)}  \u0007`
+    );
+    const persistedTitle = row.source_window_title;
+    expect(typeof persistedTitle).toBe("string");
+    expect(persistedTitle).toMatch(/^Quarterly Plan 🚀/u);
+    expect(persistedTitle).not.toMatch(/[\p{White_Space}\p{Cc}]$/u);
+    expect([...(persistedTitle as string)]).toHaveLength(512);
+  });
+
+  test("window subject with no app fields and a control-only live title writes null", async () => {
+    const row = await runFullCapture(
+      {
+        kind: "window",
+        windowId: 12345,
+        rect: { x: 0, y: 0, w: 100, h: 100 },
+        displayId: 1
+      },
+      "\u0000\t\n\u0007"
+    );
+    expect(row.source_app_name).toBeNull();
+    expect(row.source_app_bundle_id).toBeNull();
+    expect(row.source_window_title).toBeNull();
+  });
+
+  test("vanished or reused window identity persists null", async () => {
+    const vanished = await runFullCapture({
       kind: "window",
       windowId: 12345,
       rect: { x: 0, y: 0, w: 100, h: 100 },
       displayId: 1
-      // appName + appBundleId intentionally omitted — protocol
-      // marks them optional for callers that lack the helper.
     });
-    expect(row.source_app_name).toBeNull();
-    expect(row.source_app_bundle_id).toBeNull();
+    expect(vanished.source_window_title).toBeNull();
+
+    const reused = await runFullCapture(
+      {
+        kind: "window",
+        windowId: 12345,
+        rect: { x: 0, y: 0, w: 100, h: 100 },
+        displayId: 1
+      },
+      "Wrong process title",
+      701
+    );
+    expect(reused.source_window_title).toBeNull();
+  });
+
+  test("malformed native title cannot fail stop after the durable file is ready", async () => {
+    const row = await runFullCapture(
+      {
+        kind: "window",
+        windowId: 12345,
+        rect: { x: 0, y: 0, w: 100, h: 100 },
+        displayId: 1
+      },
+      42
+    );
+    const sourceStore = await import("../../persistence/source-store");
+    expect(sourceStore.adoptExistingFileAsSource).toHaveBeenCalled();
+    expect(row.source_window_title).toBeNull();
   });
 
   test("region subject writes null app metadata (no single source app)", async () => {
@@ -714,6 +829,160 @@ describe("RecordingService.stop source-app metadata → capture row", () => {
     });
     expect(row.source_app_name).toBeNull();
     expect(row.source_app_bundle_id).toBeNull();
+    expect(row.source_window_title).toBeNull();
+  });
+});
+
+describe("RecordingService trusted window-title timing", () => {
+  const windowSubject: import("@pwrsnap/shared").RecordingSubject = {
+    kind: "window",
+    windowId: 12345,
+    rect: { x: 0, y: 0, w: 100, h: 100 },
+    displayId: 1,
+    appName: "Example",
+    appBundleId: "com.example"
+  };
+
+  async function finishNativeStop(
+    service: import("../recording-service").RecordingService,
+    child: FakeChild
+  ): Promise<Record<string, unknown>> {
+    const stopPromise = service.stop();
+    child.emitLine({
+      event: "stopped",
+      durationSec: 2.5,
+      containerFormat: "mp4",
+      hasSystemAudio: false,
+      hasMicrophoneAudio: false,
+      outputPath: "/fake/captures/src-1.mp4"
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await stopPromise;
+    const captures = await import("../../persistence/captures-repo");
+    const calls = (captures.insertCapture as unknown as { mock: { calls: unknown[][] } })
+      .mock.calls;
+    return calls.at(-1)![0] as Record<string, unknown>;
+  }
+
+  test("resolves the changed title only after the countdown and actual start", async () => {
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+    mocks.liveWindows.push({ windowId: 12345, pid: 700, title: "Selector title" });
+
+    const startPromise = service.start({
+      subject: windowSubject,
+      capabilities: CAPS,
+      countdownSeconds: 3
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    mocks.liveWindows[0]!.title = "Changed during countdown — 東京 🚀";
+    await vi.advanceTimersByTimeAsync(2_100);
+    const child = mocks.spawnedChildren[0]!;
+    child.emitLine({
+      event: "started",
+      physicalRect: { x: 0, y: 0, w: 100, h: 100 }
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const started = await startPromise;
+    expect(
+      service.attachTrustedWindowIdentity?.(started.sessionId, {
+        windowId: 12345,
+        pid: 700
+      })
+    ).toBe(true);
+
+    const row = await finishNativeStop(service, child);
+    expect(row.source_window_title).toBe("Changed during countdown — 東京 🚀");
+  });
+
+  test("persists null when the selected window disappears during countdown", async () => {
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+    mocks.liveWindows.push({ windowId: 12345, pid: 700, title: "Closing window" });
+
+    const startPromise = service.start({
+      subject: windowSubject,
+      capabilities: CAPS,
+      countdownSeconds: 3
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    mocks.liveWindows.length = 0;
+    await vi.advanceTimersByTimeAsync(2_100);
+    const child = mocks.spawnedChildren[0]!;
+    child.emitLine({
+      event: "started",
+      physicalRect: { x: 0, y: 0, w: 100, h: 100 }
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const started = await startPromise;
+    expect(
+      service.attachTrustedWindowIdentity?.(started.sessionId, {
+        windowId: 12345,
+        pid: 700
+      })
+    ).toBe(true);
+
+    const row = await finishNativeStop(service, child);
+    expect(row.source_window_title).toBeNull();
+  });
+
+  test("restart re-resolves the title for the new actual start", async () => {
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+    mocks.liveWindows.push({ windowId: 12345, pid: 700, title: "First start" });
+
+    const firstStartPromise = service.start({
+      subject: windowSubject,
+      capabilities: CAPS,
+      countdownSeconds: 0
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const firstChild = mocks.spawnedChildren[0]!;
+    firstChild.emitLine({
+      event: "started",
+      physicalRect: { x: 0, y: 0, w: 100, h: 100 }
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const firstStarted = await firstStartPromise;
+    expect(
+      service.attachTrustedWindowIdentity?.(firstStarted.sessionId, {
+        windowId: 12345,
+        pid: 700
+      })
+    ).toBe(true);
+    await vi.advanceTimersByTimeAsync(0);
+
+    const restartPromise = service.restart();
+    firstChild.emitLine({
+      event: "stopped",
+      durationSec: 0.5,
+      containerFormat: "mp4",
+      hasSystemAudio: false,
+      hasMicrophoneAudio: false,
+      outputPath: "/tmp/discarded.mp4"
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    mocks.liveWindows[0]!.title = "Restarted title";
+    await vi.advanceTimersByTimeAsync(2_100);
+    const restartedChild = mocks.spawnedChildren[1]!;
+    restartedChild.emitLine({
+      event: "started",
+      physicalRect: { x: 0, y: 0, w: 100, h: 100 }
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await restartPromise;
+
+    const row = await finishNativeStop(service, restartedChild);
+    expect(row.source_window_title).toBe("Restarted title");
   });
 });
 
@@ -1050,6 +1319,57 @@ describe("Windows FFmpeg recorder", () => {
     expect(stopped.captureId).toBe("cap-1");
     expect(mocks.stateLog.map((s) => s.phase)).toContain("processing");
     expect(mocks.stateLog.map((s) => s.phase)).toContain("ready");
+
+    const captures = await import("../../persistence/captures-repo");
+    const calls = (captures.insertCapture as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls;
+    const row = calls.at(-1)![0] as Record<string, unknown>;
+    expect(row.source_window_title).toBeNull();
+  });
+
+  test("persists source_window_title for a window subject", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    const started = await service.start({
+      subject: {
+        kind: "window",
+        windowId: 133048,
+        rect: { x: 0, y: 0, w: 100, h: 100 },
+        displayId: 1,
+        appName: "slack",
+        appBundleId: "C:\\Program Files\\Slack\\slack.exe"
+      },
+      capabilities: CAPS,
+      countdownSeconds: 0
+    });
+    mocks.liveWindows.push({
+      windowId: 133048,
+      pid: 900,
+      title: "项目状态 — Café 🚀"
+    });
+    expect(
+      service.attachTrustedWindowIdentity?.(started.sessionId, {
+        windowId: 133048,
+        pid: 900
+      })
+    ).toBe(true);
+
+    const child = mocks.spawnedChildren[0]!;
+    const stopPromise = service.stop();
+    child.emit("exit", 0, null);
+    await stopPromise;
+
+    const captures = await import("../../persistence/captures-repo");
+    const calls = (captures.insertCapture as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls;
+    const row = calls.at(-1)![0] as Record<string, unknown>;
+    expect(row.source_window_title).toBe("项目状态 — Café 🚀");
   });
 
   test("converts selected DIP rects to physical pixels before gdigrab", async () => {

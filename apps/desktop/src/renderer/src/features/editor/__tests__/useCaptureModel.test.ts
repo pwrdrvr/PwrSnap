@@ -104,6 +104,7 @@ function makeRecord(id: string, formatVersion: number): CaptureRecord {
     sha256: "0".repeat(64),
     source_app_bundle_id: null,
     source_app_name: null,
+    source_window_title: null,
     edits_version: 0,
     has_alpha: false,
     deleted_at: null

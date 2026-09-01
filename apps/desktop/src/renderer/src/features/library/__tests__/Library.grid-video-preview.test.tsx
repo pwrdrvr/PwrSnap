@@ -139,6 +139,7 @@ const videoRecord: CaptureRecord = {
   sha256: "sha_cap_video",
   source_app_bundle_id: "com.example.app",
   source_app_name: "Example",
+  source_window_title: null,
   edits_version: 0,
   has_alpha: false,
   deleted_at: null,

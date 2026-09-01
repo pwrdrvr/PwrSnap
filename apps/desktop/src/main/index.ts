@@ -31,6 +31,7 @@ import { guardScreenCapture } from "./capture/screen-permission-gate";
 import { ensureCapturesDirReady } from "./capture/capture-storage-gate";
 import { reconcileCapturesLocationOnBoot } from "./capture/capture-location-reconciliation";
 import {
+  findWindowById,
   resolveSelectionSourceApp,
   shouldConsiderRaisingOurWindows
 } from "./capture/source-app";
@@ -99,7 +100,10 @@ import {
   installRecordingController
 } from "./recording/recording-controller";
 import { readRecordingReadiness } from "./recording/recording-permissions";
-import { getRecordingService } from "./recording/recording-service";
+import {
+  attachTrustedRecordingWindowIdentity,
+  getRecordingService
+} from "./recording/recording-service";
 import { getRecordingState, isRecordingActive } from "./recording/recording-state";
 import { videoAssetDir } from "./recording/video-frames";
 import {
@@ -1150,6 +1154,17 @@ async function runInteractiveRecord(
     return;
   }
   const { screenSnapshotId, previousAppPid } = selection;
+  const cachedSnapshot = getLastWindowListSnapshot();
+  const selectedWindow =
+    selection.snappedWindowId === undefined
+      ? null
+      : findWindowById(cachedSnapshot, selection.snappedWindowId);
+  // Retain only main-process native identity through the countdown. The title
+  // in this selector snapshot may already be stale when recording begins.
+  const trustedWindowIdentity =
+    selectedWindow === null
+      ? null
+      : { windowId: selectedWindow.windowId, pid: selectedWindow.pid };
   // CRITICAL: the selector is at screen-saver level and would
   // otherwise be in the captured pixels for the entire countdown +
   // first frames of the recording. Drop it BEFORE `recording:start`
@@ -1174,7 +1189,6 @@ async function runInteractiveRecord(
   //   • Snap to one of ours but the rect doesn't actually intersect
   //     any visible BrowserWindow (e.g. that window just closed) →
   //     fall through to the previous-app activation; nothing to raise.
-  const cachedSnapshot = getLastWindowListSnapshot();
   const shouldRaise = shouldConsiderRaisingOurWindows(
     selection.snappedWindowId,
     cachedSnapshot,
@@ -1248,13 +1262,13 @@ async function runInteractiveRecord(
   // null if neither resolves. This runs whether the user held ⇧ at
   // commit time or just clicked — both shapes attribute the same app
   // for the same selection. We also reuse the cached window-list
-  // snapshot rather than re-running `listWindows()`, so the lookup
-  // matches the list the user actually picked against (no drift if
-  // a window moved/closed in the ~50ms between hideSelector + here).
+  // snapshot so the lookup matches the list the user actually picked
+  // against. Window title attribution is attached separately after the
+  // recorder starts; public recording:start input never carries it.
   const sourceApp = resolveSelectionSourceApp(
     selection.rect,
     selection.snappedWindowId,
-    getLastWindowListSnapshot()
+    cachedSnapshot
   );
   // A snapshot windowId in the selection means the user pointed at a
   // specific window (with or without ⇧). Persist that as a `window`
@@ -1290,6 +1304,12 @@ async function runInteractiveRecord(
     },
     { principal: "ipc" }
   );
+  if (result.ok && trustedWindowIdentity !== null) {
+    attachTrustedRecordingWindowIdentity(
+      result.value.sessionId,
+      trustedWindowIdentity
+    );
+  }
   if (!result.ok && result.error.code !== "cancelled") {
     log.warn("recording:start failed", { code: result.error.code, message: result.error.message });
     if (getRecordingState().phase === "failed") return;

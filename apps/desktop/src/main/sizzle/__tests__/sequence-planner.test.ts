@@ -32,6 +32,7 @@ function capture(id: string, kind: "image" | "video", durationSec = 1): CaptureR
     sha256: id,
     source_app_bundle_id: null,
     source_app_name: null,
+    source_window_title: null,
     edits_version: 0,
     has_alpha: false,
     deleted_at: null,

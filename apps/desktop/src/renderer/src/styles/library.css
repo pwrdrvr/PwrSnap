@@ -3023,6 +3023,22 @@
   font-family: var(--font-sans);
 }
 .psl__detail-name:focus, .psl__detail-name:hover { border-color: var(--border-subtle); padding: 4px 6px; border-radius: 4px; }
+.psl__detail-window-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font: 500 10px/1.4 var(--font-mono);
+  color: var(--text-muted);
+}
+.psl__detail-window-label { flex: 0 0 auto; }
+.psl__detail-window-title {
+  min-width: 0;
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  overflow-wrap: anywhere;
+  unicode-bidi: isolate;
+}
 .psl__detail-row {
   display: flex; gap: 14px;
   font: 500 10px/1.4 var(--font-mono);

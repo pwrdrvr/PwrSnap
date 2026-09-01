@@ -48,9 +48,30 @@ export const NOTICE_PACKAGE_NAME = "@pwrsnap/desktop";
  *
  * Ported from pwrdrvr/PwrAgent#1905, where the same bare filter hid 71
  * production packages beneath eight workspace packages.
+ *
+ * `...` follows devDependencies too, and pnpm has no "production dependency
+ * projects only" selector. A workspace package that desktop only devDepends on
+ * would therefore contribute its production tree to the notice without
+ * shipping. That over-discloses rather than under-discloses, which is the safe
+ * direction for both the notice and the gate; desktop has no workspace
+ * devDependencies today.
  */
 export const NOTICE_PNPM_FILTER = `${NOTICE_PACKAGE_NAME}...`;
 const licenseTextsDir = join(scriptDir, "license-texts");
+
+/**
+ * One dependency record line in the notice: `- <name>@<version> | <license>`.
+ *
+ * Both readers of the generated text — the record count printed after a write
+ * and describeNoticeDrift — match against this, so the format lives in exactly
+ * one place. Capture group 1 is the `name@version` key; read it from the group
+ * rather than slicing fixed offsets off the full match, so changing the prefix
+ * or separator here cannot silently truncate the names reported as drift.
+ *
+ * Stateful (`g`), so every use must consume it in one pass — matchAll or match,
+ * never a bare `.test()` in a loop.
+ */
+const NOTICE_RECORD_LINE = /^- (\S+@\S*) \| /gm;
 
 // sharp publishes its native code as OS+CPU-specific optional dependencies, so
 // `pnpm licenses list --no-optional` never reports them and `--prod` (optional
@@ -1162,7 +1183,7 @@ export function buildThirdPartyLicenseNotice({
  */
 export function describeNoticeDrift(committed, generated, limit = 20) {
   const packagesIn = (text) =>
-    new Set((text.match(/^- (\S+@\S*) \| /gm) ?? []).map((line) => line.slice(2, -3).trim()));
+    new Set(Array.from(text.matchAll(NOTICE_RECORD_LINE), (match) => match[1]));
   const committedPackages = packagesIn(committed);
   const generatedPackages = packagesIn(generated);
 
@@ -1193,7 +1214,11 @@ export function describeNoticeDrift(committed, generated, limit = 20) {
       `    generated:  ${generatedLines[index] ?? "<end of file>"}`,
     ].join("\n");
   }
-  return "  no package-level or line-level difference found (trailing whitespace only)";
+  // Unreachable from --check, which only calls this when the strings differ:
+  // split("\n") is injective, so any textual difference — trailing whitespace
+  // included — surfaces as a differing line above. Reached only by a direct
+  // call with equal strings, so say that rather than inventing a difference.
+  return "  no difference found; the two notices are identical";
 }
 
 /**
@@ -1259,7 +1284,7 @@ function runCli() {
   // macOS and Linux CI for a notice whose whole premise is being identical on
   // both. Counted from the already-generated text so a spawn failure here
   // cannot report failure for a file that was written correctly.
-  const count = (output.match(/^- \S+@\S* \| /gm) ?? []).length;
+  const count = (output.match(NOTICE_RECORD_LINE) ?? []).length;
   console.log(
     `wrote ${relative(repoRoot, outputPath)} (${count} dependency records incl. Electron, shipped platform packages and bundled binaries)`,
   );

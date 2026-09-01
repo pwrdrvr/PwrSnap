@@ -860,8 +860,22 @@ export function RegionSelector() {
       const port = framePortRef.current;
       if (frozen === null || port === null) return;
       commitBusyRef.current = true;
+      let commitStage: "encode" | "stream" = "encode";
       try {
+        window.pwrsnapApi?.reportSelectorPerformance({
+          invocationId: currentInvocationId,
+          mark: "crop-encode-started"
+        });
         const crop = await encodeFrozenCrop(frozen, r, viewport());
+        window.pwrsnapApi?.reportSelectorPerformance({
+          invocationId: currentInvocationId,
+          mark: "crop-encode-completed"
+        });
+        commitStage = "stream";
+        window.pwrsnapApi?.reportSelectorPerformance({
+          invocationId: currentInvocationId,
+          mark: "crop-stream-started"
+        });
         await streamEncodedCrop(currentInvocationId, crop, (message, transfer) =>
           new Promise<SelectorCropStreamReply>((resolve, reject) => {
             const timeout = window.setTimeout(() => {
@@ -885,8 +899,19 @@ export function RegionSelector() {
             else port.postMessage(message, transfer);
           })
         );
+        window.pwrsnapApi?.reportSelectorPerformance({
+          invocationId: currentInvocationId,
+          mark: "crop-stream-completed"
+        });
       } catch {
         if (invocationIdRef.current === currentInvocationId) {
+          window.pwrsnapApi?.reportSelectorPerformance({
+            invocationId: currentInvocationId,
+            mark:
+              commitStage === "encode"
+                ? "crop-commit-failed-encode"
+                : "crop-commit-failed-stream"
+          });
           snapshotStateRef.current = "error";
           setSnapshotState("error");
         }

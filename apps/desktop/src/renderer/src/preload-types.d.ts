@@ -122,7 +122,15 @@ declare global {
       }): void;
       reportSelectorPerformance(payload: {
         invocationId: number;
-        mark: "shell-painted" | "window-targets-painted";
+        mark:
+          | "shell-painted"
+          | "window-targets-painted"
+          | "crop-encode-started"
+          | "crop-encode-completed"
+          | "crop-stream-started"
+          | "crop-stream-completed"
+          | "crop-commit-failed-encode"
+          | "crop-commit-failed-stream";
       }): void;
       perfMark(payload: PerfMarkPayload): void;
     };

@@ -62,6 +62,71 @@ test("stops every display-media track", () => {
   expect(tracks[1]!.stop).toHaveBeenCalledTimes(1);
 });
 
+test("freezes into a readable 2d canvas instead of a bitmaprenderer backing store", async () => {
+  const readyStateDescriptor = Object.getOwnPropertyDescriptor(
+    HTMLMediaElement.prototype,
+    "readyState"
+  );
+  const requestFrameDescriptor = Object.getOwnPropertyDescriptor(
+    HTMLVideoElement.prototype,
+    "requestVideoFrameCallback"
+  );
+  Object.defineProperty(HTMLMediaElement.prototype, "readyState", {
+    configurable: true,
+    get: () => HTMLMediaElement.HAVE_CURRENT_DATA
+  });
+  Object.defineProperty(HTMLVideoElement.prototype, "requestVideoFrameCallback", {
+    configurable: true,
+    value: (callback: VideoFrameRequestCallback): number => {
+      queueMicrotask(() => callback(0, {} as VideoFrameCallbackMetadata));
+      return 1;
+    }
+  });
+  const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+  const pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => undefined);
+  const close = vi.fn();
+  vi.stubGlobal(
+    "createImageBitmap",
+    vi.fn(async () => ({ width: 2992, height: 1934, close }) as unknown as ImageBitmap)
+  );
+  const drawImage = vi.fn();
+  const getContext = vi.fn((kind: string) =>
+    kind === "2d" ? ({ drawImage } as unknown as CanvasRenderingContext2D) : null
+  );
+  const canvas = { width: 0, height: 0, getContext } as unknown as HTMLCanvasElement;
+  const stop = vi.fn();
+  const stream = { getTracks: () => [{ stop }] } as unknown as MediaStream;
+
+  try {
+    const frozen = await acquireFrozenDisplayFrame(canvas, async () => stream);
+
+    expect(frozen).toMatchObject({ width: 2992, height: 1934, transferMode: "2d" });
+    expect(getContext).toHaveBeenCalledTimes(1);
+    expect(getContext).toHaveBeenCalledWith("2d", { alpha: false });
+    expect(drawImage).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(stop).toHaveBeenCalledTimes(1);
+  } finally {
+    play.mockRestore();
+    pause.mockRestore();
+    vi.unstubAllGlobals();
+    if (readyStateDescriptor === undefined) {
+      Reflect.deleteProperty(HTMLMediaElement.prototype, "readyState");
+    } else {
+      Object.defineProperty(HTMLMediaElement.prototype, "readyState", readyStateDescriptor);
+    }
+    if (requestFrameDescriptor === undefined) {
+      Reflect.deleteProperty(HTMLVideoElement.prototype, "requestVideoFrameCallback");
+    } else {
+      Object.defineProperty(
+        HTMLVideoElement.prototype,
+        "requestVideoFrameCallback",
+        requestFrameDescriptor
+      );
+    }
+  }
+});
+
 test("stops a display stream that resolves after the bounded acquisition timeout", async () => {
   vi.useFakeTimers();
   try {

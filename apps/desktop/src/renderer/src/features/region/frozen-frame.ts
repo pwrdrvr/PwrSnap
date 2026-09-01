@@ -4,7 +4,7 @@ export type FrozenFrame = {
   canvas: HTMLCanvasElement;
   width: number;
   height: number;
-  transferMode: "bitmaprenderer" | "2d";
+  transferMode: "2d";
 };
 
 export type EncodedFrozenCrop = {
@@ -139,8 +139,11 @@ function waitForVideoFrame(video: HTMLVideoElement, signal: AbortSignal): Promis
  * Freeze one display-media frame into renderer-owned storage. The track is
  * stopped in every exit path before the promise settles. The deadline spans
  * source acquisition, playback, first-frame delivery, and ImageBitmap creation.
- * bitmaprenderer keeps the ImageBitmap as the canvas backing store without a
- * second full-frame draw.
+ * The stable backing store is deliberately a 2D canvas: Chromium can present a
+ * bitmaprenderer canvas while failing or stalling when that GPU-backed canvas
+ * is later used as the source of the committed crop. This renderer-local draw
+ * is the one unavoidable full-frame copy; no full-frame pixels are encoded,
+ * written to disk, or transferred to main.
  */
 export async function acquireFrozenDisplayFrame(
   canvas: HTMLCanvasElement,
@@ -181,16 +184,6 @@ export async function acquireFrozenDisplayFrame(
     }
     canvas.width = bitmap.width;
     canvas.height = bitmap.height;
-    const bitmapContext = canvas.getContext("bitmaprenderer");
-    if (bitmapContext !== null) {
-      bitmapContext.transferFromImageBitmap(bitmap);
-      return {
-        canvas,
-        width: canvas.width,
-        height: canvas.height,
-        transferMode: "bitmaprenderer"
-      };
-    }
     const context = canvas.getContext("2d", { alpha: false });
     if (context === null) {
       bitmap.close();

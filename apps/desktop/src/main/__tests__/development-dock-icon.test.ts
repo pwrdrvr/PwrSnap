@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 
-const ICON_PATH = join("/test/app", "build", "icon.png");
+const ICON_PATH = join("/test/app", "build", "icon-macos.png");
 
 const mocks = vi.hoisted(() => {
   const icon = {

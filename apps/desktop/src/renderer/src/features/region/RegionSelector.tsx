@@ -64,6 +64,13 @@ const NUDGE_PX_SHIFT = 10;
 // stray cursor move must not be able to defeat the de-dupe).
 const ESCAPE_DEDUPE_MS = 50;
 
+/** True on macOS. Read lazily — the preload bridge is installed before
+ *  the component mounts, but not necessarily before this module is
+ *  evaluated. */
+function isMacPlatform(): boolean {
+  return window.pwrsnapApi?.platform === "darwin";
+}
+
 type SnapTarget =
   | { kind: "window"; entry: WindowSnapEntry }
   | { kind: "display" };
@@ -291,7 +298,8 @@ export function RegionSelector() {
     // Multi-select is on: the HUD owns the bottom of the screen, so
     // CSS lifts the hint bar clear of it. Also used by E2E to assert
     // the pick set without reaching into React state.
-    document.body.dataset.hasPicks = picks.length > 0 ? "true" : "false";
+    // One attribute, not two: `has-picks` was exactly
+    // `pick-count !== "0"`, and two encodings of one fact can disagree.
     document.body.dataset.pickCount = String(picks.length);
     document.body.dataset.outputMode = outputMode;
   }, [interaction.kind, spaceHeld, snapTarget, shiftHeld, mode, picks, outputMode]);
@@ -312,6 +320,17 @@ export function RegionSelector() {
       // (defaults ON when unset) so a prior capture's choice can't bleed
       // into this one through the reused, pre-warmed selector window.
       setCaptureCursor(payload.cursor ?? true);
+      // Drop the pick set on EVERY show. This handler is the only
+      // per-show reset the renderer gets, and main can end a session
+      // without one: `pickRegion` resolves an in-flight resolver with
+      // `cancelled` and re-shows the same pre-warmed window. Without
+      // this, a set built in an abandoned session survives into the
+      // next capture — the HUD paints over a video picker, `commit()`
+      // ships the old windows' extents, and in `region` mode (where
+      // multi-select is off) the user cannot even click them away.
+      picksRef.current = [];
+      setPicks([]);
+      setOutputMode("windows");
       // When switching INTO 'region' mode, drop any existing window
       // snap target back to display — otherwise the user sees a stale
       // window-snap rect from the previous session before they move
@@ -484,6 +503,14 @@ export function RegionSelector() {
       : [...current, entry];
     picksRef.current = next;
     setPicks(next);
+    // Below two picks the union box IS the extent, so the output-shape
+    // control and the `T` binding both disappear. Snap back to the
+    // default or the user is stranded in `rectangle` with no key and no
+    // button to leave it — and the next pick they add inherits it.
+    if (next.length < 2) {
+      outputModeRef.current = "windows";
+      setOutputMode("windows");
+    }
     const union = unionOfPicks(next);
     if (union === null) {
       // Last pick removed — back to live snap under the cursor.
@@ -510,24 +537,38 @@ export function RegionSelector() {
   }
 
   function commit(): void {
+    // The renderer's rects are in CSS pixels. Main + screencapture
+    // expect display-logical pixels. Scale back via the inverse of the
+    // snapshot's css-to-logical factor. On standard displays this is
+    // 1.0 — no-op. On scaled-mode Retina (e.g. inner=1460 logical=1920)
+    // it's ~1.315 and corrects the doubling we'd otherwise see in the
+    // captured PNG. ONE definition, used by every commit route — this
+    // is the most bug-prone arithmetic in the file and a second copy
+    // could be fixed while the first stayed wrong.
+    const inv = cssToLogicalRef.current > 0 ? 1 / cssToLogicalRef.current : 1;
+    const toLogical = (r: Rect): Rect => ({
+      x: Math.round(r.x * inv),
+      y: Math.round(r.y * inv),
+      w: Math.round(r.w * inv),
+      h: Math.round(r.h * inv)
+    });
     // Multi-window pick wins over the single-target path when the user
     // has one. Its rect is the union box, so everything downstream in
     // main — validation, source-app resolution, cursor placement —
     // behaves exactly as it does for a plain rect capture.
-    const activePicks = picksRef.current;
+    // Re-check the capability, don't just trust that the pick set could
+    // only have been built where multi-select is allowed. A set can
+    // outlive the mode it was built in (main re-shows this pre-warmed
+    // window with a new mode signal), and shipping `extents` on a video
+    // commit would record the bounding box of windows the user picked
+    // in an abandoned session and never re-confirmed.
+    const activePicks = multiSelectAllowed() ? picksRef.current : [];
     if (activePicks.length > 0) {
       const union = unionOfPicks(activePicks);
       if (union === null || !rectIsMeaningful(union)) {
         cancel();
         return;
       }
-      const inv = cssToLogicalRef.current > 0 ? 1 / cssToLogicalRef.current : 1;
-      const toLogical = (r: Rect): Rect => ({
-        x: Math.round(r.x * inv),
-        y: Math.round(r.y * inv),
-        w: Math.round(r.w * inv),
-        h: Math.round(r.h * inv)
-      });
       // A pick set of ONE is still the old single-window capture, and
       // in the two places that mean "full window" — `window` mode, and
       // ⇧ in auto mode — it must keep routing to the backing-buffer
@@ -570,13 +611,6 @@ export function RegionSelector() {
       return;
     }
     const snap = snapTargetRef.current;
-    // The renderer's rect is in CSS pixels. Main + screencapture
-    // expect display-logical pixels. Scale back via the inverse of
-    // the snapshot's css-to-logical factor. On standard displays
-    // this is 1.0 — no-op. On scaled-mode Retina (e.g. inner=1460
-    // logical=1920) it's ~1.315 and corrects the doubling we'd
-    // otherwise see in the captured PNG.
-    const inv = cssToLogicalRef.current > 0 ? 1 / cssToLogicalRef.current : 1;
     // A "window snap commit" can happen from any interaction state
     // when we have a window snap target — not just live `snap`. In
     // window-mode the user clicks once, the pending → adjusting flow
@@ -586,12 +620,7 @@ export function RegionSelector() {
       fromWindowSnap && (shiftRef.current || modeRef.current === "window");
     window.pwrsnapApi?.submitRegion({
       ok: true,
-      rect: {
-        x: Math.round(r.x * inv),
-        y: Math.round(r.y * inv),
-        w: Math.round(r.w * inv),
-        h: Math.round(r.h * inv)
-      },
+      rect: toLogical(r),
       displayId,
       // snappedWindowId tags the commit when the user clicked
       // straight from a window snap. Used by main for source-app
@@ -723,17 +752,21 @@ export function RegionSelector() {
       // expands from the visible-region bbox to the full window
       // bounds + the chip text changes + commit sends fullWindow:true.
       // Disabled in 'region' and 'window' modes — those modes have
-      // explicit semantics; ⇧ is meaningless there.
+      // explicit semantics; ⇧ is meaningless there. Also disabled once
+      // a pick set exists: the rect is then the derived union, and
+      // `setSnapRect` refuses to overwrite it (so a raw `setRect` here
+      // would corrupt it with no way back).
       if (
         event.key === "Shift" &&
         !shiftRef.current &&
         modeRef.current === "auto" &&
+        picksRef.current.length === 0 &&
         (interactionRef.current.kind === "snap" || interactionRef.current.kind === "pending")
       ) {
         const target = snapTargetRef.current;
         if (target.kind === "window") {
           setShiftHeld(true);
-          setRect({
+          setSnapRect({
             x: target.entry.rawRect.x,
             y: target.entry.rawRect.y,
             w: target.entry.rawRect.w,
@@ -844,7 +877,7 @@ export function RegionSelector() {
           target.kind === "window" &&
           (interactionRef.current.kind === "snap" || interactionRef.current.kind === "pending")
         ) {
-          setRect({
+          setSnapRect({
             x: target.entry.rect.x,
             y: target.entry.rect.y,
             w: target.entry.rect.w,
@@ -862,7 +895,11 @@ export function RegionSelector() {
      *     and accumulating them is what it should have done from the
      *     start. Commit moves from the click to ↵ / the HUD button.
      *   - `auto` mode: ⌘ (⌃ off macOS) starts a pick set — the
-     *     platform add-to-selection idiom. A plain click keeps Quick
+     *     platform add-to-selection idiom. ⌃ is deliberately NOT
+     *     honored on macOS: there, ⌃+left-click IS the secondary-click
+     *     gesture and arrives as `button === 0` with `ctrlKey`, so
+     *     accepting it would turn every attempted right-click into a
+     *     pick the user then cannot plainly click their way out of. A plain click keeps Quick
      *     Capture's existing behavior byte-for-byte until a set
      *     exists; once one does, every click is additive, because a
      *     plain click would otherwise silently discard work the user
@@ -874,7 +911,10 @@ export function RegionSelector() {
       if (!multiSelectAllowed()) return false;
       if (picksRef.current.length > 0) return true;
       if (modeRef.current === "window") return true;
-      return event.metaKey || event.ctrlKey;
+      // ⌘ always. ⌃ only off macOS: there, ⌃+left-click IS the
+      // secondary-click gesture and arrives as `button === 0` with
+      // `ctrlKey` set.
+      return event.metaKey || (!isMacPlatform() && event.ctrlKey);
     }
 
     function onMouseDown(event: MouseEvent): void {
@@ -893,9 +933,16 @@ export function RegionSelector() {
       const handle = getHandleFromTarget(event.target);
       const i = interactionRef.current;
 
-      // Multi-select intercept, ahead of every gesture branch: a pick
-      // toggle is not a drag, a resize, or a discard.
-      if (isAdditivePick(event)) {
+      // Multi-select intercept. It sits ahead of the SNAP/DRAW branches
+      // — a pick toggle is not a drag or a discard — but BEHIND the
+      // adjusting affordances below: a press on a resize handle or a
+      // border move-band is unambiguously a gesture on the committed
+      // rect, and a window almost always lies under those few pixels,
+      // so intercepting first made handles and move-bands unusable.
+      const onAdjustAffordance =
+        i.kind === "adjusting" &&
+        (handle !== null || spaceRef.current || isMoveBandTarget(event.target));
+      if (!onAdjustAffordance && isAdditivePick(event)) {
         const hit = findWindowAt(event.clientX, event.clientY);
         if (hit !== null) {
           togglePick(hit);
@@ -965,20 +1012,25 @@ export function RegionSelector() {
     }
 
     function onMouseMove(event: MouseEvent): void {
-      lastMouseRef.current = { x: event.clientX, y: event.clientY };
-      // Crosshair tracks the cursor in every state; CSS decides whether
-      // it paints (hidden during moving/resizing and in window mode).
-      positionCrosshair(event.clientX, event.clientY);
-      const i = interactionRef.current;
       // Over the HUD there is nothing to aim at — the bar covers
       // whatever is behind it. Freeze the highlight rather than
-      // snapping to a window the user can't see under the toolbar.
+      // snapping to a window the user can't see under the toolbar, and
+      // bail BEFORE recording the position: `lastMouseRef` is what
+      // `togglePick` hit-tests from when the set empties and what Tab
+      // cycles from, so letting it hold a HUD coordinate makes removing
+      // the last chip snap to whatever sits behind the toolbar.
       if (
+        picksRef.current.length > 0 &&
         event.target instanceof HTMLElement &&
         event.target.closest("[data-region-hud]") !== null
       ) {
         return;
       }
+      lastMouseRef.current = { x: event.clientX, y: event.clientY };
+      // Crosshair tracks the cursor in every state; CSS decides whether
+      // it paints (hidden during moving/resizing and in window mode).
+      positionCrosshair(event.clientX, event.clientY);
+      const i = interactionRef.current;
       switch (i.kind) {
         case "snap": {
           // Live snap: recompute target from cursor, repaint rect.
@@ -1109,19 +1161,14 @@ export function RegionSelector() {
           // never changed since the press, so there is nothing to
           // restore — fall straight through to adjusting. (This is why
           // a free-drawn rect doesn't re-expand to the full display.)
-          // Window mode: clicking on a window IS the commit. Skip
-          // adjusting and submit immediately. We re-set rect
-          // synchronously off `snap` so commit() reads the window's
-          // bounds rather than whatever the previous adjusting rect was.
-          // (Window mode has no adjusting state, so wasDiscard is always
-          // false here.)
-          if (modeRef.current === "window" && snap !== null && snap.kind === "window") {
-            const r = rectForSnap(snap);
-            rectRef.current = r;
-            snapTargetRef.current = snap;
-            commit();
-            return;
-          }
+          // Window mode used to commit here — clicking a window WAS the
+          // capture. It no longer can be: `isAdditivePick` is true for
+          // every window-mode press, so a press over a window toggles a
+          // pick and returns, and a press that misses every window
+          // leaves `snapAtPress` as a display target. The branch was
+          // unreachable in every configuration main produces, so it is
+          // gone rather than left looking live. Commit is now ↵ or the
+          // HUD button.
           setInteraction({ kind: "adjusting" });
           return;
         }
@@ -1195,33 +1242,24 @@ export function RegionSelector() {
 
   // ---- Multi-select mask geometry -------------------------------------
   //
-  // The dim mask IS the output preview. In `windows` mode we punch one
+  // The dim mask IS the output preview. In `windows` mode there is one
   // hole per picked extent, so the undimmed pixels are exactly the
   // pixels the PNG keeps; everything else inside the union box gets the
   // alpha checker because it becomes transparent. In `rectangle` mode
   // there is one hole — the union box itself — because the whole box is
   // kept opaque.
   //
-  // Both paths are even-odd: an outer subpath plus one subpath per
-  // hole, so the holes subtract. That is one element instead of the
-  // 4-quadrant div trick, which cannot express disjoint holes at all.
+  // Drawn with an SVG <mask>, NOT an even-odd path. Even-odd cancels
+  // where two subpaths overlap, so two overlapping picked windows (a
+  // dialog over its parent — the exact case Tab-cycling exists for)
+  // would paint their intersection as dimmed and alpha-checkered while
+  // the composite keeps those pixels opaque. Masking is union-shaped:
+  // black over black is still black.
   const holes: Rect[] = !hasPicks
     ? []
     : outputMode === "windows"
-      ? picks.map((p) => ({
-          x: p.rawRect.x,
-          y: p.rawRect.y,
-          w: p.rawRect.w,
-          h: p.rawRect.h
-        }))
+      ? picks.map((p) => p.rawRect)
       : [rect];
-  const maskViewport = viewport();
-  const rectPath = (r: { x: number; y: number; w: number; h: number }): string =>
-    `M${r.x} ${r.y}H${r.x + r.w}V${r.y + r.h}H${r.x}Z`;
-  const holesPath = holes.map(rectPath).join("");
-  const dimPath =
-    rectPath({ x: 0, y: 0, w: maskViewport.width, h: maskViewport.height }) + holesPath;
-  const alphaPath = rectPath(rect) + holesPath;
   // Hovering an un-picked window while a set is live: show where the
   // next click would land. The main rect is pinned to the union, so
   // without this there is no feedback that the click does anything.
@@ -1423,40 +1461,64 @@ export function RegionSelector() {
           Single selection: four quadrant divs around the rect (cheap,
           and what has shipped since Phase 1.10).
 
-          Multi-select: an even-odd SVG path, because a pick set has
-          disjoint holes and quadrants cannot express those. */}
+          Multi-select: an SVG <mask>, because a pick set has disjoint
+          holes and quadrants cannot express those. The mask is sized in
+          CSS (inset:0, width/height 100%) rather than from a measured
+          viewport, so a window resize — main calls setBounds on
+          `display-metrics-changed`, which on macOS includes a menu-bar
+          show/hide — cannot leave an undimmed strip along an edge. */}
       {hasPicks ? (
-        <svg
-          className="region-mask"
-          width={maskViewport.width}
-          height={maskViewport.height}
-          viewBox={`0 0 ${maskViewport.width} ${maskViewport.height}`}
-          preserveAspectRatio="none"
-          aria-hidden
-        >
+        <svg className="region-mask" aria-hidden>
           <defs>
             {/* Transparency checker. The renderer's own alpha checkers
                 (editor.css / library.css) use 7%; this one is lighter-
                 weight on purpose — it sits over a dimmed screenshot,
-                not over a panel background. */}
+                not over a panel background. Tones come from region.css
+                so every color in this surface stays in the stylesheet. */}
             <pattern
               id="region-alpha-checker"
               width="12"
               height="12"
               patternUnits="userSpaceOnUse"
             >
-              <rect width="12" height="12" fill="rgba(255, 255, 255, 0.02)" />
-              <rect width="6" height="6" fill="rgba(255, 255, 255, 0.05)" />
-              <rect x="6" y="6" width="6" height="6" fill="rgba(255, 255, 255, 0.05)" />
+              <rect className="region-mask__checker-a" width="12" height="12" />
+              <rect className="region-mask__checker-b" width="6" height="6" />
+              <rect className="region-mask__checker-b" x="6" y="6" width="6" height="6" />
             </pattern>
+            {/* White keeps, black cuts. Overlapping holes just stay
+                black, which is the whole reason this is a mask and not
+                an even-odd path. */}
+            <mask id="region-mask-holes" maskUnits="userSpaceOnUse">
+              <rect x="0" y="0" width="100%" height="100%" fill="white" />
+              {holes.map((h, idx) => (
+                <rect
+                  key={idx}
+                  x={h.x}
+                  y={h.y}
+                  width={Math.max(0, h.w)}
+                  height={Math.max(0, h.h)}
+                  fill="black"
+                />
+              ))}
+            </mask>
           </defs>
-          <path className="region-mask__dim" d={dimPath} fillRule="evenodd" />
+          <rect
+            className="region-mask__dim"
+            x="0"
+            y="0"
+            width="100%"
+            height="100%"
+            mask="url(#region-mask-holes)"
+          />
           {outputMode === "windows" && (
-            <path
+            <rect
               className="region-mask__alpha"
-              d={alphaPath}
-              fillRule="evenodd"
+              x={rect.x}
+              y={rect.y}
+              width={Math.max(0, rect.w)}
+              height={Math.max(0, rect.h)}
               fill="url(#region-alpha-checker)"
+              mask="url(#region-mask-holes)"
             />
           )}
         </svg>
@@ -1521,6 +1583,11 @@ export function RegionSelector() {
         </div>
       )}
 
+      {/* The selection frame. Skipped at exactly one pick: the union
+          box and that pick's box are the same rectangle, and drawing
+          both puts a dashed border under a solid one. The pick box wins
+          because it carries the ordinal badge. */}
+      {!(hasPicks && picks.length === 1) && (
       <div
         className={
           "region-rect" +
@@ -1529,15 +1596,12 @@ export function RegionSelector() {
           // a snap target — never style it as one, or a two-window pick
           // reads as a single-window snap.
           (hasPicks
-            ? ` region-rect--union region-rect--union-${outputMode}` +
-              // One pick: the union box and the pick box are the same
-              // rectangle, and drawing both makes a muddy double
-              // border. The pick box (which carries the badge) wins.
-              (picks.length === 1 ? " region-rect--union-solo" : "")
+            ? ` region-rect--union region-rect--union-${outputMode}`
             : isSnap
               ? ` region-rect--snap-${snapTarget.kind}`
               : "")
         }
+        data-testid="region-rect"
         style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}
       >
         {isAdjustable && (
@@ -1556,6 +1620,7 @@ export function RegionSelector() {
           </>
         )}
       </div>
+      )}
 
       {dimsChipPosition !== null && (
         <div
@@ -1615,7 +1680,21 @@ export function RegionSelector() {
           everything else is a canvas gesture. Rendered only while a
           pick set exists so single-selection capture is untouched. */}
       {hasPicks && (
-        <div className="region-hud" data-region-hud data-testid="region-hud">
+        <div
+          className="region-hud"
+          data-region-hud
+          data-testid="region-hud"
+          // A HUD press deliberately skips preventDefault so the button
+          // takes focus and its onClick fires. But a focused <button>
+          // is then activated by Space, and the window-level Space
+          // handler only preventDefaults while `adjusting` — a pick set
+          // parks the interaction in `snap`. Left alone, Space on the
+          // focused Capture button submits the capture, which is bound
+          // nowhere in the hint bar. Drop focus once the click is done.
+          onClick={(e) => {
+            if (e.target instanceof HTMLElement) e.target.blur();
+          }}
+        >
           {/* Output shape. Hidden at one pick, where the union box is
               the extent and both modes produce identical pixels. */}
           {picks.length > 1 && (

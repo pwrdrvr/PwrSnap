@@ -1685,7 +1685,11 @@ function isSelectorPayload(value: unknown): value is {
   if (v.extents !== undefined) {
     if (!Array.isArray(v.extents)) return false;
     if (v.extents.length > MAX_SELECTOR_EXTENTS) return false;
-    if (!v.extents.every(isExtentRect)) return false;
+    // Indexed, not `every`: `every` SKIPS array holes, so a sparse
+    // `extents` would validate and then hand `undefined` to the crop.
+    for (let i = 0; i < v.extents.length; i += 1) {
+      if (!isExtentRect(v.extents[i])) return false;
+    }
   }
   if (
     v.outputMode !== undefined &&

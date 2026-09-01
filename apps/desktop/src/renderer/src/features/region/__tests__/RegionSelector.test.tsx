@@ -105,7 +105,6 @@ afterEach(async () => {
     "fullWindow",
     "mode",
     "discarding",
-    "hasPicks",
     "pickCount",
     "outputMode"
   ]) {
@@ -502,6 +501,19 @@ const WIN_C: WindowSnapEntry = {
   rawRect: { x: 100, y: 500, w: 150, h: 120 }
 };
 
+/** Overlaps WIN (200,150,400x300) in x∈[400,600], y∈[250,450]. */
+const WIN_OVERLAP: WindowSnapEntry = {
+  windowId: 11,
+  pid: 4,
+  bundleId: "com.test.d",
+  appName: "App D",
+  title: null,
+  ownedByUs: false,
+  zIndex: 3,
+  rect: { x: 400, y: 250, w: 300, h: 200 },
+  rawRect: { x: 400, y: 250, w: 300, h: 200 }
+};
+
 const centerOf = (w: WindowSnapEntry): { x: number; y: number } => ({
   x: w.rawRect.x + w.rawRect.w / 2,
   y: w.rawRect.y + w.rawRect.h / 2
@@ -513,7 +525,10 @@ async function mountScene(p: ModePayload = { mode: "auto" }): Promise<void> {
   await mount();
   await emitMode(p);
   await emitSnapshot({
-    windows: [WIN, WIN_B, WIN_C],
+    // WIN_OVERLAP is last so the z-order walk finds WIN first where
+    // they overlap; centerOf(WIN_OVERLAP) is outside WIN, so it still
+    // hit-tests to itself.
+    windows: [WIN, WIN_B, WIN_C, WIN_OVERLAP],
     displayBounds: { width: window.innerWidth, height: window.innerHeight }
   });
 }
@@ -537,6 +552,28 @@ async function clickWindow(
     );
   });
   await mouseUp(c.x, c.y);
+}
+
+/** Geometry of the union frame, or of the lone pick box when only one
+ *  pick is live (the union frame is not rendered then — it would draw a
+ *  dashed border under the pick box's solid one). */
+function selectionStyle(): { left: number; top: number; width: number; height: number } {
+  const el =
+    container?.querySelector(".region-rect") ??
+    container?.querySelector('[data-testid="region-pick"]');
+  if (!(el instanceof HTMLElement)) throw new Error("no selection frame found");
+  const num = (v: string): number => Number.parseFloat(v.replace("px", ""));
+  return {
+    left: num(el.style.left),
+    top: num(el.style.top),
+    width: num(el.style.width),
+    height: num(el.style.height)
+  };
+}
+
+/** Number of hole rects in the SVG mask (one per kept extent). */
+function maskHoles(): number {
+  return container?.querySelectorAll('#region-mask-holes rect[fill="black"]').length ?? 0;
 }
 
 function pickBoxes(): HTMLElement[] {
@@ -565,25 +602,19 @@ async function clickEl(el: Element): Promise<void> {
   });
 }
 
-/** Count of subpaths in the even-odd mask path (1 outer + N holes). */
-function maskSubpaths(cls: string): number {
-  const el = container?.querySelector(`.${cls}`);
-  if (el === null || el === undefined) return 0;
-  return (el.getAttribute("d") ?? "").split("M").length - 1;
-}
-
 describe("U5 — multi-window pick set", () => {
   test("⌘-click accumulates windows; the rect becomes their union", async () => {
     await mountScene();
     await clickWindow(WIN, { metaKey: true });
     expect(pickBoxes()).toHaveLength(1);
-    expect(rectStyle()).toEqual({ left: 200, top: 150, width: 400, height: 300 });
+    expect(selectionStyle()).toEqual({ left: 200, top: 150, width: 400, height: 300 });
 
     await clickWindow(WIN_B, { metaKey: true });
     expect(pickBoxes()).toHaveLength(2);
     // union of (200,150,400x300) and (700,100,200x150)
     expect(rectStyle()).toEqual({ left: 200, top: 100, width: 700, height: 350 });
     expect(document.body.dataset.pickCount).toBe("2");
+    expect(rectStyle()).toEqual({ left: 200, top: 100, width: 700, height: 350 });
   });
 
   test("once a set exists a plain click is additive — no modifier needed", async () => {
@@ -600,12 +631,12 @@ describe("U5 — multi-window pick set", () => {
     await clickWindow(WIN_B);
     await clickWindow(WIN_B); // toggle off
     expect(pickBoxes()).toHaveLength(1);
-    expect(rectStyle()).toEqual({ left: 200, top: 150, width: 400, height: 300 });
+    expect(selectionStyle()).toEqual({ left: 200, top: 150, width: 400, height: 300 });
 
     await clickWindow(WIN); // last one off
     expect(pickBoxes()).toHaveLength(0);
     expect(hud()).toBeNull();
-    expect(document.body.dataset.hasPicks).toBe("false");
+    expect(document.body.dataset.pickCount).toBe("0");
     // Back to live snap under the cursor — which is still over WIN.
     expect(document.body.dataset.interaction).toBe("snap");
     expect(document.body.dataset.snap).toBe("window");
@@ -713,15 +744,34 @@ describe("U5 — multi-window pick set", () => {
     await clickWindow(WIN, { metaKey: true });
     await clickWindow(WIN_B);
     await clickWindow(WIN_C);
-    // 1 outer viewport subpath + 3 holes.
-    expect(maskSubpaths("region-mask__dim")).toBe(4);
-    // Alpha checker: 1 union box + the same 3 holes.
-    expect(maskSubpaths("region-mask__alpha")).toBe(4);
+    expect(maskHoles()).toBe(3);
+    expect(container?.querySelector(".region-mask__alpha")).not.toBeNull();
 
     await keyDown("T"); // → rectangle
-    expect(maskSubpaths("region-mask__dim")).toBe(2); // viewport + union box
+    expect(maskHoles()).toBe(1); // just the union box
     // Nothing becomes transparent, so there is no checker at all.
     expect(container?.querySelector(".region-mask__alpha")).toBeNull();
+  });
+
+  test("overlapping picks each get their own hole — no even-odd cancellation", async () => {
+    // A dialog over its parent is the common case, and the reason this
+    // is an SVG <mask> rather than an even-odd path: with even-odd the
+    // intersection of two holes winds back to \"filled\" and the preview
+    // paints kept pixels as dimmed + transparency-checkered.
+    await mountScene();
+    await clickWindow(WIN, { metaKey: true }); // 200,150 400x300
+    // Click at 650,350 — inside WIN_OVERLAP (400..700) but past WIN's
+    // right edge (600), so the z-order walk lands on WIN_OVERLAP and
+    // does not toggle WIN back off.
+    await mouseMove(650, 350);
+    await mouseDown(650, 350);
+    await mouseUp(650, 350);
+    expect(pickBoxes()).toHaveLength(2);
+    expect(maskHoles()).toBe(2);
+    const holes = Array.from(
+      container?.querySelectorAll('#region-mask-holes rect[fill="black"]') ?? []
+    ).map((el) => el.getAttribute("x"));
+    expect(holes).toEqual(["200", "400"]);
   });
 
   test("HUD: the segmented control sets the mode and a chip removes its pick", async () => {
@@ -813,12 +863,108 @@ describe("U5 — multi-window pick set", () => {
     await mouseMove(c.x, c.y);
     const hover = container?.querySelector(".region-pick-hover");
     expect(hover).not.toBeNull();
-    // ...and the union rect is NOT stomped by the hover.
-    expect(rectStyle()).toEqual({ left: 200, top: 150, width: 400, height: 300 });
+    // ...and the selection is NOT stomped by the hover.
+    expect(selectionStyle()).toEqual({ left: 200, top: 150, width: 400, height: 300 });
     // Hovering an already-picked window shows no add preview.
     const back = centerOf(WIN);
     await mouseMove(back.x, back.y);
     expect(container?.querySelector(".region-pick-hover")).toBeNull();
+  });
+
+  test("⇧ cannot stomp the union rect", async () => {
+    // ⇧ opts a single snap into full-window capture by rewriting `rect`
+    // directly. With a pick set, `rect` is the derived union and
+    // `setSnapRect` refuses to overwrite it — so an unguarded write
+    // here corrupted the frame with no way back, and the mask (built
+    // from `rect` in rectangle mode) then disagreed with what commit
+    // actually captured.
+    await mountScene();
+    await clickWindow(WIN, { metaKey: true });
+    await clickWindow(WIN_B);
+    const union = { left: 200, top: 100, width: 700, height: 350 };
+    expect(rectStyle()).toEqual(union);
+    await mouseMove(centerOf(WIN_B).x, centerOf(WIN_B).y);
+    await keyDown("Shift");
+    expect(rectStyle()).toEqual(union);
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keyup", { key: "Shift", bubbles: true }));
+    });
+    expect(rectStyle()).toEqual(union);
+  });
+
+  test("a new mode signal drops the pick set — pre-warmed windows are reused", async () => {
+    // This handler is the only per-show reset the renderer gets, and
+    // main can end a session without a renderer-side commit or cancel
+    // (`pickRegion` resolves an in-flight resolver with `cancelled` and
+    // re-shows the same window). A surviving set would paint its HUD
+    // over the next capture and ship its extents on commit.
+    await mountScene();
+    await clickWindow(WIN, { metaKey: true });
+    await clickWindow(WIN_B);
+    expect(pickBoxes()).toHaveLength(2);
+    await emitMode({ mode: "auto", intent: "video" });
+    expect(pickBoxes()).toHaveLength(0);
+    expect(hud()).toBeNull();
+    expect(document.body.dataset.pickCount).toBe("0");
+  });
+
+  test("a leaked pick set can never be committed where multi-select is off", async () => {
+    // Belt to the reset's braces: commit re-checks the capability
+    // rather than trusting that a set could only exist where it was
+    // allowed. A video commit must never carry extents — the recording
+    // path reads only `rect` and would silently record the union.
+    await mountScene();
+    await clickWindow(WIN, { metaKey: true });
+    await clickWindow(WIN_B);
+    // Force the leak the mode handler now prevents.
+    await act(async () => {
+      modeHandler?.({ mode: "auto", intent: "video" });
+    });
+    await keyDown("Enter");
+    const payload = submitRegion.mock.calls[0]?.[0];
+    expect(payload).not.toHaveProperty("extents");
+    expect(payload).not.toHaveProperty("outputMode");
+  });
+
+  test("⌃-click does not pick on macOS — that is the secondary-click gesture", async () => {
+    await mount();
+    (window.pwrsnapApi as { platform: string }).platform = "darwin";
+    await emitMode({ mode: "auto" });
+    await emitSnapshot({
+      windows: [WIN, WIN_B, WIN_C],
+      displayBounds: { width: window.innerWidth, height: window.innerHeight }
+    });
+    const c = centerOf(WIN);
+    await mouseMove(c.x, c.y);
+    await act(async () => {
+      window.dispatchEvent(
+        new MouseEvent("mousedown", {
+          clientX: c.x,
+          clientY: c.y,
+          button: 0,
+          bubbles: true,
+          ctrlKey: true
+        })
+      );
+    });
+    await mouseUp(c.x, c.y);
+    expect(pickBoxes()).toHaveLength(0);
+    // ⌘ still works there.
+    await clickWindow(WIN, { metaKey: true });
+    expect(pickBoxes()).toHaveLength(1);
+  });
+
+  test("dropping below two picks releases the rectangle mode", async () => {
+    // The toggle and the `T` binding both disappear below two picks, so
+    // a retained `rectangle` would be unreachable — and would silently
+    // apply to the next window the user added.
+    await mountScene();
+    await clickWindow(WIN, { metaKey: true });
+    await clickWindow(WIN_B);
+    await keyDown("T");
+    expect(document.body.dataset.outputMode).toBe("rectangle");
+    await clickWindow(WIN_B); // back down to one
+    expect(document.body.dataset.outputMode).toBe("windows");
   });
 
   test("hint copy switches to the multi-select legend", async () => {

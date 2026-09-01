@@ -25,9 +25,16 @@ body[data-stage="region"] .region-root {
   background: rgba(0, 0, 0, 0.004);
 }
 
+body[data-stage="region"] {
+  /* The scrim. Shared by the four quadrant divs (single selection) and
+     the SVG mask (multi-select) so the two cannot drift — they paint
+     the same overlay and the user flips between them mid-gesture. */
+  --region-scrim: rgba(0, 0, 0, 0.62);
+}
+
 .region-dim {
   position: fixed;
-  background: rgba(0, 0, 0, 0.62);
+  background: var(--region-scrim);
 }
 .region-dim--full {
   inset: 0;
@@ -58,7 +65,8 @@ body[data-stage="region"] .region-root {
 }
 /* Hide while a committed rect is being dragged (the lines would just
    clutter), and entirely in window mode (a crosshair implies a draw
-   gesture the pure window-picker can't honor — it commits on click). */
+   gesture the pure window-picker can't honor — clicks there add and
+   remove windows; ↵ or the HUD button captures). */
 body[data-stage="region"][data-interaction="moving"] .region-crosshair,
 body[data-stage="region"][data-interaction="resizing"] .region-crosshair,
 body[data-stage="region"][data-mode="window"] .region-crosshair {
@@ -251,12 +259,24 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
    so the two paths look identical where they overlap. */
 .region-mask {
   position: fixed;
-  left: 0;
-  top: 0;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   pointer-events: none;
 }
+/* Must match `.region-dim` above — the two implementations paint the
+   same scrim and the user switches between them by picking a second
+   window. One value, referenced twice. */
 .region-mask__dim {
-  fill: rgba(0, 0, 0, 0.62);
+  fill: var(--region-scrim);
+}
+/* Alpha checker tones. Here rather than as SVG `fill` attributes in the
+   component so every color in this surface lives in the stylesheet. */
+.region-mask__checker-a {
+  fill: rgba(255, 255, 255, 0.02);
+}
+.region-mask__checker-b {
+  fill: rgba(255, 255, 255, 0.05);
 }
 /* The alpha checker paints the part of the union box that is NOT a
    picked extent — i.e. exactly the pixels the exported PNG makes
@@ -301,12 +321,12 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
   padding: 0 5px;
   background: var(--accent);
   border-radius: 5px;
-  color: #000;
+  color: var(--button-text-on-accent);
   font: 700 11px/1 var(--font-mono);
 }
 .region-pick__badge--add {
   background: color-mix(in srgb, var(--accent) 70%, transparent);
-  color: #000;
+  color: var(--button-text-on-accent);
 }
 
 /* The union bounding box while a pick set is live. It is a derived
@@ -326,14 +346,6 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
 .region-rect--union-rectangle {
   border-style: solid;
   box-shadow: 0 0 0 1px rgba(255, 138, 31, 0.4) inset;
-}
-/* One pick: the union box and that pick's box are the same rectangle.
-   Drawing both puts a dashed border under a solid one; the pick box
-   wins because it carries the ordinal badge. The element stays in the
-   tree — it is still the geometry the commit reads. */
-.region-rect--union-solo {
-  border-color: transparent;
-  box-shadow: none;
 }
 
 /* --- HUD ------------------------------------------------------------ */
@@ -389,7 +401,7 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
 }
 .region-hud__seg-btn[data-active="true"] {
   background: var(--accent);
-  color: #000;
+  color: var(--button-text-on-accent);
 }
 
 .region-hud__chips {
@@ -432,7 +444,7 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
   padding: 0 4px;
   background: var(--accent);
   border-radius: 4px;
-  color: #000;
+  color: var(--button-text-on-accent);
   font: 700 10px/1 var(--font-mono);
 }
 .region-hud__chip-name {
@@ -458,7 +470,7 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
   background: var(--accent);
   border: 0;
   border-radius: 8px;
-  color: #000;
+  color: var(--button-text-on-accent);
   font: 700 12px/1 var(--font-sans);
   cursor: pointer;
 }
@@ -473,6 +485,9 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
 }
 
 /* Lift the keyboard legend clear of the HUD. */
-body[data-stage="region"][data-has-picks="true"] .region-hint {
+/* Requires the attribute to be PRESENT and non-zero. A bare
+   `:not([data-pick-count="0"])` would also match the first paint,
+   before the effect stamps anything. */
+body[data-stage="region"][data-pick-count]:not([data-pick-count="0"]) .region-hint {
   bottom: 82px;
 }

@@ -468,9 +468,10 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       // only the pixels inside the picked extents. `rect` is the union
       // box either way, so RECTANGLE mode (and every single-target
       // pick) falls through to the plain crop unchanged.
+      const pickedExtents = selection.extents;
       const maskToExtents =
-        selection.extents !== undefined &&
-        selection.extents.length > 0 &&
+        pickedExtents !== undefined &&
+        pickedExtents.length > 0 &&
         selection.outputMode !== "rectangle";
       const captureResult =
         selection.fullWindow === true && selection.snappedWindowId !== undefined
@@ -479,7 +480,7 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
             ? await cropScreenSnapshotExtents(
                 screenSnapshotPath,
                 selection.rect,
-                selection.extents ?? [],
+                pickedExtents,
                 selection.displayId
               )
             : await cropScreenSnapshot(
@@ -553,11 +554,29 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
           const clampedH =
             Math.min(selection.rect.y + selection.rect.h, by + display.bounds.height) -
             clampedY;
-          cursorLayer = await resolveCursorLayerForRect(
-            cursorSamplePromise,
-            { x: clampedX, y: clampedY, w: clampedW, h: clampedH },
-            display.scaleFactor
-          );
+          // In WINDOWS output mode the gaps between picked windows are
+          // written as alpha-0, so a pointer resting on the desktop
+          // between two windows would be composited into empty
+          // transparency — an arrow floating in a hole. Only place the
+          // cursor when it actually falls inside a kept extent.
+          const cursorPoint = await cursorSamplePromise;
+          const cursorInKeptPixels =
+            !maskToExtents ||
+            cursorPoint === null ||
+            pickedExtents.some(
+              (e) =>
+                cursorPoint.posX >= e.x &&
+                cursorPoint.posX <= e.x + e.w &&
+                cursorPoint.posY >= e.y &&
+                cursorPoint.posY <= e.y + e.h
+            );
+          if (cursorInKeptPixels) {
+            cursorLayer = await resolveCursorLayerForRect(
+              cursorSamplePromise,
+              { x: clampedX, y: clampedY, w: clampedW, h: clampedH },
+              display.scaleFactor
+            );
+          }
         }
       }
       const persisted = await persistAndBroadcast(captureResult.tempPath, sourceApp, {
@@ -1295,15 +1314,31 @@ async function cropScreenSnapshotExtents(
   if (display === undefined) {
     return { ok: false, reason: "validation", message: `unknown display id: ${displayId}` };
   }
+  // Same rect precondition the single-rect crop enforces. Without it a
+  // degenerate union box falls through to the extent check below and
+  // gets reported as a bad PICK, sending triage at the wrong thing.
+  if (rect.w <= 0 || rect.h <= 0) {
+    return { ok: false, reason: "validation", message: "rect.w and rect.h must be positive" };
+  }
 
   try {
-    const meta = await sharp(snapshotPath).metadata();
+    // ONE decode of the full-display PNG, into raw pixels. Extracting
+    // per layer from the file instead re-decodes the whole snapshot
+    // every time — PNG has no random access — and encoding each layer
+    // back to PNG only makes `composite` decode it again. Measured on a
+    // 6K snapshot, the round trip was ~40% of total crop time and the
+    // repeated decode most of the rest; this runs before the selector
+    // is torn down, so it is latency the user watches.
+    const { data: snapshotRaw, info: snapshotInfo } = await sharp(snapshotPath)
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
     const plan = planExtentMask({
       rect,
       extents,
       displayOrigin: { x: display.bounds.x, y: display.bounds.y },
       scaleFactor: display.scaleFactor,
-      snapshot: { width: meta.width ?? 0, height: meta.height ?? 0 }
+      snapshot: { width: snapshotInfo.width, height: snapshotInfo.height }
     });
     if (plan === null) {
       return {
@@ -1313,13 +1348,26 @@ async function cropScreenSnapshotExtents(
       };
     }
 
-    const layers: { input: Buffer; left: number; top: number }[] = [];
+    const layers: {
+      input: Buffer;
+      raw: { width: number; height: number; channels: 1 | 2 | 3 | 4 };
+      left: number;
+      top: number;
+    }[] = [];
     for (const layer of plan.layers) {
-      // eslint-disable-next-line no-await-in-loop -- serialized on purpose:
-      // a 64-extent pick issuing 64 concurrent sharp decodes of the same
-      // full-display PNG is a memory spike for no wall-clock win.
-      const input = await sharp(snapshotPath).extract(layer.extract).png().toBuffer();
-      layers.push({ input, left: layer.left, top: layer.top });
+      // eslint-disable-next-line no-await-in-loop -- each iteration is a
+      // memcpy out of the already-decoded buffer, not I/O; running them
+      // concurrently would only add peak memory.
+      const { data, info } = await sharp(snapshotRaw, { raw: snapshotInfo })
+        .extract(layer.extract)
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+      layers.push({
+        input: data,
+        raw: { width: info.width, height: info.height, channels: info.channels },
+        left: layer.left,
+        top: layer.top
+      });
     }
 
     const dir = await mkdtemp(join(tmpdir(), "pwrsnap-crop-"));

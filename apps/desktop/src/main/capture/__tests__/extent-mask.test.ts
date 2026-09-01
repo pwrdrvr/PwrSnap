@@ -130,6 +130,87 @@ describe("planExtentMask", () => {
     ).toBeNull();
   });
 
+  it("leaves no seam between abutting extents at a fractional scale", () => {
+    // Windows at 125%, two windows that touch exactly. Deriving the far
+    // edge as round(left) + round(width) put them 1 physical px apart,
+    // and that gap is a fully transparent line through the middle of
+    // the capture. Rounding both edges makes them abut.
+    const plan = planExtentMask({
+      rect: { x: 1, y: 0, w: 1801, h: 1000 },
+      extents: [
+        { x: 1, y: 0, w: 901, h: 1000 },
+        { x: 902, y: 0, w: 900, h: 1000 }
+      ],
+      displayOrigin: { x: 0, y: 0 },
+      scaleFactor: 1.25,
+      snapshot: { width: 2400, height: 1250 }
+    });
+    expect(plan).not.toBeNull();
+    const a = plan?.layers[0];
+    const b = plan?.layers[1];
+    expect(a).toBeDefined();
+    expect(b).toBeDefined();
+    if (a === undefined || b === undefined) return;
+    expect(a.left + a.extract.width).toBe(b.left);
+  });
+
+  it("returns null for a box wholly past the right or bottom edge", () => {
+    // Clamping the origin to `width - 1` while the far edge clamped to
+    // `width` manufactured a 1-px overlap, and the caller wrote a
+    // sliver PNG instead of failing.
+    expect(
+      planExtentMask({
+        rect: { x: 3000, y: 0, w: 400, h: 400 },
+        extents: [{ x: 3000, y: 0, w: 400, h: 400 }],
+        displayOrigin: { x: 0, y: 0 },
+        scaleFactor: 1,
+        snapshot: { width: 1920, height: 1080 }
+      })
+    ).toBeNull();
+    expect(
+      planExtentMask({
+        rect: { x: 0, y: 2000, w: 400, h: 400 },
+        extents: [{ x: 0, y: 2000, w: 400, h: 400 }],
+        displayOrigin: { x: 0, y: 0 },
+        scaleFactor: 1,
+        snapshot: { width: 1920, height: 1080 }
+      })
+    ).toBeNull();
+  });
+
+  it("returns null for a zero or non-finite scale factor", () => {
+    // display-density.test.ts pins that a display can report 0 during a
+    // hot-plug race. Without the guard every rect collapsed to 1x1 and
+    // the user silently got a one-pixel capture.
+    for (const scaleFactor of [0, Number.NaN, Number.POSITIVE_INFINITY, -2]) {
+      expect(
+        planExtentMask({
+          rect: { x: 0, y: 0, w: 100, h: 100 },
+          extents: [{ x: 0, y: 0, w: 100, h: 100 }],
+          displayOrigin: { x: 0, y: 0 },
+          scaleFactor,
+          snapshot: SNAPSHOT_1X
+        })
+      ).toBeNull();
+    }
+  });
+
+  it("skips holes in a sparse extents array instead of dereferencing them", () => {
+    // `isExtentRect` is applied with `every` on the validation side, and
+    // `every` SKIPS holes — so a sparse array reached the planner. A
+    // `for…of` there would hand `undefined` to the coordinate math.
+    const sparse: { x: number; y: number; w: number; h: number }[] = [];
+    sparse[0] = { x: 0, y: 0, w: 100, h: 100 };
+    sparse[2] = { x: 200, y: 0, w: 100, h: 100 };
+    const plan = plan1x({ x: 0, y: 0, w: 300, h: 100 }, sparse);
+    expect(plan?.layers).toHaveLength(2);
+  });
+
+  it("rejects a NaN rect rather than letting it reach sharp", () => {
+    expect(plan1x({ x: Number.NaN, y: 0, w: 100, h: 100 }, [{ x: 0, y: 0, w: 10, h: 10 }])).toBeNull();
+    expect(plan1x({ x: 0, y: 0, w: Number.NaN, h: 100 }, [{ x: 0, y: 0, w: 10, h: 10 }])).toBeNull();
+  });
+
   it("never emits a zero-width extract from a sub-pixel extent", () => {
     // 0.4 logical px at 1x rounds to 0 — Math.max(1, …) keeps it a
     // legal extract instead of making sharp throw.

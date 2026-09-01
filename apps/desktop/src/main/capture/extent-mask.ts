@@ -83,20 +83,48 @@ export function planExtentMask(args: {
   snapshot: { width: number; height: number };
 }): ExtentMaskPlan | null {
   const { rect, extents, displayOrigin, scaleFactor, snapshot } = args;
+  if (!Number.isFinite(rect.w) || !Number.isFinite(rect.h)) return null;
+  if (!Number.isFinite(rect.x) || !Number.isFinite(rect.y)) return null;
   if (rect.w <= 0 || rect.h <= 0) return null;
   if (extents.length === 0) return null;
   if (snapshot.width <= 0 || snapshot.height <= 0) return null;
+  // A display can report a zero / non-finite scale factor during a
+  // hot-plug or metrics-changed race (`display-density.test.ts` pins
+  // that case). Without this the whole plan collapses to a 1×1 box and
+  // the user silently gets a one-pixel capture.
+  if (!Number.isFinite(scaleFactor) || scaleFactor <= 0) return null;
 
-  const toPhysical = (r: MaskRect): PhysicalBox => ({
-    left: Math.round((r.x - displayOrigin.x) * scaleFactor),
-    top: Math.round((r.y - displayOrigin.y) * scaleFactor),
-    width: Math.max(1, Math.round(r.w * scaleFactor)),
-    height: Math.max(1, Math.round(r.h * scaleFactor))
-  });
+  /**
+   * Logical rect → snapshot pixels.
+   *
+   * The far edge is ROUNDED, not derived as `round(left) + round(w)`.
+   * At a fractional scale factor those differ: two windows that abut
+   * exactly (A ends where B begins) can round to a 1-px gap between
+   * them, and that gap is a fully transparent line through the middle
+   * of the capture — visible in the editor's alpha checker and in the
+   * exported PNG. Rounding both edges makes abutting extents abut in
+   * physical space too.
+   */
+  const toPhysical = (r: MaskRect): PhysicalBox => {
+    const left = Math.round((r.x - displayOrigin.x) * scaleFactor);
+    const top = Math.round((r.y - displayOrigin.y) * scaleFactor);
+    const right = Math.round((r.x + r.w - displayOrigin.x) * scaleFactor);
+    const bottom = Math.round((r.y + r.h - displayOrigin.y) * scaleFactor);
+    return {
+      left,
+      top,
+      width: Math.max(1, right - left),
+      height: Math.max(1, bottom - top)
+    };
+  };
 
   const raw = toPhysical(rect);
-  const boxLeft = Math.min(Math.max(0, raw.left), snapshot.width - 1);
-  const boxTop = Math.min(Math.max(0, raw.top), snapshot.height - 1);
+  // Clamp BOTH edges to the same bound. Clamping the origin to
+  // `width - 1` while the far edge clamps to `width` manufactures a
+  // 1-px overlap for a box lying entirely past the right/bottom edge,
+  // which yields a sliver capture instead of the intended null.
+  const boxLeft = Math.min(Math.max(0, raw.left), snapshot.width);
+  const boxTop = Math.min(Math.max(0, raw.top), snapshot.height);
   // A union box that starts off the left/top edge is clamped to 0, so
   // its far edge — not its width — is what survives the clamp.
   const boxRight = Math.min(raw.left + raw.width, snapshot.width);
@@ -106,7 +134,13 @@ export function planExtentMask(args: {
   if (boxW <= 0 || boxH <= 0) return null;
 
   const layers: ExtentMaskPlan["layers"] = [];
-  for (const extent of extents) {
+  for (let i = 0; i < extents.length; i += 1) {
+    // Indexed, not `for…of`: a sparse array yields `undefined` for its
+    // holes, and `isExtentRect` on the validation side is applied with
+    // `every`, which SKIPS holes. Checking here means a hole can never
+    // reach `toPhysical`.
+    const extent = extents[i];
+    if (!isExtentRect(extent)) continue;
     const e = toPhysical(extent);
     // Intersect with the canvas: an extent hanging off the display edge
     // (or off the union box, which a rounding difference can produce)

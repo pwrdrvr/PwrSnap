@@ -91,7 +91,7 @@ function installSelectorApi(): void {
     canvas,
     width: 3840,
     height: 2160,
-    transferMode: "bitmaprenderer" as const
+    transferMode: "2d" as const
   }));
   frozenFrameMocks.encode.mockResolvedValue({
     blob: new Blob([new Uint8Array(16)], { type: "image/png" }),
@@ -1168,5 +1168,21 @@ describe("U7 — renderer-owned frozen frame transport", () => {
         }
       })
     );
+    expect(reportSelectorPerformance).toHaveBeenCalledWith({
+      invocationId: DEFAULT_INVOCATION_ID,
+      mark: "crop-encode-started"
+    });
+    expect(reportSelectorPerformance).toHaveBeenCalledWith({
+      invocationId: DEFAULT_INVOCATION_ID,
+      mark: "crop-encode-completed"
+    });
+    expect(reportSelectorPerformance).toHaveBeenCalledWith({
+      invocationId: DEFAULT_INVOCATION_ID,
+      mark: "crop-stream-started"
+    });
+    expect(reportSelectorPerformance).toHaveBeenCalledWith({
+      invocationId: DEFAULT_INVOCATION_ID,
+      mark: "crop-stream-completed"
+    });
   });
 });

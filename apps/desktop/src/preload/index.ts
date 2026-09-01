@@ -460,7 +460,15 @@ const pwrsnapApi = {
   /** Renderer paint marks used to order picker shell and target readiness. */
   reportSelectorPerformance(payload: {
     invocationId: number;
-    mark: "shell-painted" | "window-targets-painted";
+    mark:
+      | "shell-painted"
+      | "window-targets-painted"
+      | "crop-encode-started"
+      | "crop-encode-completed"
+      | "crop-stream-started"
+      | "crop-stream-completed"
+      | "crop-commit-failed-encode"
+      | "crop-commit-failed-stream";
   }): void {
     ipcRenderer.send(REGION_SELECTOR_PERFORMANCE_CHANNEL, payload);
   },

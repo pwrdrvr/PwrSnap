@@ -10,11 +10,10 @@
 // constructor with the matching surface color, the frame already
 // reads the right way from the very first OS-level paint.
 //
-// We deliberately keep this module narrow — sync I/O on a tiny JSON
-// file, no DesktopSettingsService dependency, no Logger. Reading
-// happens on every window construction (handful per session, cheap)
-// rather than caching, so a theme change in the Settings page
-// propagates to the next opened window without invalidation tracking.
+// BrowserWindow construction is synchronous. Normal startup hydrates the
+// process-owned settings store before any user window is created, so repeated
+// window opens read its current immutable snapshot. The direct sync read is a
+// narrow fallback for an exceptional pre-hydration window only.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -22,6 +21,7 @@ import { app, nativeTheme } from "electron";
 import type { AppearanceTheme } from "@pwrsnap/shared";
 import { isAppearanceTheme } from "@pwrsnap/shared";
 import { serializeAppearanceArg } from "@pwrsnap/shared/appearance-arg";
+import { getDesktopSettingsStore } from "./desktop-settings-store";
 
 /** Surface color when the user is in dark mode. Matches
  *  `--bg-app` in `apps/desktop/src/renderer/src/styles/tokens.css`
@@ -40,6 +40,9 @@ function settingsFilePath(): string {
 }
 
 function readPersistedTheme(): AppearanceTheme {
+  const cached = getDesktopSettingsStore().getCurrentSnapshot();
+  if (cached !== null) return cached.appearance.theme;
+
   const filePath = settingsFilePath();
   if (!existsSync(filePath)) return "system";
   let raw: string;

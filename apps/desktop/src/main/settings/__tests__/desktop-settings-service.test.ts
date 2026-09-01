@@ -91,6 +91,83 @@ describe("DesktopSettingsService.read", () => {
     const entries = readdirSync(workDir);
     expect(entries.some((n) => n.includes("corrupt-"))).toBe(true);
   });
+
+  test("coalesces concurrent cold reads into one immutable hydration", async () => {
+    const raw = JSON.stringify(defaultSettings());
+    let releaseRead: () => void = () => undefined;
+    const readGate = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    const readTextFile = vi.fn(async () => {
+      await readGate;
+      return raw;
+    });
+    const svc = new DesktopSettingsService({
+      filePath: join(workDir, "settings.json"),
+      readTextFile
+    });
+
+    const reads = [svc.read(), svc.read(), svc.read()];
+    expect(readTextFile).toHaveBeenCalledTimes(1);
+    releaseRead();
+    const [first, second, third] = await Promise.all(reads);
+
+    expect(first).toBe(second);
+    expect(second).toBe(third);
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(Object.isFrozen(first.recording)).toBe(true);
+    expect(readTextFile).toHaveBeenCalledTimes(1);
+  });
+
+  test("keeps external edits behind the explicit reload boundary", async () => {
+    let diskSettings = defaultSettings();
+    const readTextFile = vi.fn(async () => JSON.stringify(diskSettings));
+    const svc = new DesktopSettingsService({
+      filePath: join(workDir, "settings.json"),
+      readTextFile
+    });
+
+    const initial = await svc.read();
+    diskSettings = mergeSettings(diskSettings, {
+      recording: { imageCaptureCursor: false }
+    });
+
+    const cached = await svc.read();
+    expect(cached).toBe(initial);
+    expect(cached.recording.imageCaptureCursor).toBe(true);
+    expect(readTextFile).toHaveBeenCalledTimes(1);
+
+    const reloaded = await svc.reload();
+    expect(reloaded.recording.imageCaptureCursor).toBe(false);
+    expect(readTextFile).toHaveBeenCalledTimes(2);
+  });
+
+  test("leaves the store unhydrated after a transient read failure and retries", async () => {
+    const persisted = mergeSettings(defaultSettings(), {
+      general: { developerMode: true }
+    });
+    let attempt = 0;
+    const readTextFile = vi.fn(async () => {
+      attempt += 1;
+      if (attempt === 1) {
+        throw Object.assign(new Error("settings temporarily busy"), {
+          code: "EBUSY"
+        });
+      }
+      return JSON.stringify(persisted);
+    });
+    const svc = new DesktopSettingsService({
+      filePath: join(workDir, "settings.json"),
+      readTextFile
+    });
+
+    await expect(svc.read()).rejects.toMatchObject({ code: "EBUSY" });
+    expect(svc.getCurrentSnapshot()).toBeNull();
+
+    const recovered = await svc.read();
+    expect(recovered.general.developerMode).toBe(true);
+    expect(readTextFile).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("DesktopSettingsService.write", () => {
@@ -131,6 +208,58 @@ describe("DesktopSettingsService.write", () => {
     await svc.write({ codex: { pinnedPath: "" } });
     const read = await svc.read();
     expect(read.codex.pinnedPath).toBe("");
+  });
+
+  test("serialized writes merge from the snapshot without re-reading disk", async () => {
+    const readTextFile = vi.fn(async () => JSON.stringify(defaultSettings()));
+    const svc = new DesktopSettingsService({
+      filePath: join(workDir, "settings.json"),
+      readTextFile
+    });
+
+    const first = svc.write({ general: { developerMode: true } });
+    const second = svc.write({ recording: { imageCaptureCursor: false } });
+    await Promise.all([first, second]);
+    const current = await svc.read();
+
+    expect(current.general.developerMode).toBe(true);
+    expect(current.recording.imageCaptureCursor).toBe(false);
+    expect(readTextFile).toHaveBeenCalledTimes(1);
+  });
+
+  test("a transient hydration failure blocks writes until the valid file is readable", async () => {
+    const filePath = join(workDir, "settings.json");
+    const persisted = mergeSettings(defaultSettings(), {
+      codex: { mode: "pinned", pinnedPath: "/opt/preserved-codex" },
+      general: { developerMode: true }
+    });
+    const originalJson = `${JSON.stringify(persisted, null, 2)}\n`;
+    writeFileSync(filePath, originalJson, "utf8");
+    let attempt = 0;
+    const readTextFile = vi.fn(async () => {
+      attempt += 1;
+      if (attempt === 1) {
+        throw Object.assign(new Error("settings temporarily unavailable"), {
+          code: "EIO"
+        });
+      }
+      return readFileSync(filePath, "utf8");
+    });
+    const svc = new DesktopSettingsService({ filePath, readTextFile });
+
+    await expect(
+      svc.write({ recording: { imageCaptureCursor: false } })
+    ).rejects.toMatchObject({ code: "EIO" });
+    expect(svc.getCurrentSnapshot()).toBeNull();
+    expect(readFileSync(filePath, "utf8")).toBe(originalJson);
+
+    const written = await svc.write({
+      recording: { imageCaptureCursor: false }
+    });
+    expect(written.codex.pinnedPath).toBe("/opt/preserved-codex");
+    expect(written.general.developerMode).toBe(true);
+    expect(written.recording.imageCaptureCursor).toBe(false);
+    expect(readTextFile).toHaveBeenCalledTimes(2);
   });
 
   test("local-agent access is opt-in and round-trips independently", async () => {
@@ -255,10 +384,13 @@ describe("DesktopSettingsService.write", () => {
   });
 
   test("rolls back staged external state when the atomic disk write fails", async () => {
-    const blocker = join(workDir, "not-a-directory");
-    writeFileSync(blocker, "blocks mkdir", "utf8");
-    const svc = new DesktopSettingsService({
-      filePath: join(blocker, "settings.json")
+    class FailingAtomicSettingsService extends DesktopSettingsService {
+      protected override async atomicWriteJson(_value: Settings): Promise<void> {
+        throw new Error("synthetic atomic write failure");
+      }
+    }
+    const svc = new FailingAtomicSettingsService({
+      filePath: join(workDir, "settings.json")
     });
     const commit = vi.fn();
     const rollback = vi.fn();
@@ -272,7 +404,6 @@ describe("DesktopSettingsService.write", () => {
 
     expect(commit).not.toHaveBeenCalled();
     expect(rollback).toHaveBeenCalledTimes(1);
-    expect(readFileSync(blocker, "utf8")).toBe("blocks mkdir");
   });
 });
 
@@ -1137,6 +1268,31 @@ describe("DesktopSettingsService.getCodexDiscoverySnapshot cache invalidation", 
       // reflect the new pin, not the prior `codex` resolved path.
       const second = await svc.getCodexDiscoverySnapshot();
       expect(second.resolvedPath).toBe("/opt/codex-pinned");
+      expect(discoverSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      restore();
+    }
+  });
+
+  test("an explicit external reload invalidates discovery and resolves the reloaded pin", async () => {
+    const codexDiscovery = await import("../codex-discovery");
+    const { discoverSpy, restore } = stubCodexDiscovery(codexDiscovery);
+
+    try {
+      const filePath = join(workDir, "settings.json");
+      writeFileSync(filePath, JSON.stringify(defaultSettings()), "utf8");
+      const svc = new DesktopSettingsService({ filePath });
+      expect((await svc.getCodexDiscoverySnapshot()).resolvedPath).toBe("codex");
+
+      const external = mergeSettings(defaultSettings(), {
+        codex: { mode: "pinned", pinnedPath: "/opt/external-codex" }
+      });
+      writeFileSync(filePath, JSON.stringify(external), "utf8");
+      await svc.reload();
+
+      expect((await svc.getCodexDiscoverySnapshot()).resolvedPath).toBe(
+        "/opt/external-codex"
+      );
       expect(discoverSpy).toHaveBeenCalledTimes(2);
     } finally {
       restore();

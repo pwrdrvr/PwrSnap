@@ -50,7 +50,8 @@ bus.
 
 | Path | What |
 |---|---|
-| `apps/desktop/src/main/settings/desktop-settings-service.ts` | JSON service + legacy-shape catalog + Codex discovery cache |
+| `apps/desktop/src/main/settings/desktop-settings-service.ts` | Immutable snapshot + JSON service + legacy-shape catalog + Codex discovery cache |
+| `apps/desktop/src/main/settings/desktop-settings-store.ts` | Lazy process-owned service singleton used by every production consumer |
 | `apps/desktop/src/main/settings/desktop-secret-store.ts` | `safeStorage`-encrypted blob |
 | `apps/desktop/src/main/settings/codex-discovery.ts` | Lifted Phase 0.5 — discovery + `resolveCodexCommand` |
 | `apps/desktop/src/main/handlers/settings-handlers.ts` | The six (well, seven counting `settings:open`) bus handlers + the broadcast emitter |
@@ -60,6 +61,29 @@ bus.
 | `packages/shared/src/ipc.ts` | `EVENT_CHANNELS.settingsChanged` + `SettingsChangedEvent` payload type |
 
 ## Persistence rules (load-bearing)
+
+### Hydrate once — hot-path reads use the process snapshot
+
+`getDesktopSettingsStore()` owns one `DesktopSettingsService` per Electron
+main process. The normal startup storage-location read is the hydration
+boundary. Concurrent cold readers coalesce; after hydration, `read()` returns
+the same deeply frozen snapshot without opening or parsing
+`pwrsnap-settings.json`. Do not construct private production service instances.
+
+`write()` serializes against other mutations, persists atomically, and replaces
+the snapshot only after rename succeeds. `reload()` is the explicit boundary
+for a deliberate out-of-process file edit; app restart is the normal boundary.
+`ENOENT` hydrates defaults for a genuine first launch. Any other read error
+rejects and leaves the store unhydrated, so later reads retry and no write can
+replace a valid-but-temporarily-unreadable file with defaults plus one patch.
+In split mode the Library process adopts the agent's trusted
+`events:settings:changed` snapshot so synchronous menu/BrowserWindow consumers
+stay current without a file read. Secret plaintext remains outside this store.
+
+Two synchronous fallbacks precede or can precede hydration: process-role
+resolution peeks `experimental.processSplit`, and BrowserWindow appearance may
+read the theme if an exceptional window is constructed early. Normal window
+creation reads the hydrated snapshot.
 
 ### Atomic writes — write to tmp + rename
 
@@ -98,8 +122,8 @@ survives version churn for free.
 
 `DesktopSettingsService.write()` awaits an internal promise chain so
 two parallel `patch()` calls don't interleave. Without this, a
-concurrent renderer could read v1, see writeA's merged result, and
-overwrite writeB's changes on disk. The queue is per-process; cross-
+concurrent renderer could merge from the same snapshot and overwrite the
+other patch's changes on disk. The queue is per-process; cross-
 process locks are out of scope (single-instance is enforced
 elsewhere).
 

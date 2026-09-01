@@ -49,6 +49,10 @@ import {
   type HotkeyRegistrationCoordinator
 } from "../hotkeys/hotkey-registration-manager";
 import {
+  __setDesktopSettingsStoreForTests,
+  getDesktopSettingsStore
+} from "../settings/desktop-settings-store";
+import {
   DesktopSecretStore,
   SecretUnavailableError
 } from "../settings/desktop-secret-store";
@@ -75,17 +79,7 @@ function ensureServices(): {
   secrets: DesktopSecretStore;
 } {
   if (settingsService === null) {
-    const userData = app.getPath("userData");
-    settingsService = new DesktopSettingsService({
-      filePath: join(userData, "pwrsnap-settings.json"),
-      resolveAppVersion: () => {
-        try {
-          return typeof app.getVersion === "function" ? app.getVersion() : "";
-        } catch {
-          return "";
-        }
-      }
-    });
+    settingsService = getDesktopSettingsStore();
   }
   if (secretStore === null) {
     const userData = app.getPath("userData");
@@ -108,7 +102,10 @@ export function __setSettingsServicesForTests(injected: {
   secrets?: DesktopSecretStore | null;
   usage?: LocalAgentUsageService | null;
 }): void {
-  if (injected.service !== undefined) settingsService = injected.service;
+  if (injected.service !== undefined) {
+    settingsService = injected.service;
+    __setDesktopSettingsStoreForTests(injected.service);
+  }
   if (injected.secrets !== undefined) secretStore = injected.secrets;
   if (injected.usage !== undefined) localAgentUsageService = injected.usage;
   localAgentGrantService = null;
@@ -132,11 +129,11 @@ function getLocalAgentUsageService(): LocalAgentUsageService {
   return localAgentUsageService;
 }
 
-/** Read the live settings snapshot for non-`settings:*` main handlers
+/** Read the current settings snapshot for non-`settings:*` main handlers
  *  (e.g. the export path resolving the active preset ladder). Shares the
  *  same lazily-constructed `DesktopSettingsService` as the bus verbs, so
- *  a write made through `settings:write` is visible here on the next read
- *  (the service has no in-memory cache — `read()` re-parses the file). */
+ *  a write made through `settings:write` is visible here immediately without
+ *  re-reading or re-parsing the file. */
 export async function readDesktopSettings(): Promise<Settings> {
   return ensureServices().service.read();
 }
@@ -752,6 +749,7 @@ export function registerSettingsDataHandlers(options: {
 
 export function __resetSettingsHandlersForTests(): void {
   settingsService = null;
+  __setDesktopSettingsStoreForTests(null);
   secretStore = null;
   localAgentGrantService = null;
   localAgentAuditService = null;

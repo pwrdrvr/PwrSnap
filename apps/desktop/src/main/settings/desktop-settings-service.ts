@@ -1,7 +1,9 @@
-// Atomic write via tmp+rename. Reads route through an ordered legacy-
-// shape catalog (see SHAPE_CATALOG below) so schema growth doesn't
-// force eager migrations on read — we rewrite on the next `write`.
-// Concurrent writes serialize through a single promise chain.
+// Process-owned settings store. The first read hydrates an immutable
+// snapshot from disk; subsequent reads stay in memory until an explicit
+// reload boundary. Reads route through an ordered legacy-shape catalog
+// (see SHAPE_CATALOG below) so schema growth doesn't force eager migrations
+// on read — we rewrite on the next `write`. Atomic writes serialize through
+// one promise chain and replace the snapshot only after rename succeeds.
 
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -127,6 +129,9 @@ export type DesktopSettingsServiceConfig = {
    *  so inference does not depend on Electron. */
   appVersion?: string;
   resolveAppVersion?: () => string;
+  /** Narrow I/O seam for deterministic store tests. Production leaves this
+   *  unset and reads UTF-8 through node:fs/promises. */
+  readTextFile?: (filePath: string) => Promise<string>;
 };
 
 export type DesktopSettingsWritePreparation = {
@@ -1448,13 +1453,20 @@ export class DesktopSettingsService {
   private readonly log: Logger;
   private readonly resolveAppVersion: () => string;
   private readonly shortcutPlatform: ShortcutPlatform;
+  private readonly readTextFile: (filePath: string) => Promise<string>;
 
-  /**
-   * Serializes all writes. Read isn't gated through this chain — the
-   * file system itself provides crash consistency via the tmp+rename
-   * dance, and reads always observe either the prior committed state
-   * or the next one, never a torn write.
-   */
+  /** Immutable current snapshot. It is process-local by design: split-mode
+   *  processes each hydrate once, while settings writes remain agent-owned
+   *  and renderer/main listeners receive the existing change broadcast. */
+  private snapshot: Settings | null = null;
+
+  /** Coalesces concurrent cold readers so startup consumers (storage,
+   *  hotkeys, tray, updater, AI) never race into duplicate disk parses. */
+  private hydrationInflight: Promise<Settings> | null = null;
+
+  /** Serializes writes and explicit reloads. Ordinary reads return the
+   *  current immutable snapshot immediately; a mutation publishes its next
+   *  snapshot only after the atomic file rename succeeds. */
   private writeQueue: Promise<unknown> = Promise.resolve();
 
   private codexSnapshotCache:
@@ -1482,6 +1494,9 @@ export class DesktopSettingsService {
     this.resolveAppVersion =
       config.resolveAppVersion ??
       (() => config.appVersion ?? "");
+    this.readTextFile =
+      config.readTextFile ??
+      ((filePath) => readFile(filePath, "utf8"));
   }
 
   private currentAppVersion(): string {
@@ -1499,6 +1514,24 @@ export class DesktopSettingsService {
     return this.filePath;
   }
 
+  /** Synchronous access for callers that cannot await during object
+   *  construction (notably BrowserWindow appearance seeding). Returns null
+   *  only before this process's startup hydration has completed. */
+  getCurrentSnapshot(): Settings | null {
+    return this.snapshot;
+  }
+
+  /** Adopt a trusted snapshot delivered by the owning process. Split-mode
+   *  library uses this on the settings-changed bridge event so synchronous
+   *  window/menu consumers stay current without reading the shared file.
+   *  This never persists and never accepts renderer input directly. */
+  applyExternalSnapshot(settings: Settings): Settings {
+    const normalized = this.normalizeForSnapshot(settings);
+    const current = this.replaceSnapshot(normalized);
+    this.invalidateCodexSnapshotCache();
+    return current;
+  }
+
   /**
    * Load + normalize settings.
    *
@@ -1510,18 +1543,59 @@ export class DesktopSettingsService {
    * be able to recover from it.
    */
   async read(): Promise<Settings> {
+    if (this.snapshot !== null) return this.snapshot;
+    if (this.hydrationInflight !== null) return this.hydrationInflight;
+
+    const hydration = this.loadFromDisk();
+    this.hydrationInflight = hydration;
+    try {
+      return await hydration;
+    } finally {
+      if (this.hydrationInflight === hydration) {
+        this.hydrationInflight = null;
+      }
+    }
+  }
+
+  /**
+   * Explicit external-change boundary. Normal production changes use
+   * `write()`, which updates this store and broadcasts the new snapshot.
+   * A caller that intentionally permits out-of-process edits may invoke
+   * `reload()` (application startup is the default boundary); hot paths must
+   * never call it. Reloads serialize with writes and invalidate Codex
+   * discovery because an external edit may have changed `codex.*`.
+   */
+  async reload(): Promise<Settings> {
+    const task = async (): Promise<Settings> => {
+      if (this.hydrationInflight !== null) {
+        await this.hydrationInflight;
+      }
+      const settings = await this.loadFromDisk();
+      this.invalidateCodexSnapshotCache();
+      return settings;
+    };
+    return this.enqueue(task);
+  }
+
+  private async loadFromDisk(): Promise<Settings> {
     let raw: string;
     try {
-      raw = await readFile(this.filePath, "utf8");
+      raw = await this.readTextFile(this.filePath);
     } catch (cause) {
       if (isNodeError(cause) && cause.code === "ENOENT") {
-        return this.withInferredUpdates(defaultSettings(this.shortcutPlatform));
+        return this.replaceSnapshot(
+          this.withInferredUpdates(defaultSettings(this.shortcutPlatform))
+        );
       }
-      this.log.warn("settings-service: read failed, using defaults", {
+      // A non-ENOENT failure does not prove the file is absent. Leave the
+      // store unhydrated and reject so a later read can recover; critically,
+      // write() also rejects before prepare/persistence instead of replacing a
+      // valid-but-temporarily-unreadable file with defaults plus one patch.
+      this.log.warn("settings-service: read failed, leaving store unhydrated", {
         path: this.filePath,
         message: cause instanceof Error ? cause.message : String(cause)
       });
-      return this.withInferredUpdates(defaultSettings(this.shortcutPlatform));
+      throw cause;
     }
 
     let parsed: unknown;
@@ -1529,7 +1603,9 @@ export class DesktopSettingsService {
       parsed = JSON.parse(raw);
     } catch (cause) {
       await this.quarantine(`json_parse: ${cause instanceof Error ? cause.message : String(cause)}`);
-      return this.withInferredUpdates(defaultSettings(this.shortcutPlatform));
+      return this.replaceSnapshot(
+        this.withInferredUpdates(defaultSettings(this.shortcutPlatform))
+      );
     }
 
     for (const entry of SHAPE_CATALOG) {
@@ -1538,11 +1614,13 @@ export class DesktopSettingsService {
         this.currentAppVersion(),
         this.shortcutPlatform
       );
-      if (normalized !== null) return normalized;
+      if (normalized !== null) return this.replaceSnapshot(normalized);
     }
 
     await this.quarantine("no_shape_matched");
-    return this.withInferredUpdates(defaultSettings(this.shortcutPlatform));
+    return this.replaceSnapshot(
+      this.withInferredUpdates(defaultSettings(this.shortcutPlatform))
+    );
   }
 
   /**
@@ -1571,10 +1649,13 @@ export class DesktopSettingsService {
    *     clears a pin.)
    *
    * Writes are serialized through a single promise chain so concurrent
-   * `write` calls observe each other's results — the second write
-   * reads the file the first wrote, not the file both started from.
+   * `write` calls observe each other's results — the second write merges
+   * onto the immutable snapshot committed by the first.
    *
-   * Returns the merged Settings the caller can echo to renderers.
+   * Returns the merged response shape the caller can echo to renderers. The
+   * internal snapshot is normalized independently, preserving the historical
+   * contract where an explicit managed-default token can appear in the write
+   * response even though a subsequent read omits that default-valued field.
    */
   async write(
     patch: SettingsPatch,
@@ -1583,11 +1664,16 @@ export class DesktopSettingsService {
     const task = async (): Promise<Settings> => {
       const current = await this.read();
       const merged = mergeSettings(current, patch);
+      // A disk round-trip used to re-run shape normalization after every
+      // write. Preserve that invariant without the I/O: additive defaults and
+      // migrations must appear in the cached result exactly as they would
+      // after a fresh process launch.
+      const normalized = this.normalizeForSnapshot(merged);
       const prepared = options.prepare === undefined
         ? undefined
         : await options.prepare(current, merged);
       try {
-        await this.atomicWriteJson(merged);
+        await this.atomicWriteJson(normalized);
       } catch (cause) {
         if (prepared !== undefined) {
           try {
@@ -1604,6 +1690,9 @@ export class DesktopSettingsService {
         }
         throw cause;
       }
+      // The rename is the settings commit point. Publish the same canonical
+      // shape immediately, then finalize the already-staged external state.
+      this.replaceSnapshot(normalized);
       prepared?.commit();
       // Invalidate the Codex discovery cache whenever a write touches
       // `codex.*`. Otherwise the snapshot's `resolvedPath` (computed
@@ -1613,7 +1702,7 @@ export class DesktopSettingsService {
       // pin. Only invalidate on success so a rejected write doesn't
       // force an extra (uncached) discovery on the next read.
       if (patch.codex !== undefined) this.invalidateCodexSnapshotCache();
-      return merged;
+      return deepFreeze(merged);
     };
 
     // Chain onto the existing queue so concurrent writes serialize.
@@ -1801,6 +1890,24 @@ export class DesktopSettingsService {
 
   // ---- internals ----
 
+  private replaceSnapshot(settings: Settings): Settings {
+    const immutable = deepFreeze(settings);
+    this.snapshot = immutable;
+    return immutable;
+  }
+
+  private normalizeForSnapshot(input: unknown): Settings {
+    for (const entry of SHAPE_CATALOG) {
+      const normalized = entry.parse(
+        input,
+        this.currentAppVersion(),
+        this.shortcutPlatform
+      );
+      if (normalized !== null) return normalized;
+    }
+    throw new Error("settings-service: merged settings did not match a known shape");
+  }
+
   private async quarantine(reason: string): Promise<void> {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const quarantinePath = `${this.filePath}.corrupt-${stamp}.json`;
@@ -1839,6 +1946,16 @@ export class DesktopSettingsService {
       throw cause;
     }
   }
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value === null || typeof value !== "object" || Object.isFrozen(value)) {
+    return value;
+  }
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    deepFreeze(child);
+  }
+  return Object.freeze(value);
 }
 
 function isNodeError(value: unknown): value is NodeJS.ErrnoException {

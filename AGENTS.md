@@ -968,6 +968,7 @@ plaintext secret on disk.**
 
 Implementation:
 [apps/desktop/src/main/settings/desktop-settings-service.ts](apps/desktop/src/main/settings/desktop-settings-service.ts) +
+[apps/desktop/src/main/settings/desktop-settings-store.ts](apps/desktop/src/main/settings/desktop-settings-store.ts) +
 [apps/desktop/src/main/settings/desktop-secret-store.ts](apps/desktop/src/main/settings/desktop-secret-store.ts) +
 [apps/desktop/src/main/handlers/settings-handlers.ts](apps/desktop/src/main/handlers/settings-handlers.ts).
 Architecture notes:
@@ -990,9 +991,23 @@ Rules:
 - **Atomic write.** Service writes through `writeFile(tmp) → rename`.
   Never `fs.writeFile` to the final path directly — a crash mid-write
   corrupts the file. Same rule for `pwrsnap-secrets.bin`.
+- **One immutable settings snapshot per main process.** Every production
+  consumer gets `getDesktopSettingsStore()`; do not construct a private
+  `DesktopSettingsService`. The first startup read hydrates + freezes one
+  snapshot, concurrent cold reads coalesce, and hot-path `read()` calls never
+  reopen or reparse `pwrsnap-settings.json`. Successful writes replace the
+  snapshot only after the atomic rename. `reload()` is the explicit
+  out-of-process edit boundary (normal boundary: app restart); split-mode
+  Library adopts the agent's trusted `events:settings:changed` snapshot.
+  A non-`ENOENT` hydration error leaves the store empty and rejects; never
+  promote fallback defaults into a writable snapshot when a valid settings
+  file may only be temporarily unreadable.
+  Neither mechanism caches secret plaintext. The synchronous process-role
+  peek is intentionally pre-service; BrowserWindow appearance uses the store
+  and reads directly only as an exceptional pre-hydration fallback.
 - **Serialized writes.** `DesktopSettingsService.write()` awaits an
   internal promise chain so two concurrent renderer patches don't
-  interleave reads. Use the same pattern in `DesktopSecretStore`. The
+  interleave snapshot updates. Use the same pattern in `DesktopSecretStore`. The
   queue uses `.catch(() => undefined).then(task)` so a rejected write
   doesn't run the next task on the rejection branch.
 - **Broadcast on every write.** Every successful settings or secret

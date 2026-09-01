@@ -49,7 +49,7 @@ import os from "node:os";
 import { dirname, join } from "node:path";
 import { join as joinPosix } from "node:path/posix";
 import type { LaunchAtLoginStatus } from "@pwrsnap/shared";
-import { DesktopSettingsService } from "./settings/desktop-settings-service";
+import { getDesktopSettingsStore } from "./settings/desktop-settings-store";
 import { onSettingsChanged } from "./handlers/settings-handlers";
 import { getMainLogger } from "./log";
 
@@ -367,16 +367,14 @@ export function createLaunchAtLoginApplier(
  *  (see `createLaunchAtLoginApplier.seed`). Unregistration happens only
  *  when the user flips the toggle off.
  *
- *  Mirrors `wireHotkeyRegistrations`: a dedicated settings reader keeps
- *  the boot dependency graph one-way, and `onSettingsChanged` rides the
+ *  Mirrors `wireHotkeyRegistrations`: the process-owned settings store
+ *  provides the boot snapshot, and `onSettingsChanged` rides the
  *  substrate's main-side fan-out (which the settings:write handler
  *  awaits before resolving — so by the time the renderer's patch()
  *  returns, registration has already been attempted and
  *  `app:launchAtLoginStatus` reads fresh). */
 export async function installLaunchAtLoginSync(): Promise<void> {
-  const service = new DesktopSettingsService({
-    filePath: join(app.getPath("userData"), "pwrsnap-settings.json")
-  });
+  const service = getDesktopSettingsStore();
   const applier = createLaunchAtLoginApplier();
   try {
     const settings = await service.read();

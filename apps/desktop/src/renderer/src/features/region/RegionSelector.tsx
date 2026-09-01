@@ -1441,13 +1441,13 @@ export function RegionSelector() {
                 not over a panel background. */}
             <pattern
               id="region-alpha-checker"
-              width="16"
-              height="16"
+              width="12"
+              height="12"
               patternUnits="userSpaceOnUse"
             >
-              <rect width="16" height="16" fill="rgba(255, 255, 255, 0.04)" />
-              <rect width="8" height="8" fill="rgba(255, 255, 255, 0.09)" />
-              <rect x="8" y="8" width="8" height="8" fill="rgba(255, 255, 255, 0.09)" />
+              <rect width="12" height="12" fill="rgba(255, 255, 255, 0.02)" />
+              <rect width="6" height="6" fill="rgba(255, 255, 255, 0.05)" />
+              <rect x="6" y="6" width="6" height="6" fill="rgba(255, 255, 255, 0.05)" />
             </pattern>
           </defs>
           <path className="region-mask__dim" d={dimPath} fillRule="evenodd" />

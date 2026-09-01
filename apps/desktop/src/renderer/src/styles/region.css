@@ -263,7 +263,10 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
    transparent. In `rectangle` mode it isn't rendered at all, because
    nothing in the box becomes transparent. */
 .region-mask__alpha {
-  opacity: 0.9;
+  /* Loud enough to read as "this is a hole", quiet enough that the
+     dimmed screenshot underneath is still legible — the user is still
+     aiming at windows while it is on screen. */
+  opacity: 0.8;
 }
 
 /* Per-pick outline. Solid accent, matching a window snap, so a picked

@@ -28,6 +28,7 @@ import {
 import { captureAndRegister, releaseSnapshot, type ScreenSnapshot } from "./screen-snapshot";
 import { hideTrayPopoverIfVisible } from "../tray";
 import { setFloatOverState, ensureFloatOverTopmost } from "../float-over";
+import { hotkeyRecorderSuspension } from "../hotkeys/hotkey-recorder-suspension-instance";
 
 const MIN_AREA_PX = 400; // 20×20 — anything smaller isn't a meaningful snap target.
 const SELECTOR_WINDOW_TITLE = "PwrSnap Region Selector";
@@ -1077,33 +1078,79 @@ function isSelectorOverlayWindow(
   );
 }
 
-let shortcutsInstalled = false;
+const SELECTOR_GLOBAL_KEYS = ["Escape", "Return"] as const;
+type SelectorGlobalKey = (typeof SELECTOR_GLOBAL_KEYS)[number];
+
+let selectorShortcutWindow: BrowserWindow | null = null;
+let selectorShortcutsSuspended = false;
+const ownedSelectorShortcuts = new Set<SelectorGlobalKey>();
+
+function releaseOwnedSelectorGlobalShortcuts(): void {
+  for (const accelerator of ownedSelectorShortcuts) {
+    try {
+      globalShortcut.unregister(accelerator);
+    } catch (cause) {
+      log.warn("selector global shortcut unregister threw", {
+        accelerator,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
+  }
+  ownedSelectorShortcuts.clear();
+}
+
+function armSelectorGlobalShortcuts(): void {
+  if (selectorShortcutsSuspended || selectorShortcutWindow === null) return;
+
+  for (const accelerator of SELECTOR_GLOBAL_KEYS) {
+    if (ownedSelectorShortcuts.has(accelerator)) continue;
+    try {
+      const registered = globalShortcut.register(accelerator, () => {
+        const win = selectorShortcutWindow;
+        if (selectorShortcutsSuspended || win === null || win.isDestroyed()) return;
+        win.webContents.send(SELECTOR_KEY_CHANNEL, {
+          key: accelerator === "Escape" ? "Escape" : "Enter"
+        });
+      });
+      if (registered) {
+        ownedSelectorShortcuts.add(accelerator);
+      } else {
+        log.warn("selector global shortcut unavailable", { accelerator });
+      }
+    } catch (cause) {
+      log.warn("selector global shortcut registration threw", {
+        accelerator,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
+  }
+}
 
 function installSelectorGlobalShortcuts(win: BrowserWindow): void {
-  if (shortcutsInstalled) return;
+  selectorShortcutWindow = win;
   // Forward to the renderer via the same IPC the renderer's own
   // keydown handlers use, so the cancel/commit code path stays
   // single-sourced. The renderer handler reads the freshest rect
   // and snap state and emits submitRegion accordingly.
-  globalShortcut.register("Escape", () => {
-    if (!win.isDestroyed()) {
-      win.webContents.send(SELECTOR_KEY_CHANNEL, { key: "Escape" });
-    }
-  });
-  globalShortcut.register("Return", () => {
-    if (!win.isDestroyed()) {
-      win.webContents.send(SELECTOR_KEY_CHANNEL, { key: "Enter" });
-    }
-  });
-  shortcutsInstalled = true;
+  armSelectorGlobalShortcuts();
 }
 
 function uninstallSelectorGlobalShortcuts(): void {
-  if (!shortcutsInstalled) return;
-  globalShortcut.unregister("Escape");
-  globalShortcut.unregister("Return");
-  shortcutsInstalled = false;
+  selectorShortcutWindow = null;
+  releaseOwnedSelectorGlobalShortcuts();
 }
+
+hotkeyRecorderSuspension.registerParticipant({
+  id: "region-selector-global-shortcuts",
+  suspend(): void {
+    selectorShortcutsSuspended = true;
+    releaseOwnedSelectorGlobalShortcuts();
+  },
+  restore(): void {
+    selectorShortcutsSuspended = false;
+    armSelectorGlobalShortcuts();
+  }
+});
 
 /**
  * The window-list snapshot taken at the most recent pickRegion call.

@@ -6,7 +6,7 @@
 // out of the registry. Event channels (server → client broadcasts) use
 // the typed map below.
 
-import type { AppUpdateStatus, CaptureRecord } from "./protocol";
+import type { AppUpdateStatus, CaptureRecord, VideoPreset } from "./protocol";
 
 export const IPC_CMD = "cmd" as const;
 
@@ -105,6 +105,15 @@ export const EVENT_CHANNELS = {
    * Payload: `{ preset: RenderPreset }`.
    */
   floatOverCopyPulse: "events:float-over:copy-pulse",
+  /**
+   * Main → float-over renderer: a native/global video export shortcut
+   * fired while the toast was visible. The renderer owns the live trim
+   * range, so it must dispatch the export instead of main falling back to
+   * the last persisted range.
+   *
+   * Payload type: `FloatOverVideoCopyShortcutEvent` (below).
+   */
+  floatOverVideoCopyShortcut: "events:float-over:video-copy-shortcut",
   /**
    * Main → renderer storage accounting progress. Full scans are
    * singleton and async; this event lets detailed storage UI update
@@ -334,6 +343,12 @@ export type FloatOverEvent =
   | { kind: "show-loaded"; captureId: string; record?: CaptureRecord | undefined }
   | { kind: "cancel" }
   | { kind: "dismiss" };
+
+export type FloatOverVideoCopyShortcutEvent = {
+  captureId: string;
+  format: "gif" | "mp4";
+  preset: VideoPreset;
+};
 
 /**
  * Main → renderer scroll-probe trigger payload. The renderer drives

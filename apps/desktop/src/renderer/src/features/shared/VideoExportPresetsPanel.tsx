@@ -16,8 +16,8 @@
 // — same shape as `useVideoExportPresets` accepting a null input, so
 // the panel is safe to mount even before a video selection lands.
 
-import type { ReactElement } from "react";
-import type { VideoRange } from "@pwrsnap/shared";
+import { useEffect, useRef, type ReactElement } from "react";
+import type { FloatOverVideoCopyShortcutEvent, VideoRange } from "@pwrsnap/shared";
 import { useVideoExportPresets } from "./useVideoExportPresets";
 import { useVideoPresetMetrics } from "./useVideoPresetMetrics";
 import { VideoExportPresetGrid } from "./VideoExportPresetGrid";
@@ -28,15 +28,37 @@ export type VideoExportPresetsPanelProps = {
    *  export call and re-keys the metrics). Omitted → main falls back
    *  to the record's persisted `defaultRange`. */
   readonly range?: VideoRange | undefined;
+  /** Monotonic renderer-side signal for a native/global shortcut. The
+   *  sequence prevents a range update from replaying the same shortcut
+   *  when `triggerCopy` is recreated with the new live range. */
+  readonly copyShortcut?: VideoCopyShortcutRequest | null | undefined;
+};
+
+export type VideoCopyShortcutRequest = FloatOverVideoCopyShortcutEvent & {
+  readonly sequence: number;
 };
 
 export function VideoExportPresetsPanel({
   captureId,
-  range
+  range,
+  copyShortcut
 }: VideoExportPresetsPanelProps): ReactElement {
   const { states, triggerCopy, triggerCopyPath, triggerDrag } =
     useVideoExportPresets(captureId === null ? null : { captureId, range });
   const metrics = useVideoPresetMetrics(captureId, range);
+  const handledShortcutSequenceRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (
+      copyShortcut === undefined ||
+      copyShortcut === null ||
+      copyShortcut.sequence === handledShortcutSequenceRef.current
+    ) {
+      return;
+    }
+    handledShortcutSequenceRef.current = copyShortcut.sequence;
+    if (copyShortcut.captureId !== captureId) return;
+    triggerCopy(copyShortcut.format, copyShortcut.preset);
+  }, [captureId, copyShortcut, triggerCopy]);
   return (
     <VideoExportPresetGrid
       metrics={metrics}

@@ -28,9 +28,9 @@ import {
   type RenderPreset
 } from "@pwrsnap/shared";
 import { bus } from "./command-bus";
+import { hotkeyRecorderSuspension } from "./hotkeys/hotkey-recorder-suspension-instance";
 import { getMainLogger } from "./log";
 import { createFloatOverWindow } from "./window";
-import { hotkeyRecorderSuspension } from "./hotkeys/hotkey-recorder-suspension-instance";
 
 const log = getMainLogger("pwrsnap:float-over");
 
@@ -352,67 +352,142 @@ function reanchorOnCurrentDisplay(window: BrowserWindow): void {
 }
 
 /**
- * Register the ⌘1 / ⌘2 / ⌘3 globalShortcuts so the user can copy
- * straight from the float-over without giving it keyboard focus.
+ * Register the active capture's primary-modifier export shortcuts so the user
+ * can copy straight from the float-over without giving it keyboard focus.
  *
  * The float-over is a non-activating panel (`type: 'panel'` +
  * `showInactive`) — it never becomes the focused window of an app,
  * so plain `keydown` listeners in the renderer don't fire when the
- * user presses ⌘1 with another app frontmost. globalShortcut
- * bypasses focus entirely; while these are armed, ANY ⌘1 press
- * anywhere on macOS triggers our handler.
+ * user presses the advertised chord with another app frontmost. globalShortcut
+ * bypasses focus entirely; while these are armed, the matching chord
+ * triggers our handler even when another app is frontmost.
  *
- * Tradeoff: we steal the ⌘1/⌘2/⌘3 hotkeys from the user's other
- * apps for the lifetime of the LOADED state (≤ ~6s default
- * countdown, longer if hovering / pinned). Acceptable: the toast
- * is in-flight, and ⌘1 from the user's app is unlikely to be the
- * next deliberate keystroke.
+ * Tradeoff: we transiently own primary+1…3 from the user's other apps for an
+ * image, or primary+1…6 for a video, for the lifetime of the LOADED state
+ * (≤ ~6s default countdown, longer if hovering / pinned). Acceptable: the
+ * toast is in-flight, and a numbered primary chord in another app is unlikely
+ * to be the next deliberate keystroke.
  *
  * On every state-machine transition out of LOADED we unregister so
  * the user gets their hotkeys back.
  */
-let copyShortcutsRegistered = false;
-let copyShortcutsSuspendedForRecorder = false;
+const ownedCopyShortcuts = new Set<string>();
+let copyShortcutGeneration = 0;
+let copyShortcutsSuspended = false;
 function emitCopyPulse(preset: RenderPreset): void {
   if (singleton === null || singleton.isDestroyed()) return;
   singleton.webContents.send(EVENT_CHANNELS.floatOverCopyPulse, { preset });
 }
 
+function emitVideoCopyShortcut(
+  captureId: string,
+  format: "gif" | "mp4",
+  preset: RenderPreset
+): void {
+  if (singleton === null || singleton.isDestroyed()) return;
+  singleton.webContents.send(EVENT_CHANNELS.floatOverVideoCopyShortcut, {
+    captureId,
+    format,
+    preset
+  });
+}
+
 function armCopyShortcuts(captureId: string): void {
-  if (copyShortcutsSuspendedForRecorder) return;
-  if (copyShortcutsRegistered) {
-    disarmCopyShortcuts();
-  }
-  globalShortcut.register("CommandOrControl+1", () => {
-    emitCopyPulse("low");
-    void bus.dispatch(IMAGE_PRESET_COPY_VERB, { captureId, preset: "low" }, { principal: "ipc" });
+  disarmCopyShortcuts();
+  if (copyShortcutsSuspended) return;
+  const generation = copyShortcutGeneration;
+  void bus.dispatch("library:byId", { id: captureId }, { principal: "ipc" }).then((result) => {
+    if (
+      generation !== copyShortcutGeneration ||
+      state.kind !== "loaded" ||
+      state.captureId !== captureId
+    ) {
+      return;
+    }
+    if (!result.ok || result.value === null) {
+      log.warn("float-over copy shortcuts skipped because capture metadata is unavailable", {
+        captureId,
+        reason: result.ok ? "not-found" : result.error.code
+      });
+      return;
+    }
+
+    const presets = ["low", "med", "high"] as const;
+    const shortcuts = result.value.kind === "video"
+      ? ([
+          ...presets.map((preset, index) => ({
+            accelerator: `CommandOrControl+${index + 1}`,
+            format: "gif" as const,
+            preset
+          })),
+          ...presets.map((preset, index) => ({
+            accelerator: `CommandOrControl+${index + 4}`,
+            format: "mp4" as const,
+            preset
+          }))
+        ] as const)
+      : presets.map((preset, index) => ({
+          accelerator: `CommandOrControl+${index + 1}`,
+          format: "image" as const,
+          preset
+        }));
+
+    for (const { accelerator, format, preset } of shortcuts) {
+      try {
+        const registered = globalShortcut.register(
+          accelerator,
+          () => {
+            if (copyShortcutsSuspended) return;
+            if (format === "image") {
+              emitCopyPulse(preset);
+              void bus.dispatch(
+                IMAGE_PRESET_COPY_VERB,
+                { captureId, preset },
+                { principal: "ipc" }
+              );
+              return;
+            }
+            emitVideoCopyShortcut(captureId, format, preset);
+          }
+        );
+        if (registered) {
+          ownedCopyShortcuts.add(accelerator);
+        } else {
+          log.warn("float-over copy shortcut unavailable; leaving its owner untouched", {
+            accelerator
+          });
+        }
+      } catch (cause) {
+        log.warn("float-over copy shortcut registration threw", {
+          accelerator,
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+      }
+    }
+  }).catch((cause: unknown) => {
+    if (generation !== copyShortcutGeneration) return;
+    log.warn("float-over copy shortcut metadata lookup threw", {
+      captureId,
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
   });
-  globalShortcut.register("CommandOrControl+2", () => {
-    emitCopyPulse("med");
-    void bus.dispatch(IMAGE_PRESET_COPY_VERB, { captureId, preset: "med" }, { principal: "ipc" });
-  });
-  globalShortcut.register("CommandOrControl+3", () => {
-    emitCopyPulse("high");
-    void bus.dispatch(IMAGE_PRESET_COPY_VERB, { captureId, preset: "high" }, { principal: "ipc" });
-  });
-  copyShortcutsRegistered = true;
 }
 function disarmCopyShortcuts(): void {
-  if (!copyShortcutsRegistered) return;
-  globalShortcut.unregister("CommandOrControl+1");
-  globalShortcut.unregister("CommandOrControl+2");
-  globalShortcut.unregister("CommandOrControl+3");
-  copyShortcutsRegistered = false;
+  copyShortcutGeneration += 1;
+  for (const accelerator of ownedCopyShortcuts) {
+    globalShortcut.unregister(accelerator);
+  }
+  ownedCopyShortcuts.clear();
 }
 
 hotkeyRecorderSuspension.registerParticipant({
   id: "float-over-copy-shortcuts",
-  suspend: () => {
-    copyShortcutsSuspendedForRecorder = true;
+  suspend(): void {
+    copyShortcutsSuspended = true;
     disarmCopyShortcuts();
   },
-  restore: () => {
-    copyShortcutsSuspendedForRecorder = false;
+  restore(): void {
+    copyShortcutsSuspended = false;
     if (state.kind === "loaded") armCopyShortcuts(state.captureId);
   }
 });

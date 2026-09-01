@@ -468,7 +468,7 @@ describe("FloatOver asset mode", () => {
   // monitor. Without this wiring you pick trim points off a 40 px
   // filmstrip blind — the preview just sits on frame 0 no matter where
   // the handles go, which makes the trim UI useless.
-  test("dragging a trim handle parks the preview video on that frame", async () => {
+  test("dragging a trim handle updates the preview and the global-shortcut export range", async () => {
     // jsdom has no layout; pin the strip to 800 px so px↔sec math runs.
     const rect = vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
       x: 0,
@@ -482,7 +482,7 @@ describe("FloatOver asset mode", () => {
       toJSON: () => ({})
     } as DOMRect);
     try {
-      const el = await renderToast({
+      const asset = {
         kind: "video",
         src: "pwrsnap-capture://r/abc",
         captureId: "abc",
@@ -490,7 +490,16 @@ describe("FloatOver asset mode", () => {
         widthPx: 1920,
         heightPx: 1080,
         defaultRange: { start: 0, end: 12.5 }
-      });
+      } as const satisfies FloatOverAsset;
+      const props = {
+        asset,
+        src: asset.src,
+        srcW: 1920,
+        srcH: 1080,
+        srcBytes: 1024,
+        startCountdown: false
+      } as const;
+      const el = await renderFloatOver(props);
 
       const video = el.querySelector<HTMLVideoElement>(".fo__preview video")!;
       const strip = el.querySelector(".vtl__strip")!;
@@ -517,6 +526,28 @@ describe("FloatOver asset mode", () => {
       expect(el.querySelector('[data-testid="video-timeline-trim-label"]')?.textContent).toBe(
         "TRIM 0:00.0 – 0:05.0 · 5 s"
       );
+
+      vi.mocked(window.pwrsnapApi!.dispatch).mockClear();
+      await act(async () => {
+        root?.render(
+          createElement(FloatOver, {
+            ...props,
+            videoCopyShortcut: {
+              captureId: "abc",
+              format: "mp4",
+              preset: "med",
+              sequence: 1
+            }
+          })
+        );
+        await Promise.resolve();
+      });
+      expect(window.pwrsnapApi!.dispatch).toHaveBeenCalledWith("clipboard:copyVideoFile", {
+        captureId: "abc",
+        format: "mp4",
+        preset: "med",
+        range: { start: 0, end: 5 }
+      });
     } finally {
       rect.mockRestore();
     }

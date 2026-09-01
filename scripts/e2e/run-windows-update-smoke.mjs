@@ -613,12 +613,11 @@ export function validateRuntimeEvidence({
 export function sanitizedWindowsBaseEnvironment(baseEnvironment) {
   const environment = {};
   for (const [key, value] of Object.entries(baseEnvironment)) {
-    // The GitHub job starts under PowerShell 7, but the signature probes use
-    // inbox Windows PowerShell 5.1 (`powershell.exe`). Inheriting pwsh's
-    // PSModulePath makes 5.1 discover the incompatible PowerShell 7 copy of
-    // Microsoft.PowerShell.Security and fail before Get-AuthenticodeSignature.
-    // Leave it unset so each powershell.exe child constructs its own system
-    // module path. Neither the installer nor PwrSnap needs this variable.
+    // Never inherit a caller-controlled module search path into the probe.
+    // The GitHub runner's pwsh constructs its compatible system PSModulePath
+    // when this is absent; retaining a path from another PowerShell host can
+    // load an incompatible or shadowed Microsoft.PowerShell.Security module.
+    // Neither the installer nor PwrSnap needs this variable.
     if (SAFE_WINDOWS_ENVIRONMENT_KEYS.has(key.toUpperCase())) {
       environment[key] = value;
     }
@@ -1331,10 +1330,14 @@ function withCaseInsensitiveEnvironment(baseEnvironment, additions) {
   return { ...result, ...additions };
 }
 
-async function invokePowerShellJson({ script, environment, timeoutMs }) {
+export async function invokePowerShellJson({ script, environment, timeoutMs }) {
   const encoded = Buffer.from(script, "utf16le").toString("base64");
   const result = await runBoundedProcess({
-    command: "powershell.exe",
+    // release.yml already requires PowerShell 7 for both the protected signing
+    // job and this credential-free smoke job. Stay on that same host: inbox
+    // Windows PowerShell 5.1 can hang in first-use module initialization when
+    // USERPROFILE is intentionally redirected to the smoke's throwaway root.
+    command: "pwsh.exe",
     arguments: [
       "-NoLogo",
       "-NoProfile",

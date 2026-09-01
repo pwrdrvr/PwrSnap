@@ -9,6 +9,7 @@
 @import "./documents.css";
 @import "./logs.css";
 @import "./local-agent-consent.css";
+@import "./pre-capture-hud.css";
 
 * {
   box-sizing: border-box;
@@ -52,7 +53,8 @@ body {
    recorded surface through a translucent dim. */
 body[data-stage="tray"],
 body[data-stage="float-over"],
-body[data-stage="recording-controller"] {
+body[data-stage="recording-controller"],
+body[data-stage="pre-capture-hud"] {
   background: transparent;
 }
 

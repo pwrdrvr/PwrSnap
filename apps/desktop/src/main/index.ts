@@ -108,6 +108,11 @@ import {
   disposeRecordingController,
   installRecordingController
 } from "./recording/recording-controller";
+import {
+  beginPreCaptureHud,
+  disposePreCaptureHud,
+  preWarmPreCaptureHud
+} from "./pre-capture-hud";
 import { readRecordingReadiness } from "./recording/recording-permissions";
 import { getRecordingService } from "./recording/recording-service";
 import { getRecordingState, isRecordingActive } from "./recording/recording-state";
@@ -1160,7 +1165,12 @@ async function runInteractiveRecord(protectWindowIds: readonly number[] = []): P
     });
     return;
   }
+  const hud = beginPreCaptureHud("video");
   try {
+    if (hud === null) {
+      log.info("video capture ignored while another interactive capture owns the HUD");
+      return;
+    }
     // Gate BEFORE pickRegion, exactly like `capture:interactive`. The
     // selector freezes a screen snapshot on show(), which is all-black on
     // a Mac without Screen Recording permission — so on a first-ever (or
@@ -1170,16 +1180,25 @@ async function runInteractiveRecord(protectWindowIds: readonly number[] = []): P
     // `recording:start` re-checks (idempotent when granted); when blocked
     // we bail before showing anything, so there's no selector to tear
     // down and no focus to restore.
+    hud.showPermission();
     const blocked = await guardScreenCapture();
-    if (blocked !== null) return;
+    if (blocked !== null) {
+      hud.finish();
+      return;
+    }
     // macOS must resolve its Documents TCC prompt before the screen-saver
     // selector covers it. Windows has no equivalent permission surface, so
     // keep its cold mkdir/probe off the feedback path and perform it after the
     // user has made a selection.
     if (process.platform === "darwin") {
+      hud.showStorage();
       const storageBlocked = await ensureCapturesDirReady();
-      if (storageBlocked !== null) return;
+      if (storageBlocked !== null) {
+        hud.block("storage");
+        return;
+      }
     }
+    hud.showPreparing();
 
     // Pick a rect / window via the existing region selector. We can't
     // route through capture:interactive (which persists an image on
@@ -1198,6 +1217,7 @@ async function runInteractiveRecord(protectWindowIds: readonly number[] = []): P
     // seeds from the persisted default. Reused below for audio
     // capabilities + the cursor value passed to `recording:start`.
     const settings = cachedRecordingSettings;
+    hud.showSelectorHandoff();
     const selection = await pickRegion({
       mode: "auto",
       keepPwrSnapChrome: false,
@@ -1210,7 +1230,8 @@ async function runInteractiveRecord(protectWindowIds: readonly number[] = []): P
       // Library as a valid target.
       protectWindowIds,
       // Seed the selector's cursor toggle from the persisted default.
-      cursorDefault: settings.videoCaptureCursor
+      cursorDefault: settings.videoCaptureCursor,
+      onSelectorPresented: hud.selectorPresented
     });
     if (!selection.ok) {
       if (selection.reason === "busy") {
@@ -1422,7 +1443,11 @@ async function runInteractiveRecord(protectWindowIds: readonly number[] = []): P
         }
       }
     });
+  } catch (cause) {
+    hud?.block("unexpected");
+    throw cause;
   } finally {
+    hud?.finish();
     releaseInteractiveCaptureSession(session.token);
   }
 }
@@ -1583,6 +1608,7 @@ export function bootstrapApp(): void {
       disposeTray,
       disposeFloatOver,
       disposeRecordingController,
+      disposePreCaptureHud,
       disposeRegionSelector,
       disposeFocusSink,
       destroyTextBakePool
@@ -2090,6 +2116,7 @@ export function bootstrapApp(): void {
     // a BrowserWindow on the first state transition.
     if (role !== "library") {
       installRecordingController();
+      preWarmPreCaptureHud();
     }
     // Dev seeder — gated on DEV at static-substitution time + a
     // belt-and-suspenders runtime NODE_ENV check. Production builds

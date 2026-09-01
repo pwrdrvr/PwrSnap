@@ -89,6 +89,7 @@ import {
   UnsafePastedFileError
 } from "../security/assertSafePastedFile";
 import { validateSafeRgbaRasterDimensions } from "../image/safe-raster-decode";
+import { beginPreCaptureHud } from "../pre-capture-hud";
 
 const log = getMainLogger("pwrsnap:capture-handlers");
 
@@ -269,26 +270,43 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
         message: "An interactive capture is already in progress."
       });
     }
+    const hud = beginPreCaptureHud("snap");
     // Claim synchronously before the first permission/storage await. This is
     // the command-bus backstop for tray/IPC double dispatches; the hotkey has
     // its own leading-edge debounce one layer earlier.
     const handlerStartedAt = Date.now();
     try {
+      if (hud === null) {
+        return err({
+          kind: "capture",
+          code: "capture_in_progress",
+          message: "An interactive capture is already in progress."
+        });
+      }
       // Gate BEFORE pickRegion: the selector freezes a screen snapshot on
       // show(), which is all-black on a Mac without Screen Recording. On a
       // first-ever attempt the gate fires the macOS prompt instead; on a
       // subsequent denied attempt it routes to System Settings. Either way
       // we never paint an empty selector at the user.
+      hud.showPermission();
       const blocked = await guardScreenCapture();
-      if (blocked) return blocked;
+      if (blocked) {
+        hud.finish();
+        return blocked;
+      }
       // macOS must preflight the Documents TCC grant before the screen-saver
       // selector can cover its consent prompt. Windows has no equivalent TCC
       // prompt, so its cold mkdir/probe/write is deferred until after selection
       // and cannot delay the first picker feedback.
       if (process.platform === "darwin") {
+        hud.showStorage();
         const storageBlocked = await ensureCapturesDirReady();
-        if (storageBlocked) return storageBlocked;
+        if (storageBlocked) {
+          hud.block("storage");
+          return storageBlocked;
+        }
       }
+      hud.showPreparing();
       log.info("capture:interactive handler received", {
         mode,
         principal: ctx.principal
@@ -309,8 +327,11 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
         log.info("capture:interactive timed delay starting", {
           durationFromHandlerReceivedMs: Date.now() - handlerStartedAt
         });
-        const delay = await runTimedDelay();
-        if (!delay.ok) return delay;
+        const delay = await runTimedDelay(hud.showCountdown);
+        if (!delay.ok) {
+          hud.block("unexpected");
+          return delay;
+        }
         log.info("capture:interactive timed delay completed", {
           durationFromHandlerReceivedMs: Date.now() - handlerStartedAt
         });
@@ -373,6 +394,7 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       // in the picker — there the user may well want to capture it.
       const protectWindowIds = librarySourceWindowIds(ctx);
 
+      hud.showSelectorHandoff();
       const pickRegionStartedAt = Date.now();
       log.info("capture:interactive calling pickRegion", {
         mode,
@@ -384,7 +406,8 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       const selection = await pickRegion({
         mode: selectorMode,
         keepPwrSnapChrome,
-        protectWindowIds
+        protectWindowIds,
+        onSelectorPresented: hud.selectorPresented
       });
       log.info("capture:interactive pickRegion returned", {
         mode,
@@ -652,7 +675,11 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
         }
         await tearDownSelector();
       }
+    } catch (cause) {
+      hud?.block("unexpected");
+      throw cause;
     } finally {
+      hud?.finish();
       releaseInteractiveCaptureSession(session.token);
     }
   });
@@ -1402,7 +1429,9 @@ let timedDelayInFlight = false;
  * next to the menubar icon, which doesn't take key focus and so can't
  * collapse the very UI the user is trying to capture.
  */
-async function runTimedDelay(): Promise<Result<void, PwrSnapError>> {
+async function runTimedDelay(
+  onTick: (secondsRemaining: number) => void = () => undefined
+): Promise<Result<void, PwrSnapError>> {
   if (timedDelayInFlight) {
     return err({
       kind: "capture",
@@ -1422,6 +1451,7 @@ async function runTimedDelay(): Promise<Result<void, PwrSnapError>> {
   hideTrayPopoverIfVisible();
   try {
     for (let remaining = TIMED_CAPTURE_SECONDS; remaining > 0; remaining--) {
+      onTick(remaining);
       setTrayCountdown(String(remaining));
       await new Promise((resolve) => setTimeout(resolve, 1_000));
     }

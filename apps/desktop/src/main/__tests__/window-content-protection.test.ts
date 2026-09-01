@@ -25,6 +25,7 @@ type WindowSpy = {
   setVisibleOnAllWorkspaces: ReturnType<typeof vi.fn>;
   setMenuBarVisibility: ReturnType<typeof vi.fn>;
   setContentProtection: ReturnType<typeof vi.fn>;
+  setIgnoreMouseEvents: ReturnType<typeof vi.fn>;
   excludedFromShownWindowsMenu: boolean;
   loadFile: ReturnType<typeof vi.fn>;
   loadURL: ReturnType<typeof vi.fn>;
@@ -37,6 +38,7 @@ type WindowSpy = {
 };
 
 const constructed: WindowSpy[] = [];
+const constructorOptions: Array<Record<string, unknown>> = [];
 
 function makeWindowSpy(): WindowSpy {
   return {
@@ -45,6 +47,7 @@ function makeWindowSpy(): WindowSpy {
     setVisibleOnAllWorkspaces: vi.fn(),
     setMenuBarVisibility: vi.fn(),
     setContentProtection: vi.fn(),
+    setIgnoreMouseEvents: vi.fn(),
     excludedFromShownWindowsMenu: false,
     loadFile: vi.fn().mockResolvedValue(undefined),
     loadURL: vi.fn().mockResolvedValue(undefined),
@@ -59,9 +62,10 @@ function makeWindowSpy(): WindowSpy {
 
 vi.mock("electron", () => {
   class BrowserWindow {
-    constructor() {
+    constructor(options: Record<string, unknown>) {
       const spy = makeWindowSpy();
       constructed.push(spy);
+      constructorOptions.push(options);
       // Return the spy instead of `this`. JS supports this — the
       // constructor's explicit object return supersedes the
       // default `this`. Lets us hand the production code a plain
@@ -109,6 +113,7 @@ vi.mock("../log", () => ({
 
 beforeEach(() => {
   constructed.length = 0;
+  constructorOptions.length = 0;
   vi.resetModules();
 });
 
@@ -139,5 +144,36 @@ describe("createRecordingControllerWindow content protection", () => {
     if (loadOrder !== undefined) {
       expect(protectOrder).toBeLessThan(loadOrder);
     }
+  });
+});
+
+describe("createPreCaptureHudWindow invariants", () => {
+  test("is sandboxed, non-activating, click-through, content-sized, and protected before load", async () => {
+    const { createPreCaptureHudWindow } = await import("../window");
+    createPreCaptureHudWindow();
+
+    const options = constructorOptions[0]!;
+    const spy = constructed[0]!;
+    expect(options).toMatchObject({
+      show: false,
+      frame: false,
+      transparent: true,
+      focusable: false,
+      skipTaskbar: true,
+      webPreferences: expect.objectContaining({
+        contextIsolation: true,
+        sandbox: true,
+        nodeIntegration: false,
+        backgroundThrottling: false
+      })
+    });
+    expect(options).not.toHaveProperty("alwaysOnTop", true);
+    expect(spy.setMinimumSize).toHaveBeenCalledWith(0, 0);
+    expect(spy.setIgnoreMouseEvents).toHaveBeenCalledWith(true);
+    expect(spy.setContentProtection).toHaveBeenCalledWith(true);
+    const protectOrder = spy.setContentProtection.mock.invocationCallOrder[0]!;
+    const loadOrder =
+      spy.loadFile.mock.invocationCallOrder[0] ?? spy.loadURL.mock.invocationCallOrder[0];
+    if (loadOrder !== undefined) expect(protectOrder).toBeLessThan(loadOrder);
   });
 });

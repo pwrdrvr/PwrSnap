@@ -98,7 +98,17 @@ afterEach(async () => {
   root = null;
   // Clear the body attributes the component stamps so state never
   // leaks across tests.
-  for (const k of ["interaction", "snap", "spaceHeld", "fullWindow", "mode", "discarding"]) {
+  for (const k of [
+    "interaction",
+    "snap",
+    "spaceHeld",
+    "fullWindow",
+    "mode",
+    "discarding",
+    "hasPicks",
+    "pickCount",
+    "outputMode"
+  ]) {
     delete document.body.dataset[k];
   }
 });
@@ -458,5 +468,320 @@ describe("U4 — border move-band", () => {
     await mouseMove(500, 450);
     await mouseUp(500, 450);
     expect(rectStyle()).toEqual({ left: 200, top: 200, width: 300, height: 250 });
+  });
+});
+
+// --- U5 — multi-window pick set ------------------------------------
+//
+// The picker used to hold exactly one target. These pin the pick-set
+// behavior: what adds, what removes, what the commit payload carries,
+// and — the part that is easy to regress — where multi-select is
+// deliberately unavailable.
+
+/** Second and third snap targets, disjoint from WIN and each other. */
+const WIN_B: WindowSnapEntry = {
+  windowId: 7,
+  pid: 2,
+  bundleId: "com.test.b",
+  appName: "App B",
+  title: null,
+  ownedByUs: false,
+  zIndex: 1,
+  rect: { x: 700, y: 100, w: 200, h: 150 },
+  rawRect: { x: 700, y: 100, w: 200, h: 150 }
+};
+const WIN_C: WindowSnapEntry = {
+  windowId: 9,
+  pid: 3,
+  bundleId: "com.test.c",
+  appName: "App C",
+  title: null,
+  ownedByUs: false,
+  zIndex: 2,
+  rect: { x: 100, y: 500, w: 150, h: 120 },
+  rawRect: { x: 100, y: 500, w: 150, h: 120 }
+};
+
+const centerOf = (w: WindowSnapEntry): { x: number; y: number } => ({
+  x: w.rawRect.x + w.rawRect.w / 2,
+  y: w.rawRect.y + w.rawRect.h / 2
+});
+
+/** Mount + publish the three-window scene at scale 1 (displayBounds =
+ *  innerSize), so CSS px and logical px are the same number. */
+async function mountScene(p: ModePayload = { mode: "auto" }): Promise<void> {
+  await mount();
+  await emitMode(p);
+  await emitSnapshot({
+    windows: [WIN, WIN_B, WIN_C],
+    displayBounds: { width: window.innerWidth, height: window.innerHeight }
+  });
+}
+
+/** Move to a window then mousedown/up on it with the given modifiers. */
+async function clickWindow(
+  w: WindowSnapEntry,
+  init: { metaKey?: boolean } = {}
+): Promise<void> {
+  const c = centerOf(w);
+  await mouseMove(c.x, c.y);
+  await act(async () => {
+    window.dispatchEvent(
+      new MouseEvent("mousedown", {
+        clientX: c.x,
+        clientY: c.y,
+        button: 0,
+        bubbles: true,
+        ...init
+      })
+    );
+  });
+  await mouseUp(c.x, c.y);
+}
+
+function pickBoxes(): HTMLElement[] {
+  return Array.from(container?.querySelectorAll('[data-testid="region-pick"]') ?? []).filter(
+    (e): e is HTMLElement => e instanceof HTMLElement
+  );
+}
+
+function hud(): HTMLElement | null {
+  const el = container?.querySelector('[data-testid="region-hud"]');
+  return el instanceof HTMLElement ? el : null;
+}
+
+function hudButton(testId: string): HTMLElement {
+  const el = container?.querySelector(`[data-testid="${testId}"]`);
+  if (!(el instanceof HTMLElement)) throw new Error(`${testId} not found`);
+  return el;
+}
+
+async function clickEl(el: Element): Promise<void> {
+  await act(async () => {
+    // The component's window-level mousedown must ignore this (the
+    // [data-region-hud] guard); React's onClick must still fire.
+    el.dispatchEvent(new MouseEvent("mousedown", { button: 0, bubbles: true }));
+    el.dispatchEvent(new MouseEvent("click", { button: 0, bubbles: true }));
+  });
+}
+
+/** Count of subpaths in the even-odd mask path (1 outer + N holes). */
+function maskSubpaths(cls: string): number {
+  const el = container?.querySelector(`.${cls}`);
+  if (el === null || el === undefined) return 0;
+  return (el.getAttribute("d") ?? "").split("M").length - 1;
+}
+
+describe("U5 — multi-window pick set", () => {
+  test("⌘-click accumulates windows; the rect becomes their union", async () => {
+    await mountScene();
+    await clickWindow(WIN, { metaKey: true });
+    expect(pickBoxes()).toHaveLength(1);
+    expect(rectStyle()).toEqual({ left: 200, top: 150, width: 400, height: 300 });
+
+    await clickWindow(WIN_B, { metaKey: true });
+    expect(pickBoxes()).toHaveLength(2);
+    // union of (200,150,400x300) and (700,100,200x150)
+    expect(rectStyle()).toEqual({ left: 200, top: 100, width: 700, height: 350 });
+    expect(document.body.dataset.pickCount).toBe("2");
+  });
+
+  test("once a set exists a plain click is additive — no modifier needed", async () => {
+    await mountScene();
+    await clickWindow(WIN, { metaKey: true });
+    await clickWindow(WIN_B); // plain
+    expect(pickBoxes()).toHaveLength(2);
+    expect(submitRegion).not.toHaveBeenCalled();
+  });
+
+  test("clicking a picked window removes it; emptying returns to live snap", async () => {
+    await mountScene();
+    await clickWindow(WIN, { metaKey: true });
+    await clickWindow(WIN_B);
+    await clickWindow(WIN_B); // toggle off
+    expect(pickBoxes()).toHaveLength(1);
+    expect(rectStyle()).toEqual({ left: 200, top: 150, width: 400, height: 300 });
+
+    await clickWindow(WIN); // last one off
+    expect(pickBoxes()).toHaveLength(0);
+    expect(hud()).toBeNull();
+    expect(document.body.dataset.hasPicks).toBe("false");
+    // Back to live snap under the cursor — which is still over WIN.
+    expect(document.body.dataset.interaction).toBe("snap");
+    expect(document.body.dataset.snap).toBe("window");
+  });
+
+  test("clicking the desktop with a set live keeps it", async () => {
+    await mountScene();
+    await clickWindow(WIN, { metaKey: true });
+    await mouseMove(980, 700); // empty desktop
+    await mouseDown(980, 700);
+    await mouseUp(980, 700);
+    expect(pickBoxes()).toHaveLength(1);
+  });
+
+  test("window mode: a plain click adds instead of committing", async () => {
+    await mountScene({ mode: "window" });
+    await clickWindow(WIN);
+    expect(submitRegion).not.toHaveBeenCalled();
+    expect(pickBoxes()).toHaveLength(1);
+    await clickWindow(WIN_B);
+    expect(pickBoxes()).toHaveLength(2);
+  });
+
+  test("commit sends the union rect, one extent per pick, and the mode", async () => {
+    await mountScene();
+    await clickWindow(WIN, { metaKey: true });
+    await clickWindow(WIN_B);
+    await keyDown("Enter");
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion.mock.calls[0]?.[0]).toEqual({
+      ok: true,
+      rect: { x: 200, y: 100, w: 700, h: 350 },
+      displayId: 0,
+      extents: [
+        { x: 200, y: 150, w: 400, h: 300 },
+        { x: 700, y: 100, w: 200, h: 150 }
+      ],
+      outputMode: "windows",
+      // First pick names the capture's source app — a union's centre
+      // often lands on empty desktop.
+      snappedWindowId: WIN.windowId
+    });
+  });
+
+  test("T flips the output mode; commit carries the flipped value", async () => {
+    await mountScene();
+    await clickWindow(WIN, { metaKey: true });
+    expect(document.body.dataset.outputMode).toBe("windows");
+    await keyDown("T");
+    expect(document.body.dataset.outputMode).toBe("rectangle");
+    await keyDown("Enter");
+    expect(submitRegion.mock.calls[0]?.[0]).toMatchObject({ outputMode: "rectangle" });
+  });
+
+  test("T does nothing without a pick set", async () => {
+    await mountScene();
+    await keyDown("T");
+    expect(document.body.dataset.outputMode).toBe("windows");
+  });
+
+  test("the mask punches one hole per extent, or one for the box", async () => {
+    await mountScene();
+    await clickWindow(WIN, { metaKey: true });
+    await clickWindow(WIN_B);
+    await clickWindow(WIN_C);
+    // 1 outer viewport subpath + 3 holes.
+    expect(maskSubpaths("region-mask__dim")).toBe(4);
+    // Alpha checker: 1 union box + the same 3 holes.
+    expect(maskSubpaths("region-mask__alpha")).toBe(4);
+
+    await keyDown("T"); // → rectangle
+    expect(maskSubpaths("region-mask__dim")).toBe(2); // viewport + union box
+    // Nothing becomes transparent, so there is no checker at all.
+    expect(container?.querySelector(".region-mask__alpha")).toBeNull();
+  });
+
+  test("HUD: the segmented control sets the mode and a chip removes its pick", async () => {
+    await mountScene();
+    await clickWindow(WIN, { metaKey: true });
+    await clickWindow(WIN_B);
+    await clickEl(hudButton("region-hud-mode-rectangle"));
+    expect(document.body.dataset.outputMode).toBe("rectangle");
+    await clickEl(hudButton("region-hud-mode-windows"));
+    expect(document.body.dataset.outputMode).toBe("windows");
+
+    const chips = Array.from(container?.querySelectorAll('[data-testid="region-hud-chip"]') ?? []);
+    expect(chips).toHaveLength(2);
+    await clickEl(chips[0]!);
+    expect(pickBoxes()).toHaveLength(1);
+    expect(submitRegion).not.toHaveBeenCalled();
+  });
+
+  test("HUD: the Capture button commits", async () => {
+    await mountScene();
+    await clickWindow(WIN, { metaKey: true });
+    await clickEl(hudButton("region-hud-capture"));
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion.mock.calls[0]?.[0]).toMatchObject({ ok: true, outputMode: "windows" });
+  });
+
+  test("a HUD press is not a canvas gesture — it never toggles a pick", async () => {
+    await mountScene();
+    await clickWindow(WIN, { metaKey: true });
+    const before = pickBoxes().length;
+    await act(async () => {
+      hudButton("region-hud-mode-windows").dispatchEvent(
+        new MouseEvent("mousedown", { clientX: 500, clientY: 740, button: 0, bubbles: true })
+      );
+    });
+    expect(pickBoxes()).toHaveLength(before);
+    expect(document.body.dataset.interaction).toBe("snap");
+  });
+
+  test("Esc drops the set first, then exits", async () => {
+    await mountScene();
+    await clickWindow(WIN, { metaKey: true });
+    await clickWindow(WIN_B);
+    await keyDown("Escape");
+    expect(pickBoxes()).toHaveLength(0);
+    expect(submitRegion).not.toHaveBeenCalled();
+    await delay(ESC_GUARD_WAIT_MS);
+    await keyDown("Escape");
+    expect(submitRegion).toHaveBeenCalledWith({ ok: false });
+  });
+
+  test("a commit clears the set — pre-warmed windows must not leak it", async () => {
+    await mountScene();
+    await clickWindow(WIN, { metaKey: true });
+    await keyDown("T");
+    await keyDown("Enter");
+    expect(pickBoxes()).toHaveLength(0);
+    expect(hud()).toBeNull();
+    // outputMode resets too, so the next capture defaults to windows.
+    expect(document.body.dataset.outputMode).toBe("windows");
+  });
+
+  test("video intent has no multi-select — ⌘-click draws instead", async () => {
+    await mount();
+    await emitMode({ mode: "auto", intent: "video" });
+    await emitSnapshot({
+      windows: [WIN, WIN_B, WIN_C],
+      displayBounds: { width: window.innerWidth, height: window.innerHeight }
+    });
+    await clickWindow(WIN, { metaKey: true });
+    expect(pickBoxes()).toHaveLength(0);
+    expect(hud()).toBeNull();
+  });
+
+  test("region mode has no multi-select", async () => {
+    await mountScene({ mode: "region" });
+    await clickWindow(WIN, { metaKey: true });
+    expect(pickBoxes()).toHaveLength(0);
+    expect(hud()).toBeNull();
+  });
+
+  test("hovering an un-picked window previews the next add", async () => {
+    await mountScene();
+    await clickWindow(WIN, { metaKey: true });
+    const c = centerOf(WIN_B);
+    await mouseMove(c.x, c.y);
+    const hover = container?.querySelector(".region-pick-hover");
+    expect(hover).not.toBeNull();
+    // ...and the union rect is NOT stomped by the hover.
+    expect(rectStyle()).toEqual({ left: 200, top: 150, width: 400, height: 300 });
+    // Hovering an already-picked window shows no add preview.
+    const back = centerOf(WIN);
+    await mouseMove(back.x, back.y);
+    expect(container?.querySelector(".region-pick-hover")).toBeNull();
+  });
+
+  test("hint copy switches to the multi-select legend", async () => {
+    await mountScene();
+    await clickWindow(WIN, { metaKey: true });
+    expect(regionHintText()).toContain("add / remove window");
+    expect(regionHintText()).toContain("keep whole box");
+    await keyDown("T");
+    expect(regionHintText()).toContain("transparent gaps");
   });
 });

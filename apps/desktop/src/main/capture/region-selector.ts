@@ -26,6 +26,7 @@ import {
   type WindowInfo
 } from "./window-list";
 import { captureAndRegister, releaseSnapshot, type ScreenSnapshot } from "./screen-snapshot";
+import { isExtentRect, MAX_SELECTOR_EXTENTS } from "./extent-mask";
 import { hideTrayPopoverIfVisible } from "../tray";
 import { setFloatOverState, ensureFloatOverTopmost } from "../float-over";
 import { hotkeyRecorderSuspension } from "../hotkeys/hotkey-recorder-suspension-instance";
@@ -1645,25 +1646,6 @@ function rendererTarget(displayId: number): RendererTarget {
     path: join(__dirname, "../renderer/index.html"),
     hash
   };
-}
-
-// Upper bound on a multi-window pick. The window list itself is
-// usually well under this; the cap is here because `extents` is
-// renderer-supplied and each entry costs a sharp extract + composite
-// at commit time. A pick larger than this is a bug or an attack, not
-// a user.
-const MAX_SELECTOR_EXTENTS = 64;
-
-function isExtentRect(value: unknown): value is { x: number; y: number; w: number; h: number } {
-  if (value === null || typeof value !== "object") return false;
-  const r = value as Record<string, unknown>;
-  for (const key of ["x", "y", "w", "h"] as const) {
-    const n = r[key];
-    if (typeof n !== "number" || !Number.isFinite(n)) return false;
-  }
-  // Zero-area extents would make sharp throw on extract; reject here
-  // rather than filtering silently at crop time.
-  return (r.w as number) > 0 && (r.h as number) > 0;
 }
 
 function isSelectorPayload(value: unknown): value is {

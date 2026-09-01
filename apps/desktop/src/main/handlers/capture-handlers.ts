@@ -41,6 +41,7 @@ import {
 } from "../capture/region-selector";
 import { captureRegion, captureScreen, captureWindow } from "../capture/screencapture";
 import { displayScaleFactorForId } from "../capture/display-density";
+import { planExtentMask } from "../capture/extent-mask";
 import { guardScreenCapture } from "../capture/screen-permission-gate";
 import {
   CapturesLocationFallbackError,
@@ -1276,12 +1277,8 @@ async function cropScreenSnapshot(
  * window's own backing buffer (so it can be captured through an
  * occluder) is a different feature and deliberately not this one.
  *
- * Coordinate handling is identical to `cropScreenSnapshot`: `rect` and
- * `extents` are display-logical px in global coords, the snapshot is
- * physical px covering `display.bounds`. Each extent is additionally
- * clamped to the union box so a stray extent can't composite outside
- * the canvas (sharp throws on a negative offset).
- *
+ * The geometry lives in `planExtentMask` (capture/extent-mask.ts) so it
+ * can be tested without sharp; this function is the I/O around it.
  * Returns the same envelope as `cropScreenSnapshot` so the caller path
  * stays identical.
  */
@@ -1298,59 +1295,17 @@ async function cropScreenSnapshotExtents(
   if (display === undefined) {
     return { ok: false, reason: "validation", message: `unknown display id: ${displayId}` };
   }
-  if (rect.w <= 0 || rect.h <= 0) {
-    return { ok: false, reason: "validation", message: "rect.w and rect.h must be positive" };
-  }
-  if (extents.length === 0) {
-    return { ok: false, reason: "validation", message: "extents must not be empty" };
-  }
-  const scale = display.scaleFactor;
-  const toPhysical = (r: Rect) => ({
-    left: Math.round((r.x - display.bounds.x) * scale),
-    top: Math.round((r.y - display.bounds.y) * scale),
-    width: Math.max(1, Math.round(r.w * scale)),
-    height: Math.max(1, Math.round(r.h * scale))
-  });
 
   try {
     const meta = await sharp(snapshotPath).metadata();
-    const maxW = meta.width ?? 0;
-    const maxH = meta.height ?? 0;
-    if (maxW <= 0 || maxH <= 0) {
-      return { ok: false, reason: "error", message: "snapshot has no readable dimensions" };
-    }
-
-    // The canvas: the union box, clamped to the snapshot.
-    const box = toPhysical(rect);
-    const boxLeft = Math.min(Math.max(0, box.left), maxW - 1);
-    const boxTop = Math.min(Math.max(0, box.top), maxH - 1);
-    const boxW = Math.min(box.width, maxW - boxLeft);
-    const boxH = Math.min(box.height, maxH - boxTop);
-
-    // One extract per extent, positioned relative to the canvas origin.
-    // Intersect with the canvas first: an extent that hangs off the
-    // display edge (or off the union box, which a rounding difference
-    // can produce) contributes only its visible part.
-    const layers: { input: Buffer; left: number; top: number }[] = [];
-    for (const extent of extents) {
-      const e = toPhysical(extent);
-      const left = Math.max(e.left, boxLeft);
-      const top = Math.max(e.top, boxTop);
-      const right = Math.min(e.left + e.width, boxLeft + boxW, maxW);
-      const bottom = Math.min(e.top + e.height, boxTop + boxH, maxH);
-      const width = right - left;
-      const height = bottom - top;
-      if (width <= 0 || height <= 0) continue;
-      // eslint-disable-next-line no-await-in-loop -- serialized on purpose:
-      // a 64-extent pick issuing 64 concurrent sharp decodes of the same
-      // full-display PNG is a memory spike for no wall-clock win.
-      const input = await sharp(snapshotPath)
-        .extract({ left, top, width, height })
-        .png()
-        .toBuffer();
-      layers.push({ input, left: left - boxLeft, top: top - boxTop });
-    }
-    if (layers.length === 0) {
+    const plan = planExtentMask({
+      rect,
+      extents,
+      displayOrigin: { x: display.bounds.x, y: display.bounds.y },
+      scaleFactor: display.scaleFactor,
+      snapshot: { width: meta.width ?? 0, height: meta.height ?? 0 }
+    });
+    if (plan === null) {
       return {
         ok: false,
         reason: "validation",
@@ -1358,12 +1313,21 @@ async function cropScreenSnapshotExtents(
       };
     }
 
+    const layers: { input: Buffer; left: number; top: number }[] = [];
+    for (const layer of plan.layers) {
+      // eslint-disable-next-line no-await-in-loop -- serialized on purpose:
+      // a 64-extent pick issuing 64 concurrent sharp decodes of the same
+      // full-display PNG is a memory spike for no wall-clock win.
+      const input = await sharp(snapshotPath).extract(layer.extract).png().toBuffer();
+      layers.push({ input, left: layer.left, top: layer.top });
+    }
+
     const dir = await mkdtemp(join(tmpdir(), "pwrsnap-crop-"));
     const tempPath = join(dir, `${Date.now()}.png`);
     await sharp({
       create: {
-        width: boxW,
-        height: boxH,
+        width: plan.box.width,
+        height: plan.box.height,
         channels: 4,
         background: { r: 0, g: 0, b: 0, alpha: 0 }
       }

@@ -138,6 +138,11 @@ function unionOfPicks(entries: readonly WindowSnapEntry[]): Rect | null {
 export function RegionSelector() {
   const shiftKey =
     acceleratorToDisplayKeys("Shift", rendererShortcutPlatform())[0] ?? "Shift";
+  // The add-to-selection modifier, per platform: ⌘ on macOS, Ctrl
+  // elsewhere — the same split `isAdditivePick` enforces, so the hint
+  // and the binding cannot drift.
+  const addPickKey =
+    acceleratorToDisplayKeys("CommandOrControl", rendererShortcutPlatform())[0] ?? "Ctrl";
   const displayIdParam = parseHashParam(HASH_PARAM_DISPLAY_ID);
   const displayId = displayIdParam !== null ? Number.parseInt(displayIdParam, 10) : 0;
 
@@ -1372,7 +1377,7 @@ export function RegionSelector() {
             <>
               <span className="region-hint-sep">·</span>
               <span>
-                <kbd>⌘click</kbd>add window
+                <kbd>{addPickKey}click</kbd>add window
               </span>
             </>
           )}

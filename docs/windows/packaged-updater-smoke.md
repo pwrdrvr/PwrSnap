@@ -62,11 +62,14 @@ single `noCache` query on `latest.yml`, supports bounded byte ranges, and logs
 every request. The old-version blockmap request is an expected 404, matching the
 real NSIS full-download fallback; any other path or query is rejected.
 
-Every launch receives isolated `APPDATA`, `LOCALAPPDATA`, `USERPROFILE`,
-`HOME`, `TEMP`, `TMP`, and `PWRSNAP_USER_DATA`, with process splitting disabled.
-PwrSnap also rebases Electron's Documents and home paths beneath that userData
-for this mode. It creates no tray, window, hotkey, login item, Codex process,
-local server, capture, or filename-maintenance task.
+Every launch receives isolated `APPDATA`, `LOCALAPPDATA`, `HOME`, `TEMP`, `TMP`,
+and `PWRSNAP_USER_DATA`, with process splitting disabled. The ephemeral hosted
+runner's real `USERPROFILE` is retained because electron-updater clears
+`PSModulePath` and inbox Windows PowerShell needs that profile to reconstruct
+its trusted system-module path for Authenticode. PwrSnap still rebases
+Electron's userData, Documents, and home paths beneath the isolated userData for
+this mode. It creates no tray, window, hotkey, login item, Codex process, local
+server, capture, or filename-maintenance task.
 
 ## Assertions and failure evidence
 
@@ -77,8 +80,9 @@ The runner validates, in order:
 - a silent baseline install under the isolated smoke root;
 - the baseline executable signature and exact packaged marker;
 - real update check, availability, download, install-attempt persistence,
-  marker-gated silent `quitAndInstall(true, true)`, NSIS replacement, and
-  target relaunch;
+  marker-gated silent `quitAndInstall(true, false)`, and NSIS replacement;
+- harness-owned target relaunch with the exact same isolated environment and
+  an exact target PID/path check;
 - the target executable signature and marker;
 - exact target `app.getVersion()`, the same userData path and random continuity
   sentinel, a surviving `pwrsnap.db`, and a cleared
@@ -114,3 +118,11 @@ synthetic pair proves updater mechanics from one source revision; it does not
 prove compatibility with an arbitrary historical build. Existing published
 Windows prereleases predate the marker-gated loopback seam and must not be used
 for this test, because doing so would require real GitHub feed discovery.
+
+The hosted runner deliberately does not assert assisted NSIS's production
+`ExecShellAsUser` relaunch. That shell-owned launch cannot reliably retain the
+test-only isolated environment, so forcing it could boot PwrSnap outside the
+throwaway userData. The smoke instead proves the signed electron-updater
+download and silent NSIS replacement, then relaunches the installed target from
+the credential-free harness. Production's user-facing assisted-installer
+finish-page relaunch remains a manual Windows check.

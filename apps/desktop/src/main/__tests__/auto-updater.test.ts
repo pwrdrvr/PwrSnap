@@ -437,7 +437,7 @@ describe("auto updater selection", () => {
     expect(mocks.autoUpdater.quitAndInstall).not.toHaveBeenCalled();
   });
 
-  test("Windows smoke installs silently and forces the signed target relaunch", async () => {
+  test("Windows smoke installs silently and leaves isolated relaunch to the harness", async () => {
     process.env.PWRSNAP_UPDATE_SMOKE = "1";
     const baselineVersion = "1.1.0-update-smoke.42.1.1";
     const targetVersion = "1.1.0-update-smoke.42.1.2";
@@ -464,7 +464,7 @@ describe("auto updater selection", () => {
     await expect(updater.installDownloadedWindowsUpdateSmoke()).resolves.toEqual({
       status: "restarting"
     });
-    expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledWith(true, true);
+    expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledWith(true, false);
   });
 
   test("pins the beta train to the smoke-checked main-train tag", async () => {

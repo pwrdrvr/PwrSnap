@@ -1453,8 +1453,11 @@ async function installDownloadedAppUpdateForMode(
       // quitAndInstall() call displays that installer and waits for user input,
       // which a credential-free hosted smoke runner cannot provide. Keep the
       // user-facing path interactive, but make this marker-gated headless path
-      // silent and explicitly relaunch the signed target after installation.
-      autoUpdater().quitAndInstall(true, true);
+      // silent. The outer harness owns the target relaunch so it can preserve
+      // the exact isolated environment; NSIS uses ExecShellAsUser for its
+      // force-run path, which does not reliably retain caller-only variables
+      // such as PWRSNAP_USER_DATA on hosted Windows runners.
+      autoUpdater().quitAndInstall(true, false);
     } else {
       autoUpdater().quitAndInstall();
     }

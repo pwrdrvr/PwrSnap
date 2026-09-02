@@ -8,9 +8,10 @@
 // painted is on top). Matches the "click selects what you see"
 // affordance.
 
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import type { OverlayRow } from "@pwrsnap/shared";
 import { hitTestOverlays } from "../Editor";
+import { clearGlyphSize, reportGlyphSize } from "../text-measure-registry";
 
 function makeRow(
   id: string,
@@ -685,6 +686,105 @@ describe("hitTestOverlays", () => {
       // clears the outward stroke-reach pad and still lands in the
       // shear-cut wedge after the inverse-rotate.)
       expect(hitTestOverlays([paraRotated], 0.405, 0.595, 1000, squareDims)).toBe(null);
+    });
+  });
+
+  describe("measured text hit box — width-proportional overhang", () => {
+    // Regression: the click target for a text overlay used to be the
+    // measured glyph box scaled by a MULTIPLIER (1.18). Because the
+    // anchor is the glyph's LEFT edge, that inflation landed entirely
+    // on the RIGHT — and it grew with the string. A wide banner of
+    // text ~1000 canvas-px across therefore claimed ~180px of empty
+    // canvas past its last character: the hover affordance painted
+    // `cursor: move` out there (editor.css `[data-hover-hit]`) and a
+    // press-drag translated the text, with nothing visible under the
+    // pointer.
+    //
+    // The forgiveness a click target wants is a small, screen-constant
+    // halo — which the all-edge `padN` already provides — NOT a
+    // fraction of however long the sentence happens to be.
+    //
+    // These tests drive the MEASURED path (`getGlyphSize`), which is
+    // what the real Chromium renderer always takes: TextHtml publishes
+    // the laid-out `<div>`'s box into the registry, and the hit-test
+    // reads it. jsdom has no live DOM, so the tests seed the registry
+    // directly.
+
+    const dims = {
+      canvasWidthPx: 1000,
+      canvasHeightPx: 1000,
+      sourceWidthPx: 1000,
+      sourceHeightPx: 1000
+    };
+
+    afterEach(() => {
+      clearGlyphSize("t1");
+    });
+
+    /** A single-line text anchored at (0.1, 0.5) whose glyph box is
+     *  `widthImagePx` × 40 image px. On the 1000×1000 dims above the
+     *  box is x ∈ [0.1, 0.1 + w/1000], y ∈ [0.48, 0.52]. */
+    function seedMeasuredText(widthImagePx: number, rotation?: number): OverlayRow {
+      const row = makeRow("t1", {
+        kind: "text",
+        point: { x: 0.1, y: 0.5 },
+        body: "Believe it or not - this is a one row scrollable list",
+        size: "medium",
+        color: "auto",
+        ...(rotation !== undefined ? { rotation } : {})
+      });
+      reportGlyphSize("t1", { widthImagePx, heightImagePx: 40 });
+      return row;
+    }
+
+    test("a click well past the last character misses", () => {
+      // 600px-wide glyph → right edge at x = 0.7. The old 1.18×
+      // inflation pushed the box to 0.808, so 0.75 — half the width
+      // of the glyph's own last word past the text — read as a hit.
+      const row = seedMeasuredText(600);
+      expect(hitTestOverlays([row], 0.75, 0.5, 1000, dims)).toBe(null);
+    });
+
+    test("the click target still covers the glyph and a small pad", () => {
+      const row = seedMeasuredText(600);
+      // Inside the glyph.
+      expect(hitTestOverlays([row], 0.4, 0.5, 1000, dims)).toBe("t1");
+      // Just inside the right edge (0.7) + padN (hitRadiusN × 0.5 =
+      // 0.005 here) — the forgiveness that survives.
+      expect(hitTestOverlays([row], 0.703, 0.5, 1000, dims)).toBe("t1");
+      // Just past that pad.
+      expect(hitTestOverlays([row], 0.71, 0.5, 1000, dims)).toBe(null);
+    });
+
+    test("the right-edge overhang does NOT grow with the glyph width", () => {
+      // The defining property: whatever slack exists past the last
+      // character must be the same for a short label and a long
+      // sentence. Under the multiplier it was 0.18 × width — 0.036
+      // for the narrow row and 0.144 for the wide one.
+      const narrow = seedMeasuredText(200); // right edge 0.3
+      expect(hitTestOverlays([narrow], 0.32, 0.5, 1000, dims)).toBe(null);
+      clearGlyphSize("t1");
+      const wide = seedMeasuredText(800); // right edge 0.9
+      expect(hitTestOverlays([wide], 0.92, 0.5, 1000, dims)).toBe(null);
+    });
+
+    test("rotated text pivots on the TRUE glyph centre", () => {
+      // The inverse-rotation pivot is the hit box's centre, so an
+      // asymmetric box rotated the click target around the wrong
+      // point — the error scaling with the string length just like
+      // the overhang. Renderer-side (TextHtml / SelectionOutline /
+      // compose.ts) the pivot is the real body-box centre.
+      //
+      // 600px glyph, 90° CW. True box x ∈ [0.1, 0.7], y ∈ [0.48,
+      // 0.52] → centre (0.4, 0.5); rotated, the visible bar runs
+      // x ∈ [0.38, 0.42], y ∈ [0.2, 0.8]. Under the 1.18× box the
+      // centre sat at (0.454, 0.5) and the bar at x ∈ [0.434,
+      // 0.474] — so a press on the visible glyph missed by ~54px.
+      const row = seedMeasuredText(600, Math.PI / 2);
+      expect(hitTestOverlays([row], 0.4, 0.3, 1000, dims)).toBe("t1");
+      // And the converse: the column the old pivot put the bar in is
+      // now empty canvas.
+      expect(hitTestOverlays([row], 0.46, 0.3, 1000, dims)).toBe(null);
     });
   });
 });

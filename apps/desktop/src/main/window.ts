@@ -67,6 +67,34 @@ const hotCpuProfilerSyncHandlers = new Map<number, (reason: string) => void>();
  */
 type MenuVisibility = "visible" | "hidden";
 
+/**
+ * macOS traffic-light (stoplight) inset for every `hiddenInset` window we open
+ * — Library, Settings, Sizzle, and the document windows. Both numbers are
+ * DERIVED from the chrome bar those windows share, not eyeballed. Re-derive
+ * them here if that bar changes; don't nudge them to taste.
+ *
+ * A macOS button is a 14pt frame on a 23pt pitch, so the group is 60pt wide
+ * and ends at `x + 60`.
+ *
+ * **x = 16** is the chrome bar's own content inset — `.psl__topbar`,
+ * `.pss__titlebar`, and `.szl__titlebar` all use `padding: 0 16px 0 92px`
+ * (`.ps-doc__titlebar` matches on the left and uses 20px on the right). The
+ * buttons are the leftmost thing in that bar, so they start on the same rail
+ * everything else lines up on. The group then ends at x=76, still inside the
+ * 92px all four bars reserve on the left.
+ *
+ * **y = 18** centres the 14pt button in the 52pt bar (`grid-template-rows:
+ * 52px ...` on `.psl`, `.pss`, `.szl`, and `.ps-doc`): dead centre is
+ * (52 - 14) / 2 = 19, and 18 sits 1pt high — the same tolerance every other
+ * app on macOS ships with, and unchanged from what PwrSnap already had.
+ *
+ * History: `x` was 20 from the 2026-05 build-out and never re-derived, which
+ * left the buttons 4pt past the rail. Measured against a standalone
+ * `hiddenInset` window: first-button left 20 → 16, pitch 23 and top 18
+ * unchanged. Pinned by `macos-traffic-light-position.test.ts`.
+ */
+export const MACOS_TRAFFIC_LIGHT_POSITION = { x: 16, y: 18 } as const;
+
 function platformWindowChrome(menu: MenuVisibility): BrowserWindowConstructorOptions {
   if (process.platform === "win32") {
     return {
@@ -79,7 +107,7 @@ function platformWindowChrome(menu: MenuVisibility): BrowserWindowConstructorOpt
   // title bar + inset traffic-light position. `trafficLightPosition` is a no-op
   // off macOS but harmless, and matching the prior unconditional behavior keeps
   // the Linux E2E frame identical.
-  return { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 20, y: 18 } };
+  return { titleBarStyle: "hiddenInset", trafficLightPosition: MACOS_TRAFFIC_LIGHT_POSITION };
 }
 
 // Title-bar (caption-button strip) background. This MUST match the renderer's

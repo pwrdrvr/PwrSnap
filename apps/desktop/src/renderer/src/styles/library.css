@@ -3451,6 +3451,10 @@
 }
 .psl__ocr-tab-body {
   margin: 0;
+  /* Extracted text is the payload of this tab. "Copy text" takes all of it;
+     selecting part of it needs an opt-out of app.css's `user-select: none`. */
+  user-select: text;
+  -webkit-user-select: text;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   border: 1px solid var(--border-subtle);

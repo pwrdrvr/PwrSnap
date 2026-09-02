@@ -44,6 +44,45 @@ body {
   overflow: hidden;
 }
 
+/* App chrome is not a document — nothing here is selectable by default.
+ *
+ * The Library, tray, float-over and settings surfaces are UI: labels,
+ * counts, chips, timestamps. Left selectable (the CSS initial value), a
+ * native Select All sweeps the ENTIRE window into one text selection and
+ * repaints every one of them in the OS selection blue. Nothing intercepts
+ * that outside the editor canvas — `role: "selectAll"` in the Edit menu
+ * (apps/desktop/src/main/index.ts) hands ⌘A straight to Blink, and the
+ * Library's own keydown handler bails on any modifier — so the whole app
+ * turns blue. Worse, the wash STICKS: it survives Escape, view changes and
+ * navigation, clearing only when the user happens to click something that
+ * is itself selectable. One stray keypress and the app looks broken.
+ *
+ * Opting out here (rather than chasing ⌘A with a preventDefault) also
+ * kills the rubber-band selection you get dragging across a card grid,
+ * which is the same defect wearing a different hat.
+ *
+ * Opt back in wherever the text IS the content and copying it is the
+ * point — see the rules below plus the per-surface opt-ins that already
+ * exist in MessageList.css (chat transcript), logs.css (log lines),
+ * documents.css, settings.css and library.css. Every one of those beats
+ * this rule on specificity, so they keep working untouched.
+ */
+body {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Form fields are content by definition. Chromium inherits `none` into
+   them, which kills selection, caret drag and double-click-to-word inside
+   the field — so the app-wide default has to be undone explicitly. */
+input,
+textarea,
+select,
+[contenteditable="true"] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 /* Tray + float-over + recording-controller windows are frameless
    transparent panels — let the component's own backdrop paint, not
    the body. Without this the BrowserWindow's `transparent: true`

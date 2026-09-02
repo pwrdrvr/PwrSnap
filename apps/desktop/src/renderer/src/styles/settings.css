@@ -1388,6 +1388,15 @@
   border-radius: 6px;
   flex-shrink: 0;
 }
+/* Binary / save-location paths carry no copy button and routinely need to
+   be pasted into a terminal — opt out of app.css's `user-select: none`. */
+.pss__path-text,
+.pss__cand-path,
+.pss__acp-instance-path {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 .pss__path-text {
   flex: 1;
   min-width: 0;

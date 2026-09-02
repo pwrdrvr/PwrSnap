@@ -114,10 +114,7 @@ import { BlurOverlays } from "./BlurOverlays";
 import { TextDraftInput } from "./TextDraftInput";
 import { TextHtmlOverlays } from "./TextHtmlOverlays";
 import { resolveTextDraftStyle } from "./text-draft-style";
-import {
-  TEXT_BBOX_CHAR_ADVANCE_HIT,
-  TEXT_BBOX_HIT_WIDTH_SLOP
-} from "./text-bbox-constants";
+import { TEXT_BBOX_CHAR_ADVANCE } from "./text-bbox-constants";
 import { measureTextWidthPx } from "./text-measure";
 import { getGlyphSize } from "./text-measure-registry";
 import { LayerContextMenu } from "./LayerContextMenu";
@@ -1327,10 +1324,14 @@ export function hitTestOverlays(
       // Box dimensions mirror what `textBoundsBox` in OverlaySvg.tsx
       // computes for the selection outline (after the HTML-text
       // unification: `height = lineCount * fontSize` with
-      // `translateY(-50%)` centering on the anchor). Width uses a
-      // GENEROUS per-character advance (0.65) plus a small padding
-      // so trailing characters and inter-line gaps don't fall just
-      // outside the box.
+      // `translateY(-50%)` centering on the anchor). Same box, same
+      // measured source, same char-advance constant — the two are
+      // kept in step by convention, not by construction (they are
+      // still two implementations; the one deliberate divergence is
+      // the `Math.max(sizePx, …)` width floor below, which only the
+      // click target applies). Forgiveness comes from `padN` below,
+      // NOT from inflating the box; see text-bbox-constants.ts for
+      // why.
       //
       // Falls back to the pre-fix point-radius when `textDims` isn't
       // threaded — keeps the existing hitTestOverlays.test.ts
@@ -1348,11 +1349,13 @@ export function hitTestOverlays(
       // Preferred path: the glyph's REAL measured box (canvas px),
       // published by TextHtml — the same source the selection outline
       // reads, so the click target covers exactly what the user sees.
-      // The width still gets TEXT_BBOX_HIT_WIDTH_SLOP for the same
-      // forgiveness as before (clicks just past the right edge register).
-      // Falls back to the canvas/char measurement below before the first
-      // measurement lands or in jsdom (no live DOM). See
-      // text-measure-registry.ts.
+      // Taken verbatim: no width multiplier. Scaling this box by a
+      // percentage put all of the inflation past the right edge (the
+      // anchor is the glyph's LEFT edge) and made the overhang grow
+      // with the sentence, so long text was draggable from well out in
+      // blank canvas. Falls back to the canvas/char measurement below
+      // before the first measurement lands or in jsdom (no live DOM).
+      // See text-measure-registry.ts.
       const glyphMeasured = getGlyphSize(row.id);
       let naturalWidthPx: number;
       let naturalHeightPx: number;
@@ -1361,7 +1364,7 @@ export function hitTestOverlays(
         glyphMeasured.widthImagePx > 0 &&
         glyphMeasured.heightImagePx > 0
       ) {
-        naturalWidthPx = glyphMeasured.widthImagePx * TEXT_BBOX_HIT_WIDTH_SLOP;
+        naturalWidthPx = glyphMeasured.widthImagePx;
         naturalHeightPx = glyphMeasured.heightImagePx;
       } else {
         // Fallback sizing — computed HERE (not before the measured
@@ -1384,13 +1387,15 @@ export function hitTestOverlays(
         }).sizePx;
         const lines = o.body.split("\n");
         const lineCount = Math.max(1, lines.length);
-        const maxChars = lines.reduce((m, l) => Math.max(m, l.length), 1);
-        // Measure the REAL advance width (same metric the selection
-        // outline uses) so the click target tracks the glyph extent
-        // instead of a char-count guess that mis-sized wide-cap text like
-        // `Hi MOm`. Falls back to the char-count advance where a 2D
-        // canvas is unavailable (jsdom unit tests). Width floors at 1×
-        // fontSize so a 1-char line still has a reasonable click target.
+        // Measure the REAL advance width (the same metric — and, since
+        // this PR, the same char-advance constant — the selection
+        // outline uses in `textBoundsBox`) so the click target tracks
+        // the glyph extent instead of a char-count guess that mis-sized
+        // wide-cap text like `Hi MOm`. Falls back to the char-count
+        // advance where a 2D canvas is unavailable (jsdom unit tests).
+        // Width floors at 1× fontSize so a 1-char line still has a
+        // reasonable click target — the one place this box is
+        // deliberately wider than the outline's.
         const measuredWidthPx = measureTextWidthPx(
           o.body,
           sizePx,
@@ -1398,8 +1403,19 @@ export function hitTestOverlays(
         );
         naturalWidthPx =
           measuredWidthPx !== null
-            ? Math.max(sizePx, measuredWidthPx * TEXT_BBOX_HIT_WIDTH_SLOP)
-            : Math.max(sizePx, maxChars * sizePx * TEXT_BBOX_CHAR_ADVANCE_HIT);
+            ? Math.max(sizePx, measuredWidthPx)
+            : // maxChars is reduced HERE, not above: this arm is the
+              // only consumer, and in the real renderer
+              // `measureTextWidthPx` never returns null — so hoisting
+              // it would scan every body every frame for a value the
+              // other arm discards, which is the GC pressure the
+              // block comment above exists to avoid.
+              Math.max(
+                sizePx,
+                lines.reduce((m, l) => Math.max(m, l.length), 1) *
+                  sizePx *
+                  TEXT_BBOX_CHAR_ADVANCE
+              );
         naturalHeightPx = sizePx * lineCount;
       }
       // Box centered vertically on the anchor (matches the HTML
@@ -1412,11 +1428,15 @@ export function hitTestOverlays(
       // bbox test "just works" against the unrotated box coords —
       // same pattern as the rect/highlight/blur branch above. Pivot
       // is the BODY-BOX center (same as TextHtml + SelectionOutline
-      // + compose.ts use); inverse-rotating in pixel space keeps the
-      // angle visually correct on non-square canvases (a "90°"
-      // rotation visually drops the top edge to the right edge on a
-      // wide canvas; normalized-space rotation would skew the angle
-      // because the y-axis is stretched).
+      // + compose.ts use), which only lines up with the renderer's
+      // because the box above is the glyph box untouched — any
+      // asymmetric slop would drag this pivot off the real centre and
+      // rotate the whole click target away from the visible glyph.
+      // Inverse-rotating in pixel space keeps the angle visually
+      // correct on non-square canvases (a "90°" rotation visually
+      // drops the top edge to the right edge on a wide canvas;
+      // normalized-space rotation would skew the angle because the
+      // y-axis is stretched).
       const textRotation = o.rotation ?? 0;
       const textPivotXn = boxXn + boxWn / 2;
       const textPivotYn = boxYn + boxHn / 2;
@@ -1430,7 +1450,16 @@ export function hitTestOverlays(
       // Add a small padding (half a hitRadius) on every edge so the
       // user can click slightly past the rendered glyph and still
       // land on the layer. Matches the affordance Cleanshot / Skitch
-      // ship for text annotations.
+      // ship for text annotations. Since the width multiplier went
+      // away this is the ONLY forgiveness the click target has, so
+      // know its two limits: it is normalized and applied to both
+      // axes while `hitRadiusN` derives from the canvas SHORT side,
+      // so on a wide canvas the horizontal pad is more px than the
+      // vertical one; and `hitRadiusN`'s 0.008 floor means it is ~5px
+      // only up to a ~1250px short side, growing with the canvas
+      // above that. Neither is coupled to SelectionOutline's own
+      // 0.006 outline pad, so on a very large canvas the dashed
+      // rectangle can be drawn a hair outside what is clickable.
       const padN = hitRadiusN * 0.5;
       if (
         tx >= boxXn - padN &&

@@ -71,6 +71,7 @@ const SAFE_WINDOWS_ENVIRONMENT_KEYS = new Set([
   "TEMP",
   "TMP",
   "TZ",
+  "USERPROFILE",
   "WINDIR"
 ]);
 
@@ -631,7 +632,11 @@ export function buildIsolatedSmokeEnvironment(baseEnvironment, options) {
     ...environment,
     APPDATA: options.appDataDir,
     LOCALAPPDATA: options.localAppDataDir,
-    USERPROFILE: options.userProfileDir,
+    // Keep the hosted runner's real OS profile for inbox Windows PowerShell.
+    // electron-updater deliberately clears PSModulePath before its Authenticode
+    // probe, so PowerShell must reconstruct the system module path from a real
+    // profile. PwrSnap itself remains hermetic: PWRSNAP_USER_DATA is explicit,
+    // and the smoke-gated bootstrap rebases Electron's home/documents paths.
     HOME: options.userProfileDir,
     PWRSNAP_USER_DATA: options.userDataDir,
     TEMP: options.tempDir,
@@ -1330,14 +1335,18 @@ function withCaseInsensitiveEnvironment(baseEnvironment, additions) {
   return { ...result, ...additions };
 }
 
-export async function invokePowerShellJson({ script, environment, timeoutMs }) {
+export async function invokePowerShellJson({
+  script,
+  environment,
+  timeoutMs,
+  host = "pwsh.exe"
+}) {
   const encoded = Buffer.from(script, "utf16le").toString("base64");
   const result = await runBoundedProcess({
-    // release.yml already requires PowerShell 7 for both the protected signing
-    // job and this credential-free smoke job. Stay on that same host: inbox
-    // Windows PowerShell 5.1 can hang in first-use module initialization when
-    // USERPROFILE is intentionally redirected to the smoke's throwaway root.
-    command: "pwsh.exe",
+    // The harness defaults to the PowerShell 7 host already required by the
+    // workflow. The Windows-only CI probe explicitly selects powershell.exe to
+    // pin electron-updater's inbox-Windows-PowerShell dependency as well.
+    command: host,
     arguments: [
       "-NoLogo",
       "-NoProfile",
@@ -1612,14 +1621,15 @@ async function launchInstalledApplication({
   executablePath,
   installDirectory,
   environment,
-  diagnosticsDirectory
+  diagnosticsDirectory,
+  logStem
 }) {
   const stdoutHandle = await open(
-    join(diagnosticsDirectory, "baseline-app.stdout.log"),
+    join(diagnosticsDirectory, `${logStem}.stdout.log`),
     "wx"
   );
   const stderrHandle = await open(
-    join(diagnosticsDirectory, "baseline-app.stderr.log"),
+    join(diagnosticsDirectory, `${logStem}.stderr.log`),
     "wx"
   );
   let child;
@@ -1652,6 +1662,42 @@ async function launchInstalledApplication({
   invariant(Number.isSafeInteger(child.pid) && child.pid > 0, "installed PwrSnap did not have a PID.");
   child.unref();
   return child.pid;
+}
+
+async function waitForInstalledTarget({
+  executablePath,
+  installDirectory,
+  expectedVersion,
+  expectedPublisher,
+  environment,
+  baselinePid,
+  timeoutMs = INSTALL_TIMEOUT_MS
+}) {
+  const deadline = Date.now() + timeoutMs;
+  let lastBaselineEvidence = null;
+  let lastInstallError = null;
+  while (Date.now() < deadline) {
+    try {
+      lastBaselineEvidence = await queryProcessByPid(baselinePid, environment);
+      if (lastBaselineEvidence !== null) {
+        await new Promise((resolveWait) => setTimeout(resolveWait, 500));
+        continue;
+      }
+      return await inspectInstalledApplication({
+        executablePath,
+        installDirectory,
+        expectedVersion,
+        expectedPublisher,
+        environment
+      });
+    } catch (error) {
+      lastInstallError = error instanceof Error ? error : new Error(String(error));
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 500));
+  }
+  throw new Error(
+    `timed out after ${timeoutMs} ms waiting for the baseline process to exit and the signed target to finish installing; baseline=${JSON.stringify(lastBaselineEvidence)}; last install error=${lastInstallError?.message ?? "none"}.`
+  );
 }
 
 async function waitForRuntimeResult(resultPath, timeoutMs = UPDATE_TIMEOUT_MS) {
@@ -2075,7 +2121,8 @@ export async function runWindowsUpdateSmoke({
       executablePath: installedExecutable,
       installDirectory,
       environment,
-      diagnosticsDirectory
+      diagnosticsDirectory,
+      logStem: "baseline-app"
     });
     const baselineProcess = await waitForExactProcessPath(
       baselinePid,
@@ -2087,6 +2134,32 @@ export async function runWindowsUpdateSmoke({
     const stateDirectory = join(userDataDirectory, "windows-update-smoke");
     const resultPath = join(stateDirectory, "result.json");
     const continuityPath = join(stateDirectory, "continuity.json");
+    const targetInspection = await waitForInstalledTarget({
+      executablePath: installedExecutable,
+      installDirectory,
+      expectedVersion: manifest.target.version,
+      expectedPublisher,
+      environment,
+      baselinePid
+    });
+    await events.record("target-install:valid", {
+      baselinePid,
+      targetVersion: manifest.target.version
+    });
+
+    const targetPid = await launchInstalledApplication({
+      executablePath: installedExecutable,
+      installDirectory,
+      environment,
+      diagnosticsDirectory,
+      logStem: "target-app"
+    });
+    await events.record("target-launch:valid", {
+      pid: targetPid,
+      executablePath: installedExecutable,
+      relaunchOwner: "harness"
+    });
+
     const result = await waitForRuntimeResult(resultPath);
     const continuity = await readBoundedJson(
       continuityPath,
@@ -2106,6 +2179,10 @@ export async function runWindowsUpdateSmoke({
       continuity.baselinePid === baselinePid,
       "runtime continuity PID must exactly equal the process launched by the harness."
     );
+    invariant(
+      result.pid === targetPid,
+      "runtime target PID must exactly equal the isolated target process launched by the harness."
+    );
     await assertRegularFile(result.dbPath, "continuity database");
     await assertPathAbsent(
       join(userDataDirectory, "pwrsnap-update-install-attempt.json"),
@@ -2122,13 +2199,6 @@ export async function runWindowsUpdateSmoke({
     validateUpdateServerEvidence(feedRecords, manifest);
     await events.record("feed-evidence:valid");
 
-    const targetInspection = await inspectInstalledApplication({
-      executablePath: installedExecutable,
-      installDirectory,
-      expectedVersion: manifest.target.version,
-      expectedPublisher,
-      environment
-    });
     invariant(
       targetInspection.executableDigest.sha256 !==
         baselineInspection.executableDigest.sha256,
@@ -2155,7 +2225,8 @@ export async function runWindowsUpdateSmoke({
       userDataDirectory,
       installDirectory,
       baselinePid,
-      targetPid: result.pid
+      targetPid: result.pid,
+      relaunchOwner: "harness"
     };
   } catch (error) {
     primaryError = error instanceof Error ? error : new Error(String(error));

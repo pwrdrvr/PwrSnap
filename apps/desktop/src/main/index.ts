@@ -1741,9 +1741,10 @@ export function bootstrapApp(): void {
     if (windowsUpdateSmokeConfig !== null) {
       // Purpose-built headless boot: open the real packaged DB, wire only the
       // updater, and let the signed baseline exercise electron-updater's real
-      // download plus marker-gated silent NSIS install/relaunch path. No tray,
-      // hotkeys, Codex, local server, BrowserWindow, or boot maintenance is
-      // started.
+      // download plus marker-gated silent NSIS install path. The credential-free
+      // outer harness relaunches the installed target with the same isolated
+      // environment. No tray, hotkeys, Codex, local server, BrowserWindow, or
+      // boot maintenance is started.
       app.on("will-quit", closeDatabase);
       try {
         await openDatabase();

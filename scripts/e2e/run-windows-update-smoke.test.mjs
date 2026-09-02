@@ -259,6 +259,7 @@ describe("isolated updater environment", () => {
       {
         Path: "C:\\Windows\\System32",
         SystemRoot: "C:\\Windows",
+        UserProfile: "C:\\Users\\runneradmin",
         PSModulePath: "C:\\Program Files\\PowerShell\\7\\Modules",
         NODE_ENV: "development",
         PWRSNAP_E2E: "1",
@@ -288,6 +289,7 @@ describe("isolated updater environment", () => {
     expect(environment).toMatchObject({
       Path: "C:\\Windows\\System32",
       SystemRoot: "C:\\Windows",
+      UserProfile: "C:\\Users\\runneradmin",
       NODE_ENV: "production",
       PWRSNAP_UPDATE_SMOKE: "1",
       PWRSNAP_PROCESS_SPLIT: "0",
@@ -311,7 +313,7 @@ describe("isolated updater environment", () => {
   });
 
   test.runIf(process.platform === "win32" && process.env.GITHUB_ACTIONS === "true")(
-    "loads the Authenticode command under the exact isolated PowerShell host",
+    "loads Authenticode in the Windows PowerShell host electron-updater uses",
     async () => {
       const isolatedRoot = tmpdir();
       const environment = buildIsolatedSmokeEnvironment(process.env, {
@@ -338,7 +340,8 @@ $signature = Get-AuthenticodeSignature -LiteralPath $env:PWRSNAP_PROBE_PATH
           ...environment,
           PWRSNAP_PROBE_PATH: process.execPath
         },
-        timeoutMs: 30_000
+        timeoutMs: 30_000,
+        host: "powershell.exe"
       });
 
       expect(evidence).toEqual({

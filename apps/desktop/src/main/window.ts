@@ -67,6 +67,58 @@ const hotCpuProfilerSyncHandlers = new Map<number, (reason: string) => void>();
  */
 type MenuVisibility = "visible" | "hidden";
 
+/**
+ * macOS traffic-light (stoplight) inset for every window that spreads
+ * `platformWindowChrome()`. Both numbers are DERIVED from the chrome bar those
+ * windows share, not eyeballed. Re-derive them here if that bar changes; don't
+ * nudge them to taste.
+ *
+ * A macOS button is a 14pt frame on a 23pt pitch, so the group is 60pt wide
+ * and ends at `x + 60`.
+ *
+ * **x = 16** is the chrome bar's own content inset — `.psl__topbar`,
+ * `.pss__titlebar`, and `.szl__titlebar` all use `padding: 0 16px 0 92px`
+ * (`.ps-doc__titlebar` matches on the left and uses 20px on the right). The
+ * buttons are the leftmost thing in that bar, so they start on the same rail
+ * everything else lines up on. The group then ends at x=76, still inside the
+ * 92px all four bars reserve on the left.
+ *
+ * **y = 18** centres the 14pt button in the 51pt BAND, not in the 52pt row.
+ * Every bar declares `grid-template-rows: 52px ...` (`.psl`, `.pss`, `.szl`,
+ * `.ps-doc`) with `box-sizing: border-box` and a 1px `border-bottom`, so the
+ * bottom pixel is the divider and the fill the buttons sit on is 51pt. That
+ * is the same band `titleBarOverlayForTheme()` already pins at `height: 51`
+ * for the Windows caption strip, for the same reason — keep the two in step.
+ *
+ * (51 - 14) / 2 = 18.5, so no integer centres exactly and the choice is which
+ * way to round. 18 rounds high, and high is where the platform sits: of the
+ * apps measured on this machine, Terminal and Ghostty sit 2pt high, PwrGit
+ * 1pt high, Edge and Claude Desktop exactly centred — none sits low. 18 also
+ * happens to be what PwrSnap already shipped, so this is a re-derivation that
+ * confirms the value rather than a change. Measured both ways against the
+ * band: y=18 leaves 18 above / 19 below, y=19 leaves 19 above / 18 below —
+ * symmetric, so nothing but the rounding direction separates them.
+ *
+ * Five of the six consumers render one of those bars: Library (`.psl`),
+ * Settings (`.pss`), Sizzle (`.szl`), the document windows and the logs
+ * window (both `.ps-doc`). **The local-agent consent window is the exception**
+ * — it has no chrome bar at all (a centred column with 52px of top padding, no
+ * drag region), so the buttons float over plain background there and the
+ * derivation above does not describe it. That is tolerated, not overlooked: if
+ * that window ever grows a title bar, the inset needs re-deriving against it.
+ *
+ * History: `x` was 20 from the 2026-05 build-out and never re-derived, which
+ * left the buttons 4pt past the rail. Measured against a standalone
+ * `hiddenInset` window: first-button left 20 → 16, pitch 23 and top 18
+ * unchanged. Pinned by `macos-traffic-light-position.test.ts`, which also
+ * fails if a seventh window starts consuming this without being classified.
+ *
+ * Frozen because it is exported — `as const` is compile-time only, so without
+ * this one stray write from any importer would move the buttons on every
+ * window opened afterwards. Callers spread it rather than passing it on.
+ */
+export const MACOS_TRAFFIC_LIGHT_POSITION = Object.freeze({ x: 16, y: 18 });
+
 function platformWindowChrome(menu: MenuVisibility): BrowserWindowConstructorOptions {
   if (process.platform === "win32") {
     return {
@@ -79,7 +131,10 @@ function platformWindowChrome(menu: MenuVisibility): BrowserWindowConstructorOpt
   // title bar + inset traffic-light position. `trafficLightPosition` is a no-op
   // off macOS but harmless, and matching the prior unconditional behavior keeps
   // the Linux E2E frame identical.
-  return { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 20, y: 18 } };
+  // Spread, don't share: the frozen constant guards against an importer
+  // mutating our source of truth, while the copy keeps one window's options
+  // object from being reachable by any other.
+  return { titleBarStyle: "hiddenInset", trafficLightPosition: { ...MACOS_TRAFFIC_LIGHT_POSITION } };
 }
 
 // Title-bar (caption-button strip) background. This MUST match the renderer's

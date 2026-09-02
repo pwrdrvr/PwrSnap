@@ -25,9 +25,16 @@ body[data-stage="region"] .region-root {
   background: rgba(0, 0, 0, 0.004);
 }
 
+body[data-stage="region"] {
+  /* The scrim. Shared by the four quadrant divs (single selection) and
+     the SVG mask (multi-select) so the two cannot drift — they paint
+     the same overlay and the user flips between them mid-gesture. */
+  --region-scrim: rgba(0, 0, 0, 0.62);
+}
+
 .region-dim {
   position: fixed;
-  background: rgba(0, 0, 0, 0.62);
+  background: var(--region-scrim);
 }
 .region-dim--full {
   inset: 0;
@@ -58,7 +65,8 @@ body[data-stage="region"] .region-root {
 }
 /* Hide while a committed rect is being dragged (the lines would just
    clutter), and entirely in window mode (a crosshair implies a draw
-   gesture the pure window-picker can't honor — it commits on click). */
+   gesture the pure window-picker can't honor — clicks there add and
+   remove windows; ↵ or the HUD button captures). */
 body[data-stage="region"][data-interaction="moving"] .region-crosshair,
 body[data-stage="region"][data-interaction="resizing"] .region-crosshair,
 body[data-stage="region"][data-mode="window"] .region-crosshair {
@@ -238,4 +246,253 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
 }
 .region-hint-sep {
   color: var(--text-muted);
+}
+
+/* ---------------------------------------------------------------------
+   Multi-select (pick set + output-mode HUD)
+   ---------------------------------------------------------------------
+   Rendered only while `picks.length > 0`. Single-selection capture is
+   untouched — the four-quadrant dim above still runs that path. */
+
+/* SVG <mask> dim with one hole per picked extent. Replaces the
+   quadrant divs, which cannot express disjoint holes. Same 62% black
+   so the two paths look identical where they overlap.
+
+   A <mask>, NOT an even-odd path: even-odd cancels where two subpaths
+   overlap, so two overlapping picks would paint their intersection as
+   dimmed while the capture keeps it opaque. See the matching comment
+   in RegionSelector.tsx before changing this. */
+.region-mask {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+/* Must match `.region-dim` above — the two implementations paint the
+   same scrim and the user switches between them by picking a second
+   window. One value, referenced twice. */
+.region-mask__dim {
+  fill: var(--region-scrim);
+}
+/* Alpha checker tones. Here rather than as SVG `fill` attributes in the
+   component so every color in this surface lives in the stylesheet. */
+.region-mask__checker-a {
+  fill: rgba(255, 255, 255, 0.02);
+}
+.region-mask__checker-b {
+  fill: rgba(255, 255, 255, 0.05);
+}
+/* The alpha checker paints the part of the union box that is NOT a
+   picked extent — i.e. exactly the pixels the exported PNG makes
+   transparent. In `rectangle` mode it isn't rendered at all, because
+   nothing in the box becomes transparent. */
+.region-mask__alpha {
+  /* Loud enough to read as "this is a hole", quiet enough that the
+     dimmed screenshot underneath is still legible — the user is still
+     aiming at windows while it is on screen. */
+  opacity: 0.8;
+}
+
+/* Per-pick outline. Solid accent, matching a window snap, so a picked
+   window looks like a window snap that stuck. */
+.region-pick {
+  position: fixed;
+  border: 2px solid var(--accent);
+  background: rgba(255, 138, 31, 0.08);
+  pointer-events: none;
+}
+
+/* Next-click preview: the un-picked window under the cursor. Dashed +
+   dimmer so it reads as "not yet part of the selection". */
+.region-pick-hover {
+  position: fixed;
+  border: 2px dashed color-mix(in srgb, var(--accent) 70%, transparent);
+  background: rgba(255, 138, 31, 0.04);
+  pointer-events: none;
+}
+
+/* Ordinal badge — matches the HUD chip number, so the user can tell
+   which chip drops which window before clicking it. */
+.region-pick__badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  background: var(--accent);
+  border-radius: 5px;
+  color: var(--button-text-on-accent);
+  font: 700 11px/1 var(--font-mono);
+}
+.region-pick__badge--add {
+  background: color-mix(in srgb, var(--accent) 70%, transparent);
+  color: var(--button-text-on-accent);
+}
+
+/* The union bounding box while a pick set is live. It is a derived
+   frame, not a snap target, so it never borrows the snap styling. */
+.region-rect--union {
+  background: transparent;
+  border-width: 1.5px;
+}
+/* `windows` output: the box is only a frame — the extents are the
+   capture. Dashed says "this outline is not itself the selection". */
+.region-rect--union-windows {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--accent) 65%, transparent);
+}
+/* `rectangle` output: the box IS the capture. Solid, and matching the
+   single-selection rect weight. */
+.region-rect--union-rectangle {
+  border-style: solid;
+  box-shadow: 0 0 0 1px rgba(255, 138, 31, 0.4) inset;
+}
+
+/* --- HUD ------------------------------------------------------------ */
+
+.region-hud {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100vw - 48px);
+  padding: 8px;
+  background: color-mix(in srgb, var(--bg-panel-hover) 96%, transparent);
+  border: 1px solid var(--border-default);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+  /* The one interactive surface on the overlay. Everything else is
+     pointer-events:none so the window-level listeners see every
+     event; the HUD instead opts in and onMouseDown skips it. */
+  pointer-events: auto;
+  cursor: default;
+}
+
+.region-hud__sep {
+  width: 1px;
+  align-self: stretch;
+  background: var(--border-default);
+}
+
+.region-hud__seg {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 8px;
+}
+.region-hud__seg-btn {
+  appearance: none;
+  padding: 5px 12px;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font: 600 11px/1 var(--font-sans);
+  cursor: pointer;
+}
+.region-hud__seg-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.06);
+}
+.region-hud__seg-btn[data-active="true"] {
+  background: var(--accent);
+  color: var(--button-text-on-accent);
+}
+
+.region-hud__chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* A big pick set must not push Capture off the bar. */
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.region-hud__chips::-webkit-scrollbar {
+  display: none;
+}
+
+.region-hud__chip {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  max-width: 180px;
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  color: var(--text-primary);
+  font: 500 11px/1 var(--font-sans);
+  cursor: pointer;
+}
+.region-hud__chip:hover {
+  border-color: var(--accent-border);
+  background: rgba(255, 138, 31, 0.1);
+}
+.region-hud__chip-n {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  background: var(--accent);
+  border-radius: 4px;
+  color: var(--button-text-on-accent);
+  font: 700 10px/1 var(--font-mono);
+}
+.region-hud__chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.region-hud__chip-x {
+  color: var(--text-muted);
+  font: 600 12px/1 var(--font-sans);
+}
+.region-hud__chip:hover .region-hud__chip-x {
+  color: var(--text-primary);
+}
+
+.region-hud__go {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 7px 14px;
+  background: var(--accent);
+  border: 0;
+  border-radius: 8px;
+  color: var(--button-text-on-accent);
+  font: 700 12px/1 var(--font-sans);
+  cursor: pointer;
+}
+.region-hud__go:hover {
+  filter: brightness(1.08);
+}
+.region-hud__go kbd {
+  padding: 1px 5px;
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: 3px;
+  font: 700 10px/1 var(--font-mono);
+}
+
+/* Lift the keyboard legend clear of the HUD. */
+/* Requires the attribute to be PRESENT and non-zero. A bare
+   `:not([data-pick-count="0"])` would also match the first paint,
+   before the effect stamps anything. */
+body[data-stage="region"][data-pick-count]:not([data-pick-count="0"]) .region-hint {
+  bottom: 82px;
 }

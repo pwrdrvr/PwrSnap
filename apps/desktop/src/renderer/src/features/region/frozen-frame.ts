@@ -237,7 +237,8 @@ function canvasPng(canvas: HTMLCanvasElement): Promise<Blob> {
 export async function encodeFrozenCrop(
   frozen: FrozenFrame,
   rect: Rect,
-  viewport: { width: number; height: number }
+  viewport: { width: number; height: number },
+  extents?: readonly Rect[]
 ): Promise<EncodedFrozenCrop> {
   const crop = physicalCropRect(rect, viewport, frozen);
   const output = document.createElement("canvas");
@@ -245,17 +246,44 @@ export async function encodeFrozenCrop(
   output.height = crop.height;
   const context = output.getContext("2d", { alpha: true });
   if (context === null) throw new Error("committed crop canvas context is unavailable");
-  context.drawImage(
-    frozen.canvas,
-    crop.x,
-    crop.y,
-    crop.width,
-    crop.height,
-    0,
-    0,
-    crop.width,
-    crop.height
-  );
+  if (extents === undefined) {
+    context.drawImage(
+      frozen.canvas,
+      crop.x,
+      crop.y,
+      crop.width,
+      crop.height,
+      0,
+      0,
+      crop.width,
+      crop.height
+    );
+  } else {
+    let painted = false;
+    for (const extent of extents) {
+      const physical = physicalCropRect(extent, viewport, frozen);
+      const left = Math.max(crop.x, physical.x);
+      const top = Math.max(crop.y, physical.y);
+      const right = Math.min(crop.x + crop.width, physical.x + physical.width);
+      const bottom = Math.min(crop.y + crop.height, physical.y + physical.height);
+      const width = right - left;
+      const height = bottom - top;
+      if (width <= 0 || height <= 0) continue;
+      context.drawImage(
+        frozen.canvas,
+        left,
+        top,
+        width,
+        height,
+        left - crop.x,
+        top - crop.y,
+        width,
+        height
+      );
+      painted = true;
+    }
+    if (!painted) throw new Error("committed crop extents do not intersect the selection");
+  }
   const blob = await canvasPng(output);
   output.width = 0;
   output.height = 0;

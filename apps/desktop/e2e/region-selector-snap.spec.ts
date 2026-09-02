@@ -73,7 +73,9 @@ test("hovering a window locks the rect to its bounds (no modifier)", async () =>
     expect(rectStyle).toContain(`height: ${SYNTHETIC_WINDOW.rect.h}px`);
 
     await expect(selector.locator(".region-dims-chip")).toContainText("Target App");
-    await expect(selector.locator(".region-hint")).toContainText(/capture target app/i);
+    // "pick", not "capture": a click adds the window to the pick set
+    // now, and the hint has to say what the click actually does.
+    await expect(selector.locator(".region-hint")).toContainText(/pick target app/i);
 
     // Move back to background — snap drops to display.
     await selector.mouse.move(50, 50);
@@ -114,7 +116,7 @@ test("window-list cursor initializes the snap target before mouse movement", asy
   }
 });
 
-test("click-without-drag on a window enters adjusting + ↵ commits with snappedWindowId", async () => {
+test("click-without-drag on a window picks it + ↵ commits with snappedWindowId", async () => {
   const app = await launchPwrSnap();
   try {
     const selector = await showAndGetSelector(app);
@@ -146,16 +148,23 @@ test("click-without-drag on a window enters adjusting + ↵ commits with snapped
     const cy = SYNTHETIC_WINDOW.rect.y + SYNTHETIC_WINDOW.rect.h / 2;
     await lockWindowSnap(selector, cx, cy);
 
-    // Click without drag — should land in adjusting mode (handles
-    // visible) without dispatching submitRegion yet. The user gets
-    // a chance to refine before sending.
+    // Click without drag — the window joins the pick set, without
+    // dispatching submitRegion yet. The user gets a chance to add more
+    // windows (or drop this one) before sending. It deliberately does
+    // NOT land in `adjusting`: that state stops mousemove from tracking
+    // the snap, so the next window would never highlight and "click to
+    // add another" would stop reading.
     await selector.mouse.click(cx, cy);
-    await expect.poll(async () => selector.locator("body").getAttribute("data-interaction")).toBe(
-      "adjusting"
+    await expect.poll(async () => selector.locator("body").getAttribute("data-pick-count")).toBe(
+      "1"
     );
-    await expect(selector.locator(".region-handle")).toHaveCount(8);
+    await expect.poll(async () => selector.locator("body").getAttribute("data-interaction")).toBe(
+      "snap"
+    );
+    await expect(selector.locator(".region-pick")).toHaveCount(1);
+    await expect(selector.locator(".region-handle")).toHaveCount(0);
 
-    // No submitRegion fired yet — adjusting holds the rect for
+    // No submitRegion fired yet — the pick set holds the selection for
     // refinement.
     const beforeEnter = (await app.electronApp.evaluate(() => {
       return (globalThis as unknown as { __SNAP_PAYLOADS__: unknown[] }).__SNAP_PAYLOADS__;
@@ -181,14 +190,11 @@ test("click-without-drag on a window enters adjusting + ↵ commits with snapped
       snappedWindowId?: number;
     }>;
 
-    // We can get one or two payloads here depending on whether the
-    // adjusting commit considers itself "still snapped" after a
-    // click — that judgment lives in the renderer's commit() and
-    // is checked by inspecting the latest payload, not the count.
     expect(payloads.length).toBeGreaterThanOrEqual(1);
     const last = payloads[payloads.length - 1]!;
     expect(last.ok).toBe(true);
-    // The rect must match the snap target's bounds — the user
+    expect(last.snappedWindowId).toBe(SYNTHETIC_WINDOW.windowId);
+    // The rect must match the picked window's bounds — the user
     // didn't refine.
     expect(last.rect).toEqual({
       x: SYNTHETIC_WINDOW.rect.x,

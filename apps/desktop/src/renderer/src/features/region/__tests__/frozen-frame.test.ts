@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import {
   acquireFrozenDisplayFrame,
+  encodeFrozenCrop,
   FROZEN_DISPLAY_MEDIA_CONSTRAINTS,
   physicalCropRect,
   stopDisplayStream
@@ -53,6 +54,38 @@ describe("frozen frame coordinate mapping", () => {
       )
     ).toEqual({ x: 40, y: 40, width: 400, height: 2 });
   });
+});
+
+test("encodes only the retained multi-window extents inside the committed union", async () => {
+  const drawImage = vi.fn();
+  const getContext = vi
+    .spyOn(HTMLCanvasElement.prototype, "getContext")
+    .mockReturnValue({ drawImage } as never);
+  const toBlob = vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation((callback) => {
+    callback(new Blob([new Uint8Array([1])], { type: "image/png" }));
+  });
+  const frozenCanvas = document.createElement("canvas");
+
+  try {
+    const encoded = await encodeFrozenCrop(
+      { canvas: frozenCanvas, width: 2000, height: 1000, transferMode: "2d" },
+      { x: 100, y: 50, w: 400, h: 200 },
+      { width: 1000, height: 500 },
+      [
+        { x: 100, y: 50, w: 100, h: 200 },
+        { x: 400, y: 50, w: 100, h: 200 }
+      ]
+    );
+
+    expect(encoded).toMatchObject({ width: 800, height: 400, mimeType: "image/png" });
+    expect(drawImage.mock.calls).toEqual([
+      [frozenCanvas, 200, 100, 200, 400, 0, 0, 200, 400],
+      [frozenCanvas, 800, 100, 200, 400, 600, 0, 200, 400]
+    ]);
+  } finally {
+    getContext.mockRestore();
+    toBlob.mockRestore();
+  }
 });
 
 test("stops every display-media track", () => {

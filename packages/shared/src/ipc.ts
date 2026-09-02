@@ -544,3 +544,20 @@ export type EventPayloads = {
  *  `EventPayloads`. Useful as the parameter type for a typed
  *  broadcaster helper. */
 export type TypedEventChannel = keyof EventPayloads;
+
+/**
+ * Upper bound on a multi-window selector pick.
+ *
+ * Shared because BOTH sides must agree: the renderer refuses the pick
+ * that would exceed it, and main's payload validator rejects a payload
+ * that does. Without the renderer half the only enforcement was main's,
+ * and rejecting there fails the WHOLE payload — which resolves the
+ * session as `cancelled`, so a user who picked one window too many
+ * watched their capture vanish with no error and no log, exactly as if
+ * they had pressed Escape.
+ *
+ * The number itself is a sanity bound, not a UX limit: real picks are
+ * two or three windows, and each extent costs a composite at commit
+ * time. A pick larger than this is a bug or an attack, not a user.
+ */
+export const MAX_SELECTOR_EXTENTS = 64;

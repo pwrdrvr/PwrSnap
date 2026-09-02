@@ -71,7 +71,10 @@ describe("renderer-owned selector capture production wiring", () => {
     expect(frozenFrame).not.toContain('canvas.getContext("bitmaprenderer")');
     expect(frozenFrame).toContain("encodeFrozenCrop");
     expect(component).toContain("frameAcquisitionStartedRef.current");
-    expect(component).toContain("encodeFrozenCrop(frozen, r, viewport())");
+    expect(component).toContain("const crop = await encodeFrozenCrop(");
+    expect(component).toContain(
+      'activePicks.length > 1 && outputModeRef.current === "windows"'
+    );
     expect(component).toContain("openSelectorCropStream(currentInvocationId)");
     expect(component).toContain("streamEncodedCrop(currentInvocationId, crop");
     expect(component).toContain('"crop-commit-failed-encode"');

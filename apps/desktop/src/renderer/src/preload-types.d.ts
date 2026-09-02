@@ -52,6 +52,14 @@ declare global {
         snappedWindowId?: number;
         fullWindow?: boolean;
         captureCursor?: boolean;
+        /** Multi-window pick — one entry per picked window extent, in
+         *  the same global logical-px space as `rect`. `rect` is always
+         *  their union bounding box. */
+        extents?: { x: number; y: number; w: number; h: number }[];
+        /** `"windows"` keeps only the pixels inside `extents` and makes
+         *  the rest of the union box transparent; `"rectangle"` keeps
+         *  the whole box opaque. */
+        outputMode?: "windows" | "rectangle";
       }): void;
       notifySelectorSnapshotPainted(payload: {
         snapshotKey: string;

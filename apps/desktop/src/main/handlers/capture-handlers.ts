@@ -41,6 +41,7 @@ import {
 } from "../capture/region-selector";
 import { captureRegion, captureScreen, captureWindow } from "../capture/screencapture";
 import { displayScaleFactorForId } from "../capture/display-density";
+import { planExtentMask } from "../capture/extent-mask";
 import { guardScreenCapture } from "../capture/screen-permission-gate";
 import {
   CapturesLocationFallbackError,
@@ -488,13 +489,22 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
         scheduleDockReclaim();
       };
       try {
+        const pickedExtents = selection.extents;
+        const maskToExtents =
+          pickedExtents !== undefined &&
+          pickedExtents.length > 0 &&
+          selection.outputMode !== "rectangle";
         // Defense in depth: pure Window mode has no display/region fallback.
         // Main validates the renderer against the current candidate allowlist;
         // keep the consumer fail-closed too so a malformed integration can
         // never fall through to a snapshot crop or persistence path.
         if (
           selectorMode === "window" &&
-          (selection.fullWindow !== true || typeof selection.snappedWindowId !== "number")
+          !(
+            (selection.fullWindow === true &&
+              typeof selection.snappedWindowId === "number") ||
+            (pickedExtents !== undefined && pickedExtents.length > 1)
+          )
         ) {
           log.warn("capture:interactive rejected invalid window selection", {
             mode,
@@ -509,6 +519,13 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
             kind: "capture",
             code: "invalid_window_selection",
             message: "Window capture requires a selected window."
+          });
+        }
+
+        if (selection.fullWindow === true && maskToExtents) {
+          log.warn("selector sent fullWindow with extents; masking wins", {
+            extentCount: pickedExtents.length,
+            snappedWindowId: selection.snappedWindowId
           });
         }
 
@@ -538,7 +555,9 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
         //     time.
         const snapshot = getLastWindowListSnapshot();
         const captureResult =
-          selection.fullWindow === true && selection.snappedWindowId !== undefined
+          selection.fullWindow === true &&
+          selection.snappedWindowId !== undefined &&
+          !maskToExtents
             ? await captureWindow(selection.snappedWindowId)
             : committedCropPath !== undefined
               ? {
@@ -547,7 +566,18 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
                   displayId: selection.displayId
                 }
               : screenSnapshotId !== undefined
-                ? await cropSelectorSnapshot(screenSnapshotId, selection.rect, selection.displayId)
+                ? maskToExtents
+                  ? await cropSelectorSnapshotExtents(
+                      screenSnapshotId,
+                      selection.rect,
+                      pickedExtents,
+                      selection.displayId
+                    )
+                  : await cropSelectorSnapshot(
+                      screenSnapshotId,
+                      selection.rect,
+                      selection.displayId
+                    )
                 : {
                     ok: false as const,
                     reason: "error" as const,
@@ -617,11 +647,24 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
               Math.min(selection.rect.x + selection.rect.w, bx + display.bounds.width) - clampedX;
             const clampedH =
               Math.min(selection.rect.y + selection.rect.h, by + display.bounds.height) - clampedY;
-            cursorLayer = await resolveCursorLayerForRect(
-              cursorSamplePromise,
-              { x: clampedX, y: clampedY, w: clampedW, h: clampedH },
-              display.scaleFactor
-            );
+            const cursorPoint = maskToExtents ? await cursorSamplePromise : null;
+            const cursorInKeptPixels =
+              !maskToExtents ||
+              cursorPoint === null ||
+              pickedExtents.some(
+                (extent) =>
+                  cursorPoint.posX >= extent.x &&
+                  cursorPoint.posX <= extent.x + extent.w &&
+                  cursorPoint.posY >= extent.y &&
+                  cursorPoint.posY <= extent.y + extent.h
+              );
+            if (cursorInKeptPixels) {
+              cursorLayer = await resolveCursorLayerForRect(
+                cursorSamplePromise,
+                { x: clampedX, y: clampedY, w: clampedW, h: clampedH },
+                display.scaleFactor
+              );
+            }
           }
         }
         const persisted = await persistAndBroadcast(captureResult.tempPath, sourceApp, {
@@ -1287,6 +1330,36 @@ async function cropSelectorSnapshot(
   return cropScreenSnapshot(snapshot.filePath, rect, displayId);
 }
 
+/** Consume and extent-mask the legacy frozen-screen representation. The
+ * renderer-owned strategy already applies this mask while encoding its
+ * committed crop, so only the registered full-frame fallback comes here. */
+async function cropSelectorSnapshotExtents(
+  snapshotId: string,
+  rect: Rect,
+  extents: readonly Rect[],
+  displayId: number
+): Promise<
+  | { ok: true; tempPath: string; displayId: number }
+  | { ok: false; reason: "validation" | "error"; message: string }
+> {
+  const snapshot = getSnapshot(snapshotId);
+  if (snapshot === null) {
+    return {
+      ok: false,
+      reason: "error",
+      message: "frozen screen snapshot was released before commit"
+    };
+  }
+  if (snapshot.displayId !== displayId) {
+    return {
+      ok: false,
+      reason: "validation",
+      message: `snapshot display mismatch: expected ${snapshot.displayId}, got ${displayId}`
+    };
+  }
+  return cropScreenSnapshotExtents(snapshot.filePath, rect, extents, displayId);
+}
+
 /**
  * Crop the frozen-screen snapshot at `rect`. The snapshot is in
  * PHYSICAL pixels (logical * display.scaleFactor); `rect` is in
@@ -1313,45 +1386,177 @@ async function cropScreenSnapshot(
   if (rect.w <= 0 || rect.h <= 0) {
     return { ok: false, reason: "validation", message: "rect.w and rect.h must be positive" };
   }
-  const scale = display.scaleFactor;
-  // Translate global → snapshot-local logical px. The snapshot
-  // covers display.bounds, so subtract bounds.{x,y}.
-  const localX = rect.x - display.bounds.x;
-  const localY = rect.y - display.bounds.y;
-  // Logical → physical px. The snapshot file is at physical
-  // resolution (e.g. 3840×2160 for a 1920×1080@2x display).
-  const left = Math.max(0, Math.round(localX * scale));
-  const top = Math.max(0, Math.round(localY * scale));
-  const width = Math.max(1, Math.round(rect.w * scale));
-  const height = Math.max(1, Math.round(rect.h * scale));
+  const scaleError = degenerateScaleMessage(display.scaleFactor);
+  if (scaleError !== null) {
+    return { ok: false, reason: "validation", message: scaleError };
+  }
 
   try {
+    // Geometry via `planExtentMask` with the rect as its own single
+    // extent, so the plain crop and the masked crop share ONE rounding
+    // rule and ONE clamping rule. They used to have two, and the copy
+    // living here was the un-fixed one: it derived the far edge as
+    // `round(left) + round(w)` (a fractional-scale seam), clamped the
+    // origin to `width - 1` while the far edge clamped to `width` (a
+    // 1-px sliver for a box wholly off-screen, instead of an error),
+    // and had no zero-scale guard. Because the HUD's Windows/Rectangle
+    // toggle routes between the two functions, the same pick could
+    // produce two different images depending on which was selected.
+    const meta = await sharp(snapshotPath).metadata();
+    const plan = planExtentMask({
+      rect,
+      extents: [rect],
+      displayOrigin: { x: display.bounds.x, y: display.bounds.y },
+      scaleFactor: display.scaleFactor,
+      snapshot: { width: meta.width ?? 0, height: meta.height ?? 0 }
+    });
+    if (plan === null) {
+      return {
+        ok: false,
+        reason: "validation",
+        message: "rect does not overlap the captured display"
+      };
+    }
     const dir = await mkdtemp(join(tmpdir(), "pwrsnap-crop-"));
     const tempPath = join(dir, `${Date.now()}.png`);
-    const img = sharp(snapshotPath);
-    const meta = await img.metadata();
-    // Clamp the extract rect to the snapshot's actual physical
-    // dimensions. Even one pixel of overrun makes sharp throw.
-    const maxW = meta.width ?? Number.MAX_SAFE_INTEGER;
-    const maxH = meta.height ?? Number.MAX_SAFE_INTEGER;
-    const clampedLeft = Math.min(left, maxW - 1);
-    const clampedTop = Math.min(top, maxH - 1);
-    const clampedW = Math.min(width, maxW - clampedLeft);
-    const clampedH = Math.min(height, maxH - clampedTop);
-    await sharp(snapshotPath)
-      .extract({
-        left: clampedLeft,
-        top: clampedTop,
-        width: clampedW,
-        height: clampedH
-      })
-      .png()
-      .toFile(tempPath);
+    await sharp(snapshotPath).extract(plan.box).png().toFile(tempPath);
     return { ok: true, tempPath, displayId };
   } catch (cause) {
     log.warn("snapshot crop failed", {
       message: cause instanceof Error ? cause.message : String(cause),
       rect,
+      displayId
+    });
+    return {
+      ok: false,
+      reason: "error",
+      message: cause instanceof Error ? cause.message : String(cause)
+    };
+  }
+}
+
+/**
+ * A display can report a zero / non-finite `scaleFactor` during a
+ * hot-plug or metrics-changed race. `planExtentMask` rejects it, but
+ * every one of its null returns collapses to a single caller message,
+ * so the failure surfaced as "no extent overlapped the captured
+ * region" — pointing triage at the user's pick instead of at display
+ * metrics. Returns null when the factor is usable.
+ */
+function degenerateScaleMessage(scaleFactor: number): string | null {
+  if (!Number.isFinite(scaleFactor) || scaleFactor <= 0) {
+    return `display reported an unusable scale factor: ${String(scaleFactor)}`;
+  }
+  return null;
+}
+
+/**
+ * Multi-window crop: the union box of `extents`, with everything
+ * OUTSIDE those extents transparent.
+ *
+ * This is a mask over the frozen screen, not a per-window capture. Each
+ * extent is a plain rectangle on the snapshot, so whatever was
+ * composited on top of a picked window at freeze time comes along —
+ * exactly what the picker showed under its dim mask. Fetching a
+ * window's own backing buffer (so it can be captured through an
+ * occluder) is a different feature and deliberately not this one.
+ *
+ * The geometry lives in `planExtentMask` (capture/extent-mask.ts) so it
+ * can be tested without sharp; this function is the I/O around it.
+ * Returns the same envelope as `cropScreenSnapshot` so the caller path
+ * stays identical.
+ */
+async function cropScreenSnapshotExtents(
+  snapshotPath: string,
+  rect: Rect,
+  extents: readonly Rect[],
+  displayId: number
+): Promise<
+  | { ok: true; tempPath: string; displayId: number }
+  | { ok: false; reason: "validation" | "error"; message: string }
+> {
+  const display = screen.getAllDisplays().find((d) => d.id === displayId);
+  if (display === undefined) {
+    return { ok: false, reason: "validation", message: `unknown display id: ${displayId}` };
+  }
+  // Same rect precondition the single-rect crop enforces. Without it a
+  // degenerate union box falls through to the extent check below and
+  // gets reported as a bad PICK, sending triage at the wrong thing.
+  if (rect.w <= 0 || rect.h <= 0) {
+    return { ok: false, reason: "validation", message: "rect.w and rect.h must be positive" };
+  }
+  const scaleError = degenerateScaleMessage(display.scaleFactor);
+  if (scaleError !== null) {
+    return { ok: false, reason: "validation", message: scaleError };
+  }
+
+  try {
+    // Dimensions come from the PNG header, NOT from decoding the frame.
+    // The first version decoded the whole display into a raw RGBA
+    // Buffer (~59 MB at 5120×2880, ~81 MB at 6K) and then extracted
+    // every layer out of it into its OWN buffer, holding all of them
+    // until `composite` ran. That is O(N) full-size buffers in the main
+    // process, on the latency path the user watches, and
+    // MAX_SELECTOR_EXTENTS caps the COUNT of extents, not their area —
+    // so a handful of maximized picks reached hundreds of MB and the
+    // 64-extent ceiling reached multiple GB.
+    const meta = await sharp(snapshotPath).metadata();
+    const plan = planExtentMask({
+      rect,
+      extents,
+      displayOrigin: { x: display.bounds.x, y: display.bounds.y },
+      scaleFactor: display.scaleFactor,
+      snapshot: { width: meta.width ?? 0, height: meta.height ?? 0 }
+    });
+    if (plan === null) {
+      return {
+        ok: false,
+        reason: "validation",
+        message: "no extent overlapped the captured region"
+      };
+    }
+
+    // One alpha mask for the whole canvas instead of one buffer per
+    // extent: opaque inside the kept rectangles, transparent between
+    // them. `dest-in` keeps the base wherever the mask is opaque, which
+    // is union-shaped — overlapping picks reinforce rather than cancel,
+    // the same reason the picker's preview uses an SVG <mask> and not
+    // an even-odd path. Cost is now box-sized and flat in N.
+    const { width: boxW, height: boxH } = plan.box;
+    const mask = Buffer.alloc(boxW * boxH * 4, 0);
+    for (const layer of plan.layers) {
+      const runBytes = layer.extract.width * 4;
+      for (let row = 0; row < layer.extract.height; row += 1) {
+        const start = ((layer.top + row) * boxW + layer.left) * 4;
+        // Every channel is 0xff inside a kept rectangle, so one byte
+        // fill per row covers RGB and alpha together.
+        mask.fill(255, start, start + runBytes);
+      }
+    }
+
+    const dir = await mkdtemp(join(tmpdir(), "pwrsnap-crop-"));
+    const tempPath = join(dir, `${Date.now()}.png`);
+    await sharp(snapshotPath)
+      .extract(plan.box)
+      .ensureAlpha()
+      .composite([
+        {
+          input: mask,
+          raw: { width: boxW, height: boxH, channels: 4 },
+          blend: "dest-in"
+        }
+      ])
+      // palette:false forces 32-bit truecolor+alpha. An 8-bit colormap
+      // would quantize the kept pixels AND is the same trap compose-tree
+      // documents for exports.
+      .png({ palette: false })
+      .toFile(tempPath);
+    return { ok: true, tempPath, displayId };
+  } catch (cause) {
+    log.warn("snapshot extent crop failed", {
+      message: cause instanceof Error ? cause.message : String(cause),
+      rect,
+      extentCount: extents.length,
       displayId
     });
     return {

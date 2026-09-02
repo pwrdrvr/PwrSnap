@@ -39,6 +39,7 @@ import {
   selectorDisplayMediaStrategy,
   type SelectorDisplayMediaStrategy
 } from "./selector-display-media";
+import { isExtentRect, MAX_SELECTOR_EXTENTS } from "./extent-mask";
 import { hideTrayPopoverIfVisible } from "../tray";
 import { setFloatOverState, ensureFloatOverTopmost } from "../float-over";
 import { hotkeyRecorderSuspension } from "../hotkeys/hotkey-recorder-suspension-instance";
@@ -280,6 +281,21 @@ export type SelectorResult =
        *  `settings.recording.videoCaptureCursor`). Undefined for image
        *  captures, which don't consume it yet (Phase 3). */
       captureCursor?: boolean;
+      /** Multi-window pick. One entry per picked window's EXTENT, in
+       *  the same GLOBAL logical-px space as `rect` (the display offset
+       *  is applied to both together, below).
+       *
+       *  `rect` is always the union bounding box of these extents, so
+       *  every consumer that predates multi-select — validateRect,
+       *  source-app resolution, cursor-layer placement, the recording
+       *  entry point — keeps working untouched. Only the crop step
+       *  reads `extents`. */
+      extents?: { x: number; y: number; w: number; h: number }[];
+      /** What to keep inside the union box. `"windows"` masks it down
+       *  to `extents` (transparent elsewhere); `"rectangle"` keeps the
+       *  whole box, which is what the picker has always produced.
+       *  Only meaningful alongside `extents`. */
+      outputMode?: "windows" | "rectangle";
     }
   | {
       ok: false;
@@ -1048,6 +1064,19 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
           }
           if (typeof payload.captureCursor === "boolean") {
             result.captureCursor = payload.captureCursor;
+          }
+          if (payload.extents !== undefined && payload.extents.length > 0) {
+            // Same display → global translation the union rect above
+            // gets. Keeping the two in one coordinate space is what
+            // lets the crop step express each extent as an offset
+            // inside the union box.
+            result.extents = payload.extents.map((e) => ({
+              x: e.x + offsetX,
+              y: e.y + offsetY,
+              w: e.w,
+              h: e.h
+            }));
+            result.outputMode = payload.outputMode ?? "windows";
           }
           closeRendererFrameSession(lifecycle, false);
           resolver(result);
@@ -2790,6 +2819,8 @@ function isSelectorPayload(value: unknown): value is {
   snappedWindowId?: number;
   fullWindow?: boolean;
   captureCursor?: boolean;
+  extents?: { x: number; y: number; w: number; h: number }[];
+  outputMode?: "windows" | "rectangle";
 } {
   if (value === null || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
@@ -2820,6 +2851,22 @@ function isSelectorPayload(value: unknown): value is {
     return false;
   }
   if (v.captureCursor !== undefined && typeof v.captureCursor !== "boolean") {
+    return false;
+  }
+  if (v.extents !== undefined) {
+    if (!Array.isArray(v.extents)) return false;
+    if (v.extents.length > MAX_SELECTOR_EXTENTS) return false;
+    // Indexed, not `every`: `every` SKIPS array holes, so a sparse
+    // `extents` would validate and then hand `undefined` to the crop.
+    for (let i = 0; i < v.extents.length; i += 1) {
+      if (!isExtentRect(v.extents[i])) return false;
+    }
+  }
+  if (
+    v.outputMode !== undefined &&
+    v.outputMode !== "windows" &&
+    v.outputMode !== "rectangle"
+  ) {
     return false;
   }
   return true;

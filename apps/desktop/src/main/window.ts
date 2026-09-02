@@ -68,10 +68,10 @@ const hotCpuProfilerSyncHandlers = new Map<number, (reason: string) => void>();
 type MenuVisibility = "visible" | "hidden";
 
 /**
- * macOS traffic-light (stoplight) inset for every `hiddenInset` window we open
- * — Library, Settings, Sizzle, and the document windows. Both numbers are
- * DERIVED from the chrome bar those windows share, not eyeballed. Re-derive
- * them here if that bar changes; don't nudge them to taste.
+ * macOS traffic-light (stoplight) inset for every window that spreads
+ * `platformWindowChrome()`. Both numbers are DERIVED from the chrome bar those
+ * windows share, not eyeballed. Re-derive them here if that bar changes; don't
+ * nudge them to taste.
  *
  * A macOS button is a 14pt frame on a 23pt pitch, so the group is 60pt wide
  * and ends at `x + 60`.
@@ -88,12 +88,25 @@ type MenuVisibility = "visible" | "hidden";
  * (52 - 14) / 2 = 19, and 18 sits 1pt high — the same tolerance every other
  * app on macOS ships with, and unchanged from what PwrSnap already had.
  *
+ * Five of the six consumers render one of those bars: Library (`.psl`),
+ * Settings (`.pss`), Sizzle (`.szl`), the document windows and the logs
+ * window (both `.ps-doc`). **The local-agent consent window is the exception**
+ * — it has no chrome bar at all (a centred column with 52px of top padding, no
+ * drag region), so the buttons float over plain background there and the
+ * derivation above does not describe it. That is tolerated, not overlooked: if
+ * that window ever grows a title bar, the inset needs re-deriving against it.
+ *
  * History: `x` was 20 from the 2026-05 build-out and never re-derived, which
  * left the buttons 4pt past the rail. Measured against a standalone
  * `hiddenInset` window: first-button left 20 → 16, pitch 23 and top 18
- * unchanged. Pinned by `macos-traffic-light-position.test.ts`.
+ * unchanged. Pinned by `macos-traffic-light-position.test.ts`, which also
+ * fails if a seventh window starts consuming this without being classified.
+ *
+ * Frozen because it is handed out by reference to every `BrowserWindow`
+ * constructor — `as const` is compile-time only, so without this one stray
+ * write would move the buttons on every window opened afterwards.
  */
-export const MACOS_TRAFFIC_LIGHT_POSITION = { x: 16, y: 18 } as const;
+export const MACOS_TRAFFIC_LIGHT_POSITION = Object.freeze({ x: 16, y: 18 });
 
 function platformWindowChrome(menu: MenuVisibility): BrowserWindowConstructorOptions {
   if (process.platform === "win32") {

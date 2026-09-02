@@ -7,8 +7,8 @@ const log = getMainLogger("pwrsnap:bundle-filename-settings");
 
 export async function readBundleFilenameTimestampZone(): Promise<FilenameTimestampZone> {
   try {
-    const settings = await getDesktopSettingsStore().read();
-    return settings.storage.filenameTimestampZone;
+    const storage = await getDesktopSettingsStore().readDomain("storage");
+    return storage.filenameTimestampZone;
   } catch (cause) {
     log.warn("falling back to local bundle filename timestamps", {
       message: cause instanceof Error ? cause.message : String(cause)

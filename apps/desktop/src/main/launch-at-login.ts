@@ -377,8 +377,8 @@ export async function installLaunchAtLoginSync(): Promise<void> {
   const service = getDesktopSettingsStore();
   const applier = createLaunchAtLoginApplier();
   try {
-    const settings = await service.read();
-    if (settings.general.launchAtLogin) {
+    const general = await service.readDomain("general");
+    if (general.launchAtLogin) {
       applier.apply(true);
     } else {
       applier.seed(false);

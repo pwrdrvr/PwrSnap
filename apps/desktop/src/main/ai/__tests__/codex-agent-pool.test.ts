@@ -5,6 +5,7 @@ import {
   listCodexModelsFromPool,
   runCodexOneShotFromPool
 } from "../codex-agent-pool";
+import { __setDesktopSettingsStoreForTests } from "../../settings/desktop-settings-store";
 
 type MockCodexThreadClient = {
   startThread: ReturnType<typeof vi.fn>;
@@ -39,10 +40,51 @@ const mockResolveCodexCommand = vi.hoisted(() =>
     })
   )
 );
+const mockDiscoverCodexCommands = vi.hoisted(() =>
+  vi.fn(async ({ configuredCommand }: { configuredCommand?: string } = {}) => {
+    const command = configuredCommand ?? "codex";
+    return {
+      selectedCommand: command,
+      selectedSource: configuredCommand === undefined ? "path" : "config",
+      candidates: [
+        {
+          command,
+          source: configuredCommand === undefined ? "path" : "config",
+          executable: true,
+          selected: true,
+          version: "0.144.0"
+        }
+      ]
+    };
+  })
+);
+
+vi.mock("electron", () => ({
+  app: {
+    getPath: () => "/tmp/pwrsnap-codex-agent-pool-settings",
+    getVersion: () => "1.0.0"
+  },
+  BrowserWindow: { getAllWindows: () => [] }
+}));
 
 vi.mock("../../settings/codex-discovery", () => ({
   assertCodexCliVersion: mockAssertCodexCliVersion,
-  resolveCodexCommand: mockResolveCodexCommand
+  compareCodexCliVersions: () => 0,
+  discoverCodexCommands: mockDiscoverCodexCommands,
+  MINIMUM_CODEX_CLI_VERSION: "0.144.0",
+  probeCodexAuth: vi.fn(async () => ({
+    status: "authenticated",
+    testedAt: "2026-09-01T00:00:00.000Z",
+    durationMs: 1
+  })),
+  resolveCodexCommand: mockResolveCodexCommand,
+  selectResolvedCodexCommand: (
+    discovery: { candidates: Array<{ command: string; source: string; selected: boolean }> },
+    fallback: string
+  ) => {
+    const selected = discovery.candidates.find((candidate) => candidate.selected);
+    return selected ?? { command: fallback, source: "path" };
+  }
 }));
 
 // The enrichment sandbox denies escalations at ERROR level with the run +
@@ -107,6 +149,7 @@ vi.mock("@pwrdrvr/agent-client", () => {
 
 afterEach(async () => {
   await closeCodexAgentPool();
+  __setDesktopSettingsStoreForTests(null);
   mockCodexThreadClients.length = 0;
   vi.clearAllMocks();
   mockLogger.error.mockClear();
@@ -139,9 +182,16 @@ describe("Codex agent pool", () => {
   });
 
   test("probes the command resolved by discovery in auto mode", async () => {
-    mockResolveCodexCommand.mockResolvedValueOnce({
-      command: "/Applications/ChatGPT.app/Contents/Resources/codex",
-      source: "application"
+    mockDiscoverCodexCommands.mockResolvedValueOnce({
+      selectedCommand: "/Applications/ChatGPT.app/Contents/Resources/codex",
+      selectedSource: "application",
+      candidates: [{
+        command: "/Applications/ChatGPT.app/Contents/Resources/codex",
+        source: "application",
+        executable: true,
+        selected: true,
+        version: "0.144.0"
+      }]
     });
     const view = acquireCodexAgentBackendView({
       command: "codex",
@@ -151,8 +201,8 @@ describe("Codex agent pool", () => {
 
     await view.startThread();
 
-    expect(mockResolveCodexCommand).toHaveBeenCalledWith({
-      command: "codex",
+    expect(mockDiscoverCodexCommands).toHaveBeenCalledWith({
+      configuredCommand: undefined,
       env: { CODEX_HOME: "/tmp/pwrsnap-codex-pool-discovery-test" }
     });
     expect(mockAssertCodexCliVersion).toHaveBeenCalledWith(

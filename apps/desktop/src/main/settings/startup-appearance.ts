@@ -12,14 +12,12 @@
 //
 // BrowserWindow construction is synchronous. Normal startup hydrates the
 // process-owned settings store before any user window is created, so repeated
-// window opens read its current immutable snapshot. The direct sync read is a
-// narrow fallback for an exceptional pre-hydration window only.
+// window opens read its current immutable snapshot. An exceptional
+// pre-hydration window uses the shipped system-theme default; it must not
+// bypass the store with a second raw file parser.
 
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { app, nativeTheme } from "electron";
+import { nativeTheme } from "electron";
 import type { AppearanceTheme } from "@pwrsnap/shared";
-import { isAppearanceTheme } from "@pwrsnap/shared";
 import { serializeAppearanceArg } from "@pwrsnap/shared/appearance-arg";
 import { getDesktopSettingsStore } from "./desktop-settings-store";
 
@@ -32,36 +30,8 @@ export const STARTUP_BG_DARK = "#000000";
  *  `--bg-app` in the `:root[data-theme="light"]` override block. */
 export const STARTUP_BG_LIGHT = "#ffffff";
 
-function settingsFilePath(): string {
-  // `app.getPath("userData")` is only valid after `app` is ready. Every
-  // call site (window factories) is reached inside `app.whenReady()`,
-  // so this is safe.
-  return join(app.getPath("userData"), "pwrsnap-settings.json");
-}
-
 function readPersistedTheme(): AppearanceTheme {
-  const cached = getDesktopSettingsStore().getCurrentSnapshot();
-  if (cached !== null) return cached.appearance.theme;
-
-  const filePath = settingsFilePath();
-  if (!existsSync(filePath)) return "system";
-  let raw: string;
-  try {
-    raw = readFileSync(filePath, "utf8");
-  } catch {
-    return "system";
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return "system";
-  }
-  if (typeof parsed !== "object" || parsed === null) return "system";
-  const appearance = (parsed as { appearance?: unknown }).appearance;
-  if (typeof appearance !== "object" || appearance === null) return "system";
-  const theme = (appearance as { theme?: unknown }).theme;
-  return isAppearanceTheme(theme) ? theme : "system";
+  return getDesktopSettingsStore().getCurrentDomain("appearance")?.theme ?? "system";
 }
 
 /**

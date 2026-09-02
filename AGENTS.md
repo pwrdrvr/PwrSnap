@@ -992,7 +992,8 @@ Rules:
   Never `fs.writeFile` to the final path directly — a crash mid-write
   corrupts the file. Same rule for `pwrsnap-secrets.bin`.
 - **One immutable settings snapshot per main process.** Every production
-  consumer gets `getDesktopSettingsStore()`; do not construct a private
+  consumer gets `getDesktopSettingsStore()`; only
+  `desktop-settings-store.ts` may import the raw
   `DesktopSettingsService`. The first startup read hydrates + freezes one
   snapshot, concurrent cold reads coalesce, and hot-path `read()` calls never
   reopen or reparse `pwrsnap-settings.json`. Successful writes replace the
@@ -1003,10 +1004,11 @@ Rules:
   promote fallback defaults into a writable snapshot when a valid settings
   file may only be temporarily unreadable.
   Neither mechanism caches secret plaintext. The synchronous process-role
-  peek is intentionally pre-service; BrowserWindow appearance uses the store
-  and reads directly only as an exceptional pre-hydration fallback.
-- **Serialized writes.** `DesktopSettingsService.write()` awaits an
-  internal promise chain so two concurrent renderer patches don't
+  peek is the sole raw-read exception because role resolution precedes
+  `app.whenReady()`; a pre-hydration BrowserWindow uses the system-theme
+  default rather than parsing the file behind the store.
+- **Serialized writes.** `DesktopSettingsStore.write()` delegates to the
+  internal persistence queue so two concurrent renderer patches don't
   interleave snapshot updates. Use the same pattern in `DesktopSecretStore`. The
   queue uses `.catch(() => undefined).then(task)` so a rejected write
   doesn't run the next task on the rejection branch.
@@ -1045,10 +1047,17 @@ Rules:
   never `executeJavaScript`.** Use `EVENT_CHANNELS.settingsNavigate`
   (or add a new channel) — string interpolation into renderer JS is a
   sandbox crack.
-- **Codex discovery cache invalidates on `codex.*` writes.** The 30s
-  in-memory snapshot cache must be cleared inside the write task when
-  `patch.codex !== undefined`. Without this, the "Using" badge lies
-  for up to 30s after pinning a path.
+- **Installed-agent discovery is store-owned and event-driven.** Only
+  `desktop-settings-store.ts` may import `discoverCodexCommands` or
+  `discoverLocalAcpAgentInstances`. Codex publications are keyed by command +
+  relevant environment; ACP publications are keyed per provider by enablement,
+  override, platform, architecture, and PATH inputs. Automatic reads from
+  Library, Float-Over, Settings, chat, model listing, runtime launch, and
+  capture enrichment reuse those immutable publications. Same-key concurrent
+  refreshes are single-flight. A settings dependency change invalidates only
+  its fingerprint; an explicit Refresh passes `force: true`. Never reintroduce
+  a TTL/focus-triggered machine scan or direct discovery fallback outside the
+  store. The source-boundary test pins this rule.
 
 What this substrate is **not for**: ephemeral renderer state (sidebar
 expanded/collapsed, last-selected capture id), per-capture metadata

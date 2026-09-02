@@ -21,7 +21,6 @@ import {
   AcpAgentClient,
   AcpAgentClientPool,
   AcpConnection,
-  discoverLocalAcpAgentInstances,
   strategyByBackendId,
   strategyById,
   type DiscoveredAcpAgent,
@@ -33,6 +32,7 @@ import { acpDiscoveryOptionsForEnabledAgent } from "./acp-enabled-discovery";
 import { PWRSNAP_CLIENT_NAME, PWRSNAP_CLIENT_TITLE, toAgentKitLogger } from "./agent-kit-bindings";
 import { makePooledAcpApprovalHandler } from "./acp-approval-policy";
 import { agentScratchJail } from "./enrichment-sandbox";
+import { getDesktopSettingsStore } from "../settings/desktop-settings-store";
 
 let pool: AcpAgentClientPool | undefined;
 
@@ -141,7 +141,10 @@ export async function resolveEnabledAcpAgent(input: {
   const { settings, agentId } = input;
   const discoveryOptions = acpDiscoveryOptionsForEnabledAgent(settings, agentId);
   if (discoveryOptions === null) return null;
-  const discover = input.discover ?? discoverLocalAcpAgentInstances;
+  if (input.discover === undefined) {
+    return getDesktopSettingsStore().resolveEnabledAcpAgent(agentId, settings);
+  }
+  const discover = input.discover;
   const groups = await discover(discoveryOptions);
   const group = groups.find((g) => g.strategyId === agentId);
   if (group === undefined || group.instances.length === 0) return null;

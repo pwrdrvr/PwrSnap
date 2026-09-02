@@ -1100,10 +1100,9 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
       }
       // Codex availability depends only on `settings.codex` (the
       // discovery inputs), so gate the refresh on that slice changing.
-      // Re-dispatching on EVERY broadcast used to re-trigger a full
-      // discovery pass (child spawns) whenever the main-side 30s cache
-      // had lapsed — grid-zoom writes, rail pins, and secret updates
-      // all paid it.
+      // Re-dispatching on EVERY broadcast used to re-trigger full discovery
+      // work before discovery became an event-driven store publication —
+      // grid-zoom writes, rail pins, and secret updates all paid it.
       const codexSlice = JSON.stringify(evt.settings.codex);
       if (lastCodexSettingsRef.current !== codexSlice) {
         lastCodexSettingsRef.current = codexSlice;
@@ -1129,31 +1128,18 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
       cancelled = true;
     };
   }, []);
-  // Probe ACP install status ONLY when an ACP agent is the enrichment backend
-  // — Codex availability needs no ACP discovery, and `acp:discover` spawns
-  // real `--version` probes (no handler cache), so we don't want it firing on
-  // every unrelated settings write (rail pin/tab) or per-capture.
-  //
-  // Two triggers, both gated on an ACP backend so Codex users never probe:
-  //   • provider change — re-resolve the moment the user picks a new backend.
-  //   • window 'focus' — a CLI can be installed (or removed) while the app
-  //     runs, with no settings write to observe. Re-probing when the Library
-  //     regains focus picks that up the moment the user returns from Settings
-  //     or a terminal, so the footer stops saying "Configure AI" without
-  //     needing a relaunch. At most one probe per focus.
+  // Read ACP install status only when an ACP agent is the enrichment backend.
+  // Provider changes consume the current store publication; installing or
+  // removing a CLI is picked up by explicit Settings Refresh or relaunch.
+  // Window focus must never become an implicit machine scan.
   useEffect(() => {
     if (!enrichmentProvider.startsWith("acp:")) return;
     let cancelled = false;
-    const probe = (): void => {
-      void dispatch("acp:discover", {}).then((result) => {
-        if (!cancelled && result.ok) setAcpDiscovery(result.value);
-      });
-    };
-    probe();
-    window.addEventListener("focus", probe);
+    void dispatch("acp:discover", {}).then((result) => {
+      if (!cancelled && result.ok) setAcpDiscovery(result.value);
+    });
     return () => {
       cancelled = true;
-      window.removeEventListener("focus", probe);
     };
   }, [enrichmentProvider]);
   // All three setters mark `userTouchedRailRef` synchronously BEFORE

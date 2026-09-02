@@ -5,12 +5,12 @@ import type { CaptureLatencyTrace } from "./capture-latency-trace";
 import { sampleCursor, type CursorSample } from "./cursor-sample";
 
 type CursorCaptureSettingsDependencies = {
-  readSettings: () => Promise<Settings>;
+  readRecordingSettings: () => Promise<Settings["recording"]>;
   sample: () => Promise<CursorSample | null>;
 };
 
 const productionDependencies: CursorCaptureSettingsDependencies = {
-  readSettings: () => getDesktopSettingsStore().read(),
+  readRecordingSettings: () => getDesktopSettingsStore().readDomain("recording"),
   sample: sampleCursor
 };
 
@@ -26,8 +26,8 @@ export function startCursorSampleIfEnabled(
     const settingsStage = trace?.begin("settings_read");
     let enabled = false;
     try {
-      const settings = await dependencies.readSettings();
-      enabled = settings.recording.imageCaptureCursor;
+      const recording = await dependencies.readRecordingSettings();
+      enabled = recording.imageCaptureCursor;
       if (settingsStage !== undefined) {
         trace?.end(settingsStage, { outcome: "read", cursorEnabled: enabled });
       }

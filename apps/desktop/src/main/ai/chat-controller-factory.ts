@@ -18,7 +18,6 @@ import type {
 import type { AgentBackend, NormalizedApprovalDecision } from "@pwrdrvr/agent-core";
 import {
   AcpAgentClient,
-  discoverLocalAcpAgentInstances,
   strategyByBackendId,
   type AcpMcpServerConfig,
   type DiscoveredAcpAgent,
@@ -53,6 +52,7 @@ import {
 import { toAgentKitLogger, PWRSNAP_SERVICE_NAME } from "./agent-kit-bindings";
 import type { ChatApprovalBroker } from "./chat-approval-broker";
 import type { ChatThreadAccess } from "./chat-thread-access";
+import { getDesktopSettingsStore } from "../settings/desktop-settings-store";
 import { PwrSnapChatSessionController } from "./chat-session-controller";
 
 type InterruptAcknowledgement = (threadId: string) => Promise<void>;
@@ -339,7 +339,6 @@ async function resolveChatBackend(
     );
   }
 
-  const discover = deps.discoverAcpAgentInstances ?? discoverLocalAcpAgentInstances;
   const strategy = strategyByBackendId(provider);
   if (strategy === undefined) {
     throw new Error(
@@ -354,7 +353,6 @@ async function resolveChatBackend(
   // active instance (override → picked → first) is resolved by the SAME helper
   // the discovery handler uses, so the spawned binary matches the "Using" badge.
   const settings = await config.readSettings();
-  const pref = settings.ai.acp.agents?.[strategyId];
   const discoveryOptions = acpDiscoveryOptionsForEnabledAgent(settings, strategyId);
   if (discoveryOptions === null) {
     throw new Error(
@@ -363,9 +361,38 @@ async function resolveChatBackend(
     );
   }
 
-  let groups: DiscoveredAcpAgentGroup[];
+  let agent: DiscoveredAcpAgent | null;
   try {
-    groups = await discover(discoveryOptions);
+    if (deps.discoverAcpAgentInstances === undefined) {
+      agent = await getDesktopSettingsStore().resolveEnabledAcpAgent(
+        strategyId,
+        settings
+      );
+    } else {
+      const groups = await deps.discoverAcpAgentInstances(discoveryOptions);
+      const group = groups.find(
+        (candidate) =>
+          candidate.backendId === provider || candidate.strategyId === strategyId
+      );
+      if (group === undefined || group.instances.length === 0) {
+        agent = null;
+      } else {
+        const active = resolveActiveAcpInstance(
+          group.instances,
+          settings.ai.acp.agents?.[strategyId]
+        );
+        agent = {
+          strategyId: group.strategyId,
+          backendId: group.backendId,
+          name: group.name,
+          command: active.command,
+          args: group.args,
+          env: group.env,
+          discoveredAt: group.discoveredAt,
+          ...(active.version !== undefined ? { version: active.version } : {})
+        };
+      }
+    }
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : String(cause);
     throw new Error(
@@ -374,27 +401,13 @@ async function resolveChatBackend(
         "Check its configuration in Settings → AI or choose another provider."
     );
   }
-  const group = groups.find(
-    (g) => g.backendId === provider || g.strategyId === strategyId
-  );
-  if (group === undefined || group.instances.length === 0) {
+  if (agent === null) {
     throw new Error(
       `Configured chat provider "${provider}" is unavailable because ` +
         `${strategy.displayName} is not installed or could not be found. ` +
         "Install or configure it in Settings → AI, or choose another provider."
     );
   }
-  const active = resolveActiveAcpInstance(group.instances, pref);
-  const agent: DiscoveredAcpAgent = {
-    strategyId: group.strategyId,
-    backendId: group.backendId,
-    name: group.name,
-    command: active.command,
-    args: group.args,
-    env: group.env,
-    discoveredAt: group.discoveredAt,
-    ...(active.version !== undefined ? { version: active.version } : {})
-  };
   const makeAcp = deps.makeAcpClient ?? defaultMakeAcpClient;
   // Pin the ACP session to an app-owned scratch jail so the agent doesn't scan
   // the app/repo tree for "workspace context" (the cause of the multi-second

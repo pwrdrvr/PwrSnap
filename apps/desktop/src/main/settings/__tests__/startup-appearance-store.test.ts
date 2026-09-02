@@ -21,11 +21,13 @@ vi.mock("electron", () => ({
 }));
 
 import {
-  DesktopSettingsService,
   defaultSettings,
   mergeSettings
 } from "../desktop-settings-service";
-import { __setDesktopSettingsStoreForTests } from "../desktop-settings-store";
+import {
+  DesktopSettingsStore,
+  __setDesktopSettingsStoreForTests
+} from "../desktop-settings-store";
 import { getStartupBackgroundColor } from "../startup-appearance";
 
 afterEach(() => {
@@ -39,7 +41,7 @@ describe("startup appearance settings store wiring", () => {
       appearance: { theme: "light" }
     });
     const readTextFile = vi.fn(async () => JSON.stringify(light));
-    const store = new DesktopSettingsService({
+    const store = new DesktopSettingsStore({
       filePath: join(mocks.userData, "pwrsnap-settings.json"),
       readTextFile
     });
@@ -49,7 +51,11 @@ describe("startup appearance settings store wiring", () => {
     // If startup-appearance bypassed the store, this external dark value
     // would be observed by the next BrowserWindow construction.
     const dark = mergeSettings(light, { appearance: { theme: "dark" } });
-    writeFileSync(store.getFilePath(), JSON.stringify(dark), "utf8");
+    writeFileSync(
+      join(mocks.userData, "pwrsnap-settings.json"),
+      JSON.stringify(dark),
+      "utf8"
+    );
 
     expect(getStartupBackgroundColor()).toBe("#ffffff");
     expect(getStartupBackgroundColor()).toBe("#ffffff");
@@ -58,7 +64,7 @@ describe("startup appearance settings store wiring", () => {
 
   test("a relayed trusted snapshot updates later window construction without disk I/O", async () => {
     const readTextFile = vi.fn(async () => JSON.stringify(defaultSettings()));
-    const store = new DesktopSettingsService({
+    const store = new DesktopSettingsStore({
       filePath: "/tmp/pwrsnap-startup-appearance-store-test/settings.json",
       readTextFile
     });

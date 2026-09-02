@@ -1944,7 +1944,10 @@ export function bootstrapApp(): void {
       // Agent/combined only — codex is agent-owned.
       const dispatchStartupCodexProbe = (): void => {
         void bus
-          .dispatch("settings:refreshCodexDiscovery", { force: true }, { principal: "ipc" })
+          // Automatic startup refresh participates in the same provider
+          // publication as renderer mounts. If Library/Float-Over already
+          // populated it, this is an in-memory read rather than a second scan.
+          .dispatch("settings:refreshCodexDiscovery", { force: false }, { principal: "ipc" })
           .then((result) => {
             if (!result.ok) {
               log.warn("startup Codex readiness probe failed", {

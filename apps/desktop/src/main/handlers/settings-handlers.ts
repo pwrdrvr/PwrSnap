@@ -41,7 +41,6 @@ import {
 } from "../local-agents/local-agent-grants";
 import { LocalAgentAuditService } from "../local-agents/local-agent-audit";
 import { LocalAgentUsageService } from "../local-agents/local-agent-usage";
-import { DesktopSettingsService } from "../settings/desktop-settings-service";
 import {
   HotkeyRegistrationError,
   HOTKEY_KINDS,
@@ -49,6 +48,8 @@ import {
   type HotkeyRegistrationCoordinator
 } from "../hotkeys/hotkey-registration-manager";
 import {
+  DesktopSettingsStore,
+  type DesktopSettingsStoreApi,
   __setDesktopSettingsStoreForTests,
   getDesktopSettingsStore
 } from "../settings/desktop-settings-store";
@@ -66,7 +67,15 @@ import {
 
 const log = getMainLogger("pwrsnap:settings-handlers");
 
-let settingsService: DesktopSettingsService | null = null;
+type SettingsHandlerStore = Pick<
+  DesktopSettingsStoreApi,
+  "read" | "write" | "withSerializedSettings"
+> &
+  Partial<
+    Pick<DesktopSettingsStore, "getCodexDiscoverySnapshot" | "testCodex">
+  >;
+
+let settingsService: SettingsHandlerStore | null = null;
 let secretStore: DesktopSecretStore | null = null;
 let localAgentGrantService: LocalAgentGrantService | null = null;
 let localAgentAuditService: LocalAgentAuditService | null = null;
@@ -75,7 +84,7 @@ let hotkeyRegistrationManager: HotkeyRegistrationCoordinator | null = null;
 let shortcutPlatformForTests: ShortcutPlatform | null = null;
 
 function ensureServices(): {
-  service: DesktopSettingsService;
+  service: SettingsHandlerStore;
   secrets: DesktopSecretStore;
 } {
   if (settingsService === null) {
@@ -91,20 +100,22 @@ function ensureServices(): {
 }
 
 export function getDesktopSettingsServices(): {
-  service: DesktopSettingsService;
+  service: SettingsHandlerStore;
   secrets: DesktopSecretStore;
 } {
   return ensureServices();
 }
 
 export function __setSettingsServicesForTests(injected: {
-  service?: DesktopSettingsService | null;
+  service?: SettingsHandlerStore | null;
   secrets?: DesktopSecretStore | null;
   usage?: LocalAgentUsageService | null;
 }): void {
   if (injected.service !== undefined) {
     settingsService = injected.service;
-    __setDesktopSettingsStoreForTests(injected.service);
+    __setDesktopSettingsStoreForTests(
+      injected.service instanceof DesktopSettingsStore ? injected.service : null
+    );
   }
   if (injected.secrets !== undefined) secretStore = injected.secrets;
   if (injected.usage !== undefined) localAgentUsageService = injected.usage;
@@ -167,7 +178,7 @@ export function onSettingsChanged(listener: MainSettingsListener): () => void {
 }
 
 async function broadcastSettingsChanged(
-  service: DesktopSettingsService,
+  service: SettingsHandlerStore,
   secrets: DesktopSecretStore,
   overrides?: { settings?: Settings }
 ): Promise<void> {
@@ -489,6 +500,9 @@ export function registerSettingsDataHandlers(options: {
     }
     const { service } = ensureServices();
     try {
+      if (service.getCodexDiscoverySnapshot === undefined) {
+        throw new Error("Codex discovery is unavailable from the injected settings test store");
+      }
       const snapshot = await service.getCodexDiscoverySnapshot({ force });
       return ok(snapshot);
     } catch (cause) {
@@ -505,6 +519,9 @@ export function registerSettingsDataHandlers(options: {
   bus.register("settings:testCodex", async () => {
     const { service } = ensureServices();
     try {
+      if (service.testCodex === undefined) {
+        throw new Error("Codex testing is unavailable from the injected settings test store");
+      }
       const result = await service.testCodex();
       return ok(result);
     } catch (cause) {

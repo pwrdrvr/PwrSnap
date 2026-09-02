@@ -37,6 +37,7 @@ import {
   defaultSettings,
   mergeSettings
 } from "../desktop-settings-service";
+import { DesktopSettingsStore } from "../desktop-settings-store";
 
 let workDir = "";
 const HOST_HOTKEY_DEFAULTS = defaultHotkeysForPlatform(
@@ -1244,13 +1245,17 @@ function stubCodexDiscovery(codexDiscovery: typeof import("../codex-discovery"))
   };
 }
 
-describe("DesktopSettingsService.getCodexDiscoverySnapshot cache invalidation", () => {
+function makeStore(): DesktopSettingsStore {
+  return new DesktopSettingsStore({ filePath: join(workDir, "settings.json") });
+}
+
+describe("DesktopSettingsStore.getCodexDiscoverySnapshot cache invalidation", () => {
   test("a codex.* write invalidates the snapshot cache so the next read reflects the new mode", async () => {
     const codexDiscovery = await import("../codex-discovery");
     const { discoverSpy, restore } = stubCodexDiscovery(codexDiscovery);
 
     try {
-      const svc = makeService();
+      const svc = makeStore();
       // Prime the cache against the default settings (mode=auto, no pin).
       const first = await svc.getCodexDiscoverySnapshot();
       // Resolution reuses the discovery snapshot — the resolved command
@@ -1281,7 +1286,7 @@ describe("DesktopSettingsService.getCodexDiscoverySnapshot cache invalidation", 
     try {
       const filePath = join(workDir, "settings.json");
       writeFileSync(filePath, JSON.stringify(defaultSettings()), "utf8");
-      const svc = new DesktopSettingsService({ filePath });
+      const svc = new DesktopSettingsStore({ filePath });
       expect((await svc.getCodexDiscoverySnapshot()).resolvedPath).toBe("codex");
 
       const external = mergeSettings(defaultSettings(), {
@@ -1304,7 +1309,7 @@ describe("DesktopSettingsService.getCodexDiscoverySnapshot cache invalidation", 
     const { discoverSpy, restore } = stubCodexDiscovery(codexDiscovery);
 
     try {
-      const svc = makeService();
+      const svc = makeStore();
       // Fire three reads before any resolves — the Library, float-over,
       // and Settings windows all refresh on the same broadcast.
       const [a, b, c] = await Promise.all([
@@ -1350,16 +1355,16 @@ describe("DesktopSettingsService.getCodexDiscoverySnapshot cache invalidation", 
     });
 
     try {
-      const svc = makeService();
+      const svc = makeStore();
       const inflight = svc.getCodexDiscoverySnapshot();
       // The write invalidates while the first computation is parked.
       await svc.write({ codex: { mode: "pinned", pinnedPath: "/opt/codex-pinned" } });
       releaseFirst();
-      // The in-flight caller still gets its (pre-write) snapshot…
-      const stale = await inflight;
-      expect(stale.resolvedPath).toBe("codex");
-      // …but the cache must NOT have kept it: the next read re-discovers
-      // and reflects the pin instead of serving the stale snapshot.
+      // A stale completion cannot publish over the newer settings
+      // fingerprint. The original caller is advanced to the current
+      // publication, and the next read reuses it.
+      const current = await inflight;
+      expect(current.resolvedPath).toBe("/opt/codex-pinned");
       const fresh = await svc.getCodexDiscoverySnapshot();
       expect(fresh.resolvedPath).toBe("/opt/codex-pinned");
     } finally {
@@ -1368,23 +1373,18 @@ describe("DesktopSettingsService.getCodexDiscoverySnapshot cache invalidation", 
   });
 });
 
-describe("DesktopSettingsService.testCodex", () => {
+describe("DesktopSettingsStore.testCodex", () => {
   test("unset when no Codex binary resolves", async () => {
-    const codexDiscovery = await import("../codex-discovery");
-    const resolveSpy = vi
-      .spyOn(codexDiscovery, "resolveCodexCommand")
-      .mockImplementation(async () => {
+    const svc = new DesktopSettingsStore({
+      filePath: join(workDir, "settings.json"),
+      discoverCodex: async () => {
         throw new Error("no codex");
-      });
-    try {
-      const svc = makeService();
-      const result = await svc.testCodex();
-      expect(result.status).toBe("unset");
-      expect(result.account).toBeNull();
-      expect(result.testedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
-    } finally {
-      resolveSpy.mockRestore();
-    }
+      }
+    });
+    const result = await svc.testCodex();
+    expect(result.status).toBe("unset");
+    expect(result.account).toBeNull();
+    expect(result.testedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 });
 

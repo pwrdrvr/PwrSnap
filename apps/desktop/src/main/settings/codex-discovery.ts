@@ -8,14 +8,15 @@
 //   • PWRSNAP_CODEX_COMMAND env-var name (the kit's codex-specific
 //     `discoverCodexCommands` hardcodes PWRDRVR_CODEX_COMMAND, so we drive the
 //     GENERIC `discoverCommands` with our own env name instead).
-//   • PwrSnap's selection/no-throw semantics: `resolveCodexCommand` falls back
-//     to the configured command (or `codex`) when discovery finds nothing.
+//   • PwrSnap's pure selection semantics fall back to the configured command
+//     (or `codex`) when discovery finds nothing. Discovery lifecycle ownership
+//     lives in DesktopSettingsStore.
 //     Discovery marks old candidates unavailable, and the App Server pool
 //     independently guards the exact command before spawning it.
 //   • `probeCodexAuth` (a `codex login status` probe) which the kit doesn't
 //     surface in this shape.
 //   • The `Desktop*` type names + `MINIMUM_CODEX_CLI_VERSION`, kept so
-//     desktop-settings-service.ts and its tests import the same names as before.
+//     desktop-settings-store.ts and its tests import the same names as before.
 //
 // Looks for the Codex binary in this priority order:
 //   1. env override (PWRSNAP_CODEX_COMMAND).
@@ -477,9 +478,9 @@ export async function discoverCodexCommands(params?: {
 }
 
 /** Pure selection over an already-computed discovery snapshot. Callers
- *  that just ran `discoverCodexCommands` (the settings-service snapshot
+ *  that just ran `discoverCodexCommands` (the settings-store snapshot
  *  path) resolve from that result instead of paying a full second
- *  discovery pass — and its child spawns — via `resolveCodexCommand`. */
+ *  discovery pass and its child spawns. */
 export function selectResolvedCodexCommand(
   discovery: DesktopCodexDiscoverySnapshot,
   fallbackCommand: string
@@ -496,17 +497,4 @@ export function selectResolvedCodexCommand(
     command: fallbackCommand.trim() || "codex",
     source: "path"
   };
-}
-
-export async function resolveCodexCommand(params: {
-  command: string;
-  env: NodeJS.ProcessEnv;
-}): Promise<ResolvedCodexCommandCandidate> {
-  const configuredCommand =
-    params.command.trim() && params.command.trim() !== "codex" ? params.command.trim() : undefined;
-  const discovery = await discoverCodexCommands({
-    configuredCommand,
-    env: params.env
-  });
-  return selectResolvedCodexCommand(discovery, params.command);
 }

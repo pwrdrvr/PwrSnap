@@ -32,9 +32,9 @@ import {
 } from "./agent-kit-bindings";
 import { getMainLogger } from "../log";
 import {
-  assertCodexCliVersion,
-  resolveCodexCommand
+  assertCodexCliVersion
 } from "../settings/codex-discovery";
+import { getDesktopSettingsStore } from "../settings/desktop-settings-store";
 import { withEffectiveCodeModeSettings } from "./codex-thread-config";
 import {
   codexEnrichmentPermissionProfile,
@@ -240,7 +240,7 @@ class CodexAgentOwner {
       this.compatibilityCheck ??
       (async () => {
         const env = this.options.env ?? process.env;
-        const resolved = await resolveCodexCommand({
+        const resolved = await getDesktopSettingsStore().resolveCodexCommand({
           command: this.options.command,
           env
         });

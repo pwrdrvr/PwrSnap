@@ -1,6 +1,7 @@
-// Process-owned settings store. The first read hydrates an immutable
-// snapshot from disk; subsequent reads stay in memory until an explicit
-// reload boundary. Reads route through an ordered legacy-shape catalog
+// Internal settings persistence adapter. DesktopSettingsStore is the sole
+// production owner. The first read hydrates an immutable snapshot from disk;
+// subsequent reads stay in memory until an explicit reload boundary. Reads
+// route through an ordered legacy-shape catalog
 // (see SHAPE_CATALOG below) so schema growth doesn't force eager migrations
 // on read — we rewrite on the next `write`. Atomic writes serialize through
 // one promise chain and replace the snapshot only after rename succeeds.
@@ -21,11 +22,6 @@ import type {
   BlurRadiusSetting,
   BlurToolStyle,
   ChatSettings,
-  CodexTestResult,
-  DesktopCodexAuthProbe as SharedCodexAuthProbe,
-  DesktopCodexCandidateSource as SharedCodexCandidateSource,
-  DesktopCodexDiscoveryCandidate as SharedCodexCandidate,
-  DesktopCodexDiscoverySnapshot as SharedCodexSnapshot,
   EditorCoachmarks,
   EditorMatchingText,
   EditorSettings,
@@ -95,21 +91,7 @@ import {
   isUpdateTrain,
   shortcutPlatformFromString
 } from "@pwrsnap/shared";
-import {
-  compareCodexCliVersions,
-  discoverCodexCommands,
-  MINIMUM_CODEX_CLI_VERSION,
-  probeCodexAuth,
-  resolveCodexCommand,
-  selectResolvedCodexCommand
-} from "./codex-discovery";
 import { getMainLogger } from "../log";
-import { execAgentCommand } from "../ai/agent-command";
-
-/** Per-probe timeout for Codex `--version` in `testCodex`. Mirrors
- *  PwrAgnt's `DEFAULT_PROBE_TIMEOUT_MS`. */
-const CODEX_TEST_TIMEOUT_MS = 7500;
-const ERROR_MESSAGE_LIMIT = 240;
 const LEGACY_ENRICHMENT_DEFAULT_MODEL = "gpt-5.4-mini";
 const DEFAULTS_MIGRATION_VERSIONS: readonly string[] = [
   "1.0.0-beta.26",
@@ -156,6 +138,11 @@ export type DesktopSettingsWriteOptions = {
 export type SerializedSettingsOperation<T> = (
   current: Settings
 ) => T | Promise<T>;
+
+export type DesktopSettingsIoDiagnostics = Readonly<{
+  fileReads: number;
+  atomicWrites: number;
+}>;
 
 export function defaultSettings(
   shortcutPlatform: ShortcutPlatform = shortcutPlatformFromString(process.platform)
@@ -1430,24 +1417,6 @@ const SHAPE_CATALOG: readonly ShapeEntry[] = [
   { shape: "v1", parse: parseV1 }
 ];
 
-// Translate the desktop-side discovery candidate shape into the shared
-// shape exposed to the renderer.
-function toSharedCandidate(input: {
-  command: string;
-  source: SharedCodexCandidateSource;
-  executable: boolean;
-  version?: string | undefined;
-}): SharedCodexCandidate {
-  return {
-    path: input.command,
-    source: input.source,
-    version: input.version ?? null,
-    available: input.executable
-  };
-}
-
-const CODEX_DISCOVERY_CACHE_TTL_MS = 30_000;
-
 export class DesktopSettingsService {
   private readonly filePath: string;
   private readonly log: Logger;
@@ -1468,23 +1437,8 @@ export class DesktopSettingsService {
    *  current immutable snapshot immediately; a mutation publishes its next
    *  snapshot only after the atomic file rename succeeds. */
   private writeQueue: Promise<unknown> = Promise.resolve();
-
-  private codexSnapshotCache:
-    | { snapshot: SharedCodexSnapshot; computedAt: number }
-    | null = null;
-
-  /** In-flight snapshot computation. Concurrent non-forced readers (the
-   *  Library, float-over, and Settings windows all refresh on the same
-   *  settings broadcast) piggyback on it instead of each spawning their
-   *  own discovery pass. */
-  private codexSnapshotInflight: Promise<SharedCodexSnapshot> | null = null;
-
-  /** Bumped whenever a `codex.*` write invalidates the cache. A
-   *  computation started under an older epoch still returns its snapshot
-   *  to its caller but must not populate the cache — otherwise a write
-   *  landing mid-computation would be shadowed by stale results for up
-   *  to the cache TTL. */
-  private codexSnapshotEpoch = 0;
+  private fileReadCount = 0;
+  private atomicWriteCount = 0;
 
   constructor(config: DesktopSettingsServiceConfig) {
     this.filePath = config.filePath;
@@ -1521,6 +1475,13 @@ export class DesktopSettingsService {
     return this.snapshot;
   }
 
+  readIoDiagnostics(): DesktopSettingsIoDiagnostics {
+    return Object.freeze({
+      fileReads: this.fileReadCount,
+      atomicWrites: this.atomicWriteCount
+    });
+  }
+
   /** Adopt a trusted snapshot delivered by the owning process. Split-mode
    *  library uses this on the settings-changed bridge event so synchronous
    *  window/menu consumers stay current without reading the shared file.
@@ -1528,7 +1489,6 @@ export class DesktopSettingsService {
   applyExternalSnapshot(settings: Settings): Settings {
     const normalized = this.normalizeForSnapshot(settings);
     const current = this.replaceSnapshot(normalized);
-    this.invalidateCodexSnapshotCache();
     return current;
   }
 
@@ -1571,13 +1531,13 @@ export class DesktopSettingsService {
         await this.hydrationInflight;
       }
       const settings = await this.loadFromDisk();
-      this.invalidateCodexSnapshotCache();
       return settings;
     };
     return this.enqueue(task);
   }
 
   private async loadFromDisk(): Promise<Settings> {
+    this.fileReadCount += 1;
     let raw: string;
     try {
       raw = await this.readTextFile(this.filePath);
@@ -1694,14 +1654,6 @@ export class DesktopSettingsService {
       // shape immediately, then finalize the already-staged external state.
       this.replaceSnapshot(normalized);
       prepared?.commit();
-      // Invalidate the Codex discovery cache whenever a write touches
-      // `codex.*`. Otherwise the snapshot's `resolvedPath` (computed
-      // from `settings.codex.{mode, pinnedPath}` at snapshot time)
-      // can lag the just-written settings by up to 30s, so the AI
-      // Providers "Using" badge sticks to the prior choice after a
-      // pin. Only invalidate on success so a rejected write doesn't
-      // force an extra (uncached) discovery on the next read.
-      if (patch.codex !== undefined) this.invalidateCodexSnapshotCache();
       return deepFreeze(merged);
     };
 
@@ -1721,171 +1673,6 @@ export class DesktopSettingsService {
     const next = this.writeQueue.catch(() => undefined).then(task);
     this.writeQueue = next.catch(() => undefined);
     return next;
-  }
-
-  /**
-   * Returns the current Codex CLI discovery snapshot in the shared
-   * shape the renderer consumes. Cached for 30s by default — Codex
-   * discovery shells out to `/usr/bin/which` + executes each candidate
-   * with `--version`, and the renderer's page-mount call shouldn't
-   * pay that on every navigation. The Refresh button passes
-   * `force: true` to bypass the cache.
-   */
-  async getCodexDiscoverySnapshot(opts?: { force?: boolean }): Promise<SharedCodexSnapshot> {
-    const force = opts?.force === true;
-    if (!force && this.codexSnapshotCache !== null) {
-      const age = Date.now() - this.codexSnapshotCache.computedAt;
-      if (age < CODEX_DISCOVERY_CACHE_TTL_MS) {
-        return this.codexSnapshotCache.snapshot;
-      }
-    }
-    // Coalesce concurrent readers onto the in-flight computation —
-    // every open window refreshes on the same settings broadcast, and
-    // without this each one would spawn its own discovery pass the
-    // moment the cache lapses. A forced refresh always starts fresh
-    // (and becomes the in-flight pass others piggyback on).
-    if (!force && this.codexSnapshotInflight !== null) {
-      return this.codexSnapshotInflight;
-    }
-
-    const compute = this.computeCodexDiscoverySnapshot(this.codexSnapshotEpoch);
-    this.codexSnapshotInflight = compute;
-    try {
-      return await compute;
-    } finally {
-      if (this.codexSnapshotInflight === compute) {
-        this.codexSnapshotInflight = null;
-      }
-    }
-  }
-
-  private async computeCodexDiscoverySnapshot(epoch: number): Promise<SharedCodexSnapshot> {
-    const settings = await this.read();
-    const pinnedCommand =
-      settings.codex.mode === "pinned" && settings.codex.pinnedPath !== ""
-        ? settings.codex.pinnedPath
-        : undefined;
-    const discovery = await discoverCodexCommands({
-      configuredCommand: pinnedCommand,
-      env: process.env
-    });
-    // The shared shape exposes only path/source/version/available — no
-    // "selected" flag. The renderer compares each candidate's path to
-    // `resolvedPath` to draw the "Using" badge.
-    const candidates: SharedCodexCandidate[] = discovery.candidates.map((c) =>
-      toSharedCandidate(c)
-    );
-
-    // Resolution selects from the discovery pass we just ran. This used
-    // to call `resolveCodexCommand`, which internally re-runs a FULL
-    // second discovery — doubling the candidate `--version` spawns on
-    // every uncached snapshot.
-    const resolved = selectResolvedCodexCommand(discovery, pinnedCommand ?? "codex");
-    let resolvedPath: string | null = null;
-    let auth: SharedCodexAuthProbe | null = null;
-    const resolvedCandidate = candidates.find(
-      (candidate) => candidate.available && candidate.path === resolved.command
-    );
-    if (resolvedCandidate !== undefined) {
-      resolvedPath = resolved.command;
-      auth = await probeCodexAuth(resolved.command, process.env);
-    }
-
-    const snapshot: SharedCodexSnapshot = {
-      candidates,
-      resolvedPath,
-      auth,
-      refreshedAt: new Date().toISOString()
-    };
-    if (epoch === this.codexSnapshotEpoch) {
-      this.codexSnapshotCache = { snapshot, computedAt: Date.now() };
-    }
-    return snapshot;
-  }
-
-  private invalidateCodexSnapshotCache(): void {
-    this.codexSnapshotEpoch += 1;
-    this.codexSnapshotCache = null;
-    this.codexSnapshotInflight = null;
-  }
-
-  /**
-   * Spawn the currently-resolved Codex binary with `--version`, parse
-   * the banner, and version-check against `MINIMUM_CODEX_CLI_VERSION`.
-   * Mirrors PwrAgnt's `CredentialTester.testCodex` shape so a future
-   * lift of the tester arrives at the same protocol.
-   */
-  async testCodex(): Promise<CodexTestResult> {
-    const startedAt = Date.now();
-    const settings = await this.read();
-    let resolvedCommand: string | null = null;
-    try {
-      const resolved = await resolveCodexCommand({
-        command:
-          settings.codex.mode === "pinned" && settings.codex.pinnedPath !== ""
-            ? settings.codex.pinnedPath
-            : "codex",
-        env: process.env
-      });
-      resolvedCommand = resolved.command;
-    } catch {
-      resolvedCommand = null;
-    }
-
-    if (resolvedCommand === null) {
-      return {
-        status: "unset",
-        testedAt: new Date().toISOString(),
-        durationMs: Date.now() - startedAt,
-        account: null
-      };
-    }
-
-    const probeStart = Date.now();
-    try {
-      const { stdout, stderr } = await execAgentCommand(resolvedCommand, ["--version"], {
-        env: process.env,
-        timeoutMs: CODEX_TEST_TIMEOUT_MS
-      });
-      const durationMs = Date.now() - probeStart;
-      const testedAt = new Date().toISOString();
-      const output = `${stdout?.toString() ?? ""}\n${stderr?.toString() ?? ""}`;
-      const match = output.match(/\b(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b/);
-      if (match) {
-        const version = match[1] as string;
-        if (compareCodexCliVersions(version, MINIMUM_CODEX_CLI_VERSION) < 0) {
-          return {
-            status: "failed",
-            testedAt,
-            durationMs,
-            account: resolvedCommand,
-            errorMessage: `Codex CLI ${version} is older than the minimum supported version ${MINIMUM_CODEX_CLI_VERSION}`
-          };
-        }
-        return {
-          status: "ok",
-          testedAt,
-          durationMs,
-          account: resolvedCommand,
-          detail: version
-        };
-      }
-      return {
-        status: "failed",
-        testedAt,
-        durationMs,
-        account: resolvedCommand,
-        errorMessage: "version banner not recognized in stdout/stderr"
-      };
-    } catch (cause) {
-      return {
-        status: "failed",
-        testedAt: new Date().toISOString(),
-        durationMs: Date.now() - probeStart,
-        account: resolvedCommand,
-        errorMessage: clipError(cause)
-      };
-    }
   }
 
   // ---- internals ----
@@ -1934,6 +1721,7 @@ export class DesktopSettingsService {
     try {
       await writeFile(tmpPath, json, "utf8");
       await rename(tmpPath, this.filePath);
+      this.atomicWriteCount += 1;
     } catch (cause) {
       // Best-effort cleanup of an orphaned tmp file. If the rename
       // itself failed mid-flight (rare on POSIX), the next write
@@ -2215,16 +2003,4 @@ function mergeSection<T extends Record<string, unknown>>(
     out[key] = value;
   }
   return out as T;
-}
-
-function clipError(error: unknown): string {
-  const message =
-    error instanceof Error
-      ? error.name === "AbortError"
-        ? "request timed out"
-        : error.message
-      : String(error);
-  return message.length <= ERROR_MESSAGE_LIMIT
-    ? message
-    : `${message.slice(0, ERROR_MESSAGE_LIMIT - 1)}…`;
 }

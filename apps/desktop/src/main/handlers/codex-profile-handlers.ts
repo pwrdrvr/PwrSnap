@@ -43,7 +43,7 @@ import type {
 import { openExternal, toAgentKitLogger } from "../ai/agent-kit-bindings";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
-import { resolveCodexCommand } from "../settings/codex-discovery";
+import { getDesktopSettingsStore } from "../settings/desktop-settings-store";
 import {
   validateCodexProfileCreate,
   validateCodexProfileLogin
@@ -71,7 +71,7 @@ async function resolveCommandForSettings(settings: Settings): Promise<string> {
       ? settings.codex.pinnedPath
       : "codex";
   try {
-    const resolved = await resolveCodexCommand({
+    const resolved = await getDesktopSettingsStore().resolveCodexCommand({
       command: configured,
       env: process.env
     });

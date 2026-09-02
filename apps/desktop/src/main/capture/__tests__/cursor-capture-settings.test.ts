@@ -22,10 +22,12 @@ vi.mock("../cursor-sample", () => ({
 }));
 
 import {
-  DesktopSettingsService,
   defaultSettings
 } from "../../settings/desktop-settings-service";
-import { __setDesktopSettingsStoreForTests } from "../../settings/desktop-settings-store";
+import {
+  DesktopSettingsStore,
+  __setDesktopSettingsStoreForTests
+} from "../../settings/desktop-settings-store";
 import { startCursorSampleIfEnabled } from "../cursor-capture-settings";
 
 afterEach(() => {
@@ -37,7 +39,7 @@ afterEach(() => {
 describe("image-capture settings hot path", () => {
   test("three repeated capture entries perform one disk read and zero discovery passes", async () => {
     const readTextFile = vi.fn(async () => JSON.stringify(defaultSettings()));
-    const store = new DesktopSettingsService({
+    const store = new DesktopSettingsStore({
       filePath: "/tmp/pwrsnap-cursor-settings-test/pwrsnap-settings.json",
       readTextFile
     });

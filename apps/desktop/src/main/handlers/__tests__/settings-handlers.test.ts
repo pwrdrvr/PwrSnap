@@ -551,8 +551,8 @@ describe("settings:* validation", () => {
 
   test("E2E suppresses automatic Codex discovery but permits an explicit forced probe", async () => {
     const originalE2E = process.env.PWRSNAP_E2E;
-    const { DesktopSettingsService } = await import(
-      "../../settings/desktop-settings-service"
+    const { DesktopSettingsStore } = await import(
+      "../../settings/desktop-settings-store"
     );
     const explicitSnapshot = {
       candidates: [],
@@ -561,7 +561,7 @@ describe("settings:* validation", () => {
       refreshedAt: "2026-08-03T00:00:00.000Z"
     };
     const discovery = vi
-      .spyOn(DesktopSettingsService.prototype, "getCodexDiscoverySnapshot")
+      .spyOn(DesktopSettingsStore.prototype, "getCodexDiscoverySnapshot")
       .mockResolvedValue(explicitSnapshot);
 
     process.env.PWRSNAP_E2E = "1";

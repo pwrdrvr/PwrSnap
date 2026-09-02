@@ -63,6 +63,18 @@ import {
 const HASH_PARAM_DISPLAY_ID = "displayId";
 const NUDGE_PX = 1;
 const NUDGE_PX_SHIFT = 10;
+
+type SelectorPresentationRequest = {
+  invocationId: string;
+  generation: number;
+  screenUrl: string;
+};
+
+type SelectorPresentationRaf = {
+  first: number | null;
+  second: number | null;
+  generation: number;
+};
 // Escape de-dupe window. A single physical Esc can be delivered twice
 // near-simultaneously — once via the focused renderer keydown and once
 // via the forwarded globalShortcut IPC. handleEscape() ignores a second
@@ -268,6 +280,12 @@ export function RegionSelector() {
   // past threshold redraws. The flag only tells the mouseup which case
   // it is — there is nothing to restore.
   const discardingRef = useRef(false);
+  const decodedScreenUrlRef = useRef<string | null>(null);
+  const presentationRequestRef = useRef<SelectorPresentationRequest | null>(null);
+  const presentationRafRef = useRef<SelectorPresentationRaf | null>(null);
+  const tryStartPresentationAckRef = useRef<(request: SelectorPresentationRequest) => void>(
+    () => undefined
+  );
 
   // Write the guide-line positions directly. `x` drives the vertical
   // line's left; `y` drives the horizontal line's top. Reads only the
@@ -288,6 +306,66 @@ export function RegionSelector() {
     positionCrosshair(window.innerWidth / 2, window.innerHeight / 2);
     // positionCrosshair only reads stable refs; safe to omit from deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Diagnostic-only visibility proof. Main sends the request strictly after
+  // BrowserWindow show/focus/moveTop. Two renderer frame barriers ensure a
+  // paint opportunity has passed before we acknowledge. A newer generation
+  // cancels older callbacks so a reused pre-warmed renderer cannot emit a
+  // stale acknowledgement for a superseded invocation.
+  useLayoutEffect(() => {
+    const cancelPending = (): void => {
+      const pending = presentationRafRef.current;
+      if (pending === null) return;
+      if (pending.first !== null) cancelAnimationFrame(pending.first);
+      if (pending.second !== null) cancelAnimationFrame(pending.second);
+      presentationRafRef.current = null;
+    };
+    tryStartPresentationAckRef.current = (request): void => {
+      if (decodedScreenUrlRef.current !== request.screenUrl) return;
+      if (presentationRequestRef.current?.generation !== request.generation) return;
+      const state: SelectorPresentationRaf = {
+        first: null,
+        second: null,
+        generation: request.generation
+      };
+      presentationRafRef.current = state;
+      state.first = requestAnimationFrame(() => {
+        if (
+          presentationRafRef.current?.generation !== request.generation ||
+          presentationRequestRef.current?.generation !== request.generation ||
+          decodedScreenUrlRef.current !== request.screenUrl
+        ) {
+          return;
+        }
+        state.first = null;
+        state.second = requestAnimationFrame(() => {
+          if (
+            presentationRafRef.current?.generation !== request.generation ||
+            presentationRequestRef.current?.generation !== request.generation ||
+            decodedScreenUrlRef.current !== request.screenUrl
+          ) {
+            return;
+          }
+          presentationRafRef.current = null;
+          presentationRequestRef.current = null;
+          window.pwrsnapApi?.notifySelectorPresented(request);
+        });
+      });
+    };
+    const unsubscribe = window.pwrsnapApi?.onSelectorPresentationRequest(
+      (request) => {
+        cancelPending();
+        presentationRequestRef.current = request;
+        tryStartPresentationAckRef.current(request);
+      }
+    );
+    return () => {
+      cancelPending();
+      presentationRequestRef.current = null;
+      tryStartPresentationAckRef.current = () => undefined;
+      unsubscribe?.();
+    };
   }, []);
 
   shiftRef.current = shiftHeld;
@@ -333,6 +411,9 @@ export function RegionSelector() {
   useLayoutEffect(() => {
     const unsub = window.pwrsnapApi?.onSelectorMode((payload) => {
       setMode(payload.mode);
+      if (decodedScreenUrlRef.current !== payload.screenUrl) {
+        decodedScreenUrlRef.current = null;
+      }
       setScreenUrl(payload.screenUrl ?? null);
       setIntent(payload.intent ?? "snap");
       // Re-seed the cursor toggle from the persisted default each show
@@ -1719,7 +1800,14 @@ export function RegionSelector() {
           // never revealed as an empty transparent overlay (which would
           // flash the live screen behind it). Fires while the window is
           // still hidden — onLoad doesn't require a visible paint.
-          onLoad={() => window.pwrsnapApi?.notifySelectorSnapshotPainted(screenUrl)}
+          onLoad={() => {
+            decodedScreenUrlRef.current = screenUrl;
+            window.pwrsnapApi?.notifySelectorSnapshotPainted(screenUrl);
+            const request = presentationRequestRef.current;
+            if (request?.screenUrl === screenUrl) {
+              tryStartPresentationAckRef.current(request);
+            }
+          }}
           style={{
             position: "fixed",
             inset: 0,

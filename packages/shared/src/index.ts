@@ -31,3 +31,4 @@ export * from "./export-ladder";
 export * from "./local-agent-policy";
 export * from "./desktop-platform";
 export * from "./shortcut-semantics";
+export * from "./capture-invocation";

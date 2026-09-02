@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   desktopFileManagerName,
+  type CaptureInvocationOrigin,
   type CaptureRecord,
   type HotkeyRegistrationStatusSnapshot,
   type HotkeySettingKey
@@ -14,7 +15,13 @@ import { useHotkeys } from "../shared/useHotkeys";
 import { VideoExportPresetsPanel } from "../shared/VideoExportPresetsPanel";
 import { useSurfaceCopyShortcuts } from "../shared/useSurfaceCopyShortcuts";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
-import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
+import {
+  cacheUrl,
+  captureSrcUrl,
+  dispatch,
+  dispatchInteractiveCapture,
+  startCaptureDrag
+} from "../../lib/pwrsnap";
 import { copyImagePreset, copyImagePresetPath } from "../../lib/clipboard-copy";
 import { useLibrary } from "../../lib/useLibrary";
 import {
@@ -373,8 +380,11 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
     };
   }, []);
 
-  const onCapture = (mode: "auto" | "region" | "window" | "timed"): void => {
-    void dispatch("capture:interactive", { mode });
+  const onCapture = (
+    origin: CaptureInvocationOrigin,
+    mode: "auto" | "region" | "window" | "timed"
+  ): void => {
+    void dispatchInteractiveCapture(origin, mode);
   };
   const onCaptureFullScreen = (): void => {
     // Omit displayId so main resolves to the display the cursor is on.
@@ -470,7 +480,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
       <button
         className="ps-tray__quick"
         type="button"
-        onClick={() => onCapture("auto")}
+        onClick={() => onCapture("tray.quick_capture", "auto")}
       >
         <span className="ps-tray__quick-l">
           <span className="ps-tray__quick-eyebrow">Quick Capture</span>
@@ -513,11 +523,11 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
         {MODES.map((m) => {
           const hk = liveHkFor[m.id];
           const tileClick = (() => {
-            if (m.id === "region") return () => onCapture("region");
-            if (m.id === "window") return () => onCapture("window");
+            if (m.id === "region") return () => onCapture("tray.region", "region");
+            if (m.id === "window") return () => onCapture("tray.window", "window");
             if (m.id === "full") return onCaptureFullScreen;
             if (m.id === "all") return onCaptureAllScreens;
-            if (m.id === "timed") return () => onCapture("timed");
+            if (m.id === "timed") return () => onCapture("tray.timed", "timed");
             return undefined;
           })();
           return (

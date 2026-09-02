@@ -30,6 +30,7 @@ import { isExtentRect, MAX_SELECTOR_EXTENTS } from "./extent-mask";
 import { hideTrayPopoverIfVisible } from "../tray";
 import { setFloatOverState, ensureFloatOverTopmost } from "../float-over";
 import { hotkeyRecorderSuspension } from "../hotkeys/hotkey-recorder-suspension-instance";
+import type { CaptureLatencyTrace } from "./capture-latency-trace";
 
 const MIN_AREA_PX = 400; // 20×20 — anything smaller isn't a meaningful snap target.
 const SELECTOR_WINDOW_TITLE = "PwrSnap Region Selector";
@@ -48,14 +49,45 @@ let displayListenersAttached = false;
 /** The capture currently waiting for its snapshot to paint before the
  *  selector is shown. Resolved by the SELECTOR_PAINTED_CHANNEL ack
  *  (matching screenUrl) or by its own timeout. */
-let pendingPaintWait: { screenUrl: string; resolve: () => void } | null = null;
+let pendingPaintWait: {
+  screenUrl: string;
+  resolve: () => void;
+  trace?: CaptureLatencyTrace;
+} | null = null;
+
+type PendingPresentation = {
+  invocationId: string;
+  generation: number;
+  screenUrl: string;
+  senderId: number;
+  trace: CaptureLatencyTrace;
+};
+
+let pendingPresentation: PendingPresentation | null = null;
+let selectorPresentationGeneration = 0;
+
+function finishPendingPresentation(
+  outcome: "cancel" | "destroy",
+  reason: string,
+  senderId?: number
+): void {
+  const pending = pendingPresentation;
+  if (pending === null) return;
+  if (senderId !== undefined && pending.senderId !== senderId) return;
+  pendingPresentation = null;
+  pending.trace.finish(outcome, { reason, generation: pending.generation });
+}
 
 /**
  * Resolve once the renderer acks that the snapshot for `screenUrl` has
  * painted, or after `timeoutMs` — whichever comes first. Never rejects.
  * A new wait supersedes any previous one (the older capture is moot).
  */
-function waitForSnapshotPainted(screenUrl: string, timeoutMs: number): Promise<void> {
+function waitForSnapshotPainted(
+  screenUrl: string,
+  timeoutMs: number,
+  trace?: CaptureLatencyTrace
+): Promise<void> {
   if (pendingPaintWait !== null) {
     const stale = pendingPaintWait;
     pendingPaintWait = null;
@@ -72,7 +104,11 @@ function waitForSnapshotPainted(screenUrl: string, timeoutMs: number): Promise<v
     };
     const settleResolve = finish;
     const timer = setTimeout(finish, timeoutMs);
-    pendingPaintWait = { screenUrl, resolve: settleResolve };
+    pendingPaintWait = {
+      screenUrl,
+      resolve: settleResolve,
+      ...(trace !== undefined ? { trace } : {})
+    };
   });
 }
 
@@ -227,6 +263,11 @@ const SELECTOR_MODE_CHANNEL = "region-selector:mode";
 // screenUrl so a late ack from a previous capture can't satisfy the
 // current wait.
 const SELECTOR_PAINTED_CHANNEL = "region-selector:painted";
+// Main → renderer after show/focus/moveTop; renderer crosses two rAF
+// boundaries then acks on SELECTOR_PRESENTED_CHANNEL. Diagnostic only:
+// unlike SELECTOR_PAINTED_CHANNEL, this never gates selector lifecycle.
+const SELECTOR_PRESENTATION_REQUEST_CHANNEL = "region-selector:presentation-request";
+const SELECTOR_PRESENTED_CHANNEL = "region-selector:presented";
 
 /** How long to wait for the renderer's "snapshot painted" ack before
  *  showing the selector anyway. Decode of a full-screen PNG is well
@@ -299,7 +340,72 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
       if (ackedUrl !== null && ackedUrl !== pendingPaintWait.screenUrl) return;
       const waiter = pendingPaintWait;
       pendingPaintWait = null;
+      waiter.trace?.mark("renderer_signal_receipt", {
+        signal: "snapshot_painted"
+      });
+      waiter.trace?.mark("frozen_source_decode_ready", {
+        renderer: "img",
+        canvas: "not_used"
+      });
       waiter.resolve();
+    });
+    ipcMain.on(SELECTOR_PRESENTED_CHANNEL, (event, payload: unknown) => {
+      const pending = pendingPresentation;
+      if (pending === null) return;
+      const senderId =
+        typeof event === "object" &&
+        event !== null &&
+        "sender" in event &&
+        typeof (event as { sender?: { id?: unknown } }).sender?.id === "number"
+          ? (event as { sender: { id: number } }).sender.id
+          : null;
+      const invocationId =
+        typeof payload === "object" && payload !== null && "invocationId" in payload
+          ? (payload as { invocationId?: unknown }).invocationId
+          : null;
+      const generation =
+        typeof payload === "object" && payload !== null && "generation" in payload
+          ? (payload as { generation?: unknown }).generation
+          : null;
+      const screenUrl =
+        typeof payload === "object" && payload !== null && "screenUrl" in payload
+          ? (payload as { screenUrl?: unknown }).screenUrl
+          : null;
+      if (
+        senderId !== pending.senderId ||
+        invocationId !== pending.invocationId ||
+        generation !== pending.generation ||
+        screenUrl !== pending.screenUrl
+      ) {
+        log.warn("capture selector presented ack rejected", {
+          expectedInvocationId: pending.invocationId,
+          expectedGeneration: pending.generation,
+          senderMatches: senderId === pending.senderId,
+          invocationMatches: invocationId === pending.invocationId,
+          generationMatches: generation === pending.generation,
+          screenUrlMatches: screenUrl === pending.screenUrl
+        });
+        return;
+      }
+      pendingPresentation = null;
+      pending.trace.mark("renderer_signal_receipt", {
+        signal: "selector_presented",
+        authenticated: true
+      });
+      pending.trace.mark("frozen_source_decode_ready", {
+        renderer: "img",
+        canvas: "not_used",
+        proof: "presentation_ack"
+      });
+      pending.trace.mark("first_visible_paint_ack", {
+        generation: pending.generation,
+        frameBarrier: 2,
+        authenticated: true
+      });
+      pending.trace.finish("presented", {
+        generation: pending.generation,
+        frameBarrier: 2
+      });
     });
     ipcMain.on(SELECTOR_RESULT_CHANNEL, (_event, payload: unknown) => {
       // IMPORTANT: this handler does NOT hide the selector windows.
@@ -449,6 +555,8 @@ export async function pickRegion(
      *  the renderer in the mode signal; the committed value rides back
      *  on the result as `captureCursor`. */
     cursorDefault?: boolean;
+    /** Selector-based image-capture diagnostics. Omitted by video flows. */
+    latencyTrace?: CaptureLatencyTrace;
   } = {}
 ): Promise<SelectorResult> {
   const mode: SelectorMode = opts.mode ?? "auto";
@@ -456,6 +564,7 @@ export async function pickRegion(
   const protectWindowIds = opts.protectWindowIds ?? [];
   const intent = opts.intent ?? "snap";
   const cursorDefault = opts.cursorDefault;
+  const latencyTrace = opts.latencyTrace;
   const requestStartedAt = Date.now();
   const elapsedFromRequest = (): number => Date.now() - requestStartedAt;
   log.info("capture selector requested", {
@@ -464,16 +573,28 @@ export async function pickRegion(
     keepPwrSnapChrome,
     ...selectorPrewarmAgePayload()
   });
+  latencyTrace?.mark("shared_session", {
+    busy: pendingResolver !== null,
+    action: pendingResolver === null ? "acquired" : "supersede_previous"
+  });
+  const prewarmStage = latencyTrace?.begin("selector_prewarm_load");
   if (selectorWindows.size === 0) {
     preWarmRegionSelector("lazy");
   }
   if (selectorWindows.size === 0) {
+    if (prewarmStage !== undefined) {
+      latencyTrace?.end(prewarmStage, { outcome: "no_selector_windows" });
+    }
     return { ok: false, reason: "destroyed" };
   }
 
   // Route to whichever display the cursor is on right now.
   const cursor = screen.getCursorScreenPoint();
   const targetDisplay = screen.getDisplayNearestPoint(cursor);
+  latencyTrace?.mark("target_display_resolution", {
+    displayId: targetDisplay.id,
+    displayCount: screen.getAllDisplays().length
+  });
   log.info("capture selector target display resolved", {
     displayId: targetDisplay.id,
     durationFromUserRequestMs: elapsedFromRequest(),
@@ -486,9 +607,17 @@ export async function pickRegion(
     targetWindow = selectorWindows.get(targetDisplay.id);
   }
   if (targetWindow === undefined) {
+    if (prewarmStage !== undefined) {
+      latencyTrace?.end(prewarmStage, { outcome: "target_window_missing" });
+    }
     return { ok: false, reason: "destroyed" };
   }
   const targetReady = await waitForSelectorWindowLoad(targetDisplay.id, targetWindow);
+  if (prewarmStage !== undefined) {
+    latencyTrace?.end(prewarmStage, {
+      outcome: targetReady ? "ready" : "load_failed"
+    });
+  }
   if (!targetReady) {
     return { ok: false, reason: "destroyed" };
   }
@@ -523,6 +652,7 @@ export async function pickRegion(
   // in the picker. Skipping the hide also skips the 50 ms compositor
   // wait, which only mattered as a "let the hide reach the window
   // server before snapshotting" guard.
+  const chromeStage = latencyTrace?.begin("pwrsnap_chrome_protection");
   if (!keepPwrSnapChrome) {
     hideTrayPopoverIfVisible();
     setFloatOverState({ kind: "cancel" });
@@ -540,6 +670,12 @@ export async function pickRegion(
     // reach the window server before we snapshot, otherwise the
     // frozen background can race ahead of the state change.
     await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  if (chromeStage !== undefined) {
+    latencyTrace?.end(chromeStage, {
+      chromeHidden: !keepPwrSnapChrome,
+      protectedWindowCount: protectWindowIds.length
+    });
   }
 
   const displayBounds = targetDisplay.bounds;
@@ -563,6 +699,7 @@ export async function pickRegion(
   let acceptingWindowList = true;
   let selectorVisible = false;
   const windowLayoutRequestedAt = Date.now();
+  const windowEnumerationStage = latencyTrace?.begin("native_window_enumeration");
   log.info("requesting window layout info", {
     displayId: targetDisplay.id,
     durationFromUserRequestMs: elapsedFromRequest()
@@ -619,8 +756,18 @@ export async function pickRegion(
       previousAppPid = prepared.previousAppPid;
       windowListPayload = prepared.payload;
       deliverWindowListPayload(prepared.payload);
+      if (windowEnumerationStage !== undefined) {
+        latencyTrace?.end(windowEnumerationStage, {
+          outcome: "completed",
+          rawWindowCount: snapshot.windows.length,
+          candidateCount: prepared.payload.windows.length
+        });
+      }
     })
     .catch((err) => {
+      if (windowEnumerationStage !== undefined) {
+        latencyTrace?.end(windowEnumerationStage, { outcome: "failed" });
+      }
       log.warn("window-list helper failed during selector startup", {
         displayId: targetDisplay.id,
         durationMs: Date.now() - windowLayoutRequestedAt,
@@ -630,6 +777,7 @@ export async function pickRegion(
     });
 
   const screenSnapshotRequestedAt = Date.now();
+  const screenFrameStage = latencyTrace?.begin("screen_frame_acquisition");
   log.info("requesting screen snapshot", {
     displayId: targetDisplay.id,
     durationFromUserRequestMs: elapsedFromRequest()
@@ -637,6 +785,12 @@ export async function pickRegion(
   try {
     const screenSnapshot = await captureAndRegister(targetDisplay.id);
     activeScreenSnapshot = screenSnapshot;
+    if (screenFrameStage !== undefined) {
+      latencyTrace?.end(screenFrameStage, {
+        outcome: "completed",
+        displayId: targetDisplay.id
+      });
+    }
     log.info("completed screen snapshot", {
       displayId: targetDisplay.id,
       durationMs: Date.now() - screenSnapshotRequestedAt,
@@ -644,12 +798,19 @@ export async function pickRegion(
       snapshotId: screenSnapshot.id
     });
   } catch (err) {
+    if (screenFrameStage !== undefined) {
+      latencyTrace?.end(screenFrameStage, {
+        outcome: "failed",
+        displayId: targetDisplay.id
+      });
+    }
     log.warn("screen snapshot failed; selector aborted", {
       displayId: targetDisplay.id,
       durationMs: Date.now() - screenSnapshotRequestedAt,
       durationFromUserRequestMs: elapsedFromRequest(),
       message: err instanceof Error ? err.message : String(err)
     });
+    latencyTrace?.finish("error", { code: "screen_frame_acquisition_failed" });
     acceptingWindowList = false;
     void windowListPromise;
     return { ok: false, reason: "destroyed" };
@@ -683,15 +844,24 @@ export async function pickRegion(
     // empty transparent overlay for a frame, flashing the live screen
     // / desktop behind the screen-saver-level selector before the
     // snapshot landed. ("compose → load image → show in one go.")
+    const presentationGeneration =
+      latencyTrace === undefined ? undefined : ++selectorPresentationGeneration;
     const modePayload =
       activeScreenSnapshot !== null
         ? {
             mode,
             screenUrl: `pwrsnap-screen://r/${activeScreenSnapshot.id}`,
             intent,
-            cursor: cursorDefault
+            cursor: cursorDefault,
+            ...(latencyTrace !== undefined && presentationGeneration !== undefined
+              ? {
+                  invocationId: latencyTrace.invocation.id,
+                  generation: presentationGeneration
+                }
+              : {})
           }
         : null;
+    const presentationScreenUrl = modePayload?.screenUrl;
     if (!win.isDestroyed() && modePayload !== null) {
       win.webContents.send(SELECTOR_MODE_CHANNEL, modePayload);
     }
@@ -755,6 +925,34 @@ export async function pickRegion(
       // after show/focus, matching the float-over and recording HUD
       // pattern without activating PwrSnap or changing Spaces.
       win.moveTop();
+      latencyTrace?.mark("browser_window_present_calls", {
+        show: true,
+        showInactive: false,
+        focus: true,
+        webContentsFocus: true,
+        moveTop: true
+      });
+      if (
+        latencyTrace !== undefined &&
+        presentationGeneration !== undefined &&
+        presentationScreenUrl !== undefined
+      ) {
+        if (pendingPresentation !== null) {
+          finishPendingPresentation("cancel", "superseded_before_visible_ack");
+        }
+        pendingPresentation = {
+          invocationId: latencyTrace.invocation.id,
+          generation: presentationGeneration,
+          screenUrl: presentationScreenUrl,
+          senderId: win.webContents.id,
+          trace: latencyTrace
+        };
+        win.webContents.send(SELECTOR_PRESENTATION_REQUEST_CHANNEL, {
+          invocationId: latencyTrace.invocation.id,
+          generation: presentationGeneration,
+          screenUrl: presentationScreenUrl
+        });
+      }
       log.info("capture selector displayed", {
         displayId: targetDisplay.id,
         durationFromDisplayRequestedMs: Date.now() - displayRequestedAt,
@@ -779,7 +977,11 @@ export async function pickRegion(
     if (modePayload === null) {
       reveal();
     } else {
-      void waitForSnapshotPainted(modePayload.screenUrl, SHOW_AFTER_PAINT_TIMEOUT_MS).then(reveal);
+      void waitForSnapshotPainted(
+        modePayload.screenUrl,
+        SHOW_AFTER_PAINT_TIMEOUT_MS,
+        latencyTrace
+      ).then(reveal);
     }
   });
   acceptingWindowList = false;
@@ -791,6 +993,19 @@ export async function pickRegion(
     reason: result.ok ? "completed" : result.reason,
     durationFromUserRequestMs: elapsedFromRequest()
   });
+  if (latencyTrace !== undefined && !latencyTrace.isFinished()) {
+    latencyTrace.finish(
+      result.ok ? "destroy" : result.reason === "destroyed" ? "destroy" : "cancel",
+      {
+        reason: result.ok
+          ? "selection_completed_before_visible_ack"
+          : result.reason
+      }
+    );
+    if (pendingPresentation?.trace === latencyTrace) {
+      pendingPresentation = null;
+    }
+  }
   return result;
 }
 
@@ -1222,6 +1437,11 @@ function hideAllSelectors(): void {
   const rebuildAfterHide: { displayId: number; staleWindow: BrowserWindow }[] = [];
   for (const [displayId, win] of selectorWindows) {
     if (win.isDestroyed()) continue;
+    finishPendingPresentation(
+      "destroy",
+      "selector_hidden_before_visible_ack",
+      win.webContents.id
+    );
     // Order: leave overlay → blur → hide.
     // On macOS a screen-saver-level always-on-top window that just
     // calls `hide()` can leave the OS still routing keyboard input
@@ -1417,6 +1637,14 @@ function createSelectorWindow(
     }
   });
   window.setTitle(SELECTOR_WINDOW_TITLE);
+  const selectorSenderId = window.webContents.id;
+  window.on("closed", () => {
+    finishPendingPresentation(
+      "destroy",
+      "selector_window_closed_before_visible_ack",
+      selectorSenderId
+    );
+  });
 
   // Highest-of-windows ordering — clears menu bar / other overlays.
   window.setAlwaysOnTop(true, "screen-saver");
@@ -1702,6 +1930,7 @@ function isSelectorPayload(value: unknown): value is {
 }
 
 export function disposeRegionSelector(): void {
+  finishPendingPresentation("destroy", "selector_disposed_before_visible_ack");
   for (const win of selectorWindows.values()) {
     if (!win.isDestroyed()) win.destroy();
   }
@@ -1715,6 +1944,7 @@ export function disposeRegionSelector(): void {
   if (resultListenerAttached) {
     ipcMain.removeAllListeners(SELECTOR_RESULT_CHANNEL);
     ipcMain.removeAllListeners(SELECTOR_PAINTED_CHANNEL);
+    ipcMain.removeAllListeners(SELECTOR_PRESENTED_CHANNEL);
     resultListenerAttached = false;
   }
 }

@@ -10,6 +10,30 @@
 import type { BundleLayerNode } from "./bundle-manifest-schema-v2";
 import type { CaptureEnrichment, SuggestedTag, AiRunStatus } from "./ai-enrichment-schemas";
 
+export type CaptureInvocationOrigin =
+  | "global_hotkey.quick_capture"
+  | "global_hotkey.region"
+  | "global_hotkey.window"
+  | "global_hotkey.timed"
+  | "library.quick_capture"
+  | "tray.quick_capture"
+  | "tray.region"
+  | "tray.window"
+  | "tray.timed"
+  | "native_tray_menu.quick_capture";
+
+/** Required identity and trigger clocks for one selector-based image capture. */
+export type CaptureInvocation = {
+  id: string;
+  origin: CaptureInvocationOrigin;
+  /** Performance-clock timestamp sampled at the initiating callback. */
+  triggerMonotonicMs: number;
+  /** Performance-clock timestamp immediately before command-bus dispatch. */
+  dispatchMonotonicMs: number;
+  /** ISO wall time for correlating this trace with unrelated system logs only. */
+  triggerWallTime: string;
+};
+
 export type Rect = { x: number; y: number; w: number; h: number };
 
 export type CaptureRecord = {
@@ -3445,7 +3469,10 @@ export type Commands = {
    *     takes focus.
    */
   "capture:interactive": {
-    req: { mode?: "auto" | "region" | "window" | "timed" };
+    req: {
+      mode?: "auto" | "region" | "window" | "timed";
+      invocation: CaptureInvocation;
+    };
     res: CaptureRecord;
   };
   /**

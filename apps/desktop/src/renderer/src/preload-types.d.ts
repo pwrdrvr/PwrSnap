@@ -64,6 +64,18 @@ declare global {
         outputMode?: "windows" | "rectangle";
       }): void;
       notifySelectorSnapshotPainted(screenUrl: string): void;
+      notifySelectorPresented(payload: {
+        invocationId: string;
+        generation: number;
+        screenUrl: string;
+      }): void;
+      onSelectorPresentationRequest(
+        handler: (payload: {
+          invocationId: string;
+          generation: number;
+          screenUrl: string;
+        }) => void
+      ): () => void;
       onWindowListSnapshot(
         handler: (payload: {
           windows: WindowSnapEntry[];
@@ -78,6 +90,8 @@ declare global {
           screenUrl?: string;
           intent?: "snap" | "video";
           cursor?: boolean;
+          invocationId?: string;
+          generation?: number;
         }) => void
       ): () => void;
       requestTrayResize(payload: { width: number; height: number }): void;

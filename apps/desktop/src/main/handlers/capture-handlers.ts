@@ -23,7 +23,12 @@ import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { clipboard, screen } from "electron";
 import sharp from "sharp";
-import { ok, err, PASTE_IMAGE_MAX_BYTES } from "@pwrsnap/shared";
+import {
+  ok,
+  err,
+  isCaptureInvocation,
+  PASTE_IMAGE_MAX_BYTES
+} from "@pwrsnap/shared";
 import type {
   CapturePresetMetric,
   CaptureRecord,
@@ -86,6 +91,7 @@ import {
   UnsafePastedFileError
 } from "../security/assertSafePastedFile";
 import { validateSafeRgbaRasterDimensions } from "../image/safe-raster-decode";
+import { CaptureLatencyTrace } from "../capture/capture-latency-trace";
 
 const log = getMainLogger("pwrsnap:capture-handlers");
 
@@ -251,23 +257,50 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
   });
 
   bus.register("capture:interactive", async (req, ctx) => {
+    const mode = req.mode ?? "auto";
+    if (!isCaptureInvocation(req.invocation)) {
+      return err({
+        kind: "validation",
+        code: "capture_invocation_required",
+        message: "capture:interactive requires a valid invocation trace"
+      });
+    }
+    const trace = new CaptureLatencyTrace(req.invocation, mode);
+    trace.mark("dispatch_receive", { principal: ctx.principal });
+    try {
+      const permissionStage = trace.begin("permission_preflight");
     // Gate BEFORE pickRegion: the selector freezes a screen snapshot on
     // show(), which is all-black on a Mac without Screen Recording. On a
     // first-ever attempt the gate fires the macOS prompt instead; on a
     // subsequent denied attempt it routes to System Settings. Either way
     // we never paint an empty selector at the user.
     const blocked = await guardScreenCapture();
-    if (blocked) return blocked;
+    const permissionErrorCode = blocked !== null && !blocked.ok ? blocked.error.code : null;
+    trace.end(permissionStage, {
+      outcome: permissionErrorCode ?? "granted"
+    });
+    if (blocked !== null) {
+      trace.finish("error", { code: permissionErrorCode ?? "permission_blocked" });
+      return blocked;
+    }
+    const storageStage = trace.begin("storage_readiness");
     // Pre-warm the captures-folder (Documents) TCC grant before the
     // selector goes up — otherwise the "Allow Documents" dialog pops
     // under the screen-saver-level selector at persist time.
     const storageBlocked = await ensureCapturesDirReady();
-    if (storageBlocked) return storageBlocked;
-    const handlerStartedAt = Date.now();
-    const mode = req.mode ?? "auto";
+    const storageErrorCode =
+      storageBlocked !== null && !storageBlocked.ok ? storageBlocked.error.code : null;
+    trace.end(storageStage, {
+      outcome: storageErrorCode ?? "ready"
+    });
+    if (storageBlocked !== null) {
+      trace.finish("error", { code: storageErrorCode ?? "storage_not_ready" });
+      return storageBlocked;
+    }
     log.info("capture:interactive handler received", {
       mode,
-      principal: ctx.principal
+      principal: ctx.principal,
+      invocationId: req.invocation.id
     });
 
     // Timed mode = "delay 5 s, then open the normal auto picker."
@@ -282,14 +315,15 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     // user picks against — region / window / ⇧-full-window all work
     // exactly as they do in Quick Capture.
     if (mode === "timed") {
-      log.info("capture:interactive timed delay starting", {
-        durationFromHandlerReceivedMs: Date.now() - handlerStartedAt
-      });
+      const timedStage = trace.begin("timed_countdown");
       const delay = await runTimedDelay();
-      if (!delay.ok) return delay;
-      log.info("capture:interactive timed delay completed", {
-        durationFromHandlerReceivedMs: Date.now() - handlerStartedAt
+      trace.end(timedStage, {
+        outcome: delay.ok ? "completed" : delay.error.code
       });
+      if (!delay.ok) {
+        trace.finish("error", { code: delay.error.code });
+        return delay;
+      }
     }
     const selectorMode = mode === "timed" ? "auto" : mode;
 
@@ -300,7 +334,7 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     // read (uncached disk parse) and the helper spawn chain off a
     // promise that runs while nothing else is happening.
     let cursorSamplePromise: Promise<CursorSample | null> | null =
-      startCursorSampleIfEnabled();
+      startCursorSampleIfEnabled(trace);
 
     // The sample must land BEFORE the selector swaps the OS cursor for
     // its synthetic crosshair — NSCursor.currentSystem reads the LIVE
@@ -311,6 +345,7 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     // Warm spawns land well inside the budget; a cold first-capture
     // miss just means no cursor layer that one time.
     if (cursorSamplePromise !== null) {
+      const cursorBudgetStage = trace.begin("cursor_sampling_budget");
       const settled = await Promise.race([
         cursorSamplePromise.then(
           () => true,
@@ -320,6 +355,10 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
           setTimeout(() => resolve(false), CURSOR_SAMPLE_PRE_SELECTOR_BUDGET_MS)
         )
       ]);
+      trace.end(cursorBudgetStage, {
+        budgetMs: CURSOR_SAMPLE_PRE_SELECTOR_BUDGET_MS,
+        outcome: settled ? "settled" : "missed"
+      });
       if (!settled) {
         log.info("cursor sample missed the pre-selector budget — dropped (tainted)");
         cursorSamplePromise = null;
@@ -350,22 +389,25 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     // in the picker — there the user may well want to capture it.
     const protectWindowIds = librarySourceWindowIds(ctx);
 
-    const pickRegionStartedAt = Date.now();
     log.info("capture:interactive calling pickRegion", {
       mode,
       selectorMode,
       keepPwrSnapChrome,
       protectWindowCount: protectWindowIds.length,
-      durationFromHandlerReceivedMs: pickRegionStartedAt - handlerStartedAt
+      invocationId: req.invocation.id
     });
-    const selection = await pickRegion({ mode: selectorMode, keepPwrSnapChrome, protectWindowIds });
+    const selection = await pickRegion({
+      mode: selectorMode,
+      keepPwrSnapChrome,
+      protectWindowIds,
+      latencyTrace: trace
+    });
     log.info("capture:interactive pickRegion returned", {
       mode,
       selectorMode,
       ok: selection.ok,
       reason: selection.ok ? "completed" : selection.reason,
-      durationFromPickRegionCallMs: Date.now() - pickRegionStartedAt,
-      durationFromHandlerReceivedMs: Date.now() - handlerStartedAt
+      invocationId: req.invocation.id
     });
 
     // CANCEL path. The selector window is still up at this point —
@@ -376,6 +418,9 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     // it the whole time, and the selector hide reveals the desktop
     // (not the float-over).
     if (!selection.ok) {
+      trace.finish(selection.reason === "destroyed" ? "destroy" : "cancel", {
+        reason: selection.reason
+      });
       setFloatOverState({ kind: "cancel" });
       // Compositor flush — the float-over hide must reach the
       // window server before we lower the selector, otherwise
@@ -616,10 +661,14 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
         setFloatOverState({ kind: "cancel" });
       }
       return persisted;
-    } finally {
-      // Safety net for an unexpected throw before the explicit teardown.
-      void releaseSnapshot(screenSnapshotId);
-      await tearDownSelector();
+      } finally {
+        // Safety net for an unexpected throw before the explicit teardown.
+        void releaseSnapshot(screenSnapshotId);
+        await tearDownSelector();
+      }
+    } catch (cause) {
+      trace.finish("error", { code: "handler_threw" });
+      throw cause;
     }
   });
 
@@ -1514,12 +1563,44 @@ const CURSOR_SAMPLE_PRE_SELECTOR_BUDGET_MS = 350;
  *  both live inside the returned promise chain) and never rejecting.
  *  Shared by every image-capture entry point so the Settings toggle
  *  means what it says: "screenshots", not "one kind of screenshot". */
-function startCursorSampleIfEnabled(): Promise<CursorSample | null> {
-  return readDesktopSettings()
-    .then((settings) =>
-      settings.recording.imageCaptureCursor ? sampleCursor() : null
-    )
-    .catch(() => null);
+function startCursorSampleIfEnabled(
+  trace?: CaptureLatencyTrace
+): Promise<CursorSample | null> {
+  return (async () => {
+    const settingsStage = trace?.begin("settings_read");
+    let enabled = false;
+    try {
+      const settings = await readDesktopSettings();
+      enabled = settings.recording.imageCaptureCursor;
+      if (settingsStage !== undefined) {
+        trace?.end(settingsStage, { outcome: "read", cursorEnabled: enabled });
+      }
+    } catch {
+      if (settingsStage !== undefined) {
+        trace?.end(settingsStage, { outcome: "failed" });
+      }
+      return null;
+    }
+    if (!enabled) {
+      trace?.mark("cursor_sample", { outcome: "disabled" });
+      return null;
+    }
+    const sampleStage = trace?.begin("cursor_sample");
+    try {
+      const sample = await sampleCursor();
+      if (sampleStage !== undefined) {
+        trace?.end(sampleStage, {
+          outcome: sample === null ? "unavailable" : "sampled"
+        });
+      }
+      return sample;
+    } catch {
+      if (sampleStage !== undefined) {
+        trace?.end(sampleStage, { outcome: "failed" });
+      }
+      return null;
+    }
+  })();
 }
 
 async function persistAndBroadcast(

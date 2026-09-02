@@ -28,6 +28,13 @@ type ModePayload = {
   mode: "auto" | "region" | "window";
   screenUrl?: string;
   intent?: "snap" | "video";
+  invocationId?: string;
+  generation?: number;
+};
+type PresentationPayload = {
+  invocationId: string;
+  generation: number;
+  screenUrl: string;
 };
 type SnapshotPayload = {
   windows: WindowSnapEntry[];
@@ -41,19 +48,31 @@ let root: Root | null = null;
 let modeHandler: ((p: ModePayload) => void) | null = null;
 let snapshotHandler: ((p: SnapshotPayload) => void) | null = null;
 let keyHandler: ((p: { key: string }) => void) | null = null;
+let presentationHandler: ((p: PresentationPayload) => void) | null = null;
 const submitRegion = vi.fn();
+const notifySelectorSnapshotPainted = vi.fn();
+const notifySelectorPresented = vi.fn();
 
 function installSelectorApi(): void {
   modeHandler = null;
   snapshotHandler = null;
   keyHandler = null;
+  presentationHandler = null;
   submitRegion.mockReset();
+  notifySelectorSnapshotPainted.mockReset();
+  notifySelectorPresented.mockReset();
   window.pwrsnapApi = {
     platform: "test",
     versions: { chrome: "", electron: "", node: "" },
     dispatch: vi.fn(),
     on: vi.fn(() => () => undefined),
     submitRegion,
+    notifySelectorSnapshotPainted,
+    notifySelectorPresented,
+    onSelectorPresentationRequest: (h: (p: PresentationPayload) => void) => {
+      presentationHandler = h;
+      return () => undefined;
+    },
     onWindowListSnapshot: (h: (p: SnapshotPayload) => void) => {
       snapshotHandler = h;
       return () => undefined;
@@ -112,6 +131,7 @@ afterEach(async () => {
   ]) {
     delete document.body.dataset[k];
   }
+  vi.unstubAllGlobals();
 });
 
 // --- event + query helpers (shared across unit describes) -----------
@@ -125,6 +145,12 @@ async function mouseMove(x: number, y: number): Promise<void> {
 async function emitMode(p: ModePayload): Promise<void> {
   await act(async () => {
     modeHandler?.(p);
+  });
+}
+
+async function emitPresentation(p: PresentationPayload): Promise<void> {
+  await act(async () => {
+    presentationHandler?.(p);
   });
 }
 
@@ -229,6 +255,95 @@ const WIN: WindowSnapEntry = {
   rect: { x: 200, y: 150, w: 400, h: 300 },
   rawRect: { x: 200, y: 150, w: 400, h: 300 }
 };
+
+describe("diagnostic first-visible acknowledgement", () => {
+  function installFrameHarness(): {
+    callbacks: Map<number, FrameRequestCallback>;
+    runNext: () => Promise<void>;
+  } {
+    let nextId = 1;
+    const callbacks = new Map<number, FrameRequestCallback>();
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      const id = nextId++;
+      callbacks.set(id, callback);
+      return id;
+    });
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => callbacks.delete(id));
+    return {
+      callbacks,
+      runNext: async () => {
+        const next = callbacks.entries().next().value as
+          | [number, FrameRequestCallback]
+          | undefined;
+        if (next === undefined) throw new Error("no pending animation frame");
+        callbacks.delete(next[0]);
+        await act(async () => next[1](16));
+      }
+    };
+  }
+
+  test("requires frozen-source decode and two post-request animation frames", async () => {
+    const frames = installFrameHarness();
+    await mount();
+    const request = {
+      invocationId: "trace-present-1",
+      generation: 1,
+      screenUrl: "pwrsnap-screen://r/snapshot-present-1"
+    };
+
+    await emitMode({ mode: "auto", screenUrl: request.screenUrl });
+    await emitPresentation(request);
+    expect(frames.callbacks.size).toBe(0);
+    expect(notifySelectorPresented).not.toHaveBeenCalled();
+
+    const image = container?.querySelector('img[src="pwrsnap-screen://r/snapshot-present-1"]');
+    if (!(image instanceof HTMLImageElement)) throw new Error("snapshot image not found");
+    await act(async () => image.dispatchEvent(new Event("load")));
+
+    expect(notifySelectorSnapshotPainted).toHaveBeenCalledWith(request.screenUrl);
+    expect(frames.callbacks.size).toBe(1);
+    await frames.runNext();
+    expect(notifySelectorPresented).not.toHaveBeenCalled();
+    await frames.runNext();
+    expect(notifySelectorPresented).toHaveBeenCalledWith(request);
+  });
+
+  test("cancels a stale generation before it can acknowledge a reused selector", async () => {
+    const frames = installFrameHarness();
+    await mount();
+    const stale = {
+      invocationId: "trace-stale-1",
+      generation: 4,
+      screenUrl: "pwrsnap-screen://r/stale"
+    };
+    await emitMode({ mode: "auto", screenUrl: stale.screenUrl });
+    const staleImage = container?.querySelector('img[src="pwrsnap-screen://r/stale"]');
+    if (!(staleImage instanceof HTMLImageElement)) throw new Error("stale image not found");
+    await act(async () => staleImage.dispatchEvent(new Event("load")));
+    await emitPresentation(stale);
+    const staleFrame = [...frames.callbacks.values()][0];
+    expect(staleFrame).toBeDefined();
+
+    const current = {
+      invocationId: "trace-current-2",
+      generation: 5,
+      screenUrl: "pwrsnap-screen://r/current"
+    };
+    await emitMode({ mode: "window", screenUrl: current.screenUrl });
+    await emitPresentation(current);
+    expect(frames.callbacks.size).toBe(0);
+    await act(async () => staleFrame?.(16));
+    expect(notifySelectorPresented).not.toHaveBeenCalled();
+
+    const currentImage = container?.querySelector('img[src="pwrsnap-screen://r/current"]');
+    if (!(currentImage instanceof HTMLImageElement)) throw new Error("current image not found");
+    await act(async () => currentImage.dispatchEvent(new Event("load")));
+    await frames.runNext();
+    await frames.runNext();
+    expect(notifySelectorPresented).toHaveBeenCalledTimes(1);
+    expect(notifySelectorPresented).toHaveBeenCalledWith(current);
+  });
+});
 
 /** snap → hover a window → click (no drag) → adjusting with a window
  *  snap. displayBounds = innerSize so the css-to-logical scale is 1. */

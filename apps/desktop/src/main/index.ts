@@ -12,7 +12,6 @@ import {
   globalShortcut,
   Menu,
   nativeTheme,
-  Notification,
   shell
 } from "electron";
 import {
@@ -22,21 +21,17 @@ import {
 } from "@pwrsnap/shared";
 import type {
   CaptureInvocationTrigger,
-  RecordingSubject,
   Settings,
   SettingsChangedEvent
 } from "@pwrsnap/shared";
 import {
   disposeRegionSelector,
-  getLastWindowListSnapshot,
   hideSelector,
   pickRegion,
   preWarmRegionSelector
 } from "./capture/region-selector";
-import { releaseSnapshot } from "./capture/screen-snapshot";
-import { activateApp, selfPidSet } from "./capture/window-list";
+import { activateApp } from "./capture/window-list";
 import { startRecordingFromSelection } from "./recording/record-from-selection";
-import { appWindowsOverlappingRect } from "./capture/rect-overlap";
 import { guardScreenCapture } from "./capture/screen-permission-gate";
 import { ensureCapturesDirReady } from "./capture/capture-storage-gate";
 import {
@@ -44,10 +39,6 @@ import {
   dispatchInteractiveCapture
 } from "./capture/capture-trigger";
 import { reconcileCapturesLocationOnBoot } from "./capture/capture-location-reconciliation";
-import {
-  resolveSelectionSourceApp,
-  shouldConsiderRaisingOurWindows
-} from "./capture/source-app";
 import { getAppIconPath } from "./app-icons/app-icon-cache";
 import {
   disposeFloatOver,

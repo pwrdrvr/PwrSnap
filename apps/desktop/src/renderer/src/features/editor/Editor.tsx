@@ -1324,12 +1324,14 @@ export function hitTestOverlays(
       // Box dimensions mirror what `textBoundsBox` in OverlaySvg.tsx
       // computes for the selection outline (after the HTML-text
       // unification: `height = lineCount * fontSize` with
-      // `translateY(-50%)` centering on the anchor) — the SAME box,
-      // so the click target and the dashed outline can never disagree
-      // about where the text ends. Forgiveness comes from `padN`
-      // below, a screen-constant halo on every edge; see
-      // text-bbox-constants.ts for why it must not come from
-      // inflating the box instead.
+      // `translateY(-50%)` centering on the anchor). Same box, same
+      // measured source, same char-advance constant — the two are
+      // kept in step by convention, not by construction (they are
+      // still two implementations; the one deliberate divergence is
+      // the `Math.max(sizePx, …)` width floor below, which only the
+      // click target applies). Forgiveness comes from `padN` below,
+      // NOT from inflating the box; see text-bbox-constants.ts for
+      // why.
       //
       // Falls back to the pre-fix point-radius when `textDims` isn't
       // threaded — keeps the existing hitTestOverlays.test.ts
@@ -1385,14 +1387,15 @@ export function hitTestOverlays(
         }).sizePx;
         const lines = o.body.split("\n");
         const lineCount = Math.max(1, lines.length);
-        const maxChars = lines.reduce((m, l) => Math.max(m, l.length), 1);
-        // Measure the REAL advance width (same metric AND same
-        // constants the selection outline uses — `textBoundsBox`) so
-        // the click target tracks the glyph extent instead of a
-        // char-count guess that mis-sized wide-cap text like `Hi MOm`.
-        // Falls back to the char-count advance where a 2D canvas is
-        // unavailable (jsdom unit tests). Width floors at 1× fontSize
-        // so a 1-char line still has a reasonable click target.
+        // Measure the REAL advance width (the same metric — and, since
+        // this PR, the same char-advance constant — the selection
+        // outline uses in `textBoundsBox`) so the click target tracks
+        // the glyph extent instead of a char-count guess that mis-sized
+        // wide-cap text like `Hi MOm`. Falls back to the char-count
+        // advance where a 2D canvas is unavailable (jsdom unit tests).
+        // Width floors at 1× fontSize so a 1-char line still has a
+        // reasonable click target — the one place this box is
+        // deliberately wider than the outline's.
         const measuredWidthPx = measureTextWidthPx(
           o.body,
           sizePx,
@@ -1401,7 +1404,18 @@ export function hitTestOverlays(
         naturalWidthPx =
           measuredWidthPx !== null
             ? Math.max(sizePx, measuredWidthPx)
-            : Math.max(sizePx, maxChars * sizePx * TEXT_BBOX_CHAR_ADVANCE);
+            : // maxChars is reduced HERE, not above: this arm is the
+              // only consumer, and in the real renderer
+              // `measureTextWidthPx` never returns null — so hoisting
+              // it would scan every body every frame for a value the
+              // other arm discards, which is the GC pressure the
+              // block comment above exists to avoid.
+              Math.max(
+                sizePx,
+                lines.reduce((m, l) => Math.max(m, l.length), 1) *
+                  sizePx *
+                  TEXT_BBOX_CHAR_ADVANCE
+              );
         naturalHeightPx = sizePx * lineCount;
       }
       // Box centered vertically on the anchor (matches the HTML
@@ -1418,11 +1432,11 @@ export function hitTestOverlays(
       // because the box above is the glyph box untouched — any
       // asymmetric slop would drag this pivot off the real centre and
       // rotate the whole click target away from the visible glyph.
-      // Inverse-rotating in pixel space keeps the
-      // angle visually correct on non-square canvases (a "90°"
-      // rotation visually drops the top edge to the right edge on a
-      // wide canvas; normalized-space rotation would skew the angle
-      // because the y-axis is stretched).
+      // Inverse-rotating in pixel space keeps the angle visually
+      // correct on non-square canvases (a "90°" rotation visually
+      // drops the top edge to the right edge on a wide canvas;
+      // normalized-space rotation would skew the angle because the
+      // y-axis is stretched).
       const textRotation = o.rotation ?? 0;
       const textPivotXn = boxXn + boxWn / 2;
       const textPivotYn = boxYn + boxHn / 2;
@@ -1436,7 +1450,16 @@ export function hitTestOverlays(
       // Add a small padding (half a hitRadius) on every edge so the
       // user can click slightly past the rendered glyph and still
       // land on the layer. Matches the affordance Cleanshot / Skitch
-      // ship for text annotations.
+      // ship for text annotations. Since the width multiplier went
+      // away this is the ONLY forgiveness the click target has, so
+      // know its two limits: it is normalized and applied to both
+      // axes while `hitRadiusN` derives from the canvas SHORT side,
+      // so on a wide canvas the horizontal pad is more px than the
+      // vertical one; and `hitRadiusN`'s 0.008 floor means it is ~5px
+      // only up to a ~1250px short side, growing with the canvas
+      // above that. Neither is coupled to SelectionOutline's own
+      // 0.006 outline pad, so on a very large canvas the dashed
+      // rectangle can be drawn a hair outside what is clickable.
       const padN = hitRadiusN * 0.5;
       if (
         tx >= boxXn - padN &&

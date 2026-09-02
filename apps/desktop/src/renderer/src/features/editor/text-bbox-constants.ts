@@ -10,9 +10,11 @@
 //
 // Both want the SAME box: the extent of the glyph the user can see.
 // The click target's forgiveness — being able to press a few pixels
-// past a character and still land on the layer — comes from a
-// screen-constant pad `hitTestOverlays` adds on every edge
-// (`hitRadiusN * 0.5`, ≈5px), NOT from inflating the box.
+// past a character and still land on the layer — comes from a small
+// pad `hitTestOverlays` adds on every edge (`hitRadiusN * 0.5`, ≈5px
+// on a canvas up to ~1250px on its short side; see the note at that
+// line for where it stops being 5px and stops being equal per axis),
+// NOT from inflating the box.
 //
 // It used to come from inflating the box, and that was a bug. The
 // hit-test carried its own wider char advance (0.65 vs the outline's
@@ -42,6 +44,6 @@
 /** FALLBACK char advance used to approximate a text overlay's glyph
  *  width when canvas measurement is unavailable. 0.55 lines up close
  *  to the visible extent of the system-font stack for the buckets we
- *  ship. Shared by the selection outline and the hit test so the two
- *  never disagree about where the text ends. */
+ *  ship. Shared by the selection outline and the hit test so a change
+ *  to the approximation moves both together. */
 export const TEXT_BBOX_CHAR_ADVANCE = 0.55;

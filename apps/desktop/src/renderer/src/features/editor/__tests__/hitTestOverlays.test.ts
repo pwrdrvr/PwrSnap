@@ -756,6 +756,34 @@ describe("hitTestOverlays", () => {
       expect(hitTestOverlays([row], 0.71, 0.5, 1000, dims)).toBe(null);
     });
 
+    test("the anchor is the LEFT edge, not the centre", () => {
+      // The property that made a width MULTIPLIER asymmetric in the
+      // first place, and the one a future refactor is most likely to
+      // get wrong: `data.point` is where the glyph starts, so the box
+      // runs [point.x, point.x + w] and every width change lands on
+      // the right. A box centred on the anchor would put its left
+      // edge at -0.2 here and still pass the right-edge tests.
+      const row = seedMeasuredText(600);
+      // Just inside the left edge (0.1) − padN.
+      expect(hitTestOverlays([row], 0.097, 0.5, 1000, dims)).toBe("t1");
+      // Just past it — nothing paints to the left of the anchor.
+      expect(hitTestOverlays([row], 0.09, 0.5, 1000, dims)).toBe(null);
+    });
+
+    test("the box is centred vertically on the anchor", () => {
+      // `translateY(-50%)` on the HTML wrapper centres the FULL block
+      // on point.y, so a 40px glyph spans y ∈ [0.48, 0.52] — pinned
+      // here because the measured path derives the vertical extent
+      // from heightImagePx alone, with no line count to cross-check
+      // it against.
+      const row = seedMeasuredText(600);
+      expect(hitTestOverlays([row], 0.4, 0.483, 1000, dims)).toBe("t1");
+      expect(hitTestOverlays([row], 0.4, 0.517, 1000, dims)).toBe("t1");
+      // Past the ±padN halo on each edge.
+      expect(hitTestOverlays([row], 0.4, 0.47, 1000, dims)).toBe(null);
+      expect(hitTestOverlays([row], 0.4, 0.53, 1000, dims)).toBe(null);
+    });
+
     test("the right-edge overhang does NOT grow with the glyph width", () => {
       // The defining property: whatever slack exists past the last
       // character must be the same for a short label and a long
@@ -763,7 +791,8 @@ describe("hitTestOverlays", () => {
       // for the narrow row and 0.144 for the wide one.
       const narrow = seedMeasuredText(200); // right edge 0.3
       expect(hitTestOverlays([narrow], 0.32, 0.5, 1000, dims)).toBe(null);
-      clearGlyphSize("t1");
+      // Re-seeding overwrites: reportGlyphSize only no-ops when the
+      // dimensions are unchanged, and 200 ≠ 800.
       const wide = seedMeasuredText(800); // right edge 0.9
       expect(hitTestOverlays([wide], 0.92, 0.5, 1000, dims)).toBe(null);
     });

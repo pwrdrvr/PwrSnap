@@ -27,50 +27,10 @@
 // Unit-level companion (every dismiss path, both platforms):
 // src/main/__tests__/tray-instant-hide.test.ts.
 
-import { expect, type LaunchedApp, launchPwrSnap, test } from "./fixtures/electron-app";
+import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
+import { hideTray, inspectTrayWindow, showTray } from "./fixtures/tray";
 
 const isMac = process.platform === "darwin";
-
-async function inspectTray(app: LaunchedApp): Promise<{
-  exists: boolean;
-  visible: boolean;
-  opacity: number | null;
-}> {
-  return await app.electronApp.evaluate(async ({ BrowserWindow }) => {
-    const win = BrowserWindow.getAllWindows().find(
-      (w) => !w.isDestroyed() && w.webContents.getURL().includes("stage=tray")
-    );
-    if (win === undefined) return { exists: false, visible: false, opacity: null };
-    return { exists: true, visible: win.isVisible(), opacity: win.getOpacity() };
-  });
-}
-
-/** Open the popover via the E2E bridge, retrying past ambient blur-
- *  dismiss churn (the popover auto-dismisses on blur with a 120ms
- *  debounce — real production behavior, and a loaded runner can blur it
- *  right after `showInactive()`). Same helper shape as tray-sizing. */
-async function showTray(app: LaunchedApp): Promise<void> {
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    await app.electronApp.evaluate(async () => {
-      (
-        globalThis as unknown as { __PWRSNAP_TEST__: { showTrayPopover: () => void } }
-      ).__PWRSNAP_TEST__.showTrayPopover();
-    });
-    await new Promise((r) => setTimeout(r, 250));
-    if ((await inspectTray(app)).visible) return;
-  }
-  throw new Error("tray popover would not stay visible after 4 show attempts");
-}
-
-/** Dismiss via the same entry point the capture flow uses
- *  (`hideTrayPopoverIfVisible`). */
-async function hideTray(app: LaunchedApp): Promise<void> {
-  await app.electronApp.evaluate(async () => {
-    (
-      globalThis as unknown as { __PWRSNAP_TEST__: { hideTrayPopover: () => void } }
-    ).__PWRSNAP_TEST__.hideTrayPopover();
-  });
-}
 
 test.describe("tray popover instant dismiss", () => {
   test.skip(
@@ -78,12 +38,16 @@ test.describe("tray popover instant dismiss", () => {
     "the NSPanel fade-out this guards is macOS-only; other platforms never touch opacity"
   );
 
-  test("capture-path dismiss leaves nothing fading on screen", async () => {
+  // One app instance: an Electron cold start costs seconds on the macOS
+  // runner, and the re-show half can't fail independently of the dismiss
+  // half anyway — it replays the same setup.
+  test("dismiss leaves nothing fading, and re-show restores full opacity", async () => {
     const app = await launchPwrSnap();
     try {
-      await showTray(app);
-
-      const shown = await inspectTray(app);
+      // `showTray` returns the state read in the same round-trip that
+      // confirmed visibility — asserting on a fresh read here would race
+      // the blur-dismiss debounce it just outwaited.
+      const shown = await showTray(app);
       expect(shown.exists).toBe(true);
       expect(shown.visible).toBe(true);
       expect(shown.opacity).toBe(1);
@@ -91,27 +55,15 @@ test.describe("tray popover instant dismiss", () => {
       await hideTray(app);
 
       // Read back IMMEDIATELY — no settle. A fading panel would still be
-      // painting here, and alpha 0 is the proof it is not.
-      const hidden = await inspectTray(app);
+      // painting here, and alpha 0 is the proof it is not. No retry
+      // needed: nothing re-shows the popover behind our back.
+      const hidden = await inspectTrayWindow(app);
       expect(hidden.visible).toBe(false);
       expect(hidden.opacity).toBe(0);
-    } finally {
-      await app.close();
-    }
-  });
-
-  test("re-showing restores the panel to full opacity", async () => {
-    const app = await launchPwrSnap();
-    try {
-      await showTray(app);
-      await hideTray(app);
-      expect((await inspectTray(app)).opacity).toBe(0);
-
-      await showTray(app);
 
       // Without the restore the popover comes back as a fully
       // transparent window that still takes clicks — worse than the bug.
-      const reshown = await inspectTray(app);
+      const reshown = await showTray(app);
       expect(reshown.visible).toBe(true);
       expect(reshown.opacity).toBe(1);
     } finally {

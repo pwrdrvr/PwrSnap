@@ -242,8 +242,13 @@ beforeEach(() => {
   suppressPaintAck = false;
   screenSnapshotMocks.captureAndRegister.mockReset();
   screenSnapshotMocks.releaseSnapshot.mockReset();
-  chromeMocks.hideTrayPopoverIfVisible.mockClear();
-  chromeMocks.setFloatOverState.mockClear();
+  // mockReset, not mockClear: the compositor-flush test below installs a
+  // `mockImplementation` on hideTrayPopoverIfVisible, and mockClear drops
+  // only the call records — the implementation would survive into every
+  // later test and make this file order-dependent. Same reason the
+  // screenSnapshot mocks above reset.
+  chromeMocks.hideTrayPopoverIfVisible.mockReset();
+  chromeMocks.setFloatOverState.mockReset();
   selectorShortcutMocks.callbacks.clear();
   selectorShortcutMocks.register.mockClear();
   selectorShortcutMocks.unregister.mockClear();

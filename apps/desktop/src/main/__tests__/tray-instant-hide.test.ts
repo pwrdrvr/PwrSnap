@@ -31,6 +31,8 @@
 // per-pixel alpha (UpdateLayeredWindow) — the same trap documented on
 // `parkOffScreen` in float-over.ts. Windows has no NSPanel fade to fix.
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 type FakeWindow = {
@@ -362,5 +364,42 @@ describe("tray popover dismissal (Windows)", () => {
 
     expect(fake.calls.filter((c) => c.startsWith("setOpacity"))).toEqual([]);
     expect(visibilityCalls(fake)).toEqual(["showInactive", "hide", "showInactive"]);
+  });
+});
+
+// The alpha-0 park makes every show path load-bearing: a bare
+// `showInactive()` / `show()` on the tray window brings the panel back
+// ordered-in and key but at alphaValue 0 — invisible, yet still
+// hit-testing, so clicks land on nothing the user can see. That is worse
+// than the fade this whole change exists to kill, and no behavioral test
+// can catch it because it only fires on a show path that does not exist
+// yet.
+//
+// So grep the source instead. The repo already uses this shape (the
+// secret store's "plaintext never appears on disk" assertion). If you
+// are adding a new way to open the popover, call `showTrayWindowNow` —
+// do not widen this allowlist.
+describe("tray.ts source — the show/hide pairing invariant", () => {
+  const source = readFileSync(
+    fileURLToPath(new URL("../tray.ts", import.meta.url)),
+    "utf8"
+  );
+
+  test("no show call on the tray window outside showTrayWindowNow", () => {
+    const showCalls = [...source.matchAll(/^.*\.(?:showInactive|show)\(\).*$/gm)]
+      .map((m) => m[0].trim())
+      // The helper itself is the one legitimate caller.
+      .filter((line) => !line.startsWith("window.showInactive();"))
+      // Prose in comments describes the calls; it doesn't make them.
+      .filter((line) => !line.startsWith("//") && !line.startsWith("*"));
+    expect(showCalls).toEqual([]);
+  });
+
+  test("no hide call on the tray window outside hideTrayWindowNow", () => {
+    const hideCalls = [...source.matchAll(/^.*\.hide\(\).*$/gm)]
+      .map((m) => m[0].trim())
+      .filter((line) => !line.startsWith("window.hide();"))
+      .filter((line) => !line.startsWith("//") && !line.startsWith("*"));
+    expect(hideCalls).toEqual([]);
   });
 });

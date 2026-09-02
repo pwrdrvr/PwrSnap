@@ -190,14 +190,46 @@ function activeTrayAccelerator(
  * own dismiss would skip it and let the fade paint itself in anyway.
  */
 function hideTrayWindowNow(window: BrowserWindow): void {
+  // Cancel any armed blur-dismiss. Without this, only the capture path
+  // (`hideTrayPopoverIfVisible`, which clears it separately) is safe:
+  // clicking the tray icon to close arms the timer via the status-item
+  // blur, and if the user re-opens within the 120ms debounce before
+  // AppKit's NSWindowDidBecomeKeyNotification lands, the stale timer
+  // fires, reads `isFocused() === false`, and hides the popover the
+  // user just re-opened. The blur callback nulls `pendingDismiss`
+  // before calling us, so this is a no-op on that path.
+  if (pendingDismiss !== null) {
+    clearTimeout(pendingDismiss);
+    pendingDismiss = null;
+  }
   if (process.platform === "darwin") {
     window.setOpacity(0);
   }
   window.hide();
 }
 
-/** Counterpart to {@link hideTrayWindowNow} — undo the alpha-0 park
- *  before the panel is ordered back in. */
+/**
+ * Counterpart to {@link hideTrayWindowNow} — undo the alpha-0 park
+ * before the panel is ordered back in.
+ *
+ * ⚠️  EVERY path that puts the popover on screen MUST go through here.
+ * `hideTrayWindowNow` leaves the panel at alphaValue 0, so a bare
+ * `showInactive()` / `show()` brings it back ordered-in and key but
+ * completely invisible — while still hit-testing, so the user's clicks
+ * land on a window they cannot see. That failure is worse and much
+ * harder to diagnose than the fade this pair exists to kill.
+ * `tray-instant-hide.test.ts` grep-asserts this file for stray show
+ * calls so a new entry point can't quietly reintroduce it.
+ *
+ * Known limitation: the panel animation this pair defeats on the hide
+ * side also fades the popover IN, and we can't suppress that without
+ * hiding what we're trying to show. It only matters for `timed` mode,
+ * which snapshots with `keepPwrSnapChrome` (no hide, no compositor
+ * flush) — a tray re-opened in the last ~200ms of the countdown is
+ * frozen mid-fade-in. Fixing that means holding the snapshot until the
+ * fade settles, which trades a rare artifact for latency on every timed
+ * capture; not worth it until someone actually hits it.
+ */
 function showTrayWindowNow(window: BrowserWindow): void {
   if (process.platform === "darwin") {
     window.setOpacity(1);

@@ -19,8 +19,84 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
+  # Keep the pull_request trigger path-unfiltered so the required check jobs
+  # exist on every PR. Documentation-only PRs skip those jobs below instead.
+  changes:
+    name: Classify Changes
+    runs-on: ubuntu-latest
+    outputs:
+      code_impacting: ${{ steps.classify.outputs.code_impacting }}
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - name: Classify changed files
+        id: classify
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fullCi = (reason) => {
+              core.setOutput("code_impacting", "true");
+              core.setOutput("docs_only", "false");
+              core.notice(`Running full CI: ${reason}`);
+            };
+
+            if (context.eventName !== "pull_request") {
+              fullCi(`${context.eventName} events are never docs-only`);
+              return;
+            }
+
+            let files;
+            try {
+              files = await github.paginate(github.rest.pulls.listFiles, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+                per_page: 100,
+              });
+            } catch (error) {
+              fullCi(`changed-file lookup failed (${error.message})`);
+              return;
+            }
+
+            const reportedCount = context.payload.pull_request.changed_files;
+            if (files.length === 0 || files.length !== reportedCount) {
+              fullCi(
+                `changed-file list was incomplete (received ${files.length} of ${reportedCount})`,
+              );
+              return;
+            }
+
+            const isDocumentationPath = (path) => {
+              if (path.startsWith("docs/")) return true;
+              if (!path.toLowerCase().endsWith(".md")) return false;
+              // Prompt Markdown is copied into the packaged app
+              // (`out/main/prompts`) and loaded at runtime. A prompt-only
+              // PR is code-impacting and must not skip CI.
+              return !/(^|\/)src\//.test(path);
+            };
+            const codeImpactingFile = files.find((file) => {
+              const paths = [file.filename, file.previous_filename].filter(Boolean);
+              return paths.some((path) => !isDocumentationPath(path));
+            });
+            const docsOnly = codeImpactingFile === undefined;
+
+            core.setOutput("code_impacting", String(!docsOnly));
+            core.setOutput("docs_only", String(docsOnly));
+            await core.summary
+              .addHeading("Changed-file classification")
+              .addTable([
+                [{data: "Classification", header: true}, {data: "Files", header: true}],
+                [docsOnly ? "Documentation only" : "Code impacting", String(files.length)],
+              ])
+              .addRaw(
+                docsOnly
+                  ? "Only `docs/**` and non-source Markdown files changed; expensive CI jobs are skipped."
+                  : `Full CI runs because \`${codeImpactingFile.filename}\` is not documentation-only.`,
+              )
+              .write();
+
   # Cache-priming gate. `lookup-only` makes this ~1s on a hit; on a miss it
   # pays one cold install and saves the cache inline (not in a post step), so
   # the fan-out below restores instead of each job installing from scratch.
@@ -41,6 +117,8 @@ jobs:
   install-deps:
     name: Install Dependencies
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.code_impacting == 'true'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -54,6 +132,8 @@ jobs:
   windows-install-deps:
     name: Install Dependencies (Windows)
     runs-on: windows-latest
+    needs: changes
+    if: needs.changes.outputs.code_impacting == 'true'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -67,7 +147,8 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
-    needs: install-deps
+    needs: [changes, install-deps]
+    if: needs.changes.outputs.code_impacting == 'true'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -83,7 +164,8 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
-    needs: install-deps
+    needs: [changes, install-deps]
+    if: needs.changes.outputs.code_impacting == 'true'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -99,7 +181,8 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    needs: install-deps
+    needs: [changes, install-deps]
+    if: needs.changes.outputs.code_impacting == 'true'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -115,7 +198,8 @@ jobs:
   desktop-e2e:
     name: Desktop E2E
     runs-on: ubuntu-latest
-    needs: install-deps
+    needs: [changes, install-deps]
+    if: needs.changes.outputs.code_impacting == 'true'
     timeout-minutes: 20
     steps:
       - name: Checkout repository
@@ -171,11 +255,12 @@ jobs:
     # isn't pwrdrvr/PwrSnap. Self-hosted runners must not execute
     # arbitrary fork code even though the VMs are throwaway.
     if: >-
-      github.event_name == 'push' ||
-      (github.event_name == 'pull_request' &&
-       github.event.pull_request.head.repo.full_name == github.repository)
+      needs.changes.outputs.code_impacting == 'true' &&
+      (github.event_name == 'push' ||
+       (github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: [self-hosted, macOS, ARM64, pwrdrvr-macos]
-    needs: install-deps
+    needs: [changes, install-deps]
     timeout-minutes: 30
     steps:
       # Visual-regression goldens are Git LFS objects. The runner setup puts
@@ -222,7 +307,8 @@ jobs:
     # capture, tray, AppKit windowing) is macOS-specific and not yet ported to
     # Windows.
     runs-on: windows-latest
-    needs: windows-install-deps
+    needs: [changes, windows-install-deps]
+    if: needs.changes.outputs.code_impacting == 'true'
     timeout-minutes: 20
     steps:
       - name: Checkout repository
@@ -249,7 +335,8 @@ jobs:
   windows-e2e:
     name: Windows Desktop E2E
     runs-on: windows-latest
-    needs: windows-install-deps
+    needs: [changes, windows-install-deps]
+    if: needs.changes.outputs.code_impacting == 'true'
     timeout-minutes: 30
     steps:
       - name: Checkout repository

@@ -70,6 +70,7 @@ import {
   readShapeKind,
   readShapeSkewDeg,
   readHighlightOpacity,
+  readOverlayRotation,
   readTextWeight,
   resolveCropViewport,
   revealInFileManagerLabel
@@ -96,7 +97,11 @@ import { TOOLS, type Tool } from "./editor-tools";
 import { useZoomPan, type ZoomMode } from "./useZoomPan";
 import { useUndoRedo, type InteractionToken, type RecordOptions } from "./useUndoRedo";
 import { decideClickSelection } from "./decideClickSelection";
-import { pruneLandedDraftGeometry, pruneLandedRasterDrafts } from "./draft-geometry";
+import {
+  adoptDraftGeometry,
+  pruneLandedDraftGeometry,
+  pruneLandedRasterDrafts
+} from "./draft-geometry";
 import { applyGeometryLocally } from "./geometry-projection";
 import { isReorderableLayer } from "./layer-roles";
 import { hitTestRasterLayers, rasterLayerBoundsN } from "./raster-hit-test";
@@ -350,18 +355,38 @@ function draftStyleWithLiveOutline(
 /** Phase 3.5 — extract a GeometryUpdate from an overlay's `data`,
  *  used by the transform-handles flow to record the PRE-DRAG geometry
  *  on the undo stack. Returns null for kinds without drag-handle
- *  semantics in this slice (crop — has its own overlay tool). */
-function overlayDataToGeometry(data: Overlay): GeometryUpdate | null {
+ *  semantics in this slice (crop — has its own overlay tool).
+ *
+ *  ROTATION IS ALWAYS EMITTED for the two kinds that carry it, even
+ *  when the row's angle is zero, and that explicitness is the whole
+ *  point. `applyGeometryToOverlay` reads an ABSENT `rotation` as
+ *  "leave the persisted angle alone" — correct for a body-drag or a
+ *  nudge, which must not clobber the angle they aren't editing. But
+ *  this function builds the "before" half of every undo entry, where
+ *  silence means the opposite of what you want: undoing a rotation
+ *  restored the (unchanged) position and left the NEW angle in place,
+ *  so ⌘Z looked like a no-op, and undoing anything older then
+ *  replayed those earlier positions with the rotation still on. An
+ *  explicit `0` is what actually un-rotates. See
+ *  __tests__/rotation-undo.test.ts.
+ *
+ *  Emitting a resolved `0` where the row simply had no `rotation` key
+ *  is safe: `readOverlayRotation` treats absent and `0` identically,
+ *  and the field is optional in the schema. */
+export function overlayDataToGeometry(data: Overlay): GeometryUpdate | null {
   if (data.kind === "arrow") {
+    // Arrows are exempt from rotation — direction is encoded in
+    // from/to, and no rotation handle is rendered for them.
     return { kind: "arrow", from: data.from, to: data.to };
   }
   if (data.kind === "shape" || data.kind === "highlight" || data.kind === "blur") {
-    return { kind: "rect", rect: data.rect };
+    return { kind: "rect", rect: data.rect, rotation: readOverlayRotation(data) };
   }
   if (data.kind === "text") {
-    return { kind: "text", point: data.point };
+    return { kind: "text", point: data.point, rotation: readOverlayRotation(data) };
   }
   if (data.kind === "step") {
+    // Step has no rotation field.
     return { kind: "step", point: data.point };
   }
   return null;
@@ -417,7 +442,17 @@ export function translateOverlayData(
  *  arrow-key nudge flow — `dxn` / `dyn` are in [0,1]² space (a 1px
  *  step is `1 / canvas dim`). Returns the translated GeometryUpdate
  *  ready to feed into `dispatchEdit({ kind: 'updateGeometry', ... })`.
- *  Returns null for overlay kinds without geometry semantics (crop). */
+ *  Returns null for overlay kinds without geometry semantics (crop).
+ *
+ *  DELIBERATELY omits `rotation`, unlike `overlayDataToGeometry`
+ *  above — the two build a GeometryUpdate from the same Overlay with
+ *  OPPOSITE rotation policies, and the nudge path calls both, four
+ *  lines apart. A translate must not touch the angle, and an absent
+ *  `rotation` is exactly how the mergers spell "leave it alone"; a
+ *  SNAPSHOT must pin the angle, because absent would make undo a
+ *  no-op. Do not "make them consistent": adding rotation here is
+ *  merely redundant, but dropping it from the snapshot restores the
+ *  un-undoable-rotation bug (see __tests__/rotation-undo.test.ts). */
 export function translateOverlayGeometry(
   data: Overlay,
   dxn: number,
@@ -2234,12 +2269,7 @@ export function Editor({
     const overlays =
       draftGeometry === null
         ? rawOverlays
-        : rawOverlays.map((o) => {
-            const override = draftGeometry.get(o.id);
-            if (override === undefined) return o;
-            const adopted = applyGeometryLocally(o.data, override);
-            return adopted === null ? o : { ...o, data: adopted };
-          });
+        : rawOverlays.map((o) => adoptDraftGeometry(o, draftGeometry));
     const rawRasters = rastersRef.current;
     const rasters =
       rasterDrafts === null
@@ -2329,12 +2359,7 @@ export function Editor({
       .map((id) => {
         const row = overlays.find((o) => o.id === id);
         if (row === undefined) return null;
-        const override = draftGeometry?.get(id);
-        const adopted =
-          override !== undefined
-            ? applyGeometryLocally(row.data, override)
-            : null;
-        return { id, data: adopted ?? row.data };
+        return { id, data: adoptDraftGeometry(row, draftGeometry).data };
       })
       .filter((s): s is { id: string; data: OverlayRow["data"] } => s !== null);
     const rasterSnapshots = ids
@@ -5701,12 +5726,7 @@ function EditorLoaded({
         const baseOverlays = selectedLayerIds
           .map((id) => snapshot.find((o) => o.id === id))
           .filter((o): o is OverlayRow => o !== undefined)
-          .map((o) => {
-            const override = draftGeometry?.get(o.id);
-            const adopted =
-              override !== undefined ? applyGeometryLocally(o.data, override) : null;
-            return { id: o.id, data: adopted ?? o.data };
-          });
+          .map((o) => ({ id: o.id, data: adoptDraftGeometry(o, draftGeometry).data }));
         // Selected non-base rasters (pasted images, the captured
         // cursor) nudge too — they have no OverlayRow, so resolve them
         // from the layer tree. Same membership rules as rastersRef /
@@ -6046,10 +6066,32 @@ function EditorLoaded({
   // resize handles (would need union-bbox math) and no style edits
   // (would need to fan out the patch to every selected layer of the
   // same kind). Single-select to refine.
-  const selectedOverlayForHandles: OverlayRow | null =
+  //
+  // The row ADOPTS the live-drag override, like every other consumer
+  // that asks where the selected layer currently IS (the canvas
+  // hit-test, the multi-drag arming snapshot, the nudge base
+  // snapshot). Without it, a drag the CANVAS armed — which is every
+  // press on the dashed selection outline, since that outline is drawn
+  // `pad 0.006` OUTSIDE the body-hit rect — moved the glyph through
+  // `liveOverride` while the rotate handle and the body-hit rect stayed
+  // at the persisted position and only caught up when the commit's
+  // refetch landed. Drags that begin on the body rect were never
+  // affected: TransformHandles tracks those in its own `liveData`,
+  // which is why the bug looked like "dragging the middle works,
+  // dragging the edge leaves the rotate ball behind".
+  //
+  // `adoptDraftGeometry` returns the same reference when there is no
+  // override, so outside a gesture this adds no allocation and the
+  // prop identity TransformHandles keys its liveData reset on stays
+  // stable.
+  const selectedOverlayRow: OverlayRow | null =
     primarySelectedLayerId === null
       ? null
       : overlays.find((r) => r.id === primarySelectedLayerId) ?? null;
+  const selectedOverlayForHandles: OverlayRow | null =
+    selectedOverlayRow === null
+      ? null
+      : adoptDraftGeometry(selectedOverlayRow, draftGeometry);
 
   // Pre-drag snapshot — stashed on pointerdown so the geometry undo
   // entry can record the PRE-DRAG geometry alongside the post-drag
@@ -6270,12 +6312,31 @@ function EditorLoaded({
   useEffect(() => {
     updateLayerStyleRef.current = (id, field, value): void => {
       const current = overlays.find((row) => row.id === id);
-      if (current !== undefined) updateOverlayStyleField(current, field, value);
+      // Adopt the live override, exactly as the editor's own popover
+      // path does — `layerStyleUpdate` is not purely a style function:
+      // its `shape` arm READS `current.data.rect` and writes a new one
+      // back (centering a circle/square in the old bounds), and the
+      // `outline: "auto"` arm samples the image under the layer. Fed
+      // the raw row inside a drag's commit→refetch window, both would
+      // work off the PRE-drag geometry — and the shape arm would
+      // persist it, silently reverting the move the user just made.
+      if (current !== undefined) {
+        updateOverlayStyleField(
+          adoptDraftGeometry(current, draftGeometry),
+          field,
+          value
+        );
+      }
     };
     return () => {
       updateLayerStyleRef.current = null;
     };
-  }, [overlays, updateLayerStyleRef, updateOverlayStyleField]);
+    // `draftGeometry` is a dep because the closure above reads it —
+    // without it the ref would keep a stale override map and the rail
+    // would be back to editing the pre-drag geometry. Re-running is a
+    // bare ref assignment, so the per-frame churn during a drag costs
+    // nothing.
+  }, [overlays, draftGeometry, updateLayerStyleRef, updateOverlayStyleField]);
 
   // Selected-overlay style edit handler for the standalone popover.
   const onSelectedStyleFieldChange = useCallback(

@@ -32,5 +32,4 @@ export * from "./local-agent-policy";
 export * from "./desktop-platform";
 export * from "./shortcut-semantics";
 export * from "./selector-crop-stream";
-export * from "./shortcut-semantics";
-export * from "./selector-crop-stream";
+export * from "./capture-invocation";

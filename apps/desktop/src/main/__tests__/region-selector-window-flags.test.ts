@@ -2114,6 +2114,179 @@ describe("region-selector — content-protection isolation", () => {
   });
 });
 
+describe("region-selector — authenticated post-show presentation trace", () => {
+  function invocation() {
+    return {
+      id: "trace-selector-1234",
+      origin: "global_hotkey.window" as const,
+      triggerMonotonicMs: 1000,
+      dispatchMonotonicMs: 1001,
+      triggerWallTime: "2026-09-01T12:00:00.000Z"
+    };
+  }
+
+  test("requests acknowledgement after show/focus/moveTop and rejects stale or wrong senders", async () => {
+    suppressPresentationAck = true;
+    const entries: Array<{ message: string; fields: Record<string, unknown> }> = [];
+    let tick = 1010;
+    const { CaptureLatencyTrace } = await import(
+      "../capture/capture-latency-trace"
+    );
+    const trace = new CaptureLatencyTrace(invocation(), "window", {
+      monotonicNow: () => ++tick,
+      wallNow: () => "2026-09-01T12:00:01.000Z",
+      logger: {
+        debug: (message, fields) => entries.push({ message, fields }),
+        info: (message, fields) => entries.push({ message, fields })
+      }
+    });
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({ mode: "window", latencyTrace: trace });
+
+    const spy = constructed[0]!;
+    await vi.waitFor(() => {
+      expect(spy.webContents.send).toHaveBeenCalledWith(
+        "region-selector:presentation-arm",
+        expect.objectContaining({
+          invocationId: 1,
+          surface: "window-loading"
+        })
+      );
+    });
+    const requestIndex = spy.webContents.send.mock.calls.findIndex(
+      ([channel]) => channel === "region-selector:presentation-arm"
+    );
+    const request = spy.webContents.send.mock.calls[requestIndex]?.[1] as {
+      invocationId: number;
+      generation: number;
+      surface: "window-loading";
+    };
+    const requestOrder = spy.webContents.send.mock.invocationCallOrder[requestIndex];
+    expect(requestOrder).toBeGreaterThan(spy.show.mock.invocationCallOrder[0]!);
+    expect(requestOrder).toBeGreaterThan(spy.focus.mock.invocationCallOrder[0]!);
+    expect(requestOrder).toBeGreaterThan(spy.webContents.focus.mock.invocationCallOrder[0]!);
+    expect(requestOrder).toBeGreaterThan(spy.moveTop.mock.invocationCallOrder[0]!);
+
+    const presented = ipcListeners.get("region-selector:presented");
+    presented?.({ sender: { id: spy.webContents.id + 1 } }, request);
+    presented?.(
+      { sender: spy.webContents },
+      { ...request, invocationId: 9999 }
+    );
+    presented?.(
+      { sender: spy.webContents },
+      { ...request, generation: request.generation - 1 }
+    );
+    presented?.(
+      { sender: spy.webContents },
+      { ...request, surface: "frozen-frame" }
+    );
+    expect(
+      entries.filter((entry) => entry.fields.event === "capture_latency_summary")
+    ).toHaveLength(0);
+
+    presented?.({ sender: spy.webContents }, request);
+    const summaries = entries.filter(
+      (entry) => entry.fields.event === "capture_latency_summary"
+    );
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]?.fields).toMatchObject({
+      outcome: "presented",
+      invocationId: invocation().id,
+      generation: request.generation,
+      frameBarrier: 2
+    });
+    expect(
+      entries.find((entry) => entry.fields.stage === "first_visible_paint_ack")?.fields
+    ).toMatchObject({ authenticated: true, frameBarrier: 2 });
+
+    ipcListeners.get("region-selector:result")?.({}, { ok: false, invocationId: 1 });
+    await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
+    expect(
+      entries.filter((entry) => entry.fields.event === "capture_latency_summary")
+    ).toHaveLength(1);
+  });
+
+  test("missing post-show acknowledgement terminates without a false presented summary", async () => {
+    suppressPresentationAck = true;
+    vi.useFakeTimers();
+    const entries: Array<{ message: string; fields: Record<string, unknown> }> = [];
+    let tick = 1010;
+    const { CaptureLatencyTrace } = await import(
+      "../capture/capture-latency-trace"
+    );
+    const trace = new CaptureLatencyTrace(invocation(), "auto", {
+      monotonicNow: () => ++tick,
+      wallNow: () => "2026-09-01T12:00:01.000Z",
+      logger: {
+        debug: (message, fields) => entries.push({ message, fields }),
+        info: (message, fields) => entries.push({ message, fields })
+      }
+    });
+    try {
+      const { pickRegion } = await import("../capture/region-selector");
+      const pick = pickRegion({ mode: "window", latencyTrace: trace });
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(constructed[0]?.show).toHaveBeenCalledTimes(1);
+      expect(
+        entries.filter((entry) => entry.fields.event === "capture_latency_summary")
+      ).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(
+        entries.filter((entry) => entry.fields.event === "capture_latency_summary")
+      ).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(pick).resolves.toMatchObject({ ok: false, reason: "destroyed" });
+
+      const summaries = entries.filter(
+        (entry) => entry.fields.event === "capture_latency_summary"
+      );
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0]?.fields).toMatchObject({
+        outcome: "destroy",
+        reason: "presentation_timeout"
+      });
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  test("screen acquisition failure emits an error summary without showing the selector", async () => {
+    screenSnapshotMocks.captureAndRegister.mockRejectedValueOnce(
+      new Error("fixture acquisition failure")
+    );
+    const entries: Array<{ message: string; fields: Record<string, unknown> }> = [];
+    let tick = 1010;
+    const { CaptureLatencyTrace } = await import(
+      "../capture/capture-latency-trace"
+    );
+    const trace = new CaptureLatencyTrace(invocation(), "auto", {
+      monotonicNow: () => ++tick,
+      wallNow: () => "2026-09-01T12:00:01.000Z",
+      logger: {
+        debug: (message, fields) => entries.push({ message, fields }),
+        info: (message, fields) => entries.push({ message, fields })
+      }
+    });
+    const { pickRegion } = await import("../capture/region-selector");
+
+    await expect(pickRegion({ latencyTrace: trace })).resolves.toMatchObject({
+      ok: false,
+      reason: "destroyed"
+    });
+    expect(constructed[0]?.show).not.toHaveBeenCalled();
+    expect(
+      entries.find((entry) => entry.fields.event === "capture_latency_summary")
+        ?.fields
+    ).toMatchObject({
+      outcome: "error",
+      code: "screen_frame_acquisition_failed"
+    });
+  });
+});
+
 describe("prepareWindowListPayload — content-protected windows", () => {
   const protectionDisplay = {
     id: 1,

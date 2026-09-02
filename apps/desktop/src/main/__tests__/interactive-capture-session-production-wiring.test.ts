@@ -111,9 +111,13 @@ describe("interactive capture session production wiring", () => {
     // debounce. A future direct call from one switch arm would reintroduce
     // the observed Windows key-repeat triple dispatch.
     for (const mode of ["auto", "region", "window", "timed"] as const) {
-      expect(
-        occurrences(hotkeyHandlers, `triggerInteractiveCaptureFromHotkey("${mode}", kind)`)
-      ).toBe(1);
+      const calls = hotkeyHandlers.match(
+        new RegExp(
+          `triggerInteractiveCaptureFromHotkey\\(\\s*"${mode}",\\s*kind,\\s*"global_hotkey\\.[^"]+"\\s*\\)`,
+          "g"
+        )
+      );
+      expect(calls).toHaveLength(1);
     }
     expect(occurrences(hotkeyHandlers, "triggerInteractiveRecordFromHotkey(kind)")).toBe(1);
     expect(occurrences(hotkeyHandlers, "runInteractiveCapture(")).toBe(0);

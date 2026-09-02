@@ -23,7 +23,7 @@ import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { clipboard, screen } from "electron";
 import sharp from "sharp";
-import { ok, err, PASTE_IMAGE_MAX_BYTES } from "@pwrsnap/shared";
+import { ok, err, isCaptureInvocation, PASTE_IMAGE_MAX_BYTES } from "@pwrsnap/shared";
 import type {
   CapturePresetMetric,
   CaptureRecord,
@@ -90,6 +90,7 @@ import {
   UnsafePastedFileError
 } from "../security/assertSafePastedFile";
 import { validateSafeRgbaRasterDimensions } from "../image/safe-raster-decode";
+import { CaptureLatencyTrace } from "../capture/capture-latency-trace";
 
 const log = getMainLogger("pwrsnap:capture-handlers");
 
@@ -256,7 +257,20 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
 
   bus.register("capture:interactive", async (req, ctx) => {
     const mode = req.mode ?? "auto";
+    if (!isCaptureInvocation(req.invocation)) {
+      return err({
+        kind: "validation",
+        code: "capture_invocation_required",
+        message: "capture:interactive requires a valid invocation trace"
+      });
+    }
+    const trace = new CaptureLatencyTrace(req.invocation, mode);
+    trace.mark("dispatch_receive", { principal: ctx.principal });
     const session = acquireInteractiveCaptureSession("image");
+    trace.mark("shared_session", {
+      busy: session.status === "busy",
+      ...(session.status === "busy" ? { activeOwner: session.activeOwner } : {})
+    });
     if (session.status === "busy") {
       log.info("capture:interactive invocation suppressed", {
         mode,
@@ -264,6 +278,7 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
         reason: "in_flight",
         activeOwner: session.activeOwner
       });
+      trace.finish("cancel", { reason: "in_flight" });
       return err({
         kind: "capture",
         code: "capture_in_progress",
@@ -280,19 +295,33 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       // first-ever attempt the gate fires the macOS prompt instead; on a
       // subsequent denied attempt it routes to System Settings. Either way
       // we never paint an empty selector at the user.
+      const permissionStage = trace.begin("permission_preflight");
       const blocked = await guardScreenCapture();
-      if (blocked) return blocked;
+      const permissionErrorCode = blocked !== null && !blocked.ok ? blocked.error.code : null;
+      trace.end(permissionStage, { outcome: permissionErrorCode ?? "granted" });
+      if (blocked) {
+        trace.finish("error", { code: permissionErrorCode ?? "permission_blocked" });
+        return blocked;
+      }
       // macOS must preflight the Documents TCC grant before the screen-saver
       // selector can cover its consent prompt. Windows has no equivalent TCC
       // prompt, so its cold mkdir/probe/write is deferred until after selection
       // and cannot delay the first picker feedback.
       if (process.platform === "darwin") {
+        const storageStage = trace.begin("storage_readiness");
         const storageBlocked = await ensureCapturesDirReady();
-        if (storageBlocked) return storageBlocked;
+        const storageErrorCode =
+          storageBlocked !== null && !storageBlocked.ok ? storageBlocked.error.code : null;
+        trace.end(storageStage, { outcome: storageErrorCode ?? "ready" });
+        if (storageBlocked) {
+          trace.finish("error", { code: storageErrorCode ?? "storage_not_ready" });
+          return storageBlocked;
+        }
       }
       log.info("capture:interactive handler received", {
         mode,
-        principal: ctx.principal
+        principal: ctx.principal,
+        invocationId: req.invocation.id
       });
 
       // Timed mode = "delay 5 s, then open the normal auto picker."
@@ -307,11 +336,16 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       // user picks against — region / window / ⇧-full-window all work
       // exactly as they do in Quick Capture.
       if (mode === "timed") {
+        const timedStage = trace.begin("timed_countdown");
         log.info("capture:interactive timed delay starting", {
           durationFromHandlerReceivedMs: Date.now() - handlerStartedAt
         });
         const delay = await runTimedDelay();
-        if (!delay.ok) return delay;
+        trace.end(timedStage, { outcome: delay.ok ? "completed" : delay.error.code });
+        if (!delay.ok) {
+          trace.finish("error", { code: delay.error.code });
+          return delay;
+        }
         log.info("capture:interactive timed delay completed", {
           durationFromHandlerReceivedMs: Date.now() - handlerStartedAt
         });
@@ -324,7 +358,8 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       // NOTHING here is awaited on the hotkey→selector path: the settings
       // read (uncached disk parse) and the helper spawn chain off a
       // promise that runs while nothing else is happening.
-      let cursorSamplePromise: Promise<CursorSample | null> | null = startCursorSampleIfEnabled();
+      let cursorSamplePromise: Promise<CursorSample | null> | null =
+        startCursorSampleIfEnabled(trace);
 
       // The sample must land BEFORE the selector swaps the OS cursor for
       // its synthetic crosshair — NSCursor.currentSystem reads the LIVE
@@ -335,6 +370,7 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       // Warm spawns land well inside the budget; a cold first-capture
       // miss just means no cursor layer that one time.
       if (cursorSamplePromise !== null) {
+        const cursorBudgetStage = trace.begin("cursor_sampling_budget");
         const settled = await Promise.race([
           cursorSamplePromise.then(
             () => true,
@@ -344,6 +380,10 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
             setTimeout(() => resolve(false), CURSOR_SAMPLE_PRE_SELECTOR_BUDGET_MS)
           )
         ]);
+        trace.end(cursorBudgetStage, {
+          budgetMs: CURSOR_SAMPLE_PRE_SELECTOR_BUDGET_MS,
+          outcome: settled ? "settled" : "missed"
+        });
         if (!settled) {
           log.info("cursor sample missed the pre-selector budget — dropped (tainted)");
           cursorSamplePromise = null;
@@ -380,18 +420,21 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
         selectorMode,
         keepPwrSnapChrome,
         protectWindowCount: protectWindowIds.length,
+        invocationId: req.invocation.id,
         durationFromHandlerReceivedMs: pickRegionStartedAt - handlerStartedAt
       });
       const selection = await pickRegion({
         mode: selectorMode,
         keepPwrSnapChrome,
-        protectWindowIds
+        protectWindowIds,
+        latencyTrace: trace
       });
       log.info("capture:interactive pickRegion returned", {
         mode,
         selectorMode,
         ok: selection.ok,
         reason: selection.ok ? "completed" : selection.reason,
+        invocationId: req.invocation.id,
         durationFromPickRegionCallMs: Date.now() - pickRegionStartedAt,
         durationFromHandlerReceivedMs: Date.now() - handlerStartedAt
       });
@@ -404,6 +447,9 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       // it the whole time, and the selector hide reveals the desktop
       // (not the float-over).
       if (!selection.ok) {
+        trace.finish(selection.reason === "destroyed" ? "destroy" : "cancel", {
+          reason: selection.reason
+        });
         if (selection.reason === "busy") {
           return err({
             kind: "capture",
@@ -530,8 +576,13 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
         }
 
         if (process.platform !== "darwin") {
+          const storageStage = trace.begin("storage_readiness");
           const storageBlocked = await ensureCapturesDirReady();
+          const storageErrorCode =
+            storageBlocked !== null && !storageBlocked.ok ? storageBlocked.error.code : null;
+          trace.end(storageStage, { outcome: storageErrorCode ?? "ready" });
           if (storageBlocked) {
+            trace.finish("error", { code: storageErrorCode ?? "storage_not_ready" });
             setFloatOverState({ kind: "cancel" });
             return storageBlocked;
           }
@@ -695,6 +746,9 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
         }
         await tearDownSelector();
       }
+    } catch (cause) {
+      trace.finish("error", { code: "handler_threw" });
+      throw cause;
     } finally {
       releaseInteractiveCaptureSession(session.token);
     }
@@ -1648,17 +1702,46 @@ const CURSOR_SAMPLE_PRE_SELECTOR_BUDGET_MS = 350;
  *  both live inside the returned promise chain) and never rejecting.
  *  Shared by every image-capture entry point so the Settings toggle
  *  means what it says: "screenshots", not "one kind of screenshot". */
-function startCursorSampleIfEnabled(): Promise<CursorSample | null> {
+function startCursorSampleIfEnabled(
+  trace?: CaptureLatencyTrace
+): Promise<CursorSample | null> {
   // The helper is macOS-only. Returning before the settings read is
   // load-bearing on Windows: otherwise every capture waits on an uncached
   // settings file read (and can burn the whole pre-selector budget) only for
   // sampleCursor() to return null afterward.
-  if (process.platform !== "darwin") return Promise.resolve(null);
-  return readDesktopSettings()
-    .then((settings) =>
-      settings.recording.imageCaptureCursor ? sampleCursor() : null
-    )
-    .catch(() => null);
+  if (process.platform !== "darwin") {
+    trace?.mark("cursor_sample", { outcome: "unsupported_platform" });
+    return Promise.resolve(null);
+  }
+  return (async () => {
+    const settingsStage = trace?.begin("settings_read");
+    let enabled = false;
+    try {
+      const settings = await readDesktopSettings();
+      enabled = settings.recording.imageCaptureCursor;
+      if (settingsStage !== undefined) {
+        trace?.end(settingsStage, { outcome: "read", cursorEnabled: enabled });
+      }
+    } catch {
+      if (settingsStage !== undefined) trace?.end(settingsStage, { outcome: "failed" });
+      return null;
+    }
+    if (!enabled) {
+      trace?.mark("cursor_sample", { outcome: "disabled" });
+      return null;
+    }
+    const sampleStage = trace?.begin("cursor_sample");
+    try {
+      const sample = await sampleCursor();
+      if (sampleStage !== undefined) {
+        trace?.end(sampleStage, { outcome: sample === null ? "unavailable" : "sampled" });
+      }
+      return sample;
+    } catch {
+      if (sampleStage !== undefined) trace?.end(sampleStage, { outcome: "failed" });
+      return null;
+    }
+  })();
 }
 
 async function persistAndBroadcast(

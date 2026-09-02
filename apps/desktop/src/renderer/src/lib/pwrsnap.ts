@@ -4,16 +4,18 @@
 // Result envelope (e.g. inside React event handlers where awaiting the
 // envelope adds noise).
 
-import type {
-  CommandName,
-  PerfMarkPayload,
-  PwrSnapError,
-  RenderPreset,
-  Req,
-  Res,
-  Result,
-  VideoPreset,
-  VideoRange
+import {
+  createCaptureInvocation,
+  type CaptureInvocationOrigin,
+  type CommandName,
+  type PerfMarkPayload,
+  type PwrSnapError,
+  type RenderPreset,
+  type Req,
+  type Res,
+  type Result,
+  type VideoPreset,
+  type VideoRange
 } from "@pwrsnap/shared";
 
 /**
@@ -36,6 +38,19 @@ export async function dispatch<C extends CommandName>(
     };
   }
   return window.pwrsnapApi.dispatch(name, req);
+}
+
+/** Start one selector-based image capture at the initiating UI callback. */
+export function dispatchInteractiveCapture(
+  origin: CaptureInvocationOrigin,
+  mode: "auto" | "region" | "window" | "timed"
+): Promise<Result<Res<"capture:interactive">, PwrSnapError>> {
+  const invocation = createCaptureInvocation({
+    id: globalThis.crypto.randomUUID(),
+    origin,
+    monotonicNow: () => performance.timeOrigin + performance.now()
+  });
+  return dispatch("capture:interactive", { mode, invocation });
 }
 
 export class PwrSnapDispatchError extends Error {

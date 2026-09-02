@@ -48,6 +48,10 @@ import {
   SELECTOR_CROP_CHUNK_BYTES,
   type SelectorCropStreamReply
 } from "@pwrsnap/shared/selector-crop-stream";
+import type {
+  CaptureLatencyStageToken,
+  CaptureLatencyTrace
+} from "./capture-latency-trace";
 
 const MIN_AREA_PX = 400; // 20×20 — anything smaller isn't a meaningful snap target.
 const SELECTOR_WINDOW_TITLE = "PwrSnap Region Selector";
@@ -106,6 +110,8 @@ type ActiveSelectorLifecycle = {
   cropPortOpened: boolean;
   cropReceiver: SelectorCropReceiver | null;
   committedCropPath: string | null;
+  latencyTrace: CaptureLatencyTrace | null;
+  screenFrameAcquisitionStage: CaptureLatencyStageToken | null;
   onSelectorPresented: ((event: SelectorPresentedEvent) => void) | null;
   presentationGeneration: number | null;
   presentationSurface: SelectorPresentedEvent["surface"] | null;
@@ -647,7 +653,21 @@ function installRendererFramePort(
       ) {
         return;
       }
+      if (lifecycle.frameReady) return;
       lifecycle.frameReady = true;
+      if (lifecycle.screenFrameAcquisitionStage !== null) {
+        lifecycle.latencyTrace?.end(lifecycle.screenFrameAcquisitionStage, {
+          strategy: "renderer-display-media",
+          displayId: targetDisplay.id,
+          width,
+          height
+        });
+        lifecycle.screenFrameAcquisitionStage = null;
+      }
+      lifecycle.latencyTrace?.mark("renderer_signal_receipt", {
+        signal: "frame-ready",
+        authenticated: true
+      });
       log.info("picker latency stage", {
         invocationId: lifecycle.invocationId,
         mode: lifecycle.mode,
@@ -697,6 +717,7 @@ function teardownActiveSelectorLifecycle(
   if (match.displayId !== undefined && lifecycle.targetDisplayId !== match.displayId) return false;
 
   lifecycle.settled = true;
+  lifecycle.latencyTrace?.finish("destroy", { reason: source });
   lifecycle.stopAsyncWork?.();
   lifecycle.stopAsyncWork = null;
   const result = selectorFailure("destroyed", takePreviousApp(lifecycle));
@@ -853,6 +874,10 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
         invocationId: mark.invocationId,
         mark: mark.mark
       });
+      activeSelectorLifecycle?.latencyTrace?.mark("renderer_signal_receipt", {
+        signal: mark.mark,
+        authenticated: true
+      });
     });
     ipcMain.on(SELECTOR_PRESENTED_CHANNEL, (event, payload: unknown) => {
       const presented =
@@ -888,6 +913,17 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
         clearTimeout(lifecycle.presentationTimeout);
         lifecycle.presentationTimeout = null;
       }
+      lifecycle.latencyTrace?.mark("first_visible_paint_ack", {
+        authenticated: true,
+        frameBarrier: 2,
+        generation: presented.generation,
+        surface: presented.surface
+      });
+      lifecycle.latencyTrace?.finish("presented", {
+        frameBarrier: 2,
+        generation: presented.generation,
+        surface: presented.surface
+      });
       const callback = lifecycle.onSelectorPresented;
       lifecycle.onSelectorPresented = null;
       if (callback !== null) {
@@ -945,6 +981,14 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
       }
       const waiter = pendingPaintWait;
       pendingPaintWait = null;
+      activeSelectorLifecycle?.latencyTrace?.mark("renderer_signal_receipt", {
+        signal: "snapshot-painted",
+        status: paint.status,
+        authenticated: true
+      });
+      activeSelectorLifecycle?.latencyTrace?.mark("frozen_source_decode_ready", {
+        status: paint.status
+      });
       waiter.resolve(paint.status === "error" ? "error" : "painted");
     });
     ipcMain.on(SELECTOR_RESULT_CHANNEL, (event, payload: unknown) => {
@@ -1149,6 +1193,8 @@ export async function pickRegion(
     /** Called synchronously once the accepted invocation's truthful selector
      *  surface has been presented and acknowledged after show. */
     onSelectorPresented?: (event: SelectorPresentedEvent) => void;
+    /** Invocation-scoped trigger-to-visible diagnostic trace. */
+    latencyTrace?: CaptureLatencyTrace;
   } = {}
 ): Promise<SelectorResult> {
   const mode: SelectorMode = opts.mode ?? "auto";
@@ -1162,6 +1208,7 @@ export async function pickRegion(
       reason: "in_flight",
       activeInvocationId: pendingInvocationId
     });
+    opts.latencyTrace?.finish("cancel", { reason: "busy" });
     return selectorFailure("busy");
   }
   pickerInvocationActive = true;
@@ -1195,6 +1242,8 @@ export async function pickRegion(
     cropPortOpened: false,
     cropReceiver: null,
     committedCropPath: null,
+    latencyTrace: opts.latencyTrace ?? null,
+    screenFrameAcquisitionStage: null,
     onSelectorPresented: opts.onSelectorPresented ?? null,
     presentationGeneration: null,
     presentationSurface: null,
@@ -1237,6 +1286,7 @@ export async function pickRegion(
   try {
     const requestStartedAt = Date.now();
     const elapsedFromRequest = (): number => Date.now() - requestStartedAt;
+    const selectorPrewarmLoadStage = lifecycle.latencyTrace?.begin("selector_prewarm_load");
     log.info("capture selector requested", {
       invocationId,
       mode,
@@ -1248,12 +1298,19 @@ export async function pickRegion(
       preWarmRegionSelector("lazy");
     }
     if (selectorWindows.size === 0) {
+      if (selectorPrewarmLoadStage !== undefined) {
+        lifecycle.latencyTrace?.end(selectorPrewarmLoadStage, { outcome: "unavailable" });
+      }
       return selectorFailure("destroyed");
     }
 
     // Route to whichever display the cursor is on right now.
+    const targetDisplayStage = lifecycle.latencyTrace?.begin("target_display_resolution");
     const cursor = screen.getCursorScreenPoint();
     const targetDisplay = screen.getDisplayNearestPoint(cursor);
+    if (targetDisplayStage !== undefined) {
+      lifecycle.latencyTrace?.end(targetDisplayStage, { displayId: targetDisplay.id });
+    }
     lifecycle.targetDisplayId = targetDisplay.id;
     log.info("capture selector target display resolved", {
       displayId: targetDisplay.id,
@@ -1276,7 +1333,16 @@ export async function pickRegion(
     );
     if (targetLoad.kind === "terminated") return targetLoad.result;
     if (!targetLoad.value) {
+      if (selectorPrewarmLoadStage !== undefined) {
+        lifecycle.latencyTrace?.end(selectorPrewarmLoadStage, { outcome: "load_failed" });
+      }
       return selectorFailure("destroyed");
+    }
+    if (selectorPrewarmLoadStage !== undefined) {
+      lifecycle.latencyTrace?.end(selectorPrewarmLoadStage, {
+        outcome: "ready",
+        displayId: targetDisplay.id
+      });
     }
 
     const win = targetWindow;
@@ -1302,6 +1368,9 @@ export async function pickRegion(
       fallback: usesLegacyFileSnapshot
     });
     releaseActiveScreenSnapshot();
+    const chromeProtectionStage = lifecycle.latencyTrace?.begin(
+      "pwrsnap_chrome_protection"
+    );
     // Synchronously dismiss PwrSnap capture chrome BEFORE the snapshot
     // and window-list enumeration so our own popovers/toasts neither
     // appear in the frozen background nor become snap candidates. The
@@ -1377,6 +1446,12 @@ export async function pickRegion(
       liftSnapshotContentProtection();
       return lifecycle.terminationResult;
     }
+    if (chromeProtectionStage !== undefined) {
+      lifecycle.latencyTrace?.end(chromeProtectionStage, {
+        protectedWindowCount: protectWindowIds.length,
+        chromePreserved: keepPwrSnapChrome
+      });
+    }
 
     const displayBounds = targetDisplay.bounds;
     const displayCursor = {
@@ -1445,6 +1520,17 @@ export async function pickRegion(
         return;
       }
       const windowLayoutRequestedAt = Date.now();
+      const windowEnumerationStage = lifecycle.latencyTrace?.begin(
+        "native_window_enumeration"
+      );
+      let windowEnumerationStageEnded = false;
+      const endWindowEnumerationStage = (
+        fields: Record<string, string | number | boolean>
+      ): void => {
+        if (windowEnumerationStage === undefined || windowEnumerationStageEnded) return;
+        windowEnumerationStageEnded = true;
+        lifecycle.latencyTrace?.end(windowEnumerationStage, fields);
+      };
       log.info("picker latency stage", {
         invocationId,
         mode,
@@ -1457,6 +1543,10 @@ export async function pickRegion(
         .then((snapshot): void => {
           if (!acceptingWindowList || lifecycle.terminationResult !== null) return;
           if (selectorVisible && pendingResolver !== windowListResolver) return;
+          endWindowEnumerationStage({
+            outcome: "ready",
+            rawWindowCount: snapshot.windows.length
+          });
           log.info("picker latency stage", {
             invocationId,
             mode,
@@ -1521,6 +1611,7 @@ export async function pickRegion(
         })
         .catch((err): void => {
           if (!acceptingWindowList || lifecycle.terminationResult !== null) return;
+          endWindowEnumerationStage({ outcome: "error" });
           log.warn("window-list helper failed during selector startup", {
             invocationId,
             mode,
@@ -1577,6 +1668,7 @@ export async function pickRegion(
     if (mode !== "window") requestWindowList();
 
     if (usesLegacyFileSnapshot) {
+      const screenFrameStage = lifecycle.latencyTrace?.begin("screen_frame_acquisition");
       const screenSnapshotRequestedAt = Date.now();
       log.info("picker latency stage", {
         invocationId,
@@ -1589,6 +1681,12 @@ export async function pickRegion(
         const capturePromise = captureAndRegister(targetDisplay.id, { mode });
         const capture = await raceSelectorTermination(lifecycle, capturePromise);
         if (capture.kind === "terminated") {
+          if (screenFrameStage !== undefined) {
+            lifecycle.latencyTrace?.end(screenFrameStage, {
+              outcome: "terminated",
+              strategy: "legacy-file"
+            });
+          }
           // The native capture cannot be synchronously cancelled. Return the
           // destroyed result now and release its registry entry if/when it lands.
           void capturePromise.then(
@@ -1599,6 +1697,13 @@ export async function pickRegion(
         }
         const screenSnapshot = capture.value;
         activeScreenSnapshot = screenSnapshot;
+        if (screenFrameStage !== undefined) {
+          lifecycle.latencyTrace?.end(screenFrameStage, {
+            outcome: "ready",
+            strategy: "legacy-file",
+            displayId: targetDisplay.id
+          });
+        }
         log.info("picker latency stage", {
           invocationId,
           mode,
@@ -1610,6 +1715,15 @@ export async function pickRegion(
           strategy: "legacy-file"
         });
       } catch (err) {
+        if (screenFrameStage !== undefined) {
+          lifecycle.latencyTrace?.end(screenFrameStage, {
+            outcome: "error",
+            strategy: "legacy-file"
+          });
+        }
+        lifecycle.latencyTrace?.finish("error", {
+          code: "screen_frame_acquisition_failed"
+        });
         if (lifecycle.terminationResult !== null) return lifecycle.terminationResult;
         log.warn("screen snapshot failed; selector aborted", {
           invocationId,
@@ -1689,6 +1803,8 @@ export async function pickRegion(
       if (!win.isDestroyed()) {
         win.webContents.send(SELECTOR_MODE_CHANNEL, modePayload);
         if (usesRendererDisplayMedia) {
+          lifecycle.screenFrameAcquisitionStage =
+            lifecycle.latencyTrace?.begin("screen_frame_acquisition") ?? null;
           installRendererFramePort(lifecycle, win, targetDisplay);
         }
       }
@@ -1756,6 +1872,10 @@ export async function pickRegion(
         // after show/focus, matching the float-over and recording HUD
         // pattern without activating PwrSnap or changing Spaces.
         win.moveTop();
+        lifecycle.latencyTrace?.mark("browser_window_present_calls", {
+          displayId: targetDisplay.id,
+          showMode: inactiveWindowsPicker ? "inactive" : "active"
+        });
         // Do not let lazy float-over BrowserWindow creation delay the first
         // picker show. Region/auto can pre-show it now beneath their frozen
         // background; every window-picker defers it until native enumeration
@@ -1890,8 +2010,18 @@ export async function pickRegion(
       reason: result.ok ? "completed" : result.reason,
       durationFromUserRequestMs: elapsedFromRequest()
     });
+    if (!lifecycle.latencyTrace?.isFinished()) {
+      lifecycle.latencyTrace?.finish(result.ok ? "destroy" : "cancel", {
+        reason: result.ok ? "selection_finished_before_presentation" : result.reason
+      });
+    }
     return result;
   } finally {
+    if (!lifecycle.latencyTrace?.isFinished()) {
+      lifecycle.latencyTrace?.finish("destroy", {
+        reason: "selector_exit_before_presentation"
+      });
+    }
     // Covers synchronous throws between protection-on and the inner capture
     // try/finally (native handle reads, bounds reads, and list setup). The
     // helper is idempotent so normal snapshot cleanup cannot double-toggle.

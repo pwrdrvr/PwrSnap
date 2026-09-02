@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import type { CaptureRecord } from "@pwrsnap/shared";
+import type { CaptureInvocation, CaptureRecord } from "@pwrsnap/shared";
 
 const captureRecord = {
   id: "cap_1",
@@ -12,6 +12,17 @@ const captureRecord = {
   source_app_name: null,
   deleted_at: null
 } as unknown as CaptureRecord;
+
+function invocation(id: string): CaptureInvocation {
+  const now = performance.timeOrigin + performance.now();
+  return {
+    id: `capture-${id}`,
+    origin: "global_hotkey.region",
+    triggerMonotonicMs: now,
+    dispatchMonotonicMs: now,
+    triggerWallTime: new Date().toISOString()
+  };
+}
 
 const mocks = vi.hoisted(() => ({
   pickRegion: vi.fn(),
@@ -216,7 +227,11 @@ describe("capture:interactive snapshot production wiring", () => {
     );
 
     try {
-      const pending = bus.dispatch("capture:interactive", { mode: "region" }, { principal: "ipc" });
+      const pending = bus.dispatch(
+        "capture:interactive",
+        { mode: "region", invocation: invocation("windows-storage-order") },
+        { principal: "ipc" }
+      );
       await vi.waitFor(() => expect(mocks.pickRegion).toHaveBeenCalledTimes(1));
       expect(mocks.ensureCapturesDirReady).not.toHaveBeenCalled();
 
@@ -268,7 +283,7 @@ describe("capture:interactive snapshot production wiring", () => {
     try {
       const result = await bus.dispatch(
         "capture:interactive",
-        { mode: "region" },
+        { mode: "region", invocation: invocation("windows-storage-failure") },
         { principal: "ipc" }
       );
 
@@ -304,7 +319,11 @@ describe("capture:interactive snapshot production wiring", () => {
     });
 
     try {
-      const pending = bus.dispatch("capture:interactive", { mode: "region" }, { principal: "ipc" });
+      const pending = bus.dispatch(
+        "capture:interactive",
+        { mode: "region", invocation: invocation("mac-storage-order") },
+        { principal: "ipc" }
+      );
       await vi.waitFor(() => expect(mocks.ensureCapturesDirReady).toHaveBeenCalledTimes(1));
       expect(mocks.pickRegion).not.toHaveBeenCalled();
 
@@ -333,7 +352,7 @@ describe("capture:interactive snapshot production wiring", () => {
 
     const result = await bus.dispatch(
       "capture:interactive",
-      { mode: "region" },
+      { mode: "region", invocation: invocation("renderer-crop") },
       { principal: "ipc" }
     );
 
@@ -364,7 +383,7 @@ describe("capture:interactive snapshot production wiring", () => {
 
     const result = await bus.dispatch(
       "capture:interactive",
-      { mode: "window" },
+      { mode: "window", invocation: invocation("full-window") },
       { principal: "ipc" }
     );
 
@@ -393,7 +412,7 @@ describe("capture:interactive snapshot production wiring", () => {
 
     const result = await bus.dispatch(
       "capture:interactive",
-      { mode: "region" },
+      { mode: "region", invocation: invocation("legacy-crop") },
       { principal: "ipc" }
     );
 
@@ -417,7 +436,7 @@ describe("capture:interactive snapshot production wiring", () => {
 
     const result = await bus.dispatch(
       "capture:interactive",
-      { mode: "window" },
+      { mode: "window", invocation: invocation("protected-window") },
       { principal: "ipc" }
     );
 
@@ -439,7 +458,7 @@ describe("capture:interactive snapshot production wiring", () => {
 
     const result = await bus.dispatch(
       "capture:interactive",
-      { mode: "window" },
+      { mode: "window", invocation: invocation("invalid-window") },
       { principal: "ipc" }
     );
 
@@ -468,7 +487,7 @@ describe("capture:interactive snapshot production wiring", () => {
 
     const result = await bus.dispatch(
       "capture:interactive",
-      { mode: "region" },
+      { mode: "region", invocation: invocation("persist-failure") },
       { principal: "ipc" }
     );
 
@@ -493,7 +512,7 @@ describe("capture:interactive snapshot production wiring", () => {
 
     const result = await bus.dispatch(
       "capture:interactive",
-      { mode: "window" },
+      { mode: "window", invocation: invocation("cancel") },
       { principal: "ipc" }
     );
 
@@ -521,7 +540,7 @@ describe("capture:interactive snapshot production wiring", () => {
 
     const result = await bus.dispatch(
       "capture:interactive",
-      { mode: "window" },
+      { mode: "window", invocation: invocation("library-restore") },
       { principal: "ipc" }
     );
 
@@ -544,12 +563,16 @@ describe("capture:interactive snapshot production wiring", () => {
       })
     );
 
-    const first = bus.dispatch("capture:interactive", { mode: "region" }, { principal: "ipc" });
+    const first = bus.dispatch(
+      "capture:interactive",
+      { mode: "region", invocation: invocation("concurrent-first") },
+      { principal: "ipc" }
+    );
     await vi.waitFor(() => expect(mocks.pickRegion).toHaveBeenCalledTimes(1));
 
     const duplicate = await bus.dispatch(
       "capture:interactive",
-      { mode: "region" },
+      { mode: "region", invocation: invocation("concurrent-duplicate") },
       { principal: "ipc" }
     );
     expect(duplicate).toMatchObject({
@@ -577,7 +600,7 @@ describe("capture:interactive snapshot production wiring", () => {
 
     const image = await bus.dispatch(
       "capture:interactive",
-      { mode: "window" },
+      { mode: "window", invocation: invocation("video-busy") },
       { principal: "ipc" }
     );
 

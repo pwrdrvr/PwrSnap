@@ -20,7 +20,13 @@ import {
   revealInFileManagerLabel,
   shortcutPlatformFromString
 } from "@pwrsnap/shared";
-import type { RecordingSubject, Settings, SettingsChangedEvent } from "@pwrsnap/shared";
+import type {
+  CaptureInvocationOrigin,
+  CaptureInvocationTrigger,
+  RecordingSubject,
+  Settings,
+  SettingsChangedEvent
+} from "@pwrsnap/shared";
 import {
   disposeRegionSelector,
   getLastWindowListSnapshot,
@@ -43,6 +49,10 @@ import { activateApp, selfPidSet } from "./capture/window-list";
 import { appWindowsOverlappingRect } from "./capture/rect-overlap";
 import { guardScreenCapture } from "./capture/screen-permission-gate";
 import { ensureCapturesDirReady } from "./capture/capture-storage-gate";
+import {
+  createInteractiveCaptureTrigger,
+  dispatchInteractiveCapture
+} from "./capture/capture-trigger";
 import { reconcileCapturesLocationOnBoot } from "./capture/capture-location-reconciliation";
 import {
   resolveSelectionSourceApp,
@@ -709,8 +719,13 @@ let cachedRecordingSettings: Settings["recording"] = defaultSettings().recording
 
 function triggerInteractiveCaptureFromHotkey(
   mode: "auto" | "region" | "window" | "timed",
-  kind: HotkeyKind
+  kind: HotkeyKind,
+  origin: CaptureInvocationOrigin
 ): void {
+  // Capture the trigger timestamp at the callback boundary. A suppressed
+  // duplicate simply discards this token; accepted work finalizes it at
+  // command dispatch after the synchronous debounce/session claim.
+  const trigger = createInteractiveCaptureTrigger(origin);
   // Synchronous by design: claim the one interactive-capture slot before
   // command dispatch (or any other awaited work) can yield to another
   // globalShortcut callback.
@@ -725,11 +740,13 @@ function triggerInteractiveCaptureFromHotkey(
     debounceMs: CAPTURE_TRIGGER_DEBOUNCE_MS
   });
   if (decision.status === "suppressed") return;
-
-  void runInteractiveCapture(mode, {
+  log.info("global hotkey fired", {
     kind,
-    shortcutFiredAt: decision.acceptedAtMs
-  })
+    mode,
+    invocationId: trigger.id
+  });
+
+  void runInteractiveCapture(mode, trigger)
     .finally(() => {
       interactiveCaptureTriggerGate.release(decision.token);
     })
@@ -772,15 +789,19 @@ function handlerFor(kind: HotkeyKind): () => void {
   switch (kind) {
     case "quickCapture":
       return () => {
-        triggerInteractiveCaptureFromHotkey("auto", kind);
+        triggerInteractiveCaptureFromHotkey(
+          "auto",
+          kind,
+          "global_hotkey.quick_capture"
+        );
       };
     case "region":
       return () => {
-        triggerInteractiveCaptureFromHotkey("region", kind);
+        triggerInteractiveCaptureFromHotkey("region", kind, "global_hotkey.region");
       };
     case "window":
       return () => {
-        triggerInteractiveCaptureFromHotkey("window", kind);
+        triggerInteractiveCaptureFromHotkey("window", kind, "global_hotkey.window");
       };
     case "fullScreen":
       // Capture the display under the cursor end-to-end (no selector).
@@ -801,7 +822,7 @@ function handlerFor(kind: HotkeyKind): () => void {
       // 5-second countdown, then the auto-mode selector. Routed through
       // `capture:interactive` (mode `"timed"`), same as the tray tile.
       return () => {
-        triggerInteractiveCaptureFromHotkey("timed", kind);
+        triggerInteractiveCaptureFromHotkey("timed", kind, "global_hotkey.timed");
       };
     case "videoCapture":
       // Fast Video Capture (issue #64). Opens the selector in auto
@@ -984,16 +1005,11 @@ async function runExportLibrary(): Promise<void> {
 
 async function runInteractiveCapture(
   mode: "auto" | "region" | "window" | "timed" = "auto",
-  trace?: { kind: HotkeyKind; shortcutFiredAt: number }
+  trigger: CaptureInvocationTrigger = createInteractiveCaptureTrigger(
+    "global_hotkey.quick_capture"
+  )
 ): Promise<void> {
   const log = getMainLogger("pwrsnap:shortcut");
-  const handlerStartedAt = Date.now();
-  log.info("interactive capture shortcut handler started", {
-    kind: trace?.kind,
-    mode,
-    durationFromHotkeyFiredMs:
-      trace === undefined ? undefined : handlerStartedAt - trace.shortcutFiredAt
-  });
   // The Quick Capture hotkey explicitly uses 'auto' mode — snap to a
   // window if the cursor is over one, drag for a free rect otherwise.
   // The Region / Window hotkeys force the selector into pure-rect /
@@ -1003,29 +1019,7 @@ async function runInteractiveCapture(
   // The handler owns the full lifecycle now (pre-show / populate /
   // hide-selector / activate-prev-app). We just wait for it to
   // finish and log non-cancellation errors.
-  const dispatchStartedAt = Date.now();
-  log.info("dispatching capture:interactive", {
-    kind: trace?.kind,
-    mode,
-    durationFromHotkeyFiredMs:
-      trace === undefined ? undefined : dispatchStartedAt - trace.shortcutFiredAt,
-    durationFromShortcutHandlerMs: dispatchStartedAt - handlerStartedAt
-  });
-  const result = await bus.dispatch(
-    "capture:interactive",
-    { mode },
-    { principal: "ipc" }
-  );
-  log.info("capture:interactive dispatch completed", {
-    kind: trace?.kind,
-    mode,
-    ok: result.ok,
-    code: result.ok ? undefined : result.error.code,
-    durationFromDispatchMs: Date.now() - dispatchStartedAt,
-    durationFromShortcutHandlerMs: Date.now() - handlerStartedAt,
-    durationFromHotkeyFiredMs:
-      trace === undefined ? undefined : Date.now() - trace.shortcutFiredAt
-  });
+  const result = await dispatchInteractiveCapture(trigger, mode);
   if (!result.ok && result.error.code !== "cancelled") {
     log.warn("capture:interactive failed", {
       code: result.error.code,

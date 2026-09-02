@@ -85,9 +85,22 @@ test("placed native windows are detected and highlighted at their Electron DIP b
         };
         const bridge = globalState.__PWRSNAP_TEST__;
         if (bridge === undefined) throw new Error("PWRSNAP_E2E bridge missing");
+        const triggerMonotonicMs = performance.timeOrigin + performance.now();
         globalState.__WINDOW_PICKER_DISPATCH__ = bridge.dispatch(
           "capture:interactive",
-          { mode: "window" }
+          {
+            mode: "window",
+            invocation: {
+              id: "e2e-window-picker",
+              origin: "global_hotkey.window",
+              triggerMonotonicMs,
+              dispatchMonotonicMs: Math.max(
+                triggerMonotonicMs,
+                performance.timeOrigin + performance.now()
+              ),
+              triggerWallTime: new Date().toISOString()
+            }
+          }
         );
       });
 

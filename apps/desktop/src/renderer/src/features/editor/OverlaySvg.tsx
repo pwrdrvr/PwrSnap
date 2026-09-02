@@ -58,6 +58,12 @@ import { rectFromDrag, type Draft } from "./editor-types";
 import type { GeometryUpdate, NormalizedPoint, NormalizedRect } from "./useCaptureModel";
 import { applyGeometryLocally } from "./geometry-projection";
 import { shapeStrokeGeometry } from "./shape-stroke-geometry";
+import {
+  applyRotationDetents,
+  createRotationDetentState,
+  resolveHeldRotation,
+  type RotationDetentState
+} from "./rotation-detents";
 import { computeTextGlyphSize } from "@pwrsnap/shared";
 import { TEXT_BBOX_CHAR_ADVANCE } from "./text-bbox-constants";
 import { measureTextWidthPx } from "./text-measure";
@@ -1965,7 +1971,13 @@ function geometryFromDrag(
   /** Measured glyph box for text rows (image px). Used for the text
    *  rotation pivot (body-box center) so it matches the outline +
    *  rendered glyph exactly. */
-  measured?: MeasuredGlyphSize | undefined
+  measured?: MeasuredGlyphSize | undefined,
+  /** Detent hook for the rotate handle: takes the raw accumulated
+   *  angle and returns the one to apply. Stateful across the gesture
+   *  (speed + which notch is holding), so the caller owns it — see
+   *  rotation-detents.ts. Omitted by callers that want the raw angle,
+   *  and ignored by every non-rotate handle. */
+  snapRotation?: (rawRad: number) => number
 ): GeometryUpdate | null {
   // Rotation handle — compute the angle from the layer's pivot point.
   // Pivot:
@@ -2012,7 +2024,13 @@ function geometryFromDrag(
     const currDyPx = (newYn - pivotYn) * imageHeightPx;
     const startAngle = Math.atan2(startDyPx, startDxPx);
     const currAngle = Math.atan2(currDyPx, currDxPx);
-    const newRotation = preRotation + (currAngle - startAngle);
+    const rawRotation = preRotation + (currAngle - startAngle);
+    // Detents live HERE rather than in the pointer handler so the live
+    // preview, the handle positions and the committed geometry are all
+    // the same number — the angle the user sees snap is the angle that
+    // gets written.
+    const newRotation =
+      snapRotation !== undefined ? snapRotation(rawRotation) : rawRotation;
     if (data.kind === "text") {
       return { kind: "text", point: data.point, rotation: newRotation };
     }
@@ -2359,6 +2377,35 @@ export function TransformHandles({
   // body-translate path reads this to compute a translation delta
   // against the start data snapshot. Resize handles ignore it.
   const dragStartPtRef = useRef<{ xn: number; yn: number } | null>(null);
+  // Rotation detent machine for the rotate handle — carries the
+  // latest sample's angular speed (INSTANTANEOUS, deliberately not
+  // smoothed: see rotation-detents.ts, where an EMA is documented as
+  // carrying a whip forward past the deceleration that should make
+  // the next notch available) and whichever notch is currently
+  // holding.
+  // A ref, not state: it advances on every pointermove and must not
+  // drive a render of its own (the geometry it produces already does).
+  // Reset on every pointerdown so a gesture never inherits the
+  // previous one's notch. See rotation-detents.ts.
+  const rotationDetentRef = useRef<RotationDetentState>(
+    createRotationDetentState()
+  );
+  // `atMs` comes from the POINTER EVENT, not from `performance.now()`
+  // at handler time: the event's own timestamp is when the input was
+  // generated, so a busy main thread that delays the handler can't
+  // stretch the measured interval and make a whip read as a deliberate
+  // rotation. Falls back to the wall clock only if the platform hands
+  // us a zero (some synthesized events do), since an always-zero clock
+  // would make every sample look motionless and every detent grab.
+  const snapRotationAt = useCallback((rawRad: number, atMs: number): number => {
+    const out = applyRotationDetents(
+      rawRad,
+      atMs > 0 ? atMs : performance.now(),
+      rotationDetentRef.current
+    );
+    rotationDetentRef.current = out.state;
+    return out.rad;
+  }, []);
 
   // When the selected overlay changes (different layer, broadcast
   // refetch), drop any stale live geometry.
@@ -2478,6 +2525,7 @@ export function TransformHandles({
       (event.target as HTMLElement).setPointerCapture(event.pointerId);
       dragStartDataRef.current = selectedOverlay.data;
       dragHandleRef.current = handle;
+      rotationDetentRef.current = createRotationDetentState();
       const startPt = clientToNormalized(event.clientX, event.clientY);
       dragStartPtRef.current = startPt ?? { xn: 0, yn: 0 };
       onDragStart?.(selectedOverlay);
@@ -2503,7 +2551,8 @@ export function TransformHandles({
         imageHeightPx,
         sourceWidthPx,
         sourceHeightPx,
-        measuredGlyph
+        measuredGlyph,
+        (rawRad) => snapRotationAt(rawRad, event.timeStamp)
       );
       if (geometry === null) return;
       // Project the geometry onto a fresh data snapshot for live render.
@@ -2524,7 +2573,8 @@ export function TransformHandles({
       imageHeightPx,
       sourceWidthPx,
       sourceHeightPx,
-      measuredGlyph
+      measuredGlyph,
+      snapRotationAt
     ]
   );
 
@@ -2593,7 +2643,11 @@ export function TransformHandles({
         imageHeightPx,
         sourceWidthPx,
         sourceHeightPx,
-        measuredGlyph
+        measuredGlyph,
+        // Commit what the last frame PAINTED — see
+        // `resolveHeldRotation` for why pointerup must not feed the
+        // detent machine a fresh (zero-speed) sample.
+        (rawRad) => resolveHeldRotation(rawRad, rotationDetentRef.current)
       );
       if (geometry !== null) {
         onGeometryChange(geometry);

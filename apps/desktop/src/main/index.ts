@@ -153,9 +153,19 @@ import {
 import {
   checkForAppUpdatesNow,
   initAppUpdater,
+  installDownloadedWindowsUpdateSmoke,
+  readAppUpdateStatus,
   reconcileAppUpdateSelection,
-  setUpdateSelectionResolver
+  setUpdateSelectionResolver,
+  setWindowsUpdateSmokeConfig
 } from "./auto-updater";
+import {
+  isWindowsUpdateSmokeRequested,
+  readWindowsUpdateSmokeConfig,
+  runWindowsUpdateSmoke,
+  writeWindowsUpdateSmokeBootstrapFailure,
+  type WindowsUpdateSmokeConfig
+} from "./windows-update-smoke";
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
 import {
@@ -1451,6 +1461,33 @@ export function bootstrapApp(): void {
   // bootstrap; every prior getPath call happened after it.)
   app.setName(APP_NAME);
 
+  let windowsUpdateSmokeConfig: WindowsUpdateSmokeConfig | null;
+  try {
+    windowsUpdateSmokeConfig = readWindowsUpdateSmokeConfig({
+      appVersion: app.getVersion(),
+      env: process.env,
+      isPackaged: app.isPackaged,
+      platform: process.platform,
+      resourcesPath: process.resourcesPath
+    });
+    setWindowsUpdateSmokeConfig(windowsUpdateSmokeConfig);
+  } catch (cause) {
+    // A marker-bearing build without its complete isolated contract and an
+    // opt-in env on an ordinary build are both terminal. Neither may continue
+    // into normal startup, where the production GitHub feed is reachable.
+    log.error("Windows updater smoke bootstrap rejected", {
+      requested: isWindowsUpdateSmokeRequested(),
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+    void writeWindowsUpdateSmokeBootstrapFailure({
+      cause,
+      env: process.env,
+      appVersion: app.getVersion()
+    }).finally(() => app.exit(1));
+    return;
+  }
+  const isWindowsUpdateSmoke = windowsUpdateSmokeConfig !== null;
+
   const role = resolveProcessRole({
     argv: process.argv,
     env: process.env,
@@ -1589,7 +1626,7 @@ export function bootstrapApp(): void {
   //
   // The library role never takes the lock: it's a supervised child of
   // the agent (which holds it), not a user-launched instance.
-  if (!isE2E && role !== "library") {
+  if (!isE2E && !isWindowsUpdateSmoke && role !== "library") {
     const gotLock = app.requestSingleInstanceLock(singleInstanceOpenFileHandoffData());
     if (!gotLock) {
       // Finder may deliver macOS's open-file event just after the
@@ -1635,24 +1672,21 @@ export function bootstrapApp(): void {
   // (app.setName moved to the top of bootstrap — the role peek needs
   // the correct userData path.)
 
-  // E2E isolation: each Playwright launch sets PWRSNAP_USER_DATA to
-  // an isolated tmpdir so SQLite, captures dir, cache dir, and trash
-  // all live in a throwaway location — no contamination between
-  // specs and no risk of the suite writing into the developer's real
-  // PwrSnap install. We can't rely on HOME alone because Electron
-  // caches the userData path early using the binary's bundle name
-  // ("Electron" under Playwright), which mangles the layout.
+  // Isolated automation: Playwright and the signed Windows updater smoke set
+  // PWRSNAP_USER_DATA to a throwaway root so SQLite, captures, cache, and
+  // trash cannot touch the operator's real PwrSnap data. We can't rely on
+  // HOME alone because Electron caches userData early from the bundle name.
   const customUserData = process.env.PWRSNAP_USER_DATA;
   if (customUserData !== undefined && customUserData.length > 0) {
     app.setPath("userData", customUserData);
-    if (isE2E) {
+    if (isE2E || isWindowsUpdateSmoke) {
       // `getCapturesRoot()` composes from app.getPath("documents"),
       // which macOS/Windows resolve via the OS user profile — NOT the
       // fixture's HOME override. Without this rebase every E2E launch
       // reads (and storage scans walk) the developer's real
       // ~/Documents/PwrSnap: a hermeticity hole, and slow enough on a
       // library of real captures to destabilize timing-sensitive
-      // specs. E2E-gated so profiling runs on a cloned userData
+      // specs. Automation-gated so profiling runs on a cloned userData
       // (PWRSNAP_USER_DATA without PWRSNAP_E2E) keep observing the
       // real captures library, which is their whole point.
       app.setPath("documents", join(customUserData, "Documents"));
@@ -1704,6 +1738,48 @@ export function bootstrapApp(): void {
   });
 
   app.whenReady().then(async () => {
+    if (windowsUpdateSmokeConfig !== null) {
+      // Purpose-built headless boot: open the real packaged DB, wire only the
+      // updater, and let the signed baseline exercise electron-updater's real
+      // download plus marker-gated silent NSIS install path. The credential-free
+      // outer harness relaunches the installed target with the same isolated
+      // environment. No tray, hotkeys, Codex, local server, BrowserWindow, or
+      // boot maintenance is started.
+      app.on("will-quit", closeDatabase);
+      try {
+        await openDatabase();
+        setUpdateSelectionResolver(() => ({ channel: "prerelease", train: "beta" }));
+        initAppUpdater();
+        await runWindowsUpdateSmoke({
+          config: windowsUpdateSmokeConfig,
+          checkForUpdates: () => checkForAppUpdatesNow("startup"),
+          readUpdateStatus: readAppUpdateStatus,
+          installDownloadedUpdate: installDownloadedWindowsUpdateSmoke,
+          exit: (code) => {
+            closeDatabase();
+            app.exit(code);
+          },
+          logger: log
+        });
+      } catch (cause) {
+        log.error("Windows updater smoke failed before its controller started", {
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+        await writeWindowsUpdateSmokeBootstrapFailure({
+          cause,
+          env: process.env,
+          appVersion: app.getVersion()
+        }).catch((writeCause: unknown) => {
+          log.error("Windows updater smoke bootstrap result write failed", {
+            message: writeCause instanceof Error ? writeCause.message : String(writeCause)
+          });
+        });
+        closeDatabase();
+        app.exit(1);
+      }
+      return;
+    }
+
     if (process.platform === "darwin" && (isE2E || role === "agent")) {
       // Agent role: menubar-only process — no Dock presence, ever.
       // (Phase 4 ships LSUIElement so this becomes the launch default

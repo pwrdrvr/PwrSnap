@@ -212,6 +212,12 @@ shipped license notice, fails closed when Windows signing is unavailable,
 verifies the resulting Authenticode signatures, and publishes Windows only
 after the macOS and Linux gates also pass.
 
+Tagged releases also build a non-publishable signed prerelease pair and gate
+publication on the isolated packaged updater check. A reviewed PR can exercise
+that path with `ci:windows-updater-smoke`; see
+[Packaged Windows updater smoke](packaged-updater-smoke.md). It never reads the
+real GitHub update feed.
+
 Authorized operators should use the
 [desktop release runbook](../desktop-release-runbook.md) and
 [Windows signing guide](../desktop-windows-signing.md). This user-facing guide
@@ -227,7 +233,11 @@ corepack pnpm typecheck
 corepack pnpm exec vitest run `
   apps/desktop/src/main/recording/__tests__/recording-service.test.ts `
   apps/desktop/src/main/recording/__tests__/ffmpeg-resolver.test.ts `
-  apps/desktop/scripts/windows-release-config.test.mjs
+  apps/desktop/scripts/windows-release-config.test.mjs `
+  apps/desktop/scripts/package-win-update-smoke.test.mjs `
+  apps/desktop/src/main/__tests__/auto-updater.test.ts `
+  apps/desktop/src/main/__tests__/windows-update-smoke.test.ts `
+  scripts/e2e/run-windows-update-smoke.test.mjs
 corepack pnpm --filter @pwrsnap/desktop build:native
 corepack pnpm --filter @pwrsnap/desktop package:win
 $version = (Get-Content apps\desktop\package.json | ConvertFrom-Json).version

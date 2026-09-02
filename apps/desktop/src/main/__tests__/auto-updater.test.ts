@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { AppUpdateInstallAttempt } from "../update-install-attempt-store";
 
 type UpdateEventHandler = (info?: { version?: string }) => void;
 
@@ -7,6 +8,17 @@ const mocks = vi.hoisted(() => {
   return {
     appPaths: { userData: "", home: "" },
     handlers,
+    installAttemptStore: {
+      clear: vi.fn(),
+      filePath: vi.fn(() => "D:\\pwrsnap-smoke\\user-data\\pwrsnap-update-install-attempt.json"),
+      read: vi.fn<() => AppUpdateInstallAttempt | undefined>(),
+      write: vi.fn(
+        (attempt: Omit<AppUpdateInstallAttempt, "schemaVersion">): AppUpdateInstallAttempt => ({
+          schemaVersion: 1,
+          ...attempt
+        })
+      )
+    },
     resolveSelection: vi.fn((): { channel: "latest" | "prerelease"; train: "stable" | "beta" } => ({
       channel: "latest",
       train: "stable"
@@ -16,6 +28,7 @@ const mocks = vi.hoisted(() => {
       allowPrerelease: false,
       autoDownload: false,
       autoInstallOnAppQuit: false,
+      channel: "latest",
       checkForUpdates: vi.fn(),
       currentVersion: { version: "1.0.0" },
       logger: undefined as unknown,
@@ -26,6 +39,7 @@ const mocks = vi.hoisted(() => {
         return mocks.autoUpdater;
       }),
       quitAndInstall: vi.fn(),
+      requestHeaders: { authorization: "must-be-cleared" } as Record<string, string> | null,
       setFeedURL: vi.fn()
     },
     emit: (event: string, ...args: unknown[]) => {
@@ -54,6 +68,10 @@ vi.mock("electron-updater", () => ({
   default: {
     autoUpdater: mocks.autoUpdater
   }
+}));
+
+vi.mock("../update-install-attempt-store", () => ({
+  createAppUpdateInstallAttemptStore: () => mocks.installAttemptStore
 }));
 
 vi.mock("../events", () => ({
@@ -211,6 +229,7 @@ describe("selectChannelReleases", () => {
 
 describe("auto updater selection", () => {
   const originalNodeEnv = process.env.NODE_ENV;
+  const originalUpdateSmoke = process.env.PWRSNAP_UPDATE_SMOKE;
   const originalPlatform = process.platform;
   const originalFetch = globalThis.fetch;
 
@@ -221,6 +240,7 @@ describe("auto updater selection", () => {
       value: "darwin"
     });
     process.env.NODE_ENV = "production";
+    delete process.env.PWRSNAP_UPDATE_SMOKE;
     mocks.handlers.clear();
     mocks.autoUpdater.checkForUpdates.mockReset();
     mocks.autoUpdater.quitAndInstall.mockReset();
@@ -229,7 +249,22 @@ describe("auto updater selection", () => {
     mocks.autoUpdater.allowDowngrade = false;
     mocks.autoUpdater.allowPrerelease = false;
     mocks.autoUpdater.autoInstallOnAppQuit = false;
+    mocks.autoUpdater.requestHeaders = { authorization: "must-be-cleared" };
     mocks.autoUpdater.currentVersion = { version: "1.0.0" };
+    mocks.installAttemptStore.clear.mockReset();
+    mocks.installAttemptStore.filePath.mockReset();
+    mocks.installAttemptStore.filePath.mockReturnValue(
+      "D:\\pwrsnap-smoke\\user-data\\pwrsnap-update-install-attempt.json"
+    );
+    mocks.installAttemptStore.read.mockReset();
+    mocks.installAttemptStore.read.mockReturnValue(undefined);
+    mocks.installAttemptStore.write.mockReset();
+    mocks.installAttemptStore.write.mockImplementation(
+      (attempt: Omit<AppUpdateInstallAttempt, "schemaVersion">): AppUpdateInstallAttempt => ({
+        schemaVersion: 1,
+        ...attempt
+      })
+    );
     mocks.resolveSelection.mockReset();
     mocks.resolveSelection.mockReturnValue({ channel: "latest", train: "stable" });
     fetchMock.mockReset();
@@ -238,6 +273,11 @@ describe("auto updater selection", () => {
 
   afterEach(async () => {
     process.env.NODE_ENV = originalNodeEnv;
+    if (originalUpdateSmoke === undefined) {
+      delete process.env.PWRSNAP_UPDATE_SMOKE;
+    } else {
+      process.env.PWRSNAP_UPDATE_SMOKE = originalUpdateSmoke;
+    }
     Object.defineProperty(process, "platform", {
       configurable: true,
       value: originalPlatform
@@ -266,6 +306,165 @@ describe("auto updater selection", () => {
       url: "https://github.com/pwrdrvr/PwrSnap/releases/download/v1.0.1-prerelease.1/"
     });
     expect(mocks.autoUpdater.allowPrerelease).toBe(true);
+    expect(mocks.autoUpdater.allowDowngrade).toBe(false);
+  });
+
+  test("Windows smoke bypasses GitHub and pins GenericProvider to exact loopback latest.yml", async () => {
+    process.env.PWRSNAP_UPDATE_SMOKE = "1";
+    mocks.autoUpdater.autoInstallOnAppQuit = true;
+    mocks.autoUpdater.currentVersion = { version: "1.1.0-update-smoke.42.1" };
+    mocks.autoUpdater.checkForUpdates.mockResolvedValue({
+      updateInfo: { version: "1.1.0-update-smoke.42.2" }
+    });
+    const updater = await importAutoUpdater();
+    updater.setWindowsUpdateSmokeConfig({
+      baselineVersion: "1.1.0-update-smoke.42.1",
+      currentVersion: "1.1.0-update-smoke.42.1",
+      targetVersion: "1.1.0-update-smoke.42.2",
+      runId: "gha-42.1",
+      feedUrl: "http://127.0.0.1:43123/",
+      userDataDir: "D:\\pwrsnap-smoke\\user-data"
+    });
+
+    await expect(updater.checkForAppUpdatesNow("startup")).resolves.toEqual({
+      status: "available",
+      version: "1.1.0-update-smoke.42.2"
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledOnce();
+    expect(mocks.autoUpdater.allowPrerelease).toBe(true);
+    expect(mocks.autoUpdater.allowDowngrade).toBe(false);
+    expect(mocks.autoUpdater.autoInstallOnAppQuit).toBe(false);
+    expect(mocks.autoUpdater.channel).toBe("latest");
+    expect(mocks.autoUpdater.requestHeaders).toBeNull();
+    expect(mocks.autoUpdater.setFeedURL).toHaveBeenCalledWith({
+      provider: "generic",
+      url: "http://127.0.0.1:43123/"
+    });
+  });
+
+  test("Windows smoke without validated marker/config fails before GitHub or updater access", async () => {
+    process.env.PWRSNAP_UPDATE_SMOKE = "1";
+    const updater = await importAutoUpdater();
+
+    await expect(updater.checkForAppUpdatesNow("startup")).rejects.toThrow(
+      /build marker\/configuration was not validated/
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocks.autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+    expect(mocks.autoUpdater.setFeedURL).not.toHaveBeenCalled();
+  });
+
+  test("Windows smoke invalid feed fails before any fetch, feed, or update check", async () => {
+    process.env.PWRSNAP_UPDATE_SMOKE = "1";
+    mocks.autoUpdater.currentVersion = { version: "1.1.0-update-smoke.42.1" };
+    const updater = await importAutoUpdater();
+    updater.setWindowsUpdateSmokeConfig({
+      baselineVersion: "1.1.0-update-smoke.42.1",
+      currentVersion: "1.1.0-update-smoke.42.1",
+      targetVersion: "1.1.0-update-smoke.42.2",
+      runId: "gha-42.1",
+      feedUrl: "https://github.com/pwrdrvr/PwrSnap/releases/",
+      userDataDir: "D:\\pwrsnap-smoke\\user-data"
+    });
+
+    await expect(updater.checkForAppUpdatesNow("startup")).resolves.toMatchObject({
+      status: "error",
+      message: expect.stringMatching(/loopback-only runtime guard/)
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocks.autoUpdater.setFeedURL).not.toHaveBeenCalled();
+    expect(mocks.autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+  });
+
+  test("Windows smoke rejects a feed version mismatch without production fallback", async () => {
+    process.env.PWRSNAP_UPDATE_SMOKE = "1";
+    mocks.autoUpdater.currentVersion = { version: "1.1.0-update-smoke.42.1" };
+    mocks.autoUpdater.checkForUpdates.mockResolvedValue({
+      updateInfo: { version: "1.1.0-update-smoke.42.3" }
+    });
+    const updater = await importAutoUpdater();
+    updater.setWindowsUpdateSmokeConfig({
+      baselineVersion: "1.1.0-update-smoke.42.1",
+      currentVersion: "1.1.0-update-smoke.42.1",
+      targetVersion: "1.1.0-update-smoke.42.2",
+      runId: "gha-42.1",
+      feedUrl: "http://127.0.0.1:43123/",
+      userDataDir: "D:\\pwrsnap-smoke\\user-data"
+    });
+
+    await expect(updater.checkForAppUpdatesNow("startup")).resolves.toMatchObject({
+      status: "error",
+      message: expect.stringMatching(/expected exact target/)
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledOnce();
+  });
+
+  test("Windows smoke refuses quitAndInstall when its durable attempt marker cannot be written", async () => {
+    process.env.PWRSNAP_UPDATE_SMOKE = "1";
+    const baselineVersion = "1.1.0-update-smoke.42.1.1";
+    const targetVersion = "1.1.0-update-smoke.42.1.2";
+    mocks.autoUpdater.currentVersion = { version: baselineVersion };
+    mocks.autoUpdater.checkForUpdates.mockResolvedValue({
+      updateInfo: { version: targetVersion }
+    });
+    const updater = await importAutoUpdater();
+    updater.setWindowsUpdateSmokeConfig({
+      baselineVersion,
+      currentVersion: baselineVersion,
+      targetVersion,
+      runId: "gha-42.1",
+      feedUrl: "http://127.0.0.1:43123/",
+      userDataDir: "D:\\pwrsnap-smoke\\user-data"
+    });
+    updater.initAppUpdater();
+    await expect(updater.checkForAppUpdatesNow("startup")).resolves.toEqual({
+      status: "available",
+      version: targetVersion
+    });
+    mocks.emit("update-downloaded", { version: targetVersion });
+    mocks.installAttemptStore.write.mockImplementationOnce(() => {
+      throw new Error("simulated marker write failure");
+    });
+
+    await expect(updater.installDownloadedWindowsUpdateSmoke()).resolves.toEqual({
+      status: "error",
+      message:
+        "Windows updater smoke could not persist its install-attempt marker; refusing to restart."
+    });
+    expect(mocks.autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+  });
+
+  test("Windows smoke installs silently and leaves isolated relaunch to the harness", async () => {
+    process.env.PWRSNAP_UPDATE_SMOKE = "1";
+    const baselineVersion = "1.1.0-update-smoke.42.1.1";
+    const targetVersion = "1.1.0-update-smoke.42.1.2";
+    mocks.autoUpdater.currentVersion = { version: baselineVersion };
+    mocks.autoUpdater.checkForUpdates.mockResolvedValue({
+      updateInfo: { version: targetVersion }
+    });
+    const updater = await importAutoUpdater();
+    updater.setWindowsUpdateSmokeConfig({
+      baselineVersion,
+      currentVersion: baselineVersion,
+      targetVersion,
+      runId: "gha-42.1",
+      feedUrl: "http://127.0.0.1:43123/",
+      userDataDir: "D:\\pwrsnap-smoke\\user-data"
+    });
+    updater.initAppUpdater();
+    await expect(updater.checkForAppUpdatesNow("startup")).resolves.toEqual({
+      status: "available",
+      version: targetVersion
+    });
+    mocks.emit("update-downloaded", { version: targetVersion });
+
+    await expect(updater.installDownloadedWindowsUpdateSmoke()).resolves.toEqual({
+      status: "restarting"
+    });
+    expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledWith(true, false);
   });
 
   test("pins the beta train to the smoke-checked main-train tag", async () => {

@@ -317,12 +317,21 @@ vi.mock("../capture/selector-display-media", () => ({
   }
 }));
 
+// Hoisted (not inline `vi.fn()`) so the SAME spy survives the
+// `vi.resetModules()` in beforeEach — the ordering assertions below
+// compare its invocation order against the snapshot mock's, which only
+// works if both identities are stable across the re-import.
+const chromeMocks = vi.hoisted(() => ({
+  hideTrayPopoverIfVisible: vi.fn(),
+  setFloatOverState: vi.fn()
+}));
+
 vi.mock("../tray", () => ({
-  hideTrayPopoverIfVisible: vi.fn()
+  hideTrayPopoverIfVisible: chromeMocks.hideTrayPopoverIfVisible
 }));
 
 vi.mock("../float-over", () => ({
-  setFloatOverState: vi.fn(),
+  setFloatOverState: chromeMocks.setFloatOverState,
   ensureFloatOverTopmost: vi.fn()
 }));
 
@@ -343,6 +352,13 @@ beforeEach(() => {
   suppressPresentationAck = false;
   screenSnapshotMocks.captureAndRegister.mockReset();
   screenSnapshotMocks.releaseSnapshot.mockReset();
+  // mockReset, not mockClear: the compositor-flush test below installs a
+  // `mockImplementation` on hideTrayPopoverIfVisible, and mockClear drops
+  // only the call records — the implementation would survive into every
+  // later test and make this file order-dependent. Same reason the
+  // screenSnapshot mocks above reset.
+  chromeMocks.hideTrayPopoverIfVisible.mockReset();
+  chromeMocks.setFloatOverState.mockReset();
   selectorShortcutMocks.callbacks.clear();
   selectorShortcutMocks.register.mockClear();
   selectorShortcutMocks.unregister.mockClear();
@@ -1357,7 +1373,7 @@ describe("region-selector — Windows shell-first latency contract", () => {
     });
 
     await vi.waitFor(() => expect(constructed[0]?.showInactive).toHaveBeenCalledTimes(1));
-    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    ipcListeners.get("region-selector:result")?.({}, { ok: false, invocationId: 1 });
     ipcListeners.get("region-selector:result")?.(
       { sender: { id: 999_999 } },
       { ok: false, invocationId: 1 }
@@ -2229,5 +2245,87 @@ describe("windowSnapshotInElectronDip — Windows native bounds", () => {
 
     expect(screenToDipRect).not.toHaveBeenCalled();
     expect(result[0]?.bounds).toEqual(physicalWindow.bounds);
+  });
+});
+
+// The region/auto capture path does NOT re-shoot the screen after the
+// user commits — it crops the frozen snapshot taken here (see the
+// COMMIT branch of `capture:interactive`). So whatever PwrSnap chrome
+// is still on screen when `captureAndRegister` runs is baked into the
+// saved capture, permanently. Two things have to hold, and this pins
+// both: the dismiss has to happen BEFORE the freeze, and the freeze has
+// to wait out a compositor flush so the WindowServer has actually
+// dropped those windows from the framebuffer.
+//
+// The dismiss being INSTANT is the other half, and lives with the tray:
+// `hideTrayWindowNow` in tray.ts, pinned by tray-instant-hide.test.ts.
+// Ordering alone is not enough — a fading NSPanel is ordered out at the
+// START of its fade, so it would satisfy every assertion here while
+// still painting itself into the snapshot.
+describe("region-selector — PwrSnap chrome leaves the frame before the screen freezes", () => {
+  test("dismisses the tray popover and parks the float-over before the snapshot", async () => {
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({});
+
+    await vi.waitFor(() => {
+      expect(screenSnapshotMocks.captureAndRegister).toHaveBeenCalledTimes(1);
+    });
+
+    expect(chromeMocks.hideTrayPopoverIfVisible).toHaveBeenCalledTimes(1);
+    expect(chromeMocks.setFloatOverState).toHaveBeenCalledWith({ kind: "cancel" });
+
+    const hideOrder = chromeMocks.hideTrayPopoverIfVisible.mock.invocationCallOrder[0]!;
+    const parkOrder = chromeMocks.setFloatOverState.mock.invocationCallOrder[0]!;
+    const freezeOrder = screenSnapshotMocks.captureAndRegister.mock.invocationCallOrder[0]!;
+    expect(hideOrder).toBeLessThan(freezeOrder);
+    expect(parkOrder).toBeLessThan(freezeOrder);
+
+    ipcListeners.get("region-selector:result")?.({}, { ok: false, invocationId: 1 });
+    await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
+  });
+
+  test("waits a compositor flush between the dismiss and the snapshot", async () => {
+    // `hide()` only tells AppKit to order the window out; the window
+    // server still has to composite a frame without it. Freezing on the
+    // same tick captures whatever is still on screen. Assert the real
+    // elapsed gap rather than a call order — a timer can fire late but
+    // never early, so this can't flake in the direction of a pass.
+    let hiddenAt = 0;
+    let frozenAt = 0;
+    chromeMocks.hideTrayPopoverIfVisible.mockImplementation(() => {
+      hiddenAt = performance.now();
+    });
+    screenSnapshotMocks.captureAndRegister.mockImplementationOnce(async () => {
+      frozenAt = performance.now();
+      return { id: "snapshot-1", filePath: "/tmp/snapshot.png", displayId: 1 };
+    });
+
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({});
+
+    await vi.waitFor(() => {
+      expect(screenSnapshotMocks.captureAndRegister).toHaveBeenCalledTimes(1);
+    });
+
+    expect(hiddenAt).toBeGreaterThan(0);
+    // The flush budget is 50ms; allow a hair of scheduler slop so a
+    // starved CI runner's clock rounding can't fail a correct build.
+    expect(frozenAt - hiddenAt).toBeGreaterThanOrEqual(45);
+
+    ipcListeners.get("region-selector:result")?.({}, { ok: false, invocationId: 1 });
+    await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
+  });
+
+  test("timed mode keeps the tray up — the countdown exists to capture it", async () => {
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({ keepPwrSnapChrome: true });
+
+    await vi.waitFor(() => {
+      expect(screenSnapshotMocks.captureAndRegister).toHaveBeenCalledTimes(1);
+    });
+    expect(chromeMocks.hideTrayPopoverIfVisible).not.toHaveBeenCalled();
+
+    ipcListeners.get("region-selector:result")?.({}, { ok: false, invocationId: 1 });
+    await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
   });
 });

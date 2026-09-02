@@ -59,7 +59,7 @@ import type { GeometryUpdate, NormalizedPoint, NormalizedRect } from "./useCaptu
 import { applyGeometryLocally } from "./geometry-projection";
 import { shapeStrokeGeometry } from "./shape-stroke-geometry";
 import { computeTextGlyphSize } from "@pwrsnap/shared";
-import { TEXT_BBOX_CHAR_ADVANCE_OUTLINE } from "./text-bbox-constants";
+import { TEXT_BBOX_CHAR_ADVANCE } from "./text-bbox-constants";
 import { measureTextWidthPx } from "./text-measure";
 import {
   useGlyphSize,
@@ -1410,7 +1410,7 @@ function textBoundsBox(
     readTextWeight(data)
   );
   const naturalWidthPx =
-    measuredWidthPx ?? maxChars * fontSizePx * TEXT_BBOX_CHAR_ADVANCE_OUTLINE;
+    measuredWidthPx ?? maxChars * fontSizePx * TEXT_BBOX_CHAR_ADVANCE;
   // line-height: 1 on the HTML div → total block height is exactly
   // `lineCount * fontSize`. No extra 1.2× spacing, no 0.2 trailing
   // subtraction (that was for SVG dy="1.2em").

@@ -764,6 +764,57 @@ overflow rules) before landing on the actual platform behavior. If
 you find yourself debugging "popover is stuck at its initial size,"
 check for `setMinimumSize(0, 0)` first.
 
+## Tray popover hide — `setOpacity(0)` before `hide()` on macOS
+
+**The tray popover must never be hidden with a bare `hide()`, and never
+shown with a bare `showInactive()` / `show()`. Both go through
+`hideTrayWindowNow` / `showTrayWindowNow` in
+[tray.ts](apps/desktop/src/main/tray.ts).**
+
+`type: 'panel'` makes the popover an `NSPanel`, and AppKit resolves a
+panel's default `NSWindowAnimationBehaviorDefault` to
+`NSWindowAnimationBehaviorUtilityWindow` — so `[NSWindow orderOut:]`,
+which is what `BrowserWindow.hide()` calls, plays a **~0.2s fade-out**
+instead of clearing the window on the next frame.
+
+That fade landed in users' screenshots. A capture started from a tray
+button dismisses the popover and waits a 50ms compositor flush before
+freezing the screen; 50ms into a 200ms fade the popover is still ~70%
+opaque, and the region/auto path **crops that frozen snapshot** rather
+than re-shooting — so a half-dissolved popover was baked into the saved
+file. Captures taken with the global hotkey were clean, which sent the
+investigation toward the compositor instead of the window.
+
+**`isVisible()` cannot detect this.** AppKit orders the window out when
+the fade *starts*, so the window reads hidden for the whole time it is
+still on screen. That is why the `isVisible()` guard in
+`hideTrayPopoverIfVisible` could not have caught it, and why all five
+dismiss paths (capture, blur, toggle, right-click, double-click) route
+through the helper — not just the capture one.
+
+Two things that bite if you touch this:
+
+- **The alpha-0 park makes every show path load-bearing.** A show that
+  skips `showTrayWindowNow` brings the popover back at alphaValue 0:
+  ordered in, key, hit-testing, painting nothing. Worse than the bug it
+  replaced. `tray-instant-hide.test.ts` grep-asserts `tray.ts` for stray
+  show/hide calls — if you add an entry point, use the helpers.
+- **Never do this on Windows.** There the tray window is
+  `transparent: true`, and `setOpacity` drives layered alpha
+  (`SetLayeredWindowAttributes`), mutually exclusive with the per-pixel
+  alpha a transparent window composites through — the same trap on
+  `parkOffScreen` in float-over.ts, where an opacity round-trip left the
+  toast blank. Windows has no NSPanel fade to fix.
+
+The tray is the only panel affected: the float-over never calls `hide()`
+(it opacity-parks), and the region selector and recording HUD both
+`destroy()` right after hiding, which kills the animation. The tray is
+the one panel we keep resident, for first-click latency.
+
+Full write-up, including why only the tray and the fade-IN limitation
+that remains in timed mode:
+[docs/solutions/2026-09-02-tray-popover-nspanel-fade-in-captures.md](docs/solutions/2026-09-02-tray-popover-nspanel-fade-in-captures.md).
+
 ## Tray + float-over popover sizing — outer `inline-block` measurer
 
 **Both popovers (the tray and the post-capture float-over) size

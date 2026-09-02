@@ -1,50 +1,49 @@
-// Shared char-advance constants for text overlay bounding boxes.
-// Two callers compute approximate bounding rects from a text
-// overlay's row data:
+// Shared char-advance constant for text overlay bounding boxes.
 //
-//   1. `textBoundsBox` in OverlaySvg.tsx — the SELECTION OUTLINE.
-//      A 1px dashed border drawn around the rendered glyph. Wants to
-//      hug the visible text closely — too loose looks like a halo,
-//      too tight clips the glyph edges.
+// Two surfaces derive a box from a text overlay's row data:
 //
-//   2. `hitTestOverlays` in Editor.tsx — the CLICK TARGET. Wants to
-//      be MORE generous than the visible glyph so the user can click
-//      a few pixels past a character and still register. Matches the
-//      affordance other annotation tools (Cleanshot, Skitch) ship.
+//   1. `textBoundsBox` in OverlaySvg.tsx — the SELECTION OUTLINE (and,
+//      via `bodyBoxForOverlay`, TransformHandles' drag-to-move rect).
 //
-// We could share one constant, but the two surfaces genuinely want
-// different sizes: the outline wants tightness (visual cleanliness),
-// the hit-test wants forgiveness (UX). Keeping both numbers here,
-// named, makes the divergence explicit and reviewable.
+//   2. `hitTestOverlays` in Editor.tsx — the CLICK TARGET, which also
+//      drives the `data-hover-hit` cursor affordance.
 //
-// FALLBACK-ONLY as of the canvas-measure path. Both call sites now
-// measure the real per-character advance width with `measureTextWidthPx`
-// (text-measure.ts) — char count alone can't tell `Hi Mom` from
-// `Hi MOm`, since capital glyphs are wider than the average advance, so
-// the count-based box under-shot wide-cap text. These constants are kept
-// as the fallback for environments without a 2D canvas context (the
-// jsdom unit-test environment) — they're never hit in the real Chromium
-// renderer. They remain reasonable approximations for the system-font
-// stack (`-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`) at
-// the sizes we ship.
+// Both want the SAME box: the extent of the glyph the user can see.
+// The click target's forgiveness — being able to press a few pixels
+// past a character and still land on the layer — comes from a small
+// pad `hitTestOverlays` adds on every edge (`hitRadiusN * 0.5`, ≈5px
+// on a canvas up to ~1250px on its short side; see the note at that
+// line for where it stops being 5px and stops being equal per axis),
+// NOT from inflating the box.
+//
+// It used to come from inflating the box, and that was a bug. The
+// hit-test carried its own wider char advance (0.65 vs the outline's
+// 0.55) and, once both switched to real measurement, a
+// `TEXT_BBOX_HIT_WIDTH_SLOP = 1.18` multiplier over the measured
+// width. A multiplier is a percentage OF THE STRING, and the anchor
+// (`data.point`) is the glyph's LEFT edge — so the whole inflation
+// landed on the right and grew with the sentence. A banner of text
+// ~1000 canvas-px wide claimed ~180px of empty canvas past its last
+// character: `cursor: move` out in blank space, and a press-drag that
+// moved text the pointer was nowhere near. It also shifted the box
+// centre, which is the pivot the hit-test inverse-rotates rotated
+// text around, so rotated text was grabbable off to one side of where
+// it painted. Forgiveness on a click target is a small constant halo;
+// it is not a function of how long the sentence is.
+//
+// FALLBACK-ONLY as of the canvas-measure path. Both call sites measure
+// the real per-character advance with `measureTextWidthPx`
+// (text-measure.ts) — and, in the real Chromium renderer, prefer the
+// live glyph `<div>`'s published box (text-measure-registry.ts) over
+// even that. The constant below is the last resort for environments
+// without a 2D canvas context (the jsdom unit-test environment); it's
+// never hit in the real renderer. It remains a reasonable
+// approximation for the system-font stack (`-apple-system,
+// BlinkMacSystemFont, 'Segoe UI', sans-serif`) at the sizes we ship.
 
-/** FALLBACK char advance for the SELECTION OUTLINE (tight wrap around
- *  the rendered glyph) when canvas measurement is unavailable. 0.55
- *  lines up close to the visible extent of the system-font stack for
- *  the buckets we ship. */
-export const TEXT_BBOX_CHAR_ADVANCE_OUTLINE = 0.55;
-
-/** FALLBACK char advance for the HIT TEST (forgiving click target) when
- *  canvas measurement is unavailable. 0.65 is ~18% wider than the
- *  outline so clicks landing just past the right edge of the rendered
- *  text still register. The hit-test ALSO adds a small all-around
- *  padding (see `hitTestOverlays`) on top of this. */
-export const TEXT_BBOX_CHAR_ADVANCE_HIT = 0.65;
-
-/** Generosity factor applied to the MEASURED hit-test width so the click
- *  target stays more forgiving than the (tight) selection outline — the
- *  same ~18% relationship the fallback advances encode (0.65 / 0.55),
- *  now applied to the accurate measured advance instead of a char count.
- *  Clicks landing just past the right edge of the rendered text still
- *  register; the hit-test's all-around padding stacks on top. */
-export const TEXT_BBOX_HIT_WIDTH_SLOP = 1.18;
+/** FALLBACK char advance used to approximate a text overlay's glyph
+ *  width when canvas measurement is unavailable. 0.55 lines up close
+ *  to the visible extent of the system-font stack for the buckets we
+ *  ship. Shared by the selection outline and the hit test so a change
+ *  to the approximation moves both together. */
+export const TEXT_BBOX_CHAR_ADVANCE = 0.55;

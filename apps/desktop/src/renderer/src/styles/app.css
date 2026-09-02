@@ -44,6 +44,71 @@ body {
   overflow: hidden;
 }
 
+/* App chrome is not a document — nothing here is selectable by default.
+ *
+ * The Library, tray, float-over and settings surfaces are UI: labels,
+ * counts, chips, timestamps. Left selectable (the CSS initial value), a
+ * native Select All sweeps the ENTIRE window into one text selection and
+ * repaints every one of them in the OS selection blue. Nothing intercepts
+ * that outside the editor canvas — `role: "selectAll"` in the Edit menu
+ * (apps/desktop/src/main/index.ts) hands ⌘A straight to Blink, and the
+ * Library's own keydown handler bails on any modifier — so the whole app
+ * turns blue. Worse, the wash STICKS: it survives Escape, view changes and
+ * navigation, clearing only when the user happens to click something that
+ * is itself selectable. One stray keypress and the app looks broken.
+ *
+ * Opting out here (rather than chasing ⌘A with a preventDefault) also
+ * kills the rubber-band selection you get dragging across a card grid,
+ * which is the same defect wearing a different hat.
+ *
+ * This declaration reaches the whole tree by INHERITANCE, not by matching
+ * every element — so any descendant that declares `user-select` for itself
+ * wins outright, whatever its specificity. That is what makes the opt-ins
+ * below safe at a bare element selector, and why the per-surface opt-ins
+ * that already exist in MessageList.css (chat transcript), logs.css (log
+ * lines), documents.css, settings.css and library.css keep working
+ * untouched. Do NOT reach for `body input` or `!important` to "win" here;
+ * there is no contest to win.
+ *
+ * Opt back in wherever the text IS the content and copying it is the point.
+ */
+body {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Text-entry fields are content by definition. Chromium inherits `none`
+   into them, which kills selection, caret drag and double-click-to-word
+   inside the field — so the app-wide default has to be undone explicitly.
+   Button-ish input types are excluded: their labels are chrome, and
+   re-arming them would put button text back into a Select All sweep.
+   `[contenteditable]:not([contenteditable="false"])` rather than
+   `[contenteditable="true"]` because bare `contenteditable`,
+   `contenteditable=""` and `plaintext-only` are all editable too. */
+input:not([type="button"]):not([type="submit"]):not([type="reset"]),
+textarea,
+[contenteditable]:not([contenteditable="false"]) {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Error and diagnostic text is the string users copy most — into a bug
+   report, a search box, a message to us. Keyed off `role="alert"` rather
+   than an enumeration of `.pss__*-error` / `.psl__*-error` class names so
+   a new error surface inherits the behavior by being marked up correctly.
+   The two live surfaces that carry the text without the role opt in
+   alongside their own rules (library.css, settings.css).
+
+   Controls nested inside an alert (Retry / Dismiss) stay chrome. */
+[role="alert"] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+[role="alert"] button {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 /* Tray + float-over + recording-controller windows are frameless
    transparent panels — let the component's own backdrop paint, not
    the body. Without this the BrowserWindow's `transparent: true`

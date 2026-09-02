@@ -196,14 +196,23 @@ describe("planExtentMask", () => {
   });
 
   it("skips holes in a sparse extents array instead of dereferencing them", () => {
-    // `isExtentRect` is applied with `every` on the validation side, and
-    // `every` SKIPS holes — so a sparse array reached the planner. A
-    // `for…of` there would hand `undefined` to the coordinate math.
+    // A sparse array can reach the planner, so the per-entry
+    // `isExtentRect` guard has to hold — it, NOT the indexed loop form,
+    // is what stops `undefined` reaching the coordinate math (a `for…of`
+    // yields the holes but the guard still rejects them). Anyone
+    // removing that guard as "redundant, the validator already ran"
+    // turns this into a TypeError inside the crop, which the caller
+    // reports as a generic failed capture.
     const sparse: { x: number; y: number; w: number; h: number }[] = [];
     sparse[0] = { x: 0, y: 0, w: 100, h: 100 };
     sparse[2] = { x: 200, y: 0, w: 100, h: 100 };
     const plan = plan1x({ x: 0, y: 0, w: 300, h: 100 }, sparse);
-    expect(plan?.layers).toHaveLength(2);
+    // Content, not just count: the surviving layers must be the two
+    // real extents, at the right offsets on the canvas.
+    expect(plan?.layers).toEqual([
+      { extract: { left: 0, top: 0, width: 100, height: 100 }, left: 0, top: 0 },
+      { extract: { left: 200, top: 0, width: 100, height: 100 }, left: 200, top: 0 }
+    ]);
   });
 
   it("rejects a NaN rect rather than letting it reach sharp", () => {
@@ -244,9 +253,41 @@ describe("isExtentRect", () => {
 });
 
 // The plan is only useful if sharp actually produces transparency
-// where no layer was placed. This runs the real composite the crop
-// path runs — on a synthetic snapshot, so it needs no screen, no
-// Electron, and no capture permission.
+// where no layer was placed. These run the REAL pipeline the crop path
+// runs — extract the union box once, build one alpha mask from the
+// layers, apply it with `dest-in` — on a synthetic snapshot, so they
+// need no screen, no Electron, and no capture permission.
+//
+// Mirroring the production technique is the point. An earlier version
+// of this test composited each layer onto a transparent canvas, which
+// is what the crop USED to do; it kept passing after the crop switched
+// to a single mask, so it pinned nothing about what ships.
+
+/** The mask + composite half of `cropScreenSnapshotExtents`. */
+async function maskedCrop(
+  snapshot: Buffer,
+  plan: NonNullable<ReturnType<typeof planExtentMask>>
+): Promise<{ data: Buffer; info: { width: number; height: number; channels: number } }> {
+  const { default: sharp } = await import("sharp");
+  const { width: boxW, height: boxH } = plan.box;
+  const mask = Buffer.alloc(boxW * boxH * 4, 0);
+  for (const layer of plan.layers) {
+    const runBytes = layer.extract.width * 4;
+    for (let row = 0; row < layer.extract.height; row += 1) {
+      const start = ((layer.top + row) * boxW + layer.left) * 4;
+      mask.fill(255, start, start + runBytes);
+    }
+  }
+  const out = await sharp(snapshot)
+    .extract(plan.box)
+    .ensureAlpha()
+    .composite([{ input: mask, raw: { width: boxW, height: boxH, channels: 4 }, blend: "dest-in" }])
+    .png({ palette: false })
+    .toBuffer();
+  const { data, info } = await sharp(out).raw().toBuffer({ resolveWithObject: true });
+  return { data, info };
+}
+
 describe("planExtentMask → sharp composite", () => {
   it("keeps the extents opaque and leaves the gap transparent", async () => {
     const { default: sharp } = await import("sharp");
@@ -271,27 +312,7 @@ describe("planExtentMask → sharp composite", () => {
     expect(plan).not.toBeNull();
     if (plan === null) return;
 
-    const layers = [];
-    for (const layer of plan.layers) {
-      layers.push({
-        input: await sharp(snapshot).extract(layer.extract).png().toBuffer(),
-        left: layer.left,
-        top: layer.top
-      });
-    }
-    const out = await sharp({
-      create: {
-        width: plan.box.width,
-        height: plan.box.height,
-        channels: 4,
-        background: { r: 0, g: 0, b: 0, alpha: 0 }
-      }
-    })
-      .composite(layers)
-      .png({ palette: false })
-      .toBuffer();
-
-    const { data, info } = await sharp(out).raw().toBuffer({ resolveWithObject: true });
+    const { data, info } = await maskedCrop(snapshot, plan);
     expect(info.width).toBe(30);
     expect(info.height).toBe(20);
     expect(info.channels).toBe(4);
@@ -307,5 +328,37 @@ describe("planExtentMask → sharp composite", () => {
     // ...on both edges of the gap, so it isn't a one-pixel seam.
     expect(alphaAt(10, 0)).toBe(0);
     expect(alphaAt(19, 19)).toBe(0);
+  });
+
+  it("keeps the intersection of overlapping picks opaque", async () => {
+    // The mask must be UNION-shaped. An even-odd fill — or any scheme
+    // where a second cover flips the first back off — would punch the
+    // overlap transparent, which is the dialog-over-its-parent case
+    // Tab-cycling exists to produce.
+    const { default: sharp } = await import("sharp");
+    const snapshot = await sharp({
+      create: { width: 40, height: 40, channels: 4, background: { r: 0, g: 255, b: 0, alpha: 1 } }
+    })
+      .png()
+      .toBuffer();
+    const plan = planExtentMask({
+      rect: { x: 0, y: 0, w: 30, h: 30 },
+      extents: [
+        { x: 0, y: 0, w: 20, h: 20 },
+        { x: 10, y: 10, w: 20, h: 20 }
+      ],
+      displayOrigin: { x: 0, y: 0 },
+      scaleFactor: 1,
+      snapshot: { width: 40, height: 40 }
+    });
+    expect(plan).not.toBeNull();
+    if (plan === null) return;
+    const { data, info } = await maskedCrop(snapshot, plan);
+    const alphaAt = (x: number, y: number): number => data[(y * info.width + x) * 4 + 3] ?? -1;
+    expect(alphaAt(15, 15)).toBe(255); // the overlap — opaque, not cancelled
+    expect(alphaAt(5, 5)).toBe(255); // first extent only
+    expect(alphaAt(25, 25)).toBe(255); // second extent only
+    expect(alphaAt(25, 5)).toBe(0); // covered by neither
+    expect(alphaAt(5, 25)).toBe(0);
   });
 });

@@ -37,15 +37,10 @@ export type ExtentMaskPlan = {
   layers: { extract: PhysicalBox; left: number; top: number }[];
 };
 
-/**
- * Upper bound on a multi-window pick.
- *
- * The window list itself is usually well under this; the cap exists
- * because `extents` is renderer-supplied and each entry costs a sharp
- * extract + composite at commit time. A pick larger than this is a bug
- * or an attack, not a user.
- */
-export const MAX_SELECTOR_EXTENTS = 64;
+// Re-exported so main-side callers keep importing the cap from the
+// module that uses it, while the single definition lives in shared —
+// the renderer enforces the same bound and the two must not drift.
+export { MAX_SELECTOR_EXTENTS } from "@pwrsnap/shared";
 
 /** Shape + sanity check for one renderer-supplied extent. */
 export function isExtentRect(value: unknown): value is MaskRect {

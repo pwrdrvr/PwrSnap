@@ -254,9 +254,14 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
    Rendered only while `picks.length > 0`. Single-selection capture is
    untouched — the four-quadrant dim above still runs that path. */
 
-/* Even-odd dim mask with one hole per picked extent. Replaces the
+/* SVG <mask> dim with one hole per picked extent. Replaces the
    quadrant divs, which cannot express disjoint holes. Same 62% black
-   so the two paths look identical where they overlap. */
+   so the two paths look identical where they overlap.
+
+   A <mask>, NOT an even-odd path: even-odd cancels where two subpaths
+   overlap, so two overlapping picks would paint their intersection as
+   dimmed while the capture keeps it opaque. See the matching comment
+   in RegionSelector.tsx before changing this. */
 .region-mask {
   position: fixed;
   inset: 0;

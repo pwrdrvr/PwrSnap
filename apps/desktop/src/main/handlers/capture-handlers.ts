@@ -473,8 +473,24 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
         pickedExtents !== undefined &&
         pickedExtents.length > 0 &&
         selection.outputMode !== "rectangle";
+      // `fullWindow` routes to the window's own backing buffer, which
+      // ignores `rect` and knows nothing about extents — so honoring it
+      // alongside a mask would silently capture ONE window and drop
+      // every other pick. The renderer never sends both today (its
+      // full-window branch is the single-pick one, and that branch
+      // sends no extents), but the two fields are one edit apart and
+      // the validator accepts them together. The mask wins: it is the
+      // selection the user built and can see.
+      if (selection.fullWindow === true && maskToExtents) {
+        log.warn("selector sent fullWindow with extents; masking wins", {
+          extentCount: pickedExtents.length,
+          snappedWindowId: selection.snappedWindowId
+        });
+      }
       const captureResult =
-        selection.fullWindow === true && selection.snappedWindowId !== undefined
+        selection.fullWindow === true &&
+        selection.snappedWindowId !== undefined &&
+        !maskToExtents
           ? await captureWindow(selection.snappedWindowId)
           : maskToExtents
             ? await cropScreenSnapshotExtents(
@@ -1236,40 +1252,40 @@ async function cropScreenSnapshot(
   if (rect.w <= 0 || rect.h <= 0) {
     return { ok: false, reason: "validation", message: "rect.w and rect.h must be positive" };
   }
-  const scale = display.scaleFactor;
-  // Translate global → snapshot-local logical px. The snapshot
-  // covers display.bounds, so subtract bounds.{x,y}.
-  const localX = rect.x - display.bounds.x;
-  const localY = rect.y - display.bounds.y;
-  // Logical → physical px. The snapshot file is at physical
-  // resolution (e.g. 3840×2160 for a 1920×1080@2x display).
-  const left = Math.max(0, Math.round(localX * scale));
-  const top = Math.max(0, Math.round(localY * scale));
-  const width = Math.max(1, Math.round(rect.w * scale));
-  const height = Math.max(1, Math.round(rect.h * scale));
+  const scaleError = degenerateScaleMessage(display.scaleFactor);
+  if (scaleError !== null) {
+    return { ok: false, reason: "validation", message: scaleError };
+  }
 
   try {
+    // Geometry via `planExtentMask` with the rect as its own single
+    // extent, so the plain crop and the masked crop share ONE rounding
+    // rule and ONE clamping rule. They used to have two, and the copy
+    // living here was the un-fixed one: it derived the far edge as
+    // `round(left) + round(w)` (a fractional-scale seam), clamped the
+    // origin to `width - 1` while the far edge clamped to `width` (a
+    // 1-px sliver for a box wholly off-screen, instead of an error),
+    // and had no zero-scale guard. Because the HUD's Windows/Rectangle
+    // toggle routes between the two functions, the same pick could
+    // produce two different images depending on which was selected.
+    const meta = await sharp(snapshotPath).metadata();
+    const plan = planExtentMask({
+      rect,
+      extents: [rect],
+      displayOrigin: { x: display.bounds.x, y: display.bounds.y },
+      scaleFactor: display.scaleFactor,
+      snapshot: { width: meta.width ?? 0, height: meta.height ?? 0 }
+    });
+    if (plan === null) {
+      return {
+        ok: false,
+        reason: "validation",
+        message: "rect does not overlap the captured display"
+      };
+    }
     const dir = await mkdtemp(join(tmpdir(), "pwrsnap-crop-"));
     const tempPath = join(dir, `${Date.now()}.png`);
-    const img = sharp(snapshotPath);
-    const meta = await img.metadata();
-    // Clamp the extract rect to the snapshot's actual physical
-    // dimensions. Even one pixel of overrun makes sharp throw.
-    const maxW = meta.width ?? Number.MAX_SAFE_INTEGER;
-    const maxH = meta.height ?? Number.MAX_SAFE_INTEGER;
-    const clampedLeft = Math.min(left, maxW - 1);
-    const clampedTop = Math.min(top, maxH - 1);
-    const clampedW = Math.min(width, maxW - clampedLeft);
-    const clampedH = Math.min(height, maxH - clampedTop);
-    await sharp(snapshotPath)
-      .extract({
-        left: clampedLeft,
-        top: clampedTop,
-        width: clampedW,
-        height: clampedH
-      })
-      .png()
-      .toFile(tempPath);
+    await sharp(snapshotPath).extract(plan.box).png().toFile(tempPath);
     return { ok: true, tempPath, displayId };
   } catch (cause) {
     log.warn("snapshot crop failed", {
@@ -1283,6 +1299,21 @@ async function cropScreenSnapshot(
       message: cause instanceof Error ? cause.message : String(cause)
     };
   }
+}
+
+/**
+ * A display can report a zero / non-finite `scaleFactor` during a
+ * hot-plug or metrics-changed race. `planExtentMask` rejects it, but
+ * every one of its null returns collapses to a single caller message,
+ * so the failure surfaced as "no extent overlapped the captured
+ * region" — pointing triage at the user's pick instead of at display
+ * metrics. Returns null when the factor is usable.
+ */
+function degenerateScaleMessage(scaleFactor: number): string | null {
+  if (!Number.isFinite(scaleFactor) || scaleFactor <= 0) {
+    return `display reported an unusable scale factor: ${String(scaleFactor)}`;
+  }
+  return null;
 }
 
 /**
@@ -1320,25 +1351,28 @@ async function cropScreenSnapshotExtents(
   if (rect.w <= 0 || rect.h <= 0) {
     return { ok: false, reason: "validation", message: "rect.w and rect.h must be positive" };
   }
+  const scaleError = degenerateScaleMessage(display.scaleFactor);
+  if (scaleError !== null) {
+    return { ok: false, reason: "validation", message: scaleError };
+  }
 
   try {
-    // ONE decode of the full-display PNG, into raw pixels. Extracting
-    // per layer from the file instead re-decodes the whole snapshot
-    // every time — PNG has no random access — and encoding each layer
-    // back to PNG only makes `composite` decode it again. Measured on a
-    // 6K snapshot, the round trip was ~40% of total crop time and the
-    // repeated decode most of the rest; this runs before the selector
-    // is torn down, so it is latency the user watches.
-    const { data: snapshotRaw, info: snapshotInfo } = await sharp(snapshotPath)
-      .ensureAlpha()
-      .raw()
-      .toBuffer({ resolveWithObject: true });
+    // Dimensions come from the PNG header, NOT from decoding the frame.
+    // The first version decoded the whole display into a raw RGBA
+    // Buffer (~59 MB at 5120×2880, ~81 MB at 6K) and then extracted
+    // every layer out of it into its OWN buffer, holding all of them
+    // until `composite` ran. That is O(N) full-size buffers in the main
+    // process, on the latency path the user watches, and
+    // MAX_SELECTOR_EXTENTS caps the COUNT of extents, not their area —
+    // so a handful of maximized picks reached hundreds of MB and the
+    // 64-extent ceiling reached multiple GB.
+    const meta = await sharp(snapshotPath).metadata();
     const plan = planExtentMask({
       rect,
       extents,
       displayOrigin: { x: display.bounds.x, y: display.bounds.y },
       scaleFactor: display.scaleFactor,
-      snapshot: { width: snapshotInfo.width, height: snapshotInfo.height }
+      snapshot: { width: meta.width ?? 0, height: meta.height ?? 0 }
     });
     if (plan === null) {
       return {
@@ -1348,39 +1382,36 @@ async function cropScreenSnapshotExtents(
       };
     }
 
-    const layers: {
-      input: Buffer;
-      raw: { width: number; height: number; channels: 1 | 2 | 3 | 4 };
-      left: number;
-      top: number;
-    }[] = [];
+    // One alpha mask for the whole canvas instead of one buffer per
+    // extent: opaque inside the kept rectangles, transparent between
+    // them. `dest-in` keeps the base wherever the mask is opaque, which
+    // is union-shaped — overlapping picks reinforce rather than cancel,
+    // the same reason the picker's preview uses an SVG <mask> and not
+    // an even-odd path. Cost is now box-sized and flat in N.
+    const { width: boxW, height: boxH } = plan.box;
+    const mask = Buffer.alloc(boxW * boxH * 4, 0);
     for (const layer of plan.layers) {
-      // eslint-disable-next-line no-await-in-loop -- each iteration is a
-      // memcpy out of the already-decoded buffer, not I/O; running them
-      // concurrently would only add peak memory.
-      const { data, info } = await sharp(snapshotRaw, { raw: snapshotInfo })
-        .extract(layer.extract)
-        .raw()
-        .toBuffer({ resolveWithObject: true });
-      layers.push({
-        input: data,
-        raw: { width: info.width, height: info.height, channels: info.channels },
-        left: layer.left,
-        top: layer.top
-      });
+      const runBytes = layer.extract.width * 4;
+      for (let row = 0; row < layer.extract.height; row += 1) {
+        const start = ((layer.top + row) * boxW + layer.left) * 4;
+        // Every channel is 0xff inside a kept rectangle, so one byte
+        // fill per row covers RGB and alpha together.
+        mask.fill(255, start, start + runBytes);
+      }
     }
 
     const dir = await mkdtemp(join(tmpdir(), "pwrsnap-crop-"));
     const tempPath = join(dir, `${Date.now()}.png`);
-    await sharp({
-      create: {
-        width: plan.box.width,
-        height: plan.box.height,
-        channels: 4,
-        background: { r: 0, g: 0, b: 0, alpha: 0 }
-      }
-    })
-      .composite(layers)
+    await sharp(snapshotPath)
+      .extract(plan.box)
+      .ensureAlpha()
+      .composite([
+        {
+          input: mask,
+          raw: { width: boxW, height: boxH, channels: 4 },
+          blend: "dest-in"
+        }
+      ])
       // palette:false forces 32-bit truecolor+alpha. An 8-bit colormap
       // would quantize the kept pixels AND is the same trap compose-tree
       // documents for exports.

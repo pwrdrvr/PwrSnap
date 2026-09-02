@@ -19,24 +19,32 @@
 //     region drag. Overrides the snap rect.
 //
 //   adjusting:
-//     A rect has been committed (by click-on-snap, by drag-end, or
-//     by ↵ from snap). Handles are live, drag-to-move works, arrow
-//     keys nudge, ⇧+arrow nudges by 10px. ↵ submits to main; esc
-//     cancels. mousedown outside the rect drops back to snap mode.
+//     A rect has been committed (by drag-end, by ↵ from snap, or by
+//     nudging a lone pick). Handles are live, drag-to-move works,
+//     arrow keys nudge, ⇧+arrow nudges by 10px. ↵ submits to main;
+//     esc steps back. mousedown outside the rect drops back to snap.
 //
 //   moving / resizing:
 //     Sub-states of adjusting; mouse drives translation / edge drag.
 //
-// All three commit paths (snap-click, drag-end, ↵-from-snap) land in
-// adjusting before submission, so the user always gets a chance to
-// refine before it goes through.
+// Orthogonal to all of the above is the PICK SET (`picks`): the
+// windows a click has accumulated in `auto` and `window` mode.
+// `togglePick` parks the interaction in `snap` while a set is live,
+// because the frame is then the set's union and handles/nudge do not
+// apply to it — so `interaction.kind` alone does NOT describe the
+// selector, and anything reading it (Escape, the hint bar, a new
+// gesture) must consult `picksRef` too.
+//
+// There are two commit routes, not one: a pick set submits straight
+// from `snap`, and everything else lands in `adjusting` first so the
+// user can refine before it goes through.
 //
 // Coords reported to main are in window-local px (= display-local;
 // the selector window covers the whole display). Main converts to
 // global virtual coords + display id before screencapture.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { acceleratorToDisplayKeys } from "@pwrsnap/shared";
+import { acceleratorToDisplayKeys, MAX_SELECTOR_EXTENTS } from "@pwrsnap/shared";
 import type { WindowSnapEntry } from "../../preload-types";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import {
@@ -224,6 +232,16 @@ export function RegionSelector() {
   // drag: on press we do not yet know which the user meant, so we
   // commit to neither until the button comes back up.
   const pendingPickRef = useRef<WindowSnapEntry | null>(null);
+  // Latched by the first `submitRegion` of a show, cleared by the next
+  // mode signal. Main arms BOTH Escape and Return as global shortcuts
+  // and forwards them, so a single physical ↵ can arrive twice — once
+  // as a renderer keydown, once over IPC. Escape already carries
+  // `ESCAPE_DEDUPE_MS` for exactly this; commit carried nothing, and
+  // the second delivery ran against the state the first one had
+  // already reset, so it submitted the whole display. Only main's
+  // `pendingResolver === null` check stood between a duplicate
+  // keystroke and a full-screen capture.
+  const submittedRef = useRef(false);
   const outputModeRef = useRef<OutputMode>("windows");
   const modeRef = useRef<SelectorMode>("auto");
   const intentRef = useRef<"snap" | "video">("snap");
@@ -337,14 +355,35 @@ export function RegionSelector() {
       // mode from landing as a pick under the new one — `region` mode
       // and video intent have no multi-select to land it in.
       pendingPickRef.current = null;
-      // When switching INTO 'region' mode, drop any existing window
-      // snap target back to display — otherwise the user sees a stale
-      // window-snap rect from the previous session before they move
-      // the cursor.
-      if (payload.mode === "region") {
-        setSnapTarget({ kind: "display" });
-        setRect(displaySnapRect());
-      }
+      // A new show is a new submission window.
+      submittedRef.current = false;
+      // Everything below is the rest of a per-show reset, and it has to
+      // be here rather than only in `resetToSnap`: main can end a
+      // session WITHOUT a renderer commit or cancel (`pickRegion`
+      // resolves an in-flight resolver with `cancelled` and re-shows
+      // the same pre-warmed window), and on Windows/Linux the panel is
+      // never destroyed, so this handler is the only reset the renderer
+      // gets. Leaving these behind meant:
+      //   - `interaction` stayed `adjusting`, so the previous
+      //     session's rect was still armed and ↵ shipped it (dropping
+      //     the pick set was not enough — `togglePick` had already
+      //     written the union into `rect`);
+      //   - a still-held `pending` survived, and one bare mousemove
+      //     then promoted it to `drawing` with no button down;
+      //   - `shiftHeld` / `spaceHeld` latched, so the next show opened
+      //     with full-window armed or the grab cursor up;
+      //   - a staged discard kept the rect dimmed at 40%.
+      setInteraction({ kind: "snap" });
+      setShiftHeld(false);
+      setSpaceHeld(false);
+      clearDiscardPending();
+      // The rect + snap target are re-derived from the cursor on the
+      // first mousemove or window-list snapshot, but until one arrives
+      // the previous session's frame would still be showing (and
+      // committable), so seed them from the display now. `region` mode
+      // additionally has no window snapping at all.
+      setSnapTarget({ kind: "display" });
+      setRect(displaySnapRect());
     });
     return () => {
       unsub?.();
@@ -516,13 +555,43 @@ export function RegionSelector() {
   }
 
   /**
+   * Return to live snap, re-deriving the frame from whatever is under
+   * the cursor.
+   *
+   * NOT the same as `resetToSnap`, which hard-sets the display rect.
+   * Emptying a pick set has to land here: the user dropped a
+   * selection, not the session, and snapping to the whole display
+   * would turn the very next ↵ into a full-screen capture. Shared by
+   * `togglePick`'s empty branch and Escape's pick branch so those two
+   * routes out of a pick set cannot land in different places.
+   */
+  function dropToLiveSnap(): void {
+    setInteraction({ kind: "snap" });
+    const cursor = lastMouseRef.current;
+    const snap =
+      cursor === null ? ({ kind: "display" } as SnapTarget) : snapAt(cursor.x, cursor.y);
+    setSnapTarget(snap);
+    snapTargetRef.current = snap;
+    const r = rectForSnap(snap);
+    rectRef.current = r;
+    setRect(r);
+  }
+
+  /**
    * Add or remove a window from the pick set, and re-derive the rect
    * from what's left. Emptying the set drops straight back to live
    * snap, so there is no "selected nothing" dead end.
    */
   function togglePick(entry: WindowSnapEntry): void {
     const current = picksRef.current;
-    const next = current.some((p) => p.windowId === entry.windowId)
+    const removing = current.some((p) => p.windowId === entry.windowId);
+    // Main's payload validator rejects the WHOLE payload past this
+    // bound, and a rejected payload resolves the session as
+    // `cancelled` — so without this the 65th pick did not fail loudly,
+    // it silently discarded the capture at commit time, looking exactly
+    // like an Escape. Refuse the add instead; removals always proceed.
+    if (!removing && current.length >= MAX_SELECTOR_EXTENTS) return;
+    const next = removing
       ? current.filter((p) => p.windowId !== entry.windowId)
       : [...current, entry];
     picksRef.current = next;
@@ -538,15 +607,7 @@ export function RegionSelector() {
     const union = unionOfPicks(next);
     if (union === null) {
       // Last pick removed — back to live snap under the cursor.
-      setInteraction({ kind: "snap" });
-      const cursor = lastMouseRef.current;
-      const snap =
-        cursor === null ? ({ kind: "display" } as SnapTarget) : snapAt(cursor.x, cursor.y);
-      setSnapTarget(snap);
-      snapTargetRef.current = snap;
-      const r = rectForSnap(snap);
-      rectRef.current = r;
-      setRect(r);
+      dropToLiveSnap();
       return;
     }
     // The union box IS the rect from here on: it is what a RECTANGLE
@@ -561,6 +622,7 @@ export function RegionSelector() {
   }
 
   function commit(): void {
+    if (submittedRef.current) return;
     // The renderer's rects are in CSS pixels. Main + screencapture
     // expect display-logical pixels. Scale back via the inverse of the
     // snapshot's css-to-logical factor. On standard displays this is
@@ -570,12 +632,31 @@ export function RegionSelector() {
     // is the most bug-prone arithmetic in the file and a second copy
     // could be fixed while the first stayed wrong.
     const inv = cssToLogicalRef.current > 0 ? 1 / cssToLogicalRef.current : 1;
-    const toLogical = (r: Rect): Rect => ({
-      x: Math.round(r.x * inv),
-      y: Math.round(r.y * inv),
-      w: Math.round(r.w * inv),
-      h: Math.round(r.h * inv)
-    });
+    // The far edge is ROUNDED, not derived as `round(x) + round(w)` —
+    // the same rule `toPhysical` follows in extent-mask.ts, for the
+    // same reason: at a fractional factor the two differ whenever the
+    // fractions carry.
+    //
+    // Measured, this changes nothing for EXTENTS: they come only from
+    // the window list, which main sends as integer logical px and this
+    // renderer scales by `cssToLogicalRef`, so multiplying by its exact
+    // reciprocal here recovers the original integers under either rule
+    // (0 divergences across 12040 sampled geometries at four scale
+    // factors). It differs only for a FREE-DRAWN rect, whose CSS
+    // coordinates are arbitrary — and there the far edge is where the
+    // user released the button, which is what this computes. Kept
+    // because one rounding rule across the two layers is worth more
+    // than the ≤1px it moves.
+    const toLogical = (r: Rect): Rect => {
+      const x = Math.round(r.x * inv);
+      const y = Math.round(r.y * inv);
+      return {
+        x,
+        y,
+        w: Math.max(1, Math.round((r.x + r.w) * inv) - x),
+        h: Math.max(1, Math.round((r.y + r.h) * inv) - y)
+      };
+    };
     // Multi-window pick wins over the single-target path when the user
     // has one. Its rect is the union box, so everything downstream in
     // main — validation, source-app resolution, cursor placement —
@@ -603,6 +684,7 @@ export function RegionSelector() {
       if (activePicks.length === 1) {
         const only = activePicks[0]!;
         const wantFull = modeRef.current === "window" || shiftRef.current;
+        submittedRef.current = true;
         window.pwrsnapApi?.submitRegion({
           ok: true,
           rect: toLogical(only.rawRect),
@@ -618,6 +700,7 @@ export function RegionSelector() {
         resetToSnap();
         return;
       }
+      submittedRef.current = true;
       window.pwrsnapApi?.submitRegion({
         ok: true,
         rect: toLogical(union),
@@ -646,8 +729,22 @@ export function RegionSelector() {
     // window-mode the user clicks once, the pending → adjusting flow
     // commits with snap=window even after the brief mouseup.
     const fromWindowSnap = snap.kind === "window";
+    // `screencapture -l` captures the window's own backing buffer and
+    // NEVER reads `rect`, so opting into it is only honest while the
+    // rect still IS the window. Once the user has nudged or resized it
+    // — which the arrow-key promotion now makes reachable in `window`
+    // mode, where every commit would otherwise take that path — the
+    // full-window route would silently throw the adjustment away and
+    // return the un-nudged window.
+    const rectIsWholeWindow =
+      fromWindowSnap &&
+      r.x === snap.entry.rawRect.x &&
+      r.y === snap.entry.rawRect.y &&
+      r.w === snap.entry.rawRect.w &&
+      r.h === snap.entry.rawRect.h;
     const wantFull =
-      fromWindowSnap && (shiftRef.current || modeRef.current === "window");
+      rectIsWholeWindow && (shiftRef.current || modeRef.current === "window");
+    submittedRef.current = true;
     window.pwrsnapApi?.submitRegion({
       ok: true,
       rect: toLogical(r),
@@ -674,12 +771,12 @@ export function RegionSelector() {
         ? { captureCursor: captureCursorRef.current }
         : {})
     });
-    setInteraction({ kind: "snap" });
-    setSnapTarget({ kind: "display" });
-    setRect(displaySnapRect());
-    // Committing can happen mid-staged-discard (Enter while pending);
-    // clear the dim + flag so they don't leak into the next show.
-    clearDiscardPending();
+    // Full reset, same as the pick path above. Hand-rolling a partial
+    // one here left `shiftHeld` / `spaceHeld` latched: the ⇧ keyup is
+    // lost once main hides the window, so the next show of this
+    // pre-warmed selector started with full-window armed and a bare ↵
+    // shipped `fullWindow: true` again.
+    resetToSnap();
   }
 
   // Reset the selector to live-snap mode WITHOUT submitting anything to
@@ -715,8 +812,10 @@ export function RegionSelector() {
   }
 
   function cancel(): void {
+    if (submittedRef.current) return;
     // The real exit: tell main to tear the selector down, then reset
     // local state so a re-shown (pre-warmed) window starts clean.
+    submittedRef.current = true;
     window.pwrsnapApi?.submitRegion({ ok: false });
     resetToSnap();
   }
@@ -743,7 +842,13 @@ export function RegionSelector() {
     // before the interaction kind because togglePick parks the
     // interaction in `snap` while picks are live.
     if (picksRef.current.length > 0) {
-      resetToSnap();
+      // Drop the SET, not the session — and land where removing the
+      // last chip lands. `resetToSnap()` hard-sets the display rect,
+      // so Escaping a lone pick used to leave the whole screen armed
+      // and the very next ↵ captured it.
+      clearPickSet();
+      dropToLiveSnap();
+      clearDiscardPending();
       return;
     }
     if (interactionRef.current.kind !== "snap") {
@@ -973,6 +1078,20 @@ export function RegionSelector() {
      */
     function pickCandidateFor(event: MouseEvent): WindowSnapEntry | null {
       if (!multiSelectAllowed()) return null;
+      // Prefer the LIVE SNAP TARGET when the press lands inside it.
+      // `findWindowAt` returns the frontmost window at the point, but
+      // Tab exists precisely to reach a window buried under another —
+      // it moves `snapTargetRef` without moving the cursor, so a bare
+      // re-hit-test would highlight the buried window and then pick the
+      // one on top of it. In `window` mode Tab is the ONLY way to reach
+      // an occluded window, and the hint advertises it in both modes.
+      const snap = snapTargetRef.current;
+      if (
+        snap.kind === "window" &&
+        isPointInsideRect(snap.entry.rawRect, event.clientX, event.clientY)
+      ) {
+        return snap.entry;
+      }
       return findWindowAt(event.clientX, event.clientY);
     }
 
@@ -1000,7 +1119,17 @@ export function RegionSelector() {
       // intercepting first made handles and move-bands unusable.
       const onAdjustAffordance =
         i.kind === "adjusting" &&
-        (handle !== null || spaceRef.current || isMoveBandTarget(event.target));
+        (handle !== null ||
+          spaceRef.current ||
+          isMoveBandTarget(event.target) ||
+          // A press INSIDE a committed rect belongs to that rect — it
+          // stages the discard/keep below. Letting the pick intercept
+          // take it destroyed the selection outright: a window sits
+          // under almost every rect in `auto` mode, so a single click
+          // anywhere inside a free-drawn or hand-resized region
+          // replaced it with that window's bounds, with no undo and
+          // with the hint still advertising only `drag redraw`.
+          isInsideCurrentRect(event.clientX, event.clientY));
       pendingPickRef.current = null;
       if (!onAdjustAffordance) {
         const hit = pickCandidateFor(event);
@@ -1235,6 +1364,24 @@ export function RegionSelector() {
     }
 
     function onMouseUp(event: MouseEvent): void {
+      // The HUD owns its own clicks, on release as much as on press —
+      // `onMouseDown` and `onMouseMove` both already bail here. Without
+      // the guard, a press that started on the canvas and was released
+      // over the toolbar was consumed as a canvas gesture: in `window`
+      // mode (where travel never promotes to `drawing`) dragging onto a
+      // HUD button toggled a pick for the window under the ORIGINAL
+      // press while the button the user released on got no click.
+      if (
+        event.target instanceof HTMLElement &&
+        event.target.closest("[data-region-hud]") !== null
+      ) {
+        pendingPickRef.current = null;
+        clearDiscardPending();
+        if (interactionRef.current.kind === "pending") {
+          setInteraction({ kind: "snap" });
+        }
+        return;
+      }
       const i = interactionRef.current;
       // Clear the discard-pending dim on ANY mouseup — including when
       // Esc/Enter already stepped the interaction back to snap/adjusting
@@ -1474,7 +1621,7 @@ export function RegionSelector() {
           </>
         );
       }
-      // Auto mode (default ⌘⇧P). Click picks the highlighted window
+      // Auto mode (Quick Capture, ⌘⇧C). Click picks the highlighted window
       // and keeps picking — the same accumulate-then-commit model as
       // window mode, because Quick Capture is the path most people
       // live in and multi-window has no reason to be locked out of it.
@@ -1485,15 +1632,18 @@ export function RegionSelector() {
         ? (snapTarget.entry.appName ?? "window")
         : "display";
       const isFullWindow = shiftHeld && overWindow;
+      // `runInteractiveRecord` opens the RECORD picker as
+      // `mode: "auto", intent: "video"`, so this copy is shared with a
+      // surface where `multiSelectAllowed()` is false and a click
+      // cannot pick anything — it drops into `adjusting` like it always
+      // did. Derive the verb from the same capability the gesture
+      // reads, or the record picker advertises a binding it lacks.
+      const clickPicks = overWindow && multiSelectAllowed();
       return (
         <>
           <span>
             <kbd>click</kbd>
-            {overWindow
-              ? isFullWindow
-                ? `pick full ${what}`
-                : `pick ${what}`
-              : `select ${what}`}
+            {clickPicks ? (isFullWindow ? `pick full ${what}` : `pick ${what}`) : `select ${what}`}
           </span>
           {overWindow && !shiftHeld && (
             <>
@@ -1827,7 +1977,10 @@ export function RegionSelector() {
           // focused Capture button submits the capture, which is bound
           // nowhere in the hint bar. Drop focus once the click is done.
           onClick={(e) => {
-            if (e.target instanceof HTMLElement) e.target.blur();
+            // `e.target` is the DEEPEST node — a chip's <span>, or the
+            // Capture button's <kbd> — and blur() on a non-focusable
+            // node is a no-op, so the <button> kept focus.
+            if (e.target instanceof HTMLElement) e.target.closest("button")?.blur();
           }}
         >
           {/* Output shape. Hidden at one pick, where the union box is
@@ -1905,12 +2058,13 @@ export function RegionSelector() {
         {hint}
         <span className="region-hint-sep">·</span>
         <span>
-          {/* Single source of the Esc affordance, accurate in every
-              state: Esc exits only from snap ("cancel"); from any other
-              state (a committed pick, or a mid-gesture pending/drawing/
-              move/resize) it steps back to snap ("back"). */}
+          {/* Single source of the Esc affordance. Mirrors handleEscape,
+              which checks the PICK SET FIRST — `togglePick` parks the
+              interaction in `snap` while picks are live, so reading
+              `interaction.kind` alone said "cancel" for a state Esc
+              actually steps back from. */}
           <kbd>esc</kbd>
-          {interaction.kind === "snap" ? "cancel" : "back"}
+          {interaction.kind === "snap" && !hasPicks ? "cancel" : "back"}
         </span>
       </div>
       <style>{`@keyframes ps-rec-pulse {

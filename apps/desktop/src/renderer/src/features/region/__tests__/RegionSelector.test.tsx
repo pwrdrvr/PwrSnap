@@ -14,6 +14,8 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 
+import { MAX_SELECTOR_EXTENTS } from "@pwrsnap/shared";
+
 import type { WindowSnapEntry } from "../../../preload-types";
 import { RegionSelector } from "../RegionSelector";
 
@@ -190,6 +192,13 @@ async function drawRect(): Promise<void> {
   await mouseDown(100, 100);
   await mouseMove(300, 300);
   await mouseUp(300, 300);
+}
+
+/** Press ↵ and return the single payload it submitted. */
+async function commitAndRead(): Promise<Record<string, never> & any> {
+  await keyDown("Enter");
+  expect(submitRegion).toHaveBeenCalledTimes(1);
+  return submitRegion.mock.calls[0]?.[0];
 }
 
 function regionHintText(): string {
@@ -388,23 +397,40 @@ describe("U3 — interior drag discards + redraws", () => {
 
   test("interior drag on a free-drawn region replaces it", async () => {
     await mount();
+    await emitSnapshot({
+      windows: [WIN],
+      displayBounds: { width: window.innerWidth, height: window.innerHeight }
+    });
     await drawRect(); // (100,100)-(300,300)
-    await mouseDown(150, 150);
-    await mouseMove(170, 170);
+    await mouseDown(250, 200); // inside the rect and inside WIN
+    await mouseMove(270, 220);
     await mouseMove(500, 400);
     await mouseUp(500, 400);
-    expect(rectStyle()).toEqual({ left: 150, top: 150, width: 350, height: 250 });
+    expect(rectStyle()).toEqual({ left: 250, top: 200, width: 250, height: 200 });
+    expect(document.body.dataset.pickCount).toBe("0");
   });
 
   test("interior click (no drag) keeps a free-drawn region — no jump to full display", async () => {
+    // The window list matters: without it `pickCandidateFor` finds
+    // nothing and the pick intercept never runs, so this passed against
+    // a build where an interior click DESTROYED the region. WIN covers
+    // (200,150)-(600,450), which contains the drawn rect.
     await mount();
+    await emitSnapshot({
+      windows: [WIN],
+      displayBounds: { width: window.innerWidth, height: window.innerHeight }
+    });
     await drawRect();
     const before = rectStyle();
     expect(before).toEqual({ left: 100, top: 100, width: 200, height: 200 });
-    await mouseDown(150, 150);
-    await mouseUp(150, 150); // no drag → keep
+    // (250,200) is inside the drawn rect AND inside WIN — the overlap
+    // is the whole point. A press at (150,150) misses WIN, so it never
+    // reaches the pick intercept and proves nothing.
+    await mouseDown(250, 200);
+    await mouseUp(250, 200); // no drag → keep
     expect(document.body.dataset.interaction).toBe("adjusting");
-    expect(rectStyle()).toEqual(before); // unchanged, NOT the full viewport
+    expect(document.body.dataset.pickCount).toBe("0");
+    expect(rectStyle()).toEqual(before); // unchanged, NOT the window's box
   });
 
   test("a click on a window picks it — it does not commit or enter adjusting", async () => {
@@ -427,10 +453,14 @@ describe("U3 — interior drag discards + redraws", () => {
 
   test("discard-pending dims the rect while staged; cleared on mouseup", async () => {
     await mount();
+    await emitSnapshot({
+      windows: [WIN],
+      displayBounds: { width: window.innerWidth, height: window.innerHeight }
+    });
     await drawRect();
-    await mouseDown(150, 150);
+    await mouseDown(250, 200); // inside the rect and inside WIN
     expect(document.body.dataset.discarding).toBe("true");
-    await mouseUp(150, 150);
+    await mouseUp(250, 200);
     expect(document.body.dataset.discarding).toBe("false");
   });
 
@@ -552,7 +582,7 @@ async function mountScene(p: ModePayload = { mode: "auto" }): Promise<void> {
 /** Move to a window then mousedown/up on it with the given modifiers. */
 async function clickWindow(
   w: WindowSnapEntry,
-  init: { metaKey?: boolean } = {}
+  init: { metaKey?: boolean; ctrlKey?: boolean } = {}
 ): Promise<void> {
   const c = centerOf(w);
   await mouseMove(c.x, c.y);
@@ -755,6 +785,209 @@ describe("U5 — multi-window pick set", () => {
     expect(rectStyle()).toEqual(before);
     expect(pickBoxes()).toHaveLength(2);
     expect(document.body.dataset.interaction).toBe("snap");
+  });
+
+  test("Tab then click picks the window Tab highlighted, not the one on top", async () => {
+    // Tab exists to reach a window BURIED under another, and in window
+    // mode it is the only way. It moves the snap target without moving
+    // the cursor, so a pick that re-hit-tests from the pointer would
+    // highlight the buried window and then pick the one above it.
+    await mountScene();
+    // (250,200) lies inside WIN (200,150,400x300) and inside WIN_OVERLAP
+    // (450,300,400x300)? No — pick a point inside both.
+    const p = { x: 500, y: 350 };
+    await mouseMove(p.x, p.y);
+    // Frontmost at that point is WIN (z-order ascending, WIN first).
+    expect(document.body.dataset.snap).toBe("window");
+    await keyDown("Tab");
+    await mouseDown(p.x, p.y);
+    await mouseUp(p.x, p.y);
+    expect(pickBoxes()).toHaveLength(1);
+    await keyDown("Enter");
+    // Whatever Tab landed on is what must be picked — assert the pick
+    // followed the highlight rather than hard-coding a z-order.
+    const payload = submitRegion.mock.calls[0]?.[0];
+    expect(payload.snappedWindowId).toBe(WIN_OVERLAP.windowId);
+  });
+
+  test("Escape on a lone pick returns to the snap under the cursor, not the display", async () => {
+    // resetToSnap() hard-sets the display rect, so Escaping a pick used
+    // to leave the whole screen armed — one ↵ from a full-screen grab.
+    await mountScene();
+    const c = centerOf(WIN);
+    await clickWindow(WIN);
+    await mouseMove(c.x, c.y);
+    await keyDown("Escape");
+    expect(pickBoxes()).toHaveLength(0);
+    expect(document.body.dataset.snap).toBe("window");
+    expect(rectStyle()).toEqual({ left: 200, top: 150, width: 400, height: 300 });
+    // And it matches the other route out of a set: removing the chip.
+    await clickWindow(WIN);
+    await clickWindow(WIN);
+    expect(rectStyle()).toEqual({ left: 200, top: 150, width: 400, height: 300 });
+  });
+
+  test("one physical ↵ delivered twice submits once", async () => {
+    // Main arms Return as a global shortcut AND the renderer hears the
+    // keydown, so a single press can arrive on both paths. The second
+    // delivery ran against the state the first had already reset and
+    // shipped the whole display.
+    await mountScene();
+    await clickWindow(WIN);
+    await keyDown("Enter");
+    await keyDown("Enter");
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion.mock.calls[0]?.[0].rect).toEqual({ x: 200, y: 150, w: 400, h: 300 });
+  });
+
+  test("window mode: a nudged pick commits the nudged rect, not the whole window", async () => {
+    // `fullWindow` routes to the window's backing buffer, which never
+    // reads `rect` — so taking it after an arrow nudge silently threw
+    // the nudge away while the hint advertised `arrows nudge`.
+    await mountScene({ mode: "window" });
+    await clickWindow(WIN);
+    await keyDown("ArrowRight");
+    await keyDown("ArrowRight");
+    await keyDown("Enter");
+    const payload = submitRegion.mock.calls[0]?.[0];
+    expect(payload.rect).toEqual({ x: 202, y: 150, w: 400, h: 300 });
+    expect(payload).not.toHaveProperty("fullWindow");
+    expect(payload.snappedWindowId).toBe(WIN.windowId);
+  });
+
+  test("window mode: an un-nudged pick still takes the full-window path", async () => {
+    await mountScene({ mode: "window" });
+    await clickWindow(WIN);
+    await keyDown("Enter");
+    expect(submitRegion.mock.calls[0]?.[0].fullWindow).toBe(true);
+  });
+
+  test("a new mode signal resets the frame, not just the pick set", async () => {
+    // Main can end a session with no renderer commit/cancel and re-show
+    // the same pre-warmed window; on Windows/Linux the panel is never
+    // destroyed. Dropping the picks was not enough — `togglePick` had
+    // already written their union into `rect`, so ↵ on the next show
+    // captured the abandoned session's bounding box.
+    await mountScene();
+    await clickWindow(WIN);
+    await clickWindow(WIN_B);
+    expect(rectStyle()).toEqual({ left: 200, top: 100, width: 700, height: 350 });
+    await emitMode({ mode: "auto", intent: "video" });
+    expect(document.body.dataset.pickCount).toBe("0");
+    expect(document.body.dataset.interaction).toBe("snap");
+    expect(rectStyle()).toEqual({
+      left: 0,
+      top: 0,
+      width: window.innerWidth,
+      height: window.innerHeight
+    });
+  });
+
+  test("a held mousedown does not survive a mode signal as a phantom drag", async () => {
+    // Release can go to a hidden window, so `pending` outlived the show
+    // and one bare mousemove promoted it to `drawing` with no button.
+    await mountScene();
+    await mouseMove(50, 50);
+    await mouseDown(50, 50);
+    expect(document.body.dataset.interaction).toBe("pending");
+    await emitMode({ mode: "auto" });
+    expect(document.body.dataset.interaction).toBe("snap");
+    await mouseMove(400, 400);
+    expect(document.body.dataset.interaction).not.toBe("drawing");
+  });
+
+  test("⇧ does not latch across a commit into the next show", async () => {
+    await mountScene();
+    await mouseMove(centerOf(WIN).x, centerOf(WIN).y);
+    await keyDown("Shift", { shiftKey: true });
+    expect(document.body.dataset.fullWindow).toBe("true");
+    await keyDown("Enter");
+    expect(submitRegion.mock.calls[0]?.[0].fullWindow).toBe(true);
+    expect(document.body.dataset.fullWindow).toBe("false");
+  });
+
+  test("the pick set is capped where main's validator caps it", async () => {
+    // Past MAX_SELECTOR_EXTENTS main rejects the WHOLE payload, and a
+    // rejected payload resolves the session as `cancelled` — so the
+    // capture vanished with no error, exactly like an Escape.
+    await mount();
+    await emitMode({ mode: "auto" });
+    const many = Array.from({ length: MAX_SELECTOR_EXTENTS + 5 }, (_, i) => ({
+      ...WIN,
+      windowId: 1000 + i,
+      zIndex: i,
+      rect: { x: i * 2, y: 0, w: 4, h: 4 },
+      rawRect: { x: i * 2, y: 0, w: 4, h: 4 }
+    }));
+    await emitSnapshot({
+      windows: many,
+      displayBounds: { width: window.innerWidth, height: window.innerHeight }
+    });
+    for (const w of many) await clickWindow(w);
+    expect(pickBoxes()).toHaveLength(MAX_SELECTOR_EXTENTS);
+    await keyDown("Enter");
+    expect(submitRegion.mock.calls[0]?.[0].extents).toHaveLength(MAX_SELECTOR_EXTENTS);
+  });
+
+  test("the Esc affordance says 'back' while a pick set is live", async () => {
+    // handleEscape checks the pick set FIRST, but togglePick parks the
+    // interaction in `snap`, so reading interaction.kind alone said
+    // "cancel" for a state Esc actually steps back from.
+    await mountScene();
+    expect(regionHintText()).toContain("cancel");
+    await clickWindow(WIN);
+    expect(regionHintText()).toContain("back");
+    expect(regionHintText()).not.toContain("cancel");
+  });
+
+  test("the record picker does not advertise picking", async () => {
+    // runInteractiveRecord opens as mode:"auto", intent:"video", where
+    // multiSelectAllowed() is false and a click cannot pick.
+    await mountScene({ mode: "auto", intent: "video" });
+    await mouseMove(centerOf(WIN).x, centerOf(WIN).y);
+    expect(regionHintText()).not.toContain("pick ");
+    await clickWindow(WIN);
+    expect(pickBoxes()).toHaveLength(0);
+  });
+
+  test("at a fractional scale the committed extents are the logical rects main sent", async () => {
+    // Every other test runs at cssToLogical 1, where `toLogical` is the
+    // identity — so the conversion could be DELETED with the whole
+    // suite still green (verified: it was). Scaled-mode Retina and
+    // every Windows display at 125%/150% are fractional, and there a
+    // dropped conversion ships `extents` in CSS px beside a `rect` in
+    // logical px; planExtentMask then finds no overlap and the capture
+    // fails outright.
+    //
+    // displayBounds 1348 against jsdom's 1024 viewport → the renderer
+    // scales the window list by 1024/1348 on the way in, and commit
+    // must scale it back exactly.
+    const A = { ...WIN, windowId: 501, zIndex: 0, rect: { x: 120, y: 100, w: 240, h: 180 }, rawRect: { x: 120, y: 100, w: 240, h: 180 } };
+    const B = { ...WIN, windowId: 502, zIndex: 1, rect: { x: 500, y: 300, w: 300, h: 200 }, rawRect: { x: 500, y: 300, w: 300, h: 200 } };
+    await mount();
+    await emitMode({ mode: "auto" });
+    await emitSnapshot({ windows: [A, B], displayBounds: { width: 1348, height: 900 } });
+    const scale = window.innerWidth / 1348;
+    const clickAt = async (w: WindowSnapEntry): Promise<void> => {
+      const x = (w.rawRect.x + w.rawRect.w / 2) * scale;
+      const y = (w.rawRect.y + w.rawRect.h / 2) * scale;
+      await mouseMove(x, y);
+      await mouseDown(x, y);
+      await mouseUp(x, y);
+    };
+    await clickAt(A);
+    await clickAt(B);
+    const payload = await commitAndRead();
+    expect(payload.extents).toEqual([A.rawRect, B.rawRect]);
+    // And the union is the union of those, in the same space.
+    expect(payload.rect).toEqual({ x: 120, y: 100, w: 680, h: 400 });
+    // Which means no extent can fall outside the box the mask clips to.
+    for (const e of payload.extents) {
+      expect(e.x).toBeGreaterThanOrEqual(payload.rect.x);
+      expect(e.x + e.w).toBeLessThanOrEqual(payload.rect.x + payload.rect.w);
+      expect(e.y).toBeGreaterThanOrEqual(payload.rect.y);
+      expect(e.y + e.h).toBeLessThanOrEqual(payload.rect.y + payload.rect.h);
+    }
   });
 
   test("window mode: a hand wobble past the drag threshold still picks", async () => {
@@ -1081,6 +1314,15 @@ describe("U5 — multi-window pick set", () => {
     await clickWindow(WIN_B);
     expect(pickBoxes()).toHaveLength(2);
     expect(submitRegion).not.toHaveBeenCalled();
+    // And ⌃-click — which on macOS arrives as button 0 with ctrlKey,
+    // the secondary-click gesture the removed carve-out refused —
+    // behaves like any other click. Without actually DISPATCHING a
+    // ctrlKey event this test could not tell a restored carve-out from
+    // a working one.
+    await clickWindow(WIN_C, { ctrlKey: true });
+    expect(pickBoxes()).toHaveLength(3);
+    await clickWindow(WIN_C, { ctrlKey: true });
+    expect(pickBoxes()).toHaveLength(2);
   });
 
   test("dropping below two picks releases the rectangle mode", async () => {

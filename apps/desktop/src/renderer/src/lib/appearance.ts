@@ -3,7 +3,7 @@
 // out below — the React layer in `useAppearance.ts` composes these
 // into the live hook.
 //
-// Source of truth lives in Settings (DesktopSettingsService). The
+// Source of truth lives in the process-owned DesktopSettingsStore. The
 // localStorage cache here is a first-paint optimization for the
 // pre-React bootstrap in `index.html`: the bootstrap reads it
 // synchronously before any JS module loads. The hook mirrors every

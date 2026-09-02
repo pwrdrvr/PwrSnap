@@ -1450,7 +1450,7 @@ export function bootstrapApp(): void {
     // role resolution can't await the settings service. Honors the E2E
     // userData override the same way the later setPath does.
     experimentalProcessSplit: peekExperimentalProcessSplit(
-      join(process.env.PWRSNAP_USER_DATA ?? app.getPath("userData"), "pwrsnap-settings.json")
+      process.env.PWRSNAP_USER_DATA ?? app.getPath("userData")
     )
   });
   setRuntimeProcessRole(role);
@@ -2052,7 +2052,7 @@ export function bootstrapApp(): void {
         // agent-owned writer. BrowserWindow appearance/menu construction is
         // synchronous and reads this snapshot; the bridge event is the
         // explicit cross-process invalidation boundary.
-        getDesktopSettingsStore().applyExternalSnapshot(settings);
+        getDesktopSettingsStore().adoptTrustedPeerSnapshot(settings);
         setCapturesLocation(settings.storage.capturesLocation);
         if (settings.general.developerMode !== lastKnownDeveloperMode) {
           installApplicationMenu(settings.general.developerMode);

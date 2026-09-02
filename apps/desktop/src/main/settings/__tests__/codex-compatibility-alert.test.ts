@@ -1,49 +1,61 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-const mocks = vi.hoisted(() => {
-  const promisifiedExecFile = vi.fn();
-  const execFile = vi.fn();
-  Object.defineProperty(execFile, Symbol.for("nodejs.util.promisify.custom"), {
-    value: promisifiedExecFile
-  });
-  return { execFile, promisifiedExecFile };
-});
-
-vi.mock("node:child_process", () => ({ execFile: mocks.execFile }));
-
-const { assertCodexCliVersion, MINIMUM_CODEX_CLI_VERSION } = await import(
-  "../codex-discovery"
-);
-const {
+import { defaultSettings } from "../desktop-settings-service";
+import { DesktopSettingsStore } from "../desktop-settings-store";
+import { MINIMUM_CODEX_CLI_VERSION } from "../codex-discovery";
+import {
   CodexCliTooOldError,
   getCodexCliCompatibilityAlert,
   onCodexCliCompatibilityAlertChanged,
   resetCodexCompatibilityAlertForTests
-} = await import("../codex-compatibility-alert");
+} from "../codex-compatibility-alert";
 
 describe("Codex CLI compatibility alert", () => {
   beforeEach(() => {
     resetCodexCompatibilityAlertForTests();
-    mocks.promisifiedExecFile.mockReset();
   });
 
   afterEach(() => {
     resetCodexCompatibilityAlertForTests();
   });
 
-  test("the real too-old guard emits once, clears on compatibility, and re-arms", async () => {
+  test("the store-owned guard emits once, clears after explicit refresh, and re-arms", async () => {
     const changes: Array<ReturnType<typeof getCodexCliCompatibilityAlert>> = [];
     const unsubscribe = onCodexCliCompatibilityAlertChanged((alert) => {
       changes.push(alert);
     });
-    mocks.promisifiedExecFile.mockResolvedValue({
-      stdout: "codex-cli 0.143.0\n",
-      stderr: ""
+    let version = "0.143.0";
+    const discoverCodex = vi.fn(async () => ({
+      candidates: [
+        {
+          command: "codex",
+          source: "path" as const,
+          executable: version === MINIMUM_CODEX_CLI_VERSION,
+          selected: version === MINIMUM_CODEX_CLI_VERSION,
+          version,
+          ...(version === MINIMUM_CODEX_CLI_VERSION
+            ? {}
+            : { failureReason: "codex_too_old" })
+        }
+      ]
+    }));
+    const store = new DesktopSettingsStore({
+      filePath: join(mkdtempSync(join(tmpdir(), "pwrsnap-codex-alert-")), "settings.json"),
+      readTextFile: async () => JSON.stringify(defaultSettings()),
+      discoverCodex,
+      probeCodexAuthentication: async () => ({
+        status: "authenticated",
+        testedAt: "2026-09-02T00:00:00.000Z",
+        durationMs: 1
+      })
     });
 
-    await expect(assertCodexCliVersion("codex", {})).rejects.toBeInstanceOf(
-      CodexCliTooOldError
-    );
+    await expect(
+      store.resolveCompatibleCodexCommand({ command: "codex" })
+    ).rejects.toBeInstanceOf(CodexCliTooOldError);
 
     const first = getCodexCliCompatibilityAlert();
     expect(first).toMatchObject({
@@ -54,29 +66,25 @@ describe("Codex CLI compatibility alert", () => {
     });
     expect(changes).toEqual([first]);
 
-    // A repeated failure with the same compatibility tuple stays deduplicated.
-    await expect(assertCodexCliVersion("codex", {})).rejects.toBeInstanceOf(
-      CodexCliTooOldError
-    );
+    // Repeated runtime consumers share the failed publication and alert.
+    await expect(
+      store.resolveCompatibleCodexCommand({ command: "codex" })
+    ).rejects.toBeInstanceOf(CodexCliTooOldError);
+    expect(discoverCodex).toHaveBeenCalledTimes(1);
     expect(changes).toEqual([first]);
 
-    mocks.promisifiedExecFile.mockResolvedValue({
-      stdout: `codex-cli ${MINIMUM_CODEX_CLI_VERSION}\n`,
-      stderr: ""
-    });
-    await expect(assertCodexCliVersion("codex", {})).resolves.toBe(
-      MINIMUM_CODEX_CLI_VERSION
-    );
+    version = MINIMUM_CODEX_CLI_VERSION;
+    await store.refreshCodexDiscoveryForUserRequest();
+    await expect(
+      store.resolveCompatibleCodexCommand({ command: "codex" })
+    ).resolves.toMatchObject({ version: MINIMUM_CODEX_CLI_VERSION });
     expect(changes).toEqual([first, null]);
 
-    // Once compatibility succeeds, the same old tuple is a new regression.
-    mocks.promisifiedExecFile.mockResolvedValue({
-      stdout: "codex-cli 0.143.0\n",
-      stderr: ""
-    });
-    await expect(assertCodexCliVersion("codex", {})).rejects.toBeInstanceOf(
-      CodexCliTooOldError
-    );
+    version = "0.143.0";
+    await store.refreshCodexDiscoveryForUserRequest();
+    await expect(
+      store.resolveCompatibleCodexCommand({ command: "codex" })
+    ).rejects.toBeInstanceOf(CodexCliTooOldError);
     expect(changes).toHaveLength(3);
     expect(changes[2]?.key).toBe(first?.key);
 

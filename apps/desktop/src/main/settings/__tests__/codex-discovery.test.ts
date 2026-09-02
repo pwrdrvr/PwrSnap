@@ -30,7 +30,6 @@ vi.mock("@pwrdrvr/codex-discovery", () => ({
 }));
 
 const {
-  assertCodexCliVersion,
   buildCodexAutoCandidates,
   discoverCodexCommands,
   nvmNodeBinDirs,
@@ -225,25 +224,5 @@ describe("nvmNodeBinDirs", () => {
 
   test("returns empty when nvm is not installed (no shell is spawned)", async () => {
     await expect(nvmNodeBinDirs(home)).resolves.toEqual([]);
-  });
-});
-
-describe("assertCodexCliVersion not-found reporting", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  test("a missing pinned path fails with a clear message before any spawn", async () => {
-    mocks.pathIsExecutable.mockResolvedValue(false);
-
-    await expect(
-      assertCodexCliVersion("/stale/pinned/codex", {})
-    ).rejects.toThrow(/Codex CLI not found: \/stale\/pinned\/codex.*Settings → AI/);
-  });
-
-  test("a bare command missing from PATH maps spawn ENOENT to the same message", async () => {
-    await expect(
-      assertCodexCliVersion("pwrsnap-definitely-not-a-real-codex", {})
-    ).rejects.toThrow(/Codex CLI not found: pwrsnap-definitely-not-a-real-codex/);
   });
 });

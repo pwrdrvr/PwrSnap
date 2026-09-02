@@ -72,7 +72,12 @@ type SettingsHandlerStore = Pick<
   "read" | "write" | "withSerializedSettings"
 > &
   Partial<
-    Pick<DesktopSettingsStore, "getCodexDiscoverySnapshot" | "testCodex">
+    Pick<
+      DesktopSettingsStore,
+      | "getCodexDiscoverySnapshot"
+      | "refreshCodexDiscoveryForUserRequest"
+      | "testCodexForUserRequest"
+    >
   >;
 
 let settingsService: SettingsHandlerStore | null = null;
@@ -142,7 +147,7 @@ function getLocalAgentUsageService(): LocalAgentUsageService {
 
 /** Read the current settings snapshot for non-`settings:*` main handlers
  *  (e.g. the export path resolving the active preset ladder). Shares the
- *  same lazily-constructed `DesktopSettingsService` as the bus verbs, so
+ *  same process-owned `DesktopSettingsStore` as the bus verbs, so
  *  a write made through `settings:write` is visible here immediately without
  *  re-reading or re-parsing the file. */
 export async function readDesktopSettings(): Promise<Settings> {
@@ -500,10 +505,13 @@ export function registerSettingsDataHandlers(options: {
     }
     const { service } = ensureServices();
     try {
-      if (service.getCodexDiscoverySnapshot === undefined) {
+      const readDiscovery = force
+        ? service.refreshCodexDiscoveryForUserRequest
+        : service.getCodexDiscoverySnapshot;
+      if (readDiscovery === undefined) {
         throw new Error("Codex discovery is unavailable from the injected settings test store");
       }
-      const snapshot = await service.getCodexDiscoverySnapshot({ force });
+      const snapshot = await readDiscovery.call(service);
       return ok(snapshot);
     } catch (cause) {
       return err(
@@ -519,10 +527,10 @@ export function registerSettingsDataHandlers(options: {
   bus.register("settings:testCodex", async () => {
     const { service } = ensureServices();
     try {
-      if (service.testCodex === undefined) {
+      if (service.testCodexForUserRequest === undefined) {
         throw new Error("Codex testing is unavailable from the injected settings test store");
       }
-      const result = await service.testCodex();
+      const result = await service.testCodexForUserRequest();
       return ok(result);
     } catch (cause) {
       return err(

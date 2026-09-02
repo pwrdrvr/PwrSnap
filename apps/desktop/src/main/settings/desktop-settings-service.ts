@@ -1,6 +1,6 @@
 // Internal settings persistence adapter. DesktopSettingsStore is the sole
 // production owner. The first read hydrates an immutable snapshot from disk;
-// subsequent reads stay in memory until an explicit reload boundary. Reads
+// subsequent reads stay in memory for the process lifetime. Reads
 // route through an ordered legacy-shape catalog
 // (see SHAPE_CATALOG below) so schema growth doesn't force eager migrations
 // on read — we rewrite on the next `write`. Atomic writes serialize through
@@ -1433,7 +1433,7 @@ export class DesktopSettingsService {
    *  hotkeys, tray, updater, AI) never race into duplicate disk parses. */
   private hydrationInflight: Promise<Settings> | null = null;
 
-  /** Serializes writes and explicit reloads. Ordinary reads return the
+  /** Serializes writes. Ordinary reads return the
    *  current immutable snapshot immediately; a mutation publishes its next
    *  snapshot only after the atomic file rename succeeds. */
   private writeQueue: Promise<unknown> = Promise.resolve();
@@ -1486,7 +1486,7 @@ export class DesktopSettingsService {
    *  library uses this on the settings-changed bridge event so synchronous
    *  window/menu consumers stay current without reading the shared file.
    *  This never persists and never accepts renderer input directly. */
-  applyExternalSnapshot(settings: Settings): Settings {
+  adoptTrustedSnapshot(settings: Settings): Settings {
     const normalized = this.normalizeForSnapshot(settings);
     const current = this.replaceSnapshot(normalized);
     return current;
@@ -1515,25 +1515,6 @@ export class DesktopSettingsService {
         this.hydrationInflight = null;
       }
     }
-  }
-
-  /**
-   * Explicit external-change boundary. Normal production changes use
-   * `write()`, which updates this store and broadcasts the new snapshot.
-   * A caller that intentionally permits out-of-process edits may invoke
-   * `reload()` (application startup is the default boundary); hot paths must
-   * never call it. Reloads serialize with writes and invalidate Codex
-   * discovery because an external edit may have changed `codex.*`.
-   */
-  async reload(): Promise<Settings> {
-    const task = async (): Promise<Settings> => {
-      if (this.hydrationInflight !== null) {
-        await this.hydrationInflight;
-      }
-      const settings = await this.loadFromDisk();
-      return settings;
-    };
-    return this.enqueue(task);
   }
 
   private async loadFromDisk(): Promise<Settings> {

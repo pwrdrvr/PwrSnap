@@ -997,9 +997,10 @@ Rules:
   `DesktopSettingsService`. The first startup read hydrates + freezes one
   snapshot, concurrent cold reads coalesce, and hot-path `read()` calls never
   reopen or reparse `pwrsnap-settings.json`. Successful writes replace the
-  snapshot only after the atomic rename. `reload()` is the explicit
-  out-of-process edit boundary (normal boundary: app restart); split-mode
-  Library adopts the agent's trusted `events:settings:changed` snapshot.
+  snapshot only after the atomic rename. There is deliberately no callable
+  production reload API: app restart is the boundary for an out-of-process
+  file edit, while split-mode Library adopts the agent's trusted
+  `events:settings:changed` snapshot.
   A non-`ENOENT` hydration error leaves the store empty and rejects; never
   promote fallback defaults into a writable snapshot when a valid settings
   file may only be temporarily unreadable.
@@ -1058,6 +1059,16 @@ Rules:
   its fingerprint; an explicit Refresh passes `force: true`. Never reintroduce
   a TTL/focus-triggered machine scan or direct discovery fallback outside the
   store. The source-boundary test pins this rule.
+- **The lint boundary is executable policy.**
+  `pnpm settings-store:check` runs inside `pnpm lint` and rejects production
+  imports of raw settings persistence or Codex/ACP discovery, direct references
+  to `pwrsnap-settings.json`, extra store construction, reuse of the synchronous
+  process-role peek, direct binary version probes, trusted peer-snapshot adoption
+  outside the split relay, or live refresh/test/profile probes outside their
+  explicit Settings handlers. Thread-config selection consumes the Codex version
+  already published by the store; it never launches its own `--version`. Do not
+  weaken the allowlist to make a new call site compile; add a cached store
+  operation or establish a genuinely explicit boundary instead.
 
 What this substrate is **not for**: ephemeral renderer state (sidebar
 expanded/collapsed, last-selected capture id), per-capture metadata

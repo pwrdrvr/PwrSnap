@@ -37,7 +37,8 @@ function replaceAlert(
 }
 
 /**
- * Report the exact too-old condition from `assertCodexCliVersion`. Repeated
+ * Report the exact too-old condition from the settings store's cached
+ * compatibility guard. Repeated
  * attempts against the same command/version pair do not emit again while the
  * condition remains active, preventing a burst of identical renderer toasts.
  */
@@ -58,7 +59,7 @@ export function reportCodexCliTooOld(
   return activeAlert ?? alert;
 }
 
-/** A successful exact-command guard resolves the active condition and re-arms
+/** A successful store-owned command guard resolves the active condition and re-arms
  * the dedupe key, allowing a later downgrade to surface again. */
 export function clearCodexCliCompatibilityAlert(): void {
   replaceAlert(null, true);

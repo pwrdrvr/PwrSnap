@@ -12,7 +12,7 @@
 // start an agent — a cache-miss listing rides the SHARED pooled process
 // (acp-agent-pool.ts), never a private short-lived spawn.
 //
-// `discoverLocalAcpAgentInstances` returns one group per installed agent, each
+// The ACP kit returns one group per installed agent, each
 // with all passing instances. We diff that against `BUILT_IN_ACP_STRATEGIES`
 // and emit a not-installed entry (with an install hint) for every strategy the
 // discovery didn't return. The user's per-agent override path (from
@@ -55,8 +55,8 @@ import { getDesktopSettingsStore } from "../settings/desktop-settings-store";
 
 const log = getMainLogger("pwrsnap:acp-handlers");
 
-/** Injectable discovery seam for tests. Production uses the kit's
- *  `discoverLocalAcpAgentInstances` (default `execFile`-backed probe). */
+/** Injectable discovery seam for tests. Production uses the store-owned kit
+ *  scan (default `execFile`-backed probe). */
 export type AcpDiscoverInstances = (
   options?: LocalAcpDiscoveryOptions
 ) => Promise<DiscoveredAcpAgentGroup[]>;
@@ -167,7 +167,9 @@ export function registerAcpHandlers(params?: {
       groups = settings === undefined
         ? []
         : discoveryStore !== null
-          ? await discoveryStore.getAcpDiscoveryGroups({ force: req.force === true })
+          ? req.force === true
+            ? await discoveryStore.refreshAcpDiscoveryForUserRequest()
+            : await discoveryStore.getAcpDiscoveryGroups()
           : await discover!(acpDiscoveryOptionsForInstallScan(settings));
     } catch (cause) {
       // The kit isolates per-strategy probe failures internally, so a

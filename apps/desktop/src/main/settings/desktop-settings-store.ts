@@ -30,6 +30,11 @@ import type {
 import { execAgentCommand } from "../ai/agent-command";
 import { resolveActiveAcpInstance } from "../ai/acp-instance-resolver";
 import {
+  clearCodexCliCompatibilityAlert,
+  CodexCliTooOldError,
+  reportCodexCliTooOld
+} from "./codex-compatibility-alert";
+import {
   DesktopSettingsService,
   type DesktopSettingsServiceConfig,
   type DesktopSettingsWriteOptions,
@@ -105,8 +110,7 @@ export interface DesktopSettingsStoreApi {
   getCurrentSnapshot(): Settings | null;
   getCurrentDomain<K extends DesktopSettingsDomain>(domain: K): Settings[K] | null;
   write(patch: SettingsPatch, options?: DesktopSettingsWriteOptions): Promise<Settings>;
-  reload(): Promise<Settings>;
-  applyExternalSnapshot(settings: Settings): Settings;
+  adoptTrustedPeerSnapshot(settings: Settings): Settings;
   withSerializedSettings<T>(operation: SerializedSettingsOperation<T>): Promise<T>;
   subscribe<K extends DesktopSettingsDomain>(
     domains: readonly K[],
@@ -191,14 +195,8 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
     return result;
   }
 
-  async reload(): Promise<Settings> {
-    const settings = await this.persistence.reload();
-    this.observeSnapshot(settings, true);
-    return settings;
-  }
-
-  applyExternalSnapshot(settings: Settings): Settings {
-    const snapshot = this.persistence.applyExternalSnapshot(settings);
+  adoptTrustedPeerSnapshot(settings: Settings): Settings {
+    const snapshot = this.persistence.adoptTrustedSnapshot(settings);
     this.observeSnapshot(snapshot, true);
     return snapshot;
   }
@@ -236,7 +234,6 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
   async resolveCodexCommand(params: {
     command: string;
     env?: NodeJS.ProcessEnv;
-    force?: boolean;
   }): Promise<ResolvedCodexCommandCandidate> {
     const env = params.env ?? this.env;
     const configuredCommand =
@@ -246,21 +243,90 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
     const discovery = await this.getRawCodexDiscovery({
       configuredCommand,
       env,
-      force: params.force === true
+      force: false
     });
     return selectResolvedCodexCommand(discovery, params.command);
   }
 
-  async getCodexDiscoverySnapshot(options?: {
-    force?: boolean;
-  }): Promise<DesktopCodexDiscoverySnapshot> {
+  /** Resolve a launchable, protocol-compatible Codex command from the cached
+   * discovery publication. This is the runtime guard: callers must not run a
+   * second version probe after resolution. */
+  async resolveCompatibleCodexCommand(params: {
+    command: string;
+    env?: NodeJS.ProcessEnv;
+  }): Promise<ResolvedCodexCommandCandidate> {
+    const env = params.env ?? this.env;
+    const requestedCommand = params.command.trim() || "codex";
+    const configuredCommand =
+      requestedCommand !== "codex" ? requestedCommand : undefined;
+    const discovery = await this.getRawCodexDiscovery({
+      configuredCommand,
+      env,
+      force: false
+    });
+    const selected = discovery.candidates.find((candidate) => candidate.selected);
+    if (selected !== undefined && selected.version !== undefined) {
+      if (
+        compareCodexCliVersions(selected.version, MINIMUM_CODEX_CLI_VERSION) < 0
+      ) {
+        throw new CodexCliTooOldError(
+          reportCodexCliTooOld(
+            selected.command,
+            selected.version,
+            MINIMUM_CODEX_CLI_VERSION
+          )
+        );
+      }
+      clearCodexCliCompatibilityAlert();
+      return {
+        command: selected.command,
+        source: selected.source,
+        version: selected.version
+      };
+    }
+
+    const incompatible = discovery.candidates.find(
+      (candidate) =>
+        candidate.failureReason === "codex_too_old" &&
+        candidate.version !== undefined
+    );
+    if (incompatible?.version !== undefined) {
+      throw new CodexCliTooOldError(
+        reportCodexCliTooOld(
+          incompatible.command,
+          incompatible.version,
+          MINIMUM_CODEX_CLI_VERSION
+        )
+      );
+    }
+    if (selected !== undefined) {
+      const reason = selected.versionFailureReason ?? "version_not_reported";
+      throw new Error(
+        `Codex CLI version could not be verified: ${selected.command} (${reason})`
+      );
+    }
+    throw new Error(codexNotFoundMessage(requestedCommand));
+  }
+
+  async getCodexDiscoverySnapshot(): Promise<DesktopCodexDiscoverySnapshot> {
+    return this.loadCodexDiscoverySnapshot(false);
+  }
+
+  /** Expensive user-action boundary. Production callers outside the Settings
+   * Refresh handler are rejected by scripts/check-settings-store-boundary.mjs. */
+  async refreshCodexDiscoveryForUserRequest(): Promise<DesktopCodexDiscoverySnapshot> {
+    return this.loadCodexDiscoverySnapshot(true);
+  }
+
+  private async loadCodexDiscoverySnapshot(
+    force: boolean
+  ): Promise<DesktopCodexDiscoverySnapshot> {
     const settings = await this.read();
     const configuredCommand = configuredCodexCommand(settings);
     const fingerprint = this.codexPublicationFingerprint(
       configuredCommand,
       this.env
     );
-    const force = options?.force === true;
     if (!force) {
       const cached = this.codexUiCache.get(fingerprint);
       if (cached !== undefined) {
@@ -289,7 +355,7 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
         this.env
       );
       if (latestFingerprint !== fingerprint) {
-        return this.getCodexDiscoverySnapshot();
+        return this.loadCodexDiscoverySnapshot(false);
       }
       return snapshot;
     } catch (cause) {
@@ -303,7 +369,7 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
     }
   }
 
-  async testCodex(): Promise<CodexTestResult> {
+  async testCodexForUserRequest(): Promise<CodexTestResult> {
     const startedAt = this.now();
     const settings = await this.read();
     let resolvedCommand: string | null = null;
@@ -378,14 +444,26 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
   /** Installed-agent scan for Settings/Library/Float-Over. Automatic reads
    * stay cached; only an explicit force refresh or changed discovery inputs
    * launch new probes. */
-  async getAcpDiscoveryGroups(options?: {
-    force?: boolean;
-  }): Promise<DiscoveredAcpAgentGroup[]> {
+  async getAcpDiscoveryGroups(): Promise<DiscoveredAcpAgentGroup[]> {
+    return this.loadAcpDiscoveryGroups(false);
+  }
+
+  /** Expensive user-action boundary. Production callers outside the Settings
+   * Refresh handler are rejected by scripts/check-settings-store-boundary.mjs. */
+  async refreshAcpDiscoveryForUserRequest(): Promise<
+    DiscoveredAcpAgentGroup[]
+  > {
+    return this.loadAcpDiscoveryGroups(true);
+  }
+
+  private async loadAcpDiscoveryGroups(
+    force: boolean
+  ): Promise<DiscoveredAcpAgentGroup[]> {
     const settings = await this.read();
     return this.discoverAcpGroups({
       settings,
       agentIds: BUILT_IN_ACP_STRATEGIES.map((strategy) => strategy.id),
-      force: options?.force === true
+      force
     });
   }
 
@@ -781,6 +859,16 @@ function acpFingerprint(
 
 function fingerprint(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function codexNotFoundMessage(command: string): string {
+  return (
+    `Codex CLI not found: ${command}. Install the Codex CLI ` +
+    (process.platform === "darwin"
+      ? `(Codex Desktop / ChatGPT Desktop or \`brew install codex\`), or pin its `
+      : `(Codex Desktop / ChatGPT Desktop or another supported CLI install), or pin its `) +
+    `full path in Settings → AI.`
+  );
 }
 
 function clipError(error: unknown): string {

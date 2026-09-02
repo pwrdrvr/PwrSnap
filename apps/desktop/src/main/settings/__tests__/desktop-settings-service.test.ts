@@ -120,7 +120,7 @@ describe("DesktopSettingsService.read", () => {
     expect(readTextFile).toHaveBeenCalledTimes(1);
   });
 
-  test("keeps external edits behind the explicit reload boundary", async () => {
+  test("keeps external edits behind the process restart boundary", async () => {
     let diskSettings = defaultSettings();
     const readTextFile = vi.fn(async () => JSON.stringify(diskSettings));
     const svc = new DesktopSettingsService({
@@ -138,8 +138,11 @@ describe("DesktopSettingsService.read", () => {
     expect(cached.recording.imageCaptureCursor).toBe(true);
     expect(readTextFile).toHaveBeenCalledTimes(1);
 
-    const reloaded = await svc.reload();
-    expect(reloaded.recording.imageCaptureCursor).toBe(false);
+    const restarted = new DesktopSettingsService({
+      filePath: join(workDir, "settings.json"),
+      readTextFile
+    });
+    expect((await restarted.read()).recording.imageCaptureCursor).toBe(false);
     expect(readTextFile).toHaveBeenCalledTimes(2);
   });
 
@@ -1279,7 +1282,7 @@ describe("DesktopSettingsStore.getCodexDiscoverySnapshot cache invalidation", ()
     }
   });
 
-  test("an explicit external reload invalidates discovery and resolves the reloaded pin", async () => {
+  test("a trusted peer snapshot invalidates discovery and resolves the relayed pin", async () => {
     const codexDiscovery = await import("../codex-discovery");
     const { discoverSpy, restore } = stubCodexDiscovery(codexDiscovery);
 
@@ -1292,8 +1295,7 @@ describe("DesktopSettingsStore.getCodexDiscoverySnapshot cache invalidation", ()
       const external = mergeSettings(defaultSettings(), {
         codex: { mode: "pinned", pinnedPath: "/opt/external-codex" }
       });
-      writeFileSync(filePath, JSON.stringify(external), "utf8");
-      await svc.reload();
+      svc.adoptTrustedPeerSnapshot(external);
 
       expect((await svc.getCodexDiscoverySnapshot()).resolvedPath).toBe(
         "/opt/external-codex"
@@ -1373,7 +1375,7 @@ describe("DesktopSettingsStore.getCodexDiscoverySnapshot cache invalidation", ()
   });
 });
 
-describe("DesktopSettingsStore.testCodex", () => {
+describe("DesktopSettingsStore.testCodexForUserRequest", () => {
   test("unset when no Codex binary resolves", async () => {
     const svc = new DesktopSettingsStore({
       filePath: join(workDir, "settings.json"),
@@ -1381,7 +1383,7 @@ describe("DesktopSettingsStore.testCodex", () => {
         throw new Error("no codex");
       }
     });
-    const result = await svc.testCodex();
+    const result = await svc.testCodexForUserRequest();
     expect(result.status).toBe("unset");
     expect(result.account).toBeNull();
     expect(result.testedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);

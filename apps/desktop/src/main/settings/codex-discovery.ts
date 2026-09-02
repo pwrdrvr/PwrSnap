@@ -49,11 +49,6 @@ import {
 } from "@pwrdrvr/codex-discovery";
 
 import { PWRSNAP_CODEX_COMMAND_ENV } from "./env";
-import {
-  clearCodexCliCompatibilityAlert,
-  CodexCliTooOldError,
-  reportCodexCliTooOld
-} from "./codex-compatibility-alert";
 import { execAgentCommand } from "../ai/agent-command";
 
 /** Minimum Codex CLI version PwrSnap will spawn. The protocol package version
@@ -106,7 +101,6 @@ export async function pathIsExecutable(candidate: string): Promise<boolean> {
 
 const AUTH_PROBE_TIMEOUT_MS = 2_500;
 const AUTH_PROBE_MESSAGE_LIMIT = 240;
-const VERSION_PROBE_TIMEOUT_MS = 2_500;
 
 function trimProbeMessage(value: string): string {
   return value.trim().replace(/\s+/g, " ").slice(0, AUTH_PROBE_MESSAGE_LIMIT);
@@ -170,56 +164,6 @@ export function validateCodexCliVersion(version: string): string | undefined {
   return compareCodexCliVersions(version, MINIMUM_CODEX_CLI_VERSION) < 0
     ? "codex_too_old"
     : undefined;
-}
-
-function isSpawnNotFoundError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    (error as { code?: unknown }).code === "ENOENT"
-  );
-}
-
-/** Guard the exact command the App Server client is about to spawn. Discovery
- *  filters old candidates for Settings, while this check prevents a direct
- *  configured/PATH command from bypassing that UI-level selection. An explicit
- *  path is existence-checked before the spawn so a stale pinned path fails
- *  with a clear "not found" instead of a raw ENOENT. */
-export async function assertCodexCliVersion(
-  command: string,
-  env: NodeJS.ProcessEnv
-): Promise<string> {
-  const notFoundMessage =
-    `Codex CLI not found: ${command}. Install the Codex CLI ` +
-    (process.platform === "darwin"
-      ? `(Codex Desktop / ChatGPT Desktop or \`brew install codex\`), or pin its `
-      : `(Codex Desktop / ChatGPT Desktop or another supported CLI install), or pin its `) +
-    `full path in Settings → AI.`;
-  if (path.isAbsolute(command) && !(await kitPathIsExecutable(command))) {
-    throw new Error(notFoundMessage);
-  }
-  let result: { stdout: string; stderr: string };
-  try {
-    result = await execAgentCommand(command, ["--version"], {
-      env,
-      timeoutMs: VERSION_PROBE_TIMEOUT_MS
-    });
-  } catch (cause) {
-    if (isSpawnNotFoundError(cause)) throw new Error(notFoundMessage);
-    throw cause;
-  }
-  const output = `${result.stdout}\n${result.stderr ?? ""}`;
-  const version = parseCodexVersion(output);
-  if (version === undefined) {
-    throw new Error(`Codex CLI version banner was not recognized: ${command}`);
-  }
-  if (validateCodexCliVersion(version) !== undefined) {
-    throw new CodexCliTooOldError(
-      reportCodexCliTooOld(command, version, MINIMUM_CODEX_CLI_VERSION)
-    );
-  }
-  clearCodexCliCompatibilityAlert();
-  return version;
 }
 
 /** Every installed nvm node version's bin dir, newest first — an

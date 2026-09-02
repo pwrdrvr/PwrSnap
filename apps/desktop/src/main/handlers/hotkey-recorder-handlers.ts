@@ -65,7 +65,7 @@ export function registerHotkeyRecorderSuspensionHandlers(
   ownership: HotkeyRecorderOwnershipCoordinator,
   isLiveSettingsOwner: (windowId: number, documentId: string) => boolean
 ): void {
-  // This must be the same DesktopSettingsService instance used by
+  // This must be the same DesktopSettingsStore instance used by
   // settings:write/status/retry. It makes native suspension one participant
   // in that service's non-reentrant mutation baton rather than a parallel
   // state machine that can race a prepared settings write.

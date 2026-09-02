@@ -1,12 +1,10 @@
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { describe, expect, test } from "vitest";
 import {
   resolveCodexThreadConfig,
-  resolveCodexThreadConfigForCommand,
   withEffectiveCodeModeSettings,
   MINIMAL_THREAD_CONFIG,
   LEGACY_FEATURES_THREAD_CONFIG,
-  MODERN_THREAD_CONFIG,
-  __clearCodexVersionCacheForTests
+  MODERN_THREAD_CONFIG
 } from "../codex-thread-config";
 
 // The Codex `config` overlay schema churns across (even alpha) releases, so
@@ -164,36 +162,5 @@ describe("config shape invariants (per Codex schema notes)", () => {
       "pwrsnap_sizzle"
     ]);
     expect(resolved).not.toHaveProperty("features.code_mode.enabled");
-  });
-});
-
-describe("resolveCodexThreadConfigForCommand (cached version probe)", () => {
-  afterEach(() => __clearCodexVersionCacheForTests());
-
-  test("probes the command's version once, then serves from cache", () => {
-    const probe = vi.fn(() => "0.136.0"); // no marker of its own → 0.135 legacy
-    const a = resolveCodexThreadConfigForCommand("/path/codex", undefined, probe);
-    const b = resolveCodexThreadConfigForCommand("/path/codex", undefined, probe);
-    expect(a).toBe(LEGACY_FEATURES_THREAD_CONFIG);
-    expect(b).toBe(LEGACY_FEATURES_THREAD_CONFIG);
-    expect(probe).toHaveBeenCalledTimes(1); // cached by command
-  });
-
-  test("distinct commands probe independently", () => {
-    const probe = vi.fn((cmd: string) => (cmd === "/old/codex" ? "0.135.0" : "0.146.0"));
-    expect(resolveCodexThreadConfigForCommand("/old/codex", undefined, probe)).toBe(
-      LEGACY_FEATURES_THREAD_CONFIG
-    );
-    expect(resolveCodexThreadConfigForCommand("/new/codex", undefined, probe)).toBe(
-      MODERN_THREAD_CONFIG
-    );
-    expect(probe).toHaveBeenCalledTimes(2);
-  });
-
-  test("a failed probe (null) → newest-marker default", () => {
-    const probe = vi.fn(() => null);
-    expect(resolveCodexThreadConfigForCommand("/x/codex", undefined, probe)).toBe(
-      MODERN_THREAD_CONFIG
-    );
   });
 });

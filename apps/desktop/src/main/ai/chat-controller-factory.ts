@@ -214,10 +214,10 @@ export function chatSurfaceDefaultsFromSettings(
 }
 
 /** Seams the backend resolver depends on, injectable for tests. Production
- *  uses the kit's real `discoverLocalAcpAgents` + concrete client classes. */
+ *  uses the kit's real local discovery + concrete client classes. */
 export type ChatBackendDeps = {
   /** Local ACP discovery (multi-instance). Defaults to the kit's
-   *  `discoverLocalAcpAgentInstances`. */
+   *  grouped local discovery. */
   discoverAcpAgentInstances?: (
     options?: LocalAcpDiscoveryOptions
   ) => Promise<DiscoveredAcpAgentGroup[]>;

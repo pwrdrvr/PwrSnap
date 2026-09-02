@@ -561,7 +561,10 @@ describe("settings:* validation", () => {
       refreshedAt: "2026-08-03T00:00:00.000Z"
     };
     const discovery = vi
-      .spyOn(DesktopSettingsStore.prototype, "getCodexDiscoverySnapshot")
+      .spyOn(
+        DesktopSettingsStore.prototype,
+        "refreshCodexDiscoveryForUserRequest"
+      )
       .mockResolvedValue(explicitSnapshot);
 
     process.env.PWRSNAP_E2E = "1";
@@ -587,7 +590,7 @@ describe("settings:* validation", () => {
       );
       expect(explicit).toEqual({ ok: true, value: explicitSnapshot });
       expect(discovery).toHaveBeenCalledOnce();
-      expect(discovery).toHaveBeenCalledWith({ force: true });
+      expect(discovery).toHaveBeenCalledWith();
     } finally {
       discovery.mockRestore();
       if (originalE2E === undefined) delete process.env.PWRSNAP_E2E;

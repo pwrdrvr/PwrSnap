@@ -61,7 +61,7 @@ async function defaultSettingsReader(): Promise<Settings> {
   return result.value;
 }
 
-/** Resolve the Codex CLI command the same way the settings service does:
+/** Resolve the Codex CLI command through the settings store publication:
  *  honor a pinned path, else fall through to discovery (which itself falls
  *  back to the bare `codex` on $PATH). Never throws — a clean ENOENT later
  *  surfaces through the spawn. */

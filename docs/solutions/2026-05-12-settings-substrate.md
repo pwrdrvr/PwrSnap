@@ -78,14 +78,23 @@ the same deeply frozen snapshot without opening or parsing
 `pwrsnap-settings.json`. Do not construct private production service instances.
 
 `write()` serializes against other mutations, persists atomically, and replaces
-the snapshot only after rename succeeds. `reload()` is the explicit boundary
-for a deliberate out-of-process file edit; app restart is the normal boundary.
+the snapshot only after rename succeeds. There is no callable production reload
+API: app restart is the boundary for a deliberate out-of-process file edit.
 `ENOENT` hydrates defaults for a genuine first launch. Any other read error
 rejects and leaves the store unhydrated, so later reads retry and no write can
 replace a valid-but-temporarily-unreadable file with defaults plus one patch.
 In split mode the Library process adopts the agent's trusted
 `events:settings:changed` snapshot so synchronous menu/BrowserWindow consumers
 stay current without a file read. Secret plaintext remains outside this store.
+
+`pnpm settings-store:check` is part of `pnpm lint`. It rejects production raw
+persistence/discovery imports, direct settings-file references, secondary store
+instances, process-role peek reuse, direct binary version probes, peer-snapshot
+adoption outside the split relay, and live discovery/test/profile probe
+entrypoints outside the explicit Settings handlers. Codex thread-config
+selection uses the version already published by store-owned discovery instead
+of maintaining a second per-command `--version` cache. This is intentionally
+stricter than relying on comments or API naming to keep a future hot path cheap.
 
 The one synchronous exception is process-role resolution's narrow peek of
 `experimental.processSplit`: the role is needed before `app.whenReady()`. An

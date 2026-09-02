@@ -71,7 +71,7 @@ describe("startup appearance settings store wiring", () => {
     __setDesktopSettingsStoreForTests(store);
     await store.read();
 
-    store.applyExternalSnapshot(
+    store.adoptTrustedPeerSnapshot(
       mergeSettings(defaultSettings(), { appearance: { theme: "light" } })
     );
 

@@ -84,17 +84,19 @@ describe("DesktopSettingsStore provider publications", () => {
       detail: "authenticated"
     }));
     const readTextFile = vi.fn(async () => JSON.stringify(defaultSettings()));
+    const executeAgentCommand = vi.fn();
     const store = new DesktopSettingsStore({
       filePath: join(workDir, "settings.json"),
       readTextFile,
       discoverCodex,
       probeCodexAuthentication,
+      executeAgentCommand,
       env: { PATH: "/usr/bin" }
     });
 
     const uiA = store.getCodexDiscoverySnapshot();
     const uiB = store.getCodexDiscoverySnapshot();
-    const runtime = store.resolveCodexCommand({ command: "codex" });
+    const runtime = store.resolveCompatibleCodexCommand({ command: "codex" });
     expect(discoverCodex).toHaveBeenCalledTimes(1);
     release.resolve();
 
@@ -104,8 +106,9 @@ describe("DesktopSettingsStore provider publications", () => {
     expect(probeCodexAuthentication).toHaveBeenCalledTimes(1);
 
     await store.getCodexDiscoverySnapshot();
-    await store.resolveCodexCommand({ command: "codex" });
+    await store.resolveCompatibleCodexCommand({ command: "codex" });
     expect(discoverCodex).toHaveBeenCalledTimes(1);
+    expect(executeAgentCommand).not.toHaveBeenCalled();
     expect(readTextFile).toHaveBeenCalledTimes(1);
     expect(store.readDiagnostics()).toMatchObject({
       settingsFileReads: 1,
@@ -113,6 +116,25 @@ describe("DesktopSettingsStore provider publications", () => {
       codexDiscoveryRuns: 1,
       codexDiscoveryDedupeHits: 1
     });
+  });
+
+  test("a missing runtime command fails from discovery without a second probe", async () => {
+    const discoverCodex = vi.fn(async () => ({ candidates: [] }));
+    const executeAgentCommand = vi.fn();
+    const store = new DesktopSettingsStore({
+      filePath: join(workDir, "settings.json"),
+      readTextFile: async () => JSON.stringify(defaultSettings()),
+      discoverCodex,
+      executeAgentCommand
+    });
+
+    await expect(
+      store.resolveCompatibleCodexCommand({
+        command: "/stale/pinned/codex"
+      })
+    ).rejects.toThrow(/Codex CLI not found: \/stale\/pinned\/codex.*Settings → AI/);
+    expect(discoverCodex).toHaveBeenCalledTimes(1);
+    expect(executeAgentCommand).not.toHaveBeenCalled();
   });
 
   test("concurrent explicit Codex refreshes remain single-flight", async () => {
@@ -132,8 +154,8 @@ describe("DesktopSettingsStore provider publications", () => {
     await store.getCodexDiscoverySnapshot();
 
     await Promise.all([
-      store.getCodexDiscoverySnapshot({ force: true }),
-      store.getCodexDiscoverySnapshot({ force: true })
+      store.refreshCodexDiscoveryForUserRequest(),
+      store.refreshCodexDiscoveryForUserRequest()
     ]);
 
     expect(discoverCodex).toHaveBeenCalledTimes(2);
@@ -276,7 +298,7 @@ describe("DesktopSettingsStore provider publications", () => {
 
     const first = await store.resolveEnabledAcpAgent("gemini");
     expect(first?.command).toBe("/usr/local/bin/gemini");
-    await expect(store.getAcpDiscoveryGroups({ force: true })).rejects.toThrow(
+    await expect(store.refreshAcpDiscoveryForUserRequest()).rejects.toThrow(
       "temporary probe failure"
     );
     const retained = await store.resolveEnabledAcpAgent("gemini");
@@ -300,7 +322,7 @@ describe("DesktopSettingsStore provider publications", () => {
     expect((await store.resolveEnabledAcpAgent("gemini"))?.command).toBe(
       "/usr/local/bin/gemini"
     );
-    const refreshed = await store.getAcpDiscoveryGroups({ force: true });
+    const refreshed = await store.refreshAcpDiscoveryForUserRequest();
     expect(refreshed.find((group) => group.strategyId === "gemini")?.instances).toEqual(
       [
         expect.objectContaining({ command: "/usr/local/bin/gemini" })

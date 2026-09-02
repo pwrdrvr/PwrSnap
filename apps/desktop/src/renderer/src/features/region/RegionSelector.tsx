@@ -883,8 +883,36 @@ export function RegionSelector() {
         }
         return;
       }
-      // Arrow-key nudge — only when adjusting (no live drag).
-      if (interactionRef.current.kind !== "adjusting") return;
+      // Arrow-key nudge. Normally only while adjusting (no live drag)
+      // — but a LONE pick promotes into adjusting on the first arrow.
+      // Clicking a window used to land in `adjusting` directly, so the
+      // arrows moved it; now a click picks, and without this the keys
+      // would be silently dead on the very selection they used to
+      // nudge. The rect is already the pick's box, so promoting is just
+      // dropping the pick (see clearPickSet) and pinning the snap
+      // target to the window that was picked — NOT to whatever the
+      // cursor has since wandered over, which would tag the commit with
+      // the wrong `snappedWindowId`.
+      //
+      // Not offered above one pick: the rect is a derived union there,
+      // and nudging it would leave the extents pinned to windows the
+      // box no longer matches.
+      const isArrowKey =
+        event.key === "ArrowLeft" ||
+        event.key === "ArrowRight" ||
+        event.key === "ArrowUp" ||
+        event.key === "ArrowDown";
+      if (interactionRef.current.kind !== "adjusting") {
+        if (!isArrowKey) return;
+        if (interactionRef.current.kind !== "snap") return;
+        if (picksRef.current.length !== 1) return;
+        const only = picksRef.current[0]!;
+        clearPickSet();
+        const promoted: SnapTarget = { kind: "window", entry: only };
+        snapTargetRef.current = promoted;
+        setSnapTarget(promoted);
+        setInteraction({ kind: "adjusting" });
+      }
       const r = rectRef.current;
       const step = event.shiftKey ? NUDGE_PX_SHIFT : NUDGE_PX;
       let dx = 0;
@@ -1389,6 +1417,18 @@ export function RegionSelector() {
           <span className="region-hint-sep">·</span>
           <span>
             <kbd>tab</kbd>next window
+          </span>
+          {picks.length === 1 && (
+            <>
+              <span className="region-hint-sep">·</span>
+              <span>
+                <kbd>arrows</kbd>nudge
+              </span>
+            </>
+          )}
+          <span className="region-hint-sep">·</span>
+          <span>
+            <kbd>↵</kbd>capture
           </span>
         </>
       );

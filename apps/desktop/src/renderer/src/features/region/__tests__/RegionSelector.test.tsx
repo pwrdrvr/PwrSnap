@@ -715,6 +715,48 @@ describe("U5 — multi-window pick set", () => {
     expect(payload.rect).toEqual({ x: 700, y: 500, w: 280, h: 200 });
   });
 
+  test("an arrow key promotes a lone pick to an adjustable rect", async () => {
+    // Clicking a window used to land in `adjusting`, where arrows
+    // nudged. Click-to-pick lands in `snap` instead, so without the
+    // promotion the arrows would be silently dead on exactly the
+    // selection they used to move.
+    await mountScene();
+    await clickWindow(WIN);
+    expect(document.body.dataset.interaction).toBe("snap");
+    await keyDown("ArrowRight");
+    expect(document.body.dataset.interaction).toBe("adjusting");
+    expect(pickBoxes()).toHaveLength(0);
+    expect(hud()).toBeNull();
+    expect(rectStyle()).toEqual({ left: 201, top: 150, width: 400, height: 300 });
+    // The commit still names the window that was picked.
+    await keyDown("Enter");
+    const payload = submitRegion.mock.calls[0]?.[0];
+    expect(payload.snappedWindowId).toBe(WIN.windowId);
+    expect(payload).not.toHaveProperty("extents");
+  });
+
+  test("the promotion tags the picked window, not whatever the cursor left on", async () => {
+    await mountScene();
+    await clickWindow(WIN);
+    await mouseMove(centerOf(WIN_B).x, centerOf(WIN_B).y); // hover elsewhere
+    await keyDown("ArrowRight");
+    await keyDown("Enter");
+    expect(submitRegion.mock.calls[0]?.[0].snappedWindowId).toBe(WIN.windowId);
+  });
+
+  test("arrows do not nudge a union of two picks", async () => {
+    // The rect is derived there; moving it would strand the extents on
+    // windows the box no longer matches.
+    await mountScene();
+    await clickWindow(WIN);
+    await clickWindow(WIN_B);
+    const before = rectStyle();
+    await keyDown("ArrowRight");
+    expect(rectStyle()).toEqual(before);
+    expect(pickBoxes()).toHaveLength(2);
+    expect(document.body.dataset.interaction).toBe("snap");
+  });
+
   test("window mode: a hand wobble past the drag threshold still picks", async () => {
     // Window mode has no competing drag gesture, so travel must not
     // cost the pick the way it does in `auto`.

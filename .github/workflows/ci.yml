@@ -237,6 +237,27 @@ jobs:
         with:
           node-version: "24.14.1"
 
+      - name: Parse Windows release PowerShell
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          foreach ($path in @(
+            "scripts/release/archive-windows-signing-input.ps1",
+            "scripts/release/smoke-installed-windows.ps1"
+          )) {
+            $tokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path -LiteralPath $path).Path,
+              [ref]$tokens,
+              [ref]$parseErrors
+            ) | Out-Null
+            if ($parseErrors.Count -ne 0) {
+              $details = $parseErrors | ForEach-Object { $_.ToString() }
+              throw "$path has PowerShell parse errors:`n$($details -join "`n")"
+            }
+          }
+
       - name: Lint
         run: pnpm run lint
 

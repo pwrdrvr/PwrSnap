@@ -8,6 +8,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const desktopPackagePath = resolve(repoRoot, "apps/desktop/package.json");
 const electronBuilderPath = resolve(repoRoot, "apps/desktop/electron-builder.yml");
 const ciWorkflowPath = resolve(repoRoot, ".github/workflows/ci.yml");
+const previewWorkflowPath = resolve(repoRoot, ".github/workflows/preview-build.yml");
 const releaseWorkflowPath = resolve(repoRoot, ".github/workflows/release.yml");
 const workflowsReadmePath = resolve(repoRoot, ".github/workflows/README.md");
 const windowsPackageScriptPath = resolve(repoRoot, "apps/desktop/scripts/package-win.mjs");
@@ -18,6 +19,10 @@ const windowsArchiveScriptPath = resolve(
 const trustedSigningScriptPath = resolve(
   repoRoot,
   "scripts/release/install-trusted-signing.ps1",
+);
+const windowsInstalledSmokeScriptPath = resolve(
+  repoRoot,
+  "scripts/release/smoke-installed-windows.ps1",
 );
 const changelogPath = resolve(repoRoot, "CHANGELOG.md");
 
@@ -112,17 +117,31 @@ const electronBuilder = readFileSync(electronBuilderPath, "utf8");
 if (!/^\s*releaseType:\s*prerelease\s*$/m.test(electronBuilder)) {
   fail("apps/desktop/electron-builder.yml publish.releaseType must be prerelease");
 }
+if (!/^ {2}deleteAppDataOnUninstall:\s*false\s*$/m.test(electronBuilder)) {
+  fail("apps/desktop/electron-builder.yml must pin nsis.deleteAppDataOnUninstall=false");
+}
 
 const ciWorkflow = readFileSync(ciWorkflowPath, "utf8");
 if (!ciWorkflow.includes("releases/**")) {
   fail('.github/workflows/ci.yml must trigger CI for "releases/**" branches');
 }
+for (const expected of [
+  "Parse Windows release PowerShell",
+  "System.Management.Automation.Language.Parser",
+  "scripts/release/smoke-installed-windows.ps1",
+]) {
+  if (!ciWorkflow.includes(expected)) {
+    fail(`.github/workflows/ci.yml must contain ${JSON.stringify(expected)}`);
+  }
+}
 
 const releaseWorkflow = readFileSync(releaseWorkflowPath, "utf8");
+const previewWorkflow = readFileSync(previewWorkflowPath, "utf8");
 const workflowsReadme = readFileSync(workflowsReadmePath, "utf8");
 const windowsPackageScript = readFileSync(windowsPackageScriptPath, "utf8");
 const windowsArchiveScript = readFileSync(windowsArchiveScriptPath, "utf8");
 const trustedSigningScript = readFileSync(trustedSigningScriptPath, "utf8");
+const windowsInstalledSmokeScript = readFileSync(windowsInstalledSmokeScriptPath, "utf8");
 
 if (!workflowsReadme.includes("ci:windows-signing")) {
   fail(".github/workflows/README.md must document ci:windows-signing");
@@ -137,6 +156,7 @@ for (const expected of [
   "  linux-build:",
   "  windows-prepare:",
   "  windows-sign:",
+  "  windows-installed-smoke:",
   "  publish-release-assets:",
   "environment: windows-signing",
   "windows-release-signing-input",
@@ -152,12 +172,17 @@ for (const expected of [
   "- linux-build",
   "- sign",
   "- windows-sign",
+  "- windows-installed-smoke",
   "gh release create",
   "--verify-tag",
   "pull_request:",
   "ci:windows-signing",
   "github.event.pull_request.head.repo.full_name == github.repository",
   "Get-AuthenticodeSignature",
+  "Launch signed installed Windows application",
+  "windows-installed-smoke-controller",
+  "-RequireBundledFfmpeg",
+  "scripts/release/smoke-installed-windows.ps1",
   "windows-signed-installer-pr",
   "if: ${{ github.event_name != 'pull_request' }}",
   "find mac-dist/dist mac-dist/build/ffmpeg-source",
@@ -184,15 +209,71 @@ if (releaseWorkflow.includes("mac-dist/*")) {
 }
 const protectedWindowsJob = releaseWorkflow
   .split("\n  windows-sign:\n")[1]
-  ?.split("\n  publish-release-assets:\n")[0];
+  ?.split("\n  windows-installed-smoke:\n")[0];
 if (!protectedWindowsJob) {
   fail(".github/workflows/release.yml protected Windows job is missing");
 } else {
+  if (!protectedWindowsJob.includes("timeout-minutes: 45")) {
+    fail(
+      ".github/workflows/release.yml protected Windows job must retain the 45-minute single-installer budget",
+    );
+  }
+  if (protectedWindowsJob.includes("timeout-minutes: 90")) {
+    fail(
+      ".github/workflows/release.yml protected Windows job must not pre-allocate an unmeasured paired-installer budget",
+    );
+  }
   for (const unexpected of ["actions/checkout", "pnpm install", "npm install"]) {
     if (protectedWindowsJob.includes(unexpected)) {
       fail(
         `.github/workflows/release.yml protected Windows job must not contain ${JSON.stringify(unexpected)}`,
       );
+    }
+  }
+  const signatureIndex = protectedWindowsJob.indexOf("Verify Authenticode signatures");
+  const aliasIndex = protectedWindowsJob.indexOf("Prepare stable-name Windows installer alias");
+  const uploadIndex = protectedWindowsJob.indexOf("Upload Windows installer artifact");
+  const controllerIndex = protectedWindowsJob.indexOf("Upload installed-app smoke controller");
+  if (
+    signatureIndex < 0 ||
+    aliasIndex <= signatureIndex ||
+    uploadIndex <= aliasIndex ||
+    controllerIndex <= uploadIndex
+  ) {
+    fail(
+      ".github/workflows/release.yml must order Authenticode -> alias -> installer/controller upload",
+    );
+  }
+  if (protectedWindowsJob.includes("Start-Process")) {
+    fail(".github/workflows/release.yml protected Windows job must not launch PR-controlled code");
+  }
+}
+const installedWindowsSmokeJob = releaseWorkflow
+  .split("\n  windows-installed-smoke:\n")[1]
+  ?.split("\n  publish-release-assets:\n")[0];
+if (!installedWindowsSmokeJob) {
+  fail(".github/workflows/release.yml credential-free installed Windows smoke job is missing");
+} else {
+  for (const expected of [
+    "needs: windows-sign",
+    "windows-installed-smoke-controller",
+    "Launch signed installed Windows application",
+    "-ExpectedPublisher $env:EXPECTED_PUBLISHER",
+    "-RequireBundledFfmpeg",
+    "Upload signed installed-app smoke diagnostics",
+  ]) {
+    if (!installedWindowsSmokeJob.includes(expected)) {
+      fail(`installed Windows smoke job must contain ${JSON.stringify(expected)}`);
+    }
+  }
+  for (const unexpected of [
+    "environment: windows-signing",
+    "actions/checkout",
+    "pnpm install",
+    "AZURE_CLIENT_SECRET",
+  ]) {
+    if (installedWindowsSmokeJob.includes(unexpected)) {
+      fail(`installed Windows smoke job must not contain ${JSON.stringify(unexpected)}`);
     }
   }
 }
@@ -217,11 +298,32 @@ for (const expected of [
     fail(`apps/desktop/scripts/package-win.mjs must contain ${JSON.stringify(expected)}`);
   }
 }
+const windowsUninstallIndex = windowsInstalledSmokeScript.indexOf('-Label "NSIS uninstall"');
+const windowsSentinelIndex = windowsInstalledSmokeScript.lastIndexOf(
+  "Assert-UninstallPreservedIsolatedData",
+);
+const windowsControllerCleanupIndex = windowsInstalledSmokeScript.indexOf(
+  "Remove-Item -LiteralPath $smokeRoot -Recurse -Force",
+);
+const windowsEnvironmentRestoreIndex = windowsInstalledSmokeScript.lastIndexOf(
+  "Restore-ProcessEnvironment",
+);
+if (
+  windowsUninstallIndex < 0 ||
+  windowsSentinelIndex <= windowsUninstallIndex ||
+  windowsControllerCleanupIndex <= windowsSentinelIndex ||
+  windowsEnvironmentRestoreIndex <= windowsControllerCleanupIndex
+) {
+  fail(
+    "installed Windows smoke must uninstall under isolated profile vars, verify data sentinels, clean its root, then restore the caller environment",
+  );
+}
 for (const expected of [
   "apps/desktop/release-stage/node_modules/.pnpm/node_modules",
   "apps/desktop/release-stage",
   "apps/desktop/scripts/package-win.mjs",
   "scripts/release/install-trusted-signing.ps1",
+  "scripts/release/smoke-installed-windows.ps1",
   // The signing job has no checkout, so anything it runs — and anything those
   // scripts import — must be archived. verify-asar-contents.mjs imports
   // cli-entrypoint.mjs; omitting it is an ERR_MODULE_NOT_FOUND after signing.
@@ -231,6 +333,64 @@ for (const expected of [
 ]) {
   if (!windowsArchiveScript.includes(expected)) {
     fail(`${windowsArchiveScriptPath} must contain ${JSON.stringify(expected)}`);
+  }
+}
+if (!previewWorkflow.includes("Smoke installed Windows application")) {
+  fail(".github/workflows/preview-build.yml must launch the installed Windows preview");
+}
+if (!previewWorkflow.includes("scripts/release/smoke-installed-windows.ps1")) {
+  fail(".github/workflows/preview-build.yml must use the shared installed-app smoke");
+}
+const previewWindowsJob = previewWorkflow.split("\n  preview-windows:\n")[1];
+if (!previewWindowsJob?.includes("timeout-minutes: 40")) {
+  fail(".github/workflows/preview-build.yml must reserve 40 minutes for Windows packaging + smoke cleanup");
+}
+for (const expected of [
+  "Start-Process",
+  "WaitForExit",
+  "taskkill.exe /PID",
+  "PWRSNAP_E2E",
+  "PWRSNAP_USER_DATA",
+  "PWRSNAP_DATA_ROOT",
+  "PWRSNAP_PACKAGED_WINDOWS_SMOKE",
+  "ConvertFrom-Json",
+  "Assert-NoExistingPwrSnapInstallation",
+  "Get-PwrSnapRegistryResidue",
+  "Remove-SmokeOwnedFileAssociationRemainder",
+  "Refusing to remove unexpected .pwrsnap registry state",
+  "NODE_PATH",
+  "libraryUiState",
+  "main.startup.singleInstanceLockAcquired",
+  "main.startup.tray.iconLoaded",
+  "main.startup.globalHotkeysSkipped",
+  "main.startup.launchAtLoginSyncSkipped",
+  "main.startup.appUpdaterSkipped",
+  "main.startup.localAgentLifecycleSkipped",
+  "main.startup.startupCodexProbeSkipped",
+  "betterSqlite3.quickCheck",
+  "betterSqlite3.bindingPath",
+  "sharp.vipsVersion",
+  "sharp.libvipsDllPaths",
+  "bundledHelpers.windowList.ownWindowDetected",
+  "bundledHelpers.windowList.executableSha256",
+  "bundledHelpers.ffmpeg.roundTrip.exactPixels",
+  "bundledHelpers.ffmpeg.capabilities.inputDevices",
+  "Assert-ReportedSha256",
+  "installed PwrSnapWindowList.exe",
+  "installed PwrSnapFFmpeg.exe",
+  "explicitly report bundled FFmpeg absent",
+  "PWRSNAP_PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG",
+  "RequireBundledFfmpeg",
+  "NSIS uninstall left production-identity residue",
+  "Installed-app smoke modified the source installer bytes",
+  "default-app-data-uninstall-sentinel",
+  "user-data-uninstall-sentinel",
+  "data-root-uninstall-sentinel",
+  "Uninstall changed or deleted the isolated smoke database",
+  "Uninstall*.exe",
+]) {
+  if (!windowsInstalledSmokeScript.includes(expected)) {
+    fail(`${windowsInstalledSmokeScriptPath} must contain ${JSON.stringify(expected)}`);
   }
 }
 for (const expected of [

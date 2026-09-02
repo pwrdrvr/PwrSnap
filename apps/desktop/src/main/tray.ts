@@ -88,6 +88,12 @@ const TRAY_WIDTH = 440;
 
 let tray: Tray | null = null;
 let trayWindow: BrowserWindow | null = null;
+export type TrayInstallationEvidence = {
+  iconPath: string;
+  iconLoaded: boolean;
+  popoverPrewarmed: boolean;
+};
+let trayInstallationEvidence: TrayInstallationEvidence | null = null;
 /**
  * Last valid renderer measurement accepted by the production resize channel.
  * BrowserWindow.getContentSize() is not a trustworthy applied-size signal on
@@ -382,10 +388,20 @@ export function installTray(): Tray {
   // off-screen + hidden. The renderer's `useLayoutEffect` posts the
   // initial resize over the IPC channel exactly as it does on a real
   // click; `wireTrayResizeChannel` sizes the (hidden) window to match.
-  prewarmTrayWindow();
+  const prewarmedWindow = prewarmTrayWindow();
+  trayInstallationEvidence = {
+    iconPath,
+    iconLoaded: !icon.isEmpty(),
+    popoverPrewarmed: !prewarmedWindow.isDestroyed()
+  };
 
   log.info("tray installed", { iconPath });
   return tray;
+}
+
+/** Causal evidence for packaged-startup smoke; null until installTray completes. */
+export function getTrayInstallationEvidence(): TrayInstallationEvidence | null {
+  return trayInstallationEvidence === null ? null : { ...trayInstallationEvidence };
 }
 
 /**
@@ -467,6 +483,7 @@ export function disposeTray(): void {
     tray.destroy();
     tray = null;
   }
+  trayInstallationEvidence = null;
   currentTrayHotkeys = { ...DEFAULT_HOTKEYS };
 }
 
@@ -601,7 +618,7 @@ export async function measureTrayFirstPaintForE2E(options: {
   };
   // Belt-and-suspenders: wire the production channel in case the
   // bridge runs before installTray() / prewarmTrayWindow() did
-  // (E2E mode skips installTray). Idempotent.
+  // (ordinary E2E mode skips installTray; packaged smoke does not). Idempotent.
   wireTrayResizeChannel();
   ipcMain.on(TRAY_RESIZE_CHANNEL, probe);
 

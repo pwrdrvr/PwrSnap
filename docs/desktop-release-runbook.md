@@ -197,11 +197,35 @@ The release workflow separates preparation, signing, and publication:
    signing credentials. It archives the stage and records its SHA-256.
 5. **`windows-sign`** runs inside `windows-signing`, verifies the archive,
    injects the pinned Windows FFmpeg artifact, installs `TrustedSigning`, and
-   packages via `--sign-stage-only --release --require-signing`. It does not
-   check out source or install dependencies. See
+   packages via `--sign-stage-only --release --require-signing`, verifies
+   Authenticode, and uploads the signed payload plus the archived smoke
+   controller. It does not check out source, install dependencies, or launch
+   PR-controlled application code. See
    [desktop-windows-signing.md](desktop-windows-signing.md).
-6. **`publish-release-assets`** depends on successful Linux, macOS, and Windows
-   jobs. Only this job creates the GitHub Pre-release, with changelog notes,
+   Its 45-minute timeout bounds runner execution after the protected environment
+   is approved; GitHub's environment approval wait is separate. If the updater
+   lane later packages a baseline and target in this job, measure that signed
+   path before changing the execution budget. Keep updater-only synthetic
+   installers outside
+   `release-stage/dist`, so the launch lane's exact-one versioned setup glob
+   continues to select only the publication artifact.
+   NSIS must keep `deleteAppDataOnUninstall: false`. The installed-app
+   controller keeps all profile/app-data variables isolated through uninstall
+   and verifies its default-app-data, userData, data-root, and SQLite sentinels
+   before deleting the controller-owned temporary tree.
+6. **`windows-installed-smoke`** is credential-free and downloads those exact
+   artifacts. It installs and launches the signed application with isolated
+   profile/data roots; acquires the production first-instance lock, installs
+   the packaged tray icon and prewarms the tray renderer; proves main, React,
+   preload/IPC, better-sqlite3, and
+   Sharp/libvips readiness; directly executes the installed window-list helper
+   against PwrSnap's visible window; verifies sidecar paths, hashes, and signed
+   lane Authenticode; and runs bundled FFmpeg capability enumeration plus an
+   exact RGBA/PNG encode/decode round trip before clean quit/uninstall.
+7. **`publish-release-assets`** depends on successful Linux, macOS, Windows
+   signing, and installed-launch smoke jobs. The updater lane is a separate
+   sibling dependency; merge resolution must preserve both gates. Only this job
+   creates the GitHub Pre-release, with changelog notes,
    macOS DMG/ZIP/updater metadata, the stable `PwrSnap.dmg` alias, the signed
    Windows installer/updater metadata, the stable
    `PwrSnap-windows-x64-setup.exe` alias, and checksums.
@@ -227,14 +251,30 @@ No signing job publishes directly. A macOS or Windows signing failure, an
 unapproved environment, or a Linux build failure leaves no partial GitHub
 Release behind.
 
+The same installed-application controller runs for the unsigned Windows
+`build-preview` artifact. Static archive/DLL/`.node` checks remain useful for
+payload structure, but they are not treated as launch readiness: only the
+installed process can produce the causal JSON evidence, and only after its
+renderer has completed a real `library:list` round trip against the fresh
+isolated database. Failure diagnostics are bounded tails of stdout, stderr,
+the result, and isolated app logs.
+
 For a non-publishing Windows signing smoke check, apply `ci:windows-signing` to
 a same-repository PR after reviewing its head SHA. Temporarily allow that exact
 PR merge ref (`refs/pull/<number>/merge`) in the `windows-signing` environment,
 approve the protected job, and remove the rule after the
-`windows-signed-installer-pr` artifact passes Authenticode and launch
-validation. This is the same `release.yml` Windows prepare/sign path used by
-tags; `publish-release-assets` is disabled for PR events, so it never creates a
-tag or GitHub Release.
+`windows-signed-installer-pr` artifact passes Authenticode and the separate launch
+validation (including better-sqlite3, Sharp/libvips, React, preload, and IPC).
+This is the same `release.yml` Windows prepare/sign path used by tags;
+`publish-release-assets` is disabled for PR events, so it never creates a tag
+or GitHub Release. The launch uses E2E only for isolated paths and test
+readiness plumbing: the first-instance lock and packaged tray/icon/prewarm path
+still execute. Global hotkeys, launch-at-login mutation, the startup Codex
+probe, local-agent lifecycle, and `electron-updater` stay explicitly disabled;
+feed retrieval, blockmaps, download,
+signature selection, `quitAndInstall`, and prerelease-to-prerelease transition
+remain the separate updater lane/clean-VM release coverage; this launch lane
+does not add feed behavior.
 
 Do not approve either signing environment unless the tag, commit, and release
 metadata are intended. Approval exposes that environment's credentials to its

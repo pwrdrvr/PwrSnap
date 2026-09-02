@@ -31,7 +31,11 @@ $paths = @(
   # imports and fails if this list falls behind again.
   "scripts/lib/cli-entrypoint.mjs",
   "scripts/check-bundled-ffmpeg-notice.mjs",
-  "scripts/release/install-trusted-signing.ps1"
+  "scripts/release/install-trusted-signing.ps1",
+  # The protected job has no checkout. Carry the installed-artifact controller
+  # so it can upload the exact hashed copy to the credential-free runtime-smoke
+  # job. Other release smoke controllers are additive entries in this allowlist.
+  "scripts/release/smoke-installed-windows.ps1"
 )
 foreach ($path in $paths) {
   if (-not (Test-Path -LiteralPath $path)) {

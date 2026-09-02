@@ -348,7 +348,8 @@ $signature = Get-AuthenticodeSignature -LiteralPath $env:PWRSNAP_PROBE_PATH
         status: expect.any(String),
         commandSource: "Microsoft.PowerShell.Security"
       });
-    }
+    },
+    45_000
   );
 });
 

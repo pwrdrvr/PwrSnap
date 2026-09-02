@@ -53,6 +53,7 @@ describe("CaptureLatencyTrace", () => {
     const permission = trace.begin("permission_preflight");
     trace.end(permission, { outcome: "granted" });
     trace.mark("settings_read", { outcome: "ready" });
+    expect(entries).toHaveLength(0);
     trace.finish("presented", { generation: 4 });
     trace.finish("error", { code: "must_be_ignored" });
 

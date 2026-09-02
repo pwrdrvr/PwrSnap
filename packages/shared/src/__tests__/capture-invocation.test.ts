@@ -2,6 +2,8 @@ import { describe, expect, test } from "vitest";
 import {
   CAPTURE_INVOCATION_ORIGINS,
   createCaptureInvocation,
+  createCaptureInvocationTrigger,
+  finalizeCaptureInvocation,
   isCaptureInvocation
 } from "../capture-invocation";
 
@@ -21,6 +23,24 @@ describe("capture invocation identity", () => {
       triggerMonotonicMs: 120.5,
       dispatchMonotonicMs: 120.5,
       triggerWallTime: "2026-09-01T12:00:00.000Z"
+    });
+    expect(isCaptureInvocation(invocation)).toBe(true);
+  });
+
+  test("separates callback sampling from dispatch sampling", () => {
+    const trigger = createCaptureInvocationTrigger({
+      id: "trace-split-1234",
+      origin: "global_hotkey.window",
+      monotonicNow: () => 50,
+      wallNow: () => "2026-09-01T12:00:00.000Z"
+    });
+
+    const invocation = finalizeCaptureInvocation(trigger, () => 85);
+
+    expect(trigger).not.toHaveProperty("dispatchMonotonicMs");
+    expect(invocation).toEqual({
+      ...trigger,
+      dispatchMonotonicMs: 85
     });
     expect(isCaptureInvocation(invocation)).toBe(true);
   });

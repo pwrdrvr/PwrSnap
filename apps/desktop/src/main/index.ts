@@ -20,7 +20,12 @@ import {
   revealInFileManagerLabel,
   shortcutPlatformFromString
 } from "@pwrsnap/shared";
-import type { RecordingSubject, Settings, SettingsChangedEvent } from "@pwrsnap/shared";
+import type {
+  CaptureInvocationTrigger,
+  RecordingSubject,
+  Settings,
+  SettingsChangedEvent
+} from "@pwrsnap/shared";
 import {
   disposeRegionSelector,
   getLastWindowListSnapshot,
@@ -33,7 +38,10 @@ import { activateApp, selfPidSet } from "./capture/window-list";
 import { appWindowsOverlappingRect } from "./capture/rect-overlap";
 import { guardScreenCapture } from "./capture/screen-permission-gate";
 import { ensureCapturesDirReady } from "./capture/capture-storage-gate";
-import { dispatchInteractiveCapture } from "./capture/capture-trigger";
+import {
+  createInteractiveCaptureTrigger,
+  dispatchInteractiveCapture
+} from "./capture/capture-trigger";
 import { reconcileCapturesLocationOnBoot } from "./capture/capture-location-reconciliation";
 import {
   resolveSelectionSourceApp,
@@ -693,18 +701,33 @@ function handlerFor(kind: HotkeyKind): () => void {
   switch (kind) {
     case "quickCapture":
       return () => {
-        log.info("global hotkey fired", { kind, mode: "auto" });
-        void runInteractiveCapture("auto", "global_hotkey.quick_capture");
+        const trigger = createInteractiveCaptureTrigger("global_hotkey.quick_capture");
+        log.info("global hotkey fired", {
+          kind,
+          mode: "auto",
+          invocationId: trigger.id
+        });
+        void runInteractiveCapture("auto", trigger);
       };
     case "region":
       return () => {
-        log.info("global hotkey fired", { kind, mode: "region" });
-        void runInteractiveCapture("region", "global_hotkey.region");
+        const trigger = createInteractiveCaptureTrigger("global_hotkey.region");
+        log.info("global hotkey fired", {
+          kind,
+          mode: "region",
+          invocationId: trigger.id
+        });
+        void runInteractiveCapture("region", trigger);
       };
     case "window":
       return () => {
-        log.info("global hotkey fired", { kind, mode: "window" });
-        void runInteractiveCapture("window", "global_hotkey.window");
+        const trigger = createInteractiveCaptureTrigger("global_hotkey.window");
+        log.info("global hotkey fired", {
+          kind,
+          mode: "window",
+          invocationId: trigger.id
+        });
+        void runInteractiveCapture("window", trigger);
       };
     case "fullScreen":
       // Capture the display under the cursor end-to-end (no selector).
@@ -725,8 +748,13 @@ function handlerFor(kind: HotkeyKind): () => void {
       // 5-second countdown, then the auto-mode selector. Routed through
       // `capture:interactive` (mode `"timed"`), same as the tray tile.
       return () => {
-        log.info("global hotkey fired", { kind, mode: "timed" });
-        void runInteractiveCapture("timed", "global_hotkey.timed");
+        const trigger = createInteractiveCaptureTrigger("global_hotkey.timed");
+        log.info("global hotkey fired", {
+          kind,
+          mode: "timed",
+          invocationId: trigger.id
+        });
+        void runInteractiveCapture("timed", trigger);
       };
     case "videoCapture":
       // Fast Video Capture (issue #64). Opens the selector in auto
@@ -899,11 +927,9 @@ async function runExportLibrary(): Promise<void> {
 
 async function runInteractiveCapture(
   mode: "auto" | "region" | "window" | "timed" = "auto",
-  origin:
-    | "global_hotkey.quick_capture"
-    | "global_hotkey.region"
-    | "global_hotkey.window"
-    | "global_hotkey.timed" = "global_hotkey.quick_capture"
+  trigger: CaptureInvocationTrigger = createInteractiveCaptureTrigger(
+    "global_hotkey.quick_capture"
+  )
 ): Promise<void> {
   const log = getMainLogger("pwrsnap:shortcut");
   // The Quick Capture hotkey explicitly uses 'auto' mode — snap to a
@@ -915,7 +941,7 @@ async function runInteractiveCapture(
   // The handler owns the full lifecycle now (pre-show / populate /
   // hide-selector / activate-prev-app). We just wait for it to
   // finish and log non-cancellation errors.
-  const result = await dispatchInteractiveCapture(origin, mode);
+  const result = await dispatchInteractiveCapture(trigger, mode);
   if (!result.ok && result.error.code !== "cancelled") {
     log.warn("capture:interactive failed", {
       code: result.error.code,

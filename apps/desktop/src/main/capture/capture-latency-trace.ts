@@ -46,6 +46,8 @@ type StageRecord = {
   stage: CaptureLatencyStage;
   elapsedMs: number;
   durationMs: number;
+  wallTime: string;
+  fields: CaptureLatencyFields;
 };
 
 const defaultLogger = getMainLogger("pwrsnap:capture-latency");
@@ -59,6 +61,8 @@ function compactMs(value: number): number {
  * clock; ISO wall time appears only so an operator can correlate the entry with
  * OS/native-helper logs. Stage completion order is clamped nondecreasing to
  * protect summaries from sub-millisecond cross-process clock-origin skew.
+ * Stage records stay in memory until finish(), so durable synchronous logging
+ * cannot perturb the trigger-to-presentation interval being measured.
  */
 export class CaptureLatencyTrace {
   private readonly stages: StageRecord[] = [];
@@ -126,6 +130,7 @@ export class CaptureLatencyTrace {
     }
     this.activeStages.clear();
     this.finished = true;
+    const terminalWallTime = this.wallNow();
     const totalDurationMs = compactMs(
       endedAt - this.invocation.triggerMonotonicMs
     );
@@ -134,13 +139,28 @@ export class CaptureLatencyTrace {
       .sort((a, b) => b.durationMs - a.durationMs)
       .slice(0, 5)
       .map(({ stage, durationMs }) => ({ stage, durationMs }));
-    this.logger().info("capture latency summary", {
+    const logger = this.logger();
+    for (const stage of this.stages) {
+      logger.info("capture latency stage", {
+        event: "capture_latency_stage",
+        invocationId: this.invocation.id,
+        origin: this.invocation.origin,
+        mode: this.mode,
+        wallTime: stage.wallTime,
+        triggerWallTime: this.invocation.triggerWallTime,
+        stage: stage.stage,
+        elapsedMs: stage.elapsedMs,
+        durationMs: stage.durationMs,
+        ...stage.fields
+      });
+    }
+    logger.info("capture latency summary", {
       event: "capture_latency_summary",
       invocationId: this.invocation.id,
       origin: this.invocation.origin,
       mode: this.mode,
       outcome,
-      wallTime: this.wallNow(),
+      wallTime: terminalWallTime,
       triggerWallTime: this.invocation.triggerWallTime,
       totalDurationMs,
       stageCount: this.stages.length,
@@ -165,19 +185,11 @@ export class CaptureLatencyTrace {
       elapsedMs: compactMs(
         atMonotonicMs - this.invocation.triggerMonotonicMs
       ),
-      durationMs: compactMs(requestedDurationMs)
+      durationMs: compactMs(requestedDurationMs),
+      wallTime: this.wallNow(),
+      fields
     };
     this.stages.push(record);
-    this.logger().info("capture latency stage", {
-      event: "capture_latency_stage",
-      invocationId: this.invocation.id,
-      origin: this.invocation.origin,
-      mode: this.mode,
-      wallTime: this.wallNow(),
-      triggerWallTime: this.invocation.triggerWallTime,
-      ...record,
-      ...fields
-    });
   }
 
   private now(): number {

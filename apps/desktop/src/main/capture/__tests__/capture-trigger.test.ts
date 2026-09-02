@@ -33,4 +33,28 @@ describe("main interactive capture trigger", () => {
     });
     expect(options).toEqual({ principal: "ipc" });
   });
+
+  test("preserves an invocation sampled before callback logging", async () => {
+    const {
+      createInteractiveCaptureTrigger,
+      dispatchInteractiveCapture
+    } = await import("../capture-trigger");
+    const trigger = createInteractiveCaptureTrigger("global_hotkey.region");
+
+    await dispatchInteractiveCapture(trigger, "region");
+
+    const request = commandBus.dispatch.mock.calls[0]?.[1] as {
+      invocation: {
+        id: string;
+        origin: string;
+        triggerMonotonicMs: number;
+        dispatchMonotonicMs: number;
+        triggerWallTime: string;
+      };
+    };
+    expect(request.invocation).toMatchObject(trigger);
+    expect(request.invocation.dispatchMonotonicMs).toBeGreaterThanOrEqual(
+      trigger.triggerMonotonicMs
+    );
+  });
 });

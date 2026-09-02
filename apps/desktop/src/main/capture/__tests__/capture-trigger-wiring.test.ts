@@ -10,14 +10,26 @@ function source(relativePath: string): string {
 }
 
 describe("interactive capture trigger production wiring", () => {
-  test("every selector-based global hotkey creates the required origin identity", () => {
+  test("every selector-based global hotkey samples before logging and dispatches that trigger", () => {
     const main = source("apps/desktop/src/main/index.ts");
-    expect(main).toContain(
-      'runInteractiveCapture("auto", "global_hotkey.quick_capture")'
-    );
-    expect(main).toContain('runInteractiveCapture("region", "global_hotkey.region")');
-    expect(main).toContain('runInteractiveCapture("window", "global_hotkey.window")');
-    expect(main).toContain('runInteractiveCapture("timed", "global_hotkey.timed")');
+    for (const [mode, origin] of [
+      ["auto", "global_hotkey.quick_capture"],
+      ["region", "global_hotkey.region"],
+      ["window", "global_hotkey.window"],
+      ["timed", "global_hotkey.timed"]
+    ]) {
+      const createIndex = main.indexOf(
+        `createInteractiveCaptureTrigger("${origin}")`
+      );
+      const logIndex = main.indexOf('log.info("global hotkey fired"', createIndex);
+      const dispatchIndex = main.indexOf(
+        `runInteractiveCapture("${mode}", trigger)`,
+        createIndex
+      );
+      expect(createIndex).toBeGreaterThan(-1);
+      expect(logIndex).toBeGreaterThan(createIndex);
+      expect(dispatchIndex).toBeGreaterThan(logIndex);
+    }
   });
 
   test("Library, tray tiles/buttons, and native tray menu carry distinct origins", () => {
@@ -49,10 +61,11 @@ describe("interactive capture trigger production wiring", () => {
   test("both process helpers construct the invocation before command dispatch", () => {
     const mainHelper = source("apps/desktop/src/main/capture/capture-trigger.ts");
     const rendererHelper = source("apps/desktop/src/renderer/src/lib/pwrsnap.ts");
-    for (const helper of [mainHelper, rendererHelper]) {
-      expect(helper).toContain("createCaptureInvocation({");
-      expect(helper).toContain('dispatch("capture:interactive", { mode, invocation }');
-    }
+    expect(mainHelper).toContain("createCaptureInvocationTrigger({");
+    expect(mainHelper).toContain("finalizeCaptureInvocation(trigger, monotonicNow)");
+    expect(mainHelper).toContain('dispatch("capture:interactive", { mode, invocation }');
+    expect(rendererHelper).toContain("createCaptureInvocation({");
+    expect(rendererHelper).toContain('dispatch("capture:interactive", { mode, invocation }');
 
     const handler = source("apps/desktop/src/main/handlers/capture-handlers.ts");
     expect(handler).toContain("if (!isCaptureInvocation(req.invocation))");

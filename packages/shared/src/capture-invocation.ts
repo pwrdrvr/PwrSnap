@@ -15,23 +15,45 @@ export const CAPTURE_INVOCATION_ORIGINS = [
 
 const originSet = new Set<string>(CAPTURE_INVOCATION_ORIGINS);
 
-export function createCaptureInvocation(args: {
+export type CaptureInvocationTrigger = Omit<CaptureInvocation, "dispatchMonotonicMs">;
+
+type CreateCaptureInvocationArgs = {
   id: string;
   origin: CaptureInvocationOrigin;
   monotonicNow: () => number;
   wallNow?: () => string;
-}): CaptureInvocation {
-  const monotonicNow = args.monotonicNow;
-  const triggerMonotonicMs = monotonicNow();
+};
+
+export function createCaptureInvocationTrigger(
+  args: CreateCaptureInvocationArgs
+): CaptureInvocationTrigger {
+  const triggerMonotonicMs = args.monotonicNow();
   const triggerWallTime = (args.wallNow ?? (() => new Date().toISOString()))();
-  const dispatchMonotonicMs = Math.max(triggerMonotonicMs, monotonicNow());
   return {
     id: args.id,
     origin: args.origin,
     triggerMonotonicMs,
-    dispatchMonotonicMs,
     triggerWallTime
   };
+}
+
+export function finalizeCaptureInvocation(
+  trigger: CaptureInvocationTrigger,
+  monotonicNow: () => number
+): CaptureInvocation {
+  return {
+    ...trigger,
+    dispatchMonotonicMs: Math.max(trigger.triggerMonotonicMs, monotonicNow())
+  };
+}
+
+export function createCaptureInvocation(
+  args: CreateCaptureInvocationArgs
+): CaptureInvocation {
+  return finalizeCaptureInvocation(
+    createCaptureInvocationTrigger(args),
+    args.monotonicNow
+  );
 }
 
 export function isCaptureInvocation(value: unknown): value is CaptureInvocation {

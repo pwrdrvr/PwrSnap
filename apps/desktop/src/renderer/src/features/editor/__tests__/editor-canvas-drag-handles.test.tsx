@@ -34,7 +34,16 @@
 
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+  vi
+} from "vitest";
 import type { BundleLayerNode, CaptureRecord } from "@pwrsnap/shared";
 
 const CANVAS_W = 1000;
@@ -68,14 +77,29 @@ vi.mock("../../../lib/pwrsnap", () => ({
 
 const SOURCE_SHA = "a".repeat(64);
 
-const record = {
+// Fully shaped, so a change to CaptureRecord breaks this test loudly
+// rather than leaving it green against a stale fixture.
+const record: CaptureRecord = {
   id: "cap_1",
-  created_at: "2026-09-02T00:00:00Z",
+  kind: "image",
+  captured_at: "2026-09-02T00:00:00Z",
+  legacy_src_path: null,
+  bundle_path: "/tmp/cap_1.pwrsnap",
+  flat_png_path: null,
+  bundle_modified_at: null,
+  bundle_format_version: 2,
+  bundle_edits_version: 1,
   width_px: CANVAS_W,
   height_px: CANVAS_H,
+  device_pixel_ratio: 1,
+  byte_size: 1024,
   sha256: SOURCE_SHA,
-  bundle_format_version: 2
-} as unknown as CaptureRecord;
+  source_app_bundle_id: null,
+  source_app_name: null,
+  edits_version: 1,
+  deleted_at: null,
+  has_alpha: false
+};
 
 const commonLayerProps = {
   parent_id: "g_root",
@@ -124,8 +148,14 @@ const layers: BundleLayerNode[] = [
       color: "auto"
     }
   }
-] as unknown as BundleLayerNode[];
+] as BundleLayerNode[];
 
+// NOTE: `vi.mock` is hoisted above the `const`s this factory reads, so
+// it only works because `../Editor` (and through it `../useCaptureModel`)
+// is imported DYNAMICALLY inside `mount()` — by then the consts are
+// initialized. Converting either to a static top-level import makes the
+// factory run during hoisted module init and die in the temporal dead
+// zone. Keep the dynamic import.
 vi.mock("../useCaptureModel", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../useCaptureModel")>();
   return {
@@ -137,10 +167,18 @@ vi.mock("../useCaptureModel", async (importOriginal) => {
       record,
       layers,
       layersView: [],
-      dispatchEdit: vi.fn(async () => ({ ok: true, value: { kind: "update" } }))
+      // `commitMultiDragRef` reads `artifact.node.id` off a successful
+      // update, so the artifact has to be shaped even though the test
+      // never asserts on the commit's own result.
+      dispatchEdit: vi.fn(async () => ({
+        ok: true,
+        value: { kind: "update", artifact: { node: { id: "text_1" } } }
+      }))
     })
   };
 });
+
+let realGetBoundingClientRect: (() => DOMRect) | null = null;
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -159,7 +197,10 @@ beforeAll(() => {
   }
   // jsdom lays nothing out, so every rect is 0×0 and the editor's
   // client→normalized conversions bail. Pin one square viewport at the
-  // origin so a client coordinate IS a canvas coordinate.
+  // origin so a client coordinate IS a canvas coordinate. Restored in
+  // afterAll — vitest isolates per file today, but a prototype patch
+  // left installed is a trap the day `isolate: false` looks attractive.
+  realGetBoundingClientRect = Element.prototype.getBoundingClientRect;
   Element.prototype.getBoundingClientRect = function (): DOMRect {
     return {
       x: 0, y: 0, left: 0, top: 0,
@@ -168,6 +209,13 @@ beforeAll(() => {
       toJSON: () => ({})
     } as DOMRect;
   };
+});
+
+afterAll(() => {
+  if (realGetBoundingClientRect !== null) {
+    Element.prototype.getBoundingClientRect = realGetBoundingClientRect;
+    realGetBoundingClientRect = null;
+  }
 });
 
 let container: HTMLDivElement | null = null;
@@ -263,6 +311,22 @@ describe("Editor — transform handles during a canvas-driven drag", () => {
       5
     );
     expect(pct(query("transform-handle-body"), "left") - bodyBefore).toBeCloseTo(20, 5);
+
+    // Release. The commit dispatches and the override is deliberately
+    // LEFT in place to bridge the refetch (draft-geometry.ts), so the
+    // handles must HOLD the dragged position across this boundary —
+    // this is the "then jumps to where the box lands" half of the
+    // report, and it is the frame where a regression would show as a
+    // snap back to the persisted geometry.
+    await act(async () => {
+      canvas.dispatchEvent(pointer("pointerup", 510, 500));
+    });
+
+    expect(pct(glyphWrapper(), "left") - glyphBefore).toBeCloseTo(20, 5);
+    expect(pct(query("transform-handle-rotate"), "left") - rotateBefore).toBeCloseTo(
+      20,
+      5
+    );
   });
 
   test("the rotate handle still follows a drag the BODY RECT armed", async () => {

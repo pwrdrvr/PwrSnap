@@ -2238,12 +2238,7 @@ export function Editor({
     const overlays =
       draftGeometry === null
         ? rawOverlays
-        : rawOverlays.map((o) => {
-            const override = draftGeometry.get(o.id);
-            if (override === undefined) return o;
-            const adopted = applyGeometryLocally(o.data, override);
-            return adopted === null ? o : { ...o, data: adopted };
-          });
+        : rawOverlays.map((o) => adoptDraftGeometry(o, draftGeometry));
     const rawRasters = rastersRef.current;
     const rasters =
       rasterDrafts === null
@@ -2333,12 +2328,7 @@ export function Editor({
       .map((id) => {
         const row = overlays.find((o) => o.id === id);
         if (row === undefined) return null;
-        const override = draftGeometry?.get(id);
-        const adopted =
-          override !== undefined
-            ? applyGeometryLocally(row.data, override)
-            : null;
-        return { id, data: adopted ?? row.data };
+        return { id, data: adoptDraftGeometry(row, draftGeometry).data };
       })
       .filter((s): s is { id: string; data: OverlayRow["data"] } => s !== null);
     const rasterSnapshots = ids
@@ -5705,12 +5695,7 @@ function EditorLoaded({
         const baseOverlays = selectedLayerIds
           .map((id) => snapshot.find((o) => o.id === id))
           .filter((o): o is OverlayRow => o !== undefined)
-          .map((o) => {
-            const override = draftGeometry?.get(o.id);
-            const adopted =
-              override !== undefined ? applyGeometryLocally(o.data, override) : null;
-            return { id: o.id, data: adopted ?? o.data };
-          });
+          .map((o) => ({ id: o.id, data: adoptDraftGeometry(o, draftGeometry).data }));
         // Selected non-base rasters (pasted images, the captured
         // cursor) nudge too — they have no OverlayRow, so resolve them
         // from the layer tree. Same membership rules as rastersRef /
@@ -6296,12 +6281,31 @@ function EditorLoaded({
   useEffect(() => {
     updateLayerStyleRef.current = (id, field, value): void => {
       const current = overlays.find((row) => row.id === id);
-      if (current !== undefined) updateOverlayStyleField(current, field, value);
+      // Adopt the live override, exactly as the editor's own popover
+      // path does — `layerStyleUpdate` is not purely a style function:
+      // its `shape` arm READS `current.data.rect` and writes a new one
+      // back (centering a circle/square in the old bounds), and the
+      // `outline: "auto"` arm samples the image under the layer. Fed
+      // the raw row inside a drag's commit→refetch window, both would
+      // work off the PRE-drag geometry — and the shape arm would
+      // persist it, silently reverting the move the user just made.
+      if (current !== undefined) {
+        updateOverlayStyleField(
+          adoptDraftGeometry(current, draftGeometry),
+          field,
+          value
+        );
+      }
     };
     return () => {
       updateLayerStyleRef.current = null;
     };
-  }, [overlays, updateLayerStyleRef, updateOverlayStyleField]);
+    // `draftGeometry` is a dep because the closure above reads it —
+    // without it the ref would keep a stale override map and the rail
+    // would be back to editing the pre-drag geometry. Re-running is a
+    // bare ref assignment, so the per-frame churn during a drag costs
+    // nothing.
+  }, [overlays, draftGeometry, updateLayerStyleRef, updateOverlayStyleField]);
 
   // Selected-overlay style edit handler for the standalone popover.
   const onSelectedStyleFieldChange = useCallback(

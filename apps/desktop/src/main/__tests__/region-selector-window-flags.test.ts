@@ -1007,3 +1007,134 @@ describe("region-selector — PwrSnap chrome leaves the frame before the screen 
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
   });
 });
+
+describe("region-selector — Snap-vs-Record commit payload (issue #75)", () => {
+  test("forwards the chooser policy to the renderer in the per-show mode signal", async () => {
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({ quickCaptureAction: "record", cursorDefault: false });
+
+    await vi.waitFor(() => {
+      expect(constructed[0]?.webContents.send).toHaveBeenCalled();
+    });
+    const modeSend = constructed[0]!.webContents.send.mock.calls.find(
+      (call) => call[0] === "region-selector:mode"
+    );
+    expect(modeSend?.[1]).toMatchObject({
+      mode: "auto",
+      quickCaptureAction: "record",
+      cursor: false
+    });
+
+    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    await expect(pick).resolves.toMatchObject({ ok: false });
+  });
+
+  test("a record commit carries the action through to the result", async () => {
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({ quickCaptureAction: "ask" });
+    await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalled());
+
+    ipcListeners.get("region-selector:result")?.(
+      {},
+      {
+        ok: true,
+        rect: { x: 10, y: 20, w: 300, h: 200 },
+        displayId: 1,
+        action: "record",
+        captureCursor: false
+      }
+    );
+    await expect(pick).resolves.toMatchObject({
+      ok: true,
+      action: "record",
+      captureCursor: false
+    });
+  });
+
+  test("a snap commit carries no action at all", async () => {
+    // The wire shape a pre-chooser selector produced, unchanged.
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion();
+    await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalled());
+
+    ipcListeners.get("region-selector:result")?.(
+      {},
+      { ok: true, rect: { x: 10, y: 20, w: 300, h: 200 }, displayId: 1 }
+    );
+    const result = await pick;
+    expect(result.ok).toBe(true);
+    expect(result).not.toHaveProperty("action");
+  });
+
+  test("rejects a commit whose action is neither snap nor record", async () => {
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion();
+    await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalled());
+
+    ipcListeners.get("region-selector:result")?.(
+      {},
+      { ok: true, rect: { x: 10, y: 20, w: 300, h: 200 }, displayId: 1, action: "video" }
+    );
+    // An unparseable payload is a cancel, not a partially-honored commit.
+    await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
+  });
+
+  test("strips a record action from a multi-window commit and keeps the extents", async () => {
+    // The seam multi-select left behind: `rect` here is the union
+    // BOUNDING BOX, and the recording path is the only consumer that
+    // never reads `extents` — so honoring this would record exactly the
+    // gaps the picker painted transparent. The renderer disables Record
+    // above one pick; this is the transport backstop, because only main
+    // sees both facts in one message.
+    //
+    // Dropping the ACTION rather than the extents is the non-lying
+    // degradation: the still honors every extent, so the user gets a
+    // picture of what they picked instead of a video of what they
+    // didn't.
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({ quickCaptureAction: "ask" });
+    await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalled());
+
+    ipcListeners.get("region-selector:result")?.(
+      {},
+      {
+        ok: true,
+        rect: { x: 0, y: 0, w: 800, h: 600 },
+        displayId: 1,
+        action: "record",
+        extents: [
+          { x: 0, y: 0, w: 200, h: 200 },
+          { x: 600, y: 400, w: 200, h: 200 }
+        ],
+        outputMode: "windows"
+      }
+    );
+    const result = await pick;
+    expect(result.ok).toBe(true);
+    expect(result).not.toHaveProperty("action");
+    expect(result).toMatchObject({ outputMode: "windows" });
+    expect((result as { extents?: unknown[] }).extents).toHaveLength(2);
+  });
+
+  test("a single-extent commit may still record", async () => {
+    // One pick is one rectangle — the union box IS the extent, so there
+    // is nothing for a recording to misrepresent. (The renderer never
+    // sends `extents` for a lone pick; a payload that does must not be
+    // punished for it.)
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({ quickCaptureAction: "ask" });
+    await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalled());
+
+    ipcListeners.get("region-selector:result")?.(
+      {},
+      {
+        ok: true,
+        rect: { x: 0, y: 0, w: 200, h: 200 },
+        displayId: 1,
+        action: "record",
+        extents: [{ x: 0, y: 0, w: 200, h: 200 }]
+      }
+    );
+    await expect(pick).resolves.toMatchObject({ ok: true, action: "record" });
+  });
+});

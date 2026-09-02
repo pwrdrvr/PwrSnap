@@ -17,6 +17,7 @@
 
 import { app, BrowserWindow, globalShortcut, ipcMain, screen, type Display } from "electron";
 import { join } from "node:path";
+import type { QuickCaptureAction } from "@pwrsnap/shared";
 import { getMainLogger } from "../log";
 import { getPreloadPath } from "../window";
 import {
@@ -209,11 +210,21 @@ export type SelectorResult =
        *  captures whatever's visible — overlapping windows included,
        *  just like the user sees on screen. */
       fullWindow?: boolean;
-      /** Video-only: whether the recording should bake in the mouse
+      /** Recording-only: whether the recording should bake in the mouse
        *  cursor. Set from the selector's `C` toggle (seeded from
        *  `settings.recording.videoCaptureCursor`). Undefined for image
        *  captures, which don't consume it yet (Phase 3). */
       captureCursor?: boolean;
+      /** The terminal action the user chose at commit (issue #75).
+       *  Present ONLY for `"record"`; a snap commit omits it and every
+       *  reader treats a missing value as `"snap"`, so a pre-chooser
+       *  call site's payload is unchanged.
+       *
+       *  This is the RENDERER'S REPORT, not the decision — it says which
+       *  affordance the user reached for. `resolveQuickCaptureAction`
+       *  re-derives the actual action against the persisted policy, so a
+       *  `"record"` main never offered cannot take effect. */
+      action?: "snap" | "record";
       /** Multi-window pick. One entry per picked window's EXTENT, in
        *  the same GLOBAL logical-px space as `rect` (the display offset
        *  is applied to both together, below).
@@ -471,6 +482,9 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
           if (typeof payload.captureCursor === "boolean") {
             result.captureCursor = payload.captureCursor;
           }
+          if (payload.action === "record") {
+            result.action = "record";
+          }
           if (payload.extents !== undefined && payload.extents.length > 0) {
             // Same display → global translation the union rect above
             // gets. Keeping the two in one coordinate space is what
@@ -483,6 +497,23 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
               h: e.h
             }));
             result.outputMode = payload.outputMode ?? "windows";
+          }
+          // A recording is one rectangular stream, and `rect` on a
+          // multi-pick commit is the union BOUNDING BOX — recording it
+          // would capture exactly the gaps the picker painted
+          // transparent. The renderer already disables Record above one
+          // pick; this is the transport-level backstop, because the two
+          // facts travel in one message and only main sees both.
+          //
+          // Dropping the ACTION (not the extents) is the non-lying
+          // degradation: the still honors every extent, so the user gets
+          // a picture of exactly what they picked instead of a video of
+          // something they did not.
+          if (result.action === "record" && (result.extents?.length ?? 0) > 1) {
+            log.warn("selector commit asked to record a multi-window pick — snapping instead", {
+              extents: result.extents?.length ?? 0
+            });
+            delete result.action;
           }
           resolver(result);
         }
@@ -551,12 +582,20 @@ export async function pickRegion(
      *  recording, not a snap. No behavioral effect on selection
      *  itself — both intents return the same rect / window payload. */
     intent?: "snap" | "video";
-    /** Video-only seed for the selector's cursor toggle. Forwarded to
+    /** Recording seed for the selector's cursor toggle. Forwarded to
      *  the renderer in the mode signal; the committed value rides back
-     *  on the result as `captureCursor`. */
+     *  on the result as `captureCursor`. Pass it on the snap path too
+     *  when the chooser can reach a recording, or `C` starts from the
+     *  wrong default. */
     cursorDefault?: boolean;
     /** Selector-based image-capture diagnostics. Omitted by video flows. */
     latencyTrace?: CaptureLatencyTrace;
+    /** Snap-vs-Record policy for this show (issue #75), from
+     *  `settings.recording.quickCaptureAction`. Decides whether the
+     *  selector offers a Record action and which one `↵` commits.
+     *  Omitted (or `"snap"`) leaves the selector exactly as it was
+     *  before the chooser existed. Ignored when `intent === "video"`. */
+    quickCaptureAction?: QuickCaptureAction;
   } = {}
 ): Promise<SelectorResult> {
   const mode: SelectorMode = opts.mode ?? "auto";
@@ -565,6 +604,7 @@ export async function pickRegion(
   const intent = opts.intent ?? "snap";
   const cursorDefault = opts.cursorDefault;
   const latencyTrace = opts.latencyTrace;
+  const quickCaptureAction = opts.quickCaptureAction;
   const requestStartedAt = Date.now();
   const elapsedFromRequest = (): number => Date.now() - requestStartedAt;
   log.info("capture selector requested", {
@@ -853,6 +893,7 @@ export async function pickRegion(
             screenUrl: `pwrsnap-screen://r/${activeScreenSnapshot.id}`,
             intent,
             cursor: cursorDefault,
+            quickCaptureAction,
             ...(latencyTrace !== undefined && presentationGeneration !== undefined
               ? {
                   invocationId: latencyTrace.invocation.id,
@@ -1883,6 +1924,7 @@ function isSelectorPayload(value: unknown): value is {
   snappedWindowId?: number;
   fullWindow?: boolean;
   captureCursor?: boolean;
+  action?: "snap" | "record";
   extents?: { x: number; y: number; w: number; h: number }[];
   outputMode?: "windows" | "rectangle";
 } {
@@ -1908,6 +1950,9 @@ function isSelectorPayload(value: unknown): value is {
     return false;
   }
   if (v.captureCursor !== undefined && typeof v.captureCursor !== "boolean") {
+    return false;
+  }
+  if (v.action !== undefined && v.action !== "snap" && v.action !== "record") {
     return false;
   }
   if (v.extents !== undefined) {

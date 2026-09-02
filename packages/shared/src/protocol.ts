@@ -2283,6 +2283,20 @@ export function isQuickCaptureAction(value: unknown): value is QuickCaptureActio
  */
 export type SelectorTerminalAction = "snap" | "record";
 
+/**
+ * How an interactive capture ended.
+ *
+ * `capture:interactive` used to return a `CaptureRecord` unconditionally
+ * because a committed selection could only ever become a still. The
+ * chooser gives it a second ending: when the user picks Record there is
+ * no record to return — the selection is handed to the recording
+ * pipeline, whose whole lifecycle (countdown, recorder, the finished
+ * video) surfaces on the `events:recording:*` broadcasts instead.
+ */
+export type InteractiveCaptureOutcome =
+  | { kind: "snap"; record: CaptureRecord }
+  | { kind: "recording" };
+
 export type Settings = {
   /** Bumped when the on-disk shape changes. Readers below the current
    *  version go through the legacy-shape catalog in the service before
@@ -3514,13 +3528,19 @@ export type Commands = {
    *     the selector takes its frozen-screen snapshot, so the staged
    *     UI is preserved in the picker even though show() inevitably
    *     takes focus.
+   *
+   * Every mode above offers the Snap-vs-Record chooser, gated on
+   * `settings.recording.quickCaptureAction` — a committed selection is a
+   * rectangle whichever mode produced it. Choosing Record hands off to
+   * the recording pipeline and answers `{ kind: "recording" }` without
+   * waiting for the countdown; see `InteractiveCaptureOutcome`.
    */
   "capture:interactive": {
     req: {
       mode?: "auto" | "region" | "window" | "timed";
       invocation: CaptureInvocation;
     };
-    res: CaptureRecord;
+    res: InteractiveCaptureOutcome;
   };
   /**
    * Fast Video Capture entry point for UI surfaces (the tray's Record

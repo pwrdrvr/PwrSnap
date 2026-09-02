@@ -70,6 +70,7 @@ import {
   readShapeKind,
   readShapeSkewDeg,
   readHighlightOpacity,
+  readOverlayRotation,
   readTextWeight,
   resolveCropViewport,
   revealInFileManagerLabel
@@ -354,18 +355,38 @@ function draftStyleWithLiveOutline(
 /** Phase 3.5 — extract a GeometryUpdate from an overlay's `data`,
  *  used by the transform-handles flow to record the PRE-DRAG geometry
  *  on the undo stack. Returns null for kinds without drag-handle
- *  semantics in this slice (crop — has its own overlay tool). */
-function overlayDataToGeometry(data: Overlay): GeometryUpdate | null {
+ *  semantics in this slice (crop — has its own overlay tool).
+ *
+ *  ROTATION IS ALWAYS EMITTED for the two kinds that carry it, even
+ *  when the row's angle is zero, and that explicitness is the whole
+ *  point. `applyGeometryToOverlay` reads an ABSENT `rotation` as
+ *  "leave the persisted angle alone" — correct for a body-drag or a
+ *  nudge, which must not clobber the angle they aren't editing. But
+ *  this function builds the "before" half of every undo entry, where
+ *  silence means the opposite of what you want: undoing a rotation
+ *  restored the (unchanged) position and left the NEW angle in place,
+ *  so ⌘Z looked like a no-op, and undoing anything older then
+ *  replayed those earlier positions with the rotation still on. An
+ *  explicit `0` is what actually un-rotates. See
+ *  __tests__/rotation-undo.test.ts.
+ *
+ *  Emitting a resolved `0` where the row simply had no `rotation` key
+ *  is safe: `readOverlayRotation` treats absent and `0` identically,
+ *  and the field is optional in the schema. */
+export function overlayDataToGeometry(data: Overlay): GeometryUpdate | null {
   if (data.kind === "arrow") {
+    // Arrows are exempt from rotation — direction is encoded in
+    // from/to, and no rotation handle is rendered for them.
     return { kind: "arrow", from: data.from, to: data.to };
   }
   if (data.kind === "shape" || data.kind === "highlight" || data.kind === "blur") {
-    return { kind: "rect", rect: data.rect };
+    return { kind: "rect", rect: data.rect, rotation: readOverlayRotation(data) };
   }
   if (data.kind === "text") {
-    return { kind: "text", point: data.point };
+    return { kind: "text", point: data.point, rotation: readOverlayRotation(data) };
   }
   if (data.kind === "step") {
+    // Step has no rotation field.
     return { kind: "step", point: data.point };
   }
   return null;

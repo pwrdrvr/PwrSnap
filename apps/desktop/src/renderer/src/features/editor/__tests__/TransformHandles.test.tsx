@@ -1069,3 +1069,157 @@ describe("TransformHandles", () => {
     expect(cursors.w).toBe("ew-resize");
   });
 });
+
+describe("TransformHandles — rotation detents reach the committed geometry", () => {
+  // rotation-detents.test.ts pins the feel; this pins the WIRING —
+  // that the snapped angle is what `geometryFromDrag` emits, so the
+  // live preview, the handle positions and the committed rotation are
+  // all the same number. A detent applied only in the pointer handler
+  // would let the glyph paint at one angle and persist at another.
+  //
+  // Two things make the arithmetic here non-obvious:
+  //
+  //   • The rotate math runs in IMAGE pixels (1920×1080 in this
+  //     harness), not in the 1000×1000 client frame, so equal visual
+  //     angles are not equal normalized ones. `atAngle` converts.
+  //   • The detent speed gate measures the interval between pointer
+  //     event TIMESTAMPS. Synthetic events all land in the same
+  //     millisecond, which would read as an infinitely fast whip, so
+  //     these tests stamp their own clock.
+
+  const PIVOT_XN = 0.3;
+  const PIVOT_YN = 0.25;
+
+  function rotatableRect(): OverlayRow {
+    const row = rectRow();
+    // Pivot (0.3, 0.25) — the centre of this rect.
+    return {
+      ...row,
+      data: {
+        kind: "shape",
+        shape: "rect",
+        rect: { x: 0.1, y: 0.1, w: 0.4, h: 0.3 },
+        color: "auto"
+      } as OverlayRow["data"]
+    };
+  }
+
+  /** Client coords for a point `deg` around the pivot, at a radius of
+   *  300 IMAGE px — the space geometryFromDrag measures angles in. */
+  function atAngle(deg: number): { x: number; y: number } {
+    const rad = (deg * Math.PI) / 180;
+    const xn = PIVOT_XN + (300 * Math.cos(rad)) / 1920;
+    const yn = PIVOT_YN + (300 * Math.sin(rad)) / 1080;
+    return { x: xn * 1000, y: yn * 1000 };
+  }
+
+  /** firePointer with an explicit event timestamp, so a test can say
+   *  how fast the user was moving. */
+  function fireAt(
+    el: Element,
+    type: "pointerdown" | "pointermove" | "pointerup",
+    deg: number,
+    atMs: number
+  ): void {
+    const { x, y } = atAngle(deg);
+    act(() => {
+      const event = new PointerEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+        clientX: x,
+        clientY: y,
+        pointerId: 1
+      });
+      Object.defineProperty(event, "timeStamp", { value: atMs });
+      el.dispatchEvent(event);
+    });
+  }
+
+  type GeometryChangeMock = ReturnType<typeof vi.fn<(g: GeometryUpdate) => void>>;
+
+  function committedRotationDeg(onGeometryChange: GeometryChangeMock): number {
+    expect(onGeometryChange).toHaveBeenCalledTimes(1);
+    const geometry = onGeometryChange.mock.calls[0]![0] as {
+      kind: string;
+      rotation?: number;
+    };
+    expect(geometry.kind).toBe("rect");
+    return ((geometry.rotation ?? 0) * 180) / Math.PI;
+  }
+
+  async function rotateHandle(
+    onGeometryChange: GeometryChangeMock
+  ): Promise<Element> {
+    const el = await render({ selectedOverlay: rotatableRect(), onGeometryChange });
+    return el.querySelector('[data-testid="transform-handle-rotate"]')!;
+  }
+
+  test("a slow drag that eases up to a detent commits the exact detent angle", async () => {
+    const onGeometryChange: GeometryChangeMock = vi.fn();
+    const handle = await rotateHandle(onGeometryChange);
+
+    // Start at -90° (straight up, where the handle lives) so the drag
+    // begins at zero delta, then walk round to -1°: 89° of raw travel
+    // over 24 frames ≈ 220°/s, under the capture gate.
+    fireAt(handle, "pointerdown", -90, 1000);
+    const path = [-70, -50, -35, -22, -12, -6, -3, -1];
+    path.forEach((deg, i) => fireAt(handle, "pointermove", deg, 1016 + i * 16));
+    fireAt(handle, "pointerup", -1, 1016 + path.length * 16);
+
+    expect(committedRotationDeg(onGeometryChange)).toBeCloseTo(90, 6);
+  });
+
+  test("a drag that settles far from any detent commits the raw angle", async () => {
+    const onGeometryChange: GeometryChangeMock = vi.fn();
+    const handle = await rotateHandle(onGeometryChange);
+
+    // -90° → -68°: 22° of travel, nowhere near 0° or 45°.
+    fireAt(handle, "pointerdown", -90, 1000);
+    const path = [-84, -78, -72, -68];
+    path.forEach((deg, i) => fireAt(handle, "pointermove", deg, 1016 + i * 16));
+    fireAt(handle, "pointerup", -68, 1016 + path.length * 16);
+
+    expect(committedRotationDeg(onGeometryChange)).toBeCloseTo(22, 4);
+  });
+
+  test("whipping past a detent does not snap to it", async () => {
+    const onGeometryChange: GeometryChangeMock = vi.fn();
+    const handle = await rotateHandle(onGeometryChange);
+
+    // The same landing angle as the first test, but covered in three
+    // frames — ~1900°/s, well over the gate. It must NOT round to 90.
+    fireAt(handle, "pointerdown", -90, 1000);
+    [-60, -30, -1].forEach((deg, i) => fireAt(handle, "pointermove", deg, 1016 + i * 16));
+    fireAt(handle, "pointerup", -1, 1064);
+
+    expect(committedRotationDeg(onGeometryChange)).toBeCloseTo(89, 4);
+  });
+
+  test("each gesture starts free — a held detent never leaks into the next drag", async () => {
+    const onGeometryChange: GeometryChangeMock = vi.fn();
+    const handle = await rotateHandle(onGeometryChange);
+
+    // First gesture eases into the 90° detent (same decelerating path
+    // as the capture test above — the final frames have to be slow
+    // enough to pass the gate, since pointerup no longer captures).
+    fireAt(handle, "pointerdown", -90, 1000);
+    [-70, -50, -35, -22, -12, -6, -3, -1].forEach((deg, i) =>
+      fireAt(handle, "pointermove", deg, 1016 + i * 16)
+    );
+    fireAt(handle, "pointerup", -1, 1160);
+    expect(committedRotationDeg(onGeometryChange)).toBeCloseTo(90, 6);
+
+    // Second gesture on the same (still un-refetched) row ends far
+    // from any detent. If the machine kept the previous hold, the
+    // release check would run against a stale notch.
+    onGeometryChange.mockClear();
+    fireAt(handle, "pointerdown", -90, 2000);
+    [-84, -78, -72, -68].forEach((deg, i) =>
+      fireAt(handle, "pointermove", deg, 2016 + i * 16)
+    );
+    fireAt(handle, "pointerup", -68, 2100);
+
+    expect(committedRotationDeg(onGeometryChange)).toBeCloseTo(22, 4);
+  });
+});

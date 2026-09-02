@@ -102,6 +102,26 @@ type AcpDiscoveryCacheEntry = Readonly<{
   group: DiscoveredAcpAgentGroup | null;
 }>;
 
+/** Serializable discovery state relayed from the agent process to the split
+ * Library process. The dependency fingerprint deliberately excludes the
+ * process-local invalidation epoch: the receiver validates the actual
+ * settings/environment inputs, then publishes under its own current epoch. */
+export type DesktopCodexDiscoveryPublication = Readonly<{
+  kind: "codex";
+  dependencyFingerprint: string;
+  raw: RawCodexDiscoverySnapshot;
+  ui: DesktopCodexDiscoverySnapshot;
+}>;
+
+export type DesktopAcpDiscoveryPublication = Readonly<{
+  kind: "acp";
+  entries: readonly Readonly<{
+    agentId: string;
+    dependencyFingerprint: string;
+    group: DiscoveredAcpAgentGroup | null;
+  }>[];
+}>;
+
 /** Public settings contract used by production consumers. Raw file ownership
  * deliberately does not appear in this interface. */
 export interface DesktopSettingsStoreApi {
@@ -111,6 +131,9 @@ export interface DesktopSettingsStoreApi {
   getCurrentDomain<K extends DesktopSettingsDomain>(domain: K): Settings[K] | null;
   write(patch: SettingsPatch, options?: DesktopSettingsWriteOptions): Promise<Settings>;
   adoptTrustedPeerSnapshot(settings: Settings): Settings;
+  getCurrentCodexDiscoveryPublication(): DesktopCodexDiscoveryPublication | null;
+  getCurrentAcpDiscoveryPublication(): DesktopAcpDiscoveryPublication | null;
+  adoptTrustedPeerDiscoveryPublication(publication: unknown): boolean;
   withSerializedSettings<T>(operation: SerializedSettingsOperation<T>): Promise<T>;
   subscribe<K extends DesktopSettingsDomain>(
     domains: readonly K[],
@@ -199,6 +222,125 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
     const snapshot = this.persistence.adoptTrustedSnapshot(settings);
     this.observeSnapshot(snapshot, true);
     return snapshot;
+  }
+
+  /** Export the latest complete Codex publication without probing. Split-mode
+   * transport calls this only after a cached/forced Settings discovery read. */
+  getCurrentCodexDiscoveryPublication(): DesktopCodexDiscoveryPublication | null {
+    const settings = this.getCurrentSnapshot();
+    if (settings === null) return null;
+    const configuredCommand = configuredCodexCommand(settings);
+    const cacheKey = this.codexPublicationFingerprint(
+      configuredCommand,
+      this.env
+    );
+    const raw = this.rawCodexCache.get(cacheKey);
+    const ui = this.codexUiCache.get(cacheKey);
+    if (raw === undefined || ui === undefined) return null;
+    return deepFreeze({
+      kind: "codex",
+      dependencyFingerprint: codexFingerprint(configuredCommand, this.env),
+      raw,
+      ui
+    });
+  }
+
+  /** Export every currently-published ACP row without probing. Null groups are
+   * intentional publications: they clear a stale installed row in the peer. */
+  getCurrentAcpDiscoveryPublication(): DesktopAcpDiscoveryPublication | null {
+    const settings = this.getCurrentSnapshot();
+    if (settings === null) return null;
+    const entries = BUILT_IN_ACP_STRATEGIES.flatMap((strategy) => {
+      const cacheKey = this.acpPublicationFingerprint(
+        settings,
+        strategy.id,
+        this.env
+      );
+      const cached = this.acpCache.get(strategy.id);
+      if (cached?.fingerprint !== cacheKey) return [];
+      return [
+        {
+          agentId: strategy.id,
+          dependencyFingerprint: acpFingerprint(
+            settings,
+            strategy.id,
+            this.env
+          ),
+          group: cached.group
+        }
+      ];
+    });
+    if (entries.length === 0) return null;
+    return deepFreeze({ kind: "acp", entries });
+  }
+
+  /** Adopt a publication received over PwrSnap's authenticated parent/child
+   * bridge. No disk, PATH, or binary work occurs here. Stale or malformed
+   * payloads are ignored rather than poisoning the process-local cache. */
+  adoptTrustedPeerDiscoveryPublication(publication: unknown): boolean {
+    const settings = this.getCurrentSnapshot();
+    if (!isRecord(publication)) return false;
+
+    if (publication.kind === "codex") {
+      if (
+        typeof publication.dependencyFingerprint !== "string" ||
+        !isRawCodexDiscoverySnapshot(publication.raw) ||
+        !isCodexUiDiscoverySnapshot(publication.ui)
+      ) {
+        return false;
+      }
+      const configuredCommand =
+        settings === null ? undefined : configuredCodexCommand(settings);
+      if (
+        settings !== null &&
+        publication.dependencyFingerprint !==
+          codexFingerprint(configuredCommand, this.env)
+      ) {
+        return false;
+      }
+      const cacheKey = `${this.codexDiscoveryEpoch}:${publication.dependencyFingerprint}`;
+      this.rawCodexCache.set(cacheKey, deepFreeze(publication.raw));
+      this.codexUiCache.set(cacheKey, deepFreeze(publication.ui));
+      return true;
+    }
+
+    if (publication.kind !== "acp" || !Array.isArray(publication.entries)) {
+      return false;
+    }
+    let adopted = false;
+    for (const candidate of publication.entries) {
+      if (
+        !isRecord(candidate) ||
+        typeof candidate.agentId !== "string" ||
+        typeof candidate.dependencyFingerprint !== "string" ||
+        (candidate.group !== null && !isAcpDiscoveryGroup(candidate.group))
+      ) {
+        continue;
+      }
+      if (
+        candidate.group !== null &&
+        candidate.group.strategyId !== candidate.agentId
+      ) {
+        continue;
+      }
+      if (
+        !BUILT_IN_ACP_STRATEGIES.some(
+          (strategy) => strategy.id === candidate.agentId
+        ) ||
+        (settings !== null &&
+          candidate.dependencyFingerprint !==
+            acpFingerprint(settings, candidate.agentId, this.env)
+        )
+      ) {
+        continue;
+      }
+      this.acpCache.set(candidate.agentId, {
+        fingerprint: `${this.acpDiscoveryEpochs.get(candidate.agentId) ?? 0}:${candidate.dependencyFingerprint}`,
+        group: candidate.group === null ? null : deepFreeze(candidate.group)
+      });
+      adopted = true;
+    }
+    return adopted;
   }
 
   withSerializedSettings<T>(operation: SerializedSettingsOperation<T>): Promise<T> {
@@ -876,6 +1018,36 @@ function clipError(error: unknown): string {
   return message.length <= ERROR_MESSAGE_LIMIT
     ? message
     : `${message.slice(0, ERROR_MESSAGE_LIMIT - 1)}…`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isRawCodexDiscoverySnapshot(
+  value: unknown
+): value is RawCodexDiscoverySnapshot {
+  return isRecord(value) && Array.isArray(value.candidates);
+}
+
+function isCodexUiDiscoverySnapshot(
+  value: unknown
+): value is DesktopCodexDiscoverySnapshot {
+  return (
+    isRecord(value) &&
+    Array.isArray(value.candidates) &&
+    (typeof value.resolvedPath === "string" || value.resolvedPath === null) &&
+    (isRecord(value.auth) || value.auth === null) &&
+    typeof value.refreshedAt === "string"
+  );
+}
+
+function isAcpDiscoveryGroup(value: unknown): value is DiscoveredAcpAgentGroup {
+  return (
+    isRecord(value) &&
+    typeof value.strategyId === "string" &&
+    Array.isArray(value.instances)
+  );
 }
 
 function deepFreeze<T>(value: T): T {

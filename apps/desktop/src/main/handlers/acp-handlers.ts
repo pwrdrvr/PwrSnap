@@ -49,6 +49,7 @@ import {
 } from "../ai/acp-enabled-discovery";
 import { agentErrorMessage } from "../ai/agent-error-message";
 import { getMainLogger } from "../log";
+import { relaySettingsDiscoveryPublicationToPeer } from "../process-split/event-relay";
 import { resolveActiveAcpInstance } from "../ai/acp-instance-resolver";
 import { listPooledAcpModels } from "../ai/acp-pooled-one-shot";
 import { getDesktopSettingsStore } from "../settings/desktop-settings-store";
@@ -184,6 +185,10 @@ export function registerAcpHandlers(params?: {
         message: cause instanceof Error ? cause.message : String(cause),
         cause
       });
+    }
+    const publication = discoveryStore?.getCurrentAcpDiscoveryPublication();
+    if (publication !== null && publication !== undefined) {
+      relaySettingsDiscoveryPublicationToPeer(publication);
     }
     return ok(toDiscovery(groups, agents));
   });

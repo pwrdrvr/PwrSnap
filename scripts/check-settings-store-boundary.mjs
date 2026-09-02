@@ -11,6 +11,7 @@ const STORE = "settings/desktop-settings-store.ts";
 const SERVICE = "settings/desktop-settings-service.ts";
 const SETTINGS_HANDLER = "handlers/settings-handlers.ts";
 const ACP_HANDLER = "handlers/acp-handlers.ts";
+const EVENT_RELAY = "process-split/event-relay.ts";
 const PROCESS_SPLIT_PEEK = "process-split/settings-peek.ts";
 const INDEX = "index.ts";
 const AGENT_COMMAND = "ai/agent-command.ts";
@@ -125,6 +126,38 @@ export function checkSettingsStoreBoundary(root = mainRoot) {
     ) {
       failures.push(
         `${name}: trusted peer snapshots may only enter through the split-process relay`
+      );
+    }
+    if (
+      /\badoptTrustedPeerDiscoveryPublication\b/.test(source) &&
+      !allowed(name, [STORE, INDEX])
+    ) {
+      failures.push(
+        `${name}: trusted peer discovery publications may only enter through split-process startup wiring`
+      );
+    }
+    if (
+      /\bgetCurrentCodexDiscoveryPublication\b/.test(source) &&
+      !allowed(name, [STORE, SETTINGS_HANDLER])
+    ) {
+      failures.push(
+        `${name}: Codex publication export is restricted to the Settings discovery handler`
+      );
+    }
+    if (
+      /\bgetCurrentAcpDiscoveryPublication\b/.test(source) &&
+      !allowed(name, [STORE, ACP_HANDLER])
+    ) {
+      failures.push(
+        `${name}: ACP publication export is restricted to the Settings discovery handler`
+      );
+    }
+    if (
+      /\brelaySettingsDiscoveryPublicationToPeer\b/.test(source) &&
+      !allowed(name, [EVENT_RELAY, SETTINGS_HANDLER, ACP_HANDLER])
+    ) {
+      failures.push(
+        `${name}: discovery publication relay is restricted to explicit Settings discovery handlers`
       );
     }
     if (/\bexecAgentCommandSync\b/.test(source) && name !== AGENT_COMMAND) {

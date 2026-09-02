@@ -161,6 +161,50 @@ describe("DesktopSettingsStore provider publications", () => {
     expect(discoverCodex).toHaveBeenCalledTimes(2);
   });
 
+  test("a split Library adopts refreshed Codex state without rediscovery", async () => {
+    const settingsText = JSON.stringify(defaultSettings());
+    const libraryDiscover = vi.fn(async () => ({ candidates: [] }));
+    const libraryStore = new DesktopSettingsStore({
+      filePath: join(workDir, "library-settings.json"),
+      readTextFile: async () => settingsText,
+      discoverCodex: libraryDiscover,
+      env: { PATH: "/usr/bin" }
+    });
+    await expect(
+      libraryStore.resolveCompatibleCodexCommand({ command: "codex" })
+    ).rejects.toThrow(/Codex CLI not found/);
+
+    const agentDiscover = vi.fn(async () =>
+      rawCodexSnapshot("/opt/codex/bin/codex")
+    );
+    const agentStore = new DesktopSettingsStore({
+      filePath: join(workDir, "agent-settings.json"),
+      readTextFile: async () => settingsText,
+      discoverCodex: agentDiscover,
+      probeCodexAuthentication: async () => ({
+        status: "authenticated",
+        testedAt: "2026-09-02T00:00:00.000Z",
+        durationMs: 1
+      }),
+      env: { PATH: "/usr/bin" }
+    });
+    await agentStore.refreshCodexDiscoveryForUserRequest();
+    const publication = agentStore.getCurrentCodexDiscoveryPublication();
+
+    expect(publication).not.toBeNull();
+    expect(
+      libraryStore.adoptTrustedPeerDiscoveryPublication(publication)
+    ).toBe(true);
+    await expect(
+      libraryStore.resolveCompatibleCodexCommand({ command: "codex" })
+    ).resolves.toMatchObject({ command: "/opt/codex/bin/codex" });
+    await expect(libraryStore.getCodexDiscoverySnapshot()).resolves.toMatchObject({
+      resolvedPath: "/opt/codex/bin/codex"
+    });
+    expect(libraryDiscover).toHaveBeenCalledTimes(1);
+    expect(agentDiscover).toHaveBeenCalledTimes(1);
+  });
+
   test("a Codex dependency write invalidates only the matching fingerprint", async () => {
     const commands: string[] = [];
     const discoverCodex = vi.fn(async ({ configuredCommand } = {}) => {
@@ -280,6 +324,77 @@ describe("DesktopSettingsStore provider publications", () => {
       BUILT_IN_ACP_STRATEGIES.map((strategy) => strategy.id).sort()
     );
     expect(calls[1]).toEqual(["gemini"]);
+  });
+
+  test("a split Library adopts refreshed ACP rows without rediscovery", async () => {
+    const settings = mergeSettings(defaultSettings(), {
+      ai: { acp: { enabledAgentIds: ["gemini"], agents: {} } }
+    });
+    const settingsText = JSON.stringify(settings);
+    const libraryDiscover = vi.fn(async () => []);
+    const libraryStore = new DesktopSettingsStore({
+      filePath: join(workDir, "library-settings.json"),
+      readTextFile: async () => settingsText,
+      discoverAcp: libraryDiscover,
+      env: { PATH: "/usr/bin" }
+    });
+    await expect(libraryStore.resolveEnabledAcpAgent("gemini")).resolves.toBeNull();
+
+    const agentDiscover = vi.fn(async () => [
+      acpGroup("gemini", ["/opt/gemini/bin/gemini"])
+    ]);
+    const agentStore = new DesktopSettingsStore({
+      filePath: join(workDir, "agent-settings.json"),
+      readTextFile: async () => settingsText,
+      discoverAcp: agentDiscover,
+      env: { PATH: "/usr/bin" }
+    });
+    await agentStore.refreshAcpDiscoveryForUserRequest();
+    const publication = agentStore.getCurrentAcpDiscoveryPublication();
+
+    expect(publication?.entries).toHaveLength(BUILT_IN_ACP_STRATEGIES.length);
+    expect(
+      libraryStore.adoptTrustedPeerDiscoveryPublication(publication)
+    ).toBe(true);
+    await expect(
+      libraryStore.resolveEnabledAcpAgent("gemini")
+    ).resolves.toMatchObject({ command: "/opt/gemini/bin/gemini" });
+    expect(libraryDiscover).toHaveBeenCalledTimes(1);
+    expect(agentDiscover).toHaveBeenCalledTimes(1);
+  });
+
+  test("peer discovery publications cannot cross dependency fingerprints", async () => {
+    const agentStore = new DesktopSettingsStore({
+      filePath: join(workDir, "agent-settings.json"),
+      readTextFile: async () => JSON.stringify(defaultSettings()),
+      discoverCodex: async () => rawCodexSnapshot("codex"),
+      probeCodexAuthentication: async () => ({
+        status: "authenticated",
+        testedAt: "2026-09-02T00:00:00.000Z",
+        durationMs: 1
+      }),
+      env: { PATH: "/agent/bin" }
+    });
+    await agentStore.getCodexDiscoverySnapshot();
+
+    const libraryDiscover = vi.fn(async () => rawCodexSnapshot("/library/codex"));
+    const libraryStore = new DesktopSettingsStore({
+      filePath: join(workDir, "library-settings.json"),
+      readTextFile: async () => JSON.stringify(defaultSettings()),
+      discoverCodex: libraryDiscover,
+      env: { PATH: "/library/bin" }
+    });
+    await libraryStore.read();
+
+    expect(
+      libraryStore.adoptTrustedPeerDiscoveryPublication(
+        agentStore.getCurrentCodexDiscoveryPublication()
+      )
+    ).toBe(false);
+    await expect(
+      libraryStore.resolveCompatibleCodexCommand({ command: "codex" })
+    ).resolves.toMatchObject({ command: "/library/codex" });
+    expect(libraryDiscover).toHaveBeenCalledTimes(1);
   });
 
   test("failed ACP refresh retains the last successful publication", async () => {

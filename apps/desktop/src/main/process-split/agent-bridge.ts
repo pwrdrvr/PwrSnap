@@ -11,7 +11,10 @@ import { broadcastRendererEventToLocalWindows } from "../events";
 import { getMainLogger } from "../log";
 import { channelForParentProcess } from "../process-bridge/channel";
 import { BridgeEndpoint } from "../process-bridge/endpoint";
-import { deliverRelayedRendererEventToMain, LIBRARY_WINDOW_READY_CHANNEL } from "./event-relay";
+import {
+  deliverRelayedProcessEvent,
+  LIBRARY_WINDOW_READY_CHANNEL
+} from "./event-relay";
 import { getRuntimeProcessRole } from "../process-role";
 
 const log = getMainLogger("pwrsnap:agent-bridge");
@@ -64,8 +67,11 @@ export function connectAgentBridge(): boolean {
       return result;
     },
     onRemoteEvent: (channel_, payload) => {
-      broadcastRendererEventToLocalWindows(channel_, payload);
-      deliverRelayedRendererEventToMain(channel_, payload);
+      deliverRelayedProcessEvent(
+        channel_,
+        payload,
+        broadcastRendererEventToLocalWindows
+      );
     },
     onRemoteCancel: (key) => {
       bus.cancel(key);

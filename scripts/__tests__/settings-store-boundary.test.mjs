@@ -27,15 +27,18 @@ describe("settings store source boundary", () => {
       "settings/codex-discovery.ts":
         'import { discoverCommands } from "@pwrdrvr/codex-discovery";\n',
       "handlers/settings-handlers.ts":
-        "store.refreshCodexDiscoveryForUserRequest(); store.testCodexForUserRequest();\n",
-      "handlers/acp-handlers.ts": "store.refreshAcpDiscoveryForUserRequest();\n",
+        "store.refreshCodexDiscoveryForUserRequest(); store.testCodexForUserRequest(); store.getCurrentCodexDiscoveryPublication(); relaySettingsDiscoveryPublicationToPeer();\n",
+      "handlers/acp-handlers.ts":
+        "store.refreshAcpDiscoveryForUserRequest(); store.getCurrentAcpDiscoveryPublication(); relaySettingsDiscoveryPublicationToPeer();\n",
       "handlers/codex-profile-handlers.ts":
         'import { discoverCodexAuthProfiles } from "@pwrdrvr/codex-discovery";\n',
       "ai/agent-command.ts": "export function execAgentCommandSync() {}\n",
       "process-split/settings-peek.ts":
         'const name = "pwrsnap-settings.json"; function peekExperimentalProcessSplit() {}\n',
+      "process-split/event-relay.ts":
+        "export function relaySettingsDiscoveryPublicationToPeer() {}\n",
       "index.ts":
-        "peekExperimentalProcessSplit(); store.adoptTrustedPeerSnapshot(settings);\n",
+        "peekExperimentalProcessSplit(); store.adoptTrustedPeerSnapshot(settings); store.adoptTrustedPeerDiscoveryPublication(publication);\n",
       "feature.ts": "store.read(); store.getCodexDiscoverySnapshot();\n"
     });
 
@@ -52,6 +55,10 @@ describe("settings store source boundary", () => {
         new DesktopSettingsStore();
         peekExperimentalProcessSplit();
         store.adoptTrustedPeerSnapshot(settings);
+        store.adoptTrustedPeerDiscoveryPublication(publication);
+        store.getCurrentCodexDiscoveryPublication();
+        store.getCurrentAcpDiscoveryPublication();
+        relaySettingsDiscoveryPublicationToPeer(publication);
         store.refreshCodexDiscoveryForUserRequest();
         store.refreshAcpDiscoveryForUserRequest();
         store.testCodexForUserRequest();
@@ -69,6 +76,10 @@ describe("settings store source boundary", () => {
         expect.stringContaining("do not create a second settings store"),
         expect.stringContaining("synchronous settings peek is restricted"),
         expect.stringContaining("trusted peer snapshots may only enter"),
+        expect.stringContaining("trusted peer discovery publications may only enter"),
+        expect.stringContaining("Codex publication export is restricted"),
+        expect.stringContaining("ACP publication export is restricted"),
+        expect.stringContaining("discovery publication relay is restricted"),
         expect.stringContaining("forced Codex discovery is restricted"),
         expect.stringContaining("forced ACP discovery is restricted"),
         expect.stringContaining("live Codex probe is restricted"),

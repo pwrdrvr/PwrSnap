@@ -28,7 +28,10 @@ import type {
 } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { activateForUserSurface } from "../process-split/activate-user-surface";
-import { relayRendererEventToPeer } from "../process-split/event-relay";
+import {
+  relayRendererEventToPeer,
+  relaySettingsDiscoveryPublicationToPeer
+} from "../process-split/event-relay";
 import {
   createSettingsWindow,
   findSettingsWindow,
@@ -75,6 +78,7 @@ type SettingsHandlerStore = Pick<
     Pick<
       DesktopSettingsStore,
       | "getCodexDiscoverySnapshot"
+      | "getCurrentCodexDiscoveryPublication"
       | "refreshCodexDiscoveryForUserRequest"
       | "testCodexForUserRequest"
     >
@@ -512,6 +516,10 @@ export function registerSettingsDataHandlers(options: {
         throw new Error("Codex discovery is unavailable from the injected settings test store");
       }
       const snapshot = await readDiscovery.call(service);
+      const publication = service.getCurrentCodexDiscoveryPublication?.();
+      if (publication !== null && publication !== undefined) {
+        relaySettingsDiscoveryPublicationToPeer(publication);
+      }
       return ok(snapshot);
     } catch (cause) {
       return err(

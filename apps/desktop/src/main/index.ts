@@ -178,7 +178,8 @@ import {
   installCancellationForwarder,
   installRendererEventForwarder,
   onRelayedRendererEvent,
-  relayRendererEventToPeer
+  relayRendererEventToPeer,
+  SETTINGS_DISCOVERY_PUBLICATION_CHANNEL
 } from "./process-split/event-relay";
 import {
   dispatchToLibraryProcess,
@@ -2059,6 +2060,15 @@ export function bootstrapApp(): void {
         }
         syncHotCpuProfilersFromSettings("settings-changed");
       });
+      onRelayedRendererEvent(
+        SETTINGS_DISCOVERY_PUBLICATION_CHANNEL,
+        (payload) => {
+          // Settings Refresh runs in the agent process. Publish its already-
+          // computed provider state into Library's local runtime resolver;
+          // adoption validates dependency fingerprints and never probes.
+          getDesktopSettingsStore().adoptTrustedPeerDiscoveryPublication(payload);
+        }
+      );
     }
     installCodexCompatibilityEventBridge();
     if (!isE2E && role !== "library") {

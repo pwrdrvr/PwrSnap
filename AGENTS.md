@@ -1058,17 +1058,22 @@ Rules:
   refreshes are single-flight. A settings dependency change invalidates only
   its fingerprint; an explicit Refresh passes `force: true`. Never reintroduce
   a TTL/focus-triggered machine scan or direct discovery fallback outside the
-  store. The source-boundary test pins this rule.
+  store. In experimental process-split mode, the agent process relays refreshed
+  publications over the main-only discovery channel and Library adopts them
+  only under a matching dependency fingerprint; do not send raw publications
+  to renderer windows or make Library re-probe after Settings Refresh. The
+  source-boundary test pins these rules.
 - **The lint boundary is executable policy.**
   `pnpm settings-store:check` runs inside `pnpm lint` and rejects production
   imports of raw settings persistence or Codex/ACP discovery, direct references
   to `pwrsnap-settings.json`, extra store construction, reuse of the synchronous
   process-role peek, direct binary version probes, trusted peer-snapshot adoption
-  outside the split relay, or live refresh/test/profile probes outside their
-  explicit Settings handlers. Thread-config selection consumes the Codex version
-  already published by the store; it never launches its own `--version`. Do not
-  weaken the allowlist to make a new call site compile; add a cached store
-  operation or establish a genuinely explicit boundary instead.
+  outside the split relay, discovery-publication export/adoption outside the
+  split Settings relay, or live refresh/test/profile probes outside their
+  explicit Settings handlers. Thread-config selection consumes the Codex
+  version already published by the store; it never launches its own `--version`.
+  Do not weaken the allowlist to make a new call site compile; add a cached
+  store operation or establish a genuinely explicit boundary instead.
 
 What this substrate is **not for**: ephemeral renderer state (sidebar
 expanded/collapsed, last-selected capture id), per-capture metadata

@@ -13,6 +13,7 @@ import type { Overlay, OverlayRow,
 } from "@pwrsnap/shared";
 import type { GeometryUpdate } from "../useCaptureModel";
 import {
+  adoptDraftGeometry,
   overlayMatchesDraftGeometry,
   pruneLandedDraftGeometry,
   pruneLandedRasterDrafts
@@ -72,6 +73,71 @@ const rectGeom = (rect: Rect, rotation?: number): GeometryUpdate => ({
 // (x) / 0.00167 (y) of slack, comfortably under the 0.002 drag threshold.
 const W = 800;
 const H = 600;
+
+describe("adoptDraftGeometry", () => {
+  // The projection every consumer needs to answer "where is the
+  // selected layer right now" during a gesture. TransformHandles was
+  // the one that skipped it — see the editor-canvas-drag-handles spec
+  // for the end-to-end symptom.
+
+  test("returns the SAME reference when there is no override map", () => {
+    const r = row("t1", text({ x: 0.3, y: 0.5 }));
+    expect(adoptDraftGeometry(r, null)).toBe(r);
+  });
+
+  test("returns the SAME reference when the map holds no entry for the row", () => {
+    const r = row("t1", text({ x: 0.3, y: 0.5 }));
+    const other = new Map<string, GeometryUpdate>([
+      ["someone_else", { kind: "text", point: { x: 0.9, y: 0.9 } }]
+    ]);
+    // Identity matters: this is the every-frame path outside a drag,
+    // and a fresh object would churn React prop identity for nothing.
+    expect(adoptDraftGeometry(r, other)).toBe(r);
+  });
+
+  test("projects the override's geometry onto the row", () => {
+    const r = row("t1", text({ x: 0.3, y: 0.5 }));
+    const adopted = adoptDraftGeometry(
+      r,
+      new Map<string, GeometryUpdate>([
+        ["t1", { kind: "text", point: { x: 0.5, y: 0.5 } }]
+      ])
+    );
+    expect(adopted).not.toBe(r);
+    expect(adopted.data).toMatchObject({ kind: "text", point: { x: 0.5, y: 0.5 } });
+    // Non-geometry fields survive — the same row feeds the per-layer
+    // style popover, which reads color / weight / sizePx off it.
+    expect(adopted.id).toBe("t1");
+    expect(adopted.z_index).toBe(r.z_index);
+    expect((adopted.data as { color: unknown }).color).toBe(
+      (r.data as { color: unknown }).color
+    );
+    // The input row is untouched.
+    expect(r.data).toMatchObject({ point: { x: 0.3, y: 0.5 } });
+  });
+
+  test("carries an in-flight rotation", () => {
+    const r = row("t1", text({ x: 0.3, y: 0.5 }));
+    const adopted = adoptDraftGeometry(
+      r,
+      new Map<string, GeometryUpdate>([
+        ["t1", { kind: "text", point: { x: 0.3, y: 0.5 }, rotation: 0.4 }]
+      ])
+    );
+    expect(adopted.data).toMatchObject({ rotation: 0.4 });
+  });
+
+  test("leaves the row alone when the override's kind does not match", () => {
+    // Not expected in practice — the override is keyed by the row's own
+    // id — but a mismatch must fall back to the persisted row rather
+    // than blanking the handles.
+    const r = row("t1", text({ x: 0.3, y: 0.5 }));
+    const mismatched = new Map<string, GeometryUpdate>([
+      ["t1", rectGeom({ x: 0.1, y: 0.1, w: 0.2, h: 0.2 })]
+    ]);
+    expect(adoptDraftGeometry(r, mismatched)).toBe(r);
+  });
+});
 
 describe("overlayMatchesDraftGeometry", () => {
   test("rect matches when the persisted rect equals the override", () => {

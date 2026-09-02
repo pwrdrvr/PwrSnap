@@ -96,7 +96,11 @@ import { TOOLS, type Tool } from "./editor-tools";
 import { useZoomPan, type ZoomMode } from "./useZoomPan";
 import { useUndoRedo, type InteractionToken, type RecordOptions } from "./useUndoRedo";
 import { decideClickSelection } from "./decideClickSelection";
-import { pruneLandedDraftGeometry, pruneLandedRasterDrafts } from "./draft-geometry";
+import {
+  adoptDraftGeometry,
+  pruneLandedDraftGeometry,
+  pruneLandedRasterDrafts
+} from "./draft-geometry";
 import { applyGeometryLocally } from "./geometry-projection";
 import { isReorderableLayer } from "./layer-roles";
 import { hitTestRasterLayers, rasterLayerBoundsN } from "./raster-hit-test";
@@ -6046,10 +6050,32 @@ function EditorLoaded({
   // resize handles (would need union-bbox math) and no style edits
   // (would need to fan out the patch to every selected layer of the
   // same kind). Single-select to refine.
-  const selectedOverlayForHandles: OverlayRow | null =
+  //
+  // The row ADOPTS the live-drag override, like every other consumer
+  // that asks where the selected layer currently IS (the canvas
+  // hit-test, the multi-drag arming snapshot, the nudge base
+  // snapshot). Without it, a drag the CANVAS armed — which is every
+  // press on the dashed selection outline, since that outline is drawn
+  // `pad 0.006` OUTSIDE the body-hit rect — moved the glyph through
+  // `liveOverride` while the rotate handle and the body-hit rect stayed
+  // at the persisted position and only caught up when the commit's
+  // refetch landed. Drags that begin on the body rect were never
+  // affected: TransformHandles tracks those in its own `liveData`,
+  // which is why the bug looked like "dragging the middle works,
+  // dragging the edge leaves the rotate ball behind".
+  //
+  // `adoptDraftGeometry` returns the same reference when there is no
+  // override, so outside a gesture this adds no allocation and the
+  // prop identity TransformHandles keys its liveData reset on stays
+  // stable.
+  const selectedOverlayRow: OverlayRow | null =
     primarySelectedLayerId === null
       ? null
       : overlays.find((r) => r.id === primarySelectedLayerId) ?? null;
+  const selectedOverlayForHandles: OverlayRow | null =
+    selectedOverlayRow === null
+      ? null
+      : adoptDraftGeometry(selectedOverlayRow, draftGeometry);
 
   // Pre-drag snapshot — stashed on pointerdown so the geometry undo
   // entry can record the PRE-DRAG geometry alongside the post-drag

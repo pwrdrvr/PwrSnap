@@ -31,6 +31,7 @@ import {
   type Overlay,
   type OverlayRow
 } from "@pwrsnap/shared";
+import { applyGeometryLocally } from "./geometry-projection";
 import type { GeometryUpdate } from "./useCaptureModel";
 
 // Per-axis tolerance in PIXELS. EFFECT layers (highlight / blur) persist
@@ -55,6 +56,38 @@ function makeNear(
   const epsX = PIXEL_TOLERANCE / Math.max(1, canvasWidthPx);
   const epsY = PIXEL_TOLERANCE / Math.max(1, canvasHeightPx);
   return (a, b, axis) => Math.abs(a - b) <= (axis === "x" ? epsX : epsY);
+}
+
+/** Project a live-drag override onto a row so a consumer sees the layer
+ *  where it is PAINTED rather than where it is persisted.
+ *
+ *  Every surface that answers a question about "the selected layer"
+ *  during a gesture needs this, because the override IS the on-screen
+ *  truth for the whole drag and for the commit→refetch window after it.
+ *  The canvas hit-test, the multi-drag arming snapshot and the nudge
+ *  base snapshot all adopt it; `TransformHandles` did not, which is why
+ *  its rotate handle and body-hit rect sat at the pre-drag position
+ *  through any drag the CANVAS armed (a press on the dashed selection
+ *  outline, which is drawn outside the body-hit rect) and then jumped
+ *  when the commit landed. Drags that start on the body rect were never
+ *  affected — TransformHandles tracks those in its own `liveData`.
+ *
+ *  Returns the SAME row reference when there is no override for it, so
+ *  the no-drag case (every frame outside a gesture) allocates nothing
+ *  and React prop identity stays stable. */
+export function adoptDraftGeometry(
+  row: OverlayRow,
+  draft: ReadonlyMap<string, GeometryUpdate> | null
+): OverlayRow {
+  if (draft === null) return row;
+  const override = draft.get(row.id);
+  if (override === undefined) return row;
+  // `applyGeometryLocally` returns null when the override's kind does
+  // not match the row's (never expected — the override is keyed by the
+  // row's own id — but a mismatch must leave the row alone, not blank
+  // the handles).
+  const adopted = applyGeometryLocally(row.data, override);
+  return adopted === null ? row : { ...row, data: adopted };
 }
 
 /** True when a persisted overlay's geometry has caught up to a live-drag

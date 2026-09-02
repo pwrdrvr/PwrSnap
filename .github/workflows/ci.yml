@@ -68,8 +68,14 @@ jobs:
               return;
             }
 
-            const isDocumentationPath = (path) =>
-              path.startsWith("docs/") || path.toLowerCase().endsWith(".md");
+            const isDocumentationPath = (path) => {
+              if (path.startsWith("docs/")) return true;
+              if (!path.toLowerCase().endsWith(".md")) return false;
+              // Prompt Markdown is copied into the packaged app
+              // (`out/main/prompts`) and loaded at runtime. A prompt-only
+              // PR is code-impacting and must not skip CI.
+              return !/(^|\/)src\//.test(path);
+            };
             const codeImpactingFile = files.find((file) => {
               const paths = [file.filename, file.previous_filename].filter(Boolean);
               return paths.some((path) => !isDocumentationPath(path));
@@ -86,7 +92,7 @@ jobs:
               ])
               .addRaw(
                 docsOnly
-                  ? "Only `docs/**` and Markdown files changed; expensive CI jobs are skipped."
+                  ? "Only `docs/**` and non-source Markdown files changed; expensive CI jobs are skipped."
                   : `Full CI runs because \`${codeImpactingFile.filename}\` is not documentation-only.`,
               )
               .write();

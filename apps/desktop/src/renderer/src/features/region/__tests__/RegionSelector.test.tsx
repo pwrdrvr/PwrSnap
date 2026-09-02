@@ -223,7 +223,10 @@ const WIN: WindowSnapEntry = {
 
 /** snap → hover a window → click (no drag) → adjusting with a window
  *  snap. displayBounds = innerSize so the css-to-logical scale is 1. */
-async function adjustWindowSnap(): Promise<void> {
+/** Click a window in `auto` mode. Since Quick Capture picks on click,
+ *  this leaves one pick live and the interaction in `snap` — NOT the
+ *  `adjusting` state a window click used to produce. */
+async function pickWindowSnap(): Promise<void> {
   await emitSnapshot({
     windows: [WIN],
     displayBounds: { width: window.innerWidth, height: window.innerHeight }
@@ -355,25 +358,32 @@ describe("U2 — multi-step Escape", () => {
 });
 
 describe("U3 — interior drag discards + redraws", () => {
-  test("interior drag on a window snap discards it and free-draws a new region", async () => {
+  test("dragging out of a picked window drops the pick and free-draws", async () => {
     await mount();
-    await adjustWindowSnap();
-    expect(document.body.dataset.interaction).toBe("adjusting");
+    await pickWindowSnap();
+    expect(document.body.dataset.interaction).toBe("snap");
+    expect(document.body.dataset.pickCount).toBe("1");
 
     // Interior mousedown + drag past threshold → a brand-new region.
+    // This is the gesture click-to-pick must not have cost: in `auto`
+    // mode almost every region drag starts on top of some window.
     await mouseDown(400, 300);
     await mouseMove(420, 320); // > DRAG_ENGAGE_PX → drawing
     await mouseMove(700, 500);
     await mouseUp(700, 500);
 
     expect(document.body.dataset.interaction).toBe("adjusting");
+    expect(document.body.dataset.pickCount).toBe("0");
     expect(rectStyle()).toEqual({ left: 400, top: 300, width: 300, height: 200 });
-    // The window pick was discarded — commit carries no snappedWindowId.
+    // The pick was dropped — commit carries the drawn rect alone, with
+    // no window id and no extents to override it.
     await keyDown("Enter");
     expect(submitRegion).toHaveBeenCalledTimes(1);
     const payload = submitRegion.mock.calls[0]?.[0];
     expect(payload.ok).toBe(true);
     expect(payload.snappedWindowId).toBeUndefined();
+    expect(payload).not.toHaveProperty("extents");
+    expect(payload.rect).toEqual({ x: 400, y: 300, w: 300, h: 200 });
   });
 
   test("interior drag on a free-drawn region replaces it", async () => {
@@ -397,16 +407,22 @@ describe("U3 — interior drag discards + redraws", () => {
     expect(rectStyle()).toEqual(before); // unchanged, NOT the full viewport
   });
 
-  test("interior click (no drag) keeps a window snap + preserves snappedWindowId", async () => {
+  test("a click on a window picks it — it does not commit or enter adjusting", async () => {
+    // The regression this replaced: in `auto` mode a plain click used
+    // to bind the window into `adjusting`, so there was no way to add a
+    // second window without a modifier nobody discovered.
     await mount();
-    await adjustWindowSnap();
-    await mouseDown(400, 300);
-    await mouseUp(400, 300); // no drag → keep
-    expect(document.body.dataset.interaction).toBe("adjusting");
-    expect(rectStyle()).toEqual({ left: 200, top: 150, width: 400, height: 300 });
+    await pickWindowSnap();
+    expect(document.body.dataset.interaction).toBe("snap");
+    expect(submitRegion).not.toHaveBeenCalled();
+    expect(selectionStyle()).toEqual({ left: 200, top: 150, width: 400, height: 300 });
+    // A lone pick still commits as the plain single-window capture it
+    // always was: rect + windowId, no extents to composite.
     await keyDown("Enter");
     const payload = submitRegion.mock.calls[0]?.[0];
     expect(payload.snappedWindowId).toBe(WIN.windowId);
+    expect(payload.rect).toEqual({ x: 200, y: 150, w: 400, h: 300 });
+    expect(payload).not.toHaveProperty("extents");
   });
 
   test("discard-pending dims the rect while staged; cleared on mouseup", async () => {
@@ -603,13 +619,13 @@ async function clickEl(el: Element): Promise<void> {
 }
 
 describe("U5 — multi-window pick set", () => {
-  test("⌘-click accumulates windows; the rect becomes their union", async () => {
+  test("plain clicks accumulate windows; the rect becomes their union", async () => {
     await mountScene();
-    await clickWindow(WIN, { metaKey: true });
+    await clickWindow(WIN);
     expect(pickBoxes()).toHaveLength(1);
     expect(selectionStyle()).toEqual({ left: 200, top: 150, width: 400, height: 300 });
 
-    await clickWindow(WIN_B, { metaKey: true });
+    await clickWindow(WIN_B);
     expect(pickBoxes()).toHaveLength(2);
     // union of (200,150,400x300) and (700,100,200x150)
     expect(rectStyle()).toEqual({ left: 200, top: 100, width: 700, height: 350 });
@@ -617,7 +633,10 @@ describe("U5 — multi-window pick set", () => {
     expect(rectStyle()).toEqual({ left: 200, top: 100, width: 700, height: 350 });
   });
 
-  test("once a set exists a plain click is additive — no modifier needed", async () => {
+  test("⌘ still picks — the modifier is inert, not forbidden", async () => {
+    // ⌘-click was the old opt-in. It has to keep working: muscle memory
+    // aside, a press that is already a pick cannot be made not-a-pick
+    // by a modifier the overlay binds nothing else to.
     await mountScene();
     await clickWindow(WIN, { metaKey: true });
     await clickWindow(WIN_B); // plain
@@ -642,13 +661,71 @@ describe("U5 — multi-window pick set", () => {
     expect(document.body.dataset.snap).toBe("window");
   });
 
-  test("clicking the desktop with a set live keeps it", async () => {
+  test("clicking the desktop with a set live keeps it, and settles in snap", async () => {
     await mountScene();
-    await clickWindow(WIN, { metaKey: true });
+    await clickWindow(WIN);
     await mouseMove(980, 700); // empty desktop
     await mouseDown(980, 700);
     await mouseUp(980, 700);
     expect(pickBoxes()).toHaveLength(1);
+    // Back in `snap`, not parked in `pending`: a stale `pending` keeps
+    // its mousedown origin, so the next bare mousemove would measure
+    // against it and promote to `drawing` with no button held.
+    expect(document.body.dataset.interaction).toBe("snap");
+    await mouseMove(400, 300);
+    expect(document.body.dataset.interaction).toBe("snap");
+    expect(pickBoxes()).toHaveLength(1);
+  });
+
+  test("a drag that starts on a window free-draws — click-to-pick did not eat it", async () => {
+    // The whole reason picks resolve on mouseup: in `auto` mode most of
+    // the screen is covered by windows, so deciding on mousedown means
+    // either clicks cannot pick or drags cannot start from a window.
+    await mountScene();
+    const c = centerOf(WIN);
+    await mouseMove(c.x, c.y);
+    await mouseDown(c.x, c.y);
+    await mouseMove(c.x + 20, c.y + 20); // past DRAG_ENGAGE_PX
+    await mouseMove(900, 640);
+    await mouseUp(900, 640);
+    expect(pickBoxes()).toHaveLength(0);
+    expect(document.body.dataset.interaction).toBe("adjusting");
+    expect(rectStyle()).toEqual({
+      left: c.x,
+      top: c.y,
+      width: 900 - c.x,
+      height: 640 - c.y
+    });
+  });
+
+  test("a drag from empty desktop replaces a live set with the region", async () => {
+    await mountScene();
+    await clickWindow(WIN);
+    await mouseMove(980, 700);
+    await mouseDown(980, 700);
+    await mouseMove(960, 680);
+    await mouseMove(700, 500);
+    await mouseUp(700, 500);
+    expect(pickBoxes()).toHaveLength(0);
+    expect(hud()).toBeNull();
+    expect(rectStyle()).toEqual({ left: 700, top: 500, width: 280, height: 200 });
+    await keyDown("Enter");
+    const payload = submitRegion.mock.calls[0]?.[0];
+    expect(payload).not.toHaveProperty("extents");
+    expect(payload.rect).toEqual({ x: 700, y: 500, w: 280, h: 200 });
+  });
+
+  test("window mode: a hand wobble past the drag threshold still picks", async () => {
+    // Window mode has no competing drag gesture, so travel must not
+    // cost the pick the way it does in `auto`.
+    await mountScene({ mode: "window" });
+    const c = centerOf(WIN);
+    await mouseMove(c.x, c.y);
+    await mouseDown(c.x, c.y);
+    await mouseMove(c.x + 6, c.y + 6);
+    await mouseUp(c.x + 6, c.y + 6);
+    expect(pickBoxes()).toHaveLength(1);
+    expect(submitRegion).not.toHaveBeenCalled();
   });
 
   test("window mode: a plain click adds instead of committing", async () => {
@@ -792,7 +869,8 @@ describe("U5 — multi-window pick set", () => {
 
   test("HUD: the Capture button commits", async () => {
     await mountScene();
-    await clickWindow(WIN, { metaKey: true });
+    await clickWindow(WIN);
+    await clickWindow(WIN_B);
     await clickEl(hudButton("region-hud-capture"));
     expect(submitRegion).toHaveBeenCalledTimes(1);
     expect(submitRegion.mock.calls[0]?.[0]).toMatchObject({ ok: true, outputMode: "windows" });
@@ -908,6 +986,23 @@ describe("U5 — multi-window pick set", () => {
     expect(document.body.dataset.pickCount).toBe("0");
   });
 
+  test("a new mode signal also drops a pick armed but not yet released", async () => {
+    // A pick resolves on mouseup, so a press can outlive the session it
+    // was made in: main re-shows the same pre-warmed window on a new
+    // mode signal while the button is still down. Releasing it must not
+    // deposit a window from the abandoned session — least of all into
+    // `region` mode or a video pick, where multi-select is off and the
+    // user has no way to click it back off.
+    await mountScene();
+    const c = centerOf(WIN);
+    await mouseMove(c.x, c.y);
+    await mouseDown(c.x, c.y);
+    await emitMode({ mode: "region" });
+    await mouseUp(c.x, c.y);
+    expect(pickBoxes()).toHaveLength(0);
+    expect(document.body.dataset.pickCount).toBe("0");
+  });
+
   test("a leaked pick set can never be committed where multi-select is off", async () => {
     // Belt to the reset's braces: commit re-checks the capability
     // rather than trusting that a set could only exist where it was
@@ -926,7 +1021,12 @@ describe("U5 — multi-window pick set", () => {
     expect(payload).not.toHaveProperty("outputMode");
   });
 
-  test("⌃-click does not pick on macOS — that is the secondary-click gesture", async () => {
+  test("on macOS a bare click picks — no modifier, no ⌃ special case", async () => {
+    // The shipped-and-wrong version of this behavior required ⌘ in
+    // `auto` mode, with a carve-out refusing ⌃ because ⌃+left-click is
+    // the macOS secondary click. Both are gone: a bare press over a
+    // window is a pick, so ⌃ neither grants nor withholds anything, and
+    // the overlay has no context menu for ⌃ to have been protecting.
     await mount();
     (window.pwrsnapApi as { platform: string }).platform = "darwin";
     await emitMode({ mode: "auto" });
@@ -934,24 +1034,11 @@ describe("U5 — multi-window pick set", () => {
       windows: [WIN, WIN_B, WIN_C],
       displayBounds: { width: window.innerWidth, height: window.innerHeight }
     });
-    const c = centerOf(WIN);
-    await mouseMove(c.x, c.y);
-    await act(async () => {
-      window.dispatchEvent(
-        new MouseEvent("mousedown", {
-          clientX: c.x,
-          clientY: c.y,
-          button: 0,
-          bubbles: true,
-          ctrlKey: true
-        })
-      );
-    });
-    await mouseUp(c.x, c.y);
-    expect(pickBoxes()).toHaveLength(0);
-    // ⌘ still works there.
-    await clickWindow(WIN, { metaKey: true });
+    await clickWindow(WIN);
     expect(pickBoxes()).toHaveLength(1);
+    await clickWindow(WIN_B);
+    expect(pickBoxes()).toHaveLength(2);
+    expect(submitRegion).not.toHaveBeenCalled();
   });
 
   test("dropping below two picks releases the rectangle mode", async () => {

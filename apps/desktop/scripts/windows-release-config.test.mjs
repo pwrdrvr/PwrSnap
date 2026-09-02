@@ -82,6 +82,19 @@ describe("Windows release configuration", () => {
     expect(electronBuilder).toBeGreaterThan(pruning);
   });
 
+  test("pins Sharp to the workspace version used for Windows native-slice injection", () => {
+    const manifest = JSON.parse(read("apps/desktop/package.json"));
+    const sharpSpecifier = manifest.dependencies.sharp;
+    expect(sharpSpecifier).toMatch(/^\d+\.\d+\.\d+$/);
+
+    const importer = /^      sharp:\r?\n        specifier: ([^\r\n]+)\r?\n        version: ([^\r\n]+)/m.exec(
+      read("pnpm-lock.yaml")
+    );
+    expect(importer, "apps/desktop Sharp lock entry is missing").not.toBeNull();
+    expect(importer[1]).toBe(sharpSpecifier);
+    expect(importer[2]).toMatch(new RegExp(`^${sharpSpecifier.replaceAll(".", "\\.")}(?:\\(|$)`));
+  });
+
   test("Windows packages the atomic verified-file helper", () => {
     const config = read("apps/desktop/electron-builder.yml");
     const builder = read("apps/desktop/scripts/build-native.mjs");

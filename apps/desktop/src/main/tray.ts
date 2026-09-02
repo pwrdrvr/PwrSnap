@@ -147,6 +147,66 @@ function activeTrayAccelerator(
 }
 
 /**
+ * Take the popover off screen with NO fade, then restore it on show.
+ *
+ * The tray popover is a macOS `NSPanel` (`type: 'panel'` — see
+ * createTrayWindow in window.ts for why). AppKit resolves a panel's
+ * default `NSWindowAnimationBehaviorDefault` to
+ * `NSWindowAnimationBehaviorUtilityWindow`, so `[NSWindow orderOut:]`
+ * — which is what `BrowserWindow.hide()` calls — plays a ~0.2s
+ * FADE-OUT rather than clearing the window on the next frame.
+ *
+ * That fade ends up inside the user's screenshots. A capture started
+ * from a tray button dismisses the popover and then waits a 50ms
+ * compositor flush before freezing the screen (see
+ * `hidePwrSnapChromeAndSettle` in capture-handlers.ts and the
+ * pre-snapshot hide in region-selector.ts). 50ms into a 200ms fade the
+ * popover is still ~70% opaque — and the region/auto path CROPS THAT
+ * FROZEN SNAPSHOT, so a half-dissolved PwrSnap popover is alpha-blended
+ * into the saved capture. The same capture taken with the global hotkey
+ * (popover never open) is clean, which is what makes this look like a
+ * compositor mystery instead of a window animation.
+ *
+ * Electron exposes no `animationBehavior` setter, so we take the window
+ * to alpha 0 FIRST. `-[NSWindow setAlphaValue:]` applies immediately —
+ * there is no implicit animation outside an `NSAnimationContext` — so
+ * the fade then runs 0 → 0 and paints nothing. Every show path restores
+ * alpha to 1 before ordering the panel back in, or the popover would
+ * come back as an invisible window that still eats clicks.
+ *
+ * Windows is deliberately excluded. There the tray window is
+ * `transparent: true`, and `setOpacity` drives whole-window layered
+ * alpha (`SetLayeredWindowAttributes`), which is mutually exclusive with
+ * the per-pixel alpha (`UpdateLayeredWindow`) a transparent window
+ * composites through — the same trap documented on `parkOffScreen` in
+ * float-over.ts, where an opacity round-trip left the toast blank.
+ * Windows has no NSPanel fade to fix, so there is nothing to trade for.
+ *
+ * Pinned by tray-instant-hide.test.ts. ALL tray hides go through
+ * `hideTrayWindowNow` — not just the capture path. A fade started by
+ * some other dismissal (blur, tray-icon toggle, right-click) is just as
+ * capturable, and worse: AppKit orders the window out at the START of
+ * the fade, so `isVisible()` already reads false and the capture path's
+ * own dismiss would skip it and let the fade paint itself in anyway.
+ */
+function hideTrayWindowNow(window: BrowserWindow): void {
+  if (process.platform === "darwin") {
+    window.setOpacity(0);
+  }
+  window.hide();
+}
+
+/** Counterpart to {@link hideTrayWindowNow} — undo the alpha-0 park
+ *  before the panel is ordered back in. */
+function showTrayWindowNow(window: BrowserWindow): void {
+  if (process.platform === "darwin") {
+    window.setOpacity(1);
+  }
+  window.showInactive();
+  window.focus();
+}
+
+/**
  * Synchronously hide the tray popover, bypassing the 120ms blur-dismiss
  * debounce. Called from the capture flow right before we shell out to
  * `screencapture` so the popover doesn't show up in the captured frame.
@@ -167,7 +227,7 @@ export function hideTrayPopoverIfVisible(): void {
     pendingDismiss = null;
   }
   if (trayWindow !== null && !trayWindow.isDestroyed() && trayWindow.isVisible()) {
-    trayWindow.hide();
+    hideTrayWindowNow(trayWindow);
   }
 }
 
@@ -288,7 +348,7 @@ function wireBlurDismiss(window: BrowserWindow): void {
       if (trayWindow.webContents.isDevToolsOpened()) return;
       // If the window regained focus during the debounce window, abort.
       if (trayWindow.isFocused()) return;
-      trayWindow.hide();
+      hideTrayWindowNow(trayWindow);
     }, BLUR_DISMISS_DEBOUNCE_MS);
   });
   window.on("focus", () => {
@@ -342,7 +402,7 @@ export function installTray(): Tray {
       // the popover — drop it so the Library doesn't open underneath an
       // orphaned popover.
       if (trayWindow !== null && !trayWindow.isDestroyed() && trayWindow.isVisible()) {
-        trayWindow.hide();
+        hideTrayWindowNow(trayWindow);
       }
       // library:focus spawns (or raises) the Library — same verb as the
       // context menu's "Open Library".
@@ -355,7 +415,7 @@ export function installTray(): Tray {
     // having both visible at once is confusing UX (and was the
     // dock-icon-right-click reproduction the user reported).
     if (trayWindow !== null && !trayWindow.isDestroyed() && trayWindow.isVisible()) {
-      trayWindow.hide();
+      hideTrayWindowNow(trayWindow);
     }
     const menu = Menu.buildFromTemplate(buildTrayContextMenuTemplate(trayBounds));
     tray?.popUpContextMenu(menu);
@@ -412,7 +472,7 @@ export function prewarmTrayWindow(): BrowserWindow {
 function toggleTrayWindow(): void {
   const window = ensureTrayWindow();
   if (window.isVisible()) {
-    window.hide();
+    hideTrayWindowNow(window);
     return;
   }
   const bounds = tray!.getBounds();
@@ -447,8 +507,10 @@ function toggleTrayWindow(): void {
   // (Cocoa picking the next-key window of our app when the panel
   // hides) is handled by the floating-level focus-sink installed
   // at startup — see focus-sink.ts.
-  window.showInactive();
-  window.focus();
+  //
+  // `showTrayWindowNow` lifts the alpha-0 park a previous
+  // `hideTrayWindowNow` left behind before either of those steps.
+  showTrayWindowNow(window);
 }
 
 export function disposeTray(): void {
@@ -490,8 +552,7 @@ export function showTrayPopoverForE2E(): void {
   const primary = screen.getPrimaryDisplay();
   const wa = primary.workArea;
   window.setPosition(wa.x + 8, wa.y + 8, false);
-  window.showInactive();
-  window.focus();
+  showTrayWindowNow(window);
 }
 
 /** E2E-only: hide the tray popover synchronously (no debounce). */
@@ -643,8 +704,7 @@ export async function measureTrayFirstPaintForE2E(options: {
   const primary = screen.getPrimaryDisplay();
   const wa = primary.workArea;
   window.setPosition(wa.x + 8, wa.y + 8, false);
-  window.showInactive();
-  window.focus();
+  showTrayWindowNow(window);
 
   let isVisible: number | null = null;
   const deadline = performance.now() + timeoutMs;

@@ -61,6 +61,10 @@
   max-width: 980px;
   margin: 0 auto;
   color: var(--text-secondary);
+  /* Release notes / changelog / third-party licences are prose, not chrome —
+     opt out of the app-wide `user-select: none` in app.css. */
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .ps-doc__body pre {

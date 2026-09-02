@@ -1388,6 +1388,15 @@
   border-radius: 6px;
   flex-shrink: 0;
 }
+/* Binary / save-location paths carry no copy button and routinely need to
+   be pasted into a terminal — opt out of app.css's `user-select: none`. */
+.pss__path-text,
+.pss__cand-path,
+.pss__acp-instance-path {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 .pss__path-text {
   flex: 1;
   min-width: 0;
@@ -1803,7 +1812,14 @@
   color: var(--text-tertiary, var(--text-secondary));
 }
 .pss__chat-counter .is-over { color: var(--accent); }
-.pss__chat-err { color: var(--accent); font: 400 11px/1.4 var(--font-sans); }
+/* Error text users copy into a bug report. This one carries no
+   `role="alert"`, so app.css's alert opt-in does not reach it. */
+.pss__chat-err {
+  color: var(--accent);
+  font: 400 11px/1.4 var(--font-sans);
+  user-select: text;
+  -webkit-user-select: text;
+}
 .pss__chat-patterns { display: flex; flex-direction: column; gap: 8px; width: 100%; }
 .pss__chat-pattern-row { display: flex; gap: 8px; align-items: center; }
 .pss__chat-pattern-row .pss__input:first-child { max-width: 160px; }

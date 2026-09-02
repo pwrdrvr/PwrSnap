@@ -45,6 +45,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { acceleratorToDisplayKeys, MAX_SELECTOR_EXTENTS } from "@pwrsnap/shared";
+import type { QuickCaptureAction, SelectorTerminalAction } from "@pwrsnap/shared";
 import type { WindowSnapEntry } from "../../preload-types";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import {
@@ -190,6 +191,15 @@ export function RegionSelector() {
   // the pre-warmed window), flipped with the `C` key, and shipped on the
   // commit payload for the hotkey path to pass to `recording:start`.
   const [captureCursor, setCaptureCursor] = useState(true);
+  // Snap-vs-Record policy for THIS show, from
+  // `settings.recording.quickCaptureAction` via the mode signal.
+  //   - "ask"    — offer both: ↵ snaps, R records the same selection.
+  //   - "snap"   — no Record affordance at all, R unbound. What the
+  //                selector did before the chooser existed.
+  //   - "record" — Record is primary (↵), Snap moves to S.
+  // Ignored entirely when `intent === "video"`: the dedicated Video
+  // Capture entry point already knows what it is doing.
+  const [quickAction, setQuickAction] = useState<QuickCaptureAction>("ask");
   // ⇧ in snap mode opts into full-window capture: the rect expands
   // from the visible-region bounding box (`entry.rect`) to the
   // window's full bounds (`entry.rawRect`), and the commit payload
@@ -258,6 +268,7 @@ export function RegionSelector() {
   const modeRef = useRef<SelectorMode>("auto");
   const intentRef = useRef<"snap" | "video">("snap");
   const captureCursorRef = useRef(true);
+  const quickActionRef = useRef<QuickCaptureAction>("ask");
   // Cursor-tracking crosshair guide-lines (auto/region modes). Rendered
   // once and repositioned by direct DOM writes from `onMouseMove` /
   // the window-list cursor — never via React state, so they impose no
@@ -376,8 +387,25 @@ export function RegionSelector() {
   modeRef.current = mode;
   intentRef.current = intent;
   captureCursorRef.current = captureCursor;
+  quickActionRef.current = quickAction;
   picksRef.current = picks;
   outputModeRef.current = outputMode;
+
+  // Render-scope mirrors of the chooser predicates. The ref-reading
+  // versions above serve the once-registered global handlers; these
+  // serve JSX, and reading state here is what makes the bar re-render
+  // when a pick lands or the policy arrives.
+  const recordOffered = intent !== "video" && quickAction !== "snap";
+  const recordUsable = recordOffered && picks.length <= 1;
+  const primary: SelectorTerminalAction =
+    quickAction === "record" && recordUsable ? "record" : "snap";
+  // The chooser needs its own bar once a selection is LATCHED — a pick
+  // set, or a committed rect the user can let go of. In live snap the
+  // frame follows the cursor, so a mouse affordance is incoherent
+  // (reaching for it moves the selection); the keys are advertised in
+  // the hint bar instead and work from the first frame.
+  const chooserBar = recordOffered && (picks.length > 0 || interaction.kind === "adjusting");
+  const showHud = picks.length > 0 || chooserBar;
 
   // Surface state to CSS for cursor switching + snap visualization.
   useLayoutEffect(() => {
@@ -399,7 +427,22 @@ export function RegionSelector() {
     // `pick-count !== "0"`, and two encodings of one fact can disagree.
     document.body.dataset.pickCount = String(picks.length);
     document.body.dataset.outputMode = outputMode;
-  }, [interaction.kind, spaceHeld, snapTarget, shiftHeld, mode, picks, outputMode]);
+    // The HUD can now be on screen without a pick set, so the hint-bar
+    // lift can no longer key off pick-count alone. Also the E2E signal
+    // for "the chooser is live in this show".
+    document.body.dataset.chooserBar = chooserBar ? "true" : "false";
+    document.body.dataset.quickAction = quickAction;
+  }, [
+    interaction.kind,
+    spaceHeld,
+    snapTarget,
+    shiftHeld,
+    mode,
+    picks,
+    outputMode,
+    chooserBar,
+    quickAction
+  ]);
 
   // Subscribe to per-show mode signal from main. The selector windows
   // are pre-warmed once at boot so we can't pass mode in the URL hash;
@@ -420,6 +463,11 @@ export function RegionSelector() {
       // (defaults ON when unset) so a prior capture's choice can't bleed
       // into this one through the reused, pre-warmed selector window.
       setCaptureCursor(payload.cursor ?? true);
+      // Re-read the chooser policy on every show. Like `cursor`, this is
+      // per-show state on a pre-warmed window: a selector opened under
+      // "record" must not stay record-primary for the next capture after
+      // the user changes the setting.
+      setQuickAction(payload.quickCaptureAction ?? "ask");
       // Drop the pick set on EVERY show. This handler is the only
       // per-show reset the renderer gets, and main can end a session
       // without one: `pickRegion` resolves an in-flight resolver with
@@ -618,6 +666,46 @@ export function RegionSelector() {
   }
 
   /**
+   * True when this show offers a Record action at all.
+   *
+   * `intent === "video"` is excluded because there is nothing to
+   * choose: that selector already commits to a recording, and the
+   * chooser would offer "Record" next to a rect badged RECORD.
+   */
+  function recordOfferedByPolicy(): boolean {
+    return intentRef.current !== "video" && quickActionRef.current !== "snap";
+  }
+
+  /**
+   * True when Record can honestly run against the CURRENT selection.
+   *
+   * The multi-pick guard is the seam multi-select left behind. Before
+   * the chooser, `multiSelectAllowed()` could exclude video by reading
+   * `intent`, because intent was fixed at hotkey time. The chooser moves
+   * the decision to after the commit, so a user in `auto` mode can pick
+   * three windows and only then reach for Record — and the commit
+   * payload's `rect` is the union bounding box, which the recording path
+   * is the only consumer of. Recording it would capture exactly the gaps
+   * the picker just painted transparent, silently.
+   *
+   * A pick set of ONE is fine: the union box IS the extent, the commit
+   * carries no `extents`, and the result is one rectangle.
+   */
+  function recordAvailable(): boolean {
+    return recordOfferedByPolicy() && picksRef.current.length <= 1;
+  }
+
+  /** Which action a bare ↵ (or the primary HUD button) commits. */
+  function primaryAction(): SelectorTerminalAction {
+    return quickActionRef.current === "record" && recordAvailable() ? "record" : "snap";
+  }
+
+  /** True when `S` is bound — only where Record has taken over ↵. */
+  function snapKeyBound(): boolean {
+    return quickActionRef.current === "record" && recordOfferedByPolicy();
+  }
+
+  /**
    * Drop the pick set WITHOUT touching the rect.
    *
    * The counterpart to `togglePick`'s empty branch, which re-derives
@@ -702,8 +790,27 @@ export function RegionSelector() {
     setInteraction({ kind: "snap" });
   }
 
-  function commit(): void {
+  /**
+   * Submit the selection with a terminal action.
+   *
+   * `action` is stamped on the payload ONLY for a recording. A snap
+   * commit is byte-identical to what it has always been, and main reads
+   * a missing `action` as "snap" — so every pre-chooser call site and
+   * every fixed-`snap` show keep exactly their old wire shape.
+   */
+  function commit(action: SelectorTerminalAction = primaryAction()): void {
     if (submittedRef.current) return;
+    // A recording is one rectangular stream, so Record is dead against a
+    // 2+-pick set (see recordAvailable). The HUD button is disabled and
+    // `R` is unbound there; this is the last line, in case a stale
+    // caller reaches commit("record") anyway. Doing nothing matches what
+    // the user can see — it must never fall through to a snap they did
+    // not ask for, nor to a recording of the gaps.
+    if (action === "record" && !recordAvailable()) return;
+    // Video-only fields (the cursor bake) ride along for BOTH ways a
+    // commit can become a recording: the dedicated video selector, and
+    // the chooser's Record.
+    const isRecording = intentRef.current === "video" || action === "record";
     // The renderer's rects are in CSS pixels. Main + screencapture
     // expect display-logical pixels. Scale back via the inverse of the
     // snapshot's css-to-logical factor. On standard displays this is
@@ -771,6 +878,8 @@ export function RegionSelector() {
           rect: toLogical(only.rawRect),
           displayId,
           snappedWindowId: only.windowId,
+          ...(action === "record" ? { action } : {}),
+          ...(isRecording ? { captureCursor: captureCursorRef.current } : {}),
           // No `extents`. A one-window mask covers its own union box
           // edge to edge, so it can only ever produce the same pixels
           // as the plain crop — at the cost of a decode + composite in
@@ -844,13 +953,14 @@ export function RegionSelector() {
       // goes through the rect path, which captures whatever's
       // literally on screen including overlapping windows.
       ...(wantFull ? { fullWindow: true } : {}),
-      // Video-only: the cursor choice for this recording. Read from the
-      // ref (not state) because this commit closure is captured once at
-      // mount by the global keydown listener. Omitted for image
+      // The chooser's Record. Absent for a snap, so a still capture's
+      // payload is unchanged from before the chooser existed.
+      ...(action === "record" ? { action } : {}),
+      // Recording-only: the cursor choice for this recording. Read from
+      // the ref (not state) because this commit closure is captured once
+      // at mount by the global keydown listener. Omitted for image
       // captures, which don't consume it yet (Phase 3).
-      ...(intentRef.current === "video"
-        ? { captureCursor: captureCursorRef.current }
-        : {})
+      ...(isRecording ? { captureCursor: captureCursorRef.current } : {})
     });
     // Full reset, same as the pick path above. Hand-rolling a partial
     // one here left `shiftHeld` / `spaceHeld` latched: the ⇧ keyup is
@@ -1005,6 +1115,34 @@ export function RegionSelector() {
         commit();
         return;
       }
+      // Snap-vs-Record chooser. `R` records the selection the user is
+      // looking at; `S` takes the snap when the policy has handed ↵ to
+      // Record. Both are bare-key bindings, so they are guarded against
+      // modifiers — ⌘R is Reload in a dev build and ⌃R is a shell
+      // history search the user may have muscle-memory for; neither must
+      // start a screen recording.
+      if (
+        (event.key === "r" || event.key === "R") &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        recordAvailable()
+      ) {
+        event.preventDefault();
+        commit("record");
+        return;
+      }
+      if (
+        (event.key === "s" || event.key === "S") &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        snapKeyBound()
+      ) {
+        event.preventDefault();
+        commit("snap");
+        return;
+      }
       if ((event.key === "t" || event.key === "T") && picksRef.current.length > 1) {
         // Flip the output shape. Only bound at two or more picks: with
         // one, the union box IS the extent, so both modes produce the
@@ -1016,11 +1154,21 @@ export function RegionSelector() {
       }
       if (
         (event.key === "c" || event.key === "C") &&
-        intentRef.current === "video"
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        (intentRef.current === "video" || recordAvailable())
       ) {
-        // Video-only: toggle whether the recording bakes in the mouse
-        // cursor. The hint bar reflects the current state; the value
-        // rides the commit payload to `recording:start`.
+        // Recording-only: toggle whether the recording bakes in the
+        // mouse cursor. The hint bar reflects the current state; the
+        // value rides the commit payload to `recording:start`. Bound
+        // wherever a recording is reachable — the dedicated video
+        // selector, and any show where the chooser offers Record.
+        //
+        // Modifier-guarded now that it is live on the SNAP path too:
+        // ⌘C is muscle memory everywhere, and before the chooser it did
+        // nothing during a Quick Capture. It must not silently flip a
+        // recording default there.
         event.preventDefault();
         setCaptureCursor((prev) => !prev);
         return;
@@ -1317,8 +1465,12 @@ export function RegionSelector() {
       // `togglePick` hit-tests from when the set empties and what Tab
       // cycles from, so letting it hold a HUD coordinate makes removing
       // the last chip snap to whatever sits behind the toolbar.
+      //
+      // Not gated on a pick set: the chooser bar puts a HUD on screen
+      // with no picks at all, and reaching for its Record button must
+      // not re-snap the selection out from under the click. Free when
+      // no HUD is rendered — nothing can match the selector then.
       if (
-        picksRef.current.length > 0 &&
         event.target instanceof HTMLElement &&
         event.target.closest("[data-region-hud]") !== null
       ) {
@@ -2048,13 +2200,19 @@ export function RegionSelector() {
         </div>
       )}
 
-      {/* Multi-select HUD. The one part of the overlay that takes its
-          own clicks (see the [data-region-hud] guard in onMouseDown) —
-          everything else is a canvas gesture. Rendered only while a
-          pick set exists so single-selection capture is untouched. */}
-      {hasPicks && (
+      {/* The HUD. The one part of the overlay that takes its own clicks
+          (see the [data-region-hud] guard in onMouseDown) — everything
+          else is a canvas gesture.
+
+          Two reasons it exists: a pick set (chips + output shape), and
+          the Snap-vs-Record chooser once a selection is latched. With
+          neither, single-selection capture paints exactly what it always
+          did — no bar at all. */}
+      {showHud && (
         <div
-          className="region-hud"
+          className={
+            hasPicks ? "region-hud" : "region-hud region-hud--chooser-only"
+          }
           data-region-hud
           data-testid="region-hud"
           // A HUD press deliberately skips preventDefault so the button
@@ -2118,15 +2276,61 @@ export function RegionSelector() {
               </button>
             ))}
           </div>
-          <span className="region-hud__sep" />
+          {hasPicks && <span className="region-hud__sep" />}
+          {/* Terminal actions. The primary is whatever ↵ commits, so the
+              pre-chooser bar (`primary === "snap"`, no Record offered)
+              renders the identical "Capture ↵" button it always has. */}
           <button
             type="button"
             className="region-hud__go"
             data-testid="region-hud-capture"
-            onClick={() => commit()}
+            data-action={primary}
+            aria-label={primary === "record" ? "Record (Return)" : "Capture (Return)"}
+            onClick={() => commit(primary)}
           >
-            Capture<kbd>↵</kbd>
+            {primary === "record" ? "Record" : "Capture"}
+            <kbd>↵</kbd>
           </button>
+          {recordOffered && (
+            // The other action. Disabled rather than hidden at 2+ picks:
+            // the user just saw Record offered, and a control that
+            // vanishes explains nothing. The title says why.
+            <button
+              type="button"
+              className="region-hud__alt"
+              data-testid="region-hud-alt"
+              data-action={primary === "record" ? "snap" : "record"}
+              disabled={primary === "snap" && !recordUsable}
+              aria-label={primary === "record" ? "Snap (S)" : "Record (R)"}
+              title={
+                primary === "record"
+                  ? "Take a still of this selection instead"
+                  : recordUsable
+                    ? "Record this selection as a video"
+                    : "A recording is one rectangle — remove picks or drag a region"
+              }
+              onClick={() => commit(primary === "record" ? "snap" : "record")}
+            >
+              {primary === "record" ? "Snap" : "Record"}
+              <kbd>{primary === "record" ? "S" : "R"}</kbd>
+            </button>
+          )}
+          {recordUsable && (
+            // Cursor bake, same toggle the dedicated video selector
+            // carries on `C`. Only meaningful while Record is reachable.
+            <button
+              type="button"
+              className="region-hud__toggle"
+              data-testid="region-hud-cursor"
+              aria-pressed={captureCursor}
+              aria-label={`Record cursor: ${captureCursor ? "on" : "off"} (C)`}
+              title="Bake the mouse pointer into the recording"
+              onClick={() => setCaptureCursor((prev) => !prev)}
+            >
+              Cursor: {captureCursor ? "on" : "off"}
+              <kbd>C</kbd>
+            </button>
+          )}
         </div>
       )}
 
@@ -2144,6 +2348,34 @@ export function RegionSelector() {
           </>
         )}
         {hint}
+        {/* Chooser keys. Live from the first frame — including in live
+            snap, where the mouse cannot be used to choose (reaching for
+            a button moves the selection) and the keyboard is the whole
+            affordance. `R` goes dead at 2+ picks; the legend says so
+            rather than disappearing. */}
+        {recordOffered && (
+          <>
+            <span className="region-hint-sep">·</span>
+            {primary === "record" ? (
+              <span>
+                <kbd>S</kbd>snap
+              </span>
+            ) : (
+              <span data-testid="region-hint-record" data-available={recordUsable}>
+                <kbd>R</kbd>
+                {recordUsable ? "record" : "record (one rectangle only)"}
+              </span>
+            )}
+            {recordUsable && (
+              <>
+                <span className="region-hint-sep">·</span>
+                <span>
+                  <kbd>C</kbd>cursor: {captureCursor ? "on" : "off"}
+                </span>
+              </>
+            )}
+          </>
+        )}
         <span className="region-hint-sep">·</span>
         <span>
           {/* Single source of the Esc affordance. Mirrors handleEscape,

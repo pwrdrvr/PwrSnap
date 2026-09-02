@@ -71,7 +71,9 @@ test("hovering a window locks the rect to its bounds (no modifier)", async () =>
     expect(rectStyle).toContain(`height: ${SYNTHETIC_WINDOW.rect.h}px`);
 
     await expect(selector.locator(".region-dims-chip")).toContainText("Target App");
-    await expect(selector.locator(".region-hint")).toContainText(/capture target app/i);
+    // "pick", not "capture": a click adds the window to the pick set
+    // now, and the hint has to say what the click actually does.
+    await expect(selector.locator(".region-hint")).toContainText(/pick target app/i);
 
     // Move back to background — snap drops to display.
     await selector.mouse.move(50, 50);

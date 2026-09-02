@@ -1773,6 +1773,13 @@ export function RegionSelector() {
       ? snapTarget.entry
       : null;
 
+  // What ↵ actually does, in hint-legend words. Every ↵ legend below
+  // reads this rather than hardcoding "capture" / "commit": under the
+  // `record` policy ↵ starts a recording, and a legend that still said
+  // "capture" would be telling the user the wrong thing about the one
+  // key they are most likely to press.
+  const commitVerb = primary === "record" ? "record" : null;
+
   // Hint copy varies by mode + snap target so the user always knows
   // what action is bound to click / drag / arrows.
   const hint = (() => {
@@ -1808,7 +1815,7 @@ export function RegionSelector() {
           )}
           <span className="region-hint-sep">·</span>
           <span>
-            <kbd>↵</kbd>capture
+            <kbd>↵</kbd>{commitVerb ?? "capture"}
           </span>
         </>
       );
@@ -1823,7 +1830,7 @@ export function RegionSelector() {
             </span>
             <span className="region-hint-sep">·</span>
             <span>
-              <kbd>↵</kbd>commit
+              <kbd>↵</kbd>{commitVerb ?? "commit"}
             </span>
           </>
         );
@@ -1849,7 +1856,7 @@ export function RegionSelector() {
             </span>
             <span className="region-hint-sep">·</span>
             <span>
-              <kbd>↵</kbd>capture
+              <kbd>↵</kbd>{commitVerb ?? "capture"}
             </span>
           </>
         );
@@ -1896,7 +1903,7 @@ export function RegionSelector() {
           </span>
           <span className="region-hint-sep">·</span>
           <span>
-            <kbd>↵</kbd>capture
+            <kbd>↵</kbd>{commitVerb ?? "capture"}
           </span>
         </>
       );
@@ -1905,7 +1912,7 @@ export function RegionSelector() {
       return (
         <>
           <span>
-            <kbd>↵</kbd>commit
+            <kbd>↵</kbd>{commitVerb ?? "commit"}
           </span>
           <span className="region-hint-sep">·</span>
           <span>
@@ -2301,7 +2308,13 @@ export function RegionSelector() {
               data-testid="region-hud-alt"
               data-action={primary === "record" ? "snap" : "record"}
               disabled={primary === "snap" && !recordUsable}
-              aria-label={primary === "record" ? "Snap (S)" : "Record (R)"}
+              aria-label={
+                primary === "record"
+                  ? "Snap (S)"
+                  : recordUsable
+                    ? "Record (R)"
+                    : "Record unavailable — a recording is one rectangle"
+              }
               title={
                 primary === "record"
                   ? "Take a still of this selection instead"

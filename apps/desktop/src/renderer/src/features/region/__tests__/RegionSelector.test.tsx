@@ -1620,6 +1620,17 @@ describe("U6 — Snap-vs-Record chooser", () => {
     expect(submitRegion.mock.calls[0]?.[0].action).toBe("record");
   });
 
+  test("record policy: the ↵ legend says record, not capture", async () => {
+    // The one key the user is most likely to press. A legend still
+    // reading "capture" while ↵ starts a recording is worse than no
+    // legend — and in live snap it is the ONLY affordance on screen.
+    await mountScene({ mode: "auto", quickCaptureAction: "record" });
+    await mouseMove(400, 300);
+    expect(regionHintText()).toContain("record");
+    expect(regionHintText()).not.toContain("capture");
+    expect(regionHintText()).toContain("snap");
+  });
+
   test("record policy: S escapes to a plain snap", async () => {
     await mountScene({ mode: "auto", quickCaptureAction: "record" });
     await drawRect();

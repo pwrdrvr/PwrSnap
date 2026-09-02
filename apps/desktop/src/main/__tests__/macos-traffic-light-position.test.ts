@@ -66,6 +66,9 @@ const GROUP_WIDTH_PT = BUTTON_SIZE_PT + 2 * BUTTON_PITCH_PT; // 60
 const RAIL_INSET_PX = 16;
 /** Left pad every chrome bar reserves for the OS buttons. */
 const RESERVED_LEFT_PX = 92;
+/** The chrome bar's `border-bottom` — the last pixel of the row is the
+ *  divider, not part of the band the buttons sit on. */
+const DIVIDER_PX = 1;
 
 const windowSource = readFileSync(fileURLToPath(new URL("../window.ts", import.meta.url)), "utf8");
 
@@ -203,7 +206,7 @@ describe("MACOS_TRAFFIC_LIGHT_POSITION", () => {
     expect(groupEnd).toBeLessThanOrEqual(RESERVED_LEFT_PX);
   });
 
-  test("y centres the button in the bar height every barred surface shares", () => {
+  test("y centres the button in the band every barred surface shares", () => {
     const heights = BARRED.map((surface) => ({
       factory: surface.factory,
       height: firstGridRowPx(readStyle(surface.file), surface.container)
@@ -212,15 +215,36 @@ describe("MACOS_TRAFFIC_LIGHT_POSITION", () => {
     // height. If one diverges, the constant needs a per-surface story.
     const [first, ...rest] = heights;
     expect(first).toBeDefined();
-    const barHeight = first!.height;
-    for (const { factory, height } of rest) expect(height, factory).toBe(barHeight);
+    const rowHeight = first!.height;
+    for (const { factory, height } of rest) expect(height, factory).toBe(rowHeight);
 
-    // Derived from the height just read, not from a second hardcoded 52.
-    const centred = (barHeight - BUTTON_SIZE_PT) / 2;
-    // 18 rather than centred: unchanged from what shipped, and within the 1pt
-    // tolerance every other macOS app on the machine sits at.
-    expect(Math.abs(MACOS_TRAFFIC_LIGHT_POSITION.y - centred)).toBeLessThanOrEqual(1);
-    expect(MACOS_TRAFFIC_LIGHT_POSITION.y).toBe(18);
+    // The buttons sit on the FILL, not the row: `box-sizing: border-box` plus a
+    // 1px `border-bottom` means the last pixel of the row is the divider.
+    for (const surface of BARRED) {
+      expect(ruleBody(readStyle(surface.file), surface.bar), surface.factory).toMatch(
+        /border-bottom:\s*1px\s+solid/
+      );
+    }
+    const band = rowHeight - DIVIDER_PX;
+
+    // (51 - 14) / 2 = 18.5 — no integer centres exactly, so the constant takes
+    // the high side. Smaller y is higher, hence floor. Every macOS app measured
+    // for this change sits centred or high; none sits low.
+    const centre = (band - BUTTON_SIZE_PT) / 2;
+    expect(MACOS_TRAFFIC_LIGHT_POSITION.y).toBe(Math.floor(centre));
+    expect(Math.abs(MACOS_TRAFFIC_LIGHT_POSITION.y - centre)).toBeLessThanOrEqual(0.5);
+  });
+
+  test("the Windows caption strip pins the same band the stoplights use", () => {
+    // titleBarOverlayForTheme() sets `height: 51` for exactly the reason the
+    // macOS band is 51 — leave the 1px divider uncovered. They are derived from
+    // the same bar, so a bar-height change has to move both in one commit.
+    const rowHeight = firstGridRowPx(readStyle(BARRED[0]!.file), BARRED[0]!.container);
+    const overlay = /height:\s*(\d+)\s*$/m.exec(
+      windowSource.slice(windowSource.indexOf("function titleBarOverlayForTheme"))
+    );
+    if (overlay === null) throw new Error("titleBarOverlayForTheme declares no height");
+    expect(Number(overlay[1])).toBe(rowHeight - DIVIDER_PX);
   });
 
   test("every window consuming the inset is classified in SURFACES", () => {
@@ -238,8 +262,11 @@ describe("MACOS_TRAFFIC_LIGHT_POSITION", () => {
     // Comments legitimately discuss `trafficLightPosition`, so count only
     // occurrences outside them — otherwise a future doc edit fails this.
     const code = windowSource.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
-    const occurrences = code.match(/trafficLightPosition:/g) ?? [];
+    const occurrences = code.match(/trafficLightPosition:\s*[^,\n]+/g) ?? [];
     expect(occurrences).toHaveLength(1);
-    expect(code).toContain("trafficLightPosition: MACOS_TRAFFIC_LIGHT_POSITION");
+    // Must reach the value through the constant, in any form (`: CONST` or a
+    // spread copy) — and must carry no inline coordinates of its own.
+    expect(occurrences[0]).toContain("MACOS_TRAFFIC_LIGHT_POSITION");
+    expect(occurrences[0], "inline x/y literal").not.toMatch(/\d/);
   });
 });

@@ -83,10 +83,21 @@ type MenuVisibility = "visible" | "hidden";
  * everything else lines up on. The group then ends at x=76, still inside the
  * 92px all four bars reserve on the left.
  *
- * **y = 18** centres the 14pt button in the 52pt bar (`grid-template-rows:
- * 52px ...` on `.psl`, `.pss`, `.szl`, and `.ps-doc`): dead centre is
- * (52 - 14) / 2 = 19, and 18 sits 1pt high — the same tolerance every other
- * app on macOS ships with, and unchanged from what PwrSnap already had.
+ * **y = 18** centres the 14pt button in the 51pt BAND, not in the 52pt row.
+ * Every bar declares `grid-template-rows: 52px ...` (`.psl`, `.pss`, `.szl`,
+ * `.ps-doc`) with `box-sizing: border-box` and a 1px `border-bottom`, so the
+ * bottom pixel is the divider and the fill the buttons sit on is 51pt. That
+ * is the same band `titleBarOverlayForTheme()` already pins at `height: 51`
+ * for the Windows caption strip, for the same reason — keep the two in step.
+ *
+ * (51 - 14) / 2 = 18.5, so no integer centres exactly and the choice is which
+ * way to round. 18 rounds high, and high is where the platform sits: of the
+ * apps measured on this machine, Terminal and Ghostty sit 2pt high, PwrGit
+ * 1pt high, Edge and Claude Desktop exactly centred — none sits low. 18 also
+ * happens to be what PwrSnap already shipped, so this is a re-derivation that
+ * confirms the value rather than a change. Measured both ways against the
+ * band: y=18 leaves 18 above / 19 below, y=19 leaves 19 above / 18 below —
+ * symmetric, so nothing but the rounding direction separates them.
  *
  * Five of the six consumers render one of those bars: Library (`.psl`),
  * Settings (`.pss`), Sizzle (`.szl`), the document windows and the logs
@@ -102,9 +113,9 @@ type MenuVisibility = "visible" | "hidden";
  * unchanged. Pinned by `macos-traffic-light-position.test.ts`, which also
  * fails if a seventh window starts consuming this without being classified.
  *
- * Frozen because it is handed out by reference to every `BrowserWindow`
- * constructor — `as const` is compile-time only, so without this one stray
- * write would move the buttons on every window opened afterwards.
+ * Frozen because it is exported — `as const` is compile-time only, so without
+ * this one stray write from any importer would move the buttons on every
+ * window opened afterwards. Callers spread it rather than passing it on.
  */
 export const MACOS_TRAFFIC_LIGHT_POSITION = Object.freeze({ x: 16, y: 18 });
 
@@ -120,7 +131,10 @@ function platformWindowChrome(menu: MenuVisibility): BrowserWindowConstructorOpt
   // title bar + inset traffic-light position. `trafficLightPosition` is a no-op
   // off macOS but harmless, and matching the prior unconditional behavior keeps
   // the Linux E2E frame identical.
-  return { titleBarStyle: "hiddenInset", trafficLightPosition: MACOS_TRAFFIC_LIGHT_POSITION };
+  // Spread, don't share: the frozen constant guards against an importer
+  // mutating our source of truth, while the copy keeps one window's options
+  // object from being reachable by any other.
+  return { titleBarStyle: "hiddenInset", trafficLightPosition: { ...MACOS_TRAFFIC_LIGHT_POSITION } };
 }
 
 // Title-bar (caption-button strip) background. This MUST match the renderer's

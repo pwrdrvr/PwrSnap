@@ -3723,6 +3723,10 @@
   cursor: default;
 }
 .psl__storage-error {
+  /* Error text users copy into a bug report. This one carries no
+     `role="alert"`, so app.css's alert opt-in does not reach it. */
+  user-select: text;
+  -webkit-user-select: text;
   padding: 8px;
   border-radius: 6px;
   border: 1px solid var(--danger-border);

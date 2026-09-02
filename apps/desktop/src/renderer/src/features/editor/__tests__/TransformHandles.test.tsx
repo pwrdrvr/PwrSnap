@@ -1149,15 +1149,35 @@ describe("TransformHandles — rotation detents reach the committed geometry", (
   }
 
   async function rotateHandle(
-    onGeometryChange: GeometryChangeMock
+    onGeometryChange: GeometryChangeMock,
+    onGeometryDrag?: GeometryChangeMock
   ): Promise<Element> {
-    const el = await render({ selectedOverlay: rotatableRect(), onGeometryChange });
+    const el = await render({
+      selectedOverlay: rotatableRect(),
+      onGeometryChange,
+      ...(onGeometryDrag !== undefined ? { onGeometryDrag } : {})
+    });
     return el.querySelector('[data-testid="transform-handle-rotate"]')!;
+  }
+
+  function lastDraggedRotationDeg(onGeometryDrag: GeometryChangeMock): number {
+    const geometry = onGeometryDrag.mock.calls.at(-1)?.[0] as {
+      kind: string;
+      rotation?: number;
+    };
+    expect(geometry.kind).toBe("rect");
+    return ((geometry.rotation ?? 0) * 180) / Math.PI;
   }
 
   test("a slow drag that eases up to a detent commits the exact detent angle", async () => {
     const onGeometryChange: GeometryChangeMock = vi.fn();
-    const handle = await rotateHandle(onGeometryChange);
+    // Watch onGeometryDrag too: it is the stream the parent paints as
+    // `draftGeometry`, i.e. what the user actually SEES snap. A snap
+    // wired only into the pointerup path would satisfy every
+    // assertion on onGeometryChange while the layer spun un-notched
+    // for the whole drag and jumped to the detent on release.
+    const onGeometryDrag: GeometryChangeMock = vi.fn();
+    const handle = await rotateHandle(onGeometryChange, onGeometryDrag);
 
     // Start at -90° (straight up, where the handle lives) so the drag
     // begins at zero delta, then walk round to -1°: 89° of raw travel
@@ -1165,9 +1185,37 @@ describe("TransformHandles — rotation detents reach the committed geometry", (
     fireAt(handle, "pointerdown", -90, 1000);
     const path = [-70, -50, -35, -22, -12, -6, -3, -1];
     path.forEach((deg, i) => fireAt(handle, "pointermove", deg, 1016 + i * 16));
+
+    // The notch has already grabbed BEFORE pointerup — the last
+    // painted frame is the detent, not the raw 89°.
+    expect(lastDraggedRotationDeg(onGeometryDrag)).toBeCloseTo(90, 6);
+
     fireAt(handle, "pointerup", -1, 1016 + path.length * 16);
 
+    // ...and the commit matches what that last frame painted.
     expect(committedRotationDeg(onGeometryChange)).toBeCloseTo(90, 6);
+  });
+
+  test("a whipped drag paints the raw angle every frame (no preview stutter)", async () => {
+    const onGeometryChange: GeometryChangeMock = vi.fn();
+    const onGeometryDrag: GeometryChangeMock = vi.fn();
+    const handle = await rotateHandle(onGeometryChange, onGeometryDrag);
+
+    // Whip through the 45° and 90° notches. Every painted frame must
+    // be the raw angle: a detent that captured mid-whip would show up
+    // here as a frame pinned to a multiple of 45 even though the
+    // commit (checked by the whip test above) still reads raw.
+    fireAt(handle, "pointerdown", -90, 1000);
+    const path = [-60, -30, -1];
+    path.forEach((deg, i) => fireAt(handle, "pointermove", deg, 1016 + i * 16));
+
+    const painted = onGeometryDrag.mock.calls.map(
+      (call) => (((call[0] as { rotation?: number }).rotation ?? 0) * 180) / Math.PI
+    );
+    expect(painted).toHaveLength(path.length);
+    painted.forEach((deg, i) => {
+      expect(deg).toBeCloseTo(path[i]! + 90, 4);
+    });
   });
 
   test("a drag that settles far from any detent commits the raw angle", async () => {

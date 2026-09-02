@@ -442,7 +442,17 @@ export function translateOverlayData(
  *  arrow-key nudge flow — `dxn` / `dyn` are in [0,1]² space (a 1px
  *  step is `1 / canvas dim`). Returns the translated GeometryUpdate
  *  ready to feed into `dispatchEdit({ kind: 'updateGeometry', ... })`.
- *  Returns null for overlay kinds without geometry semantics (crop). */
+ *  Returns null for overlay kinds without geometry semantics (crop).
+ *
+ *  DELIBERATELY omits `rotation`, unlike `overlayDataToGeometry`
+ *  above — the two build a GeometryUpdate from the same Overlay with
+ *  OPPOSITE rotation policies, and the nudge path calls both, four
+ *  lines apart. A translate must not touch the angle, and an absent
+ *  `rotation` is exactly how the mergers spell "leave it alone"; a
+ *  SNAPSHOT must pin the angle, because absent would make undo a
+ *  no-op. Do not "make them consistent": adding rotation here is
+ *  merely redundant, but dropping it from the snapshot restores the
+ *  un-undoable-rotation bug (see __tests__/rotation-undo.test.ts). */
 export function translateOverlayGeometry(
   data: Overlay,
   dxn: number,

@@ -103,8 +103,17 @@ export type GeometryUpdate =
   | {
       readonly kind: "text";
       readonly point: NormalizedPoint;
-      /** Optional clockwise rotation (radians) around the anchor
-       *  point. See `rect.rotation` above. */
+      /** Optional clockwise rotation (radians) around the glyph's
+       *  BODY-BOX CENTER — NOT around `point`. `point` is the text's
+       *  left edge (`computeTextHtmlStyle` anchors with `left:
+       *  point.x%` plus a `translateY(-50%)`), so the render pivot is
+       *  the wrapper's box center, which is where the rotate handle
+       *  and the inverse hit-test transform both pivot too. Rotating
+       *  about `point` instead is what put the move cursor an inch to
+       *  the right of the glyph in #541. Pinned by
+       *  __tests__/TransformHandles.test.tsx ("text rotation handle
+       *  pivots around the body-box CENTER, not the anchor").
+       *  Omitted = "don't change rotation", as for `rect.rotation`. */
       readonly rotation?: number;
     }
   | { readonly kind: "step"; readonly point: NormalizedPoint }

@@ -79,8 +79,9 @@ export function createRotationDetentState(): RotationDetentState {
   return { lastRawRad: null, lastAtMs: null, speedRadPerMs: 0, heldRad: null };
 }
 
-/** Nearest detent to `rad`. Exported for tests + callers that want to
- *  reason about the ladder without running the state machine. */
+/** Nearest detent to `rad`. Exported so the ladder itself can be
+ *  asserted independently of the state machine — no production caller
+ *  outside this module. */
 export function nearestDetent(rad: number): number {
   return Math.round(rad / DETENT_STEP_RAD) * DETENT_STEP_RAD;
 }
@@ -111,24 +112,41 @@ export function resolveHeldRotation(
 /** Feed one pointer sample through the detent machine.
  *
  *  `rawRad` is the angle the drag geometry produced with no snapping;
- *  `atMs` is a monotonic timestamp (`performance.now()` in the editor,
- *  explicit values in tests). Returns the angle to actually apply plus
- *  the next state — the caller keeps the state in a ref for the life of
- *  the gesture.
+ *  `atMs` is a timestamp in ms. The editor passes the POINTER EVENT's
+ *  own `event.timeStamp`, not `performance.now()` read inside the
+ *  handler — the event stamp is when the input was generated, so a
+ *  busy main thread that delays the handler cannot stretch the
+ *  measured interval and make a whip read as a deliberate rotation.
+ *  (Tests pass explicit values; synthetic events all stamp the same
+ *  microsecond, so a wall-clock read there makes every sample a
+ *  whip.) Returns the angle to actually apply plus the next state —
+ *  the caller keeps the state in a ref for the life of the gesture.
  *
  *  The FIRST sample of a gesture has no previous angle to difference
- *  against, so it carries the state's initial zero speed: a drag that
- *  begins already inside a detent's capture window grabs immediately,
- *  which is what you want when the layer is sitting at 0° and you nudge
- *  the handle. */
+ *  against, so it carries the state's initial zero speed and skips the
+ *  gate entirely. That is wanted in the common case: the layer sits at
+ *  0°, you nudge the handle, and the notch grabs immediately. It also
+ *  means a gesture that starts FAST can capture on its first sample —
+ *  bounded, though, because that sample is at most `DETENT_CAPTURE_RAD`
+ *  from the drag's own starting angle, so the worst case is one frame
+ *  of snap at the gesture's origin before the second (measured, fast)
+ *  sample clears the release window. Not worth suppressing: requiring
+ *  a measured sample before any capture would cost the nudge case a
+ *  frame of latency on every deliberate rotation. */
 export function applyRotationDetents(
   rawRad: number,
   atMs: number,
   state: RotationDetentState
 ): { rad: number; state: RotationDetentState } {
-  // Speed sample. A non-advancing clock (two events in the same
-  // millisecond, or a replayed timestamp) carries the previous value
-  // rather than dividing by zero.
+  // Speed sample. `dtMs > 0` is the only case we can measure; both
+  // ways of failing it carry the previous value forward. A clock that
+  // did not advance (two events in the same millisecond) would divide
+  // by zero, and one that went BACKWARDS (coalesced or predicted
+  // pointer events can arrive out of order) would produce a negative
+  // interval — deliberately folded into the same branch, since a
+  // stale reading is the conservative failure here: it can only block
+  // a capture the user wanted or hold one a frame longer, both of
+  // which the next real sample corrects.
   let speedRadPerMs = state.speedRadPerMs;
   if (state.lastRawRad !== null && state.lastAtMs !== null) {
     const dtMs = atMs - state.lastAtMs;

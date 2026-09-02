@@ -2378,7 +2378,11 @@ export function TransformHandles({
   // against the start data snapshot. Resize handles ignore it.
   const dragStartPtRef = useRef<{ xn: number; yn: number } | null>(null);
   // Rotation detent machine for the rotate handle — carries the
-  // smoothed angular speed and whichever notch is currently holding.
+  // latest sample's angular speed (INSTANTANEOUS, deliberately not
+  // smoothed: see rotation-detents.ts, where an EMA is documented as
+  // carrying a whip forward past the deceleration that should make
+  // the next notch available) and whichever notch is currently
+  // holding.
   // A ref, not state: it advances on every pointermove and must not
   // drive a render of its own (the geometry it produces already does).
   // Reset on every pointerdown so a gesture never inherits the

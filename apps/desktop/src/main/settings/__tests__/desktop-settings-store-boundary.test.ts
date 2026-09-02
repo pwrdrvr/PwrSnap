@@ -16,12 +16,16 @@ function productionTypeScriptFiles(directory = MAIN_ROOT): string[] {
   return files;
 }
 
+function productionRelativePath(path: string): string {
+  return relative(MAIN_ROOT, path).replaceAll("\\", "/");
+}
+
 describe("desktop settings store ownership boundary", () => {
   test("only the store imports the raw settings persistence service", () => {
     const offenders = productionTypeScriptFiles().flatMap((path) => {
       const source = readFileSync(path, "utf8");
       if (!source.includes("desktop-settings-service")) return [];
-      const name = relative(MAIN_ROOT, path);
+      const name = productionRelativePath(path);
       return name === "settings/desktop-settings-store.ts" ? [] : [name];
     });
     expect(offenders).toEqual([]);
@@ -38,7 +42,7 @@ describe("desktop settings store ownership boundary", () => {
           source
         );
       if (!importsRawDiscovery) return [];
-      const name = relative(MAIN_ROOT, path);
+      const name = productionRelativePath(path);
       return name === "settings/desktop-settings-store.ts" ? [] : [name];
     });
     expect(offenders).toEqual([]);
@@ -48,7 +52,7 @@ describe("desktop settings store ownership boundary", () => {
     const rawReaders = productionTypeScriptFiles().flatMap((path) => {
       const source = readFileSync(path, "utf8");
       if (!/readFileSync\(settingsFilePath/.test(source)) return [];
-      return [relative(MAIN_ROOT, path)];
+      return [productionRelativePath(path)];
     });
     expect(rawReaders).toEqual(["process-split/settings-peek.ts"]);
 

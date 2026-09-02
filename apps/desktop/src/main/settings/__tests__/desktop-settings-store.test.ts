@@ -54,6 +54,22 @@ function acpGroup(
   };
 }
 
+function rejectedAcpGroup(
+  strategyId: string,
+  command = `/usr/local/bin/${strategyId}`
+): DiscoveredAcpAgentGroup {
+  return {
+    ...acpGroup(strategyId, []),
+    rejectedInstances: [
+      {
+        command,
+        source: "path",
+        reason: "probe-timed-out"
+      }
+    ]
+  };
+}
+
 describe("DesktopSettingsStore provider publications", () => {
   test("Codex UI, runtime, and concurrent readers share one discovery pass", async () => {
     const release = deferredSignal();
@@ -152,6 +168,11 @@ describe("DesktopSettingsStore provider publications", () => {
     const updated = await store.getCodexDiscoverySnapshot();
     expect(updated.resolvedPath).toBe("/opt/pinned-codex");
     expect(commands).toEqual(["codex", "/opt/pinned-codex"]);
+
+    await store.write({ codex: { mode: "auto" } });
+    const cycled = await store.getCodexDiscoverySnapshot();
+    expect(cycled.resolvedPath).toBe("codex");
+    expect(commands).toEqual(["codex", "/opt/pinned-codex", "codex"]);
   });
 
   test("Settings, runtime, and repeated capture enrichment reuse ACP discovery", async () => {
@@ -260,6 +281,80 @@ describe("DesktopSettingsStore provider publications", () => {
     );
     const retained = await store.resolveEnabledAcpAgent("gemini");
     expect(retained?.command).toBe("/usr/local/bin/gemini");
+  });
+
+  test("soft ACP probe failures retain the matching last-known-good row", async () => {
+    const settings = mergeSettings(defaultSettings(), {
+      ai: { acp: { enabledAgentIds: ["gemini"], agents: {} } }
+    });
+    const discoverAcp = vi
+      .fn<(options?: LocalAcpDiscoveryOptions) => Promise<DiscoveredAcpAgentGroup[]>>()
+      .mockResolvedValueOnce([acpGroup("gemini")])
+      .mockResolvedValueOnce([rejectedAcpGroup("gemini")]);
+    const store = new DesktopSettingsStore({
+      filePath: join(workDir, "settings.json"),
+      readTextFile: async () => JSON.stringify(settings),
+      discoverAcp
+    });
+
+    expect((await store.resolveEnabledAcpAgent("gemini"))?.command).toBe(
+      "/usr/local/bin/gemini"
+    );
+    const refreshed = await store.getAcpDiscoveryGroups({ force: true });
+    expect(refreshed.find((group) => group.strategyId === "gemini")?.instances).toEqual(
+      [
+        expect.objectContaining({ command: "/usr/local/bin/gemini" })
+      ]
+    );
+    expect(discoverAcp.mock.calls[1]?.[0]).toMatchObject({
+      includeRejectedCandidates: true
+    });
+    expect((await store.resolveEnabledAcpAgent("gemini"))?.command).toBe(
+      "/usr/local/bin/gemini"
+    );
+  });
+
+  test("ACP discovery restarts against settings that change mid-scan", async () => {
+    const settings = mergeSettings(defaultSettings(), {
+      ai: { acp: { enabledAgentIds: ["gemini"], agents: {} } }
+    });
+    const entered = deferredSignal();
+    const release = deferredSignal();
+    const calls: LocalAcpDiscoveryOptions[] = [];
+    const discoverAcp = vi.fn(async (options: LocalAcpDiscoveryOptions = {}) => {
+      calls.push(options);
+      if (calls.length === 1) {
+        entered.resolve();
+        await release.promise;
+      }
+      return [
+        acpGroup("gemini", [
+          options.overrides?.gemini ?? "/usr/local/bin/gemini"
+        ])
+      ];
+    });
+    const store = new DesktopSettingsStore({
+      filePath: join(workDir, "settings.json"),
+      readTextFile: async () => JSON.stringify(settings),
+      discoverAcp
+    });
+
+    const discovery = store.getAcpDiscoveryGroups();
+    await entered.promise;
+    await store.write({
+      ai: { acp: { agents: { gemini: { overridePath: "/custom/gemini" } } } }
+    });
+    release.resolve();
+
+    const groups = await discovery;
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.strategies?.map((strategy) => strategy.id)).toEqual([
+      "gemini"
+    ]);
+    expect(calls[1]?.overrides).toEqual({ gemini: "/custom/gemini" });
+    expect(groups.find((group) => group.strategyId === "gemini")?.instances).toEqual(
+      [expect.objectContaining({ command: "/custom/gemini" })]
+    );
   });
 });
 

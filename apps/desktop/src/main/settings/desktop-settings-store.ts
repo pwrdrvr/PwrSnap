@@ -137,8 +137,10 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
     string,
     Promise<DesktopCodexDiscoverySnapshot>
   >();
+  private codexDiscoveryEpoch = 0;
   private readonly acpCache = new Map<string, AcpDiscoveryCacheEntry>();
   private readonly acpInflight = new Map<string, Promise<void>>();
+  private readonly acpDiscoveryEpochs = new Map<string, number>();
 
   private diagnostics: DesktopSettingsStoreDiagnostics = {
     settingsFileReads: 0,
@@ -254,7 +256,10 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
   }): Promise<DesktopCodexDiscoverySnapshot> {
     const settings = await this.read();
     const configuredCommand = configuredCodexCommand(settings);
-    const fingerprint = codexFingerprint(configuredCommand, this.env);
+    const fingerprint = this.codexPublicationFingerprint(
+      configuredCommand,
+      this.env
+    );
     const force = options?.force === true;
     if (!force) {
       const cached = this.codexUiCache.get(fingerprint);
@@ -279,7 +284,7 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
     try {
       const snapshot = await computation;
       const latest = await this.read();
-      const latestFingerprint = codexFingerprint(
+      const latestFingerprint = this.codexPublicationFingerprint(
         configuredCodexCommand(latest),
         this.env
       );
@@ -450,7 +455,12 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
       auth,
       refreshedAt: new Date(this.now()).toISOString()
     });
-    this.codexUiCache.set(params.fingerprint, snapshot);
+    if (
+      this.codexPublicationFingerprint(params.configuredCommand, params.env) ===
+      params.fingerprint
+    ) {
+      this.codexUiCache.set(params.fingerprint, snapshot);
+    }
     return snapshot;
   }
 
@@ -459,7 +469,10 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
     env: NodeJS.ProcessEnv;
     force: boolean;
   }): Promise<RawCodexDiscoverySnapshot> {
-    const fingerprint = codexFingerprint(params.configuredCommand, params.env);
+    const fingerprint = this.codexPublicationFingerprint(
+      params.configuredCommand,
+      params.env
+    );
     if (!params.force) {
       const cached = this.rawCodexCache.get(fingerprint);
       if (cached !== undefined) {
@@ -478,12 +491,24 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
       env: params.env
     }).then((snapshot) => {
       const frozen = deepFreeze(snapshot);
-      this.rawCodexCache.set(fingerprint, frozen);
+      if (
+        this.codexPublicationFingerprint(params.configuredCommand, params.env) ===
+        fingerprint
+      ) {
+        this.rawCodexCache.set(fingerprint, frozen);
+      }
       return frozen;
     });
     this.rawCodexInflight.set(fingerprint, discovery);
     try {
-      return await discovery;
+      const snapshot = await discovery;
+      if (
+        this.codexPublicationFingerprint(params.configuredCommand, params.env) !==
+        fingerprint
+      ) {
+        return this.getRawCodexDiscovery({ ...params, force: false });
+      }
+      return snapshot;
     } finally {
       if (this.rawCodexInflight.get(fingerprint) === discovery) {
         this.rawCodexInflight.delete(fingerprint);
@@ -501,7 +526,11 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
         (candidate) => candidate.id === agentId
       );
       if (strategy === undefined) return [];
-      const fingerprint = acpFingerprint(params.settings, agentId, this.env);
+      const fingerprint = this.acpPublicationFingerprint(
+        params.settings,
+        agentId,
+        this.env
+      );
       return [{ agentId, fingerprint, key: `${agentId}:${fingerprint}`, strategy }];
     });
 
@@ -533,6 +562,7 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
       }
       const options: LocalAcpDiscoveryOptions = {
         strategies: toProbe.map((descriptor) => descriptor.strategy),
+        includeRejectedCandidates: true,
         ...(Object.keys(overrides).length > 0 ? { overrides } : {})
       };
       this.bumpDiagnostic("acpDiscoveryRuns");
@@ -540,16 +570,37 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
         const latest = await this.read();
         for (const descriptor of toProbe) {
           if (
-            acpFingerprint(latest, descriptor.agentId, this.env) !==
+            this.acpPublicationFingerprint(
+              latest,
+              descriptor.agentId,
+              this.env
+            ) !==
             descriptor.fingerprint
+          ) {
+            continue;
+          }
+          const group = groups.find(
+            (candidate) => candidate.strategyId === descriptor.agentId
+          );
+          const previous = this.acpCache.get(descriptor.agentId);
+          const softProbeFailure =
+            group !== undefined &&
+            group.instances.length === 0 &&
+            (group.rejectedInstances?.length ?? 0) > 0;
+          if (
+            softProbeFailure &&
+            previous?.fingerprint === descriptor.fingerprint &&
+            previous.group !== null &&
+            previous.group.instances.length > 0
           ) {
             continue;
           }
           this.acpCache.set(descriptor.agentId, {
             fingerprint: descriptor.fingerprint,
             group:
-              groups.find((group) => group.strategyId === descriptor.agentId) ??
-              null
+              group !== undefined && group.instances.length > 0
+                ? deepFreeze(group)
+                : null
           });
         }
       });
@@ -567,6 +618,23 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
     }
 
     await Promise.all(waits);
+    const latest = await this.read();
+    if (
+      descriptors.some(
+        (descriptor) =>
+          this.acpPublicationFingerprint(
+            latest,
+            descriptor.agentId,
+            this.env
+          ) !== descriptor.fingerprint
+      )
+    ) {
+      return this.discoverAcpGroups({
+        settings: latest,
+        agentIds: params.agentIds,
+        force: false
+      });
+    }
     return descriptors.flatMap((descriptor) => {
       const cached = this.acpCache.get(descriptor.agentId);
       return cached?.fingerprint === descriptor.fingerprint && cached.group !== null
@@ -578,6 +646,9 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
   private observeSnapshot(settings: Settings, notify: boolean): void {
     if (this.publishedSnapshot === settings) return;
     const previous = this.publishedSnapshot;
+    if (previous !== null) {
+      this.invalidateDiscoveryDependencies(previous, settings);
+    }
     this.publishedSnapshot = settings;
     this.snapshotVersion += 1;
     if (!notify || previous === null) return;
@@ -598,6 +669,53 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
         ) as Pick<Settings, DesktopSettingsDomain>
       });
     }
+  }
+
+  private invalidateDiscoveryDependencies(
+    previous: Settings,
+    settings: Settings
+  ): void {
+    if (
+      codexFingerprint(configuredCodexCommand(previous), this.env) !==
+      codexFingerprint(configuredCodexCommand(settings), this.env)
+    ) {
+      this.codexDiscoveryEpoch += 1;
+      this.rawCodexCache.clear();
+      this.codexUiCache.clear();
+    }
+
+    for (const strategy of BUILT_IN_ACP_STRATEGIES) {
+      if (
+        acpFingerprint(previous, strategy.id, this.env) ===
+        acpFingerprint(settings, strategy.id, this.env)
+      ) {
+        continue;
+      }
+      this.acpDiscoveryEpochs.set(
+        strategy.id,
+        (this.acpDiscoveryEpochs.get(strategy.id) ?? 0) + 1
+      );
+      this.acpCache.delete(strategy.id);
+    }
+  }
+
+  private codexPublicationFingerprint(
+    configuredCommand: string | undefined,
+    env: NodeJS.ProcessEnv
+  ): string {
+    return `${this.codexDiscoveryEpoch}:${codexFingerprint(configuredCommand, env)}`;
+  }
+
+  private acpPublicationFingerprint(
+    settings: Settings,
+    agentId: string,
+    env: NodeJS.ProcessEnv
+  ): string {
+    return `${this.acpDiscoveryEpochs.get(agentId) ?? 0}:${acpFingerprint(
+      settings,
+      agentId,
+      env
+    )}`;
   }
 
   private bumpDiagnostic(key: keyof DesktopSettingsStoreDiagnostics): void {

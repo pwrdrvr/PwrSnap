@@ -50,6 +50,7 @@ import type {
   TextToolStyle,
   ToolColor,
   ToolSizePreset,
+  QuickCaptureAction,
   UpdateChannel,
   UpdateTrain
 } from "@pwrsnap/shared";
@@ -81,6 +82,8 @@ import {
   isGridCopyPaletteAnchor,
   isLibrarySidebarTab,
   isLocalAgentCapability,
+  isQuickCaptureAction,
+  QUICK_CAPTURE_ACTION_DEFAULT,
   findRoleForCapabilities,
   defaultLocalAgentRoleConstraints,
   isValidRole,
@@ -230,6 +233,11 @@ export function defaultSettings(
       capturesLocation: "documents"
     },
     recording: {
+      // The chooser is the default: `ask` puts a Record action next to
+      // Capture in the selector HUD and binds `R` to it, WITHOUT adding a
+      // step — ↵ still snaps. Users who never want the affordance pick
+      // "snap"; users who mostly record pick "record".
+      quickCaptureAction: QUICK_CAPTURE_ACTION_DEFAULT,
       // Audio defaults OFF — recording either source is privacy-
       // relevant; we'd rather have the user explicitly toggle ON
       // for their first MP4 export than silently default to "yes
@@ -379,6 +387,13 @@ function pickCapturesLocation(
   fallback: CapturesLocation
 ): CapturesLocation {
   return value === "documents" || value === "home" ? value : fallback;
+}
+
+function pickQuickCaptureAction(
+  value: unknown,
+  fallback: QuickCaptureAction
+): QuickCaptureAction {
+  return isQuickCaptureAction(value) ? value : fallback;
 }
 
 function pickNumber(value: unknown, fallback: number): number {
@@ -859,6 +874,15 @@ function parseV1(
       // it. Defaults to audio OFF + an empty fingerprint so the
       // startup permission routing fires once after the first launch
       // on the new build.
+      //
+      // `quickCaptureAction` is additive on top of that (no schemaVersion
+      // bump): an older file has no value, so it takes the `ask` default
+      // and existing installs gain the Record affordance without losing
+      // ↵-to-snap.
+      quickCaptureAction: pickQuickCaptureAction(
+        recording.quickCaptureAction,
+        defaults.recording.quickCaptureAction
+      ),
       includeSystemAudio: pickBoolean(recording.includeSystemAudio, defaults.recording.includeSystemAudio),
       includeMicrophone: pickBoolean(recording.includeMicrophone, defaults.recording.includeMicrophone),
       // `videoCaptureCursor` / `imageCaptureCursor` landed with the

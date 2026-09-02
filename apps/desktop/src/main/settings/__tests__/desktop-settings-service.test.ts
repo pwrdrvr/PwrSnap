@@ -761,6 +761,52 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     expect(settings.recording.imageCaptureCursor).toBe(false);
   });
 
+  test("defaultSettings() seeds quickCaptureAction to ask", () => {
+    // `ask` is the chooser default: the selector offers both Snap and
+    // Record without adding a keystroke (↵ still snaps).
+    expect(defaultSettings().recording.quickCaptureAction).toBe("ask");
+  });
+
+  test("v1 recording block missing quickCaptureAction gets the ask default", async () => {
+    // Additive field, no schemaVersion bump — an existing install gains
+    // the Record affordance and keeps ↵-to-snap.
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        recording: { includeSystemAudio: true }
+      }),
+      "utf8"
+    );
+    const settings = await new DesktopSettingsService({ filePath }).read();
+    expect(settings.recording.quickCaptureAction).toBe("ask");
+    expect(settings.recording.includeSystemAudio).toBe(true);
+  });
+
+  test("v1 recording block preserves an explicit quickCaptureAction and rejects junk", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({ schemaVersion: 1, recording: { quickCaptureAction: "record" } }),
+      "utf8"
+    );
+    expect(
+      (await new DesktopSettingsService({ filePath }).read()).recording.quickCaptureAction
+    ).toBe("record");
+
+    const junkPath = join(workDir, "settings-junk.json");
+    writeFileSync(
+      junkPath,
+      JSON.stringify({ schemaVersion: 1, recording: { quickCaptureAction: "video" } }),
+      "utf8"
+    );
+    expect(
+      (await new DesktopSettingsService({ filePath: junkPath }).read()).recording
+        .quickCaptureAction
+    ).toBe("ask");
+  });
+
   test("ignores beta.25 captionModel and advances the managed-defaults ledger", async () => {
     // `ai.defaults.*` is additive. Older files won't have it; parseV1
     // fills empty objects for the two chat surfaces (= "Codex default").

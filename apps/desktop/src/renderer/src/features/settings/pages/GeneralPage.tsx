@@ -23,6 +23,7 @@ import {
   type AppUpdateReleaseVersions,
   type AppUpdateStatus,
   type LaunchAtLoginStatus,
+  type QuickCaptureAction,
   type UpdateChannel,
   type UpdateTrain
 } from "@pwrsnap/shared";
@@ -34,6 +35,12 @@ const THEME_OPTIONS: readonly SegmentOption<AppearanceTheme>[] = [
   { id: "system", label: "System" },
   { id: "dark", label: "Dark" },
   { id: "light", label: "Light" }
+];
+
+const QUICK_CAPTURE_ACTION_OPTIONS: readonly SegmentOption<QuickCaptureAction>[] = [
+  { id: "ask", label: "Ask" },
+  { id: "snap", label: "Snap" },
+  { id: "record", label: "Record" }
 ];
 
 const UPDATE_TRAIN_OPTIONS: readonly SegmentOption<UpdateTrain>[] = [
@@ -117,6 +124,8 @@ export function GeneralPage(): ReactElement {
   selectionRef.current = { channel, train };
   const videoCaptureCursor = settings?.recording.videoCaptureCursor ?? true;
   const imageCaptureCursor = settings?.recording.imageCaptureCursor ?? true;
+  const quickCaptureAction: QuickCaptureAction =
+    settings?.recording.quickCaptureAction ?? "ask";
   const platform = window.pwrsnapApi?.platform;
 
   // Live OS-side registration state, distinct from the saved toggle —
@@ -348,6 +357,23 @@ export function GeneralPage(): ReactElement {
             options={THEME_OPTIONS}
             value={theme}
             onChange={onThemeChange}
+          />
+        </Row>
+      </Card>
+
+      <Card eyebrow="CAPTURE" title="After you select">
+        <Row
+          label="What ↵ does once you have a selection"
+          sub="Ask offers both — ↵ snaps, R records the same selection. Snap hides the Record action entirely. Record makes ↵ start a recording and moves Snap to S. The Video Capture hotkey always records, whichever you pick."
+          tag="action"
+        >
+          <SegmentedControl<QuickCaptureAction>
+            options={QUICK_CAPTURE_ACTION_OPTIONS}
+            value={quickCaptureAction}
+            onChange={(next) => {
+              if (!ready) return;
+              void patch({ recording: { quickCaptureAction: next } });
+            }}
           />
         </Row>
       </Card>

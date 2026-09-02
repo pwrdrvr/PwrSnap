@@ -2242,6 +2242,47 @@ export type LaunchAtLoginStatus = {
   blockedByOs: boolean;
 };
 
+/**
+ * What the ⌘⇧C selector's primary commit does, and whether the Record
+ * action is offered alongside it at all.
+ *
+ *   - `ask`    — offer BOTH. ↵ / the Capture button still snaps, `R` /
+ *                the Record button starts a recording of the same
+ *                selection. The default: it adds an affordance without
+ *                adding a keystroke, so Quick Capture stays one press.
+ *   - `snap`   — Snap only. No Record affordance, `R` unbound. What the
+ *                selector did before the chooser existed.
+ *   - `record` — Record is the primary action: ↵ / the primary button
+ *                start a recording, and `S` / the secondary button take
+ *                a snap.
+ *
+ * The dedicated Video Capture hotkey ignores this entirely — it always
+ * records, which is the whole point of having it.
+ */
+export type QuickCaptureAction = "ask" | "snap" | "record";
+
+export const QUICK_CAPTURE_ACTIONS = [
+  "ask",
+  "snap",
+  "record"
+] as const satisfies readonly QuickCaptureAction[];
+
+export const QUICK_CAPTURE_ACTION_DEFAULT: QuickCaptureAction = "ask";
+
+export function isQuickCaptureAction(value: unknown): value is QuickCaptureAction {
+  return (
+    typeof value === "string" && (QUICK_CAPTURE_ACTIONS as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Which terminal action a selector commit asked for. Rides the commit
+ * payload only so `ask` mode can report the user's choice; a fixed
+ * policy is resolved in main from the persisted setting and never
+ * trusts this echo (see `resolveQuickCaptureAction`).
+ */
+export type SelectorTerminalAction = "snap" | "record";
+
 export type Settings = {
   /** Bumped when the on-disk shape changes. Readers below the current
    *  version go through the legacy-shape catalog in the service before
@@ -2436,13 +2477,19 @@ export type Settings = {
     capturesLocation: CapturesLocation;
   };
   /**
-   * Per-user defaults the recording UI seeds from. Audio toggles
+   * Per-user capture and recording defaults. Audio toggles
    * default to OFF — recording the user's microphone or system audio
    * is a privacy-relevant action and must be an explicit opt-in each
    * time, but remembering the last choice cuts friction for the
    * common "I record with mic every time" pattern.
    */
   recording: {
+    /** What a Quick Capture selector commit does — Snap, Record, or
+     *  offer both (`ask`, the default). Lives here rather than in a new
+     *  `capture` section because this block is already the home of the
+     *  cross-mode capture defaults (`imageCaptureCursor` is an image
+     *  setting). See `QuickCaptureAction` for the per-value semantics. */
+    quickCaptureAction: QuickCaptureAction;
     /** Default toggle for the system-audio MP4 export option. */
     includeSystemAudio: boolean;
     /** Default toggle for the microphone MP4 export option. */

@@ -6,7 +6,20 @@ import {
   type CaptureLatencyOutcome
 } from "../capture-latency-trace";
 
-type LogEntry = { message: string; fields: Record<string, unknown> };
+type LogEntry = {
+  level: "debug" | "info";
+  message: string;
+  fields: Record<string, unknown>;
+};
+
+function recordingLogger(entries: LogEntry[]) {
+  return {
+    debug: (message: string, fields: Record<string, unknown>) =>
+      entries.push({ level: "debug", message, fields }),
+    info: (message: string, fields: Record<string, unknown>) =>
+      entries.push({ level: "info", message, fields })
+  };
+}
 
 const INVOCATION: CaptureInvocation = {
   id: "trace-12345678",
@@ -47,7 +60,7 @@ describe("CaptureLatencyTrace", () => {
     const trace = new CaptureLatencyTrace(INVOCATION, "window", {
       monotonicNow: () => clock.shift() ?? 140,
       wallNow: () => "2099-01-01T00:00:00.000Z",
-      logger: { info: (message, fields) => entries.push({ message, fields }) }
+      logger: recordingLogger(entries)
     });
 
     const permission = trace.begin("permission_preflight");
@@ -71,11 +84,17 @@ describe("CaptureLatencyTrace", () => {
     expect(stages.every((entry) => entry.wallTime === "2099-01-01T00:00:00.000Z")).toBe(
       true
     );
+    expect(
+      entries
+        .filter((entry) => entry.fields.event === "capture_latency_stage")
+        .every((entry) => entry.level === "debug")
+    ).toBe(true);
 
     const summaries = entries.filter(
       (entry) => entry.fields.event === "capture_latency_summary"
     );
     expect(summaries).toHaveLength(1);
+    expect(summaries[0]?.level).toBe("info");
     expect(summaries[0]?.fields).toMatchObject({
       invocationId: INVOCATION.id,
       origin: INVOCATION.origin,
@@ -97,7 +116,7 @@ describe("CaptureLatencyTrace", () => {
       const trace = new CaptureLatencyTrace(INVOCATION, "auto", {
         monotonicNow: () => 130,
         wallNow: () => "2026-09-01T12:00:01.000Z",
-        logger: { info: (message, fields) => entries.push({ message, fields }) }
+        logger: recordingLogger(entries)
       });
 
       trace.finish(outcome, { reason: "fixture" });
@@ -117,7 +136,7 @@ describe("CaptureLatencyTrace", () => {
     const trace = new CaptureLatencyTrace(INVOCATION, "auto", {
       monotonicNow: () => samples.shift() ?? 135,
       wallNow: () => "2026-09-01T12:00:01.000Z",
-      logger: { info: (message, fields) => entries.push({ message, fields }) }
+      logger: recordingLogger(entries)
     });
 
     trace.begin("native_window_enumeration");

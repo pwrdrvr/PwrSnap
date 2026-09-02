@@ -644,7 +644,10 @@ describe("region-selector — authenticated post-show presentation trace", () =>
     const trace = new CaptureLatencyTrace(invocation(), "window", {
       monotonicNow: () => ++tick,
       wallNow: () => "2026-09-01T12:00:01.000Z",
-      logger: { info: (message, fields) => entries.push({ message, fields }) }
+      logger: {
+        debug: (message, fields) => entries.push({ message, fields }),
+        info: (message, fields) => entries.push({ message, fields })
+      }
     });
     const { pickRegion } = await import("../capture/region-selector");
     const pick = pickRegion({ mode: "window", latencyTrace: trace });
@@ -722,7 +725,10 @@ describe("region-selector — authenticated post-show presentation trace", () =>
     const trace = new CaptureLatencyTrace(invocation(), "auto", {
       monotonicNow: () => ++tick,
       wallNow: () => "2026-09-01T12:00:01.000Z",
-      logger: { info: (message, fields) => entries.push({ message, fields }) }
+      logger: {
+        debug: (message, fields) => entries.push({ message, fields }),
+        info: (message, fields) => entries.push({ message, fields })
+      }
     });
     const { pickRegion } = await import("../capture/region-selector");
     const pick = pickRegion({ latencyTrace: trace });
@@ -753,7 +759,10 @@ describe("region-selector — authenticated post-show presentation trace", () =>
     const trace = new CaptureLatencyTrace(invocation(), "auto", {
       monotonicNow: () => ++tick,
       wallNow: () => "2026-09-01T12:00:01.000Z",
-      logger: { info: (message, fields) => entries.push({ message, fields }) }
+      logger: {
+        debug: (message, fields) => entries.push({ message, fields }),
+        info: (message, fields) => entries.push({ message, fields })
+      }
     });
     const { pickRegion } = await import("../capture/region-selector");
 

@@ -34,6 +34,7 @@ type CaptureLatencyFields = Record<
 >;
 
 type CaptureLatencyLogger = {
+  debug(message: string, fields: Record<string, unknown>): void;
   info(message: string, fields: Record<string, unknown>): void;
 };
 
@@ -141,7 +142,7 @@ export class CaptureLatencyTrace {
       .map(({ stage, durationMs }) => ({ stage, durationMs }));
     const logger = this.logger();
     for (const stage of this.stages) {
-      logger.info("capture latency stage", {
+      logger.debug("capture latency stage", {
         event: "capture_latency_stage",
         invocationId: this.invocation.id,
         origin: this.invocation.origin,

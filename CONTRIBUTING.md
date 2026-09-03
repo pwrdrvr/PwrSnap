@@ -191,19 +191,19 @@ The desktop release pipeline (universal DMG, signing, notarization,
 auto-update, stable `PwrSnap.dmg` URL) is documented in
 [docs/desktop-release-runbook.md](docs/desktop-release-runbook.md).
 
-## Plan Documents
+## Design Documents
 
-- Implementation plans live in `docs/plans/`. The current canonical
-  buildout plan is
-  [docs/plans/2026-05-03-001-feat-pwrsnap-feature-buildout-plan.md](docs/plans/2026-05-03-001-feat-pwrsnap-feature-buildout-plan.md)
-  — read it before changing scope, schema, IPC contracts, or phase order.
-- Brainstorm / requirements docs (when they appear) live in
-  `docs/brainstorms/`.
+- [docs/architecture.md](docs/architecture.md) is the canonical description
+  of what PwrSnap is and why it is shaped this way. Read it before changing
+  scope, schema, or IPC contracts.
+- [AGENTS.md](AGENTS.md) holds the enforcement rules — the invariants a
+  change can violate.
 - Solution learnings (post-incident notes, gotchas) live in
-  `docs/solutions/`.
-- Treat plan documents as decision artifacts, not implementation scripts.
-- Do not delete or "clean up" files in `docs/brainstorms/`, `docs/plans/`,
-  or `docs/solutions/`.
+  `docs/solutions/`. **These are never deleted.**
+- `docs/plans/` is archival; only documents that still describe a live
+  contract remain. Do not add new phase plans — open an issue, or amend
+  `docs/architecture.md` when the change is architectural. See AGENTS.md
+  §Workflow for the full retention policy.
 
 ## Conduct
 

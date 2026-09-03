@@ -46,9 +46,8 @@
 //   • <Editor chrome="chromeless" tool onToolChange /> for the canvas
 //   • <EditToolbar /> floating bottom-center (images only)
 //
-// Plan reference:
-//   docs/plans/2026-05-05-001-feat-library-three-state-view-model-plan.md
-//   Phase C.1 (Stage), C.11 (focus management — Library window keydown).
+// The view-state contract this renders against lives on the
+// `LibraryView` union in ./library-view.ts.
 
 import { useState, type ReactElement } from "react";
 import type { BlurStyle, CaptureRecord } from "@pwrsnap/shared";
@@ -280,8 +279,7 @@ function StageBody({
           // tools operate on PNG/WebP renders) so we don't mount
           // <Editor> here. Trim in/out persists to the record's
           // `defaultRange` and drives every export. Phase B editing
-          // (speed / crop / split / cursor highlight) is a follow-up —
-          // see docs/plans/2026-08-15-001-feat-video-transport-trim-plan.md.
+          // (speed / crop / split / cursor highlight) is a follow-up.
           record.video !== null && record.video !== undefined ? (
             <VideoStage
               record={record}

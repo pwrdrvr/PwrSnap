@@ -7,8 +7,6 @@
 // bytes that get copied, in every mode. Before this module the mapping
 // was duplicated as a literal `low?800:med?1440:src` in two places that
 // had to be kept in lock-step by hand.
-//
-// See docs/plans/2026-06-14-001-feat-dpi-aware-export-presets-plan.md.
 
 import type { RenderPreset, Settings } from "./protocol";
 

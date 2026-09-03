@@ -412,7 +412,6 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
       // The caller (capture-handlers) hides via `hideSelector()` AFTER
       // it has set the float-over to LOADED, so the selector hide
       // reveals an already-painted toast — no post-hoc show race.
-      // See docs/plans/2026-05-04-001 §"Solution 3" for context.
       if (pendingResolver === null) return;
       const resolver = pendingResolver;
       pendingResolver = null;
@@ -878,7 +877,6 @@ export async function pickRegion(
       // float-over is never briefly visible uncovered. The selector
       // (screen-saver level) covers it until commit/cancel, and the
       // post-commit reveal stays instant (toast already painted).
-      // See docs/plans/2026-05-04-001 §"Solution 3".
       setFloatOverState({ kind: "show-idle" });
       // Order matters: setSimpleFullScreen(true) BEFORE show().
       //
@@ -1473,8 +1471,7 @@ function hideAllSelectors(): void {
   // has populated the float-over to LOADED, so the toast is up on
   // screen before we yield focus to the previous app. This is what
   // wins the z-order race that used to leave the toast hidden behind
-  // the previous app's key window. See docs/plans/2026-05-04-001
-  // §"Solution 4".
+  // the previous app's key window.
 
   // Windows: while the selector was up (topmost screen-saver level, and on
   // win32 native-fullscreen to cover the taskbar), the post-capture toast

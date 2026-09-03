@@ -121,8 +121,8 @@ App Server protocol types are consumed from
 `@pwrdrvr/codex-app-server-protocol`, pinned in
 `apps/desktop/package.json`; publish that package from its own repo before
 bumping PwrSnap to a newer Codex protocol surface. Full dev workflow,
-conventions, and the active buildout plan live in
-**[AGENTS.md](AGENTS.md)** and **[docs/plans/](docs/plans/)**.
+conventions, and the architecture overview live in
+**[AGENTS.md](AGENTS.md)** and **[docs/architecture.md](docs/architecture.md)**.
 
 ## How it's built
 
@@ -152,10 +152,10 @@ A few load-bearing design rules:
 
 macOS and Windows are shipping desktop targets. The 1.1 release line ships
 signed Windows and universal macOS artifacts through the same guarded release;
-Linux remains a build-only release gate with no supported installer. The active
-feature and platform work stays tracked in the
-[buildout plan](docs/plans/2026-05-03-001-feat-pwrsnap-feature-buildout-plan.md)
-and the [Windows guide](docs/windows/README.md).
+Linux remains a build-only release gate with no supported installer. The
+durable architecture and direction live in
+[docs/architecture.md](docs/architecture.md); platform specifics are in the
+[Windows guide](docs/windows/README.md).
 
 What's shipped vs. what's still in flight — including video capture, the
 sizzle-reel composer, and presenter video — is tracked at
@@ -173,7 +173,7 @@ notarization, updater metadata, and stable-name aliases) is documented in
 | **[docs.pwrsnap.com](https://docs.pwrsnap.com)**                                                   | Operator reference — capture modes, hotkeys, settings, AI configuration.                  |
 | [AGENTS.md](AGENTS.md)                                                                             | Project conventions, brand rules, "how the load-bearing pieces fit together." Read first. |
 | [docs/desktop-release-runbook.md](docs/desktop-release-runbook.md)                                 | One-time setup, CI release path, local fallback, universal DMG verification.              |
-| [docs/plans/2026-05-03-001-feat-pwrsnap-feature-buildout-plan.md](docs/plans/2026-05-03-001-feat-pwrsnap-feature-buildout-plan.md) | Active feature buildout plan — phase order, scope, decisions.                             |
+| [docs/architecture.md](docs/architecture.md)                                                       | What PwrSnap is, the storage/AI/library decisions that still hold, and what's unresolved.  |
 | [docs/solutions/](docs/solutions/)                                                                 | Post-incident notes + gotchas — read before re-solving an old problem.                    |
 
 ## License

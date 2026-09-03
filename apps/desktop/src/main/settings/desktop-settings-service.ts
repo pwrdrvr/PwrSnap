@@ -763,8 +763,7 @@ function parseV1(
       // DEFAULT_CHAT_SETTINGS for any missing nested field so the
       // in-memory shape is always complete and the next write rewrites
       // with the full block. No `schemaVersion` bump per the additive
-      // convention. See docs/plans/2026-05-28-001-feat-library-chat-
-      // editor-interface-plan.md and §F13 substrate compliance.
+      // convention (see AGENTS.md "Settings substrate").
       chat: parseChatSettings(ai.chat, defaults.ai.chat),
       // `ai.defaults.*` is additive — older files won't have it. Missing
       // surface fields stay empty (= follow the managed default); the legacy
@@ -880,8 +879,8 @@ function parseV1(
         defaults.recording.screenCapturePrompted
       )
     },
-    // `editor.*` landed in the v2-editor refresh (docs/plans/2026-05-23-
-    // 001). Older files won't have it; parseEditorSettings falls through
+    // `editor.*` landed in the v2-editor refresh. Older files won't
+    // have it; parseEditorSettings falls through
     // to defaults for any missing nested field so the in-memory shape
     // is always complete and the next write rewrites the file with the
     // full block. No `schemaVersion` bump per the additive convention.

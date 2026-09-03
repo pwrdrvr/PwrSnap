@@ -4,8 +4,7 @@
 // expands it over the canvas).
 //
 // Originally lived inside Library.tsx (commit b9296ea), then was
-// extracted in Phase B of the library three-state plan
-// (docs/plans/2026-05-05-001-feat-library-three-state-view-model-plan.md)
+// extracted when the Library moved to the Grid / Focus / Reel model,
 // because the Library's new design doesn't need the pin/auto-hide
 // toggle — the rail is always visible in Focus / Reel and absent in
 // Grid. The pattern is house style though, so it lives here for

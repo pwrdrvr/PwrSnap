@@ -1,8 +1,9 @@
 // Which half of the two-process architecture this main process runs.
 //
-// See docs/plans/2026-06-12-001-feat-two-process-agent-library-split-plan.md.
+// The supervisor and bridge live in `main/process-split/`; the opt-in
+// flag is `settings.experimental.twoProcessSplit`.
 // `combined` is the single-process shape PwrSnap has always had and stays
-// the default until that plan's Phase 4 flips macOS to `agent`. The
+// the default while the split soaks. The
 // `library` role is never launched by the user directly — the agent's
 // supervisor spawns it with the role flag on the command line.
 

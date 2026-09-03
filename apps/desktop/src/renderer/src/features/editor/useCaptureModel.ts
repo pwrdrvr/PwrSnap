@@ -16,9 +16,6 @@
 //   - the layer-node-to-LayerView shim (inlined here, not a separate
 //     file, per code-simplicity-reviewer in the plan),
 //   - the `dispatchEdit` so callers can write layer ops.
-//
-// Plan reference:
-// docs/plans/2026-05-23-001-feat-v2-editor-plan.md Phase 2.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { nanoid } from "nanoid";
@@ -339,7 +336,8 @@ type FetchedState =
 
 // ---- Shims (v2 layer node → LayerView) -----------------------------
 //
-// Inlined per the plan's code-simplicity decision. The vector-layer
+// Deliberately inlined rather than split into their own file. The
+// vector-layer
 // case projects the v2 VectorLayer's carried Overlay `shape` through
 // `overlayToLayerView`.
 
@@ -963,7 +961,7 @@ export function useCaptureModel(captureId: string): CaptureModel {
   }
 
   // v2 edit dispatcher. `layers:upsertBatch` isn't in the bus yet
-  // (Phase 7 expands the surface per the plan); return a typed
+  // (a later pass expands the bus surface); return a typed
   // not-yet-supported error rather than silently no-oping.
   const dispatchEditV2 = useCallback(
     async (op: LayerEditOp): Promise<Result<EditOpResult, PwrSnapError>> => {

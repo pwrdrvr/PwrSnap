@@ -15,8 +15,6 @@
 // the strip only reports drags (`commit=false`) and releases
 // (`commit=true`). Frames + audio are fetched by the caller too, so the
 // float-over and the stage can share requests / caches.
-//
-// Plan: docs/plans/2026-08-15-001-feat-video-transport-trim-plan.md
 
 import {
   useCallback,

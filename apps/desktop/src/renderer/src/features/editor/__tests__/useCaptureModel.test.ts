@@ -10,9 +10,6 @@
 // Mirrors `useUndoRedo.test.ts` and `useEditorToolState.test.ts`'s
 // bare-react + createRoot + act harness. No `@testing-library/react`
 // (no project precedent).
-//
-// Plan reference: docs/plans/2026-05-23-001-feat-v2-editor-plan.md
-// Phase 2.
 
 import { act, createElement, useEffect, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";

@@ -3740,12 +3740,13 @@
    Ported from design/src/library.css with adaptations:
      • Focus uses a native <dialog> element (not a position:absolute
        div) so it gets free focus management + ESC + inert-behind +
-       ::backdrop. Plan reference: framework-docs research.
+       ::backdrop.
      • L/M/H copy row reuses the existing <CopyButton> component which
        emits .fo__copy-btn* classes — we only port the .psl__copy-row
        grid wrapper here, NOT the design's .psl__copy-btn rules.
-     • Cell-pulse keyframes are 600ms (vs design's 1.2s) per the plan's
-       resolved decision. Pure CSS animation triggered by adding
+     • Cell-pulse keyframes are 600ms (vs design's 1.2s) — the longer
+       pulse read as sluggish on return-to-grid. Pure CSS animation
+       triggered by adding
        .is-was-open class on Focus → Grid transition.
    ============================================================ */
 

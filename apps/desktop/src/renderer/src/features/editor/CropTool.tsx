@@ -47,8 +47,6 @@
 //     stays on the canvas SVG (or wherever it was when the tool was
 //     activated) and IME / form-control / menubar focus consumers
 //     would swallow Enter before the document-level listener saw it.
-//
-// See plan: docs/plans/2026-05-23-001-feat-v2-editor-plan.md §"Phase 1".
 
 import {
   useCallback,

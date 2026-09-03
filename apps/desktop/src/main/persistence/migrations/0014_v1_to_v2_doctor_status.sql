@@ -19,8 +19,9 @@
 -- Retry button. The Retry button clears `v1_to_v2_attempts` (un-parks)
 -- so the doctor can re-attempt on next user open.
 --
--- See docs/plans/2026-05-23-001-feat-v2-editor-plan.md §"Phase 3" for
--- the full doctor spec.
+-- NOTE: the v1->v2 doctor these columns supported has since been
+-- deleted along with the whole v1 path (v2 is the only bundle format).
+-- The columns remain only so this migration replays on old databases.
 
 ALTER TABLE captures ADD COLUMN v1_to_v2_attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE captures ADD COLUMN v1_to_v2_last_failed_at TEXT;

@@ -18,6 +18,7 @@ import { useActivePage } from "./useActivePage";
 import { HotkeysPage } from "./pages/HotkeysPage";
 import { AboutPage } from "./pages/AboutPage";
 import { GeneralPage } from "./pages/GeneralPage";
+import { UpdatesPage } from "./pages/UpdatesPage";
 import { AIProvidersPage } from "./pages/AIProvidersPage";
 import { LocalAgentsPage } from "./pages/LocalAgentsPage";
 import { StoragePage } from "./pages/StoragePage";
@@ -33,6 +34,9 @@ export function SettingsApp(): ReactElement {
   switch (active) {
     case "general":
       page = <GeneralPage />;
+      break;
+    case "updates":
+      page = <UpdatesPage />;
       break;
     case "hotkeys":
       page = <HotkeysPage />;

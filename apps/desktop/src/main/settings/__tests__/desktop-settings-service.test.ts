@@ -1761,21 +1761,35 @@ describe("DesktopSettingsService updates train/track", () => {
   test("defaults the update selection from the running app version", async () => {
     const svc = makeService();
     const initial = await svc.read();
-    expect(initial.updates).toEqual({ channel: "latest", train: "stable" });
+    expect(initial.updates).toEqual({
+      channel: "latest",
+      train: "stable",
+      selectionSource: "inferred"
+    });
 
     await svc.write({ updates: { channel: "prerelease", train: "beta" } });
     expect(JSON.parse(readFileSync(join(workDir, "settings.json"), "utf8")).updates).toEqual({
       channel: "prerelease",
-      train: "beta"
+      train: "beta",
+      selectionSource: "user"
     });
-    expect((await svc.read()).updates).toEqual({ channel: "prerelease", train: "beta" });
+    expect((await svc.read()).updates).toEqual({
+      channel: "prerelease",
+      train: "beta",
+      selectionSource: "user"
+    });
 
     await svc.write({ updates: { channel: "latest", train: "stable" } });
     expect(JSON.parse(readFileSync(join(workDir, "settings.json"), "utf8")).updates).toEqual({
       channel: "latest",
-      train: "stable"
+      train: "stable",
+      selectionSource: "user"
     });
-    expect((await svc.read()).updates).toEqual({ channel: "latest", train: "stable" });
+    expect((await svc.read()).updates).toEqual({
+      channel: "latest",
+      train: "stable",
+      selectionSource: "user"
+    });
   });
 
   test("infers Beta Prerelease from an alpha desktop version when both keys are absent", async () => {
@@ -1785,11 +1799,16 @@ describe("DesktopSettingsService updates train/track", () => {
     });
     expect((await svc.read()).updates).toEqual({
       channel: "prerelease",
-      train: "beta"
+      train: "beta",
+      selectionSource: "inferred"
     });
   });
 
-  test("keeps a legacy prerelease config on the Stable train", async () => {
+  // The bug this replaced: a pre-`train` settings file carrying only
+  // `channel` read as a deliberate Stable pin, so a 1.1.0-alpha install
+  // was offered v1.0.3 and never told about the newer alpha it came from.
+  // A half pair proves nothing about intent, so the binary decides.
+  test("re-infers a legacy half-written config from the running binary", async () => {
     const filePath = join(workDir, "settings.json");
     writeFileSync(
       filePath,
@@ -1801,8 +1820,47 @@ describe("DesktopSettingsService updates train/track", () => {
       appVersion: "1.1.0-beta.2"
     });
     expect((await svc.read()).updates).toEqual({
+      channel: "latest",
+      train: "beta",
+      selectionSource: "inferred"
+    });
+  });
+
+  test("moves a legacy Stable/Latest config onto the alpha feed it is running", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({ schemaVersion: 1, updates: { channel: "latest", train: "stable" } }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({
+      filePath,
+      appVersion: "1.1.0-alpha.4"
+    });
+    expect((await svc.read()).updates).toEqual({
       channel: "prerelease",
-      train: "stable"
+      train: "beta",
+      selectionSource: "inferred"
+    });
+  });
+
+  // Any non-default pair on a pre-`selectionSource` file could only have
+  // come from a click or the old seeding path — both mean "leave it".
+  test("treats a legacy non-default pair as an existing pin", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({ schemaVersion: 1, updates: { channel: "latest", train: "beta" } }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({
+      filePath,
+      appVersion: "1.0.3"
+    });
+    expect((await svc.read()).updates).toEqual({
+      channel: "latest",
+      train: "beta",
+      selectionSource: "user"
     });
   });
 
@@ -1816,11 +1874,33 @@ describe("DesktopSettingsService updates train/track", () => {
     await svc.write({ updates: { train: "stable", channel: "latest" } });
     expect((await svc.read()).updates).toEqual({
       channel: "latest",
-      train: "stable"
+      train: "stable",
+      selectionSource: "user"
     });
     expect(JSON.parse(readFileSync(filePath, "utf8")).updates).toEqual({
       channel: "latest",
-      train: "stable"
+      train: "stable",
+      selectionSource: "user"
+    });
+
+    // And the pin survives a fresh process on the same alpha/beta binary —
+    // without `selectionSource` this is exactly the read that would undo it.
+    const reopened = new DesktopSettingsService({ filePath, appVersion: "1.1.0-beta.2" });
+    expect((await reopened.read()).updates).toEqual({
+      channel: "latest",
+      train: "stable",
+      selectionSource: "user"
+    });
+  });
+
+  test("a patch naming only one axis still pins the pair", async () => {
+    const filePath = join(workDir, "settings.json");
+    const svc = new DesktopSettingsService({ filePath, appVersion: "1.1.0-alpha.4" });
+    await svc.write({ updates: { train: "stable" } });
+    expect((await svc.read()).updates).toEqual({
+      channel: "prerelease",
+      train: "stable",
+      selectionSource: "user"
     });
   });
 });

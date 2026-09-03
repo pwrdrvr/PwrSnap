@@ -482,6 +482,18 @@ export function validateSettingsWrite(
         )
       };
     }
+    // `selectionSource` is derived in the write path from whether a patch
+    // named either axis, never accepted from one. Rejecting it here keeps a
+    // renderer from pinning (or un-pinning) a selection nobody clicked.
+    if (!isUndefined(updates.selectionSource)) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_updates_selection_source",
+          "settings:write: updates.selectionSource is derived and cannot be written"
+        )
+      };
+    }
   }
 
   if (p.storage !== undefined) {

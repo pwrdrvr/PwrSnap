@@ -1,4 +1,7 @@
-// GeneralPage — the Launch-at-login card:
+// GeneralPage — appearance, capture defaults, and the Launch-at-login card.
+// The release train/track moved to __tests__/UpdatesPage.test.tsx.
+//
+// Launch at login:
 //   • the toggle patches `general.launchAtLogin` through the settings
 //     substrate (no side channels);
 //   • the page re-reads `app:launchAtLoginStatus` and surfaces the
@@ -9,12 +12,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
-import {
-  EVENT_CHANNELS,
-  type AppUpdateStatus,
-  type LaunchAtLoginStatus,
-  type Settings
-} from "@pwrsnap/shared";
+import { type LaunchAtLoginStatus, type Settings } from "@pwrsnap/shared";
 import { GeneralPage } from "../GeneralPage";
 import type { UseSettingsValue } from "../../useSettings";
 
@@ -61,7 +59,7 @@ const baseSettings: Settings = {
   },
   experimental: { processSplit: true, dpiAwareExport: false, allowRetinaExport: true },
   appearance: { theme: "system" },
-  updates: { channel: "latest", train: "stable" },
+  updates: { channel: "latest", train: "stable", selectionSource: "inferred" },
   storage: { filenameTimestampZone: "local", capturesLocation: "documents" },
   recording: {
     quickCaptureAction: "ask",
@@ -121,31 +119,6 @@ function installFakeApi(
       dispatch: async (name: string, req: unknown): Promise<AnyResult> => {
         calls.push({ name, req });
         if (name === "app:launchAtLoginStatus") return { ok: true, value: status };
-        if (name === "app:update:releases") {
-          return {
-            ok: true,
-            value: {
-              fetchedAt: 1,
-              stable: {
-                latest: { version: "v1.2.3" },
-                prerelease: { version: "v1.2.4-prerelease.1" }
-              },
-              beta: {
-                latest: { version: "v1.3.0-beta.2" },
-                prerelease: { unavailableReason: "No beta prerelease found." }
-              }
-            }
-          };
-        }
-        if (name === "app:update:status") {
-          return { ok: true, value: { status: "idle" } satisfies AppUpdateStatus };
-        }
-        if (name === "app:update:check") {
-          return { ok: true, value: { status: "available", version: "1.3.0-beta.3" } };
-        }
-        if (name === "app:update:install") {
-          return { ok: true, value: { status: "restarting" } };
-        }
         return { ok: true, value: undefined };
       },
       on: (channel: string, handler: (payload: unknown) => void): (() => void) => {
@@ -318,155 +291,5 @@ describe("GeneralPage — launch at login", () => {
     });
     expect(container?.textContent).toContain("Development build");
     expect(container?.textContent).toContain("Saved only");
-  });
-});
-
-describe("GeneralPage — updates", () => {
-  test("shows all four published versions and persists both keys", async () => {
-    await renderGeneral(baseSettings, healthyStatus);
-
-    expect(container?.textContent).toContain("v1.2.3");
-    expect(container?.textContent).toContain("v1.2.4-prerelease.1");
-    expect(container?.textContent).toContain("v1.3.0-beta.2");
-    expect(container?.textContent).toContain("Unavailable");
-
-    const prerelease = Array.from(container!.querySelectorAll("button")).find(
-      (el) => el.textContent?.includes("Prerelease")
-    );
-    await act(async () => {
-      prerelease?.click();
-    });
-
-    expect(patchMock).toHaveBeenCalledWith({
-      updates: { train: "stable", channel: "prerelease" }
-    });
-  });
-
-  // The track control indexes by the selected train; the train control has
-  // to index by the selected track the same way, or it advertises a version
-  // that picking that train would not resolve to.
-  test("labels each train with the slot the selected track resolves to", async () => {
-    await renderGeneral(
-      { ...baseSettings, updates: { channel: "prerelease", train: "stable" } },
-      healthyStatus
-    );
-    const trainButton = (label: string): HTMLButtonElement | undefined =>
-      Array.from(container!.querySelectorAll("button")).find((el) =>
-        el.textContent?.startsWith(label)
-      );
-
-    expect(trainButton("Stable")?.textContent).toContain("v1.2.4-prerelease.1");
-    expect(trainButton("Stable")?.textContent).not.toContain("v1.2.3");
-    // beta.prerelease is unavailable in the fixture even though
-    // beta.latest is v1.3.0-beta.2.
-    expect(trainButton("Beta")?.textContent).toContain("Unavailable");
-    expect(trainButton("Beta")?.textContent).not.toContain("v1.3.0-beta.2");
-  });
-
-  test("keeps Beta selectable when its slots are unavailable", async () => {
-    await renderGeneral(baseSettings, healthyStatus);
-    const beta = Array.from(container!.querySelectorAll("button")).find(
-      (el) => el.textContent?.includes("Beta")
-    );
-    expect(beta).toBeDefined();
-    expect(beta?.hasAttribute("disabled")).toBe(false);
-
-    await act(async () => {
-      beta?.click();
-    });
-
-    expect(patchMock).toHaveBeenCalledWith({
-      updates: { train: "beta", channel: "latest" }
-    });
-  });
-
-  test("composes rapid train then track clicks without a stale second write", async () => {
-    await renderGeneral(baseSettings, healthyStatus);
-    const beta = Array.from(container!.querySelectorAll("button")).find(
-      (el) => el.textContent?.includes("Beta")
-    );
-    const prerelease = Array.from(container!.querySelectorAll("button")).find(
-      (el) => el.textContent?.includes("Prerelease")
-    );
-
-    await act(async () => {
-      beta?.click();
-      prerelease?.click();
-    });
-
-    expect(patchMock).toHaveBeenNthCalledWith(1, {
-      updates: { train: "beta", channel: "latest" }
-    });
-    expect(patchMock).toHaveBeenNthCalledWith(2, {
-      updates: { train: "beta", channel: "prerelease" }
-    });
-  });
-
-  test("manual check dispatches app:update:check and shows the result", async () => {
-    const { calls } = await renderGeneral(baseSettings, healthyStatus);
-    const button = Array.from(container!.querySelectorAll("button")).find(
-      (el) => el.textContent === "Check for Updates"
-    );
-
-    await act(async () => {
-      button?.click();
-      await Promise.resolve();
-    });
-
-    expect(calls.some((c) => c.name === "app:update:check")).toBe(true);
-    expect(container?.textContent).toContain("Update available: v1.3.0-beta.3");
-  });
-
-  test("downloaded update status switches the action to restart", async () => {
-    const api = await renderGeneral(baseSettings, healthyStatus);
-
-    await act(async () => {
-      api.pushEvent(EVENT_CHANNELS.appUpdateStatus, {
-        status: "downloaded",
-        version: "1.3.0-beta.4"
-      } satisfies AppUpdateStatus);
-    });
-
-    expect(container?.textContent).toContain("Update version: 1.3.0-beta.4");
-    const button = Array.from(container!.querySelectorAll("button")).find(
-      (el) => el.getAttribute("aria-label") === "Restart to Update (1.3.0-beta.4)"
-    );
-    expect(button).toBeDefined();
-
-    await act(async () => {
-      button?.click();
-      await Promise.resolve();
-    });
-
-    expect(api.calls.some((c) => c.name === "app:update:install")).toBe(true);
-  });
-
-  test("failed install status shows a retry action", async () => {
-    const api = await renderGeneral(baseSettings, healthyStatus);
-
-    await act(async () => {
-      api.pushEvent(EVENT_CHANNELS.appUpdateStatus, {
-        status: "install-failed",
-        version: "1.3.0-beta.5",
-        currentVersion: "1.3.0-beta.4",
-        attemptedAt: "2026-06-29T12:00:00.000Z",
-        channel: "prerelease",
-        train: "stable"
-      } satisfies AppUpdateStatus);
-    });
-
-    expect(container?.textContent).toContain("did not finish installing");
-    expect(container?.textContent).toContain("Update version: 1.3.0-beta.5");
-    const button = Array.from(container!.querySelectorAll("button")).find(
-      (el) => el.getAttribute("aria-label") === "Retry Update (1.3.0-beta.5)"
-    );
-    expect(button).toBeDefined();
-
-    await act(async () => {
-      button?.click();
-      await Promise.resolve();
-    });
-
-    expect(api.calls.some((c) => c.name === "app:update:install")).toBe(true);
   });
 });

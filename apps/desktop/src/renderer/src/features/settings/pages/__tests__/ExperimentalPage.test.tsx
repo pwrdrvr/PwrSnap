@@ -58,7 +58,7 @@ const baseSettings: Settings = {
   },
   experimental: { processSplit: false, dpiAwareExport: false, allowRetinaExport: true },
   appearance: { theme: "system" },
-  updates: { channel: "latest", train: "stable" },
+  updates: { channel: "latest", train: "stable", selectionSource: "inferred" },
   storage: { filenameTimestampZone: "local", capturesLocation: "documents" },
   recording: {
     quickCaptureAction: "ask",

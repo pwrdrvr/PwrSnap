@@ -30,7 +30,10 @@ import { isExtentRect, MAX_SELECTOR_EXTENTS } from "./extent-mask";
 import { hideTrayPopoverIfVisible } from "../tray";
 import { setFloatOverState, ensureFloatOverTopmost } from "../float-over";
 import { hotkeyRecorderSuspension } from "../hotkeys/hotkey-recorder-suspension-instance";
-import type { CaptureLatencyTrace } from "./capture-latency-trace";
+import type {
+  CaptureLatencyStageToken,
+  CaptureLatencyTrace
+} from "./capture-latency-trace";
 
 const MIN_AREA_PX = 400; // 20×20 — anything smaller isn't a meaningful snap target.
 const SELECTOR_WINDOW_TITLE = "PwrSnap Region Selector";
@@ -51,7 +54,7 @@ let displayListenersAttached = false;
  *  (matching screenUrl) or by its own timeout. */
 let pendingPaintWait: {
   screenUrl: string;
-  resolve: () => void;
+  settle: (outcome: "loaded" | "timeout" | "superseded") => void;
   trace?: CaptureLatencyTrace;
 } | null = null;
 
@@ -61,6 +64,7 @@ type PendingPresentation = {
   screenUrl: string;
   senderId: number;
   trace: CaptureLatencyTrace;
+  visibleStage: CaptureLatencyStageToken;
 };
 
 let pendingPresentation: PendingPresentation | null = null;
@@ -91,22 +95,31 @@ function waitForSnapshotPainted(
   if (pendingPaintWait !== null) {
     const stale = pendingPaintWait;
     pendingPaintWait = null;
-    stale.resolve();
+    stale.settle("superseded");
   }
   return new Promise<void>((resolve) => {
+    const resourceStage = trace?.begin("frozen_source_decode_ready");
     let settled = false;
-    const finish = (): void => {
+    const finish = (outcome: "loaded" | "timeout" | "superseded"): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (pendingPaintWait?.resolve === settleResolve) pendingPaintWait = null;
+      if (pendingPaintWait?.settle === settlePaint) pendingPaintWait = null;
+      if (resourceStage !== undefined) {
+        trace?.end(resourceStage, {
+          outcome,
+          renderer: "img",
+          signal: outcome === "loaded" ? "load" : "none",
+          canvas: "not_used"
+        });
+      }
       resolve();
     };
-    const settleResolve = finish;
-    const timer = setTimeout(finish, timeoutMs);
+    const settlePaint = finish;
+    const timer = setTimeout(() => finish("timeout"), timeoutMs);
     pendingPaintWait = {
       screenUrl,
-      resolve: settleResolve,
+      settle: settlePaint,
       ...(trace !== undefined ? { trace } : {})
     };
   });
@@ -343,11 +356,7 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
       waiter.trace?.mark("renderer_signal_receipt", {
         signal: "snapshot_painted"
       });
-      waiter.trace?.mark("frozen_source_decode_ready", {
-        renderer: "img",
-        canvas: "not_used"
-      });
-      waiter.resolve();
+      waiter.settle("loaded");
     });
     ipcMain.on(SELECTOR_PRESENTED_CHANNEL, (event, payload: unknown) => {
       const pending = pendingPresentation;
@@ -392,12 +401,7 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
         signal: "selector_presented",
         authenticated: true
       });
-      pending.trace.mark("frozen_source_decode_ready", {
-        renderer: "img",
-        canvas: "not_used",
-        proof: "presentation_ack"
-      });
-      pending.trace.mark("first_visible_paint_ack", {
+      pending.trace.end(pending.visibleStage, {
         generation: pending.generation,
         frameBarrier: 2,
         authenticated: true
@@ -783,7 +787,7 @@ export async function pickRegion(
     durationFromUserRequestMs: elapsedFromRequest()
   });
   try {
-    const screenSnapshot = await captureAndRegister(targetDisplay.id);
+    const screenSnapshot = await captureAndRegister(targetDisplay.id, latencyTrace);
     activeScreenSnapshot = screenSnapshot;
     if (screenFrameStage !== undefined) {
       latencyTrace?.end(screenFrameStage, {
@@ -945,7 +949,8 @@ export async function pickRegion(
           generation: presentationGeneration,
           screenUrl: presentationScreenUrl,
           senderId: win.webContents.id,
-          trace: latencyTrace
+          trace: latencyTrace,
+          visibleStage: latencyTrace.begin("first_visible_paint_ack")
         };
         win.webContents.send(SELECTOR_PRESENTATION_REQUEST_CHANNEL, {
           invocationId: latencyTrace.invocation.id,

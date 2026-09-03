@@ -678,6 +678,7 @@ describe("region-selector — authenticated post-show presentation trace", () =>
         })
       );
     });
+    expect(screenSnapshotMocks.captureAndRegister).toHaveBeenCalledWith(1, trace);
     const requestIndex = spy.webContents.send.mock.calls.findIndex(
       ([channel]) => channel === "region-selector:presentation-request"
     );
@@ -724,6 +725,16 @@ describe("region-selector — authenticated post-show presentation trace", () =>
     expect(
       entries.find((entry) => entry.fields.stage === "first_visible_paint_ack")?.fields
     ).toMatchObject({ authenticated: true, frameBarrier: 2 });
+    const decodeStages = entries.filter(
+      (entry) => entry.fields.stage === "frozen_source_decode_ready"
+    );
+    expect(decodeStages).toHaveLength(1);
+    expect(decodeStages[0]?.fields).toMatchObject({
+      outcome: "loaded",
+      renderer: "img",
+      signal: "load",
+      canvas: "not_used"
+    });
 
     ipcListeners.get("region-selector:result")?.({}, { ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });

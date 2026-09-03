@@ -76,6 +76,61 @@ describe("whole-file responses", () => {
     expect(res.body).toBeInstanceOf(ReadableStream);
   });
 
+  test("observer reports file open and read-to-completion byte counts", async () => {
+    const events: Array<{ event: string; details: Record<string, unknown> }> = [];
+    const res = await fileResponse(filePath, req(), {
+      observer: {
+        onOpenStarted: (details) => events.push({ event: "open_started", details }),
+        onOpenFinished: (details) => events.push({ event: "open_finished", details }),
+        onReadStarted: (details) => events.push({ event: "read_started", details }),
+        onReadFinished: (details) => events.push({ event: "read_finished", details })
+      }
+    });
+
+    expect(Buffer.from(await res.arrayBuffer())).toEqual(CONTENT);
+    expect(events).toEqual([
+      {
+        event: "open_started",
+        details: { expectedBytes: CONTENT.length }
+      },
+      {
+        event: "open_finished",
+        details: { outcome: "completed", expectedBytes: CONTENT.length }
+      },
+      {
+        event: "read_started",
+        details: { start: 0, end: CONTENT.length - 1, expectedBytes: CONTENT.length }
+      },
+      {
+        event: "read_finished",
+        details: {
+          outcome: "completed",
+          start: 0,
+          end: CONTENT.length - 1,
+          expectedBytes: CONTENT.length,
+          bytesRead: CONTENT.length
+        }
+      }
+    ]);
+  });
+
+  test("observer failures cannot change the streamed response", async () => {
+    const fail = (): never => {
+      throw new Error("diagnostic observer failure");
+    };
+    const res = await fileResponse(filePath, req(), {
+      observer: {
+        onOpenStarted: fail,
+        onOpenFinished: fail,
+        onReadStarted: fail,
+        onReadFinished: fail
+      }
+    });
+
+    expect(res.status).toBe(200);
+    expect(Buffer.from(await res.arrayBuffer())).toEqual(CONTENT);
+  });
+
   test("empty file serves 200 with content-length 0", async () => {
     const empty = join(dir, "empty.png");
     writeFileSync(empty, "");

@@ -19,6 +19,7 @@ import { promisify } from "node:util";
 import { desktopCapturer, screen, type Display } from "electron";
 import sharp from "sharp";
 import { getMainLogger } from "../log";
+import type { CaptureLatencyTrace } from "./capture-latency-trace";
 import { classifyCaptureError } from "./permissions";
 
 const log = getMainLogger("pwrsnap:screencapture");
@@ -37,7 +38,10 @@ export type Rect = { x: number; y: number; w: number; h: number };
  * needs no native helper. On Windows there's no TCC-style permission
  * gate, so a failure here is a plain error rather than a "revoked".
  */
-async function captureDisplayPng(display: Display): Promise<Buffer> {
+async function captureDisplayPng(
+  display: Display,
+  latencyTrace?: CaptureLatencyTrace
+): Promise<Buffer> {
   // Request the display's physical size so we don't downscale a HiDPI
   // monitor. desktopCapturer treats this as a max and returns the
   // screen's native pixels (so the actual buffer may differ slightly —
@@ -45,10 +49,31 @@ async function captureDisplayPng(display: Display): Promise<Buffer> {
   // from scaleFactor, to stay robust).
   const width = Math.max(1, Math.round(display.bounds.width * display.scaleFactor));
   const height = Math.max(1, Math.round(display.bounds.height * display.scaleFactor));
-  const sources = await desktopCapturer.getSources({
-    types: ["screen"],
-    thumbnailSize: { width, height }
-  });
+  const getSourcesStage = latencyTrace?.begin("screen_get_sources");
+  let sources: Awaited<ReturnType<typeof desktopCapturer.getSources>>;
+  try {
+    sources = await desktopCapturer.getSources({
+      types: ["screen"],
+      thumbnailSize: { width, height }
+    });
+    if (getSourcesStage !== undefined) {
+      latencyTrace?.end(getSourcesStage, {
+        outcome: "completed",
+        requestedWidthPx: width,
+        requestedHeightPx: height,
+        sourceCount: sources.length
+      });
+    }
+  } catch (cause) {
+    if (getSourcesStage !== undefined) {
+      latencyTrace?.end(getSourcesStage, {
+        outcome: "failed",
+        requestedWidthPx: width,
+        requestedHeightPx: height
+      });
+    }
+    throw cause;
+  }
   if (sources.length === 0) {
     throw new Error("desktopCapturer returned no screen sources");
   }
@@ -56,12 +81,16 @@ async function captureDisplayPng(display: Display): Promise<Buffer> {
   // string form of Display.id) on macOS + Windows. An exact match is
   // authoritative and the only way to grab the RIGHT monitor on a
   // multi-display setup.
+  const selectionStage = latencyTrace?.begin("screen_source_selection");
+  let strategy = "display_id";
+  let fallbackIndex: number | null = null;
   let source = sources.find((s) => s.display_id === String(display.id));
   if (source === undefined && sources.length === 1) {
     // Single monitor: the lone source IS this display, even when
     // `display_id` comes back empty (observed on some Windows configs /
     // remote sessions). Unambiguous, so take it without a warning.
     source = sources[0];
+    strategy = "single_source";
   }
   if (source === undefined) {
     // Multi-monitor with no display_id match. The ordering of
@@ -71,16 +100,44 @@ async function captureDisplayPng(display: Display): Promise<Buffer> {
     // capture is diagnosable instead of silently producing the wrong
     // pixels.
     const idx = screen.getAllDisplays().findIndex((d) => d.id === display.id);
+    fallbackIndex = idx;
     source = (idx >= 0 ? sources[idx] : undefined) ?? sources[0];
+    strategy = idx >= 0 && sources[idx] !== undefined ? "display_index" : "first_source";
+  }
+  if (selectionStage !== undefined) {
+    latencyTrace?.end(selectionStage, {
+      outcome: source === undefined ? "failed" : "completed",
+      strategy,
+      sourceCount: sources.length
+    });
+  }
+  if (strategy === "display_index" || strategy === "first_source") {
     log.warn(
       "desktopCapturer: no source matched display_id; falling back to index/first source",
-      { displayId: display.id, sourceCount: sources.length, matchedIndex: idx }
+      { displayId: display.id, sourceCount: sources.length, matchedIndex: fallbackIndex }
     );
   }
   if (source === undefined) {
     throw new Error("desktopCapturer returned no usable screen source");
   }
-  const png = source.thumbnail.toPNG();
+  const toPngStage = latencyTrace?.begin("screen_to_png");
+  let png: Buffer;
+  try {
+    png = source.thumbnail.toPNG();
+    if (toPngStage !== undefined) {
+      latencyTrace?.end(toPngStage, {
+        outcome: png.length === 0 ? "empty" : "completed",
+        byteSize: png.length
+      });
+    }
+  } catch (cause) {
+    if (toPngStage !== undefined) {
+      latencyTrace?.end(toPngStage, {
+        outcome: "failed"
+      });
+    }
+    throw cause;
+  }
   if (png.length === 0) {
     throw new Error("desktopCapturer screen thumbnail was empty");
   }
@@ -272,7 +329,10 @@ export async function captureWindow(
  * Caller owns deletion via `releaseScreenSnapshot` once the selector
  * dismisses.
  */
-export async function captureScreen(displayId: number): Promise<CaptureRegionResult> {
+export async function captureScreen(
+  displayId: number,
+  latencyTrace?: CaptureLatencyTrace
+): Promise<CaptureRegionResult> {
   const display = screen.getAllDisplays().find((d) => d.id === displayId);
   if (display === undefined) {
     return { ok: false, reason: "validation", message: `unknown display id: ${displayId}` };
@@ -281,10 +341,40 @@ export async function captureScreen(displayId: number): Promise<CaptureRegionRes
 
   // Non-macOS: grab the whole display via desktopCapturer (no screencapture CLI).
   if (process.platform !== "darwin") {
-    const dir = await mkdtemp(join(tmpdir(), "pwrsnap-screen-"));
+    const tempStage = latencyTrace?.begin("screen_temp_allocation");
+    let dir: string;
+    try {
+      dir = await mkdtemp(join(tmpdir(), "pwrsnap-screen-"));
+      if (tempStage !== undefined) {
+        latencyTrace?.end(tempStage, { outcome: "completed" });
+      }
+    } catch (cause) {
+      if (tempStage !== undefined) {
+        latencyTrace?.end(tempStage, { outcome: "failed" });
+      }
+      throw cause;
+    }
     const tempPath = join(dir, `${Date.now()}.png`);
     try {
-      await writeFile(tempPath, await captureDisplayPng(display));
+      const png = await captureDisplayPng(display, latencyTrace);
+      const writeStage = latencyTrace?.begin("screen_file_write");
+      try {
+        await writeFile(tempPath, png);
+        if (writeStage !== undefined) {
+          latencyTrace?.end(writeStage, {
+            outcome: "completed",
+            byteSize: png.length
+          });
+        }
+      } catch (cause) {
+        if (writeStage !== undefined) {
+          latencyTrace?.end(writeStage, {
+            outcome: "failed",
+            byteSize: png.length
+          });
+        }
+        throw cause;
+      }
       return { ok: true, tempPath, displayId };
     } catch (err) {
       return {
@@ -295,7 +385,19 @@ export async function captureScreen(displayId: number): Promise<CaptureRegionRes
     }
   }
 
-  const dir = await mkdtemp(join(tmpdir(), "pwrsnap-screen-"));
+  const tempStage = latencyTrace?.begin("screen_temp_allocation");
+  let dir: string;
+  try {
+    dir = await mkdtemp(join(tmpdir(), "pwrsnap-screen-"));
+    if (tempStage !== undefined) {
+      latencyTrace?.end(tempStage, { outcome: "completed" });
+    }
+  } catch (cause) {
+    if (tempStage !== undefined) {
+      latencyTrace?.end(tempStage, { outcome: "failed" });
+    }
+    throw cause;
+  }
   const tempPath = join(dir, `${Date.now()}.png`);
   // -R covers exactly this display's logical bounds. The output PNG
   // ends up at physical resolution (logical * device-pixel-ratio).

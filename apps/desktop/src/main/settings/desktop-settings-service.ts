@@ -84,6 +84,7 @@ import {
   isLocalAgentCapability,
   isQuickCaptureAction,
   QUICK_CAPTURE_ACTION_DEFAULT,
+  RECORDING_MEDIA_DEFAULTS,
   findRoleForCapabilities,
   defaultLocalAgentRoleConstraints,
   isValidRole,
@@ -238,17 +239,15 @@ export function defaultSettings(
       // step — ↵ still snaps. Users who never want the affordance pick
       // "snap"; users who mostly record pick "record".
       quickCaptureAction: QUICK_CAPTURE_ACTION_DEFAULT,
-      // Audio defaults OFF — recording either source is privacy-
-      // relevant; we'd rather have the user explicitly toggle ON
-      // for their first MP4 export than silently default to "yes
-      // include everything". Once they pick, the choice persists.
-      includeSystemAudio: false,
-      includeMicrophone: false,
-      // Cursor defaults ON for both modes: video has always baked in
-      // the cursor (the native recorder hardcoded it), and Phase 1
-      // preserves that. Image consumption lands in Phase 3; the field
-      // is seeded now so the later change is additive.
-      videoCaptureCursor: true,
+      // Audio OFF, video cursor ON — from shared, because the capture
+      // path needs the same three values when its settings read fails
+      // and must not import this module to get them. Rationale for each
+      // lives on the constant.
+      includeSystemAudio: RECORDING_MEDIA_DEFAULTS.includeSystemAudio,
+      includeMicrophone: RECORDING_MEDIA_DEFAULTS.includeMicrophone,
+      videoCaptureCursor: RECORDING_MEDIA_DEFAULTS.videoCaptureCursor,
+      // Image cursor capture is settings-only (consumed by the still
+      // pipeline, never by a recording), so it stays local.
       imageCaptureCursor: true,
       lastRoutedPermissionFingerprint: "",
       // Fresh install has never triggered the macOS Screen Recording

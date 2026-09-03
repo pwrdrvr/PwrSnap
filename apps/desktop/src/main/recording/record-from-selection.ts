@@ -14,6 +14,7 @@
 // snapshot themselves.
 
 import { app, Notification, screen, type BrowserWindow } from "electron";
+import { RECORDING_MEDIA_DEFAULTS } from "@pwrsnap/shared";
 import type { Rect, RecordingSubject, Settings } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { setFloatOverState } from "../float-over";
@@ -25,7 +26,6 @@ import {
   type SelectorResult,
 } from "../capture/region-selector";
 import { releaseSnapshot } from "../capture/screen-snapshot";
-import { defaultSettings } from "../settings/desktop-settings-service";
 import {
   resolveSelectionSourceApp,
   shouldConsiderRaisingOurWindows,
@@ -53,18 +53,17 @@ export type RecordingDefaults = Pick<
  *  reachable: `ensureServices()` calls `app.getPath("userData")` before
  *  `read()` is even entered.
  *
- *  DERIVED from `defaultSettings().recording` rather than restating it.
- *  The hand-written copy said "mirrors defaultSettings()", and nothing
- *  made that true: the one test that named this constant asserted a
- *  mocked module against the same literal the mock installed, so
- *  flipping the real `includeMicrophone` to `true` — silently hot-miking
- *  a user whose settings file hiccuped — passed 9/9. */
-const RECORDING_DEFAULTS = defaultSettings().recording;
-export const FALLBACK_RECORDING_DEFAULTS: RecordingDefaults = {
-  includeSystemAudio: RECORDING_DEFAULTS.includeSystemAudio,
-  includeMicrophone: RECORDING_DEFAULTS.includeMicrophone,
-  videoCaptureCursor: RECORDING_DEFAULTS.videoCaptureCursor,
-};
+ *  This IS `defaultSettings().recording`'s source, not a copy of it —
+ *  both read `RECORDING_MEDIA_DEFAULTS` from shared. The hand-written
+ *  copy that used to live here claimed to "mirror defaultSettings()"
+ *  and nothing made that true; the one test that named this constant
+ *  asserted a mocked module against the same literal the mock
+ *  installed, so flipping the real `includeMicrophone` to `true` —
+ *  silently hot-miking a user whose settings file hiccuped — passed
+ *  9/9. Shared is the right home because the settings service imports
+ *  `@pwrdrvr/agent-transport`, which has no business in the import
+ *  graph of a capture. */
+export const FALLBACK_RECORDING_DEFAULTS: RecordingDefaults = RECORDING_MEDIA_DEFAULTS;
 
 /**
  * Global logical rect → the same rect relative to its display's

@@ -2269,6 +2269,35 @@ export const QUICK_CAPTURE_ACTIONS = [
 
 export const QUICK_CAPTURE_ACTION_DEFAULT: QuickCaptureAction = "ask";
 
+/**
+ * The audio + cursor defaults a recording starts from.
+ *
+ * Lives here because TWO places need them and neither may import the
+ * other: `defaultSettings()` in the settings service, and the fallback
+ * `capture:interactive` uses when its settings read fails outright.
+ * Deriving the fallback from `defaultSettings()` would drag the whole
+ * settings module — and, through it, `@pwrdrvr/agent-transport` — into
+ * the capture path's import graph; restating the literals let them
+ * drift silently, which is worse: audio OFF is a privacy default, and
+ * the one test that named the fallback asserted a mocked module against
+ * its own literal, so flipping `includeMicrophone` here would have
+ * hot-miked a user whose settings file hiccuped and passed every test.
+ */
+export const RECORDING_MEDIA_DEFAULTS: {
+  includeSystemAudio: boolean;
+  includeMicrophone: boolean;
+  videoCaptureCursor: boolean;
+} = {
+  // Recording either source is a privacy-relevant opt-in: better that
+  // the user turns it ON for their first MP4 than that we silently
+  // default to "include everything". Once they pick, the choice sticks.
+  includeSystemAudio: false,
+  includeMicrophone: false,
+  // Video has always baked in the cursor — the native recorder
+  // hardcoded it — and that behavior is preserved.
+  videoCaptureCursor: true
+};
+
 export function isQuickCaptureAction(value: unknown): value is QuickCaptureAction {
   return (
     typeof value === "string" && (QUICK_CAPTURE_ACTIONS as readonly string[]).includes(value)

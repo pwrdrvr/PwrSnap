@@ -133,26 +133,35 @@ whatever you are doing, and your real windows can end up inside a capture
 under test. Prefer an off-desktop VM.
 
 If you have a PwrSuiteLab checkout, its `macos-tart/run-e2e.sh` controller
-runs the suite in a macOS VM from a **clean, committed** worktree — it sends
-only `HEAD`, serializes the guest display, and collects artifacts:
+runs the suite in a macOS VM. Run this from your PwrSnap worktree, not from
+the lab checkout — it transports only that worktree's committed `HEAD`:
 
 ```bash
-suite_lab_root="<your PwrSuiteLab checkout>"
+suite_lab_root="$HOME/path/to/PwrSuiteLab"
 "$suite_lab_root/macos-tart/run-e2e.sh" --confirm-live-run \
   --workload pwrsnap --local "$(git rev-parse --show-toplevel)" \
   e2e/region-selector-ui.spec.ts
 ```
 
-Playwright paths are relative to `apps/desktop`. Omit the spec list to run
-everything. The adapter sets `PWRSNAP_E2E_DISABLE_GPU=1`, matching the macOS
-CI lane, so a lab run reproduces the CI renderer that every screenshot golden
-was recorded in — a plain local `pnpm test:desktop-e2e` does not. That
-checkout's own runbook is authoritative for the lab; host, guest, and access
-details live only there. Agents should follow
-[`.agents/skills/macos-vm-e2e-lab/SKILL.md`](.agents/skills/macos-vm-e2e-lab/SKILL.md).
+That flag order is required — the controller reads its arguments positionally,
+and everything after `--local <path>` is passed to Playwright untouched.
+Filters are regexes matched against the full test path, so `e2e/editor` picks
+up every `editor-*.spec.ts`. Omitting the filter runs everything, which needs
+`git lfs pull` first (the goldens are LFS objects and the controller aborts
+without them) and holds the serialized guest display for the whole suite —
+so prefer the narrowest useful list.
 
-Without a lab, run the suite headed on your own machine and expect the
-interruption.
+The worktree must be clean, and the check counts untracked files: a new spec
+needs `git add -A`, since `git commit -am` will not stage it. Note the guest
+does not set `CI`, so you get no HTML report, no trace, and no retry there.
+
+That checkout's runbook is authoritative and wins on conflict; host, guest,
+and access details live only there. Agents should follow
+[`.agents/skills/macos-vm-e2e-lab/SKILL.md`](.agents/skills/macos-vm-e2e-lab/SKILL.md),
+which also requires them to get your approval before starting a run.
+
+Without a lab you can run the suite headed on your own machine, accepting the
+interruption — but an agent must ask you first rather than take your screen.
 
 ### Visual-regression goldens
 

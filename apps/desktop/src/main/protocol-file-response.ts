@@ -113,10 +113,82 @@ function ifRangeMatches(headerValue: string, etag: string, lastModified: string)
 function fileStream(
   fh: Awaited<ReturnType<typeof open>>,
   start: number,
-  end: number
+  end: number,
+  observer?: FileResponseObserver
 ): ReadableStream {
   const nodeStream = fh.createReadStream({ start, end, autoClose: true });
+  const expectedBytes = end - start + 1;
+  observe(() => observer?.onReadStarted?.({ start, end, expectedBytes }));
+  let readFinished = false;
+  const finishRead = (outcome: FileReadOutcome): void => {
+    if (readFinished) return;
+    readFinished = true;
+    observe(() =>
+      observer?.onReadFinished?.({
+        outcome,
+        start,
+        end,
+        expectedBytes,
+        bytesRead: nodeStream.bytesRead
+      })
+    );
+  };
+  nodeStream.once("end", () => finishRead("completed"));
+  nodeStream.once("error", () => finishRead("failed"));
+  nodeStream.once("close", () => finishRead("cancelled"));
   return Readable.toWeb(nodeStream) as unknown as ReadableStream;
+}
+
+type FileReadOutcome = "completed" | "failed" | "cancelled";
+
+type FileRangeObservation = {
+  start: number;
+  end: number;
+  expectedBytes: number;
+};
+
+export type FileResponseObserver = {
+  onOpenStarted?(details: { expectedBytes: number }): void;
+  onOpenFinished?(details: {
+    outcome: "completed" | "failed";
+    expectedBytes: number;
+  }): void;
+  onReadStarted?(details: FileRangeObservation): void;
+  onReadFinished?(
+    details: FileRangeObservation & {
+      outcome: FileReadOutcome;
+      bytesRead: number;
+    }
+  ): void;
+};
+
+function observe(callback: () => void): void {
+  try {
+    callback();
+  } catch {
+    // Instrumentation is a passive observer. A diagnostic callback must
+    // never change whether or how the custom-protocol response is served.
+  }
+}
+
+async function openForResponse(
+  filePath: string,
+  expectedBytes: number,
+  observer?: FileResponseObserver
+): Promise<Awaited<ReturnType<typeof open>>> {
+  observe(() => observer?.onOpenStarted?.({ expectedBytes }));
+  try {
+    const fh = await open(filePath, "r");
+    observe(() =>
+      observer?.onOpenFinished?.({ outcome: "completed", expectedBytes })
+    );
+    return fh;
+  } catch (cause) {
+    observe(() =>
+      observer?.onOpenFinished?.({ outcome: "failed", expectedBytes })
+    );
+    throw cause;
+  }
 }
 
 export type FileResponseOptions = {
@@ -130,6 +202,9 @@ export type FileResponseOptions = {
    *  output, app icons) have no CORS consumer and keep the default
    *  same-origin read barrier. */
   cors?: boolean;
+  /** Passive lifecycle observer for precise file-open and streamed-read
+   *  diagnostics. Callbacks receive byte counts but never the file path. */
+  observer?: FileResponseObserver;
 };
 
 /**
@@ -219,8 +294,8 @@ export async function fileResponse(
       const end = endRaw.length > 0 ? Number.parseInt(endRaw, 10) : total - 1;
       if (Number.isFinite(start) && Number.isFinite(end) && start <= end && end < total) {
         const length = end - start + 1;
-        const fh = await open(filePath, "r");
-        return new Response(fileStream(fh, start, end), {
+        const fh = await openForResponse(filePath, length, options.observer);
+        return new Response(fileStream(fh, start, end, options.observer), {
           status: 206,
           headers: {
             ...validatorHeaders,
@@ -252,8 +327,8 @@ export async function fileResponse(
   if (total === 0) {
     return new Response(null, { status: 200, headers: wholeFileHeaders });
   }
-  const fh = await open(filePath, "r");
-  return new Response(fileStream(fh, 0, total - 1), {
+  const fh = await openForResponse(filePath, total, options.observer);
+  return new Response(fileStream(fh, 0, total - 1, options.observer), {
     status: 200,
     headers: wholeFileHeaders
   });

@@ -74,10 +74,24 @@
   or "just this machine". Suites sensitive to rasterization should pin the env
   themselves and assert the pin rather than trust the caller —
   `visual-regression.spec.ts` does both.
-- **Ask before running disruptive headed desktop E2E on the operator's
-  machine.** The operator may have an off-desktop lab for Windows or macOS
-  testing; ask them for a pointer to the appropriate lab repository or skill.
-  Do not assume or document machine-specific lab paths or configuration here.
+- **Headed desktop E2E belongs in the lab VM, not on the operator's
+  machine.** It takes over the screen — opens windows, steals focus, drives
+  the selector and global hotkeys — and the operator's real windows can leak
+  into a capture. For macOS Tart, self-hosted runner, or headed E2E work,
+  follow [`.agents/skills/macos-vm-e2e-lab/SKILL.md`](.agents/skills/macos-vm-e2e-lab/SKILL.md).
+  It discovers an existing PwrSuiteLab checkout and routes all lab access
+  through that checkout's current instructions and controllers
+  (`macos-tart/run-e2e.sh`). For Windows probes or Windows headed E2E, read
+  the Windows VM skill in that same checkout. Do not provision a
+  product-local Tart lab from this repository, improvise direct Tart or SSH
+  access, or run headed E2E on the operator's desktop without their explicit
+  approval.
+- **Keep private lab details out of this repository.** Host and guest names,
+  addresses, usernames, fingerprints, keys, config contents, and fleet
+  inventory live only in PwrSuiteLab — including in commit messages, PR
+  bodies, issues, and fixtures. What may live here is the product/CI contract
+  and the fact that the lab exists, is named PwrSuiteLab, and is driven by
+  `macos-tart/run-e2e.sh`.
 
 ## Agent Instruction Files
 

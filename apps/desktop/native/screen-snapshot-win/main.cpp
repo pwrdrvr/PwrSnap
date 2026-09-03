@@ -24,6 +24,7 @@
 //   48  u8[16]   random per-snapshot nonce
 //   64  u8[]     tightly packed R,G,B,A pixels; A is always 255
 
+#define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 

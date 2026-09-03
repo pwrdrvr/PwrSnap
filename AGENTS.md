@@ -89,9 +89,10 @@
 - **Keep private lab details out of this repository.** Host and guest names,
   addresses, usernames, fingerprints, keys, config contents, and fleet
   inventory live only in PwrSuiteLab — including in commit messages, PR
-  bodies, issues, and fixtures. What may live here is the product/CI contract
-  and the fact that the lab exists, is named PwrSuiteLab, and is driven by
-  `macos-tart/run-e2e.sh`.
+  bodies, issues, and fixtures. What may live here is the product/CI contract,
+  the fact that the lab exists and is named PwrSuiteLab, and the controller
+  entry points it exposes (`macos-tart/run-e2e.sh` and its flags) — enough to
+  invoke it, never enough to map it.
 
 ## Agent Instruction Files
 

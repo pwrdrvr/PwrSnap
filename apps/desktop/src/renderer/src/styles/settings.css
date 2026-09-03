@@ -418,6 +418,111 @@
   color: var(--danger-text);
 }
 
+/* ---- release slot matrix (Settings -> Updates) ----------------
+   All four published slots at once: two trains (rows) x two tracks
+   (columns). Every tile carries its own resolved version, so an empty
+   Beta Latest can never read as "the Beta train has nothing" while
+   Beta Prerelease is sitting right beside it with a build. */
+.pss__slots {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  align-items: stretch;
+}
+.pss__slots-colhdr,
+.pss__slots-rowhdr {
+  display: flex;
+  align-items: center;
+  font: 600 10px/1 var(--font-sans);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.pss__slots-colhdr { justify-content: flex-start; padding-left: 2px; }
+.pss__slots-rowhdr {
+  justify-content: flex-start;
+  letter-spacing: 0.06em;
+  font: 600 12px/1 var(--font-sans);
+  text-transform: none;
+  color: var(--text-secondary);
+}
+.pss__slot {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  padding: 11px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+.pss__slot:hover { border-color: var(--accent-border); }
+/* The matrix is a roving-tabindex radiogroup, so arrow keys move focus
+   between tiles WITHOUT selecting. Without a focus ring distinct from
+   `.is-selected` there is no way to see which slot Space would commit. */
+.pss__slot:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-shadow);
+}
+.pss__slot.is-selected {
+  background: var(--bg-row-active);
+  border-color: var(--accent);
+}
+.pss__slot-ver {
+  font: 600 12px/1.2 var(--font-mono);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+.pss__slot.is-selected .pss__slot-ver { color: var(--accent-bright); }
+.pss__slot-ver.is-empty {
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-weight: 500;
+}
+.pss__slot-sub {
+  font: 400 11px/1.35 var(--font-sans);
+  color: var(--text-muted);
+}
+.pss__slot-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.pss__slot-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel-elevated);
+  color: var(--text-muted);
+  font: 600 9px/1 var(--font-sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.pss__slot-chip.is-selected {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent-bright);
+}
+.pss__slot-chip.is-installed {
+  border-color: var(--success-border);
+  background: var(--success-soft);
+  color: var(--success-text);
+}
+.pss__update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
 /* path / option cards — highlighted = currently using, unhighlighted = available */
 .pss__opt {
   display: flex;

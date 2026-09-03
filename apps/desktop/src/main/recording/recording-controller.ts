@@ -20,7 +20,10 @@ import {
   type IpcMainEvent
 } from "electron";
 import { recordingFailureSummary, type RecordingState } from "@pwrsnap/shared";
-import { appWindowsOverlappingRect } from "../capture/rect-overlap";
+import {
+  appWindowsOverlappingRect,
+  displayLocalRectToGlobal
+} from "../capture/rect-overlap";
 import { bus } from "../command-bus";
 import { hotkeyRecorderSuspension } from "../hotkeys/hotkey-recorder-suspension-instance";
 import { getMainLogger } from "../log";
@@ -323,11 +326,12 @@ function anchorAwayFromRecordedRect(
   const display = screen.getAllDisplays().find((d) => d.id === displayId) ?? screen.getPrimaryDisplay();
   const [w, h] = win.getSize();
   const workArea = display.workArea;
+  const globalRect = displayLocalRectToGlobal(rect, displayId) ?? rect;
   const recorded = {
-    x: display.bounds.x + rect.x,
-    y: display.bounds.y + rect.y,
-    width: rect.w,
-    height: rect.h
+    x: globalRect.x,
+    y: globalRect.y,
+    width: globalRect.w,
+    height: globalRect.h
   };
   const centerX = recorded.x + (recorded.width - w) / 2;
   const centerY = recorded.y + (recorded.height - h) / 2;
@@ -358,10 +362,16 @@ function anchorAwayFromRecordedRect(
  * The user sees the countdown drawn inside their actual recording
  * surface — no offset, no spillover.
  *
- * `rect` is in display-local logical pixels (selector convention);
- * `setPosition` + `setContentSize` both take logical px in the
- * global virtual coord space, so we add `display.bounds.{x,y}` to
- * translate.
+ * `rect` is in DISPLAY-LOCAL logical pixels — relative to
+ * `displayId`'s own top-left. `setPosition` + `setContentSize` both
+ * take logical px in the GLOBAL virtual coord space, so we add
+ * `display.bounds.{x,y}` to translate.
+ *
+ * NOT the selector's convention — `SelectorResult.rect` is global, so
+ * one handed here would apply the origin twice. What arrives is
+ * `state.rect`, already converted down by `subjectToPhysicalRect`.
+ * See the coordinate-space note at the head of
+ * capture/rect-overlap.ts.
  */
 function fillRect(
   win: BrowserWindow,
@@ -382,9 +392,8 @@ function fillRect(
   // computation reads the already-grown size. setPosition then
   // anchors the top-left of the window to the top-left of the rect.
   win.setContentSize(w, h, false);
-  const x = Math.round(display.bounds.x + rect.x);
-  const y = Math.round(display.bounds.y + rect.y);
-  win.setPosition(x, y, false);
+  const global = displayLocalRectToGlobal(rect, displayId) ?? rect;
+  win.setPosition(Math.round(global.x), Math.round(global.y), false);
 }
 
 function registerDesiredLeadInEscapeShortcut(): void {

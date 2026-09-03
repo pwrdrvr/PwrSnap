@@ -123,6 +123,16 @@
   --shadow-glow:   0 0 0 1px var(--accent-border), 0 8px 32px var(--accent-shadow);
   --shadow-inset:  inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 4%, transparent);
 
+  /* ---------- SCROLLBARS ----------
+     Thumb + track for the native (`scrollbar-color`) thin scrollbars
+     applied to every scroller by the `*` rule in app.css. No hover
+     tone — the OS owns thumb hover. Derived from `--text-muted` /
+     `--text-primary` via color-mix so the light theme picks up the
+     inverted values for free (both tokens are overridden below).
+     Matches PwrAgent's suite-wide scrollbar tones. */
+  --scrollbar-track: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  --scrollbar-thumb: color-mix(in srgb, var(--text-muted) 46%, transparent);
+
   /* ---------- RADII ---------- */
   --radius-xs:   4px;
   --radius-sm:   6px;   /* buttons, chips */

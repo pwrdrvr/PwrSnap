@@ -53,10 +53,11 @@
   flex: 1 1 auto;
   min-width: 0;
   overflow-x: auto;
-  scrollbar-width: none; /* Firefox */
-}
-.ps-libchat-thread-strip::-webkit-scrollbar {
-  display: none; /* WebKit/Chromium (Electron) */
+  /* Overrides the universal `scrollbar-width: thin` from app.css.
+     `none` is the whole hide — no `::-webkit-scrollbar { display:
+     none }` companion, which Chromium has not needed since 121 and
+     which app.css bans outright. */
+  scrollbar-width: none;
 }
 .ps-libchat-thread-shell {
   display: inline-flex;

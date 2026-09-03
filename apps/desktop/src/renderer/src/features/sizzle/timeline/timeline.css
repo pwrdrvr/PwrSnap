@@ -98,15 +98,11 @@
   overflow-x: auto;
   overflow-y: hidden;
   min-width: 0;
-  scrollbar-width: thin;
+  /* Tone override kept from the removed `::-webkit-scrollbar-thumb`,
+     which painted `--border-strong` over an undefined (transparent)
+     track. Width comes from the universal `scrollbar-width: thin` in
+     app.css; no `::-webkit-scrollbar` block (see that rule's comment). */
   scrollbar-color: var(--border-strong) transparent;
-}
-.szt__scroll::-webkit-scrollbar {
-  height: 8px;
-}
-.szt__scroll::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
-  border-radius: 4px;
 }
 /* ruler · regions · clips · waveform · word ribbon (3 stagger rows) */
 .szt__lanes {

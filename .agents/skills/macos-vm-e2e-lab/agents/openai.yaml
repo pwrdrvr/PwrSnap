@@ -1,0 +1,4 @@
+interface:
+  display_name: "macOS VM E2E Lab"
+  short_description: "Run headed macOS E2E in the PwrSuiteLab VM"
+  default_prompt: "Use $macos-vm-e2e-lab to find out how PwrSnap headed desktop E2E runs in the PwrSuiteLab macOS VM instead of on this desktop."

@@ -13,13 +13,13 @@
 // points hand ownership over at the call and must not release the
 // snapshot themselves.
 
-import { app, Notification, screen, type BrowserWindow } from "electron";
+import { app, Notification, type BrowserWindow } from "electron";
 import { RECORDING_MEDIA_DEFAULTS } from "@pwrsnap/shared";
-import type { Rect, RecordingSubject, Settings } from "@pwrsnap/shared";
+import type { RecordingSubject, Settings } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { setFloatOverState } from "../float-over";
 import { getMainLogger } from "../log";
-import { appWindowsOverlappingRect } from "../capture/rect-overlap";
+import { appWindowsOverlappingGlobalRect } from "../capture/rect-overlap";
 import {
   getLastWindowListSnapshot,
   hideSelector,
@@ -66,24 +66,6 @@ export type RecordingDefaults = Pick<
 export const FALLBACK_RECORDING_DEFAULTS: RecordingDefaults = RECORDING_MEDIA_DEFAULTS;
 
 /**
- * Global logical rect → the same rect relative to its display's
- * origin. The inverse of the translation `region-selector` applies on
- * commit, and the space `appWindowsOverlappingRect` documents that it
- * wants. Unknown display → return the rect unchanged, which is what the
- * helper's own missing-display branch degrades to anyway.
- */
-function toDisplayLocal(rect: Rect, displayId: number): Rect {
-  const display = screen.getAllDisplays().find((d) => d.id === displayId);
-  if (display === undefined) return rect;
-  return {
-    x: rect.x - display.bounds.x,
-    y: rect.y - display.bounds.y,
-    w: rect.w,
-    h: rect.h,
-  };
-}
-
-/**
  * Choose which of the overlapping PwrSnap windows to give keyboard
  * focus when we raise them for a recording. Prefer the Library (the
  * primary user-facing window in this app); fall back to the first
@@ -92,13 +74,13 @@ function toDisplayLocal(rect: Rect, displayId: number): Rect {
  * implementation order decide.
  *
  * Caller invariant: `overlapping` is the result of
- * `appWindowsOverlappingRect` BEFORE the recording HUD has been
+ * `appWindowsOverlappingGlobalRect` BEFORE the recording HUD has been
  * created. The HUD is only constructed when the state machine enters
  * preflight, which happens *after* this call (inside the awaited
  * `bus.dispatch("recording:start", ...)`), so the HUD can't appear
  * here and we don't need to filter it out. If a future caller invokes
  * this from a code path where the HUD is live, pass `excludeWindow`
- * to `appWindowsOverlappingRect` first.
+ * to `appWindowsOverlappingGlobalRect` first.
  */
 function pickFocusTargetForRecording(
   overlapping: BrowserWindow[],
@@ -189,22 +171,13 @@ export async function startRecordingFromSelection(
       cachedSnapshot,
       selfPidSet(),
     );
-    // `appWindowsOverlappingRect` wants DISPLAY-LOCAL logical pixels —
-    // it re-adds `display.bounds` itself — but `SelectorResult.rect` is
-    // GLOBAL (region-selector translates window-local → global on
-    // commit, so capture-handlers and the snapshot crop see one
-    // consistent space). Handing it the global rect adds the origin
-    // twice, which is a no-op on the primary display and displaces the
-    // test by the full origin anywhere else: measured on a display at
-    // {x:1496,y:-473}, a selection squarely inside the Library tested
-    // as {x:3192,y:-846} and matched zero windows, so the raise branch
-    // below never ran. `shouldConsiderRaisingOurWindows` is true for
-    // every free-hand drag, so this is the common path.
+    // `SelectorResult.rect` is GLOBAL, so this must be the global
+    // entry point — its display-local sibling would add the display
+    // origin a second time and match nothing off the primary display.
+    // That double-add shipped here once; see the coordinate-space
+    // note at the head of capture/rect-overlap.ts.
     const overlapping = shouldRaise
-      ? appWindowsOverlappingRect(
-          toDisplayLocal(selection.rect, selection.displayId),
-          selection.displayId,
-        )
+      ? appWindowsOverlappingGlobalRect(selection.rect)
       : [];
     // Debug-only — useful when triaging "Library hid / dove under"
     // reports. Turn on with `electron-log` debug; default level keeps

@@ -125,7 +125,13 @@ vi.mock("../../command-bus", () => ({
 }));
 
 vi.mock("../../capture/rect-overlap", () => ({
-  appWindowsOverlappingRect: () => mocks.overlappingWindows
+  appWindowsOverlappingRect: () => mocks.overlappingWindows,
+  // The module has more than one export and vi.mock replaces all of
+  // it, so anything omitted here is `undefined` at the call site
+  // rather than a clear missing-mock error.
+  appWindowsOverlappingGlobalRect: () => mocks.overlappingWindows,
+  displayLocalRectToGlobal: (rect: { x: number; y: number; w: number; h: number }) => rect,
+  globalRectToDisplayLocal: (rect: { x: number; y: number; w: number; h: number }) => rect
 }));
 
 vi.mock("../../window", () => ({

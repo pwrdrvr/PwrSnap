@@ -31,6 +31,10 @@ export class WindowsSharedSnapshotError extends Error {
   }
 }
 
+type StdinErrorMonitor = Readonly<{
+  subscribe: (listener: (cause: Error) => void) => () => void;
+}>;
+
 let helperPathOverrideForTest: string | null = null;
 
 export function __setWindowsSnapshotHelperPathForTest(path: string | null): void {
@@ -56,6 +60,33 @@ function terminateChild(child: ChildProcessWithoutNullStreams): void {
   child.stdout.destroy();
   child.stderr.destroy();
   if (child.exitCode === null && child.signalCode === null) child.kill();
+}
+
+/**
+ * Child-process stdin is an EventEmitter error boundary in addition to the
+ * write callback boundary. Keep one listener installed for the entire stream
+ * lifetime so an early helper exit can never surface as an uncaught EPIPE in
+ * Electron main. Operations subscribe while they need the error to settle
+ * their own promise; the monitor remembers an error that arrived between
+ * operations so release still completes deterministically.
+ */
+function monitorStdinErrors(child: ChildProcessWithoutNullStreams): StdinErrorMonitor {
+  let error: Error | null = null;
+  const subscribers = new Set<(cause: Error) => void>();
+  child.stdin.on("error", (cause: Error) => {
+    error = cause;
+    for (const subscriber of [...subscribers]) subscriber(cause);
+  });
+  return {
+    subscribe: (listener): (() => void) => {
+      if (error !== null) {
+        listener(error);
+        return () => undefined;
+      }
+      subscribers.add(listener);
+      return () => subscribers.delete(listener);
+    }
+  };
 }
 
 function boundedStderr(child: ChildProcessWithoutNullStreams): () => string {
@@ -144,13 +175,26 @@ function parseReadyMetadata(value: unknown, expected: WindowsSnapshotHeader): vo
 
 async function writeBitmap(
   child: ChildProcessWithoutNullStreams,
-  bitmap: Buffer
+  bitmap: Buffer,
+  stdinErrors: StdinErrorMonitor
 ): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    child.stdin.write(bitmap, (cause) => {
-      if (cause !== null && cause !== undefined) reject(cause);
+    let done = false;
+    let unsubscribe = (): void => undefined;
+    const finish = (cause: Error | null): void => {
+      if (done) return;
+      done = true;
+      unsubscribe();
+      if (cause !== null) reject(cause);
       else resolve();
-    });
+    };
+    unsubscribe = stdinErrors.subscribe((cause) => finish(cause));
+    if (done) return;
+    try {
+      child.stdin.write(bitmap, (cause) => finish(cause ?? null));
+    } catch (cause) {
+      finish(cause instanceof Error ? cause : new Error(String(cause)));
+    }
   });
 }
 
@@ -226,27 +270,42 @@ async function readMapping(
   });
 }
 
-async function releaseOwner(child: ChildProcessWithoutNullStreams): Promise<void> {
+async function releaseOwner(
+  child: ChildProcessWithoutNullStreams,
+  stdinErrors: StdinErrorMonitor
+): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
   await new Promise<void>((resolve) => {
     let done = false;
+    let unsubscribe = (): void => undefined;
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      unsubscribe();
+      child.off("close", finish);
+      child.off("error", finish);
+    };
     const finish = (): void => {
       if (done) return;
       done = true;
-      clearTimeout(timer);
+      cleanup();
       resolve();
     };
     const timer = setTimeout(() => {
-      terminateChild(child);
       finish();
+      terminateChild(child);
     }, HELPER_TIMEOUT_MS);
     child.once("close", finish);
     child.once("error", finish);
+    unsubscribe = stdinErrors.subscribe(() => {
+      finish();
+      terminateChild(child);
+    });
+    if (done) return;
     try {
       child.stdin.end("release\n");
     } catch {
-      terminateChild(child);
       finish();
+      terminateChild(child);
     }
   });
 }
@@ -288,9 +347,13 @@ export async function createWindowsSharedSnapshot(args: {
     ],
     { stdio: ["pipe", "pipe", "pipe"], windowsHide: true }
   );
+  const stdinErrors = monitorStdinErrors(child);
   const stderr = boundedStderr(child);
   try {
-    const [metadata] = await Promise.all([readyLine(child), writeBitmap(child, args.bitmap)]);
+    const [metadata] = await Promise.all([
+      readyLine(child),
+      writeBitmap(child, args.bitmap, stdinErrors)
+    ]);
     parseReadyMetadata(metadata, header);
   } catch (cause) {
     terminateChild(child);
@@ -316,7 +379,7 @@ export async function createWindowsSharedSnapshot(args: {
     release: async (): Promise<void> => {
       if (released) return;
       released = true;
-      await releaseOwner(child);
+      await releaseOwner(child, stdinErrors);
     }
   };
 }

@@ -355,9 +355,8 @@ export type PermissionReadinessReport = RecordingReadiness & {
  * shape (low / med / high) so the renderer's preset cards feel like
  * siblings of the image L/M/H row. Each (format, preset) maps to a
  * specific encode profile (dimensions, fps, codec params) owned by
- * the main-side `recording-exporter`. See plan
- * [docs/plans/2026-05-27-001-feat-video-export-presets-plan.md] §2
- * for the current tier values.
+ * the main-side `recording-exporter` — read it for the current tier
+ * values rather than duplicating them here.
  */
 export type VideoPreset = "low" | "med" | "high";
 
@@ -2281,9 +2280,7 @@ export type Settings = {
      *  sensitive-data patterns, default redaction style, first-launch
      *  banner state). Sits inside `ai` so the existing AI-consent +
      *  kill-switch fields stay close to the chat knobs the user
-     *  interacts with on the same Settings page. Added per
-     *  docs/plans/2026-05-28-001-feat-library-chat-editor-interface-plan.md
-     *  Phase 0 + deepening §F7 #3. */
+     *  interacts with on the same Settings page. */
     chat: ChatSettings;
     /** Per-surface default provider / model / reasoning the user picks
      *  in Settings → AI. These flow into the kit `ChatThreadController`
@@ -2379,7 +2376,7 @@ export type Settings = {
    *  once a gate has soaked, the flag and the fallback path are
    *  deleted together. */
   experimental: {
-    /** macOS two-process split (docs/plans/2026-06-12-001): the tray /
+    /** macOS two-process split (see `main/process-split/`): the tray /
      *  capture agent and the Library run as separate processes, so the
      *  capture overlays can never flash the Dock or disturb the
      *  Library window. Default OFF — opt-in while it soaks; turning it
@@ -2392,8 +2389,7 @@ export type Settings = {
      *  25% / 50% / 100% of the capture's resolution (DPI-aware) instead
      *  of the legacy fixed-width clamp (800 / 1440 / source). Resolves to
      *  the `scalePhysical` / `scaleLogical` export strategies in
-     *  `@pwrsnap/shared`'s `resolveExportStrategy`. Default false. See
-     *  docs/plans/2026-06-14-001-feat-dpi-aware-export-presets-plan.md. */
+     *  `@pwrsnap/shared`'s `resolveExportStrategy`. Default false. */
     dpiAwareExport: boolean;
     /** Only meaningful when `dpiAwareExport` is true. When true (default)
      *  the 100% rung is the full native capture (Retina on a 2× display);
@@ -2483,8 +2479,7 @@ export type Settings = {
    *  right-sidebar pin/last-panel state. Lives behind the same Settings
    *  substrate as every other field; renderers patch via SettingsPatch
    *  and re-fetch on `events:settings:changed` (see AGENTS.md "Settings
-   *  substrate"). Added per docs/plans/2026-05-23-001-feat-v2-editor-
-   *  plan.md Phase 1. */
+   *  substrate"). */
   editor: EditorSettings;
   /** Library DetailRail right-side activity bar state. Mirrors
    *  `editor.sidebar` but scoped to the Library — the two surfaces
@@ -4560,8 +4555,7 @@ export type Commands = {
   //
   // The user-facing agent that lives in the Library sidebar. Threads are
   // persistent (Codex rollout + our pwrsnap-thread.json sidecar) and
-  // survive relaunch. See docs/plans/2026-05-28-001-feat-library-chat-
-  // editor-interface-plan.md. Streaming + approval flows ride the
+  // survive relaunch. Streaming + approval flows ride the
   // `events:libraryChat:*` channels (see ipc.ts), not these verbs.
 
   /** List all (non-archived by default) chat threads for the thread-list

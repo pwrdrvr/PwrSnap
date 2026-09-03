@@ -12,7 +12,7 @@
 // `--write-clipboard` subcommand in native/window-list/main.swift.
 //
 // Five layers of defense the receiving paste handler enforces — see
-// docs/plans/2026-05-07-002-feat-bundle-format-v2-layer-tree-plan.md
+// docs/architecture-bundle-format.md
 // §"Clipboard — private UTI with defense-in-depth":
 //
 //   1. CLIPBOARD_FRAGMENT_MAX_BYTES — hard size cap before JSON.parse

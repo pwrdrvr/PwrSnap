@@ -2,22 +2,56 @@
 
 ## Source of Truth
 
-- Implementation plans live in `docs/plans/`. The current canonical buildout plan is
-  [docs/plans/2026-05-03-001-feat-pwrsnap-feature-buildout-plan.md](docs/plans/2026-05-03-001-feat-pwrsnap-feature-buildout-plan.md) —
-  read it before changing scope, schema, IPC contracts, or phase order.
-- Brainstorm / requirements docs (when they appear) live in `docs/brainstorms/`.
+- **[docs/architecture.md](docs/architecture.md) is the canonical description
+  of what PwrSnap is and why it is shaped this way** — read it before changing
+  scope, schema, or IPC contracts. It is deliberately short and carries no
+  phase order or task lists.
+- This file (AGENTS.md) holds the enforcement rules — the invariants a change
+  can violate. `docs/architecture.md` explains *why*; the sections below say
+  *what you must not break*.
 - Solution learnings (post-incident notes, gotchas) live in `docs/solutions/`.
+- Shipped-behavior references live at the top level of `docs/` — the release
+  runbook, the Windows guide and signing doc, the ffmpeg build reference, and
+  the third-party license notices doc.
+- Two documents that began as plans survive as living references, because
+  each is the only written statement of something still true: the
+  [bundle format spec](docs/architecture-bundle-format.md) and the
+  [Windows port status](docs/windows/port-status.md) (an open backlog).
+- `docs/plans/` and `docs/brainstorms/` are **gone and are not coming back.**
+  Do not recreate them. A change that needs written scope belongs in an
+  issue or a PR description; a change that is architectural belongs in
+  `docs/architecture.md`.
 - The original Claude Design handoff bundle (HTML/JSX/CSS reference for the
   Library + Float-Over + Tray surfaces) is preserved verbatim under `design/`.
   Treat it as a visual reference, not as code to import.
 
 ## Workflow
 
-- Treat plan documents as decision artifacts, not implementation scripts.
-- Keep changes aligned with the current active plan unless the user explicitly
-  changes scope.
-- Do not delete or "clean up" files in `docs/brainstorms/`, `docs/plans/`, or
-  `docs/solutions/`.
+- **Retention policy for docs (replaces the former blanket "never delete"
+  rule).** The old rule read: *"Do not delete or 'clean up' files in
+  `docs/brainstorms/`, `docs/plans/`, or `docs/solutions/`."* It was written
+  to stop drive-by tidying of decision artifacts, and it worked — but it also
+  preserved ~40 phase plans and requirements docs long past the point where
+  they described the product. They accumulated `status: active` front matter
+  and unchecked task lists over features that had shipped months earlier, and
+  agents reading them were reliably misled. The policy now:
+  - **`docs/solutions/` is still never deleted.** Post-incident notes stay
+    true whether or not the code moved on; they record how a class of bug
+    was found. Same for the top-level shipped-behavior docs in `docs/`.
+  - **`docs/architecture.md` is amended, not archived.** When a decision in
+    it stops holding, fix it in the PR that changed it.
+  - **Plan-shaped documents are deleted once the work lands.** A plan's value
+    expires when the code exists — the code, its comments, and AGENTS.md are
+    truer sources. Keep one only if it is the sole written statement of a
+    still-live contract — and then move it out of plan-shaped naming into
+    `docs/`, and say at the top of the file what it is and why it survived.
+    `docs/architecture-bundle-format.md` and `docs/windows/port-status.md`
+    are the two that qualified.
+  - Git history retains everything. "It might be useful someday" is not a
+    reason to keep a document that is currently wrong.
+- Treat any surviving plan document as a decision artifact, not an
+  implementation script, and verify its claims against the code before acting
+  on them.
 - **Never suggest wiping the user's database** (even on a dev machine). The
   pwrsnap.db at `~/Library/Application Support/PwrSnap/pwrsnap.db` contains
   real captures the user cares about. If a migration / schema bug bricks
@@ -435,8 +469,8 @@ Notes for anyone touching this area:
   with the deleted v1 *bundle* schemas.
 
 See
-[docs/plans/2026-05-07-002-feat-bundle-format-v2-layer-tree-plan.md](docs/plans/2026-05-07-002-feat-bundle-format-v2-layer-tree-plan.md)
-§"Shipping Status" for the rollout history.
+[docs/architecture-bundle-format.md](docs/architecture-bundle-format.md)
+§Status for the rollout history.
 
 ## Never block the main thread on a TCC-gated path
 

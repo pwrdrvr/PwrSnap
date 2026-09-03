@@ -1,6 +1,5 @@
 -- 0003_perf_app_stats — denormalized app counts + recency-leading
--- partial index. Pairs with the perf-seeder work tracked in
--- docs/plans/2026-05-07-001-feat-perf-seeder-and-library-scale-plan.md.
+-- partial index. Pairs with the perf seeder in `main/dev/seeder/`.
 --
 -- The captures table can grow into the 100k+ range; the Library's
 -- sidebar grouping needs counts per source_app_bundle_id without

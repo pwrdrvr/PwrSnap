@@ -11,12 +11,11 @@
 // rejection, zod schemas on manifest.json AND overlays.json before
 // any extraction.
 //
-// Phase 1 lands the security primitives + atomic-rename helper here.
-// The yazl/yauzl integration (pack/unpack) and scheduleRepack
-// debounce land in the follow-up commit alongside the capture-flow
-// rewire.
+// Holds the security primitives, the atomic-rename helper, the
+// yazl/yauzl pack/unpack integration, and the scheduleRepack debounce.
 //
-// See docs/plans/2026-05-07-001-feat-pwrsnap-bundle-storage-plan.md.
+// Why bundles live in the user's Documents folder rather than userData:
+// docs/architecture.md §"Storage: data, not pixels".
 
 import { createHash } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
@@ -130,8 +129,8 @@ export async function assertSafeBundleFile(filePath: string): Promise<void> {
  *   2. fsync the file body before rename.
  *   3. fsync the containing directory after rename.
  *
- * See docs/plans/2026-05-07-001-feat-pwrsnap-bundle-storage-plan.md
- * for the iCloud + atomic-rename research.
+ * The three steps are ordered for iCloud/Files-on-Demand safety — a
+ * bundle must never be observable half-written by the sync daemon.
  */
 export async function atomicWriteBundle(destPath: string, contents: Buffer): Promise<void> {
   const dir = dirname(destPath);

@@ -1,92 +1,35 @@
----
-title: Bundle format v2 — multi-source canvas + layer tree + contextual effects
-type: feat
-status: active
-date: 2026-05-07
-origin: docs/brainstorms/2026-05-07-bundle-format-v2-requirements.md
----
+# Bundle format v2 — layer tree
 
-# Bundle format v2 — multi-source canvas + layer tree + contextual effects
+> **What this document is.** The written specification for the `.pwrsnap`
+> bundle format — the layer-tree data model, the compositor's contract, and
+> the security invariants on bundle read/write. It is kept (when every other
+> plan document was pruned) because it is the only written statement of a
+> live contract, per AGENTS.md §Workflow.
+>
+> Companion documents: [docs/architecture.md](architecture.md) for why
+> storage is shaped this way, and AGENTS.md §"Bundle format v2 — the only
+> bundle format" for the rules a change can violate.
+>
+> It began life as an implementation plan. The phase sequencing, hour
+> estimates, task checklists, and acceptance criteria have been removed —
+> they described work that has since shipped. The specification and the
+> rationale behind it are what remain. Recover the original with
+> `git log --follow -- docs/architecture-bundle-format.md`.
 
-## Shipping Status — v2 is the default
+## Status
 
-**UPDATE 2026-05-28 — v1 fully removed.** The library converged to v2
-(eager boot sweep, PR #153), then the entire v1 path was deleted: the
-v1→v2 doctor, the v1 linear compositor, `overlays-repo`, the
-`overlays:*` IPC verbs, the renderer v1 model arm + doctor banners,
-`legacy-bundle-migration`, the v1 bundle read handle, the v1 zod
-schemas (`bundle-manifest-schema.ts`), and the `overlays` SQLite table
-(migration `0020`). `coordinator.ts` is v2-only and throws on non-v2;
-`compose.ts` survives only as the v2 SVG-helper holder. The
-bullets below are **historical** — `feature-flags.ts`, the
-`PWRSNAP_BUNDLE_V2` env var, and the dual-format read path they
-describe no longer exist. See AGENTS.md §"Bundle format v2 — the only
-bundle format" for current state.
+**v2 is the only bundle format.** v1 was removed entirely on 2026-05-28:
+the v1→v2 doctor, the v1 linear compositor, `overlays-repo`, the
+`overlays:*` IPC verbs, the renderer's v1 model arm, `legacy-bundle-migration`,
+the v1 bundle read handle, the v1 zod schemas, and the `overlays` SQLite
+table (migration `0020`). `coordinator.ts` is v2-only and throws on any
+non-v2 record; `compose.ts` survives only as the holder for the v2 SVG
+helpers that `compose-tree.ts` imports.
 
-**As of 2026-05-24** v2 is the default for new captures. The flip
-happened as v2-editor §Phase 6 (moved up before Phases 4-5 so the
-v2-only feature work — smart blur, multi-image — would ship against
-a real v2 install base instead of dogfood-only).
-
-- Source of truth: [apps/desktop/src/main/feature-flags.ts](../../apps/desktop/src/main/feature-flags.ts)
-- Default: **on** (v2 write path); the lazy v1→v2 doctor wraps
-  existing v1 captures on first edit-open.
-- Escape hatch: `PWRSNAP_BUNDLE_V2=0` forces the legacy v1 write
-  path. Debug-only — used for bisecting v2-codepath regressions.
-- Read path: **always dual-format** — both v1 and v2 captures render
-  correctly via `coordinator.ts:resolveCacheFile` branching on
-  `record.bundle_format_version`.
-- Clipboard `copyLayerFragment` / `pasteLayerFragment`: refuse v1
-  captures (paste targets the v2 layer tree; v1 captures will be
-  promoted by the doctor on first edit-open and only then accept a
-  fragment paste).
-
-### Rollout history
-
-The original gate (2026-05-12) shipped Phases 1–5 of the v2 data
-layer behind `PWRSNAP_BUNDLE_V2=1` while the renderer still only
-spoke `overlays:upsert`. The blockers to flipping the default were:
-
-1. Layer-editor UI in the renderer (resolved by v2-editor Phases
-   1-3 + 6 — dual-dispatch on `bundle_format_version`).
-2. v1→v2 doctor promotion (resolved by v2-editor Phase 3 — lazy
-   wrap on first edit-open).
-3. Phase 6 E2E specs covering capture → edit → repack → reload.
-4. Cross-instance UTI roundtrip verification.
-
-The flip landed with the env var inverted: `=0` is now the escape
-hatch instead of `=1` being the opt-in.
-
-## Enhancement Summary
-
-**Deepened on:** 2026-05-07
-**Reviewers:** architecture-strategist, code-simplicity-reviewer, data-integrity-guardian, security-sentinel, performance-oracle
-
-### Key changes vs. first-cut plan
-
-| Change | Driver |
-|---|---|
-| **Layer kinds 5 → 3.** Dropped `MaskLayer` (no v2.0 UX consumes it); dropped `AdjustmentEffect` slot (speculative; `z.record(z.unknown())` was a validation hole). Surviving: `raster`, `vector`, `effect`, `group`. | Simplicity + security. |
-| **BlendMode enum 12 → 1.** v2.0 ships `"normal"` only. Migration sets it. Other modes land non-breaking when an editor feature exposes them. | Simplicity. |
-| **DB columns trimmed.** `overlays_version` / `layers_version` collapse to **`edits_version`**; `bundle_overlays_version` / `bundle_layers_version` collapse to **`bundle_edits_version`**. Same semantics work for v1 (overlays table) and v2 (layers table) — the table being read is already gated by `bundle_format_version`. | Architecture + simplicity. |
-| **Schema fields stripped.** Removed `color_profile`, `source_count`, `layer_count`, `thumbnails/` from v2.0 manifest + path validator. Add when a feature needs them. | Simplicity + security (every unused field is a validation hole or a denormalization-drift bug). |
-| **Per-layer cache deleted.** Single composite cache `cache/<capture_id>/<treeHash>.<format>` like v1. Per-layer cache had estimated <15% hit rate vs. ~70% for single-composite; cache orphan accumulation risk dropped. `render-hash-tree` machinery kept (load-bearing for contextual-effect correctness). | Architecture + simplicity + performance (all three reviewers converged). |
-| **`BundleReadHandle` hidden internally; expose `BundleView` adapter.** Most callers (doctor, library, capture-handlers) only need canvas dims + capture_id + paired filename — fields *both* versions carry. v1/v2 awareness pushed down to the two functions that genuinely need it (`composeV2` vs `compose`, migration). | Architecture. |
-| **HIGH-severity security guards added.** Content-integrity verification (sha256(zipEntryBytes) === filenameSha on every `sources/<sha>.png` read); `z.number().finite()` on every numeric schema field; canvas + image dimensions capped at 32768²; clipboard UTI defense-in-depth (zod validate, 64 MiB size cap, 4096-layer count cap, sha256-verify `pngBytes`, sharp decode-probe); SVG masks deferred (originally `MaskLayer.svg_path` was a `<script>`/XXE attack surface — dropping `MaskLayer` closes this entire class). | Security-sentinel. |
-| **CRITICAL data-integrity fixes.** (1) Transitive soft-delete cascade in `rejectLayer` (groups → children get same `rejected_at`). (2) Reparent in `BEGIN IMMEDIATE` + recursive-CTE cycle check (not a TS walk outside a TX). (3) `bundle_format_version`, `bundle_modified_at`, `bundle_edits_version` are **derived from bundle at doctor reconcile** (not authoritatively stored) — closes the rename-vs-UPDATE crash gap. (4) `layers:rasterize` uses deterministic recovery (re-render from live tree if bundle write fails). | Data-integrity. |
-| **CRITICAL `walkLayerTree` contract.** Returns `{ data: Buffer; raw: { width, height, channels: 4 } }`, **raw RGBA throughout**. Single PNG encode at root. Preserves v1's two-pass discipline ([compose.ts:135-179](apps/desktop/src/main/render/compose.ts:135-179)). Stream-fold not accumulate; max 4 retained RGBA buffers; OOM-guard at canvas-dim cap. Plan's first-cut pseudocode showed `Promise<Buffer>` with no encoding declared — would have caused ~250MB transient buffers + libpng-deflate per layer. | Architecture + performance (both flagged independently). |
-| **Debounce + iCloud tuning.** `scheduleRepack` bumps 1s → **3-5s for v2** (continuous-pointer-edit gestures coalesce; v2 repack cost is 1.5-3s vs v1's ~50ms). Newer `scheduleRepack` calls cancel in-flight repacks. **iCloud-aware gating**: when bundle is iCloud-active (`NSURLUbiquitousItemIsUploadingKey`), defer auto-repack to 30s idle. | Performance. |
-| **v1→v2 doctor migration deferred** to a separate plan. v1 Phase 2 (doctor) doesn't exist yet; planning a hook into nonexistent code was planning-theater. v2.0 ships writing v2; existing v1 bundles continue to read normally via the dual-read path. Migration plan files in a follow-up once doctor lands. | Simplicity. |
-| **`packBundleV1` deleted post-Phase 4.** Roundtrip tests consume a checked-in fixture v1 `.pwrsnap`. Production code shouldn't exist solely to serve tests. | Simplicity. |
-| **`transformation-matrix` npm dep.** Replaces custom `affine-transform.ts`. ~1KB, zero deps, battle-tested. | Simplicity. |
-| **Phase count 5 → 6.** Split Phase 5 into clipboard (Phase 5) and E2E+cleanup (Phase 6). Independent landings; smaller PRs. | Simplicity. |
-| **Estimate revised down.** ~42-54h → **~33-46h** total. | Cumulative of cuts. |
-
-### What survived review unchanged
-
-The bundle ZIP layout (additive on v1's), canvas-pixel-coordinate decision, flat-list-plus-parent_id layer-tree storage (newly justified by AI-staging index `idx_layers_capture_pending`), sample-below contextual-effect semantics, the `VectorLayer.shape` reuse of `OverlaySchema`, `RasterSourceRef` kind-discriminator with `"linked"` reserved, lazy v1→v2 migration model (just deferred to a follow-up plan), per-version path validator with all v1 Zip-Slip rules carried forward.
-
----
+Consequences for anything below: passages describing a dual-format read
+path, `feature-flags.ts`, the `PWRSNAP_BUNDLE_V2` env var, or the v1→v2
+doctor are **historical**. They are kept because they explain why the
+format is shaped as it is, not because that machinery still exists.
 
 ## Overview
 
@@ -96,23 +39,23 @@ a canvas + multiple sources + layer tree + live (sampled-below) effects.
 v1 bundles remain valid forever; v2-aware builds read them via a uniform
 adapter that hides the version discrimination from most callers.
 
-This plan supersedes nothing in [v1's plan](docs/plans/2026-05-07-001-feat-pwrsnap-bundle-storage-plan.md) —
-v2 builds on it. Phase 1 of v1 (durability + atomic-rename + Zip-Slip
+v2 supersedes nothing in the original `.pwrsnap` bundle-storage design —
+it builds on it. That design's first phase (durability + atomic-rename + Zip-Slip
 defenses + sha256 dedup + paired flat PNG) carries forward verbatim. v2
 extends the *content* of a bundle, not its physical packaging or its
 durability semantics.
 
-See origin: [docs/brainstorms/2026-05-07-bundle-format-v2-requirements.md](docs/brainstorms/2026-05-07-bundle-format-v2-requirements.md)
-for the WHAT-to-build decisions.
+The requirements this was designed against (referred to below as R1-R15)
+are summarised under §"Origin".
 
 ## Problem Statement
 
 v1's data model assumes **source == canvas**. Overlay coordinates normalize
-to source W×H ([overlay-schemas.ts](packages/shared/src/overlay-schemas.ts)).
-`OVERLAY_RENDER_ORDER` ([overlay-schemas.ts:91-99](packages/shared/src/overlay-schemas.ts:91-99))
-bakes a single fixed composite. `compose.ts` ([:128](apps/desktop/src/main/render/compose.ts:128))
+to source W×H ([overlay-schemas.ts](../packages/shared/src/overlay-schemas.ts)).
+`OVERLAY_RENDER_ORDER` ([overlay-schemas.ts:91-99](../packages/shared/src/overlay-schemas.ts:91-99))
+bakes a single fixed composite. `compose.ts` ([:128](../apps/desktop/src/main/render/compose.ts:128))
 iterates a flat array. Blur is `sharp(srcPath).extract(rect).blur(sigma)` —
-the **raw source** ([:415-454](apps/desktop/src/main/render/compose.ts:415-454)).
+the **raw source** ([:415-454](../apps/desktop/src/main/render/compose.ts:415-454)).
 
 Three shapes this can't carry (see origin §Problem Frame):
 
@@ -167,7 +110,7 @@ Three top-level fixed entries + two prefix-allowlisted directories. **No
 16 chars) — matches PwrSnap's existing id convention; **NOT** UUID v4 as
 the first-cut plan mistakenly specified (correctness fix from security review).
 
-(see origin: [R5, R7](docs/brainstorms/2026-05-07-bundle-format-v2-requirements.md))
+(requirements R5, R7 — see §"Origin")
 
 ### Layer model
 
@@ -256,7 +199,7 @@ without a depth bound, compose stalls.
 ### Render contract — tree-walking compositor with sample-below
 
 **Critical contract:** `walkLayerTree` operates on **raw RGBA buffers**,
-not PNG-encoded buffers. v1's [compose.ts:135-179](apps/desktop/src/main/render/compose.ts:135-179)
+not PNG-encoded buffers. v1's [compose.ts:135-179](../apps/desktop/src/main/render/compose.ts:135-179)
 already implements this two-pass discipline (composite at source resolution
 → raw RGBA → resize + encode). v2 preserves it.
 
@@ -420,7 +363,7 @@ attacker-controlled entry names (sanitized error rule from v1).
 
 ### Write path — v2 packBundle + persistCaptureFromTempV2
 
-`packBundle` ([bundle-store.ts:454-486](apps/desktop/src/main/persistence/bundle-store.ts:454-486))
+`packBundle` ([bundle-store.ts:454-486](../apps/desktop/src/main/persistence/bundle-store.ts:454-486))
 gets a v2 sibling. Critically: `packBundleV1` is **scheduled for deletion
 post-Phase 4**. Production never writes v1 again after the cutover; v1
 read paths remain forever for unmigrated bundles. v1 roundtrip tests
@@ -669,7 +612,7 @@ function scheduleRepackV2(captureId: string): void {
 
 ```sql
 -- 0004_layers — Bundle format v2 + layer tree + unified edits-version columns.
--- See docs/plans/2026-05-07-002-feat-bundle-format-v2-layer-tree-plan.md.
+-- See docs/architecture-bundle-format.md.
 
 -- Rename v1 columns to unify v1/v2 convergence semantics. Same columns
 -- work for both formats; the table being read is already gated by
@@ -1031,8 +974,7 @@ Files added:
 - A checked-in fixture `apps/desktop/e2e/fixtures/bundles/v1-sample.pwrsnap` for v1 read tests post-`packBundleV1` deletion
 
 Files updated:
-- `docs/plans/2026-05-07-001-feat-pwrsnap-bundle-storage-plan.md` — Future Considerations references v2 plan
-- `docs/architecture/bundle-format-v2.md` (NEW) — manifest + document shapes, layer kinds, tree-walking compositor with raw-RGBA discipline, sample-below semantics, cache key construction, soft-delete cascade rules, reparent cycle prevention
+- `docs/architecture-bundle-format.md` (this document) — manifest + document shapes, layer kinds, tree-walking compositor with raw-RGBA discipline, sample-below semantics, cache key construction, soft-delete cascade rules, reparent cycle prevention
 - `AGENTS.md` — extends "PwrSnap on-disk layout" with v2; reaffirms R10
 - `apps/desktop/src/main/__tests__/bundle-store-pack.test.ts` — v1 pack tests rewritten to consume the fixture (since `packBundleV1` is deleted)
 
@@ -1045,7 +987,6 @@ Success criteria:
 - E2E disaster-recovery: wipe `<userData>`, restart; mix of v1 + v2 bundles renders correctly (relies on v1 Phase 2 doctor; deferred if not yet shipped)
 - E2E layer-fragment round-trip passes
 - No remaining references to `packBundleV1` outside the fixture-based test
-- Plan §460-466 of v1 buildout cites this plan as authority for the v2 future
 
 ## Alternative Approaches Considered
 
@@ -1187,7 +1128,7 @@ IPC contracts for `library:*`, `capture:*`, existing `overlays:*` survive
 unchanged. New `layers:*` namespace for v2. Renderer branches editor UI
 on `record.bundle_format_version`:
 - v1: existing editor (overlay tool palette)
-- v2: layer-tree editor (deferred; this plan does NOT ship the editor UI)
+- v2: layer-tree editor (shipped separately from the format itself)
 
 `layers:rasterize` available for the future "freeze this effect" UX
 command. The runtime behavior is there; the button is a renderer-side
@@ -1238,71 +1179,6 @@ feature for a separate plan.
 10. **iCloud-aware debounce.** Mark a bundle iCloud-active; verify
     repack defers to 30s idle, not 5s.
 
-## Acceptance Criteria
-
-### Functional Requirements
-
-- [ ] `bundle_format_version: 2` introduced; v1 bundles remain readable forever (R1)
-- [ ] `canvas_dimensions` top-level on v2 manifest (R2)
-- [ ] All coordinates in canvas-pixel space (R3)
-- [ ] Flat layer list + `parent_id` + `z_index` (R4)
-- [ ] **Three** layer kinds in v2.0: raster, vector, effect, group (R5; reduced from 5)
-- [ ] Common props (opacity, blend_mode, transform, visibility, locked, name) on every layer (R6)
-- [ ] Bundle ZIP layout supports `sources/` and `layers/` prefixes; `thumbnails/` deferred (R7)
-- [ ] Contextual effects sample from layers below at composite time (R8)
-- [ ] `layers:rasterize` IPC freezes a live effect (R9)
-- [ ] Clipboard PNG + private UTI for layer-fragment paste with 5-layer defense (R10)
-- [ ] Sources embedded only; `linked` reserved for future (R11)
-- [ ] Bundle rewrite stays the write model; scheduleRepack debounce tuned for v2 (R12)
-- [ ] ZIP append-on-write NOT in v2.0 (R13)
-- [ ] v1 → v2 doctor migration deferred to a follow-up plan (R14 partial)
-- [ ] Package-directory mode reserved (R15)
-
-### Non-Functional Requirements
-
-- [ ] v1 capture flow performance unchanged (±10ms)
-- [ ] v2 capture flow performance within ±20ms of v1 baseline
-- [ ] Tree-walking compositor uses raw RGBA throughout; single PNG encode at root
-- [ ] `walkLayerTree` refuses trees deeper than 32 levels
-- [ ] `walkLayerTree` refuses when retained RGBA buffer count exceeds 4
-- [ ] Canvas + image dimensions capped at 32768² in schemas
-- [ ] All numeric schema fields use `.finite()` (no NaN/Inf accepted)
-- [ ] Zip-Slip defenses extend cleanly to v2 path validator + every v1 case + new v2-specific cases (homograph, URL-encoded traversal, mixed-case sha)
-- [ ] `sources/<sha>.png` content-hash verified on read
-- [ ] Clipboard layer-fragment paste: 64 MiB size cap, 4096-layer count cap, zod validation, sha256 verification, sharp decode-probe — all enforced
-- [ ] Sanitized error messages — attacker-controlled entry names, paths, sha256 values never echoed
-- [ ] Source-immutability invariant preserved: `sources/<sha>.png` write-once-at-create per content; never modified
-
-### Quality Gates
-
-- [ ] Unit tests for: v2 schemas, path validator (with full Zip-Slip grid), layers-repo (cascade, reparent cycle, atomic reorder), compose-tree (sample-below + depth bound + memory bound), bundle-store-content-integrity, clipboard-handlers-v2 (all 5 defense layers)
-- [ ] E2E spec for v2 capture round-trip
-- [ ] E2E spec for clipboard layer-fragment paste
-- [ ] E2E spec for disaster recovery (if v1 Phase 2 doctor exists)
-- [ ] Lint + typecheck pass across all 3 workspace packages
-- [ ] v1 capture tests still pass (no regression on existing surface)
-- [ ] Acceptance: doctor reconcile (v1 Phase 2) reads `bundle_format_version` from bundle, not DB row, when they disagree
-
-## Success Metrics
-
-- A user pastes an image onto a v2 canvas; the image lands as a raster layer with independent transform; persists across app restart
-- A user adds a blur layer above a raster, drags the raster — blur visibly re-renders against new position (proving sample-below)
-- A user converts a live blur to a rasterized layer (`layers:rasterize`); subsequent moves below it no longer affect the blurred region
-- Copy a layer fragment in PwrSnap A; paste into PwrSnap B; layer tree preserved
-- Wiping `<userData>` and re-launching rebuilds the library with no data loss (relies on v1 Phase 2 doctor for v1 bundles; v2 bundles handled by v2 doctor extension when it lands)
-- A malicious v2 bundle dropped via AirDrop is quarantined; no extraction; no DB row created
-
-## Dependencies & Prerequisites
-
-- **v1 Phase 2 (doctor)** is NOT a hard prerequisite for v2.0; v2 ships
-  read + write + clipboard + rasterize without it. The follow-up
-  `v1→v2 migration` plan needs the doctor and lands once it exists.
-- **sharp** — continues; v2.0 ships sharp-native blend modes; `normal` is the only mode exposed
-- **yazl ^3.3.1 / yauzl ^3.x** — already pinned from Phase 1
-- **archiver ^7.0.1** — devDep for adversarial test fixtures (Phase 1)
-- **`transformation-matrix`** (NEW dep, ~1KB, MIT, zero deps) — affine math
-- No new native dependencies
-
 ## Risk Analysis & Mitigation
 
 | Risk | Likelihood | Impact | Mitigation |
@@ -1325,13 +1201,6 @@ feature for a separate plan.
 | **v2 builds writing rows that v1 builds can't read** | Med | Med | `bundle_format_version` stored on row; v1 builds see this column post-0004 migration; v1 builds refuse to open v2 bundles cleanly. |
 | `packBundleV1` deletion breaks v1 read tests | Low | Low | Checked-in fixture v1 `.pwrsnap` replaces synthesis. |
 | `transformation-matrix` dep introduces supply-chain risk | Very Low | Low | ~1KB, zero deps, MIT, well-known. Pin minor; review on upgrade. |
-
-## Resource Requirements
-
-Solo founder + Claude. Total estimate **~33-46h** of focused work across
-6 phases (down from ~42-54h after deepening cuts). Phase 3 (layers +
-tree compositor) remains the bulk (~10-14h). Phases sequenced so each
-boundary is a shippable state.
 
 ## Future Considerations
 
@@ -1359,27 +1228,13 @@ boundary is a shippable state.
 - **Color profile support.** Add `color_profile` field at the v2.x
   bump that ships ICC machinery.
 
-## Documentation Plan
-
-- New: `docs/architecture/bundle-format-v2.md` — manifest + document
-  shapes, layer kinds, tree-walking compositor with raw-RGBA discipline,
-  sample-below semantics, cache key, soft-delete cascade rules, reparent
-  cycle prevention, content-integrity verification, clipboard private
-  UTI defense-in-depth
-- Update: [`AGENTS.md`](AGENTS.md) — "PwrSnap on-disk layout" section
-  with v2 bundle internals; reaffirm R10 + R10 precedence in time-windowed terms
-- Update: [`docs/plans/2026-05-07-001-feat-pwrsnap-bundle-storage-plan.md`](docs/plans/2026-05-07-001-feat-pwrsnap-bundle-storage-plan.md)
-  — reference v2 plan in Future Considerations
-- Add to `docs/solutions/` after implementation:
-  - Bottom-up hash-of-layers-below cache key — load-bearing for contextual-effect correctness
-  - Raw RGBA discipline in `walkLayerTree` — easy to get wrong; preserves v1's two-pass pipeline
-  - `BEGIN IMMEDIATE` + recursive-CTE pattern for cycle prevention under concurrent dispatch
-
 ## Sources & References
 
 ### Origin
 
-- **Origin document:** [docs/brainstorms/2026-05-07-bundle-format-v2-requirements.md](docs/brainstorms/2026-05-07-bundle-format-v2-requirements.md). Key decisions carried forward:
+- **Origin:** a 2026-05-07 requirements document, pruned 2026-09-03 (recover
+  with `git log --diff-filter=D -- docs/brainstorms/`). Key decisions carried
+  forward:
   - bundle_format_version 2; v1 stays valid; v2-aware builds read both (origin §R1)
   - Canvas dimensions independent of source; canvas-pixel coords (origin §R2-R3)
   - Flat layer list + parent_id + z_index, justified by AI-staging index (origin §R4)
@@ -1390,23 +1245,23 @@ boundary is a shippable state.
   - Clipboard: PNG + private UTI with 5-layer defense (origin §R10, deepened)
   - Embedded sources only in v2.0; linked reserved (origin §R11)
 
-### Internal References
+### Where the code lives
 
-- [apps/desktop/src/main/render/compose.ts:66-179](apps/desktop/src/main/render/compose.ts:66-179) — current linear compositor; `composeV2` preserves it for v1
-- [apps/desktop/src/main/render/compose.ts:135-179](apps/desktop/src/main/render/compose.ts:135-179) — two-pass discipline `composeV2` must preserve
-- [apps/desktop/src/main/render/compose.ts:415-454](apps/desktop/src/main/render/compose.ts:415-454) — current blur reads raw source; v2 effect kind reads sample-below
-- [apps/desktop/src/main/persistence/overlays-repo.ts:57-138](apps/desktop/src/main/persistence/overlays-repo.ts:57-138) — repo pattern for `layers-repo.ts`
-- [apps/desktop/src/main/handlers/overlays-handlers.ts:28-83](apps/desktop/src/main/handlers/overlays-handlers.ts:28-83) — broadcast + scheduleRepack pattern
-- [apps/desktop/src/main/persistence/bundle-store.ts:267-303](apps/desktop/src/main/persistence/bundle-store.ts:267-303) — `openAndValidateBundle` seam
-- [apps/desktop/src/main/persistence/bundle-store.ts:454-486](apps/desktop/src/main/persistence/bundle-store.ts:454-486) — `packBundle` becomes `packBundleV1` (deleted Phase 4)
-- [apps/desktop/src/main/persistence/bundle-store.ts:516-617](apps/desktop/src/main/persistence/bundle-store.ts:516-617) — `persistCaptureFromTemp` pattern
-- [apps/desktop/src/main/persistence/legacy-bundle-migration.ts](apps/desktop/src/main/persistence/legacy-bundle-migration.ts) — per-row migration pattern
-- [packages/shared/src/protocol.ts:14-63](packages/shared/src/protocol.ts:14-63) — `CaptureRecord` gains `bundle_format_version`; `overlays_version` renamed
-- [packages/shared/src/bundle-manifest-schema.ts:1-13](packages/shared/src/bundle-manifest-schema.ts:1-13) — schema discipline for v2
-- [packages/shared/src/overlay-schemas.ts:73-99](packages/shared/src/overlay-schemas.ts:73-99) — `Overlay` becomes `VectorLayer.shape`
-- [apps/desktop/src/main/handlers/clipboard-handlers.ts:27-65](apps/desktop/src/main/handlers/clipboard-handlers.ts:27-65) — clipboard surface
-- [apps/desktop/electron-builder.yml:90-97](apps/desktop/electron-builder.yml:90-97) — UTI declaration target
-- [apps/desktop/src/main/__tests__/bundle-store-guards.test.ts](apps/desktop/src/main/__tests__/bundle-store-guards.test.ts) — v1 Zip-Slip test grid
+Current owners of the contracts described above. (This replaces a
+pre-implementation reading list whose line ranges had gone stale and four
+of whose files were deleted with the v1 path.)
+
+| Concern | Module |
+| --- | --- |
+| v2 manifest + layer-tree schemas | [`packages/shared/src/bundle-manifest-schema-v2.ts`](../packages/shared/src/bundle-manifest-schema-v2.ts) |
+| `Overlay`, carried as `VectorLayer.shape` | [`packages/shared/src/overlay-schemas.ts`](../packages/shared/src/overlay-schemas.ts) |
+| Tree-walking compositor (`composeV2`) | [`apps/desktop/src/main/render/compose-tree.ts`](../apps/desktop/src/main/render/compose-tree.ts) |
+| v2 SVG rasterize helpers | [`apps/desktop/src/main/render/compose.ts`](../apps/desktop/src/main/render/compose.ts) |
+| v2-only read path / cache resolution | [`apps/desktop/src/main/render/coordinator.ts`](../apps/desktop/src/main/render/coordinator.ts) |
+| Pack / unpack, atomic write, Zip-Slip defenses | [`apps/desktop/src/main/persistence/bundle-store.ts`](../apps/desktop/src/main/persistence/bundle-store.ts) |
+| Layer persistence (cascade, reparent) | [`apps/desktop/src/main/persistence/layers-repo.ts`](../apps/desktop/src/main/persistence/layers-repo.ts) |
+| Single v2 write entrypoint (`persistCaptureFromTempV2`) | [`apps/desktop/src/main/handlers/capture-handlers.ts`](../apps/desktop/src/main/handlers/capture-handlers.ts) |
+| Private-UTI layer-fragment clipboard | [`packages/shared/src/clipboard-layer-fragment.ts`](../packages/shared/src/clipboard-layer-fragment.ts) · [`apps/desktop/src/main/handlers/clipboard-handlers.ts`](../apps/desktop/src/main/handlers/clipboard-handlers.ts) |
 
 ### External References
 
@@ -1426,6 +1281,5 @@ boundary is a shippable state.
 
 ### Related Work
 
-- [docs/brainstorms/2026-05-07-bundle-format-v2-requirements.md](docs/brainstorms/2026-05-07-bundle-format-v2-requirements.md) — origin
-- [docs/plans/2026-05-07-001-feat-pwrsnap-bundle-storage-plan.md](docs/plans/2026-05-07-001-feat-pwrsnap-bundle-storage-plan.md) — v1 plan
+- [docs/architecture.md](architecture.md) — why storage is shaped this way
 - [PR #14](https://github.com/pwrdrvr/PwrSnap/pull/14) — v1 Phase 1 implementation

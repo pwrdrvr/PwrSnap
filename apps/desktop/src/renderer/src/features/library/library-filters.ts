@@ -28,8 +28,6 @@
 // action that doesn't change anything returns the same object, so
 // React bails out of the re-render and the memo chain downstream of
 // `activeFilter` doesn't churn. Tests: __tests__/library-filters.test.ts.
-//
-// Design source: docs/brainstorms/2026-08-15-library-video-sizzle-design-critique.md §1.
 
 import type { LibraryCountsRequest } from "@pwrsnap/shared";
 

@@ -10,9 +10,6 @@
 // Settings substrate as every other field. The bus validator enforces
 // caps + the secret-shape sniff; a rejected patch surfaces an inline
 // error and we re-sync local draft state from the broadcast.
-//
-// Plan: docs/plans/2026-05-28-001-feat-library-chat-editor-interface-plan.md
-// (§Storage layout banner copy, §F3 Phase 3, §F4 H3 secret sniff).
 
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import {

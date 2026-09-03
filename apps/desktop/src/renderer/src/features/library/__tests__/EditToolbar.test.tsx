@@ -1,7 +1,7 @@
 // Behavior tests for the v2-refresh of Library's EditToolbar. Verifies
 // that the chromeless inline editor (Library Focus / Reel) wires up
 // useEditorToolState the same way the standalone Editor window does
-// (per docs/plans/2026-05-23-001-feat-v2-editor-plan.md task #10):
+// — the same seven tools, the same state hook:
 //
 //   • All 7 tool buttons render (pointer / arrow / rect / highlight /
 //     blur / text / crop).

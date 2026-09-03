@@ -4,7 +4,7 @@
 // `poster.png` from `video-poster.ts` and the export artifacts from
 // `recording-exporter.ts`). Backs the `video:frames` IPC that the
 // Library timeline + float-over mini-trim use for their filmstrip
-// lane. Plan: docs/plans/2026-08-15-001-feat-video-transport-trim-plan.md
+// lane.
 //
 // Why a contact strip instead of N files: one file, one protocol
 // request, one `<img>`; the renderer slices it with `object-position`

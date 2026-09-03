@@ -1,6 +1,6 @@
 // Float-over toast — singleton renderer with IPC-driven state machine.
 //
-// Phase 1.5 lifecycle (per docs/plans/2026-05-04-001):
+// Lifecycle:
 //
 //   HIDDEN → IDLE (pre-show under selector)
 //          ↘ LOADED (post-commit, populated)

@@ -6,9 +6,9 @@
 // (`installLaunchAtLoginSync`). A login-item launch boots TRAY-ONLY:
 // index.ts consults `wasLaunchedAtLogin()` and skips the Library window
 // so signing in brings up the hotkeys + menu-bar icon without flashing
-// a window. The two-process split plan (docs/plans/2026-06-12-001, §D2
-// + §D10) later makes that structural — login items boot the agent
-// role under LSUIElement — but the detection seam is the same: this
+// a window. The two-process split (see `main/process-split/`) makes
+// that structural — login items boot the agent role under LSUIElement
+// — but the detection seam is the same: this
 // module stays the single place that answers "was this a login
 // launch?".
 //

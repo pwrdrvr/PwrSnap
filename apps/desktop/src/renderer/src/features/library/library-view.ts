@@ -8,7 +8,6 @@
 // from either layout and exit back to it. Don't add `cart`/`peek`/etc.
 // kinds — those are inspector/overlay state that lives OUTSIDE this union.
 //
-// Plan: docs/plans/2026-05-05-001-feat-library-three-state-view-model-plan.md
 //
 // The discriminated union encodes the illegal-state guard at compile
 // time: `kind: "focus"` REQUIRES non-null `selectedRecordId`, so render
@@ -16,16 +15,16 @@
 // (not `string | null`) for the recordId — no `!` non-null assertions
 // needed, no defensive null guards inside the focus subtree.
 //
-// The reducer runs OUT of React (pure logic, no DOM). All transition
-// rules in the plan's transition table are encoded here. Tests live
-// at __tests__/library-view.test.ts.
+// The reducer runs OUT of React (pure logic, no DOM). Every legal
+// transition is encoded here and nowhere else. Tests live at
+// __tests__/library-view.test.ts.
 
 export type GridReturnAnchor = {
   /** scrollTop of the grid's main pane at the moment the user clicked
    *  a cell. Used by the cell-pulse animation effect to find the cell
-   *  that was open when Focus closes. With Grid kept mounted (per the
-   *  Phase B/C decision in the plan), `scrollTop` survives the
-   *  display:none toggle natively, so this is no longer load-bearing
+   *  that was open when Focus closes. Grid is kept mounted, so
+   *  `scrollTop` survives the
+   *  display:none toggle natively and this is no longer load-bearing
    *  for scroll restoration — only the `cellId` is. We keep the field
    *  for symmetry and in case future virtualization re-introduces the
    *  manual restore path. */
@@ -88,8 +87,8 @@ export type LibraryAction =
    *  is a query, query changed, show the new result set in Grid form).
    *  In Grid, if the now-real grid selection left the visible set, it
    *  is cleared to null so the inspector empties instead of showing an
-   *  off-screen record. Decision: see the plan's Resolved Decisions
-   *  item 2 + grid-first-select-edit plan SpecFlow I1. */
+   *  off-screen record. (A filter is a query; when the query changes
+   *  the result set wins over whatever was selected before it.) */
   | {
       readonly type: "FILTER_CHANGED";
       readonly visibleIds: ReadonlyArray<string>;

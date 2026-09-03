@@ -3,7 +3,7 @@
   "productName": "PwrSnap",
   "version": "1.1.0-alpha.4",
   "private": true,
-  "description": "Mac-first agentic screen capture tool",
+  "description": "Screen capture with a local-first library",
   "author": "PwrDrvr LLC",
   "license": "MIT",
   "copyright": "Copyright © 2026 PwrDrvr LLC",

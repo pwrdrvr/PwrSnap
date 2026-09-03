@@ -1164,12 +1164,44 @@ doesn't.
   except through `pnpm licenses:generate`, and do not remove the shipped
   notices/changelog resources from packaged builds. See
   [docs/third-party-license-notices.md](docs/third-party-license-notices.md).
-- macOS-first (Phase 1–7); cross-platform deferred to Phase 8.
+- macOS and Windows both ship: a signed/notarized universal DMG and a
+  signed NSIS x64 installer (plus the winget manifests under
+  [docs/windows/winget](docs/windows/winget)). Linux is not a distribution
+  target — the Linux CI job is E2E only. The old "macOS-first, cross-platform
+  deferred to Phase 8" framing is history; do not write new platform-
+  exclusive copy anywhere a user can read it (see the `description` section
+  below for where that bit us).
 - electron-builder config at [apps/desktop/electron-builder.yml](apps/desktop/electron-builder.yml).
   Hardened runtime + notarization wired (notarize off until Apple Developer
   ID is configured).
 - Auto-update wires in Phase 3 via `electron-updater`, mirroring PwrAgnt's
   pattern.
+
+### `package.json` `description` is shipped UI on Windows
+
+**It is not inert metadata.** electron-builder reads
+`apps/desktop/package.json` → `description` into `AppInfo.description` and
+puts it in two places a Windows user actually reads:
+
+- the **NSIS installer's own `FileDescription`** version string — what
+  SmartScreen and Explorer's Properties → Details name the program;
+- **`APP_DESCRIPTION`**, passed to `CreateShortCut` for the Start Menu and
+  desktop `.lnk`s, which is the line Windows 11 renders in the **taskbar
+  jump list** above "Pin to taskbar" / "Close window".
+
+1.1 shipped `"Mac-first agentic screen capture tool"` to Windows users
+through both. Nothing surfaced it: the app exe's own `FileDescription` is
+`productName` (`winPackager.ts`), so the string is invisible everywhere on
+macOS and only appears once a `.exe` exists.
+
+Keep it platform-neutral and short enough to read as a one-line label.
+[scripts/check-app-metadata-policy.mjs](scripts/check-app-metadata-policy.mjs)
+enforces that: empty, over 80 characters, carrying any word in
+`PLATFORM_WORDS`, or drifting from the root `package.json`'s copy all fail.
+It runs in `pnpm metadata:check` — so in `pnpm lint`, so on **every PR** — and
+`pnpm release:check` calls the same function so a string that reached `main`
+another way still cannot ship. Putting it only in the release gate would have
+caught this at tag time, which is the worst moment to find it.
 
 ## Dependencies and tooling
 

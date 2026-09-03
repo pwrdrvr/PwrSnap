@@ -415,10 +415,11 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
   gap: 6px;
   /* A big pick set must not push Capture off the bar. */
   overflow-x: auto;
+  /* Hidden, as it has always been here — this replaces an equivalent
+     `::-webkit-scrollbar { display: none }`, which app.css bans and
+     which Chromium has not needed since 121. `none` also overrides the
+     universal `scrollbar-width: thin`. */
   scrollbar-width: none;
-}
-.region-hud__chips::-webkit-scrollbar {
-  display: none;
 }
 
 .region-hud__chip {

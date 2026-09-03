@@ -24,33 +24,24 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
+import {
+  extractBlock as extractCssBlock,
+  stripCssComments,
+  tokenValue as cssTokenValue
+} from "./css-block";
+
+const LABEL = "theme-contract";
 const TOKENS_PATH = join(__dirname, "..", "tokens.css");
-const css = readFileSync(TOKENS_PATH, "utf8");
+// Comment-stripped: `extractBlock` scans to the first `}`, so a brace
+// inside one of this file's (many, long) comments would otherwise
+// truncate the block and hide every token after it. See ./css-block.
+const css = stripCssComments(readFileSync(TOKENS_PATH, "utf8"));
 
-/** Extract the body (`{ ... }`) of a selector block. Selector is
- *  matched as a regex source (escape what needs it). Throws when
- *  the block is missing — that's an explicit failure mode rather
- *  than a silent `undefined`. */
-function extractBlock(selectorPattern: string): string {
-  const re = new RegExp(`${selectorPattern}\\s*\\{([\\s\\S]*?)\\}`);
-  const match = css.match(re);
-  if (match === null) {
-    throw new Error(`theme-contract: no block found for selector /${selectorPattern}/`);
-  }
-  return match[1] ?? "";
-}
+const extractBlock = (selectorPattern: string): string =>
+  extractCssBlock(css, selectorPattern, { label: LABEL });
 
-/** Pull a single `--name: <value>;` declaration out of a block.
- *  Returns the trimmed value or throws if the token isn't defined
- *  in that block. */
-function tokenValue(block: string, name: string): string {
-  const re = new RegExp(`--${name}\\s*:\\s*([^;]+);`);
-  const match = block.match(re);
-  if (match === null) {
-    throw new Error(`theme-contract: --${name} not declared in this block`);
-  }
-  return (match[1] ?? "").trim();
-}
+const tokenValue = (block: string, name: string): string =>
+  cssTokenValue(block, name, LABEL);
 
 describe("dark theme :root tokens", () => {
   const block = extractBlock(":root");

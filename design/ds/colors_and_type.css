@@ -100,6 +100,15 @@
   --shadow-card:    var(--shadow-md);
   --shadow-thumb:   var(--shadow-md);
 
+  /* ---------- SCROLLBARS ----------
+     Thumb + track for the native (`scrollbar-color`) thin scrollbars
+     applied to every scroller by the `*` rule in the app's app.css.
+     No hover tone — the OS owns thumb hover. Redeclared in the light
+     block below; see the note there for why that is not optional in
+     THIS file. */
+  --scrollbar-track: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  --scrollbar-thumb: color-mix(in srgb, var(--text-muted) 46%, transparent);
+
   /* ---------- FOCUS ---------- */
   --focus-ring: 0 0 0 3px var(--accent-shadow);
 
@@ -236,6 +245,18 @@
   --shadow-md:     0 12px 28px color-mix(in srgb, var(--shadow-base) 12%, transparent);
   --shadow-lg:     0 18px 48px color-mix(in srgb, var(--shadow-base) 18%, transparent);
   --shadow-inset:  inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 60%, transparent);
+
+  /* ---------- SCROLLBARS ----------
+     Redeclared here for the same reason as the accent derivatives
+     above: this file's light selector includes the bare
+     `[data-theme="light"]` subtree variant, and in a subtree the
+     :root values were already substituted against the DARK
+     --text-primary / --text-muted and merely inherit down. The app's
+     own tokens.css does NOT need this — its selector is
+     `:root[data-theme="light"]` only, the same element as `:root`, so
+     the color-mix re-derives there on its own. */
+  --scrollbar-track: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  --scrollbar-thumb: color-mix(in srgb, var(--text-muted) 46%, transparent);
 }
 
 /* ============================================================

@@ -786,6 +786,7 @@ export type CapturesAccessHealth = {
  *  to deep-link directly to a section. */
 export type SettingsPage =
   | "general"
+  | "updates"
   | "hotkeys"
   | "ai"
   | "local-agents"
@@ -803,6 +804,7 @@ export type SettingsPage =
  *  without adding the literal here is a type error. */
 export const SETTINGS_PAGES = [
   "general",
+  "updates",
   "hotkeys",
   "ai",
   "local-agents",
@@ -2504,11 +2506,16 @@ export type Settings = {
      *  if the user invokes Check for Updates from the Help menu). */
     channel: UpdateChannel;
     /** Release train. `"stable"` is the 1.0 / GitHub Latest feed;
-     *  `"beta"` follows `main` (`-beta` / `-alpha` tags). Additive —
-     *  older settings files omit it and stay on Stable unless both
-     *  `train` and `channel` are absent, in which case the installed
-     *  app version seeds the pair. */
+     *  `"beta"` follows `main` (`-beta` / `-alpha` tags). */
     train: UpdateTrain;
+    /** Whether the pair above is a user's pinned choice or derived from
+     *  the running binary. See {@link UpdateSelectionSource} — while it
+     *  reads `"inferred"`, `train`/`channel` are RECOMPUTED from the
+     *  installed version on every hydration, so a hand-installed alpha
+     *  follows the alpha feed instead of being offered the last stable.
+     *  Main-owned: it is not part of `SettingsPatch`, and any write that
+     *  touches `train`/`channel` flips it to `"user"`. */
+    selectionSource: UpdateSelectionSource;
   };
   /** Library storage and filename preferences. */
   storage: {
@@ -3121,6 +3128,27 @@ export function isUpdateTrain(value: unknown): value is UpdateTrain {
   return value === "stable" || value === "beta";
 }
 
+/** Where the persisted train/track pair came from.
+ *
+ *  `"inferred"` means nobody has picked a slot yet, so the pair is
+ *  derived from the RUNNING BINARY's version on every hydration —
+ *  install an alpha and you follow the alpha feed, install a stable
+ *  build and you follow Stable Latest. `"user"` means somebody clicked
+ *  a slot in Settings and the pair is pinned until they click another.
+ *
+ *  Without this flag the two states are indistinguishable on disk, and
+ *  a pre-`train` settings file carrying only `channel: "latest"` read
+ *  as a deliberate Stable pin. That is what stranded 1.1.0-alpha
+ *  installs on the Stable Latest feed: the app offered them v1.0.3 and
+ *  never mentioned the newer alpha their own binary came from. */
+export type UpdateSelectionSource = "inferred" | "user";
+
+export const UPDATE_SELECTION_SOURCE_DEFAULT: UpdateSelectionSource = "inferred";
+
+export function isUpdateSelectionSource(value: unknown): value is UpdateSelectionSource {
+  return value === "inferred" || value === "user";
+}
+
 // Last 1.0 core that used `-beta.N` as the Stable prerelease line. Builds
 // at this core stay on Stable so a website Beta download cannot be confused
 // with historical `v1.0.0-beta.N` tags.
@@ -3142,10 +3170,17 @@ function parseUpdateVersion(
 }
 
 /**
- * Map an installed app version onto the Settings update train/track.
- * Used only when both `updates.train` and `updates.channel` are unset so a
- * GitHub or website download of Beta/Prerelease follows that feed. A
- * pre-train config that only set `channel` stays on Stable.
+ * Map an INSTALLED app version onto the Settings update train/track, so a
+ * GitHub or website download follows the feed it came from. This is the
+ * whole rule for a selection whose {@link UpdateSelectionSource} is still
+ * `"inferred"`: an `-alpha` binary is evidence of Beta/Prerelease, a
+ * `-beta` binary is evidence of Beta/Latest, a `-rc` / `-prerelease`
+ * binary is evidence of Stable/Prerelease, and a plain release means
+ * Stable/Latest. Once someone picks a slot in Settings the source flips to
+ * `"user"` and this function is no longer consulted.
+ *
+ * `v1.0.0-beta.N` is the one exception: those tags were the STABLE
+ * prerelease line before the trains split, so they stay on Stable.
  */
 export function inferUpdateSelection(version: string): {
   channel: UpdateChannel;
@@ -3241,7 +3276,11 @@ export type SettingsPatch = {
   hotkeys?: Partial<Settings["hotkeys"]>;
   general?: Partial<Settings["general"]>;
   appearance?: Partial<Settings["appearance"]>;
-  updates?: Partial<Settings["updates"]>;
+  /** Only the two selectable axes. `selectionSource` is main-owned
+   *  derived state — the write path sets it to `"user"` whenever a
+   *  patch names either axis, so a renderer can neither forget to send
+   *  it nor forge it. */
+  updates?: Partial<Pick<Settings["updates"], "channel" | "train">>;
   storage?: Partial<Settings["storage"]>;
   recording?: Partial<Settings["recording"]>;
   /** Editor preferences are deep-nested (toolStyles per tool kind),

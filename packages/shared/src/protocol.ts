@@ -2471,6 +2471,12 @@ export type Settings = {
      *  Meaningless (ignored) off macOS, where the boot is always
      *  single-process. */
     processSplit: boolean;
+    /** Renderer-owned frozen-frame acquisition for the interactive selector.
+     *  Default OFF while the new macOS/Windows path soaks. When false, the
+     *  existing native/temp-file snapshot path remains the shipping behavior.
+     *  Applies to the next picker invocation without a relaunch. Ignored on
+     *  Linux, whose explicit fallback remains the only supported strategy. */
+    rendererOwnedSelectorCapture: boolean;
     /** When true, the Low / Med / High image-export presets scale to
      *  25% / 50% / 100% of the capture's resolution (DPI-aware) instead
      *  of the legacy fixed-width clamp (800 / 1440 / source). Resolves to

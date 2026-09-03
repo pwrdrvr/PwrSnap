@@ -152,7 +152,11 @@ async function captureDisplayPng(
  */
 export type CaptureRegionResult =
   | { ok: true; tempPath: string; displayId: number }
-  | { ok: false; reason: "revoked" | "cancelled" | "error" | "validation"; message: string };
+  | {
+      ok: false;
+      reason: "revoked" | "cancelled" | "error" | "validation";
+      message: string;
+    };
 
 /**
  * Validate a renderer-supplied rect against the current display
@@ -225,9 +229,7 @@ function validateRect(rect: Rect, displayId: number): { valid: boolean; message:
  * `fullWindow: true`; capture-handlers routes here. The default
  * (no ⇧) goes through `captureRegion`.
  */
-export async function captureWindow(
-  windowId: number
-): Promise<CaptureRegionResult> {
+export async function captureWindow(windowId: number): Promise<CaptureRegionResult> {
   if (!Number.isInteger(windowId) || windowId <= 0) {
     return {
       ok: false,
@@ -300,11 +302,8 @@ export async function captureWindow(
   } catch (err) {
     const exitCode = (err as NodeJS.ErrnoException & { code?: number | string }).code;
     const stderr = (err as { stderr?: Buffer | string }).stderr;
-    const stderrStr = typeof stderr === "string" ? stderr : stderr?.toString() ?? "";
-    const reason = classifyCaptureError(
-      typeof exitCode === "number" ? exitCode : 1,
-      stderrStr
-    );
+    const stderrStr = typeof stderr === "string" ? stderr : (stderr?.toString() ?? "");
+    const reason = classifyCaptureError(typeof exitCode === "number" ? exitCode : 1, stderrStr);
     return {
       ok: false,
       reason,
@@ -335,7 +334,11 @@ export async function captureScreen(
 ): Promise<CaptureRegionResult> {
   const display = screen.getAllDisplays().find((d) => d.id === displayId);
   if (display === undefined) {
-    return { ok: false, reason: "validation", message: `unknown display id: ${displayId}` };
+    return {
+      ok: false,
+      reason: "validation",
+      message: `unknown display id: ${displayId}`
+    };
   }
   const { bounds } = display;
 
@@ -416,7 +419,7 @@ export async function captureScreen(
   } catch (err) {
     const exitCode = (err as NodeJS.ErrnoException & { code?: number | string }).code;
     const stderr = (err as { stderr?: Buffer | string }).stderr;
-    const stderrStr = typeof stderr === "string" ? stderr : stderr?.toString() ?? "";
+    const stderrStr = typeof stderr === "string" ? stderr : (stderr?.toString() ?? "");
     const reason = classifyCaptureError(typeof exitCode === "number" ? exitCode : 1, stderrStr);
     return {
       ok: false,
@@ -430,10 +433,7 @@ export async function captureScreen(
  * Capture a region. Returns a temp file path on success; caller is
  * responsible for moving / deleting the file.
  */
-export async function captureRegion(
-  rect: Rect,
-  displayId: number
-): Promise<CaptureRegionResult> {
+export async function captureRegion(rect: Rect, displayId: number): Promise<CaptureRegionResult> {
   const validation = validateRect(rect, displayId);
   if (!validation.valid) {
     return { ok: false, reason: "validation", message: validation.message };
@@ -447,7 +447,11 @@ export async function captureRegion(
   if (process.platform !== "darwin") {
     const display = screen.getAllDisplays().find((d) => d.id === displayId);
     if (display === undefined) {
-      return { ok: false, reason: "validation", message: `unknown display id: ${displayId}` };
+      return {
+        ok: false,
+        reason: "validation",
+        message: `unknown display id: ${displayId}`
+      };
     }
     const dir = await mkdtemp(join(tmpdir(), "pwrsnap-"));
     const tempPath = join(dir, `${Date.now()}.png`);
@@ -497,8 +501,12 @@ export async function captureRegion(
   } catch (err) {
     const exitCode = (err as NodeJS.ErrnoException & { code?: number | string }).code;
     const stderr = (err as { stderr?: Buffer | string }).stderr;
-    const stderrStr = typeof stderr === "string" ? stderr : stderr?.toString() ?? "";
+    const stderrStr = typeof stderr === "string" ? stderr : (stderr?.toString() ?? "");
     const reason = classifyCaptureError(typeof exitCode === "number" ? exitCode : 1, stderrStr);
-    return { ok: false, reason, message: stderrStr || (err instanceof Error ? err.message : String(err)) };
+    return {
+      ok: false,
+      reason,
+      message: stderrStr || (err instanceof Error ? err.message : String(err))
+    };
   }
 }

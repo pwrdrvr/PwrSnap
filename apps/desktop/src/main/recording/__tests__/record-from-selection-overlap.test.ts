@@ -82,9 +82,9 @@ describe("startRecordingFromSelection — overlap coordinate space", () => {
         ok: true,
         rect: selectorRect,
         displayId: SKEWED.id,
-        screenSnapshotPath: "/tmp/snap.png",
         screenSnapshotId: "snap-1",
-        previousAppPid: null
+        previousAppPid: null,
+        previousAppOrigin: "unknown"
       },
       { includeSystemAudio: false, includeMicrophone: false, videoCaptureCursor: false }
     );

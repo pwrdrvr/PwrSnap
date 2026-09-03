@@ -62,10 +62,7 @@ import {
   IPC_CMD,
   IPC_VIDEO_DRAG_START
 } from "@pwrsnap/shared/ipc";
-import type {
-  RenderPreset,
-  VideoPreset
-} from "@pwrsnap/shared/protocol";
+import type { RenderPreset, VideoPreset } from "@pwrsnap/shared/protocol";
 import type { PerfMarkPayload } from "@pwrsnap/shared/ipc";
 import { parseAppearanceArg } from "@pwrsnap/shared/appearance-arg";
 import { resolveDroppedFilePath } from "./dropped-file-path";
@@ -92,19 +89,61 @@ const REGION_SELECTOR_KEY_CHANNEL = "region-selector:key";
 // `win.show()` so the selector renderer can configure UI for
 // 'auto' | 'region' | 'window' before the first paint.
 const REGION_SELECTOR_MODE_CHANNEL = "region-selector:mode";
+const REGION_SELECTOR_FRAME_PORT_CHANNEL = "region-selector:frame-port";
+const REGION_SELECTOR_FRAME_RELEASE_CHANNEL = "region-selector:frame-release";
+const REGION_SELECTOR_CROP_PORT_CHANNEL = "region-selector:crop-port";
 // Renderer → main: the selector acks that the frozen-snapshot <img>
 // for a given screenUrl has loaded/decoded. Main waits for this before
 // showing the (still-hidden) selector window, so it never appears as an
 // empty transparent overlay flashing the live screen behind it.
 const REGION_SELECTOR_PAINTED_CHANNEL = "region-selector:painted";
-const REGION_SELECTOR_PRESENTATION_REQUEST_CHANNEL = "region-selector:presentation-request";
+const REGION_SELECTOR_PERFORMANCE_CHANNEL = "region-selector:performance";
+const REGION_SELECTOR_PRESENTATION_ARM_CHANNEL = "region-selector:presentation-arm";
 const REGION_SELECTOR_PRESENTED_CHANNEL = "region-selector:presented";
+
+// MessagePortMain cannot be exposed through contextBridge directly. Forward
+// the one invocation-scoped port into the selector's main world using the
+// context-isolation-safe Electron bridge pattern. Main authenticates every
+// message again; this does not grant a general display-capture API.
+ipcRenderer.on(REGION_SELECTOR_FRAME_PORT_CHANNEL, (event, payload: unknown) => {
+  const invocationId =
+    payload !== null && typeof payload === "object" && "invocationId" in payload
+      ? (payload as { invocationId?: unknown }).invocationId
+      : null;
+  if (typeof invocationId !== "number" || event.ports.length !== 1) return;
+  window.postMessage({ type: "pwrsnap-selector-frame-port", invocationId }, "*", event.ports);
+});
 
 // One opaque epoch per preload execution. The renderer cannot choose or reuse
 // it; main binds it to the current top-level WebFrameMain before admitting a
 // Settings recorder lease. This distinguishes delayed IPC from a document
 // that has already navigated away even when Chromium reuses a renderer PID.
 const rendererDocumentId = crypto.randomUUID().replaceAll("-", "");
+
+// The renderer opens a fresh MessageChannel only when the user commits a
+// frozen crop. Forward its transferred port to main without exposing Electron
+// or a generic IPC primitive. This avoids both the stale long-lived port that
+// Electron 41 dropped after the hidden acquisition phase and structured-clone
+// copies of every crop chunk through ipcRenderer.invoke.
+window.addEventListener("message", (event) => {
+  if (event.source !== window) return;
+  const payload = event.data as { type?: unknown; invocationId?: unknown } | null;
+  if (payload === null || payload.type !== "pwrsnap-selector-crop-port") return;
+  if (
+    event.ports.length !== 1 ||
+    typeof payload.invocationId !== "number" ||
+    !Number.isSafeInteger(payload.invocationId) ||
+    payload.invocationId <= 0
+  ) {
+    for (const port of event.ports) port.close();
+    return;
+  }
+  ipcRenderer.postMessage(
+    REGION_SELECTOR_CROP_PORT_CHANNEL,
+    { invocationId: payload.invocationId },
+    [event.ports[0]]
+  );
+});
 
 // Tray content auto-sizes to fit. The renderer measures itself with a
 // ResizeObserver and asks main to setContentSize so the popover never
@@ -196,6 +235,7 @@ const pwrsnapApi = {
    */
   submitRegion(payload: {
     ok: boolean;
+    invocationId: number;
     rect?: { x: number; y: number; w: number; h: number };
     displayId?: number;
     /** Always set when the user committed straight from a window
@@ -239,27 +279,19 @@ const pwrsnapApi = {
    * painted. Carries `screenUrl` so a stale ack from a superseded
    * capture can't satisfy the current wait.
    */
-  notifySelectorSnapshotPainted(screenUrl: string): void {
-    ipcRenderer.send(REGION_SELECTOR_PAINTED_CHANNEL, { screenUrl });
+  notifySelectorSnapshotPainted(payload: {
+    snapshotKey: string;
+    invocationId: number;
+    status: "painted" | "error";
+  }): void {
+    ipcRenderer.send(REGION_SELECTOR_PAINTED_CHANNEL, payload);
   },
-  /** Diagnostic-only post-show acknowledgement. Main authenticates the
-   * sender webContents plus invocation/generation before accepting it. */
   notifySelectorPresented(payload: {
-    invocationId: string;
+    invocationId: number;
     generation: number;
-    screenUrl: string;
+    surface: "frozen-frame" | "window-loading" | "error";
   }): void {
     ipcRenderer.send(REGION_SELECTOR_PRESENTED_CHANNEL, payload);
-  },
-  /** Main emits this only after show/focus/moveTop. The renderer crosses
-   * two animation-frame barriers before replying through the method above. */
-  onSelectorPresentationRequest(
-    handler: (payload: { invocationId: string; generation: number; screenUrl: string }) => void
-  ): () => void {
-    const wrapped = (_event: unknown, payload: unknown) =>
-      handler(payload as { invocationId: string; generation: number; screenUrl: string });
-    ipcRenderer.on(REGION_SELECTOR_PRESENTATION_REQUEST_CHANNEL, wrapped);
-    return () => ipcRenderer.off(REGION_SELECTOR_PRESENTATION_REQUEST_CHANNEL, wrapped);
   },
   /**
    * Subscribe to the snap-to-window window-list snapshot main pushes
@@ -270,6 +302,8 @@ const pwrsnapApi = {
    */
   onWindowListSnapshot(
     handler: (payload: {
+      invocationId: number;
+      status?: "ready" | "error";
       windows: WindowSnapEntry[];
       displayBounds: { width: number; height: number };
       cursor?: { x: number; y: number };
@@ -278,6 +312,8 @@ const pwrsnapApi = {
     const wrapped = (_event: unknown, payload: unknown) =>
       handler(
         payload as {
+          invocationId: number;
+          status?: "ready" | "error";
           windows: WindowSnapEntry[];
           displayBounds: { width: number; height: number };
           cursor?: { x: number; y: number };
@@ -373,8 +409,7 @@ const pwrsnapApi = {
    * pressed the key directly.
    */
   onSelectorKey(handler: (payload: { key: string }) => void): () => void {
-    const wrapped = (_event: unknown, payload: unknown) =>
-      handler(payload as { key: string });
+    const wrapped = (_event: unknown, payload: unknown) => handler(payload as { key: string });
     ipcRenderer.on(REGION_SELECTOR_KEY_CHANNEL, wrapped);
     return () => ipcRenderer.off(REGION_SELECTOR_KEY_CHANNEL, wrapped);
   },
@@ -394,8 +429,16 @@ const pwrsnapApi = {
    */
   onSelectorMode(
     handler: (payload: {
+      invocationId: number;
       mode: "auto" | "region" | "window";
-      screenUrl?: string;
+      captureSource:
+        | {
+            kind: "renderer-display-media";
+            displayId: number;
+            displayBounds: { width: number; height: number };
+          }
+        | { kind: "legacy-file"; screenUrl: string }
+        | { kind: "none" };
       /** Visual intent: `"video"` triggers the "Recording video"
        *  badge + alternate hint copy so the user knows commit
        *  starts a recording instead of taking a snap. Default
@@ -403,8 +446,6 @@ const pwrsnapApi = {
       intent?: "snap" | "video";
       /** Recording seed for the cursor toggle. `undefined` = ON. */
       cursor?: boolean;
-      invocationId?: string;
-      generation?: number;
       /** Snap-vs-Record policy for this show, from
        *  `settings.recording.quickCaptureAction`. `undefined` = "ask". */
       quickCaptureAction?: "ask" | "snap" | "record";
@@ -413,17 +454,48 @@ const pwrsnapApi = {
     const wrapped = (_event: unknown, payload: unknown) =>
       handler(
         payload as {
+          invocationId: number;
           mode: "auto" | "region" | "window";
-          screenUrl?: string;
+          captureSource:
+            | {
+                kind: "renderer-display-media";
+                displayId: number;
+                displayBounds: { width: number; height: number };
+              }
+            | { kind: "legacy-file"; screenUrl: string }
+            | { kind: "none" };
           intent?: "snap" | "video";
           cursor?: boolean;
-          invocationId?: string;
-          generation?: number;
           quickCaptureAction?: "ask" | "snap" | "record";
         }
       );
     ipcRenderer.on(REGION_SELECTOR_MODE_CHANNEL, wrapped);
     return () => ipcRenderer.off(REGION_SELECTOR_MODE_CHANNEL, wrapped);
+  },
+  onSelectorPresentationArm(
+    handler: (payload: {
+      invocationId: number;
+      generation: number;
+      surface: "frozen-frame" | "window-loading" | "error";
+    }) => void
+  ): () => void {
+    const wrapped = (_event: unknown, payload: unknown) =>
+      handler(
+        payload as {
+          invocationId: number;
+          generation: number;
+          surface: "frozen-frame" | "window-loading" | "error";
+        }
+      );
+    ipcRenderer.on(REGION_SELECTOR_PRESENTATION_ARM_CHANNEL, wrapped);
+    return () => ipcRenderer.off(REGION_SELECTOR_PRESENTATION_ARM_CHANNEL, wrapped);
+  },
+  /** Main hid the reusable selector; drop its invocation-owned full frame. */
+  onSelectorFrameRelease(handler: (payload: { invocationId: number }) => void): () => void {
+    const wrapped = (_event: unknown, payload: unknown) =>
+      handler(payload as { invocationId: number });
+    ipcRenderer.on(REGION_SELECTOR_FRAME_RELEASE_CHANNEL, wrapped);
+    return () => ipcRenderer.off(REGION_SELECTOR_FRAME_RELEASE_CHANNEL, wrapped);
   },
   /**
    * Diagnostic — region selector renderer → main. Ships the
@@ -442,6 +514,21 @@ const pwrsnapApi = {
     screenHeight: number;
   }): void {
     ipcRenderer.send(REGION_SELECTOR_DIAGNOSTICS_CHANNEL, payload);
+  },
+  /** Renderer paint marks used to order picker shell and target readiness. */
+  reportSelectorPerformance(payload: {
+    invocationId: number;
+    mark:
+      | "shell-painted"
+      | "window-targets-painted"
+      | "crop-encode-started"
+      | "crop-encode-completed"
+      | "crop-stream-started"
+      | "crop-stream-completed"
+      | "crop-commit-failed-encode"
+      | "crop-commit-failed-stream";
+  }): void {
+    ipcRenderer.send(REGION_SELECTOR_PERFORMANCE_CHANNEL, payload);
   },
   /**
    * Renderer → main perf signal. Phase 5 of the perf-seeder plan —

@@ -14,6 +14,8 @@
 // snapshot themselves.
 
 import { app, Notification, type BrowserWindow } from "electron";
+import { rm } from "node:fs/promises";
+import { dirname } from "node:path";
 import { RECORDING_MEDIA_DEFAULTS } from "@pwrsnap/shared";
 import type { RecordingSubject, Settings } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
@@ -105,7 +107,7 @@ export async function startRecordingFromSelection(
   recording: RecordingDefaults,
 ): Promise<void> {
   const log = getMainLogger("pwrsnap:shortcut");
-  const { screenSnapshotId, previousAppPid } = selection;
+  const { committedCropPath, screenSnapshotId, previousAppPid } = selection;
   // Teardown is unconditional. With two entry points — one of them
   // fire-and-forget — a throw anywhere below must not be able to strand
   // a screen-saver-level overlay on top of the user's desktop with no
@@ -115,7 +117,12 @@ export async function startRecordingFromSelection(
     if (tornDown) return;
     tornDown = true;
     hideSelector();
-    void releaseSnapshot(screenSnapshotId);
+    if (screenSnapshotId !== undefined) {
+      void releaseSnapshot(screenSnapshotId);
+    }
+    if (committedCropPath !== undefined) {
+      void rm(dirname(committedCropPath), { recursive: true, force: true });
+    }
     // Unconditional, matching the snap path's `tearDownSelector`. The
     // two reclaims further down are both branch-local: one needs
     // overlapping windows, the other a previous app to fall back to —

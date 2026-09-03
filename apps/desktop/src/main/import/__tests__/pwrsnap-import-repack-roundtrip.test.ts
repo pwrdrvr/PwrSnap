@@ -715,7 +715,10 @@ describe("imported v2 ordinary repack", () => {
     const { validatePwrsnapBundleBytes } = await import("../pwrsnap-import-reader");
     const repacked = await validatePwrsnapBundleBytes(await fs.readFile(fixture.bundlePath));
     expect(repacked.document.description).toBe("Edited in the library");
-    expect(repacked.document.tags).toEqual(["Current", "Original"]);
+    // Tag order follows accepted-at time. SQLite timestamps have one-second
+    // resolution, so this fixture may cross a timestamp boundary on a loaded
+    // runner instead of taking the label-order tie breaker.
+    expect([...repacked.document.tags].sort()).toEqual(["Current", "Original"]);
     expect(mocks.accessSuccesses).toContain(fixture.bundlePath);
   });
 

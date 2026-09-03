@@ -17,18 +17,13 @@
 // Phase 1.5 wires the float-over to actually fire after a successful
 // capture. Phase 1.6 adds clipboard at this seam.
 
-import { mkdtemp, unlink } from "node:fs/promises";
+import { mkdtemp, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { extname, join } from "node:path";
+import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { clipboard, screen } from "electron";
 import sharp from "sharp";
-import {
-  ok,
-  err,
-  isCaptureInvocation,
-  PASTE_IMAGE_MAX_BYTES
-} from "@pwrsnap/shared";
+import { ok, err, isCaptureInvocation, PASTE_IMAGE_MAX_BYTES } from "@pwrsnap/shared";
 import type {
   CapturePresetMetric,
   CaptureRecord,
@@ -37,8 +32,7 @@ import type {
   PwrSnapError,
   Rect,
   RenderPreset,
-  Result,
-  Settings
+  Result
 } from "@pwrsnap/shared";
 import { bus, type CommandContext } from "../command-bus";
 import {
@@ -61,7 +55,11 @@ import {
   ensureCapturesDirReady,
   runWithCapturesDirFallback
 } from "../capture/capture-storage-gate";
-import { releaseSnapshot } from "../capture/screen-snapshot";
+import { getSnapshot, releaseSnapshot } from "../capture/screen-snapshot";
+import {
+  acquireInteractiveCaptureSession,
+  releaseInteractiveCaptureSession
+} from "../capture/interactive-capture-session";
 import { type WindowInfo } from "../capture/window-list";
 import {
   resolveSelectionSourceApp,
@@ -275,491 +273,548 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     }
     const trace = new CaptureLatencyTrace(req.invocation, mode);
     trace.mark("dispatch_receive", { principal: ctx.principal });
-    try {
-      const permissionStage = trace.begin("permission_preflight");
-    // Gate BEFORE pickRegion: the selector freezes a screen snapshot on
-    // show(), which is all-black on a Mac without Screen Recording. On a
-    // first-ever attempt the gate fires the macOS prompt instead; on a
-    // subsequent denied attempt it routes to System Settings. Either way
-    // we never paint an empty selector at the user.
-    const blocked = await guardScreenCapture();
-    const permissionErrorCode = blocked !== null && !blocked.ok ? blocked.error.code : null;
-    trace.end(permissionStage, {
-      outcome: permissionErrorCode ?? "granted"
+    const session = acquireInteractiveCaptureSession("image");
+    trace.mark("shared_session", {
+      busy: session.status === "busy",
+      ...(session.status === "busy" ? { activeOwner: session.activeOwner } : {})
     });
-    if (blocked !== null) {
-      trace.finish("error", { code: permissionErrorCode ?? "permission_blocked" });
-      return blocked;
-    }
-    const storageStage = trace.begin("storage_readiness");
-    // Pre-warm the captures-folder (Documents) TCC grant before the
-    // selector goes up — otherwise the "Allow Documents" dialog pops
-    // under the screen-saver-level selector at persist time.
-    const storageBlocked = await ensureCapturesDirReady();
-    const storageErrorCode =
-      storageBlocked !== null && !storageBlocked.ok ? storageBlocked.error.code : null;
-    trace.end(storageStage, {
-      outcome: storageErrorCode ?? "ready"
-    });
-    if (storageBlocked !== null) {
-      trace.finish("error", { code: storageErrorCode ?? "storage_not_ready" });
-      return storageBlocked;
-    }
-    log.info("capture:interactive handler received", {
-      mode,
-      principal: ctx.principal,
-      invocationId: req.invocation.id
-    });
-
-    // Timed mode = "delay 5 s, then open the normal auto picker."
-    // During the countdown the user is free to stage anything that
-    // would otherwise close the moment a selector window stole key
-    // focus — a dropdown, a tooltip, the PwrSnap tray menu itself.
-    // We don't touch the screen, we don't substitute any other
-    // capture path; we just wait, then fall through to the same
-    // `pickRegion({ mode: "auto" })` call Quick Capture uses. The
-    // selector takes its frozen-screen snapshot at show() time, so
-    // whatever is on screen at t=0 (dropdowns and all) is what the
-    // user picks against — region / window / ⇧-full-window all work
-    // exactly as they do in Quick Capture.
-    if (mode === "timed") {
-      const timedStage = trace.begin("timed_countdown");
-      const delay = await runTimedDelay();
-      trace.end(timedStage, {
-        outcome: delay.ok ? "completed" : delay.error.code
+    if (session.status === "busy") {
+      log.info("capture:interactive invocation suppressed", {
+        mode,
+        principal: ctx.principal,
+        reason: "in_flight",
+        activeOwner: session.activeOwner
       });
-      if (!delay.ok) {
-        trace.finish("error", { code: delay.error.code });
-        return delay;
-      }
-    }
-    const selectorMode = mode === "timed" ? "auto" : mode;
-
-    // Cursor sample (cursor-capture Phase 3): kicked off HERE — after
-    // the timed countdown (so the sample matches where the user parked
-    // the cursor, not where it was at trigger) and BEFORE pickRegion.
-    // NOTHING here is awaited on the hotkey→selector path: the process-owned
-    // settings snapshot and helper spawn chain off a promise that runs while
-    // nothing else is happening.
-    let cursorSamplePromise: Promise<CursorSample | null> | null =
-      startCursorSampleIfEnabled(trace);
-
-    // The sample must land BEFORE the selector swaps the OS cursor for
-    // its synthetic crosshair — NSCursor.currentSystem reads the LIVE
-    // cursor at read time, and the pre-warmed selector can show in
-    // ~10ms while a cold helper spawn takes 50-200ms. Wait a bounded
-    // beat for the sample; if it hasn't resolved in time, DROP it (a
-    // later resolution would have photographed our own crosshair).
-    // Warm spawns land well inside the budget; a cold first-capture
-    // miss just means no cursor layer that one time.
-    if (cursorSamplePromise !== null) {
-      const cursorBudgetStage = trace.begin("cursor_sampling_budget");
-      const settled = await Promise.race([
-        cursorSamplePromise.then(
-          () => true,
-          () => true
-        ),
-        new Promise<boolean>((resolve) =>
-          setTimeout(() => resolve(false), CURSOR_SAMPLE_PRE_SELECTOR_BUDGET_MS)
-        )
-      ]);
-      trace.end(cursorBudgetStage, {
-        budgetMs: CURSOR_SAMPLE_PRE_SELECTOR_BUDGET_MS,
-        outcome: settled ? "settled" : "missed"
-      });
-      if (!settled) {
-        log.info("cursor sample missed the pre-selector budget — dropped (tainted)");
-        cursorSamplePromise = null;
-      }
-    }
-
-    // Timed mode leaves PwrSnap chrome alone — the user may have
-    // re-opened the tray menu during the 5 s precisely to capture
-    // it. Every other mode keeps the default behavior of hiding our
-    // own popovers/toasts before snapshotting.
-    const keepPwrSnapChrome = mode === "timed";
-
-    // Note (2026-05-04): the prior "hide the library, restore at end"
-    // dance is gone. The tray popover is now a non-activating
-    // NSPanel (`type: 'panel'` in createTrayWindow), so its show
-    // doesn't activate PwrSnap and its hide doesn't cascade focus
-    // to the Library. The Library can stay exactly where the user
-    // left it through the entire capture flow — visible, minimized,
-    // hidden, on another Space — and Cocoa won't touch it.
-
-    // Trigger-source exclusion: when the capture was started from the
-    // Library's OWN Capture button (ctx.sourceWindowId is the Library
-    // window), the user demonstrably can't have meant to capture the
-    // Library itself — they were clicking a control on it. Content-
-    // protect the Library for the snapshot so it's absent from the
-    // picker while staying exactly where it is on screen. A global-
-    // hotkey trigger carries no sourceWindowId, so the Library is left
-    // in the picker — there the user may well want to capture it.
-    const protectWindowIds = librarySourceWindowIds(ctx);
-
-    log.info("capture:interactive calling pickRegion", {
-      mode,
-      selectorMode,
-      keepPwrSnapChrome,
-      protectWindowCount: protectWindowIds.length,
-      invocationId: req.invocation.id
-    });
-    // Chooser policy + cursor seed for the selector. Read HERE rather than
-    // hoisted ahead of the gates: `readDesktopSettings` is served from the
-    // process-owned settings snapshot, so it neither touches the disk nor
-    // re-parses, and there is nothing left to overlap. Degrades to the
-    // defaults on a read failure — a settings hiccup must not cost the
-    // user a capture.
-    const settings = await readDesktopSettings().then(
-      (value) => value,
-      () => null
-    );
-    // Fail CLOSED. A read failure must not re-arm an action the user
-    // turned off: under `ask` a stray `R` starts a screen recording,
-    // and this same branch omits `cursorDefault`, so it would bake in a
-    // cursor they had disabled too. `snap` is what the selector did
-    // before the chooser existed — the user loses the Record shortcut
-    // for one capture, which is recoverable; the other direction
-    // records their screen when they had asked it not to.
-    const quickCaptureAction = settings?.recording.quickCaptureAction ?? "snap";
-    const selection = await pickRegion({
-      mode: selectorMode,
-      keepPwrSnapChrome,
-      protectWindowIds,
-      latencyTrace: trace,
-      quickCaptureAction,
-      // Seed the selector's `C` toggle from the persisted default. Only
-      // consumed if the user chooses Record, but it has to be in the
-      // mode signal BEFORE the selector shows — there is no second
-      // chance to send it once the chooser is on screen.
-      ...(settings !== null ? { cursorDefault: settings.recording.videoCaptureCursor } : {})
-    });
-    log.info("capture:interactive pickRegion returned", {
-      mode,
-      selectorMode,
-      ok: selection.ok,
-      reason: selection.ok ? "completed" : selection.reason,
-      invocationId: req.invocation.id
-    });
-
-    // CANCEL path. The selector window is still up at this point —
-    // pickRegion no longer hides itself; the caller owns hideSelector.
-    // The float-over was pre-shown UNDER the selector during
-    // pickRegion; cancel-hide it FIRST, then drop the selector. The
-    // user never sees the empty toast because the selector covered
-    // it the whole time, and the selector hide reveals the desktop
-    // (not the float-over).
-    if (!selection.ok) {
-      trace.finish(selection.reason === "destroyed" ? "destroy" : "cancel", {
-        reason: selection.reason
-      });
-      setFloatOverState({ kind: "cancel" });
-      // Compositor flush — the float-over hide must reach the
-      // window server before we lower the selector, otherwise
-      // there's a one-frame window where the toast is visible
-      // before the selector window's compositor pass is complete.
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      hideSelector();
-      // No activateApp(previousAppPid): the selector is a
-      // non-activating NSPanel, so whatever app was frontmost before
-      // the capture was never deactivated — it stays frontmost when
-      // the selector hides. Re-activating it (the old behavior) was
-      // the main trigger for AppKit demoting PwrSnap to Accessory,
-      // which is what made the Dock icon flash and the Library appear
-      // to hide. We only intervene when PwrSnap's OWN window was
-      // frontmost (previousAppPid null): there the selector-hide
-      // key-window cascade would let the floating focus-sink steal key
-      // from the Library, so restore it explicitly.
-      if (selection.previousAppPid === null || selection.previousAppPid === undefined) {
-        const library = findMainLibraryWindow();
-        if (library !== null && !library.isDestroyed()) {
-          if (library.isMinimized()) library.restore();
-          if (!library.isVisible()) library.show();
-          library.focus();
-        }
-      }
-      // The Accessory demotion that strips the Library's Dock icon
-      // lands asynchronously — and when PwrSnap was a background app
-      // (capture triggered from another app), WITHOUT a
-      // did-resign-active to drive the app-level safety net. A single
-      // synchronous reclaim races it and loses. Re-assert Regular at a
-      // spread of delays — guarded, so it no-ops once the Dock is back,
-      // and never steals focus from the app the user's now in.
-      scheduleDockReclaim();
+      trace.finish("cancel", { reason: "in_flight" });
       return err({
         kind: "capture",
-        code: selection.reason,
-        message: `region selector: ${selection.reason}`
+        code: "capture_in_progress",
+        message: "An interactive capture is already in progress."
       });
     }
-
-    // COMMIT path. The user has selected AND committed — the selector has
-    // done its job. We tear it down COMPLETELY before attempting the file
-    // save, so a first-capture macOS Documents TCC prompt (triggered by
-    // the persist write) can never appear UNDER the screen-saver-level
-    // (1000) selector. Once the selector is gone the only PwrSnap window
-    // left is the float-over at floating level (3), which sits BELOW a
-    // system consent dialog — so the prompt is reachable.
-    //
-    // RECORD handoff (issue #75). Ahead of everything below, because
-    // nothing below applies: no crop, no persist, no float-over swap,
-    // and — critically — no snapshot ownership. The continuation takes
-    // the selector and the snapshot from here, so this must land BEFORE
-    // the try/finally that would otherwise tear both down underneath it.
-    //
-    // `resolveQuickCaptureAction` re-derives the action from the policy
-    // this show was actually opened under; the renderer's `action` is a
-    // report, not the decision.
-    // Can the recorder actually take this? `recording:start` refuses
-    // both of these, and the continuation's error path deliberately
-    // stays silent while a failure awaits Retry or Dismiss (that check
-    // was written for a caller which had already bailed — see the guard
-    // at the top of `runInteractiveRecord`). Reaching it from here would
-    // spend the user's selection on nothing at all: no still, no
-    // recording, no notification. So decide BEFORE the handoff, and
-    // fall through to the still pipeline rather than refusing — the
-    // user pressed a capture hotkey and framed a region, and a picture
-    // of what they picked is what ⌘⇧C has always given them.
-    const recorderBusy =
-      getRecordingState().phase === "failed" ? "awaiting_retry_or_dismiss" : null;
-    const recorderUnavailable =
-      recorderBusy ?? (isRecordingActive() ? "already_recording" : null);
-    const wantsRecord =
-      resolveQuickCaptureAction(quickCaptureAction, selection.action) === "record";
-    if (wantsRecord && recorderUnavailable !== null) {
-      log.warn("capture:interactive falling back to a still — recorder unavailable", {
-        mode,
-        quickCaptureAction,
-        reason: recorderUnavailable,
-        phase: getRecordingState().phase
-      });
-    }
-    if (wantsRecord && recorderUnavailable === null) {
-      log.info("capture:interactive committing to a recording", {
-        mode,
-        quickCaptureAction,
-        reported: selection.action ?? "snap"
-      });
-      // Fire-and-forget, exactly like `capture:videoInteractive`: the
-      // countdown and the recorder surface on `events:recording:*`, so
-      // holding this dispatch open across a 3-second countdown the user
-      // can still cancel buys the caller nothing. A rejection is logged
-      // here so it never becomes an unhandled rejection.
-      void startRecordingFromSelection(
-        selection,
-        settings?.recording ?? FALLBACK_RECORDING_DEFAULTS
-      ).catch((cause) => {
-        log.warn("interactive record handoff failed", {
-          message: cause instanceof Error ? cause.message : String(cause)
-        });
-      });
-      return ok({ kind: "recording" });
-    }
-
-    // We own the screen snapshot now and MUST release it; the try/finally
-    // is a safety net (both teardown + release are idempotent).
-    const { screenSnapshotId, screenSnapshotPath } = selection;
-    let teardownDone = false;
-    const tearDownSelector = async (): Promise<void> => {
-      if (teardownDone) return;
-      teardownDone = true;
-      // Selector down — but NO activateApp(previousAppPid). The selector
-      // is a non-activating NSPanel, so the previously-frontmost app was
-      // never deactivated; it stays frontmost as the selector hides, and
-      // the float-over (also a non-activating panel at floating level 3)
-      // sits above it through the idle→loaded swap without stealing
-      // focus. Re-activating it was the main trigger for AppKit demoting
-      // PwrSnap to Accessory (Dock flash + Library hide/reshow). Reclaim
-      // across a spread of delays to catch the async demotion — guarded,
-      // so it no-ops once the Dock is back. (Full rationale on the
-      // cancel branch above.)
-      hideSelector();
-      scheduleDockReclaim();
+    // Claim synchronously before the first permission/storage await. This is
+    // the command-bus backstop for tray/IPC double dispatches; the hotkey has
+    // its own leading-edge debounce one layer earlier.
+    const handlerStartedAt = Date.now();
+    let releaseSessionInFinally = true;
+    const releaseSession = (): void => {
+      releaseInteractiveCaptureSession(session.token);
     };
     try {
-      // Two capture paths:
-      //   • Full-window mode (user held ⇧ at commit time, or `mode`
-      //     was 'window') → desktopCapturer / `screencapture -l
-      //     <id>`. Asks WindowServer for the window's full backing
-      //     buffer — clean rounded corners, no occlusion artifacts,
-      //     no drop shadow. Captures content even where other
-      //     windows are in front. NOTE: this re-shoots the live
-      //     screen rather than using the snapshot, because the
-      //     snapshot only contains visible pixels.
-      //   • Default (mode='auto' rect or 'region') → CROP the
-      //     screen snapshot. The snapshot was taken at show() in
-      //     PHYSICAL pixels; the rect is in logical px relative to
-      //     display.bounds. Multiply rect by scaleFactor and use
-      //     sharp.extract for the crop. Apps starting / popups /
-      //     redraws after the user committed don't bleed into the
-      //     capture — by definition, the snapshot is frozen-in-
-      //     time.
-      const snapshot = getLastWindowListSnapshot();
-      // Third path, for a multi-window pick in WINDOWS output mode:
-      // crop the union box out of the same frozen snapshot, but keep
-      // only the pixels inside the picked extents. `rect` is the union
-      // box either way, so RECTANGLE mode (and every single-target
-      // pick) falls through to the plain crop unchanged.
-      const pickedExtents = selection.extents;
-      const maskToExtents =
-        pickedExtents !== undefined &&
-        pickedExtents.length > 0 &&
-        selection.outputMode !== "rectangle";
-      // `fullWindow` routes to the window's own backing buffer, which
-      // ignores `rect` and knows nothing about extents — so honoring it
-      // alongside a mask would silently capture ONE window and drop
-      // every other pick. The renderer never sends both today (its
-      // full-window branch is the single-pick one, and that branch
-      // sends no extents), but the two fields are one edit apart and
-      // the validator accepts them together. The mask wins: it is the
-      // selection the user built and can see.
-      if (selection.fullWindow === true && maskToExtents) {
-        log.warn("selector sent fullWindow with extents; masking wins", {
-          extentCount: pickedExtents.length,
-          snappedWindowId: selection.snappedWindowId
-        });
+      // Gate BEFORE pickRegion: the selector freezes a screen snapshot on
+      // show(), which is all-black on a Mac without Screen Recording. On a
+      // first-ever attempt the gate fires the macOS prompt instead; on a
+      // subsequent denied attempt it routes to System Settings. Either way
+      // we never paint an empty selector at the user.
+      const permissionStage = trace.begin("permission_preflight");
+      const blocked = await guardScreenCapture();
+      const permissionErrorCode = blocked !== null && !blocked.ok ? blocked.error.code : null;
+      trace.end(permissionStage, { outcome: permissionErrorCode ?? "granted" });
+      if (blocked) {
+        trace.finish("error", { code: permissionErrorCode ?? "permission_blocked" });
+        return blocked;
       }
-      const captureResult =
-        selection.fullWindow === true &&
-        selection.snappedWindowId !== undefined &&
-        !maskToExtents
-          ? await captureWindow(selection.snappedWindowId)
-          : maskToExtents
-            ? await cropScreenSnapshotExtents(
-                screenSnapshotPath,
-                selection.rect,
-                pickedExtents,
-                selection.displayId
-              )
-            : await cropScreenSnapshot(
-                screenSnapshotPath,
-                selection.rect,
-                selection.displayId
-              );
-      // Snapshot pixels are now in `captureResult.tempPath` — release the
-      // frozen snapshot immediately (idempotent; finally re-calls as a
-      // safety net).
-      void releaseSnapshot(screenSnapshotId);
-      // Source-app resolution is the same on both capture branches —
-      // the choice of pixel-fetch path (full-window vs. cropped
-      // snapshot) doesn't change WHO owned the window. Single shared
-      // helper keeps the snap-id-first / rect-fallback / null tiering
-      // identical to the video-recording entry point.
-      const sourceApp = resolveSelectionSourceApp(
-        selection.rect,
-        selection.snappedWindowId,
-        snapshot
-      );
-
-      if (!captureResult.ok) {
-        // Crop/window grab failed before we even tried to save. Mirror the
-        // cancel choreography: park the pre-shown idle toast, flush, then
-        // drop the selector — so the empty placeholder never flashes.
-        setFloatOverState({ kind: "cancel" });
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        await tearDownSelector();
-        return err({
-          kind: "capture",
-          code: captureResult.reason,
-          message: captureResult.message
-        });
-      }
-
-      // We have the pixels. Tear the selector down NOW — BEFORE the save —
-      // so the file write (and any Documents TCC prompt it triggers) runs
-      // on a clean screen, never under the picker.
-      await tearDownSelector();
-
-      // Resolve the cursor layer (if sampling ran): place the sprite
-      // relative to the captured rect in canvas pixels. Skipped for
-      // full-window captures — the window's backing buffer has its own
-      // coordinate space and may be occluded, so a screen-space cursor
-      // position is meaningless there (computing via the window frame
-      // is a possible follow-up for the frontmost-window case).
-      let cursorLayer: CursorLayerPlacement | undefined;
-      if (
-        cursorSamplePromise !== null &&
-        !(selection.fullWindow === true && selection.snappedWindowId !== undefined)
-      ) {
-        const display = screen.getAllDisplays().find((d) => d.id === selection.displayId);
-        if (display !== undefined) {
-          // selection.rect is GLOBAL logical px (cropScreenSnapshot
-          // subtracts display.bounds to localize) — the same top-left
-          // global point space CGEvent reports the cursor in. CLAMP the
-          // rect to display.bounds exactly like cropScreenSnapshot
-          // clamps its crop window (Math.max(0, local)): a snapped
-          // window overhanging the display edge is cropped at the edge,
-          // so the CANVAS origin is the clamped origin — placing
-          // against the raw rect would offset the sprite by the
-          // overhang.
-          const bx = display.bounds.x;
-          const by = display.bounds.y;
-          const clampedX = Math.max(selection.rect.x, bx);
-          const clampedY = Math.max(selection.rect.y, by);
-          const clampedW =
-            Math.min(selection.rect.x + selection.rect.w, bx + display.bounds.width) -
-            clampedX;
-          const clampedH =
-            Math.min(selection.rect.y + selection.rect.h, by + display.bounds.height) -
-            clampedY;
-          // In WINDOWS output mode the gaps between picked windows are
-          // written as alpha-0, so a pointer resting on the desktop
-          // between two windows would be composited into empty
-          // transparency — an arrow floating in a hole. Only place the
-          // cursor when it actually falls inside a kept extent.
-          const cursorPoint = await cursorSamplePromise;
-          const cursorInKeptPixels =
-            !maskToExtents ||
-            cursorPoint === null ||
-            pickedExtents.some(
-              (e) =>
-                cursorPoint.posX >= e.x &&
-                cursorPoint.posX <= e.x + e.w &&
-                cursorPoint.posY >= e.y &&
-                cursorPoint.posY <= e.y + e.h
-            );
-          if (cursorInKeptPixels) {
-            cursorLayer = await resolveCursorLayerForRect(
-              cursorSamplePromise,
-              { x: clampedX, y: clampedY, w: clampedW, h: clampedH },
-              display.scaleFactor
-            );
-          }
+      // macOS must preflight the Documents TCC grant before the screen-saver
+      // selector can cover its consent prompt. Windows has no equivalent TCC
+      // prompt, so its cold mkdir/probe/write is deferred until after selection
+      // and cannot delay the first picker feedback.
+      if (process.platform === "darwin") {
+        const storageStage = trace.begin("storage_readiness");
+        const storageBlocked = await ensureCapturesDirReady();
+        const storageErrorCode =
+          storageBlocked !== null && !storageBlocked.ok ? storageBlocked.error.code : null;
+        trace.end(storageStage, { outcome: storageErrorCode ?? "ready" });
+        if (storageBlocked) {
+          trace.finish("error", { code: storageErrorCode ?? "storage_not_ready" });
+          return storageBlocked;
         }
       }
-      const persisted = await persistAndBroadcast(captureResult.tempPath, sourceApp, {
-        devicePixelRatio: displayScaleFactorForId(
-          screen.getAllDisplays(),
-          selection.displayId
-        ),
-        cursorLayer
+      log.info("capture:interactive handler received", {
+        mode,
+        principal: ctx.principal,
+        invocationId: req.invocation.id
       });
-      if (persisted.ok) {
-        // Selector is already gone; this swaps the idle float-over to the
-        // loaded preview in place (the window stays at floating level).
-        setFloatOverState({
-          kind: "show-loaded",
-          captureId: persisted.value.id,
-          record: persisted.value
+
+      // Timed mode = "delay 5 s, then open the normal auto picker."
+      // During the countdown the user is free to stage anything that
+      // would otherwise close the moment a selector window stole key
+      // focus — a dropdown, a tooltip, the PwrSnap tray menu itself.
+      // We don't touch the screen, we don't substitute any other
+      // capture path; we just wait, then fall through to the same
+      // `pickRegion({ mode: "auto" })` call Quick Capture uses. The
+      // selector takes its frozen-screen snapshot at show() time, so
+      // whatever is on screen at t=0 (dropdowns and all) is what the
+      // user picks against — region / window / ⇧-full-window all work
+      // exactly as they do in Quick Capture.
+      if (mode === "timed") {
+        const timedStage = trace.begin("timed_countdown");
+        log.info("capture:interactive timed delay starting", {
+          durationFromHandlerReceivedMs: Date.now() - handlerStartedAt
         });
-      } else {
-        // Save failed (e.g. the user denied Documents access at the
-        // prompt). Park the idle toast rather than leaving it empty.
-        setFloatOverState({ kind: "cancel" });
+        const delay = await runTimedDelay();
+        trace.end(timedStage, { outcome: delay.ok ? "completed" : delay.error.code });
+        if (!delay.ok) {
+          trace.finish("error", { code: delay.error.code });
+          return delay;
+        }
+        log.info("capture:interactive timed delay completed", {
+          durationFromHandlerReceivedMs: Date.now() - handlerStartedAt
+        });
       }
-      // Wrapped rather than returned bare: the verb has two endings now
-      // and the caller has to be able to tell them apart.
-      return persisted.ok
-        ? ok<InteractiveCaptureOutcome>({ kind: "snap", record: persisted.value })
-        : persisted;
+      const selectorMode = mode === "timed" ? "auto" : mode;
+
+      // Cursor sample (cursor-capture Phase 3): kicked off HERE — after
+      // the timed countdown (so the sample matches where the user parked
+      // the cursor, not where it was at trigger) and BEFORE pickRegion.
+      // NOTHING here is awaited on the hotkey→selector path: the process-owned
+      // settings snapshot and helper spawn chain off a promise that runs while
+      // nothing else is happening.
+      let cursorSamplePromise: Promise<CursorSample | null> | null =
+        startCursorSampleIfEnabled(trace);
+
+      // The sample must land BEFORE the selector swaps the OS cursor for
+      // its synthetic crosshair — NSCursor.currentSystem reads the LIVE
+      // cursor at read time, and the pre-warmed selector can show in
+      // ~10ms while a cold helper spawn takes 50-200ms. Wait a bounded
+      // beat for the sample; if it hasn't resolved in time, DROP it (a
+      // later resolution would have photographed our own crosshair).
+      // Warm spawns land well inside the budget; a cold first-capture
+      // miss just means no cursor layer that one time.
+      if (cursorSamplePromise !== null) {
+        const cursorBudgetStage = trace.begin("cursor_sampling_budget");
+        const settled = await Promise.race([
+          cursorSamplePromise.then(
+            () => true,
+            () => true
+          ),
+          new Promise<boolean>((resolve) =>
+            setTimeout(() => resolve(false), CURSOR_SAMPLE_PRE_SELECTOR_BUDGET_MS)
+          )
+        ]);
+        trace.end(cursorBudgetStage, {
+          budgetMs: CURSOR_SAMPLE_PRE_SELECTOR_BUDGET_MS,
+          outcome: settled ? "settled" : "missed"
+        });
+        if (!settled) {
+          log.info("cursor sample missed the pre-selector budget — dropped (tainted)");
+          cursorSamplePromise = null;
+        }
+      }
+
+      // Timed mode leaves PwrSnap chrome alone — the user may have
+      // re-opened the tray menu during the 5 s precisely to capture
+      // it. Every other mode keeps the default behavior of hiding our
+      // own popovers/toasts before snapshotting.
+      const keepPwrSnapChrome = mode === "timed";
+
+      // Note (2026-05-04): the prior "hide the library, restore at end"
+      // dance is gone. The tray popover is now a non-activating
+      // NSPanel (`type: 'panel'` in createTrayWindow), so its show
+      // doesn't activate PwrSnap and its hide doesn't cascade focus
+      // to the Library. The Library can stay exactly where the user
+      // left it through the entire capture flow — visible, minimized,
+      // hidden, on another Space — and Cocoa won't touch it.
+
+      // Trigger-source exclusion: when the capture was started from the
+      // Library's OWN Capture button (ctx.sourceWindowId is the Library
+      // window), the user demonstrably can't have meant to capture the
+      // Library itself — they were clicking a control on it. Content-
+      // protect the Library for the snapshot so it's absent from the
+      // picker while staying exactly where it is on screen. A global-
+      // hotkey trigger carries no sourceWindowId, so the Library is left
+      // in the picker — there the user may well want to capture it.
+      const protectWindowIds = librarySourceWindowIds(ctx);
+
+      const settings = await readDesktopSettings().then(
+        (value) => value,
+        () => null
+      );
+      // A settings failure must not unexpectedly arm screen recording.
+      const quickCaptureAction = settings?.recording.quickCaptureAction ?? "snap";
+
+      const pickRegionStartedAt = Date.now();
+      log.info("capture:interactive calling pickRegion", {
+        mode,
+        selectorMode,
+        keepPwrSnapChrome,
+        protectWindowCount: protectWindowIds.length,
+        invocationId: req.invocation.id,
+        durationFromHandlerReceivedMs: pickRegionStartedAt - handlerStartedAt
+      });
+      const selection = await pickRegion({
+        mode: selectorMode,
+        keepPwrSnapChrome,
+        protectWindowIds,
+        latencyTrace: trace,
+        quickCaptureAction,
+        ...(settings !== null ? { cursorDefault: settings.recording.videoCaptureCursor } : {})
+      });
+      log.info("capture:interactive pickRegion returned", {
+        mode,
+        selectorMode,
+        ok: selection.ok,
+        reason: selection.ok ? "completed" : selection.reason,
+        invocationId: req.invocation.id,
+        durationFromPickRegionCallMs: Date.now() - pickRegionStartedAt,
+        durationFromHandlerReceivedMs: Date.now() - handlerStartedAt
+      });
+
+      // CANCEL path. The selector window is still up at this point —
+      // pickRegion no longer hides itself; the caller owns hideSelector.
+      // The float-over was pre-shown UNDER the selector during
+      // pickRegion; cancel-hide it FIRST, then drop the selector. The
+      // user never sees the empty toast because the selector covered
+      // it the whole time, and the selector hide reveals the desktop
+      // (not the float-over).
+      if (!selection.ok) {
+        trace.finish(selection.reason === "destroyed" ? "destroy" : "cancel", {
+          reason: selection.reason
+        });
+        if (selection.reason === "busy") {
+          return err({
+            kind: "capture",
+            code: "capture_in_progress",
+            message: "An interactive capture is already in progress."
+          });
+        }
+        setFloatOverState({ kind: "cancel" });
+        // Compositor flush — the float-over hide must reach the
+        // window server before we lower the selector, otherwise
+        // there's a one-frame window where the toast is visible
+        // before the selector window's compositor pass is complete.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        hideSelector();
+        // No activateApp(previousAppPid): the selector is a
+        // non-activating NSPanel, so whatever app was frontmost before
+        // the capture was never deactivated — it stays frontmost when
+        // the selector hides. Re-activating it (the old behavior) was
+        // the main trigger for AppKit demoting PwrSnap to Accessory,
+        // which is what made the Dock icon flash and the Library appear
+        // to hide. We only intervene when PwrSnap's OWN window was
+        // frontmost (previousAppOrigin === "pwrsnap"): there the selector-hide
+        // key-window cascade would let the floating focus-sink steal key
+        // from the Library, so restore it explicitly.
+        // "unknown" is intentionally non-destructive: cancellation can beat
+        // deferred window enumeration, and an unresolved origin must never be
+        // interpreted as permission to raise PwrSnap over the user's app.
+        if (selection.previousAppOrigin === "pwrsnap") {
+          const library = findMainLibraryWindow();
+          if (library !== null && !library.isDestroyed()) {
+            if (library.isMinimized()) library.restore();
+            if (!library.isVisible()) library.show();
+            library.focus();
+          }
+        }
+        // The Accessory demotion that strips the Library's Dock icon
+        // lands asynchronously — and when PwrSnap was a background app
+        // (capture triggered from another app), WITHOUT a
+        // did-resign-active to drive the app-level safety net. A single
+        // synchronous reclaim races it and loses. Re-assert Regular at a
+        // spread of delays — guarded, so it no-ops once the Dock is back,
+        // and never steals focus from the app the user's now in.
+        scheduleDockReclaim();
+        return err({
+          kind: "capture",
+          code: selection.reason,
+          message: `region selector: ${selection.reason}`
+        });
+      }
+
+      const recorderUnavailable =
+        getRecordingState().phase === "failed"
+          ? "awaiting_retry_or_dismiss"
+          : isRecordingActive()
+            ? "already_recording"
+            : null;
+      const wantsRecord =
+        resolveQuickCaptureAction(quickCaptureAction, selection.action) === "record";
+      if (wantsRecord && recorderUnavailable !== null) {
+        log.warn("capture:interactive falling back to a still — recorder unavailable", {
+          mode,
+          quickCaptureAction,
+          reason: recorderUnavailable,
+          phase: getRecordingState().phase
+        });
+      }
+      if (wantsRecord && recorderUnavailable === null) {
+        log.info("capture:interactive committing to a recording", {
+          mode,
+          quickCaptureAction,
+          reported: selection.action ?? "snap"
+        });
+        // Transfer the shared image/video session lease to the asynchronous
+        // recording handoff so another picker cannot start during countdown.
+        releaseSessionInFinally = false;
+        void startRecordingFromSelection(
+          selection,
+          settings?.recording ?? FALLBACK_RECORDING_DEFAULTS
+        )
+          .catch((cause) => {
+            log.warn("interactive record handoff failed", {
+              message: cause instanceof Error ? cause.message : String(cause)
+            });
+          })
+          .finally(() => {
+            releaseSession();
+          });
+        return ok<InteractiveCaptureOutcome>({ kind: "recording" });
+      }
+
+      // COMMIT path. The user has selected AND committed — the selector has
+      // done its job. We tear it down COMPLETELY before attempting the file
+      // save, so a first-capture macOS Documents TCC prompt (triggered by
+      // the persist write) can never appear UNDER the screen-saver-level
+      // (1000) selector. Once the selector is gone the only PwrSnap window
+      // left is the float-over at floating level (3), which sits BELOW a
+      // system consent dialog — so the prompt is reachable.
+      //
+      // We own the screen snapshot now and MUST release it; the try/finally
+      // is a safety net (both teardown + release are idempotent).
+      const { committedCropPath, screenSnapshotId } = selection;
+      let snapshotReleased = false;
+      const releaseOwnedSnapshot = async (): Promise<void> => {
+        if (screenSnapshotId === undefined || snapshotReleased) return;
+        snapshotReleased = true;
+        await releaseSnapshot(screenSnapshotId);
+      };
+      let teardownDone = false;
+      const tearDownSelector = async (): Promise<void> => {
+        if (teardownDone) return;
+        teardownDone = true;
+        // Selector down — but NO activateApp(previousAppPid). The selector
+        // is a non-activating NSPanel, so the previously-frontmost app was
+        // never deactivated; it stays frontmost as the selector hides, and
+        // the float-over (also a non-activating panel at floating level 3)
+        // sits above it through the idle→loaded swap without stealing
+        // focus. Re-activating it was the main trigger for AppKit demoting
+        // PwrSnap to Accessory (Dock flash + Library hide/reshow). Reclaim
+        // across a spread of delays to catch the async demotion — guarded,
+        // so it no-ops once the Dock is back. (Full rationale on the
+        // cancel branch above.)
+        hideSelector();
+        scheduleDockReclaim();
+      };
+      try {
+        const pickedExtents = selection.extents;
+        const maskToExtents =
+          pickedExtents !== undefined &&
+          pickedExtents.length > 0 &&
+          selection.outputMode !== "rectangle";
+        // Defense in depth: pure Window mode has no display/region fallback.
+        // Main validates the renderer against the current candidate allowlist;
+        // keep the consumer fail-closed too so a malformed integration can
+        // never fall through to a snapshot crop or persistence path.
+        if (
+          selectorMode === "window" &&
+          !(
+            (selection.fullWindow === true &&
+              typeof selection.snappedWindowId === "number") ||
+            (pickedExtents !== undefined && pickedExtents.length > 1)
+          )
+        ) {
+          log.warn("capture:interactive rejected invalid window selection", {
+            mode,
+            selectorMode,
+            fullWindow: selection.fullWindow === true,
+            hasWindowId: typeof selection.snappedWindowId === "number"
+          });
+          setFloatOverState({ kind: "cancel" });
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          await tearDownSelector();
+          return err({
+            kind: "capture",
+            code: "invalid_window_selection",
+            message: "Window capture requires a selected window."
+          });
+        }
+
+        if (selection.fullWindow === true && maskToExtents) {
+          log.warn("selector sent fullWindow with extents; masking wins", {
+            extentCount: pickedExtents.length,
+            snappedWindowId: selection.snappedWindowId
+          });
+        }
+
+        if (process.platform !== "darwin") {
+          const storageStage = trace.begin("storage_readiness");
+          const storageBlocked = await ensureCapturesDirReady();
+          const storageErrorCode =
+            storageBlocked !== null && !storageBlocked.ok ? storageBlocked.error.code : null;
+          trace.end(storageStage, { outcome: storageErrorCode ?? "ready" });
+          if (storageBlocked) {
+            trace.finish("error", { code: storageErrorCode ?? "storage_not_ready" });
+            setFloatOverState({ kind: "cancel" });
+            return storageBlocked;
+          }
+        }
+        // Two capture paths:
+        //   • Full-window mode (user held ⇧ at commit time, or `mode`
+        //     was 'window') → desktopCapturer / `screencapture -l
+        //     <id>`. Asks WindowServer for the window's full backing
+        //     buffer — clean rounded corners, no occlusion artifacts,
+        //     no drop shadow. Captures content even where other
+        //     windows are in front. NOTE: this re-shoots the live
+        //     screen rather than using the snapshot, because the
+        //     snapshot only contains visible pixels.
+        //   • Default (mode='auto' rect or 'region') → CROP the
+        //     screen snapshot. The snapshot was taken at show() in
+        //     PHYSICAL pixels; the rect is in logical px relative to
+        //     display.bounds. Multiply rect by scaleFactor and use
+        //     sharp.extract for the crop. Apps starting / popups /
+        //     redraws after the user committed don't bleed into the
+        //     capture — by definition, the snapshot is frozen-in-
+        //     time.
+        const snapshot = getLastWindowListSnapshot();
+        const captureResult =
+          selection.fullWindow === true &&
+          selection.snappedWindowId !== undefined &&
+          !maskToExtents
+            ? await captureWindow(selection.snappedWindowId)
+            : committedCropPath !== undefined
+              ? {
+                  ok: true as const,
+                  tempPath: committedCropPath,
+                  displayId: selection.displayId
+                }
+              : screenSnapshotId !== undefined
+                ? maskToExtents
+                  ? await cropSelectorSnapshotExtents(
+                      screenSnapshotId,
+                      selection.rect,
+                      pickedExtents,
+                      selection.displayId
+                    )
+                  : await cropSelectorSnapshot(
+                      screenSnapshotId,
+                      selection.rect,
+                      selection.displayId
+                    )
+                : {
+                    ok: false as const,
+                    reason: "error" as const,
+                    message: "region selector returned no frozen snapshot for a rect capture"
+                  };
+        // Snapshot pixels are now in `captureResult.tempPath` — release the
+        // frozen snapshot immediately. The guarded finally below owns the
+        // unexpected-throw path without double-releasing the registry entry.
+        await releaseOwnedSnapshot();
+        // Source-app resolution is the same on both capture branches —
+        // the choice of pixel-fetch path (full-window vs. cropped
+        // snapshot) doesn't change WHO owned the window. Single shared
+        // helper keeps the snap-id-first / rect-fallback / null tiering
+        // identical to the video-recording entry point.
+        const sourceApp = resolveSelectionSourceApp(
+          selection.rect,
+          selection.snappedWindowId,
+          snapshot
+        );
+
+        if (!captureResult.ok) {
+          // Crop/window grab failed before we even tried to save. Mirror the
+          // cancel choreography: park the pre-shown idle toast, flush, then
+          // drop the selector — so the empty placeholder never flashes.
+          setFloatOverState({ kind: "cancel" });
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          await tearDownSelector();
+          return err({
+            kind: "capture",
+            code: captureResult.reason,
+            message: captureResult.message
+          });
+        }
+
+        // We have the pixels. Tear the selector down NOW — BEFORE the save —
+        // so the file write (and any Documents TCC prompt it triggers) runs
+        // on a clean screen, never under the picker.
+        await tearDownSelector();
+
+        // Resolve the cursor layer (if sampling ran): place the sprite
+        // relative to the captured rect in canvas pixels. Skipped for
+        // full-window captures — the window's backing buffer has its own
+        // coordinate space and may be occluded, so a screen-space cursor
+        // position is meaningless there (computing via the window frame
+        // is a possible follow-up for the frontmost-window case).
+        let cursorLayer: CursorLayerPlacement | undefined;
+        if (
+          cursorSamplePromise !== null &&
+          !(selection.fullWindow === true && selection.snappedWindowId !== undefined)
+        ) {
+          const display = screen.getAllDisplays().find((d) => d.id === selection.displayId);
+          if (display !== undefined) {
+            // selection.rect is GLOBAL logical px (cropScreenSnapshot
+            // subtracts display.bounds to localize) — the same top-left
+            // global point space CGEvent reports the cursor in. CLAMP the
+            // rect to display.bounds exactly like cropScreenSnapshot
+            // clamps its crop window (Math.max(0, local)): a snapped
+            // window overhanging the display edge is cropped at the edge,
+            // so the CANVAS origin is the clamped origin — placing
+            // against the raw rect would offset the sprite by the
+            // overhang.
+            const bx = display.bounds.x;
+            const by = display.bounds.y;
+            const clampedX = Math.max(selection.rect.x, bx);
+            const clampedY = Math.max(selection.rect.y, by);
+            const clampedW =
+              Math.min(selection.rect.x + selection.rect.w, bx + display.bounds.width) - clampedX;
+            const clampedH =
+              Math.min(selection.rect.y + selection.rect.h, by + display.bounds.height) - clampedY;
+            const cursorPoint = maskToExtents ? await cursorSamplePromise : null;
+            const cursorInKeptPixels =
+              !maskToExtents ||
+              cursorPoint === null ||
+              pickedExtents.some(
+                (extent) =>
+                  cursorPoint.posX >= extent.x &&
+                  cursorPoint.posX <= extent.x + extent.w &&
+                  cursorPoint.posY >= extent.y &&
+                  cursorPoint.posY <= extent.y + extent.h
+              );
+            if (cursorInKeptPixels) {
+              cursorLayer = await resolveCursorLayerForRect(
+                cursorSamplePromise,
+                { x: clampedX, y: clampedY, w: clampedW, h: clampedH },
+                display.scaleFactor
+              );
+            }
+          }
+        }
+        const persisted = await persistAndBroadcast(captureResult.tempPath, sourceApp, {
+          devicePixelRatio: displayScaleFactorForId(screen.getAllDisplays(), selection.displayId),
+          cursorLayer
+        });
+        if (persisted.ok) {
+          // Selector is already gone; this swaps the idle float-over to the
+          // loaded preview in place (the window stays at floating level).
+          setFloatOverState({
+            kind: "show-loaded",
+            captureId: persisted.value.id,
+            record: persisted.value
+          });
+        } else {
+          // Save failed (e.g. the user denied Documents access at the
+          // prompt). Park the idle toast rather than leaving it empty.
+          setFloatOverState({ kind: "cancel" });
+        }
+        return persisted.ok
+          ? ok<InteractiveCaptureOutcome>({ kind: "snap", record: persisted.value })
+          : persisted;
       } finally {
         // Safety net for an unexpected throw before the explicit teardown.
-        void releaseSnapshot(screenSnapshotId);
+        await releaseOwnedSnapshot();
+        if (committedCropPath !== undefined) {
+          // source-store moves the file on success; on every other path remove
+          // the invocation-scoped crop and its otherwise-empty temp directory.
+          await rm(dirname(committedCropPath), { recursive: true, force: true });
+        }
         await tearDownSelector();
       }
     } catch (cause) {
       trace.finish("error", { code: "handler_threw" });
       throw cause;
+    } finally {
+      if (releaseSessionInFinally) {
+        releaseSession();
+      }
     }
   });
 
@@ -1364,6 +1419,63 @@ function fileUrlCandidateToPath(candidate: string): string | null {
 
 function looksLikeImageFile(filePath: string): boolean {
   return IMAGE_FILE_EXTENSIONS.has(extname(filePath).toLowerCase());
+}
+
+/** Consume the representation registered by pickRegion without guessing. */
+async function cropSelectorSnapshot(
+  snapshotId: string,
+  rect: Rect,
+  displayId: number
+): Promise<
+  | { ok: true; tempPath: string; displayId: number }
+  | { ok: false; reason: "validation" | "error"; message: string }
+> {
+  const snapshot = getSnapshot(snapshotId);
+  if (snapshot === null) {
+    return {
+      ok: false,
+      reason: "error",
+      message: "frozen screen snapshot was released before commit"
+    };
+  }
+  if (snapshot.displayId !== displayId) {
+    return {
+      ok: false,
+      reason: "validation",
+      message: `snapshot display mismatch: expected ${snapshot.displayId}, got ${displayId}`
+    };
+  }
+  return cropScreenSnapshot(snapshot.filePath, rect, displayId);
+}
+
+/** Consume and extent-mask the legacy frozen-screen representation. The
+ * renderer-owned strategy already applies this mask while encoding its
+ * committed crop, so only the registered full-frame fallback comes here. */
+async function cropSelectorSnapshotExtents(
+  snapshotId: string,
+  rect: Rect,
+  extents: readonly Rect[],
+  displayId: number
+): Promise<
+  | { ok: true; tempPath: string; displayId: number }
+  | { ok: false; reason: "validation" | "error"; message: string }
+> {
+  const snapshot = getSnapshot(snapshotId);
+  if (snapshot === null) {
+    return {
+      ok: false,
+      reason: "error",
+      message: "frozen screen snapshot was released before commit"
+    };
+  }
+  if (snapshot.displayId !== displayId) {
+    return {
+      ok: false,
+      reason: "validation",
+      message: `snapshot display mismatch: expected ${snapshot.displayId}, got ${displayId}`
+    };
+  }
+  return cropScreenSnapshotExtents(snapshot.filePath, rect, extents, displayId);
 }
 
 /**

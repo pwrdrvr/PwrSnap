@@ -1,6 +1,6 @@
 // Pins the BrowserWindow-aware wrappers around `rectIntersectsBounds`
 // — `appWindowsOverlappingGlobalRect` (global virtual-screen coords,
-// used by the post-commit raise gate in main/index.ts) and
+// used by the post-commit raise gate in record-from-selection.ts) and
 // `appWindowsOverlappingRect` (display-local coords, used by the
 // per-tick re-raise in recording-controller.ts). Both rely on the
 // same filters: destroyed → out, hidden → out, optional
@@ -317,9 +317,10 @@ describe("global vs display-local entry points", () => {
   // GLOBAL — region-selector.ts adds `display.bounds.{x,y}` before
   // resolving — so passing one to `appWindowsOverlappingRect` applies
   // the origin a second time. Two call sites shipped that mistake
-  // (main/index.ts's post-commit raise gate, and the record-from-
-  // selection path), and neither was visible in test or on a primary
-  // display, because at (0,0) the second add is the identity.
+  // (the post-commit raise gate, which moved from main/index.ts into
+  // record-from-selection.ts), and neither was visible in test or on
+  // a primary display, because at (0,0) the second add is the
+  // identity.
   test("a global selector rect must use the global entry point", async () => {
     // The Library on SKEWED, at display-local (400, 300), 1200×800 →
     // global x 1896..3096, y -173..627.
@@ -361,3 +362,34 @@ describe("global vs display-local entry points", () => {
     expect(appWindowsOverlappingRect(rect, PRIMARY.id)).toEqual([library]);
   });
 });
+
+describe("rect coordinate-space converters", () => {
+  // These now own the ± display.bounds arithmetic for every caller,
+  // so the round-trip and the two deliberately-different unknown-
+  // display policies are the things worth pinning.
+  test("round-trips a rect through both directions on a skewed display", async () => {
+    const { displayLocalRectToGlobal, globalRectToDisplayLocal } =
+      await import("../capture/rect-overlap");
+    const local = { x: 300, y: 200, w: 400, h: 300 };
+
+    const global = displayLocalRectToGlobal(local, SKEWED.id);
+    expect(global).toEqual({ x: 1796, y: -273, w: 400, h: 300 });
+    expect(globalRectToDisplayLocal(global!, SKEWED.id)).toEqual(local);
+  });
+
+  test("the two directions take opposite unknown-display policies, on purpose", async () => {
+    const { displayLocalRectToGlobal, globalRectToDisplayLocal } =
+      await import("../capture/rect-overlap");
+    const rect = { x: 10, y: 20, w: 30, h: 40 };
+
+    // display-local → global refuses: without the origin there is no
+    // correct answer, and the overlap helper would rather match
+    // nothing than aim at the wrong place.
+    expect(displayLocalRectToGlobal(rect, /* unknown */ 999)).toBeNull();
+    // global → display-local guesses, preserving the recording path's
+    // long-standing behavior: the recorder and HUD need some rect to
+    // proceed with a capture already in flight.
+    expect(globalRectToDisplayLocal(rect, /* unknown */ 999)).toEqual(rect);
+  });
+});
+

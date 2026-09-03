@@ -23,6 +23,7 @@ import type {
   RecordingSubject
 } from "@pwrsnap/shared";
 import { getMainLogger } from "../log";
+import { globalRectToDisplayLocal } from "../capture/rect-overlap";
 import { setFloatOverState } from "../float-over";
 import { broadcastCapturesChanged } from "../events";
 import { maybeEnqueueCaptureEnrichment } from "../handlers/codex-handlers";
@@ -1226,11 +1227,11 @@ function normalizeWindowsCaptureRect(rect: { x: number; y: number; w: number; h:
  * bug is invisible on single-display setups where `bounds.{x,y}`
  * are zero.
  *
- * This is one instance of a hazard shared with the window-overlap
- * helpers; the coordinate-space note at the head of
- * capture/rect-overlap.ts is the common write-up, and
- * `appWindowsOverlappingGlobalRect` is the variant that sidesteps it
- * for callers who only need an overlap test.
+ * The arithmetic itself lives in `globalRectToDisplayLocal`; the
+ * canonical write-up of the hazard is the coordinate-space note at
+ * the head of capture/rect-overlap.ts. Note that converter keeps this
+ * function's original unknown-display behavior (rect unchanged) — see
+ * its doc for why that differs from the overlap helper's.
  */
 function subjectToPhysicalRect(subject: RecordingSubject): {
   x: number;
@@ -1241,15 +1242,7 @@ function subjectToPhysicalRect(subject: RecordingSubject): {
   switch (subject.kind) {
     case "region":
     case "window": {
-      const display = screen.getAllDisplays().find((d) => d.id === subject.displayId);
-      const offsetX = display?.bounds.x ?? 0;
-      const offsetY = display?.bounds.y ?? 0;
-      return {
-        x: subject.rect.x - offsetX,
-        y: subject.rect.y - offsetY,
-        w: subject.rect.w,
-        h: subject.rect.h
-      };
+      return globalRectToDisplayLocal(subject.rect, subject.displayId);
     }
     case "display": {
       // Recorder reads its own display dims; supply zeros and it

@@ -171,20 +171,11 @@ export async function startRecordingFromSelection(
       cachedSnapshot,
       selfPidSet(),
     );
-    // `SelectorResult.rect` is GLOBAL — region-selector translates
-    // window-local → global on commit, so capture-handlers and the
-    // snapshot crop see one consistent space — so this takes the
-    // global entry point, which hit-tests against `getBounds()`
-    // directly and has no display origin to apply.
-    //
-    // Its display-local sibling `appWindowsOverlappingRect` re-adds
-    // `display.bounds` itself, so handing IT the global rect applies
-    // the origin twice: a no-op on the primary display, and a
-    // full-origin displacement anywhere else. Measured on a display at
-    // {x:1496,y:-473}, a selection squarely inside the Library tested
-    // as {x:3192,y:-846} and matched zero windows, so the raise branch
-    // below never ran. `shouldConsiderRaisingOurWindows` is true for
-    // every free-hand drag, so this is the common path.
+    // `SelectorResult.rect` is GLOBAL, so this must be the global
+    // entry point — its display-local sibling would add the display
+    // origin a second time and match nothing off the primary display.
+    // That double-add shipped here once; see the coordinate-space
+    // note at the head of capture/rect-overlap.ts.
     const overlapping = shouldRaise
       ? appWindowsOverlappingGlobalRect(selection.rect)
       : [];

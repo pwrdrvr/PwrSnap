@@ -73,6 +73,9 @@ import {
 } from "./runtime-identity";
 import { installTerminalSignalShutdown } from "./terminal-signal-shutdown";
 import { installTransientWindowTeardown } from "./transient-window-teardown";
+import {
+  applyWindowsChromiumStartupFeaturePolicy
+} from "./windows-chromium-startup-policy";
 // (showFloatOverForCapture is no longer called from the bootstrap;
 // the capture-handlers `capture:interactive` now drives the entire
 // float-over lifecycle. Kept as an export from float-over.ts for the
@@ -1646,7 +1649,21 @@ export function bootstrapApp(): void {
     // to never show the toast while occluded (defer its first show to after the
     // selector hides) — a restructure of the verified-working show choreography
     // we're deferring until it can be validated on a real Windows GUI session.
-    app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
+    //
+    // Chromium also enables DirectXCapturer by default. WebRTC puts its DXGI
+    // Desktop Duplication capturer in front of the GDI fallback, and only falls
+    // back after the DirectX capturer fails. On affected Windows/RDP systems that
+    // failed attempt has taken 1.6–4.1 seconds per selector snapshot. Disabling
+    // DirectXCapturer at startup selects the fallback immediately. Both Windows
+    // workarounds share one disable-features switch because Chromium treats it as
+    // a comma-separated feature list.
+    const disabledFeatures = applyWindowsChromiumStartupFeaturePolicy(
+      app.commandLine
+    );
+    log.info("configured Windows Chromium screen capture fallback", {
+      backend: "GDI",
+      disabledFeatures
+    });
   }
   if (isE2E && process.platform === "linux") {
     app.disableHardwareAcceleration();

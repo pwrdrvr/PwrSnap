@@ -2136,6 +2136,44 @@ describe("region-selector — authenticated post-show presentation trace", () =>
     };
   }
 
+  test("threads the trace through the explicit legacy snapshot fallback", async () => {
+    const entries: Array<{ message: string; fields: Record<string, unknown> }> = [];
+    let tick = 1010;
+    const { CaptureLatencyTrace } = await import(
+      "../capture/capture-latency-trace"
+    );
+    const trace = new CaptureLatencyTrace(invocation(), "region", {
+      monotonicNow: () => ++tick,
+      wallNow: () => "2026-09-01T12:00:01.000Z",
+      logger: {
+        debug: (message, fields) => entries.push({ message, fields }),
+        info: (message, fields) => entries.push({ message, fields })
+      }
+    });
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({ mode: "region", latencyTrace: trace });
+
+    await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalled());
+    expect(screenSnapshotMocks.captureAndRegister).toHaveBeenCalledWith(1, {
+      mode: "region",
+      latencyTrace: trace
+    });
+    await vi.waitFor(() => {
+      expect(
+        entries.find((entry) => entry.fields.stage === "frozen_source_decode_ready")
+          ?.fields
+      ).toMatchObject({
+        outcome: "loaded",
+        renderer: "img",
+        signal: "load",
+        canvas: "not_used"
+      });
+    });
+
+    submitCurrentSelectorResult({ ok: false });
+    await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
+  });
+
   test("requests acknowledgement after show/focus/moveTop and rejects stale or wrong senders", async () => {
     suppressPresentationAck = true;
     const entries: Array<{ message: string; fields: Record<string, unknown> }> = [];
@@ -2164,6 +2202,10 @@ describe("region-selector — authenticated post-show presentation trace", () =>
         })
       );
     });
+    // Pure window mode presents its loading shell without freezing a full
+    // display. Its visible-paint span is still measured, but there is no
+    // frozen-source decode span to report.
+    expect(screenSnapshotMocks.captureAndRegister).not.toHaveBeenCalled();
     const requestIndex = spy.webContents.send.mock.calls.findIndex(
       ([channel]) => channel === "region-selector:presentation-arm"
     );
@@ -2210,6 +2252,10 @@ describe("region-selector — authenticated post-show presentation trace", () =>
     expect(
       entries.find((entry) => entry.fields.stage === "first_visible_paint_ack")?.fields
     ).toMatchObject({ authenticated: true, frameBarrier: 2 });
+    const decodeStages = entries.filter(
+      (entry) => entry.fields.stage === "frozen_source_decode_ready"
+    );
+    expect(decodeStages).toHaveLength(0);
 
     ipcListeners.get("region-selector:result")?.({}, { ok: false, invocationId: 1 });
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });

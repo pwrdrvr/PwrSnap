@@ -8,6 +8,7 @@ import { rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import { nanoid } from "nanoid";
 import { getMainLogger } from "../log";
+import type { CaptureLatencyTrace } from "./capture-latency-trace";
 import { captureScreen } from "./screencapture";
 
 const log = getMainLogger("pwrsnap:screen-snapshot");
@@ -15,6 +16,9 @@ const log = getMainLogger("pwrsnap:screen-snapshot");
 type Entry = {
   filePath: string;
   displayId: number;
+  /** Capture invocation that owns this short-lived snapshot. Kept only
+   *  in memory so the custom-protocol stream can add correlated spans. */
+  latencyTrace?: CaptureLatencyTrace;
 };
 
 const registry = new Map<string, Entry>();
@@ -27,14 +31,22 @@ export type ScreenSnapshot = {
 
 export async function captureAndRegister(
   displayId: number,
-  _options?: { mode?: "auto" | "region" | "window" }
+  options?: {
+    mode?: "auto" | "region" | "window";
+    latencyTrace?: CaptureLatencyTrace;
+  }
 ): Promise<ScreenSnapshot> {
-  const result = await captureScreen(displayId);
+  const latencyTrace = options?.latencyTrace;
+  const result = await captureScreen(displayId, latencyTrace);
   if (!result.ok) {
     throw new Error(`screen snapshot failed: ${result.reason}: ${result.message}`);
   }
   const id = nanoid();
-  const entry: Entry = { filePath: result.tempPath, displayId };
+  const entry: Entry = {
+    filePath: result.tempPath,
+    displayId,
+    ...(latencyTrace !== undefined ? { latencyTrace } : {})
+  };
   registry.set(id, entry);
   log.info("fallback snapshot registered", {
     id,
@@ -47,6 +59,21 @@ export async function captureAndRegister(
 
 export function getSnapshotPath(id: string): string | null {
   return registry.get(id)?.filePath ?? null;
+}
+
+/** Resolve the protocol target plus its owning latency trace. Neither the
+ *  trace nor the path crosses IPC; the protocol handler uses them only to
+ *  time the existing streamed file response. */
+export function getSnapshotProtocolTarget(id: string): {
+  filePath: string;
+  latencyTrace?: CaptureLatencyTrace;
+} | null {
+  const entry = registry.get(id);
+  if (entry === undefined) return null;
+  return {
+    filePath: entry.filePath,
+    ...(entry.latencyTrace !== undefined ? { latencyTrace: entry.latencyTrace } : {})
+  };
 }
 
 export function getSnapshot(id: string): ScreenSnapshot | null {

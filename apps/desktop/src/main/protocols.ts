@@ -41,9 +41,13 @@
 // `vscode-file://`.
 
 import { app, protocol } from "electron";
+import type { CaptureLatencyTrace } from "./capture/capture-latency-trace";
+import { getSnapshotProtocolTarget } from "./capture/screen-snapshot";
 import { getMainLogger } from "./log";
-import { getSnapshotPath } from "./capture/screen-snapshot";
-import { fileResponse } from "./protocol-file-response";
+import {
+  fileResponse,
+  type FileResponseObserver
+} from "./protocol-file-response";
 import {
   parseAppIconBundleId,
   parseCacheUrl,
@@ -194,6 +198,31 @@ export type ProtocolResolver = {
  */
 const CAPTURE_SOURCE_CACHE_CONTROL = "private, max-age=86400, immutable";
 
+function screenSnapshotFileObserver(
+  trace: CaptureLatencyTrace
+): FileResponseObserver {
+  let openStage: ReturnType<CaptureLatencyTrace["begin"]> | undefined;
+  let readStage: ReturnType<CaptureLatencyTrace["begin"]> | undefined;
+  return {
+    onOpenStarted: () => {
+      openStage = trace.begin("screen_protocol_file_open");
+    },
+    onOpenFinished: ({ outcome, expectedBytes }) => {
+      if (openStage === undefined) return;
+      trace.end(openStage, { outcome, expectedBytes });
+      openStage = undefined;
+    },
+    onReadStarted: () => {
+      readStage = trace.begin("screen_protocol_file_read");
+    },
+    onReadFinished: ({ outcome, expectedBytes, bytesRead }) => {
+      if (readStage === undefined) return;
+      trace.end(readStage, { outcome, expectedBytes, bytesRead });
+      readStage = undefined;
+    }
+  };
+}
+
 /**
  * Wires both protocol handlers. Must be called inside `app.whenReady()`.
  */
@@ -270,14 +299,18 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
       return new Response("invalid screen snapshot id", { status: 400 });
     }
     try {
-      const filePath = getSnapshotPath(id);
-      if (filePath === null) {
+      const target = getSnapshotProtocolTarget(id);
+      if (target === null) {
         // Snapshot already released — selector dismissed mid-fetch
         // is a normal race. Quiet log + 404.
         log.info("screen: not found", { id });
         return new Response("not found", { status: 404 });
       }
-      return await fileResponse(filePath, request);
+      return await fileResponse(target.filePath, request, {
+        ...(target.latencyTrace !== undefined
+          ? { observer: screenSnapshotFileObserver(target.latencyTrace) }
+          : {})
+      });
     } catch (cause) {
       log.error("screen handler threw", {
         id,

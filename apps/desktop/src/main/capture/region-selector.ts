@@ -117,6 +117,7 @@ type ActiveSelectorLifecycle = {
   presentationGeneration: number | null;
   presentationSurface: SelectorPresentedEvent["surface"] | null;
   presentationAcknowledged: boolean;
+  visiblePaintStage: CaptureLatencyStageToken | null;
   presentationTimeout: ReturnType<typeof setTimeout> | null;
   onPresentationAcknowledged: (() => void) | null;
   captureStrategy: SelectorDisplayMediaStrategy;
@@ -138,6 +139,7 @@ const SELECTOR_FRAME_RELEASE_CHANNEL = "region-selector:frame-release";
  *  selector is shown. Resolved by the SELECTOR_PAINTED_CHANNEL ack
  *  (matching screenUrl) or by its own timeout. */
 type SnapshotPaintOutcome = "painted" | "error" | "timeout" | "superseded";
+type SnapshotPaintSource = "renderer-display-media" | "legacy-file";
 let pendingPaintWait: {
   screenUrl: string;
   invocationId: number;
@@ -152,7 +154,9 @@ let pendingPaintWait: {
 function waitForSnapshotPainted(
   screenUrl: string,
   invocationId: number,
-  timeoutMs: number
+  timeoutMs: number,
+  source: SnapshotPaintSource,
+  trace: CaptureLatencyTrace | null
 ): Promise<SnapshotPaintOutcome> {
   if (pendingPaintWait !== null) {
     const stale = pendingPaintWait;
@@ -160,17 +164,35 @@ function waitForSnapshotPainted(
     stale.resolve("superseded");
   }
   return new Promise<SnapshotPaintOutcome>((resolve) => {
+    const decodeStage = trace?.begin("frozen_source_decode_ready") ?? null;
     let settled = false;
     const finish = (outcome: SnapshotPaintOutcome): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       if (pendingPaintWait?.resolve === settleResolve) pendingPaintWait = null;
+      if (decodeStage !== null) {
+        trace?.end(decodeStage, {
+          outcome: outcome === "painted" ? "loaded" : outcome,
+          renderer: source === "legacy-file" ? "img" : "canvas",
+          signal:
+            outcome === "painted"
+              ? source === "legacy-file"
+                ? "load"
+                : "painted"
+              : "none",
+          canvas: source === "legacy-file" ? "not_used" : "renderer_owned"
+        });
+      }
       resolve(outcome);
     };
     const settleResolve = finish;
     const timer = setTimeout(() => finish("timeout"), timeoutMs);
-    pendingPaintWait = { screenUrl, invocationId, resolve: settleResolve };
+    pendingPaintWait = {
+      screenUrl,
+      invocationId,
+      resolve: settleResolve
+    };
   });
 }
 
@@ -916,12 +938,15 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
         clearTimeout(lifecycle.presentationTimeout);
         lifecycle.presentationTimeout = null;
       }
-      lifecycle.latencyTrace?.mark("first_visible_paint_ack", {
-        authenticated: true,
-        frameBarrier: 2,
-        generation: presented.generation,
-        surface: presented.surface
-      });
+      if (lifecycle.visiblePaintStage !== null) {
+        lifecycle.latencyTrace?.end(lifecycle.visiblePaintStage, {
+          authenticated: true,
+          frameBarrier: 2,
+          generation: presented.generation,
+          surface: presented.surface
+        });
+        lifecycle.visiblePaintStage = null;
+      }
       lifecycle.latencyTrace?.finish("presented", {
         frameBarrier: 2,
         generation: presented.generation,
@@ -988,9 +1013,6 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
         signal: "snapshot-painted",
         status: paint.status,
         authenticated: true
-      });
-      activeSelectorLifecycle?.latencyTrace?.mark("frozen_source_decode_ready", {
-        status: paint.status
       });
       waiter.resolve(paint.status === "error" ? "error" : "painted");
     });
@@ -1269,6 +1291,7 @@ export async function pickRegion(
     presentationGeneration: null,
     presentationSurface: null,
     presentationAcknowledged: false,
+    visiblePaintStage: null,
     presentationTimeout: null,
     onPresentationAcknowledged: null,
     captureStrategy,
@@ -1699,7 +1722,12 @@ export async function pickRegion(
         durationFromUserRequestMs: elapsedFromRequest()
       });
       try {
-        const capturePromise = captureAndRegister(targetDisplay.id, { mode });
+        const capturePromise = captureAndRegister(targetDisplay.id, {
+          mode,
+          ...(lifecycle.latencyTrace !== null
+            ? { latencyTrace: lifecycle.latencyTrace }
+            : {})
+        });
         const capture = await raceSelectorTermination(lifecycle, capturePromise);
         if (capture.kind === "terminated") {
           if (screenFrameStage !== undefined) {
@@ -1927,6 +1955,8 @@ export async function pickRegion(
         lifecycle.presentationGeneration = generation;
         lifecycle.presentationSurface = surface;
         lifecycle.presentationAcknowledged = false;
+        lifecycle.visiblePaintStage =
+          lifecycle.latencyTrace?.begin("first_visible_paint_ack") ?? null;
         lifecycle.onPresentationAcknowledged =
           surface === "window-loading"
             ? () => {
@@ -1989,7 +2019,9 @@ export async function pickRegion(
           invocationId,
           usesRendererDisplayMedia
             ? RENDERER_FRAME_PAINT_TIMEOUT_MS
-            : LEGACY_SNAPSHOT_PAINT_TIMEOUT_MS
+            : LEGACY_SNAPSHOT_PAINT_TIMEOUT_MS,
+          usesRendererDisplayMedia ? "renderer-display-media" : "legacy-file",
+          lifecycle.latencyTrace
         ).then((paintOutcome) => {
           restoreTemporarilyHiddenProtectedWindows();
           liftSnapshotContentProtection();

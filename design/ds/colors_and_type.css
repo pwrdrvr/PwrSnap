@@ -100,6 +100,14 @@
   --shadow-card:    var(--shadow-md);
   --shadow-thumb:   var(--shadow-md);
 
+  /* ---------- SCROLLBARS ----------
+     Thumb + track for the native (`scrollbar-color`) thin scrollbars.
+     No hover tone — the OS owns thumb hover. Derived from
+     `--text-primary` / `--text-muted` via color-mix so the light theme
+     picks up the inverted values for free. */
+  --scrollbar-track: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  --scrollbar-thumb: color-mix(in srgb, var(--text-muted) 46%, transparent);
+
   /* ---------- FOCUS ---------- */
   --focus-ring: 0 0 0 3px var(--accent-shadow);
 

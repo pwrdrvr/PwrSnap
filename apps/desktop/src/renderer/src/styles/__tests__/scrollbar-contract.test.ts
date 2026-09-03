@@ -29,54 +29,82 @@
 //
 // Reads the CSS as strings, like theme-contract.test.ts next door: the
 // files ARE the source of truth, and "this declaration is in this
-// block" is a string-match question, not a CSSOM one.
+// block" is a string-match question, not a CSSOM one. The extractor
+// itself is shared with that suite — see ./css-block.
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
+import { extractBlock, stripCssComments } from "./css-block";
+
+const LABEL = "scrollbar-contract";
 const RENDERER_SRC = join(__dirname, "..", "..");
 const STYLES_DIR = join(__dirname, "..");
+// …/apps/desktop/src/renderer/src → repo root is five levels up.
+const REPO_ROOT = join(RENDERER_SRC, "..", "..", "..", "..", "..");
 
-/** Every `.css` file the renderer bundle can pull in, relative-path
- *  labelled so a failure names the file to open. */
-function collectCssFiles(dir: string, out: Array<[string, string]> = []): Array<[string, string]> {
+/** Feature areas that own stylesheets today. Named explicitly so a
+ *  directory MOVE — the one way the collector can go partially blind
+ *  while every assertion below still passes — fails loudly instead. */
+const REQUIRED_CSS_AREAS = ["styles/", "features/"];
+/** Floor, not an exact count: adding a stylesheet must not need a test
+ *  edit, but losing most of them must not pass silently. */
+const MIN_CSS_FILES = 20;
+
+type CssFile = [label: string, stripped: string];
+
+/** Every `.css` file the renderer bundle can pull in, comment-stripped
+ *  once at collection and relative-path labelled so a failure names the
+ *  file to open. */
+function collectCssFiles(dir: string, out: CssFile[] = []): CssFile[] {
   for (const entry of readdirSync(dir)) {
     if (entry === "node_modules") continue;
     const full = join(dir, entry);
     if (statSync(full).isDirectory()) {
       collectCssFiles(full, out);
     } else if (entry.endsWith(".css")) {
-      out.push([full.slice(RENDERER_SRC.length + 1), readFileSync(full, "utf8")]);
+      out.push([
+        full.slice(RENDERER_SRC.length + 1),
+        stripCssComments(readFileSync(full, "utf8"))
+      ]);
     }
   }
   return out;
 }
 
-/** Strip `/* … *\/` comments so prose ABOUT a banned selector doesn't
- *  read as a use of it — the app.css rule explains the ban at length. */
-function stripComments(css: string): string {
-  return css.replace(/\/\*[\s\S]*?\*\//g, "");
-}
-
-/** Extract the body of the first block matching a selector pattern. */
-function extractBlock(css: string, selectorPattern: string): string {
-  const match = stripComments(css).match(new RegExp(`${selectorPattern}\\s*\\{([\\s\\S]*?)\\}`));
-  if (match === null) {
-    throw new Error(`scrollbar-contract: no block found for selector /${selectorPattern}/`);
-  }
-  return match[1] ?? "";
-}
-
 const cssFiles = collectCssFiles(RENDERER_SRC);
-const appCss = readFileSync(join(STYLES_DIR, "app.css"), "utf8");
-const tokensCss = readFileSync(join(STYLES_DIR, "tokens.css"), "utf8");
+const appCss = stripCssComments(readFileSync(join(STYLES_DIR, "app.css"), "utf8"));
+const tokensCss = stripCssComments(readFileSync(join(STYLES_DIR, "tokens.css"), "utf8"));
+
+describe("the CSS collector actually covers the renderer", () => {
+  // Without this, a stylesheet directory moved out from under
+  // RENDERER_SRC narrows the ban below to whatever is left, with the
+  // suite still green — the exact regression this file exists to catch.
+  // (A fully empty collection is caught by Vitest itself, which errors
+  // on an `it.each([])`; a PARTIAL miss is what needs asserting.)
+  it(`finds at least ${MIN_CSS_FILES} stylesheets`, () => {
+    expect(cssFiles.length).toBeGreaterThanOrEqual(MIN_CSS_FILES);
+  });
+
+  it.each(REQUIRED_CSS_AREAS)("covers %s", (area) => {
+    expect(cssFiles.some(([label]) => label.startsWith(area))).toBe(true);
+  });
+});
 
 describe("universal scrollbar rule", () => {
   // The universal selector, not `:root`. `scrollbar-color` inherits;
   // `scrollbar-width` does NOT — a `:root` rule would tint every
   // scroller and leave every width at the chunky default.
-  const universal = extractBlock(appCss, "(?<![\\w.#\\]:-])\\*");
+  //
+  // Anchored to a `*` that STARTS a selector line, because a bare `\*`
+  // also matches `.app-toast-stack > *` further down the file; matching
+  // both and taking the first would make this assertion depend on rule
+  // order. `expectSingle` makes that ambiguity throw rather than pick.
+  const universal = extractBlock(appCss, "(?<=\\n)\\*", {
+    label: LABEL,
+    expectSingle: true
+  });
 
   it("sets scrollbar-width: thin on `*`", () => {
     expect(universal).toMatch(/scrollbar-width:\s*thin\s*;/);
@@ -94,34 +122,56 @@ describe("scrollbar tokens", () => {
   // off `--text-primary` / `--text-muted`, both of which the light
   // block overrides — so light theme themes for free and must NOT get
   // a second literal declaration that can drift.
-  const root = extractBlock(tokensCss, ":root");
+  const root = extractBlock(tokensCss, ":root", { label: LABEL, expectSingle: true });
 
   it.each(["scrollbar-track", "scrollbar-thumb"])("declares --%s in :root", (name) => {
     expect(root).toMatch(new RegExp(`--${name}\\s*:\\s*color-mix\\([^;]+\\);`));
   });
 
   it("does not redeclare the scrollbar tokens in the light block", () => {
-    const light = extractBlock(tokensCss, ':root\\[data-theme="light"\\]');
+    const light = extractBlock(tokensCss, ':root\\[data-theme="light"\\]', { label: LABEL });
     expect(light).not.toMatch(/--scrollbar-(track|thumb)\s*:/);
+  });
+
+  it("is mirrored into the design-system palette", () => {
+    // CLAUDE.md: "PwrSnap mirrors its `:root` palette in
+    // design/ds/colors_and_type.css and tokens.css." That file is a
+    // live mirror, not a frozen handoff — it already tracks the shadow
+    // and surface tokens — so a new palette token belongs in both.
+    const mirror = readFileSync(
+      join(REPO_ROOT, "design", "ds", "colors_and_type.css"),
+      "utf8"
+    );
+    expect(mirror).toMatch(/--scrollbar-track\s*:/);
+    expect(mirror).toMatch(/--scrollbar-thumb\s*:/);
   });
 });
 
 describe("no ::-webkit-scrollbar anywhere in the renderer", () => {
-  it.each(cssFiles)("%s", (_label, css) => {
-    expect(stripComments(css)).not.toMatch(/::-webkit-scrollbar/);
+  it.each(cssFiles)("%s", (_label, stripped) => {
+    expect(stripped).not.toMatch(/::-webkit-scrollbar/);
   });
 });
 
-describe("every scrollbar-width override is deliberate", () => {
-  // `thin` (the default posture) or `none` (a scroller that hides its
+describe("every scrollbar-width declaration is deliberate", () => {
+  // `thin` (the universal default) or `none` (a scroller that hides its
   // bar on purpose) are the only two legal values. `auto` would be a
   // per-scroller re-introduction of the chunky bar.
-  it.each(cssFiles)("%s", (_label, css) => {
-    const values = [...stripComments(css).matchAll(/scrollbar-width:\s*([a-z-]+)/g)].map(
-      (m) => m[1]
-    );
+  it.each(cssFiles)("%s", (_label, stripped) => {
+    const values = [...stripped.matchAll(/scrollbar-width:\s*([a-z-]+)/g)].map((m) => m[1]);
     for (const value of values) {
       expect(["thin", "none"]).toContain(value);
     }
+  });
+
+  it("declares thin exactly once — on the universal rule", () => {
+    // A per-scroller `scrollbar-width: thin` is dead weight now that
+    // `*` carries it, and worse than dead: it reads as a deliberate
+    // opt-in, which invites deleting the universal rule on the belief
+    // that each scroller already opts in for itself.
+    const thinDeclarations = cssFiles.flatMap(([label, stripped]) =>
+      [...stripped.matchAll(/scrollbar-width:\s*thin/g)].map(() => label)
+    );
+    expect(thinDeclarations).toEqual(["styles/app.css"]);
   });
 });

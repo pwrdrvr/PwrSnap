@@ -1232,9 +1232,12 @@
   overflow-x: auto;
   overflow-y: hidden;
   display: flex; align-items: stretch; gap: 4px;
-  /* Width + tone come from the universal `*` rule in app.css. No
-     `::-webkit-scrollbar` block here — see that rule's comment. */
-  scrollbar-width: thin;
+  /* Width comes from the universal `*` rule in app.css. The tone is
+     pinned here to keep what the removed `::-webkit-scrollbar-thumb`
+     painted: a bare 32% thumb over NO track. Inheriting the app-wide
+     pair instead would lay a faint full-width track line across the
+     bottom of the 110px filmstrip, which this bar has never had. */
+  scrollbar-color: color-mix(in srgb, var(--text-muted) 32%, transparent) transparent;
 }
 .psl__reel-day {
   display: flex; flex-direction: column;
@@ -3097,11 +3100,10 @@
   gap: 8px;
   padding-right: 4px;
   overscroll-behavior: contain;
-  /* Accent-tinted thumb — the one scroller that deliberately departs
-     from `--scrollbar-thumb`, because the AI card is the accent
-     surface. Width still comes from the universal `scrollbar-width:
-     thin`; no `::-webkit-scrollbar` block (see app.css). */
-  scrollbar-width: thin;
+  /* Accent-tinted thumb — the AI card is the accent surface, so this
+     scroller departs from `--scrollbar-thumb`. Width still comes from
+     the universal `scrollbar-width: thin` in app.css; no
+     `::-webkit-scrollbar` block (see that rule's comment). */
   scrollbar-color: color-mix(in srgb, var(--accent) 42%, transparent) color-mix(in srgb, var(--surface-highlight) 6%, transparent);
 }
 .psl__ai-card-text {

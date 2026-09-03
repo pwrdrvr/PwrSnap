@@ -15,7 +15,15 @@
 // captured), CSS-only — pure positioning + a 1.5px accent border. NO
 // `backdrop-filter` — single biggest cause of jank over Splashtop.
 
-import { app, BrowserWindow, globalShortcut, ipcMain, screen, type Display } from "electron";
+import {
+  app,
+  BrowserWindow,
+  globalShortcut,
+  ipcMain,
+  screen,
+  type Display,
+  type IpcMainInvokeEvent
+} from "electron";
 import { join } from "node:path";
 import type { QuickCaptureAction } from "@pwrsnap/shared";
 import { getMainLogger } from "../log";
@@ -26,7 +34,15 @@ import {
   selfPidSet,
   type WindowInfo
 } from "./window-list";
-import { captureAndRegister, releaseSnapshot, type ScreenSnapshot } from "./screen-snapshot";
+import {
+  captureAndRegister,
+  readSnapshotForRenderer,
+  recordSnapshotCanvasUpload,
+  releaseAllSnapshots,
+  releaseSnapshot,
+  type ScreenSnapshot,
+  type SelectorMappedSnapshotDescriptor
+} from "./screen-snapshot";
 import { isExtentRect, MAX_SELECTOR_EXTENTS } from "./extent-mask";
 import { hideTrayPopoverIfVisible } from "../tray";
 import { setFloatOverState, ensureFloatOverTopmost } from "../float-over";
@@ -53,9 +69,18 @@ let displayListenersAttached = false;
 /** The capture currently waiting for its snapshot to paint before the
  *  selector is shown. Resolved by the SELECTOR_PAINTED_CHANNEL ack
  *  (matching screenUrl) or by its own timeout. */
+type SnapshotPaintOutcome = "loaded" | "timeout" | "superseded";
+type SnapshotPaintDetails = Readonly<{
+  transport: "img" | "windows-shared-memory";
+  decodeMs: number | null;
+  mainToRendererBytes: number | null;
+  canvasUploadBytes: number | null;
+}>;
+
 let pendingPaintWait: {
   screenUrl: string;
-  settle: (outcome: "loaded" | "timeout" | "superseded") => void;
+  senderId: number;
+  settle: (outcome: SnapshotPaintOutcome, details?: SnapshotPaintDetails) => void;
   trace?: CaptureLatencyTrace;
 } | null = null;
 
@@ -70,6 +95,41 @@ type PendingPresentation = {
 
 let pendingPresentation: PendingPresentation | null = null;
 let selectorPresentationGeneration = 0;
+let activeSelectorSenderId: number | null = null;
+
+function isTopLevelSelectorFrame(event: IpcMainInvokeEvent): boolean {
+  if (event.sender.isDestroyed()) return false;
+  const senderFrame = event.senderFrame;
+  const mainFrame = event.sender.mainFrame;
+  return (
+    senderFrame !== null &&
+    mainFrame !== null &&
+    senderFrame.processId === mainFrame.processId &&
+    senderFrame.routingId === mainFrame.routingId
+  );
+}
+
+function abortActiveSelector(senderId: number, reason: string): void {
+  if (activeSelectorSenderId !== senderId) return;
+  activeSelectorSenderId = null;
+  if (pendingPaintWait?.senderId === senderId) {
+    const waiter = pendingPaintWait;
+    pendingPaintWait = null;
+    waiter.settle("superseded");
+  }
+  finishPendingPresentation("destroy", reason, senderId);
+  if (activeScreenSnapshot !== null) {
+    const stale = activeScreenSnapshot;
+    activeScreenSnapshot = null;
+    void releaseSnapshot(stale.id);
+  }
+  previousAppPid = null;
+  if (pendingResolver !== null) {
+    const resolver = pendingResolver;
+    pendingResolver = null;
+    resolver({ ok: false, reason: "destroyed" });
+  }
+}
 
 function finishPendingPresentation(
   outcome: "cancel" | "destroy",
@@ -90,6 +150,7 @@ function finishPendingPresentation(
  */
 function waitForSnapshotPainted(
   screenUrl: string,
+  senderId: number,
   timeoutMs: number,
   trace?: CaptureLatencyTrace
 ): Promise<void> {
@@ -101,17 +162,33 @@ function waitForSnapshotPainted(
   return new Promise<void>((resolve) => {
     const resourceStage = trace?.begin("frozen_source_decode_ready");
     let settled = false;
-    const finish = (outcome: "loaded" | "timeout" | "superseded"): void => {
+    const finish = (
+      outcome: SnapshotPaintOutcome,
+      details?: SnapshotPaintDetails
+    ): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       if (pendingPaintWait?.settle === settlePaint) pendingPaintWait = null;
       if (resourceStage !== undefined) {
+        const transport = details?.transport ?? "img";
         trace?.end(resourceStage, {
           outcome,
-          renderer: "img",
-          signal: outcome === "loaded" ? "load" : "none",
-          canvas: "not_used"
+          renderer: transport === "windows-shared-memory" ? "canvas" : "img",
+          signal:
+            outcome === "loaded"
+              ? transport === "windows-shared-memory"
+                ? "ipc"
+                : "load"
+              : "none",
+          canvas: transport === "windows-shared-memory" ? "put_image_data" : "not_used",
+          ...(details !== undefined
+            ? {
+                decodeMs: details.decodeMs,
+                mainToRendererBytes: details.mainToRendererBytes,
+                canvasUploadBytes: details.canvasUploadBytes
+              }
+            : {})
         });
       }
       resolve();
@@ -120,6 +197,7 @@ function waitForSnapshotPainted(
     const timer = setTimeout(() => finish("timeout"), timeoutMs);
     pendingPaintWait = {
       screenUrl,
+      senderId,
       settle: settlePaint,
       ...(trace !== undefined ? { trace } : {})
     };
@@ -163,7 +241,7 @@ const selectorPrewarmTimings = new Map<number, SelectorPrewarmTiming>();
 let lastSnapshot: WindowInfo[] = [];
 
 // Active screen snapshot for the in-flight pickRegion. The selector
-// shows this PNG as a full-window background image; the user drags
+// shows this immutable generation as a full-window background; the user drags
 // against the snapshot, and commit crops the snapshot rather than
 // re-shooting the live screen. Released on hide.
 let activeScreenSnapshot: ScreenSnapshot | null = null;
@@ -196,11 +274,9 @@ export type SelectorResult =
       ok: true;
       rect: { x: number; y: number; w: number; h: number };
       displayId: number;
-      /** Path to the frozen-at-show screen snapshot. The capture
-       *  handler crops this file at `rect * scaleFactor` rather than
-       *  re-shooting the live screen. */
-      screenSnapshotPath: string;
-      /** Registry id matching the path. Capture-handlers MUST call
+      /** Registry id for the exact generation painted by the selector.
+       *  The backing store is a PNG file on macOS/Linux/fallback and a
+       *  pagefile mapping on the Windows fast path. Capture-handlers MUST call
        *  `releaseSnapshot(id)` from screen-snapshot.ts after
        *  cropping — ownership transfers from the selector module to
        *  the consumer when this result is produced, so
@@ -279,14 +355,17 @@ const SELECTOR_KEY_CHANNEL = "region-selector:key";
 // before show() and the renderer flips its UI accordingly. Possible
 // values: 'auto' | 'region' | 'window'.
 const SELECTOR_MODE_CHANNEL = "region-selector:mode";
-// Renderer → main: the renderer fires this once the frozen-snapshot
-// <img> for a given screenUrl has loaded/decoded. Main waits for it
+// Renderer → main: the renderer fires this once the frozen snapshot has
+// painted through either canvas or <img>. Main waits for it
 // before `win.show()` so the window never appears as an empty
 // transparent overlay (which would flash the live screen / desktop
 // behind it for a frame before the snapshot paints). Carries the
 // screenUrl so a late ack from a previous capture can't satisfy the
 // current wait.
 const SELECTOR_PAINTED_CHANNEL = "region-selector:painted";
+// Renderer → main request for one validated RGBA copy of the active Windows
+// pagefile mapping. Accepted only from the active selector's top-level frame.
+const SELECTOR_SNAPSHOT_READ_CHANNEL = "region-selector:snapshot-read";
 // Main → renderer after show/focus/moveTop; renderer crosses two rAF
 // boundaries then acks on SELECTOR_PRESENTED_CHANNEL. Diagnostic only:
 // unlike SELECTOR_PAINTED_CHANNEL, this never gates selector lifecycle.
@@ -352,22 +431,74 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
       lastViewportByWebContents.set(wcId, summary);
       log.info(`renderer viewport wc=${wcId} ${summary}`);
     });
-    ipcMain.on(SELECTOR_PAINTED_CHANNEL, (_event, payload: unknown) => {
-      // Renderer acked that the frozen snapshot finished painting.
-      // Only satisfy the current wait if the URL matches (a stale ack
-      // from a superseded capture must not reveal the selector early).
-      if (pendingPaintWait === null) return;
-      const ackedUrl =
-        typeof payload === "object" && payload !== null && "screenUrl" in payload
-          ? (payload as { screenUrl?: unknown }).screenUrl
+    ipcMain.handle(SELECTOR_SNAPSHOT_READ_CHANNEL, async (event, payload: unknown) => {
+      const snapshotId =
+        typeof payload === "object" && payload !== null && "id" in payload
+          ? (payload as { id?: unknown }).id
           : null;
-      if (ackedUrl !== null && ackedUrl !== pendingPaintWait.screenUrl) return;
+      if (
+        event.sender.id !== activeSelectorSenderId ||
+        !isTopLevelSelectorFrame(event) ||
+        typeof snapshotId !== "string" ||
+        !/^[A-Za-z0-9_-]{1,64}$/.test(snapshotId) ||
+        activeScreenSnapshot?.id !== snapshotId ||
+        activeScreenSnapshot.selectorDescriptor === undefined
+      ) {
+        log.warn("selector mapped snapshot read rejected", {
+          senderMatches: event.sender.id === activeSelectorSenderId,
+          topLevelFrame: isTopLevelSelectorFrame(event),
+          snapshotMatches: activeScreenSnapshot?.id === snapshotId
+        });
+        return { ok: false, code: "unauthorized" } as const;
+      }
+      const result = await readSnapshotForRenderer(snapshotId);
+      if (!result.ok && result.code === "read_failed") {
+        abortActiveSelector(event.sender.id, "mapped_snapshot_read_failed");
+      }
+      return result;
+    });
+    ipcMain.on(SELECTOR_PAINTED_CHANNEL, (event, payload: unknown) => {
+      // Renderer acked that the frozen snapshot finished painting.
+      // Only satisfy the current wait if the sender and URL match (a stale
+      // ack from a superseded capture must not reveal the selector early).
+      if (pendingPaintWait === null) return;
+      if (event.sender.id !== pendingPaintWait.senderId) return;
+      if (typeof payload !== "object" || payload === null) return;
+      const painted = payload as Record<string, unknown>;
+      if (painted.screenUrl !== pendingPaintWait.screenUrl) return;
+      const transport =
+        painted.transport === "windows-shared-memory" ? "windows-shared-memory" : "img";
+      const canvasUploadBytes = painted.canvasUploadBytes;
+      if (
+        transport === "windows-shared-memory" &&
+        activeScreenSnapshot !== null &&
+        Number.isSafeInteger(canvasUploadBytes) &&
+        (canvasUploadBytes as number) >= 0
+      ) {
+        recordSnapshotCanvasUpload(activeScreenSnapshot.id, canvasUploadBytes as number);
+      }
       const waiter = pendingPaintWait;
       pendingPaintWait = null;
       waiter.trace?.mark("renderer_signal_receipt", {
-        signal: "snapshot_painted"
+        signal: "snapshot_painted",
+        transport
       });
-      waiter.settle("loaded");
+      waiter.settle("loaded", {
+        transport,
+        decodeMs:
+          typeof painted.decodeMs === "number" && Number.isFinite(painted.decodeMs)
+            ? painted.decodeMs
+            : null,
+        mainToRendererBytes:
+          typeof painted.mainToRendererBytes === "number" &&
+          Number.isSafeInteger(painted.mainToRendererBytes)
+            ? painted.mainToRendererBytes
+            : null,
+        canvasUploadBytes:
+          typeof canvasUploadBytes === "number" && Number.isSafeInteger(canvasUploadBytes)
+            ? canvasUploadBytes
+            : null
+      });
     });
     ipcMain.on(SELECTOR_PRESENTED_CHANNEL, (event, payload: unknown) => {
       const pending = pendingPresentation;
@@ -430,6 +561,7 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
       if (pendingResolver === null) return;
       const resolver = pendingResolver;
       pendingResolver = null;
+      activeSelectorSenderId = null;
       if (isSelectorPayload(payload) && payload.ok) {
         // Renderer ships rects in WINDOW-LOCAL display logical
         // coords. The selector window covers display.bounds via
@@ -472,7 +604,6 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
               h: payload.rect.h
             },
             displayId: payload.displayId,
-            screenSnapshotPath: snapshot.filePath,
             screenSnapshotId: snapshot.id,
             previousAppPid: prevPid
           };
@@ -832,18 +963,39 @@ export async function pickRegion(
   });
   try {
     const screenSnapshot = await captureAndRegister(targetDisplay.id, latencyTrace);
+    if (win.isDestroyed()) {
+      await releaseSnapshot(screenSnapshot.id);
+      if (screenFrameStage !== undefined) {
+        latencyTrace?.end(screenFrameStage, {
+          outcome: "selector_destroyed",
+          displayId: targetDisplay.id,
+          transport: screenSnapshot.transport,
+          ...screenSnapshot.acquisition
+        });
+      }
+      acceptingWindowList = false;
+      void windowListPromise;
+      latencyTrace?.finish("destroy", {
+        reason: "selector_destroyed_during_screen_acquisition"
+      });
+      return { ok: false, reason: "destroyed" };
+    }
     activeScreenSnapshot = screenSnapshot;
     if (screenFrameStage !== undefined) {
       latencyTrace?.end(screenFrameStage, {
         outcome: "completed",
-        displayId: targetDisplay.id
+        displayId: targetDisplay.id,
+        transport: screenSnapshot.transport,
+        ...screenSnapshot.acquisition
       });
     }
     log.info("completed screen snapshot", {
       displayId: targetDisplay.id,
       durationMs: Date.now() - screenSnapshotRequestedAt,
       durationFromUserRequestMs: elapsedFromRequest(),
-      snapshotId: screenSnapshot.id
+      snapshotId: screenSnapshot.id,
+      transport: screenSnapshot.transport,
+      ...screenSnapshot.acquisition
     });
   } catch (err) {
     if (screenFrameStage !== undefined) {
@@ -882,10 +1034,11 @@ export async function pickRegion(
   installSelectorGlobalShortcuts(win);
 
   const result = await new Promise<SelectorResult>((resolve) => {
+    activeSelectorSenderId = win.webContents.id;
     pendingResolver = resolve;
     windowListResolver = resolve;
-    // Tell the renderer which mode + snapshot URL to use, then let it
-    // render + DECODE the frozen-snapshot <img> while the window is
+    // Tell the renderer which mode + snapshot descriptor/URL to use, then let
+    // it paint the mapped canvas or decode the fallback <img> while the window is
     // STILL HIDDEN. We reveal the window only once the renderer acks
     // that paint (or a short timeout elapses) — see `reveal()` below.
     // Showing first (the old behavior) made the window appear as an
@@ -899,6 +1052,9 @@ export async function pickRegion(
         ? {
             mode,
             screenUrl: `pwrsnap-screen://r/${activeScreenSnapshot.id}`,
+            ...(activeScreenSnapshot.selectorDescriptor !== undefined
+              ? { snapshot: activeScreenSnapshot.selectorDescriptor }
+              : {}),
             intent,
             cursor: cursorDefault,
             quickCaptureAction,
@@ -1028,6 +1184,7 @@ export async function pickRegion(
     } else {
       void waitForSnapshotPainted(
         modePayload.screenUrl,
+        win.webContents.id,
         SHOW_AFTER_PAINT_TIMEOUT_MS,
         latencyTrace
       ).then(reveal);
@@ -1474,6 +1631,12 @@ function hideAllSelectors(): void {
   // leaving Esc / ↵ globally bound after the selector is gone would
   // hijack those keys for the rest of the app session.
   uninstallSelectorGlobalShortcuts();
+  activeSelectorSenderId = null;
+  if (pendingPaintWait !== null) {
+    const waiter = pendingPaintWait;
+    pendingPaintWait = null;
+    waiter.settle("superseded");
+  }
   // Release the screen snapshot UNLESS ownership has already
   // transferred to a consumer (the OK code path clears
   // `activeScreenSnapshot` before calling hideAllSelectors). On
@@ -1692,7 +1855,17 @@ function createSelectorWindow(
       "selector_window_closed_before_visible_ack",
       selectorSenderId
     );
+    abortActiveSelector(selectorSenderId, "selector_window_closed");
   });
+  window.webContents.on("render-process-gone", () => {
+    abortActiveSelector(selectorSenderId, "selector_renderer_gone");
+  });
+  window.webContents.on(
+    "did-start-navigation",
+    (_event, _url, _isInPlace, isMainFrame) => {
+      if (isMainFrame) abortActiveSelector(selectorSenderId, "selector_renderer_navigated");
+    }
+  );
 
   // Highest-of-windows ordering — clears menu bar / other overlays.
   window.setAlwaysOnTop(true, "screen-saver");
@@ -1983,6 +2156,16 @@ function isSelectorPayload(value: unknown): value is {
 
 export function disposeRegionSelector(): void {
   finishPendingPresentation("destroy", "selector_disposed_before_visible_ack");
+  if (activeSelectorSenderId !== null) {
+    abortActiveSelector(activeSelectorSenderId, "selector_disposed");
+  } else if (pendingResolver !== null) {
+    const resolver = pendingResolver;
+    pendingResolver = null;
+    resolver({ ok: false, reason: "destroyed" });
+  }
+  activeSelectorSenderId = null;
+  activeScreenSnapshot = null;
+  void releaseAllSnapshots();
   for (const win of selectorWindows.values()) {
     if (!win.isDestroyed()) win.destroy();
   }
@@ -1997,6 +2180,7 @@ export function disposeRegionSelector(): void {
     ipcMain.removeAllListeners(SELECTOR_RESULT_CHANNEL);
     ipcMain.removeAllListeners(SELECTOR_PAINTED_CHANNEL);
     ipcMain.removeAllListeners(SELECTOR_PRESENTED_CHANNEL);
+    ipcMain.removeHandler(SELECTOR_SNAPSHOT_READ_CHANNEL);
     resultListenerAttached = false;
   }
 }
@@ -2005,3 +2189,4 @@ export const REGION_SELECTOR_RESULT_CHANNEL = SELECTOR_RESULT_CHANNEL;
 export const REGION_SELECTOR_WINDOW_LIST_CHANNEL = SELECTOR_WINDOW_LIST_CHANNEL;
 export const REGION_SELECTOR_KEY_CHANNEL = SELECTOR_KEY_CHANNEL;
 export const REGION_SELECTOR_MODE_CHANNEL = SELECTOR_MODE_CHANNEL;
+export const REGION_SELECTOR_SNAPSHOT_READ_CHANNEL = SELECTOR_SNAPSHOT_READ_CHANNEL;

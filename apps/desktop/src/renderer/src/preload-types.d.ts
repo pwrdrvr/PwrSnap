@@ -35,6 +35,17 @@ export type WindowSnapEntry = {
   rawRect: { x: number; y: number; w: number; h: number };
 };
 
+export type SelectorMappedSnapshotDescriptor = {
+  id: string;
+  transport: "windows-shared-memory";
+  version: 1;
+  width: number;
+  height: number;
+  stride: number;
+  pixelFormat: 1;
+  byteLength: number;
+};
+
 declare global {
   interface Window {
     pwrsnapApi?: {
@@ -67,7 +78,21 @@ declare global {
          *  the whole box opaque. */
         outputMode?: "windows" | "rectangle";
       }): void;
-      notifySelectorSnapshotPainted(screenUrl: string): void;
+      notifySelectorSnapshotPainted(payload: {
+        screenUrl: string;
+        transport: "img" | "windows-shared-memory";
+        decodeMs: number;
+        mainToRendererBytes: number;
+        canvasUploadBytes: number;
+      }): void;
+      readSelectorSnapshot(id: string): Promise<
+        | {
+            ok: true;
+            header: Omit<SelectorMappedSnapshotDescriptor, "id" | "transport">;
+            data: Uint8Array;
+          }
+        | { ok: false; code: string }
+      >;
       notifySelectorPresented(payload: {
         invocationId: string;
         generation: number;
@@ -92,6 +117,7 @@ declare global {
         handler: (payload: {
           mode: "auto" | "region" | "window";
           screenUrl?: string;
+          snapshot?: SelectorMappedSnapshotDescriptor;
           intent?: "snap" | "video";
           cursor?: boolean;
           invocationId?: string;

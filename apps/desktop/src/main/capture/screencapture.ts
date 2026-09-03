@@ -16,11 +16,12 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { desktopCapturer, screen, type Display } from "electron";
+import { desktopCapturer, nativeImage, screen, type Display, type NativeImage } from "electron";
 import sharp from "sharp";
 import { getMainLogger } from "../log";
 import type { CaptureLatencyTrace } from "./capture-latency-trace";
 import { classifyCaptureError } from "./permissions";
+import type { ElectronBitmapPixelFormat } from "./windows-shared-snapshot";
 
 const log = getMainLogger("pwrsnap:screencapture");
 
@@ -38,10 +39,10 @@ export type Rect = { x: number; y: number; w: number; h: number };
  * needs no native helper. On Windows there's no TCC-style permission
  * gate, so a failure here is a plain error rather than a "revoked".
  */
-async function captureDisplayPng(
+async function captureDisplayNativeImage(
   display: Display,
   latencyTrace?: CaptureLatencyTrace
-): Promise<Buffer> {
+): Promise<NativeImage> {
   // Request the display's physical size so we don't downscale a HiDPI
   // monitor. desktopCapturer treats this as a max and returns the
   // screen's native pixels (so the actual buffer may differ slightly —
@@ -120,10 +121,21 @@ async function captureDisplayPng(
   if (source === undefined) {
     throw new Error("desktopCapturer returned no usable screen source");
   }
+  if (source.thumbnail.isEmpty()) {
+    throw new Error("desktopCapturer screen thumbnail was empty");
+  }
+  return source.thumbnail;
+}
+
+async function captureDisplayPng(
+  display: Display,
+  latencyTrace?: CaptureLatencyTrace
+): Promise<Buffer> {
+  const image = await captureDisplayNativeImage(display, latencyTrace);
   const toPngStage = latencyTrace?.begin("screen_to_png");
   let png: Buffer;
   try {
-    png = source.thumbnail.toPNG();
+    png = image.toPNG();
     if (toPngStage !== undefined) {
       latencyTrace?.end(toPngStage, {
         outcome: png.length === 0 ? "empty" : "completed",
@@ -139,9 +151,76 @@ async function captureDisplayPng(
     throw cause;
   }
   if (png.length === 0) {
-    throw new Error("desktopCapturer screen thumbnail was empty");
+    throw new Error("desktopCapturer screen PNG was empty");
   }
   return png;
+}
+
+export type CapturedDisplayBitmap = Readonly<{
+  bitmap: Buffer;
+  width: number;
+  height: number;
+  sourcePixelFormat: ElectronBitmapPixelFormat;
+}>;
+
+let cachedBitmapPixelFormat: ElectronBitmapPixelFormat | null = null;
+
+/**
+ * Electron deliberately documents NativeImage.toBitmap() as
+ * platform-dependent. Probe the installed Electron build with one opaque red
+ * pixel and accept only the two layouts we normalize in the Win32 helper.
+ * Unknown layouts disable the fast path and fall back to PNG/file transport.
+ */
+function electronBitmapPixelFormat(): ElectronBitmapPixelFormat {
+  if (cachedBitmapPixelFormat !== null) return cachedBitmapPixelFormat;
+  const redPixel = nativeImage.createFromDataURL(
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADUlEQVQImWP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=="
+  );
+  const probe = redPixel.toBitmap({ scaleFactor: 1 });
+  if (probe.byteLength < 4 || probe[3] !== 0xff) {
+    throw new Error("Electron NativeImage bitmap probe returned an unsupported layout");
+  }
+  if (probe[0] > 0xf0 && probe[1] < 0x10 && probe[2] < 0x10) {
+    cachedBitmapPixelFormat = "rgba8";
+    return cachedBitmapPixelFormat;
+  }
+  if (probe[2] > 0xf0 && probe[0] < 0x10 && probe[1] < 0x10) {
+    cachedBitmapPixelFormat = "bgra8";
+    return cachedBitmapPixelFormat;
+  }
+  throw new Error("Electron NativeImage bitmap probe was neither RGBA8 nor BGRA8");
+}
+
+/** Windows fast-path source: one raw desktopCapturer bitmap, no PNG encode. */
+export async function captureDisplayBitmap(
+  display: Display,
+  latencyTrace?: CaptureLatencyTrace
+): Promise<CapturedDisplayBitmap> {
+  const sourcePixelFormat = electronBitmapPixelFormat();
+  const image = await captureDisplayNativeImage(display, latencyTrace);
+  // Pin both calls to the same representation. NativeImage can contain more
+  // than one scale factor; relying on independent defaults risks validating
+  // one representation's dimensions against another representation's bytes.
+  const { width, height } = image.getSize(1);
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
+    throw new Error("desktopCapturer returned invalid bitmap dimensions");
+  }
+  const bitmap = image.toBitmap({ scaleFactor: 1 });
+  const expectedBytes = BigInt(width) * BigInt(height) * 4n;
+  if (
+    expectedBytes > BigInt(Number.MAX_SAFE_INTEGER) ||
+    bitmap.byteLength !== Number(expectedBytes)
+  ) {
+    throw new Error(
+      `desktopCapturer bitmap length mismatch: got ${bitmap.byteLength}, expected ${expectedBytes}`
+    );
+  }
+  return {
+    bitmap,
+    width,
+    height,
+    sourcePixelFormat
+  };
 }
 
 /**

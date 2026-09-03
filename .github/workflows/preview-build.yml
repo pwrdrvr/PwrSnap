@@ -353,7 +353,8 @@ jobs:
             "PwrSnap.exe",
             "resources/elevate.exe",
             "resources/PwrSnapWindowList.exe",
-            "resources/PwrSnapFFmpeg.exe"
+            "resources/PwrSnapFFmpeg.exe",
+            "resources/PwrSnapScreenSnapshot.exe"
           )
           foreach ($path in $requiredArchivePaths) {
             if ($entryPaths -notcontains $path) {
@@ -392,7 +393,8 @@ jobs:
             (Join-Path $installDir "PwrSnap.exe"),
             (Join-Path $installDir "resources/app.asar"),
             (Join-Path $installDir "resources/PwrSnapWindowList.exe"),
-            (Join-Path $installDir "resources/PwrSnapFFmpeg.exe")
+            (Join-Path $installDir "resources/PwrSnapFFmpeg.exe"),
+            (Join-Path $installDir "resources/PwrSnapScreenSnapshot.exe")
           )
           foreach ($file in $requiredFiles) {
             if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {

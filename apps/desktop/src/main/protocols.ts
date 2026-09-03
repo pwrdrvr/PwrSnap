@@ -302,7 +302,7 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
       return new Response("invalid screen snapshot id", { status: 400 });
     }
     try {
-      const target = getSnapshotProtocolTarget(id);
+      const target = await getSnapshotProtocolTarget(id);
       if (target === null) {
         // Snapshot already released — selector dismissed mid-fetch
         // is a normal race. Quiet log + 404.

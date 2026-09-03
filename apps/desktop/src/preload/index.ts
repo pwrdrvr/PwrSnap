@@ -92,11 +92,13 @@ const REGION_SELECTOR_KEY_CHANNEL = "region-selector:key";
 // `win.show()` so the selector renderer can configure UI for
 // 'auto' | 'region' | 'window' before the first paint.
 const REGION_SELECTOR_MODE_CHANNEL = "region-selector:mode";
-// Renderer → main: the selector acks that the frozen-snapshot <img>
-// for a given screenUrl has loaded/decoded. Main waits for this before
+// Renderer → main: the selector acks that the frozen snapshot has painted
+// through either the mapped RGBA canvas path or the PNG <img> fallback.
+// Main waits for this before
 // showing the (still-hidden) selector window, so it never appears as an
 // empty transparent overlay flashing the live screen behind it.
 const REGION_SELECTOR_PAINTED_CHANNEL = "region-selector:painted";
+const REGION_SELECTOR_SNAPSHOT_READ_CHANNEL = "region-selector:snapshot-read";
 const REGION_SELECTOR_PRESENTATION_REQUEST_CHANNEL = "region-selector:presentation-request";
 const REGION_SELECTOR_PRESENTED_CHANNEL = "region-selector:presented";
 
@@ -153,6 +155,77 @@ export type WindowSnapEntry = {
    *  considers "topmost at this point." */
   rawRect: { x: number; y: number; w: number; h: number };
 };
+
+export type SelectorMappedSnapshotDescriptor = {
+  id: string;
+  transport: "windows-shared-memory";
+  version: 1;
+  width: number;
+  height: number;
+  stride: number;
+  pixelFormat: 1;
+  byteLength: number;
+};
+
+type SelectorMappedSnapshotReadResult =
+  | {
+      ok: true;
+      header: Omit<SelectorMappedSnapshotDescriptor, "id" | "transport">;
+      data: Uint8Array;
+    }
+  | { ok: false; code: string };
+
+function validatedSelectorSnapshotRead(value: unknown): SelectorMappedSnapshotReadResult {
+  if (typeof value !== "object" || value === null) {
+    return { ok: false, code: "malformed" };
+  }
+  const result = value as Record<string, unknown>;
+  if (result.ok !== true) {
+    return {
+      ok: false,
+      code: typeof result.code === "string" ? result.code.slice(0, 64) : "read_failed"
+    };
+  }
+  if (typeof result.header !== "object" || result.header === null) {
+    return { ok: false, code: "malformed" };
+  }
+  const header = result.header as Record<string, unknown>;
+  const width = header.width;
+  const height = header.height;
+  const stride = header.stride;
+  const byteLength = header.byteLength;
+  if (
+    header.version !== 1 ||
+    header.pixelFormat !== 1 ||
+    !Number.isSafeInteger(width) ||
+    !Number.isSafeInteger(height) ||
+    !Number.isSafeInteger(stride) ||
+    !Number.isSafeInteger(byteLength) ||
+    (width as number) <= 0 ||
+    (height as number) <= 0 ||
+    (width as number) > 32_768 ||
+    (height as number) > 32_768 ||
+    (stride as number) !== (width as number) * 4 ||
+    BigInt(stride as number) * BigInt(height as number) !== BigInt(byteLength as number) ||
+    (byteLength as number) > 512 * 1024 * 1024 ||
+    !(result.data instanceof Uint8Array) ||
+    result.data.byteLength !== byteLength
+  ) {
+    return { ok: false, code: "malformed" };
+  }
+  return {
+    ok: true,
+    header: {
+      version: 1,
+      width: width as number,
+      height: height as number,
+      stride: stride as number,
+      pixelFormat: 1,
+      byteLength: byteLength as number
+    },
+    data: result.data
+  };
+}
 
 const pwrsnapApi = {
   platform: shortcutPlatformFromString(process.platform),
@@ -239,8 +312,24 @@ const pwrsnapApi = {
    * painted. Carries `screenUrl` so a stale ack from a superseded
    * capture can't satisfy the current wait.
    */
-  notifySelectorSnapshotPainted(screenUrl: string): void {
-    ipcRenderer.send(REGION_SELECTOR_PAINTED_CHANNEL, { screenUrl });
+  notifySelectorSnapshotPainted(payload: {
+    screenUrl: string;
+    transport: "img" | "windows-shared-memory";
+    decodeMs: number;
+    mainToRendererBytes: number;
+    canvasUploadBytes: number;
+  }): void {
+    ipcRenderer.send(REGION_SELECTOR_PAINTED_CHANNEL, payload);
+  },
+  /** Read one copy of the currently active mapped selector snapshot. Main
+   * authenticates this exact webContents/top-level frame and never exposes the
+   * Win32 mapping name or handle across the context bridge. */
+  async readSelectorSnapshot(id: string): Promise<SelectorMappedSnapshotReadResult> {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) return { ok: false, code: "invalid_id" };
+    const value: unknown = await ipcRenderer.invoke(REGION_SELECTOR_SNAPSHOT_READ_CHANNEL, {
+      id
+    });
+    return validatedSelectorSnapshotRead(value);
   },
   /** Diagnostic-only post-show acknowledgement. Main authenticates the
    * sender webContents plus invocation/generation before accepting it. */
@@ -384,8 +473,8 @@ const pwrsnapApi = {
    *   1. Reconfigure between 'auto' (snap + drag), 'region' (drag-
    *      only, no snap candidates), and 'window' (snap-only, no
    *      drag).
-   *   2. Mount the frozen-screen snapshot via `<img src=screenUrl>`
-   *      as a full-window background. The renderer paints the
+   *   2. Mount the frozen-screen snapshot via mapped RGBA canvas when a
+   *      descriptor is present, or `<img src=screenUrl>` otherwise. The renderer paints the
    *      snapshot, the user drags against it, and on commit the
    *      capture handler crops THAT snapshot (not the live screen).
    *
@@ -396,6 +485,7 @@ const pwrsnapApi = {
     handler: (payload: {
       mode: "auto" | "region" | "window";
       screenUrl?: string;
+      snapshot?: SelectorMappedSnapshotDescriptor;
       /** Visual intent: `"video"` triggers the "Recording video"
        *  badge + alternate hint copy so the user knows commit
        *  starts a recording instead of taking a snap. Default
@@ -415,6 +505,7 @@ const pwrsnapApi = {
         payload as {
           mode: "auto" | "region" | "window";
           screenUrl?: string;
+          snapshot?: SelectorMappedSnapshotDescriptor;
           intent?: "snap" | "video";
           cursor?: boolean;
           invocationId?: string;

@@ -46,7 +46,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { acceleratorToDisplayKeys, MAX_SELECTOR_EXTENTS } from "@pwrsnap/shared";
 import type { QuickCaptureAction, SelectorTerminalAction } from "@pwrsnap/shared";
-import type { WindowSnapEntry } from "../../preload-types";
+import type {
+  SelectorMappedSnapshotDescriptor,
+  WindowSnapEntry
+} from "../../preload-types";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import {
   ALL_HANDLES,
@@ -175,11 +178,15 @@ export function RegionSelector() {
   const [mode, setMode] = useState<SelectorMode>("auto");
   // SnagIt-style frozen-screen background. Main captures the screen
   // before show() and ships a `pwrsnap-screen://r/<id>` URL via the
-  // mode signal. We render it as a full-window <img> behind the dim
+  // mode signal. Windows prefers a mapped RGBA canvas; other platforms and
+  // failures render the URL as a full-window <img>, both behind the dim
   // mask + rect overlay; the user is interacting with the snapshot,
   // not the live screen. Apps starting / stopping during selection
   // can no longer change what's under the cursor.
   const [screenUrl, setScreenUrl] = useState<string | null>(null);
+  const [mappedSnapshot, setMappedSnapshot] =
+    useState<SelectorMappedSnapshotDescriptor | null>(null);
+  const [mappedSnapshotFallback, setMappedSnapshotFallback] = useState(false);
   // Visual intent: 'video' swaps the rect badge + hint copy so the
   // user knows commit starts a recording, not a snap. Defaults to
   // 'snap' for backwards-compat with every call site that doesn't
@@ -298,6 +305,8 @@ export function RegionSelector() {
   // it is — there is nothing to restore.
   const discardingRef = useRef(false);
   const decodedScreenUrlRef = useRef<string | null>(null);
+  const snapshotCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const snapshotLoadStartedAtRef = useRef(0);
   const presentationRequestRef = useRef<SelectorPresentationRequest | null>(null);
   const presentationRafRef = useRef<SelectorPresentationRaf | null>(null);
   const tryStartPresentationAckRef = useRef<(request: SelectorPresentationRequest) => void>(
@@ -324,6 +333,74 @@ export function RegionSelector() {
     // positionCrosshair only reads stable refs; safe to omit from deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Windows fast path: ask the narrow preload bridge for one validated RGBA
+  // copy, then upload it directly to the canvas. Any read/header/canvas
+  // failure switches to the existing protocol <img>; main lazily encodes that
+  // PNG from this exact mapping generation, so paint and crop never diverge.
+  useLayoutEffect(() => {
+    if (screenUrl === null || mappedSnapshot === null || mappedSnapshotFallback) return;
+    const canvas = snapshotCanvasRef.current;
+    const api = window.pwrsnapApi;
+    if (canvas === null || api === undefined || typeof api.readSelectorSnapshot !== "function") {
+      setMappedSnapshotFallback(true);
+      return;
+    }
+    let cancelled = false;
+    const startedAt = performance.now();
+    void api
+      .readSelectorSnapshot(mappedSnapshot.id)
+      .then((result) => {
+        if (cancelled) return;
+        if (
+          !result.ok ||
+          result.header.version !== mappedSnapshot.version ||
+          result.header.width !== mappedSnapshot.width ||
+          result.header.height !== mappedSnapshot.height ||
+          result.header.stride !== mappedSnapshot.stride ||
+          result.header.pixelFormat !== mappedSnapshot.pixelFormat ||
+          result.header.byteLength !== mappedSnapshot.byteLength ||
+          result.data.byteLength !== mappedSnapshot.byteLength
+        ) {
+          throw new Error("mapped selector snapshot did not match its descriptor");
+        }
+        canvas.width = mappedSnapshot.width;
+        canvas.height = mappedSnapshot.height;
+        const context = canvas.getContext("2d", { alpha: false });
+        if (context === null) throw new Error("selector canvas context unavailable");
+        const rgba =
+          result.data instanceof Uint8ClampedArray
+            ? result.data
+            : new Uint8ClampedArray(
+                result.data.buffer as ArrayBuffer,
+                result.data.byteOffset,
+                result.data.byteLength
+              );
+        context.putImageData(
+          new ImageData(rgba, mappedSnapshot.width, mappedSnapshot.height),
+          0,
+          0
+        );
+        decodedScreenUrlRef.current = screenUrl;
+        api.notifySelectorSnapshotPainted({
+          screenUrl,
+          transport: "windows-shared-memory",
+          decodeMs: performance.now() - startedAt,
+          mainToRendererBytes: result.data.byteLength,
+          canvasUploadBytes: result.data.byteLength
+        });
+        const request = presentationRequestRef.current;
+        if (request?.screenUrl === screenUrl) {
+          tryStartPresentationAckRef.current(request);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setMappedSnapshotFallback(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mappedSnapshot, mappedSnapshotFallback, screenUrl]);
 
   // Diagnostic-only visibility proof. Main sends the request strictly after
   // BrowserWindow show/focus/moveTop. Two renderer frame barriers ensure a
@@ -474,7 +551,10 @@ export function RegionSelector() {
       if (decodedScreenUrlRef.current !== payload.screenUrl) {
         decodedScreenUrlRef.current = null;
       }
+      snapshotLoadStartedAtRef.current = performance.now();
       setScreenUrl(payload.screenUrl ?? null);
+      setMappedSnapshot(payload.snapshot ?? null);
+      setMappedSnapshotFallback(false);
       setIntent(payload.intent ?? "snap");
       // Re-seed the cursor toggle from the persisted default each show
       // (defaults ON when unset) so a prior capture's choice can't bleed
@@ -2005,7 +2085,23 @@ export function RegionSelector() {
           screen.  Drawn first so the dim mask + rect sit on top.
           Sized to fill the window via inline styles to avoid waiting
           on a CSS bundle hot-reload during dev. */}
-      {screenUrl !== null && (
+      {screenUrl !== null && mappedSnapshot !== null && !mappedSnapshotFallback && (
+        <canvas
+          ref={snapshotCanvasRef}
+          data-testid="region-snapshot-canvas"
+          aria-hidden="true"
+          style={{
+            position: "fixed",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            pointerEvents: "none",
+            zIndex: 0,
+            userSelect: "none"
+          }}
+        />
+      )}
+      {screenUrl !== null && (mappedSnapshot === null || mappedSnapshotFallback) && (
         <img
           src={screenUrl}
           alt=""
@@ -2017,7 +2113,13 @@ export function RegionSelector() {
           // still hidden — onLoad doesn't require a visible paint.
           onLoad={() => {
             decodedScreenUrlRef.current = screenUrl;
-            window.pwrsnapApi?.notifySelectorSnapshotPainted(screenUrl);
+            window.pwrsnapApi?.notifySelectorSnapshotPainted({
+              screenUrl,
+              transport: "img",
+              decodeMs: performance.now() - snapshotLoadStartedAtRef.current,
+              mainToRendererBytes: 0,
+              canvasUploadBytes: 0
+            });
             const request = presentationRequestRef.current;
             if (request?.screenUrl === screenUrl) {
               tryStartPresentationAckRef.current(request);

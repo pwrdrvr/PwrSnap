@@ -86,6 +86,29 @@ afterEach(async () => {
 });
 
 describe("screen snapshot registry Windows transport", () => {
+  test("falls back to the PNG transport when the helper pipe fails", async () => {
+    mappingMocks.createWindowsSharedSnapshot.mockRejectedValue(
+      Object.assign(new Error("write EPIPE"), { code: "EPIPE" })
+    );
+    captureMocks.captureScreen.mockResolvedValue({
+      ok: true,
+      tempPath: "/tmp/pwrsnap-test-shared-snapshot-fallback/snapshot.png",
+      displayId: 7
+    });
+
+    const snapshot = await snapshots!.captureAndRegister(7);
+
+    expect(snapshot).toMatchObject({
+      displayId: 7,
+      transport: "png-file",
+      acquisition: {
+        mappingWriteBytes: 0,
+        fullScreenPngEncodeCount: 1
+      }
+    });
+    expect(captureMocks.captureScreen).toHaveBeenCalledWith(7, undefined);
+  });
+
   test("keeps the native mapping identity private while paint and crop read one generation", async () => {
     const snapshot = await snapshots!.captureAndRegister(7);
 

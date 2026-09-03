@@ -125,6 +125,35 @@ platform; macOS-only clipboard, tray, menu-bar, screen-capture, and AppKit
 windowing specs are expected to be skipped. Add `--platform linux/amd64`
 only when investigating architecture-specific GHA parity.
 
+### Headed macOS E2E
+
+The macOS suite is headed: it opens windows, takes focus, and drives the
+region selector and global hotkeys. Running it on your own desktop interrupts
+whatever you are doing, and your real windows can end up inside a capture
+under test. Prefer an off-desktop VM.
+
+If you have a PwrSuiteLab checkout, its `macos-tart/run-e2e.sh` controller
+runs the suite in a macOS VM from a **clean, committed** worktree — it sends
+only `HEAD`, serializes the guest display, and collects artifacts:
+
+```bash
+suite_lab_root="<your PwrSuiteLab checkout>"
+"$suite_lab_root/macos-tart/run-e2e.sh" --confirm-live-run \
+  --workload pwrsnap --local "$(git rev-parse --show-toplevel)" \
+  e2e/region-selector-ui.spec.ts
+```
+
+Playwright paths are relative to `apps/desktop`. Omit the spec list to run
+everything. The adapter sets `PWRSNAP_E2E_DISABLE_GPU=1`, matching the macOS
+CI lane, so a lab run reproduces the CI renderer that every screenshot golden
+was recorded in — a plain local `pnpm test:desktop-e2e` does not. That
+checkout's own runbook is authoritative for the lab; host, guest, and access
+details live only there. Agents should follow
+[`.agents/skills/macos-vm-e2e-lab/SKILL.md`](.agents/skills/macos-vm-e2e-lab/SKILL.md).
+
+Without a lab, run the suite headed on your own machine and expect the
+interruption.
+
 ### Visual-regression goldens
 
 The focused Playwright visual-regression suite uses lossless WebP references

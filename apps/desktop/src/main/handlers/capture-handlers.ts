@@ -75,16 +75,16 @@ import { ensureEffectiveSrcPath, putCaptureSource } from "../persistence/source-
 import { persistCaptureFromTempV2 } from "../persistence/bundle-store";
 import {
   resolveCursorLayerForRect,
-  sampleCursor,
   type CursorLayerPlacement,
   type CursorSample
 } from "../capture/cursor-sample";
+import { startCursorSampleIfEnabled } from "../capture/cursor-capture-settings";
 import { getMainLogger } from "../log";
 import { renderViaCoordinator } from "../render/coordinator";
 import { prepareRenderedFileAlias } from "../render/file-alias";
 import { buildPresetExportDisplayName } from "../render/export-filename";
 import { resolveImagePresetFile, targetWidthForImagePreset } from "../render/image-presets";
-import { getActiveExportStrategy, readDesktopSettings } from "./settings-handlers";
+import { getActiveExportStrategy } from "./settings-handlers";
 import { getCaptureEnrichment } from "../persistence/enrichment-repo";
 import {
   readSafePastedFile,
@@ -330,9 +330,9 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     // Cursor sample (cursor-capture Phase 3): kicked off HERE — after
     // the timed countdown (so the sample matches where the user parked
     // the cursor, not where it was at trigger) and BEFORE pickRegion.
-    // NOTHING here is awaited on the hotkey→selector path: the settings
-    // read (uncached disk parse) and the helper spawn chain off a
-    // promise that runs while nothing else is happening.
+    // NOTHING here is awaited on the hotkey→selector path: the process-owned
+    // settings snapshot and helper spawn chain off a promise that runs while
+    // nothing else is happening.
     let cursorSamplePromise: Promise<CursorSample | null> | null =
       startCursorSampleIfEnabled(trace);
 
@@ -1557,51 +1557,6 @@ async function runTimedDelay(): Promise<Result<void, PwrSnapError>> {
  *  cold first spawn, where we prefer "no cursor layer once" over
  *  delaying the selector further or sampling our own crosshair. */
 const CURSOR_SAMPLE_PRE_SELECTOR_BUDGET_MS = 350;
-
-/** Kick off the cursor sample IF the setting allows — fully
- *  non-blocking (the uncached settings disk read and the helper spawn
- *  both live inside the returned promise chain) and never rejecting.
- *  Shared by every image-capture entry point so the Settings toggle
- *  means what it says: "screenshots", not "one kind of screenshot". */
-function startCursorSampleIfEnabled(
-  trace?: CaptureLatencyTrace
-): Promise<CursorSample | null> {
-  return (async () => {
-    const settingsStage = trace?.begin("settings_read");
-    let enabled = false;
-    try {
-      const settings = await readDesktopSettings();
-      enabled = settings.recording.imageCaptureCursor;
-      if (settingsStage !== undefined) {
-        trace?.end(settingsStage, { outcome: "read", cursorEnabled: enabled });
-      }
-    } catch {
-      if (settingsStage !== undefined) {
-        trace?.end(settingsStage, { outcome: "failed" });
-      }
-      return null;
-    }
-    if (!enabled) {
-      trace?.mark("cursor_sample", { outcome: "disabled" });
-      return null;
-    }
-    const sampleStage = trace?.begin("cursor_sample");
-    try {
-      const sample = await sampleCursor();
-      if (sampleStage !== undefined) {
-        trace?.end(sampleStage, {
-          outcome: sample === null ? "unavailable" : "sampled"
-        });
-      }
-      return sample;
-    } catch {
-      if (sampleStage !== undefined) {
-        trace?.end(sampleStage, { outcome: "failed" });
-      }
-      return null;
-    }
-  })();
-}
 
 async function persistAndBroadcast(
   tempPath: string,

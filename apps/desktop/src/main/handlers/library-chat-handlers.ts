@@ -31,7 +31,10 @@ import {
 } from "@pwrsnap/shared";
 import { bus, type CommandDispatchOptions } from "../command-bus";
 import { getMainLogger } from "../log";
-import { resolveCodexThreadConfigForCommand } from "../ai/codex-thread-config";
+import {
+  MODERN_THREAD_CONFIG,
+  resolveCodexThreadConfig
+} from "../ai/codex-thread-config";
 import {
   buildChatSurface,
   interruptChatThreadAcknowledged
@@ -54,6 +57,7 @@ import {
   ChatTurnToolContextStore,
   missingChatToolContext
 } from "../ai/chat-turn-tool-context";
+import { getDesktopSettingsStore } from "../settings/desktop-settings-store";
 
 const log = getMainLogger("pwrsnap:library-chat-handlers");
 
@@ -242,6 +246,17 @@ export function registerLibraryChatHandlers(params?: {
     build: async (config, settings) => {
       const command = codexCommandForSettings(settings);
       const env = codexEnvForProfile(settings.codex.profile);
+      const threadConfig =
+        config.provider === null || config.provider === "" || config.provider === "codex"
+          ? resolveCodexThreadConfig(
+              (
+                await getDesktopSettingsStore().resolveCompatibleCodexCommand({
+                  command,
+                  env
+                })
+              ).version ?? null
+            )
+          : MODERN_THREAD_CONFIG;
       const surface = await buildChatSurface({
         command,
         env,
@@ -264,7 +279,7 @@ export function registerLibraryChatHandlers(params?: {
             : dispatchLibraryToolCall(toolCall, undefined, context);
         },
         onTurnTerminal: (threadId, turnId) => activeToolContexts.clearTurn(threadId, turnId),
-        threadConfig: resolveCodexThreadConfigForCommand(command, env),
+        threadConfig,
         threadEnvironments: LIBRARY_CHAT_THREAD_ENVIRONMENTS,
         // The THREAD's chosen config (not the surface default) — null leaves
         // omitted so the kit/backend default applies.

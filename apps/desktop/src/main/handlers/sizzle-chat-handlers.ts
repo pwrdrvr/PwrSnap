@@ -25,7 +25,10 @@ import {
 } from "@pwrsnap/shared";
 import { bus, type CommandDispatchOptions } from "../command-bus";
 import { getMainLogger } from "../log";
-import { resolveCodexThreadConfigForCommand } from "../ai/codex-thread-config";
+import {
+  MODERN_THREAD_CONFIG,
+  resolveCodexThreadConfig
+} from "../ai/codex-thread-config";
 import { ChatThreadStore, rootKeyedChatThreadStore } from "../ai/chat-thread-store";
 import {
   buildChatSurface,
@@ -48,6 +51,7 @@ import { getChatsRoot } from "../persistence/paths";
 import { ChatApprovalBroker } from "../ai/chat-approval-broker";
 import { ChatThreadAccess } from "../ai/chat-thread-access";
 import { ChatTurnToolContextStore } from "../ai/chat-turn-tool-context";
+import { getDesktopSettingsStore } from "../settings/desktop-settings-store";
 
 const log = getMainLogger("pwrsnap:sizzle-chat-handlers");
 // Tool callbacks outlive sendMessage(), so retain exact successful-turn origin.
@@ -191,6 +195,17 @@ function getSizzleCache(): KeyedChatControllerCache<ChatThreadController<Setting
         activeSizzleToolContexts.forToolCall({ threadId, turnId }));
       const command = codexCommandForSettings(settings);
       const env = codexEnvForProfile(settings.codex.profile);
+      const threadConfig =
+        config.provider === null || config.provider === "" || config.provider === "codex"
+          ? resolveCodexThreadConfig(
+              (
+                await getDesktopSettingsStore().resolveCompatibleCodexCommand({
+                  command,
+                  env
+                })
+              ).version ?? null
+            )
+          : MODERN_THREAD_CONFIG;
       const surface = await buildChatSurface({
         command,
         env,
@@ -209,7 +224,7 @@ function getSizzleCache(): KeyedChatControllerCache<ChatThreadController<Setting
         dispatchToolCall: tools.dispatch,
         onTurnTerminal: (threadId, turnId) =>
           activeSizzleToolContexts.clearTurn(threadId, turnId),
-        threadConfig: resolveCodexThreadConfigForCommand(command, env),
+        threadConfig,
         threadEnvironments: SIZZLE_CHAT_THREAD_ENVIRONMENTS,
         // The THREAD's chosen config (null → backend default).
         ...(config.provider !== null && config.provider !== "" ? { provider: config.provider } : {}),

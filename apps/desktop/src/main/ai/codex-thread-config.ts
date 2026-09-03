@@ -19,8 +19,6 @@
 // Codex build changes the schema; the detector is a token measurement (see
 // docs/solutions/2026-06-04-codex-thread-config-token-bloat.md).
 
-import { execAgentCommandSync } from "./agent-command";
-
 const SHARED_INCLUDES = {
   // Top-level STRING lever. `web_search = false` (boolean) FAILS config
   // deserialization on recent Codex and falls back to the FULL prompt.
@@ -240,56 +238,9 @@ export function resolveCodexThreadConfig(
   return (best ?? newestMarker()).config;
 }
 
-/** Probe a Codex binary's `--version`. Injectable for tests. */
-export type CodexVersionProbe = (
-  command: string,
-  env?: NodeJS.ProcessEnv
-) => string | null;
-
-const defaultVersionProbe: CodexVersionProbe = (command, env) => {
-  try {
-    const out = String(
-      execAgentCommandSync(command, ["--version"], {
-        timeoutMs: 5_000,
-        // MERGE over process.env — passing only { CODEX_HOME } would drop PATH
-        // and a bare `codex` command would fail to resolve.
-        env: env !== undefined ? { ...process.env, ...env } : process.env
-      })
-    );
-    return out.match(/\d+\.\d+\.\d+(?:[-+][\w.-]+)?/)?.[0] ?? null;
-  } catch {
-    return null;
-  }
-};
-
-const versionCache = new Map<string, string | null>();
-
 /**
- * Resolve the config overlay for the Codex binary at `command`, probing its
- * version once (cached per command for the process lifetime — Codex doesn't
- * change version mid-session). A failed probe → minimal default.
- */
-export function resolveCodexThreadConfigForCommand(
-  command: string,
-  env?: NodeJS.ProcessEnv,
-  probe: CodexVersionProbe = defaultVersionProbe
-): Record<string, unknown> {
-  let version = versionCache.get(command);
-  if (version === undefined) {
-    version = probe(command, env);
-    versionCache.set(command, version);
-  }
-  return resolveCodexThreadConfig(version);
-}
-
-/** Test seam: clear the per-command version cache. */
-export function __clearCodexVersionCacheForTests(): void {
-  versionCache.clear();
-}
-
-/**
- * @deprecated Prefer `resolveCodexThreadConfigForCommand(command, env)` so the
- * overlay matches the running Codex build. This alias is the minimal default
- * and exists only for call sites that don't yet have the command in hand.
+ * @deprecated Callers with a store-published Codex version should use
+ * `resolveCodexThreadConfig(version)`. This alias is the minimal default and
+ * exists only for call sites that don't have a resolved version in hand.
  */
 export const PWRSNAP_CODEX_THREAD_CONFIG = MINIMAL_THREAD_CONFIG;

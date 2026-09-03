@@ -12,7 +12,7 @@
 // start an agent — a cache-miss listing rides the SHARED pooled process
 // (acp-agent-pool.ts), never a private short-lived spawn.
 //
-// `discoverLocalAcpAgentInstances` returns one group per installed agent, each
+// The ACP kit returns one group per installed agent, each
 // with all passing instances. We diff that against `BUILT_IN_ACP_STRATEGIES`
 // and emit a not-installed entry (with an install hint) for every strategy the
 // discovery didn't return. The user's per-agent override path (from
@@ -22,7 +22,6 @@
 
 import {
   BUILT_IN_ACP_STRATEGIES,
-  discoverLocalAcpAgentInstances,
   strategyById,
   type DiscoveredAcpAgent,
   type DiscoveredAcpAgentGroup,
@@ -50,13 +49,15 @@ import {
 } from "../ai/acp-enabled-discovery";
 import { agentErrorMessage } from "../ai/agent-error-message";
 import { getMainLogger } from "../log";
+import { relaySettingsDiscoveryPublicationToPeer } from "../process-split/event-relay";
 import { resolveActiveAcpInstance } from "../ai/acp-instance-resolver";
 import { listPooledAcpModels } from "../ai/acp-pooled-one-shot";
+import { getDesktopSettingsStore } from "../settings/desktop-settings-store";
 
 const log = getMainLogger("pwrsnap:acp-handlers");
 
-/** Injectable discovery seam for tests. Production uses the kit's
- *  `discoverLocalAcpAgentInstances` (default `execFile`-backed probe). */
+/** Injectable discovery seam for tests. Production uses the store-owned kit
+ *  scan (default `execFile`-backed probe). */
 export type AcpDiscoverInstances = (
   options?: LocalAcpDiscoveryOptions
 ) => Promise<DiscoveredAcpAgentGroup[]>;
@@ -127,12 +128,26 @@ export function registerAcpHandlers(params?: {
   discover?: AcpDiscoverInstances;
   readSettings?: AcpSettingsReader;
 }): void {
-  const discover = params?.discover ?? discoverLocalAcpAgentInstances;
+  const injectedDiscovery = params?.discover;
+  const discover = injectedDiscovery;
   const readSettings = params?.readSettings ?? defaultSettingsReader;
+  // Production discovery is owned by the process settings store. Tests that
+  // inject the kit seam keep exercising the pure handler mapping below.
+  const discoveryStore =
+    injectedDiscovery === undefined && params?.readSettings === undefined
+      ? getDesktopSettingsStore()
+      : null;
 
-  bus.register("acp:discover", async (): Promise<
+  bus.register("acp:discover", async (req): Promise<
     Result<AcpAgentDiscovery, PwrSnapError>
   > => {
+    if (req.force !== undefined && typeof req.force !== "boolean") {
+      return err({
+        kind: "validation",
+        code: "invalid_force",
+        message: "acp:discover: force must be a boolean"
+      });
+    }
     let agents: Record<string, AcpAgentPreference> | undefined;
     let settings: Settings | undefined;
     try {
@@ -150,10 +165,13 @@ export function registerAcpHandlers(params?: {
 
     let groups: DiscoveredAcpAgentGroup[];
     try {
-      groups =
-        settings === undefined
-          ? []
-          : await discover(acpDiscoveryOptionsForInstallScan(settings));
+      groups = settings === undefined
+        ? []
+        : discoveryStore !== null
+          ? req.force === true
+            ? await discoveryStore.refreshAcpDiscoveryForUserRequest()
+            : await discoveryStore.getAcpDiscoveryGroups()
+          : await discover!(acpDiscoveryOptionsForInstallScan(settings));
     } catch (cause) {
       // The kit isolates per-strategy probe failures internally, so a
       // throw here is an unexpected, list-wide failure (e.g. a bug in the
@@ -167,6 +185,10 @@ export function registerAcpHandlers(params?: {
         message: cause instanceof Error ? cause.message : String(cause),
         cause
       });
+    }
+    const publication = discoveryStore?.getCurrentAcpDiscoveryPublication();
+    if (publication !== null && publication !== undefined) {
+      relaySettingsDiscoveryPublicationToPeer(publication);
     }
     return ok(toDiscovery(groups, agents));
   });
@@ -226,7 +248,6 @@ export function registerAcpHandlers(params?: {
         cause
       });
     }
-    const pref = settings.ai.acp.agents?.[agentId];
     const strategy = strategyById(agentId);
     if (strategy === undefined) {
       return err({ kind: "settings", code: "acp_unknown_agent", message: `Unknown ACP agent ${agentId}` });
@@ -236,9 +257,36 @@ export function registerAcpHandlers(params?: {
       return ok({ agentId, models: [] });
     }
 
-    let groups: DiscoveredAcpAgentGroup[];
+    let agent: DiscoveredAcpAgent | null;
     try {
-      groups = await discover(discoveryOptions);
+      if (discoveryStore !== null) {
+        agent = await discoveryStore.resolveEnabledAcpAgent(agentId, settings);
+      } else {
+        const groups = await discover!(discoveryOptions);
+        const group = groups.find((g) => g.strategyId === agentId);
+        if (group === undefined || group.instances.length === 0) {
+          agent = null;
+        } else {
+          const active = resolveActiveAcpInstance(
+            group.instances.map((inst) => ({
+              command: inst.command,
+              source: inst.source,
+              ...(inst.version !== undefined ? { version: inst.version } : {})
+            })),
+            settings.ai.acp.agents?.[agentId]
+          );
+          agent = {
+            strategyId: group.strategyId,
+            backendId: group.backendId,
+            name: group.name,
+            command: active.command,
+            args: group.args,
+            env: group.env,
+            discoveredAt: group.discoveredAt,
+            ...(active.version !== undefined ? { version: active.version } : {})
+          };
+        }
+      }
     } catch (cause) {
       return err({
         kind: "settings",
@@ -247,33 +295,14 @@ export function registerAcpHandlers(params?: {
         cause
       });
     }
-    const group = groups.find((g) => g.strategyId === agentId);
-    if (group === undefined || group.instances.length === 0) {
+    if (agent === null) {
       // Not installed → empty list (the UI falls back to "Default").
       return ok({ agentId, models: [] });
     }
-    const active = resolveActiveAcpInstance(
-      group.instances.map((inst) => ({
-        command: inst.command,
-        source: inst.source,
-        ...(inst.version !== undefined ? { version: inst.version } : {})
-      })),
-      pref
-    );
     // Ride the SHARED pooled agent process (one per agent app-wide) — model
     // listing must not spawn its own short-lived instance. First listing for a
     // not-yet-running agent starts the pooled process, which is then retained
     // (an explicit model refresh IS an invocation of that agent).
-    const agent: DiscoveredAcpAgent = {
-      strategyId: group.strategyId,
-      backendId: group.backendId,
-      name: group.name,
-      command: active.command,
-      args: group.args,
-      env: group.env,
-      discoveredAt: group.discoveredAt,
-      ...(active.version !== undefined ? { version: active.version } : {})
-    };
     try {
       const models = await listPooledAcpModels({ agent });
       const options: AcpAgentModelOption[] = models.map((m) => ({
@@ -286,7 +315,7 @@ export function registerAcpHandlers(params?: {
       // Persist so the next Settings open (even after a restart) is instant.
       saveAcpModelCacheEntry(agentId, {
         models: options,
-        command: active.command,
+        command: agent.command,
         discoveredAt: new Date().toISOString()
       });
       return ok({ agentId, models: options });

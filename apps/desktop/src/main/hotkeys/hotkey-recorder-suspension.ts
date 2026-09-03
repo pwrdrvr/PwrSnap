@@ -4,7 +4,7 @@
  * The first accepted lease releases every shortcut actually owned by the
  * registration manager plus registered transient participants. Lease end,
  * abnormal window cleanup, or timeout rebuilds exact desired native
- * ownership. Every transition runs under DesktopSettingsService's write
+ * ownership. Every transition runs under DesktopSettingsStore's write
  * baton, so prepare/write/retry cannot interleave with suspension.
  */
 

@@ -16,7 +16,7 @@
 // `contextWindow → modelContextWindow`).
 
 import type { AiUsageTokenBreakdown, EnrichmentResult } from "@pwrsnap/shared";
-import { resolveCodexThreadConfigForCommand } from "./codex-thread-config";
+import { resolveCodexThreadConfig } from "./codex-thread-config";
 import { runCodexOneShotFromPool } from "./codex-agent-pool";
 import {
   defaultEnrichmentWorkspaceDir,
@@ -35,6 +35,8 @@ export type CaptureEnrichmentClientOptions = {
   /** Process env for the spawned Codex — carries CODEX_HOME for the selected
    *  auth profile (`codexEnvForProfile`). Omit for the default ~/.codex. */
   env?: NodeJS.ProcessEnv;
+  /** Version published by DesktopSettingsStore's shared discovery pass. */
+  codexVersion: string | null;
   captureMetadataWorkspaceDir?: string;
   requestTimeoutMs?: number;
   turnTimeoutMs?: number;
@@ -117,9 +119,9 @@ export class CaptureEnrichmentClient {
       options.captureMetadataWorkspaceDir ?? defaultEnrichmentWorkspaceDir();
     if (options.requestTimeoutMs !== undefined) this.requestTimeoutMs = options.requestTimeoutMs;
     if (options.turnTimeoutMs !== undefined) this.turnTimeoutMs = options.turnTimeoutMs;
-    // Pick the config overlay shape for the running Codex build (the schema
-    // churns across releases). Probed once per command, cached.
-    this.threadConfig = resolveCodexThreadConfigForCommand(options.command, options.env);
+    // Pick the config overlay shape from the store-published discovery result.
+    // This must never run a second `--version` probe on a capture path.
+    this.threadConfig = resolveCodexThreadConfig(options.codexVersion);
   }
 
   async enrichCapture(request: CaptureEnrichmentRequest): Promise<CaptureEnrichmentResponse> {

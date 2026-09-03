@@ -8,14 +8,15 @@
 //   • PWRSNAP_CODEX_COMMAND env-var name (the kit's codex-specific
 //     `discoverCodexCommands` hardcodes PWRDRVR_CODEX_COMMAND, so we drive the
 //     GENERIC `discoverCommands` with our own env name instead).
-//   • PwrSnap's selection/no-throw semantics: `resolveCodexCommand` falls back
-//     to the configured command (or `codex`) when discovery finds nothing.
+//   • PwrSnap's pure selection semantics fall back to the configured command
+//     (or `codex`) when discovery finds nothing. Discovery lifecycle ownership
+//     lives in DesktopSettingsStore.
 //     Discovery marks old candidates unavailable, and the App Server pool
 //     independently guards the exact command before spawning it.
 //   • `probeCodexAuth` (a `codex login status` probe) which the kit doesn't
 //     surface in this shape.
 //   • The `Desktop*` type names + `MINIMUM_CODEX_CLI_VERSION`, kept so
-//     desktop-settings-service.ts and its tests import the same names as before.
+//     desktop-settings-store.ts and its tests import the same names as before.
 //
 // Looks for the Codex binary in this priority order:
 //   1. env override (PWRSNAP_CODEX_COMMAND).
@@ -48,11 +49,6 @@ import {
 } from "@pwrdrvr/codex-discovery";
 
 import { PWRSNAP_CODEX_COMMAND_ENV } from "./env";
-import {
-  clearCodexCliCompatibilityAlert,
-  CodexCliTooOldError,
-  reportCodexCliTooOld
-} from "./codex-compatibility-alert";
 import { execAgentCommand } from "../ai/agent-command";
 
 /** Minimum Codex CLI version PwrSnap will spawn. The protocol package version
@@ -105,7 +101,6 @@ export async function pathIsExecutable(candidate: string): Promise<boolean> {
 
 const AUTH_PROBE_TIMEOUT_MS = 2_500;
 const AUTH_PROBE_MESSAGE_LIMIT = 240;
-const VERSION_PROBE_TIMEOUT_MS = 2_500;
 
 function trimProbeMessage(value: string): string {
   return value.trim().replace(/\s+/g, " ").slice(0, AUTH_PROBE_MESSAGE_LIMIT);
@@ -169,56 +164,6 @@ export function validateCodexCliVersion(version: string): string | undefined {
   return compareCodexCliVersions(version, MINIMUM_CODEX_CLI_VERSION) < 0
     ? "codex_too_old"
     : undefined;
-}
-
-function isSpawnNotFoundError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    (error as { code?: unknown }).code === "ENOENT"
-  );
-}
-
-/** Guard the exact command the App Server client is about to spawn. Discovery
- *  filters old candidates for Settings, while this check prevents a direct
- *  configured/PATH command from bypassing that UI-level selection. An explicit
- *  path is existence-checked before the spawn so a stale pinned path fails
- *  with a clear "not found" instead of a raw ENOENT. */
-export async function assertCodexCliVersion(
-  command: string,
-  env: NodeJS.ProcessEnv
-): Promise<string> {
-  const notFoundMessage =
-    `Codex CLI not found: ${command}. Install the Codex CLI ` +
-    (process.platform === "darwin"
-      ? `(Codex Desktop / ChatGPT Desktop or \`brew install codex\`), or pin its `
-      : `(Codex Desktop / ChatGPT Desktop or another supported CLI install), or pin its `) +
-    `full path in Settings → AI.`;
-  if (path.isAbsolute(command) && !(await kitPathIsExecutable(command))) {
-    throw new Error(notFoundMessage);
-  }
-  let result: { stdout: string; stderr: string };
-  try {
-    result = await execAgentCommand(command, ["--version"], {
-      env,
-      timeoutMs: VERSION_PROBE_TIMEOUT_MS
-    });
-  } catch (cause) {
-    if (isSpawnNotFoundError(cause)) throw new Error(notFoundMessage);
-    throw cause;
-  }
-  const output = `${result.stdout}\n${result.stderr ?? ""}`;
-  const version = parseCodexVersion(output);
-  if (version === undefined) {
-    throw new Error(`Codex CLI version banner was not recognized: ${command}`);
-  }
-  if (validateCodexCliVersion(version) !== undefined) {
-    throw new CodexCliTooOldError(
-      reportCodexCliTooOld(command, version, MINIMUM_CODEX_CLI_VERSION)
-    );
-  }
-  clearCodexCliCompatibilityAlert();
-  return version;
 }
 
 /** Every installed nvm node version's bin dir, newest first — an
@@ -477,9 +422,9 @@ export async function discoverCodexCommands(params?: {
 }
 
 /** Pure selection over an already-computed discovery snapshot. Callers
- *  that just ran `discoverCodexCommands` (the settings-service snapshot
+ *  that just ran `discoverCodexCommands` (the settings-store snapshot
  *  path) resolve from that result instead of paying a full second
- *  discovery pass — and its child spawns — via `resolveCodexCommand`. */
+ *  discovery pass and its child spawns. */
 export function selectResolvedCodexCommand(
   discovery: DesktopCodexDiscoverySnapshot,
   fallbackCommand: string
@@ -496,17 +441,4 @@ export function selectResolvedCodexCommand(
     command: fallbackCommand.trim() || "codex",
     source: "path"
   };
-}
-
-export async function resolveCodexCommand(params: {
-  command: string;
-  env: NodeJS.ProcessEnv;
-}): Promise<ResolvedCodexCommandCandidate> {
-  const configuredCommand =
-    params.command.trim() && params.command.trim() !== "codex" ? params.command.trim() : undefined;
-  const discovery = await discoverCodexCommands({
-    configuredCommand,
-    env: params.env
-  });
-  return selectResolvedCodexCommand(discovery, params.command);
 }

@@ -5,7 +5,7 @@ import type {
   LocalAgentCapability,
   Settings
 } from "@pwrsnap/shared";
-import { DesktopSettingsService } from "../settings/desktop-settings-service";
+import type { DesktopSettingsStoreApi } from "../settings/desktop-settings-store";
 
 const MAX_AUDIT_ENTRIES = 500;
 
@@ -13,7 +13,7 @@ export class LocalAgentAuditService {
   private writeQueue: Promise<unknown> = Promise.resolve();
 
   constructor(
-    private readonly settings: DesktopSettingsService,
+    private readonly settings: Pick<DesktopSettingsStoreApi, "read" | "write">,
     private readonly onSettingsChanged?: (settings: Settings) => void | Promise<void>
   ) {}
 

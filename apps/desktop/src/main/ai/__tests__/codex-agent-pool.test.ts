@@ -5,6 +5,7 @@ import {
   listCodexModelsFromPool,
   runCodexOneShotFromPool
 } from "../codex-agent-pool";
+import { __setDesktopSettingsStoreForTests } from "../../settings/desktop-settings-store";
 
 type MockCodexThreadClient = {
   startThread: ReturnType<typeof vi.fn>;
@@ -13,6 +14,19 @@ type MockCodexThreadClient = {
   onToolCall: ReturnType<typeof vi.fn>;
   onApprovalRequest: ReturnType<typeof vi.fn>;
   emitEvent(event: unknown): void;
+};
+
+type MockCodexDiscovery = {
+  selectedCommand?: string;
+  selectedSource?: "path" | "config" | "application";
+  candidates: Array<{
+    command: string;
+    source: "path" | "config" | "application";
+    executable: boolean;
+    selected: boolean;
+    version?: string;
+    failureReason?: string;
+  }>;
 };
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
@@ -27,22 +41,49 @@ const mockCodexThreadClients = vi.hoisted(() => [] as MockCodexThreadClient[]);
 const mockConnectionRequest = vi.hoisted(() =>
   vi.fn(async (_method: string, _params: unknown): Promise<unknown> => ({}))
 );
-const mockAssertCodexCliVersion = vi.hoisted(() => vi.fn(async () => "0.144.0"));
-const mockResolveCodexCommand = vi.hoisted(() =>
-  vi.fn(
-    async ({ command }: { command: string }): Promise<{
-      command: string;
-      source: "path" | "application";
-    }> => ({
-      command,
-      source: "path"
-    })
-  )
+const mockDiscoverCodexCommands = vi.hoisted(() =>
+  vi.fn(async ({ configuredCommand }: { configuredCommand?: string } = {}): Promise<MockCodexDiscovery> => {
+    const command = configuredCommand ?? "codex";
+    return {
+      selectedCommand: command,
+      selectedSource: configuredCommand === undefined ? "path" : "config",
+      candidates: [
+        {
+          command,
+          source: configuredCommand === undefined ? "path" : "config",
+          executable: true,
+          selected: true,
+          version: "0.144.0"
+        }
+      ]
+    };
+  })
 );
 
+vi.mock("electron", () => ({
+  app: {
+    getPath: () => "/tmp/pwrsnap-codex-agent-pool-settings",
+    getVersion: () => "1.0.0"
+  },
+  BrowserWindow: { getAllWindows: () => [] }
+}));
+
 vi.mock("../../settings/codex-discovery", () => ({
-  assertCodexCliVersion: mockAssertCodexCliVersion,
-  resolveCodexCommand: mockResolveCodexCommand
+  compareCodexCliVersions: () => 0,
+  discoverCodexCommands: mockDiscoverCodexCommands,
+  MINIMUM_CODEX_CLI_VERSION: "0.144.0",
+  probeCodexAuth: vi.fn(async () => ({
+    status: "authenticated",
+    testedAt: "2026-09-01T00:00:00.000Z",
+    durationMs: 1
+  })),
+  selectResolvedCodexCommand: (
+    discovery: { candidates: Array<{ command: string; source: string; selected: boolean }> },
+    fallback: string
+  ) => {
+    const selected = discovery.candidates.find((candidate) => candidate.selected);
+    return selected ?? { command: fallback, source: "path" };
+  }
 }));
 
 // The enrichment sandbox denies escalations at ERROR level with the run +
@@ -107,6 +148,7 @@ vi.mock("@pwrdrvr/agent-client", () => {
 
 afterEach(async () => {
   await closeCodexAgentPool();
+  __setDesktopSettingsStoreForTests(null);
   mockCodexThreadClients.length = 0;
   vi.clearAllMocks();
   mockLogger.error.mockClear();
@@ -116,9 +158,18 @@ afterEach(async () => {
 
 describe("Codex agent pool", () => {
   test("refuses to start a thread when the CLI is older than the protocol floor", async () => {
-    mockAssertCodexCliVersion.mockRejectedValueOnce(
-      new Error("Codex CLI 0.143.0 is older than the minimum supported version 0.144.0")
-    );
+    mockDiscoverCodexCommands.mockResolvedValueOnce({
+      candidates: [
+        {
+          command: "codex-test",
+          source: "config",
+          executable: false,
+          selected: false,
+          version: "0.143.0",
+          failureReason: "codex_too_old"
+        }
+      ]
+    });
     const view = acquireCodexAgentBackendView({
       command: "codex-test",
       env: { CODEX_HOME: "/tmp/pwrsnap-codex-pool-old-cli-test" },
@@ -130,18 +181,26 @@ describe("Codex agent pool", () => {
     );
     expect(mockCodexThreadClients[0]?.startThread).not.toHaveBeenCalled();
 
-    // A failed probe is not cached forever; upgrading the CLI can recover
-    // without restarting PwrSnap.
-    await expect(view.startThread()).resolves.toEqual(
-      expect.objectContaining({ threadId: "thread-1" })
+    // Retrying the runtime action itself reuses the failed publication instead
+    // of launching another machine probe.
+    await expect(view.startThread()).rejects.toThrow(
+      "older than the minimum supported version 0.144.0"
     );
-    expect(mockCodexThreadClients[0]?.startThread).toHaveBeenCalledTimes(1);
+    expect(mockDiscoverCodexCommands).toHaveBeenCalledTimes(1);
+    expect(mockCodexThreadClients[0]?.startThread).not.toHaveBeenCalled();
   });
 
-  test("probes the command resolved by discovery in auto mode", async () => {
-    mockResolveCodexCommand.mockResolvedValueOnce({
-      command: "/Applications/ChatGPT.app/Contents/Resources/codex",
-      source: "application"
+  test("uses the store-resolved command without a second version probe", async () => {
+    mockDiscoverCodexCommands.mockResolvedValueOnce({
+      selectedCommand: "/Applications/ChatGPT.app/Contents/Resources/codex",
+      selectedSource: "application",
+      candidates: [{
+        command: "/Applications/ChatGPT.app/Contents/Resources/codex",
+        source: "application",
+        executable: true,
+        selected: true,
+        version: "0.144.0"
+      }]
     });
     const view = acquireCodexAgentBackendView({
       command: "codex",
@@ -151,14 +210,11 @@ describe("Codex agent pool", () => {
 
     await view.startThread();
 
-    expect(mockResolveCodexCommand).toHaveBeenCalledWith({
-      command: "codex",
+    expect(mockDiscoverCodexCommands).toHaveBeenCalledWith({
+      configuredCommand: undefined,
       env: { CODEX_HOME: "/tmp/pwrsnap-codex-pool-discovery-test" }
     });
-    expect(mockAssertCodexCliVersion).toHaveBeenCalledWith(
-      "/Applications/ChatGPT.app/Contents/Resources/codex",
-      { CODEX_HOME: "/tmp/pwrsnap-codex-pool-discovery-test" }
-    );
+    expect(mockDiscoverCodexCommands).toHaveBeenCalledTimes(1);
   });
 
   test.each([true, false])(

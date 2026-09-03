@@ -32,7 +32,7 @@ import { getRuntimeProcessRole } from "./process-role";
 import { activateForUserSurface } from "./process-split/activate-user-surface";
 import { signalLibraryWindowReady } from "./process-split/agent-bridge";
 import { showWindowWhenReady } from "./window-show";
-import { DesktopSettingsService } from "./settings/desktop-settings-service";
+import { getDesktopSettingsStore } from "./settings/desktop-settings-store";
 import { wireSizzleCloseBarrier } from "./sizzle/sizzle-close-barrier";
 import {
   allowNextHotkeyRecorderDocument,
@@ -377,10 +377,7 @@ function diagnosticsOutputRoot(): string {
 }
 
 async function readHotCpuSettings(): Promise<Settings> {
-  const service = new DesktopSettingsService({
-    filePath: join(app.getPath("userData"), "pwrsnap-settings.json")
-  });
-  return service.read();
+  return getDesktopSettingsStore().read();
 }
 
 export function syncHotCpuProfilersFromSettings(reason: string): void {

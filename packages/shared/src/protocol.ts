@@ -4506,7 +4506,9 @@ export type Commands = {
    *  install status so the renderer can list installed + not-installed
    *  agents and let the user enable installed ones. */
   "acp:discover": {
-    req: Record<string, never>;
+    /** `force: true` is reserved for an explicit user refresh. Automatic
+     * surface reads omit it and consume the process store publication. */
+    req: { force?: boolean };
     res: AcpAgentDiscovery;
   };
   /** List the models a specific installed ACP agent advertises. Spawns the

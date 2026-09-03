@@ -28,7 +28,10 @@ import type {
 } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { activateForUserSurface } from "../process-split/activate-user-surface";
-import { relayRendererEventToPeer } from "../process-split/event-relay";
+import {
+  relayRendererEventToPeer,
+  relaySettingsDiscoveryPublicationToPeer
+} from "../process-split/event-relay";
 import {
   createSettingsWindow,
   findSettingsWindow,
@@ -41,13 +44,18 @@ import {
 } from "../local-agents/local-agent-grants";
 import { LocalAgentAuditService } from "../local-agents/local-agent-audit";
 import { LocalAgentUsageService } from "../local-agents/local-agent-usage";
-import { DesktopSettingsService } from "../settings/desktop-settings-service";
 import {
   HotkeyRegistrationError,
   HOTKEY_KINDS,
   isHotkeyKind,
   type HotkeyRegistrationCoordinator
 } from "../hotkeys/hotkey-registration-manager";
+import {
+  DesktopSettingsStore,
+  type DesktopSettingsStoreApi,
+  __setDesktopSettingsStoreForTests,
+  getDesktopSettingsStore
+} from "../settings/desktop-settings-store";
 import {
   DesktopSecretStore,
   SecretUnavailableError
@@ -62,7 +70,21 @@ import {
 
 const log = getMainLogger("pwrsnap:settings-handlers");
 
-let settingsService: DesktopSettingsService | null = null;
+type SettingsHandlerStore = Pick<
+  DesktopSettingsStoreApi,
+  "read" | "write" | "withSerializedSettings"
+> &
+  Partial<
+    Pick<
+      DesktopSettingsStore,
+      | "getCodexDiscoverySnapshot"
+      | "getCurrentCodexDiscoveryPublication"
+      | "refreshCodexDiscoveryForUserRequest"
+      | "testCodexForUserRequest"
+    >
+  >;
+
+let settingsService: SettingsHandlerStore | null = null;
 let secretStore: DesktopSecretStore | null = null;
 let localAgentGrantService: LocalAgentGrantService | null = null;
 let localAgentAuditService: LocalAgentAuditService | null = null;
@@ -71,21 +93,11 @@ let hotkeyRegistrationManager: HotkeyRegistrationCoordinator | null = null;
 let shortcutPlatformForTests: ShortcutPlatform | null = null;
 
 function ensureServices(): {
-  service: DesktopSettingsService;
+  service: SettingsHandlerStore;
   secrets: DesktopSecretStore;
 } {
   if (settingsService === null) {
-    const userData = app.getPath("userData");
-    settingsService = new DesktopSettingsService({
-      filePath: join(userData, "pwrsnap-settings.json"),
-      resolveAppVersion: () => {
-        try {
-          return typeof app.getVersion === "function" ? app.getVersion() : "";
-        } catch {
-          return "";
-        }
-      }
-    });
+    settingsService = getDesktopSettingsStore();
   }
   if (secretStore === null) {
     const userData = app.getPath("userData");
@@ -97,18 +109,23 @@ function ensureServices(): {
 }
 
 export function getDesktopSettingsServices(): {
-  service: DesktopSettingsService;
+  service: SettingsHandlerStore;
   secrets: DesktopSecretStore;
 } {
   return ensureServices();
 }
 
 export function __setSettingsServicesForTests(injected: {
-  service?: DesktopSettingsService | null;
+  service?: SettingsHandlerStore | null;
   secrets?: DesktopSecretStore | null;
   usage?: LocalAgentUsageService | null;
 }): void {
-  if (injected.service !== undefined) settingsService = injected.service;
+  if (injected.service !== undefined) {
+    settingsService = injected.service;
+    __setDesktopSettingsStoreForTests(
+      injected.service instanceof DesktopSettingsStore ? injected.service : null
+    );
+  }
   if (injected.secrets !== undefined) secretStore = injected.secrets;
   if (injected.usage !== undefined) localAgentUsageService = injected.usage;
   localAgentGrantService = null;
@@ -132,11 +149,11 @@ function getLocalAgentUsageService(): LocalAgentUsageService {
   return localAgentUsageService;
 }
 
-/** Read the live settings snapshot for non-`settings:*` main handlers
+/** Read the current settings snapshot for non-`settings:*` main handlers
  *  (e.g. the export path resolving the active preset ladder). Shares the
- *  same lazily-constructed `DesktopSettingsService` as the bus verbs, so
- *  a write made through `settings:write` is visible here on the next read
- *  (the service has no in-memory cache — `read()` re-parses the file). */
+ *  same process-owned `DesktopSettingsStore` as the bus verbs, so
+ *  a write made through `settings:write` is visible here immediately without
+ *  re-reading or re-parsing the file. */
 export async function readDesktopSettings(): Promise<Settings> {
   return ensureServices().service.read();
 }
@@ -170,7 +187,7 @@ export function onSettingsChanged(listener: MainSettingsListener): () => void {
 }
 
 async function broadcastSettingsChanged(
-  service: DesktopSettingsService,
+  service: SettingsHandlerStore,
   secrets: DesktopSecretStore,
   overrides?: { settings?: Settings }
 ): Promise<void> {
@@ -492,7 +509,17 @@ export function registerSettingsDataHandlers(options: {
     }
     const { service } = ensureServices();
     try {
-      const snapshot = await service.getCodexDiscoverySnapshot({ force });
+      const readDiscovery = force
+        ? service.refreshCodexDiscoveryForUserRequest
+        : service.getCodexDiscoverySnapshot;
+      if (readDiscovery === undefined) {
+        throw new Error("Codex discovery is unavailable from the injected settings test store");
+      }
+      const snapshot = await readDiscovery.call(service);
+      const publication = service.getCurrentCodexDiscoveryPublication?.();
+      if (publication !== null && publication !== undefined) {
+        relaySettingsDiscoveryPublicationToPeer(publication);
+      }
       return ok(snapshot);
     } catch (cause) {
       return err(
@@ -508,7 +535,10 @@ export function registerSettingsDataHandlers(options: {
   bus.register("settings:testCodex", async () => {
     const { service } = ensureServices();
     try {
-      const result = await service.testCodex();
+      if (service.testCodexForUserRequest === undefined) {
+        throw new Error("Codex testing is unavailable from the injected settings test store");
+      }
+      const result = await service.testCodexForUserRequest();
       return ok(result);
     } catch (cause) {
       return err(
@@ -752,6 +782,7 @@ export function registerSettingsDataHandlers(options: {
 
 export function __resetSettingsHandlersForTests(): void {
   settingsService = null;
+  __setDesktopSettingsStoreForTests(null);
   secretStore = null;
   localAgentGrantService = null;
   localAgentAuditService = null;

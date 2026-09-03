@@ -157,7 +157,7 @@ type GitHubReleaseAsset = {
 };
 
 /** Inject the function the updater calls to read the current train/track.
- *  Kept as a callback rather than importing the settings service
+ *  Kept as a callback rather than importing the settings store
  *  directly so this module stays testable + free of the singleton
  *  graph. Called by `initAutoUpdater` from main bootstrap. */
 export function setUpdateSelectionResolver(fn: SelectionResolver): void {

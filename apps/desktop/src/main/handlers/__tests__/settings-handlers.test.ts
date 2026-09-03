@@ -551,8 +551,8 @@ describe("settings:* validation", () => {
 
   test("E2E suppresses automatic Codex discovery but permits an explicit forced probe", async () => {
     const originalE2E = process.env.PWRSNAP_E2E;
-    const { DesktopSettingsService } = await import(
-      "../../settings/desktop-settings-service"
+    const { DesktopSettingsStore } = await import(
+      "../../settings/desktop-settings-store"
     );
     const explicitSnapshot = {
       candidates: [],
@@ -561,7 +561,10 @@ describe("settings:* validation", () => {
       refreshedAt: "2026-08-03T00:00:00.000Z"
     };
     const discovery = vi
-      .spyOn(DesktopSettingsService.prototype, "getCodexDiscoverySnapshot")
+      .spyOn(
+        DesktopSettingsStore.prototype,
+        "refreshCodexDiscoveryForUserRequest"
+      )
       .mockResolvedValue(explicitSnapshot);
 
     process.env.PWRSNAP_E2E = "1";
@@ -587,7 +590,7 @@ describe("settings:* validation", () => {
       );
       expect(explicit).toEqual({ ok: true, value: explicitSnapshot });
       expect(discovery).toHaveBeenCalledOnce();
-      expect(discovery).toHaveBeenCalledWith({ force: true });
+      expect(discovery).toHaveBeenCalledWith();
     } finally {
       discovery.mockRestore();
       if (originalE2E === undefined) delete process.env.PWRSNAP_E2E;
@@ -768,6 +771,42 @@ describe("settings:* validation", () => {
 // seam so the lazy-init code path doesn't try to call `app.getPath`
 // through the partial mock above.
 describe("settings:read + settings:write round-trip (integration)", () => {
+  test("repeated settings and export-strategy reads share one disk hydration", async () => {
+    const { DesktopSettingsService, defaultSettings } = await import(
+      "../../settings/desktop-settings-service"
+    );
+    const { DesktopSecretStore } = await import(
+      "../../settings/desktop-secret-store"
+    );
+    const {
+      __setSettingsServicesForTests,
+      getActiveExportStrategy
+    } = await import("../settings-handlers");
+    const readTextFile = vi.fn(async () => JSON.stringify(defaultSettings()));
+    const service = new DesktopSettingsService({
+      filePath: "/tmp/pwrsnap-settings-handler-store/settings.json",
+      readTextFile
+    });
+    const secrets = new DesktopSecretStore({
+      filePath: "/tmp/pwrsnap-settings-handler-store/secrets.bin"
+    });
+    __setSettingsServicesForTests({ service, secrets });
+
+    const [first, second, strategyA, strategyB] = await Promise.all([
+      bus.dispatch("settings:read", {}, { principal: "ipc" }),
+      bus.dispatch("settings:read", {}, { principal: "ipc" }),
+      getActiveExportStrategy(),
+      getActiveExportStrategy()
+    ]);
+
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    expect(strategyA).toBe(strategyB);
+    expect(readTextFile).toHaveBeenCalledTimes(1);
+
+    __setSettingsServicesForTests({ service: null, secrets: null });
+  });
+
   test("write → read returns the patched value; broadcast fires", async () => {
     const { mkdtemp } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
@@ -1284,12 +1323,10 @@ describe("settings:read + settings:write round-trip (integration)", () => {
   });
 
   test("disk failure rolls back a staged hotkey and keeps the prior live binding", async () => {
-    const { mkdtemp, writeFile } = await import("node:fs/promises");
+    const { mkdtemp } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const path = await import("node:path");
     const dir = await mkdtemp(path.join(tmpdir(), "pwrsnap-hotkey-disk-failure-"));
-    const blocker = path.join(dir, "not-a-directory");
-    await writeFile(blocker, "block atomic settings write", "utf8");
     const { DesktopSettingsService, defaultSettings } = await import(
       "../../settings/desktop-settings-service"
     );
@@ -1318,9 +1355,15 @@ describe("settings:read + settings:write round-trip (integration)", () => {
       callbackFor: () => vi.fn(),
       logger: { warn: vi.fn(), error: vi.fn() }
     });
-    manager.initialize(defaultSettings().hotkeys);
-    const service = new DesktopSettingsService({
-      filePath: path.join(blocker, "settings.json")
+    manager.initialize(defaultSettings("win32").hotkeys);
+    class FailingAtomicSettingsService extends DesktopSettingsService {
+      protected override async atomicWriteJson(): Promise<void> {
+        throw new Error("synthetic atomic settings write failure");
+      }
+    }
+    const service = new FailingAtomicSettingsService({
+      filePath: path.join(dir, "settings.json"),
+      shortcutPlatform: "win32"
     });
     const secrets = new DesktopSecretStore({
       filePath: path.join(dir, "secrets.bin")

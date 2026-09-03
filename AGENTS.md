@@ -968,6 +968,7 @@ plaintext secret on disk.**
 
 Implementation:
 [apps/desktop/src/main/settings/desktop-settings-service.ts](apps/desktop/src/main/settings/desktop-settings-service.ts) +
+[apps/desktop/src/main/settings/desktop-settings-store.ts](apps/desktop/src/main/settings/desktop-settings-store.ts) +
 [apps/desktop/src/main/settings/desktop-secret-store.ts](apps/desktop/src/main/settings/desktop-secret-store.ts) +
 [apps/desktop/src/main/handlers/settings-handlers.ts](apps/desktop/src/main/handlers/settings-handlers.ts).
 Architecture notes:
@@ -990,9 +991,26 @@ Rules:
 - **Atomic write.** Service writes through `writeFile(tmp) → rename`.
   Never `fs.writeFile` to the final path directly — a crash mid-write
   corrupts the file. Same rule for `pwrsnap-secrets.bin`.
-- **Serialized writes.** `DesktopSettingsService.write()` awaits an
-  internal promise chain so two concurrent renderer patches don't
-  interleave reads. Use the same pattern in `DesktopSecretStore`. The
+- **One immutable settings snapshot per main process.** Every production
+  consumer gets `getDesktopSettingsStore()`; only
+  `desktop-settings-store.ts` may import the raw
+  `DesktopSettingsService`. The first startup read hydrates + freezes one
+  snapshot, concurrent cold reads coalesce, and hot-path `read()` calls never
+  reopen or reparse `pwrsnap-settings.json`. Successful writes replace the
+  snapshot only after the atomic rename. There is deliberately no callable
+  production reload API: app restart is the boundary for an out-of-process
+  file edit, while split-mode Library adopts the agent's trusted
+  `events:settings:changed` snapshot.
+  A non-`ENOENT` hydration error leaves the store empty and rejects; never
+  promote fallback defaults into a writable snapshot when a valid settings
+  file may only be temporarily unreadable.
+  Neither mechanism caches secret plaintext. The synchronous process-role
+  peek is the sole raw-read exception because role resolution precedes
+  `app.whenReady()`; a pre-hydration BrowserWindow uses the system-theme
+  default rather than parsing the file behind the store.
+- **Serialized writes.** `DesktopSettingsStore.write()` delegates to the
+  internal persistence queue so two concurrent renderer patches don't
+  interleave snapshot updates. Use the same pattern in `DesktopSecretStore`. The
   queue uses `.catch(() => undefined).then(task)` so a rejected write
   doesn't run the next task on the rejection branch.
 - **Broadcast on every write.** Every successful settings or secret
@@ -1030,10 +1048,32 @@ Rules:
   never `executeJavaScript`.** Use `EVENT_CHANNELS.settingsNavigate`
   (or add a new channel) — string interpolation into renderer JS is a
   sandbox crack.
-- **Codex discovery cache invalidates on `codex.*` writes.** The 30s
-  in-memory snapshot cache must be cleared inside the write task when
-  `patch.codex !== undefined`. Without this, the "Using" badge lies
-  for up to 30s after pinning a path.
+- **Installed-agent discovery is store-owned and event-driven.** Only
+  `desktop-settings-store.ts` may import `discoverCodexCommands` or
+  `discoverLocalAcpAgentInstances`. Codex publications are keyed by command +
+  relevant environment; ACP publications are keyed per provider by enablement,
+  override, platform, architecture, and PATH inputs. Automatic reads from
+  Library, Float-Over, Settings, chat, model listing, runtime launch, and
+  capture enrichment reuse those immutable publications. Same-key concurrent
+  refreshes are single-flight. A settings dependency change invalidates only
+  its fingerprint; an explicit Refresh passes `force: true`. Never reintroduce
+  a TTL/focus-triggered machine scan or direct discovery fallback outside the
+  store. In experimental process-split mode, the agent process relays refreshed
+  publications over the main-only discovery channel and Library adopts them
+  only under a matching dependency fingerprint; do not send raw publications
+  to renderer windows or make Library re-probe after Settings Refresh. The
+  source-boundary test pins these rules.
+- **The lint boundary is executable policy.**
+  `pnpm settings-store:check` runs inside `pnpm lint` and rejects production
+  imports of raw settings persistence or Codex/ACP discovery, direct references
+  to `pwrsnap-settings.json`, extra store construction, reuse of the synchronous
+  process-role peek, direct binary version probes, trusted peer-snapshot adoption
+  outside the split relay, discovery-publication export/adoption outside the
+  split Settings relay, or live refresh/test/profile probes outside their
+  explicit Settings handlers. Thread-config selection consumes the Codex
+  version already published by the store; it never launches its own `--version`.
+  Do not weaken the allowlist to make a new call site compile; add a cached
+  store operation or establish a genuinely explicit boundary instead.
 
 What this substrate is **not for**: ephemeral renderer state (sidebar
 expanded/collapsed, last-selected capture id), per-capture metadata

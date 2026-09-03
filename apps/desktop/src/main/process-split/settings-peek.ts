@@ -8,9 +8,11 @@
 // the substrate's single-writer rule is untouched.
 
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
-export function peekExperimentalProcessSplit(settingsFilePath: string): boolean {
+export function peekExperimentalProcessSplit(userDataPath: string): boolean {
   try {
+    const settingsFilePath = join(userDataPath, "pwrsnap-settings.json");
     const raw = JSON.parse(readFileSync(settingsFilePath, "utf8")) as unknown;
     if (typeof raw !== "object" || raw === null) return false;
     const experimental = (raw as { experimental?: unknown }).experimental;

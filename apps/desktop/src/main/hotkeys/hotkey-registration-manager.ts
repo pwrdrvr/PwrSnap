@@ -112,7 +112,7 @@ const HOTKEY_LABELS = {
  *
  * A settings edit is a two-phase operation: `prepare` registers every new
  * accelerator while the prior binding is still live, persistence happens in
- * DesktopSettingsService's serialized write queue, then `commit` releases the
+ * DesktopSettingsStore's serialized write queue, then `commit` releases the
  * replaced bindings. A failed register or disk write rolls back only the
  * staged registrations, so a working shortcut is never silently discarded.
  */

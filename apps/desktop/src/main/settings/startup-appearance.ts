@@ -10,18 +10,16 @@
 // constructor with the matching surface color, the frame already
 // reads the right way from the very first OS-level paint.
 //
-// We deliberately keep this module narrow — sync I/O on a tiny JSON
-// file, no DesktopSettingsService dependency, no Logger. Reading
-// happens on every window construction (handful per session, cheap)
-// rather than caching, so a theme change in the Settings page
-// propagates to the next opened window without invalidation tracking.
+// BrowserWindow construction is synchronous. Normal startup hydrates the
+// process-owned settings store before any user window is created, so repeated
+// window opens read its current immutable snapshot. An exceptional
+// pre-hydration window uses the shipped system-theme default; it must not
+// bypass the store with a second raw file parser.
 
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { app, nativeTheme } from "electron";
+import { nativeTheme } from "electron";
 import type { AppearanceTheme } from "@pwrsnap/shared";
-import { isAppearanceTheme } from "@pwrsnap/shared";
 import { serializeAppearanceArg } from "@pwrsnap/shared/appearance-arg";
+import { getDesktopSettingsStore } from "./desktop-settings-store";
 
 /** Surface color when the user is in dark mode. Matches
  *  `--bg-app` in `apps/desktop/src/renderer/src/styles/tokens.css`
@@ -32,33 +30,8 @@ export const STARTUP_BG_DARK = "#000000";
  *  `--bg-app` in the `:root[data-theme="light"]` override block. */
 export const STARTUP_BG_LIGHT = "#ffffff";
 
-function settingsFilePath(): string {
-  // `app.getPath("userData")` is only valid after `app` is ready. Every
-  // call site (window factories) is reached inside `app.whenReady()`,
-  // so this is safe.
-  return join(app.getPath("userData"), "pwrsnap-settings.json");
-}
-
 function readPersistedTheme(): AppearanceTheme {
-  const filePath = settingsFilePath();
-  if (!existsSync(filePath)) return "system";
-  let raw: string;
-  try {
-    raw = readFileSync(filePath, "utf8");
-  } catch {
-    return "system";
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return "system";
-  }
-  if (typeof parsed !== "object" || parsed === null) return "system";
-  const appearance = (parsed as { appearance?: unknown }).appearance;
-  if (typeof appearance !== "object" || appearance === null) return "system";
-  const theme = (appearance as { theme?: unknown }).theme;
-  return isAppearanceTheme(theme) ? theme : "system";
+  return getDesktopSettingsStore().getCurrentDomain("appearance")?.theme ?? "system";
 }
 
 /**

@@ -84,6 +84,18 @@ function makeGroup(
 }
 
 describe("acp:discover", () => {
+  test("rejects a non-boolean force flag before discovery", async () => {
+    const result = await bus.dispatch(
+      "acp:discover",
+      { force: "yes" } as unknown as { force?: boolean },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("invalid_force");
+    expect(discover).not.toHaveBeenCalled();
+  });
+
   test("maps installed agents + surfaces every known agent (installed or not)", async () => {
     agentsPref = {};
     const installedId = KNOWN_IDS[0]!;

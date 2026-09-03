@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.1.0-alpha.5 - 2026-09-03
+
+This alpha makes selecting, editing, and sharing captures more capable, with
+substantial new Sizzle timeline controls and stronger Windows workflows.
+
+- Capture Selector - Added multi-window selection that keeps gaps transparent,
+  and lets you choose Snap or Record after committing a selection so one
+  capture flow supports both stills and recordings without a second hotkey.
+- Sizzle Reels - Added a multi-scene timeline with draggable clip moves and
+  retiming, narration-word anchors, clip inspection, transition and Ken Burns
+  previews, and playback directly from the timeline.
+- Bundle Import - Added cross-device PwrSnap bundle import that preserves
+  portable edit history and restores captures into the local Library.
+- Editor Controls - Added contrast-outline controls for arrows, shapes, and
+  text, plus undoable rotation with 45-degree detents and more reliable
+  annotation sizing, tool commits, and transform-handle drags.
+- Library Filtering - Added filter-aware match counts, per-type sidebar
+  counts, and a removable active-search chip so large Libraries are easier to
+  narrow and scan.
+- Windows Capture - Improved Windows hotkey recording, cursor handling,
+  recording permissions, path behavior, and export fidelity so capture and
+  recording workflows behave predictably across displays.
+- Capture Reliability - Fixed PwrSnap so Documents-folder access cannot block
+  the app's main process, pasted file ingestion is safer, and post-start
+  recording failures give actionable recovery details.
+
 ## v1.1.0-alpha.4 - 2026-08-20
 
 This 1.1 alpha opens PwrSnap to trusted PwrAgent workflows while adding more

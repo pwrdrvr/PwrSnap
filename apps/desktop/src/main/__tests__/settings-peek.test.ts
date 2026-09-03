@@ -9,18 +9,18 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { peekExperimentalProcessSplit } from "../process-split/settings-peek";
 
-function fileWith(content: string): string {
+function userDataWith(content: string): string {
   const dir = mkdtempSync(join(tmpdir(), "pwrsnap-peek-"));
   const path = join(dir, "pwrsnap-settings.json");
   writeFileSync(path, content);
-  return path;
+  return dir;
 }
 
 describe("peekExperimentalProcessSplit", () => {
   test("reads an explicit false (the user's opt-out)", () => {
     expect(
       peekExperimentalProcessSplit(
-        fileWith(JSON.stringify({ schemaVersion: 1, experimental: { processSplit: false } }))
+        userDataWith(JSON.stringify({ schemaVersion: 1, experimental: { processSplit: false } }))
       )
     ).toBe(false);
   });
@@ -28,32 +28,32 @@ describe("peekExperimentalProcessSplit", () => {
   test("reads an explicit true", () => {
     expect(
       peekExperimentalProcessSplit(
-        fileWith(JSON.stringify({ experimental: { processSplit: true } }))
+        userDataWith(JSON.stringify({ experimental: { processSplit: true } }))
       )
     ).toBe(true);
   });
 
   test("missing file → default OFF (single-process)", () => {
     expect(
-      peekExperimentalProcessSplit(join(tmpdir(), "pwrsnap-peek-nonexistent", "nope.json"))
+      peekExperimentalProcessSplit(join(tmpdir(), "pwrsnap-peek-nonexistent"))
     ).toBe(false);
   });
 
   test("pre-experimental settings file → default OFF", () => {
     expect(
       peekExperimentalProcessSplit(
-        fileWith(JSON.stringify({ schemaVersion: 1, general: { developerMode: true } }))
+        userDataWith(JSON.stringify({ schemaVersion: 1, general: { developerMode: true } }))
       )
     ).toBe(false);
   });
 
   test("corrupt JSON and wrong-typed values → default OFF", () => {
-    expect(peekExperimentalProcessSplit(fileWith("{not json"))).toBe(false);
+    expect(peekExperimentalProcessSplit(userDataWith("{not json"))).toBe(false);
     expect(
       peekExperimentalProcessSplit(
-        fileWith(JSON.stringify({ experimental: { processSplit: "yes" } }))
+        userDataWith(JSON.stringify({ experimental: { processSplit: "yes" } }))
       )
     ).toBe(false);
-    expect(peekExperimentalProcessSplit(fileWith(JSON.stringify(null)))).toBe(false);
+    expect(peekExperimentalProcessSplit(userDataWith(JSON.stringify(null)))).toBe(false);
   });
 });

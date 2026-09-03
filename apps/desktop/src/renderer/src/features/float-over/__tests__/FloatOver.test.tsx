@@ -748,7 +748,7 @@ describe("FloatOverHost", () => {
   });
 
   // Glue for `isEnrichmentProviderAvailable`: the host probes `acp:discover`
-  // (real `--version` spawns, no handler cache) ONLY when an ACP agent is the
+  // (a store-backed install-status read) ONLY when an ACP agent is the
   // enrichment backend — never for Codex users. The Library footer uses the
   // identical machinery, so this gating is exercised once here.
   test("probes acp:discover when an ACP agent is the enrichment backend", async () => {

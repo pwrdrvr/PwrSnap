@@ -350,8 +350,8 @@ export function FloatOverHost({
       });
       // Codex availability depends only on `settings.codex`, so gate the
       // refresh on that slice changing — unrelated settings broadcasts
-      // shouldn't re-trigger a discovery pass (child spawns) every time
-      // the main-side 30s cache lapses. Mirrors Library's gate.
+      // shouldn't re-trigger discovery work on every broadcast. Mirrors
+      // Library's gate and the store's targeted invalidation boundary.
       const codexSlice = JSON.stringify(settings.codex);
       if (lastCodexSettingsRef.current !== codexSlice) {
         lastCodexSettingsRef.current = codexSlice;
@@ -381,10 +381,10 @@ export function FloatOverHost({
     };
   }, []);
 
-  // Probe ACP install status ONLY when an ACP agent is the enrichment backend
-  // (mirrors Library). `acp:discover` spawns real `--version` probes with no
-  // handler cache, so we key it on the selected provider rather than firing on
-  // every capture or unrelated settings write.
+  // Read ACP install status only when an ACP agent is the enrichment backend
+  // (mirrors Library). Main owns the provider publication; key this IPC read on
+  // the selected provider rather than firing on every capture or unrelated
+  // settings write.
   const enrichmentProviderSelector =
     state.kind === "loaded" ? state.settings?.ai.defaults.enrichment.provider ?? "" : "";
   useEffect(() => {

@@ -107,9 +107,9 @@ export function AIProvidersPage(): ReactElement {
   const [acpDiscoveryError, setAcpDiscoveryError] = useState<string | null>(null);
   const [aiConsentDialogOpen, setAiConsentDialogOpen] = useState<boolean>(false);
 
-  const refreshAcpDiscovery = useCallback(async (): Promise<void> => {
+  const refreshAcpDiscovery = useCallback(async (force = false): Promise<void> => {
     setAcpDiscoveryLoading(true);
-    const result = await dispatch("acp:discover", {});
+    const result = await dispatch("acp:discover", { force });
     if (result.ok) {
       setAcpDiscovery(result.value);
       setAcpDiscoveryError(null);
@@ -120,7 +120,7 @@ export function AIProvidersPage(): ReactElement {
   }, []);
 
   useEffect(() => {
-    void refreshAcpDiscovery();
+    void refreshAcpDiscovery(false);
   }, [refreshAcpDiscovery]);
 
   const refreshBudgetStatus = useCallback(async (): Promise<void> => {
@@ -533,7 +533,7 @@ export function AIProvidersPage(): ReactElement {
           // default model) is refreshed and the "Default (…)" annotation +
           // model options update. Previously this only ran acp:discover, so
           // clicking Refresh here never updated models.
-          void refreshAcpDiscovery();
+          void refreshAcpDiscovery(true);
           for (const id of acpAgentIdsKey.length > 0 ? acpAgentIdsKey.split(",") : []) {
             void fetchAcpModels(id, true);
           }

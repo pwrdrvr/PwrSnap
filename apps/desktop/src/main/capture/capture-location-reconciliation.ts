@@ -1,4 +1,4 @@
-import type { DesktopSettingsService } from "../settings/desktop-settings-service";
+import type { DesktopSettingsStoreApi } from "../settings/desktop-settings-store";
 import { countCapturePathReferencesUnder } from "../persistence/captures-repo";
 import {
   getCapturesLocation,
@@ -22,7 +22,7 @@ export type CapturesLocationReconciliation =
  * before migrations or capture handlers can create anything at Documents.
  */
 export async function reconcileCapturesLocationOnBoot(
-  settingsService: Pick<DesktopSettingsService, "write">
+  settingsService: Pick<DesktopSettingsStoreApi, "write">
 ): Promise<CapturesLocationReconciliation> {
   if (isOverriddenDataRoot() || getCapturesLocation() === "home") {
     return { changed: false, homeCaptureReferences: 0 };

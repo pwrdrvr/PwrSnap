@@ -14,7 +14,11 @@ import { getMainLogger } from "../log";
 import { channelForChildProcess } from "../process-bridge/channel";
 import { BridgeEndpoint } from "../process-bridge/endpoint";
 import { processRoleFlag } from "../process-role";
-import { deliverRelayedRendererEventToMain, LIBRARY_WINDOW_READY_CHANNEL } from "./event-relay";
+import {
+  deliverRelayedProcessEvent,
+  deliverRelayedRendererEventToMain,
+  LIBRARY_WINDOW_READY_CHANNEL
+} from "./event-relay";
 
 const log = getMainLogger("pwrsnap:library-supervisor");
 
@@ -139,8 +143,11 @@ function spawnLibraryProcess(): BridgeEndpoint {
         clearWindowWatchdog();
         return;
       }
-      broadcastRendererEventToLocalWindows(channel, payload);
-      deliverRelayedRendererEventToMain(channel, payload);
+      deliverRelayedProcessEvent(
+        channel,
+        payload,
+        broadcastRendererEventToLocalWindows
+      );
     },
     onRemoteCancel: (key) => {
       bus.cancel(key);

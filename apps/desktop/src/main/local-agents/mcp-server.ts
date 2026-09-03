@@ -38,7 +38,7 @@ import {
 import { bus, type CommandContext } from "../command-bus";
 import { getMainLogger } from "../log";
 import { DesktopSecretStore } from "../settings/desktop-secret-store";
-import { DesktopSettingsService } from "../settings/desktop-settings-service";
+import type { DesktopSettingsStoreApi } from "../settings/desktop-settings-store";
 import { TRASH_RETENTION_DAYS } from "../persistence/trash-retention";
 import { getCaptureById } from "../persistence/captures-repo";
 import {
@@ -108,7 +108,7 @@ type GrantService = Pick<
 type UsageService = Pick<LocalAgentUsageService, "reserve" | "release">;
 
 export type LocalAgentMcpServerOptions = {
-  settings: DesktopSettingsService;
+  settings: Pick<DesktopSettingsStoreApi, "read" | "write">;
   secrets: DesktopSecretStore;
   grantService?: GrantService;
   tools?: readonly AnyLocalAgentMcpTool[];

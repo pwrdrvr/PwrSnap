@@ -143,10 +143,7 @@ import {
   installSizzleQuitBarrier,
   isSizzleQuitDeferred
 } from "./sizzle/sizzle-close-barrier";
-import {
-  defaultSettings,
-  DesktopSettingsService
-} from "./settings/desktop-settings-service";
+import { getDesktopSettingsStore } from "./settings/desktop-settings-store";
 import {
   HotkeyRegistrationManager,
   type HotkeyKind
@@ -192,7 +189,8 @@ import {
   installCancellationForwarder,
   installRendererEventForwarder,
   onRelayedRendererEvent,
-  relayRendererEventToPeer
+  relayRendererEventToPeer,
+  SETTINGS_DISCOVERY_PUBLICATION_CHANNEL
 } from "./process-split/event-relay";
 import {
   dispatchToLibraryProcess,
@@ -711,11 +709,6 @@ async function runPasteFromClipboard(): Promise<void> {
 }
 
 const interactiveCaptureTriggerGate = createCaptureTriggerGate();
-// Hotkey registration already reads settings before it installs the live
-// accelerators. Keep the recording subset from that read so Fast Video does
-// not synchronously re-parse settings before it can show the shared picker.
-// Defaults cover the narrow startup window before the first read completes.
-let cachedRecordingSettings: Settings["recording"] = defaultSettings().recording;
 
 function triggerInteractiveCaptureFromHotkey(
   mode: "auto" | "region" | "window" | "timed",
@@ -857,17 +850,10 @@ const hotkeyRegistrationManager = new HotkeyRegistrationManager({
  *  settings that share the same broadcast. */
 async function wireHotkeyRegistrations(): Promise<void> {
   const log = getMainLogger("pwrsnap:shortcut");
-  // The settings service is a tiny standalone class — load once,
-  // apply current state, then ride the change event for future
-  // updates. We deliberately don't reuse the lazy module-singleton in
-  // `settings-handlers.ts` (it's also fine, but instantiating a
-  // dedicated reader keeps the boot dependency graph one-way:
-  // index.ts depends on settings, not the handlers' internal state).
-  const userData = app.getPath("userData");
-  const service = new DesktopSettingsService({
-    filePath: join(userData, "pwrsnap-settings.json"),
-    resolveAppVersion: () => app.getVersion()
-  });
+  // Startup storage selection hydrates this process-owned store first.
+  // Hotkeys, tray, updater, capture and AI consumers all share the same
+  // immutable snapshot instead of independently reading settings.json.
+  const service = getDesktopSettingsStore();
   let currentChannel: Settings["updates"]["channel"] = "latest";
   let currentTrain: Settings["updates"]["train"] = "stable";
   // Fail safe even if this initializer is ever re-entered after a prior
@@ -875,7 +861,6 @@ async function wireHotkeyRegistrations(): Promise<void> {
   setRendererOwnedSelectorCaptureEnabled(false);
   try {
     const settings = await service.read();
-    cachedRecordingSettings = settings.recording;
     setRendererOwnedSelectorCaptureEnabled(
       settings.experimental.rendererOwnedSelectorCapture
     );
@@ -899,7 +884,6 @@ async function wireHotkeyRegistrations(): Promise<void> {
     train: currentTrain
   }));
   onSettingsChanged((settings) => {
-    cachedRecordingSettings = settings.recording;
     setRendererOwnedSelectorCaptureEnabled(
       settings.experimental.rendererOwnedSelectorCapture
     );
@@ -1167,10 +1151,10 @@ async function runInteractiveRecord(protectWindowIds: readonly number[] = []): P
     // seconds before the picker appeared (subsequent invocations were
     // instant because the chunks were cached). Static imports add no
     // measurable boot cost and remove the cold-press latency.
-    // Read settings before the picker so the selector's cursor toggle
-    // seeds from the persisted default. Reused below for audio
-    // capabilities + the cursor value passed to `recording:start`.
-    const settings = cachedRecordingSettings;
+    // The store is hydrated at startup; this domain read resolves from its
+    // immutable in-memory publication without re-reading settings.json.
+    // Reused below for audio capabilities and the cursor default.
+    const settings = await getDesktopSettingsStore().readDomain("recording");
     const selection = await pickRegion({
       mode: "auto",
       keepPwrSnapChrome: false,
@@ -1576,7 +1560,7 @@ export function bootstrapApp(): void {
     // role resolution can't await the settings service. Honors the E2E
     // userData override the same way the later setPath does.
     experimentalProcessSplit: peekExperimentalProcessSplit(
-      join(process.env.PWRSNAP_USER_DATA ?? app.getPath("userData"), "pwrsnap-settings.json")
+      process.env.PWRSNAP_USER_DATA ?? app.getPath("userData")
     )
   });
   setRuntimeProcessRole(role);
@@ -1871,9 +1855,7 @@ export function bootstrapApp(): void {
     // migrations, accounting, or filename maintenance can ask for it. This is
     // a settings read only: it never probes Documents and therefore never
     // triggers a TCC prompt at startup.
-    const storageSettingsService = new DesktopSettingsService({
-      filePath: join(app.getPath("userData"), "pwrsnap-settings.json")
-    });
+    const storageSettingsService = getDesktopSettingsStore();
     try {
       const storageSettings = await storageSettingsService.read();
       setCapturesLocation(storageSettings.storage.capturesLocation);
@@ -1956,9 +1938,7 @@ export function bootstrapApp(): void {
       // while the library is open arrive via the relayed settings event
       // wired below; this boot peek covers the persisted flag.
       installApplicationMenu();
-      void new DesktopSettingsService({
-        filePath: join(app.getPath("userData"), "pwrsnap-settings.json")
-      })
+      void getDesktopSettingsStore()
         .read()
         .then((settings) => {
           if (settings.general.developerMode !== lastKnownDeveloperMode) {
@@ -2074,7 +2054,10 @@ export function bootstrapApp(): void {
       // Agent/combined only — codex is agent-owned.
       const dispatchStartupCodexProbe = (): void => {
         void bus
-          .dispatch("settings:refreshCodexDiscovery", { force: true }, { principal: "ipc" })
+          // Automatic startup refresh participates in the same provider
+          // publication as renderer mounts. If Library/Float-Over already
+          // populated it, this is an in-memory read rather than a second scan.
+          .dispatch("settings:refreshCodexDiscovery", { force: false }, { principal: "ipc" })
           .then((result) => {
             if (!result.ok) {
               log.warn("startup Codex readiness probe failed", {
@@ -2175,12 +2158,26 @@ export function bootstrapApp(): void {
       // only covers the persisted state).
       onRelayedRendererEvent(EVENT_CHANNELS.settingsChanged, (payload) => {
         const settings = (payload as SettingsChangedEvent).settings;
+        // Keep the split library's process-local store in lockstep with the
+        // agent-owned writer. BrowserWindow appearance/menu construction is
+        // synchronous and reads this snapshot; the bridge event is the
+        // explicit cross-process invalidation boundary.
+        getDesktopSettingsStore().adoptTrustedPeerSnapshot(settings);
         setCapturesLocation(settings.storage.capturesLocation);
         if (settings.general.developerMode !== lastKnownDeveloperMode) {
           installApplicationMenu(settings.general.developerMode);
         }
         syncHotCpuProfilersFromSettings("settings-changed");
       });
+      onRelayedRendererEvent(
+        SETTINGS_DISCOVERY_PUBLICATION_CHANNEL,
+        (payload) => {
+          // Settings Refresh runs in the agent process. Publish its already-
+          // computed provider state into Library's local runtime resolver;
+          // adoption validates dependency fingerprints and never probes.
+          getDesktopSettingsStore().adoptTrustedPeerDiscoveryPublication(payload);
+        }
+      );
     }
     installCodexCompatibilityEventBridge();
     if (!isE2E && role !== "library") {

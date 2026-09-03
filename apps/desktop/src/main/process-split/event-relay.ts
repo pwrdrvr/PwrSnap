@@ -24,6 +24,12 @@ let forwarder: RendererEventForwarder | null = null;
  */
 export const LIBRARY_WINDOW_READY_CHANNEL = "pwrsnap:internal:library-window-ready";
 
+/** Main-process-only discovery publication. The agent owns Settings refresh;
+ * the split Library adopts this cached state for chat/runtime resolution.
+ * Bridge receive sites intercept it before renderer fan-out. */
+export const SETTINGS_DISCOVERY_PUBLICATION_CHANNEL =
+  "pwrsnap:internal:settings-discovery-publication";
+
 export function installRendererEventForwarder(next: RendererEventForwarder): void {
   if (forwarder !== null) {
     throw new Error("event-relay: renderer event forwarder already installed");
@@ -40,6 +46,23 @@ export function uninstallRendererEventForwarderForTests(): void {
  *  re-read fresh state on mount, so missed events self-heal). */
 export function relayRendererEventToPeer(channel: string, payload: unknown): void {
   forwarder?.(channel, payload);
+}
+
+export function relaySettingsDiscoveryPublicationToPeer(payload: unknown): void {
+  forwarder?.(SETTINGS_DISCOVERY_PUBLICATION_CHANNEL, payload);
+}
+
+/** Receive one bridge event. Discovery publications are process-private;
+ * ordinary renderer events retain the existing local-window fan-out. */
+export function deliverRelayedProcessEvent(
+  channel: string,
+  payload: unknown,
+  broadcastToLocalWindows: RendererEventForwarder
+): void {
+  if (channel !== SETTINGS_DISCOVERY_PUBLICATION_CHANNEL) {
+    broadcastToLocalWindows(channel, payload);
+  }
+  deliverRelayedRendererEventToMain(channel, payload);
 }
 
 // ── Cancellation relay ────────────────────────────────────────────

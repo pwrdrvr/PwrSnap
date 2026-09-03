@@ -89,13 +89,14 @@ import { renameBundleToEffectiveFilename } from "../persistence/bundle-filename-
 import { scheduleRepack } from "../persistence/bundle-store";
 import { renameVideoSourceToEffectiveFilename } from "../persistence/video-filename-maintenance";
 import { getCodexCliCompatibilityAlert } from "../settings/codex-compatibility-alert";
+import { getDesktopSettingsStore } from "../settings/desktop-settings-store";
 
 const log = getMainLogger("pwrsnap:codex-handlers");
 
 export type CodexClientFactory = (
   command: string,
   env?: NodeJS.ProcessEnv
-) => CaptureEnrichmentClient;
+) => CaptureEnrichmentClient | Promise<CaptureEnrichmentClient>;
 export type SettingsReader = () => Promise<Settings>;
 export type SettingsWriter = (patch: SettingsPatch) => Promise<Settings>;
 
@@ -479,14 +480,19 @@ export function registerCodexHandlers(params?: {
   const modelListInFlight = new Map<string, Promise<CodexModelOption[]>>();
   const clientFactory =
     params?.clientFactory ??
-    ((command, env) => {
+    (async (command, env) => {
       // No `captureMetadataWorkspaceDir` override: the client defaults to the
       // app-owned scratch jail (`defaultEnrichmentWorkspaceDir`). This used to
       // pass ~/Documents/PwrSnap/Chats/.capture-metadata, which put the agent's
       // cwd and runtime workspace root two levels under the user's captures,
       // inside the TCC-gated Documents tree. The option survives for tests.
+      const resolved = await getDesktopSettingsStore().resolveCompatibleCodexCommand({
+        command,
+        ...(env !== undefined ? { env } : {})
+      });
       return new CaptureEnrichmentClient({
         command,
+        codexVersion: resolved.version ?? null,
         ...(env !== undefined ? { env } : {})
       });
     });
@@ -1078,7 +1084,7 @@ async function runCaptureEnrichment(params: {
       }
       client = acpClient;
     } else {
-      client = params.clientFactory(params.command, params.env);
+      client = await params.clientFactory(params.command, params.env);
     }
     // Bound the turn: a stalled agent (the ACP path forwards an abort
     // signal but enforces no deadline) would otherwise leave the run in

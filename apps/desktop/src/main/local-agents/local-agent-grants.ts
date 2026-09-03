@@ -19,7 +19,7 @@ import {
 } from "@pwrsnap/shared";
 import type { CommandContext } from "../command-bus";
 import { DesktopSecretStore } from "../settings/desktop-secret-store";
-import { DesktopSettingsService } from "../settings/desktop-settings-service";
+import type { DesktopSettingsStoreApi } from "../settings/desktop-settings-store";
 
 const TOKEN_PREFIX = "pws_local_";
 const TOKEN_BYTES = 32;
@@ -36,7 +36,7 @@ export type LocalAgentAuthResult =
   | { ok: false; code: "missing_token" | "invalid_token" | "revoked" | "invalid_role" | "missing_capability" };
 
 export type LocalAgentGrantServiceConfig = {
-  settings: DesktopSettingsService;
+  settings: Pick<DesktopSettingsStoreApi, "read" | "write">;
   secrets: DesktopSecretStore;
   now?: () => Date;
   makeId?: () => string;
@@ -51,7 +51,7 @@ type LocalAgentGrantPatchInput = Omit<LocalAgentClientGrantPatch, "capabilities"
 };
 
 export class LocalAgentGrantService {
-  private readonly settings: DesktopSettingsService;
+  private readonly settings: Pick<DesktopSettingsStoreApi, "read" | "write">;
   private readonly secrets: DesktopSecretStore;
   private readonly now: () => Date;
   private readonly makeId: () => string;

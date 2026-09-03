@@ -35,10 +35,15 @@ these choices.
                                                       │               │
                                        ┌──────────────▼──┐    ┌───────▼─────────────┐
                                        │ DesktopSettings │    │ DesktopSecretStore  │
-                                       │ Service         │    │  safeStorage blob   │
-                                       │  pwrsnap-       │    │  pwrsnap-           │
-                                       │  settings.json  │    │  secrets.bin        │
-                                       └─────────────────┘    └─────────────────────┘
+                                       │ Store           │    │  safeStorage blob   │
+                                       │  snapshot +     │    │  pwrsnap-           │
+                                       │  discovery      │    │  secrets.bin        │
+                                       └───────┬─────────┘    └─────────────────────┘
+                                               │ internal only
+                                       ┌───────▼─────────┐
+                                       │ SettingsService │
+                                       │ JSON persistence│
+                                       └─────────────────┘
 ```
 
 Every transport (ipcMain `cmd` today, HTTP RPC later, MCP later) flows
@@ -50,7 +55,8 @@ bus.
 
 | Path | What |
 |---|---|
-| `apps/desktop/src/main/settings/desktop-settings-service.ts` | JSON service + legacy-shape catalog + Codex discovery cache |
+| `apps/desktop/src/main/settings/desktop-settings-service.ts` | Internal JSON persistence, immutable snapshot, migrations, quarantine, atomic write queue |
+| `apps/desktop/src/main/settings/desktop-settings-store.ts` | Sole production config owner, domain reads/subscriptions, and Codex/ACP discovery publications |
 | `apps/desktop/src/main/settings/desktop-secret-store.ts` | `safeStorage`-encrypted blob |
 | `apps/desktop/src/main/settings/codex-discovery.ts` | Lifted Phase 0.5 — discovery + `resolveCodexCommand` |
 | `apps/desktop/src/main/handlers/settings-handlers.ts` | The six (well, seven counting `settings:open`) bus handlers + the broadcast emitter |
@@ -60,6 +66,41 @@ bus.
 | `packages/shared/src/ipc.ts` | `EVENT_CHANNELS.settingsChanged` + `SettingsChangedEvent` payload type |
 
 ## Persistence rules (load-bearing)
+
+### Hydrate once — hot-path reads use the process snapshot
+
+`getDesktopSettingsStore()` owns one `DesktopSettingsStore` per Electron main
+process. Its internal `DesktopSettingsService` is the raw persistence adapter;
+production modules are forbidden to import it. The normal startup
+storage-location read is the hydration
+boundary. Concurrent cold readers coalesce; after hydration, `read()` returns
+the same deeply frozen snapshot without opening or parsing
+`pwrsnap-settings.json`. Do not construct private production service instances.
+
+`write()` serializes against other mutations, persists atomically, and replaces
+the snapshot only after rename succeeds. There is no callable production reload
+API: app restart is the boundary for a deliberate out-of-process file edit.
+`ENOENT` hydrates defaults for a genuine first launch. Any other read error
+rejects and leaves the store unhydrated, so later reads retry and no write can
+replace a valid-but-temporarily-unreadable file with defaults plus one patch.
+In split mode the Library process adopts the agent's trusted
+`events:settings:changed` snapshot so synchronous menu/BrowserWindow consumers
+stay current without a file read. Secret plaintext remains outside this store.
+
+`pnpm settings-store:check` is part of `pnpm lint`. It rejects production raw
+persistence/discovery imports, direct settings-file references, secondary store
+instances, process-role peek reuse, direct binary version probes, peer-snapshot
+adoption outside the split relay, and live discovery/test/profile probe
+entrypoints outside the explicit Settings handlers. Codex thread-config
+selection uses the version already published by store-owned discovery instead
+of maintaining a second per-command `--version` cache. This is intentionally
+stricter than relying on comments or API naming to keep a future hot path cheap.
+
+The one synchronous exception is process-role resolution's narrow peek of
+`experimental.processSplit`: the role is needed before `app.whenReady()`. An
+exceptional pre-hydration BrowserWindow uses the system-theme default instead
+of opening and parsing the file behind the store. A source-boundary test fails
+on any new raw service import or raw settings reader.
 
 ### Atomic writes — write to tmp + rename
 
@@ -96,10 +137,11 @@ survives version churn for free.
 
 ### Serialized writes — one-at-a-time queue
 
-`DesktopSettingsService.write()` awaits an internal promise chain so
+`DesktopSettingsStore.write()` delegates to the persistence adapter's internal
+promise chain so
 two parallel `patch()` calls don't interleave. Without this, a
-concurrent renderer could read v1, see writeA's merged result, and
-overwrite writeB's changes on disk. The queue is per-process; cross-
+concurrent renderer could merge from the same snapshot and overwrite the
+other patch's changes on disk. The queue is per-process; cross-
 process locks are out of scope (single-instance is enforced
 elsewhere).
 
@@ -134,28 +176,30 @@ which forces every patch to include every leaf.
   = appending to the tuple + extending `DesktopSettingsSecretName` in
   shared protocol.
 
-## Codex discovery — service-cached, renderer-driven
+## Installed-agent discovery — store-owned, targeted, single-flight
 
-`getCodexDiscoverySnapshot({ force })` wraps
-`discoverCodexCommands()` from the lifted module with a 30-second
-in-memory cache. Two reasons:
+The store is also the sole production owner of
+`discoverCodexCommands()` and `discoverLocalAcpAgentInstances()`. This is an
+event-driven publication, not a short TTL:
 
-1. **Page mount cost** — AI Providers calls `refreshCodex(false)`
-   on every mount; the cache keeps this snappy.
-2. **Refresh control** — the page's manual "Refresh" button calls
-   `refreshCodex(true)`, which bypasses the cache and re-runs
-   discovery (notable on machines where the user just installed Codex
-   via brew between page mounts).
+- Codex keys include configured command, platform/architecture, and relevant
+  executable-search environment. Settings, startup, profiles, and runtime
+  compatibility checks share the same raw discovery publication; the UI auth
+  projection is layered on it without starting a second command scan.
+- ACP keys are per provider. Settings' all-provider install scan fills those
+  provider rows once; Library, Float-Over, chat, model listing, and capture
+  enrichment then reuse the matching row. Changing one provider override
+  causes the next read to probe only that provider.
+- Concurrent same-key reads or explicit refreshes share one in-flight job.
+  Successful rows remain last-known-good if a later explicit refresh fails.
+- Automatic startup/UI reads never force. The Settings Refresh button is the
+  explicit `force: true` boundary; a process restart is the other revalidation
+  boundary. Ordinary settings writes do no discovery.
 
-The cache is per-main-process and dies with the app. No persistence.
-Restart re-discovers. Intentional — discovery is cheap enough that
-caching across launches is more complexity than it's worth.
-
-The renderer computes the "Using" badge by comparing
-`candidate.path === snapshot.resolvedPath`. The service-side
-`resolveCodexCommand()` already does the right precedence (env >
-config > path > application + version sort), so the renderer is dumb
-about it.
+The renderer still computes the Codex "Using" badge by comparing
+`candidate.path === snapshot.resolvedPath`. ACP active-instance mapping is pure
+over the stored groups plus the current `selectedPath`, so changing a selection
+does not rescan PATH.
 
 ## Broadcast — every write fires `events:settings:changed`
 

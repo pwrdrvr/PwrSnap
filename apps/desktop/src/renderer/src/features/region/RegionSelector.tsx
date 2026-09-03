@@ -45,6 +45,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { acceleratorToDisplayKeys, MAX_SELECTOR_EXTENTS } from "@pwrsnap/shared";
+import type { QuickCaptureAction, SelectorTerminalAction } from "@pwrsnap/shared";
 import type { SelectorCropStreamReply } from "@pwrsnap/shared/selector-crop-stream";
 import { flushSync } from "react-dom";
 import type { WindowSnapEntry } from "../../preload-types";
@@ -213,6 +214,9 @@ export function RegionSelector() {
   // the pre-warmed window), flipped with the `C` key, and shipped on the
   // commit payload for the hotkey path to pass to `recording:start`.
   const [captureCursor, setCaptureCursor] = useState(true);
+  // Per-show Snap-vs-Record policy. An omitted policy deliberately
+  // defaults to the pre-chooser behavior.
+  const [quickAction, setQuickAction] = useState<QuickCaptureAction>("snap");
   // ⇧ in snap mode opts into full-window capture: the rect expands
   // from the visible-region bounding box (`entry.rect`) to the
   // window's full bounds (`entry.rawRect`), and the commit payload
@@ -292,6 +296,7 @@ export function RegionSelector() {
   const modeRef = useRef<SelectorMode>("auto");
   const intentRef = useRef<"snap" | "video">("snap");
   const captureCursorRef = useRef(true);
+  const quickActionRef = useRef<QuickCaptureAction>("snap");
   // Cursor-tracking crosshair guide-lines (auto/region modes). Rendered
   // once and repositioned by direct DOM writes from `onMouseMove` /
   // the window-list cursor — never via React state, so they impose no
@@ -352,8 +357,20 @@ export function RegionSelector() {
   screenUrlRef.current = screenUrl;
   captureSourceRef.current = captureSource;
   snapshotStateRef.current = snapshotState;
+  quickActionRef.current = quickAction;
   picksRef.current = picks;
   outputModeRef.current = outputMode;
+
+  const recordOffered = intent !== "video" && quickAction !== "snap";
+  const recordUsable = recordOffered && picks.length <= 1;
+  const primary: SelectorTerminalAction =
+    quickAction === "record" && recordUsable ? "record" : "snap";
+  const latched =
+    interaction.kind === "adjusting" ||
+    interaction.kind === "moving" ||
+    interaction.kind === "resizing";
+  const chooserBar = recordOffered && (picks.length > 0 || latched);
+  const showHud = picks.length > 0 || chooserBar;
 
   // Surface state to CSS for cursor switching + snap visualization.
   useLayoutEffect(() => {
@@ -373,6 +390,8 @@ export function RegionSelector() {
     // `pick-count !== "0"`, and two encodings of one fact can disagree.
     document.body.dataset.pickCount = String(picks.length);
     document.body.dataset.outputMode = outputMode;
+    document.body.dataset.chooserBar = chooserBar ? "true" : "false";
+    document.body.dataset.quickAction = quickAction;
   }, [
     interaction.kind,
     spaceHeld,
@@ -382,7 +401,9 @@ export function RegionSelector() {
     windowListState,
     snapshotState,
     picks,
-    outputMode
+    outputMode,
+    chooserBar,
+    quickAction
   ]);
 
   // Subscribe to per-show mode signal from main. The selector windows
@@ -449,6 +470,9 @@ export function RegionSelector() {
       // (defaults ON when unset) so a prior capture's choice can't bleed
       // into this one through the reused, pre-warmed selector window.
       setCaptureCursor(payload.cursor ?? true);
+      const nextQuickAction = payload.quickCaptureAction ?? "snap";
+      quickActionRef.current = nextQuickAction;
+      setQuickAction(nextQuickAction);
       // Drop the pick set on EVERY show. This handler is the only
       // per-show reset the renderer gets, and main can end a session
       // without one: `pickRegion` resolves an in-flight resolver with
@@ -936,6 +960,22 @@ export function RegionSelector() {
     return intentRef.current !== "video" && modeRef.current !== "region";
   }
 
+  function recordOfferedByPolicy(): boolean {
+    return intentRef.current !== "video" && quickActionRef.current !== "snap";
+  }
+
+  function recordAvailable(): boolean {
+    return recordOfferedByPolicy() && picksRef.current.length <= 1;
+  }
+
+  function primaryAction(): SelectorTerminalAction {
+    return quickActionRef.current === "record" && recordAvailable() ? "record" : "snap";
+  }
+
+  function snapKeyBound(): boolean {
+    return primaryAction() === "record";
+  }
+
   /**
    * Drop the pick set WITHOUT touching the rect.
    *
@@ -1021,14 +1061,16 @@ export function RegionSelector() {
     setInteraction({ kind: "snap" });
   }
 
-  function commit(): void {
-    void commitSelection();
+  function commit(action: SelectorTerminalAction = primaryAction()): void {
+    void commitSelection(action);
   }
 
-  async function commitSelection(): Promise<void> {
+  async function commitSelection(action: SelectorTerminalAction): Promise<void> {
     if (commitBusyRef.current || submittedRef.current) return;
+    if (action === "record" && !recordAvailable()) return;
     const currentInvocationId = invocationIdRef.current;
     if (currentInvocationId === null) return;
+    const isRecording = intentRef.current === "video" || action === "record";
 
     // A frozen-screen picker is not truthful/usable until its image has
     // decoded. The normal main path shows only after `onLoad`; this also
@@ -1120,11 +1162,11 @@ export function RegionSelector() {
       // goes through the rect path, which captures whatever's
       // literally on screen including overlapping windows.
       ...(wantFull ? { fullWindow: true } : {}),
-      // Video-only: the cursor choice for this recording. Read from the
+      ...(action === "record" ? { action } : {}),
+      // Recording-only: the cursor choice for this recording. Read from the
       // ref (not state) because this commit closure is captured once at
-      // mount by the global keydown listener. Omitted for image
-      // captures, which don't consume it yet (Phase 3).
-      ...(intentRef.current === "video" ? { captureCursor: captureCursorRef.current } : {}),
+      // mount by the global keydown listener.
+      ...(isRecording ? { captureCursor: captureCursorRef.current } : {}),
       ...(activePicks.length > 1
         ? {
             extents: activePicks.map((pick) => toLogical(pick.rawRect)),
@@ -1135,6 +1177,7 @@ export function RegionSelector() {
     };
     if (
       intentRef.current === "snap" &&
+      action !== "record" &&
       captureSourceRef.current.kind === "renderer-display-media" &&
       !wantFull
     ) {
@@ -1318,6 +1361,12 @@ export function RegionSelector() {
       return target instanceof HTMLElement && target.dataset.move !== undefined;
     }
 
+    function isHudButtonFocused(target: EventTarget | null): boolean {
+      return (
+        target instanceof HTMLElement && target.closest("[data-region-hud] button") !== null
+      );
+    }
+
     function lastCursor(): { x: number; y: number } {
       // Approximate cursor — onMouseMove keeps `lastMouseRef.current`
       // current; falls back to viewport center if we have nothing yet.
@@ -1358,9 +1407,31 @@ export function RegionSelector() {
         handleEscape();
         return;
       }
-      if (event.key === "Enter") {
+      if (event.key === "Enter" && !isHudButtonFocused(event.target)) {
         event.preventDefault();
         commit();
+        return;
+      }
+      if (
+        (event.key === "r" || event.key === "R") &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        recordAvailable()
+      ) {
+        event.preventDefault();
+        commit("record");
+        return;
+      }
+      if (
+        (event.key === "s" || event.key === "S") &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        snapKeyBound()
+      ) {
+        event.preventDefault();
+        commit("snap");
         return;
       }
       if ((event.key === "t" || event.key === "T") && picksRef.current.length > 1) {
@@ -1374,11 +1445,13 @@ export function RegionSelector() {
       }
       if (
         (event.key === "c" || event.key === "C") &&
-        intentRef.current === "video"
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        (intentRef.current === "video" || recordAvailable())
       ) {
-        // Video-only: toggle whether the recording bakes in the mouse
-        // cursor. The hint bar reflects the current state; the value
-        // rides the commit payload to `recording:start`.
+        // Recording-only cursor toggle, shared by dedicated video and
+        // the Quick Capture Record action.
         event.preventDefault();
         setCaptureCursor((prev) => !prev);
         return;
@@ -1418,7 +1491,7 @@ export function RegionSelector() {
         setSnapRect({ x: r.x, y: r.y, w: r.w, h: r.h });
         return;
       }
-      if (event.key === " " && !spaceRef.current) {
+      if (event.key === " " && !spaceRef.current && !isHudButtonFocused(event.target)) {
         // Space-hold: convert any subsequent mousedown into a move
         // anchored on the current rect, even when the cursor is
         // outside. Only useful during adjusting; in snap mode there's
@@ -1989,6 +2062,8 @@ export function RegionSelector() {
       ? snapTarget.entry
       : null;
 
+  const commitVerb = primary === "record" ? "record" : null;
+
   // Hint copy varies by mode + snap target so the user always knows
   // what action is bound to click / drag / arrows.
   const hint = (() => {
@@ -2024,7 +2099,7 @@ export function RegionSelector() {
           )}
           <span className="region-hint-sep">·</span>
           <span>
-            <kbd>↵</kbd>capture
+            <kbd>↵</kbd>{commitVerb ?? "capture"}
           </span>
         </>
       );
@@ -2039,7 +2114,7 @@ export function RegionSelector() {
             </span>
             <span className="region-hint-sep">·</span>
             <span>
-              <kbd>↵</kbd>commit
+              <kbd>↵</kbd>{commitVerb ?? "commit"}
             </span>
           </>
         );
@@ -2068,7 +2143,7 @@ export function RegionSelector() {
             </span>
             <span className="region-hint-sep">·</span>
             <span>
-              <kbd>↵</kbd>capture
+              <kbd>↵</kbd>{commitVerb ?? "capture"}
             </span>
           </>
         );
@@ -2115,7 +2190,7 @@ export function RegionSelector() {
           </span>
           <span className="region-hint-sep">·</span>
           <span>
-            <kbd>↵</kbd>capture
+            <kbd>↵</kbd>{commitVerb ?? "capture"}
           </span>
         </>
       );
@@ -2124,7 +2199,7 @@ export function RegionSelector() {
       return (
         <>
           <span>
-            <kbd>↵</kbd>commit
+            <kbd>↵</kbd>{commitVerb ?? "commit"}
           </span>
           <span className="region-hint-sep">·</span>
           <span>
@@ -2546,13 +2621,10 @@ export function RegionSelector() {
         </div>
       )}
 
-      {/* Multi-select HUD. The one part of the overlay that takes its
-          own clicks (see the [data-region-hud] guard in onMouseDown) —
-          everything else is a canvas gesture. Rendered only while a
-          pick set exists so single-selection capture is untouched. */}
-      {hasPicks && (
+      {/* Pick-set controls and the optional Snap-vs-Record chooser. */}
+      {showHud && (
         <div
-          className="region-hud"
+          className={hasPicks ? "region-hud" : "region-hud region-hud--chooser-only"}
           data-region-hud
           data-testid="region-hud"
           // A HUD press deliberately skips preventDefault so the button
@@ -2598,33 +2670,77 @@ export function RegionSelector() {
               <span className="region-hud__sep" />
             </>
           )}
-          <div className="region-hud__chips">
-            {picks.map((p, idx) => (
-              <button
-                key={p.windowId}
-                type="button"
-                className="region-hud__chip"
-                data-testid="region-hud-chip"
-                onClick={() => togglePick(p)}
-                title={`Remove ${p.appName ?? "window"}`}
-              >
-                <span className="region-hud__chip-n">{idx + 1}</span>
-                <span className="region-hud__chip-name">{p.appName ?? "Window"}</span>
-                <span className="region-hud__chip-x" aria-hidden>
-                  ×
-                </span>
-              </button>
-            ))}
-          </div>
-          <span className="region-hud__sep" />
+          {hasPicks && (
+            <>
+              <div className="region-hud__chips">
+                {picks.map((p, idx) => (
+                  <button
+                    key={p.windowId}
+                    type="button"
+                    className="region-hud__chip"
+                    data-testid="region-hud-chip"
+                    onClick={() => togglePick(p)}
+                    title={`Remove ${p.appName ?? "window"}`}
+                  >
+                    <span className="region-hud__chip-n">{idx + 1}</span>
+                    <span className="region-hud__chip-name">{p.appName ?? "Window"}</span>
+                    <span className="region-hud__chip-x" aria-hidden>×</span>
+                  </button>
+                ))}
+              </div>
+              <span className="region-hud__sep" />
+            </>
+          )}
           <button
             type="button"
             className="region-hud__go"
             data-testid="region-hud-capture"
-            onClick={() => commit()}
+            data-action={primary}
+            aria-label={primary === "record" ? "Record (Return)" : "Capture (Return)"}
+            onClick={() => commit(primary)}
           >
-            Capture<kbd>↵</kbd>
+            {primary === "record" ? "Record" : "Capture"}<kbd>↵</kbd>
           </button>
+          {recordOffered && (
+            <button
+              type="button"
+              className="region-hud__alt"
+              data-testid="region-hud-alt"
+              data-action={primary === "record" ? "snap" : "record"}
+              disabled={!recordUsable}
+              aria-label={
+                primary === "record"
+                  ? "Snap (S)"
+                  : recordUsable
+                    ? "Record (R)"
+                    : "Record unavailable — a recording is one rectangle"
+              }
+              title={
+                primary === "record"
+                  ? "Take a still of this selection instead"
+                  : recordUsable
+                    ? "Record this selection as a video"
+                    : "A recording is one rectangle — remove picks or drag a region"
+              }
+              onClick={() => commit(primary === "record" ? "snap" : "record")}
+            >
+              {primary === "record" ? "Snap" : "Record"}
+              <kbd>{primary === "record" ? "S" : "R"}</kbd>
+            </button>
+          )}
+          {recordUsable && (
+            <button
+              type="button"
+              className="region-hud__toggle"
+              data-testid="region-hud-cursor"
+              aria-pressed={captureCursor}
+              aria-label={`Record cursor: ${captureCursor ? "on" : "off"} (C)`}
+              title="Bake the mouse pointer into the recording"
+              onClick={() => setCaptureCursor((prev) => !prev)}
+            >
+              Rec cursor: {captureCursor ? "on" : "off"}<kbd>C</kbd>
+            </button>
+          )}
         </div>
       )}
 
@@ -2642,6 +2758,24 @@ export function RegionSelector() {
           </>
         )}
         {hint}
+        {recordOffered && (
+          <>
+            <span className="region-hint-sep">·</span>
+            {primary === "record" ? (
+              <span><kbd>S</kbd>snap</span>
+            ) : (
+              <span data-testid="region-hint-record" data-available={recordUsable}>
+                <kbd>R</kbd>{recordUsable ? "record" : "record (one rectangle only)"}
+              </span>
+            )}
+            {recordUsable && (
+              <>
+                <span className="region-hint-sep">·</span>
+                <span><kbd>C</kbd>rec cursor: {captureCursor ? "on" : "off"}</span>
+              </>
+            )}
+          </>
+        )}
         <span className="region-hint-sep">·</span>
         <span>
           {/* Single source of the Esc affordance. Mirrors handleEscape,

@@ -246,7 +246,13 @@ const pwrsnapApi = {
      *  ⇧ at commit time. Routes main to `screencapture -l <id>`
      *  instead of `-R <rect>`. */
     fullWindow?: boolean;
-    /** Video-only: whether the recording bakes in the mouse cursor,
+    /** The terminal action the user chose at commit. Present ONLY for
+     *  `"record"` — a snap commit ships the pre-chooser payload
+     *  unchanged and main reads a missing `action` as `"snap"`. Main
+     *  re-derives this against the persisted policy and never trusts a
+     *  `"record"` it did not offer. */
+    action?: "snap" | "record";
+    /** Recording-only: whether the recording bakes in the mouse cursor,
      *  from the selector's `C` toggle. Omitted for image captures. */
     captureCursor?: boolean;
     /** Multi-window pick. Each entry is one picked window's EXTENT —
@@ -438,8 +444,11 @@ const pwrsnapApi = {
        *  starts a recording instead of taking a snap. Default
        *  `"snap"` keeps existing visuals unchanged. */
       intent?: "snap" | "video";
-      /** Video-only seed for the cursor toggle. `undefined` = ON. */
+      /** Recording seed for the cursor toggle. `undefined` = ON. */
       cursor?: boolean;
+      /** Snap-vs-Record policy for this show, from
+       *  `settings.recording.quickCaptureAction`. `undefined` = "ask". */
+      quickCaptureAction?: "ask" | "snap" | "record";
     }) => void
   ): () => void {
     const wrapped = (_event: unknown, payload: unknown) =>
@@ -457,6 +466,7 @@ const pwrsnapApi = {
             | { kind: "none" };
           intent?: "snap" | "video";
           cursor?: boolean;
+          quickCaptureAction?: "ask" | "snap" | "record";
         }
       );
     ipcRenderer.on(REGION_SELECTOR_MODE_CHANNEL, wrapped);

@@ -1,6 +1,6 @@
 // EditorChrome behaviour suite. Verifies the activity-bar + collapsible/
-// poppable right-panel shell against the 13 user-visible cases called
-// out in docs/plans/2026-05-23-001-feat-v2-editor-plan.md Phase 1.
+// poppable right-panel shell against the 13 user-visible cases the
+// component's own header comment enumerates.
 //
 // Test rig deliberately mirrors `features/settings/__tests__/SettingsContext.test.tsx`
 // — plain React `createRoot` + `act` rather than @testing-library/react,
@@ -63,6 +63,7 @@ const baseSettings: Settings = {
   updates: { channel: "latest", train: "stable" },
   storage: { filenameTimestampZone: "local", capturesLocation: "documents" },
   recording: {
+    quickCaptureAction: "ask",
     includeSystemAudio: false,
     includeMicrophone: false,
     videoCaptureCursor: true,

@@ -588,10 +588,80 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
   font: 700 10px/1 var(--font-mono);
 }
 
+/* Secondary terminal action (Record next to Capture, or Snap next to
+   Record). Outlined rather than filled so the accent stays on the ↵
+   action — the bar must not read as two equally-weighted buttons. */
+.region-hud__alt,
+.region-hud__toggle {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font: 600 12px/1 var(--font-sans);
+  cursor: pointer;
+}
+.region-hud__alt:hover:not(:disabled),
+.region-hud__toggle:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--accent-border);
+}
+.region-hud__alt:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+.region-hud__alt kbd,
+.region-hud__toggle kbd {
+  padding: 1px 5px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-default);
+  border-radius: 3px;
+  color: var(--text-secondary);
+  font: 600 10px/1 var(--font-mono);
+}
+.region-hud__toggle {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+/* Chooser-only bar: no chips, no output-shape control — just the two
+   terminal actions. It is a state hook only; hit testing is deliberately
+   IDENTICAL to the pick-set HUD.
+
+   It used to carry `pointer-events: none` with `auto` on the buttons, to
+   avoid "a full-width dead strip across the bottom of the screen". That
+   premise was wrong — `.region-hud` is `left: 50%` + `translateX(-50%)`
+   and shrink-to-fit, a small centred pill — and the cost was severe: with
+   the container transparent to hit testing, a press on its 8px padding or
+   the 10px gaps between buttons never became an `[data-region-hud]`
+   target, so the guards in onMouseDown/onMouseMove/onMouseUp could not
+   see it. The press fell through to the canvas, and the chooser bar only
+   renders while `adjusting`, where an outside-the-rect press re-snaps —
+   so missing the Record button by a few pixels silently REPLACED the
+   user's committed selection with whatever window sat under the toolbar.
+
+   Eating the press is the correct behaviour for visible chrome, and it is
+   what the pick-set HUD has always done in the same screen position. */
+
+/* Keyboard focus has to be visible: `adjusting` does not intercept Tab,
+   so focus genuinely traverses this bar, and without a ring the user is
+   activating a button they cannot see. */
+.region-hud button:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 2px;
+}
+
 /* Lift the keyboard legend clear of the HUD. */
 /* Requires the attribute to be PRESENT and non-zero. A bare
    `:not([data-pick-count="0"])` would also match the first paint,
    before the effect stamps anything. */
-body[data-stage="region"][data-pick-count]:not([data-pick-count="0"]) .region-hint {
+body[data-stage="region"][data-pick-count]:not([data-pick-count="0"]) .region-hint,
+/* Same lift for a chooser-only bar, which has no pick set to key off. */
+body[data-stage="region"][data-chooser-bar="true"] .region-hint {
   bottom: 82px;
 }

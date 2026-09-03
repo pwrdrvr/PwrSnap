@@ -254,8 +254,10 @@ Don't open `apps/desktop/src/main/ipc.ts` — that's the single
 
 ## Pointers
 
-- Source plan: [docs/plans/2026-05-12-001-feat-settings-substrate-and-design-catchup-plan.md](../plans/2026-05-12-001-feat-settings-substrate-and-design-catchup-plan.md)
+- Current rules: [AGENTS.md](../../AGENTS.md) §"Settings substrate" — the
+  enforcement authority. (The 2026-05-12 source plan was pruned 2026-09-03;
+  recover with `git log --diff-filter=D -- docs/plans/`.)
 - Reference (not lifted): `~/github/PwrAgnt/apps/desktop/src/main/settings/desktop-settings-service.ts`,
   `desktop-secret-store.ts`, `~/github/PwrAgnt/docs/config-file-evolution.md`.
-- Buildout plan back-pointer: [docs/plans/2026-05-03-001-feat-pwrsnap-feature-buildout-plan.md](../plans/2026-05-03-001-feat-pwrsnap-feature-buildout-plan.md)
-  §"Phase 1 — Settings screen" and §"Phase 4 — Codex discovery + Settings → AI".
+- Architecture: [docs/architecture.md](../architecture.md) §"Process and
+  transport shape".

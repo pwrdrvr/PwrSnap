@@ -1,6 +1,5 @@
-// Float-over visibility spec — guards Bug 2 from
-// docs/plans/2026-05-04-001 ("toast almost never shows / flashes for
-// a microsecond"). The pre-Phase-4 e2e suite asserts post-capture
+// Float-over visibility spec — guards the original "toast almost never
+// shows / flashes for a microsecond" bug. The pre-Phase-4 e2e suite asserts post-capture
 // state via DB queries and Result envelopes — it doesn't observe the
 // actual on-screen toast. So a toast that's hidden, off-display, or
 // dismissed within 200ms passed every spec.

@@ -4,6 +4,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { checkAppMetadataPolicy } from "./check-app-metadata-policy.mjs";
+
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const desktopPackagePath = resolve(repoRoot, "apps/desktop/package.json");
 const electronBuilderPath = resolve(repoRoot, "apps/desktop/electron-builder.yml");
@@ -106,6 +108,15 @@ if (desktopPackage.version !== expectedVersion) {
   fail(
     `apps/desktop/package.json version is ${desktopPackage.version}, but release tag ${tag} requires ${expectedVersion}`,
   );
+}
+
+// `description` is shipped UI on Windows (installer FileDescription + Start
+// Menu shortcut comment -> taskbar jump list). The rule lives in
+// check-app-metadata-policy.mjs so `pnpm lint` catches a regression on the PR
+// that introduces it; re-running it here keeps a release tag from shipping one
+// that reached main some other way.
+for (const failure of checkAppMetadataPolicy(repoRoot)) {
+  fail(failure);
 }
 
 const electronBuilder = readFileSync(electronBuilderPath, "utf8");

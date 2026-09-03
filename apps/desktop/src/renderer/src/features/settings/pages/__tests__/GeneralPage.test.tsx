@@ -69,6 +69,7 @@ const baseSettings: Settings = {
   updates: { channel: "latest", train: "stable" },
   storage: { filenameTimestampZone: "local", capturesLocation: "documents" },
   recording: {
+    quickCaptureAction: "ask",
     includeSystemAudio: false,
     includeMicrophone: false,
     videoCaptureCursor: true,

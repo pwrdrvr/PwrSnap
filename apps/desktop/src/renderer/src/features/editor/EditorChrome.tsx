@@ -2,8 +2,7 @@
 // panel that wraps the chromeless `<Editor>` viewport in the standalone
 // Editor window.
 //
-// Behaviour summary (from docs/plans/2026-05-23-001-feat-v2-editor-plan.md
-// Phase 1 + "Six structural decisions baked into Phase 1"):
+// Behaviour summary:
 //
 //   • Pinned mode lays a 320px panel beside the viewport (default OFF
 //     for first-time users, persisted via `settings.editor.sidebar`).

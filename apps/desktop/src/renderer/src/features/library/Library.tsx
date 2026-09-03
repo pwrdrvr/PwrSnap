@@ -497,7 +497,6 @@ function CellThumb({
         // for offscreen cells. With content-visibility:auto on the
         // .psl__cell wrapper (library.css), this is sufficient
         // through ~1000 captures without a virtualization library.
-        // Plan: B.9 perf hygiene.
         loading="lazy"
         decoding="async"
         style={{
@@ -1250,9 +1249,8 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   // View-state reducer — single source of truth for {grid, focus, reel}
   // mode + selected record id. Discriminated-union shape encodes the
   // illegal-state guard at compile time (focus mode requires non-null
-  // selectedRecordId). Plan: docs/plans/2026-05-05-001-feat-library-
-  // three-state-view-model-plan.md, Phase A. Tests at
-  // ./__tests__/library-view.test.ts.
+  // selectedRecordId). The transition rules live on the union in
+  // ./library-view.ts; tests at ./__tests__/library-view.test.ts.
   const [view, setView] = useState<LibraryView>(initialLibraryView);
   const viewRef = useRef(view);
   useEffect(() => {
@@ -2372,7 +2370,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   // Records that match the current active filter, mapped from the
   // (already-filtered) `visible` fixture list. Drives ←/→ navigation
   // in Focus + Reel — both modes cycle through this set with wrap-
-  // around at the edges (per the plan's Phase C.8 contract).
+  // around at the edges.
   const visibleRecords: CaptureRecord[] = useMemo(() => {
     const out: CaptureRecord[] = [];
     for (const c of visible) {

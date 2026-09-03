@@ -51,6 +51,10 @@ declare global {
         displayId?: number;
         snappedWindowId?: number;
         fullWindow?: boolean;
+        /** Terminal action. Present ONLY for `"record"`; a snap commit
+         *  ships the pre-chooser payload and main reads a missing
+         *  `action` as `"snap"`. */
+        action?: "snap" | "record";
         captureCursor?: boolean;
         /** Multi-window pick — one entry per picked window extent, in
          *  the same global logical-px space as `rect`. `rect` is always
@@ -95,6 +99,9 @@ declare global {
             | { kind: "none" };
           intent?: "snap" | "video";
           cursor?: boolean;
+          /** Snap-vs-Record policy for this show, from
+           *  `settings.recording.quickCaptureAction`. `undefined` = "ask". */
+          quickCaptureAction?: "ask" | "snap" | "record";
         }) => void
       ): () => void;
       onSelectorPresentationArm(

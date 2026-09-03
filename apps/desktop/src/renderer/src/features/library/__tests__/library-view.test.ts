@@ -1,7 +1,5 @@
 // library-view reducer tests. The reducer is pure logic with no React
-// or DOM, so every transition in the plan's table can be a one-line
-// assert. Test-first per the Phase A execution note in
-// docs/plans/2026-05-05-001-feat-library-three-state-view-model-plan.md.
+// or DOM, so every transition can be a one-line assert.
 //
 // The discriminated union LibraryView has three kinds: grid, focus,
 // reel. The illegal-state guard the type system enforces — focus mode

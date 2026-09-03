@@ -29,6 +29,7 @@ import {
 } from "electron";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
+import type { QuickCaptureAction } from "@pwrsnap/shared";
 import { getMainLogger } from "../log";
 import { getPreloadPath } from "../window";
 import { boundsApproxEqual, listWindowsSnapshot, selfPidSet, type WindowInfo } from "./window-list";
@@ -287,6 +288,8 @@ export type SelectorResult =
        *  `settings.recording.videoCaptureCursor`). Undefined for image
        *  captures, which don't consume it yet (Phase 3). */
       captureCursor?: boolean;
+      /** Terminal chooser action. Omitted means a still capture. */
+      action?: "record";
       /** Multi-window pick. One entry per picked window's EXTENT, in
        *  the same GLOBAL logical-px space as `rect` (the display offset
        *  is applied to both together, below).
@@ -996,7 +999,6 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
       // The caller (capture-handlers) hides via `hideSelector()` AFTER
       // it has set the float-over to LOADED, so the selector hide
       // reveals an already-painted toast — no post-hoc show race.
-      // See docs/plans/2026-05-04-001 §"Solution 3" for context.
       if (pendingResolver === null || pendingInvocationId === null) return;
       const payloadInvocationId =
         typeof payload === "object" && payload !== null && "invocationId" in payload
@@ -1059,9 +1061,11 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
         // window backing store and therefore does not require frozen pixels.
         const commitsWithoutSnapshot =
           payload.fullWindow === true && trustedWindow !== undefined;
-        const commitsVideoCoordinates = lifecycle.intent === "video";
+        const commitsVideoCoordinates =
+          lifecycle.intent === "video" || payload.action === "record";
         const requiresCommittedRendererCrop =
           lifecycle.intent === "snap" &&
+          payload.action !== "record" &&
           lifecycle.captureStrategy === "renderer-display-media" &&
           !commitsWithoutSnapshot;
         const hasRequiredPixels = requiresCommittedRendererCrop
@@ -1109,6 +1113,9 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
           if (typeof payload.captureCursor === "boolean") {
             result.captureCursor = payload.captureCursor;
           }
+          if (payload.action === "record") {
+            result.action = "record";
+          }
           if (payload.extents !== undefined && payload.extents.length > 0) {
             // Same display → global translation the union rect above
             // gets. Keeping the two in one coordinate space is what
@@ -1121,6 +1128,15 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
               h: e.h
             }));
             result.outputMode = payload.outputMode ?? "windows";
+          }
+          // A recording is one rectangular stream, while a multi-pick rect is
+          // the union bounding box. Refuse to record the transparent gaps even
+          // if a compromised renderer bypasses the chooser's disabled state.
+          if (result.action === "record" && (result.extents?.length ?? 0) > 1) {
+            log.warn("selector commit asked to record a multi-window pick — snapping instead", {
+              extents: result.extents?.length ?? 0
+            });
+            delete result.action;
           }
           closeRendererFrameSession(lifecycle, false);
           resolver(result);
@@ -1186,15 +1202,19 @@ export async function pickRegion(
      *  recording, not a snap. No behavioral effect on selection
      *  itself — both intents return the same rect / window payload. */
     intent?: "snap" | "video";
-    /** Video-only seed for the selector's cursor toggle. Forwarded to
+    /** Recording seed for the selector's cursor toggle. Forwarded to
      *  the renderer in the mode signal; the committed value rides back
-     *  on the result as `captureCursor`. */
+     *  on the result as `captureCursor`. Pass it on the snap path too
+     *  when the chooser can reach a recording. */
     cursorDefault?: boolean;
     /** Called synchronously once the accepted invocation's truthful selector
      *  surface has been presented and acknowledged after show. */
     onSelectorPresented?: (event: SelectorPresentedEvent) => void;
     /** Invocation-scoped trigger-to-visible diagnostic trace. */
     latencyTrace?: CaptureLatencyTrace;
+    /** Snap-vs-Record policy for this show. Omitted (or `snap`) leaves
+     *  the selector's prior behavior unchanged. Ignored for video intent. */
+    quickCaptureAction?: QuickCaptureAction;
   } = {}
 ): Promise<SelectorResult> {
   const mode: SelectorMode = opts.mode ?? "auto";
@@ -1202,6 +1222,7 @@ export async function pickRegion(
   const protectWindowIds = opts.protectWindowIds ?? [];
   const intent = opts.intent ?? "snap";
   const cursorDefault = opts.cursorDefault;
+  const quickCaptureAction = opts.quickCaptureAction;
   if (pickerInvocationActive || pendingResolver !== null) {
     log.info("capture selector invocation suppressed", {
       mode,
@@ -1798,7 +1819,8 @@ export async function pickRegion(
         captureSource,
         ...(captureSource.kind === "legacy-file" ? { screenUrl: captureSource.screenUrl } : {}),
         intent,
-        cursor: cursorDefault
+        cursor: cursorDefault,
+        quickCaptureAction
       };
       if (!win.isDestroyed()) {
         win.webContents.send(SELECTOR_MODE_CHANNEL, modePayload);
@@ -2948,6 +2970,7 @@ function isSelectorPayload(value: unknown): value is {
   displayId: number;
   snappedWindowId?: number;
   fullWindow?: boolean;
+  action?: "snap" | "record";
   captureCursor?: boolean;
   extents?: { x: number; y: number; w: number; h: number }[];
   outputMode?: "windows" | "rectangle";
@@ -2978,6 +3001,9 @@ function isSelectorPayload(value: unknown): value is {
     return false;
   }
   if (v.fullWindow !== undefined && typeof v.fullWindow !== "boolean") {
+    return false;
+  }
+  if (v.action !== undefined && v.action !== "snap" && v.action !== "record") {
     return false;
   }
   if (v.captureCursor !== undefined && typeof v.captureCursor !== "boolean") {

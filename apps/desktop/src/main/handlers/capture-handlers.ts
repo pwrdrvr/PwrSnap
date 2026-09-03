@@ -28,6 +28,7 @@ import type {
   CapturePresetMetric,
   CaptureRecord,
   ExportStrategy,
+  InteractiveCaptureOutcome,
   PwrSnapError,
   Rect,
   RenderPreset,
@@ -43,6 +44,12 @@ import { captureRegion, captureScreen, captureWindow } from "../capture/screenca
 import { displayScaleFactorForId } from "../capture/display-density";
 import { planExtentMask } from "../capture/extent-mask";
 import { guardScreenCapture } from "../capture/screen-permission-gate";
+import { resolveQuickCaptureAction } from "../capture/quick-capture-action";
+import {
+  FALLBACK_RECORDING_DEFAULTS,
+  startRecordingFromSelection
+} from "../recording/record-from-selection";
+import { getRecordingState, isRecordingActive } from "../recording/recording-state";
 import {
   CapturesLocationFallbackError,
   ensureCapturesDirReady,
@@ -83,7 +90,7 @@ import { renderViaCoordinator } from "../render/coordinator";
 import { prepareRenderedFileAlias } from "../render/file-alias";
 import { buildPresetExportDisplayName } from "../render/export-filename";
 import { resolveImagePresetFile, targetWidthForImagePreset } from "../render/image-presets";
-import { getActiveExportStrategy } from "./settings-handlers";
+import { getActiveExportStrategy, readDesktopSettings } from "./settings-handlers";
 import { getCaptureEnrichment } from "../persistence/enrichment-repo";
 import {
   readSafePastedFile,
@@ -289,6 +296,10 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     // the command-bus backstop for tray/IPC double dispatches; the hotkey has
     // its own leading-edge debounce one layer earlier.
     const handlerStartedAt = Date.now();
+    let releaseSessionInFinally = true;
+    const releaseSession = (): void => {
+      releaseInteractiveCaptureSession(session.token);
+    };
     try {
       // Gate BEFORE pickRegion: the selector freezes a screen snapshot on
       // show(), which is all-black on a Mac without Screen Recording. On a
@@ -414,6 +425,13 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       // in the picker — there the user may well want to capture it.
       const protectWindowIds = librarySourceWindowIds(ctx);
 
+      const settings = await readDesktopSettings().then(
+        (value) => value,
+        () => null
+      );
+      // A settings failure must not unexpectedly arm screen recording.
+      const quickCaptureAction = settings?.recording.quickCaptureAction ?? "snap";
+
       const pickRegionStartedAt = Date.now();
       log.info("capture:interactive calling pickRegion", {
         mode,
@@ -427,7 +445,9 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
         mode: selectorMode,
         keepPwrSnapChrome,
         protectWindowIds,
-        latencyTrace: trace
+        latencyTrace: trace,
+        quickCaptureAction,
+        ...(settings !== null ? { cursorDefault: settings.recording.videoCaptureCursor } : {})
       });
       log.info("capture:interactive pickRegion returned", {
         mode,
@@ -498,6 +518,46 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
           code: selection.reason,
           message: `region selector: ${selection.reason}`
         });
+      }
+
+      const recorderUnavailable =
+        getRecordingState().phase === "failed"
+          ? "awaiting_retry_or_dismiss"
+          : isRecordingActive()
+            ? "already_recording"
+            : null;
+      const wantsRecord =
+        resolveQuickCaptureAction(quickCaptureAction, selection.action) === "record";
+      if (wantsRecord && recorderUnavailable !== null) {
+        log.warn("capture:interactive falling back to a still — recorder unavailable", {
+          mode,
+          quickCaptureAction,
+          reason: recorderUnavailable,
+          phase: getRecordingState().phase
+        });
+      }
+      if (wantsRecord && recorderUnavailable === null) {
+        log.info("capture:interactive committing to a recording", {
+          mode,
+          quickCaptureAction,
+          reported: selection.action ?? "snap"
+        });
+        // Transfer the shared image/video session lease to the asynchronous
+        // recording handoff so another picker cannot start during countdown.
+        releaseSessionInFinally = false;
+        void startRecordingFromSelection(
+          selection,
+          settings?.recording ?? FALLBACK_RECORDING_DEFAULTS
+        )
+          .catch((cause) => {
+            log.warn("interactive record handoff failed", {
+              message: cause instanceof Error ? cause.message : String(cause)
+            });
+          })
+          .finally(() => {
+            releaseSession();
+          });
+        return ok<InteractiveCaptureOutcome>({ kind: "recording" });
       }
 
       // COMMIT path. The user has selected AND committed — the selector has
@@ -735,7 +795,9 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
           // prompt). Park the idle toast rather than leaving it empty.
           setFloatOverState({ kind: "cancel" });
         }
-        return persisted;
+        return persisted.ok
+          ? ok<InteractiveCaptureOutcome>({ kind: "snap", record: persisted.value })
+          : persisted;
       } finally {
         // Safety net for an unexpected throw before the explicit teardown.
         await releaseOwnedSnapshot();
@@ -750,7 +812,9 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       trace.finish("error", { code: "handler_threw" });
       throw cause;
     } finally {
-      releaseInteractiveCaptureSession(session.token);
+      if (releaseSessionInFinally) {
+        releaseSession();
+      }
     }
   });
 

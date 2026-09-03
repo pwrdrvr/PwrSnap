@@ -14,9 +14,10 @@
 //   • the command bus: `codex:libraryChat:*` req/res shapes reference
 //     these types via protocol.ts.
 //
-// See docs/plans/2026-05-28-001-feat-library-chat-editor-interface-plan.md
-// §F2 (TypeScript hygiene — zod-first source of truth) + §F9 (data
-// integrity — corrupt sidecar quarantines).
+// Two rules this module exists to hold: zod is the source of truth (the
+// TypeScript types are inferred from the schemas, never hand-declared
+// alongside them), and a sidecar that fails to parse is quarantined
+// rather than silently dropped.
 
 import { z } from "zod";
 

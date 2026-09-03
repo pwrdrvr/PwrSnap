@@ -187,10 +187,8 @@
      follows `--accent` so the brand-accent swatch deepens to the
      WCAG-AA tangerine on white surfaces.
 
-     Source: docs/plans/2026-05-23-001-feat-v2-editor-plan.md (Phase 1
-     "Color tokens added to tokens.css" — values chosen to match Apple
-     traffic-light hues so they read as familiar stoplight semantics on
-     macOS). */
+     Values were chosen to match Apple traffic-light hues so they read
+     as familiar stoplight semantics on macOS. */
   --swatch-red:    #ff5f57;
   --swatch-yellow: #facc15;
   --swatch-green:  #28c840;

@@ -16,8 +16,11 @@ despite repeated incidents. Captured after
 multi-step Escape + interior-drag-redraw) so the next person touching the
 overlay doesn't re-derive these — they're non-obvious and each one bit us.
 
-Background on the window choreography this builds on:
-[docs/plans/2026-05-04-001-fix-capture-flow-window-choreography-plan.md](../plans/2026-05-04-001-fix-capture-flow-window-choreography-plan.md).
+Background on the window choreography this builds on lives in the code
+itself — `apps/desktop/src/main/capture/region-selector.ts` and
+`apps/desktop/src/main/float-over.ts` carry the rationale inline. (The
+2026-05-04 choreography plan was pruned 2026-09-03; recover with
+`git log --diff-filter=D -- docs/plans/`.)
 
 Key files:
 

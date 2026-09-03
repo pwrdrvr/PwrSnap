@@ -355,9 +355,8 @@ export type PermissionReadinessReport = RecordingReadiness & {
  * shape (low / med / high) so the renderer's preset cards feel like
  * siblings of the image L/M/H row. Each (format, preset) maps to a
  * specific encode profile (dimensions, fps, codec params) owned by
- * the main-side `recording-exporter`. See plan
- * [docs/plans/2026-05-27-001-feat-video-export-presets-plan.md] §2
- * for the current tier values.
+ * the main-side `recording-exporter` — read it for the current tier
+ * values rather than duplicating them here.
  */
 export type VideoPreset = "low" | "med" | "high";
 
@@ -2242,6 +2241,90 @@ export type LaunchAtLoginStatus = {
   blockedByOs: boolean;
 };
 
+/**
+ * What the ⌘⇧C selector's primary commit does, and whether the Record
+ * action is offered alongside it at all.
+ *
+ *   - `ask`    — offer BOTH. ↵ / the Capture button still snaps, `R` /
+ *                the Record button starts a recording of the same
+ *                selection. The default: it adds an affordance without
+ *                adding a keystroke, so Quick Capture stays one press.
+ *   - `snap`   — Snap only. No Record affordance, `R` unbound. What the
+ *                selector did before the chooser existed.
+ *   - `record` — Record is the primary action: ↵ / the primary button
+ *                start a recording, and `S` / the secondary button take
+ *                a snap.
+ *
+ * The dedicated Video Capture hotkey ignores this entirely — it always
+ * records, which is the whole point of having it.
+ */
+export type QuickCaptureAction = "ask" | "snap" | "record";
+
+export const QUICK_CAPTURE_ACTIONS = [
+  "ask",
+  "snap",
+  "record"
+] as const satisfies readonly QuickCaptureAction[];
+
+export const QUICK_CAPTURE_ACTION_DEFAULT: QuickCaptureAction = "ask";
+
+/**
+ * The audio + cursor defaults a recording starts from.
+ *
+ * Lives here because TWO places need them and neither may import the
+ * other: `defaultSettings()` in the settings service, and the fallback
+ * `capture:interactive` uses when its settings read fails outright.
+ * Deriving the fallback from `defaultSettings()` would drag the whole
+ * settings module — and, through it, `@pwrdrvr/agent-transport` — into
+ * the capture path's import graph; restating the literals let them
+ * drift silently, which is worse: audio OFF is a privacy default, and
+ * the one test that named the fallback asserted a mocked module against
+ * its own literal, so flipping `includeMicrophone` here would have
+ * hot-miked a user whose settings file hiccuped and passed every test.
+ */
+export const RECORDING_MEDIA_DEFAULTS: {
+  includeSystemAudio: boolean;
+  includeMicrophone: boolean;
+  videoCaptureCursor: boolean;
+} = {
+  // Recording either source is a privacy-relevant opt-in: better that
+  // the user turns it ON for their first MP4 than that we silently
+  // default to "include everything". Once they pick, the choice sticks.
+  includeSystemAudio: false,
+  includeMicrophone: false,
+  // Video has always baked in the cursor — the native recorder
+  // hardcoded it — and that behavior is preserved.
+  videoCaptureCursor: true
+};
+
+export function isQuickCaptureAction(value: unknown): value is QuickCaptureAction {
+  return (
+    typeof value === "string" && (QUICK_CAPTURE_ACTIONS as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Which terminal action a selector commit asked for. Rides the commit
+ * payload only so `ask` mode can report the user's choice; a fixed
+ * policy is resolved in main from the persisted setting and never
+ * trusts this echo (see `resolveQuickCaptureAction`).
+ */
+export type SelectorTerminalAction = "snap" | "record";
+
+/**
+ * How an interactive capture ended.
+ *
+ * `capture:interactive` used to return a `CaptureRecord` unconditionally
+ * because a committed selection could only ever become a still. The
+ * chooser gives it a second ending: when the user picks Record there is
+ * no record to return — the selection is handed to the recording
+ * pipeline, whose whole lifecycle (countdown, recorder, the finished
+ * video) surfaces on the `events:recording:*` broadcasts instead.
+ */
+export type InteractiveCaptureOutcome =
+  | { kind: "snap"; record: CaptureRecord }
+  | { kind: "recording" };
+
 export type Settings = {
   /** Bumped when the on-disk shape changes. Readers below the current
    *  version go through the legacy-shape catalog in the service before
@@ -2281,9 +2364,7 @@ export type Settings = {
      *  sensitive-data patterns, default redaction style, first-launch
      *  banner state). Sits inside `ai` so the existing AI-consent +
      *  kill-switch fields stay close to the chat knobs the user
-     *  interacts with on the same Settings page. Added per
-     *  docs/plans/2026-05-28-001-feat-library-chat-editor-interface-plan.md
-     *  Phase 0 + deepening §F7 #3. */
+     *  interacts with on the same Settings page. */
     chat: ChatSettings;
     /** Per-surface default provider / model / reasoning the user picks
      *  in Settings → AI. These flow into the kit `ChatThreadController`
@@ -2379,7 +2460,7 @@ export type Settings = {
    *  once a gate has soaked, the flag and the fallback path are
    *  deleted together. */
   experimental: {
-    /** macOS two-process split (docs/plans/2026-06-12-001): the tray /
+    /** macOS two-process split (see `main/process-split/`): the tray /
      *  capture agent and the Library run as separate processes, so the
      *  capture overlays can never flash the Dock or disturb the
      *  Library window. Default OFF — opt-in while it soaks; turning it
@@ -2398,8 +2479,7 @@ export type Settings = {
      *  25% / 50% / 100% of the capture's resolution (DPI-aware) instead
      *  of the legacy fixed-width clamp (800 / 1440 / source). Resolves to
      *  the `scalePhysical` / `scaleLogical` export strategies in
-     *  `@pwrsnap/shared`'s `resolveExportStrategy`. Default false. See
-     *  docs/plans/2026-06-14-001-feat-dpi-aware-export-presets-plan.md. */
+     *  `@pwrsnap/shared`'s `resolveExportStrategy`. Default false. */
     dpiAwareExport: boolean;
     /** Only meaningful when `dpiAwareExport` is true. When true (default)
      *  the 100% rung is the full native capture (Retina on a 2× display);
@@ -2442,13 +2522,19 @@ export type Settings = {
     capturesLocation: CapturesLocation;
   };
   /**
-   * Per-user defaults the recording UI seeds from. Audio toggles
+   * Per-user capture and recording defaults. Audio toggles
    * default to OFF — recording the user's microphone or system audio
    * is a privacy-relevant action and must be an explicit opt-in each
    * time, but remembering the last choice cuts friction for the
    * common "I record with mic every time" pattern.
    */
   recording: {
+    /** What a Quick Capture selector commit does — Snap, Record, or
+     *  offer both (`ask`, the default). Lives here rather than in a new
+     *  `capture` section because this block is already the home of the
+     *  cross-mode capture defaults (`imageCaptureCursor` is an image
+     *  setting). See `QuickCaptureAction` for the per-value semantics. */
+    quickCaptureAction: QuickCaptureAction;
     /** Default toggle for the system-audio MP4 export option. */
     includeSystemAudio: boolean;
     /** Default toggle for the microphone MP4 export option. */
@@ -2489,8 +2575,7 @@ export type Settings = {
    *  right-sidebar pin/last-panel state. Lives behind the same Settings
    *  substrate as every other field; renderers patch via SettingsPatch
    *  and re-fetch on `events:settings:changed` (see AGENTS.md "Settings
-   *  substrate"). Added per docs/plans/2026-05-23-001-feat-v2-editor-
-   *  plan.md Phase 1. */
+   *  substrate"). */
   editor: EditorSettings;
   /** Library DetailRail right-side activity bar state. Mirrors
    *  `editor.sidebar` but scoped to the Library — the two surfaces
@@ -3473,13 +3558,19 @@ export type Commands = {
    *     the selector takes its frozen-screen snapshot, so the staged
    *     UI is preserved in the picker even though show() inevitably
    *     takes focus.
+   *
+   * Every mode above offers the Snap-vs-Record chooser, gated on
+   * `settings.recording.quickCaptureAction` — a committed selection is a
+   * rectangle whichever mode produced it. Choosing Record hands off to
+   * the recording pipeline and answers `{ kind: "recording" }` without
+   * waiting for the countdown; see `InteractiveCaptureOutcome`.
    */
   "capture:interactive": {
     req: {
       mode?: "auto" | "region" | "window" | "timed";
       invocation: CaptureInvocation;
     };
-    res: CaptureRecord;
+    res: InteractiveCaptureOutcome;
   };
   /**
    * Fast Video Capture entry point for UI surfaces (the tray's Record
@@ -4566,8 +4657,7 @@ export type Commands = {
   //
   // The user-facing agent that lives in the Library sidebar. Threads are
   // persistent (Codex rollout + our pwrsnap-thread.json sidecar) and
-  // survive relaunch. See docs/plans/2026-05-28-001-feat-library-chat-
-  // editor-interface-plan.md. Streaming + approval flows ride the
+  // survive relaunch. Streaming + approval flows ride the
   // `events:libraryChat:*` channels (see ipc.ts), not these verbs.
 
   /** List all (non-archived by default) chat threads for the thread-list

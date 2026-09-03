@@ -14,8 +14,6 @@
 // passed in as `trim` — the DetailRail's export cards read that same
 // live object, so a click during the persist debounce can't export a
 // stale range.
-//
-// Plan: docs/plans/2026-08-15-001-feat-video-transport-trim-plan.md
 
 import {
   useCallback,

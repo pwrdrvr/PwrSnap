@@ -2,7 +2,9 @@
 
 > MIT-licensed (see [LICENSE](../LICENSE)). Copyright © 2026 PwrDrvr LLC.
 >
-> Origin: [docs/plans/2026-05-04-002-feat-release-infrastructure-dmg-signing-plan.md](plans/2026-05-04-002-feat-release-infrastructure-dmg-signing-plan.md)
+> Origin: the 2026-05-04 release-infrastructure plan (pruned 2026-09-03;
+> recover with `git log --diff-filter=D -- docs/plans/`). This runbook is the
+> living successor and supersedes it.
 
 This runbook covers cutting v0.x and v1.x desktop releases. macOS ships as a
 universal Apple Silicon + Intel build outside the Mac App Store; Windows ships
@@ -382,7 +384,8 @@ Most-common Electron failures:
 
 ---
 
-## Plan / brainstorm references
+## References
 
-- Plan: [docs/plans/2026-05-04-002-feat-release-infrastructure-dmg-signing-plan.md](plans/2026-05-04-002-feat-release-infrastructure-dmg-signing-plan.md)
-- Buildout plan: [docs/plans/2026-05-03-001-feat-pwrsnap-feature-buildout-plan.md](plans/2026-05-03-001-feat-pwrsnap-feature-buildout-plan.md)
+- Architecture and direction: [docs/architecture.md](architecture.md)
+- Windows signing: [docs/desktop-windows-signing.md](desktop-windows-signing.md)
+- Windows operator guide: [docs/windows/README.md](windows/README.md)

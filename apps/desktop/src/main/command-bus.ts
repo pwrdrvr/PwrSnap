@@ -118,9 +118,8 @@ type AnyCommandHandler = (req: unknown, ctx: CommandContext) => Promise<Result<u
 class CommandBus {
   private readonly handlers = new Map<CommandName, AnyCommandHandler>();
   /**
-   * AbortControllers keyed by `(captureId | "global")`. Every dispatch
-   * inherits the controller's signal. Capture deletion / float-over
-   * dismissal calls `cancel(captureId)` to fire the abort.
+   * AbortControllers keyed by an opaque command scope (capture id, run id,
+   * or `"global"`). Every matching dispatch inherits the controller's signal.
    */
   private readonly cancellation = new Map<string, AbortController>();
 
@@ -168,9 +167,8 @@ class CommandBus {
   }
 
   /**
-   * Cancel every in-flight handler keyed by `key`. Called on capture
-   * deletion (`key = capture_id`) and on app shutdown (`key = "global"`,
-   * which we leave to natural process exit).
+   * Cancel every in-flight handler keyed by `key`. Capture deletion uses the
+   * capture id; renderer-owned exports use their run id namespace.
    */
   cancel(key: string): void {
     const controller = this.cancellation.get(key);

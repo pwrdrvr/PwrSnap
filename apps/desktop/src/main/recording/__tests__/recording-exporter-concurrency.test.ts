@@ -21,7 +21,9 @@ import type { CaptureRecord, VideoCaptureMetadata } from "@pwrsnap/shared";
 // can assert "exactly N spawns happened" and "K were concurrent".
 
 type FakeChildProcess = EventEmitter & {
+  stdout: EventEmitter;
   stderr: EventEmitter;
+  kill: () => boolean;
 };
 
 const spawnQueue: Array<{ child: FakeChildProcess; args: string[] }> = [];
@@ -30,7 +32,9 @@ let activeSpawnPeak = 0;
 
 function makeFakeChild(): FakeChildProcess {
   const ee = new EventEmitter() as FakeChildProcess;
+  ee.stdout = new EventEmitter();
   ee.stderr = new EventEmitter();
+  ee.kill = () => true;
   return ee;
 }
 
@@ -52,6 +56,8 @@ vi.mock("node:fs", () => ({
 
 vi.mock("node:fs/promises", () => ({
   mkdir: async () => undefined,
+  rename: async () => undefined,
+  rm: async () => undefined,
   stat: async () => ({ size: 12345 })
 }));
 
@@ -104,11 +110,11 @@ async function resolveNextSpawn(exitCode: number = 0): Promise<void> {
   await waitForSpawnCount(1);
   const next = spawnQueue.shift();
   if (next === undefined) throw new Error("no pending spawn to resolve");
-  // Emit on a nextTick so the exporter's `child.on('exit', …)` listener
+  // Emit on a nextTick so the exporter's `child.on('close', …)` listener
   // is registered before we fire — mirroring real child_process behavior.
   await new Promise<void>((resolve) => {
     setImmediate(() => {
-      next.child.emit("exit", exitCode);
+      next.child.emit("close", exitCode);
       resolve();
     });
   });

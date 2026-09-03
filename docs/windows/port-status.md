@@ -125,7 +125,11 @@ Cross-cutting:
 
 - [ ] **Platform-aware shortcut glyphs** — `⌘`/`⌥`/`⇧` labels should render as `Ctrl`/`Alt`/`Shift` on Windows across `TrayMenu`, the float-over, and the Library.
 - [ ] **Custom window chrome** — currently native Windows title-bar chrome; optional `titleBarStyle: 'hidden'` + `titleBarOverlay` to match the macOS frameless look.
-- [ ] **DXGI duplication noise over RDP** — `desktopCapturer` logs a DXGI failure then falls back to GDI; harmless, but noisy in logs.
+- [x] **Skip failing DXGI duplication before selector capture** — operator
+  measurements showed Chromium's failed DirectX path adding 1.6–4.1 seconds to
+  frame acquisition before its GDI fallback. Windows now disables
+  `DirectXCapturer` alongside `CalculateNativeWinOcclusion` at startup so
+  `desktopCapturer` selects the fallback immediately.
 
 ### ⏸️ Known external limitations (not our bugs)
 

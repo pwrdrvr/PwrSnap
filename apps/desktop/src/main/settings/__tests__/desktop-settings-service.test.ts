@@ -1893,6 +1893,27 @@ describe("DesktopSettingsService updates train/track", () => {
     });
   });
 
+  // A pin whose file lost one axis (truncated write, hand edit with a typo)
+  // must keep the axis that survived AND stay pinned — re-inferring the pair
+  // would silently move a deliberate Stable pin onto the alpha feed.
+  test("keeps a pin whose stored pair lost one axis", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        updates: { train: "stable", channel: "lates", selectionSource: "user" }
+      }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath, appVersion: "1.1.0-alpha.4" });
+    expect((await svc.read()).updates).toEqual({
+      channel: "latest",
+      train: "stable",
+      selectionSource: "user"
+    });
+  });
+
   test("a patch naming only one axis still pins the pair", async () => {
     const filePath = join(workDir, "settings.json");
     const svc = new DesktopSettingsService({ filePath, appVersion: "1.1.0-alpha.4" });

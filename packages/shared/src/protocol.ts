@@ -3137,27 +3137,11 @@ export function isUpdateTrain(value: unknown): value is UpdateTrain {
  *  never mentioned the newer alpha their own binary came from. */
 export type UpdateSelectionSource = "inferred" | "user";
 
-export const UPDATE_SELECTION_SOURCES = [
-  "inferred",
-  "user"
-] as const satisfies readonly UpdateSelectionSource[];
-
 export const UPDATE_SELECTION_SOURCE_DEFAULT: UpdateSelectionSource = "inferred";
 
 export function isUpdateSelectionSource(value: unknown): value is UpdateSelectionSource {
   return value === "inferred" || value === "user";
 }
-
-/** The four published slots, in the order the Settings matrix renders
- *  them (Stable row first, Latest column first). */
-export type UpdateSlot = { train: UpdateTrain; channel: UpdateChannel };
-
-export const UPDATE_SLOTS = [
-  { train: "stable", channel: "latest" },
-  { train: "stable", channel: "prerelease" },
-  { train: "beta", channel: "latest" },
-  { train: "beta", channel: "prerelease" }
-] as const satisfies readonly UpdateSlot[];
 
 // Last 1.0 core that used `-beta.N` as the Stable prerelease line. Builds
 // at this core stay on Stable so a website Beta download cannot be confused

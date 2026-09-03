@@ -18,83 +18,12 @@ import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { EVENT_CHANNELS, type AppUpdateStatus, type Settings } from "@pwrsnap/shared";
 import { UpdatesPage } from "../UpdatesPage";
 import type { UseSettingsValue } from "../../useSettings";
+import { baseSettings } from "../../__tests__/settings-fixture";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 });
 
-const baseSettings: Settings = {
-  schemaVersion: 1,
-  codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.4-mini" },
-  ai: {
-    enabled: false,
-    consentAcceptedAt: null,
-    budgetSafetyDisabledAt: null,
-    autoAcceptSuggestions: false,
-    chat: {
-      userGuidance: "",
-      sensitiveDataPatterns: [],
-      defaultRedactionStyle: "blackout",
-      firstLaunchBannerDismissed: false
-    },
-    defaults: { libraryChat: {}, sizzleChat: {}, enrichment: {} },
-    acp: { enabledAgentIds: [] }
-  },
-  hotkeys: {
-    quickCapture: "CommandOrControl+Shift+C",
-    region: "",
-    window: "",
-    fullScreen: "",
-    allScreens: "",
-    timed: "",
-    videoCapture: "CommandOrControl+Alt+C",
-    reshowFloatOver: "CommandOrControl+Alt+Shift+F"
-  },
-  general: {
-    developerMode: false,
-    hotCpuProfilingEnabled: false,
-    hotCpuProfilingStartDelayMs: 0,
-    hotCpuProfilingTriggerMode: "sustained",
-    hotCpuProfilingSlowburnThresholdPercent: 15,
-    hotCpuProfilingCaptureHeapSnapshot: false,
-    hotCpuProfilingHeapSnapshotLimit: 2,
-    launchAtLogin: false
-  },
-  experimental: { processSplit: true, dpiAwareExport: false, allowRetinaExport: true },
-  appearance: { theme: "system" },
-  updates: { channel: "latest", train: "stable", selectionSource: "inferred" },
-  storage: { filenameTimestampZone: "local", capturesLocation: "documents" },
-  recording: {
-    quickCaptureAction: "ask",
-    includeSystemAudio: false,
-    includeMicrophone: false,
-    videoCaptureCursor: true,
-    imageCaptureCursor: true,
-    lastRoutedPermissionFingerprint: "",
-    screenCapturePrompted: false
-  },
-  editor: {
-    toolStyles: {
-      arrow: {
-        color: "accent",
-        thickness: "auto",
-        endStyle: "filled-triangle",
-        stemStyle: "solid",
-        doubleEnded: false,
-        outline: "auto"
-      },
-      text: { color: "accent", fontSize: "auto", weight: "regular", outline: "auto" },
-      shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15, outline: "auto" },
-      blur: { mode: "gaussian", radius: { mode: "auto" } },
-      highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
-    },
-    coachmarks: { stoplightSeen: false },
-    matchingText: { enabled: true },
-    sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }
-  },
-  library: { detailRail: { pinned: true, lastSelectedTab: "info" }, gridCopyPalette: { anchor: "follow" }, confirmBeforeTrash: true, gridZoom: 180 },
-  localAgents: { enabled: false, grants: [], roles: [], audit: [] }
-};
 
 const patchMock = vi.fn(async (): Promise<void> => undefined);
 
@@ -120,7 +49,10 @@ const RELEASES = {
   }
 };
 
-function installFakeApi(appVersion = "1.1.0-alpha.4"): {
+function installFakeApi(
+  appVersion = "1.1.0-alpha.4",
+  releasesFail = false
+): {
   calls: { name: string; req: unknown }[];
   pushEvent: (channel: string, payload: unknown) => void;
 } {
@@ -132,7 +64,11 @@ function installFakeApi(appVersion = "1.1.0-alpha.4"): {
       platform: "darwin",
       dispatch: async (name: string, req: unknown): Promise<AnyResult> => {
         calls.push({ name, req });
-        if (name === "app:update:releases") return { ok: true, value: RELEASES };
+        if (name === "app:update:releases") {
+          return releasesFail
+            ? { ok: false, error: { message: "bridge closed" } }
+            : { ok: true, value: RELEASES };
+        }
         if (name === "app:version") {
           return { ok: true, value: { version: appVersion, electron: "38.0.0", chrome: "1", node: "24" } };
         }
@@ -168,12 +104,13 @@ let root: Root | null = null;
 
 async function renderUpdates(
   settings: Settings = baseSettings,
-  appVersion = "1.1.0-alpha.4"
+  appVersion = "1.1.0-alpha.4",
+  releasesFail = false
 ): Promise<{
   calls: { name: string; req: unknown }[];
   pushEvent: (channel: string, payload: unknown) => void;
 }> {
-  const api = installFakeApi(appVersion);
+  const api = installFakeApi(appVersion, releasesFail);
   contextValue = { settings, patch: patchMock as unknown as UseSettingsValue["patch"] };
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -268,6 +205,55 @@ describe("UpdatesPage — release matrix", () => {
     expect(patchMock).toHaveBeenCalledWith({
       updates: { train: "beta", channel: "latest" }
     });
+  });
+
+  // "Loading" and "Unavailable" are different claims. A dispatch that FAILS
+  // still settles the read, so the tiles must stop claiming a read is in
+  // flight — otherwise the page lies for the lifetime of the window.
+  test("a failed release read falls out of Loading instead of hanging on it", async () => {
+    await renderUpdates(baseSettings, "1.1.0-alpha.4", true);
+
+    for (const [train, channel] of [
+      ["Stable", "Latest"],
+      ["Stable", "Prerelease"],
+      ["Beta", "Latest"],
+      ["Beta", "Prerelease"]
+    ] as const) {
+      expect(slot(train, channel).textContent).toContain("Unavailable");
+      expect(slot(train, channel).textContent).not.toContain("Loading");
+    }
+    expect(container?.textContent).toContain("Could not read published releases: bridge closed");
+  });
+
+  test("arrow keys move focus across the matrix without changing the selection", async () => {
+    await renderUpdates({
+      ...baseSettings,
+      updates: { channel: "latest", train: "stable", selectionSource: "user" }
+    });
+
+    // Roving tabindex: only the selected tile is in the tab order.
+    expect(slot("Stable", "Latest").tabIndex).toBe(0);
+    expect(slot("Beta", "Prerelease").tabIndex).toBe(-1);
+
+    slot("Stable", "Latest").focus();
+    await act(async () => {
+      slot("Stable", "Latest").dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })
+      );
+    });
+    expect(document.activeElement).toBe(slot("Beta", "Latest"));
+
+    await act(async () => {
+      slot("Beta", "Latest").dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })
+      );
+    });
+    expect(document.activeElement).toBe(slot("Beta", "Prerelease"));
+
+    // Focus moved; the feed did NOT change. Selecting rewrites which build
+    // the app installs, so it waits for a real activation.
+    expect(patchMock).not.toHaveBeenCalled();
+    expect(slot("Stable", "Latest").getAttribute("aria-checked")).toBe("true");
   });
 
   test("says the selection is still inferred until it is pinned", async () => {

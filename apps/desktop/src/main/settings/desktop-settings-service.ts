@@ -96,6 +96,7 @@ import {
   isUpdateTrain,
   isUpdateSelectionSource,
   UPDATE_CHANNEL_DEFAULT,
+  UPDATE_SELECTION_SOURCE_DEFAULT,
   UPDATE_TRAIN_DEFAULT,
   shortcutPlatformFromString
 } from "@pwrsnap/shared";
@@ -228,7 +229,7 @@ export function defaultSettings(
       // download follows its own feed until somebody picks a slot.
       channel: UPDATE_CHANNEL_DEFAULT,
       train: UPDATE_TRAIN_DEFAULT,
-      selectionSource: "inferred"
+      selectionSource: UPDATE_SELECTION_SOURCE_DEFAULT
     },
     storage: {
       // Local timestamps match what single users remember seeing on
@@ -652,13 +653,25 @@ function migrateEnrichmentDefaultToManagedLuna(defaults: AiSurfaceDefaults): AiS
   };
 }
 
+/** The pair every pre-`selectionSource` settings file landed on when
+ *  nobody had chosen: the shape `defaultSettings()` shipped at the time,
+ *  and what the old `parseUpdates` filled a missing `train` with. This is
+ *  a HISTORICAL FACT about files already on disk, so it is frozen here
+ *  rather than read from `UPDATE_*_DEFAULT` — moving the shipped default
+ *  later must not retroactively reclassify those files as deliberate
+ *  pins and freeze that population on Stable Latest forever. */
+const LEGACY_UNCHOSEN_UPDATE_PAIR: { channel: UpdateChannel; train: UpdateTrain } = {
+  channel: "latest",
+  train: "stable"
+};
+
 /** Classify a settings file written before `updates.selectionSource`
- *  existed. A complete pair that is NOT the stable/latest default could
- *  only have been written by a deliberate click or by the old
+ *  existed. A complete pair that is NOT the historical unchosen pair
+ *  could only have been written by a deliberate click or by the old
  *  version-seeding path, and both mean "leave it alone" — so it reads as
- *  `"user"`. Everything else (no pair, a half pair, or the default pair)
- *  is indistinguishable from "never chose", so it reads as `"inferred"`
- *  and gets re-derived from the running binary.
+ *  `"user"`. Everything else (no pair, a half pair, or that pair) is
+ *  indistinguishable from "never chose", so it reads as `"inferred"` and
+ *  gets re-derived from the running binary.
  *
  *  The one behavior change this migration can produce: an operator who
  *  deliberately pinned Stable/Latest while running an alpha is moved back
@@ -671,14 +684,19 @@ function legacyUpdateSelectionSource(
   train: UpdateTrain | undefined
 ): UpdateSelectionSource {
   if (channel === undefined || train === undefined) return "inferred";
-  if (channel === UPDATE_CHANNEL_DEFAULT && train === UPDATE_TRAIN_DEFAULT) return "inferred";
+  if (
+    channel === LEGACY_UNCHOSEN_UPDATE_PAIR.channel &&
+    train === LEGACY_UNCHOSEN_UPDATE_PAIR.train
+  ) {
+    return "inferred";
+  }
   return "user";
 }
 
 function parseUpdates(
   raw: unknown,
   appVersion: string,
-  _defaults: Settings["updates"]
+  defaults: Settings["updates"]
 ): Settings["updates"] {
   const updates = isRecord(raw) ? raw : {};
   const storedChannel = isUpdateChannel(updates.channel) ? updates.channel : undefined;
@@ -686,14 +704,22 @@ function parseUpdates(
   const source = isUpdateSelectionSource(updates.selectionSource)
     ? updates.selectionSource
     : legacyUpdateSelectionSource(storedChannel, storedTrain);
-  // A pinned pair is honoured verbatim. An inferred one is RE-DERIVED on
-  // every hydration from the version of the binary doing the reading, so
-  // installing an alpha over a stable build (or the reverse) moves the
-  // feed with it instead of stranding the install on a slot it can never
-  // advance from.
-  if (source === "user" && storedChannel !== undefined && storedTrain !== undefined) {
-    return { channel: storedChannel, train: storedTrain, selectionSource: "user" };
+  // A pin is honoured even when one axis did not survive the round trip
+  // (a truncated write, a hand edit that misspelled a value). Re-inferring
+  // the whole pair there would silently discard the axis that IS valid and
+  // un-pin the selection — on an alpha binary that quietly moves a
+  // deliberate Stable pin onto the alpha feed. Fall back per axis instead.
+  if (source === "user") {
+    return {
+      channel: storedChannel ?? defaults.channel,
+      train: storedTrain ?? defaults.train,
+      selectionSource: "user"
+    };
   }
+  // An inferred selection is RE-DERIVED on every hydration from the
+  // version of the binary doing the reading, so installing an alpha over a
+  // stable build (or the reverse) moves the feed with it instead of
+  // stranding the install on a slot it can never advance from.
   return { ...inferUpdateSelection(appVersion), selectionSource: "inferred" };
 }
 
@@ -1514,7 +1540,7 @@ export class DesktopSettingsService {
       ...settings,
       updates: {
         ...inferUpdateSelection(this.currentAppVersion()),
-        selectionSource: "inferred"
+        selectionSource: UPDATE_SELECTION_SOURCE_DEFAULT
       }
     };
   }

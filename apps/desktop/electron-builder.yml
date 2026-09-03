@@ -334,6 +334,11 @@ win:
       to: "PwrSnapWindowList.exe"
     - from: "build/native/verified-file.exe"
       to: "PwrSnapVerifiedFile.exe"
+    # Pagefile-backed frozen-selector snapshot broker. The sandboxed
+    # renderer never receives its mapping name or a native handle; main
+    # authenticates the selector sender and brokers bounded RGBA copies.
+    - from: "build/native/screen-snapshot.exe"
+      to: "PwrSnapScreenSnapshot.exe"
 
 nsis:
   oneClick: false

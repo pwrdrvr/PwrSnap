@@ -58,6 +58,7 @@ type WindowSpy = {
 
 const constructed: WindowSpy[] = [];
 const ipcListeners = new Map<string, (event: unknown, payload: unknown) => void>();
+const ipcHandlers = new Map<string, (event: unknown, payload: unknown) => unknown>();
 const deferredLoadResolvers: (() => void)[] = [];
 let deferSelectorLoads = false;
 // When true, the window spy stops auto-acking `region-selector:painted`
@@ -66,7 +67,10 @@ let deferSelectorLoads = false;
 let suppressPaintAck = false;
 const screenSnapshotMocks = vi.hoisted(() => ({
   captureAndRegister: vi.fn(),
-  releaseSnapshot: vi.fn()
+  releaseSnapshot: vi.fn(),
+  releaseAllSnapshots: vi.fn(),
+  readSnapshotForRenderer: vi.fn(),
+  recordSnapshotCanvasUpload: vi.fn()
 }));
 const selectorShortcutMocks = vi.hoisted(() => {
   const callbacks = new Map<string, () => void>();
@@ -90,6 +94,7 @@ function selectorLoadPromise(): Promise<void> {
 }
 
 function makeWindowSpy(options: Record<string, unknown>): WindowSpy {
+  const webContentsId = 100 + constructed.length;
   return {
     setTitle: vi.fn(),
     setAlwaysOnTop: vi.fn(),
@@ -107,7 +112,7 @@ function makeWindowSpy(options: Record<string, unknown>): WindowSpy {
     loadURL: vi.fn(() => selectorLoadPromise()),
     loadFile: vi.fn(() => selectorLoadPromise()),
     webContents: {
-      id: 100 + constructed.length,
+      id: webContentsId,
       on: vi.fn(),
       // Simulate the selector renderer: when main pushes the per-show
       // mode with a snapshot URL, the real renderer loads the frozen
@@ -121,7 +126,16 @@ function makeWindowSpy(options: Record<string, unknown>): WindowSpy {
           const url = (payload as { screenUrl?: unknown }).screenUrl;
           if (typeof url === "string") {
             queueMicrotask(() =>
-              ipcListeners.get("region-selector:painted")?.({}, { screenUrl: url })
+              ipcListeners.get("region-selector:painted")?.(
+                { sender: { id: webContentsId } },
+                {
+                  screenUrl: url,
+                  transport: "img",
+                  decodeMs: 1,
+                  mainToRendererBytes: 0,
+                  canvasUploadBytes: 0
+                }
+              )
             );
           }
         }
@@ -184,7 +198,11 @@ vi.mock("electron", () => {
       on: vi.fn((channel: string, listener: (event: unknown, payload: unknown) => void) => {
         ipcListeners.set(channel, listener);
       }),
-      removeAllListeners: vi.fn()
+      handle: vi.fn((channel: string, listener: (event: unknown, payload: unknown) => unknown) => {
+        ipcHandlers.set(channel, listener);
+      }),
+      removeAllListeners: vi.fn(),
+      removeHandler: vi.fn()
     }
   };
 });
@@ -214,7 +232,10 @@ vi.mock("../capture/window-list", () => ({
 
 vi.mock("../capture/screen-snapshot", () => ({
   captureAndRegister: screenSnapshotMocks.captureAndRegister,
-  releaseSnapshot: screenSnapshotMocks.releaseSnapshot
+  releaseSnapshot: screenSnapshotMocks.releaseSnapshot,
+  releaseAllSnapshots: screenSnapshotMocks.releaseAllSnapshots,
+  readSnapshotForRenderer: screenSnapshotMocks.readSnapshotForRenderer,
+  recordSnapshotCanvasUpload: screenSnapshotMocks.recordSnapshotCanvasUpload
 }));
 
 // Hoisted (not inline `vi.fn()`) so the SAME spy survives the
@@ -239,11 +260,15 @@ const realPlatform = process.platform;
 beforeEach(() => {
   constructed.length = 0;
   ipcListeners.clear();
+  ipcHandlers.clear();
   deferredLoadResolvers.length = 0;
   deferSelectorLoads = false;
   suppressPaintAck = false;
   screenSnapshotMocks.captureAndRegister.mockReset();
   screenSnapshotMocks.releaseSnapshot.mockReset();
+  screenSnapshotMocks.releaseAllSnapshots.mockReset();
+  screenSnapshotMocks.readSnapshotForRenderer.mockReset();
+  screenSnapshotMocks.recordSnapshotCanvasUpload.mockReset();
   // mockReset, not mockClear: the compositor-flush test below installs a
   // `mockImplementation` on hideTrayPopoverIfVisible, and mockClear drops
   // only the call records — the implementation would survive into every
@@ -256,8 +281,15 @@ beforeEach(() => {
   selectorShortcutMocks.unregister.mockClear();
   screenSnapshotMocks.captureAndRegister.mockResolvedValue({
     id: "snapshot-1",
-    filePath: "/tmp/snapshot.png",
-    displayId: 1
+    displayId: 1,
+    transport: "png-file",
+    acquisition: {
+      sourceBitmapBytes: 0,
+      mappingWriteBytes: 0,
+      fullScreenPngEncodeCount: 1,
+      fullScreenPngBytes: 100,
+      fullScreenTempFileWriteBytes: 100
+    }
   });
   vi.resetModules();
   // createSelectorWindow only sets the NSPanel (`type: 'panel'`) +
@@ -625,15 +657,107 @@ describe("region-selector — snapshot-paint gate before show()", () => {
     // A late ack from a SUPERSEDED capture (different screenUrl) must not
     // satisfy the current wait — the selector stays hidden. (Well under
     // the 250ms timeout, so the fallback can't be what keeps it hidden.)
-    ipcListeners.get("region-selector:painted")?.({}, { screenUrl: "pwrsnap-screen://r/stale-0" });
+    const paintEvent = { sender: { id: constructed[0]!.webContents.id } };
+    ipcListeners.get("region-selector:painted")?.(paintEvent, {
+      screenUrl: "pwrsnap-screen://r/stale-0"
+    });
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(constructed[0]?.show).not.toHaveBeenCalled();
 
     // The ack for the CURRENT snapshot reveals it.
-    ipcListeners.get("region-selector:painted")?.({}, { screenUrl: "pwrsnap-screen://r/snapshot-1" });
+    ipcListeners.get("region-selector:painted")?.(paintEvent, {
+      screenUrl: "pwrsnap-screen://r/snapshot-1"
+    });
     await vi.waitFor(() => {
       expect(constructed[0]?.show).toHaveBeenCalledTimes(1);
     });
+
+    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
+  });
+});
+
+describe("region-selector — mapped snapshot IPC boundary", () => {
+  test("admits only the active selector top-level frame and active opaque id", async () => {
+    screenSnapshotMocks.captureAndRegister.mockResolvedValueOnce({
+      id: "mapped-snapshot-1",
+      displayId: 1,
+      transport: "windows-shared-memory",
+      selectorDescriptor: {
+        id: "mapped-snapshot-1",
+        transport: "windows-shared-memory",
+        version: 1,
+        width: 2,
+        height: 1,
+        stride: 8,
+        pixelFormat: 1,
+        byteLength: 8
+      },
+      acquisition: {
+        sourceBitmapBytes: 8,
+        mappingWriteBytes: 72,
+        fullScreenPngEncodeCount: 0,
+        fullScreenPngBytes: 0,
+        fullScreenTempFileWriteBytes: 0
+      }
+    });
+    screenSnapshotMocks.readSnapshotForRenderer.mockResolvedValue({
+      ok: true,
+      header: {
+        version: 1,
+        width: 2,
+        height: 1,
+        stride: 8,
+        pixelFormat: 1,
+        byteLength: 8
+      },
+      data: Buffer.alloc(8)
+    });
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({ keepPwrSnapChrome: true });
+    await vi.waitFor(() => {
+      expect(ipcHandlers.has("region-selector:snapshot-read")).toBe(true);
+      expect(constructed[0]?.webContents.send).toHaveBeenCalledWith(
+        "region-selector:mode",
+        expect.objectContaining({
+          snapshot: expect.objectContaining({ id: "mapped-snapshot-1" })
+        })
+      );
+    });
+    const handler = ipcHandlers.get("region-selector:snapshot-read")!;
+    const mainFrame = { processId: 10, routingId: 20 };
+    const sender = {
+      id: constructed[0]!.webContents.id,
+      isDestroyed: () => false,
+      mainFrame
+    };
+
+    await expect(
+      handler(
+        {
+          sender: { id: sender.id + 1, isDestroyed: () => false, mainFrame },
+          senderFrame: mainFrame
+        },
+        { id: "mapped-snapshot-1" }
+      )
+    ).resolves.toEqual({ ok: false, code: "unauthorized" });
+    await expect(
+      handler(
+        { sender, senderFrame: { processId: 10, routingId: 21 } },
+        { id: "mapped-snapshot-1" }
+      )
+    ).resolves.toEqual({ ok: false, code: "unauthorized" });
+    await expect(
+      handler({ sender, senderFrame: mainFrame }, { id: "mapped-snapshot-2" })
+    ).resolves.toEqual({ ok: false, code: "unauthorized" });
+    expect(screenSnapshotMocks.readSnapshotForRenderer).not.toHaveBeenCalled();
+
+    await expect(
+      handler({ sender, senderFrame: mainFrame }, { id: "mapped-snapshot-1" })
+    ).resolves.toMatchObject({ ok: true });
+    expect(screenSnapshotMocks.readSnapshotForRenderer).toHaveBeenCalledWith(
+      "mapped-snapshot-1"
+    );
 
     ipcListeners.get("region-selector:result")?.({}, { ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });

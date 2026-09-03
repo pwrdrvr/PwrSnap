@@ -16,10 +16,10 @@
  * (window-list, recorder, thumbnail/preview extensions) below.
  *
  * Windows — compiles the C++ window-list and verified-file helpers via the
- * win32 branch immediately below, then exits. The former drives
- * snap-to-window/source-app metadata; the latter supplies the atomic Win32
- * reparse-point-safe open boundary for untrusted external files. The
- * macOS-only Swift/.appex targets are skipped on Windows.
+ * win32 branch immediately below, then exits. The helpers drive
+ * snap-to-window/source-app metadata, the atomic Win32 reparse-point-safe
+ * open boundary for untrusted external files, and pagefile-backed selector
+ * snapshots. The macOS-only Swift/.appex targets are skipped on Windows.
  *
  * Linux — no native helpers; the build is a no-op so unit tests + Linux
  * CI keep working.
@@ -434,6 +434,7 @@ for (const appex of appexTargets) {
  * Compile the Windows C++ helpers:
  *   native/window-list-win/main.cpp → build/native/window-list.exe
  *   native/verified-file-win/main.cpp → build/native/verified-file.exe
+ *   native/screen-snapshot-win/main.cpp → build/native/screen-snapshot.exe
  *
  * Counterpart to the macOS Swift `window-list` binary. Self-contained
  * C++ over Win32 (EnumWindows / DWM / PSAPI); compiled with cl.exe from
@@ -471,6 +472,16 @@ function buildWindowsHelpers() {
       source: join(nativeRoot, "verified-file-win", "main.cpp"),
       output: join(buildRoot, "verified-file.exe"),
       libraries: []
+    },
+    {
+      // Owns the Windows selector's frozen RGBA bitmap in a
+      // pagefile-backed CreateFileMapping section. It is a standalone
+      // helper rather than a .node addon so Electron upgrades never create
+      // a Node/Electron ABI rebuild boundary for screen capture.
+      name: "screen-snapshot",
+      source: join(nativeRoot, "screen-snapshot-win", "main.cpp"),
+      output: join(buildRoot, "screen-snapshot.exe"),
+      libraries: ["advapi32.lib"]
     }
   ];
 

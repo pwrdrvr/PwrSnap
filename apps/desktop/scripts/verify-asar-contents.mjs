@@ -49,7 +49,8 @@ const macRequiredResources = ["THIRD_PARTY_LICENSES", "CHANGELOG.md", "PwrSnapFF
 const windowsRequiredResources = [
   "THIRD_PARTY_LICENSES",
   "CHANGELOG.md",
-  "PwrSnapWindowList.exe"
+  "PwrSnapWindowList.exe",
+  "PwrSnapScreenSnapshot.exe"
 ];
 
 // electron-vite emits ESM for the main process and workers while leaving Sharp

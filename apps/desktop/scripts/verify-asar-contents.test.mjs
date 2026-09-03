@@ -189,7 +189,12 @@ describe("verify-asar-contents", () => {
 
   test("verifies Windows resources and native runtime sidecars", () => {
     const { appPath, resources } = fakeWindowsApp();
-    for (const name of ["THIRD_PARTY_LICENSES", "CHANGELOG.md", "PwrSnapWindowList.exe"]) {
+    for (const name of [
+      "THIRD_PARTY_LICENSES",
+      "CHANGELOG.md",
+      "PwrSnapWindowList.exe",
+      "PwrSnapScreenSnapshot.exe"
+    ]) {
       writeResource(resources, name);
     }
     writeUnpackedNativeFixtures(resources, windowsUnpackedRuntimeFixtures("x64"));
@@ -328,7 +333,12 @@ describe("verify-asar-contents", () => {
 
   test("requires the bundled Windows FFmpeg resource for release verification", () => {
     const { appPath, resources } = fakeWindowsApp();
-    for (const name of ["THIRD_PARTY_LICENSES", "CHANGELOG.md", "PwrSnapWindowList.exe"]) {
+    for (const name of [
+      "THIRD_PARTY_LICENSES",
+      "CHANGELOG.md",
+      "PwrSnapWindowList.exe",
+      "PwrSnapScreenSnapshot.exe"
+    ]) {
       writeResource(resources, name);
     }
     const previous = process.env.PWRSNAP_REQUIRE_FFMPEG;

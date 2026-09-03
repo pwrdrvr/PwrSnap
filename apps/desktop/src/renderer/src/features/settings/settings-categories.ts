@@ -12,7 +12,10 @@
 // Annotate, App detection) and folded Appearance into "General".
 // "Updates" sits directly under General, matching where PwrGit puts it —
 // the release-channel matrix is too tall to ride along on another page.
-// Developer diagnostics live under Advanced.
+// "About" sits beside it: version, license and links are the plainest
+// screen here, and burying the app's own identity under "Advanced" (where
+// it used to live) read as a filing accident. Advanced is now just the two
+// pages that genuinely are: Experimental and Developer diagnostics.
 // The "Experimental" page
 // is back — it hosts the opt-in soak toggles (two-process mode,
 // DPI-aware export) that previously lived inline on General, mirroring
@@ -36,6 +39,7 @@ export const SETTINGS_CATEGORIES: readonly SettingsCategory[] = [
     items: [
       { id: "general", name: "General" },
       { id: "updates", name: "Updates" },
+      { id: "about", name: "About" },
       { id: "hotkeys", name: "Hotkeys" },
       { id: "ai", name: "AI Providers" },
       { id: "local-agents", name: "Local Agents" }
@@ -53,7 +57,6 @@ export const SETTINGS_CATEGORIES: readonly SettingsCategory[] = [
     group: "Advanced",
     items: [
       { id: "experimental", name: "Experimental" },
-      { id: "about", name: "About" },
       { id: "developer", name: "Developer" }
     ]
   }

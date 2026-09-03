@@ -62,13 +62,14 @@ describe("SETTINGS_CATEGORIES", () => {
     expect(byGroup["General"]).toEqual([
       "general",
       "updates",
+      "about",
       "hotkeys",
       "ai",
       "local-agents"
     ]);
     expect(byGroup["Capture"]).toEqual(["system-permissions"]);
     expect(byGroup["Library"]).toEqual(["storage"]);
-    expect(byGroup["Advanced"]).toEqual(["experimental", "about", "developer"]);
+    expect(byGroup["Advanced"]).toEqual(["experimental", "developer"]);
   });
 
   test("SETTINGS_PAGE_IDS exposes the same id set", () => {

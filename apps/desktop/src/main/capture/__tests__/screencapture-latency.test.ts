@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { CaptureInvocation } from "@pwrsnap/shared";
+import { join } from "node:path";
 
 const mocks = vi.hoisted(() => {
   const png = Buffer.from("png-fixture");
@@ -88,6 +89,7 @@ afterEach(() => {
 describe("captureScreen latency instrumentation", () => {
   test("decomposes the Windows frozen-frame path without changing its bytes", async () => {
     const entries: LogEntry[] = [];
+    const tempPath = join("C:\\Temp\\pwrsnap-screen-test", "1234.png");
     const ticks = [101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111];
     const { CaptureLatencyTrace } = await import("../capture-latency-trace");
     const trace = new CaptureLatencyTrace(invocation, "window", {
@@ -105,17 +107,14 @@ describe("captureScreen latency instrumentation", () => {
 
     expect(result).toEqual({
       ok: true,
-      tempPath: "C:\\Temp\\pwrsnap-screen-test/1234.png",
+      tempPath,
       displayId: 42
     });
     expect(mocks.getSources).toHaveBeenCalledWith({
       types: ["screen"],
       thumbnailSize: { width: 2880, height: 1620 }
     });
-    expect(mocks.writeFile).toHaveBeenCalledWith(
-      "C:\\Temp\\pwrsnap-screen-test/1234.png",
-      mocks.png
-    );
+    expect(mocks.writeFile).toHaveBeenCalledWith(tempPath, mocks.png);
 
     const stages = entries
       .filter((entry) => entry.fields.event === "capture_latency_stage")

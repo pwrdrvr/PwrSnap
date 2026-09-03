@@ -98,15 +98,12 @@
   overflow-x: auto;
   overflow-y: hidden;
   min-width: 0;
+  /* Border-toned thumb over a transparent track so the bar reads as
+     part of the timeline's own chrome rather than the app's. Width
+     comes from the universal `scrollbar-width: thin` in app.css; no
+     `::-webkit-scrollbar` block (see that rule's comment). */
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
-}
-.szt__scroll::-webkit-scrollbar {
-  height: 8px;
-}
-.szt__scroll::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
-  border-radius: 4px;
 }
 /* ruler · regions · clips · waveform · word ribbon (3 stagger rows) */
 .szt__lanes {

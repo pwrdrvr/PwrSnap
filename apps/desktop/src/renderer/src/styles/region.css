@@ -415,10 +415,10 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
   gap: 6px;
   /* A big pick set must not push Capture off the bar. */
   overflow-x: auto;
+  /* Overrides the universal `scrollbar-width: thin` from app.css —
+     the HUD bar is too short to carry a bar without eating a chip
+     row. No `::-webkit-scrollbar` companion; see app.css. */
   scrollbar-width: none;
-}
-.region-hud__chips::-webkit-scrollbar {
-  display: none;
 }
 
 .region-hud__chip {

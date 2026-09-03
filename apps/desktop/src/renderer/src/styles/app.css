@@ -10,8 +10,36 @@
 @import "./logs.css";
 @import "./local-agent-consent.css";
 
+/* Thin, themed scrollbars on every scroll container — sidebar, grid,
+   inspector rail, reel, chat transcript, settings, dropdowns, … — in
+   BOTH overlay and classic scrollbar modes. Classic mode (chunky,
+   always-visible bars) is what macOS renders whenever a mouse is
+   attached under System Settings ▸ Appearance ▸ "Show scroll bars:
+   Automatically based on mouse or trackpad", when it is set to
+   "Always", and transiently while another app re-evaluates the
+   scroller style during a screen capture. Without an explicit thin
+   width those bars render fat — which is exactly the state PwrSnap
+   shipped in while PwrAgent, which already carries this rule, did not.
+
+   This MUST use the universal selector, not `:root`. `scrollbar-color`
+   is an inherited property, but `scrollbar-width` is NOT — a `:root`
+   rule would tint every scroller yet leave its WIDTH at the chunky
+   default (only the root/viewport bar would go thin). Setting both on
+   `*` is the standard workaround so every element's scroll container
+   picks up the thin width. Per-scroller `scrollbar-color` overrides
+   (e.g. `.psl__ai-card-scroll`) still win on specificity.
+
+   Do NOT add a `::-webkit-scrollbar` block anywhere. Defining one puts
+   that scroller into Chromium's *custom, non-overlay* scrollbar mode:
+   the webkit `width`/`height` overrides `scrollbar-width: thin`, the
+   bar stops auto-hiding, and it starts taking layout width even in
+   overlay mode. Letting `scrollbar-width: thin` govern both modes is
+   what keeps the bars consistent. scrollbar-contract.test.ts guards
+   this. */
 * {
   box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
 
 /* Visually hidden but available to assistive tech. */

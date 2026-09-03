@@ -2,7 +2,7 @@
   "name": "pwrsnap-workspace",
   "version": "0.0.1-alpha.0",
   "private": true,
-  "description": "Mac-first agentic screen capture tool",
+  "description": "Screen capture with a local-first library",
   "author": "PwrDrvr LLC",
   "license": "MIT",
   "copyright": "Copyright © 2026 PwrDrvr LLC",

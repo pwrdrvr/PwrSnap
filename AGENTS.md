@@ -1137,6 +1137,27 @@ doesn't.
 - Auto-update wires in Phase 3 via `electron-updater`, mirroring PwrAgnt's
   pattern.
 
+### `package.json` `description` is shipped UI on Windows
+
+**It is not inert metadata.** electron-builder reads
+`apps/desktop/package.json` → `description` into `AppInfo.description` and
+puts it in two places a Windows user actually reads:
+
+- the **NSIS installer's own `FileDescription`** version string — what
+  SmartScreen and Explorer's Properties → Details name the program;
+- **`APP_DESCRIPTION`**, passed to `CreateShortCut` for the Start Menu and
+  desktop `.lnk`s, which is the line Windows 11 renders in the **taskbar
+  jump list** above "Pin to taskbar" / "Close window".
+
+1.1 shipped `"Mac-first agentic screen capture tool"` to Windows users
+through both. Nothing surfaced it: the app exe's own `FileDescription` is
+`productName` (`winPackager.ts`), so the string is invisible everywhere on
+macOS and only appears once a `.exe` exists.
+
+Keep it platform-neutral and short enough to read as a one-line label.
+`pnpm release:check` now fails a release tag whose desktop `description` is
+empty, names a platform, or drifts from the root `package.json`'s copy.
+
 ## Dependencies and tooling
 
 - Node version pinned in `.nvmrc` (currently `v24.14.1`).

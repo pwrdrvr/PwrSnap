@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const desktopPackagePath = resolve(repoRoot, "apps/desktop/package.json");
+const rootPackagePath = resolve(repoRoot, "package.json");
 const electronBuilderPath = resolve(repoRoot, "apps/desktop/electron-builder.yml");
 const ciWorkflowPath = resolve(repoRoot, ".github/workflows/ci.yml");
 const releaseWorkflowPath = resolve(repoRoot, ".github/workflows/release.yml");
@@ -105,6 +106,28 @@ const desktopPackage = JSON.parse(readFileSync(desktopPackagePath, "utf8"));
 if (desktopPackage.version !== expectedVersion) {
   fail(
     `apps/desktop/package.json version is ${desktopPackage.version}, but release tag ${tag} requires ${expectedVersion}`,
+  );
+}
+
+// `description` is not inert metadata on Windows. electron-builder writes it
+// into the NSIS installer's own FileDescription version string (what SmartScreen
+// and the file Properties dialog name the program) and passes it as
+// APP_DESCRIPTION to `CreateShortCut`, which becomes the Start Menu / desktop
+// .lnk comment — the line Windows 11 renders in the taskbar jump list. v1.1
+// shipped "Mac-first agentic screen capture tool" to Windows users that way.
+const description = typeof desktopPackage.description === "string" ? desktopPackage.description : "";
+if (description.trim() === "") {
+  fail("apps/desktop/package.json description must be a non-empty string");
+} else if (/\b(?:mac|macos|mac-first|apple|osx|windows|linux)\b/i.test(description)) {
+  fail(
+    `apps/desktop/package.json description ships to Windows users as the installer FileDescription and the shortcut comment, so it must stay platform-neutral; got ${JSON.stringify(description)}`,
+  );
+}
+
+const rootPackage = JSON.parse(readFileSync(rootPackagePath, "utf8"));
+if (rootPackage.description !== desktopPackage.description) {
+  fail(
+    `package.json description ${JSON.stringify(rootPackage.description)} must match apps/desktop/package.json description ${JSON.stringify(description)}`,
   );
 }
 

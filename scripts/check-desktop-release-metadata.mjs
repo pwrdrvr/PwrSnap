@@ -4,9 +4,10 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { checkAppMetadataPolicy } from "./check-app-metadata-policy.mjs";
+
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const desktopPackagePath = resolve(repoRoot, "apps/desktop/package.json");
-const rootPackagePath = resolve(repoRoot, "package.json");
 const electronBuilderPath = resolve(repoRoot, "apps/desktop/electron-builder.yml");
 const ciWorkflowPath = resolve(repoRoot, ".github/workflows/ci.yml");
 const releaseWorkflowPath = resolve(repoRoot, ".github/workflows/release.yml");
@@ -109,26 +110,13 @@ if (desktopPackage.version !== expectedVersion) {
   );
 }
 
-// `description` is not inert metadata on Windows. electron-builder writes it
-// into the NSIS installer's own FileDescription version string (what SmartScreen
-// and the file Properties dialog name the program) and passes it as
-// APP_DESCRIPTION to `CreateShortCut`, which becomes the Start Menu / desktop
-// .lnk comment — the line Windows 11 renders in the taskbar jump list. v1.1
-// shipped "Mac-first agentic screen capture tool" to Windows users that way.
-const description = typeof desktopPackage.description === "string" ? desktopPackage.description : "";
-if (description.trim() === "") {
-  fail("apps/desktop/package.json description must be a non-empty string");
-} else if (/\b(?:mac|macos|mac-first|apple|osx|windows|linux)\b/i.test(description)) {
-  fail(
-    `apps/desktop/package.json description ships to Windows users as the installer FileDescription and the shortcut comment, so it must stay platform-neutral; got ${JSON.stringify(description)}`,
-  );
-}
-
-const rootPackage = JSON.parse(readFileSync(rootPackagePath, "utf8"));
-if (rootPackage.description !== desktopPackage.description) {
-  fail(
-    `package.json description ${JSON.stringify(rootPackage.description)} must match apps/desktop/package.json description ${JSON.stringify(description)}`,
-  );
+// `description` is shipped UI on Windows (installer FileDescription + Start
+// Menu shortcut comment -> taskbar jump list). The rule lives in
+// check-app-metadata-policy.mjs so `pnpm lint` catches a regression on the PR
+// that introduces it; re-running it here keeps a release tag from shipping one
+// that reached main some other way.
+for (const failure of checkAppMetadataPolicy(repoRoot)) {
+  fail(failure);
 }
 
 const electronBuilder = readFileSync(electronBuilderPath, "utf8");

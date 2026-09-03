@@ -82,6 +82,20 @@ describe("Windows release configuration", () => {
     expect(electronBuilder).toBeGreaterThan(pruning);
   });
 
+  test("Windows Sharp staging pins the native slice to the lockfile version", () => {
+    const desktopPackage = JSON.parse(read("apps/desktop/package.json"));
+    const sharpVersion = desktopPackage.dependencies.sharp;
+    const lockfile = read("pnpm-lock.yaml");
+
+    // package-win.mjs injects Sharp's Windows prebuild by the version declared
+    // in Sharp's staged optionalDependencies. A range can make deploy choose a
+    // newer Sharp than the workspace store carries, leaving the signing input
+    // without a matching native slice.
+    expect(sharpVersion).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(lockfile).toContain(`sharp@${sharpVersion}:`);
+    expect(lockfile).toContain(`'@img/sharp-win32-x64@${sharpVersion}':`);
+  });
+
   test("Windows packages the atomic verified-file helper", () => {
     const config = read("apps/desktop/electron-builder.yml");
     const builder = read("apps/desktop/scripts/build-native.mjs");

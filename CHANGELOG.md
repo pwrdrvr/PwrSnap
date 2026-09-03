@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.1.0-alpha.5 - 2026-09-03
+## v1.1.0-alpha.6 - 2026-09-03
 
 This alpha makes selecting, editing, and sharing captures more capable, with
 substantial new Sizzle timeline controls and stronger Windows workflows.

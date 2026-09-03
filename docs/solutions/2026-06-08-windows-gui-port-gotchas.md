@@ -15,8 +15,8 @@ non-obvious — most cost multiple RDP round-trips to diagnose because the sympt
 and the cause were in different layers. Read this before touching the tray,
 float-over, or region-selector windowing on Windows.
 
-Plan/status: [docs/plans/2026-06-08-001-feat-windows-cross-platform-port-plan.md](../plans/2026-06-08-001-feat-windows-cross-platform-port-plan.md)
-§Status (kept for its open backlog). Operator guide:
+Port status + open backlog: [docs/windows/port-status.md](../windows/port-status.md)
+§Status. Operator guide:
 [docs/windows/README.md](../windows/README.md).
 macOS window choreography this builds on is documented inline in
 `apps/desktop/src/main/capture/region-selector.ts` and

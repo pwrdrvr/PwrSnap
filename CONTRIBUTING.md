@@ -200,10 +200,9 @@ auto-update, stable `PwrSnap.dmg` URL) is documented in
   change can violate.
 - Solution learnings (post-incident notes, gotchas) live in
   `docs/solutions/`. **These are never deleted.**
-- `docs/plans/` is archival; only documents that still describe a live
-  contract remain. Do not add new phase plans — open an issue, or amend
-  `docs/architecture.md` when the change is architectural. See AGENTS.md
-  §Workflow for the full retention policy.
+- `docs/plans/` and `docs/brainstorms/` no longer exist. Do not recreate
+  them — open an issue, or amend `docs/architecture.md` when the change is
+  architectural. See AGENTS.md §Workflow for the full retention policy.
 
 ## Conduct
 

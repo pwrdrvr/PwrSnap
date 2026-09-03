@@ -1,5 +1,5 @@
 -- 0008_layers — Bundle format v2 + layer tree + unified edits-version
--- columns. See docs/plans/2026-05-07-002-feat-bundle-format-v2-layer-tree-plan.md.
+-- columns. See docs/architecture-bundle-format.md.
 --
 -- Schema changes:
 --

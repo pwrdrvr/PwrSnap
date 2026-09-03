@@ -1,17 +1,19 @@
 # PwrSnap architecture and direction
 
 The durable decisions — what PwrSnap is, and the shape choices that are
-still true. This document replaces the historical phase plans that used to
-live in `docs/plans/`; it deliberately carries **no** task lists, phase
-order, or status tracking. Those belong in issues and PRs.
+still true. It replaces the historical phase plans that used to live in
+`docs/plans/` (pruned 2026-09-03); it deliberately carries **no** task
+lists, phase order, or status tracking. Those belong in issues and PRs.
 
 - **Enforcement rules** (the things a change can violate) live in
   [AGENTS.md](../AGENTS.md). This file explains *why*; AGENTS.md says
   *what you must not break*.
 - **Post-incident notes** live in [docs/solutions/](solutions/).
 - **Shipped-behavior docs** live beside this file — the
+  [bundle format spec](architecture-bundle-format.md),
   [release runbook](desktop-release-runbook.md),
   [Windows guide](windows/README.md),
+  [Windows port status](windows/port-status.md),
   [Windows signing](desktop-windows-signing.md),
   [ffmpeg builds](ffmpeg-build-reference.md),
   [third-party notices](third-party-license-notices.md).
@@ -68,10 +70,9 @@ AGENTS.md §"Never block the main thread on a TCC-gated path".
 
 **Bundle format v2 (layer tree) is the only format.** See AGENTS.md
 §"Bundle format v2" for the current rules, and
-[the v2 format plan](plans/2026-05-07-002-feat-bundle-format-v2-layer-tree-plan.md)
-for the format's design rationale — the one plan document kept, because it
-is still the written spec for a live contract. Read its "Shipping Status"
-header first; it marks which of its own sections are historical.
+[docs/architecture-bundle-format.md](architecture-bundle-format.md) for the
+format specification and its design rationale. Read that document's §Status
+first; it marks which of its own sections are historical.
 
 ## AI runs on the user's machine, through their own agent
 
@@ -145,8 +146,8 @@ measured against a seeded large library rather than a handful of captures.
   licensing" — do not read its source, docs, or examples. A replacement
   engine is an open research item.
 - **Windows.** Ships signed, with a known backlog tracked in
-  [the Windows port plan](plans/2026-06-08-001-feat-windows-cross-platform-port-plan.md)
-  §Status. No Arm64 package yet; no distributed Linux desktop build.
+  [docs/windows/port-status.md](windows/port-status.md) §Status. No Arm64
+  package yet; no distributed Linux desktop build.
 - **Cloud sync and alternate storage targets** (Drive / Dropbox / S3 / R2)
   are named goals with no shipped implementation. Nothing in the current
   storage model blocks them — bundles are already portable files.

@@ -1,25 +1,32 @@
----
-title: "feat: Windows cross-platform port (Phase 8a)"
-type: feat
-status: in-progress
-date: 2026-06-08
-target_repo: PwrSnap (this repo)
-supersedes_section: "docs/plans/2026-05-03-001-feat-pwrsnap-feature-buildout-plan.md §Phase 8 (the 'deferred' stub)"
----
+# Windows port — status and decisions
 
-# Windows Cross-Platform Port — Plan & Status
+> **What this document is.** The running status of the Windows port: what
+> landed, what is still open, and the platform decisions (plus the rejected
+> alternatives) behind the Windows-specific code paths. It is kept (when
+> every other plan document was pruned) because §Status is the only written
+> record of the remaining backlog, per AGENTS.md §Workflow.
+>
+> Companion documents: [docs/windows/README.md](README.md) is the operator
+> guide for installing and running PwrSnap on Windows,
+> [docs/desktop-windows-signing.md](../desktop-windows-signing.md) covers
+> Authenticode signing, and
+> [docs/solutions/2026-06-08-windows-gui-port-gotchas.md](../solutions/2026-06-08-windows-gui-port-gotchas.md)
+> holds the debugging notes.
+>
+> It began life as an implementation plan; it is now a status document.
+> Keep §Status current as items land, and delete the file once the backlog
+> is empty.
 
 ## Summary
 
-PwrSnap shipped macOS-first; the buildout plan parked all cross-platform work in
-a two-line **Phase 8** stub ("deferred — re-plan after macOS feature parity").
-That stub is now stale: a working **Windows GUI port** has landed across two
-merged PRs, and the core capture loop is functional on Windows. This doc
-promotes the Windows port to its own tracked workstream with a real status
-checklist, records the architecture decisions, and enumerates what remains
-before Windows is a shippable target.
+PwrSnap shipped macOS-first, parking all cross-platform work in
+a "deferred — re-plan after macOS feature parity" stub. A working **Windows
+GUI port** then landed across two merged PRs, the core capture loop became
+functional on Windows, and signed releases now ship. This document tracks
+that workstream: the architecture decisions, what has landed, and what
+remains.
 
-Linux remains fully deferred. This plan covers **Windows only** (call it
+Linux remains fully deferred. This document covers **Windows only** (call it
 Phase 8a); Linux is Phase 8b and unplanned.
 
 **Verification posture:** unit + E2E run on `windows-latest` in CI; interactive
@@ -167,7 +174,7 @@ whole-window layered alpha that is mutually exclusive with `transparent:true`'s
 per-pixel alpha. Real `hide()`/`showInactive()` is the Windows park.
 
 ### Native screen capture via `Windows.Graphics.Capture` (deferred)
-The buildout plan floated a UWP `Windows.Graphics.Capture` analogue to
+An early sketch floated a UWP `Windows.Graphics.Capture` analogue to
 `screencapture`. `desktopCapturer` + `sharp` crop is cross-platform, needs no
 native code, and is fast enough for stills. Revisit only if a perf or
 multi-monitor-fidelity need appears (and it's the natural home for Windows video

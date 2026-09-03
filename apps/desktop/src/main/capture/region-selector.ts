@@ -594,7 +594,12 @@ export async function pickRegion(
      *  `settings.recording.quickCaptureAction`. Decides whether the
      *  selector offers a Record action and which one `↵` commits.
      *  Omitted (or `"snap"`) leaves the selector exactly as it was
-     *  before the chooser existed. Ignored when `intent === "video"`. */
+     *  before the chooser existed — the renderer defaults to `"snap"`
+     *  for exactly this reason. Opt-IN is the only safe direction:
+     *  `capture-handlers` is the sole caller that resolves the returned
+     *  `action`, so a caller which never asked for the chooser would
+     *  otherwise render a Record button, bind `R`, and then quietly
+     *  take a still. Ignored when `intent === "video"`. */
     quickCaptureAction?: QuickCaptureAction;
   } = {}
 ): Promise<SelectorResult> {

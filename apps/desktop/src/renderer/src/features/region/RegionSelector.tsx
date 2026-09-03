@@ -199,7 +199,13 @@ export function RegionSelector() {
   //   - "record" — Record is primary (↵), Snap moves to S.
   // Ignored entirely when `intent === "video"`: the dedicated Video
   // Capture entry point already knows what it is doing.
-  const [quickAction, setQuickAction] = useState<QuickCaptureAction>("ask");
+  //
+  // Defaults to "snap", NOT "ask". This is what a show whose mode signal
+  // omitted the policy gets, and `pickRegion` documents an omitted
+  // option as leaving the selector exactly as it was before the chooser
+  // existed. Defaulting to "ask" made that comment a lie and put a live
+  // `R` in front of a caller that never opted in.
+  const [quickAction, setQuickAction] = useState<QuickCaptureAction>("snap");
   // ⇧ in snap mode opts into full-window capture: the rect expands
   // from the visible-region bounding box (`entry.rect`) to the
   // window's full bounds (`entry.rawRect`), and the commit payload
@@ -268,7 +274,7 @@ export function RegionSelector() {
   const modeRef = useRef<SelectorMode>("auto");
   const intentRef = useRef<"snap" | "video">("snap");
   const captureCursorRef = useRef(true);
-  const quickActionRef = useRef<QuickCaptureAction>("ask");
+  const quickActionRef = useRef<QuickCaptureAction>("snap");
   // Cursor-tracking crosshair guide-lines (auto/region modes). Rendered
   // once and repositioned by direct DOM writes from `onMouseMove` /
   // the window-list cursor — never via React state, so they impose no
@@ -404,7 +410,18 @@ export function RegionSelector() {
   // frame follows the cursor, so a mouse affordance is incoherent
   // (reaching for it moves the selection); the keys are advertised in
   // the hint bar instead and work from the first frame.
-  const chooserBar = recordOffered && (picks.length > 0 || interaction.kind === "adjusting");
+  // `adjusting` is only ONE of the latched states — a mousedown on a
+  // handle goes to `resizing` and a border-band press to `moving`.
+  // Keying off adjusting alone unmounted the whole bar for the duration
+  // of every drag and, because `data-chooser-bar` flips with it, made
+  // the hint bar jump 82px down and back on every nudge. The pick-set
+  // HUD never did that (it holds on `picks.length > 0`), so the two
+  // shapes of the same bar behaved differently.
+  const latched =
+    interaction.kind === "adjusting" ||
+    interaction.kind === "moving" ||
+    interaction.kind === "resizing";
+  const chooserBar = recordOffered && (picks.length > 0 || latched);
   const showHud = picks.length > 0 || chooserBar;
 
   // Surface state to CSS for cursor switching + snap visualization.
@@ -467,7 +484,14 @@ export function RegionSelector() {
       // per-show state on a pre-warmed window: a selector opened under
       // "record" must not stay record-primary for the next capture after
       // the user changes the setting.
-      setQuickAction(payload.quickCaptureAction ?? "ask");
+      // Ref written synchronously alongside the state, exactly like
+      // `picksRef` / `submittedRef` below: the once-registered global
+      // keydown handler reads the REF, so between this IPC callback and
+      // React's commit it would otherwise still be arbitrating keys
+      // under the previous show's policy.
+      const nextQuickAction = payload.quickCaptureAction ?? "snap";
+      quickActionRef.current = nextQuickAction;
+      setQuickAction(nextQuickAction);
       // Drop the pick set on EVERY show. This handler is the only
       // per-show reset the renderer gets, and main can end a session
       // without one: `pickRegion` resolves an in-flight resolver with
@@ -700,9 +724,17 @@ export function RegionSelector() {
     return quickActionRef.current === "record" && recordAvailable() ? "record" : "snap";
   }
 
-  /** True when `S` is bound — only where Record has taken over ↵. */
+  /**
+   * True when `S` is bound — only where Record has taken over ↵.
+   *
+   * Defined in terms of `primaryAction()` rather than re-deriving the
+   * policy, so the binding and the hint legend cannot disagree: the
+   * legend branches on the same answer. Spelling it out separately
+   * dropped the pick-count term, which left `S` live (and unadvertised)
+   * at two or more picks, where Record is refused and ↵ already snaps.
+   */
   function snapKeyBound(): boolean {
-    return quickActionRef.current === "record" && recordOfferedByPolicy();
+    return primaryAction() === "record";
   }
 
   /**
@@ -1070,6 +1102,16 @@ export function RegionSelector() {
       return target instanceof HTMLElement && target.dataset.move !== undefined;
     }
 
+    // True when the keydown originated on a focused HUD button. The
+    // window-level handler must yield Enter and Space to those — they
+    // are the keys that ACTIVATE a button, and preventDefault-ing them
+    // makes the bar reachable by Tab but impossible to use.
+    function isHudButtonFocused(target: EventTarget | null): boolean {
+      return (
+        target instanceof HTMLElement && target.closest("[data-region-hud] button") !== null
+      );
+    }
+
     function lastCursor(): { x: number; y: number } {
       // Approximate cursor — onMouseMove keeps `lastMouseRef.current`
       // current; falls back to viewport center if we have nothing yet.
@@ -1110,7 +1152,16 @@ export function RegionSelector() {
         handleEscape();
         return;
       }
-      if (event.key === "Enter") {
+      // Enter and Space are how a keyboard user ACTIVATES a focused
+      // button, and this window-level handler would otherwise
+      // preventDefault them out from under one. `adjusting` does not
+      // intercept Tab (that branch requires `kind === "snap"`), so focus
+      // really does traverse into the HUD — and Enter there ran
+      // `commit()` with its default argument, i.e. `primaryAction()`, so
+      // tabbing to Record and pressing Enter took a SCREENSHOT. Let the
+      // button's own handler win whenever focus is inside it; every
+      // other key (Escape, R, S, C, arrows) still works globally.
+      if (event.key === "Enter" && !isHudButtonFocused(event.target)) {
         event.preventDefault();
         commit();
         return;
@@ -1206,11 +1257,16 @@ export function RegionSelector() {
         setSnapRect({ x: r.x, y: r.y, w: r.w, h: r.h });
         return;
       }
-      if (event.key === " " && !spaceRef.current) {
+      if (event.key === " " && !spaceRef.current && !isHudButtonFocused(event.target)) {
         // Space-hold: convert any subsequent mousedown into a move
         // anchored on the current rect, even when the cursor is
         // outside. Only useful during adjusting; in snap mode there's
         // nothing to move around.
+        //
+        // Skipped while a HUD button has focus: `adjusting` is exactly
+        // when the chooser bar is up, so this branch would swallow the
+        // Space that activates the focused button and leave the user
+        // with a grab cursor instead of the action they pressed.
         if (interactionRef.current.kind === "adjusting") {
           event.preventDefault();
           setSpaceHeld(true);
@@ -2265,25 +2321,34 @@ export function RegionSelector() {
               <span className="region-hud__sep" />
             </>
           )}
-          <div className="region-hud__chips">
-            {picks.map((p, idx) => (
-              <button
-                key={p.windowId}
-                type="button"
-                className="region-hud__chip"
-                data-testid="region-hud-chip"
-                onClick={() => togglePick(p)}
-                title={`Remove ${p.appName ?? "window"}`}
-              >
-                <span className="region-hud__chip-n">{idx + 1}</span>
-                <span className="region-hud__chip-name">{p.appName ?? "Window"}</span>
-                <span className="region-hud__chip-x" aria-hidden>
-                  ×
-                </span>
-              </button>
-            ))}
-          </div>
-          {hasPicks && <span className="region-hud__sep" />}
+          {/* Gated, like the separator it carries: `.region-hud` is a
+              flex row with a 10px gap, so an empty chips container still
+              contributed a full gap of chrome that belonged to no
+              control — dead space immediately left of "Capture" on the
+              chooser-only bar. */}
+          {hasPicks && (
+            <>
+              <div className="region-hud__chips">
+                {picks.map((p, idx) => (
+                  <button
+                    key={p.windowId}
+                    type="button"
+                    className="region-hud__chip"
+                    data-testid="region-hud-chip"
+                    onClick={() => togglePick(p)}
+                    title={`Remove ${p.appName ?? "window"}`}
+                  >
+                    <span className="region-hud__chip-n">{idx + 1}</span>
+                    <span className="region-hud__chip-name">{p.appName ?? "Window"}</span>
+                    <span className="region-hud__chip-x" aria-hidden>
+                      ×
+                    </span>
+                  </button>
+                ))}
+              </div>
+              <span className="region-hud__sep" />
+            </>
+          )}
           {/* Terminal actions. The primary is whatever ↵ commits, so the
               pre-chooser bar (`primary === "snap"`, no Record offered)
               renders the identical "Capture ↵" button it always has. */}
@@ -2307,7 +2372,7 @@ export function RegionSelector() {
               className="region-hud__alt"
               data-testid="region-hud-alt"
               data-action={primary === "record" ? "snap" : "record"}
-              disabled={primary === "snap" && !recordUsable}
+              disabled={!recordUsable}
               aria-label={
                 primary === "record"
                   ? "Snap (S)"
@@ -2340,7 +2405,7 @@ export function RegionSelector() {
               title="Bake the mouse pointer into the recording"
               onClick={() => setCaptureCursor((prev) => !prev)}
             >
-              Cursor: {captureCursor ? "on" : "off"}
+              Rec cursor: {captureCursor ? "on" : "off"}
               <kbd>C</kbd>
             </button>
           )}
@@ -2383,7 +2448,7 @@ export function RegionSelector() {
               <>
                 <span className="region-hint-sep">·</span>
                 <span>
-                  <kbd>C</kbd>cursor: {captureCursor ? "on" : "off"}
+                  <kbd>C</kbd>rec cursor: {captureCursor ? "on" : "off"}
                 </span>
               </>
             )}

@@ -13,8 +13,8 @@
 // points hand ownership over at the call and must not release the
 // snapshot themselves.
 
-import { app, Notification, type BrowserWindow } from "electron";
-import type { RecordingSubject, Settings } from "@pwrsnap/shared";
+import { app, Notification, screen, type BrowserWindow } from "electron";
+import type { Rect, RecordingSubject, Settings } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { setFloatOverState } from "../float-over";
 import { getMainLogger } from "../log";
@@ -25,6 +25,7 @@ import {
   type SelectorResult,
 } from "../capture/region-selector";
 import { releaseSnapshot } from "../capture/screen-snapshot";
+import { defaultSettings } from "../settings/desktop-settings-service";
 import {
   resolveSelectionSourceApp,
   shouldConsiderRaisingOurWindows,
@@ -48,15 +49,40 @@ export type RecordingDefaults = Pick<
   "includeSystemAudio" | "includeMicrophone" | "videoCaptureCursor"
 >;
 
-/** Used only when the settings read failed outright. Mirrors
- *  `defaultSettings().recording`: audio OFF because recording either
- *  source is a privacy-relevant opt-in, cursor ON because recordings
- *  have always baked it in. */
+/** Used only when the settings read failed outright — which is
+ *  reachable: `ensureServices()` calls `app.getPath("userData")` before
+ *  `read()` is even entered.
+ *
+ *  DERIVED from `defaultSettings().recording` rather than restating it.
+ *  The hand-written copy said "mirrors defaultSettings()", and nothing
+ *  made that true: the one test that named this constant asserted a
+ *  mocked module against the same literal the mock installed, so
+ *  flipping the real `includeMicrophone` to `true` — silently hot-miking
+ *  a user whose settings file hiccuped — passed 9/9. */
+const RECORDING_DEFAULTS = defaultSettings().recording;
 export const FALLBACK_RECORDING_DEFAULTS: RecordingDefaults = {
-  includeSystemAudio: false,
-  includeMicrophone: false,
-  videoCaptureCursor: true,
+  includeSystemAudio: RECORDING_DEFAULTS.includeSystemAudio,
+  includeMicrophone: RECORDING_DEFAULTS.includeMicrophone,
+  videoCaptureCursor: RECORDING_DEFAULTS.videoCaptureCursor,
 };
+
+/**
+ * Global logical rect → the same rect relative to its display's
+ * origin. The inverse of the translation `region-selector` applies on
+ * commit, and the space `appWindowsOverlappingRect` documents that it
+ * wants. Unknown display → return the rect unchanged, which is what the
+ * helper's own missing-display branch degrades to anyway.
+ */
+function toDisplayLocal(rect: Rect, displayId: number): Rect {
+  const display = screen.getAllDisplays().find((d) => d.id === displayId);
+  if (display === undefined) return rect;
+  return {
+    x: rect.x - display.bounds.x,
+    y: rect.y - display.bounds.y,
+    w: rect.w,
+    h: rect.h,
+  };
+}
 
 /**
  * Choose which of the overlapping PwrSnap windows to give keyboard
@@ -109,6 +135,15 @@ export async function startRecordingFromSelection(
     tornDown = true;
     hideSelector();
     void releaseSnapshot(screenSnapshotId);
+    // Unconditional, matching the snap path's `tearDownSelector`. The
+    // two reclaims further down are both branch-local: one needs
+    // overlapping windows, the other a previous app to fall back to —
+    // so a recording framed away from every PwrSnap window while
+    // PwrSnap itself was frontmost (`previousAppPid === null`) reached
+    // neither, and nothing re-asserted the Dock icon after AppKit's
+    // async Accessory demotion. Guarded internally, so it no-ops once
+    // the Dock is back and the later calls stay harmless.
+    scheduleDockReclaim();
   };
   try {
     // Park the idle float-over BEFORE the selector comes down.
@@ -155,8 +190,22 @@ export async function startRecordingFromSelection(
       cachedSnapshot,
       selfPidSet(),
     );
+    // `appWindowsOverlappingRect` wants DISPLAY-LOCAL logical pixels —
+    // it re-adds `display.bounds` itself — but `SelectorResult.rect` is
+    // GLOBAL (region-selector translates window-local → global on
+    // commit, so capture-handlers and the snapshot crop see one
+    // consistent space). Handing it the global rect adds the origin
+    // twice, which is a no-op on the primary display and displaces the
+    // test by the full origin anywhere else: measured on a display at
+    // {x:1496,y:-473}, a selection squarely inside the Library tested
+    // as {x:3192,y:-846} and matched zero windows, so the raise branch
+    // below never ran. `shouldConsiderRaisingOurWindows` is true for
+    // every free-hand drag, so this is the common path.
     const overlapping = shouldRaise
-      ? appWindowsOverlappingRect(selection.rect, selection.displayId)
+      ? appWindowsOverlappingRect(
+          toDisplayLocal(selection.rect, selection.displayId),
+          selection.displayId,
+        )
       : [];
     // Debug-only — useful when triaging "Library hid / dove under"
     // reports. Turn on with `electron-log` debug; default level keeps

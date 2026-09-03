@@ -28,7 +28,9 @@ const mocks = vi.hoisted(() => ({
   pickRegion: vi.fn(),
   captureRegion: vi.fn(),
   startRecordingFromSelection: vi.fn(),
-  readDesktopSettings: vi.fn()
+  readDesktopSettings: vi.fn(),
+  getRecordingState: vi.fn(),
+  isRecordingActive: vi.fn()
 }));
 
 const COMMITTED = {
@@ -103,6 +105,11 @@ vi.mock("../../recording/record-from-selection", () => ({
     includeMicrophone: false,
     videoCaptureCursor: true
   }
+}));
+
+vi.mock("../../recording/recording-state", () => ({
+  getRecordingState: mocks.getRecordingState,
+  isRecordingActive: mocks.isRecordingActive
 }));
 
 vi.mock("../settings-handlers", () => ({
@@ -204,6 +211,10 @@ beforeEach(() => {
   });
   mocks.startRecordingFromSelection.mockResolvedValue(undefined);
   mocks.readDesktopSettings.mockResolvedValue(settingsWith("ask"));
+  mocks.getRecordingState.mockReset();
+  mocks.isRecordingActive.mockReset();
+  mocks.getRecordingState.mockReturnValue({ phase: "idle" });
+  mocks.isRecordingActive.mockReturnValue(false);
 });
 
 describe("capture:interactive — Record handoff", () => {
@@ -295,24 +306,62 @@ describe("capture:interactive — Record handoff", () => {
     });
   });
 
-  test("a settings read failure still offers the chooser", async () => {
-    // A settings hiccup must not silently cost the user the Record
-    // action, nor the capture. Policy falls back to "ask" and the
-    // recording defaults to the same values a fresh install has.
+  test("a settings read failure fails CLOSED, not open", async () => {
+    // The two directions are not symmetric. Falling back to "ask" costs
+    // a user who chose Snap a screen recording they had switched off —
+    // started by a stray `R`, with the cursor baked in because this same
+    // branch cannot read `videoCaptureCursor` either. Falling back to
+    // "snap" costs a user who chose Record one keyboard shortcut for
+    // one capture. This branch IS reachable: `ensureServices()` calls
+    // `app.getPath("userData")` before `read()` is entered.
     mocks.readDesktopSettings.mockRejectedValue(new Error("disk gone"));
 
     const result = await interactive();
 
     expect(mocks.pickRegion.mock.calls[0]?.[0]).toMatchObject({
-      quickCaptureAction: "ask"
+      quickCaptureAction: "snap"
     });
     expect(mocks.pickRegion.mock.calls[0]?.[0]).not.toHaveProperty("cursorDefault");
-    expect(mocks.startRecordingFromSelection.mock.calls[0]?.[1]).toEqual({
-      includeSystemAudio: false,
-      includeMicrophone: false,
-      videoCaptureCursor: true
-    });
-    expect(result).toEqual({ ok: true, value: { kind: "recording" } });
+    // The selector never offered Record, so the stale "record" echo on
+    // the canned commit is refused and the still pipeline runs.
+    expect(mocks.startRecordingFromSelection).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ ok: false, error: { kind: "capture" } });
+  });
+
+  test("a recording awaiting Retry or Dismiss falls back to a still", async () => {
+    // `recording:start` answers `failure_action_required` in this phase,
+    // and the handoff's own error path stays SILENT while a failure is
+    // pending (it was written for a caller that had already bailed).
+    // Reaching it from here spent the user's selection on nothing at
+    // all: no still, no recording, no notification, `ok` on the wire.
+    mocks.getRecordingState.mockReturnValue({ phase: "failed" });
+
+    const result = await interactive();
+
+    expect(mocks.startRecordingFromSelection).not.toHaveBeenCalled();
+    // Fell through to the still pipeline — which is what ⌘⇧C did in
+    // this state before the chooser existed.
+    expect(result).toMatchObject({ ok: false, error: { kind: "capture" } });
+  });
+
+  test("a recording already in flight falls back to a still", async () => {
+    // `recording:start` refuses with `already_recording`. That at least
+    // notifies, but it still throws away the capture the user framed.
+    mocks.isRecordingActive.mockReturnValue(true);
+
+    const result = await interactive();
+
+    expect(mocks.startRecordingFromSelection).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ ok: false, error: { kind: "capture" } });
+  });
+
+  test("the preflight only gates the record branch", async () => {
+    // A busy recorder must not cost a plain snap anything.
+    mocks.getRecordingState.mockReturnValue({ phase: "failed" });
+    mocks.pickRegion.mockResolvedValue({ ...COMMITTED });
+
+    expect(await interactive()).toMatchObject({ ok: false, error: { kind: "capture" } });
+    expect(mocks.startRecordingFromSelection).not.toHaveBeenCalled();
   });
 
   test("a cancelled pick never reaches either pipeline", async () => {

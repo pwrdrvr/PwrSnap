@@ -531,17 +531,30 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
 }
 
 /* Chooser-only bar: no chips, no output-shape control — just the two
-   terminal actions. Unlike the pick-set HUD, its chrome must NOT eat
-   canvas presses: with no picks the user may still be laying out a
-   region, and a full-width dead strip across the bottom of the screen
-   would take away a drag that has always worked. Only the buttons opt
-   back in, which is exactly the surface the [data-region-hud] guards
-   need to match. */
-.region-hud--chooser-only {
-  pointer-events: none;
-}
-.region-hud--chooser-only button {
-  pointer-events: auto;
+   terminal actions. It is a state hook only; hit testing is deliberately
+   IDENTICAL to the pick-set HUD.
+
+   It used to carry `pointer-events: none` with `auto` on the buttons, to
+   avoid "a full-width dead strip across the bottom of the screen". That
+   premise was wrong — `.region-hud` is `left: 50%` + `translateX(-50%)`
+   and shrink-to-fit, a small centred pill — and the cost was severe: with
+   the container transparent to hit testing, a press on its 8px padding or
+   the 10px gaps between buttons never became an `[data-region-hud]`
+   target, so the guards in onMouseDown/onMouseMove/onMouseUp could not
+   see it. The press fell through to the canvas, and the chooser bar only
+   renders while `adjusting`, where an outside-the-rect press re-snaps —
+   so missing the Record button by a few pixels silently REPLACED the
+   user's committed selection with whatever window sat under the toolbar.
+
+   Eating the press is the correct behaviour for visible chrome, and it is
+   what the pick-set HUD has always done in the same screen position. */
+
+/* Keyboard focus has to be visible: `adjusting` does not intercept Tab,
+   so focus genuinely traverses this bar, and without a ring the user is
+   activating a button they cannot see. */
+.region-hud button:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 2px;
 }
 
 /* Lift the keyboard legend clear of the HUD. */

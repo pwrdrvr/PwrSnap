@@ -135,7 +135,7 @@ function makeSettings(matchingTextEnabled = true): Settings {
     storage: { filenameTimestampZone: "local", capturesLocation: "documents" },
     recording: {
       quickCaptureAction: "ask",
-    includeSystemAudio: false,
+      includeSystemAudio: false,
       includeMicrophone: false,
       videoCaptureCursor: true,
       imageCaptureCursor: true,

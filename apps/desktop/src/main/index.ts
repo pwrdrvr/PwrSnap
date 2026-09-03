@@ -752,10 +752,12 @@ function handlerFor(kind: HotkeyKind): () => void {
     case "videoCapture":
       // Fast Video Capture (issue #64). Opens the selector in auto
       // mode; the commit is routed to `recording:start` instead of
-      // `capture:interactive`. The Snap/Video post-selection chooser
-      // ships in a follow-up enhancement — for now this hotkey is
-      // the explicit "record video" entry point and the existing
-      // ⌘⇧C remains the explicit "take a snap" entry point.
+      // `capture:interactive`. This is the explicit "record video"
+      // entry point and deliberately SKIPS the post-selection chooser
+      // (issue #75) that ⌘⇧C now offers — `intent: "video"` turns it
+      // off — so a user who reaches for this hotkey never has to
+      // choose anything. That is the whole reason to keep a second
+      // hotkey now that the chooser exists.
       return () => {
         log.info("global hotkey fired", { kind, mode: "video" });
         void runInteractiveRecord();

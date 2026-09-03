@@ -37,7 +37,8 @@ import type {
   PwrSnapError,
   Rect,
   RenderPreset,
-  Result
+  Result,
+  Settings
 } from "@pwrsnap/shared";
 import { bus, type CommandContext } from "../command-bus";
 import {
@@ -54,6 +55,7 @@ import {
   FALLBACK_RECORDING_DEFAULTS,
   startRecordingFromSelection
 } from "../recording/record-from-selection";
+import { getRecordingState, isRecordingActive } from "../recording/recording-state";
 import {
   CapturesLocationFallbackError,
   ensureCapturesDirReady,
@@ -90,7 +92,7 @@ import { renderViaCoordinator } from "../render/coordinator";
 import { prepareRenderedFileAlias } from "../render/file-alias";
 import { buildPresetExportDisplayName } from "../render/export-filename";
 import { resolveImagePresetFile, targetWidthForImagePreset } from "../render/image-presets";
-import { getActiveExportStrategy } from "./settings-handlers";
+import { getActiveExportStrategy, readDesktopSettings } from "./settings-handlers";
 import { getCaptureEnrichment } from "../persistence/enrichment-repo";
 import {
   readSafePastedFile,
@@ -273,16 +275,6 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     }
     const trace = new CaptureLatencyTrace(req.invocation, mode);
     trace.mark("dispatch_receive", { principal: ctx.principal });
-    // Chooser policy + cursor seed for the selector. Started HERE, ahead
-    // of the first await, and consumed just before `pickRegion` so the
-    // uncached settings parse overlaps the permission and storage gates
-    // instead of landing inside the trigger→presentation interval this
-    // trace exists to measure. Degrades to the defaults on a read
-    // failure — a settings hiccup must not cost the user a capture.
-    const settingsPromise = readDesktopSettings().then(
-      (value) => value,
-      () => null
-    );
     try {
       const permissionStage = trace.begin("permission_preflight");
     // Gate BEFORE pickRegion: the selector freezes a screen snapshot on
@@ -412,8 +404,24 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       protectWindowCount: protectWindowIds.length,
       invocationId: req.invocation.id
     });
-    const settings = await settingsPromise;
-    const quickCaptureAction = settings?.recording.quickCaptureAction ?? "ask";
+    // Chooser policy + cursor seed for the selector. Read HERE rather than
+    // hoisted ahead of the gates: `readDesktopSettings` is served from the
+    // process-owned settings snapshot, so it neither touches the disk nor
+    // re-parses, and there is nothing left to overlap. Degrades to the
+    // defaults on a read failure — a settings hiccup must not cost the
+    // user a capture.
+    const settings = await readDesktopSettings().then(
+      (value) => value,
+      () => null
+    );
+    // Fail CLOSED. A read failure must not re-arm an action the user
+    // turned off: under `ask` a stray `R` starts a screen recording,
+    // and this same branch omits `cursorDefault`, so it would bake in a
+    // cursor they had disabled too. `snap` is what the selector did
+    // before the chooser existed — the user loses the Record shortcut
+    // for one capture, which is recoverable; the other direction
+    // records their screen when they had asked it not to.
+    const quickCaptureAction = settings?.recording.quickCaptureAction ?? "snap";
     const selection = await pickRegion({
       mode: selectorMode,
       keepPwrSnapChrome,
@@ -502,7 +510,31 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     // `resolveQuickCaptureAction` re-derives the action from the policy
     // this show was actually opened under; the renderer's `action` is a
     // report, not the decision.
-    if (resolveQuickCaptureAction(quickCaptureAction, selection.action) === "record") {
+    // Can the recorder actually take this? `recording:start` refuses
+    // both of these, and the continuation's error path deliberately
+    // stays silent while a failure awaits Retry or Dismiss (that check
+    // was written for a caller which had already bailed — see the guard
+    // at the top of `runInteractiveRecord`). Reaching it from here would
+    // spend the user's selection on nothing at all: no still, no
+    // recording, no notification. So decide BEFORE the handoff, and
+    // fall through to the still pipeline rather than refusing — the
+    // user pressed a capture hotkey and framed a region, and a picture
+    // of what they picked is what ⌘⇧C has always given them.
+    const recorderBusy =
+      getRecordingState().phase === "failed" ? "awaiting_retry_or_dismiss" : null;
+    const recorderUnavailable =
+      recorderBusy ?? (isRecordingActive() ? "already_recording" : null);
+    const wantsRecord =
+      resolveQuickCaptureAction(quickCaptureAction, selection.action) === "record";
+    if (wantsRecord && recorderUnavailable !== null) {
+      log.warn("capture:interactive falling back to a still — recorder unavailable", {
+        mode,
+        quickCaptureAction,
+        reason: recorderUnavailable,
+        phase: getRecordingState().phase
+      });
+    }
+    if (wantsRecord && recorderUnavailable === null) {
       log.info("capture:interactive committing to a recording", {
         mode,
         quickCaptureAction,

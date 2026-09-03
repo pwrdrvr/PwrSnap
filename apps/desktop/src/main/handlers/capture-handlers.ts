@@ -33,10 +33,12 @@ import type {
   CapturePresetMetric,
   CaptureRecord,
   ExportStrategy,
+  InteractiveCaptureOutcome,
   PwrSnapError,
   Rect,
   RenderPreset,
-  Result
+  Result,
+  Settings
 } from "@pwrsnap/shared";
 import { bus, type CommandContext } from "../command-bus";
 import {
@@ -48,6 +50,12 @@ import { captureRegion, captureScreen, captureWindow } from "../capture/screenca
 import { displayScaleFactorForId } from "../capture/display-density";
 import { planExtentMask } from "../capture/extent-mask";
 import { guardScreenCapture } from "../capture/screen-permission-gate";
+import { resolveQuickCaptureAction } from "../capture/quick-capture-action";
+import {
+  FALLBACK_RECORDING_DEFAULTS,
+  startRecordingFromSelection
+} from "../recording/record-from-selection";
+import { getRecordingState, isRecordingActive } from "../recording/recording-state";
 import {
   CapturesLocationFallbackError,
   ensureCapturesDirReady,
@@ -84,7 +92,7 @@ import { renderViaCoordinator } from "../render/coordinator";
 import { prepareRenderedFileAlias } from "../render/file-alias";
 import { buildPresetExportDisplayName } from "../render/export-filename";
 import { resolveImagePresetFile, targetWidthForImagePreset } from "../render/image-presets";
-import { getActiveExportStrategy } from "./settings-handlers";
+import { getActiveExportStrategy, readDesktopSettings } from "./settings-handlers";
 import { getCaptureEnrichment } from "../persistence/enrichment-repo";
 import {
   readSafePastedFile,
@@ -396,11 +404,35 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       protectWindowCount: protectWindowIds.length,
       invocationId: req.invocation.id
     });
+    // Chooser policy + cursor seed for the selector. Read HERE rather than
+    // hoisted ahead of the gates: `readDesktopSettings` is served from the
+    // process-owned settings snapshot, so it neither touches the disk nor
+    // re-parses, and there is nothing left to overlap. Degrades to the
+    // defaults on a read failure — a settings hiccup must not cost the
+    // user a capture.
+    const settings = await readDesktopSettings().then(
+      (value) => value,
+      () => null
+    );
+    // Fail CLOSED. A read failure must not re-arm an action the user
+    // turned off: under `ask` a stray `R` starts a screen recording,
+    // and this same branch omits `cursorDefault`, so it would bake in a
+    // cursor they had disabled too. `snap` is what the selector did
+    // before the chooser existed — the user loses the Record shortcut
+    // for one capture, which is recoverable; the other direction
+    // records their screen when they had asked it not to.
+    const quickCaptureAction = settings?.recording.quickCaptureAction ?? "snap";
     const selection = await pickRegion({
       mode: selectorMode,
       keepPwrSnapChrome,
       protectWindowIds,
-      latencyTrace: trace
+      latencyTrace: trace,
+      quickCaptureAction,
+      // Seed the selector's `C` toggle from the persisted default. Only
+      // consumed if the user chooses Record, but it has to be in the
+      // mode signal BEFORE the selector shows — there is no second
+      // chance to send it once the chooser is on screen.
+      ...(settings !== null ? { cursorDefault: settings.recording.videoCaptureCursor } : {})
     });
     log.info("capture:interactive pickRegion returned", {
       mode,
@@ -469,6 +501,61 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     // left is the float-over at floating level (3), which sits BELOW a
     // system consent dialog — so the prompt is reachable.
     //
+    // RECORD handoff (issue #75). Ahead of everything below, because
+    // nothing below applies: no crop, no persist, no float-over swap,
+    // and — critically — no snapshot ownership. The continuation takes
+    // the selector and the snapshot from here, so this must land BEFORE
+    // the try/finally that would otherwise tear both down underneath it.
+    //
+    // `resolveQuickCaptureAction` re-derives the action from the policy
+    // this show was actually opened under; the renderer's `action` is a
+    // report, not the decision.
+    // Can the recorder actually take this? `recording:start` refuses
+    // both of these, and the continuation's error path deliberately
+    // stays silent while a failure awaits Retry or Dismiss (that check
+    // was written for a caller which had already bailed — see the guard
+    // at the top of `runInteractiveRecord`). Reaching it from here would
+    // spend the user's selection on nothing at all: no still, no
+    // recording, no notification. So decide BEFORE the handoff, and
+    // fall through to the still pipeline rather than refusing — the
+    // user pressed a capture hotkey and framed a region, and a picture
+    // of what they picked is what ⌘⇧C has always given them.
+    const recorderBusy =
+      getRecordingState().phase === "failed" ? "awaiting_retry_or_dismiss" : null;
+    const recorderUnavailable =
+      recorderBusy ?? (isRecordingActive() ? "already_recording" : null);
+    const wantsRecord =
+      resolveQuickCaptureAction(quickCaptureAction, selection.action) === "record";
+    if (wantsRecord && recorderUnavailable !== null) {
+      log.warn("capture:interactive falling back to a still — recorder unavailable", {
+        mode,
+        quickCaptureAction,
+        reason: recorderUnavailable,
+        phase: getRecordingState().phase
+      });
+    }
+    if (wantsRecord && recorderUnavailable === null) {
+      log.info("capture:interactive committing to a recording", {
+        mode,
+        quickCaptureAction,
+        reported: selection.action ?? "snap"
+      });
+      // Fire-and-forget, exactly like `capture:videoInteractive`: the
+      // countdown and the recorder surface on `events:recording:*`, so
+      // holding this dispatch open across a 3-second countdown the user
+      // can still cancel buys the caller nothing. A rejection is logged
+      // here so it never becomes an unhandled rejection.
+      void startRecordingFromSelection(
+        selection,
+        settings?.recording ?? FALLBACK_RECORDING_DEFAULTS
+      ).catch((cause) => {
+        log.warn("interactive record handoff failed", {
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+      });
+      return ok({ kind: "recording" });
+    }
+
     // We own the screen snapshot now and MUST release it; the try/finally
     // is a safety net (both teardown + release are idempotent).
     const { screenSnapshotId, screenSnapshotPath } = selection;
@@ -660,7 +747,11 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
         // prompt). Park the idle toast rather than leaving it empty.
         setFloatOverState({ kind: "cancel" });
       }
-      return persisted;
+      // Wrapped rather than returned bare: the verb has two endings now
+      // and the caller has to be able to tell them apart.
+      return persisted.ok
+        ? ok<InteractiveCaptureOutcome>({ kind: "snap", record: persisted.value })
+        : persisted;
       } finally {
         // Safety net for an unexpected throw before the explicit teardown.
         void releaseSnapshot(screenSnapshotId);

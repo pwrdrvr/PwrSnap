@@ -28,6 +28,8 @@ type ModePayload = {
   mode: "auto" | "region" | "window";
   screenUrl?: string;
   intent?: "snap" | "video";
+  cursor?: boolean;
+  quickCaptureAction?: "ask" | "snap" | "record";
   invocationId?: string;
   generation?: number;
 };
@@ -127,7 +129,9 @@ afterEach(async () => {
     "mode",
     "discarding",
     "pickCount",
-    "outputMode"
+    "outputMode",
+    "chooserBar",
+    "quickAction"
   ]) {
     delete document.body.dataset[k];
   }
@@ -193,6 +197,24 @@ async function mouseUp(x: number, y: number): Promise<void> {
 async function keyDown(key: string, init: KeyboardEventInit = {}): Promise<void> {
   await act(async () => {
     window.dispatchEvent(
+      new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init })
+    );
+  });
+}
+
+/** A keydown that originates on `el` and bubbles to the window
+ *  listener, the way a real key press on a focused element does.
+ *  `keyDown` above dispatches straight at `window`, so `event.target`
+ *  is the window and any handler that inspects the focus target sees
+ *  nothing — fine for the global bindings it was written for, wrong for
+ *  asserting that the HUD's buttons keep their own Enter/Space. */
+async function keyDownOn(
+  el: Element,
+  key: string,
+  init: KeyboardEventInit = {}
+): Promise<void> {
+  await act(async () => {
+    el.dispatchEvent(
       new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init })
     );
   });
@@ -748,6 +770,14 @@ function hud(): HTMLElement | null {
   return el instanceof HTMLElement ? el : null;
 }
 
+/** The pick-set half of the HUD. Present only while a set is live —
+ *  the chooser bar renders the same container with no chips. */
+function hudChips(): HTMLElement[] {
+  return Array.from(
+    container?.querySelectorAll('[data-testid="region-hud-chip"]') ?? []
+  ).filter((e): e is HTMLElement => e instanceof HTMLElement);
+}
+
 function hudButton(testId: string): HTMLElement {
   const el = container?.querySelector(`[data-testid="${testId}"]`);
   if (!(el instanceof HTMLElement)) throw new Error(`${testId} not found`);
@@ -852,7 +882,9 @@ describe("U5 — multi-window pick set", () => {
     await mouseMove(700, 500);
     await mouseUp(700, 500);
     expect(pickBoxes()).toHaveLength(0);
-    expect(hud()).toBeNull();
+    // The set is gone; the bar that remains is the Snap/Record chooser
+    // (the drag landed in `adjusting`), which carries no chips.
+    expect(hudChips()).toHaveLength(0);
     expect(rectStyle()).toEqual({ left: 700, top: 500, width: 280, height: 200 });
     await keyDown("Enter");
     const payload = submitRegion.mock.calls[0]?.[0];
@@ -871,7 +903,7 @@ describe("U5 — multi-window pick set", () => {
     await keyDown("ArrowRight");
     expect(document.body.dataset.interaction).toBe("adjusting");
     expect(pickBoxes()).toHaveLength(0);
-    expect(hud()).toBeNull();
+    expect(hudChips()).toHaveLength(0);
     expect(rectStyle()).toEqual({ left: 201, top: 150, width: 400, height: 300 });
     // The commit still names the window that was picked.
     await keyDown("Enter");
@@ -1321,7 +1353,8 @@ describe("U5 — multi-window pick set", () => {
     await mountScene({ mode: "region" });
     await clickWindow(WIN, { metaKey: true });
     expect(pickBoxes()).toHaveLength(0);
-    expect(hud()).toBeNull();
+    expect(hudChips()).toHaveLength(0);
+    expect(document.body.dataset.pickCount).toBe("0");
   });
 
   test("hovering an un-picked window previews the next add", async () => {
@@ -1464,5 +1497,335 @@ describe("U5 — multi-window pick set", () => {
     expect(regionHintText()).toContain("keep whole box");
     await keyDown("T");
     expect(regionHintText()).toContain("transparent gaps");
+  });
+});
+
+// ---------------------------------------------------------------------
+// U6 — Snap-vs-Record chooser (issue #75)
+// ---------------------------------------------------------------------
+// The chooser is NOT a modal step. `↵` still commits, and what it
+// commits is the policy's primary action; the other action lives on a
+// second key + a second button. So the tests below are mostly about two
+// things: which action a keystroke maps to, and whether the payload
+// gained an `action` field (a snap must stay byte-for-byte identical to
+// the pre-chooser wire shape).
+describe("U6 — Snap-vs-Record chooser", () => {
+  /** The primary (↵) button; its `data-action` says what it commits. */
+  function primaryButton(): HTMLElement {
+    return hudButton("region-hud-capture");
+  }
+
+  /** The secondary action button, or null when none is offered. */
+  function altButton(): HTMLElement | null {
+    const el = container?.querySelector('[data-testid="region-hud-alt"]');
+    return el instanceof HTMLElement ? el : null;
+  }
+
+  test("ask: ↵ still snaps, and the payload is unchanged by the chooser", async () => {
+    await mountScene({ mode: "auto", quickCaptureAction: "ask" });
+    await drawRect();
+    const payload = await commitAndRead();
+    // The whole point of putting the chooser on the bar instead of in a
+    // dialog: Quick Capture is still one keystroke, and the wire shape
+    // main has always parsed is untouched.
+    expect(payload).not.toHaveProperty("action");
+    expect(payload).not.toHaveProperty("captureCursor");
+    expect(payload.rect).toEqual({ x: 100, y: 100, w: 200, h: 200 });
+  });
+
+  test("ask: the bar offers both actions once the selection is latched", async () => {
+    await mountScene({ mode: "auto", quickCaptureAction: "ask" });
+    // Live snap — the frame is still following the cursor, so there is
+    // nothing to anchor a mouse chooser to. Keys only.
+    await mouseMove(400, 300);
+    expect(hud()).toBeNull();
+    expect(regionHintText()).toContain("record");
+
+    await drawRect();
+    expect(document.body.dataset.chooserBar).toBe("true");
+    expect(primaryButton().dataset.action).toBe("snap");
+    expect(primaryButton().textContent).toContain("Capture");
+    expect(altButton()?.dataset.action).toBe("record");
+    expect(altButton()?.textContent).toContain("Record");
+  });
+
+  test("ask: R records the latched selection", async () => {
+    await mountScene({ mode: "auto", quickCaptureAction: "ask" });
+    await drawRect();
+    await keyDown("r");
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    const payload = submitRegion.mock.calls[0]?.[0];
+    expect(payload.action).toBe("record");
+    // The cursor bake rides along, exactly as it does from the
+    // dedicated video selector.
+    expect(payload.captureCursor).toBe(true);
+    expect(payload.rect).toEqual({ x: 100, y: 100, w: 200, h: 200 });
+  });
+
+  test("ask: the Record button commits the same thing R does", async () => {
+    await mountScene({ mode: "auto", quickCaptureAction: "ask" });
+    await drawRect();
+    const alt = altButton();
+    expect(alt).not.toBeNull();
+    await clickEl(alt as HTMLElement);
+    expect(submitRegion.mock.calls[0]?.[0].action).toBe("record");
+  });
+
+  test("ask: R records a single-window pick without extents", async () => {
+    // One pick is one rectangle — the union box IS the extent, so the
+    // commit carries no `extents` and a recording is honest.
+    await mountScene({ mode: "auto", quickCaptureAction: "ask" });
+    await clickWindow(WIN);
+    expect(document.body.dataset.pickCount).toBe("1");
+    await keyDown("R");
+    const payload = submitRegion.mock.calls[0]?.[0];
+    expect(payload.action).toBe("record");
+    expect(payload).not.toHaveProperty("extents");
+    expect(payload.snappedWindowId).toBe(WIN.windowId);
+  });
+
+  test("R needs a bare press — ⌘R / ⌃R must not start a recording", async () => {
+    // ⌘R is Reload in a dev build and ⌃R is a shell history search.
+    // Neither may be a screen recording.
+    await mountScene({ mode: "auto", quickCaptureAction: "ask" });
+    await drawRect();
+    await keyDown("r", { metaKey: true });
+    await keyDown("r", { ctrlKey: true });
+    expect(submitRegion).not.toHaveBeenCalled();
+    await keyDown("r");
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+  });
+
+  test("C toggles the cursor bake on the chooser path", async () => {
+    await mountScene({ mode: "auto", cursor: true, quickCaptureAction: "ask" });
+    await drawRect();
+    // "rec cursor", not "cursor": under `ask` this legend sits next to
+    // "↵ capture" on an ordinary Quick Capture, and it governs ONLY a
+    // recording — a still's cursor comes from `imageCaptureCursor`,
+    // sampled before the selector even showed. An unqualified label
+    // promised the user a toggle over the screenshot they were about
+    // to take.
+    expect(regionHintText()).toContain("rec cursor: on");
+    await keyDown("c");
+    expect(regionHintText()).toContain("rec cursor: off");
+    await keyDown("r");
+    expect(submitRegion.mock.calls[0]?.[0].captureCursor).toBe(false);
+  });
+
+  test("C does not leak the cursor field onto a snap payload", async () => {
+    await mountScene({ mode: "auto", quickCaptureAction: "ask" });
+    await drawRect();
+    await keyDown("c");
+    const payload = await commitAndRead();
+    expect(payload).not.toHaveProperty("captureCursor");
+  });
+
+  test('snap policy: no Record affordance and R is inert', async () => {
+    await mountScene({ mode: "auto", quickCaptureAction: "snap" });
+    await drawRect();
+    // No bar at all — this is exactly what the selector rendered before
+    // the chooser existed.
+    expect(hud()).toBeNull();
+    expect(document.body.dataset.chooserBar).toBe("false");
+    expect(regionHintText()).not.toContain("record");
+    await keyDown("r");
+    expect(submitRegion).not.toHaveBeenCalled();
+    await keyDown("Enter");
+    expect(submitRegion.mock.calls[0]?.[0]).not.toHaveProperty("action");
+  });
+
+  test("record policy: ↵ records and S takes the snap", async () => {
+    await mountScene({ mode: "auto", quickCaptureAction: "record" });
+    await drawRect();
+    expect(primaryButton().dataset.action).toBe("record");
+    expect(primaryButton().textContent).toContain("Record");
+    expect(altButton()?.dataset.action).toBe("snap");
+    await keyDown("Enter");
+    expect(submitRegion.mock.calls[0]?.[0].action).toBe("record");
+  });
+
+  test("record policy: the ↵ legend says record, not capture", async () => {
+    // The one key the user is most likely to press. A legend still
+    // reading "capture" while ↵ starts a recording is worse than no
+    // legend — and in live snap it is the ONLY affordance on screen.
+    await mountScene({ mode: "auto", quickCaptureAction: "record" });
+    await mouseMove(400, 300);
+    expect(regionHintText()).toContain("record");
+    expect(regionHintText()).not.toContain("capture");
+    expect(regionHintText()).toContain("snap");
+  });
+
+  test("record policy: S escapes to a plain snap", async () => {
+    await mountScene({ mode: "auto", quickCaptureAction: "record" });
+    await drawRect();
+    await keyDown("s");
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion.mock.calls[0]?.[0]).not.toHaveProperty("action");
+  });
+
+  test("S is unbound unless Record has taken over ↵", async () => {
+    await mountScene({ mode: "auto", quickCaptureAction: "ask" });
+    await drawRect();
+    await keyDown("s");
+    expect(submitRegion).not.toHaveBeenCalled();
+  });
+
+  test("2+ picks: Record is disabled and R does nothing", async () => {
+    // THE seam. `multiSelectAllowed()` could exclude video by reading
+    // `intent` only because intent was fixed at hotkey time. The chooser
+    // moves the decision after the commit, so a Record here would ship
+    // the union bounding box to a recorder that never reads `extents` —
+    // recording exactly the gaps the picker painted transparent.
+    await mountScene({ mode: "auto", quickCaptureAction: "ask" });
+    await clickWindow(WIN, { metaKey: true });
+    await clickWindow(WIN_B);
+    expect(document.body.dataset.pickCount).toBe("2");
+    const alt = altButton();
+    expect(alt).not.toBeNull();
+    expect((alt as HTMLButtonElement).disabled).toBe(true);
+    await keyDown("r");
+    expect(submitRegion).not.toHaveBeenCalled();
+    // The legend says why, rather than the key silently doing nothing.
+    expect(regionHintText()).toContain("one rectangle only");
+    // ↵ still works and still ships the mask.
+    await keyDown("Enter");
+    const payload = submitRegion.mock.calls[0]?.[0];
+    expect(payload).not.toHaveProperty("action");
+    expect(payload.extents).toHaveLength(2);
+  });
+
+  test("2+ picks under the record policy: ↵ falls back to a snap", async () => {
+    // The policy cannot make ↵ do something the selection does not
+    // support. It must degrade to the honest action, never to a
+    // recording of the gaps.
+    await mountScene({ mode: "auto", quickCaptureAction: "record" });
+    await clickWindow(WIN, { metaKey: true });
+    await clickWindow(WIN_B);
+    expect(primaryButton().dataset.action).toBe("snap");
+    await keyDown("Enter");
+    const payload = submitRegion.mock.calls[0]?.[0];
+    expect(payload).not.toHaveProperty("action");
+    expect(payload.extents).toHaveLength(2);
+  });
+
+  test("dropping back to one pick re-enables Record", async () => {
+    await mountScene({ mode: "auto", quickCaptureAction: "ask" });
+    await clickWindow(WIN, { metaKey: true });
+    await clickWindow(WIN_B);
+    expect((altButton() as HTMLButtonElement).disabled).toBe(true);
+    await clickWindow(WIN_B); // remove
+    expect((altButton() as HTMLButtonElement).disabled).toBe(false);
+    await keyDown("r");
+    expect(submitRegion.mock.calls[0]?.[0].action).toBe("record");
+  });
+
+  test("video intent ignores the chooser entirely", async () => {
+    // The dedicated Video Capture selector already knows what it is.
+    // Offering "Record" next to a rect badged RECORD would be nonsense,
+    // and `S` must not turn a video hotkey into a screenshot.
+    await mountScene({ mode: "auto", intent: "video", quickCaptureAction: "record" });
+    await drawRect();
+    expect(hud()).toBeNull();
+    expect(altButton()).toBeNull();
+    await keyDown("s");
+    expect(submitRegion).not.toHaveBeenCalled();
+    await keyDown("Enter");
+    const payload = submitRegion.mock.calls[0]?.[0];
+    // Byte-for-byte the pre-chooser video payload: cursor, no `action`.
+    expect(payload).not.toHaveProperty("action");
+    expect(payload.captureCursor).toBe(true);
+  });
+
+  test("an omitted policy leaves the selector exactly as it was", async () => {
+    // `pickRegion` documents the option as opt-IN ("Omitted (or `snap`)
+    // leaves the selector exactly as it was before the chooser
+    // existed"), and there is no `resolveQuickCaptureAction` on any
+    // path but capture-handlers — so a caller that never opted in must
+    // not be able to ship `action: "record"` to a handler that will
+    // quietly take a still instead.
+    await mountScene({ mode: "auto" });
+    await drawRect();
+    expect(hud()).toBeNull();
+    expect(document.body.dataset.quickAction).toBe("snap");
+    await keyDown("r");
+    expect(submitRegion).not.toHaveBeenCalled();
+    await keyDown("Enter");
+    expect(submitRegion.mock.calls[0]?.[0]).not.toHaveProperty("action");
+  });
+
+  test("the snap policy keeps the multi-select HUD it never owned", async () => {
+    // `showHud` is the chooser's predicate, but the chips bar, the `T`
+    // output-shape toggle and the Capture button all predate it. A
+    // regression that gated them behind `chooserBar` would delete the
+    // whole multi-window UI for every `snap`-policy user the moment
+    // they picked a window — and, before this test, would have done it
+    // with a green suite.
+    await mountScene({ mode: "auto", quickCaptureAction: "snap" });
+    await clickWindow(WIN, { metaKey: true });
+    await clickWindow(WIN_B);
+    expect(document.body.dataset.pickCount).toBe("2");
+    expect(hud()).not.toBeNull();
+    expect(hudChips()).toHaveLength(2);
+    expect(primaryButton().dataset.action).toBe("snap");
+    // ...and still no chooser: that is what the policy asked for.
+    expect(altButton()).toBeNull();
+    expect(document.body.dataset.chooserBar).toBe("false");
+  });
+
+  test("the chooser bar survives a move drag", async () => {
+    // `adjusting` is one of three latched states. Keying the bar off it
+    // alone unmounted the whole thing for the duration of every drag,
+    // and `data-chooser-bar` drives an 82px lift on the hint bar, so it
+    // jumped down and back on each nudge.
+    await mountScene({ mode: "auto", quickCaptureAction: "ask" });
+    await drawRect();
+    expect(document.body.dataset.chooserBar).toBe("true");
+    await keyDown(" ");
+    await mouseDown(300, 300);
+    expect(document.body.dataset.interaction).toBe("moving");
+    expect(document.body.dataset.chooserBar).toBe("true");
+    expect(hud()).not.toBeNull();
+    await mouseUp(320, 320);
+  });
+
+  test("Enter on a focused HUD button activates it, not the primary action", async () => {
+    // `adjusting` does not intercept Tab, so focus genuinely reaches
+    // this bar. The window-level keydown handler used to preventDefault
+    // Enter unconditionally and run `commit()` with its default
+    // argument — so tabbing to Record and pressing Enter took a
+    // SCREENSHOT. The button's own handler has to win.
+    await mountScene({ mode: "auto", quickCaptureAction: "ask" });
+    await drawRect();
+    const alt = altButton() as HTMLButtonElement;
+    expect(alt.dataset.action).toBe("record");
+    alt.focus();
+    await keyDownOn(alt, "Enter");
+    // The global handler stood down: no snap was committed behind the
+    // button's back.
+    expect(submitRegion).not.toHaveBeenCalled();
+    // jsdom does not synthesize click-from-Enter, so drive the
+    // activation the browser would have performed.
+    alt.click();
+    await Promise.resolve();
+    expect(submitRegion.mock.calls[0]?.[0].action).toBe("record");
+    // Space is the other activation key, and `adjusting` claimed it for
+    // space-to-move. It must not be swallowed here either.
+    expect(document.body.dataset.spaceHeld ?? "false").toBe("false");
+    await keyDownOn(alt, " ");
+    expect(document.body.dataset.spaceHeld ?? "false").toBe("false");
+  });
+
+  test("the policy is re-read on every show of the pre-warmed window", async () => {
+    // Same window, second capture. A stale `record` policy would make
+    // the next ↵ start a recording the user never asked for.
+    await mountScene({ mode: "auto", quickCaptureAction: "record" });
+    await drawRect();
+    expect(primaryButton().dataset.action).toBe("record");
+    await emitMode({ mode: "auto", quickCaptureAction: "snap" });
+    await drawRect();
+    expect(document.body.dataset.quickAction).toBe("snap");
+    expect(hud()).toBeNull();
+    await keyDown("Enter");
+    expect(submitRegion.mock.calls[0]?.[0]).not.toHaveProperty("action");
   });
 });

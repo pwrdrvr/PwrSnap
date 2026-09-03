@@ -27,6 +27,7 @@ import {
   isEditorSidebarPanel,
   isGridCopyPaletteAnchor,
   isLibrarySidebarTab,
+  isQuickCaptureAction,
   isRedactionStyle,
   isSettingsPage,
   GRID_COPY_PALETTE_ANCHORS,
@@ -559,6 +560,18 @@ export function validateSettingsWrite(
           )
         };
       }
+    }
+    if (
+      !isUndefined(recording.quickCaptureAction) &&
+      !isQuickCaptureAction(recording.quickCaptureAction)
+    ) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_recording_quickCaptureAction",
+          'settings:write: recording.quickCaptureAction must be "ask", "snap", or "record"'
+        )
+      };
     }
     if (
       !isUndefined(recording.lastRoutedPermissionFingerprint) &&

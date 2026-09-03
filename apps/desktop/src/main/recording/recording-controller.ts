@@ -358,10 +358,18 @@ function anchorAwayFromRecordedRect(
  * The user sees the countdown drawn inside their actual recording
  * surface — no offset, no spillover.
  *
- * `rect` is in display-local logical pixels (selector convention);
- * `setPosition` + `setContentSize` both take logical px in the
- * global virtual coord space, so we add `display.bounds.{x,y}` to
- * translate.
+ * `rect` is in DISPLAY-LOCAL logical pixels — relative to
+ * `displayId`'s own top-left. `setPosition` + `setContentSize` both
+ * take logical px in the GLOBAL virtual coord space, so we add
+ * `display.bounds.{x,y}` to translate.
+ *
+ * This is NOT the selector's convention: `SelectorResult.rect` is
+ * global (region-selector.ts adds the display origin before
+ * resolving), so a selector rect handed to this function would apply
+ * the origin twice. The rect that reaches here is `state.rect`,
+ * which recording-service.ts already converted down via
+ * `subjectToPhysicalRect`. See the coordinate-space note at the head
+ * of capture/rect-overlap.ts.
  */
 function fillRect(
   win: BrowserWindow,

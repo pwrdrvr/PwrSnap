@@ -1211,11 +1211,11 @@ function normalizeWindowsCaptureRect(rect: { x: number; y: number; w: number; h:
 }
 /**
  * Translate the subject's rect from the GLOBAL logical coord space
- * (the convention the region selector resolves to —
- * `region-selector.ts:225` adds `display.bounds.{x,y}` before
- * resolving) into DISPLAY-LOCAL logical coords (what both the
- * recording-controller HUD and the Swift recorder's `sourceRect`
- * actually want).
+ * (the convention the region selector RESOLVES to — its renderer
+ * reports display-local, then `region-selector.ts` adds
+ * `display.bounds.{x,y}` when it builds `SelectorResult`) into
+ * DISPLAY-LOCAL logical coords (what both the recording-controller
+ * HUD and the Swift recorder's `sourceRect` actually want).
  *
  * Without this translation, multi-monitor setups where the
  * recorded display has a non-zero origin (e.g. a 2560×1440
@@ -1225,6 +1225,12 @@ function normalizeWindowsCaptureRect(rect: { x: number; y: number; w: number; h:
  * relative to the captured display, not the virtual desktop). The
  * bug is invisible on single-display setups where `bounds.{x,y}`
  * are zero.
+ *
+ * This is one instance of a hazard shared with the window-overlap
+ * helpers; the coordinate-space note at the head of
+ * capture/rect-overlap.ts is the common write-up, and
+ * `appWindowsOverlappingGlobalRect` is the variant that sidesteps it
+ * for callers who only need an overlap test.
  */
 function subjectToPhysicalRect(subject: RecordingSubject): {
   x: number;

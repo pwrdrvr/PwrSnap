@@ -11,6 +11,40 @@
 //
 // Co-located so both call sites are guaranteed to agree on "is this
 // rect overlapping one of our windows."
+//
+// ---------------------------------------------------------------
+// COORDINATE SPACES — read this before passing a rect to anything
+// here. Getting it wrong is silent, and a no-op on the primary
+// display, so it ships and is only ever reported from a
+// multi-monitor desk.
+//
+// There are two logical-pixel spaces in play, and the ONLY thing
+// separating them is `display.bounds.{x,y}`:
+//
+//   GLOBAL (virtual-screen)  — what `BrowserWindow.getBounds()`,
+//     `setPosition`, `screen.getCursorScreenPoint()`, and
+//     `SelectorResult.rect` are in. Origin is the virtual desktop's,
+//     so a secondary display can sit at e.g. {x:1496, y:-473}.
+//   DISPLAY-LOCAL — relative to one display's own top-left. What
+//     the selector RENDERER reports (its window is display-sized),
+//     what ScreenCaptureKit's `sourceRect` wants, and what
+//     `appWindowsOverlappingRect` + the HUD's `fillRect` want.
+//
+// The trap: **the region selector's PUBLIC result is GLOBAL**, even
+// though its renderer speaks display-local. `region-selector.ts`
+// adds `display.bounds.{x,y}` when it builds `SelectorResult`, so
+// anything downstream holding a `SelectorResult.rect` — or a
+// `RecordingSubject.rect`, which is seeded from one — has a GLOBAL
+// rect. Handing that to a display-local parameter adds the display
+// origin a second time and points the test at empty desktop.
+//
+// So: if what you are holding came from the selector, either
+// subtract the origin first (`subjectToPhysicalRect` in
+// recording-service.ts is the recording flow's converter) or use
+// `appWindowsOverlappingGlobalRect`, which takes the global rect
+// directly and has no origin arithmetic to get wrong. Prefer the
+// latter — it is the variant that cannot be misused.
+// ---------------------------------------------------------------
 
 import { BrowserWindow, screen } from "electron";
 import type { Rect } from "@pwrsnap/shared";
@@ -37,8 +71,15 @@ export function rectIntersectsBounds(
 
 /**
  * Top-level PwrSnap windows visible on screen that intersect a
- * recording rect. `rect` is in display-local logical pixels
- * (selector convention); `displayId` identifies the display.
+ * recording rect expressed in GLOBAL virtual-screen logical pixels —
+ * the same space `BrowserWindow.getBounds()` reports in, which is
+ * why this variant needs no display and does no arithmetic.
+ *
+ * **This is the variant to reach for when you are holding a
+ * `SelectorResult.rect` / `RecordingSubject.rect`** — those are
+ * already global (see the coordinate-space note at the top of this
+ * file), and passing one to `appWindowsOverlappingRect` instead
+ * double-applies the display origin.
  *
  * `isVisible()` is the practical filter — by the time the recording
  * flow consults this helper, transient panels (tray popover, float-
@@ -54,23 +95,52 @@ export function rectIntersectsBounds(
  * top" loop. The index.ts call site doesn't pass anything; the HUD
  * doesn't exist yet at that point.
  */
-export function appWindowsOverlappingRect(
-  rect: Rect,
-  displayId: number,
+export function appWindowsOverlappingGlobalRect(
+  globalRect: Rect,
   excludeWindow?: BrowserWindow
 ): BrowserWindow[] {
-  const display = screen.getAllDisplays().find((d) => d.id === displayId);
-  if (display === undefined) return [];
-  const globalRect = {
-    x: rect.x + display.bounds.x,
-    y: rect.y + display.bounds.y,
-    w: rect.w,
-    h: rect.h
-  };
   return BrowserWindow.getAllWindows().filter((win) => {
     if (win.isDestroyed()) return false;
     if (!win.isVisible()) return false;
     if (excludeWindow !== undefined && win === excludeWindow) return false;
     return rectIntersectsBounds(globalRect, win.getBounds());
   });
+}
+
+/**
+ * `appWindowsOverlappingGlobalRect` for a rect in DISPLAY-LOCAL
+ * logical pixels — relative to `displayId`'s own top-left, NOT to
+ * the virtual desktop. This function adds `display.bounds.{x,y}`
+ * itself, so the caller must not have added it already.
+ *
+ * The selector does NOT hand you one of these. Its renderer reports
+ * display-local, but `region-selector.ts` translates to global
+ * before resolving, so `SelectorResult.rect` (and therefore
+ * `RecordingSubject.rect`) is GLOBAL — use
+ * `appWindowsOverlappingGlobalRect` for those. What legitimately
+ * arrives here is a rect that has already been converted back down,
+ * e.g. `RecordingState.rect`, which recording-service.ts built via
+ * `subjectToPhysicalRect`.
+ *
+ * Returns `[]` for an unknown `displayId`: without the display's
+ * origin a display-local rect cannot be placed on the virtual
+ * desktop at all, and guessing (0,0) would silently mis-aim the
+ * test on every non-primary display.
+ */
+export function appWindowsOverlappingRect(
+  displayLocalRect: Rect,
+  displayId: number,
+  excludeWindow?: BrowserWindow
+): BrowserWindow[] {
+  const display = screen.getAllDisplays().find((d) => d.id === displayId);
+  if (display === undefined) return [];
+  return appWindowsOverlappingGlobalRect(
+    {
+      x: displayLocalRect.x + display.bounds.x,
+      y: displayLocalRect.y + display.bounds.y,
+      w: displayLocalRect.w,
+      h: displayLocalRect.h
+    },
+    excludeWindow
+  );
 }

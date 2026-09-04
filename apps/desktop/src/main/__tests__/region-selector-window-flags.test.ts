@@ -314,6 +314,17 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
     });
   });
 
+  test("disables background throttling on Windows so a reused hidden selector can schedule its presentation frames", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    const { preWarmRegionSelector } = await import("../capture/region-selector");
+    preWarmRegionSelector();
+
+    const spy = constructed[0]!;
+    expect(spy.options.webPreferences).toMatchObject({
+      backgroundThrottling: false
+    });
+  });
+
   test("setVisibleOnAllWorkspaces is called BEFORE the renderer loads — first paint must not flash on the wrong Space", async () => {
     const { preWarmRegionSelector } = await import("../capture/region-selector");
     preWarmRegionSelector();

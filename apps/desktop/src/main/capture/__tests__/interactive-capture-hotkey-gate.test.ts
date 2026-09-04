@@ -16,6 +16,19 @@ function deferred(): {
 }
 
 describe("interactive capture hotkey gate", () => {
+  test("starts an accepted task inside the initiating callback", async () => {
+    const order: string[] = [];
+    const gate = createInteractiveCaptureHotkeyGate();
+
+    const decision = gate.tryStart(async () => {
+      order.push("task_started");
+    });
+    order.push("try_start_returned");
+
+    expect(order).toEqual(["task_started", "try_start_returned"]);
+    if (decision.status === "accepted") await decision.completion;
+  });
+
   test("one native callback burst starts exactly one capture task", async () => {
     let nowMs = 1_000;
     const pending = deferred();
@@ -42,7 +55,6 @@ describe("interactive capture hotkey gate", () => {
       ageMs: 600
     });
 
-    await Promise.resolve();
     expect(task).toHaveBeenCalledOnce();
     pending.resolve();
     if (first.status === "accepted") await first.completion;

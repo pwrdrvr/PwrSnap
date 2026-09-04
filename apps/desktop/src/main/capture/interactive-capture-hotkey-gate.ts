@@ -24,11 +24,11 @@ type InteractiveCaptureHotkeyGateOptions = Readonly<{
 /**
  * Leading-edge gate for selector-based global shortcuts.
  *
- * `tryStart()` claims the shared slot synchronously, before `task` can create
- * a capture invocation or dispatch any IPC. The active slot covers the full
- * picker lifecycle. The short trailing debounce also absorbs duplicate native
- * callbacks when an attempt exits before Windows finishes delivering one
- * physical chord's events.
+ * `tryStart()` claims the shared slot synchronously, then invokes `task` in the
+ * same native shortcut callback so capture timing keeps its callback boundary.
+ * The active slot covers the full picker lifecycle. The short trailing
+ * debounce also absorbs duplicate native callbacks when an attempt exits
+ * before Windows finishes delivering one physical chord's events.
  */
 export function createInteractiveCaptureHotkeyGate(
   options: InteractiveCaptureHotkeyGateOptions = {}
@@ -75,11 +75,15 @@ export function createInteractiveCaptureHotkeyGate(
       activeSequence = ownSequence;
       activeStartedAtMs = observedAtMs;
       lastAcceptedAtMs = observedAtMs;
-      const completion = Promise.resolve()
-        .then(task)
-        .finally(() => {
-          if (activeSequence === ownSequence) activeSequence = null;
-        });
+      let taskCompletion: Promise<void>;
+      try {
+        taskCompletion = task();
+      } catch (cause) {
+        taskCompletion = Promise.reject(cause);
+      }
+      const completion = taskCompletion.finally(() => {
+        if (activeSequence === ownSequence) activeSequence = null;
+      });
       return {
         status: "accepted",
         reason: "leading_edge",

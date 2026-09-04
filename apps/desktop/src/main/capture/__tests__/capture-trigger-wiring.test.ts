@@ -70,23 +70,33 @@ describe("interactive capture trigger production wiring", () => {
 
   test("every selector-based global hotkey samples before logging and dispatches that trigger", () => {
     const main = source("apps/desktop/src/main/index.ts");
-    for (const [mode, origin] of [
-      ["auto", "global_hotkey.quick_capture"],
-      ["region", "global_hotkey.region"],
-      ["window", "global_hotkey.window"],
-      ["timed", "global_hotkey.timed"]
+    const helperStart = main.indexOf(
+      "function triggerInteractiveCaptureFromHotkey("
+    );
+    const helperEnd = main.indexOf(
+      "function triggerInteractiveRecordFromHotkey("
+    );
+    const helper = main.slice(helperStart, helperEnd);
+    const logIndex = helper.indexOf('log.info("global hotkey fired"');
+    const dispatchIndex = helper.indexOf(
+      "await runInteractiveCapture(mode, trigger)"
+    );
+    expect(helperStart).toBeGreaterThan(-1);
+    expect(helperEnd).toBeGreaterThan(helperStart);
+    expect(logIndex).toBeGreaterThan(-1);
+    expect(dispatchIndex).toBeGreaterThan(logIndex);
+
+    for (const origin of [
+      "global_hotkey.quick_capture",
+      "global_hotkey.region",
+      "global_hotkey.window",
+      "global_hotkey.timed"
     ]) {
       const createIndex = main.indexOf(
         `createInteractiveCaptureTrigger("${origin}")`
       );
-      const logIndex = main.indexOf('log.info("global hotkey fired"', createIndex);
-      const dispatchIndex = main.indexOf(
-        `runInteractiveCapture("${mode}", trigger)`,
-        createIndex
-      );
       expect(createIndex).toBeGreaterThan(-1);
-      expect(logIndex).toBeGreaterThan(createIndex);
-      expect(dispatchIndex).toBeGreaterThan(logIndex);
+      expect(createIndex).toBeLessThan(helperStart + logIndex);
     }
   });
 

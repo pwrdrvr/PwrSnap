@@ -10,6 +10,64 @@ function source(relativePath: string): string {
 }
 
 describe("interactive capture trigger production wiring", () => {
+  test("selector-based global hotkeys enter one shared gate before capture work", () => {
+    const main = source("apps/desktop/src/main/index.ts");
+    expect(main).toContain("const interactiveCaptureHotkeyGate =");
+
+    const captureHelperStart = main.indexOf(
+      "function triggerInteractiveCaptureFromHotkey("
+    );
+    const recordHelperStart = main.indexOf(
+      "function triggerInteractiveRecordFromHotkey("
+    );
+    const handlerStart = main.indexOf("function handlerFor(");
+    expect(captureHelperStart).toBeGreaterThan(-1);
+    expect(recordHelperStart).toBeGreaterThan(captureHelperStart);
+    expect(handlerStart).toBeGreaterThan(recordHelperStart);
+
+    const captureHelper = main.slice(captureHelperStart, recordHelperStart);
+    const captureGateIndex = captureHelper.indexOf(
+      "interactiveCaptureHotkeyGate.tryStart("
+    );
+    const triggerIndex = captureHelper.indexOf(
+      "createInteractiveCaptureTrigger("
+    );
+    const dispatchIndex = captureHelper.indexOf("runInteractiveCapture(");
+    expect(captureGateIndex).toBeGreaterThan(-1);
+    expect(triggerIndex).toBeGreaterThan(captureGateIndex);
+    expect(dispatchIndex).toBeGreaterThan(triggerIndex);
+
+    const recordHelper = main.slice(recordHelperStart, handlerStart);
+    const recordGateIndex = recordHelper.indexOf(
+      "interactiveCaptureHotkeyGate.tryStart("
+    );
+    expect(recordGateIndex).toBeGreaterThan(-1);
+    expect(recordHelper.indexOf("runInteractiveRecord()"))
+      .toBeGreaterThan(recordGateIndex);
+
+    const handlers = main.slice(handlerStart);
+    for (const [kind, mode] of [
+      ["quickCapture", "auto"],
+      ["region", "region"],
+      ["window", "window"],
+      ["timed", "timed"]
+    ]) {
+      const caseStart = handlers.indexOf(`case "${kind}":`);
+      expect(caseStart).toBeGreaterThan(-1);
+      expect(
+        handlers.indexOf(
+          `triggerInteractiveCaptureFromHotkey("${mode}", kind)`,
+          caseStart
+        )
+      ).toBeGreaterThan(caseStart);
+    }
+    const videoCaseStart = handlers.indexOf('case "videoCapture":');
+    expect(videoCaseStart).toBeGreaterThan(-1);
+    expect(
+      handlers.indexOf("triggerInteractiveRecordFromHotkey(kind)", videoCaseStart)
+    ).toBeGreaterThan(videoCaseStart);
+  });
+
   test("every selector-based global hotkey samples before logging and dispatches that trigger", () => {
     const main = source("apps/desktop/src/main/index.ts");
     for (const [mode, origin] of [

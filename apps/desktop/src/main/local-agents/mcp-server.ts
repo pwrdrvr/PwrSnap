@@ -629,6 +629,22 @@ export class LocalAgentMcpServer {
       writeJsonResponse(res, 404, { error: "not_found" });
       return;
     }
+    if (req.method === "GET") {
+      // This endpoint is stateless: every POST gets its own transport and its
+      // own McpServer, so there is no session for a standalone SSE stream to
+      // belong to. Both Claude Code and Codex open this GET as part of every
+      // connection (Codex first, before it even initializes). Letting the SDK
+      // transport handle it returns a stream that never ends, which pins one
+      // transport + McpServer per live agent session until the client goes
+      // away. 405 is the spec's answer for "no SSE stream here", and both
+      // clients treat it as exactly that and carry on.
+      res.setHeader("allow", "POST, DELETE");
+      writeJsonResponse(res, 405, {
+        error: "method_not_allowed",
+        error_description: "PwrSnap's MCP endpoint is stateless; it offers no GET SSE stream"
+      });
+      return;
+    }
     await this.handleMcpRequest(req, res, requestUrl);
   }
 

@@ -96,6 +96,12 @@ Expected, after the deviceRGB fixes:
 
 - `build/icon.png` (and every `icon.iconset/*`): dominant orange **`#e8743a`**;
   background gradient **`#1c1813` → `#0c0b09`** (warm, top→bottom).
+  *Addendum 2026-09-05:* the `.iconset` / `.icns` are gone — macOS now
+  ships an Icon Composer package, `build/icon.icon/`, whose
+  `Assets/glyph.png` is the mark alone (same `#e8743a`) and whose
+  `icon.json` `fill` carries the gradient as `srgb:` stops. The sampling
+  recipe above still applies to `build/icon.png`. See
+  [2026-09-05-macos-26-legacy-icon-light-plate.md](2026-09-05-macos-26-legacy-icon-light-plate.md).
 - `build/dmg-background.png`: wordmark/arrow orange **`#ff8a1f`**.
 - In-app wordmark: `--accent` = **`#ff8a1f`**.
 

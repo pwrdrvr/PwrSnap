@@ -434,6 +434,25 @@ describe("LocalAgentMcpServer", () => {
     );
   });
 
+  test("answers GET /mcp with 405 instead of holding an SSE stream open", async () => {
+    // Both Claude Code and Codex open this GET on every connection (Codex before
+    // it even initializes). The endpoint is stateless — one transport and one
+    // McpServer per POST — so there is no session for the stream to belong to;
+    // letting the SDK transport answer it pinned a transport + server per live
+    // agent session. 405 is the spec's "no SSE stream here" and both clients
+    // carry on after it. It must answer before auth so the stream can't be
+    // opened by anyone.
+    const url = await startServer();
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { accept: "text/event-stream" }
+    });
+
+    expect(res.status).toBe(405);
+    expect(res.headers.get("allow")).toBe("POST, DELETE");
+    expect(await res.json()).toMatchObject({ error: "method_not_allowed" });
+  });
+
   test("lists tool schemas with read-only and destructive annotations", async () => {
     await grantService.createGrant({
       name: "PwrAgent",

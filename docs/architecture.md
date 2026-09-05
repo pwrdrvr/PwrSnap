@@ -137,6 +137,12 @@ measured against a seeded large library rather than a handful of captures.
 - **Settings and secrets have exactly one substrate.** No sibling JSON
   files, no plaintext secrets, no second IPC channel. See AGENTS.md
   §"Settings substrate".
+- **Local agents come in through one OAuth door.** PwrSnap serves MCP on
+  loopback and is the OAuth 2.1 authorization server for it — dynamic
+  client registration, PKCE, and its own native approval window. Third-
+  party agents (Claude Code, Codex CLI) connect with their built-in OAuth
+  clients; there is no second credential path and no helper to install.
+  See [mcp-third-party-agents.md](mcp-third-party-agents.md).
 
 ## Direction — open and deliberately unresolved
 

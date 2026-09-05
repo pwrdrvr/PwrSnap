@@ -189,6 +189,50 @@ describe("LocalAgentsPage", () => {
     expect(el.textContent).not.toContain("MCP off");
   });
 
+  test("hands out the Claude Code and Codex connect commands only while listening", async () => {
+    const enabledSettings = {
+      ...baseSettings,
+      localAgents: { ...baseSettings.localAgents, enabled: true }
+    };
+    installFakeApi(grant, [], { state: "listening" });
+    const el = await renderPage(enabledSettings);
+
+    // The exact lines the operator pastes; both verified against the real server.
+    expect(el.textContent).toContain(
+      "claude mcp add --transport http pwrsnap http://127.0.0.1:51729/mcp"
+    );
+    expect(el.textContent).toContain("claude mcp login pwrsnap");
+    expect(el.textContent).toContain(
+      "codex mcp add pwrsnap --url http://127.0.0.1:51729/mcp --oauth-client-registration dcr"
+    );
+
+    installFakeApi(grant, [], { state: "off" });
+    const offEl = await renderPage(baseSettings);
+    expect(offEl.textContent).not.toContain("claude mcp add");
+    expect(offEl.textContent).toContain("Turn on local-agent access");
+  });
+
+  test("copy button puts the whole command on the clipboard", async () => {
+    const enabledSettings = {
+      ...baseSettings,
+      localAgents: { ...baseSettings.localAgents, enabled: true }
+    };
+    const { dispatch } = installFakeApi(grant, [], { state: "listening" });
+    const el = await renderPage(enabledSettings);
+
+    const button = el.querySelector<HTMLButtonElement>('button[aria-label="Copy Claude Code command"]');
+    expect(button).not.toBeNull();
+    await act(async () => {
+      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(dispatch).toHaveBeenCalledWith("clipboard:copyText", {
+      text:
+        "claude mcp add --transport http pwrsnap http://127.0.0.1:51729/mcp\n" +
+        "claude mcp login pwrsnap"
+    });
+  });
+
   test("shows enabled intent as unavailable after listener startup fails", async () => {
     const enabledSettings = {
       ...baseSettings,

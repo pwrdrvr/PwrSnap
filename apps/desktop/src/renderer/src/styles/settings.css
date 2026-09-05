@@ -2207,3 +2207,33 @@
   .pss__auth-legend { flex-wrap: wrap; }
   .pss__auth-legend .pss__key-btn { margin-left: 0; }
 }
+
+/* Settings > Local Agents: the connect-an-agent commands. Wraps instead of
+   scrolling so the whole line is readable and selectable at once. */
+.pss__pair-command {
+  width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  font: 500 11px/1.5 var(--font-mono);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.pss__pair-recipe {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.pss__pair-recipe-hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}

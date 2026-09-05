@@ -51,7 +51,7 @@
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "safe-stable-stringify": "^2.5.0",
-    "sharp": "0.35.3",
+    "sharp": "0.35.4",
     "transformation-matrix": "^3.1.0",
     "wavesurfer.js": "^7.12.11",
     "yauzl": "^3.4.0",

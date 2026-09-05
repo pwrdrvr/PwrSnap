@@ -1,6 +1,6 @@
 # macOS 26.6.2 drew the app icon on a light plate — ship a `.icon`, not just a `.icns`
 
-*2026-09-05 — [#PR_NUMBER](https://github.com/pwrdrvr/PwrSnap/pull/PR_NUMBER)*
+*2026-09-05 — [#563](https://github.com/pwrdrvr/PwrSnap/pull/563)*
 
 ## Symptom
 

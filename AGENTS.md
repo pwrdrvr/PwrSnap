@@ -709,6 +709,45 @@ Worked example — the 2026-08 video-playback GPU burn, where a 1 px
 playhead was re-rasterizing a tile 120 times a second:
 [docs/solutions/2026-08-20-video-playback-gpu-process-burn.md](docs/solutions/2026-08-20-video-playback-gpu-process-burn.md).
 
+## Loopback agent access — one door, one approval window
+
+**Every credential that reaches `http://127.0.0.1:51729/mcp` is minted by
+a decision the operator made in PwrSnap's own approval window, through
+the OAuth 2.1 door in `local-agent-oauth.ts` + `mcp-server.ts`. There is
+no other way to get one, and adding one is not a feature.** Reference:
+[docs/mcp-third-party-agents.md](docs/mcp-third-party-agents.md).
+
+A device-flow "pair" endpoint plus a bundled `pwrsnap-mcp` stdio bridge
+was built for terminal agents and then removed inside the same PR
+([#561](https://github.com/pwrdrvr/PwrSnap/pull/561)) once it was
+measured that Claude Code and Codex CLI complete the OAuth door natively
+— dynamic registration, PKCE, their own loopback redirect — and connect
+in tens of milliseconds. The premise "a CLI cannot do OAuth" was wrong.
+Before adding any client-specific credential path, run that measurement
+again; the doc says how, and which harness mistake makes a healthy
+server look like it hangs.
+
+Rules the surface keeps, in the express middleware every route inherits
+and pinned by `mcp-server.test.ts`:
+
+- **Loopback peer, Origin AND Host are all validated.** Any web page the
+  operator visits can POST to 127.0.0.1, and a hostname that resolves to
+  loopback defeats a Host check alone. No Origin means a local process and
+  is allowed; a non-loopback Origin is refused.
+- **`GET /mcp` answers 405.** The endpoint is stateless — one transport and
+  one `McpServer` per POST — so there is no session for a standalone SSE
+  stream. Both verified clients open that GET on every connection; letting
+  the SDK transport handle it pins a transport + server per live agent
+  session until the client goes away.
+- **A tool result carries its data twice.** `toMcpToolResult` emits
+  `structuredContent` AND a text block holding the same JSON, because a
+  host that renders only `content` otherwise shows the agent a summary
+  sentence with no data in it. The JSON block goes LAST, after any
+  `resource_link`, and never contains the signed media URL — that lives
+  only in the link.
+- **Never mint outside the window.** No bearer in a settings file, no
+  "trusted local client" allowlist, no env-var token for convenience.
+
 ## Repository conventions
 
 - **pnpm workspaces.** Apps in `apps/*`, packages in `packages/*`. Always run

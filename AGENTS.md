@@ -1192,6 +1192,62 @@ doesn't.
 - Auto-update wires in Phase 3 via `electron-updater`, mirroring PwrAgnt's
   pattern.
 
+### macOS app icon — ship the Icon Composer `.icon`; actool derives the `.icns`
+
+**`mac.icon` in electron-builder.yml points at `build/icon.icon`, an Icon
+Composer package, and nothing in this repo hand-builds a `.icns`.**
+electron-builder (≥ 26.15, pinned) compiles the package with Xcode 26's
+`actool` into `Contents/Resources/Assets.car` + `CFBundleIconName` — what
+macOS 26 draws — and derives the legacy `Contents/Resources/icon.icns` +
+`CFBundleIconFile` — what macOS 15 and earlier draw — from the same
+source. Each OS reads the format designed for it; one file no longer has
+to satisfy both.
+
+Why this is an invariant and not a preference: macOS 26 auto-normalizes a
+legacy `.icns` it is handed *instead of* a `.icon`, and how it does so is
+not stable across point releases. 1.1.0-alpha.6 shipped only a `.icns`
+padded to Apple's 824-in-1024 template (#534 — the right shape for macOS
+15). 26.6.1 composited it identically to the full-bleed one before it;
+26.6.2 composited it onto a light plate in the Dock and Finder. Same
+bytes, two results. With a `.icon` present the `.icns` is never opened on
+macOS 26, so the question goes away. Ghostty (MIT) ships exactly this pair
+— its actool-made `.icns` is padded like ours was — which is why it never
+showed the plate.
+
+Rules:
+
+- **Regenerate with `pnpm --filter @pwrsnap/desktop generate:app-icon`**
+  ([generate-app-icon.swift](apps/desktop/scripts/generate-app-icon.swift)).
+  It writes the package (`icon.json` + a glyph-only `Assets/glyph.png`;
+  the tile is the package's `fill`), `icon.png` (full-bleed Windows
+  master) and `icon-macos.png` (padded — the development Dock icon, which
+  `app.dock.setIcon()` paints literally). Do not add a `.icns` /
+  `.iconset` back, and do not point `mac.icon` at one.
+- **The build machine must have Xcode 26+ selected.** electron-builder
+  hard-fails on `actool` < 26. GitHub's `macos-15` image defaults to
+  Xcode 16.4 with several 26.x installed, so both macOS jobs in
+  [release.yml](.github/workflows/release.yml) run a "Select Xcode 26"
+  step that picks the newest and asserts the version. Keep that step
+  ahead of `pnpm test` — it is what lets the actool compile test in
+  [app-icon.test.mjs](apps/desktop/scripts/app-icon.test.mjs) run instead
+  of skip.
+- **`actool` resolves `--app-icon Icon` by the package's basename.** Fed
+  `build/icon.icon` directly it exits 0 and silently writes no `.icns`.
+  electron-builder copies the package to `Icon.icon` first; do the same
+  if you ever compile by hand, and check the output for the `.icns`.
+- **PNG bytes are deterministic per machine, not across macOS versions**
+  (±2/255 antialiasing drift). Regenerate when the artwork changes, not to
+  "refresh", and don't read a byte diff of `icon.png` as a design change.
+- **Verifying an icon change means asking macOS, not eyeballing the PNG.**
+  Dock and Finder both draw `NSWorkspace.shared.icon(forFile:)`; render
+  that to a bitmap and measure the opaque bounds (recipe in the solutions
+  doc). Do it on a machine running the newest macOS you ship to — this
+  class of bug is invisible one point release back, and GitHub runners lag
+  further.
+
+Full investigation, measurements, and the probe recipe:
+[docs/solutions/2026-09-05-macos-26-legacy-icon-light-plate.md](docs/solutions/2026-09-05-macos-26-legacy-icon-light-plate.md).
+
 ### `package.json` `description` is shipped UI on Windows
 
 **It is not inert metadata.** electron-builder reads

@@ -3,12 +3,27 @@
 import AppKit
 import Foundation
 
-// Regenerates apps/desktop/build/icon.iconset/* and build/icon.png for PwrSnap.
+// Regenerates the PwrSnap app-icon assets under apps/desktop/build/:
 //
-//   swift scripts/generate-app-icon.swift build/icon.iconset
-//   iconutil -c icns build/icon.iconset -o build/icon.icns
+//   swift scripts/generate-app-icon.swift build
+//
+//   build/icon.icon/          Icon Composer package — the ONLY macOS input.
+//     icon.json               background fill + one glyph layer
+//     Assets/glyph.png        the mark alone, 1024×1024, transparent
+//   build/icon.png            1024×1024 unpadded master (Windows .ico source)
+//   build/icon-macos.png      1024×1024 with the tile inset to Apple's 824px
+//                             legacy safe area — the DEVELOPMENT Dock icon only
+//
+// electron-builder (`mac.icon: build/icon.icon`) compiles the package with
+// Xcode 26's actool into Contents/Resources/Assets.car + CFBundleIconName
+// (what macOS 26 draws) AND derives the legacy Contents/Resources/icon.icns +
+// CFBundleIconFile (macOS 15 and earlier) from the same source. There is
+// deliberately no hand-built .icns / .iconset any more: a macOS 26 build
+// that only finds a legacy .icns guesses at how to normalize it, and 26.6.2
+// guessed a light plate behind our padded tile. See AGENTS.md "macOS app
+// icon" and docs/solutions/2026-09-05-macos-26-legacy-icon-light-plate.md.
 
-let outputDir = CommandLine.arguments.dropFirst().first ?? "build/icon.iconset"
+let buildDir = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "build")
 
 struct Color {
   // Warm near-black vertical gradient matching the PwrAgent app icon, as
@@ -33,7 +48,18 @@ struct Color {
   static let backAlpha: CGFloat = 0.3
 }
 
-func renderIcon(size: Int, macOSCanvas: Bool = false) -> NSBitmapImageRep {
+/// Renders the icon at `size` px.
+///
+/// - `macOSCanvas`: inset the tile to Apple's legacy 824-in-1024 safe area
+///   (a 100px transparent margin). Pre-26 macOS draws a .icns canvas
+///   literally, so a full-bleed tile reads ~24% larger than Terminal next to
+///   it. Used for the development Dock PNG only — the shipped legacy .icns
+///   is derived by actool from the .icon package, which pads it itself.
+/// - `glyphOnly`: skip the tile and paint just the mark on a transparent
+///   canvas. This is the Icon Composer layer; the tile comes from the
+///   package's `fill`, which is what lets macOS 26 apply its own shape,
+///   glass edge, and Dark / Clear / Tinted variants.
+func renderIcon(size: Int, macOSCanvas: Bool = false, glyphOnly: Bool = false) -> NSBitmapImageRep {
   guard let bitmap = NSBitmapImageRep(
     bitmapDataPlanes: nil,
     pixelsWide: size,
@@ -59,41 +85,38 @@ func renderIcon(size: Int, macOSCanvas: Bool = false) -> NSBitmapImageRep {
   let cg = NSGraphicsContext.current!.cgContext
   let bounds = CGRect(x: tileInset, y: tileInset, width: tileSize, height: tileSize)
 
-  // Rounded-rect background — vertical gradient (warm charcoal at the top,
-  // near-black at the bottom), matching the PwrAgent app icon. Filled per
-  // scanline in device-RGB (encoded) space so the ramp is linear in the
-  // output pixels; NSGradient interpolates in linear light and renders the
-  // upper half too bright. The bitmap context is y-up, so image row 0 (the
-  // top, lighter end) maps to the highest AppKit y.
-  // Legacy macOS renders the ICNS canvas literally. Apple's 1024px template
-  // puts the rounded tile in an 824px square with a 100px transparent margin;
-  // macOS 26 can normalize old icons automatically, but Sequoia and earlier
-  // cannot. Keep the unpadded master for Windows/Linux and use this safe-area
-  // canvas for the ICNS and the development Dock icon.
-  let cornerRadius = macOSCanvas ? 185 * canvasScale : 180 * scale
-  let bg = NSBezierPath(roundedRect: NSRect(
-                          x: tileInset,
-                          y: tileInset,
-                          width: tileSize,
-                          height: tileSize),
-                        xRadius: cornerRadius, yRadius: cornerRadius)
-  NSGraphicsContext.saveGraphicsState()
-  bg.addClip()
-  let rows = max(1, Int(tileSize.rounded(.up)))
-  for row in 0..<rows {
-    let t = rows > 1 ? Double(row) / Double(rows - 1) : 0  // 0 at top, 1 at bottom
-    let r = (Color.bgTop.r + (Color.bgBottom.r - Color.bgTop.r) * t) / 255.0
-    let g = (Color.bgTop.g + (Color.bgBottom.g - Color.bgTop.g) * t) / 255.0
-    let b = (Color.bgTop.b + (Color.bgBottom.b - Color.bgTop.b) * t) / 255.0
-    NSColor(deviceRed: CGFloat(r), green: CGFloat(g), blue: CGFloat(b), alpha: 1).setFill()
-    NSRect(
-      x: tileInset,
-      y: tileInset + tileSize - CGFloat(row) - 1,
-      width: tileSize,
-      height: 1
-    ).fill()
+  if !glyphOnly {
+    // Rounded-rect background — vertical gradient (warm charcoal at the top,
+    // near-black at the bottom), matching the PwrAgent app icon. Filled per
+    // scanline in device-RGB (encoded) space so the ramp is linear in the
+    // output pixels; NSGradient interpolates in linear light and renders the
+    // upper half too bright. The bitmap context is y-up, so image row 0 (the
+    // top, lighter end) maps to the highest AppKit y.
+    let cornerRadius = macOSCanvas ? 185 * canvasScale : 180 * scale
+    let bg = NSBezierPath(roundedRect: NSRect(
+                            x: tileInset,
+                            y: tileInset,
+                            width: tileSize,
+                            height: tileSize),
+                          xRadius: cornerRadius, yRadius: cornerRadius)
+    NSGraphicsContext.saveGraphicsState()
+    bg.addClip()
+    let rows = max(1, Int(tileSize.rounded(.up)))
+    for row in 0..<rows {
+      let t = rows > 1 ? Double(row) / Double(rows - 1) : 0  // 0 at top, 1 at bottom
+      let r = (Color.bgTop.r + (Color.bgBottom.r - Color.bgTop.r) * t) / 255.0
+      let g = (Color.bgTop.g + (Color.bgBottom.g - Color.bgTop.g) * t) / 255.0
+      let b = (Color.bgTop.b + (Color.bgBottom.b - Color.bgTop.b) * t) / 255.0
+      NSColor(deviceRed: CGFloat(r), green: CGFloat(g), blue: CGFloat(b), alpha: 1).setFill()
+      NSRect(
+        x: tileInset,
+        y: tileInset + tileSize - CGFloat(row) - 1,
+        width: tileSize,
+        height: 1
+      ).fill()
+    }
+    NSGraphicsContext.restoreGraphicsState()
   }
-  NSGraphicsContext.restoreGraphicsState()
 
   // ---------------------------------------------------------------------
   // Three stacked rectangles (PwrSnap mark) — centered in the icon.
@@ -170,46 +193,97 @@ func renderIcon(size: Int, macOSCanvas: Bool = false) -> NSBitmapImageRep {
   return bitmap
 }
 
-let sizes: [(Int, String)] = [
-  (16, "icon_16x16.png"),
-  (32, "icon_16x16@2x.png"),
-  (32, "icon_32x32.png"),
-  (64, "icon_32x32@2x.png"),
-  (128, "icon_128x128.png"),
-  (256, "icon_128x128@2x.png"),
-  (256, "icon_256x256.png"),
-  (512, "icon_256x256@2x.png"),
-  (512, "icon_512x512.png"),
-  (1024, "icon_512x512@2x.png"),
-]
-
-let outputURL = URL(fileURLWithPath: outputDir)
-try FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
-
-for (size, filename) in sizes {
-  let rep = renderIcon(size: size, macOSCanvas: true)
-  guard let pngData = rep.representation(using: .png, properties: [:]) else {
-    fatalError("Unable to create PNG for \(filename)")
+func writePNG(_ rep: NSBitmapImageRep, to url: URL, label: String) throws {
+  guard let data = rep.representation(using: .png, properties: [:]) else {
+    fatalError("Unable to create PNG for \(label)")
   }
-  let file = outputURL.appendingPathComponent(filename)
-  try pngData.write(to: file)
-  print("  \(filename) (\(size)x\(size))")
+  try data.write(to: url)
+  print("  \(label) (\(rep.pixelsWide)x\(rep.pixelsHigh))")
 }
 
-let dockIconRep = renderIcon(size: 1024)
-guard let dockIconPngData = dockIconRep.representation(using: .png, properties: [:]) else {
-  fatalError("Unable to create PNG for icon.png")
+/// One gradient stop in Icon Composer's `srgb:r,g,b,a` notation. The
+/// fixed five-decimal format keeps `icon.json` byte-for-byte deterministic.
+func gradientStop(_ c: (r: Double, g: Double, b: Double)) -> String {
+  String(format: "srgb:%.5f,%.5f,%.5f,1.00000", c.r / 255.0, c.g / 255.0, c.b / 255.0)
 }
-let dockIconFile = outputURL.deletingLastPathComponent().appendingPathComponent("icon.png")
-try dockIconPngData.write(to: dockIconFile)
-print("  icon.png (1024x1024)")
 
-let macOSDockIconRep = renderIcon(size: 1024, macOSCanvas: true)
-guard let macOSDockIconPngData = macOSDockIconRep.representation(using: .png, properties: [:]) else {
-  fatalError("Unable to create PNG for icon-macos.png")
+// --- build/icon.icon — the Icon Composer package ---------------------------
+//
+// The schema is the one Icon Composer writes (compare Ghostty's
+// images/Ghostty.icon/icon.json, MIT). `fill` paints the whole icon shape;
+// the single layer is the mark with `fill: automatic` so Dark / Clear /
+// Tinted appearances can recolor it. `glass: false` keeps the mark a flat
+// stroke — only the tile edge picks up the macOS 26 glass treatment.
+let iconPackage = buildDir.appendingPathComponent("icon.icon")
+let assetsDir = iconPackage.appendingPathComponent("Assets")
+try FileManager.default.createDirectory(at: assetsDir, withIntermediateDirectories: true)
+
+try writePNG(
+  renderIcon(size: 1024, glyphOnly: true),
+  to: assetsDir.appendingPathComponent("glyph.png"),
+  label: "icon.icon/Assets/glyph.png"
+)
+
+let iconJSON = """
+{
+  "fill" : {
+    "linear-gradient" : [
+      "\(gradientStop(Color.bgTop))",
+      "\(gradientStop(Color.bgBottom))"
+    ]
+  },
+  "groups" : [
+    {
+      "name" : "Mark",
+      "layers" : [
+        {
+          "name" : "glyph",
+          "image-name" : "glyph.png",
+          "fill" : "automatic",
+          "glass" : false,
+          "hidden" : false,
+          "blend-mode" : "normal"
+        }
+      ],
+      "lighting" : "individual",
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : false,
+        "value" : 0.5
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
 }
-let macOSDockIconFile = outputURL.deletingLastPathComponent().appendingPathComponent("icon-macos.png")
-try macOSDockIconPngData.write(to: macOSDockIconFile)
-print("  icon-macos.png (1024x1024)")
 
-print("Generated \(sizes.count) icon variants in \(outputDir)")
+"""
+try iconJSON.write(to: iconPackage.appendingPathComponent("icon.json"), atomically: true, encoding: .utf8)
+print("  icon.icon/icon.json")
+
+// --- build/icon.png — unpadded master (Windows .ico source) -----------------
+try writePNG(
+  renderIcon(size: 1024),
+  to: buildDir.appendingPathComponent("icon.png"),
+  label: "icon.png"
+)
+
+// --- build/icon-macos.png — development Dock icon ---------------------------
+//
+// `app.dock.setIcon()` in development paints this PNG literally, with none
+// of the packaged-app icon handling, so it carries the legacy safe-area
+// inset itself (see development-dock-icon.ts).
+try writePNG(
+  renderIcon(size: 1024, macOSCanvas: true),
+  to: buildDir.appendingPathComponent("icon-macos.png"),
+  label: "icon-macos.png"
+)
+
+print("Generated app-icon assets in \(buildDir.path)")

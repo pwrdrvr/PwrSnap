@@ -66,6 +66,25 @@ const USAGE_LABELS: Record<LocalAgentUsageAction, string> = {
 
 const LOCAL_AGENT_MCP_URL = "http://127.0.0.1:51729/mcp";
 
+/** The connect recipes Settings hands out. Both were verified end to end
+ *  against the real server (Claude Code 2.1.251, Codex CLI 0.152.1): each
+ *  client's built-in OAuth client registers, opens PwrSnap's approval window,
+ *  and connects. Nothing else has to be installed. */
+const CONNECT_RECIPES = [
+  {
+    id: "claude-code",
+    label: "Claude Code",
+    command:
+      `claude mcp add --transport http pwrsnap ${LOCAL_AGENT_MCP_URL}\n` +
+      "claude mcp login pwrsnap"
+  },
+  {
+    id: "codex",
+    label: "Codex CLI",
+    command: `codex mcp add pwrsnap --url ${LOCAL_AGENT_MCP_URL} --oauth-client-registration dcr`
+  }
+] as const;
+
 type GraphPath = {
   id: string;
   d: string;
@@ -353,6 +372,17 @@ export function LocalAgentsPage(): ReactElement {
     setSaving(false);
   };
 
+  const [copiedRecipe, setCopiedRecipe] = useState<string | null>(null);
+  const copyRecipe = useCallback(async (id: string, text: string): Promise<void> => {
+    const result = await dispatch("clipboard:copyText", { text });
+    if (result.ok) {
+      setCopiedRecipe(id);
+      setTimeout(() => setCopiedRecipe((current) => (current === id ? null : current)), 1_500);
+    } else {
+      setError(result.error.message);
+    }
+  }, []);
+
   return (
     <>
       <div className="pss__main-hdr pss__main-hdr--agents">
@@ -388,6 +418,37 @@ export function LocalAgentsPage(): ReactElement {
             }
           />
         </Row>
+      </Card>
+
+      <Card eyebrow="CONNECT AN AGENT" title="Claude Code and Codex">
+        {listenerStatus.state === "listening" ? (
+          <>
+            <p className="pss__row-sub">
+              Run one of these in a terminal. The agent opens PwrSnap's approval window; pick a
+              Session Name and role there. Nothing else to install.
+            </p>
+            {CONNECT_RECIPES.map((recipe) => (
+              <div key={recipe.id} className="pss__pair-recipe">
+                <div className="pss__pair-recipe-hdr">
+                  <span className="pss__row-label">{recipe.label}</span>
+                  <button
+                    type="button"
+                    className="pss__key-btn"
+                    aria-label={`Copy ${recipe.label} command`}
+                    onClick={() => void copyRecipe(recipe.id, recipe.command)}
+                  >
+                    {copiedRecipe === recipe.id ? "Copied" : "Copy"}
+                  </button>
+                </div>
+                <pre className="pss__pair-command">{recipe.command}</pre>
+              </div>
+            ))}
+          </>
+        ) : (
+          <p className="pss__row-sub">
+            Turn on local-agent access above to get the connect commands for Claude Code and Codex.
+          </p>
+        )}
       </Card>
 
       <div className="pss__auth-legend" aria-label="Authorization graph legend">

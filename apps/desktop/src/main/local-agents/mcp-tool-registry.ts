@@ -79,18 +79,31 @@ export function toMcpToolResult(result: Result<unknown, PwrSnapError>): CallTool
     };
   }
   const supplemental = supplementalContentFor(result.value);
+  const structuredContent =
+    result.value !== null && typeof result.value === "object"
+      ? (result.value as Record<string, unknown>)
+      : { value: result.value };
   return {
     content: [
       {
         type: "text",
         text: successSummary(result.value, supplemental)
       },
-      ...supplemental
+      ...supplemental,
+      // MCP says a tool returning `structuredContent` SHOULD also serialize it
+      // into a text block, because a host that renders only `content` shows the
+      // agent whatever the summary says and nothing else. Without this, every
+      // tool here answered a question with a sentence about where the answer
+      // was — and for a client that cannot read structuredContent, it was
+      // nowhere. https://modelcontextprotocol.io/specification/2025-11-25/server/tools
+      //
+      // Last, not second: for a media tool the resource link IS the answer and
+      // belongs next to the sentence that introduces it. This block is the
+      // fallback copy of the metadata, and it never carries the signed media
+      // URL — that lives only in the resource link.
+      { type: "text", text: JSON.stringify(structuredContent) }
     ],
-    structuredContent:
-      result.value !== null && typeof result.value === "object"
-        ? (result.value as Record<string, unknown>)
-        : { value: result.value }
+    structuredContent
   };
 }
 
@@ -138,6 +151,10 @@ function supplementalContentFor(value: unknown): CallToolResult["content"] {
   return (value as ToolValueWithSupplementalContent)[supplementalContent] ?? [];
 }
 
+/** The first line of a result: what happened, in a sentence.
+ *
+ * It no longer points at `structuredContent` for the data, because the block
+ * after it now carries that data verbatim. */
 function successSummary(
   value: unknown,
   supplemental: CallToolResult["content"]
@@ -148,10 +165,10 @@ function successSummary(
   if (value !== null && typeof value === "object" && "rows" in value) {
     const rows = (value as { rows?: unknown }).rows;
     if (Array.isArray(rows)) {
-      return `PwrSnap returned ${rows.length} capture${rows.length === 1 ? "" : "s"}. See structuredContent for result fields.`;
+      return `PwrSnap returned ${rows.length} capture${rows.length === 1 ? "" : "s"}.`;
     }
   }
-  return "PwrSnap operation completed. See structuredContent for result fields.";
+  return "PwrSnap operation completed.";
 }
 
 export function capabilityDenied(

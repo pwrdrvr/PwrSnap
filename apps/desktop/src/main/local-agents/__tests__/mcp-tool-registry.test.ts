@@ -59,32 +59,46 @@ describe("createDefaultLocalAgentMcpTools", () => {
           audience: ["user", "assistant"],
           priority: 1
         }
+      },
+      {
+        type: "text",
+        text: JSON.stringify({ resourceUri: "pwrsnap://capture/cap_1/composite" })
       }
     ]);
     expect(JSON.stringify(result.structuredContent)).not.toContain("/media?");
-    expect(result.content[0]).not.toEqual(expect.objectContaining({
-      text: expect.stringContaining("/media?")
-    }));
+    // The signed URL belongs to the resource link alone. Serializing
+    // structuredContent must not smuggle a copy of it into a text block the
+    // model reads and might then reconstruct.
+    for (const content of result.content) {
+      if (content.type === "resource_link") continue;
+      expect(JSON.stringify(content)).not.toContain("/media?");
+    }
   });
 
-  test("summarizes search results without serializing structured content twice", () => {
+  // This used to assert the opposite — one summary block and nothing else, to
+  // avoid paying for the payload twice. It reads well until you drive the
+  // server from a host that renders only `content`, which is most of them:
+  // the agent is handed "PwrSnap returned 1 capture" and no capture. MCP says
+  // a tool returning structuredContent SHOULD also serialize it, and this is
+  // why.
+  test("serializes structured content into a text block a content-only host can read", () => {
     const result = toMcpToolResult(ok({
       detail: "enriched",
       rows: [{ id: "cap_1" }]
     }));
 
     expect(result.content).toEqual([
-      {
-        type: "text",
-        text: "PwrSnap returned 1 capture. See structuredContent for result fields."
-      }
+      { type: "text", text: "PwrSnap returned 1 capture." },
+      { type: "text", text: JSON.stringify({ detail: "enriched", rows: [{ id: "cap_1" }] }) }
     ]);
     expect(result.structuredContent).toEqual({
       detail: "enriched",
       rows: [{ id: "cap_1" }]
     });
+    // The summary is a sentence about what happened, not a pointer to where
+    // the data went.
     expect(result.content[0]).not.toEqual(expect.objectContaining({
-      text: JSON.stringify(result.structuredContent)
+      text: expect.stringContaining("structuredContent")
     }));
   });
 

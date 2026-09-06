@@ -1,6 +1,8 @@
 name: Dependabot Licenses
 
-# Regenerate THIRD_PARTY_LICENSES on a Dependabot PR and push the result.
+# Regenerate the files a Dependabot PR cannot regenerate itself, and push the
+# result: THIRD_PARTY_LICENSES, and the packaged Electron runtime pin in
+# apps/desktop/electron-builder.yml.
 #
 # WHY THIS EXISTS
 #
@@ -10,6 +12,16 @@ name: Dependabot Licenses
 # PR arrives with `Lint` and `Windows (lint + build + test)` red, on that one
 # line and nothing else, and cannot merge until a human checks the branch out
 # and pushes the regenerated notice by hand.
+#
+# An Electron bump fails the same two jobs a second way, for the same reason.
+# `scripts/check-dependency-version-policy.mjs` requires
+# electron-builder.yml's `electronVersion:` to equal the version the lockfile
+# resolves — electron-builder downloads the runtime it is told to, so a stale
+# pin ships a binary nothing was built or tested against. That line is outside
+# the set of files Dependabot edits, so it has been hand-fixed twice (443e1507,
+# then 615475d3 on PR #565) and would need hand-fixing on every future bump.
+# `scripts/sync-packaged-electron-version.mjs` is the fixer, and this workflow
+# runs it.
 #
 # WHY IT IS SAFE TO AUTOMATE *NOW* AND WAS NOT BEFORE
 #
@@ -23,7 +35,9 @@ name: Dependabot Licenses
 # what this workflow removes.
 #
 # So this job runs the allowlist gate FIRST and pushes nothing if it fails. A
-# bad license stops here, loudly, instead of being committed by a bot.
+# bad license stops here, loudly, instead of being committed by a bot. The
+# Electron sync runs after the gate for the same reason: nothing is written to
+# the branch until the new dependency tree has passed it.
 #
 # SECURITY NOTES — read before editing
 #
@@ -40,9 +54,23 @@ name: Dependabot Licenses
 #      repo, so a fork PR can never reach the privileged path.
 #   2. "Verify the pull request only touches dependency manifests" refuses to
 #      continue if the branch changes anything but package.json / the lockfile
-#      / the notice. A Dependabot branch that somehow carried a script or
-#      workflow edit does not get an install. It fails CLOSED — an unreadable
-#      file list is an error, not an empty list of violations.
+#      / the notice / the Electron pin. A Dependabot branch that somehow
+#      carried a script or workflow edit does not get an install. It fails
+#      CLOSED — an unreadable file list is an error, not an empty list of
+#      violations.
+#
+#      electron-builder.yml is the one entry on that list that is NOT a
+#      manifest, and it is there only because this workflow writes it, so its
+#      own commit is part of the PR diff from that point on. A whole-file
+#      allowance would be a real widening — the file names an `afterPack` hook
+#      and the asar layout of a signed release — so the allowance is narrowed
+#      to the line: the file's patch may add or remove nothing but
+#      `electronVersion:` lines. That check also fails closed; a patch GitHub
+#      declines to return is refused rather than assumed empty. What it does
+#      NOT do is verify the value, because the guard job has no checkout and
+#      must not acquire one to read PR-controlled content; the value is the
+#      PR's own `pnpm deps:check` to judge, and nothing in this workflow reads
+#      electron-builder.yml or runs electron-builder.
 #   3. Only the second job holds `contents: write`, and it is reached only
 #      through `needs: guard`.
 #   4. `pnpm install --ignore-scripts`. A dependency bump is by definition
@@ -79,7 +107,7 @@ on:
   workflow_dispatch:
     inputs:
       pull-request:
-        description: "PR number to regenerate THIRD_PARTY_LICENSES for"
+        description: "PR number to regenerate dependency-derived files for"
         required: true
         type: string
 
@@ -91,11 +119,12 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # The subject line this workflow commits under, and the one the guard below
-  # recognizes as its own. These MUST stay identical: if they drift, the guard
-  # stops recognizing the bot's push and every regeneration costs a second,
-  # pointless run of the whole job.
+  # The subject lines this workflow commits under, and the ones the guard below
+  # recognizes as its own. These MUST stay identical to what the commit step
+  # writes: if they drift, the guard stops recognizing the bot's push and every
+  # regeneration costs a second, pointless run of the whole job.
   REGEN_COMMIT_SUBJECT: "chore(deps): regenerate THIRD_PARTY_LICENSES"
+  SYNC_COMMIT_SUBJECT: "chore(deps): sync packaged Electron runtime"
 
 jobs:
   # Unprivileged half. Decides whether the privileged half may run at all, and
@@ -157,7 +186,7 @@ jobs:
           # this every regeneration would cost a second full run that can only
           # discover the notice is already current.
           subject="$(gh api "repos/${REPO}/commits/${head_sha}" --jq '.commit.message' | head -n 1)"
-          if [ "$subject" = "$REGEN_COMMIT_SUBJECT" ]; then
+          if [ "$subject" = "$REGEN_COMMIT_SUBJECT" ] || [ "$subject" = "$SYNC_COMMIT_SUBJECT" ]; then
             echo "::notice::PR #${PR_NUMBER} is already at this workflow's own regeneration commit."
             echo "proceed=false" >>"$GITHUB_OUTPUT"
             exit 0
@@ -177,7 +206,8 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          allowed='^(package\.json|pnpm-lock\.yaml|THIRD_PARTY_LICENSES|(apps|packages)/[^/]+/package\.json)$'
+          allowed='^(package\.json|pnpm-lock\.yaml|THIRD_PARTY_LICENSES|apps/desktop/electron-builder\.yml|(apps|packages)/[^/]+/package\.json)$'
+          builder_config='apps/desktop/electron-builder.yml'
 
           # Fetch first so `set -e` catches an API failure. Folding this into a
           # pipeline with grep would let grep's exit status stand in for the
@@ -206,10 +236,51 @@ jobs:
             printf '%s\n' "$unexpected"
             exit 1
           fi
+
+          # electron-builder.yml is on the allowed list only because this
+          # workflow writes its `electronVersion:` line, which then rides in
+          # the PR diff for every later run. It is not a manifest, so the
+          # allowance is narrowed to that one line here: any other added or
+          # removed line on that path is refused exactly like a script edit.
+          if printf '%s\n' "$files" | grep -Fxq "$builder_config"; then
+            # Fetch first, so `set -e` catches an API failure rather than
+            # letting a downstream grep's status stand in for it.
+            patch="$(gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/files" \
+              --jq ".[] | select(.filename == \"${builder_config}\") | .patch // empty")"
+            if [ -z "$patch" ]; then
+              echo "::error::GitHub returned no patch for ${builder_config} (too large, or the" \
+                "field was omitted), so its scope cannot be checked. Refusing to continue."
+              exit 1
+            fi
+
+            # Allowed patch lines: context (leading space or empty), hunk
+            # headers, the "\ No newline" marker, file headers, and +/- on an
+            # electronVersion line. grep exits 1 for "nothing offending" and 2
+            # for a real error, so the statuses are kept apart.
+            set +e
+            offending="$(printf '%s\n' "$patch" | grep -Ev '^($|[ @]|\\|\+\+\+|---|[+-]electronVersion:)')"
+            grep_status=$?
+            set -e
+            if [ "$grep_status" -gt 1 ]; then
+              echo "::error::Could not evaluate the ${builder_config} patch (grep exit" \
+                "${grep_status})."
+              exit 1
+            fi
+            if [ -n "$offending" ]; then
+              echo "::error::PR #${PR_NUMBER} changes ${builder_config} beyond its" \
+                "electronVersion line, so it will not be given a privileged install. Offending" \
+                "patch lines:"
+              printf '%s\n' "$offending"
+              exit 1
+            fi
+            echo "Only dependency manifests changed (plus an electronVersion-only edit to" \
+              "${builder_config})."
+            exit 0
+          fi
           echo "Only dependency manifests changed."
 
   regenerate:
-    name: Regenerate THIRD_PARTY_LICENSES
+    name: Regenerate dependency-derived files
     needs: guard
     if: needs.guard.outputs.proceed == 'true'
     runs-on: ubuntu-latest
@@ -321,39 +392,76 @@ jobs:
         if: steps.race.outputs.skip != 'true'
         run: node ./scripts/check-third-party-license-allowlist.mjs
 
+      # After the gate, deliberately: this is the first step that writes to the
+      # working tree, so nothing can reach the branch ahead of the allowlist.
+      # It only rewrites the `electronVersion:` line, and it fails loudly rather
+      # than silently no-op'ing if electron-builder.yml is not shaped the way it
+      # expects — a no-op here would read as "already current" to the commit
+      # step below.
+      - name: Sync the packaged Electron runtime with the lockfile
+        if: steps.race.outputs.skip != 'true'
+        run: node ./scripts/sync-packaged-electron-version.mjs
+
       - name: Regenerate THIRD_PARTY_LICENSES
         if: steps.race.outputs.skip != 'true'
         run: pnpm licenses:generate
 
-      - name: Commit and push if the notice changed
+      - name: Commit and push whatever the branch was missing
         if: steps.race.outputs.skip != 'true'
         env:
           HEAD_REF: ${{ needs.guard.outputs.head-ref }}
           PR_NUMBER: ${{ needs.guard.outputs.number }}
         run: |
           set -euo pipefail
-          if git diff --quiet -- THIRD_PARTY_LICENSES; then
-            echo "THIRD_PARTY_LICENSES is already current; nothing to push."
-            echo "\`THIRD_PARTY_LICENSES\` was already current." >>"$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
+          builder_config="apps/desktop/electron-builder.yml"
+          pushed=false
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add THIRD_PARTY_LICENSES
-          # Single-line body on purpose: a `-m` argument continued onto a second
-          # source line inside a `run: |` block only produces the intended text
-          # while that line keeps exactly the block's indentation, so any
-          # reformatting would silently reshape the published commit message.
-          git commit -m "$REGEN_COMMIT_SUBJECT" \
-            -m "Dependabot cannot run 'pnpm licenses:generate', so 'licenses:check' fails on every dependency PR. Regenerated automatically for #${PR_NUMBER}."
+
+          # Two commits rather than one, and each names its own path: a
+          # dependency bump usually needs only the notice, and `git add -A` on
+          # a job that just installed third-party code would stage whatever the
+          # install left behind.
+          #
+          # Single-line `-m` bodies on purpose: an argument continued onto a
+          # second source line inside a `run: |` block only produces the
+          # intended text while that line keeps exactly the block's
+          # indentation, so any reformatting would silently reshape the
+          # published commit message.
+          if git diff --quiet -- "$builder_config"; then
+            echo "The packaged Electron runtime pin is already current."
+            echo "- \`electronVersion\` already matched the lockfile." >>"$GITHUB_STEP_SUMMARY"
+          else
+            git add "$builder_config"
+            git commit -m "$SYNC_COMMIT_SUBJECT" \
+              -m "Dependabot cannot edit electron-builder.yml, so 'deps:check' fails on every Electron bump. Synced from pnpm-lock.yaml automatically for #${PR_NUMBER}."
+            pushed=true
+            echo "- Synced \`electronVersion\` to the version \`pnpm-lock.yaml\` resolves." \
+              >>"$GITHUB_STEP_SUMMARY"
+          fi
+
+          if git diff --quiet -- THIRD_PARTY_LICENSES; then
+            echo "THIRD_PARTY_LICENSES is already current."
+            echo "- \`THIRD_PARTY_LICENSES\` was already current." >>"$GITHUB_STEP_SUMMARY"
+          else
+            git add THIRD_PARTY_LICENSES
+            git commit -m "$REGEN_COMMIT_SUBJECT" \
+              -m "Dependabot cannot run 'pnpm licenses:generate', so 'licenses:check' fails on every dependency PR. Regenerated automatically for #${PR_NUMBER}."
+            pushed=true
+            echo "- Regenerated \`THIRD_PARTY_LICENSES\`." >>"$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ "$pushed" != "true" ]; then
+            echo "Nothing to push."
+            exit 0
+          fi
 
           # Plain push: if the branch moved since the race check, this is
           # rejected and the newer run handles it. Never force-push a branch
           # somebody else owns.
           git push origin "HEAD:${HEAD_REF}"
-          echo "Pushed a regenerated \`THIRD_PARTY_LICENSES\` to \`${HEAD_REF}\`." \
-            >>"$GITHUB_STEP_SUMMARY"
+          echo "Pushed to \`${HEAD_REF}\`." >>"$GITHUB_STEP_SUMMARY"
 
           # Warn only now that something was actually pushed. Warning earlier
           # fired on every run, including the ones that push nothing.

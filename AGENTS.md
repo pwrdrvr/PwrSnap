@@ -225,6 +225,38 @@ a token that can write to this repo.
 ordering is the point: unattended regeneration is only safe because a bad
 license now stops the job instead of being quietly committed by a bot.
 
+### The same job syncs the packaged Electron runtime
+
+An Electron bump fails those two jobs a second way, and for the same reason:
+`scripts/check-dependency-version-policy.mjs` requires
+[electron-builder.yml](apps/desktop/electron-builder.yml)'s `electronVersion:`
+to equal the version `pnpm-lock.yaml` resolves — electron-builder downloads the
+runtime it is told to, so a stale pin packages a binary nothing was built or
+tested against. That line is outside the set of files Dependabot edits, so it
+was hand-fixed twice (`443e1507`, then `615475d3` on
+[#565](https://github.com/pwrdrvr/PwrSnap/pull/565)) before the workflow took it
+over.
+
+- The fixer is
+  [sync-packaged-electron-version.mjs](scripts/sync-packaged-electron-version.mjs)
+  (`pnpm deps:sync`) — run it locally when `pnpm deps:check` reports the drift.
+  It imports the lockfile reader from the check rather than reimplementing it,
+  so the two cannot disagree about what "resolved" means, and it rewrites **one
+  line in place**: the file's comments are load-bearing and three other regex
+  parsers read it ([release.mjs](apps/desktop/scripts/release.mjs),
+  [package-win.mjs](apps/desktop/scripts/package-win.mjs), the check itself).
+  An ambiguous file — no `electronVersion:`, two of them, a lockfile version
+  that is not plain semver — is a hard failure, never a silent no-op.
+- **It runs after the allowlist gate**, so the "nothing is written to the branch
+  until the license gate passes" ordering above still holds.
+- **electron-builder.yml is now the one non-manifest file the changed-file guard
+  admits**, because the workflow's own commit rides in the PR diff from then on.
+  The allowance is narrowed to the line, not the file: the guard reads that
+  file's patch from the API and refuses any added or removed line that is not an
+  `electronVersion:` line (and refuses just as hard if GitHub returns no patch).
+  Widening it back to the whole file would put an `afterPack` hook path and the
+  asar layout of a signed release on the privileged path.
+
 **Operational requirement:** a push made with the default `GITHUB_TOKEN` does
 not trigger new workflow runs, so without a separate token the PR keeps showing
 its stale red checks and nothing is gained. Provision repository variable

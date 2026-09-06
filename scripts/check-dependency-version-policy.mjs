@@ -78,7 +78,10 @@ function normalizeLockVersion(rawVersion) {
     .replace(/\(.+$/, "");
 }
 
-function readImporterDependencyVersions(lockfileText, importerPath, names) {
+// Exported so scripts/sync-packaged-electron-version.mjs — the fixer for the
+// Electron pin this file checks — resolves the version the same way the check
+// does. Two readers would eventually disagree about what "resolved" means.
+export function readImporterDependencyVersions(lockfileText, importerPath, names) {
   const lines = lockfileText.split(/\r?\n/);
   const importerStart = lines.findIndex((line) => line === `  ${importerPath}:`);
   if (importerStart === -1) return new Map();

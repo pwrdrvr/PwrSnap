@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
@@ -29,7 +29,8 @@ function productionSources(dir: string): string[] {
   return files;
 }
 
-/** Production files (relative to src/main) with a non-comment line matching
+/** Production files (relative to src/main, forward slashes on every platform —
+ *  `relative()` yields backslashes on Windows) with a non-comment line matching
  *  `pattern`. Prose in comments describes the calls; it doesn't make them. */
 function filesCalling(pattern: RegExp): string[] {
   return productionSources(mainRoot)
@@ -40,7 +41,7 @@ function filesCalling(pattern: RegExp): string[] {
         .filter((line) => !line.startsWith("//") && !line.startsWith("*") && !line.startsWith("/*"))
         .some((line) => pattern.test(line))
     )
-    .map((path) => relative(mainRoot, path))
+    .map((path) => relative(mainRoot, path).split(sep).join("/"))
     .sort();
 }
 

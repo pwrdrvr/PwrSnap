@@ -1,7 +1,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
-import type { AppLogEntry, AppLogSnapshot } from "@pwrsnap/shared";
+import { err, ok, type AppLogEntry, type AppLogSnapshot, type Result } from "@pwrsnap/shared";
 import { LogsWindow } from "../LogsWindow";
 
 beforeAll(() => {
@@ -68,5 +68,83 @@ describe("LogsWindow search navigation", () => {
 
     expect(container.textContent).toContain("1 / 1");
     expect(scrollIntoView).toHaveBeenCalledWith({ block: "center", inline: "nearest" });
+  });
+});
+
+const LOG_PATH = "/Users/example/Library/Logs/PwrSnap/app.log";
+
+describe("LogsWindow log file copy", () => {
+  function installCopyApi(copyResult: Result<void>): ReturnType<typeof vi.fn> {
+    const snapshot: AppLogSnapshot = {
+      entries: [entry(1, "hello")],
+      readAt: 1,
+      truncated: false,
+      debugCollectionEnabled: false,
+      logFilePath: LOG_PATH
+    };
+    const dispatch = vi.fn(async (name: string) => {
+      if (name === "logs:read") return ok(snapshot);
+      if (name === "clipboard:copyText") return copyResult;
+      return ok(undefined);
+    });
+    Object.defineProperty(window, "pwrsnapApi", {
+      configurable: true,
+      value: { dispatch, on: () => () => undefined }
+    });
+    return dispatch;
+  }
+
+  async function renderWindow(): Promise<HTMLDivElement> {
+    Element.prototype.scrollIntoView = vi.fn();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(createElement(LogsWindow));
+      await Promise.resolve();
+    });
+    return container;
+  }
+
+  function copyButton(el: HTMLDivElement): HTMLButtonElement {
+    const button = Array.from(
+      el.querySelectorAll<HTMLButtonElement>("button.log-window__file-action")
+    ).find((candidate) => candidate.textContent === "Copy");
+    if (button === undefined) throw new Error("copy button not rendered");
+    return button;
+  }
+
+  async function clickCopy(button: HTMLButtonElement): Promise<void> {
+    await act(async () => {
+      button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+  }
+
+  test("copies the log file path through clipboard:copyText and flips the button to Copied", async () => {
+    const dispatch = installCopyApi(ok(undefined));
+    const el = await renderWindow();
+    const button = copyButton(el);
+
+    await clickCopy(button);
+
+    expect(dispatch).toHaveBeenCalledWith("clipboard:copyText", { text: LOG_PATH });
+    expect(button.textContent).toBe("Copied");
+    expect(button.getAttribute("data-copied")).toBe("true");
+    expect(el.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  test("a failed copy says so on the button and puts the reason in the error line", async () => {
+    installCopyApi(
+      err({ kind: "clipboard", code: "clipboard_unavailable", message: "clipboard unavailable" })
+    );
+    const el = await renderWindow();
+    const button = copyButton(el);
+
+    await clickCopy(button);
+
+    expect(button.textContent).toBe("Copy failed");
+    expect(button.getAttribute("data-copied")).toBeNull();
+    expect(el.querySelector('[role="alert"]')?.textContent).toContain("clipboard unavailable");
   });
 });

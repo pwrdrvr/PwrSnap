@@ -21,6 +21,7 @@ import {
   type LocalAgentUsageSnapshot
 } from "@pwrsnap/shared";
 import { dispatch } from "../../../lib/pwrsnap";
+import { useCopyText } from "../../../lib/useCopyText";
 import { Card, Row, Switch } from "../components";
 import { useSettingsContext } from "../SettingsContext";
 
@@ -374,28 +375,8 @@ export function LocalAgentsPage(): ReactElement {
 
   // Copy feedback lives on the button, not in the page-level error banner: a
   // clipboard failure is not a "local agent update", and the banner is sticky
-  // until some other action succeeds. One timer, re-armed per click and
-  // cleared on unmount, so a repeat click cannot be cut short by an older one.
-  const [copyFeedback, setCopyFeedback] = useState<{
-    id: string;
-    status: "copied" | "failed";
-  } | null>(null);
-  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(
-    () => () => {
-      if (copyTimer.current !== null) clearTimeout(copyTimer.current);
-    },
-    []
-  );
-  const copyRecipe = async (id: string, text: string): Promise<void> => {
-    const result = await dispatch("clipboard:copyText", { text });
-    setCopyFeedback({ id, status: result.ok ? "copied" : "failed" });
-    if (copyTimer.current !== null) clearTimeout(copyTimer.current);
-    copyTimer.current = setTimeout(() => {
-      copyTimer.current = null;
-      setCopyFeedback(null);
-    }, 1_500);
-  };
+  // until some other action succeeds.
+  const { feedback: copyFeedback, copy: copyRecipe } = useCopyText();
 
   // Why the connect commands are not showing. The recipes are gated on the
   // listener actually listening (`enabled` can stay true after a bind

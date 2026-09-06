@@ -285,6 +285,27 @@ function endpoint(address: LocalAgentMcpServerAddress, path: string): string {
   return new URL(path, `http://${address.host}:${address.port}`).href;
 }
 
+function toolsCallBody(query: string): string {
+  return JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: { name: "pwrsnap_library_search", arguments: { query } }
+  });
+}
+
+async function postMcpJson(url: string, body: string): Promise<Response> {
+  return fetch(url, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer lag_mcp:pws_local_mcp-token",
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream"
+    },
+    body
+  });
+}
+
 async function registerOAuthClient(
   address: LocalAgentMcpServerAddress,
   clientName = "Codex"
@@ -1382,28 +1403,43 @@ describe("LocalAgentMcpServer", () => {
     expect(responseStatus).toBe(403);
   });
 
-  test("rejects request bodies larger than one MiB", async () => {
-    server = new LocalAgentMcpServer({
-      settings,
-      secrets,
-      grantService,
-      tools: toolSet(),
-      host: "127.0.0.1",
-      port: 0
+  test("rejects MCP request bodies larger than one MiB with PwrSnap's JSON 413", async () => {
+    await grantService.createGrant({
+      name: "PwrAgent",
+      capabilities: ["library.read"]
     });
-    const address = await server.start();
+    const url = await startServer();
 
-    const response = await fetch(endpoint(address, "/register"), {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        client_name: "oversize",
-        redirect_uris: [OAUTH_CALLBACK],
-        padding: "x".repeat(1024 * 1024)
-      })
-    });
+    const response = await postMcpJson(url, toolsCallBody("x".repeat(1024 * 1024)));
 
     expect(response.status).toBe(413);
+    expect(response.headers.get("content-type")).toBe("application/json");
+    await expect(response.json()).resolves.toEqual({ error: "request_too_large" });
+  });
+
+  test("accepts a tools/call body above body-parser's 100 kb default", async () => {
+    await grantService.createGrant({
+      name: "PwrAgent",
+      capabilities: ["library.read"]
+    });
+    const url = await startServer();
+    const query = "y".repeat(200 * 1024);
+    const body = toolsCallBody(query);
+    // Above the 100 kb limit the SDK's createMcpExpressApp would have
+    // imposed, below MAX_REQUEST_BODY_BYTES: only PwrSnap's cap may run.
+    expect(Buffer.byteLength(body)).toBeGreaterThan(100 * 1024);
+    expect(Buffer.byteLength(body)).toBeLessThan(1024 * 1024);
+
+    const response = await postMcpJson(url, body);
+
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      result?: CallToolResult;
+      error?: unknown;
+    };
+    expect(payload.error).toBeUndefined();
+    expect(payload.result?.isError).not.toBe(true);
+    expect(payload.result?.structuredContent).toMatchObject({ query });
   });
 
   test("uses a stable default port", () => {

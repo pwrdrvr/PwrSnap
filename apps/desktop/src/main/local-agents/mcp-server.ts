@@ -7,7 +7,7 @@ import type {
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
+import { localhostHostValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
 import {
   getOAuthProtectedResourceMetadataUrl,
   mcpAuthMetadataRouter
@@ -20,10 +20,11 @@ import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { OAuthMetadata } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
-import type {
-  NextFunction,
-  Request as ExpressRequest,
-  Response as ExpressResponse
+import express, {
+  type Express,
+  type NextFunction,
+  type Request as ExpressRequest,
+  type Response as ExpressResponse
 } from "express";
 import {
   LOCAL_AGENT_CAPABILITIES,
@@ -80,7 +81,15 @@ const log = getMainLogger("pwrsnap:local-agent-mcp");
 const MCP_PATH = "/mcp";
 const MEDIA_PATH = "/media";
 const AUTHORIZATION_STATUS_PATH = "/authorize/status";
+/**
+ * Byte cap on `/mcp` request bodies, enforced by `readRequestBody`. It is
+ * the ONLY limiter on that path: the app is built without an app-level
+ * `express.json()` (see `createExpressApp`), so nothing parses — or
+ * rejects — an MCP body before it reaches `toWebRequest`.
+ */
 const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
+/** Bind hosts for which the SDK's `createMcpExpressApp` adds DNS-rebinding protection. */
+const LOOPBACK_BIND_HOSTS: ReadonlySet<string> = new Set(["127.0.0.1", "localhost", "::1"]);
 const BROWSER_AUTHORIZATION_TTL_MS = 5 * 60 * 1_000;
 const MAX_BROWSER_AUTHORIZATIONS = 64;
 export const LOCAL_AGENT_MCP_PORT = 51_729;
@@ -301,7 +310,7 @@ export class LocalAgentMcpServer {
   async start(): Promise<LocalAgentMcpServerAddress> {
     if (this.server !== null && this.address !== null) return this.address;
     if (this.closed) throw new Error("MCP server cannot restart after stop");
-    const app = createMcpExpressApp({ host: this.host });
+    const app = createExpressApp(this.host);
     app.use((req: ExpressRequest, res: ExpressResponse, next: NextFunction) => {
       if (!isLoopbackRemoteAddress(req.socket.remoteAddress)) {
         res.status(403).json({ error: "non_loopback_client" });
@@ -1209,7 +1218,11 @@ export class LocalAgentMcpServer {
 
 }
 
-class RequestBodyTooLargeError extends Error {}
+class RequestBodyTooLargeError extends Error {
+  constructor() {
+    super(`request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`);
+  }
+}
 
 function parseSingleByteRange(
   header: string | undefined,
@@ -1397,12 +1410,9 @@ async function toWebRequest(request: IncomingMessage, url: URL): Promise<Request
     }
   }
   const method = request.method ?? "GET";
-  const parsedBody = (request as IncomingMessage & { body?: unknown }).body;
   const body = method === "GET" || method === "HEAD"
     ? undefined
-    : parsedBody !== undefined
-      ? Buffer.from(JSON.stringify(parsedBody), "utf8")
-      : await readRequestBody(request);
+    : await readRequestBody(request);
   return new Request(url, {
     method,
     headers,
@@ -1428,8 +1438,26 @@ async function readRequestBody(request: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
+/**
+ * Builds the Express app by hand instead of through the SDK's
+ * `createMcpExpressApp`. That helper installs `express.json()` ahead of
+ * every route with body-parser's default 100 kb limit and offers no way to
+ * raise it, so it would consume — and 413, with Express's HTML error page —
+ * any `/mcp` body before `readRequestBody` and its `MAX_REQUEST_BODY_BYTES`
+ * cap ever ran. Only the helper's other contribution survives here: the
+ * SDK's DNS-rebinding Host check for loopback binds. `/mcp` bodies are then
+ * read exactly once, by `readRequestBody`. The SDK's OAuth routers
+ * (`/register`, `/token`, `/revoke`) mount their own body parsers and are
+ * unaffected either way.
+ */
+function createExpressApp(host: string): Express {
+  const app = express();
+  if (LOOPBACK_BIND_HOSTS.has(host)) app.use(localhostHostValidation());
+  return app;
+}
+
 async function listenExpress(
-  app: ReturnType<typeof createMcpExpressApp>,
+  app: Express,
   port: number,
   host: string
 ): Promise<HttpServer> {

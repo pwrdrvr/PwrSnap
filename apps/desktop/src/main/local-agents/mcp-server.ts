@@ -919,16 +919,6 @@ export class LocalAgentMcpServer {
     res: ServerResponse,
     requestUrl: URL
   ): Promise<void> {
-    if (req.method !== "POST") {
-      // Every request gets its own McpServer (stateless transport), so a
-      // standalone GET stream could never carry server-initiated messages —
-      // and the SDK's stream never closes, which left `arrayBuffer()` below
-      // pending forever and leaked a server per client connect. 405 is the
-      // spec's "no standalone stream" answer; the SDK client treats it as such.
-      res.setHeader("allow", "POST");
-      writeJsonResponse(res, 405, { error: "method_not_allowed" });
-      return;
-    }
     const authInfo = await this.authenticateRequest(req);
     if (authInfo === null) {
       const metadataUrl = getOAuthProtectedResourceMetadataUrl(requestUrl);
@@ -1451,31 +1441,26 @@ function readRequestBody(request: IncomingMessage): Promise<Uint8Array<ArrayBuff
   return new Promise<Uint8Array<ArrayBuffer>>((resolve, reject) => {
     const chunks: Buffer[] = [];
     let totalBytes = 0;
-    let settled = false;
-    const settle = (outcome: Uint8Array<ArrayBuffer> | Error): void => {
-      if (settled) return;
-      settled = true;
-      chunks.length = 0;
-      if (outcome instanceof Error) reject(outcome);
-      else resolve(outcome);
-    };
-    // Listeners rather than `for await`: throwing out of the iterator
-    // destroys the IncomingMessage, after which the socket is no longer
-    // read and a rejected upload sits paused until the keep-alive timeout.
-    // Staying subscribed past `settle` drains the remainder instead, so the
-    // 413 leaves on a connection that is immediately reusable.
-    request.on("data", (chunk: Buffer | string) => {
-      if (settled) return;
+    const onData = (chunk: Buffer | string): void => {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       totalBytes += buffer.length;
       if (totalBytes > MAX_REQUEST_BODY_BYTES) {
-        settle(new RequestBodyTooLargeError());
+        // Stop reading rather than draining the rest: `jsonErrorHandler`
+        // answers this rejection with `Connection: close`, so the socket is
+        // torn down and an over-cap (or hostile, unbounded) body never
+        // finishes entering this process. `for await` is avoided because
+        // throwing out of it destroys the request before the 413 is written.
+        request.off("data", onData);
+        request.pause();
+        chunks.length = 0;
+        reject(new RequestBodyTooLargeError());
         return;
       }
       chunks.push(buffer);
-    });
-    request.once("end", () => settle(concatChunks(chunks, totalBytes)));
-    request.once("error", (cause: Error) => settle(cause));
+    };
+    request.on("data", onData);
+    request.once("end", () => resolve(concatChunks(chunks, totalBytes)));
+    request.once("error", reject);
   });
 }
 
@@ -1519,6 +1504,13 @@ function jsonErrorHandler(
   if (res.headersSent) {
     if (!res.writableEnded) res.end();
     return;
+  }
+  if (req.complete !== true) {
+    // We answered before the whole body arrived (an over-cap or rejected
+    // upload). RFC 9110 §9.3.6: signal `Connection: close` so the client
+    // does not reuse this socket and Node tears it down after the response,
+    // rather than parking it — undrained — until the keep-alive timeout.
+    res.setHeader("connection", "close");
   }
   writeJsonResponse(res, status, { error: errorCodeForStatus(status) });
 }

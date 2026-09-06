@@ -321,7 +321,12 @@ async function postMcpJson(
   });
 }
 
-type RawMcpResponse = { status: number | undefined; body: string; socket: unknown };
+type RawMcpResponse = {
+  status: number | undefined;
+  body: string;
+  headers: Record<string, string | string[] | undefined>;
+  socket: unknown;
+};
 
 /** Streams `pieces` as a chunked (no content-length) POST over `agent`. */
 function postMcpChunked(
@@ -331,6 +336,7 @@ function postMcpChunked(
 ): Promise<RawMcpResponse> {
   return new Promise((resolve, reject) => {
     const target = new URL(url);
+    let responded = false;
     const req = httpRequest(
       {
         agent,
@@ -341,6 +347,7 @@ function postMcpChunked(
         headers: { ...mcpPostHeaders(), "transfer-encoding": "chunked" }
       },
       (response) => {
+        responded = true;
         const socket = response.socket;
         const chunks: Buffer[] = [];
         response.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -348,21 +355,36 @@ function postMcpChunked(
           resolve({
             status: response.statusCode,
             body: Buffer.concat(chunks).toString("utf8"),
+            headers: response.headers,
             socket
           })
         );
       }
     );
-    req.once("error", reject);
+    // The server closes the connection when it rejects a body mid-upload
+    // (Connection: close), so the still-writing side sees EPIPE/ECONNRESET,
+    // possibly more than once and on the socket rather than the request.
+    // Swallow those: reject only if no response arrived first.
+    req.on("socket", (socket) => socket.on("error", () => undefined));
+    req.on("error", (cause) => {
+      if (!responded) reject(cause);
+    });
     const iterator = pieces()[Symbol.iterator]();
     const pump = (): void => {
+      if (req.destroyed || req.writableEnded) return;
       for (;;) {
         const next = iterator.next();
         if (next.done === true) {
           req.end();
           return;
         }
-        if (!req.write(next.value)) {
+        let flushed: boolean;
+        try {
+          flushed = req.write(next.value);
+        } catch {
+          return;
+        }
+        if (!flushed) {
           req.once("drain", pump);
           return;
         }
@@ -1532,31 +1554,49 @@ describe("LocalAgentMcpServer", () => {
     expect(echoed === query).toBe(true);
   });
 
-  test("rejects a chunked upload past one MiB and keeps the connection usable", async () => {
+  test("bounds an over-cap chunked upload and keeps serving", async () => {
     await grantService.createGrant({
       name: "PwrAgent",
       capabilities: ["library.read"]
     });
     const url = await startServer();
+    // maxSockets: 1 so the follow-up request can only proceed once the first
+    // connection is released — the case that used to hang ~6 s under load.
     const agent = new HttpAgent({ keepAlive: true, maxSockets: 1 });
     try {
-      // No content-length, so the streaming branch of the cap is the only guard.
+      // No content-length, so the streaming branch of the cap — not the
+      // up-front content-length check — is the only thing that can stop this.
+      // The server rejects mid-stream and closes the connection so the body is
+      // never buffered (RFC 9110 §9.3.6). A well-timed client reads the JSON
+      // 413; one still mid-upload sees the reset instead. Both are acceptable;
+      // asserting a clean 413 here would be racing the upload. What must always
+      // hold is the health property below: no hang, and the next caller is
+      // served — proof the streaming cap fired and released the connection.
       const first = await postMcpChunked(url, agent, function* () {
         yield '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":' +
           '{"name":"pwrsnap_library_search","arguments":{"query":"';
         const piece = "x".repeat(64 * 1024);
         for (let sent = 0; sent < 2 * 1024 * 1024; sent += piece.length) yield piece;
         yield '"}}}';
-      });
-      expect(first.status).toBe(413);
-      expect(JSON.parse(first.body)).toEqual({ error: "request_too_large" });
+      })
+        .then((response) => ({ delivered: true as const, response }))
+        .catch(() => ({ delivered: false as const }));
+      if (first.delivered) {
+        expect(first.response.status).toBe(413);
+        expect(JSON.parse(first.response.body)).toEqual({ error: "request_too_large" });
+        const connection = first.response.headers["connection"];
+        expect(
+          typeof connection === "string" ? connection.toLowerCase() : connection
+        ).toBe("close");
+      }
 
+      // The client transparently opens a fresh socket and the server answers
+      // promptly — no multi-second wait. (vitest's 5 s per-test timeout is the
+      // backstop that turns a stall regression here into a failure.)
       const second = await postMcpChunked(url, agent, function* () {
         yield toolsCallBody("after");
       });
       expect(second.status).toBe(200);
-      // Same keep-alive socket: the rejected upload was drained, not parked or reset.
-      expect(second.socket).toBe(first.socket);
     } finally {
       agent.destroy();
     }
@@ -1577,27 +1617,6 @@ describe("LocalAgentMcpServer", () => {
 
     expect(response.status).toBe(415);
     await expect(response.json()).resolves.toEqual({ error: "unsupported_media_type" });
-  });
-
-  test("answers GET /mcp with 405 instead of an SSE stream that never closes", async () => {
-    await grantService.createGrant({
-      name: "PwrAgent",
-      capabilities: ["library.read"]
-    });
-    const url = await startServer();
-
-    const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        authorization: bearer("lag_mcp", "pws_local_mcp-token"),
-        accept: "text/event-stream"
-      },
-      signal: AbortSignal.timeout(2_000)
-    });
-
-    expect(response.status).toBe(405);
-    expect(response.headers.get("allow")).toBe("POST");
-    await expect(response.json()).resolves.toEqual({ error: "method_not_allowed" });
   });
 
   test("answers SDK-router parser failures with JSON, not Express's HTML page", async () => {

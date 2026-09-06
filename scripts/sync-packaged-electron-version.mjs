@@ -29,7 +29,10 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isCliEntrypoint } from "./lib/cli-entrypoint.mjs";
-import { readImporterDependencyVersions } from "./check-dependency-version-policy.mjs";
+import {
+  normalizeLockVersion,
+  readImporterDependencyVersions,
+} from "./check-dependency-version-policy.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -107,7 +110,13 @@ export function syncPackagedElectronVersion(root = repoRoot) {
     throw new Error(`${BUILDER_CONFIG_REL} has an unreadable electronVersion value: ${line[0]}`);
   }
 
-  const [, spacing, packagedElectron, trailing] = parsed;
+  // Equality is the CHECKER's, not a stricter one of our own: it normalizes the
+  // packaged value before comparing, so `electronVersion: "41.10.7"` already
+  // satisfies it. Comparing the raw capture instead rewrote such a pin (dropping
+  // its quotes) on a tree `deps:check` was perfectly happy with — which in the
+  // workflow is a pointless commit pushed onto somebody else's branch.
+  const [, spacing, rawPackagedElectron, trailing] = parsed;
+  const packagedElectron = normalizeLockVersion(rawPackagedElectron);
   if (packagedElectron === resolvedElectron) {
     return { changed: false, from: packagedElectron, to: resolvedElectron };
   }
@@ -142,8 +151,6 @@ function runCli() {
     );
   }
 }
-
-export { isCliEntrypoint };
 
 if (isCliEntrypoint(import.meta.url)) {
   runCli();

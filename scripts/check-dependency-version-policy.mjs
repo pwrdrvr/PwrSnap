@@ -71,7 +71,10 @@ function unquoteYamlKey(rawKey) {
   return key;
 }
 
-function normalizeLockVersion(rawVersion) {
+// Exported for the same reason as readImporterDependencyVersions below: the
+// fixer must decide "already matches" with the checker's notion of equality,
+// or it rewrites pins this file is perfectly happy with.
+export function normalizeLockVersion(rawVersion) {
   return rawVersion
     .trim()
     .replace(/^['"]|['"]$/g, "")
@@ -148,7 +151,6 @@ function checkPackagedElectronVersion(root, lockfileText) {
     "apps/desktop",
     ["electron"],
   ).get("electron");
-  if (resolvedElectron === undefined) return [];
 
   const builderConfigPath = join(root, "apps", "desktop", "electron-builder.yml");
   let builderConfig;
@@ -156,17 +158,35 @@ function checkPackagedElectronVersion(root, lockfileText) {
     builderConfig = readFileSync(builderConfigPath, "utf8");
   } catch (error) {
     if (error.code === "ENOENT") {
-      return [
-        "apps/desktop/electron-builder.yml: missing packaged Electron runtime pin",
-      ];
+      // No packaged app in this tree (the unit fixtures, a future workspace
+      // layout), so there is no pin to check and no lockfile expectation.
+      return resolvedElectron === undefined
+        ? []
+        : ["apps/desktop/electron-builder.yml: missing packaged Electron runtime pin"];
     }
     throw error;
   }
 
-  const match = /^electronVersion:\s*([^\s#]+)/m.exec(builderConfig);
+  // Horizontal whitespace only. `\s*` also matches a newline, which read the
+  // NEXT line as the pin: `electronVersion:` with nothing after it compared
+  // equal to the version on the line below and reported no drift, even though
+  // the YAML value is null.
+  const match = /^electronVersion:[^\S\r\n]*([^\s#]+)/m.exec(builderConfig);
   if (match === null) {
     return [
       "apps/desktop/electron-builder.yml: missing electronVersion for packaged runtime",
+    ];
+  }
+
+  // A pin exists but nothing resolved it. Returning [] here is the fail-open
+  // shape this repo keeps getting bitten by: a lockfile whose shape the reader
+  // above stops understanding (a pnpm format change, a renamed importer) would
+  // silently switch the whole Electron check off and let a stale runtime ship.
+  if (resolvedElectron === undefined) {
+    return [
+      "apps/desktop/electron-builder.yml pins an Electron runtime but pnpm-lock.yaml " +
+        "resolves no electron for apps/desktop; the lockfile reader may no longer " +
+        "understand this lockfile",
     ];
   }
 

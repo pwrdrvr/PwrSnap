@@ -74,10 +74,14 @@ importers:
         version: ${resolved}
 `,
   );
-  writeFileSync(
-    join(root, "apps", "desktop", "electron-builder.yml"),
-    builderConfig ?? `electronVersion: ${packaged}\n`,
-  );
+  // `builderConfig: null` writes no electron-builder.yml at all, for the trees
+  // that have no packaged app (the React fixtures, a future workspace layout).
+  if (builderConfig !== null) {
+    writeFileSync(
+      join(root, "apps", "desktop", "electron-builder.yml"),
+      builderConfig ?? `electronVersion: ${packaged}\n`,
+    );
+  }
 }
 
 function readBuilderConfig(root) {
@@ -149,6 +153,73 @@ describe("checkDependencyVersionPolicy", () => {
     expect(checkDependencyVersionPolicy(root)).toEqual([
       "Electron runtime versions must match exactly; pnpm-lock.yaml resolves electron@41.10.3, apps/desktop/electron-builder.yml packages electron@41.2.1",
     ]);
+  });
+
+  test("accepts a quoted pin, the same way it accepts a quoted lockfile version", () => {
+    const root = tempRoot();
+    writeElectronReleaseInputs(root, {
+      resolved: "41.10.7",
+      builderConfig: 'electronVersion: "41.10.7"\n',
+    });
+
+    expect(checkDependencyVersionPolicy(root)).toEqual([]);
+  });
+
+  test("fails when a pin exists but the lockfile resolves no Electron", () => {
+    const root = tempRoot();
+    // A lockfile shape the reader does not understand — a pnpm format change, a
+    // renamed importer — used to return [] here and switch the whole Electron
+    // check off silently while a stale runtime shipped.
+    writePackage(root, "apps/desktop/package.json", { devDependencies: {} });
+    writeFileSync(
+      join(root, "pnpm-lock.yaml"),
+      `lockfileVersion: '9.0'
+
+importers:
+
+  apps/desktop:
+    devDependencies:
+      electron: {specifier: ^41.10.7, version: 41.10.7}
+`,
+    );
+    writeFileSync(
+      join(root, "apps", "desktop", "electron-builder.yml"),
+      "electronVersion: 41.10.3\n",
+    );
+
+    expect(checkDependencyVersionPolicy(root)).toEqual([
+      "apps/desktop/electron-builder.yml pins an Electron runtime but pnpm-lock.yaml resolves no electron for apps/desktop; the lockfile reader may no longer understand this lockfile",
+    ]);
+  });
+
+  test("does not read the pin off the line below an empty electronVersion key", () => {
+    const root = tempRoot();
+    // `\s*` matched the newline, so this compared equal to 41.10.3 and reported
+    // no drift — even though the YAML value is null and nothing is pinned.
+    writeElectronReleaseInputs(root, {
+      resolved: "41.10.3",
+      builderConfig: "electronVersion:\n  41.10.3\n",
+    });
+
+    expect(checkDependencyVersionPolicy(root)).toEqual([
+      "apps/desktop/electron-builder.yml: missing electronVersion for packaged runtime",
+    ]);
+  });
+
+  test("fails when a resolved Electron has no electron-builder.yml to pin it", () => {
+    const root = tempRoot();
+    writeElectronReleaseInputs(root, { resolved: "41.10.7", builderConfig: null });
+
+    expect(checkDependencyVersionPolicy(root)).toEqual([
+      "apps/desktop/electron-builder.yml: missing packaged Electron runtime pin",
+    ]);
+  });
+
+  test("says nothing about Electron in a tree that packages none", () => {
+    const root = tempRoot();
+    writeElectronReleaseInputs(root, { builderConfig: null });
+
+    expect(checkDependencyVersionPolicy(root)).toEqual([]);
   });
 
   test("recognizes the CLI entrypoint when the checkout path has escaped characters", () => {
@@ -229,6 +300,38 @@ describe("syncPackagedElectronVersion", () => {
         "electronVersion:   41.10.7 # pinned",
       ),
     );
+    expect(checkDependencyVersionPolicy(root)).toEqual([]);
+  });
+
+  test("leaves a quoted pin alone when it normalizes to the resolved version", () => {
+    const root = tempRoot();
+    // The checker normalizes before comparing, so this tree is already clean.
+    // Rewriting it would push a commit onto a Dependabot branch for nothing.
+    const builderConfig = 'electronVersion: "41.10.7"\n';
+    writeElectronReleaseInputs(root, { resolved: "41.10.7", builderConfig });
+
+    expect(syncPackagedElectronVersion(root)).toEqual({
+      changed: false,
+      from: "41.10.7",
+      to: "41.10.7",
+    });
+    expect(readBuilderConfig(root)).toBe(builderConfig);
+    expect(checkDependencyVersionPolicy(root)).toEqual([]);
+  });
+
+  test("rewrites a quoted pin that does not match, dropping the quotes", () => {
+    const root = tempRoot();
+    writeElectronReleaseInputs(root, {
+      resolved: "41.10.7",
+      builderConfig: 'electronVersion: "41.10.3"\n',
+    });
+
+    expect(syncPackagedElectronVersion(root)).toEqual({
+      changed: true,
+      from: "41.10.3",
+      to: "41.10.7",
+    });
+    expect(readBuilderConfig(root)).toBe("electronVersion: 41.10.7\n");
     expect(checkDependencyVersionPolicy(root)).toEqual([]);
   });
 

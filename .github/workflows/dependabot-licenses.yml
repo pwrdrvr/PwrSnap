@@ -211,8 +211,11 @@ jobs:
 
           # Fetch first so `set -e` catches an API failure. Folding this into a
           # pipeline with grep would let grep's exit status stand in for the
-          # API's, which is how a guard like this fails open.
-          files="$(gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/files" --jq '.[].filename')"
+          # API's, which is how a guard like this fails open. One fetch, read
+          # twice: the patch check below needs the same response, and refetching
+          # it could see a different PR state than the list this step judged.
+          files_json="$(gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/files")"
+          files="$(printf '%s' "$files_json" | jq -r '.[].filename')"
           if [ -z "$files" ]; then
             echo "::error::Could not read the changed-file list for PR #${PR_NUMBER}. Refusing to" \
               "continue: an empty list is indistinguishable from a guard that did not run."
@@ -243,22 +246,24 @@ jobs:
           # allowance is narrowed to that one line here: any other added or
           # removed line on that path is refused exactly like a script edit.
           if printf '%s\n' "$files" | grep -Fxq "$builder_config"; then
-            # Fetch first, so `set -e` catches an API failure rather than
-            # letting a downstream grep's status stand in for it.
-            patch="$(gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/files" \
-              --jq ".[] | select(.filename == \"${builder_config}\") | .patch // empty")"
+            patch="$(printf '%s' "$files_json" \
+              | jq -r --arg name "$builder_config" '.[] | select(.filename == $name) | .patch // empty')"
             if [ -z "$patch" ]; then
               echo "::error::GitHub returned no patch for ${builder_config} (too large, or the" \
                 "field was omitted), so its scope cannot be checked. Refusing to continue."
               exit 1
             fi
 
-            # Allowed patch lines: context (leading space or empty), hunk
-            # headers, the "\ No newline" marker, file headers, and +/- on an
-            # electronVersion line. grep exits 1 for "nothing offending" and 2
-            # for a real error, so the statuses are kept apart.
+            # Allowed patch lines: context (leading space, or empty when the
+            # context line itself is blank), hunk headers, the "\ No newline"
+            # marker, and +/- on an electronVersion line. `+++`/`---` are NOT
+            # allowed: the API's `patch` field starts at `@@` and carries no
+            # file headers, so those patterns could only ever match a content
+            # line whose text happens to be `++` / `--`. grep exits 1 for
+            # "nothing offending" and 2 for a real error, so the statuses are
+            # kept apart.
             set +e
-            offending="$(printf '%s\n' "$patch" | grep -Ev '^($|[ @]|\\|\+\+\+|---|[+-]electronVersion:)')"
+            offending="$(printf '%s\n' "$patch" | grep -Ev '^($|[ @]|\\|[+-]electronVersion:)')"
             grep_status=$?
             set -e
             if [ "$grep_status" -gt 1 ]; then
@@ -273,11 +278,14 @@ jobs:
               printf '%s\n' "$offending"
               exit 1
             fi
+            # No `exit 0` here: an early exit would silently skip anything a
+            # later edit appends to this step, for exactly the PRs that carry a
+            # builder-config edit.
             echo "Only dependency manifests changed (plus an electronVersion-only edit to" \
               "${builder_config})."
-            exit 0
+          else
+            echo "Only dependency manifests changed."
           fi
-          echo "Only dependency manifests changed."
 
   regenerate:
     name: Regenerate dependency-derived files
@@ -461,7 +469,12 @@ jobs:
           # rejected and the newer run handles it. Never force-push a branch
           # somebody else owns.
           git push origin "HEAD:${HEAD_REF}"
-          echo "Pushed to \`${HEAD_REF}\`." >>"$GITHUB_STEP_SUMMARY"
+          # Blank line first: without it GFM folds this into the last list item
+          # above, and this is the line an operator scans for.
+          {
+            echo
+            echo "Pushed to \`${HEAD_REF}\`."
+          } >>"$GITHUB_STEP_SUMMARY"
 
           # Warn only now that something was actually pushed. Warning earlier
           # fired on every run, including the ones that push nothing.

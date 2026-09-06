@@ -11,8 +11,9 @@
   *what you must not break*.
 - Solution learnings (post-incident notes, gotchas) live in `docs/solutions/`.
 - Shipped-behavior references live at the top level of `docs/` — the release
-  runbook, the Windows guide and signing doc, the ffmpeg build reference, and
-  the third-party license notices doc.
+  runbook, the Windows guide and signing doc, the ffmpeg build reference, the
+  third-party license notices doc, and the
+  [third-party agent connection guide](docs/mcp-third-party-agents.md).
 - Two documents that began as plans survive as living references, because
   each is the only written statement of something still true: the
   [bundle format spec](docs/architecture-bundle-format.md) and the
@@ -708,6 +709,61 @@ Two things to know before measuring GPU-process CPU:
 Worked example — the 2026-08 video-playback GPU burn, where a 1 px
 playhead was re-rasterizing a tile 120 times a second:
 [docs/solutions/2026-08-20-video-playback-gpu-process-burn.md](docs/solutions/2026-08-20-video-playback-gpu-process-burn.md).
+
+## Loopback agent access — one door, one approval window
+
+**Every credential that reaches `http://127.0.0.1:51729/mcp` is minted by
+a decision the operator made in PwrSnap's own approval window, through
+the OAuth 2.1 door in `local-agent-oauth.ts` + `mcp-server.ts`. There is
+no other way to get one, and adding one is not a feature.** Reference:
+[docs/mcp-third-party-agents.md](docs/mcp-third-party-agents.md).
+
+A device-flow "pair" endpoint plus a bundled `pwrsnap-mcp` stdio bridge
+was built for terminal agents and then removed inside the same PR
+([#561](https://github.com/pwrdrvr/PwrSnap/pull/561)) once it was
+measured that Claude Code and Codex CLI complete the OAuth door natively
+— dynamic registration, PKCE, their own loopback redirect — and connect
+in tens of milliseconds. The premise "a CLI cannot do OAuth" was wrong.
+Before adding any client-specific credential path, run that measurement
+again; the doc says how, and which harness mistake makes a healthy
+server look like it hangs.
+
+Rules the surface keeps, and where each one lives:
+
+- **Loopback peer, Origin AND Host are all validated** — in the express
+  middleware every route inherits (`mcp-server.ts`, `start()`); Origin
+  and Host refusals are pinned by `mcp-server.test.ts`, the loopback
+  branch is not (every test client is a loopback peer). Any web page the
+  operator visits can POST to 127.0.0.1 with a correct `Host`, so Origin
+  is what stops it: a non-loopback Origin is refused. A hostname the
+  attacker points at 127.0.0.1 (DNS rebinding) yields same-origin GETs
+  that carry no Origin at all, so `Host` must equal the bound
+  `127.0.0.1:<port>` exactly — that is what stops rebinding, not Origin.
+  Origin-less requests are allowed (browser navigations and `<img>` loads
+  send none, not just local processes), which is safe only because no
+  Origin-less path mints or reveals anything.
+- **Every verb but POST on `/mcp` answers 405 `Allow: POST`** — in the
+  `/mcp` route handler (`handleRequest`), before auth; pinned by
+  `mcp-server.test.ts`. The endpoint is stateless — one transport and one
+  `McpServer` per POST — so there is no session for a GET SSE stream or a
+  DELETE. Letting the SDK transport answer the GET held a stream that never
+  ended, and the server awaited its body, so the transport + server behind
+  it lived for the rest of the process.
+- **A tool result carries its data twice** — in `toMcpToolResult`
+  (`mcp-tool-registry.ts`); pinned by `mcp-tool-registry.test.ts`, not the
+  server test. `structuredContent` AND a text block holding the same JSON,
+  per the MCP SHOULD, for hosts that read only `content`. (Claude Code and
+  Codex read `structuredContent` and drop the text copy; the block is for
+  hosts that don't.) The JSON block goes LAST, after any `resource_link`,
+  never contains the signed media URL — that lives only in the link — and
+  is always a JSON object: non-objects are wrapped as `{ value }` because
+  the SDK client rejects an array and fails the whole call.
+- **Never mint outside the window.** No bearer in a settings file, no
+  "trusted local client" allowlist, no env-var token for convenience.
+  Pinned two ways: `mcp-server.test.ts` shows a forged loopback approval
+  mints nothing, and `local-agent-minting-boundary.test.ts` greps the
+  production sources so `createGrant` has no caller and `issueOAuthGrant`
+  is reached only from the authorization-code exchange.
 
 ## Repository conventions
 

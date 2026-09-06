@@ -364,11 +364,7 @@ export class LocalAgentMcpServer {
         }
       );
       app.post("/authorize", (_req: ExpressRequest, res: ExpressResponse) => {
-        res.setHeader("allow", "GET");
-        writeJsonResponse(res, 405, {
-          error: "method_not_allowed",
-          error_description: "Authorization decisions are accepted only in PwrSnap"
-        });
+        writeMethodNotAllowed(res, "GET", "Authorization decisions are accepted only in PwrSnap");
       });
       app.use("/token", tokenHandler({ provider: this.oauth }));
       app.use(
@@ -629,6 +625,20 @@ export class LocalAgentMcpServer {
       writeJsonResponse(res, 404, { error: "not_found" });
       return;
     }
+    if (req.method !== "POST") {
+      // Stateless endpoint: one transport and one McpServer per POST, so
+      // there is no session for a GET SSE stream to attach to or for a DELETE
+      // to terminate. Handing either to the SDK transport is worse than 405 —
+      // the GET stream never ended (it pinned a transport + McpServer for the
+      // life of the process), and a DELETE built a full server to close
+      // nothing. Both verified clients open the GET on every connection and
+      // treat 405 as "no stream here"; neither sends DELETE without a session
+      // id, which this server never issues. Answered before auth so no
+      // caller, authenticated or not, can open a stream.
+      // See docs/mcp-third-party-agents.md.
+      writeMethodNotAllowed(res, "POST", "PwrSnap's MCP endpoint accepts only POST");
+      return;
+    }
     await this.handleMcpRequest(req, res, requestUrl);
   }
 
@@ -834,8 +844,7 @@ export class LocalAgentMcpServer {
     requestUrl: URL
   ): Promise<void> {
     if (req.method !== "GET") {
-      res.setHeader("allow", "GET");
-      writeJsonResponse(res, 405, { error: "method_not_allowed" });
+      writeMethodNotAllowed(res, "GET");
       return;
     }
     const payload = this.signedUrls.verify(requestUrl);
@@ -1314,6 +1323,20 @@ function writeJsonResponse(
     "content-type": "application/json"
   });
   response.end(JSON.stringify(body));
+}
+
+/** 405 with the `Allow` header RFC 9110 requires. One shape for every route
+ *  that refuses a verb, so the header and body cannot drift between them. */
+function writeMethodNotAllowed(
+  response: ServerResponse,
+  allow: string,
+  description?: string
+): void {
+  response.setHeader("allow", allow);
+  writeJsonResponse(response, 405, {
+    error: "method_not_allowed",
+    ...(description === undefined ? {} : { error_description: description })
+  });
 }
 
 function writeAuthorizationPage(

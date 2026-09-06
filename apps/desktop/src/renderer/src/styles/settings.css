@@ -1493,11 +1493,13 @@
   border-radius: 6px;
   flex-shrink: 0;
 }
-/* Binary / save-location paths carry no copy button and routinely need to
-   be pasted into a terminal — opt out of app.css's `user-select: none`. */
+/* Paths and commands the operator pastes into a terminal — opt out of
+   app.css's `user-select: none` so they can be selected by hand even when a
+   Copy button is also offered. */
 .pss__path-text,
 .pss__cand-path,
-.pss__acp-instance-path {
+.pss__acp-instance-path,
+.pss__pair-command {
   user-select: text;
   -webkit-user-select: text;
 }
@@ -2206,4 +2208,41 @@
 @media (max-width: 720px) {
   .pss__auth-legend { flex-wrap: wrap; }
   .pss__auth-legend .pss__key-btn { margin-left: 0; }
+}
+
+/* Settings > Local Agents: the connect-an-agent card. `.pss__card-body` has
+   no padding of its own (every other card child is a self-padding Row), so
+   the card content carries the same 20px inset a Row does. */
+.pss__connect {
+  padding: 20px;
+}
+
+/* The connect commands. Wraps instead of scrolling so the whole line is
+   readable and selectable at once; selectability comes from the opt-in group
+   above. */
+.pss__pair-command {
+  width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  font: 500 11px/1.5 var(--font-mono);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.pss__pair-recipe {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.pss__pair-recipe-hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }

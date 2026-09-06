@@ -59,33 +59,56 @@ describe("createDefaultLocalAgentMcpTools", () => {
           audience: ["user", "assistant"],
           priority: 1
         }
+      },
+      {
+        type: "text",
+        text: JSON.stringify({ resourceUri: "pwrsnap://capture/cap_1/composite" })
       }
     ]);
     expect(JSON.stringify(result.structuredContent)).not.toContain("/media?");
-    expect(result.content[0]).not.toEqual(expect.objectContaining({
-      text: expect.stringContaining("/media?")
-    }));
+    // The signed URL belongs to the resource link alone. Serializing
+    // structuredContent must not smuggle a copy of it into a text block the
+    // model reads and might then reconstruct.
+    for (const content of result.content) {
+      if (content.type === "resource_link") continue;
+      expect(JSON.stringify(content)).not.toContain("/media?");
+    }
   });
 
-  test("summarizes search results without serializing structured content twice", () => {
+  // This used to assert the opposite — one summary block and nothing else, to
+  // avoid paying for the payload twice. MCP says a tool returning
+  // structuredContent SHOULD also serialize it, for hosts that read only
+  // `content`; without the block such a host is handed "PwrSnap returned 1
+  // capture" and no capture. (Claude Code and Codex read structuredContent
+  // and drop the text copy, so for them this costs nothing either way.)
+  test("serializes structured content into a text block a content-only host can read", () => {
     const result = toMcpToolResult(ok({
       detail: "enriched",
       rows: [{ id: "cap_1" }]
     }));
 
     expect(result.content).toEqual([
-      {
-        type: "text",
-        text: "PwrSnap returned 1 capture. See structuredContent for result fields."
-      }
+      { type: "text", text: "PwrSnap returned 1 capture." },
+      { type: "text", text: JSON.stringify({ detail: "enriched", rows: [{ id: "cap_1" }] }) }
     ]);
     expect(result.structuredContent).toEqual({
       detail: "enriched",
       rows: [{ id: "cap_1" }]
     });
+    // The summary is a sentence about what happened, not a pointer to where
+    // the data went.
     expect(result.content[0]).not.toEqual(expect.objectContaining({
-      text: JSON.stringify(result.structuredContent)
+      text: expect.stringContaining("structuredContent")
     }));
+  });
+
+  test("wraps non-object values so structuredContent is always a JSON object", () => {
+    // The SDK client parses structuredContent as a record and rejects the
+    // whole call otherwise; an array reaching the wire would read like a
+    // broken server. No tool returns one today — this pins the wrapper.
+    expect(toMcpToolResult(ok([1, 2])).structuredContent).toEqual({ value: [1, 2] });
+    expect(toMcpToolResult(ok("done")).structuredContent).toEqual({ value: "done" });
+    expect(toMcpToolResult(ok(null)).structuredContent).toEqual({ value: null });
   });
 
   test("search, discovery, and delete tools dispatch through distinct command paths", async () => {

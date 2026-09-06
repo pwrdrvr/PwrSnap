@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
-import { request as httpRequest } from "node:http";
+import { once } from "node:events";
+import { Agent as HttpAgent, request as httpRequest } from "node:http";
+import { connect as netConnect } from "node:net";
+import { gzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -244,7 +247,7 @@ async function connectAs(
   const transport = new StreamableHTTPClientTransport(new URL(url), {
     fetch: (input, init) => {
       const headers = new Headers(init?.headers);
-      headers.set("authorization", `Bearer ${clientId}:${token}`);
+      headers.set("authorization", bearer(clientId, token));
       return fetch(input, {
         ...init,
         headers
@@ -285,6 +288,10 @@ function endpoint(address: LocalAgentMcpServerAddress, path: string): string {
   return new URL(path, `http://${address.host}:${address.port}`).href;
 }
 
+function bearer(clientId: string, token: string): string {
+  return `Bearer ${clientId}:${token}`;
+}
+
 function toolsCallBody(query: string): string {
   return JSON.stringify({
     jsonrpc: "2.0",
@@ -294,15 +301,74 @@ function toolsCallBody(query: string): string {
   });
 }
 
-async function postMcpJson(url: string, body: string): Promise<Response> {
+function mcpPostHeaders(): Record<string, string> {
+  return {
+    authorization: bearer("lag_mcp", "pws_local_mcp-token"),
+    "content-type": "application/json",
+    accept: "application/json, text/event-stream"
+  };
+}
+
+async function postMcpJson(
+  url: string,
+  body: string | Uint8Array<ArrayBuffer>,
+  headers: Record<string, string> = {}
+): Promise<Response> {
   return fetch(url, {
     method: "POST",
-    headers: {
-      authorization: "Bearer lag_mcp:pws_local_mcp-token",
-      "content-type": "application/json",
-      accept: "application/json, text/event-stream"
-    },
+    headers: { ...mcpPostHeaders(), ...headers },
     body
+  });
+}
+
+type RawMcpResponse = { status: number | undefined; body: string; socket: unknown };
+
+/** Streams `pieces` as a chunked (no content-length) POST over `agent`. */
+function postMcpChunked(
+  url: string,
+  agent: HttpAgent,
+  pieces: () => Iterable<string>
+): Promise<RawMcpResponse> {
+  return new Promise((resolve, reject) => {
+    const target = new URL(url);
+    const req = httpRequest(
+      {
+        agent,
+        hostname: target.hostname,
+        port: target.port,
+        path: target.pathname,
+        method: "POST",
+        headers: { ...mcpPostHeaders(), "transfer-encoding": "chunked" }
+      },
+      (response) => {
+        const socket = response.socket;
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        response.once("end", () =>
+          resolve({
+            status: response.statusCode,
+            body: Buffer.concat(chunks).toString("utf8"),
+            socket
+          })
+        );
+      }
+    );
+    req.once("error", reject);
+    const iterator = pieces()[Symbol.iterator]();
+    const pump = (): void => {
+      for (;;) {
+        const next = iterator.next();
+        if (next.done === true) {
+          req.end();
+          return;
+        }
+        if (!req.write(next.value)) {
+          req.once("drain", pump);
+          return;
+        }
+      }
+    };
+    pump();
   });
 }
 
@@ -1439,7 +1505,170 @@ describe("LocalAgentMcpServer", () => {
     };
     expect(payload.error).toBeUndefined();
     expect(payload.result?.isError).not.toBe(true);
-    expect(payload.result?.structuredContent).toMatchObject({ query });
+    const echoed = payload.result?.structuredContent?.["query"];
+    expect(typeof echoed === "string" ? echoed.length : echoed).toBe(query.length);
+    // Compared as a boolean so a mismatch does not print 200 KB twice.
+    expect(echoed === query).toBe(true);
+  });
+
+  test("rejects a chunked upload past one MiB and keeps the connection usable", async () => {
+    await grantService.createGrant({
+      name: "PwrAgent",
+      capabilities: ["library.read"]
+    });
+    const url = await startServer();
+    const agent = new HttpAgent({ keepAlive: true, maxSockets: 1 });
+    try {
+      // No content-length, so the streaming branch of the cap is the only guard.
+      const first = await postMcpChunked(url, agent, function* () {
+        yield '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":' +
+          '{"name":"pwrsnap_library_search","arguments":{"query":"';
+        const piece = "x".repeat(64 * 1024);
+        for (let sent = 0; sent < 2 * 1024 * 1024; sent += piece.length) yield piece;
+        yield '"}}}';
+      });
+      expect(first.status).toBe(413);
+      expect(JSON.parse(first.body)).toEqual({ error: "request_too_large" });
+
+      const second = await postMcpChunked(url, agent, function* () {
+        yield toolsCallBody("after");
+      });
+      expect(second.status).toBe(200);
+      // Same keep-alive socket: the rejected upload was drained, not parked or reset.
+      expect(second.socket).toBe(first.socket);
+    } finally {
+      agent.destroy();
+    }
+  });
+
+  test("rejects compressed MCP bodies with 415 instead of inflating them", async () => {
+    await grantService.createGrant({
+      name: "PwrAgent",
+      capabilities: ["library.read"]
+    });
+    const url = await startServer();
+
+    const response = await postMcpJson(
+      url,
+      new Uint8Array(gzipSync(toolsCallBody("zipped"))),
+      { "content-encoding": "gzip" }
+    );
+
+    expect(response.status).toBe(415);
+    await expect(response.json()).resolves.toEqual({ error: "unsupported_media_type" });
+  });
+
+  test("answers GET /mcp with 405 instead of an SSE stream that never closes", async () => {
+    await grantService.createGrant({
+      name: "PwrAgent",
+      capabilities: ["library.read"]
+    });
+    const url = await startServer();
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        authorization: bearer("lag_mcp", "pws_local_mcp-token"),
+        accept: "text/event-stream"
+      },
+      signal: AbortSignal.timeout(2_000)
+    });
+
+    expect(response.status).toBe(405);
+    expect(response.headers.get("allow")).toBe("POST");
+    await expect(response.json()).resolves.toEqual({ error: "method_not_allowed" });
+  });
+
+  test("answers SDK-router parser failures with JSON, not Express's HTML page", async () => {
+    server = new LocalAgentMcpServer({
+      settings,
+      secrets,
+      grantService,
+      tools: toolSet(),
+      host: "127.0.0.1",
+      port: 0
+    });
+    const address = await server.start();
+
+    const oversize = await fetch(endpoint(address, "/register"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        client_name: "oversize",
+        redirect_uris: [OAUTH_CALLBACK],
+        padding: "x".repeat(150 * 1024)
+      })
+    });
+    expect(oversize.status).toBe(413);
+    expect(oversize.headers.get("content-type")).toBe("application/json");
+    await expect(oversize.json()).resolves.toEqual({ error: "request_too_large" });
+
+    const malformed = await fetch(endpoint(address, "/register"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{"
+    });
+    expect(malformed.status).toBe(400);
+    expect(malformed.headers.get("content-type")).toBe("application/json");
+    const text = await malformed.text();
+    expect(JSON.parse(text)).toEqual({ error: "invalid_request" });
+    expect(text).not.toContain("SyntaxError");
+  });
+
+  test("token endpoint takes form bodies only (no app-level JSON parser)", async () => {
+    server = new LocalAgentMcpServer({
+      settings,
+      secrets,
+      grantService,
+      tools: toolSet(),
+      host: "127.0.0.1",
+      port: 0
+    });
+    const address = await server.start();
+
+    const response = await fetch(endpoint(address, "/token"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        grant_type: "authorization_code",
+        client_id: "lag_mcp",
+        code: "code",
+        code_verifier: PKCE_VERIFIER
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: string }).error).toBe("invalid_request");
+  });
+
+  test("stop() does not wait for a client that is still uploading", async () => {
+    await grantService.createGrant({
+      name: "PwrAgent",
+      capabilities: ["library.read"]
+    });
+    const url = await startServer();
+    const target = new URL(url);
+    const socket = netConnect(Number(target.port), target.hostname);
+    socket.on("error", () => undefined);
+    await once(socket, "connect");
+    socket.write(
+      `POST ${target.pathname} HTTP/1.1\r\nhost: ${target.host}\r\n` +
+        `authorization: ${bearer("lag_mcp", "pws_local_mcp-token")}\r\n` +
+        "content-type: application/json\r\naccept: application/json, text/event-stream\r\n" +
+        'content-length: 100\r\n\r\n{"jsonrpc"'
+    );
+    // Let the server pick the request up and park in readRequestBody.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const stopping = server?.stop() ?? Promise.resolve();
+    server = null;
+    await expect(
+      Promise.race([
+        stopping.then(() => "stopped"),
+        new Promise<string>((resolve) => setTimeout(() => resolve("timed out"), 3_000))
+      ])
+    ).resolves.toBe("stopped");
+    socket.destroy();
   });
 
   test("uses a stable default port", () => {

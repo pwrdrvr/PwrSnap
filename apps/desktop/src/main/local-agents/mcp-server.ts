@@ -81,15 +81,8 @@ const log = getMainLogger("pwrsnap:local-agent-mcp");
 const MCP_PATH = "/mcp";
 const MEDIA_PATH = "/media";
 const AUTHORIZATION_STATUS_PATH = "/authorize/status";
-/**
- * Byte cap on `/mcp` request bodies, enforced by `readRequestBody`. It is
- * the ONLY limiter on that path: the app is built without an app-level
- * `express.json()` (see `createExpressApp`), so nothing parses — or
- * rejects — an MCP body before it reaches `toWebRequest`.
- */
+/** Cap on `/mcp` request bodies; `readRequestBody` is its only enforcer (see `createExpressApp`). */
 const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
-/** Bind hosts for which the SDK's `createMcpExpressApp` adds DNS-rebinding protection. */
-const LOOPBACK_BIND_HOSTS: ReadonlySet<string> = new Set(["127.0.0.1", "localhost", "::1"]);
 const BROWSER_AUTHORIZATION_TTL_MS = 5 * 60 * 1_000;
 const MAX_BROWSER_AUTHORIZATIONS = 64;
 export const LOCAL_AGENT_MCP_PORT = 51_729;
@@ -310,7 +303,7 @@ export class LocalAgentMcpServer {
   async start(): Promise<LocalAgentMcpServerAddress> {
     if (this.server !== null && this.address !== null) return this.address;
     if (this.closed) throw new Error("MCP server cannot restart after stop");
-    const app = createExpressApp(this.host);
+    const app = createExpressApp();
     app.use((req: ExpressRequest, res: ExpressResponse, next: NextFunction) => {
       if (!isLoopbackRemoteAddress(req.socket.remoteAddress)) {
         res.status(403).json({ error: "non_loopback_client" });
@@ -407,27 +400,10 @@ export class LocalAgentMcpServer {
         resourceName: "PwrSnap",
         scopesSupported: [...LOCAL_AGENT_CAPABILITIES]
       }));
-      app.use((req: ExpressRequest, res: ExpressResponse) => {
-        void this.handleRequest(req, res).catch((cause) => {
-          log.warn("MCP request failed", {
-            message: cause instanceof Error ? cause.message : String(cause)
-          });
-          if (!res.headersSent) {
-            writeJsonResponse(
-              res,
-              cause instanceof RequestBodyTooLargeError ? 413 : 500,
-              {
-                error:
-                  cause instanceof RequestBodyTooLargeError
-                    ? "request_too_large"
-                    : "internal_error"
-              }
-            );
-          } else if (!res.writableEnded) {
-            res.end();
-          }
-        });
+      app.use((req: ExpressRequest, res: ExpressResponse, next: NextFunction) => {
+        void this.handleRequest(req, res).catch(next);
       });
+      app.use(jsonErrorHandler);
       log.info("local MCP server listening", {
         host: this.address.host,
         port: this.address.port,
@@ -934,6 +910,16 @@ export class LocalAgentMcpServer {
     res: ServerResponse,
     requestUrl: URL
   ): Promise<void> {
+    if (req.method !== "POST") {
+      // Every request gets its own McpServer (stateless transport), so a
+      // standalone GET stream could never carry server-initiated messages —
+      // and the SDK's stream never closes, which left `arrayBuffer()` below
+      // pending forever and leaked a server per client connect. 405 is the
+      // spec's "no standalone stream" answer; the SDK client treats it as such.
+      res.setHeader("allow", "POST");
+      writeJsonResponse(res, 405, { error: "method_not_allowed" });
+      return;
+    }
     const authInfo = await this.authenticateRequest(req);
     if (authInfo === null) {
       const metadataUrl = getOAuthProtectedResourceMetadataUrl(requestUrl);
@@ -944,16 +930,16 @@ export class LocalAgentMcpServer {
       writeJsonResponse(res, 401, { error: "unauthorized" });
       return;
     }
+    // Read (and cap) the body before building a server for it: a 413
+    // should not pay for tool registration and teardown.
+    const webRequest = await toWebRequest(req, requestUrl);
     const transport = new WebStandardStreamableHTTPServerTransport({
       enableJsonResponse: true
     });
     const mcp = this.createMcpServer();
     await mcp.connect(transport);
     try {
-      const webResponse = await transport.handleRequest(
-        await toWebRequest(req, requestUrl),
-        { authInfo }
-      );
+      const webResponse = await transport.handleRequest(webRequest, { authInfo });
       res.writeHead(
         webResponse.status,
         Object.fromEntries(webResponse.headers.entries())
@@ -1218,9 +1204,20 @@ export class LocalAgentMcpServer {
 
 }
 
+/** Shaped like body-parser's http-errors (`status` + `expose`) so `jsonErrorHandler` needs one rule. */
 class RequestBodyTooLargeError extends Error {
+  readonly status = 413;
+  readonly expose = true;
   constructor() {
     super(`request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`);
+  }
+}
+
+class UnsupportedContentEncodingError extends Error {
+  readonly status = 415;
+  readonly expose = true;
+  constructor() {
+    super("compressed request bodies are not accepted");
   }
 }
 
@@ -1410,49 +1407,141 @@ async function toWebRequest(request: IncomingMessage, url: URL): Promise<Request
     }
   }
   const method = request.method ?? "GET";
-  const body = method === "GET" || method === "HEAD"
-    ? undefined
-    : await readRequestBody(request);
   return new Request(url, {
     method,
     headers,
-    ...(body !== undefined ? { body: body.toString("utf8") } : {})
+    body: method === "GET" || method === "HEAD" ? null : await readRequestBody(request)
   });
 }
 
-async function readRequestBody(request: IncomingMessage): Promise<Buffer> {
+function readRequestBody(request: IncomingMessage): Promise<Uint8Array<ArrayBuffer>> {
+  const encoding = request.headers["content-encoding"];
+  if (encoding !== undefined && encoding.toLowerCase() !== "identity") {
+    // body-parser used to inflate these. The cap counts wire bytes, so
+    // inflating here would let a 1 MiB gzip bomb allocate ~1 GiB.
+    return Promise.reject(new UnsupportedContentEncodingError());
+  }
   const contentLength = Number(request.headers["content-length"]);
   if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BODY_BYTES) {
-    throw new RequestBodyTooLargeError();
+    return Promise.reject(new RequestBodyTooLargeError());
   }
-  const chunks: Buffer[] = [];
-  let totalBytes = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    totalBytes += buffer.length;
-    if (totalBytes > MAX_REQUEST_BODY_BYTES) {
-      throw new RequestBodyTooLargeError();
-    }
-    chunks.push(buffer);
+  return new Promise<Uint8Array<ArrayBuffer>>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    let settled = false;
+    const settle = (outcome: Uint8Array<ArrayBuffer> | Error): void => {
+      if (settled) return;
+      settled = true;
+      chunks.length = 0;
+      if (outcome instanceof Error) reject(outcome);
+      else resolve(outcome);
+    };
+    // Listeners rather than `for await`: throwing out of the iterator
+    // destroys the IncomingMessage, after which the socket is no longer
+    // read and a rejected upload sits paused until the keep-alive timeout.
+    // Staying subscribed past `settle` drains the remainder instead, so the
+    // 413 leaves on a connection that is immediately reusable.
+    request.on("data", (chunk: Buffer | string) => {
+      if (settled) return;
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      totalBytes += buffer.length;
+      if (totalBytes > MAX_REQUEST_BODY_BYTES) {
+        settle(new RequestBodyTooLargeError());
+        return;
+      }
+      chunks.push(buffer);
+    });
+    request.once("end", () => settle(concatChunks(chunks, totalBytes)));
+    request.once("error", (cause: Error) => settle(cause));
+  });
+}
+
+/** One copy, like `Buffer.concat`, but typed as a fetch-compatible `BodyInit`. */
+function concatChunks(chunks: readonly Buffer[], totalBytes: number): Uint8Array<ArrayBuffer> {
+  const out = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
   }
-  return Buffer.concat(chunks);
+  return out;
 }
 
 /**
- * Builds the Express app by hand instead of through the SDK's
- * `createMcpExpressApp`. That helper installs `express.json()` ahead of
- * every route with body-parser's default 100 kb limit and offers no way to
- * raise it, so it would consume — and 413, with Express's HTML error page —
- * any `/mcp` body before `readRequestBody` and its `MAX_REQUEST_BODY_BYTES`
- * cap ever ran. Only the helper's other contribution survives here: the
- * SDK's DNS-rebinding Host check for loopback binds. `/mcp` bodies are then
- * read exactly once, by `readRequestBody`. The SDK's OAuth routers
- * (`/register`, `/token`, `/revoke`) mount their own body parsers and are
- * unaffected either way.
+ * The app's only error handler, registered last so every rejection on this
+ * server — PwrSnap's own (`handleRequest`) and the SDK routers' body-parser
+ * failures on `/register`, `/token`, `/revoke` — answers with the same
+ * `{ error }` JSON the rest of the surface speaks. Without it Express falls
+ * back to `finalhandler`, which renders text/html and, because the packaged
+ * app never sets NODE_ENV, embeds the error stack (file paths included).
+ * Client errors are recognized by the http-errors shape body-parser uses
+ * (`status` + `expose: true`); their message is never echoed or logged,
+ * because a JSON parse failure's message quotes the client's input.
  */
-function createExpressApp(host: string): Express {
+function jsonErrorHandler(
+  cause: unknown,
+  req: ExpressRequest,
+  res: ExpressResponse,
+  _next: NextFunction
+): void {
+  const status = exposedClientErrorStatus(cause) ?? 500;
+  if (status >= 500) {
+    log.warn("MCP request failed", {
+      path: req.path,
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+  } else {
+    log.info("MCP request rejected", { path: req.path, status });
+  }
+  if (res.headersSent) {
+    if (!res.writableEnded) res.end();
+    return;
+  }
+  writeJsonResponse(res, status, { error: errorCodeForStatus(status) });
+}
+
+function exposedClientErrorStatus(cause: unknown): number | null {
+  if (typeof cause !== "object" || cause === null) return null;
+  const { status, expose } = cause as { status?: unknown; expose?: unknown };
+  return typeof status === "number" &&
+    Number.isInteger(status) &&
+    status >= 400 &&
+    status < 500 &&
+    expose === true
+    ? status
+    : null;
+}
+
+function errorCodeForStatus(status: number): string {
+  switch (status) {
+    case 413: return "request_too_large";
+    case 415: return "unsupported_media_type";
+    default: return status < 500 ? "invalid_request" : "internal_error";
+  }
+}
+
+/**
+ * Built by hand rather than with the SDK's `createMcpExpressApp`. On the
+ * pinned SDK (1.30.0) that helper installs `express.json()` ahead of every
+ * route at body-parser's default 100 kb with no option to raise it, so it
+ * consumed — and 413'd through Express's HTML default handler — any `/mcp`
+ * body before `readRequestBody` and `MAX_REQUEST_BODY_BYTES` ever ran. A
+ * limit option (newer SDK lines have one) would not be enough either: an
+ * app-level parser reads the body for `req.body` and the SDK transport then
+ * parses it again, so the fix is no app-level parser at all. The helper's
+ * other contribution, `localhostHostValidation()` — the SDK's DNS-rebinding
+ * Host check — stays, ahead of PwrSnap's stricter exact-`host:port` check
+ * in `start()`.
+ *
+ * The SDK's OAuth routers parse for themselves: `/register` mounts
+ * `express.json()`; `/token` and `/revoke` mount only `express.urlencoded()`,
+ * as RFC 6749 / 7009 require. JSON bodies on those two were accepted only
+ * by accident of the removed app-level parser — no shipped client sends
+ * them — and a test pins the 400 so the accident cannot quietly return.
+ */
+function createExpressApp(): Express {
   const app = express();
-  if (LOOPBACK_BIND_HOSTS.has(host)) app.use(localhostHostValidation());
+  app.use(localhostHostValidation());
   return app;
 }
 
@@ -1483,5 +1572,9 @@ async function closeHttpServer(server: HttpServer): Promise<void> {
       if (cause) reject(cause);
       else resolve();
     });
+    // `close()` only reaps idle sockets. A request still uploading, or a
+    // rejected body still draining, would otherwise hold `stop()` open
+    // until Node's requestTimeout — five minutes by default.
+    server.closeAllConnections();
   });
 }

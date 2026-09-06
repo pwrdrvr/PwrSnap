@@ -1554,7 +1554,7 @@ describe("LocalAgentMcpServer", () => {
     expect(echoed === query).toBe(true);
   });
 
-  test("bounds an over-cap chunked upload and keeps serving", async () => {
+  test("rejects an over-cap chunked upload and keeps the connection usable", async () => {
     await grantService.createGrant({
       name: "PwrAgent",
       capabilities: ["library.read"]
@@ -1566,33 +1566,22 @@ describe("LocalAgentMcpServer", () => {
     try {
       // No content-length, so the streaming branch of the cap — not the
       // up-front content-length check — is the only thing that can stop this.
-      // The server rejects mid-stream and closes the connection so the body is
-      // never buffered (RFC 9110 §9.3.6). A well-timed client reads the JSON
-      // 413; one still mid-upload sees the reset instead. Both are acceptable;
-      // asserting a clean 413 here would be racing the upload. What must always
-      // hold is the health property below: no hang, and the next caller is
-      // served — proof the streaming cap fired and released the connection.
       const first = await postMcpChunked(url, agent, function* () {
         yield '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":' +
           '{"name":"pwrsnap_library_search","arguments":{"query":"';
         const piece = "x".repeat(64 * 1024);
         for (let sent = 0; sent < 2 * 1024 * 1024; sent += piece.length) yield piece;
         yield '"}}}';
-      })
-        .then((response) => ({ delivered: true as const, response }))
-        .catch(() => ({ delivered: false as const }));
-      if (first.delivered) {
-        expect(first.response.status).toBe(413);
-        expect(JSON.parse(first.response.body)).toEqual({ error: "request_too_large" });
-        const connection = first.response.headers["connection"];
-        expect(
-          typeof connection === "string" ? connection.toLowerCase() : connection
-        ).toBe("close");
-      }
+      });
+      // The server drains the rejected body before answering (like
+      // body-parser), so the 413 arrives on a keep-alive connection — not as a
+      // mid-upload reset — on every platform.
+      expect(first.status).toBe(413);
+      expect(JSON.parse(first.body)).toEqual({ error: "request_too_large" });
 
-      // The client transparently opens a fresh socket and the server answers
-      // promptly — no multi-second wait. (vitest's 5 s per-test timeout is the
-      // backstop that turns a stall regression here into a failure.)
+      // The next request reuses that connection and is served at once: no
+      // reset, and no wait for the keep-alive timeout. (vitest's 5 s per-test
+      // timeout is the backstop that turns a stall regression into a failure.)
       const second = await postMcpChunked(url, agent, function* () {
         yield toolsCallBody("after");
       });

@@ -1429,37 +1429,37 @@ async function toWebRequest(request: IncomingMessage, url: URL): Promise<Request
 
 function readRequestBody(request: IncomingMessage): Promise<Uint8Array<ArrayBuffer>> {
   const encoding = request.headers["content-encoding"];
-  if (encoding !== undefined && encoding.toLowerCase() !== "identity") {
-    // body-parser used to inflate these. The cap counts wire bytes, so
-    // inflating here would let a 1 MiB gzip bomb allocate ~1 GiB.
-    return Promise.reject(new UnsupportedContentEncodingError());
-  }
-  const contentLength = Number(request.headers["content-length"]);
-  if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BODY_BYTES) {
-    return Promise.reject(new RequestBodyTooLargeError());
-  }
   return new Promise<Uint8Array<ArrayBuffer>>((resolve, reject) => {
     const chunks: Buffer[] = [];
     let totalBytes = 0;
+    // A pending rejection stops us BUFFERING more, but we keep READING until
+    // `end` and answer only then — the same shape body-parser uses. Draining
+    // the rest (and discarding it) is what lets the error reach the client on
+    // a fully-consumed, cleanly reusable keep-alive connection: answering
+    // mid-upload instead either resets the socket before the client reads the
+    // response (measured on Windows) or parks it until the keep-alive
+    // timeout. The cap still bounds MEMORY — what we keep — not the bytes a
+    // client may send; `for await` is avoided because throwing out of it
+    // destroys the request before the response is written.
+    let rejection: Error | null =
+      encoding !== undefined && encoding.toLowerCase() !== "identity"
+        ? new UnsupportedContentEncodingError()
+        : null;
     const onData = (chunk: Buffer | string): void => {
+      if (rejection !== null) return;
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       totalBytes += buffer.length;
       if (totalBytes > MAX_REQUEST_BODY_BYTES) {
-        // Stop reading rather than draining the rest: `jsonErrorHandler`
-        // answers this rejection with `Connection: close`, so the socket is
-        // torn down and an over-cap (or hostile, unbounded) body never
-        // finishes entering this process. `for await` is avoided because
-        // throwing out of it destroys the request before the 413 is written.
-        request.off("data", onData);
-        request.pause();
+        rejection = new RequestBodyTooLargeError();
         chunks.length = 0;
-        reject(new RequestBodyTooLargeError());
         return;
       }
       chunks.push(buffer);
     };
     request.on("data", onData);
-    request.once("end", () => resolve(concatChunks(chunks, totalBytes)));
+    request.once("end", () =>
+      rejection !== null ? reject(rejection) : resolve(concatChunks(chunks, totalBytes))
+    );
     request.once("error", reject);
   });
 }
@@ -1504,13 +1504,6 @@ function jsonErrorHandler(
   if (res.headersSent) {
     if (!res.writableEnded) res.end();
     return;
-  }
-  if (req.complete !== true) {
-    // We answered before the whole body arrived (an over-cap or rejected
-    // upload). RFC 9110 §9.3.6: signal `Connection: close` so the client
-    // does not reuse this socket and Node tears it down after the response,
-    // rather than parking it — undrained — until the keep-alive timeout.
-    res.setHeader("connection", "close");
   }
   writeJsonResponse(res, status, { error: errorCodeForStatus(status) });
 }

@@ -521,6 +521,27 @@ describe("LocalAgentMcpServer", () => {
     );
   });
 
+  test("answers every non-POST verb on /mcp with 405 before auth", async () => {
+    // The endpoint is stateless (one transport + McpServer per POST), so there
+    // is no session for a GET SSE stream or a DELETE to act on. Before this
+    // pin, the SDK transport answered GET with a stream that never ended and
+    // DELETE by building a whole server to close nothing; other verbs reached
+    // the SDK's own 405, which advertised the GET this server refuses. One
+    // answer, one `Allow`, and it comes before auth so nobody can open a
+    // stream. Both verified clients treat the GET 405 as "no stream here".
+    const url = await startServer();
+
+    for (const method of ["GET", "DELETE", "PUT"]) {
+      const res = await fetch(url, {
+        method,
+        headers: method === "GET" ? { accept: "text/event-stream" } : {}
+      });
+      expect(res.status, method).toBe(405);
+      expect(res.headers.get("allow"), method).toBe("POST");
+      expect(await res.json()).toMatchObject({ error: "method_not_allowed" });
+    }
+  });
+
   test("lists tool schemas with read-only and destructive annotations", async () => {
     await grantService.createGrant({
       name: "PwrAgent",

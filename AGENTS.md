@@ -1224,14 +1224,16 @@ Rules:
   `app.dock.setIcon()` paints literally). Do not add a `.icns` /
   `.iconset` back, and do not point `mac.icon` at one.
 - **Every job that packages the mac app needs an actool 26 or newer.**
-  electron-builder hard-fails below that, and GitHub's `macos-15` image
-  defaults to Xcode 16.4.
+  electron-builder hard-fails below that, and its Icon Composer
+  `AssetCatalogAgent` also requires the macOS 26 host frameworks. The macOS
+  packaging jobs therefore run on GitHub's `macos-26` image, not `macos-15`:
+  pointing any Xcode 26 installation at the macOS 15 host crashes the agent
+  with missing CoreMedia/MediaToolbox symbols.
   [select-xcode-for-actool](.github/actions/select-xcode-for-actool/action.yml)
-  pins the macOS 15-compatible Xcode 26.0.1 installation and returns its
-  Developer directory. Do not change it to select the newest Xcode: 26.3's
-  AssetCatalogAgent crashes on the macOS 15 runner while compiling the package.
-  Revisit the pin only when moving the release lane to a newer macOS runner and
-  verifying a signed package end to end. [release.yml](.github/workflows/release.yml) (both macOS
+  verifies the `macos-26` runner's default actool and returns its Developer
+  directory. Do not override that directory with a side-by-side Xcode unless
+  the host/toolchain pair has passed a signed package end-to-end verification.
+  [release.yml](.github/workflows/release.yml) (both macOS
   jobs) and [preview-build.yml](.github/workflows/preview-build.yml) set
   `DEVELOPER_DIR` from it on exactly the steps that run actool — the unit
   tests, so the compile test in

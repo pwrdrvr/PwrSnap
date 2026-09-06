@@ -118,16 +118,20 @@ describe("Windows release configuration", () => {
     expect(existsSync(resolve(repoRoot, "apps/desktop/scripts/build-ffmpeg.mjs"))).toBe(false);
   });
 
-  test("macOS Icon Composer packaging uses the compatible Xcode 26 toolchain", () => {
+  test("macOS Icon Composer packaging uses a macOS 26 runner with its default Xcode", () => {
     const action = read(".github/actions/select-xcode-for-actool/action.yml");
+    const releaseWorkflow = read(".github/workflows/release.yml");
+    const previewWorkflow = read(".github/workflows/preview-build.yml");
 
-    // macos-15 includes both Xcode 26.0.1 and 26.3. Selecting the newest
-    // version chose 26.3, whose AssetCatalogAgent crashes on that host while
-    // electron-builder compiles build/icon.icon. Keep the release lane pinned
-    // to the compatible installation until the runner itself changes.
-    expect(action).toContain("/Applications/Xcode_26.0.1.app/Contents/Developer");
-    expect(action).toContain("Xcode 26.3's AssetCatalogAgent");
-    expect(action).not.toContain("sort -rV");
+    // Any Xcode 26 actool crashes its AssetCatalogAgent against macos-15's
+    // host frameworks. Compile Icon Composer only where the host and selected
+    // default Xcode are from macOS 26; overriding DEVELOPER_DIR to another
+    // side-by-side Xcode recreates the mismatch.
+    expect(releaseWorkflow.match(/runs-on: macos-26/g)).toHaveLength(2);
+    expect(previewWorkflow).toContain("runs-on: macos-26");
+    expect(action).toContain('developer_dir="$(xcode-select -p)"');
+    expect(action).toContain("AssetCatalogAgent must match the macOS 26 host");
+    expect(action).not.toContain("/Applications/Xcode_");
   });
 
   test("tagged release workflow gates publication on Linux, macOS, and Azure-signed Windows", () => {

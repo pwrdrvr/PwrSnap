@@ -86,15 +86,17 @@ Compiled output for our package on this machine:
 | partial Info.plist | `CFBundleIconName = Icon`, `CFBundleIconFile = Icon` |
 | two-key bundle, system-composited | 80.5% box, dark tile, no plate |
 
-The build machine needs Xcode 26+ selected: electron-builder hard-fails on
-`actool` < 26, and GitHub's `macos-15` image defaults to 16.4 with 26.0.1 –
-26.3 installed alongside. `.github/actions/select-xcode-for-actool` pins
-Xcode 26.0.1: the newer 26.3 AssetCatalogAgent crashes against the macOS 15
-host frameworks while compiling this package (first seen in the alpha.7
-release workflow). `release.yml` (both macOS jobs) and `preview-build.yml`
-set `DEVELOPER_DIR` from it on the steps that run actool only, so the native
-helper builds keep the image's toolchain. Revisit the pin only when moving to
-a newer macOS runner and verifying a signed package end to end.
+The build machine needs a macOS 26 host with Xcode 26+ selected:
+electron-builder hard-fails on `actool` < 26, and its
+`AssetCatalogAgent` crashes on GitHub's `macos-15` host even when pointed at
+either installed Xcode 26.0.1 or 26.3. The agent links against CoreMedia and
+MediaToolbox symbols that do not exist on that host (first seen in the alpha.7
+and alpha.8 release workflows). `release.yml` (both macOS jobs) and
+`preview-build.yml` therefore run on `macos-26` and use
+`.github/actions/select-xcode-for-actool` to verify that runner's default
+actool. They set `DEVELOPER_DIR` from it only where electron-builder compiles
+the icon, so the contract stays explicit. Do not override it with a
+side-by-side Xcode without a signed package end-to-end verification.
 
 A limitation to know about: the derived `Icon.icns` carries four reps —
 ic04 / ic11 / ic07 / ic13, i.e. 16, 32, 128 and 256 px — and Ghostty's

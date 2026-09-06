@@ -27,7 +27,7 @@ jobs:
   prepare:
     name: Test and prepare signing input
     if: ${{ github.event_name != 'pull_request' }}
-    runs-on: macos-15 # Apple Silicon GH-hosted runner; matches signing identity
+    runs-on: macos-26 # Icon Composer's actool requires the matching macOS 26 host.
     timeout-minutes: 45
     permissions:
       contents: read
@@ -54,12 +54,11 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      # electron-builder compiles build/icon.icon with actool, which needs
-      # Xcode 26 (the macos-15 image defaults to 16.4). The action returns the
-      # Developer directory; only the steps that run actool set DEVELOPER_DIR
-      # from it, so build:native keeps the image's toolchain and SDK. See
+      # electron-builder compiles build/icon.icon with actool 26+. The
+      # macos-26 runner's default Xcode matches the AssetCatalogAgent host;
+      # the action verifies it and returns its Developer directory. See
       # AGENTS.md "macOS app icon".
-      - name: Select an Xcode with actool 26
+      - name: Verify the macOS 26 runner actool
         id: xcode
         uses: ./.github/actions/select-xcode-for-actool
 
@@ -114,7 +113,7 @@ jobs:
 
   sign:
     name: Sign, notarize, package macOS
-    runs-on: macos-15
+    runs-on: macos-26
     needs: prepare
     timeout-minutes: 60
     environment: apple-signing
@@ -263,7 +262,7 @@ jobs:
 
       # No checkout in this job: the action arrives inside the signing input
       # tarball the prepare job archived (see its tar list).
-      - name: Select an Xcode with actool 26
+      - name: Verify the macOS 26 runner actool
         id: xcode
         uses: ./.github/actions/select-xcode-for-actool
 

@@ -234,7 +234,7 @@ MIT
 - vary@1.1.2 | jshttp/vary
 - yauzl@3.4.0 | https://github.com/thejoshwolfe/yauzl
 - yazl@3.3.1 | https://github.com/thejoshwolfe/yazl
-- zod@4.4.3 | https://github.com/colinhacks/zod
+- zod@4.5.4 | https://github.com/colinhacks/zod
 
 OFL-1.1
 ~~~~~~~
@@ -5359,13 +5359,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-zod@4.4.3 (MIT)
+zod@4.5.4 (MIT)
 ---------------
 
 Applies to:
-- zod@4.4.3 (MIT)
+- zod@4.5.4 (MIT)
 
-Representative file: zod@4.4.3/LICENSE
+Representative file: zod@4.5.4/LICENSE
 
 MIT License
 

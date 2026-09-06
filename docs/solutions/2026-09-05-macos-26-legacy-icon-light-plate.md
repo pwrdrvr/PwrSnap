@@ -88,10 +88,13 @@ Compiled output for our package on this machine:
 
 The build machine needs Xcode 26+ selected: electron-builder hard-fails on
 `actool` < 26, and GitHub's `macos-15` image defaults to 16.4 with 26.0.1 –
-26.3 installed alongside. `.github/actions/select-xcode-for-actool` finds
-the newest stable one with actool 26+, and `release.yml` (both macOS jobs)
-and `preview-build.yml` set `DEVELOPER_DIR` from it on the steps that run
-actool only, so the native helper builds keep the image's toolchain.
+26.3 installed alongside. `.github/actions/select-xcode-for-actool` pins
+Xcode 26.0.1: the newer 26.3 AssetCatalogAgent crashes against the macOS 15
+host frameworks while compiling this package (first seen in the alpha.7
+release workflow). `release.yml` (both macOS jobs) and `preview-build.yml`
+set `DEVELOPER_DIR` from it on the steps that run actool only, so the native
+helper builds keep the image's toolchain. Revisit the pin only when moving to
+a newer macOS runner and verifying a signed package end to end.
 
 A limitation to know about: the derived `Icon.icns` carries four reps —
 ic04 / ic11 / ic07 / ic13, i.e. 16, 32, 128 and 256 px — and Ghostty's

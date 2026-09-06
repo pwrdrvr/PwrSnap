@@ -1227,8 +1227,11 @@ Rules:
   electron-builder hard-fails below that, and GitHub's `macos-15` image
   defaults to Xcode 16.4.
   [select-xcode-for-actool](.github/actions/select-xcode-for-actool/action.yml)
-  finds the newest stable Xcode with actool 26+ and returns its Developer
-  directory; [release.yml](.github/workflows/release.yml) (both macOS
+  pins the macOS 15-compatible Xcode 26.0.1 installation and returns its
+  Developer directory. Do not change it to select the newest Xcode: 26.3's
+  AssetCatalogAgent crashes on the macOS 15 runner while compiling the package.
+  Revisit the pin only when moving the release lane to a newer macOS runner and
+  verifying a signed package end to end. [release.yml](.github/workflows/release.yml) (both macOS
   jobs) and [preview-build.yml](.github/workflows/preview-build.yml) set
   `DEVELOPER_DIR` from it on exactly the steps that run actool — the unit
   tests, so the compile test in

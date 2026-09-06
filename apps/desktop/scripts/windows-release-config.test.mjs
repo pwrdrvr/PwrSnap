@@ -118,6 +118,18 @@ describe("Windows release configuration", () => {
     expect(existsSync(resolve(repoRoot, "apps/desktop/scripts/build-ffmpeg.mjs"))).toBe(false);
   });
 
+  test("macOS Icon Composer packaging uses the compatible Xcode 26 toolchain", () => {
+    const action = read(".github/actions/select-xcode-for-actool/action.yml");
+
+    // macos-15 includes both Xcode 26.0.1 and 26.3. Selecting the newest
+    // version chose 26.3, whose AssetCatalogAgent crashes on that host while
+    // electron-builder compiles build/icon.icon. Keep the release lane pinned
+    // to the compatible installation until the runner itself changes.
+    expect(action).toContain("/Applications/Xcode_26.0.1.app/Contents/Developer");
+    expect(action).toContain("Xcode 26.3's AssetCatalogAgent");
+    expect(action).not.toContain("sort -rV");
+  });
+
   test("tagged release workflow gates publication on Linux, macOS, and Azure-signed Windows", () => {
     const workflow = read(".github/workflows/release.yml");
 

@@ -266,6 +266,11 @@ pnpm --filter @pwrsnap/desktop package         # signed + notarized, no publish
 pnpm --filter @pwrsnap/desktop release         # signed + notarized + publish
 ```
 
+All three need an Xcode 26 or newer selected (`xcode-select -p`, or export
+`DEVELOPER_DIR`): electron-builder compiles `build/icon.icon` with `actool` and
+refuses older versions. CI selects one with
+`.github/actions/select-xcode-for-actool`; see AGENTS.md "macOS app icon".
+
 Verify the produced `.app`:
 
 ```bash

@@ -1223,14 +1223,31 @@ Rules:
   master) and `icon-macos.png` (padded — the development Dock icon, which
   `app.dock.setIcon()` paints literally). Do not add a `.icns` /
   `.iconset` back, and do not point `mac.icon` at one.
-- **The build machine must have Xcode 26+ selected.** electron-builder
-  hard-fails on `actool` < 26. GitHub's `macos-15` image defaults to
-  Xcode 16.4 with several 26.x installed, so both macOS jobs in
-  [release.yml](.github/workflows/release.yml) run a "Select Xcode 26"
-  step that picks the newest and asserts the version. Keep that step
-  ahead of `pnpm test` — it is what lets the actool compile test in
-  [app-icon.test.mjs](apps/desktop/scripts/app-icon.test.mjs) run instead
-  of skip.
+- **Every job that packages the mac app needs an actool 26 or newer.**
+  electron-builder hard-fails below that, and GitHub's `macos-15` image
+  defaults to Xcode 16.4.
+  [select-xcode-for-actool](.github/actions/select-xcode-for-actool/action.yml)
+  finds the newest stable Xcode with actool 26+ and returns its Developer
+  directory; [release.yml](.github/workflows/release.yml) (both macOS
+  jobs) and [preview-build.yml](.github/workflows/preview-build.yml) set
+  `DEVELOPER_DIR` from it on exactly the steps that run actool — the unit
+  tests, so the compile test in
+  [app-icon.test.mjs](apps/desktop/scripts/app-icon.test.mjs) runs
+  instead of skips (that step also sets `PWRSNAP_REQUIRE_ACTOOL=1`, so on
+  the release lane the suite fails rather than skips when the probe finds
+  no actool 26) — and electron-builder, so the icon compile does not
+  move `build:native` (swiftc helpers, the Quick Look extensions) onto a
+  different SDK. The sign job has no checkout, so the action rides inside
+  the archived signing input. Locally, select an Xcode 26
+  (`xcode-select`, or `DEVELOPER_DIR`) before `package:dryrun`.
+- **The compile test calls electron-builder's own helper**
+  (`app-builder-lib/out/util/macosIconComposer.generateAssetCatalogForIcon`),
+  not a copied actool command line, so the two cannot drift.
+- **actool's derived `.icns` carries 16, 32, 128 and 256px reps only** —
+  the same four Ghostty ships. macOS 15 upsamples the 256px rep for
+  Finder's largest icon sizes and Quick Look, where the deleted hand-built
+  icns had 512 and 1024. Accepted for now; an `afterPack` hook could
+  splice larger reps rendered from `icon-macos.png` if it ever matters.
 - **`actool` resolves `--app-icon Icon` by the package's basename.** Fed
   `build/icon.icon` directly it exits 0 and silently writes no `.icns`.
   electron-builder copies the package to `Icon.icon` first; do the same
@@ -1243,7 +1260,10 @@ Rules:
   that to a bitmap and measure the opaque bounds (recipe in the solutions
   doc). Do it on a machine running the newest macOS you ship to — this
   class of bug is invisible one point release back, and GitHub runners lag
-  further.
+  further. Probe a `.pwrsnap` file as well as the app: the document icon
+  (`UTTypeIconFile` / `CFBundleTypeIconFile` in electron-builder.yml) still
+  comes from the derived, padded `.icns`, and whether 26.6.2 plates it has
+  not been measured — see the solutions doc's open item.
 
 Full investigation, measurements, and the probe recipe:
 [docs/solutions/2026-09-05-macos-26-legacy-icon-light-plate.md](docs/solutions/2026-09-05-macos-26-legacy-icon-light-plate.md).

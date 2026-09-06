@@ -54,29 +54,21 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      # electron-builder compiles build/icon.icon (Icon Composer) with actool,
-      # which needs Xcode 26+. The macos-15 image defaults to Xcode 16.4 but
-      # ships several 26.x — select the newest and fail here, readably, rather
-      # than mid-package. Selecting it before the unit tests also lets the
-      # actool compile test in apps/desktop/scripts/app-icon.test.mjs run
-      # instead of skip.
-      - name: Select Xcode 26 for the app-icon compile
-        run: |
-          set -euo pipefail
-          xcode="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1 || true)"
-          if [ -z "$xcode" ]; then
-            echo "::error::no /Applications/Xcode_26*.app on this runner image; build/icon.icon cannot be compiled" >&2
-            exit 1
-          fi
-          sudo xcode-select -s "$xcode/Contents/Developer"
-          actool_version="$(xcrun actool --version | python3 -c 'import plistlib, sys; print(plistlib.load(sys.stdin.buffer)["com.apple.actool.version"]["short-bundle-version"])')"
-          echo "xcode-select -> $xcode (actool $actool_version)"
-          if [ "${actool_version%%.*}" -lt 26 ]; then
-            echo "::error::actool $actool_version is older than 26; build/icon.icon cannot be compiled" >&2
-            exit 1
-          fi
+      # electron-builder compiles build/icon.icon with actool, which needs
+      # Xcode 26 (the macos-15 image defaults to 16.4). The action returns the
+      # Developer directory; only the steps that run actool set DEVELOPER_DIR
+      # from it, so build:native keeps the image's toolchain and SDK. See
+      # AGENTS.md "macOS app icon".
+      - name: Select an Xcode with actool 26
+        id: xcode
+        uses: ./.github/actions/select-xcode-for-actool
 
       - name: Test (unit)
+        env:
+          # Lets the actool compile test in apps/desktop/scripts/app-icon.test.mjs run instead of skip,
+          # and REQUIRE_ACTOOL makes that suite fail rather than skip if the selection is ever wrong.
+          DEVELOPER_DIR: ${{ steps.xcode.outputs.developer-dir }}
+          PWRSNAP_REQUIRE_ACTOOL: "1"
         run: pnpm test
 
       - name: Prepare release stage
@@ -99,6 +91,7 @@ jobs:
             apps/desktop/package.json \
             apps/desktop/electron-builder.yml \
             apps/desktop/release-stage \
+            .github/actions/select-xcode-for-actool \
             apps/desktop/scripts/release.mjs \
             apps/desktop/scripts/rebuild-native-for-electron.mjs \
             apps/desktop/scripts/sharp-platform-packages.mjs \
@@ -268,26 +261,17 @@ jobs:
           cp "$dir/SOURCE-OFFER.txt" apps/desktop/release-stage/build/ffmpeg-source/ffmpeg-8.1.1-macos-universal-SOURCE-OFFER.txt
           cp "$dir/LGPL-NOTICE.txt" apps/desktop/release-stage/build/ffmpeg-source/ffmpeg-8.1.1-macos-universal-LGPL-NOTICE.txt
 
-      # Same selection as the prepare job: electron-builder runs actool here
-      # to compile build/icon.icon, and the image's default Xcode 16.4 cannot.
-      - name: Select Xcode 26 for the app-icon compile
-        run: |
-          set -euo pipefail
-          xcode="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1 || true)"
-          if [ -z "$xcode" ]; then
-            echo "::error::no /Applications/Xcode_26*.app on this runner image; build/icon.icon cannot be compiled" >&2
-            exit 1
-          fi
-          sudo xcode-select -s "$xcode/Contents/Developer"
-          actool_version="$(xcrun actool --version | python3 -c 'import plistlib, sys; print(plistlib.load(sys.stdin.buffer)["com.apple.actool.version"]["short-bundle-version"])')"
-          echo "xcode-select -> $xcode (actool $actool_version)"
-          if [ "${actool_version%%.*}" -lt 26 ]; then
-            echo "::error::actool $actool_version is older than 26; build/icon.icon cannot be compiled" >&2
-            exit 1
-          fi
+      # No checkout in this job: the action arrives inside the signing input
+      # tarball the prepare job archived (see its tar list).
+      - name: Select an Xcode with actool 26
+        id: xcode
+        uses: ./.github/actions/select-xcode-for-actool
 
       - name: Sign, notarize, package macOS
         env:
+          # electron-builder compiles build/icon.icon with this Xcode's actool.
+          DEVELOPER_DIR: ${{ steps.xcode.outputs.developer-dir }}
+
           # Code signing (Developer ID Application: PwrDrvr LLC, T44CNHC4UH).
           # These come from the apple-signing GitHub Environment, NOT from
           # repository secrets. The environment is protected by required

@@ -110,7 +110,8 @@ Expected, after the deviceRGB fixes:
 - Regenerate after editing either generator:
   `pnpm --filter @pwrsnap/desktop generate:app-icon` and
   `pnpm --filter @pwrsnap/desktop generate:dmg-background`. Both commit their
-  PNG output (and the icon's `.iconset` + `.icns`).
+  PNG output; the icon generator also commits `build/icon.icon/` (no
+  `.iconset` / `.icns` any more — see AGENTS.md "macOS app icon").
 - Don't unify the icon to `#ff8a1f` or the wordmark to `#e8743a` — the
   two-orange split is intentional and matches PwrAgent.
 - If you ever see an orange that isn't `#ff8a1f` or `#e8743a` in a rendered

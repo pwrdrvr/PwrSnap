@@ -88,8 +88,17 @@ Compiled output for our package on this machine:
 
 The build machine needs Xcode 26+ selected: electron-builder hard-fails on
 `actool` < 26, and GitHub's `macos-15` image defaults to 16.4 with 26.0.1 –
-26.3 installed alongside. `release.yml` selects the newest 26.x in both
-macOS jobs and asserts the version.
+26.3 installed alongside. `.github/actions/select-xcode-for-actool` finds
+the newest stable one with actool 26+, and `release.yml` (both macOS jobs)
+and `preview-build.yml` set `DEVELOPER_DIR` from it on the steps that run
+actool only, so the native helper builds keep the image's toolchain.
+
+A limitation to know about: the derived `Icon.icns` carries four reps —
+ic04 / ic11 / ic07 / ic13, i.e. 16, 32, 128 and 256 px — and Ghostty's
+actool-made icns has the same four. The hand-built icns had 512 and 1024 px
+too, so macOS 15 now upsamples 256 px for Finder's largest icon view and
+Quick Look. Accepted; an `afterPack` hook could splice larger reps rendered
+from `icon-macos.png` if it ever matters.
 
 One actool trap, found while writing the test: **`--app-icon Icon` is
 resolved by the package's basename.** Compile `build/icon.icon` directly
@@ -97,7 +106,8 @@ with that flag and actool exits 0, writes `Assets.car`, and silently emits
 **no `Icon.icns`** — the app icon was never registered as the app icon.
 electron-builder copies the package to `Icon.icon` before compiling for
 exactly this reason (`macosIconComposer.js`), and `app-icon.test.mjs`
-stages it the same way. Compile by hand the same way, or check for the
+compiles through that same helper (`generateAssetCatalogForIcon`) rather
+than a copied command line, so the two cannot drift. Compile by hand the same way, or check for the
 `.icns` in the output.
 
 The proof for this PR was the real pipeline, not the scratch compile:
@@ -148,6 +158,20 @@ Three things this investigation kept tripping over:
   (the literal canvas); `NSWorkspace.icon(forFile:)` on the `.app` shows
   what macOS 26 draws. Measuring one and reasoning about the other is how
   #534 looked correct.
+
+## Still open — the `.pwrsnap` document icon
+
+`UTTypeIconFile` and `CFBundleTypeIconFile` in electron-builder.yml still
+name `icon.icns`, which is now the actool-derived, padded file. Document
+types have no `.icon` path through electron-builder (actool takes a single
+`--app-icon`), so any surface that draws a `.pwrsnap` file's type icon
+rather than its Quick Look thumbnail — Open / Save panels, drag badges,
+"Open With" lists, the thumbnail extension's failure fallback — hands
+macOS 26 the same padded input that plated the app icon. Whether it plates
+a *document* icon the same way is not measured: the probe above was only
+run against `PwrSnap.app`. Run it against a `.pwrsnap` file on 26.6.2. If
+it plates, the likely fix is an `afterPack` hook that writes a separate
+full-bleed document `.icns` from `icon.png` and points both keys at it.
 
 ## What we ruled out first
 

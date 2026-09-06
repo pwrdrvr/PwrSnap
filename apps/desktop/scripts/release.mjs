@@ -406,7 +406,13 @@ function maybePrepareCodesignKeychain() {
     );
   }
 
-  process.env.CSC_KEYCHAIN = keychainPath;
+  // This keychain exists only so afterPack-sign-appex can sign the Quick Look
+  // extension before electron-builder signs the parent app. Do not expose it
+  // as CSC_KEYCHAIN: electron-builder treats that as its own keychain and
+  // retries set-key-partition-list with CSC_KEY_PASSWORD (the .p12 password),
+  // while this keychain uses the generated keychainPassword. Keep it first in
+  // the user search list and let electron-builder create/manage its normal
+  // CSC_LINK keychain with the matching credentials.
   process.env.PWRSNAP_APPEX_SIGN_IDENTITY ??= identity;
   process.env.CSC_NAME ??= stripDeveloperIdApplicationPrefix(identity);
   codesignKeychainCleanup = () => restoreCodesignKeychains(originalKeychains, keychainPath);

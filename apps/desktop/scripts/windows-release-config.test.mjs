@@ -118,6 +118,18 @@ describe("Windows release configuration", () => {
     expect(existsSync(resolve(repoRoot, "apps/desktop/scripts/build-ffmpeg.mjs"))).toBe(false);
   });
 
+  test("macOS afterPack keychain preload stays separate from electron-builder's keychain", () => {
+    const script = read("apps/desktop/scripts/release.mjs");
+
+    // The preload gives afterPack-sign-appex a Developer ID identity before
+    // electron-builder signs the parent app. Its password is generated, while
+    // CSC_KEY_PASSWORD unlocks the .p12; exporting it as CSC_KEYCHAIN makes
+    // electron-builder use the wrong password for set-key-partition-list.
+    expect(script).toContain("Keep it first in");
+    expect(script).toContain("let electron-builder create/manage its normal");
+    expect(script).not.toContain("process.env.CSC_KEYCHAIN");
+  });
+
   test("macOS Icon Composer packaging uses a macOS 26 runner with its default Xcode", () => {
     const action = read(".github/actions/select-xcode-for-actool/action.yml");
     const releaseWorkflow = read(".github/workflows/release.yml");

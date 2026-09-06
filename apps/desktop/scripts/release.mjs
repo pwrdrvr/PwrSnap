@@ -336,21 +336,21 @@ function maybeDecodeCscLink() {
 // preload the .p12 into a temporary keychain so both the hook and
 // electron-builder resolve the same Developer ID identity deterministically.
 function maybePrepareCodesignKeychain() {
-  if (process.platform !== "darwin") return;
-  if (!process.env.CSC_LINK) return;
+  if (process.platform !== "darwin") return false;
+  if (!process.env.CSC_LINK) return false;
   if (!process.env.CSC_KEY_PASSWORD) {
     throw new Error("CSC_LINK is set but CSC_KEY_PASSWORD is missing");
   }
   const certificatePath = cscLinkFilePath();
   if (certificatePath === null) {
-    return;
+    return false;
   }
 
   const existingIdentity = findDeveloperIdIdentity(null);
   if (existingIdentity !== null) {
     process.env.PWRSNAP_APPEX_SIGN_IDENTITY ??= existingIdentity;
     process.env.CSC_NAME ??= stripDeveloperIdApplicationPrefix(existingIdentity);
-    return;
+    return true;
   }
 
   const keychainPath = join(
@@ -423,6 +423,7 @@ function maybePrepareCodesignKeychain() {
     }
   });
   console.log(`  imported CSC_LINK into temporary keychain for ${identity}`);
+  return true;
 }
 
 if (!signStageOnly) {
@@ -559,7 +560,16 @@ step(
 maybeDecodeAppleApiKey();
 if (!dryrun) {
   maybeDecodeCscLink();
-  maybePrepareCodesignKeychain();
+  if (maybePrepareCodesignKeychain()) {
+    // electron-builder 26.15.x passes CSC_KEY_PASSWORD (the .p12 import
+    // password) to security set-key-partition-list for the keychain it creates.
+    // macOS 26 correctly rejects that password. The Developer ID identity is
+    // already in our temporary keychain and first in the user search list, so
+    // sign through CSC_NAME instead of asking electron-builder to import it.
+    delete process.env.CSC_LINK;
+    delete process.env.CSC_KEY_PASSWORD;
+    console.log("  using preloaded Developer ID keychain for electron-builder signing");
+  }
 }
 // Fail loudly BEFORE invoking electron-builder if we expect to
 // notarize but don't have the creds. Cheaper than letting the

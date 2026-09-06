@@ -118,15 +118,17 @@ describe("Windows release configuration", () => {
     expect(existsSync(resolve(repoRoot, "apps/desktop/scripts/build-ffmpeg.mjs"))).toBe(false);
   });
 
-  test("macOS afterPack keychain preload stays separate from electron-builder's keychain", () => {
+  test("macOS signing uses the preloaded keychain instead of electron-builder's broken import", () => {
     const script = read("apps/desktop/scripts/release.mjs");
 
     // The preload gives afterPack-sign-appex a Developer ID identity before
     // electron-builder signs the parent app. Its password is generated, while
-    // CSC_KEY_PASSWORD unlocks the .p12; exporting it as CSC_KEYCHAIN makes
-    // electron-builder use the wrong password for set-key-partition-list.
+    // CSC_KEY_PASSWORD unlocks the .p12. electron-builder 26.15.x passes the
+    // .p12 password to set-key-partition-list for its own generated keychain.
     expect(script).toContain("Keep it first in");
-    expect(script).toContain("let electron-builder create/manage its normal");
+    expect(script).toContain("using preloaded Developer ID keychain");
+    expect(script).toContain("delete process.env.CSC_LINK");
+    expect(script).toContain("delete process.env.CSC_KEY_PASSWORD");
     expect(script).not.toContain("process.env.CSC_KEYCHAIN");
   });
 

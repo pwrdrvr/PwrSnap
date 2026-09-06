@@ -375,8 +375,7 @@ export function LocalAgentsPage(): ReactElement {
 
   // Copy feedback lives on the button, not in the page-level error banner: a
   // clipboard failure is not a "local agent update", and the banner is sticky
-  // until some other action succeeds. The hook keys feedback by recipe id so
-  // only the clicked button flips, and owns the one reset timer.
+  // until some other action succeeds.
   const { feedback: copyFeedback, copy: copyRecipe } = useCopyText();
 
   // Why the connect commands are not showing. The recipes are gated on the

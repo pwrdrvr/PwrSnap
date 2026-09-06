@@ -1,9 +1,13 @@
 // One "copy text → show Copied → reset after a moment" for every renderer
 // surface that can reach the command bus. The copy goes through
 // `clipboard:copyText` — the main-process chokepoint for plain-text
-// clipboard writes (see `library-handlers.ts`) — never through
-// `navigator.clipboard`: renderers are sandboxed, and the bus is the one
-// place a redaction policy or audit hook plugs in.
+// clipboard writes (see `library-handlers.ts`) — not `navigator.clipboard`,
+// which would also work from a sandboxed renderer: the bus is the one place
+// a redaction policy or audit hook plugs in, so every copy should land
+// there. In experimental process-split mode the verb is library-owned (see
+// `command-routing.ts`), so a float-over or tray adopter would forward the
+// copy to the library process and could spawn it; keep the hook on
+// library-owned surfaces until that verb is registered in both.
 //
 // The hook owns exactly one feedback timer. A repeat click re-arms it, so
 // an older click cannot cut a newer "Copied" short, and unmount clears it,
@@ -21,9 +25,7 @@ import { dispatch } from "./pwrsnap";
 /** How long "Copied" / "Copy failed" stays on the button. */
 export const COPY_TEXT_FEEDBACK_MS = 1_500;
 
-export type CopyTextStatus = "copied" | "failed";
-
-export type CopyTextFeedback = { id: string; status: CopyTextStatus };
+export type CopyTextFeedback = { id: string; status: "copied" | "failed" };
 
 export type UseCopyTextValue = {
   /** Which button to flip and what it should say, or null once reset. */
@@ -37,33 +39,41 @@ export type UseCopyTextValue = {
 
 export function useCopyText(): UseCopyTextValue {
   const [feedback, setFeedback] = useState<CopyTextFeedback | null>(null);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Monotonic per click. A copy that resolves after a newer one started must
-  // not overwrite the newer feedback or re-arm its timer — the clipboard holds
-  // the newer text, so the newer button is the one telling the truth.
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Monotonic per click, bumped again on cleanup. A copy that resolves after
+  // a newer click started, or after the component went away, is dropped: it
+  // must not overwrite the newer feedback or re-arm its timer. What shows is
+  // the newest click's own outcome — not necessarily what the clipboard
+  // holds, since an older copy can succeed where the newer one failed.
   const seq = useRef(0);
-  const mounted = useRef(false);
 
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-      if (timer.current !== null) clearTimeout(timer.current);
-      timer.current = null;
-    };
-  }, []);
+  useEffect(
+    () => () => {
+      seq.current += 1;
+      clearTimeout(timer.current);
+      // Fast Refresh re-runs effects with state intact, so the label would
+      // otherwise outlive its timer. A silent no-op on a real unmount.
+      setFeedback(null);
+    },
+    []
+  );
 
   const copy = useCallback(
     async (id: string, text: string): Promise<Result<void, PwrSnapError>> => {
       const mine = ++seq.current;
       const result = await dispatch("clipboard:copyText", { text });
-      if (!mounted.current || mine !== seq.current) return result;
-      setFeedback({ id, status: result.ok ? "copied" : "failed" });
-      if (timer.current !== null) clearTimeout(timer.current);
-      timer.current = setTimeout(() => {
-        timer.current = null;
-        setFeedback(null);
-      }, COPY_TEXT_FEEDBACK_MS);
+      if (mine !== seq.current) return result;
+      const status = result.ok ? "copied" : "failed";
+      // Keep the identity when nothing changed, so a repeat click on the same
+      // button bails out of a re-render (the Logs window reconciles thousands
+      // of lines on each one). The timer still re-arms below.
+      setFeedback((current) =>
+        current !== null && current.id === id && current.status === status
+          ? current
+          : { id, status }
+      );
+      clearTimeout(timer.current);
+      timer.current = setTimeout(() => setFeedback(null), COPY_TEXT_FEEDBACK_MS);
       return result;
     },
     []

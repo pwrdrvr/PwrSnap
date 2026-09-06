@@ -55,7 +55,9 @@ export function LogsWindow(): ReactElement {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { feedback: copyFeedback, copy: copyText } = useCopyText();
-  const copied = copyFeedback?.status === "copied";
+  const copyStatus =
+    copyFeedback?.id === LOG_FILE_PATH_COPY_ID ? copyFeedback.status : null;
+  const copied = copyStatus === "copied";
 
   const setFollowingMode = useCallback((value: boolean) => {
     followingRef.current = value;
@@ -170,8 +172,9 @@ export function LogsWindow(): ReactElement {
 
   const copyPath = useCallback(async () => {
     if (logFilePath === undefined) return;
-    // The hook flips the button to "Copied"; a failure here is worth more
-    // than a label, so it also lands in the window's error line.
+    // The hook flips the button to "Copied" / "Copy failed"; the reason for
+    // a failure is worth more than a label, so it also lands in the window's
+    // error line.
     const result = await copyText(LOG_FILE_PATH_COPY_ID, logFilePath);
     if (!result.ok) setError(result.error.message);
   }, [copyText, logFilePath]);
@@ -233,7 +236,7 @@ export function LogsWindow(): ReactElement {
           <div className="log-window__file" aria-label="Log file path">
             <span className="log-window__file-label">File</span>
             <code className="log-window__file-path" title={logFilePath}>{logFilePath}</code>
-            <button className="log-window__file-action" data-copied={copied || undefined} type="button" onClick={() => void copyPath()}>{copied ? "Copied" : "Copy"}</button>
+            <button className="log-window__file-action" data-copied={copied || undefined} type="button" onClick={() => void copyPath()}>{copyStatus === "copied" ? "Copied" : copyStatus === "failed" ? "Copy failed" : "Copy"}</button>
             <button className="log-window__file-action" type="button" onClick={() => void revealPath()}>Reveal</button>
           </div>
         ) : null}

@@ -91,7 +91,8 @@ flattens *within* one tier only and is **not** sufficient here, where the
 compounding is *between* tiers of different alpha.
 
 Touching either generator means regenerating and committing the assets:
-`pnpm --filter @pwrsnap/desktop generate:app-icon` (+ `iconutil -c icns`) and
+`pnpm --filter @pwrsnap/desktop generate:app-icon` (which also writes the
+Icon Composer package `build/icon.icon/`; there is no `.icns` to build) and
 `pnpm --filter @pwrsnap/desktop tray-icon`.
 
 ### Don'ts

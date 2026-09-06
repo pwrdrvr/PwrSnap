@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.1.0-alpha.10 - 2026-09-06
+## v1.1.0-alpha.11 - 2026-09-06
 
 This alpha makes screen capture and update selection more dependable across
 Windows and prerelease channels.

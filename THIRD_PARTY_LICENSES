@@ -18,12 +18,12 @@ Bundled Asset Notes
 The renderer build emits Geist Sans and Geist Mono webfont assets from @fontsource/geist-sans and @fontsource/geist-mono. Those packages are listed below under OFL-1.1, and their SIL Open Font License text is included in the License Texts section.
 Build-time-only assets that are rendered into images, such as the DMG background image, do not distribute the font software itself and are not listed separately here.
 PwrSnap's release artifacts also bundle sharp's platform-specific native runtime packages. sharp publishes these as OS+CPU-specific optional dependencies, so a production dependency listing either hides them entirely or reports only the slice matching the machine that ran the listing. They are therefore enumerated from what the release artifacts actually bundle and read from their own installed metadata, which keeps this notice identical on every platform including Linux CI:
-- @img/sharp-darwin-arm64@0.35.3 (Apache-2.0) — macOS universal build (arm64 slice)
-- @img/sharp-darwin-x64@0.35.3 (Apache-2.0) — macOS universal build (x64 slice)
-- @img/sharp-libvips-darwin-arm64@1.3.2 (LGPL-3.0-or-later) — macOS universal build (arm64 slice)
-- @img/sharp-libvips-darwin-x64@1.3.2 (LGPL-3.0-or-later) — macOS universal build (x64 slice)
-- @img/sharp-win32-x64@0.35.3 (Apache-2.0 AND LGPL-3.0-or-later) — Windows x64 installer
-PwrSnap ships 4 weak-copyleft bundled binaries — FFmpeg@8.1.1 (LGPL-2.1-or-later), @img/sharp-libvips-darwin-arm64@1.3.2 (LGPL-3.0-or-later), @img/sharp-libvips-darwin-x64@1.3.2 (LGPL-3.0-or-later), @img/sharp-win32-x64@0.35.3 (LGPL-3.0-or-later). Their full canonical FSF license texts and the corresponding relinking / written source offers are reproduced in the "Full License Texts — Weak-Copyleft Bundled Binaries" section at the end of this notice.
+- @img/sharp-darwin-arm64@0.35.4 (Apache-2.0) — macOS universal build (arm64 slice)
+- @img/sharp-darwin-x64@0.35.4 (Apache-2.0) — macOS universal build (x64 slice)
+- @img/sharp-libvips-darwin-arm64@1.3.3 (LGPL-3.0-or-later) — macOS universal build (arm64 slice)
+- @img/sharp-libvips-darwin-x64@1.3.3 (LGPL-3.0-or-later) — macOS universal build (x64 slice)
+- @img/sharp-win32-x64@0.35.4 (Apache-2.0 AND LGPL-3.0-or-later) — Windows x64 installer
+PwrSnap ships 4 weak-copyleft bundled binaries — FFmpeg@8.1.1 (LGPL-2.1-or-later), @img/sharp-libvips-darwin-arm64@1.3.3 (LGPL-3.0-or-later), @img/sharp-libvips-darwin-x64@1.3.3 (LGPL-3.0-or-later), @img/sharp-win32-x64@0.35.4 (LGPL-3.0-or-later). Their full canonical FSF license texts and the corresponding relinking / written source offers are reproduced in the "Full License Texts — Weak-Copyleft Bundled Binaries" section at the end of this notice.
 
 Dependency Summary
 ------------------
@@ -39,15 +39,15 @@ Dependency Summary
 Apache-2.0
 ~~~~~~~~~~
 - @agentclientprotocol/sdk@1.3.0 | https://github.com/agentclientprotocol/typescript-sdk
-- @img/sharp-darwin-arm64@0.35.3 | https://github.com/lovell/sharp
-- @img/sharp-darwin-x64@0.35.3 | https://github.com/lovell/sharp
+- @img/sharp-darwin-arm64@0.35.4 | https://github.com/lovell/sharp
+- @img/sharp-darwin-x64@0.35.4 | https://github.com/lovell/sharp
 - detect-libc@2.1.2 | https://github.com/lovell/detect-libc
-- sharp@0.35.3 | https://github.com/lovell/sharp
+- sharp@0.35.4 | https://github.com/lovell/sharp
 - tunnel-agent@0.6.0 | https://github.com/mikeal/tunnel-agent
 
 Apache-2.0 AND LGPL-3.0-or-later
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-- @img/sharp-win32-x64@0.35.3 | https://github.com/lovell/sharp
+- @img/sharp-win32-x64@0.35.4 | https://github.com/lovell/sharp
 
 BSD-2-Clause
 ~~~~~~~~~~~~
@@ -85,8 +85,8 @@ LGPL-2.1-or-later
 
 LGPL-3.0-or-later
 ~~~~~~~~~~~~~~~~~
-- @img/sharp-libvips-darwin-arm64@1.3.2 | https://github.com/lovell/sharp-libvips
-- @img/sharp-libvips-darwin-x64@1.3.2 | https://github.com/lovell/sharp-libvips
+- @img/sharp-libvips-darwin-arm64@1.3.3 | https://github.com/lovell/sharp-libvips
+- @img/sharp-libvips-darwin-x64@1.3.3 | https://github.com/lovell/sharp-libvips
 
 MIT
 ~~~
@@ -771,15 +771,15 @@ The above copyright notice and this permission notice shall be included in all c
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-@img/sharp-darwin-arm64@0.35.3 (Apache-2.0)
+@img/sharp-darwin-arm64@0.35.4 (Apache-2.0)
 -------------------------------------------
 
 Applies to:
-- @img/sharp-darwin-arm64@0.35.3 (Apache-2.0)
-- @img/sharp-darwin-x64@0.35.3 (Apache-2.0)
-- sharp@0.35.3 (Apache-2.0)
+- @img/sharp-darwin-arm64@0.35.4 (Apache-2.0)
+- @img/sharp-darwin-x64@0.35.4 (Apache-2.0)
+- sharp@0.35.4 (Apache-2.0)
 
-Representative file: @img/sharp-darwin-arm64@0.35.3/LICENSE
+Representative file: @img/sharp-darwin-arm64@0.35.4/LICENSE
 
 Apache License
 Version 2.0, January 2004
@@ -973,15 +973,15 @@ third-party archives.
    See the License for the specific language governing permissions and
    limitations under the License.
 
-@img/sharp-libvips-darwin-arm64@1.3.2 (LGPL-3.0-or-later)
+@img/sharp-libvips-darwin-arm64@1.3.3 (LGPL-3.0-or-later)
 ---------------------------------------------------------
 
 Applies to:
-- @img/sharp-libvips-darwin-arm64@1.3.2 (LGPL-3.0-or-later)
+- @img/sharp-libvips-darwin-arm64@1.3.3 (LGPL-3.0-or-later)
 
-Representative file: @img/sharp-libvips-darwin-arm64@1.3.2/package metadata + PwrSnap cross-reference
+Representative file: @img/sharp-libvips-darwin-arm64@1.3.3/package metadata + PwrSnap cross-reference
 
-No license text file was found in the installed package for @img/sharp-libvips-darwin-arm64@1.3.2.
+No license text file was found in the installed package for @img/sharp-libvips-darwin-arm64@1.3.3.
 The package declares license: LGPL-3.0-or-later.
 
 @img/sharp-libvips-darwin-arm64 ships libvips-cpp under the GNU Lesser General Public License,
@@ -989,15 +989,15 @@ version 3 or later. The full LGPL-3.0 text and the corresponding relinking /
 written source offer are reproduced below under "Full License Texts — Weak-Copyleft
 Bundled Binaries".
 
-@img/sharp-libvips-darwin-x64@1.3.2 (LGPL-3.0-or-later)
+@img/sharp-libvips-darwin-x64@1.3.3 (LGPL-3.0-or-later)
 -------------------------------------------------------
 
 Applies to:
-- @img/sharp-libvips-darwin-x64@1.3.2 (LGPL-3.0-or-later)
+- @img/sharp-libvips-darwin-x64@1.3.3 (LGPL-3.0-or-later)
 
-Representative file: @img/sharp-libvips-darwin-x64@1.3.2/package metadata + PwrSnap cross-reference
+Representative file: @img/sharp-libvips-darwin-x64@1.3.3/package metadata + PwrSnap cross-reference
 
-No license text file was found in the installed package for @img/sharp-libvips-darwin-x64@1.3.2.
+No license text file was found in the installed package for @img/sharp-libvips-darwin-x64@1.3.3.
 The package declares license: LGPL-3.0-or-later.
 
 @img/sharp-libvips-darwin-x64 ships libvips-cpp under the GNU Lesser General Public License,
@@ -1005,13 +1005,13 @@ version 3 or later. The full LGPL-3.0 text and the corresponding relinking /
 written source offer are reproduced below under "Full License Texts — Weak-Copyleft
 Bundled Binaries".
 
-@img/sharp-win32-x64@0.35.3 (Apache-2.0 AND LGPL-3.0-or-later)
+@img/sharp-win32-x64@0.35.4 (Apache-2.0 AND LGPL-3.0-or-later)
 --------------------------------------------------------------
 
 Applies to:
-- @img/sharp-win32-x64@0.35.3 (Apache-2.0 AND LGPL-3.0-or-later)
+- @img/sharp-win32-x64@0.35.4 (Apache-2.0 AND LGPL-3.0-or-later)
 
-Representative file: @img/sharp-win32-x64@0.35.3/LICENSE + PwrSnap cross-reference
+Representative file: @img/sharp-win32-x64@0.35.4/LICENSE + PwrSnap cross-reference
 
 Apache License
 Version 2.0, January 2004
@@ -5421,7 +5421,7 @@ license text and an offer to relink/obtain corresponding source. The verbatim ca
 license texts follow, sourced from https://www.gnu.org/licenses/ and committed under
 scripts/license-texts/.
 
-@img/sharp-libvips-darwin-arm64@1.3.2 (LGPL-3.0-or-later)
+@img/sharp-libvips-darwin-arm64@1.3.3 (LGPL-3.0-or-later)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 PwrSnap's macOS universal build (arm64 slice) bundles the prebuilt libvips-cpp shipped in
@@ -5436,7 +5436,7 @@ The corresponding source for libvips and its dependencies is published at the UR
 PwrDrvr LLC will additionally provide the corresponding source on written request to
 support@pwrdrvr.com for at least three years from the date of distribution.
 
-@img/sharp-libvips-darwin-x64@1.3.2 (LGPL-3.0-or-later)
+@img/sharp-libvips-darwin-x64@1.3.3 (LGPL-3.0-or-later)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 PwrSnap's macOS universal build (x64 slice) bundles the prebuilt libvips-cpp shipped in
@@ -5451,7 +5451,7 @@ The corresponding source for libvips and its dependencies is published at the UR
 PwrDrvr LLC will additionally provide the corresponding source on written request to
 support@pwrdrvr.com for at least three years from the date of distribution.
 
-@img/sharp-win32-x64@0.35.3 (LGPL-3.0-or-later)
+@img/sharp-win32-x64@0.35.4 (LGPL-3.0-or-later)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 PwrSnap's Windows x64 installer bundles the prebuilt libvips and libvips-cpp shipped in
@@ -5489,9 +5489,9 @@ distribution.
 GNU LESSER GENERAL PUBLIC LICENSE, Version 3:
 
 Applies to:
-- @img/sharp-libvips-darwin-arm64@1.3.2 (LGPL-3.0-or-later)
-- @img/sharp-libvips-darwin-x64@1.3.2 (LGPL-3.0-or-later)
-- @img/sharp-win32-x64@0.35.3 (LGPL-3.0-or-later)
+- @img/sharp-libvips-darwin-arm64@1.3.3 (LGPL-3.0-or-later)
+- @img/sharp-libvips-darwin-x64@1.3.3 (LGPL-3.0-or-later)
+- @img/sharp-win32-x64@0.35.4 (LGPL-3.0-or-later)
 
 GNU LESSER GENERAL PUBLIC LICENSE
                        Version 3, 29 June 2007

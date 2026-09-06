@@ -11,8 +11,9 @@
   *what you must not break*.
 - Solution learnings (post-incident notes, gotchas) live in `docs/solutions/`.
 - Shipped-behavior references live at the top level of `docs/` — the release
-  runbook, the Windows guide and signing doc, the ffmpeg build reference, and
-  the third-party license notices doc.
+  runbook, the Windows guide and signing doc, the ffmpeg build reference, the
+  third-party license notices doc, and the
+  [third-party agent connection guide](docs/mcp-third-party-agents.md).
 - Two documents that began as plans survive as living references, because
   each is the only written statement of something still true: the
   [bundle format spec](docs/architecture-bundle-format.md) and the
@@ -727,26 +728,42 @@ Before adding any client-specific credential path, run that measurement
 again; the doc says how, and which harness mistake makes a healthy
 server look like it hangs.
 
-Rules the surface keeps, in the express middleware every route inherits
-and pinned by `mcp-server.test.ts`:
+Rules the surface keeps, and where each one lives:
 
-- **Loopback peer, Origin AND Host are all validated.** Any web page the
-  operator visits can POST to 127.0.0.1, and a hostname that resolves to
-  loopback defeats a Host check alone. No Origin means a local process and
-  is allowed; a non-loopback Origin is refused.
-- **`GET /mcp` answers 405.** The endpoint is stateless — one transport and
-  one `McpServer` per POST — so there is no session for a standalone SSE
-  stream. Both verified clients open that GET on every connection; letting
-  the SDK transport handle it pins a transport + server per live agent
-  session until the client goes away.
-- **A tool result carries its data twice.** `toMcpToolResult` emits
-  `structuredContent` AND a text block holding the same JSON, because a
-  host that renders only `content` otherwise shows the agent a summary
-  sentence with no data in it. The JSON block goes LAST, after any
-  `resource_link`, and never contains the signed media URL — that lives
-  only in the link.
+- **Loopback peer, Origin AND Host are all validated** — in the express
+  middleware every route inherits (`mcp-server.ts`, `start()`); Origin
+  and Host refusals are pinned by `mcp-server.test.ts`, the loopback
+  branch is not (every test client is a loopback peer). Any web page the
+  operator visits can POST to 127.0.0.1 with a correct `Host`, so Origin
+  is what stops it: a non-loopback Origin is refused. A hostname the
+  attacker points at 127.0.0.1 (DNS rebinding) yields same-origin GETs
+  that carry no Origin at all, so `Host` must equal the bound
+  `127.0.0.1:<port>` exactly — that is what stops rebinding, not Origin.
+  Origin-less requests are allowed (browser navigations and `<img>` loads
+  send none, not just local processes), which is safe only because no
+  Origin-less path mints or reveals anything.
+- **Every verb but POST on `/mcp` answers 405 `Allow: POST`** — in the
+  `/mcp` route handler (`handleRequest`), before auth; pinned by
+  `mcp-server.test.ts`. The endpoint is stateless — one transport and one
+  `McpServer` per POST — so there is no session for a GET SSE stream or a
+  DELETE. Letting the SDK transport answer the GET held a stream that never
+  ended, and the server awaited its body, so the transport + server behind
+  it lived for the rest of the process.
+- **A tool result carries its data twice** — in `toMcpToolResult`
+  (`mcp-tool-registry.ts`); pinned by `mcp-tool-registry.test.ts`, not the
+  server test. `structuredContent` AND a text block holding the same JSON,
+  per the MCP SHOULD, for hosts that read only `content`. (Claude Code and
+  Codex read `structuredContent` and drop the text copy; the block is for
+  hosts that don't.) The JSON block goes LAST, after any `resource_link`,
+  never contains the signed media URL — that lives only in the link — and
+  is always a JSON object: non-objects are wrapped as `{ value }` because
+  the SDK client rejects an array and fails the whole call.
 - **Never mint outside the window.** No bearer in a settings file, no
   "trusted local client" allowlist, no env-var token for convenience.
+  Pinned two ways: `mcp-server.test.ts` shows a forged loopback approval
+  mints nothing, and `local-agent-minting-boundary.test.ts` greps the
+  production sources so `createGrant` has no caller and `issueOAuthGrant`
+  is reached only from the authorization-code exchange.
 
 ## Repository conventions
 

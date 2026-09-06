@@ -434,23 +434,25 @@ describe("LocalAgentMcpServer", () => {
     );
   });
 
-  test("answers GET /mcp with 405 instead of holding an SSE stream open", async () => {
-    // Both Claude Code and Codex open this GET on every connection (Codex before
-    // it even initializes). The endpoint is stateless — one transport and one
-    // McpServer per POST — so there is no session for the stream to belong to;
-    // letting the SDK transport answer it pinned a transport + server per live
-    // agent session. 405 is the spec's "no SSE stream here" and both clients
-    // carry on after it. It must answer before auth so the stream can't be
-    // opened by anyone.
+  test("answers every non-POST verb on /mcp with 405 before auth", async () => {
+    // The endpoint is stateless (one transport + McpServer per POST), so there
+    // is no session for a GET SSE stream or a DELETE to act on. Before this
+    // pin, the SDK transport answered GET with a stream that never ended and
+    // DELETE by building a whole server to close nothing; other verbs reached
+    // the SDK's own 405, which advertised the GET this server refuses. One
+    // answer, one `Allow`, and it comes before auth so nobody can open a
+    // stream. Both verified clients treat the GET 405 as "no stream here".
     const url = await startServer();
-    const res = await fetch(url, {
-      method: "GET",
-      headers: { accept: "text/event-stream" }
-    });
 
-    expect(res.status).toBe(405);
-    expect(res.headers.get("allow")).toBe("POST, DELETE");
-    expect(await res.json()).toMatchObject({ error: "method_not_allowed" });
+    for (const method of ["GET", "DELETE", "PUT"]) {
+      const res = await fetch(url, {
+        method,
+        headers: method === "GET" ? { accept: "text/event-stream" } : {}
+      });
+      expect(res.status, method).toBe(405);
+      expect(res.headers.get("allow"), method).toBe("POST");
+      expect(await res.json()).toMatchObject({ error: "method_not_allowed" });
+    }
   });
 
   test("lists tool schemas with read-only and destructive annotations", async () => {

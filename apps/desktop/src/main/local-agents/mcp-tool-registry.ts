@@ -79,8 +79,11 @@ export function toMcpToolResult(result: Result<unknown, PwrSnapError>): CallTool
     };
   }
   const supplemental = supplementalContentFor(result.value);
+  // `structuredContent` must be a JSON object on the wire — the SDK client
+  // parses it as a record and fails the whole call on an array — so anything
+  // else is wrapped.
   const structuredContent =
-    result.value !== null && typeof result.value === "object"
+    result.value !== null && typeof result.value === "object" && !Array.isArray(result.value)
       ? (result.value as Record<string, unknown>)
       : { value: result.value };
   return {
@@ -90,17 +93,11 @@ export function toMcpToolResult(result: Result<unknown, PwrSnapError>): CallTool
         text: successSummary(result.value, supplemental)
       },
       ...supplemental,
-      // MCP says a tool returning `structuredContent` SHOULD also serialize it
-      // into a text block, because a host that renders only `content` shows the
-      // agent whatever the summary says and nothing else. Without this, every
-      // tool here answered a question with a sentence about where the answer
-      // was — and for a client that cannot read structuredContent, it was
-      // nowhere. https://modelcontextprotocol.io/specification/2025-11-25/server/tools
-      //
-      // Last, not second: for a media tool the resource link IS the answer and
-      // belongs next to the sentence that introduces it. This block is the
-      // fallback copy of the metadata, and it never carries the signed media
-      // URL — that lives only in the resource link.
+      // MCP: a tool returning `structuredContent` SHOULD also serialize it into
+      // a text block, for hosts that read only `content`. Last, so a media
+      // tool's resource_link stays beside the sentence introducing it; never
+      // the signed media URL, which lives only in that link. See
+      // docs/mcp-third-party-agents.md §"Tool results carry their data twice".
       { type: "text", text: JSON.stringify(structuredContent) }
     ],
     structuredContent
@@ -151,10 +148,8 @@ function supplementalContentFor(value: unknown): CallToolResult["content"] {
   return (value as ToolValueWithSupplementalContent)[supplementalContent] ?? [];
 }
 
-/** The first line of a result: what happened, in a sentence.
- *
- * It no longer points at `structuredContent` for the data, because the block
- * after it now carries that data verbatim. */
+/** The first line of a result: what happened, in a sentence. The data itself
+ *  follows in the JSON block, so this never has to point at it. */
 function successSummary(
   value: unknown,
   supplemental: CallToolResult["content"]

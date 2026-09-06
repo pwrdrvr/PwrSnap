@@ -16,7 +16,8 @@ lists, phase order, or status tracking. Those belong in issues and PRs.
   [Windows port status](windows/port-status.md),
   [Windows signing](desktop-windows-signing.md),
   [ffmpeg builds](ffmpeg-build-reference.md),
-  [third-party notices](third-party-license-notices.md).
+  [third-party notices](third-party-license-notices.md),
+  [third-party agents over MCP](mcp-third-party-agents.md).
 
 ## What PwrSnap is
 

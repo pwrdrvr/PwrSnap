@@ -106,6 +106,13 @@ async function renderPage(
   settings: Settings = baseSettings,
   patch: UseSettingsValue["patch"] = vi.fn(async () => undefined)
 ): Promise<HTMLDivElement> {
+  // A test that renders twice must not leave the first page mounted in
+  // document.body for every test after it — afterEach only sees the last.
+  if (root !== null) {
+    const previous = root;
+    act(() => previous.unmount());
+    container?.remove();
+  }
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -197,9 +204,11 @@ describe("LocalAgentsPage", () => {
     installFakeApi(grant, [], { state: "listening" });
     const el = await renderPage(enabledSettings);
 
-    // The exact lines the operator pastes; both verified against the real server.
+    // The exact lines the operator pastes; both verified against the real
+    // server. `--scope user`: without it Claude Code registers the server for
+    // the terminal's current directory only.
     expect(el.textContent).toContain(
-      "claude mcp add --transport http pwrsnap http://127.0.0.1:51729/mcp"
+      "claude mcp add --scope user --transport http pwrsnap http://127.0.0.1:51729/mcp"
     );
     expect(el.textContent).toContain("claude mcp login pwrsnap");
     expect(el.textContent).toContain(
@@ -210,6 +219,8 @@ describe("LocalAgentsPage", () => {
     const offEl = await renderPage(baseSettings);
     expect(offEl.textContent).not.toContain("claude mcp add");
     expect(offEl.textContent).toContain("Turn on local-agent access");
+    // The first render was unmounted, not left behind in document.body.
+    expect(document.body.children).toHaveLength(1);
   });
 
   test("copy button puts the whole command on the clipboard", async () => {
@@ -228,9 +239,39 @@ describe("LocalAgentsPage", () => {
     });
     expect(dispatch).toHaveBeenCalledWith("clipboard:copyText", {
       text:
-        "claude mcp add --transport http pwrsnap http://127.0.0.1:51729/mcp\n" +
+        "claude mcp add --scope user --transport http pwrsnap http://127.0.0.1:51729/mcp\n" +
         "claude mcp login pwrsnap"
     });
+    // The visible label and the accessible name change together.
+    expect(button?.textContent).toBe("Copied");
+    expect(button?.getAttribute("aria-label")).toBe("Copied Claude Code command");
+  });
+
+  test("a failed copy stays on the button and never reaches the page error banner", async () => {
+    const enabledSettings = {
+      ...baseSettings,
+      localAgents: { ...baseSettings.localAgents, enabled: true }
+    };
+    const { dispatch } = installFakeApi(grant, [], { state: "listening" });
+    dispatch.mockImplementation(async (name: string): Promise<AnyResult> => {
+      if (name === "clipboard:copyText") {
+        return { ok: false, error: { message: "clipboard unavailable" } };
+      }
+      if (name === "localAgents:list") {
+        return { ok: true, value: { grants: [grant], roles, listenerStatus: { state: "listening" } } };
+      }
+      return { ok: true, value: { entries: [] } };
+    });
+    const el = await renderPage(enabledSettings);
+
+    const button = el.querySelector<HTMLButtonElement>('button[aria-label="Copy Codex CLI command"]');
+    await act(async () => {
+      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(button?.textContent).toBe("Copy failed");
+    expect(el.querySelector('[role="alert"]')).toBeNull();
+    expect(el.textContent).not.toContain("Local agent update failed");
   });
 
   test("shows enabled intent as unavailable after listener startup fails", async () => {
@@ -245,6 +286,9 @@ describe("LocalAgentsPage", () => {
     expect(el.textContent).toContain("failed to start");
     expect(el.textContent).not.toContain("http://127.0.0.1:51729/mcp");
     expect(el.querySelector("button[role='switch']")?.getAttribute("aria-checked")).toBe("true");
+    // The switch is already on, so the connect card must not say to turn it on.
+    expect(el.textContent).not.toContain("Turn on local-agent access");
+    expect(el.textContent).toContain("failed to start, so there is nothing to connect to yet");
   });
 
   test("revoke button dispatches localAgents:revoke", async () => {

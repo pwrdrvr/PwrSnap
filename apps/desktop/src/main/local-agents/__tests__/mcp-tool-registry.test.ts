@@ -76,11 +76,11 @@ describe("createDefaultLocalAgentMcpTools", () => {
   });
 
   // This used to assert the opposite — one summary block and nothing else, to
-  // avoid paying for the payload twice. It reads well until you drive the
-  // server from a host that renders only `content`, which is most of them:
-  // the agent is handed "PwrSnap returned 1 capture" and no capture. MCP says
-  // a tool returning structuredContent SHOULD also serialize it, and this is
-  // why.
+  // avoid paying for the payload twice. MCP says a tool returning
+  // structuredContent SHOULD also serialize it, for hosts that read only
+  // `content`; without the block such a host is handed "PwrSnap returned 1
+  // capture" and no capture. (Claude Code and Codex read structuredContent
+  // and drop the text copy, so for them this costs nothing either way.)
   test("serializes structured content into a text block a content-only host can read", () => {
     const result = toMcpToolResult(ok({
       detail: "enriched",
@@ -100,6 +100,15 @@ describe("createDefaultLocalAgentMcpTools", () => {
     expect(result.content[0]).not.toEqual(expect.objectContaining({
       text: expect.stringContaining("structuredContent")
     }));
+  });
+
+  test("wraps non-object values so structuredContent is always a JSON object", () => {
+    // The SDK client parses structuredContent as a record and rejects the
+    // whole call otherwise; an array reaching the wire would read like a
+    // broken server. No tool returns one today — this pins the wrapper.
+    expect(toMcpToolResult(ok([1, 2])).structuredContent).toEqual({ value: [1, 2] });
+    expect(toMcpToolResult(ok("done")).structuredContent).toEqual({ value: "done" });
+    expect(toMcpToolResult(ok(null)).structuredContent).toEqual({ value: null });
   });
 
   test("search, discovery, and delete tools dispatch through distinct command paths", async () => {

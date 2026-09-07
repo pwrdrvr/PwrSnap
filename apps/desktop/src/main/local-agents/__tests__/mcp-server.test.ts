@@ -361,10 +361,11 @@ function postMcpChunked(
         );
       }
     );
-    // The server closes the connection when it rejects a body mid-upload
-    // (Connection: close), so the still-writing side sees EPIPE/ECONNRESET,
-    // possibly more than once and on the socket rather than the request.
-    // Swallow those: reject only if no response arrived first.
+    // The server drains a rejected body before answering, so the happy path
+    // never resets this connection. These are defensive only: if a socket
+    // ever does error while still writing, swallow it (possibly more than
+    // once, and on the socket rather than the request) and reject only when
+    // no response arrived first.
     req.on("socket", (socket) => socket.on("error", () => undefined));
     req.on("error", (cause) => {
       if (!responded) reject(cause);

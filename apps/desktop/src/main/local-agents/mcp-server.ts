@@ -1428,7 +1428,8 @@ async function toWebRequest(request: IncomingMessage, url: URL): Promise<Request
 }
 
 function readRequestBody(request: IncomingMessage): Promise<Uint8Array<ArrayBuffer>> {
-  const encoding = request.headers["content-encoding"];
+  // An empty or whitespace-only value denotes no encoding, i.e. identity.
+  const encoding = request.headers["content-encoding"]?.trim().toLowerCase();
   return new Promise<Uint8Array<ArrayBuffer>>((resolve, reject) => {
     const chunks: Buffer[] = [];
     let totalBytes = 0;
@@ -1442,7 +1443,7 @@ function readRequestBody(request: IncomingMessage): Promise<Uint8Array<ArrayBuff
     // client may send; `for await` is avoided because throwing out of it
     // destroys the request before the response is written.
     let rejection: Error | null =
-      encoding !== undefined && encoding.toLowerCase() !== "identity"
+      encoding !== undefined && encoding !== "" && encoding !== "identity"
         ? new UnsupportedContentEncodingError()
         : null;
     const onData = (chunk: Buffer | string): void => {
@@ -1460,7 +1461,9 @@ function readRequestBody(request: IncomingMessage): Promise<Uint8Array<ArrayBuff
     request.once("end", () =>
       rejection !== null ? reject(rejection) : resolve(concatChunks(chunks, totalBytes))
     );
-    request.once("error", reject);
+    // If the cap already tripped, keep that decision: a client that aborts
+    // mid-drain earned a 413, not a 500 logged as a server failure.
+    request.once("error", (cause: Error) => reject(rejection ?? cause));
   });
 }
 

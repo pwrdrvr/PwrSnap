@@ -1,0 +1,175 @@
+/* ============================================================
+   .psu — the compact app-update row
+   ============================================================
+
+   One component, two placements (see AppUpdateRow.tsx):
+
+     .psu--tray  full-bleed strip under .ps-tray__hdr, above Quick
+                 Capture. Square edges + its own bottom rule so it
+                 reads as part of the popover's chrome stack rather
+                 than a card floating above the actions.
+     .psu--fo    inset card under .fo__hdr, on the float-over toast's
+                 own 12px gutter, so the toast keeps one left edge all
+                 the way down.
+
+   Both host surfaces measure their natural content height and tell
+   main what to setContentSize the window to, so the row appearing or
+   leaving resizes the popover on its own — nothing here needs to know
+   about window bounds. See the "outer inline-block measurer" section
+   in AGENTS.md.
+
+   Accent-tinted rather than accent-filled: in the tray this sits four
+   rows above Quick Capture's solid tangerine fill, and two solid
+   oranges in one popover would fight over which one is the default
+   action. Quick Capture wins that fight by design.
+   ============================================================ */
+
+.psu {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  background: var(--accent-tint);
+  border: 1px solid var(--accent-border);
+  color: var(--text-primary);
+}
+
+.psu__icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  color: var(--accent-bright);
+}
+
+.psu__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.psu__title {
+  font: 700 11px/1.1 var(--font-display);
+  letter-spacing: 0.005em;
+  color: var(--accent-bright);
+}
+
+/* Mono so the version scans as a value rather than as prose.
+   `anywhere` because a failed install surfaces main's own error text
+   here, which has no length budget. */
+.psu__sub {
+  font: 500 10px/1.25 var(--font-mono);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.psu__err {
+  color: var(--danger-text);
+}
+
+.psu__actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.psu__go {
+  height: 24px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 5px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--button-text-on-accent);
+  font: 700 10px/1 var(--font-sans);
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: background 120ms var(--ease-out), border-color 120ms var(--ease-out);
+}
+.psu__go:hover:not(:disabled) {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+}
+.psu__go:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.psu__x {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 120ms var(--ease-out), background 120ms var(--ease-out);
+}
+.psu__x:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+}
+.psu__x:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Retry — the install did not apply. Amber, not danger: the app is
+   running fine on the version it booted, only the swap didn't take. */
+.psu.is-retry {
+  background: var(--warn-soft);
+  border-color: var(--warn-border);
+}
+.psu.is-retry .psu__icon {
+  background: var(--warn-soft);
+  border-color: var(--warn-border);
+  color: var(--warn-text);
+}
+.psu.is-retry .psu__title {
+  color: var(--warn-text);
+}
+.psu.is-retry .psu__go {
+  background: var(--warn);
+  border-color: var(--warn);
+}
+.psu.is-retry .psu__go:hover:not(:disabled) {
+  background: var(--warn-text);
+  border-color: var(--warn-text);
+}
+
+/* ----- tray placement ----- */
+.psu--tray {
+  width: 100%;
+  padding: 9px 14px;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  background: linear-gradient(180deg, var(--accent-soft) 0%, var(--accent-tint) 100%);
+  border-bottom-color: var(--accent-border);
+}
+.psu--tray.is-retry {
+  background: linear-gradient(180deg, var(--warn-soft) 0%, transparent 100%);
+  border-bottom-color: var(--warn-border);
+}
+
+/* ----- float-over placement ----- */
+.psu--fo {
+  /* Symmetric 10px — the same vertical rhythm the toast already uses
+     between its preview and the copy grid. The preview carries no top
+     margin of its own (`.fo__preview { margin: 0 12px }`), so this row
+     owns the gap on both sides of itself. */
+  margin: 10px 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+}

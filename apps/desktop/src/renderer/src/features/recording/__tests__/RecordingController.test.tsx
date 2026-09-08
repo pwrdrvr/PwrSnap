@@ -159,6 +159,29 @@ describe("RecordingController failed state", () => {
     expect(container.querySelector('[data-recording-action="retry"]')).not.toBeNull();
   });
 
+  test.each(["result error", "transport rejection"])(
+    "a Logs %s stays visible and leaves recovery buttons usable",
+    async (failureMode) => {
+      mocks.dispatch.mockImplementation(async (name: string) => {
+        if (name === "recording:state") return { ok: true, value: failure };
+        if (name === "logs:openWindow") {
+          if (failureMode === "transport rejection") throw new Error("private transport details");
+          return { ok: false, error: { kind: "unknown", code: "unavailable", message: "private details" } };
+        }
+        return { ok: true, value: undefined };
+      });
+      await renderController();
+      await click("reveal-logs");
+      expect(container.textContent).toContain("PwrSnap couldn't open Logs.");
+      expect(container.textContent).not.toContain("private");
+      expect(container.querySelector<HTMLButtonElement>('[data-recording-action="dismiss"]')?.disabled).toBe(false);
+      await click("dismiss");
+      expect(mocks.dispatch).toHaveBeenCalledWith("recording:dismissFailure", {
+        sessionId: "failed-session"
+      });
+    }
+  );
+
   test("opens the built-in Logs window and dismisses by failed session", async () => {
     await renderController();
     await click("reveal-logs");

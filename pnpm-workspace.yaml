@@ -27,6 +27,9 @@ allowBuilds:
 # pinned — exempt them from the 7-day minimumReleaseAge gate (which targets
 # untrusted third-party releases) so PwrSnap can consume 0.1.0 immediately.
 minimumReleaseAgeExclude:
+  # Security backport: GHSA-qw65-cvwx-89v3 and GHSA-58mr-gqgx-xq4g.
+  # Exempt only this release; future fast-uri versions retain the age gate.
+  - "fast-uri@3.1.7"
   - "@pwrdrvr/codex-app-server-protocol"
   - "@pwrdrvr/agent-core"
   - "@pwrdrvr/agent-transport"

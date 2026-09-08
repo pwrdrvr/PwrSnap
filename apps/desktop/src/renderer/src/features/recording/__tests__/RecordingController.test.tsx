@@ -159,12 +159,13 @@ describe("RecordingController failed state", () => {
     expect(container.querySelector('[data-recording-action="retry"]')).not.toBeNull();
   });
 
-  test("reveals the owner log and dismisses by failed session", async () => {
+  test("opens the built-in Logs window and dismisses by failed session", async () => {
     await renderController();
     await click("reveal-logs");
+    expect(container.textContent).toContain("Open Logs");
     await click("dismiss");
 
-    expect(mocks.dispatch).toHaveBeenCalledWith("renderer:revealLogFile", {});
+    expect(mocks.dispatch).toHaveBeenCalledWith("logs:openWindow", {});
     expect(mocks.dispatch).toHaveBeenCalledWith("recording:dismissFailure", {
       sessionId: "failed-session"
     });

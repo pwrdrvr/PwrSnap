@@ -619,6 +619,54 @@ describe("RecordingService.restart", () => {
   });
 });
 
+describe("RecordingService restart isolates retired recorder events", () => {
+  test.each(["exit", "started", "error", "partial stdout"])(
+    "ignores delayed %s from the cancelled recorder during the replacement countdown",
+    async (event) => {
+      const { __setRecordingServiceForTests, getRecordingService } = await import(
+        "../recording-service"
+      );
+      __setRecordingServiceForTests(null);
+      const service = getRecordingService();
+      const firstStart = service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
+      await vi.advanceTimersByTimeAsync(0);
+      const oldChild = mocks.spawnedChildren[0]!;
+      oldChild.emitLine({ event: "started", physicalRect: SUBJECT.rect });
+      await firstStart;
+      // Hold exit until AFTER restart has installed its new promise, as in
+      // the installed-app log. A stop acknowledgement is not process exit.
+      oldChild.kill = vi.fn(() => true);
+      const outcome = vi.fn();
+      const restarted = service.restart().then(outcome, outcome);
+      oldChild.emitLine({ event: "stopped", durationSec: 2 });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.spawnedChildren).toHaveLength(2);
+      const replacement = mocks.spawnedChildren[1]!;
+      if (event === "exit") oldChild.emit("exit", 0, null);
+      if (event === "started") oldChild.emitLine({ event: "started" });
+      if (event === "error") oldChild.emitLine({ event: "error", code: "late", message: "old session" });
+      if (event === "partial stdout") oldChild.stdout.emit("data", '{"event":');
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(outcome).not.toHaveBeenCalled();
+      expect(mocks.currentState).toMatchObject({ phase: "starting" });
+      replacement.emitLine({ event: "started", physicalRect: SUBJECT.rect });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(outcome).toHaveBeenCalledWith({ sessionId: mocks.currentState.sessionId });
+      await restarted;
+      expect(mocks.currentState).toMatchObject({ phase: "recording" });
+      expect(replacement.killCalled).toBe(false);
+      // A retired process also cannot fail the now-active replacement.
+      oldChild.emit("exit", 0, null);
+      oldChild.emit("error", new Error("late process error"));
+      oldChild.emitLine({ event: "error", code: "late", message: "old session" });
+      expect(mocks.currentState).toMatchObject({ phase: "recording" });
+      const cancelled = service.cancel();
+      replacement.emitLine({ event: "stopped", durationSec: 1 });
+      await cancelled;
+    }
+  );
+});
+
 describe("RecordingService.stop source-app metadata → capture row", () => {
   // The Library renders `record.source_app_name ?? "Unknown app"`,
   // so the recording-service has to populate those fields whenever

@@ -27,6 +27,7 @@ import { CodexStatusPill } from "../shared/CodexStatusPill";
 import { AiConsentDialog } from "../shared/AiConsentDialog";
 import { useFieldEditor } from "../shared/useFieldEditor";
 import { HoverAutoplayVideo } from "../shared/HoverAutoplayVideo";
+import { AppUpdateRow } from "../update/AppUpdateRow";
 import type { PresetMetricMap } from "../shared/usePresetRenderMetrics";
 import {
   VideoExportPresetsPanel,
@@ -835,6 +836,14 @@ export function FloatOver({
           </button>
         </div>
       </div>
+
+      {/* Renders nothing unless a downloaded update (or a failed
+          install) is waiting. Under the header rather than beside the
+          footer buttons so it never competes with Edit, this toast's
+          own primary action. Its dismissal is renderer-scoped, so it
+          survives this component's per-capture remount — see
+          AppUpdateRow.tsx. */}
+      <AppUpdateRow variant="float-over" />
 
       <div className="fo__preview">
         {asset?.kind === "video" ? (

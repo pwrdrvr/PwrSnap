@@ -44,7 +44,7 @@
   border-radius: 6px;
   background: var(--accent-soft);
   border: 1px solid var(--accent-border);
-  color: var(--accent-bright);
+  color: var(--accent);
 }
 
 .psu__text {
@@ -55,10 +55,17 @@
   gap: 2px;
 }
 
+/* `--accent`, not `--accent-bright`: the bright tone is the dark-theme
+   emphasis step and resolves to #d96d00 in the light theme, which is
+   3.42:1 on this near-white row — under the 4.5:1 AA floor for 11px
+   bold. `--accent` is #c45200 there (4.60:1) and is what every other
+   accent-colored label in the app uses (`.ps-tray__quick--video`'s
+   eyebrow, for one). The icon takes the same tone so the two do not
+   read as two different oranges side by side. */
 .psu__title {
   font: 700 11px/1.1 var(--font-display);
   letter-spacing: 0.005em;
-  color: var(--accent-bright);
+  color: var(--accent);
 }
 
 /* Mono so the version scans as a value rather than as prose.
@@ -89,23 +96,44 @@
   gap: 4px;
 }
 
+/* An accent OUTLINE, not an accent fill — the idiom
+   `.ps-tray__quick--video` already uses one row below this in the tray.
+   A solid tangerine pill here put a second call-to-action 46px above
+   Quick Capture's solid fill, and inline with the toast footer's solid
+   `Edit`; each surface should have exactly one, and it should be the
+   one the surface exists for. Restarting stays obviously actionable
+   without claiming that slot.
+
+   The background is OPAQUE `--bg-panel-elevated`, not `transparent` as
+   the neighbouring secondary buttons use. That is a contrast
+   requirement, not a style choice: letting the row's `--accent-tint`
+   show through drops `--accent` label text to 4.29:1 in the light
+   theme, while the opaque panel keeps it at 4.60:1.
+
+   The hover tones flip direction per theme on purpose: `--accent-strong`
+   is BRIGHTER than `--accent` on dark (#ffa33d) and DARKER on light
+   (#b34a00), so one declaration clears 4.5:1 against the tinted hover
+   ground in both. Do not swap it for `--accent-bright`, which sinks to
+   3.05:1 on the light hover fill. */
 .psu__go {
   height: 24px;
   padding: 0 10px;
   display: inline-flex;
   align-items: center;
   border-radius: 5px;
-  border: 1px solid var(--accent);
-  background: var(--accent);
-  color: var(--button-text-on-accent);
+  border: 1px solid var(--accent-border);
+  background: var(--bg-panel-elevated);
+  color: var(--accent);
   font: 700 10px/1 var(--font-sans);
   letter-spacing: 0.01em;
   cursor: pointer;
-  transition: background 120ms var(--ease-out), border-color 120ms var(--ease-out);
+  transition: background 120ms var(--ease-out), border-color 120ms var(--ease-out),
+    color 120ms var(--ease-out);
 }
 .psu__go:hover:not(:disabled) {
-  background: var(--accent-strong);
-  border-color: var(--accent-strong);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-strong);
 }
 .psu__go:disabled {
   opacity: 0.7;
@@ -157,34 +185,42 @@
 .psu.is-retry .psu__title {
   color: var(--warn-text);
 }
-/* The BUTTON deliberately keeps the accent fill in this variant. Amber
-   is the row's semantics (tint, border, icon, title); the action is the
-   same install either way, and `--button-text-on-accent` is the pair
-   contrast-tuned against `--accent` in both themes — white on light
-   theme's `--warn` (#a86b00) measures 4.38:1, under the 4.5:1 AA floor
-   for a label this size. Semantic color stays off the accent. */
+/* The button is NOT re-tinted for this variant. Amber is the row's
+   semantics (tint, border, icon, title); the action is the same install
+   either way, so it keeps one appearance across both states. Semantic
+   color stays off the control. */
 
-/* ----- tray placement ----- */
+/* The two placements differ in EDGE ONLY — full-bleed strip vs inset
+   card — because each mirrors its host. Fill, border colour, padding
+   rhythm and typography are shared above, so a change to the row lands
+   identically on both surfaces. Resist adding a surface-specific
+   background or tone here: an earlier revision gave the tray a vertical
+   gradient wash the toast did not have, which nothing in the tray's own
+   vocabulary motivated (its header and Quick Capture are both flat
+   fills) and which made one component read as two. */
+
+/* ----- tray placement -----
+   Mirrors `.ps-tray__hdr`: full-bleed, bottom rule only, same 14px
+   gutter, so the row reads as part of the popover's chrome stack rather
+   than a card floating above the actions. The retry variant needs no
+   rule of its own — `.psu.is-retry` already out-specifies the bottom
+   border colour below. */
 .psu--tray {
   width: 100%;
   padding: 9px 14px;
   border-width: 0 0 1px;
   border-radius: 0;
-  background: linear-gradient(180deg, var(--accent-soft) 0%, var(--accent-tint) 100%);
   border-bottom-color: var(--accent-border);
 }
-.psu--tray.is-retry {
-  background: linear-gradient(180deg, var(--warn-soft) 0%, transparent 100%);
-  border-bottom-color: var(--warn-border);
-}
 
-/* ----- float-over placement ----- */
+/* ----- float-over placement -----
+   Inset on the toast's own 12px gutter so it keeps one left edge all
+   the way down, with `.fo__field`'s 9px 10px padding — the closest
+   sibling card in that surface. The preview carries no top margin
+   (`.fo__preview { margin: 0 12px }`), so this row owns the gap on both
+   sides of itself. */
 .psu--fo {
-  /* Symmetric 10px — the same vertical rhythm the toast already uses
-     between its preview and the copy grid. The preview carries no top
-     margin of its own (`.fo__preview { margin: 0 12px }`), so this row
-     owns the gap on both sides of itself. */
   margin: 10px 12px;
-  padding: 8px 10px;
+  padding: 9px 10px;
   border-radius: 8px;
 }

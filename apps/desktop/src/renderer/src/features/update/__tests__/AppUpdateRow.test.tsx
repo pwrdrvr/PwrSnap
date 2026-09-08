@@ -14,20 +14,32 @@ type AnyResult = { ok: true; value: unknown } | { ok: false; error: { message: s
 type FakeApi = {
   calls: { name: string; req: unknown }[];
   pushStatus: (status: AppUpdateStatus) => Promise<void>;
+  /** Only meaningful with `deferSnapshot` — lets the pending
+   *  `app:update:status` read resolve, so a test can land an event
+   *  while the snapshot is still in flight. */
+  releaseSnapshot: () => Promise<void>;
 };
 
 function installFakeApi(options: {
   snapshot?: AppUpdateStatus;
   installResult?: AnyResult;
+  deferSnapshot?: boolean;
 } = {}): FakeApi {
   const calls: { name: string; req: unknown }[] = [];
   const listeners = new Map<string, Set<(payload: unknown) => void>>();
+  let openSnapshotGate: (() => void) | undefined;
+  const snapshotGate = options.deferSnapshot === true
+    ? new Promise<void>((resolve) => {
+        openSnapshotGate = resolve;
+      })
+    : Promise.resolve();
   Object.defineProperty(window, "pwrsnapApi", {
     configurable: true,
     value: {
       dispatch: async (name: string, req: unknown): Promise<AnyResult> => {
         calls.push({ name, req });
         if (name === "app:update:status") {
+          await snapshotGate;
           return { ok: true, value: options.snapshot ?? { status: "idle" } };
         }
         if (name === "app:update:install") {
@@ -52,6 +64,15 @@ function installFakeApi(options: {
         for (const listener of listeners.get(EVENT_CHANNELS.appUpdateStatus) ?? []) {
           listener(status);
         }
+      });
+    },
+    releaseSnapshot: async () => {
+      await act(async () => {
+        openSnapshotGate?.();
+        // Two turns: one for the awaited gate, one for the dispatch
+        // promise the hook is sitting on.
+        await Promise.resolve();
+        await Promise.resolve();
       });
     }
   };
@@ -253,6 +274,51 @@ describe("AppUpdateRow", () => {
     await api.pushStatus({ status: "downloaded", version: "1.2.0" });
     await api.pushStatus(undefined as unknown as AppUpdateStatus);
 
+    expect(container?.textContent).toContain("Update ready");
+  });
+
+  // A rejected event must not also claim the race against the snapshot:
+  // main only broadcasts on transitions, so a swallowed snapshot can
+  // leave the window on `idle` for the rest of the session.
+  test("a malformed event does not cancel the in-flight snapshot read", async () => {
+    const api = installFakeApi({
+      snapshot: { status: "downloaded", version: "1.5.0" },
+      deferSnapshot: true
+    });
+    await mountRow("tray");
+    await api.pushStatus(undefined as unknown as AppUpdateStatus);
+    expect(container?.querySelector(".psu")).toBeNull();
+
+    await api.releaseSnapshot();
+    expect(container?.textContent).toContain("v1.5.0 · restart to install");
+  });
+
+  // Half-validating is worse than not validating: it renders
+  // "vundefined" and writes a poisoned key into the dismissal set.
+  test("rejects an actionable status carrying no version", async () => {
+    const api = installFakeApi();
+    await mountRow("tray");
+    await api.pushStatus({ status: "downloaded" } as unknown as AppUpdateStatus);
+    expect(container?.querySelector(".psu")).toBeNull();
+
+    await api.pushStatus({ status: "downloaded", version: "1.2.0" });
+    expect(container?.textContent).toContain("v1.2.0 · restart to install");
+  });
+
+  // The same version can arrive first as a switch back to the picked
+  // train and later as an ordinary update — two different offers.
+  test("dismissing a switch does not silence the same version's update", async () => {
+    const api = installFakeApi();
+    await mountRow("float-over");
+    await api.pushStatus({ status: "downloaded", version: "1.0.1", downgrade: true });
+    expect(container?.textContent).toContain("Switch ready");
+
+    await act(async () => {
+      container?.querySelector<HTMLButtonElement>(".psu__x")?.click();
+    });
+    expect(container?.querySelector(".psu")).toBeNull();
+
+    await api.pushStatus({ status: "downloaded", version: "1.0.1" });
     expect(container?.textContent).toContain("Update ready");
   });
 });

@@ -47,7 +47,11 @@ export function appUpdateNotice(status: AppUpdateStatus): AppUpdateNotice | unde
     // number that is lower than the one they are running.
     const switching = status.downgrade === true;
     return {
-      key: `downloaded:${status.version}`,
+      // The downgrade flag is part of the dismissal identity, not just
+      // the wording: the same version can arrive first as a switch back
+      // to the picked train and later as an ordinary update. Sharing one
+      // key would let a dismissed switch silence the update.
+      key: `downloaded:${switching ? "switch" : "update"}:${status.version}`,
       kind: "ready",
       version: status.version,
       title: switching ? "Switch ready" : "Update ready",

@@ -11,14 +11,28 @@ import type { AppUpdateStatus } from "@pwrsnap/shared";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
 
+/** Statuses that carry a `version` the surfaces put on screen. A
+ *  payload claiming one of these without a version renders literal
+ *  "vundefined" and poisons the dismissal key, so the guard treats it
+ *  as malformed rather than passing it through half-checked. */
+const VERSIONED_STATUSES = new Set([
+  "no-update",
+  "available",
+  "downloading",
+  "downloaded",
+  "install-failed"
+]);
+
 /** Both inputs below arrive as `unknown` over IPC, and the update row
  *  is a passenger on surfaces that must keep working without it — the
  *  post-capture toast above all. A malformed payload leaves the last
  *  good status in place instead of throwing through the host's render. */
 function asAppUpdateStatus(payload: unknown): AppUpdateStatus | undefined {
   if (typeof payload !== "object" || payload === null) return undefined;
-  const { status } = payload as { status?: unknown };
-  return typeof status === "string" ? (payload as AppUpdateStatus) : undefined;
+  const { status, version } = payload as { status?: unknown; version?: unknown };
+  if (typeof status !== "string") return undefined;
+  if (VERSIONED_STATUSES.has(status) && typeof version !== "string") return undefined;
+  return payload as AppUpdateStatus;
 }
 
 /**
@@ -38,10 +52,17 @@ export function useAppUpdateStatus(): AppUpdateStatus {
     const unsubscribe = window.pwrsnapApi?.on(
       EVENT_CHANNELS.appUpdateStatus,
       (payload) => {
-        receivedEvent = true;
         if (cancelled) return;
         const next = asAppUpdateStatus(payload);
-        if (next !== undefined) setStatus(next);
+        if (next === undefined) return;
+        // Only an ACCEPTED event out-races the snapshot. Setting the
+        // flag before validating would let one malformed broadcast
+        // both fail to update the status and cancel the snapshot read
+        // that carried a good one — leaving the window on `idle` until
+        // main happens to emit another transition, which for an
+        // already-downloaded update may never come.
+        receivedEvent = true;
+        setStatus(next);
       }
     );
     void (async () => {

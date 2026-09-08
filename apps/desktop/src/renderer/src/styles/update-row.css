@@ -70,8 +70,16 @@
   overflow-wrap: anywhere;
 }
 
+/* This carries main's own install-failure string — the one users paste
+   into a bug report. app.css sets `user-select: none` app-wide and
+   re-arms error text under `[role="alert"]`; the row is `role="status"`
+   (an update being ready is not an alert), so it opts in beside its own
+   rules, the same way library.css and settings.css do for their live
+   error surfaces. */
 .psu__err {
   color: var(--danger-text);
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .psu__actions {
@@ -102,6 +110,15 @@
 .psu__go:disabled {
   opacity: 0.7;
   cursor: default;
+}
+/* Explicit rings rather than the UA default, matching how every other
+   control in this app states its focus (library.css, logs.css,
+   region.css). Offset outward so the ring clears the button's own
+   accent border on both the tray strip and the toast card. */
+.psu__go:focus-visible,
+.psu__x:focus-visible {
+  outline: 2px solid var(--accent-bright);
+  outline-offset: 2px;
 }
 
 .psu__x {
@@ -140,14 +157,12 @@
 .psu.is-retry .psu__title {
   color: var(--warn-text);
 }
-.psu.is-retry .psu__go {
-  background: var(--warn);
-  border-color: var(--warn);
-}
-.psu.is-retry .psu__go:hover:not(:disabled) {
-  background: var(--warn-text);
-  border-color: var(--warn-text);
-}
+/* The BUTTON deliberately keeps the accent fill in this variant. Amber
+   is the row's semantics (tint, border, icon, title); the action is the
+   same install either way, and `--button-text-on-accent` is the pair
+   contrast-tuned against `--accent` in both themes — white on light
+   theme's `--warn` (#a86b00) measures 4.38:1, under the 4.5:1 AA floor
+   for a label this size. Semantic color stays off the accent. */
 
 /* ----- tray placement ----- */
 .psu--tray {

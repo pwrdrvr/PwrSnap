@@ -18,10 +18,11 @@
    about window bounds. See the "outer inline-block measurer" section
    in AGENTS.md.
 
-   Accent-tinted rather than accent-filled: in the tray this sits four
-   rows above Quick Capture's solid tangerine fill, and two solid
+   Accent-tinted rather than accent-filled: in the tray it sits
+   directly above Quick Capture's solid tangerine fill, and two solid
    oranges in one popover would fight over which one is the default
-   action. Quick Capture wins that fight by design.
+   action. Quick Capture wins that fight by design — which is also why
+   the button below is an outline.
    ============================================================ */
 
 .psu {

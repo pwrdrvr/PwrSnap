@@ -25,7 +25,6 @@ export type AppUpdateNotice = {
    *  actionable state brings a dismissed notice back. */
   key: string;
   kind: AppUpdateNoticeKind;
-  version: string;
   /** Banner eyebrow / compact-row title. */
   title: string;
   /** Full sentence, for the Library toast. */
@@ -53,7 +52,6 @@ export function appUpdateNotice(status: AppUpdateStatus): AppUpdateNotice | unde
       // key would let a dismissed switch silence the update.
       key: `downloaded:${switching ? "switch" : "update"}:${status.version}`,
       kind: "ready",
-      version: status.version,
       title: switching ? "Switch ready" : "Update ready",
       message: switching
         ? `Restart to switch to v${status.version}.`
@@ -70,7 +68,6 @@ export function appUpdateNotice(status: AppUpdateStatus): AppUpdateNotice | unde
     return {
       key: `install-failed:${status.version}`,
       kind: "retry",
-      version: status.version,
       title: "Update retry needed",
       message: `The update to v${status.version} did not finish installing. Retry to download it again and restart.`,
       compact: `v${status.version} didn't finish installing`,

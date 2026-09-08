@@ -41,7 +41,14 @@ describe("AppUpdateRow placement", () => {
 
   it.each(HOSTS)("$label mounts it above $anchor", ({ path, mount, anchor }) => {
     const source = readFileSync(path, "utf8");
-    expect(source.indexOf(mount)).toBeLessThan(source.indexOf(anchor));
+    const mountAt = source.indexOf(mount);
+    const anchorAt = source.indexOf(anchor);
+    // Assert both are PRESENT before comparing. A missing mount indexes
+    // to -1, and -1 is below any real anchor offset, so the ordering
+    // check alone would pass for a host that no longer renders the row.
+    expect(mountAt).toBeGreaterThan(-1);
+    expect(anchorAt).toBeGreaterThan(-1);
+    expect(mountAt).toBeLessThan(anchorAt);
   });
 
   it.each(HOSTS)("$label imports it from the update feature", ({ path }) => {

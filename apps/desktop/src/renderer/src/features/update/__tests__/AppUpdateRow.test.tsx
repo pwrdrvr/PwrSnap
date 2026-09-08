@@ -190,6 +190,29 @@ describe("AppUpdateRow", () => {
     expect(button("Retry")).toBeDefined();
   });
 
+  // `.psu--tray.is-retry` was deleted on the reasoning that
+  // `.psu.is-retry` (0,2,0) out-specifies `.psu--tray`'s
+  // `border-bottom-color` (0,1,0) and supplies the amber rule for free.
+  // jsdom cannot check a cascade, but it can pin the class contract that
+  // argument rests on — raise `.psu--tray`'s specificity later and this
+  // still passes, but at least the combination is asserted to exist.
+  test("the tray variant carries both placement and retry classes", async () => {
+    const api = installFakeApi();
+    await mountRow("tray");
+    await api.pushStatus({
+      status: "install-failed",
+      version: "1.2.0",
+      currentVersion: "1.1.0",
+      attemptedAt: "2026-09-08T12:00:00.000Z",
+      channel: "latest",
+      train: "stable"
+    });
+
+    const row = container?.querySelector(".psu");
+    expect(row?.className).toBe("psu psu--tray is-retry");
+    expect(container?.querySelector(".psu__x")).toBeNull();
+  });
+
   test("shows an install failure in place and leaves the button pressable", async () => {
     const api = installFakeApi({
       installResult: {

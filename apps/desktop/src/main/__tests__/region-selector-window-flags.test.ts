@@ -786,6 +786,75 @@ describe("region-selector — authenticated post-show presentation trace", () =>
     };
   }
 
+  test("retains late bitmap readiness after timeout, rejects stale/duplicate acks, and summarizes frame timings", async () => {
+    suppressPaintAck = true;
+    const entries: Array<{ message: string; fields: Record<string, unknown> }> = [];
+    const { CaptureLatencyTrace } = await import("../capture/capture-latency-trace");
+    const trace = new CaptureLatencyTrace(invocation(), "window", {
+      logger: {
+        debug: (message, fields) => entries.push({ message, fields }),
+        info: (message, fields) => entries.push({ message, fields })
+      }
+    });
+    screenSnapshotMocks.captureAndRegister.mockResolvedValueOnce({
+      id: "late-mapped", displayId: 1, transport: "windows-shared-memory",
+      selectorDescriptor: {
+        id: "late-mapped", transport: "windows-shared-memory", version: 1,
+        width: 2, height: 1, stride: 8, pixelFormat: 1, byteLength: 8
+      }
+    });
+    const { pickRegion, hideSelector } = await import("../capture/region-selector");
+    const pick = pickRegion({ mode: "window", latencyTrace: trace });
+    const spy = constructed[0]!;
+    await vi.waitFor(() => expect(spy.show).toHaveBeenCalledTimes(1));
+    const request = spy.webContents.send.mock.calls.find(
+      ([channel]) => channel === "region-selector:presentation-request"
+    )?.[1] as Record<string, unknown>;
+    screenSnapshotMocks.readSnapshotForRenderer.mockResolvedValueOnce({ ok: true });
+    const mainFrame = { processId: 10, routingId: 20 };
+    await ipcHandlers.get("region-selector:snapshot-read")!({
+      sender: { id: spy.webContents.id, isDestroyed: () => false, mainFrame },
+      senderFrame: mainFrame
+    }, { id: "late-mapped" });
+    const painted = ipcListeners.get("region-selector:painted")!;
+    const payload = {
+      screenUrl: "pwrsnap-screen://r/late-mapped", transport: "windows-shared-memory",
+      decodeMs: 900, readRoundTripMs: 850, canvasUploadMs: 50,
+      mainToRendererBytes: 8, canvasUploadBytes: 8
+    };
+    painted({ sender: { id: spy.webContents.id + 1 } }, payload);
+    painted({ sender: { id: spy.webContents.id } }, { ...payload, screenUrl: "stale" });
+    expect(screenSnapshotMocks.recordSnapshotCanvasUpload).not.toHaveBeenCalled();
+    painted({ sender: { id: spy.webContents.id } }, payload);
+    painted({ sender: { id: spy.webContents.id } }, payload);
+    expect(spy.show).toHaveBeenCalledTimes(1);
+    expect(screenSnapshotMocks.recordSnapshotCanvasUpload).toHaveBeenCalledTimes(1);
+    expect(screenSnapshotMocks.recordSnapshotCanvasUpload).toHaveBeenCalledWith("late-mapped", 8);
+    ipcListeners.get("region-selector:presented")?.({ sender: { id: spy.webContents.id } }, {
+      ...request, snapshotWaitMs: 600, firstFrameWaitMs: 20, secondFrameWaitMs: 30,
+      rendererTotalMs: Number.POSITIVE_INFINITY
+    });
+    expect(entries.find((entry) => entry.fields.stage === "frozen_source_decode_ready")?.fields)
+      .toMatchObject({ outcome: "timeout", renderer: "canvas" });
+    expect(entries.find((entry) => entry.fields.event === "capture_latency_summary")?.fields)
+      .toMatchObject({
+        snapshotReadiness: {
+          transport: "windows-shared-memory", gateOutcome: "timeout", late: true,
+          mainBitmapReadMs: expect.any(Number), mainBitmapReadOutcome: "read",
+          readRoundTripMs: 850, canvasUploadMs: 50, rendererReadyMs: 900
+        },
+        presentation: {
+          snapshotWaitMs: 600, firstFrameWaitMs: 20, secondFrameWaitMs: 30,
+          rendererTotalMs: null
+        }
+      });
+    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    await pick;
+    hideSelector();
+    painted({ sender: { id: spy.webContents.id } }, payload);
+    expect(screenSnapshotMocks.recordSnapshotCanvasUpload).toHaveBeenCalledTimes(1);
+  });
+
   test("requests acknowledgement after show/focus/moveTop and rejects stale or wrong senders", async () => {
     const entries: Array<{ message: string; fields: Record<string, unknown> }> = [];
     let tick = 1010;

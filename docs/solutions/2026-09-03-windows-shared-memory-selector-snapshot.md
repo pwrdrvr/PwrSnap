@@ -152,6 +152,38 @@ below are required before promoting the draft PR:
 8. Run the repository's Windows desktop E2E lane in its appropriate lab. Do not
    use a disruptive headed run on the operator's primary desktop.
 
+## Late-readiness diagnostics (2026-09-09)
+
+Operator runs still showed an occasional second-capture stall after disabling
+Windows selector background throttling: the 250 ms reveal gate timed out, then
+the presentation acknowledgement arrived more than a second after show. The
+old listener discarded the late painted acknowledgement, incorrectly labeled
+the timeout as an image decode, and missed the canvas-upload accounting.
+
+The reveal timeout is unchanged. Diagnostic observation now survives that
+timeout until acknowledgement, replacement, or selector cleanup. Sender and
+snapshot URL must match the active invocation; duplicate acknowledgements are
+ignored. The existing `capture latency summary` includes:
+
+- `snapshotReadiness`: transport, `gateOutcome`, `late`, time to actual painted
+  acknowledgement, `mainBitmapReadMs`, `readRoundTripMs`, `canvasUploadMs`, and
+  `rendererReadyMs` (the legacy `decodeMs` envelope).
+- `presentation`: `snapshotWaitMs` after the renderer receives the presentation
+  request, `firstFrameWaitMs`, `secondFrameWaitMs`, and `rendererTotalMs`.
+
+`mainBitmapReadMs` includes helper startup, mapping read through stdout, and
+main-side validation/assembly. `readRoundTripMs` includes that work plus IPC,
+preload/context-bridge transfer, and scheduling; it is not pure copy time.
+`canvasUploadMs` includes payload validation, canvas sizing, ImageData creation,
+and putImageData, not GPU completion. Each duration uses a clock within its own
+process; no absolute main/renderer timestamps are subtracted. Comparing main's
+presentation envelope with `rendererTotalMs` can reveal time outside the
+renderer interval, but cannot separate outbound from inbound IPC delays.
+
+For the next Windows run, compare the summary's late bitmap/read interval with
+its snapshot and frame waits. This distinguishes delayed bitmap availability
+from delayed frame callbacks without adding another stream of per-frame logs.
+
 ## Main implementation files
 
 - `apps/desktop/native/screen-snapshot-win/main.cpp`

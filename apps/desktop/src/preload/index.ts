@@ -318,6 +318,8 @@ const pwrsnapApi = {
     decodeMs: number;
     mainToRendererBytes: number;
     canvasUploadBytes: number;
+    readRoundTripMs?: number;
+    canvasUploadMs?: number;
   }): void {
     ipcRenderer.send(REGION_SELECTOR_PAINTED_CHANNEL, payload);
   },
@@ -337,6 +339,10 @@ const pwrsnapApi = {
     invocationId: string;
     generation: number;
     screenUrl: string;
+    snapshotWaitMs?: number;
+    firstFrameWaitMs?: number;
+    secondFrameWaitMs?: number;
+    rendererTotalMs?: number;
   }): void {
     ipcRenderer.send(REGION_SELECTOR_PRESENTED_CHANNEL, payload);
   },

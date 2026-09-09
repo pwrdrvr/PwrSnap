@@ -308,6 +308,7 @@ export function RegionSelector() {
   const snapshotCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const snapshotLoadStartedAtRef = useRef(0);
   const presentationRequestRef = useRef<SelectorPresentationRequest | null>(null);
+  const presentationReceivedAtRef = useRef(0);
   const presentationRafRef = useRef<SelectorPresentationRaf | null>(null);
   const tryStartPresentationAckRef = useRef<(request: SelectorPresentationRequest) => void>(
     () => undefined
@@ -352,6 +353,7 @@ export function RegionSelector() {
       .readSelectorSnapshot(mappedSnapshot.id)
       .then((result) => {
         if (cancelled) return;
+        const readFinishedAt = performance.now();
         if (
           !result.ok ||
           result.header.version !== mappedSnapshot.version ||
@@ -382,10 +384,13 @@ export function RegionSelector() {
           0
         );
         decodedScreenUrlRef.current = screenUrl;
+        const canvasFinishedAt = performance.now();
         api.notifySelectorSnapshotPainted({
           screenUrl,
           transport: "windows-shared-memory",
-          decodeMs: performance.now() - startedAt,
+          decodeMs: canvasFinishedAt - startedAt,
+          readRoundTripMs: readFinishedAt - startedAt,
+          canvasUploadMs: canvasFinishedAt - readFinishedAt,
           mainToRendererBytes: result.data.byteLength,
           canvasUploadBytes: result.data.byteLength
         });
@@ -418,6 +423,8 @@ export function RegionSelector() {
     tryStartPresentationAckRef.current = (request): void => {
       if (decodedScreenUrlRef.current !== request.screenUrl) return;
       if (presentationRequestRef.current?.generation !== request.generation) return;
+      const framesStartedAt = performance.now();
+      const receivedAt = presentationReceivedAtRef.current;
       const state: SelectorPresentationRaf = {
         first: null,
         second: null,
@@ -433,6 +440,7 @@ export function RegionSelector() {
           return;
         }
         state.first = null;
+        const firstFrameAt = performance.now();
         state.second = requestAnimationFrame(() => {
           if (
             presentationRafRef.current?.generation !== request.generation ||
@@ -443,13 +451,21 @@ export function RegionSelector() {
           }
           presentationRafRef.current = null;
           presentationRequestRef.current = null;
-          window.pwrsnapApi?.notifySelectorPresented(request);
+          const secondFrameAt = performance.now();
+          window.pwrsnapApi?.notifySelectorPresented({
+            ...request,
+            snapshotWaitMs: framesStartedAt - receivedAt,
+            firstFrameWaitMs: firstFrameAt - framesStartedAt,
+            secondFrameWaitMs: secondFrameAt - firstFrameAt,
+            rendererTotalMs: secondFrameAt - receivedAt
+          });
         });
       });
     };
     const unsubscribe = window.pwrsnapApi?.onSelectorPresentationRequest(
       (request) => {
         cancelPending();
+        presentationReceivedAtRef.current = performance.now();
         presentationRequestRef.current = request;
         tryStartPresentationAckRef.current(request);
       }

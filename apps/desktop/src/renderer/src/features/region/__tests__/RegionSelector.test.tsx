@@ -314,6 +314,8 @@ describe("diagnostic first-visible acknowledgement", () => {
 
   test("requires frozen-source decode and two post-request animation frames", async () => {
     const frames = installFrameHarness();
+    let now = 100;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
     await mount();
     const request = {
       invocationId: "trace-present-1",
@@ -328,16 +330,25 @@ describe("diagnostic first-visible acknowledgement", () => {
 
     const image = container?.querySelector('img[src="pwrsnap-screen://r/snapshot-present-1"]');
     if (!(image instanceof HTMLImageElement)) throw new Error("snapshot image not found");
+    now = 800;
     await act(async () => image.dispatchEvent(new Event("load")));
 
     expect(notifySelectorSnapshotPainted).toHaveBeenCalledWith(
       expect.objectContaining({ screenUrl: request.screenUrl, transport: "img" })
     );
     expect(frames.callbacks.size).toBe(1);
+    now = 830;
     await frames.runNext();
     expect(notifySelectorPresented).not.toHaveBeenCalled();
+    now = 850;
     await frames.runNext();
-    expect(notifySelectorPresented).toHaveBeenCalledWith(request);
+    expect(notifySelectorPresented).toHaveBeenCalledWith({
+      ...request,
+      snapshotWaitMs: 700,
+      firstFrameWaitMs: 30,
+      secondFrameWaitMs: 20,
+      rendererTotalMs: 750
+    });
   });
 
   test("cancels a stale generation before it can acknowledge a reused selector", async () => {
@@ -373,11 +384,13 @@ describe("diagnostic first-visible acknowledgement", () => {
     await frames.runNext();
     await frames.runNext();
     expect(notifySelectorPresented).toHaveBeenCalledTimes(1);
-    expect(notifySelectorPresented).toHaveBeenCalledWith(current);
+    expect(notifySelectorPresented).toHaveBeenCalledWith(expect.objectContaining(current));
   });
 
   test("paints a validated mapped RGBA generation to canvas without loading the PNG", async () => {
-    const putImageData = vi.fn();
+    let now = 100;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    const putImageData = vi.fn(() => { now = 375; });
     const getContext = vi
       .spyOn(HTMLCanvasElement.prototype, "getContext")
       .mockReturnValue({ putImageData } as unknown as CanvasRenderingContext2D);
@@ -401,17 +414,20 @@ describe("diagnostic first-visible acknowledgement", () => {
       pixelFormat: 1,
       byteLength: 4
     };
-    readSelectorSnapshot.mockResolvedValue({
-      ok: true,
-      header: {
-        version: 1,
-        width: 1,
-        height: 1,
-        stride: 4,
-        pixelFormat: 1,
-        byteLength: 4
-      },
-      data: new Uint8Array([255, 0, 0, 255])
+    readSelectorSnapshot.mockImplementationOnce(async () => {
+      now = 350;
+      return {
+        ok: true,
+        header: {
+          version: 1,
+          width: 1,
+          height: 1,
+          stride: 4,
+          pixelFormat: 1,
+          byteLength: 4
+        },
+        data: new Uint8Array([255, 0, 0, 255])
+      };
     });
     await mount();
     await emitMode({
@@ -432,7 +448,10 @@ describe("diagnostic first-visible acknowledgement", () => {
         screenUrl: "pwrsnap-screen://r/mapped-snapshot-1",
         transport: "windows-shared-memory",
         mainToRendererBytes: 4,
-        canvasUploadBytes: 4
+        canvasUploadBytes: 4,
+        readRoundTripMs: 250,
+        canvasUploadMs: 25,
+        decodeMs: 275
       })
     );
     getContext.mockRestore();

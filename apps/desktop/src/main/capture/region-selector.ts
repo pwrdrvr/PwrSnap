@@ -70,6 +70,22 @@ let displayListenersAttached = false;
  *  selector is shown. Resolved by the SELECTOR_PAINTED_CHANNEL ack
  *  (matching screenUrl) or by its own timeout. */
 type SnapshotPaintOutcome = "loaded" | "timeout" | "superseded";
+// Separate diagnostic ownership from the 250 ms reveal gate. A timeout must
+// not discard the eventual bitmap acknowledgement or its byte accounting.
+let snapshotPaintObservation: {
+  screenUrl: string;
+  senderId: number;
+  startedAt: number;
+  received: boolean;
+  trace: CaptureLatencyTrace | undefined;
+  fields: Record<string, string | number | boolean | null>;
+} | null = null;
+
+function diagnosticMs(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 300_000
+    ? Math.round(value * 100) / 100
+    : null;
+}
 type SnapshotPaintDetails = Readonly<{
   transport: "img" | "windows-shared-memory";
   decodeMs: number | null;
@@ -111,6 +127,7 @@ function isTopLevelSelectorFrame(event: IpcMainInvokeEvent): boolean {
 
 function abortActiveSelector(senderId: number, reason: string): void {
   if (activeSelectorSenderId !== senderId) return;
+  snapshotPaintObservation = null;
   activeSelectorSenderId = null;
   if (pendingPaintWait?.senderId === senderId) {
     const waiter = pendingPaintWait;
@@ -160,6 +177,18 @@ function waitForSnapshotPainted(
     stale.settle("superseded");
   }
   return new Promise<void>((resolve) => {
+    const observation = {
+      screenUrl,
+      senderId,
+      startedAt: performance.now(),
+      received: false,
+      trace,
+      fields: {
+        transport: activeScreenSnapshot?.selectorDescriptor?.transport ?? "img",
+        gateOutcome: "waiting"
+      } as Record<string, string | number | boolean | null>
+    };
+    snapshotPaintObservation = observation;
     const resourceStage = trace?.begin("frozen_source_decode_ready");
     let settled = false;
     const finish = (
@@ -168,10 +197,11 @@ function waitForSnapshotPainted(
     ): void => {
       if (settled) return;
       settled = true;
+      observation.fields.gateOutcome = outcome;
       clearTimeout(timer);
       if (pendingPaintWait?.settle === settlePaint) pendingPaintWait = null;
       if (resourceStage !== undefined) {
-        const transport = details?.transport ?? "img";
+        const transport = details?.transport ?? observation.fields.transport;
         trace?.end(resourceStage, {
           outcome,
           renderer: transport === "windows-shared-memory" ? "canvas" : "img",
@@ -451,7 +481,13 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
         });
         return { ok: false, code: "unauthorized" } as const;
       }
+      const observation = snapshotPaintObservation;
+      const readStartedAt = performance.now();
       const result = await readSnapshotForRenderer(snapshotId);
+      if (observation !== null && observation === snapshotPaintObservation) {
+        observation.fields.mainBitmapReadMs = diagnosticMs(performance.now() - readStartedAt);
+        observation.fields.mainBitmapReadOutcome = result.ok ? "read" : result.code;
+      }
       if (!result.ok && result.code === "read_failed") {
         abortActiveSelector(event.sender.id, "mapped_snapshot_read_failed");
       }
@@ -461,11 +497,14 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
       // Renderer acked that the frozen snapshot finished painting.
       // Only satisfy the current wait if the sender and URL match (a stale
       // ack from a superseded capture must not reveal the selector early).
-      if (pendingPaintWait === null) return;
-      if (event.sender.id !== pendingPaintWait.senderId) return;
+      const observation = snapshotPaintObservation;
+      if (observation === null || observation.received) return;
+      if (event.sender.id !== observation.senderId || event.sender.id !== activeSelectorSenderId) return;
       if (typeof payload !== "object" || payload === null) return;
       const painted = payload as Record<string, unknown>;
-      if (painted.screenUrl !== pendingPaintWait.screenUrl) return;
+      if (painted.screenUrl !== observation.screenUrl) return;
+      observation.received = true;
+      const late = observation.fields.gateOutcome === "timeout";
       const transport =
         painted.transport === "windows-shared-memory" ? "windows-shared-memory" : "img";
       const canvasUploadBytes = painted.canvasUploadBytes;
@@ -479,11 +518,20 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
       }
       const waiter = pendingPaintWait;
       pendingPaintWait = null;
-      waiter.trace?.mark("renderer_signal_receipt", {
-        signal: "snapshot_painted",
-        transport
+      Object.assign(observation.fields, {
+        transport,
+        gateOutcome: late ? "timeout" : "loaded",
+        late,
+        paintedAfterRequestMs: diagnosticMs(performance.now() - observation.startedAt),
+        readRoundTripMs: diagnosticMs(painted.readRoundTripMs),
+        canvasUploadMs: diagnosticMs(painted.canvasUploadMs),
+        rendererReadyMs: diagnosticMs(painted.decodeMs)
       });
-      waiter.settle("loaded", {
+      observation.trace?.mark("renderer_signal_receipt", {
+        signal: "snapshot_painted",
+        ...observation.fields
+      });
+      waiter?.settle("loaded", {
         transport,
         decodeMs:
           typeof painted.decodeMs === "number" && Number.isFinite(painted.decodeMs)
@@ -539,18 +587,30 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
         return;
       }
       pendingPresentation = null;
+      const timings = payload as Record<string, unknown>;
+      const presentation = {
+        snapshotWaitMs: diagnosticMs(timings.snapshotWaitMs),
+        firstFrameWaitMs: diagnosticMs(timings.firstFrameWaitMs),
+        secondFrameWaitMs: diagnosticMs(timings.secondFrameWaitMs),
+        rendererTotalMs: diagnosticMs(timings.rendererTotalMs)
+      };
       pending.trace.mark("renderer_signal_receipt", {
         signal: "selector_presented",
         authenticated: true
       });
       pending.trace.end(pending.visibleStage, {
+        ...presentation,
         generation: pending.generation,
         frameBarrier: 2,
         authenticated: true
       });
       pending.trace.finish("presented", {
         generation: pending.generation,
-        frameBarrier: 2
+        frameBarrier: 2,
+        presentation,
+        ...(snapshotPaintObservation?.trace === pending.trace
+          ? { snapshotReadiness: { ...snapshotPaintObservation.fields } }
+          : {})
       });
     });
     ipcMain.on(SELECTOR_RESULT_CHANNEL, (_event, payload: unknown) => {
@@ -1627,6 +1687,7 @@ export function hideSelector(): void {
 }
 
 function hideAllSelectors(): void {
+  snapshotPaintObservation = null;
   // Release the globalShortcut binding before we lower the window;
   // leaving Esc / ↵ globally bound after the selector is gone would
   // hijack those keys for the rest of the app session.

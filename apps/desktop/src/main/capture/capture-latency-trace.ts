@@ -35,9 +35,10 @@ export const CAPTURE_LATENCY_STAGES = [
 
 export type CaptureLatencyStage = (typeof CAPTURE_LATENCY_STAGES)[number];
 
+type CaptureLatencyValue = string | number | boolean | null | undefined;
 type CaptureLatencyFields = Record<
   string,
-  string | number | boolean | null | undefined
+  CaptureLatencyValue | Readonly<Record<string, CaptureLatencyValue>>
 >;
 
 type CaptureLatencyLogger = {

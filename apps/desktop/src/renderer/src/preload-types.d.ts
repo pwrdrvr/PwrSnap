@@ -84,6 +84,8 @@ declare global {
         decodeMs: number;
         mainToRendererBytes: number;
         canvasUploadBytes: number;
+        readRoundTripMs?: number;
+        canvasUploadMs?: number;
       }): void;
       readSelectorSnapshot(id: string): Promise<
         | {
@@ -97,6 +99,10 @@ declare global {
         invocationId: string;
         generation: number;
         screenUrl: string;
+        snapshotWaitMs?: number;
+        firstFrameWaitMs?: number;
+        secondFrameWaitMs?: number;
+        rendererTotalMs?: number;
       }): void;
       onSelectorPresentationRequest(
         handler: (payload: {

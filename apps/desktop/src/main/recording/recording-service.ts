@@ -113,7 +113,7 @@ export type RecordingService = {
   retryCapabilities(sessionId: string): RecordingCapabilities;
   retry(sessionId: string): Promise<{ sessionId: string }>;
   dismissFailure(sessionId: string): Promise<void>;
-  /** Main-process-only provenance attached after an interactive start.
+  /** Main-process-only provenance attached to an active or retryable failed session.
    *  Public recording:start callers cannot provide this evidence. */
   attachTrustedWindowIdentity?(
     sessionId: string,
@@ -204,6 +204,8 @@ class NativeRecorderService implements RecordingService {
   private inboundBuffer = "";
   private stopRequested = false;
   private retryOptions: StartOptions | null = null;
+  // Survives failure cleanup with retryOptions; never stores a stale title.
+  private retryWindowIdentity: TrustedRecordingWindowIdentity | null = null;
   private retryInFlight = false;
   private trustedWindowIdentity: TrustedRecordingWindowIdentity | null = null;
   private sourceWindowTitlePromise: Promise<string | null> | null = null;
@@ -216,6 +218,13 @@ class NativeRecorderService implements RecordingService {
     sessionId: string,
     identity: TrustedRecordingWindowIdentity
   ): boolean {
+    const state = getRecordingState();
+    const failedSubject = state.phase === "failed" && state.sessionId === sessionId
+      && state.canRetry ? this.retryOptions?.subject : null;
+    if (failedSubject?.kind === "window" && failedSubject.windowId === identity.windowId) {
+      this.retryWindowIdentity = { ...identity };
+      return true;
+    }
     if (
       this.sessionId !== sessionId ||
       this.subject?.kind !== "window" ||
@@ -223,7 +232,8 @@ class NativeRecorderService implements RecordingService {
     ) {
       return false;
     }
-    this.trustedWindowIdentity = identity;
+    this.retryWindowIdentity = { ...identity };
+    this.trustedWindowIdentity = { ...identity };
     this.sourceWindowTitlePromise = resolveTrustedRecordingWindowTitle(identity);
     return true;
   }
@@ -247,6 +257,7 @@ class NativeRecorderService implements RecordingService {
     const physicalRect = subjectToPhysicalRect(options.subject);
     const displayId = subjectDisplayId(options.subject);
     this.retryOptions = options;
+    if (!retryingFailure) this.retryWindowIdentity = null;
     const binary = resolveRecorderBinary();
     if (binary === null) {
       const cause = new Error(
@@ -549,6 +560,7 @@ class NativeRecorderService implements RecordingService {
       });
       setRecordingState({ phase: "ready", sessionId, captureId: stored.captureId });
       this.retryOptions = null;
+      this.retryWindowIdentity = null;
       this.cleanup();
       return stored;
     } catch (cause) {
@@ -607,7 +619,10 @@ class NativeRecorderService implements RecordingService {
     }
     this.retryInFlight = true;
     try {
-      return await this.startAttempt(snapshotStartOptions(this.retryOptions), true);
+      const identity = this.retryWindowIdentity;
+      const started = await this.startAttempt(snapshotStartOptions(this.retryOptions), true);
+      if (identity !== null) this.attachTrustedWindowIdentity(started.sessionId, identity);
+      return started;
     } finally {
       this.retryInFlight = false;
     }
@@ -633,6 +648,7 @@ class NativeRecorderService implements RecordingService {
     }
     this.cleanup();
     this.retryOptions = null;
+    this.retryWindowIdentity = null;
     setRecordingState({ phase: "idle" });
   }
 
@@ -667,6 +683,7 @@ class NativeRecorderService implements RecordingService {
     }
     this.cleanup();
     this.retryOptions = null;
+    this.retryWindowIdentity = null;
     setRecordingState({ phase: "idle" });
     log.info("recording cancelled", { sessionId });
   }
@@ -849,6 +866,8 @@ class WindowsFfmpegRecorderService implements RecordingService {
   private exitPromise: Promise<{ code: number | null; signal: NodeJS.Signals | null }> | null = null;
   private stderrTail: string[] = [];
   private retryOptions: StartOptions | null = null;
+  // Survives failure cleanup with retryOptions; never stores a stale title.
+  private retryWindowIdentity: TrustedRecordingWindowIdentity | null = null;
   private retryInFlight = false;
   private trustedWindowIdentity: TrustedRecordingWindowIdentity | null = null;
   private sourceWindowTitlePromise: Promise<string | null> | null = null;
@@ -861,6 +880,13 @@ class WindowsFfmpegRecorderService implements RecordingService {
     sessionId: string,
     identity: TrustedRecordingWindowIdentity
   ): boolean {
+    const state = getRecordingState();
+    const failedSubject = state.phase === "failed" && state.sessionId === sessionId
+      && state.canRetry ? this.retryOptions?.subject : null;
+    if (failedSubject?.kind === "window" && failedSubject.windowId === identity.windowId) {
+      this.retryWindowIdentity = { ...identity };
+      return true;
+    }
     if (
       this.sessionId !== sessionId ||
       this.subject?.kind !== "window" ||
@@ -868,7 +894,8 @@ class WindowsFfmpegRecorderService implements RecordingService {
     ) {
       return false;
     }
-    this.trustedWindowIdentity = identity;
+    this.retryWindowIdentity = { ...identity };
+    this.trustedWindowIdentity = { ...identity };
     this.sourceWindowTitlePromise = resolveTrustedRecordingWindowTitle(identity);
     return true;
   }
@@ -892,6 +919,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
     const hudRect = subjectToPhysicalRect(options.subject);
     const displayId = subjectDisplayId(options.subject);
     this.retryOptions = options;
+    if (!retryingFailure) this.retryWindowIdentity = null;
     const ffmpeg = resolveFfmpegPath();
     if (ffmpeg === null) {
       const cause = new Error(
@@ -1100,6 +1128,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
       });
       setRecordingState({ phase: "ready", sessionId, captureId: stored.captureId });
       this.retryOptions = null;
+      this.retryWindowIdentity = null;
       this.cleanup();
       return stored;
     } catch (cause) {
@@ -1149,7 +1178,10 @@ class WindowsFfmpegRecorderService implements RecordingService {
     }
     this.retryInFlight = true;
     try {
-      return await this.startAttempt(snapshotStartOptions(this.retryOptions), true);
+      const identity = this.retryWindowIdentity;
+      const started = await this.startAttempt(snapshotStartOptions(this.retryOptions), true);
+      if (identity !== null) this.attachTrustedWindowIdentity(started.sessionId, identity);
+      return started;
     } finally {
       this.retryInFlight = false;
     }
@@ -1175,6 +1207,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
     }
     this.cleanup();
     this.retryOptions = null;
+    this.retryWindowIdentity = null;
     setRecordingState({ phase: "idle" });
   }
 
@@ -1200,6 +1233,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
     }
     this.cleanup();
     this.retryOptions = null;
+    this.retryWindowIdentity = null;
     setRecordingState({ phase: "idle" });
     log.info("recording cancelled", { sessionId });
   }

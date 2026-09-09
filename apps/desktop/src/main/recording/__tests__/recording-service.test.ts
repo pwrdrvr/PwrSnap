@@ -1034,6 +1034,56 @@ describe("RecordingService trusted window-title timing", () => {
   });
 });
 
+describe.each(["darwin", "win32"])("window-title retries on %s", (platform) => {
+  test.each(["start failure", "post-start failure", "reused window"])("%s refreshes trusted provenance", async (scenario) => {
+    Object.defineProperty(process, "platform", { value: platform, configurable: true });
+    const { __setRecordingServiceForTests, getRecordingService } = await import("../recording-service");
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+    const identity = { windowId: 12345, pid: 700 };
+    const subject = { kind: "window" as const, windowId: 12345,
+      displayId: 1, rect: { x: 0, y: 0, w: 100, h: 100 } };
+    mocks.liveWindows.push({ ...identity, title: "Original title" });
+    const acknowledge = async (): Promise<void> => {
+      await vi.advanceTimersByTimeAsync(0);
+      if (platform === "darwin") mocks.spawnedChildren.at(-1)!.emitLine({
+        event: "started", physicalRect: { x: 0, y: 0, w: 100, h: 100 }
+      });
+      await vi.advanceTimersByTimeAsync(0);
+    };
+    if (scenario === "post-start failure") {
+      const starting = service.start({ subject, capabilities: CAPS, countdownSeconds: 0 });
+      await acknowledge();
+      const started = await starting;
+      expect(service.attachTrustedWindowIdentity?.(started.sessionId, identity)).toBe(true);
+      mocks.spawnedChildren.at(-1)!.emit("error", new Error("recorder failed"));
+    } else {
+      mocks.nextSpawnError = new Error("start failed");
+      await expect(service.start({ subject, capabilities: CAPS, countdownSeconds: 0 })).rejects.toThrow("start failed");
+      expect(service.attachTrustedWindowIdentity?.(mocks.currentState.sessionId as string, identity)).toBe(true);
+    }
+    expect(mocks.currentState.phase).toBe("failed");
+    mocks.liveWindows[0]!.title = "Refreshed title — 東京";
+    if (scenario === "reused window") mocks.liveWindows[0]!.pid = 701;
+    const retry = service.retry(mocks.currentState.sessionId as string);
+    await acknowledge();
+    await retry;
+    const child = mocks.spawnedChildren.at(-1)!;
+    const stopped = service.stop();
+    if (platform === "darwin") child.emitLine({
+      event: "stopped", durationSec: 2, containerFormat: "mp4",
+      hasSystemAudio: false, hasMicrophoneAudio: false,
+      outputPath: "/fake/captures/src-1.mp4"
+    });
+    else child.emit("exit", 0, null);
+    await vi.advanceTimersByTimeAsync(0);
+    await stopped;
+    const { insertCapture } = await import("../../persistence/captures-repo");
+    expect(vi.mocked(insertCapture).mock.calls.at(-1)![0].source_window_title)
+      .toBe(scenario === "reused window" ? null : "Refreshed title — 東京");
+  });
+});
+
 describe("RecordingService.start startedPromise timeout", () => {
   test("recorder that never acks `started` is killed after 15s and state goes to failed", async () => {
     const { __setRecordingServiceForTests, getRecordingService } = await import(

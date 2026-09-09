@@ -10,6 +10,7 @@
 // site catches it.
 
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import type { RecordingState } from "@pwrsnap/shared";
 
 /** A display with a non-zero origin on both axes — the real config the
  *  double-add was measured on. At (0,0) this test cannot fail. */
@@ -64,16 +65,39 @@ vi.mock("../../window", () => ({
   reclaimDockIconIfLibraryAlive: () => undefined,
   scheduleDockReclaim: () => undefined
 }));
-vi.mock("../recording-state", () => ({ getRecordingState: () => ({ phase: "idle" }) }));
+let recordingState: RecordingState = { phase: "idle" };
+vi.mock("../recording-state", () => ({ getRecordingState: () => recordingState }));
 
 beforeEach(() => {
   globalCalls.length = 0;
   displayLocalCalls.length = 0;
   dispatch.mockClear();
   attachIdentity.mockClear();
+  recordingState = { phase: "idle" };
 });
 
 describe("startRecordingFromSelection — overlap coordinate space", () => {
+  test.each([false, true])("failed start saves provenance only for a new failure (existing=%s)", async (existing) => {
+    const { startRecordingFromSelection } = await import("../record-from-selection");
+    const failed: RecordingState = {
+      phase: "failed", sessionId: "failed-session", code: "recorder_spawn_failed",
+      canRetry: true, displayId: 3
+    };
+    if (existing) recordingState = failed;
+    dispatch.mockImplementationOnce(async () => {
+      recordingState = failed;
+      return { ok: false, error: { kind: "capture", code: "recording_start_failed", message: "Failed" } } as never;
+    });
+    await startRecordingFromSelection(
+      { ok: true, snappedWindowId: 42, rect: { x: 0, y: 0, w: 100, h: 100 },
+        displayId: 3, screenSnapshotPath: "/tmp/snap.png",
+        screenSnapshotId: "snap-failed", previousAppPid: null },
+      { includeSystemAudio: false, includeMicrophone: false, videoCaptureCursor: false }
+    );
+    if (existing) expect(attachIdentity).not.toHaveBeenCalled();
+    else expect(attachIdentity).toHaveBeenCalledWith("failed-session", { windowId: 42, pid: 123 });
+  });
+
   test("attaches selected native identity only after recording start succeeds", async () => {
     const { startRecordingFromSelection } = await import("../record-from-selection");
     dispatch.mockImplementationOnce(async () => {

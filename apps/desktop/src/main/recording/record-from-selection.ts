@@ -282,6 +282,7 @@ export async function startRecordingFromSelection(
         displayId: selection.displayId,
       };
     }
+    const stateBeforeStart = getRecordingState();
     const result = await bus.dispatch(
       "recording:start",
       {
@@ -296,6 +297,14 @@ export async function startRecordingFromSelection(
     );
     if (result.ok && trustedWindowIdentity !== null) {
       attachTrustedRecordingWindowIdentity(result.value.sessionId, trustedWindowIdentity);
+    } else if (!result.ok && trustedWindowIdentity !== null) {
+      const failed = getRecordingState();
+      // Only a new failure from this attempt can inherit the selection.
+      // Permission rejection or an already-open failure must not claim it.
+      if (failed.phase === "failed" && failed.canRetry &&
+          (stateBeforeStart.phase !== "failed" || stateBeforeStart.sessionId !== failed.sessionId)) {
+        attachTrustedRecordingWindowIdentity(failed.sessionId, trustedWindowIdentity);
+      }
     }
     if (!result.ok && result.error.code !== "cancelled") {
       log.warn("recording:start failed", {

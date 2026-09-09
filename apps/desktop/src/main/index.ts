@@ -38,6 +38,10 @@ import {
   createInteractiveCaptureTrigger,
   dispatchInteractiveCapture
 } from "./capture/capture-trigger";
+import {
+  INTERACTIVE_CAPTURE_HOTKEY_DEBOUNCE_MS,
+  createInteractiveCaptureHotkeyGate
+} from "./capture/interactive-capture-hotkey-gate";
 import { reconcileCapturesLocationOnBoot } from "./capture/capture-location-reconciliation";
 import { getAppIconPath } from "./app-icons/app-icon-cache";
 import {
@@ -692,38 +696,93 @@ async function runPasteFromClipboard(): Promise<void> {
   }
 }
 
+const interactiveCaptureHotkeyGate = createInteractiveCaptureHotkeyGate();
+
+function triggerInteractiveCaptureFromHotkey(
+  mode: "auto" | "region" | "window" | "timed",
+  kind: "quickCapture" | "region" | "window" | "timed"
+): void {
+  const log = getMainLogger("pwrsnap:shortcut");
+  const decision = interactiveCaptureHotkeyGate.tryStart(async () => {
+    let trigger: CaptureInvocationTrigger;
+    switch (kind) {
+      case "quickCapture":
+        trigger = createInteractiveCaptureTrigger("global_hotkey.quick_capture");
+        break;
+      case "region":
+        trigger = createInteractiveCaptureTrigger("global_hotkey.region");
+        break;
+      case "window":
+        trigger = createInteractiveCaptureTrigger("global_hotkey.window");
+        break;
+      case "timed":
+        trigger = createInteractiveCaptureTrigger("global_hotkey.timed");
+        break;
+    }
+    log.info("global hotkey fired", {
+      kind,
+      mode,
+      invocationId: trigger.id
+    });
+    await runInteractiveCapture(mode, trigger);
+  });
+  log.info("interactive capture hotkey gate decision", {
+    kind,
+    mode,
+    decision: decision.status,
+    reason: decision.reason,
+    ageMs: decision.ageMs,
+    debounceMs: INTERACTIVE_CAPTURE_HOTKEY_DEBOUNCE_MS
+  });
+  if (decision.status === "accepted") {
+    void decision.completion.catch((cause: unknown) => {
+      log.error("interactive capture hotkey failed unexpectedly", {
+        kind,
+        mode,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    });
+  }
+}
+
+function triggerInteractiveRecordFromHotkey(kind: "videoCapture"): void {
+  const log = getMainLogger("pwrsnap:shortcut");
+  const decision = interactiveCaptureHotkeyGate.tryStart(async () => {
+    log.info("global hotkey fired", { kind, mode: "video" });
+    await runInteractiveRecord();
+  });
+  log.info("interactive capture hotkey gate decision", {
+    kind,
+    mode: "video",
+    decision: decision.status,
+    reason: decision.reason,
+    ageMs: decision.ageMs,
+    debounceMs: INTERACTIVE_CAPTURE_HOTKEY_DEBOUNCE_MS
+  });
+  if (decision.status === "accepted") {
+    void decision.completion.catch((cause: unknown) => {
+      log.error("interactive video capture hotkey failed unexpectedly", {
+        kind,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    });
+  }
+}
+
 function handlerFor(kind: HotkeyKind): () => void {
   const log = getMainLogger("pwrsnap:shortcut");
   switch (kind) {
     case "quickCapture":
       return () => {
-        const trigger = createInteractiveCaptureTrigger("global_hotkey.quick_capture");
-        log.info("global hotkey fired", {
-          kind,
-          mode: "auto",
-          invocationId: trigger.id
-        });
-        void runInteractiveCapture("auto", trigger);
+        triggerInteractiveCaptureFromHotkey("auto", kind);
       };
     case "region":
       return () => {
-        const trigger = createInteractiveCaptureTrigger("global_hotkey.region");
-        log.info("global hotkey fired", {
-          kind,
-          mode: "region",
-          invocationId: trigger.id
-        });
-        void runInteractiveCapture("region", trigger);
+        triggerInteractiveCaptureFromHotkey("region", kind);
       };
     case "window":
       return () => {
-        const trigger = createInteractiveCaptureTrigger("global_hotkey.window");
-        log.info("global hotkey fired", {
-          kind,
-          mode: "window",
-          invocationId: trigger.id
-        });
-        void runInteractiveCapture("window", trigger);
+        triggerInteractiveCaptureFromHotkey("window", kind);
       };
     case "fullScreen":
       // Capture the display under the cursor end-to-end (no selector).
@@ -744,13 +803,7 @@ function handlerFor(kind: HotkeyKind): () => void {
       // 5-second countdown, then the auto-mode selector. Routed through
       // `capture:interactive` (mode `"timed"`), same as the tray tile.
       return () => {
-        const trigger = createInteractiveCaptureTrigger("global_hotkey.timed");
-        log.info("global hotkey fired", {
-          kind,
-          mode: "timed",
-          invocationId: trigger.id
-        });
-        void runInteractiveCapture("timed", trigger);
+        triggerInteractiveCaptureFromHotkey("timed", kind);
       };
     case "videoCapture":
       // Fast Video Capture (issue #64). Opens the selector in auto
@@ -762,8 +815,7 @@ function handlerFor(kind: HotkeyKind): () => void {
       // choose anything. That is the whole reason to keep a second
       // hotkey now that the chooser exists.
       return () => {
-        log.info("global hotkey fired", { kind, mode: "video" });
-        void runInteractiveRecord();
+        triggerInteractiveRecordFromHotkey(kind);
       };
     case "reshowFloatOver":
       // Re-pop the most recent capture's float-over toast (issue: the

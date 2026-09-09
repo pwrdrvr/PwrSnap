@@ -10,25 +10,93 @@ function source(relativePath: string): string {
 }
 
 describe("interactive capture trigger production wiring", () => {
+  test("selector-based global hotkeys enter one shared gate before capture work", () => {
+    const main = source("apps/desktop/src/main/index.ts");
+    expect(main).toContain("const interactiveCaptureHotkeyGate =");
+
+    const captureHelperStart = main.indexOf(
+      "function triggerInteractiveCaptureFromHotkey("
+    );
+    const recordHelperStart = main.indexOf(
+      "function triggerInteractiveRecordFromHotkey("
+    );
+    const handlerStart = main.indexOf("function handlerFor(");
+    expect(captureHelperStart).toBeGreaterThan(-1);
+    expect(recordHelperStart).toBeGreaterThan(captureHelperStart);
+    expect(handlerStart).toBeGreaterThan(recordHelperStart);
+
+    const captureHelper = main.slice(captureHelperStart, recordHelperStart);
+    const captureGateIndex = captureHelper.indexOf(
+      "interactiveCaptureHotkeyGate.tryStart("
+    );
+    const triggerIndex = captureHelper.indexOf(
+      "createInteractiveCaptureTrigger("
+    );
+    const dispatchIndex = captureHelper.indexOf("runInteractiveCapture(");
+    expect(captureGateIndex).toBeGreaterThan(-1);
+    expect(triggerIndex).toBeGreaterThan(captureGateIndex);
+    expect(dispatchIndex).toBeGreaterThan(triggerIndex);
+
+    const recordHelper = main.slice(recordHelperStart, handlerStart);
+    const recordGateIndex = recordHelper.indexOf(
+      "interactiveCaptureHotkeyGate.tryStart("
+    );
+    expect(recordGateIndex).toBeGreaterThan(-1);
+    expect(recordHelper.indexOf("runInteractiveRecord()"))
+      .toBeGreaterThan(recordGateIndex);
+
+    const handlers = main.slice(handlerStart);
+    for (const [kind, mode] of [
+      ["quickCapture", "auto"],
+      ["region", "region"],
+      ["window", "window"],
+      ["timed", "timed"]
+    ]) {
+      const caseStart = handlers.indexOf(`case "${kind}":`);
+      expect(caseStart).toBeGreaterThan(-1);
+      expect(
+        handlers.indexOf(
+          `triggerInteractiveCaptureFromHotkey("${mode}", kind)`,
+          caseStart
+        )
+      ).toBeGreaterThan(caseStart);
+    }
+    const videoCaseStart = handlers.indexOf('case "videoCapture":');
+    expect(videoCaseStart).toBeGreaterThan(-1);
+    expect(
+      handlers.indexOf("triggerInteractiveRecordFromHotkey(kind)", videoCaseStart)
+    ).toBeGreaterThan(videoCaseStart);
+  });
+
   test("every selector-based global hotkey samples before logging and dispatches that trigger", () => {
     const main = source("apps/desktop/src/main/index.ts");
-    for (const [mode, origin] of [
-      ["auto", "global_hotkey.quick_capture"],
-      ["region", "global_hotkey.region"],
-      ["window", "global_hotkey.window"],
-      ["timed", "global_hotkey.timed"]
+    const helperStart = main.indexOf(
+      "function triggerInteractiveCaptureFromHotkey("
+    );
+    const helperEnd = main.indexOf(
+      "function triggerInteractiveRecordFromHotkey("
+    );
+    const helper = main.slice(helperStart, helperEnd);
+    const logIndex = helper.indexOf('log.info("global hotkey fired"');
+    const dispatchIndex = helper.indexOf(
+      "await runInteractiveCapture(mode, trigger)"
+    );
+    expect(helperStart).toBeGreaterThan(-1);
+    expect(helperEnd).toBeGreaterThan(helperStart);
+    expect(logIndex).toBeGreaterThan(-1);
+    expect(dispatchIndex).toBeGreaterThan(logIndex);
+
+    for (const origin of [
+      "global_hotkey.quick_capture",
+      "global_hotkey.region",
+      "global_hotkey.window",
+      "global_hotkey.timed"
     ]) {
       const createIndex = main.indexOf(
         `createInteractiveCaptureTrigger("${origin}")`
       );
-      const logIndex = main.indexOf('log.info("global hotkey fired"', createIndex);
-      const dispatchIndex = main.indexOf(
-        `runInteractiveCapture("${mode}", trigger)`,
-        createIndex
-      );
       expect(createIndex).toBeGreaterThan(-1);
-      expect(logIndex).toBeGreaterThan(createIndex);
-      expect(dispatchIndex).toBeGreaterThan(logIndex);
+      expect(createIndex).toBeLessThan(helperStart + logIndex);
     }
   });
 

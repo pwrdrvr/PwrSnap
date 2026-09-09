@@ -62,8 +62,9 @@ import {
   runWithCapturesDirFallback
 } from "../capture/capture-storage-gate";
 import { releaseSnapshot } from "../capture/screen-snapshot";
-import { type WindowInfo } from "../capture/window-list";
+import { listWindows, type WindowInfo } from "../capture/window-list";
 import {
+  resolveSelectedWindowTitle,
   resolveSelectionSourceApp,
   resolveSourceAppByRect
 } from "../capture/source-app";
@@ -619,6 +620,12 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
           snappedWindowId: selection.snappedWindowId
         });
       }
+      // Title attribution needs a live, exact-id check. Start the native
+      // enumeration alongside pixel capture so its ~30-50ms cost does not
+      // lengthen the normal path. A free region has no source-window title
+      // and therefore performs no extra lookup.
+      const liveWindowsPromise =
+        selection.snappedWindowId === undefined ? null : listWindows();
       const captureResult =
         selection.fullWindow === true &&
         selection.snappedWindowId !== undefined &&
@@ -664,6 +671,15 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
           message: captureResult.message
         });
       }
+
+      const sourceWindowTitle =
+        liveWindowsPromise === null
+          ? null
+          : resolveSelectedWindowTitle(
+              selection.snappedWindowId,
+              snapshot,
+              await liveWindowsPromise
+            );
 
       // We have the pixels. Tear the selector down NOW — BEFORE the save —
       // so the file write (and any Documents TCC prompt it triggers) runs
@@ -732,7 +748,8 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
           screen.getAllDisplays(),
           selection.displayId
         ),
-        cursorLayer
+        cursorLayer,
+        sourceWindowTitle
       });
       if (persisted.ok) {
         // Selector is already gone; this swaps the idle float-over to the
@@ -1655,6 +1672,7 @@ async function persistAndBroadcast(
   options: {
     devicePixelRatio?: number | undefined;
     cursorLayer?: CursorLayerPlacement | undefined;
+    sourceWindowTitle?: string | null | undefined;
   } = {}
 ): Promise<Result<CaptureRecord, PwrSnapError>> {
   // New captures land as v2 layer-tree bundles. The read path in
@@ -1675,6 +1693,7 @@ async function persistAndBroadcast(
           sourceApp === null
             ? null
             : { bundleId: sourceApp.bundleId, appName: sourceApp.appName },
+        sourceWindowTitle: options.sourceWindowTitle ?? null,
         outputDir,
         devicePixelRatio: options.devicePixelRatio,
         cursorLayer: options.cursorLayer

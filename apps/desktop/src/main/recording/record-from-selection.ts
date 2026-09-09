@@ -27,6 +27,7 @@ import {
 } from "../capture/region-selector";
 import { releaseSnapshot } from "../capture/screen-snapshot";
 import {
+  findWindowById,
   resolveSelectionSourceApp,
   shouldConsiderRaisingOurWindows,
 } from "../capture/source-app";
@@ -37,6 +38,7 @@ import {
   scheduleDockReclaim,
 } from "../window";
 import { getRecordingState } from "./recording-state";
+import { attachTrustedRecordingWindowIdentity } from "./recording-service";
 
 /** A selector result the user actually committed. */
 export type CommittedSelection = Extract<SelectorResult, { ok: true }>;
@@ -166,6 +168,12 @@ export async function startRecordingFromSelection(
     //     any visible BrowserWindow (e.g. that window just closed) →
     //     fall through to the previous-app activation; nothing to raise.
     const cachedSnapshot = getLastWindowListSnapshot();
+    const selectedWindow = selection.snappedWindowId === undefined
+      ? null
+      : findWindowById(cachedSnapshot, selection.snappedWindowId);
+    const trustedWindowIdentity = selectedWindow === null
+      ? null
+      : { windowId: selectedWindow.windowId, pid: selectedWindow.pid };
     const shouldRaise = shouldConsiderRaisingOurWindows(
       selection.snappedWindowId,
       cachedSnapshot,
@@ -274,6 +282,7 @@ export async function startRecordingFromSelection(
         displayId: selection.displayId,
       };
     }
+    const stateBeforeStart = getRecordingState();
     const result = await bus.dispatch(
       "recording:start",
       {
@@ -286,6 +295,17 @@ export async function startRecordingFromSelection(
       },
       { principal: "ipc" },
     );
+    if (result.ok && trustedWindowIdentity !== null) {
+      attachTrustedRecordingWindowIdentity(result.value.sessionId, trustedWindowIdentity);
+    } else if (!result.ok && trustedWindowIdentity !== null) {
+      const failed = getRecordingState();
+      // Only a new failure from this attempt can inherit the selection.
+      // Permission rejection or an already-open failure must not claim it.
+      if (failed.phase === "failed" && failed.canRetry &&
+          (stateBeforeStart.phase !== "failed" || stateBeforeStart.sessionId !== failed.sessionId)) {
+        attachTrustedRecordingWindowIdentity(failed.sessionId, trustedWindowIdentity);
+      }
+    }
     if (!result.ok && result.error.code !== "cancelled") {
       log.warn("recording:start failed", {
         code: result.error.code,

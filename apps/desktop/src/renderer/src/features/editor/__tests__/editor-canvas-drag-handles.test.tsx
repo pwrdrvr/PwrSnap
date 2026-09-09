@@ -96,6 +96,7 @@ const record: CaptureRecord = {
   sha256: SOURCE_SHA,
   source_app_bundle_id: null,
   source_app_name: null,
+  source_window_title: null,
   edits_version: 1,
   deleted_at: null,
   has_alpha: false

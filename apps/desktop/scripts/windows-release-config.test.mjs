@@ -118,6 +118,36 @@ describe("Windows release configuration", () => {
     expect(existsSync(resolve(repoRoot, "apps/desktop/scripts/build-ffmpeg.mjs"))).toBe(false);
   });
 
+  test("macOS signing uses the preloaded keychain instead of electron-builder's broken import", () => {
+    const script = read("apps/desktop/scripts/release.mjs");
+
+    // The preload gives afterPack-sign-appex a Developer ID identity before
+    // electron-builder signs the parent app. Its password is generated, while
+    // CSC_KEY_PASSWORD unlocks the .p12. electron-builder 26.15.x passes the
+    // .p12 password to set-key-partition-list for its own generated keychain.
+    expect(script).toContain("Keep it first in");
+    expect(script).toContain("using preloaded Developer ID keychain");
+    expect(script).toContain("delete process.env.CSC_LINK");
+    expect(script).toContain("delete process.env.CSC_KEY_PASSWORD");
+    expect(script).not.toContain("process.env.CSC_KEYCHAIN");
+  });
+
+  test("macOS Icon Composer packaging uses a macOS 26 runner with its default Xcode", () => {
+    const action = read(".github/actions/select-xcode-for-actool/action.yml");
+    const releaseWorkflow = read(".github/workflows/release.yml");
+    const previewWorkflow = read(".github/workflows/preview-build.yml");
+
+    // Any Xcode 26 actool crashes its AssetCatalogAgent against macos-15's
+    // host frameworks. Compile Icon Composer only where the host and selected
+    // default Xcode are from macOS 26; overriding DEVELOPER_DIR to another
+    // side-by-side Xcode recreates the mismatch.
+    expect(releaseWorkflow.match(/runs-on: macos-26/g)).toHaveLength(2);
+    expect(previewWorkflow).toContain("runs-on: macos-26");
+    expect(action).toContain('developer_dir="$(xcode-select -p)"');
+    expect(action).toContain("AssetCatalogAgent must match the macOS 26 host");
+    expect(action).not.toContain("/Applications/Xcode_");
+  });
+
   test("tagged release workflow gates publication on Linux, macOS, and Azure-signed Windows", () => {
     const workflow = read(".github/workflows/release.yml");
 

@@ -112,19 +112,14 @@ describe("interactive capture session production wiring", () => {
     // the observed Windows key-repeat triple dispatch.
     for (const mode of ["auto", "region", "window", "timed"] as const) {
       const calls = hotkeyHandlers.match(
-        new RegExp(
-          `triggerInteractiveCaptureFromHotkey\\(\\s*"${mode}",\\s*kind,\\s*"global_hotkey\\.[^"]+"\\s*\\)`,
-          "g"
-        )
+        new RegExp(`triggerInteractiveCaptureFromHotkey\\(\\s*"${mode}",\\s*kind\\s*\\)`, "g")
       );
       expect(calls).toHaveLength(1);
     }
     expect(occurrences(hotkeyHandlers, "triggerInteractiveRecordFromHotkey(kind)")).toBe(1);
     expect(occurrences(hotkeyHandlers, "runInteractiveCapture(")).toBe(0);
     expect(occurrences(hotkeyHandlers, "runInteractiveRecord(")).toBe(0);
-    expect(occurrences(videoHotkey, "interactiveCaptureTriggerGate.acquire()")).toBe(1);
-    expect(occurrences(videoHotkey, "interactiveCaptureTriggerGate.release(decision.token)")).toBe(
-      1
-    );
+    expect(occurrences(videoHotkey, "interactiveCaptureHotkeyGate.tryStart(")).toBe(1);
+    expect(occurrences(videoHotkey, "decision.completion.catch(")).toBe(1);
   });
 });

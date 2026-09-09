@@ -11,8 +11,9 @@
   *what you must not break*.
 - Solution learnings (post-incident notes, gotchas) live in `docs/solutions/`.
 - Shipped-behavior references live at the top level of `docs/` — the release
-  runbook, the Windows guide and signing doc, the ffmpeg build reference, and
-  the third-party license notices doc.
+  runbook, the Windows guide and signing doc, the ffmpeg build reference, the
+  third-party license notices doc, and the
+  [third-party agent connection guide](docs/mcp-third-party-agents.md).
 - Two documents that began as plans survive as living references, because
   each is the only written statement of something still true: the
   [bundle format spec](docs/architecture-bundle-format.md) and the
@@ -223,6 +224,45 @@ a token that can write to this repo.
 **It runs the allowlist gate first and pushes nothing if that fails.** That
 ordering is the point: unattended regeneration is only safe because a bad
 license now stops the job instead of being quietly committed by a bot.
+
+### The same job syncs the packaged Electron runtime
+
+An Electron bump fails those two jobs a second way, and for the same reason:
+`scripts/check-dependency-version-policy.mjs` requires
+[electron-builder.yml](apps/desktop/electron-builder.yml)'s `electronVersion:`
+to equal the version `pnpm-lock.yaml` resolves — electron-builder downloads the
+runtime it is told to, so a stale pin packages a binary nothing was built or
+tested against. That line is outside the set of files Dependabot edits, so it
+was hand-fixed twice (`443e1507`, then `615475d3` on
+[#565](https://github.com/pwrdrvr/PwrSnap/pull/565)) before the workflow took it
+over.
+
+- The fixer is
+  [sync-packaged-electron-version.mjs](scripts/sync-packaged-electron-version.mjs)
+  (`pnpm deps:sync`) — run it locally when `pnpm deps:check` reports the drift.
+  It imports both the lockfile reader **and `normalizeLockVersion`** from the
+  check rather than reimplementing them, so the two cannot disagree about what
+  "resolved" means or about what already counts as a match — a fixer with
+  stricter equality rewrites clean trees and pushes commits for nothing. It
+  rewrites **one line in place**: the file's comments are load-bearing and three other regex
+  parsers read it ([release.mjs](apps/desktop/scripts/release.mjs),
+  [package-win.mjs](apps/desktop/scripts/package-win.mjs), the check itself).
+  An ambiguous file — no `electronVersion:`, two of them, a lockfile version
+  that is not plain semver — is a hard failure, never a silent no-op.
+- **It runs after the allowlist gate**, so the "nothing is written to the branch
+  until the license gate passes" ordering above still holds.
+- **The check itself no longer fails open.** `electron-builder.yml` pinning a
+  runtime that `pnpm-lock.yaml` resolves nothing for is now a failure, not a
+  silent pass: the old `return []` meant a lockfile shape the reader stopped
+  understanding (a pnpm format change, a renamed importer) would switch the
+  Electron check off entirely and let a stale runtime ship.
+- **electron-builder.yml is now the one non-manifest file the changed-file guard
+  admits**, because the workflow's own commit rides in the PR diff from then on.
+  The allowance is narrowed to the line, not the file: the guard reads that
+  file's patch from the API and refuses any added or removed line that is not an
+  `electronVersion:` line (and refuses just as hard if GitHub returns no patch).
+  Widening it back to the whole file would put an `afterPack` hook path and the
+  asar layout of a signed release on the privileged path.
 
 **Operational requirement:** a push made with the default `GITHUB_TOKEN` does
 not trigger new workflow runs, so without a separate token the PR keeps showing
@@ -709,6 +749,61 @@ Worked example — the 2026-08 video-playback GPU burn, where a 1 px
 playhead was re-rasterizing a tile 120 times a second:
 [docs/solutions/2026-08-20-video-playback-gpu-process-burn.md](docs/solutions/2026-08-20-video-playback-gpu-process-burn.md).
 
+## Loopback agent access — one door, one approval window
+
+**Every credential that reaches `http://127.0.0.1:51729/mcp` is minted by
+a decision the operator made in PwrSnap's own approval window, through
+the OAuth 2.1 door in `local-agent-oauth.ts` + `mcp-server.ts`. There is
+no other way to get one, and adding one is not a feature.** Reference:
+[docs/mcp-third-party-agents.md](docs/mcp-third-party-agents.md).
+
+A device-flow "pair" endpoint plus a bundled `pwrsnap-mcp` stdio bridge
+was built for terminal agents and then removed inside the same PR
+([#561](https://github.com/pwrdrvr/PwrSnap/pull/561)) once it was
+measured that Claude Code and Codex CLI complete the OAuth door natively
+— dynamic registration, PKCE, their own loopback redirect — and connect
+in tens of milliseconds. The premise "a CLI cannot do OAuth" was wrong.
+Before adding any client-specific credential path, run that measurement
+again; the doc says how, and which harness mistake makes a healthy
+server look like it hangs.
+
+Rules the surface keeps, and where each one lives:
+
+- **Loopback peer, Origin AND Host are all validated** — in the express
+  middleware every route inherits (`mcp-server.ts`, `start()`); Origin
+  and Host refusals are pinned by `mcp-server.test.ts`, the loopback
+  branch is not (every test client is a loopback peer). Any web page the
+  operator visits can POST to 127.0.0.1 with a correct `Host`, so Origin
+  is what stops it: a non-loopback Origin is refused. A hostname the
+  attacker points at 127.0.0.1 (DNS rebinding) yields same-origin GETs
+  that carry no Origin at all, so `Host` must equal the bound
+  `127.0.0.1:<port>` exactly — that is what stops rebinding, not Origin.
+  Origin-less requests are allowed (browser navigations and `<img>` loads
+  send none, not just local processes), which is safe only because no
+  Origin-less path mints or reveals anything.
+- **Every verb but POST on `/mcp` answers 405 `Allow: POST`** — in the
+  `/mcp` route handler (`handleRequest`), before auth; pinned by
+  `mcp-server.test.ts`. The endpoint is stateless — one transport and one
+  `McpServer` per POST — so there is no session for a GET SSE stream or a
+  DELETE. Letting the SDK transport answer the GET held a stream that never
+  ended, and the server awaited its body, so the transport + server behind
+  it lived for the rest of the process.
+- **A tool result carries its data twice** — in `toMcpToolResult`
+  (`mcp-tool-registry.ts`); pinned by `mcp-tool-registry.test.ts`, not the
+  server test. `structuredContent` AND a text block holding the same JSON,
+  per the MCP SHOULD, for hosts that read only `content`. (Claude Code and
+  Codex read `structuredContent` and drop the text copy; the block is for
+  hosts that don't.) The JSON block goes LAST, after any `resource_link`,
+  never contains the signed media URL — that lives only in the link — and
+  is always a JSON object: non-objects are wrapped as `{ value }` because
+  the SDK client rejects an array and fails the whole call.
+- **Never mint outside the window.** No bearer in a settings file, no
+  "trusted local client" allowlist, no env-var token for convenience.
+  Pinned two ways: `mcp-server.test.ts` shows a forged loopback approval
+  mints nothing, and `local-agent-minting-boundary.test.ts` greps the
+  production sources so `createGrant` has no caller and `issueOAuthGrant`
+  is reached only from the authorization-code exchange.
+
 ## Repository conventions
 
 - **pnpm workspaces.** Apps in `apps/*`, packages in `packages/*`. Always run
@@ -1191,6 +1286,87 @@ doesn't.
   ID is configured).
 - Auto-update wires in Phase 3 via `electron-updater`, mirroring PwrAgnt's
   pattern.
+
+### macOS app icon — ship the Icon Composer `.icon`; actool derives the `.icns`
+
+**`mac.icon` in electron-builder.yml points at `build/icon.icon`, an Icon
+Composer package, and nothing in this repo hand-builds a `.icns`.**
+electron-builder (≥ 26.15, pinned) compiles the package with Xcode 26's
+`actool` into `Contents/Resources/Assets.car` + `CFBundleIconName` — what
+macOS 26 draws — and derives the legacy `Contents/Resources/icon.icns` +
+`CFBundleIconFile` — what macOS 15 and earlier draw — from the same
+source. Each OS reads the format designed for it; one file no longer has
+to satisfy both.
+
+Why this is an invariant and not a preference: macOS 26 auto-normalizes a
+legacy `.icns` it is handed *instead of* a `.icon`, and how it does so is
+not stable across point releases. 1.1.0-alpha.6 shipped only a `.icns`
+padded to Apple's 824-in-1024 template (#534 — the right shape for macOS
+15). 26.6.1 composited it identically to the full-bleed one before it;
+26.6.2 composited it onto a light plate in the Dock and Finder. Same
+bytes, two results. With a `.icon` present the `.icns` is never opened on
+macOS 26, so the question goes away. Ghostty (MIT) ships exactly this pair
+— its actool-made `.icns` is padded like ours was — which is why it never
+showed the plate.
+
+Rules:
+
+- **Regenerate with `pnpm --filter @pwrsnap/desktop generate:app-icon`**
+  ([generate-app-icon.swift](apps/desktop/scripts/generate-app-icon.swift)).
+  It writes the package (`icon.json` + a glyph-only `Assets/glyph.png`;
+  the tile is the package's `fill`), `icon.png` (full-bleed Windows
+  master) and `icon-macos.png` (padded — the development Dock icon, which
+  `app.dock.setIcon()` paints literally). Do not add a `.icns` /
+  `.iconset` back, and do not point `mac.icon` at one.
+- **Every job that packages the mac app needs an actool 26 or newer.**
+  electron-builder hard-fails below that, and its Icon Composer
+  `AssetCatalogAgent` also requires the macOS 26 host frameworks. The macOS
+  packaging jobs therefore run on GitHub's `macos-26` image, not `macos-15`:
+  pointing any Xcode 26 installation at the macOS 15 host crashes the agent
+  with missing CoreMedia/MediaToolbox symbols.
+  [select-xcode-for-actool](.github/actions/select-xcode-for-actool/action.yml)
+  verifies the `macos-26` runner's default actool and returns its Developer
+  directory. Do not override that directory with a side-by-side Xcode unless
+  the host/toolchain pair has passed a signed package end-to-end verification.
+  [release.yml](.github/workflows/release.yml) (both macOS
+  jobs) and [preview-build.yml](.github/workflows/preview-build.yml) set
+  `DEVELOPER_DIR` from it on exactly the steps that run actool — the unit
+  tests, so the compile test in
+  [app-icon.test.mjs](apps/desktop/scripts/app-icon.test.mjs) runs
+  instead of skips (that step also sets `PWRSNAP_REQUIRE_ACTOOL=1`, so on
+  the release lane the suite fails rather than skips when the probe finds
+  no actool 26) — and electron-builder, so the icon compile does not
+  move `build:native` (swiftc helpers, the Quick Look extensions) onto a
+  different SDK. The sign job has no checkout, so the action rides inside
+  the archived signing input. Locally, select an Xcode 26
+  (`xcode-select`, or `DEVELOPER_DIR`) before `package:dryrun`.
+- **The compile test calls electron-builder's own helper**
+  (`app-builder-lib/out/util/macosIconComposer.generateAssetCatalogForIcon`),
+  not a copied actool command line, so the two cannot drift.
+- **actool's derived `.icns` carries 16, 32, 128 and 256px reps only** —
+  the same four Ghostty ships. macOS 15 upsamples the 256px rep for
+  Finder's largest icon sizes and Quick Look, where the deleted hand-built
+  icns had 512 and 1024. Accepted for now; an `afterPack` hook could
+  splice larger reps rendered from `icon-macos.png` if it ever matters.
+- **`actool` resolves `--app-icon Icon` by the package's basename.** Fed
+  `build/icon.icon` directly it exits 0 and silently writes no `.icns`.
+  electron-builder copies the package to `Icon.icon` first; do the same
+  if you ever compile by hand, and check the output for the `.icns`.
+- **PNG bytes are deterministic per machine, not across macOS versions**
+  (±2/255 antialiasing drift). Regenerate when the artwork changes, not to
+  "refresh", and don't read a byte diff of `icon.png` as a design change.
+- **Verifying an icon change means asking macOS, not eyeballing the PNG.**
+  Dock and Finder both draw `NSWorkspace.shared.icon(forFile:)`; render
+  that to a bitmap and measure the opaque bounds (recipe in the solutions
+  doc). Do it on a machine running the newest macOS you ship to — this
+  class of bug is invisible one point release back, and GitHub runners lag
+  further. Probe a `.pwrsnap` file as well as the app: the document icon
+  (`UTTypeIconFile` / `CFBundleTypeIconFile` in electron-builder.yml) still
+  comes from the derived, padded `.icns`, and whether 26.6.2 plates it has
+  not been measured — see the solutions doc's open item.
+
+Full investigation, measurements, and the probe recipe:
+[docs/solutions/2026-09-05-macos-26-legacy-icon-light-plate.md](docs/solutions/2026-09-05-macos-26-legacy-icon-light-plate.md).
 
 ### `package.json` `description` is shipped UI on Windows
 

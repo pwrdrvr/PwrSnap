@@ -1,0 +1,40 @@
+name: Verify the macOS 26 runner actool
+description: >-
+  electron-builder compiles build/icon.icon (an Icon Composer package) with
+  actool and hard-fails below actool 26. Its AssetCatalogAgent requires the
+  macOS 26 host frameworks, so callers run on GitHub's macos-26 image and this
+  verifies that image's default Xcode before returning its Developer directory.
+  Consumers set DEVELOPER_DIR from the output on exactly the steps that run
+  actool (the unit tests, electron-builder). See AGENTS.md "macOS app icon".
+
+outputs:
+  developer-dir:
+    description: DEVELOPER_DIR for the selected Xcode.
+    value: ${{ steps.select.outputs.developer-dir }}
+
+runs:
+  using: composite
+  steps:
+    - name: Verify the default Xcode has actool 26 or newer
+      id: select
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Do not override this with an Xcode installed alongside the default:
+        # Icon Composer's AssetCatalogAgent must match the macOS 26 host.
+        developer_dir="$(xcode-select -p)"
+        if [ ! -x "$developer_dir/usr/bin/actool" ]; then
+          echo "::error::the macOS 26 runner default Xcode must provide actool" >&2
+          exit 1
+        fi
+        # actool prints a plist. plistlib.loads() reads a pipe; load() seeks
+        # to sniff the format and fails on stdin with "not seekable".
+        version="$(DEVELOPER_DIR="$developer_dir" xcrun actool --version \
+          | python3 -c 'import plistlib, sys; print(plistlib.loads(sys.stdin.buffer.read())["com.apple.actool.version"]["short-bundle-version"])')"
+        echo "$developer_dir: actool $version"
+        if [ "${version%%.*}" -lt 26 ]; then
+          echo "::error::the macOS 26 runner default actool must be 26 or newer; got $version" >&2
+          exit 1
+        fi
+        echo "DEVELOPER_DIR=$developer_dir"
+        echo "developer-dir=$developer_dir" >> "$GITHUB_OUTPUT"

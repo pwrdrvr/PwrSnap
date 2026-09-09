@@ -15,6 +15,7 @@
     "rebuild:electron-native": "pnpm --filter @pwrsnap/desktop rebuild:electron-native",
     "typecheck": "pnpm -r --if-present typecheck",
     "deps:check": "node ./scripts/check-dependency-version-policy.mjs",
+    "deps:sync": "node ./scripts/sync-packaged-electron-version.mjs",
     "metadata:check": "node ./scripts/check-app-metadata-policy.mjs",
     "licenses:allowlist": "node ./scripts/check-third-party-license-allowlist.mjs",
     "licenses:check": "node ./scripts/check-package-license-policy.mjs && node ./scripts/check-third-party-license-allowlist.mjs && node ./scripts/generate-third-party-licenses.mjs --check",

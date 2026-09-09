@@ -10,10 +10,13 @@ import {
 } from "react";
 import { EVENT_CHANNELS, type AppLogEntry, type AppLogSnapshot } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "../../lib/pwrsnap";
+import { useCopyText } from "../../lib/useCopyText";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 
 const MAX_RENDERED_LOG_ENTRIES = 5000;
 const BOTTOM_THRESHOLD_PX = 32;
+/** The one copy button in this window, keyed for `useCopyText`. */
+const LOG_FILE_PATH_COPY_ID = "log-file-path";
 type LogLevelFilter = "error" | "warn" | "info" | "debug";
 const FILTERS: Array<{ value: LogLevelFilter; label: string }> = [
   { value: "error", label: "Error" },
@@ -51,7 +54,10 @@ export function LogsWindow(): ReactElement {
   const [following, setFollowing] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const { feedback: copyFeedback, copy: copyText } = useCopyText();
+  const copyStatus =
+    copyFeedback?.id === LOG_FILE_PATH_COPY_ID ? copyFeedback.status : null;
+  const copied = copyStatus === "copied";
 
   const setFollowingMode = useCallback((value: boolean) => {
     followingRef.current = value;
@@ -166,14 +172,12 @@ export function LogsWindow(): ReactElement {
 
   const copyPath = useCallback(async () => {
     if (logFilePath === undefined) return;
-    const result = await dispatch("clipboard:copyText", { text: logFilePath });
-    if (!result.ok) {
-      setError(result.error.message);
-      return;
-    }
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1400);
-  }, [logFilePath]);
+    // The hook flips the button to "Copied" / "Copy failed"; the reason for
+    // a failure is worth more than a label, so it also lands in the window's
+    // error line.
+    const result = await copyText(LOG_FILE_PATH_COPY_ID, logFilePath);
+    if (!result.ok) setError(result.error.message);
+  }, [copyText, logFilePath]);
 
   const revealPath = useCallback(async () => {
     const result = await dispatch("logs:revealFile", {});
@@ -232,7 +236,7 @@ export function LogsWindow(): ReactElement {
           <div className="log-window__file" aria-label="Log file path">
             <span className="log-window__file-label">File</span>
             <code className="log-window__file-path" title={logFilePath}>{logFilePath}</code>
-            <button className="log-window__file-action" data-copied={copied || undefined} type="button" onClick={() => void copyPath()}>{copied ? "Copied" : "Copy"}</button>
+            <button className="log-window__file-action" data-copied={copied || undefined} type="button" onClick={() => void copyPath()}>{copyStatus === "copied" ? "Copied" : copyStatus === "failed" ? "Copy failed" : "Copy"}</button>
             <button className="log-window__file-action" type="button" onClick={() => void revealPath()}>Reveal</button>
           </div>
         ) : null}

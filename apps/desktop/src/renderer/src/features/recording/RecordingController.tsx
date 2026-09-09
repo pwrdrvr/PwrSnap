@@ -308,20 +308,23 @@ function RecordingFailureCard({
     if (pending !== null) return;
     setPending(action);
     setActionError(null);
-    const result =
-      action === "retry"
-        ? await dispatch("recording:retry", { sessionId: state.sessionId })
-        : action === "dismiss"
-          ? await dispatch("recording:dismissFailure", { sessionId: state.sessionId })
-          : await dispatch("renderer:revealLogFile", {});
-    if (!result.ok) {
+    try {
+      const result =
+        action === "retry"
+          ? await dispatch("recording:retry", { sessionId: state.sessionId })
+          : action === "dismiss"
+            ? await dispatch("recording:dismissFailure", { sessionId: state.sessionId })
+            : await dispatch("logs:openWindow", {});
+      if (!result.ok) throw new Error("recovery_action_failed");
+    } catch {
       setActionError(
         action === "logs"
-          ? "PwrSnap couldn't reveal the log file."
+          ? "PwrSnap couldn't open Logs."
           : "That recovery action couldn't be completed."
       );
+    } finally {
+      setPending(null);
     }
-    setPending(null);
   };
 
   const buttonStyle: React.CSSProperties = {
@@ -402,7 +405,7 @@ function RecordingFailureCard({
             onClick={() => void run("logs")}
             style={buttonStyle}
           >
-            {pending === "logs" ? "Opening…" : "Reveal Log File"}
+            {pending === "logs" ? "Opening…" : "Open Logs"}
           </button>
           <button
             type="button"

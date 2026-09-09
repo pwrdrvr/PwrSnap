@@ -79,18 +79,28 @@ export function toMcpToolResult(result: Result<unknown, PwrSnapError>): CallTool
     };
   }
   const supplemental = supplementalContentFor(result.value);
+  // `structuredContent` must be a JSON object on the wire — the SDK client
+  // parses it as a record and fails the whole call on an array — so anything
+  // else is wrapped.
+  const structuredContent =
+    result.value !== null && typeof result.value === "object" && !Array.isArray(result.value)
+      ? (result.value as Record<string, unknown>)
+      : { value: result.value };
   return {
     content: [
       {
         type: "text",
         text: successSummary(result.value, supplemental)
       },
-      ...supplemental
+      ...supplemental,
+      // MCP: a tool returning `structuredContent` SHOULD also serialize it into
+      // a text block, for hosts that read only `content`. Last, so a media
+      // tool's resource_link stays beside the sentence introducing it; never
+      // the signed media URL, which lives only in that link. See
+      // docs/mcp-third-party-agents.md §"Tool results carry their data twice".
+      { type: "text", text: JSON.stringify(structuredContent) }
     ],
-    structuredContent:
-      result.value !== null && typeof result.value === "object"
-        ? (result.value as Record<string, unknown>)
-        : { value: result.value }
+    structuredContent
   };
 }
 
@@ -138,6 +148,8 @@ function supplementalContentFor(value: unknown): CallToolResult["content"] {
   return (value as ToolValueWithSupplementalContent)[supplementalContent] ?? [];
 }
 
+/** The first line of a result: what happened, in a sentence. The data itself
+ *  follows in the JSON block, so this never has to point at it. */
 function successSummary(
   value: unknown,
   supplemental: CallToolResult["content"]
@@ -148,10 +160,10 @@ function successSummary(
   if (value !== null && typeof value === "object" && "rows" in value) {
     const rows = (value as { rows?: unknown }).rows;
     if (Array.isArray(rows)) {
-      return `PwrSnap returned ${rows.length} capture${rows.length === 1 ? "" : "s"}. See structuredContent for result fields.`;
+      return `PwrSnap returned ${rows.length} capture${rows.length === 1 ? "" : "s"}.`;
     }
   }
-  return "PwrSnap operation completed. See structuredContent for result fields.";
+  return "PwrSnap operation completed.";
 }
 
 export function capabilityDenied(

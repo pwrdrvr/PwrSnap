@@ -96,6 +96,12 @@ Expected, after the deviceRGB fixes:
 
 - `build/icon.png` (and every `icon.iconset/*`): dominant orange **`#e8743a`**;
   background gradient **`#1c1813` → `#0c0b09`** (warm, top→bottom).
+  *Addendum 2026-09-05:* the `.iconset` / `.icns` are gone — macOS now
+  ships an Icon Composer package, `build/icon.icon/`, whose
+  `Assets/glyph.png` is the mark alone (same `#e8743a`) and whose
+  `icon.json` `fill` carries the gradient as `srgb:` stops. The sampling
+  recipe above still applies to `build/icon.png`. See
+  [2026-09-05-macos-26-legacy-icon-light-plate.md](2026-09-05-macos-26-legacy-icon-light-plate.md).
 - `build/dmg-background.png`: wordmark/arrow orange **`#ff8a1f`**.
 - In-app wordmark: `--accent` = **`#ff8a1f`**.
 
@@ -104,7 +110,8 @@ Expected, after the deviceRGB fixes:
 - Regenerate after editing either generator:
   `pnpm --filter @pwrsnap/desktop generate:app-icon` and
   `pnpm --filter @pwrsnap/desktop generate:dmg-background`. Both commit their
-  PNG output (and the icon's `.iconset` + `.icns`).
+  PNG output; the icon generator also commits `build/icon.icon/` (no
+  `.iconset` / `.icns` any more — see AGENTS.md "macOS app icon").
 - Don't unify the icon to `#ff8a1f` or the wordmark to `#e8743a` — the
   two-orange split is intentional and matches PwrAgent.
 - If you ever see an orange that isn't `#ff8a1f` or `#e8743a` in a rendered

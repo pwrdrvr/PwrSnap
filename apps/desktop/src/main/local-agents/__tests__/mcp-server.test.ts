@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
-import { request as httpRequest } from "node:http";
+import { once } from "node:events";
+import { Agent as HttpAgent, request as httpRequest } from "node:http";
+import { connect as netConnect } from "node:net";
+import { gzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -244,7 +247,7 @@ async function connectAs(
   const transport = new StreamableHTTPClientTransport(new URL(url), {
     fetch: (input, init) => {
       const headers = new Headers(init?.headers);
-      headers.set("authorization", `Bearer ${clientId}:${token}`);
+      headers.set("authorization", bearer(clientId, token));
       return fetch(input, {
         ...init,
         headers
@@ -283,6 +286,113 @@ const PKCE_VERIFIER = "pwrsnap-test-verifier-abcdefghijklmnopqrstuvwxyz-01234567
 
 function endpoint(address: LocalAgentMcpServerAddress, path: string): string {
   return new URL(path, `http://${address.host}:${address.port}`).href;
+}
+
+function bearer(clientId: string, token: string): string {
+  return `Bearer ${clientId}:${token}`;
+}
+
+function toolsCallBody(query: string): string {
+  return JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: { name: "pwrsnap_library_search", arguments: { query } }
+  });
+}
+
+function mcpPostHeaders(): Record<string, string> {
+  return {
+    authorization: bearer("lag_mcp", "pws_local_mcp-token"),
+    "content-type": "application/json",
+    accept: "application/json, text/event-stream"
+  };
+}
+
+async function postMcpJson(
+  url: string,
+  body: string | Uint8Array<ArrayBuffer>,
+  headers: Record<string, string> = {}
+): Promise<Response> {
+  return fetch(url, {
+    method: "POST",
+    headers: { ...mcpPostHeaders(), ...headers },
+    body
+  });
+}
+
+type RawMcpResponse = {
+  status: number | undefined;
+  body: string;
+  headers: Record<string, string | string[] | undefined>;
+  socket: unknown;
+};
+
+/** Streams `pieces` as a chunked (no content-length) POST over `agent`. */
+function postMcpChunked(
+  url: string,
+  agent: HttpAgent,
+  pieces: () => Iterable<string>
+): Promise<RawMcpResponse> {
+  return new Promise((resolve, reject) => {
+    const target = new URL(url);
+    let responded = false;
+    const req = httpRequest(
+      {
+        agent,
+        hostname: target.hostname,
+        port: target.port,
+        path: target.pathname,
+        method: "POST",
+        headers: { ...mcpPostHeaders(), "transfer-encoding": "chunked" }
+      },
+      (response) => {
+        responded = true;
+        const socket = response.socket;
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        response.once("end", () =>
+          resolve({
+            status: response.statusCode,
+            body: Buffer.concat(chunks).toString("utf8"),
+            headers: response.headers,
+            socket
+          })
+        );
+      }
+    );
+    // The server drains a rejected body before answering, so the happy path
+    // never resets this connection. These are defensive only: if a socket
+    // ever does error while still writing, swallow it (possibly more than
+    // once, and on the socket rather than the request) and reject only when
+    // no response arrived first.
+    req.on("socket", (socket) => socket.on("error", () => undefined));
+    req.on("error", (cause) => {
+      if (!responded) reject(cause);
+    });
+    const iterator = pieces()[Symbol.iterator]();
+    const pump = (): void => {
+      if (req.destroyed || req.writableEnded) return;
+      for (;;) {
+        const next = iterator.next();
+        if (next.done === true) {
+          req.end();
+          return;
+        }
+        let flushed: boolean;
+        try {
+          flushed = req.write(next.value);
+        } catch {
+          return;
+        }
+        if (!flushed) {
+          req.once("drain", pump);
+          return;
+        }
+      }
+    };
+    pump();
+  });
 }
 
 async function registerOAuthClient(
@@ -432,6 +542,27 @@ describe("LocalAgentMcpServer", () => {
     expect(res.headers.get("www-authenticate")).toContain(
       "/.well-known/oauth-protected-resource/mcp"
     );
+  });
+
+  test("answers every non-POST verb on /mcp with 405 before auth", async () => {
+    // The endpoint is stateless (one transport + McpServer per POST), so there
+    // is no session for a GET SSE stream or a DELETE to act on. Before this
+    // pin, the SDK transport answered GET with a stream that never ended and
+    // DELETE by building a whole server to close nothing; other verbs reached
+    // the SDK's own 405, which advertised the GET this server refuses. One
+    // answer, one `Allow`, and it comes before auth so nobody can open a
+    // stream. Both verified clients treat the GET 405 as "no stream here".
+    const url = await startServer();
+
+    for (const method of ["GET", "DELETE", "PUT"]) {
+      const res = await fetch(url, {
+        method,
+        headers: method === "GET" ? { accept: "text/event-stream" } : {}
+      });
+      expect(res.status, method).toBe(405);
+      expect(res.headers.get("allow"), method).toBe("POST");
+      expect(await res.json()).toMatchObject({ error: "method_not_allowed" });
+    }
   });
 
   test("lists tool schemas with read-only and destructive annotations", async () => {
@@ -1382,7 +1513,103 @@ describe("LocalAgentMcpServer", () => {
     expect(responseStatus).toBe(403);
   });
 
-  test("rejects request bodies larger than one MiB", async () => {
+  test("rejects MCP request bodies larger than one MiB with PwrSnap's JSON 413", async () => {
+    await grantService.createGrant({
+      name: "PwrAgent",
+      capabilities: ["library.read"]
+    });
+    const url = await startServer();
+
+    const response = await postMcpJson(url, toolsCallBody("x".repeat(1024 * 1024)));
+
+    expect(response.status).toBe(413);
+    expect(response.headers.get("content-type")).toBe("application/json");
+    await expect(response.json()).resolves.toEqual({ error: "request_too_large" });
+  });
+
+  test("accepts a tools/call body above body-parser's 100 kb default", async () => {
+    await grantService.createGrant({
+      name: "PwrAgent",
+      capabilities: ["library.read"]
+    });
+    const url = await startServer();
+    const query = "y".repeat(200 * 1024);
+    const body = toolsCallBody(query);
+    // Above the 100 kb limit the SDK's createMcpExpressApp would have
+    // imposed, below MAX_REQUEST_BODY_BYTES: only PwrSnap's cap may run.
+    expect(Buffer.byteLength(body)).toBeGreaterThan(100 * 1024);
+    expect(Buffer.byteLength(body)).toBeLessThan(1024 * 1024);
+
+    const response = await postMcpJson(url, body);
+
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      result?: CallToolResult;
+      error?: unknown;
+    };
+    expect(payload.error).toBeUndefined();
+    expect(payload.result?.isError).not.toBe(true);
+    const echoed = payload.result?.structuredContent?.["query"];
+    expect(typeof echoed === "string" ? echoed.length : echoed).toBe(query.length);
+    // Compared as a boolean so a mismatch does not print 200 KB twice.
+    expect(echoed === query).toBe(true);
+  });
+
+  test("rejects an over-cap chunked upload and keeps the connection usable", async () => {
+    await grantService.createGrant({
+      name: "PwrAgent",
+      capabilities: ["library.read"]
+    });
+    const url = await startServer();
+    // maxSockets: 1 so the follow-up request can only proceed once the first
+    // connection is released — the case that used to hang ~6 s under load.
+    const agent = new HttpAgent({ keepAlive: true, maxSockets: 1 });
+    try {
+      // No content-length, so the streaming branch of the cap — not the
+      // up-front content-length check — is the only thing that can stop this.
+      const first = await postMcpChunked(url, agent, function* () {
+        yield '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":' +
+          '{"name":"pwrsnap_library_search","arguments":{"query":"';
+        const piece = "x".repeat(64 * 1024);
+        for (let sent = 0; sent < 2 * 1024 * 1024; sent += piece.length) yield piece;
+        yield '"}}}';
+      });
+      // The server drains the rejected body before answering (like
+      // body-parser), so the 413 arrives on a keep-alive connection — not as a
+      // mid-upload reset — on every platform.
+      expect(first.status).toBe(413);
+      expect(JSON.parse(first.body)).toEqual({ error: "request_too_large" });
+
+      // The next request reuses that connection and is served at once: no
+      // reset, and no wait for the keep-alive timeout. (vitest's 5 s per-test
+      // timeout is the backstop that turns a stall regression into a failure.)
+      const second = await postMcpChunked(url, agent, function* () {
+        yield toolsCallBody("after");
+      });
+      expect(second.status).toBe(200);
+    } finally {
+      agent.destroy();
+    }
+  });
+
+  test("rejects compressed MCP bodies with 415 instead of inflating them", async () => {
+    await grantService.createGrant({
+      name: "PwrAgent",
+      capabilities: ["library.read"]
+    });
+    const url = await startServer();
+
+    const response = await postMcpJson(
+      url,
+      new Uint8Array(gzipSync(toolsCallBody("zipped"))),
+      { "content-encoding": "gzip" }
+    );
+
+    expect(response.status).toBe(415);
+    await expect(response.json()).resolves.toEqual({ error: "unsupported_media_type" });
+  });
+
+  test("answers SDK-router parser failures with JSON, not Express's HTML page", async () => {
     server = new LocalAgentMcpServer({
       settings,
       secrets,
@@ -1393,17 +1620,85 @@ describe("LocalAgentMcpServer", () => {
     });
     const address = await server.start();
 
-    const response = await fetch(endpoint(address, "/register"), {
+    const oversize = await fetch(endpoint(address, "/register"), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         client_name: "oversize",
         redirect_uris: [OAUTH_CALLBACK],
-        padding: "x".repeat(1024 * 1024)
+        padding: "x".repeat(150 * 1024)
+      })
+    });
+    expect(oversize.status).toBe(413);
+    expect(oversize.headers.get("content-type")).toBe("application/json");
+    await expect(oversize.json()).resolves.toEqual({ error: "request_too_large" });
+
+    const malformed = await fetch(endpoint(address, "/register"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{"
+    });
+    expect(malformed.status).toBe(400);
+    expect(malformed.headers.get("content-type")).toBe("application/json");
+    const text = await malformed.text();
+    expect(JSON.parse(text)).toEqual({ error: "invalid_request" });
+    expect(text).not.toContain("SyntaxError");
+  });
+
+  test("token endpoint takes form bodies only (no app-level JSON parser)", async () => {
+    server = new LocalAgentMcpServer({
+      settings,
+      secrets,
+      grantService,
+      tools: toolSet(),
+      host: "127.0.0.1",
+      port: 0
+    });
+    const address = await server.start();
+
+    const response = await fetch(endpoint(address, "/token"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        grant_type: "authorization_code",
+        client_id: "lag_mcp",
+        code: "code",
+        code_verifier: PKCE_VERIFIER
       })
     });
 
-    expect(response.status).toBe(413);
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: string }).error).toBe("invalid_request");
+  });
+
+  test("stop() does not wait for a client that is still uploading", async () => {
+    await grantService.createGrant({
+      name: "PwrAgent",
+      capabilities: ["library.read"]
+    });
+    const url = await startServer();
+    const target = new URL(url);
+    const socket = netConnect(Number(target.port), target.hostname);
+    socket.on("error", () => undefined);
+    await once(socket, "connect");
+    socket.write(
+      `POST ${target.pathname} HTTP/1.1\r\nhost: ${target.host}\r\n` +
+        `authorization: ${bearer("lag_mcp", "pws_local_mcp-token")}\r\n` +
+        "content-type: application/json\r\naccept: application/json, text/event-stream\r\n" +
+        'content-length: 100\r\n\r\n{"jsonrpc"'
+    );
+    // Let the server pick the request up and park in readRequestBody.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const stopping = server?.stop() ?? Promise.resolve();
+    server = null;
+    await expect(
+      Promise.race([
+        stopping.then(() => "stopped"),
+        new Promise<string>((resolve) => setTimeout(() => resolve("timed out"), 3_000))
+      ])
+    ).resolves.toBe("stopped");
+    socket.destroy();
   });
 
   test("uses a stable default port", () => {

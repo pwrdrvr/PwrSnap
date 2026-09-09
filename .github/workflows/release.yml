@@ -27,7 +27,7 @@ jobs:
   prepare:
     name: Test and prepare signing input
     if: ${{ github.event_name != 'pull_request' }}
-    runs-on: macos-15 # Apple Silicon GH-hosted runner; matches signing identity
+    runs-on: macos-26 # Icon Composer's actool requires the matching macOS 26 host.
     timeout-minutes: 45
     permissions:
       contents: read
@@ -54,7 +54,20 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      # electron-builder compiles build/icon.icon with actool 26+. The
+      # macos-26 runner's default Xcode matches the AssetCatalogAgent host;
+      # the action verifies it and returns its Developer directory. See
+      # AGENTS.md "macOS app icon".
+      - name: Verify the macOS 26 runner actool
+        id: xcode
+        uses: ./.github/actions/select-xcode-for-actool
+
       - name: Test (unit)
+        env:
+          # Lets the actool compile test in apps/desktop/scripts/app-icon.test.mjs run instead of skip,
+          # and REQUIRE_ACTOOL makes that suite fail rather than skip if the selection is ever wrong.
+          DEVELOPER_DIR: ${{ steps.xcode.outputs.developer-dir }}
+          PWRSNAP_REQUIRE_ACTOOL: "1"
         run: pnpm test
 
       - name: Prepare release stage
@@ -77,6 +90,7 @@ jobs:
             apps/desktop/package.json \
             apps/desktop/electron-builder.yml \
             apps/desktop/release-stage \
+            .github/actions/select-xcode-for-actool \
             apps/desktop/scripts/release.mjs \
             apps/desktop/scripts/rebuild-native-for-electron.mjs \
             apps/desktop/scripts/sharp-platform-packages.mjs \
@@ -99,7 +113,7 @@ jobs:
 
   sign:
     name: Sign, notarize, package macOS
-    runs-on: macos-15
+    runs-on: macos-26
     needs: prepare
     timeout-minutes: 60
     environment: apple-signing
@@ -246,8 +260,17 @@ jobs:
           cp "$dir/SOURCE-OFFER.txt" apps/desktop/release-stage/build/ffmpeg-source/ffmpeg-8.1.1-macos-universal-SOURCE-OFFER.txt
           cp "$dir/LGPL-NOTICE.txt" apps/desktop/release-stage/build/ffmpeg-source/ffmpeg-8.1.1-macos-universal-LGPL-NOTICE.txt
 
+      # No checkout in this job: the action arrives inside the signing input
+      # tarball the prepare job archived (see its tar list).
+      - name: Verify the macOS 26 runner actool
+        id: xcode
+        uses: ./.github/actions/select-xcode-for-actool
+
       - name: Sign, notarize, package macOS
         env:
+          # electron-builder compiles build/icon.icon with this Xcode's actool.
+          DEVELOPER_DIR: ${{ steps.xcode.outputs.developer-dir }}
+
           # Code signing (Developer ID Application: PwrDrvr LLC, T44CNHC4UH).
           # These come from the apple-signing GitHub Environment, NOT from
           # repository secrets. The environment is protected by required

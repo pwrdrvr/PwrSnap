@@ -19,7 +19,7 @@ jobs:
     if: |
       (github.event.action == 'labeled' && github.event.label.name == 'build-preview') ||
       (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'build-preview'))
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 30
     steps:
       - name: Checkout PR branch
@@ -114,7 +114,17 @@ jobs:
       - name: Build native helpers
         run: pnpm --filter @pwrsnap/desktop build:native
 
+      # electron-builder compiles build/icon.icon with actool 26+. The
+      # macos-26 runner's default Xcode matches the AssetCatalogAgent host.
+      # Unlike release.yml this package step also runs build:native. See
+      # AGENTS.md "macOS app icon".
+      - name: Verify the macOS 26 runner actool
+        id: xcode
+        uses: ./.github/actions/select-xcode-for-actool
+
       - name: Build preview package (unsigned)
+        env:
+          DEVELOPER_DIR: ${{ steps.xcode.outputs.developer-dir }}
         run: pnpm --filter @pwrsnap/desktop package:dryrun
 
       - name: Upload DMG artifact

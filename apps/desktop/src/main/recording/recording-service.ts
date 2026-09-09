@@ -294,10 +294,15 @@ class NativeRecorderService implements RecordingService {
     this.stoppedPromise.catch(() => undefined);
 
     child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => this.consumeStdout(chunk));
+    child.stdout.on("data", (chunk: string) => {
+      // Stop acknowledgement precedes process exit. A retired recorder can
+      // still deliver buffered output after restart installs the next session.
+      if (this.sessionId !== sessionId) return;
+      this.consumeStdout(chunk);
+    });
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => {
-      log.warn("recorder stderr", { chunk: chunk.trim() });
+      log.warn("recorder stderr", { sessionId, chunk: chunk.trim() });
     });
     let startFailureCode: RecordingFailureCode = "recorder_start_failed";
     child.on("error", (cause) => {
@@ -319,7 +324,8 @@ class NativeRecorderService implements RecordingService {
       });
     });
     child.on("exit", (code, signal) => {
-      log.info("recorder exited", { code, signal });
+      log.info("recorder exited", { sessionId, code, signal });
+      if (this.sessionId !== sessionId) return;
       if (this.startReject !== null && this.startedPromise !== null) {
         this.startReject(new Error(`recorder exited before start ack (code=${code})`));
         this.startReject = null;

@@ -13,7 +13,7 @@ copyright: "Copyright © 2026 PwrDrvr LLC. All rights reserved."
 # exemptions, this is a sandboxed Quick Look provider).
 afterPack: "scripts/afterpack-sign-appex.mjs"
 
-electronVersion: 41.10.3
+electronVersion: 41.10.7
 
 asar: true
 asarUnpack:
@@ -121,7 +121,15 @@ electronFuses:
 
 mac:
   category: public.app-category.graphics-design
-  icon: build/icon.icns
+  # Icon Composer package, NOT a hand-built .icns: electron-builder compiles
+  # it with Xcode 26's actool (Assets.car + CFBundleIconName for macOS 26) and
+  # derives the legacy icon.icns + CFBundleIconFile (macOS 15 and earlier).
+  # The `icon.icns` named by UTTypeIconFile / CFBundleTypeIconFile below is
+  # that derived, padded file: the .pwrsnap document icon has no .icon path
+  # and has NOT been measured on macOS 26.6.2 (open item in the solutions
+  # doc). Needs actool 26 selected (release.yml and preview-build.yml do it).
+  # Why: AGENTS.md "macOS app icon".
+  icon: build/icon.icon
   hardenedRuntime: true
   gatekeeperAssess: false
   notarize: true

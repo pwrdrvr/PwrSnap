@@ -1,0 +1,227 @@
+/* ============================================================
+   .psu — the compact app-update row
+   ============================================================
+
+   One component, two placements (see AppUpdateRow.tsx):
+
+     .psu--tray  full-bleed strip under .ps-tray__hdr, above Quick
+                 Capture. Square edges + its own bottom rule so it
+                 reads as part of the popover's chrome stack rather
+                 than a card floating above the actions.
+     .psu--fo    inset card under .fo__hdr, on the float-over toast's
+                 own 12px gutter, so the toast keeps one left edge all
+                 the way down.
+
+   Both host surfaces measure their natural content height and tell
+   main what to setContentSize the window to, so the row appearing or
+   leaving resizes the popover on its own — nothing here needs to know
+   about window bounds. See the "outer inline-block measurer" section
+   in AGENTS.md.
+
+   Accent-tinted rather than accent-filled: in the tray it sits
+   directly above Quick Capture's solid tangerine fill, and two solid
+   oranges in one popover would fight over which one is the default
+   action. Quick Capture wins that fight by design — which is also why
+   the button below is an outline.
+   ============================================================ */
+
+.psu {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  background: var(--accent-tint);
+  border: 1px solid var(--accent-border);
+  color: var(--text-primary);
+}
+
+.psu__icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  color: var(--accent);
+}
+
+.psu__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* `--accent`, not `--accent-bright`: the bright tone is the dark-theme
+   emphasis step and resolves to #d96d00 in the light theme, which is
+   3.42:1 on this near-white row — under the 4.5:1 AA floor for 11px
+   bold. `--accent` is #c45200 there (4.60:1) and is what every other
+   accent-colored label in the app uses (`.ps-tray__quick--video`'s
+   eyebrow, for one). The icon takes the same tone so the two do not
+   read as two different oranges side by side. */
+.psu__title {
+  font: 700 11px/1.1 var(--font-display);
+  letter-spacing: 0.005em;
+  color: var(--accent);
+}
+
+/* Mono so the version scans as a value rather than as prose.
+   `anywhere` because a failed install surfaces main's own error text
+   here, which has no length budget. */
+.psu__sub {
+  font: 500 10px/1.25 var(--font-mono);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+/* This carries main's own install-failure string — the one users paste
+   into a bug report. app.css sets `user-select: none` app-wide and
+   re-arms error text under `[role="alert"]`; the row is `role="status"`
+   (an update being ready is not an alert), so it opts in beside its own
+   rules, the same way library.css and settings.css do for their live
+   error surfaces. */
+.psu__err {
+  color: var(--danger-text);
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.psu__actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* An accent OUTLINE, not an accent fill — the idiom
+   `.ps-tray__quick--video` already uses one row below this in the tray.
+   A solid tangerine pill here put a second call-to-action 46px above
+   Quick Capture's solid fill, and inline with the toast footer's solid
+   `Edit`; each surface should have exactly one, and it should be the
+   one the surface exists for. Restarting stays obviously actionable
+   without claiming that slot.
+
+   The background is OPAQUE `--bg-panel-elevated`, not `transparent` as
+   the neighbouring secondary buttons use. That is a contrast
+   requirement, not a style choice: letting the row's `--accent-tint`
+   show through drops `--accent` label text to 4.29:1 in the light
+   theme, while the opaque panel keeps it at 4.60:1.
+
+   The hover tones flip direction per theme on purpose: `--accent-strong`
+   is BRIGHTER than `--accent` on dark (#ffa33d) and DARKER on light
+   (#b34a00), so one declaration clears 4.5:1 against the tinted hover
+   ground in both. Do not swap it for `--accent-bright`, which sinks to
+   3.05:1 on the light hover fill. */
+.psu__go {
+  height: 24px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 5px;
+  border: 1px solid var(--accent-border);
+  background: var(--bg-panel-elevated);
+  color: var(--accent);
+  font: 700 10px/1 var(--font-sans);
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: background 120ms var(--ease-out), border-color 120ms var(--ease-out),
+    color 120ms var(--ease-out);
+}
+.psu__go:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+.psu__go:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+/* Explicit rings rather than the UA default, matching how every other
+   control in this app states its focus (library.css, logs.css,
+   region.css). Offset outward so the ring clears the button's own
+   accent border on both the tray strip and the toast card. */
+.psu__go:focus-visible,
+.psu__x:focus-visible {
+  outline: 2px solid var(--accent-bright);
+  outline-offset: 2px;
+}
+
+.psu__x {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 120ms var(--ease-out), background 120ms var(--ease-out);
+}
+.psu__x:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+}
+.psu__x:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Retry — the install did not apply. Amber, not danger: the app is
+   running fine on the version it booted, only the swap didn't take. */
+.psu.is-retry {
+  background: var(--warn-soft);
+  border-color: var(--warn-border);
+}
+.psu.is-retry .psu__icon {
+  background: var(--warn-soft);
+  border-color: var(--warn-border);
+  color: var(--warn-text);
+}
+.psu.is-retry .psu__title {
+  color: var(--warn-text);
+}
+/* The button is NOT re-tinted for this variant. Amber is the row's
+   semantics (tint, border, icon, title); the action is the same install
+   either way, so it keeps one appearance across both states. Semantic
+   color stays off the control. */
+
+/* The two placements differ in EDGE ONLY — full-bleed strip vs inset
+   card — because each mirrors its host. Fill, border colour, padding
+   rhythm and typography are shared above, so a change to the row lands
+   identically on both surfaces. Resist adding a surface-specific
+   background or tone here: an earlier revision gave the tray a vertical
+   gradient wash the toast did not have, which nothing in the tray's own
+   vocabulary motivated (its header and Quick Capture are both flat
+   fills) and which made one component read as two. */
+
+/* ----- tray placement -----
+   Mirrors `.ps-tray__hdr`: full-bleed, bottom rule only, same 14px
+   gutter, so the row reads as part of the popover's chrome stack rather
+   than a card floating above the actions. The retry variant needs no
+   rule of its own — `.psu.is-retry` already out-specifies the bottom
+   border colour below. */
+.psu--tray {
+  width: 100%;
+  padding: 9px 14px;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  border-bottom-color: var(--accent-border);
+}
+
+/* ----- float-over placement -----
+   Inset on the toast's own 12px gutter so it keeps one left edge all
+   the way down, with `.fo__field`'s 9px 10px padding — the closest
+   sibling card in that surface. The preview carries no top margin
+   (`.fo__preview { margin: 0 12px }`), so this row owns the gap on both
+   sides of itself. */
+.psu--fo {
+  margin: 10px 12px;
+  padding: 9px 10px;
+  border-radius: 8px;
+}

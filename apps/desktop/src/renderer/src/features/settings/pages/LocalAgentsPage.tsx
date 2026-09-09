@@ -21,6 +21,7 @@ import {
   type LocalAgentUsageSnapshot
 } from "@pwrsnap/shared";
 import { dispatch } from "../../../lib/pwrsnap";
+import { useCopyText } from "../../../lib/useCopyText";
 import { Card, Row, Switch } from "../components";
 import { useSettingsContext } from "../SettingsContext";
 
@@ -65,6 +66,25 @@ const USAGE_LABELS: Record<LocalAgentUsageAction, string> = {
 };
 
 const LOCAL_AGENT_MCP_URL = "http://127.0.0.1:51729/mcp";
+
+/** The connect recipes Settings hands out — see docs/mcp-third-party-agents.md
+ *  for what each does and how they were verified. `--scope user` because
+ *  `claude mcp add` otherwise registers the server for the terminal's current
+ *  directory only, which a paste from Settings never intends. */
+const CONNECT_RECIPES = [
+  {
+    id: "claude-code",
+    label: "Claude Code",
+    command:
+      `claude mcp add --scope user --transport http pwrsnap ${LOCAL_AGENT_MCP_URL}\n` +
+      "claude mcp login pwrsnap"
+  },
+  {
+    id: "codex",
+    label: "Codex CLI",
+    command: `codex mcp add pwrsnap --url ${LOCAL_AGENT_MCP_URL} --oauth-client-registration dcr`
+  }
+] as const;
 
 type GraphPath = {
   id: string;
@@ -353,6 +373,25 @@ export function LocalAgentsPage(): ReactElement {
     setSaving(false);
   };
 
+  // Copy feedback lives on the button, not in the page-level error banner: a
+  // clipboard failure is not a "local agent update", and the banner is sticky
+  // until some other action succeeds.
+  const { feedback: copyFeedback, copy: copyRecipe } = useCopyText();
+
+  // Why the connect commands are not showing. The recipes are gated on the
+  // listener actually listening (`enabled` can stay true after a bind
+  // failure), so the fallback has to explain each non-listening state rather
+  // than tell the operator to flip a switch that may already be on.
+  const connectFallback = !mcpEnabled
+    ? "Turn on local-agent access above to get the connect commands for Claude Code and Codex."
+    : listenerStatus.state === "starting"
+      ? "The MCP server is starting. The connect commands appear once it is listening."
+      : listenerStatus.state === "stopping"
+        ? "The MCP server is stopping. Turn local-agent access back on to get the connect commands."
+        : listenerStatus.state === "failed"
+          ? "The MCP server failed to start, so there is nothing to connect to yet. Turn local-agent access off and on to retry."
+          : "The MCP server is not listening yet.";
+
   return (
     <>
       <div className="pss__main-hdr pss__main-hdr--agents">
@@ -388,6 +427,50 @@ export function LocalAgentsPage(): ReactElement {
             }
           />
         </Row>
+      </Card>
+
+      <Card eyebrow="CONNECT AN AGENT" title="Claude Code and Codex">
+        <div className="pss__connect">
+          {listenerStatus.state === "listening" ? (
+            <>
+              <p className="pss__row-sub">
+                Run one of these in a terminal. The agent opens PwrSnap's approval window; pick a
+                Session Name and role there. Nothing else to install.
+              </p>
+              {CONNECT_RECIPES.map((recipe) => {
+                const feedback = copyFeedback?.id === recipe.id ? copyFeedback.status : null;
+                const label =
+                  feedback === "copied" ? "Copied" : feedback === "failed" ? "Copy failed" : "Copy";
+                // The accessible name follows the visible label so the state
+                // change is announced and the name never disagrees with the text.
+                const name =
+                  feedback === "copied"
+                    ? `Copied ${recipe.label} command`
+                    : feedback === "failed"
+                      ? `Copying ${recipe.label} command failed`
+                      : `Copy ${recipe.label} command`;
+                return (
+                  <div key={recipe.id} className="pss__pair-recipe">
+                    <div className="pss__pair-recipe-hdr">
+                      <span className="pss__row-label">{recipe.label}</span>
+                      <button
+                        type="button"
+                        className="pss__key-btn"
+                        aria-label={name}
+                        onClick={() => void copyRecipe(recipe.id, recipe.command)}
+                      >
+                        {label}
+                      </button>
+                    </div>
+                    <pre className="pss__pair-command">{recipe.command}</pre>
+                  </div>
+                );
+              })}
+            </>
+          ) : (
+            <p className="pss__row-sub">{connectFallback}</p>
+          )}
+        </div>
       </Card>
 
       <div className="pss__auth-legend" aria-label="Authorization graph legend">

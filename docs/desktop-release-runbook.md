@@ -266,6 +266,11 @@ pnpm --filter @pwrsnap/desktop package         # signed + notarized, no publish
 pnpm --filter @pwrsnap/desktop release         # signed + notarized + publish
 ```
 
+All three need an Xcode 26 or newer selected (`xcode-select -p`, or export
+`DEVELOPER_DIR`): electron-builder compiles `build/icon.icon` with `actool` and
+refuses older versions. CI selects one with
+`.github/actions/select-xcode-for-actool`; see AGENTS.md "macOS app icon".
+
 Verify the produced `.app`:
 
 ```bash
@@ -358,6 +363,7 @@ Most-common Electron failures:
 | Symptom | Cause | Fix |
 |---|---|---|
 | "The binary is not signed with a valid Developer ID certificate." | Wrong cert in Keychain or `CSC_LINK` wrong | Re-import `.p12` from 1Password; verify `security find-identity -v -p codesigning` |
+| `SecKeychainUnlock: The user name or passphrase you entered is not correct` from `set-key-partition-list` | electron-builder 26.15.x/26.16.0 passes the `.p12` import password to its separately generated keychain on macOS 26 | Keep PwrSnap's `release.mjs` keychain preload and remove `CSC_LINK` / `CSC_KEY_PASSWORD` before electron-builder runs; it signs through the preloaded `CSC_NAME` identity instead. |
 | "The signature does not include a secure timestamp." | `--timestamp` flag missing on inner sign | electron-builder ≥ 26 handles this automatically; upgrade builder |
 | "The executable does not have the hardened runtime enabled." | Missing `mac.hardenedRuntime: true` | Confirm in `electron-builder.yml` |
 | "The entitlement com.apple.security.cs.allow-jit ... is missing on a helper bundle." | `entitlementsInherit` not pointing at the same plist | Confirm `mac.entitlements` and `mac.entitlementsInherit` both reference `build/entitlements.mac.plist` |

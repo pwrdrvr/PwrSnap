@@ -14,6 +14,7 @@ import { Kbd } from "../shared/Primitives";
 import { useHotkeys } from "../shared/useHotkeys";
 import { VideoExportPresetsPanel } from "../shared/VideoExportPresetsPanel";
 import { useSurfaceCopyShortcuts } from "../shared/useSurfaceCopyShortcuts";
+import { AppUpdateRow } from "../update/AppUpdateRow";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import {
   cacheUrl,
@@ -467,6 +468,14 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
           </div>
         </div>
       </div>
+
+      {/* Renders nothing unless a downloaded update (or a failed
+          install) is waiting. Sits in the chrome stack, directly under
+          the header and above Quick Capture, so the offer is the first
+          thing in the popover's body without ever displacing the
+          app's primary verb. The popover measures its own content and
+          resizes, so the extra strip costs nothing when absent. */}
+      <AppUpdateRow variant="tray" />
 
       {/* Quick Capture + Record Video — the two headline actions, the
           app's primary verbs. Both are promoted out of the grid because

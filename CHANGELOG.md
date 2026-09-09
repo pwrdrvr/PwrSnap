@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.1.0-alpha.11 - 2026-09-06
+
+This alpha makes screen capture and update selection more dependable across
+Windows and prerelease channels.
+
+- Windows Capture - Fixed Windows screen capture to bypass a failing DXGI path,
+  reducing acquisition delays and keeping capture responsive when that driver
+  path cannot supply a frame.
+- Updates - Fixed installed builds to follow their own release feed and
+  improved the Updates page to show all Stable/Beta and Latest/Prerelease
+  choices, so switching channels targets the release you expect.
+
 ## v1.1.0-alpha.6 - 2026-09-03
 
 This alpha makes selecting, editing, and sharing captures more capable, with

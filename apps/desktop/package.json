@@ -1,7 +1,7 @@
 {
   "name": "@pwrsnap/desktop",
   "productName": "PwrSnap",
-  "version": "1.1.0-alpha.6",
+  "version": "1.1.0-alpha.11",
   "private": true,
   "description": "Screen capture with a local-first library",
   "author": "PwrDrvr LLC",
@@ -25,7 +25,7 @@
     "pretest:e2e": "node ./scripts/rebuild-native-for-electron.mjs && node ./scripts/build-native.mjs && pnpm build",
     "test:e2e": "playwright test -c playwright.config.ts",
     "generate:dmg-background": "swift ./scripts/generate-dmg-background.swift ./build/dmg-background.png",
-    "generate:app-icon": "swift ./scripts/generate-app-icon.swift ./build/icon.iconset && iconutil -c icns build/icon.iconset -o build/icon.icns",
+    "generate:app-icon": "swift ./scripts/generate-app-icon.swift ./build",
     "verify:asar-contents": "node ./scripts/verify-asar-contents.mjs",
     "tray-icon": "node ./scripts/generate-tray-icon.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
@@ -47,16 +47,17 @@
     "better-sqlite3": "^12.11.1",
     "electron-log": "^5.4.4",
     "electron-updater": "^6.8.9",
+    "express": "^5.2.1",
     "nanoid": "^5.1.16",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "safe-stable-stringify": "^2.5.0",
-    "sharp": "0.35.3",
+    "sharp": "0.35.4",
     "transformation-matrix": "^3.1.0",
     "wavesurfer.js": "^7.12.11",
     "yauzl": "^3.4.0",
     "yazl": "^3.3.1",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@electron/asar": "^4.3.0",
@@ -65,12 +66,12 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/express": "5.0.6",
     "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.4",
+    "@types/react-dom": "^19.2.5",
     "@types/yauzl": "^3.4.0",
     "@types/yazl": "^3.3.1",
     "@vitejs/plugin-react": "^5.2.0",
     "archiver": "^7.0.1",
-    "electron": "^41.10.3",
+    "electron": "^41.10.7",
     "electron-builder": "26.15.7",
     "electron-vite": "^5.0.0",
     "vite": "^7.3.6"

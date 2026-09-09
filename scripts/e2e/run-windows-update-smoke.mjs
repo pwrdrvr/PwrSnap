@@ -632,10 +632,9 @@ export function buildIsolatedSmokeEnvironment(baseEnvironment, options) {
     ...environment,
     APPDATA: options.appDataDir,
     LOCALAPPDATA: options.localAppDataDir,
-    // Keep the hosted runner's real OS profile for inbox Windows PowerShell.
-    // electron-updater deliberately clears PSModulePath before its Authenticode
-    // probe, so PowerShell must reconstruct the system module path from a real
-    // profile. PwrSnap itself remains hermetic: PWRSNAP_USER_DATA is explicit,
+    // Keep the hosted runner's OS profile while rebasing application state.
+    // Signature probes use PowerShell 7 with no inherited PSModulePath.
+    // PwrSnap itself remains hermetic: PWRSNAP_USER_DATA is explicit,
     // and the smoke-gated bootstrap rebases Electron's home/documents paths.
     HOME: options.userProfileDir,
     PWRSNAP_USER_DATA: options.userDataDir,
@@ -1344,8 +1343,7 @@ export async function invokePowerShellJson({
   const encoded = Buffer.from(script, "utf16le").toString("base64");
   const result = await runBoundedProcess({
     // The harness defaults to the PowerShell 7 host already required by the
-    // workflow. The Windows-only CI probe explicitly selects powershell.exe to
-    // pin electron-updater's inbox-Windows-PowerShell dependency as well.
+    // workflow and by the smoke's fail-closed signature callback.
     command: host,
     arguments: [
       "-NoLogo",
@@ -1671,7 +1669,9 @@ async function waitForInstalledTarget({
   expectedPublisher,
   environment,
   baselinePid,
-  timeoutMs = INSTALL_TIMEOUT_MS
+  // Includes the baseline's update check, download, verification, and NSIS
+  // replacement. The baseline installer alone took 139s on the hosted runner.
+  timeoutMs = UPDATE_TIMEOUT_MS
 }) {
   const deadline = Date.now() + timeoutMs;
   let lastBaselineEvidence = null;

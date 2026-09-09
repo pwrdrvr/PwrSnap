@@ -20,6 +20,8 @@
 
 import { app } from "electron";
 import electronUpdater from "electron-updater";
+import type { NsisUpdater } from "electron-updater";
+import { verifyWindowsSmokeSignature } from "./windows-update-smoke-signature";
 import type {
   AppUpdateCheckResult,
   AppUpdateInstallResult,
@@ -1494,6 +1496,9 @@ export function initAppUpdater(): void {
   autoUpdater().logger = log as unknown as Console;
   autoUpdater().autoDownload = true;
   autoUpdater().autoInstallOnAppQuit = windowsUpdateSmokeConfig() === undefined;
+  if (windowsUpdateSmokeConfig() !== undefined) {
+    (autoUpdater() as NsisUpdater).verifyUpdateCodeSignature = verifyWindowsSmokeSignature;
+  }
   configureAutoUpdaterChannel();
   const pendingInstallFailed = reconcilePendingInstallAttemptOnBoot();
   reconcileAppUpdateSelection();

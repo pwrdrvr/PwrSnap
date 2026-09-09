@@ -455,6 +455,9 @@ describe("auto updater selection", () => {
       userDataDir: "D:\\pwrsnap-smoke\\user-data"
     });
     updater.initAppUpdater();
+    expect(mocks.autoUpdater).toEqual(expect.objectContaining({
+      verifyUpdateCodeSignature: expect.any(Function)
+    }));
     await expect(updater.checkForAppUpdatesNow("startup")).resolves.toEqual({
       status: "available",
       version: targetVersion

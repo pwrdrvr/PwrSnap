@@ -313,7 +313,7 @@ describe("isolated updater environment", () => {
   });
 
   test.runIf(process.platform === "win32" && process.env.GITHUB_ACTIONS === "true")(
-    "loads Authenticode in the Windows PowerShell host electron-updater uses",
+    "loads Authenticode in the PowerShell 7 host used by the smoke verifier",
     async () => {
       const isolatedRoot = tmpdir();
       const environment = buildIsolatedSmokeEnvironment(process.env, {
@@ -341,7 +341,7 @@ $signature = Get-AuthenticodeSignature -LiteralPath $env:PWRSNAP_PROBE_PATH
           PWRSNAP_PROBE_PATH: process.execPath
         },
         timeoutMs: 30_000,
-        host: "powershell.exe"
+        host: "pwsh.exe"
       });
 
       expect(evidence).toEqual({

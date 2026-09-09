@@ -64,9 +64,11 @@ real NSIS full-download fallback; any other path or query is rejected.
 
 Every launch receives isolated `APPDATA`, `LOCALAPPDATA`, `HOME`, `TEMP`, `TMP`,
 and `PWRSNAP_USER_DATA`, with process splitting disabled. The ephemeral hosted
-runner's real `USERPROFILE` is retained because electron-updater clears
-`PSModulePath` and inbox Windows PowerShell needs that profile to reconstruct
-its trusted system-module path for Authenticode. PwrSnap still rebases
+runner's real `USERPROFILE` is retained. The smoke installs an electron-updater
+signature callback that requires PowerShell 7 and a valid PwrDrvr LLC signature
+on the downloaded file. Probe errors, timeouts, and malformed output reject the
+download; the inbox verifier's unsupported-PowerShell fallback is not used.
+Ordinary Windows CI exercises the PowerShell 7 Authenticode host. PwrSnap rebases
 Electron's userData, Documents, and home paths beneath the isolated userData for
 this mode. It creates no tray, window, hotkey, login item, Codex process, local
 server, capture, or filename-maintenance task.

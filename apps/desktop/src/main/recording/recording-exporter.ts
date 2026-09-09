@@ -22,8 +22,9 @@
 //   HIGH: source resolution · 6 Mbps · compressed master
 
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, stat } from "node:fs/promises";
+import { mkdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type {
   CaptureRecord,
@@ -40,6 +41,7 @@ import {
   lookupExport,
   recordExport
 } from "../persistence/video-repo";
+import { FfmpegProgressParser, type FfmpegProgressRecord } from "./ffmpeg-progress";
 import { resolveFfmpegPath } from "./ffmpeg-resolver";
 
 const log = getMainLogger("pwrsnap:recording-exporter");
@@ -113,6 +115,28 @@ export type ExportInput = {
   preset: VideoPreset;
   range: VideoRange;
   audio: VideoExportAudio;
+  signal?: AbortSignal | undefined;
+  progress?: VideoExportProgressObserver | undefined;
+};
+
+export type VideoExportProgressUpdate =
+  | {
+      phase: "queued" | "palette" | "encoding" | "finalizing";
+      ratio: number | null;
+    }
+  | { phase: "done"; ratio: 1; outcome: "succeeded" }
+  | {
+      phase: "done";
+      ratio: null;
+      outcome: "failed";
+      error: { code: string; message: string };
+    }
+  | { phase: "done"; ratio: null; outcome: "cancelled" };
+
+export type VideoExportProgressObserver = {
+  /** One visible renderer attempt. Also de-duplicates duplicate listeners. */
+  runId: string;
+  emit: (update: VideoExportProgressUpdate) => void;
 };
 
 // ── Encode concurrency hygiene ──────────────────────────────────────
@@ -125,9 +149,8 @@ export type ExportInput = {
 // 1. In-flight de-duplication — a per-cache-key Promise map. If a
 //    second request for the same (captureId, format, preset, range,
 //    audio) tuple arrives while the first is still running, both
-//    await the same Promise. Same ffmpeg run, two callers. This is
-//    how `triggerDrag`'s parallel `video:export` dispatch on the
-//    renderer side avoids paying twice for the encode.
+//    await the same Promise. Same ffmpeg run, two callers. This also
+//    coalesces requests from concurrent Library / Float-Over windows.
 //
 // 2. Global concurrency cap — a counting semaphore limits how many
 //    ffmpeg processes run simultaneously. MAX_CONCURRENT_ENCODES=2
@@ -139,25 +162,64 @@ export type ExportInput = {
 
 const MAX_CONCURRENT_ENCODES = 2;
 let activeEncodeCount = 0;
-const encodeWaitQueue: Array<() => void> = [];
+type EncodeWaiter = {
+  resolve: () => void;
+  reject: (cause: unknown) => void;
+  signal: AbortSignal;
+  onAbort: () => void;
+};
+const encodeWaitQueue: EncodeWaiter[] = [];
 
-function acquireEncodeSlot(): Promise<void> {
+function abortError(): DOMException {
+  return new DOMException("Video export cancelled", "AbortError");
+}
+
+function isAbortError(cause: unknown): boolean {
+  return cause instanceof Error && cause.name === "AbortError";
+}
+
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw abortError();
+}
+
+function acquireEncodeSlot(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(abortError());
   if (activeEncodeCount < MAX_CONCURRENT_ENCODES) {
     activeEncodeCount++;
     return Promise.resolve();
   }
-  return new Promise<void>((resolve) => {
-    encodeWaitQueue.push(() => {
-      activeEncodeCount++;
-      resolve();
-    });
+  return new Promise<void>((resolve, reject) => {
+    const waiter: EncodeWaiter = {
+      resolve: () => {
+        signal.removeEventListener("abort", waiter.onAbort);
+        activeEncodeCount++;
+        resolve();
+      },
+      reject,
+      signal,
+      onAbort: () => {
+        const index = encodeWaitQueue.indexOf(waiter);
+        if (index >= 0) encodeWaitQueue.splice(index, 1);
+        reject(abortError());
+      }
+    };
+    signal.addEventListener("abort", waiter.onAbort, { once: true });
+    encodeWaitQueue.push(waiter);
   });
 }
 
 function releaseEncodeSlot(): void {
   activeEncodeCount--;
-  const next = encodeWaitQueue.shift();
-  if (next !== undefined) next();
+  for (;;) {
+    const next = encodeWaitQueue.shift();
+    if (next === undefined) return;
+    if (next.signal.aborted) {
+      next.signal.removeEventListener("abort", next.onAbort);
+      continue;
+    }
+    next.resolve();
+    return;
+  }
 }
 
 /** Cache-key string for in-flight de-dup. Same fields the
@@ -175,7 +237,174 @@ function encodeKey(input: ExportInput): string {
   ].join("|");
 }
 
-const inFlightEncodes = new Map<string, Promise<VideoExportResult>>();
+type ProgressListener = {
+  refs: number;
+  emit: VideoExportProgressObserver["emit"];
+};
+
+type InFlightEncode = {
+  promise: Promise<VideoExportResult>;
+  controller: AbortController;
+  acceptingConsumers: boolean;
+  consumers: number;
+  listeners: Map<string, ProgressListener>;
+  lastProgress: VideoExportProgressUpdate;
+};
+
+const inFlightEncodes = new Map<string, InFlightEncode>();
+
+function emitProgressSafely(
+  emit: VideoExportProgressObserver["emit"],
+  update: VideoExportProgressUpdate
+): void {
+  try {
+    emit(update);
+  } catch (cause) {
+    log.warn("video export progress observer threw", {
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+  }
+}
+
+function publishProgress(job: InFlightEncode, update: VideoExportProgressUpdate): void {
+  job.lastProgress = update;
+  for (const listener of job.listeners.values()) {
+    emitProgressSafely(listener.emit, update);
+  }
+}
+
+function attachProgressObserver(
+  job: InFlightEncode,
+  observer: VideoExportProgressObserver | undefined
+): void {
+  if (observer === undefined) return;
+  const existing = job.listeners.get(observer.runId);
+  if (existing !== undefined) {
+    existing.refs++;
+    return;
+  }
+  job.listeners.set(observer.runId, { refs: 1, emit: observer.emit });
+  emitProgressSafely(observer.emit, job.lastProgress);
+}
+
+function detachProgressObserver(
+  job: InFlightEncode,
+  observer: VideoExportProgressObserver | undefined
+): void {
+  if (observer === undefined) return;
+  const existing = job.listeners.get(observer.runId);
+  if (existing === undefined) return;
+  existing.refs--;
+  if (existing.refs === 0) job.listeners.delete(observer.runId);
+}
+
+async function waitForEncode(
+  job: InFlightEncode,
+  input: ExportInput,
+  joined: boolean
+): Promise<VideoExportResult> {
+  const signal = input.signal ?? new AbortController().signal;
+  if (signal.aborted) {
+    if (input.progress !== undefined) {
+      emitProgressSafely(input.progress.emit, {
+        phase: "done",
+        ratio: null,
+        outcome: "cancelled"
+      });
+    }
+    if (job.consumers === 0) {
+      job.acceptingConsumers = false;
+      job.controller.abort();
+    }
+    throw abortError();
+  }
+
+  job.consumers++;
+  attachProgressObserver(job, input.progress);
+
+  let didAbort = false;
+  let onAbort: (() => void) | null = null;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => {
+      didAbort = true;
+      const listener =
+        input.progress === undefined
+          ? undefined
+          : job.listeners.get(input.progress.runId);
+      if (input.progress !== undefined && (listener === undefined || listener.refs === 1)) {
+        emitProgressSafely(input.progress.emit, {
+          phase: "done",
+          ratio: null,
+          outcome: "cancelled"
+        });
+      }
+      detachProgressObserver(job, input.progress);
+      job.consumers--;
+      if (job.consumers === 0) {
+        job.acceptingConsumers = false;
+        job.controller.abort();
+      }
+      reject(abortError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+
+  try {
+    const result = await Promise.race([job.promise, aborted]);
+    return joined ? { ...result, fromCache: true } : result;
+  } finally {
+    if (onAbort !== null) signal.removeEventListener("abort", onAbort);
+    if (!didAbort) {
+      detachProgressObserver(job, input.progress);
+      job.consumers--;
+    }
+  }
+}
+
+async function waitForRetiringEncode(
+  job: InFlightEncode,
+  input: ExportInput
+): Promise<void> {
+  const settled = job.promise.then(
+    () => undefined,
+    () => undefined
+  );
+  const signal = input.signal;
+  if (signal === undefined) {
+    await settled;
+    return;
+  }
+  if (signal.aborted) {
+    if (input.progress !== undefined) {
+      emitProgressSafely(input.progress.emit, {
+        phase: "done",
+        ratio: null,
+        outcome: "cancelled"
+      });
+    }
+    throw abortError();
+  }
+
+  let onAbort: (() => void) | null = null;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => {
+      if (input.progress !== undefined) {
+        emitProgressSafely(input.progress.emit, {
+          phase: "done",
+          ratio: null,
+          outcome: "cancelled"
+        });
+      }
+      reject(abortError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    await Promise.race([settled, aborted]);
+  } finally {
+    if (onAbort !== null) signal.removeEventListener("abort", onAbort);
+  }
+}
 
 /**
  * Resolve a cache hit or encode fresh. Caller is responsible for
@@ -187,6 +416,16 @@ const inFlightEncodes = new Map<string, Promise<VideoExportResult>>();
  * semaphore (concurrency cap). See the header above for rationale.
  */
 export async function exportVideoRange(input: ExportInput): Promise<VideoExportResult> {
+  if (input.signal?.aborted === true) {
+    if (input.progress !== undefined) {
+      emitProgressSafely(input.progress.emit, {
+        phase: "done",
+        ratio: null,
+        outcome: "cancelled"
+      });
+    }
+    throw abortError();
+  }
   const { widthPx, heightPx } = computeOutputDimensions(
     (input.format === "gif" ? GIF_PRESETS : MP4_PRESETS)[input.preset].width,
     input.record.width_px,
@@ -208,38 +447,84 @@ export async function exportVideoRange(input: ExportInput): Promise<VideoExportR
     existsSync(cached.path) &&
     cacheEntryMatchesEncoder(input, cached.path)
   ) {
+    if (input.progress !== undefined) {
+      emitProgressSafely(input.progress.emit, { phase: "queued", ratio: null });
+      emitProgressSafely(input.progress.emit, { phase: "finalizing", ratio: 0.99 });
+      emitProgressSafely(input.progress.emit, {
+        phase: "done",
+        ratio: 1,
+        outcome: "succeeded"
+      });
+    }
     return { ...cached, widthPx, heightPx };
   }
 
-  // In-flight de-dup: two callers for the same key share one ffmpeg.
-  // Critical for the `triggerDrag` parallel-dispatch pattern on the
-  // renderer side — the drag's `video:prepareDrag` and the visible-
-  // state `video:export` would otherwise encode the same file twice.
+  // In-flight de-dup: two callers for the same key share one ffmpeg,
+  // including requests from separate renderer windows.
   const key = encodeKey(input);
   const existing = inFlightEncodes.get(key);
   if (existing !== undefined) {
-    const result = await existing;
-    // The first caller returns `fromCache: false`; subsequent callers
-    // get a result that's effectively cached (the file is on disk now,
-    // they didn't pay for the encode). Mark as cache hit so log spans
-    // distinguish "actually encoded" from "rode the in-flight wave".
-    return { ...result, fromCache: true };
+    if (existing.acceptingConsumers && !existing.controller.signal.aborted) {
+      return waitForEncode(existing, input, true);
+    }
+    // A last consumer cancelled this shared job. Do not attach a retry to
+    // the doomed promise or open the same output while FFmpeg is closing.
+    await waitForRetiringEncode(existing, input);
+    return exportVideoRange(input);
   }
 
-  const promise = encodeAndRecord(input, widthPx, heightPx);
-  inFlightEncodes.set(key, promise);
-  try {
-    return await promise;
-  } finally {
-    inFlightEncodes.delete(key);
-  }
+  const controller = new AbortController();
+  const job: InFlightEncode = {
+    promise: Promise.resolve(null as never),
+    controller,
+    acceptingConsumers: true,
+    consumers: 0,
+    listeners: new Map<string, ProgressListener>(),
+    lastProgress: { phase: "queued", ratio: null }
+  };
+  job.promise = encodeAndRecord(input, widthPx, heightPx, controller.signal, (update) => {
+    publishProgress(job, update);
+  }).then(
+    (result) => {
+      publishProgress(job, { phase: "done", ratio: 1, outcome: "succeeded" });
+      return result;
+    },
+    (cause: unknown) => {
+      job.acceptingConsumers = false;
+      if (isAbortError(cause)) {
+        publishProgress(job, {
+          phase: "done",
+          ratio: null,
+          outcome: "cancelled"
+        });
+      } else {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        publishProgress(job, {
+          phase: "done",
+          ratio: null,
+          outcome: "failed",
+          error: { code: "video_export_failed", message }
+        });
+      }
+      throw cause;
+    }
+  );
+  inFlightEncodes.set(key, job);
+  const removeJob = (): void => {
+    if (inFlightEncodes.get(key) === job) inFlightEncodes.delete(key);
+  };
+  void job.promise.then(removeJob, removeJob);
+  return waitForEncode(job, input, false);
 }
 
 async function encodeAndRecord(
   input: ExportInput,
   widthPx: number,
-  heightPx: number
+  heightPx: number,
+  signal: AbortSignal,
+  onProgress: (update: VideoExportProgressUpdate) => void
 ): Promise<VideoExportResult> {
+  throwIfAborted(signal);
   const ffmpeg = resolveFfmpegPath();
   if (ffmpeg === null) {
     throw new Error(
@@ -249,6 +534,7 @@ async function encodeAndRecord(
 
   const outputDir = join(getCacheRoot(), "video", input.record.id);
   await mkdir(outputDir, { recursive: true });
+  throwIfAborted(signal);
   const audioTag =
     input.format === "gif"
       ? "silent"
@@ -270,6 +556,11 @@ async function encodeAndRecord(
       ext
     ].join(".")
   );
+  // FFmpeg must never write directly to the cache pathname. A cancelled or
+  // failed child can leave a non-empty, truncated artifact behind, and a
+  // pre-existing cache row would then accept it on the next lookup. Keep the
+  // real extension last so FFmpeg can infer the muxer from the staging name.
+  const stagingPath = `${outputPath}.${process.pid}.${randomUUID()}.partial.${ext}`;
 
   // Video captures always carry a legacy_src_path (the recorded .mp4
   // lives at ~/Documents/PwrSnap/<id>.mp4 — the bundle-flow rewire
@@ -282,71 +573,110 @@ async function encodeAndRecord(
     );
   }
 
-  await acquireEncodeSlot();
-  const startMs = Date.now();
   try {
-    if (input.format === "gif") {
-      await encodeGif(
-        ffmpeg,
-        input.record.legacy_src_path,
-        input.range,
-        GIF_PRESETS[input.preset],
-        outputPath
-      );
-    } else {
-      await encodeMp4(
-        ffmpeg,
-        input.record.legacy_src_path,
-        input.video,
-        input.range,
-        input.audio,
-        MP4_PRESETS[input.preset],
-        {
-          sourceWidthPx: input.record.width_px,
-          sourceHeightPx: input.record.height_px,
-          outputWidthPx: widthPx,
-          outputHeightPx: heightPx
-        },
-        outputPath
-      );
+    await acquireEncodeSlot(signal);
+    const startMs = Date.now();
+    try {
+      if (input.format === "gif") {
+        // palettegen must consume the selected range before paletteuse can
+        // produce output timestamps. Keep that work honestly indeterminate.
+        onProgress({ phase: "palette", ratio: null });
+        await encodeGif(
+          ffmpeg,
+          input.record.legacy_src_path,
+          input.range,
+          GIF_PRESETS[input.preset],
+          stagingPath,
+          signal,
+          onProgress
+        );
+      } else {
+        // Stay indeterminate until FFmpeg reports its first usable output
+        // timestamp. A known duration alone cannot prove forward movement.
+        onProgress({ phase: "encoding", ratio: null });
+        await encodeMp4(
+          ffmpeg,
+          input.record.legacy_src_path,
+          input.video,
+          input.range,
+          input.audio,
+          MP4_PRESETS[input.preset],
+          {
+            sourceWidthPx: input.record.width_px,
+            sourceHeightPx: input.record.height_px,
+            outputWidthPx: widthPx,
+            outputHeightPx: heightPx
+          },
+          stagingPath,
+          signal,
+          onProgress
+        );
+      }
+    } finally {
+      releaseEncodeSlot();
     }
-  } finally {
-    releaseEncodeSlot();
-  }
 
-  const sizeInfo = await stat(outputPath);
-  recordExport({
-    captureId: input.record.id,
-    range: input.range,
-    format: input.format,
-    preset: input.preset,
-    audio: input.audio,
-    path: outputPath,
-    byteSize: sizeInfo.size
-  });
-  // Capture actual encode duration + byte size for offline estimator
-  // tuning. The renderer's pre-click size labels come from
-  // `estimateVideoByteSize` in recording-handlers.ts — those numbers
-  // were calibrated by hand and want a feedback loop once we have
-  // real data. Grep `video export encoded` in logs to compare.
-  log.info("video export encoded", {
-    captureId: input.record.id,
-    format: input.format,
-    preset: input.preset,
-    widthPx,
-    heightPx,
-    byteSize: sizeInfo.size,
-    durationSec: input.range.end - input.range.start,
-    encodeMs: Date.now() - startMs
-  });
-  return {
-    path: outputPath,
-    byteSize: sizeInfo.size,
-    durationSec: input.range.end - input.range.start,
-    widthPx,
-    heightPx,
-    fromCache: false
-  };
+    throwIfAborted(signal);
+    onProgress({ phase: "finalizing", ratio: 0.99 });
+    const sizeInfo = await stat(stagingPath);
+    throwIfAborted(signal);
+    await publishCompletedExport(stagingPath, outputPath);
+    if (signal.aborted) {
+      await rm(outputPath, { force: true }).catch(() => undefined);
+      throw abortError();
+    }
+    recordExport({
+      captureId: input.record.id,
+      range: input.range,
+      format: input.format,
+      preset: input.preset,
+      audio: input.audio,
+      path: outputPath,
+      byteSize: sizeInfo.size
+    });
+    // Capture actual encode duration + byte size for offline estimator
+    // tuning. The renderer's pre-click size labels come from
+    // `estimateVideoByteSize` in recording-handlers.ts — those numbers
+    // were calibrated by hand and want a feedback loop once we have
+    // real data. Grep `video export encoded` in logs to compare.
+    log.info("video export encoded", {
+      captureId: input.record.id,
+      format: input.format,
+      preset: input.preset,
+      widthPx,
+      heightPx,
+      byteSize: sizeInfo.size,
+      durationSec: input.range.end - input.range.start,
+      encodeMs: Date.now() - startMs
+    });
+    return {
+      path: outputPath,
+      byteSize: sizeInfo.size,
+      durationSec: input.range.end - input.range.start,
+      widthPx,
+      heightPx,
+      fromCache: false
+    };
+  } finally {
+    await rm(stagingPath, { force: true }).catch(() => undefined);
+  }
+}
+
+async function publishCompletedExport(
+  stagingPath: string,
+  outputPath: string
+): Promise<void> {
+  try {
+    await rename(stagingPath, outputPath);
+  } catch (cause) {
+    const code = (cause as NodeJS.ErrnoException | null)?.code;
+    if (code !== "EEXIST" && code !== "EPERM") throw cause;
+    // POSIX rename replaces atomically. Windows rejects an existing target,
+    // so remove only the old final artifact and retry with the completed
+    // staging file. FFmpeg never observes or writes the final pathname.
+    await rm(outputPath, { force: true });
+    await rename(stagingPath, outputPath);
+  }
 }
 
 async function encodeGif(
@@ -354,7 +684,9 @@ async function encodeGif(
   src: string,
   range: VideoRange,
   spec: GifPresetSpec,
-  outPath: string
+  outPath: string,
+  signal: AbortSignal,
+  onProgress: (update: VideoExportProgressUpdate) => void
 ): Promise<void> {
   // Two-pass palette pipeline through a single ffmpeg invocation
   // using `split` + `palettegen` + `paletteuse`. The preset drives
@@ -383,7 +715,23 @@ async function encodeGif(
     filterComplex,
     outPath
   ];
-  await runFfmpeg(ffmpeg, args);
+  const durationSec = range.end - range.start;
+  await runFfmpeg(ffmpeg, args, {
+    durationSec,
+    signal,
+    onProgress: (record) => {
+      if (record.outTimeSec === null || record.outTimeSec <= 0) return;
+      // The graph performs two full-range logical stages in one process.
+      // FFmpeg exposes no clock for palettegen, so stage one stays
+      // indeterminate. Once mux timestamps begin, palettegen is complete;
+      // the determinate second half is weighted by its full-range clock.
+      const encodeRatio = record.ratio ?? null;
+      onProgress({
+        phase: "encoding",
+        ratio: encodeRatio === null ? null : Math.min(0.99, 0.5 + encodeRatio * 0.49)
+      });
+    }
+  });
 }
 
 async function encodeMp4(
@@ -399,7 +747,9 @@ async function encodeMp4(
     outputWidthPx: number;
     outputHeightPx: number;
   },
-  outPath: string
+  outPath: string,
+  signal: AbortSignal,
+  onProgress: (update: VideoExportProgressUpdate) => void
 ): Promise<void> {
   const duration = (range.end - range.start).toFixed(3);
   const args: string[] = [
@@ -474,7 +824,16 @@ async function encodeMp4(
   }
   args.push("-movflags", "+faststart", outPath);
 
-  await runFfmpeg(ffmpeg, args);
+  await runFfmpeg(ffmpeg, args, {
+    durationSec: range.end - range.start,
+    signal,
+    onProgress: (record) => {
+      onProgress({
+        phase: "encoding",
+        ratio: record.ratio === null ? null : Math.min(0.99, record.ratio * 0.99)
+      });
+    }
+  });
 }
 
 function cacheEncoderTag(input: ExportInput): string | null {
@@ -487,18 +846,140 @@ function cacheEntryMatchesEncoder(input: ExportInput, path: string): boolean {
   return encoderTag === null || path.includes(`.${encoderTag}.`);
 }
 
-function runFfmpeg(ffmpeg: string, args: string[]): Promise<void> {
+type RunFfmpegOptions = {
+  durationSec: number;
+  signal: AbortSignal;
+  onProgress: (record: FfmpegProgressRecord) => void;
+};
+
+const FFMPEG_KILL_CLOSE_TIMEOUT_MS = 5_000;
+
+function createProgressThrottle(
+  emit: (record: FfmpegProgressRecord) => void,
+  intervalMs = 250
+): { report: (record: FfmpegProgressRecord) => void; cancel: () => void } {
+  let lastEmitAt = Number.NEGATIVE_INFINITY;
+  let pending: FfmpegProgressRecord | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const flush = (): void => {
+    timer = null;
+    if (pending === null) return;
+    const next = pending;
+    pending = null;
+    lastEmitAt = Date.now();
+    emit(next);
+  };
+
+  return {
+    report: (record) => {
+      const elapsed = Date.now() - lastEmitAt;
+      if (elapsed >= intervalMs) {
+        if (timer !== null) clearTimeout(timer);
+        timer = null;
+        pending = null;
+        lastEmitAt = Date.now();
+        emit(record);
+        return;
+      }
+      pending = record;
+      if (timer === null) timer = setTimeout(flush, Math.max(0, intervalMs - elapsed));
+    },
+    cancel: () => {
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+      pending = null;
+    }
+  };
+}
+
+function runFfmpeg(
+  ffmpeg: string,
+  args: string[],
+  options: RunFfmpegOptions
+): Promise<void> {
+  throwIfAborted(options.signal);
   return new Promise((resolve, reject) => {
-    const child = spawn(ffmpeg, args, { stdio: ["ignore", "ignore", "pipe"] });
-    let stderr = "";
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8");
+    const progressArgs = [
+      "-nostdin",
+      "-hide_banner",
+      "-nostats",
+      "-stats_period",
+      "0.25",
+      "-progress",
+      "pipe:1",
+      ...args
+    ];
+    const child = spawn(ffmpeg, progressArgs, {
+      stdio: ["ignore", "pipe", "pipe"]
     });
-    child.on("error", reject);
-    child.on("exit", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`ffmpeg exited ${code}: ${ffmpegFailureSummary(stderr)}`));
+    const parser = new FfmpegProgressParser(options.durationSec);
+    const throttled = createProgressThrottle(options.onProgress);
+    let stderrTail = "";
+    let settled = false;
+    let aborted = false;
+    let killCloseTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const cleanup = (): void => {
+      options.signal.removeEventListener("abort", onAbort);
+      throttled.cancel();
+      if (killCloseTimer !== null) clearTimeout(killCloseTimer);
+      killCloseTimer = null;
+    };
+    const settle = (cause?: unknown): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (cause === undefined) resolve();
+      else reject(cause);
+    };
+    const onAbort = (): void => {
+      aborted = true;
+      throttled.cancel();
+      try {
+        child.kill("SIGKILL");
+        killCloseTimer = setTimeout(() => {
+          settle(abortError());
+        }, FFMPEG_KILL_CLOSE_TIMEOUT_MS);
+      } catch {
+        settle(abortError());
+      }
+    };
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (settled || aborted) return;
+      for (const record of parser.push(chunk)) throttled.report(record);
     });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderrTail = `${stderrTail}${chunk.toString("utf8")}`.slice(-8_192);
+    });
+    child.once("error", (cause) => {
+      // A spawn failure has no live process and can settle immediately.
+      // An error raised while killing an aborted child is different: keep
+      // the encode slot until `close` (or the bounded fallback) so a retry
+      // cannot overlap the same output writer.
+      if (aborted || options.signal.aborted) return;
+      settle(cause);
+    });
+    child.once("close", (code) => {
+      if (settled) return;
+      if (!aborted) {
+        for (const record of parser.finish()) throttled.report(record);
+      }
+      if (aborted || options.signal.aborted) {
+        settle(abortError());
+      } else if (code === 0) {
+        settle();
+      } else {
+        settle(
+          new Error(
+            `ffmpeg exited ${String(code)}: ${ffmpegFailureSummary(stderrTail)}`
+          )
+        );
+      }
+    });
+    options.signal.addEventListener("abort", onAbort, { once: true });
+    if (options.signal.aborted) onAbort();
   });
 }
 

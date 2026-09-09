@@ -592,7 +592,13 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
         snapshotWaitMs: diagnosticMs(timings.snapshotWaitMs),
         firstFrameWaitMs: diagnosticMs(timings.firstFrameWaitMs),
         secondFrameWaitMs: diagnosticMs(timings.secondFrameWaitMs),
-        rendererTotalMs: diagnosticMs(timings.rendererTotalMs)
+        rendererTotalMs: diagnosticMs(timings.rendererTotalMs),
+        firstTimerWaitMs: diagnosticMs(timings.firstTimerWaitMs),
+        secondTimerWaitMs: diagnosticMs(timings.secondTimerWaitMs),
+        firstTimerFired: diagnosticMs(timings.firstTimerFired),
+        secondTimerFired: diagnosticMs(timings.secondTimerFired),
+        hiddenAtFrames: diagnosticMs(timings.hiddenAtFrames),
+        hiddenAtAck: diagnosticMs(timings.hiddenAtAck)
       };
       pending.trace.mark("renderer_signal_receipt", {
         signal: "selector_presented",

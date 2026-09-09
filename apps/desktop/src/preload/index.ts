@@ -343,6 +343,12 @@ const pwrsnapApi = {
     firstFrameWaitMs?: number;
     secondFrameWaitMs?: number;
     rendererTotalMs?: number;
+    firstTimerWaitMs?: number;
+    secondTimerWaitMs?: number;
+    firstTimerFired?: number;
+    secondTimerFired?: number;
+    hiddenAtFrames?: number;
+    hiddenAtAck?: number;
   }): void {
     ipcRenderer.send(REGION_SELECTOR_PRESENTED_CHANNEL, payload);
   },

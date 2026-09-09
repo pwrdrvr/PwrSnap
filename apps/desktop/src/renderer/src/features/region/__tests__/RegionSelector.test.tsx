@@ -121,6 +121,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   await act(async () => {
     root?.unmount();
   });
@@ -313,6 +314,7 @@ describe("diagnostic first-visible acknowledgement", () => {
   }
 
   test("requires frozen-source decode and two post-request animation frames", async () => {
+    vi.useFakeTimers();
     const frames = installFrameHarness();
     let now = 100;
     vi.spyOn(performance, "now").mockImplementation(() => now);
@@ -337,9 +339,13 @@ describe("diagnostic first-visible acknowledgement", () => {
       expect.objectContaining({ screenUrl: request.screenUrl, transport: "img" })
     );
     expect(frames.callbacks.size).toBe(1);
+    now = 801;
+    await act(async () => vi.advanceTimersByTime(0));
     now = 830;
     await frames.runNext();
     expect(notifySelectorPresented).not.toHaveBeenCalled();
+    now = 832;
+    await act(async () => vi.advanceTimersByTime(0));
     now = 850;
     await frames.runNext();
     expect(notifySelectorPresented).toHaveBeenCalledWith({
@@ -347,7 +353,13 @@ describe("diagnostic first-visible acknowledgement", () => {
       snapshotWaitMs: 700,
       firstFrameWaitMs: 30,
       secondFrameWaitMs: 20,
-      rendererTotalMs: 750
+      rendererTotalMs: 750,
+      firstTimerWaitMs: 1,
+      secondTimerWaitMs: 2,
+      firstTimerFired: 1,
+      secondTimerFired: 1,
+      hiddenAtFrames: Number(document.hidden),
+      hiddenAtAck: Number(document.hidden)
     });
   });
 

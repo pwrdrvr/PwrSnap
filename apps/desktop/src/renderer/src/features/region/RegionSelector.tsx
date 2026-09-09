@@ -77,6 +77,7 @@ type SelectorPresentationRequest = {
 type SelectorPresentationRaf = {
   first: number | null;
   second: number | null;
+  timers: ReturnType<typeof setTimeout>[];
   generation: number;
 };
 // Escape de-dupe window. A single physical Esc can be delivered twice
@@ -418,6 +419,7 @@ export function RegionSelector() {
       if (pending === null) return;
       if (pending.first !== null) cancelAnimationFrame(pending.first);
       if (pending.second !== null) cancelAnimationFrame(pending.second);
+      pending.timers.forEach(clearTimeout);
       presentationRafRef.current = null;
     };
     tryStartPresentationAckRef.current = (request): void => {
@@ -425,12 +427,21 @@ export function RegionSelector() {
       if (presentationRequestRef.current?.generation !== request.generation) return;
       const framesStartedAt = performance.now();
       const receivedAt = presentationReceivedAtRef.current;
+      const hiddenAtFrames = Number(document.hidden);
+      let firstTimerWaitMs: number | undefined;
+      let secondTimerWaitMs: number | undefined;
       const state: SelectorPresentationRaf = {
         first: null,
         second: null,
+        timers: [],
         generation: request.generation
       };
       presentationRafRef.current = state;
+      // One timer per frame, no polling. Fast timers with slow rAF suggest
+      // frame scheduling, not a generally stalled renderer event loop.
+      state.timers.push(setTimeout(() => {
+        firstTimerWaitMs = performance.now() - framesStartedAt;
+      }, 0));
       state.first = requestAnimationFrame(() => {
         if (
           presentationRafRef.current?.generation !== request.generation ||
@@ -441,6 +452,9 @@ export function RegionSelector() {
         }
         state.first = null;
         const firstFrameAt = performance.now();
+        state.timers.push(setTimeout(() => {
+          secondTimerWaitMs = performance.now() - firstFrameAt;
+        }, 0));
         state.second = requestAnimationFrame(() => {
           if (
             presentationRafRef.current?.generation !== request.generation ||
@@ -452,12 +466,19 @@ export function RegionSelector() {
           presentationRafRef.current = null;
           presentationRequestRef.current = null;
           const secondFrameAt = performance.now();
+          state.timers.forEach(clearTimeout);
           window.pwrsnapApi?.notifySelectorPresented({
             ...request,
             snapshotWaitMs: framesStartedAt - receivedAt,
             firstFrameWaitMs: firstFrameAt - framesStartedAt,
             secondFrameWaitMs: secondFrameAt - firstFrameAt,
-            rendererTotalMs: secondFrameAt - receivedAt
+            rendererTotalMs: secondFrameAt - receivedAt,
+            hiddenAtFrames,
+            hiddenAtAck: Number(document.hidden),
+            firstTimerFired: Number(firstTimerWaitMs !== undefined),
+            secondTimerFired: Number(secondTimerWaitMs !== undefined),
+            ...(firstTimerWaitMs === undefined ? {} : { firstTimerWaitMs }),
+            ...(secondTimerWaitMs === undefined ? {} : { secondTimerWaitMs })
           });
         });
       });

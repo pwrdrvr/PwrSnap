@@ -217,3 +217,20 @@ from delayed frame callbacks without adding another stream of per-frame logs.
 - `apps/desktop/src/main/capture/region-selector.ts`
 - `apps/desktop/src/preload/index.ts`
 - `apps/desktop/src/renderer/src/features/region/RegionSelector.tsx`
+# Follow-up delay diagnostics
+
+The helper completion/failure logs now include elapsed time, its unchanged
+2000 ms timeout budget, main event-loop active/idle milliseconds, and failure
+code/signal/killed status. Output byte counts are retained, not output text
+(which can contain window titles). `killed` alone does not prove a timeout;
+interpret it alongside the code, signal, and duration. Event-loop active time
+is not CPU time and does not identify which main-process task was running.
+
+Presentation summaries additionally compare one zero-delay timer per frame
+(`firstTimerWaitMs`, `secondTimerWaitMs`) against the existing frame waits.
+The `*TimerFired` fields distinguish missing samples from zero-duration ones;
+pending timers are cancelled on completion, supersession, or unmount. Hidden
+state at frame scheduling and acknowledgement is logged as 0/1. Fast timers
+with slow frames narrow the suspicion to frame scheduling; slow timers too
+suggest broader scheduling/event-loop contention, not a proven GPU cause.
+These probes do not alter reveal gates or enable continuous polling.

@@ -103,6 +103,12 @@ declare global {
         firstFrameWaitMs?: number;
         secondFrameWaitMs?: number;
         rendererTotalMs?: number;
+        firstTimerWaitMs?: number;
+        secondTimerWaitMs?: number;
+        firstTimerFired?: number;
+        secondTimerFired?: number;
+        hiddenAtFrames?: number;
+        hiddenAtAck?: number;
       }): void;
       onSelectorPresentationRequest(
         handler: (payload: {

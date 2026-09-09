@@ -607,6 +607,11 @@ describe("Windows release configuration", () => {
     const preview = read(".github/workflows/preview-build.yml");
     const archiveScript = read("scripts/release/archive-windows-signing-input.ps1");
 
+    // Early-exit grep can kill unzip with SIGPIPE and fail a valid archive
+    // under pipefail. Consume the complete listing while suppressing output.
+    expect(preview).toContain('grep -Fx "$ffmpeg_entry" > /dev/null');
+    expect(preview).not.toContain('grep -Fxq "$ffmpeg_entry"');
+
     // Static agreement above only proves this repo is self-consistent. It
     // cannot see the build repo, so it cannot catch an artifact whose manifest
     // reports a version nobody mirrored here. The signing jobs close that by

@@ -104,7 +104,8 @@ jobs:
           download_and_verify "$FFMPEG_LGPL_NOTICE_ASSET" "$FFMPEG_LGPL_NOTICE_ASSET_SHA256"
 
           ffmpeg_entry="PwrSnap.app/Contents/Resources/PwrSnapFFmpeg"
-          if ! unzip -Z1 "$dir/$FFMPEG_RELEASE_PAYLOAD" | grep -Fxq "$ffmpeg_entry"; then
+          # Drain the listing: grep -q can SIGPIPE unzip under pipefail.
+          if ! unzip -Z1 "$dir/$FFMPEG_RELEASE_PAYLOAD" | grep -Fx "$ffmpeg_entry" > /dev/null; then
             echo "::error::$FFMPEG_RELEASE_PAYLOAD is missing $ffmpeg_entry" >&2
             exit 1
           fi

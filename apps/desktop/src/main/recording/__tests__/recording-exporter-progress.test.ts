@@ -54,7 +54,10 @@ vi.mock("node:fs/promises", () => ({
   rm: async (path: string) => {
     existingPaths.delete(path);
   },
-  stat: async () => ({ size: 12_345 })
+  stat: async (path: string) => {
+    if (!existingPaths.has(path)) throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    return { size: 12_345, isFile: () => true };
+  }
 }));
 
 vi.mock("../ffmpeg-resolver", () => ({
@@ -170,6 +173,7 @@ function sendProgress(
 }
 
 function close(call: SpawnCall, code: number): void {
+  if (code === 0) existingPaths.add(call.args.at(-1)!);
   call.child.emit("close", code);
 }
 
@@ -218,7 +222,7 @@ describe("recording exporter progress", () => {
     expect(call.args).toEqual(
       expect.arrayContaining(["-ss", "10.000", "-t", "4.000"])
     );
-    expect(call.options).toEqual({ stdio: ["ignore", "pipe", "pipe"] });
+    expect(call.options).toEqual({ shell: false, stdio: ["ignore", "pipe", "pipe"] });
 
     // Two seconds through the selected four-second trim is 50%. MP4 reserves
     // the final 1% for its stat/cache finalization work.

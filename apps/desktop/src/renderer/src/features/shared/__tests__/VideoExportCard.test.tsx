@@ -89,7 +89,7 @@ describe("VideoExportCard truthful action feedback", () => {
     expect(harness.file().classList.contains("is-copied")).toBe(false);
     expect(harness.file().textContent).toBe("File");
 
-    harness.renderState({ kind: "running", action: "path" });
+    harness.renderState({ kind: "running", runId: "run_1", phase: "queued", ratio: null, action: "path" });
     expect(harness.file().classList.contains("is-copied")).toBe(false);
 
     harness.renderState({ kind: "done", action: "path", path: "C:\\Exports\\clip.gif" });
@@ -97,7 +97,7 @@ describe("VideoExportCard truthful action feedback", () => {
     expect(harness.file().textContent).toBe("Copied");
     expect(harness.button().classList.contains("is-copied")).toBe(false);
 
-    harness.renderState({ kind: "running", action: "path" });
+    harness.renderState({ kind: "running", runId: "run_1", phase: "queued", ratio: null, action: "path" });
     expect(harness.file().classList.contains("is-copied")).toBe(false);
     expect(harness.file().textContent).toBe("File");
   });
@@ -111,13 +111,13 @@ describe("VideoExportCard truthful action feedback", () => {
     expect(harness.onCopy).toHaveBeenCalledOnce();
     expect(harness.button().classList.contains("is-copied")).toBe(false);
 
-    harness.renderState({ kind: "running", action: "copy" });
+    harness.renderState({ kind: "running", runId: "run_1", phase: "queued", ratio: null, action: "copy" });
     harness.renderState({ kind: "done", action: "copy", path: "C:\\Exports\\clip.gif" });
 
     expect(harness.button().classList.contains("is-copied")).toBe(true);
     expect(harness.file().classList.contains("is-copied")).toBe(false);
 
-    harness.renderState({ kind: "running", action: "copy" });
+    harness.renderState({ kind: "running", runId: "run_1", phase: "queued", ratio: null, action: "copy" });
     expect(harness.button().classList.contains("is-copied")).toBe(false);
   });
 
@@ -129,7 +129,7 @@ describe("VideoExportCard truthful action feedback", () => {
     });
     expect(harness.onDrag).toHaveBeenCalledOnce();
 
-    harness.renderState({ kind: "running", action: "drag" });
+    harness.renderState({ kind: "running", runId: "run_1", phase: "queued", ratio: null, action: "drag" });
     harness.renderState({ kind: "done", action: "drag", path: "C:\\Exports\\clip.gif" });
 
     expect(harness.button().classList.contains("is-copied")).toBe(false);
@@ -138,7 +138,7 @@ describe("VideoExportCard truthful action feedback", () => {
   });
 
   test("FILE cannot start a second drag while its card is already running", () => {
-    const harness = mountCard({ kind: "running", action: "copy" });
+    const harness = mountCard({ kind: "running", runId: "run_1", phase: "queued", ratio: null, action: "copy" });
 
     expect(harness.file().draggable).toBe(false);
     expect(harness.file().getAttribute("aria-disabled")).toBe("true");
@@ -150,7 +150,7 @@ describe("VideoExportCard truthful action feedback", () => {
   });
 
   test("path and drag errors stay on the FILE affordance with the useful message", () => {
-    const harness = mountCard({ kind: "running", action: "path" });
+    const harness = mountCard({ kind: "running", runId: "run_1", phase: "queued", ratio: null, action: "path" });
 
     harness.renderState({
       kind: "error",
@@ -166,7 +166,7 @@ describe("VideoExportCard truthful action feedback", () => {
   });
 
   test("media-copy errors remain retryable on the card body", () => {
-    const harness = mountCard({ kind: "running", action: "copy" });
+    const harness = mountCard({ kind: "running", runId: "run_1", phase: "queued", ratio: null, action: "copy" });
 
     harness.renderState({
       kind: "error",

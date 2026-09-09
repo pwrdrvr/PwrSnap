@@ -411,7 +411,7 @@ describe("exportVideoRange concurrency", () => {
     expect(dirname(tempPath)).toBe(dirname(result.path));
     expect(extname(tempPath)).toBe(".mp4");
     expect(renameCalls).toEqual([{ from: tempPath, to: result.path }]);
-    expect(rmCalls).toHaveLength(0);
+    expect(rmCalls).toEqual([{ path: tempPath, force: true }]);
   });
 
   test("rejects and removes a zero-byte ffmpeg output before promotion", async () => {
@@ -454,7 +454,7 @@ describe("exportVideoRange concurrency", () => {
         "60"
       ])
     );
-    expect(spawnQueue[0]?.args.at(-1)).toMatch(/\.low\.gop60\.s0m0\.tmp-.+\.mp4$/);
+    expect(spawnQueue[0]?.args.at(-1)).toMatch(/\.low\.gop60\.s0m0\.mp4\..+\.partial\.mp4$/);
 
     await resolveNextSpawn(0);
     const lowResult = await low;
@@ -473,7 +473,7 @@ describe("exportVideoRange concurrency", () => {
         "60"
       ])
     );
-    expect(spawnQueue[0]?.args.at(-1)).toMatch(/\.med\.gop60\.s0m0\.tmp-.+\.mp4$/);
+    expect(spawnQueue[0]?.args.at(-1)).toMatch(/\.med\.gop60\.s0m0\.mp4\..+\.partial\.mp4$/);
 
     await resolveNextSpawn(0);
     const medResult = await med;
@@ -569,7 +569,7 @@ describe("exportVideoRange concurrency", () => {
     );
     expect(args).not.toContain("copy");
     expect(args).not.toContain("-vf");
-    expect(args.at(-1)).toMatch(/\.high\.gop60\.s0m0\.tmp-.+\.mp4$/);
+    expect(args.at(-1)).toMatch(/\.high\.gop60\.s0m0\.mp4\..+\.partial\.mp4$/);
 
     await resolveNextSpawn(0);
     const result = await high;

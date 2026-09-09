@@ -474,23 +474,20 @@ export async function exportVideoRange(input: ExportInput): Promise<VideoExportR
     preset: input.preset,
     audio: input.audio
   });
-  if (
-    cached !== null &&
-    cacheEntryMatchesEncoder(input, cached.path)
-  ) {
+  if (cached !== null && cacheEntryMatchesEncoder(input, cached.path)) {
     try {
       const cachedInfo = await stat(cached.path);
       if (cachedInfo.isFile() && cachedInfo.size > 0) {
-    if (input.progress !== undefined) {
-      emitProgressSafely(input.progress.emit, { phase: "queued", ratio: null });
-      emitProgressSafely(input.progress.emit, { phase: "finalizing", ratio: 0.99 });
-      emitProgressSafely(input.progress.emit, {
-        phase: "done",
-        ratio: 1,
-        outcome: "succeeded"
-      });
-    }
-    return { ...cached, byteSize: cachedInfo.size, widthPx, heightPx };
+        if (input.progress !== undefined) {
+          emitProgressSafely(input.progress.emit, { phase: "queued", ratio: null });
+          emitProgressSafely(input.progress.emit, { phase: "finalizing", ratio: 0.99 });
+          emitProgressSafely(input.progress.emit, {
+            phase: "done",
+            ratio: 1,
+            outcome: "succeeded"
+          });
+        }
+        return { ...cached, byteSize: cachedInfo.size, widthPx, heightPx };
       }
     } catch {
       // Stale or missing cached files fall through to a fresh encode.
@@ -655,7 +652,9 @@ async function encodeAndRecord(
     onProgress({ phase: "finalizing", ratio: 0.99 });
     const sizeInfo = await stat(stagingPath);
     if (!sizeInfo.isFile() || sizeInfo.size <= 0) {
-      throw new Error(`recording-exporter: ffmpeg produced an empty or invalid ${input.format.toUpperCase()} export`);
+      throw new Error(
+        `recording-exporter: ffmpeg produced an empty or invalid ${input.format.toUpperCase()} export`
+      );
     }
     throwIfAborted(signal);
     await publishCompletedExport(stagingPath, outputPath);
@@ -783,7 +782,6 @@ export function buildGifEncodeArgs(
     filterComplex,
     outPath
   ];
-
 }
 
 async function encodeMp4(

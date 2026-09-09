@@ -49,10 +49,11 @@ vi.mock("node:child_process", () => ({
     state.spawnCalls.push({ command, args, options });
     const child = new EventEmitter() as FakeChildProcess;
     child.stderr = new EventEmitter();
+    Object.assign(child, { stdout: new EventEmitter() });
     setImmediate(() => {
       const outputPath = args.at(-1);
       if (outputPath !== undefined) writeFileSync(outputPath, "encoded-media");
-      child.emit("exit", 0);
+      child.emit("close", 0);
     });
     return child;
   }

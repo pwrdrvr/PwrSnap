@@ -279,7 +279,7 @@ describe("useVideoExportPresets", () => {
 
     const runId = runIdFromExport("mp4", "med");
     expect(runningState(harness.snapshot(), "mp4-med")).toEqual({
-      kind: "running",
+      kind: "running", action: "copy",
       runId,
       phase: "queued",
       ratio: null
@@ -306,7 +306,7 @@ describe("useVideoExportPresets", () => {
       value: { path: "/friendly/export.mp4" }
     });
     expect(harness.snapshot().states["mp4-med"]).toEqual({
-      kind: "done",
+      kind: "done", action: "copy",
       path: "/friendly/export.mp4"
     });
   });
@@ -348,7 +348,7 @@ describe("useVideoExportPresets", () => {
       { captureId: "cap_drag", format: "mp4", preset: "high", range }
     ]);
     expect(harness.snapshot().states["mp4-high"]).toEqual({
-      kind: "done",
+      kind: "done", action: "drag",
       path: "/cache/drag.mp4"
     });
   });
@@ -367,7 +367,7 @@ describe("useVideoExportPresets", () => {
       ratio: null
     });
     expect(runningState(harness.snapshot(), "gif-high")).toEqual({
-      kind: "running",
+      kind: "running", action: "copy",
       runId,
       phase: "palette",
       ratio: null
@@ -382,7 +382,7 @@ describe("useVideoExportPresets", () => {
       ratio: 0.426
     });
     expect(runningState(harness.snapshot(), "gif-high")).toEqual({
-      kind: "running",
+      kind: "running", action: "copy",
       runId,
       phase: "encoding",
       ratio: 0.426
@@ -476,7 +476,7 @@ describe("useVideoExportPresets", () => {
       ratio: 0.61
     });
     expect(runningState(harness.snapshot(), "mp4-low")).toEqual({
-      kind: "running",
+      kind: "running", action: "copy",
       runId: newRunId,
       phase: "encoding",
       ratio: 0.61
@@ -499,13 +499,13 @@ describe("useVideoExportPresets", () => {
       error: { code: "ffmpeg_failed", message: "Encoder exited 1" }
     });
     expect(harness.snapshot().states["gif-med"]).toEqual({
-      kind: "error",
+      kind: "error", action: "drag",
       message: "Encoder exited 1"
     });
 
     await resolvePending(pendingNamed("video:export"), exportOk("/cache/late.gif"));
     expect(harness.snapshot().states["gif-med"]).toEqual({
-      kind: "error",
+      kind: "error", action: "drag",
       message: "Encoder exited 1"
     });
     expect(videoDragSink).toHaveLength(0);
@@ -570,7 +570,7 @@ describe("useVideoExportPresets", () => {
     act(() => harness.snapshot().triggerCopy("gif", "low"));
     await resolvePending(pendingNamed("video:export"), commandError("preflight failed"));
     expect(harness.snapshot().states["gif-low"]).toEqual({
-      kind: "error",
+      kind: "error", action: "copy",
       message: "preflight failed"
     });
 
@@ -581,7 +581,7 @@ describe("useVideoExportPresets", () => {
       commandError("clipboard unavailable")
     );
     expect(harness.snapshot().states["mp4-high"]).toEqual({
-      kind: "error",
+      kind: "error", action: "path",
       message: "clipboard unavailable"
     });
   });
@@ -593,7 +593,7 @@ describe("useVideoExportPresets", () => {
     await rejectPending(pendingNamed("video:export"), new Error("bridge disconnected"));
 
     expect(harness.snapshot().states["mp4-med"]).toEqual({
-      kind: "error",
+      kind: "error", action: "copy",
       message: "bridge disconnected"
     });
     expect(dispatchesNamed("clipboard:copyVideoFile")).toHaveLength(0);
@@ -607,7 +607,7 @@ describe("useVideoExportPresets", () => {
     await resolvePending(pendingNamed("video:export"), exportOk("/cache/drag.gif"));
 
     expect(harness.snapshot().states["gif-med"]).toEqual({
-      kind: "error",
+      kind: "error", action: "drag",
       message: "native drag unavailable"
     });
     expect(videoDragSink).toHaveLength(0);
@@ -703,11 +703,11 @@ describe("useVideoExportPresets", () => {
     });
 
     expect(harness.snapshot().states["mp4-low"]).toEqual({
-      kind: "done",
+      kind: "done", action: "copy",
       path: "/friendly/mp4-low.mp4"
     });
     expect(runningState(harness.snapshot(), "gif-high")).toEqual({
-      kind: "running",
+      kind: "running", action: "copy",
       runId: gifRunId,
       phase: "palette",
       ratio: null

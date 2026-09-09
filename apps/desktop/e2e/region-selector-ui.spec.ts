@@ -10,6 +10,8 @@
 import { type Page } from "@playwright/test";
 import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 
+const E2E_SELECTOR_INVOCATION_ID = 1;
+
 /** Find the pre-warmed region-selector BrowserWindow by URL hash. */
 async function showAndGetRegionSelector(
   app: Awaited<ReturnType<typeof launchPwrSnap>>
@@ -43,7 +45,26 @@ async function showAndGetRegionSelector(
     const selector = app.electronApp
       .windows()
       .find((w) => w.url().includes("stage=region"));
-    if (selector !== undefined) return selector;
+    if (selector !== undefined) {
+      await selector.waitForFunction(() => document.body.dataset.windowListReady === "1");
+      await app.electronApp.evaluate(
+        ({ BrowserWindow }, invocationId) => {
+          const w = BrowserWindow.getAllWindows().find(
+            (w) => !w.isDestroyed() && w.webContents.getURL().includes("stage=region")
+          );
+          if (w === undefined) throw new Error("no selector window");
+          w.webContents.send("region-selector:mode", {
+            invocationId,
+            mode: "auto",
+            captureSource: { kind: "none" },
+            intent: "snap"
+          });
+        },
+        E2E_SELECTOR_INVOCATION_ID
+      );
+      await selector.waitForFunction(() => document.body.dataset.windowListState === "loading");
+      return selector;
+    }
     await new Promise((r) => setTimeout(r, 100));
   }
   throw new Error("region-selector page did not appear in Playwright window list");

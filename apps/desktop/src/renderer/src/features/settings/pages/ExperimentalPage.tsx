@@ -11,8 +11,8 @@
 // main process validates and broadcasts back — same flow as every other
 // settings control. `experimental.processSplit` is read once at process
 // start (it determines the boot role), so flipping it only takes effect
-// after PwrSnap is quit and relaunched; the other two resolve the export
-// ladder at render time and apply immediately.
+// after PwrSnap is quit and relaunched; the capture and export toggles apply
+// to their next operation.
 
 import type { ReactElement } from "react";
 import { Card, Row, Switch } from "../components";
@@ -26,9 +26,12 @@ export function ExperimentalPage(): ReactElement {
   // (the boot is always single-process there), so don't show a switch
   // that can't do anything.
   const isMac = window.pwrsnapApi?.platform === "darwin";
+  const isWindows = window.pwrsnapApi?.platform === "win32";
   const densityName = isMac ? "Retina" : "High DPI";
 
   const processSplit = settings?.experimental.processSplit ?? false;
+  const rendererOwnedSelectorCapture =
+    settings?.experimental.rendererOwnedSelectorCapture ?? false;
   const dpiAwareExport = settings?.experimental.dpiAwareExport ?? false;
   const allowRetinaExport = settings?.experimental.allowRetinaExport ?? true;
 
@@ -41,6 +44,12 @@ export function ExperimentalPage(): ReactElement {
   const onDpiAwareExportChange = ready
     ? (next: boolean): void => {
         void patch({ experimental: { dpiAwareExport: next } });
+      }
+    : undefined;
+
+  const onRendererOwnedSelectorCaptureChange = ready
+    ? (next: boolean): void => {
+        void patch({ experimental: { rendererOwnedSelectorCapture: next } });
       }
     : undefined;
 
@@ -71,6 +80,21 @@ export function ExperimentalPage(): ReactElement {
             tag="process-split"
           >
             <Switch on={processSplit} onChange={onProcessSplitChange} />
+          </Row>
+        </Card>
+      ) : null}
+
+      {isMac || isWindows ? (
+        <Card eyebrow="EXPERIMENTAL" title="Selector capture engine">
+          <Row
+            label="Use renderer-owned selector capture"
+            sub="Freezes the selected display directly in the sandboxed selector instead of using the current native temporary-file snapshot path. Off by default while this soaks on macOS and Windows. Turn it off at any time to restore the shipping capture engine; changes apply to the next capture."
+            tag="capture"
+          >
+            <Switch
+              on={rendererOwnedSelectorCapture}
+              onChange={onRendererOwnedSelectorCaptureChange}
+            />
           </Row>
         </Card>
       ) : null}

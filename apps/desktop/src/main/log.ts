@@ -8,6 +8,12 @@ let debugCollectionEnabled = false;
 
 export const MAIN_LOG_FILE_LEVEL = "info";
 export const MAIN_LOG_FILE_MAX_SIZE_BYTES = 1024 * 1024;
+// electron-log defaults to synchronous file writes. That makes every info
+// mark on latency-sensitive main-process paths (notably the capture hotkey)
+// block Electron's UI thread on the log file. Keep the durable transport, but
+// enqueue its writes so diagnostics remain an observer rather than part of
+// the measured critical path.
+export const MAIN_LOG_FILE_SYNC = false;
 const MAX_COMPACT_STRING_LENGTH = 320;
 const MAX_COMPACT_FIELDS = 24;
 const MAX_COMPACT_DEPTH = 2;
@@ -78,6 +84,7 @@ export function initializeMainLogger(): void {
   guardConsoleTransport();
   electronLog.transports.file.level = debugCollectionEnabled ? "debug" : MAIN_LOG_FILE_LEVEL;
   electronLog.transports.file.maxSize = MAIN_LOG_FILE_MAX_SIZE_BYTES;
+  electronLog.transports.file.sync = MAIN_LOG_FILE_SYNC;
   electronLog.initialize();
   electronLog.scope.labelPadding = false;
 

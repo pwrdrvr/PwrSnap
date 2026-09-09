@@ -134,6 +134,7 @@ vi.mock("../../capture/capture-storage-gate", () => {
 });
 
 vi.mock("../../capture/screen-snapshot", () => ({
+  getSnapshot: () => null,
   releaseSnapshot: async () => undefined
 }));
 

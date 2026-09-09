@@ -70,6 +70,7 @@ describe("DesktopSettingsService.read", () => {
     const svc = makeService();
     const settings = await svc.read();
     expect(settings).toEqual(defaultSettings());
+    expect(settings.experimental.rendererOwnedSelectorCapture).toBe(false);
   });
 
   test("returns defaults + quarantines the file on JSON parse failure", async () => {
@@ -446,6 +447,14 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     expect(settings.hotkeys.quickCapture).toBe(HOST_HOTKEY_DEFAULTS.quickCapture); // filled
     // videoCapture wasn't in the older v1 shape — service fills it.
     expect(settings.hotkeys.videoCapture).toBe(HOST_HOTKEY_DEFAULTS.videoCapture);
+    expect(settings.experimental.rendererOwnedSelectorCapture).toBe(false);
+  });
+
+  test("renderer-owned selector capture is opt-in and round-trips", async () => {
+    const svc = makeService();
+    await svc.write({ experimental: { rendererOwnedSelectorCapture: true } });
+
+    expect((await svc.read()).experimental.rendererOwnedSelectorCapture).toBe(true);
   });
 
   test("v1 shape missing the newer hotkeys gets the defaults filled in", async () => {

@@ -18,6 +18,7 @@ import { nanoid } from "nanoid";
 import sharp from "sharp";
 
 import { deletePendingSourcesForCapture } from "./pending-source-store";
+import { moveFileWithExdevFallback } from "./cross-device-move";
 import {
   getCacheLayerSourcePath,
   getCacheRoot,
@@ -75,10 +76,11 @@ export async function putCaptureSource(tempPath: string): Promise<StoredSource> 
   await mkdir(dir, { recursive: true });
   const srcPath = join(dir, `${id}.png`);
 
-  // This raw rename intentionally continues to surface EXDEV until the shared
-  // durable persistence-move helper is wired here. Node does not fall back to
-  // copy+unlink, and Windows temp/Documents commonly live on different drives.
-  await rename(tempPath, srcPath);
+  // The capture tool writes under os.tmpdir(), which may be a different
+  // volume from Documents (especially on Windows with a relocated profile).
+  // Same-volume moves stay a single atomic rename; EXDEV stages beside the
+  // destination and deletes the temp source only after installation.
+  await moveFileWithExdevFallback(tempPath, srcPath);
 
   // debug-level: this fires once per capture, including 100k× under
   // the dev seeder. Production can re-enable via the logger's level
@@ -129,7 +131,7 @@ export async function adoptExistingFileAsSource(
   const dir = outputDir;
   await mkdir(dir, { recursive: true });
   const srcPath = join(dir, `${id}${ext}`);
-  await rename(tempPath, srcPath);
+  await moveFileWithExdevFallback(tempPath, srcPath);
 
   log.debug("adopted source file", { id, srcPath, byteSize, extension: ext });
 
@@ -401,7 +403,7 @@ export async function moveSourceToTrash(srcPath: string, captureId: string): Pro
     log.warn("trash move: source missing, nothing to move", { srcPath, captureId });
     return;
   }
-  await rename(srcPath, trashPath);
+  await moveFileWithExdevFallback(srcPath, trashPath);
 }
 
 /**
@@ -419,7 +421,7 @@ export async function restoreSourceFromTrash(captureId: string, srcPath: string)
     return;
   }
   await mkdir(dirname(srcPath), { recursive: true });
-  await rename(trashPath, srcPath);
+  await moveFileWithExdevFallback(trashPath, srcPath);
 }
 
 /**

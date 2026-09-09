@@ -1,5 +1,5 @@
-// Unit coverage for `capture:pasteFromClipboard`'s empty and file-URL
-// branches. The no_image case formerly lived in
+// Unit coverage for `capture:pasteFromClipboard`'s empty, file-URL, and
+// Windows Explorer CF_HDROP branches. The no_image case formerly lived in
 // `apps/desktop/e2e/clipboard-paste.spec.ts`; file-URL coverage here pins
 // the secure byte-read boundary and path-redaction contract without relying
 // on host NSPasteboard behavior.
@@ -31,6 +31,8 @@ const mocks = vi.hoisted(() => ({
   readBookmark: vi.fn(() => ({ title: "", url: "" })),
   readBuffer: vi.fn(() => Buffer.alloc(0)),
   readText: vi.fn(() => ""),
+  readWindowsClipboardImageFile: vi.fn(),
+  windowsClipboardFormatsMayContainFiles: vi.fn((_formats: readonly string[]) => false),
   readSafePastedFile: vi.fn(),
   ingestImageBufferToTempPng: vi.fn(),
   writeFirstDecodableClipboardBufferToPng: vi.fn(),
@@ -170,6 +172,14 @@ vi.mock("../../capture/window-list", () => ({
   resolveWindowListHelperPath: () => null
 }));
 
+vi.mock("../../clipboard/windows-file-clipboard-reader", () => ({
+  readWindowsClipboardImageFile: () => mocks.readWindowsClipboardImageFile(),
+  isSupportedClipboardImagePath: (path: string) =>
+    /\.(?:avif|bmp|gif|heic|heif|jpe?g|png|tiff?|webp)$/i.test(path),
+  windowsClipboardFormatsMayContainFiles: (formats: readonly string[]) =>
+    mocks.windowsClipboardFormatsMayContainFiles(formats)
+}));
+
 vi.mock("../../events", () => ({
   broadcastCapturesChanged: () => undefined
 }));
@@ -251,6 +261,8 @@ beforeEach(() => {
   mocks.readBookmark.mockReturnValue({ title: "", url: "" });
   mocks.readBuffer.mockReturnValue(Buffer.alloc(0));
   mocks.readText.mockReturnValue("");
+  mocks.readWindowsClipboardImageFile.mockResolvedValue({ ok: true, path: null });
+  mocks.windowsClipboardFormatsMayContainFiles.mockReturnValue(false);
   mocks.readSafePastedFile.mockResolvedValue(Buffer.from("safe image bytes"));
   mocks.ingestImageBufferToTempPng.mockResolvedValue({
     tempPath: "/test/tmp/clipboard.png",
@@ -336,6 +348,77 @@ describe("capture:pasteFromClipboard", () => {
     expect(result).toEqual({ ok: true, value: persistedRecord });
   });
 
+  test.each([
+    "C:\\Users\\Ada\\Pictures\\copied image.png",
+    "\\\\server\\share\\Pictures\\copied image.png"
+  ])("routes a native CF_HDROP candidate through the same safe byte snapshot: %s", async (path) => {
+    const safeBytes = Buffer.from("bytes returned by one verified open");
+    mocks.readWindowsClipboardImageFile.mockResolvedValue({ ok: true, path });
+    mocks.readSafePastedFile.mockResolvedValue(safeBytes);
+
+    const result = await bus.dispatch(
+      "capture:pasteFromClipboard",
+      {},
+      { principal: "ipc" }
+    );
+
+    expect(mocks.readSafePastedFile).toHaveBeenCalledWith(path, {
+      maxBytes: PASTE_IMAGE_MAX_BYTES
+    });
+    expect(mocks.ingestImageBufferToTempPng).toHaveBeenCalledWith(
+      safeBytes,
+      expect.any(Function)
+    );
+    expect(result).toEqual({ ok: true, value: persistedRecord });
+  });
+
+  test("rejects multiple Windows Explorer files with a specific clipboard error", async () => {
+    mocks.readWindowsClipboardImageFile.mockResolvedValue({
+      ok: false,
+      error: {
+        code: "multiple_files",
+        message: "PwrSnap can paste one image file at a time; the clipboard contains 2 files.",
+        terminal: true
+      }
+    });
+
+    const result = await bus.dispatch(
+      "capture:pasteFromClipboard",
+      {},
+      { principal: "ipc" }
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { kind: "clipboard", code: "multiple_files" }
+    });
+    expect(mocks.readSafePastedFile).not.toHaveBeenCalled();
+    expect(mocks.readBuffer).not.toHaveBeenCalledWith("CF_HDROP");
+  });
+
+  test("rejects a non-image Explorer file instead of reporting no_image", async () => {
+    mocks.readWindowsClipboardImageFile.mockResolvedValue({
+      ok: false,
+      error: {
+        code: "not_image_file",
+        message: "The copied file is not a supported image: demo.mp4",
+        terminal: true
+      }
+    });
+
+    const result = await bus.dispatch(
+      "capture:pasteFromClipboard",
+      {},
+      { principal: "ipc" }
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { kind: "clipboard", code: "not_image_file" }
+    });
+    expect(mocks.readSafePastedFile).not.toHaveBeenCalled();
+  });
+
   test("keeps the synchronous menu probe filesystem-free for file URLs", () => {
     const safeUrl = pathToFileURL(join(tmpdir(), "menu probe.png")).href;
     mocks.readBookmark.mockReturnValue({ title: "menu probe.png", url: safeUrl });
@@ -343,6 +426,15 @@ describe("capture:pasteFromClipboard", () => {
     expect(clipboardHasPasteableImage()).toBe(true);
     expect(mocks.readSafePastedFile).not.toHaveBeenCalled();
     expect(mocks.ingestImageBufferToTempPng).not.toHaveBeenCalled();
+  });
+
+  test("keeps the synchronous menu probe filesystem-free for native file formats", () => {
+    mocks.windowsClipboardFormatsMayContainFiles.mockReturnValue(true);
+    mocks.availableFormats.mockReturnValue(["text/uri-list"]);
+
+    expect(clipboardHasPasteableImage()).toBe(true);
+    expect(mocks.readWindowsClipboardImageFile).not.toHaveBeenCalled();
+    expect(mocks.readSafePastedFile).not.toHaveBeenCalled();
   });
 
   test("returns a sanitized stable error when the secure file gate refuses the URL", async () => {
@@ -375,9 +467,45 @@ describe("capture:pasteFromClipboard", () => {
     expect(JSON.stringify(result)).not.toContain(privatePath);
     expect(mocks.ingestImageBufferToTempPng).not.toHaveBeenCalled();
     expect(mocks.persistCaptureFromTempV2).not.toHaveBeenCalled();
-    expect(mocks.logWarn).toHaveBeenCalledWith("clipboard file URL unavailable", {
+    expect(mocks.logWarn).toHaveBeenCalledWith("clipboard image file unavailable", {
       code: "privileged_path"
     });
+    expect(JSON.stringify(mocks.logWarn.mock.calls)).not.toContain(privatePath);
+  });
+
+  test("redacts a rejected CF_HDROP candidate without reopening its pathname", async () => {
+    const privatePath = "C:\\Users\\Ada\\Pictures\\junction\\secret.png";
+    mocks.readWindowsClipboardImageFile.mockResolvedValue({
+      ok: true,
+      path: privatePath
+    });
+    mocks.readSafePastedFile.mockRejectedValue(
+      new securityMocks.UnsafePastedFileError(
+        "symlink",
+        "Invalid file",
+        `refusing to follow a junction at ${privatePath}`
+      )
+    );
+
+    const result = await bus.dispatch(
+      "capture:pasteFromClipboard",
+      {},
+      { principal: "ipc" }
+    );
+
+    expect(mocks.readSafePastedFile).toHaveBeenCalledWith(privatePath, {
+      maxBytes: PASTE_IMAGE_MAX_BYTES
+    });
+    expect(mocks.ingestImageBufferToTempPng).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        kind: "clipboard",
+        code: "clipboard_file_unavailable",
+        message: "Invalid file"
+      }
+    });
+    expect(JSON.stringify(result)).not.toContain(privatePath);
     expect(JSON.stringify(mocks.logWarn.mock.calls)).not.toContain(privatePath);
   });
 
@@ -409,7 +537,7 @@ describe("capture:pasteFromClipboard", () => {
     ]);
     expect(JSON.stringify(result)).not.toContain(privatePath);
     expect(mocks.logWarn).toHaveBeenCalledWith(
-      "clipboard file URL image decode failed",
+      "clipboard image file decode failed",
       { code: "decode_failed" }
     );
     expect(JSON.stringify(mocks.logWarn.mock.calls)).not.toContain(privatePath);

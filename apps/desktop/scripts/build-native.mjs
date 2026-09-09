@@ -16,10 +16,12 @@
  * (window-list, recorder, thumbnail/preview extensions) below.
  *
  * Windows — compiles the C++ window-list and verified-file helpers via the
- * win32 branch immediately below, then exits. The former drives
- * snap-to-window/source-app metadata; the latter supplies the atomic Win32
- * reparse-point-safe open boundary for untrusted external files. The
- * macOS-only Swift/.appex targets are skipped on Windows.
+ * win32 branch immediately below, then exits. Window-list drives
+ * snap-to-window/source-app metadata and hosts the native CF_HDROP
+ * file-clipboard subcommands used by GIF/MP4/image Copy. Verified-file owns
+ * the atomic Win32 reparse-point-safe open boundary for untrusted external
+ * files.
+ * The macOS-only Swift/.appex targets are skipped on Windows.
  *
  * Linux — no native helpers; the build is a no-op so unit tests + Linux
  * CI keep working.
@@ -436,9 +438,10 @@ for (const appex of appexTargets) {
  *   native/verified-file-win/main.cpp → build/native/verified-file.exe
  *
  * Counterpart to the macOS Swift `window-list` binary. Self-contained
- * C++ over Win32 (EnumWindows / DWM / PSAPI); compiled with cl.exe from
- * the Visual Studio Build Tools, which are present on the GitHub
- * `windows-latest` runner and the project's Windows dev box.
+ * C++ over Win32 (EnumWindows / DWM / PSAPI plus CF_HDROP clipboard
+ * ownership/readback); compiled with cl.exe from the Visual Studio Build
+ * Tools, which are present on the GitHub `windows-latest` runner and the
+ * project's Windows dev box.
  *
  * Idempotent: skips the compile when the .exe is newer than its source.
  *
@@ -507,9 +510,10 @@ function buildWindowsTarget(target) {
   //   /nologo quiet banner
   //   /Fe:    output exe path
   //   /Fo:    output obj path (keeps cwd clean)
-  // Libraries: user32 (EnumWindows / window APIs), dwmapi (cloak +
-  // extended-frame bounds), and the Windows shell/COM/WIC stack used by
-  // --extract-app-icon. Listed after the source per cl convention.
+  // Libraries: user32 (EnumWindows / clipboard / window APIs), dwmapi
+  // (cloak + extended-frame bounds), and the Windows shell/COM/WIC stack
+  // used by --extract-app-icon and --write-file-clipboard. Listed after the
+  // source per cl convention.
   const clArgs = [
     "/O2",
     "/EHsc",

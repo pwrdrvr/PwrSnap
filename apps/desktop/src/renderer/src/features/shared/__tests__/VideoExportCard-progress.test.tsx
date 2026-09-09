@@ -57,7 +57,7 @@ function renderCard(state: ExportButtonState): {
 describe("VideoExportCard progress accessibility", () => {
   test("renders a determinate percentage with complete progressbar semantics", () => {
     const { button } = renderCard({
-      kind: "running",
+      kind: "running", action: "copy",
       runId: "run_1",
       phase: "encoding",
       ratio: 0.426
@@ -82,7 +82,7 @@ describe("VideoExportCard progress accessibility", () => {
 
   test("renders a useful indeterminate fallback without aria-valuenow", () => {
     const { button } = renderCard({
-      kind: "running",
+      kind: "running", action: "copy",
       runId: "run_2",
       phase: "palette",
       ratio: null
@@ -107,7 +107,7 @@ describe("VideoExportCard progress accessibility", () => {
 
   test("keeps an error card enabled and retryable", () => {
     const { button, onCopy } = renderCard({
-      kind: "error",
+      kind: "error", action: "copy",
       message: "Encoder exited 1"
     });
 

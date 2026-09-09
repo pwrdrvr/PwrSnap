@@ -3,6 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { ensureWindowsDevFfmpeg } from "./dev-ffmpeg.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -392,6 +393,22 @@ export function ensureElectronInstalled(
   return 0;
 }
 
+// FFmpeg is optional for app startup, even though recording/export needs it.
+export function configureDevFfmpeg(env, provision = ensureWindowsDevFfmpeg, logger = console) {
+  try {
+    const ffmpeg = provision(env);
+    if (ffmpeg !== null) {
+      env.PWRSNAP_FFMPEG_PATH = ffmpeg.path;
+      logger.log(`[dev] using controlled Windows FFmpeg (${ffmpeg.source}): ${ffmpeg.path}`);
+    }
+  } catch (cause) {
+    logger.warn(`[dev] ${cause instanceof Error ? cause.message : String(cause)}`);
+    logger.warn(
+      "[dev] Continuing app startup without provisioned FFmpeg. Recording and media export may be unavailable. Fix the FFmpeg setup above and restart to retry."
+    );
+  }
+}
+
 export async function main(argv = process.argv.slice(2), inputEnv = process.env) {
   const nodeCheck = checkNodeVersion(process.version, readExpectedNodeVersion());
   if (!nodeCheck.ok) {
@@ -406,6 +423,8 @@ export async function main(argv = process.argv.slice(2), inputEnv = process.env)
   if (removed.length > 0) {
     console.warn(`[dev] scrubbed inherited launch env: ${removed.join(", ")}`);
   }
+
+  configureDevFfmpeg(env);
 
   const electronStatus = ensureElectronInstalled(env);
   if (electronStatus !== 0) return electronStatus;

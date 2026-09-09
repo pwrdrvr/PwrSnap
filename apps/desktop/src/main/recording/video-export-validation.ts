@@ -36,7 +36,9 @@ function validationError(code: string, message: string): PwrSnapError {
  * a gate, not a normalizer; clamping to the source duration stays in
  * `normalizeRange`, which runs once the values are known-sane.
  */
-export function validateVideoExportRequest<T extends VideoExportCoordinates>(
+export function validateVideoExportRequest<
+  T extends VideoExportCoordinates & { runId?: unknown }
+>(
   req: T,
   verb: string
 ): Result<T, PwrSnapError> {
@@ -54,6 +56,17 @@ export function validateVideoExportRequest<T extends VideoExportCoordinates>(
   if (req.preset !== "low" && req.preset !== "med" && req.preset !== "high") {
     return err(
       validationError("invalid_preset", `${verb}: preset must be "low", "med", or "high"`)
+    );
+  }
+  if (
+    req.runId !== undefined &&
+    (typeof req.runId !== "string" || req.runId.length === 0 || req.runId.length > 128)
+  ) {
+    return err(
+      validationError(
+        "invalid_run_id",
+        `${verb}: runId must be a non-empty string of at most 128 characters`
+      )
     );
   }
   if (req.range !== undefined) {

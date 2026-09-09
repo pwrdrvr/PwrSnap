@@ -40,6 +40,8 @@ export const EVENT_CHANNELS = {
   aiRunUpdated: "events:ai-run:updated",
   aiUsageUpdated: "events:ai-usage:updated",
   aiBudgetUpdated: "events:ai-budget:updated",
+  /** Main → every BrowserWindow: run-scoped GIF/MP4 export progress.
+   * Payload type: `VideoExportProgressEvent`. */
   renderProgress: "events:render:progress",
   /**
    * Main → every BrowserWindow: recording-service lifecycle update.
@@ -447,7 +449,8 @@ import type {
   CartExportProgressEvent,
   DraftCart,
   SizzleProject,
-  SizzleRenderProgressEvent
+  SizzleRenderProgressEvent,
+  VideoExportProgressEvent
 } from "./protocol";
 import type {
   ChatApprovalResolvedEvent,
@@ -519,6 +522,7 @@ export type EventPayloads = {
   [EVENT_CHANNELS.sizzleCloseRequested]: { requestId: number };
   [EVENT_CHANNELS.cartChanged]: { cart: DraftCart };
   [EVENT_CHANNELS.cartExportProgress]: CartExportProgressEvent;
+  [EVENT_CHANNELS.renderProgress]: VideoExportProgressEvent;
   [EVENT_CHANNELS.libraryChatThreadUpdated]: { thread: LibraryChatThreadView };
   [EVENT_CHANNELS.libraryChatStreamDelta]: LibraryChatStreamDeltaEvent;
   [EVENT_CHANNELS.libraryChatToolCall]: LibraryChatToolCallEvent;

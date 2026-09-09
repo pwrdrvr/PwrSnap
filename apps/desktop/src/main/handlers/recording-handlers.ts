@@ -13,6 +13,7 @@ import { copyFile, mkdir, rename, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { ok, err, recordingFailureSummary } from "@pwrsnap/shared";
 import type {
+  Commands,
   PwrSnapError,
   RecordingCapabilities,
   RecordingFailureCode,
@@ -60,6 +61,7 @@ import {
   resolveVideoExport
 } from "../recording/video-export-resolver";
 import { validateVideoExportRequest } from "../recording/video-export-validation";
+import { createVideoExportProgressObserver } from "../recording/video-export-progress";
 import { ensureVideoPoster } from "../recording/video-poster";
 import { ensureVideoFrames, videoAssetDir } from "../recording/video-frames";
 import { extractVideoAudio } from "../sizzle/audio-extract";
@@ -68,6 +70,7 @@ import { broadcastCapturesChanged } from "../events";
 import { prepareRenderedFileAlias } from "../render/file-alias";
 import { buildPresetExportDisplayName } from "../render/export-filename";
 import { getCaptureEnrichment } from "../persistence/enrichment-repo";
+import { relayCancellationToPeer } from "../process-split/event-relay";
 
 const log = getMainLogger("pwrsnap:recording-handlers");
 
@@ -134,6 +137,149 @@ async function guardRecordingAttempt(
     );
   }
   return null;
+}
+
+type RecordingStartRequest = Commands["recording:start"]["req"];
+
+const RECORDING_COUNTDOWN_MAX_SECONDS = 30;
+const RECORDING_APP_NAME_MAX_CODE_POINTS = 512;
+const RECORDING_APP_ID_MAX_CODE_POINTS = 2_048;
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKeys(
+  value: Record<string, unknown>,
+  allowed: readonly string[]
+): boolean {
+  const allowedSet = new Set(allowed);
+  return Object.keys(value).every((key) => allowedSet.has(key));
+}
+
+function isFiniteRect(value: unknown): boolean {
+  if (!isObjectRecord(value) || !hasOnlyKeys(value, ["x", "y", "w", "h"])) {
+    return false;
+  }
+  return (
+    typeof value.x === "number" &&
+    Number.isFinite(value.x) &&
+    typeof value.y === "number" &&
+    Number.isFinite(value.y) &&
+    typeof value.w === "number" &&
+    Number.isFinite(value.w) &&
+    value.w > 0 &&
+    typeof value.h === "number" &&
+    Number.isFinite(value.h) &&
+    value.h > 0
+  );
+}
+
+function isOptionalBoundedMetadata(
+  value: unknown,
+  maxCodePoints: number
+): boolean {
+  if (value === undefined || value === null) return true;
+  if (typeof value !== "string" || /\p{Cc}/u.test(value)) return false;
+  let codePoints = 0;
+  for (const _character of value) {
+    codePoints += 1;
+    if (codePoints > maxCodePoints) return false;
+  }
+  return true;
+}
+
+/** Runtime gate shared by IPC, HTTP, and future command transports. */
+export function validateRecordingStartRequest(
+  value: unknown
+): Result<RecordingStartRequest, PwrSnapError> {
+  const invalid = (): Result<RecordingStartRequest, PwrSnapError> =>
+    err(
+      validationError(
+        "invalid_recording_start",
+        "recording:start requires a valid subject, capabilities, countdown, and cursor option."
+      )
+    );
+
+  if (
+    !isObjectRecord(value) ||
+    !hasOnlyKeys(value, [
+      "subject",
+      "capabilities",
+      "countdownSeconds",
+      "captureCursor"
+    ])
+  ) {
+    return invalid();
+  }
+
+  const subject = value.subject;
+  if (!isObjectRecord(subject) || typeof subject.kind !== "string") return invalid();
+  if (!Number.isSafeInteger(subject.displayId)) return invalid();
+
+  if (subject.kind === "region") {
+    if (
+      !hasOnlyKeys(subject, ["kind", "rect", "displayId"]) ||
+      !isFiniteRect(subject.rect)
+    ) {
+      return invalid();
+    }
+  } else if (subject.kind === "window") {
+    if (
+      !hasOnlyKeys(subject, [
+        "kind",
+        "windowId",
+        "rect",
+        "displayId",
+        "appName",
+        "appBundleId"
+      ]) ||
+      !Number.isSafeInteger(subject.windowId) ||
+      (subject.windowId as number) <= 0 ||
+      !isFiniteRect(subject.rect) ||
+      !isOptionalBoundedMetadata(
+        subject.appName,
+        RECORDING_APP_NAME_MAX_CODE_POINTS
+      ) ||
+      !isOptionalBoundedMetadata(
+        subject.appBundleId,
+        RECORDING_APP_ID_MAX_CODE_POINTS
+      )
+    ) {
+      return invalid();
+    }
+  } else if (subject.kind === "display") {
+    if (!hasOnlyKeys(subject, ["kind", "displayId"])) return invalid();
+  } else {
+    return invalid();
+  }
+
+  const capabilities = value.capabilities;
+  if (
+    !isObjectRecord(capabilities) ||
+    !hasOnlyKeys(capabilities, ["systemAudio", "microphone"]) ||
+    typeof capabilities.systemAudio !== "boolean" ||
+    typeof capabilities.microphone !== "boolean"
+  ) {
+    return invalid();
+  }
+
+  if (
+    value.countdownSeconds !== undefined &&
+    (!Number.isInteger(value.countdownSeconds) ||
+      (value.countdownSeconds as number) < 0 ||
+      (value.countdownSeconds as number) > RECORDING_COUNTDOWN_MAX_SECONDS)
+  ) {
+    return invalid();
+  }
+  if (
+    value.captureCursor !== undefined &&
+    typeof value.captureCursor !== "boolean"
+  ) {
+    return invalid();
+  }
+
+  return ok(value as RecordingStartRequest);
 }
 
 /** Filename of the extracted full-clip audio under the video asset dir.
@@ -283,6 +429,9 @@ export function registerRecordingHandlers(): void {
   // ---- recording lifecycle ----
 
   bus.register("recording:start", async (req) => {
+    const validated = validateRecordingStartRequest(req);
+    if (!validated.ok) return validated;
+    const request = validated.value;
     if (getRecordingState().phase === "failed") {
       return err(
         validationError(
@@ -297,14 +446,14 @@ export function registerRecordingHandlers(): void {
     // the first-ever attempt and routes to System Settings thereafter
     // (see screen-permission-gate.ts). Missing audio is a degraded
     // continuation that the selector dialog handled before calling us.
-    const blocked = await guardRecordingAttempt(req.capabilities);
+    const blocked = await guardRecordingAttempt(request.capabilities);
     if (blocked) return blocked;
     try {
       const session = await getService().start({
-        subject: req.subject,
-        capabilities: req.capabilities,
-        captureCursor: req.captureCursor,
-        countdownSeconds: req.countdownSeconds ?? 3
+        subject: request.subject,
+        capabilities: request.capabilities,
+        captureCursor: request.captureCursor,
+        countdownSeconds: request.countdownSeconds ?? 3
       });
       return ok({ sessionId: session.sessionId });
     } catch (cause) {
@@ -580,43 +729,86 @@ export function registerRecordingHandlers(): void {
     }
   });
 
-  bus.register("video:export", async (req) => {
+  bus.register("video:export", async (req, ctx) => {
     const validated = validateExportRequest(req);
     if (!validated.ok) return validated;
-    const record = getCaptureById(req.captureId);
-    if (record === null) {
-      return err(validationError("not_found", `video:export: capture not found: ${req.captureId}`));
-    }
-    if (record.kind !== "video" || record.video === null || record.video === undefined) {
-      return err(validationError("not_a_video", `video:export: ${req.captureId} is not a video capture`));
-    }
-    const range = req.range ?? record.video.defaultRange;
-    const audio =
-      req.audio ??
-      ({ includeSystemAudio: false, includeMicrophone: false } as const);
-    // Source metadata is the source of truth for whether a track
-    // even exists in the file. Toggling a missing track on is a
-    // validator-level rejection, not a silent normalisation, so the
-    // renderer can tell the user precisely what went wrong.
-    if (req.format === "mp4") {
-      if (audio.includeSystemAudio && !record.video.hasSystemAudio) {
-        return err(
-          validationError(
-            "audio_track_missing",
-            "video:export: cannot include system audio — source recording has no system-audio track."
-          )
-        );
+    const baseProgress = createVideoExportProgressObserver(req);
+    let terminalEmitted = false;
+    const progress =
+      baseProgress === undefined
+        ? undefined
+        : {
+            runId: baseProgress.runId,
+            emit: (update: Parameters<typeof baseProgress.emit>[0]) => {
+              if (update.phase === "done") terminalEmitted = true;
+              try {
+                baseProgress.emit(update);
+              } catch (cause) {
+                // A renderer can disappear between the window liveness check
+                // and webContents.send(). Progress delivery must never replace
+                // the command's real success/failure Result.
+                log.warn("video export progress delivery failed", {
+                  runId: baseProgress.runId,
+                  message: cause instanceof Error ? cause.message : String(cause)
+                });
+              }
+            }
+          };
+    const failBeforeTerminal = (error: PwrSnapError): Result<never, PwrSnapError> => {
+      if (!terminalEmitted && progress !== undefined) {
+        progress.emit({
+          phase: "done",
+          ratio: null,
+          outcome: "failed",
+          error: { code: error.code, message: error.message }
+        });
       }
-      if (audio.includeMicrophone && !record.video.hasMicrophoneAudio) {
-        return err(
-          validationError(
-            "audio_track_missing",
-            "video:export: cannot include microphone — source recording has no microphone track."
-          )
-        );
-      }
-    }
+      return err(error);
+    };
+
     try {
+      const record = getCaptureById(req.captureId);
+      if (record === null) {
+        return failBeforeTerminal(
+          validationError("not_found", `video:export: capture not found: ${req.captureId}`)
+        );
+      }
+      if (record.kind !== "video" || record.video === null || record.video === undefined) {
+        return failBeforeTerminal(
+          validationError("not_a_video", `video:export: ${req.captureId} is not a video capture`)
+        );
+      }
+      const range = req.range ?? record.video.defaultRange;
+      const audio =
+        req.audio ??
+        (req.format === "gif"
+          ? { includeSystemAudio: false, includeMicrophone: false }
+          : {
+              // Match resolveVideoExport: an omitted MP4 policy preserves
+              // every source track. This keeps the visible preflight on the
+              // same cache key as copy/path/drag instead of encoding twice.
+              includeSystemAudio: record.video.hasSystemAudio,
+              includeMicrophone: record.video.hasMicrophoneAudio
+            });
+      // Source metadata is the source of truth for whether a track exists.
+      if (req.format === "mp4") {
+        if (audio.includeSystemAudio && !record.video.hasSystemAudio) {
+          return failBeforeTerminal(
+            validationError(
+              "audio_track_missing",
+              "video:export: cannot include system audio — source recording has no system-audio track."
+            )
+          );
+        }
+        if (audio.includeMicrophone && !record.video.hasMicrophoneAudio) {
+          return failBeforeTerminal(
+            validationError(
+              "audio_track_missing",
+              "video:export: cannot include microphone — source recording has no microphone track."
+            )
+          );
+        }
+      }
       const result = await exportVideoRange({
         record,
         video: record.video,
@@ -625,19 +817,61 @@ export function registerRecordingHandlers(): void {
         range: normalizeRange(range, record.video.durationSec),
         audio: req.format === "gif"
           ? { includeSystemAudio: false, includeMicrophone: false }
-          : audio
+          : audio,
+        signal: ctx.signal,
+        ...(progress === undefined ? {} : { progress })
       });
       return ok(result);
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
-      log.error("video:export failed", {
+      const cancelled = cause instanceof Error && cause.name === "AbortError";
+      const details = {
         captureId: req.captureId,
         format: req.format,
         preset: req.preset,
         message
-      });
-      return err({ kind: "render", code: "video_export_failed", message, cause });
+      };
+      if (cancelled) log.info("video:export cancelled", details);
+      else log.error("video:export failed", details);
+      const error: PwrSnapError = {
+        kind: "render",
+        code: cancelled ? "video_export_cancelled" : "video_export_failed",
+        message,
+        cause
+      };
+      if (!terminalEmitted && progress !== undefined) {
+        progress.emit(
+          cancelled
+            ? { phase: "done", ratio: null, outcome: "cancelled" }
+            : {
+                phase: "done",
+                ratio: null,
+                outcome: "failed",
+                error: { code: error.code, message }
+              }
+        );
+      }
+      return err(error);
     }
+  });
+
+  bus.register("video:cancelExport", async (req) => {
+    if (
+      typeof req.runId !== "string" ||
+      req.runId.length === 0 ||
+      req.runId.length > 128
+    ) {
+      return err(
+        validationError(
+          "invalid_run_id",
+          "video:cancelExport: runId must be a non-empty string of at most 128 characters"
+        )
+      );
+    }
+    const key = `video-export:${req.runId}`;
+    bus.cancel(key);
+    relayCancellationToPeer(key);
+    return ok(undefined);
   });
 
   // ── video:presetMetrics ───────────────────────────────────────────

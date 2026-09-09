@@ -41,6 +41,15 @@ describe("validateVideoExportRequest", () => {
     expect(out.value).toBe(req);
   });
 
+  test("accepts a bounded renderer run id and rejects malformed ids", () => {
+    expect(validateVideoExportRequest({ ...base, runId: "run-123" }, "video:export").ok).toBe(
+      true
+    );
+    expect(reject({ ...base, runId: "" }).code).toBe("invalid_run_id");
+    expect(reject({ ...base, runId: 42 }).code).toBe("invalid_run_id");
+    expect(reject({ ...base, runId: "x".repeat(129) }).code).toBe("invalid_run_id");
+  });
+
   test("rejects a NaN range", () => {
     expect(reject({ ...base, range: { start: NaN, end: NaN } })).toEqual({
       code: "invalid_range",

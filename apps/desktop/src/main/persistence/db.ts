@@ -205,13 +205,113 @@ export function listPendingMigrationFiles(db: Database.Database): string[] {
  * Apply pending migrations from ./migrations/. Each migration runs in
  * its own transaction; partial failure leaves the schema unchanged.
  */
-function runMigrations(db: Database.Database): void {
+const IMPORT_RECOVERY_MIGRATION = "0029_pwrsnap_import_recovery.sql";
+const BUNDLE_REPACK_STATE_MIGRATION = "0031_bundle_carrier_repack_state.sql";
+const WINDOW_TITLE_MIGRATION = "0032_capture_source_window_title.sql";
+const WINDOW_TITLE_ALTER = "ALTER TABLE captures ADD COLUMN source_window_title TEXT;";
+
+function tableExists(db: Database.Database, table: string): boolean {
+  return db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(table) !== undefined;
+}
+
+function tableHasColumn(
+  db: Database.Database,
+  table: string,
+  column: string
+): boolean {
+  if (!tableExists(db, table)) return false;
+  return (db.pragma(`table_info(${table})`) as Array<{ name: string }>).some(
+    (entry) => entry.name === column
+  );
+}
+
+/**
+ * Repair databases that ran this feature branch while its migration occupied
+ * either 0029 or 0031. Those branch builds recorded the colliding version for
+ * the window-title schema, causing the official migration at that number to
+ * be skipped on the next launch.
+ *
+ * Replay only the displaced official schema. Keep the existing version rows:
+ * they identify the collision, and the title migration now at 0032 recognizes
+ * and preserves the already-added column.
+ */
+function repairPreRenumberedWindowTitleSchema(
+  db: Database.Database,
+  migrationsDir: string
+): void {
+  const version29Applied = db
+    .prepare("SELECT 1 FROM schema_migrations WHERE version = 29")
+    .get() !== undefined;
+  const importRecoveryPresent =
+    tableExists(db, "pwrsnap_import_intents") &&
+    tableExists(db, "capture_bundle_carriers");
+
+  if (version29Applied && !importRecoveryPresent) {
+    const hadWindowTitleColumn = tableHasColumn(
+      db,
+      "captures",
+      "source_window_title"
+    );
+    log.warn("repairing displaced migration 0029 schema", {
+      hadWindowTitleColumn
+    });
+    const sql = readFileSync(join(migrationsDir, IMPORT_RECOVERY_MIGRATION), "utf8");
+    db.transaction(() => db.exec(sql))();
+  }
+
+  // The title migration was subsequently published as version 31 before main
+  // claimed that number for carrier repack state. A database that ran that
+  // branch head has the title column and a version-31 row, but lacks main's
+  // two carrier columns. Replay the displaced official migration now; 0032
+  // will recognize the existing title column below.
+  const version31Applied = db
+    .prepare("SELECT 1 FROM schema_migrations WHERE version = 31")
+    .get() !== undefined;
+  const repackStatePresent =
+    tableHasColumn(db, "capture_bundle_carriers", "full_tags_json") &&
+    tableHasColumn(db, "capture_bundle_carriers", "layer_order_json");
+  if (
+    version31Applied &&
+    tableExists(db, "capture_bundle_carriers") &&
+    !repackStatePresent
+  ) {
+    log.warn("repairing displaced migration 0031 schema");
+    const repackSql = readFileSync(
+      join(migrationsDir, BUNDLE_REPACK_STATE_MIGRATION),
+      "utf8"
+    );
+    db.transaction(() => db.exec(repackSql))();
+  }
+}
+
+function migrationSqlForDatabase(
+  db: Database.Database,
+  file: string,
+  sql: string
+): string {
+  if (
+    file !== WINDOW_TITLE_MIGRATION ||
+    !tableHasColumn(db, "captures", "source_window_title")
+  ) {
+    return sql;
+  }
+
+  if (!sql.includes(WINDOW_TITLE_ALTER)) {
+    throw new Error(
+      `db: ${WINDOW_TITLE_MIGRATION} no longer contains its guarded column addition`
+    );
+  }
+  log.warn("source_window_title already present — applying 0032 search repair only");
+  return sql.replace(WINDOW_TITLE_ALTER, "");
+}
+
+export function runMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
     applied_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`);
-
-  const applied = appliedMigrationVersions(db);
 
   // Migrations live next to the compiled main bundle; electron-vite
   // emits them via a `?asset` import side-effect or — simpler — via
@@ -219,6 +319,8 @@ function runMigrations(db: Database.Database): void {
   // is `out/main` in production, `apps/desktop/src/main` in dev).
   // Both paths reach the migrations dir.
   const migrationsDir = resolveMigrationsDir();
+  repairPreRenumberedWindowTitleSchema(db, migrationsDir);
+  const applied = appliedMigrationVersions(db);
   const files = readdirSync(migrationsDir)
     .filter((name) => /^\d{4}_.+\.sql$/.test(name))
     .sort();
@@ -231,7 +333,11 @@ function runMigrations(db: Database.Database): void {
     if (Number.isNaN(version) || applied.has(version)) continue;
 
     log.info("applying migration", { file, version });
-    const sql = readFileSync(join(migrationsDir, file), "utf8");
+    const sql = migrationSqlForDatabase(
+      db,
+      file,
+      readFileSync(join(migrationsDir, file), "utf8")
+    );
 
     // SQLite's "12-step ALTER TABLE" pattern (recreating a table to
     // change a column constraint) requires foreign_keys=OFF, and that

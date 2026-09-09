@@ -37,6 +37,7 @@ const record: CaptureRecord = {
   sha256: "sha_cap_1",
   source_app_bundle_id: "jp.naver.line.mac",
   source_app_name: "LINE",
+  source_window_title: null,
   edits_version: 0,
   has_alpha: false,
   deleted_at: null
@@ -367,6 +368,42 @@ describe("DetailRail", () => {
       tagEditor?.querySelectorAll(".psl__tag-accepted > span") ?? []
     ).map((node) => node.textContent?.trim());
     expect(editorTagLabels).toEqual(["chat", "pwrsnap", "bot"]);
+  });
+
+  test("shows a non-null source window title exactly in the detail header", async () => {
+    const windowTitle =
+      "プロジェクト計画 🪟 — " + "an-uninterrupted-window-title-segment-".repeat(8);
+    const { el } = await renderDetailRail(enrichment(), undefined, {
+      record: { ...record, source_window_title: windowTitle }
+    });
+
+    const title = el.querySelector<HTMLElement>(
+      '[data-testid="detail-window-title"]'
+    );
+    expect(title?.textContent).toBe(windowTitle);
+    expect(title?.classList.contains("psl__detail-window-title")).toBe(true);
+    expect(title?.getAttribute("dir")).toBe("auto");
+  });
+
+  test("omits the source window title line when the title is null", async () => {
+    const { el } = await renderDetailRail(enrichment());
+
+    expect(
+      el.querySelector('[data-testid="detail-window-title"]')
+    ).toBeNull();
+  });
+
+  test("omits the source window title line for a legacy absent field", async () => {
+    const { el } = await renderDetailRail(enrichment(), undefined, {
+      record: {
+        ...record,
+        source_window_title: undefined as unknown as null
+      }
+    });
+
+    expect(
+      el.querySelector('[data-testid="detail-window-title"]')
+    ).toBeNull();
   });
 
   test("× on an accepted tag chip dispatches library:removeTag with the label", async () => {

@@ -14,14 +14,23 @@ import type { RenderPreset, VideoExportCoordinates, VideoPreset } from "@pwrsnap
 import { bus } from "./command-bus";
 import { getMainLogger } from "./log";
 import { admitHotkeyRecorderDocument } from "./hotkeys/hotkey-recorder-document";
+import { relayCancellationToPeer } from "./process-split/event-relay";
 
 const log = getMainLogger("pwrsnap:ipc");
 
 function ipcCancellationKey(name: string, req: unknown): string | undefined {
-  if (name !== "codex:enrich") return undefined;
-  if (typeof req !== "object" || req === null || !("captureId" in req)) return undefined;
-  const captureId = (req as { captureId?: unknown }).captureId;
-  return typeof captureId === "string" ? captureId : undefined;
+  if (typeof req !== "object" || req === null) return undefined;
+  if (name === "codex:enrich" && "captureId" in req) {
+    const captureId = (req as { captureId?: unknown }).captureId;
+    return typeof captureId === "string" ? captureId : undefined;
+  }
+  if (name === "video:export" && "runId" in req) {
+    const runId = (req as { runId?: unknown }).runId;
+    return typeof runId === "string" && runId.length > 0
+      ? `video-export:${runId}`
+      : undefined;
+  }
+  return undefined;
 }
 
 export function registerIpcDispatcher(): void {
@@ -61,8 +70,26 @@ export function registerIpcDispatcher(): void {
         dispatchOptions.sourceDocumentId = admittedDocumentId;
       }
     }
-    const result = await bus.dispatch(name, req as never, dispatchOptions);
-    return result;
+    const exportCancellationKey =
+      name === "video:export" ? dispatchOptions.cancellationKey : undefined;
+    const cancelExport = (): void => {
+      if (exportCancellationKey === undefined) return;
+      bus.cancel(exportCancellationKey);
+      relayCancellationToPeer(exportCancellationKey);
+    };
+    if (exportCancellationKey !== undefined) {
+      event.sender.once("destroyed", cancelExport);
+    }
+    try {
+      return await bus.dispatch(name, req as never, dispatchOptions);
+    } finally {
+      if (exportCancellationKey !== undefined) {
+        event.sender.removeListener("destroyed", cancelExport);
+        // Run-scoped keys are one-shot. Cancelling after settlement is a
+        // harmless way to discard both local and split-peer controllers.
+        cancelExport();
+      }
+    }
   });
 
   ipcMain.on(IPC_CAPTURE_DRAG_START, (event, req: unknown) => {

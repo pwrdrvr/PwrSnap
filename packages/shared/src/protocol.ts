@@ -86,6 +86,12 @@ export type CaptureRecord = {
   source_app_bundle_id: string | null;
   source_app_name: string | null;
   /**
+   * Normalized title of the exact selected source window. Null for region,
+   * display, and clipboard captures, and when the selected window could not be
+   * resolved safely at capture time.
+   */
+  source_window_title: string | null;
+  /**
    * Monotonic counter, bumped in the same transaction as every
    * edit write (overlay insert for v1; layer insert for v2 — see
    * `insertOverlay` / `rejectOverlay` in persistence/overlays-repo.ts
@@ -364,8 +370,8 @@ export type VideoPreset = "low" | "med" | "high";
  * GIF or MP4 export request. `preset` is required — the caller picks
  * a tier (LMH); the backend never guesses. `range` defaults to the
  * source `defaultRange` when omitted. `audio` is ignored for GIF
- * (always silent) and validated against the source's available
- * tracks for MP4.
+ * (always silent); MP4 defaults to every recorded source track and
+ * validates explicit choices against the source's available tracks.
  */
 export type VideoExportRequest = {
   captureId: string;
@@ -373,6 +379,12 @@ export type VideoExportRequest = {
   preset: VideoPreset;
   range?: VideoRange | undefined;
   audio?: VideoExportAudio | undefined;
+  /**
+   * Renderer-minted identity for one visible export attempt. Progress
+   * events echo this value so retries and concurrent windows cannot
+   * consume one another's updates. Non-UI callers may omit it.
+   */
+  runId?: string | undefined;
 };
 
 export type VideoExportAudio = {
@@ -390,6 +402,48 @@ export type VideoExportResult = {
   heightPx: number;
   fromCache: boolean;
 };
+
+export type VideoExportProgressPhase =
+  | "queued"
+  | "palette"
+  | "encoding"
+  | "finalizing";
+
+type VideoExportProgressIdentity = {
+  runId: string;
+  captureId: string;
+  format: "gif" | "mp4";
+  preset: VideoPreset;
+};
+
+/**
+ * Main → renderer progress for one `video:export` request. `ratio: null`
+ * is deliberately indeterminate: FFmpeg has not exposed a usable output
+ * timestamp yet (notably while the single-process GIF graph builds its
+ * palette). A successful terminal event is the only event allowed to
+ * report 100%.
+ */
+export type VideoExportProgressEvent =
+  | (VideoExportProgressIdentity & {
+      phase: VideoExportProgressPhase;
+      ratio: number | null;
+    })
+  | (VideoExportProgressIdentity & {
+      phase: "done";
+      ratio: 1;
+      outcome: "succeeded";
+    })
+  | (VideoExportProgressIdentity & {
+      phase: "done";
+      ratio: null;
+      outcome: "failed";
+      error: { code: string; message: string };
+    })
+  | (VideoExportProgressIdentity & {
+      phase: "done";
+      ratio: null;
+      outcome: "cancelled";
+    });
 
 /** Per-(format, preset) metric returned by `video:presetMetrics`.
  *  Mirrors `CapturePresetMetric` for images. Estimated values come
@@ -616,9 +670,9 @@ export type CaptureSearchDiscovery = {
  * searches default to newest-first.
  */
 export type CaptureSearchRequest = {
-  /** Free-text query against title / description / OCR / source app
-   *  name via the `capture_search_fts` FTS5 virtual table (migration
-   *  0017). When omitted, the search degenerates to a filter-only
+  /** Free-text query against title / description / OCR / source app name /
+   *  source window title via the `capture_search_fts` FTS5 virtual table
+   *  (migration 0032). When omitted, the search degenerates to a filter-only
    *  scan ordered by `captured_at DESC`. */
   query?: string;
   /** Internal precise source-app filter. PwrSnap's Library/Sizzle code can
@@ -3823,9 +3877,9 @@ export type Commands = {
    *
    * Every filter field is optional; they combine conjunctively. The
    * `query` arg searches an FTS5 virtual table (`capture_search_fts`,
-   * migration 0017) that mirrors `capture_enrichments` and `captures`
-   * — title, description, OCR text, source app name. The returned
-   * `matchSnippet` is the SQLite `snippet()` function output around
+   * migration 0032) that mirrors `capture_enrichments` and `captures`
+   * — title, description, OCR text, source app name, source window title.
+   * The returned `matchSnippet` is the SQLite `snippet()` function output around
    * the FTS hit; it's only non-null when `query` is set.
    *
    * Soft-deleted captures are always excluded.
@@ -4494,12 +4548,18 @@ export type Commands = {
    * Render and return a GIF or MP4 export for the requested range,
    * preset (LMH), and audio tracks. Cached against (captureId,
    * range, format, preset, audio choices) — re-export with the same
-   * args returns instantly. Progress lands on
-   * `EVENT_CHANNELS.renderProgress`.
+   * args returns instantly. When `runId` is present, progress lands on
+   * `EVENT_CHANNELS.renderProgress` scoped to that exact attempt.
    */
   "video:export": {
     req: VideoExportRequest;
     res: VideoExportResult;
+  };
+  /** Cancel one renderer-owned visible export attempt. Shared encodes keep
+   *  running while another drag/window still consumes the same cache key. */
+  "video:cancelExport": {
+    req: { runId: string };
+    res: void;
   };
   /**
    * Per-(format, preset) metrics for a video capture. Mirrors

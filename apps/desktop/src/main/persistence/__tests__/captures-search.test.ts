@@ -76,18 +76,24 @@ function insertCapture(
     kind?: "image" | "video";
     sourceAppBundleId?: string | null;
     sourceAppName?: string | null;
+    sourceWindowTitle?: string | null;
     deletedAt?: string | null;
   }
 ): void {
+  const hasWindowTitleColumn = db
+    .prepare(
+      "SELECT 1 FROM pragma_table_info('captures') WHERE name = 'source_window_title'"
+    )
+    .get() !== undefined;
   db.prepare(
     `INSERT INTO captures (
        id, kind, captured_at,
-       source_app_bundle_id, source_app_name,
+       source_app_bundle_id, source_app_name${hasWindowTitleColumn ? ", source_window_title" : ""},
        legacy_src_path, width_px, height_px, device_pixel_ratio, byte_size,
        sha256, edits_version, deleted_at
      ) VALUES (
        @id, @kind, @captured_at,
-       @bundle, @name,
+       @bundle, @name${hasWindowTitleColumn ? ", @window_title" : ""},
        @path, 1920, 1080, 2.0, 1024,
        @sha256, 0, @deleted_at
      )`
@@ -97,6 +103,7 @@ function insertCapture(
     captured_at: args.capturedAt ?? "2026-05-27T12:00:00.000Z",
     bundle: args.sourceAppBundleId ?? null,
     name: args.sourceAppName ?? null,
+    ...(hasWindowTitleColumn ? { window_title: args.sourceWindowTitle ?? null } : {}),
     path: `/tmp/captures/${args.id}.png`,
     sha256: `sha-${args.id}`,
     deleted_at: args.deletedAt ?? null
@@ -178,6 +185,21 @@ describe("0017_capture_search_fts — migration shape", () => {
     expect(row).toBeDefined();
   });
 
+  test("0032 indexes source window titles alongside existing search fields", () => {
+    const columns = mocks.db!
+      .prepare("PRAGMA table_info(capture_search_fts)")
+      .all() as Array<{ name: string }>;
+    expect(columns.map((column) => column.name)).toEqual([
+      "capture_id",
+      "title",
+      "description",
+      "ocr_text",
+      "source_app_name",
+      "source_window_title",
+      "accepted_tags"
+    ]);
+  });
+
   test("creates the captures + capture_enrichments sync triggers", () => {
     const triggers = mocks.db!
       .prepare("SELECT name FROM sqlite_master WHERE type='trigger' ORDER BY name")
@@ -230,18 +252,25 @@ describe("0017_capture_search_fts — migration shape", () => {
 // ────────────────────────────────────────────────────────────────────
 // Trigger behaviors — index stays in sync with source-table edits.
 describe("0017_capture_search_fts — trigger sync", () => {
-  test("captures INSERT seeds FTS5 row with source_app_name", () => {
+  test("captures INSERT seeds FTS5 row with source app and window metadata", () => {
     insertCapture(mocks.db!, {
       id: "cap-1",
-      sourceAppName: "Telegram"
+      sourceAppName: "Telegram",
+      sourceWindowTitle: "Release planning — Telegram"
     });
     const row = mocks.db!
       .prepare(
-        "SELECT capture_id, source_app_name FROM capture_search_fts WHERE capture_id = ?"
+        `SELECT capture_id, source_app_name, source_window_title
+           FROM capture_search_fts WHERE capture_id = ?`
       )
-      .get("cap-1") as { capture_id: string; source_app_name: string };
+      .get("cap-1") as {
+      capture_id: string;
+      source_app_name: string;
+      source_window_title: string;
+    };
     expect(row.capture_id).toBe("cap-1");
     expect(row.source_app_name).toBe("Telegram");
+    expect(row.source_window_title).toBe("Release planning — Telegram");
   });
 
   test("capture_enrichments INSERT fills in title / description / ocr_text", () => {
@@ -268,8 +297,12 @@ describe("0017_capture_search_fts — trigger sync", () => {
     expect(row.source_app_name).toBe("Notion");
   });
 
-  test("captures UPDATE of source_app_name propagates to FTS5 + preserves AI fields", () => {
-    insertCapture(mocks.db!, { id: "cap-3", sourceAppName: "Discord" });
+  test("capture source metadata updates propagate to FTS5 + preserve AI fields", () => {
+    insertCapture(mocks.db!, {
+      id: "cap-3",
+      sourceAppName: "Discord",
+      sourceWindowTitle: "General — Discord"
+    });
     // Populate the AI-derived columns BEFORE the source_app_name
     // update so we can assert they survive. A regression that
     // wrote all four FTS5 columns instead of just source_app_name
@@ -282,21 +315,26 @@ describe("0017_capture_search_fts — trigger sync", () => {
     });
 
     mocks.db!
-      .prepare("UPDATE captures SET source_app_name = ? WHERE id = ?")
-      .run("Slack", "cap-3");
+      .prepare(
+        "UPDATE captures SET source_app_name = ?, source_window_title = ? WHERE id = ?"
+      )
+      .run("Slack", "Launch plan — Slack", "cap-3");
 
     const row = mocks.db!
       .prepare(
-        "SELECT title, description, ocr_text, source_app_name FROM capture_search_fts WHERE capture_id = ?"
+        `SELECT title, description, ocr_text, source_app_name, source_window_title
+           FROM capture_search_fts WHERE capture_id = ?`
       )
       .get("cap-3") as {
       title: string;
       description: string;
       ocr_text: string;
       source_app_name: string;
+      source_window_title: string;
     };
     // source_app_name updated.
     expect(row.source_app_name).toBe("Slack");
+    expect(row.source_window_title).toBe("Launch plan — Slack");
     // AI-derived columns preserved.
     expect(row.title).toBe("Voice channel UI");
     expect(row.description).toBe("Discord voice channel screen");
@@ -360,6 +398,24 @@ describe("0017_capture_search_fts — trigger sync", () => {
 // ────────────────────────────────────────────────────────────────────
 // searchCaptures — query plan #1: FTS5 path.
 describe("searchCaptures — FTS5 query path", () => {
+  test("finds a capture by its Unicode source window title", async () => {
+    const { searchCaptures } = await import("../captures-repo");
+    insertCapture(mocks.db!, {
+      id: "window-title-hit",
+      sourceAppName: "Editor",
+      sourceWindowTitle: "Quarterly Résumé — 東京"
+    });
+    insertCapture(mocks.db!, {
+      id: "window-title-miss",
+      sourceAppName: "Editor",
+      sourceWindowTitle: null
+    });
+
+    const rows = searchCaptures({ query: "resume" });
+    expect(rows.map((row) => row.record.id)).toEqual(["window-title-hit"]);
+    expect(rows[0]?.record.source_window_title).toBe("Quarterly Résumé — 東京");
+  });
+
   test("returns hits matching the query, ordered by FTS5 rank", async () => {
     const { searchCaptures } = await import("../captures-repo");
     insertCapture(mocks.db!, { id: "cap-a", sourceAppName: "Telegram" });

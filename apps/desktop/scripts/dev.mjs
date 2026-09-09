@@ -393,6 +393,22 @@ export function ensureElectronInstalled(
   return 0;
 }
 
+// FFmpeg is optional for app startup, even though recording/export needs it.
+export function configureDevFfmpeg(env, provision = ensureWindowsDevFfmpeg, logger = console) {
+  try {
+    const ffmpeg = provision(env);
+    if (ffmpeg !== null) {
+      env.PWRSNAP_FFMPEG_PATH = ffmpeg.path;
+      logger.log(`[dev] using controlled Windows FFmpeg (${ffmpeg.source}): ${ffmpeg.path}`);
+    }
+  } catch (cause) {
+    logger.warn(`[dev] ${cause instanceof Error ? cause.message : String(cause)}`);
+    logger.warn(
+      "[dev] Continuing app startup without provisioned FFmpeg. Recording and media export may be unavailable. Fix the FFmpeg setup above and restart to retry."
+    );
+  }
+}
+
 export async function main(argv = process.argv.slice(2), inputEnv = process.env) {
   const nodeCheck = checkNodeVersion(process.version, readExpectedNodeVersion());
   if (!nodeCheck.ok) {
@@ -408,16 +424,7 @@ export async function main(argv = process.argv.slice(2), inputEnv = process.env)
     console.warn(`[dev] scrubbed inherited launch env: ${removed.join(", ")}`);
   }
 
-  try {
-    const ffmpeg = ensureWindowsDevFfmpeg(env);
-    if (ffmpeg !== null) {
-      env.PWRSNAP_FFMPEG_PATH = ffmpeg.path;
-      console.log(`[dev] using controlled Windows FFmpeg (${ffmpeg.source}): ${ffmpeg.path}`);
-    }
-  } catch (cause) {
-    console.error(`[dev] ${cause instanceof Error ? cause.message : String(cause)}`);
-    return 1;
-  }
+  configureDevFfmpeg(env);
 
   const electronStatus = ensureElectronInstalled(env);
   if (electronStatus !== 0) return electronStatus;

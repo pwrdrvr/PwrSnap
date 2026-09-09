@@ -9,6 +9,8 @@ const sharp = require("sharp");
 const { readFile } = require("node:fs/promises");
 const { performance } = require("node:perf_hooks");
 
+const roundMs = (value) => Math.round(value * 100) / 100;
+
 function options(args) {
   const result = { iterations: 5 };
   while (args.length) {
@@ -131,8 +133,9 @@ async function run() {
           && actual.info.height === reference.info.height && actual.data.equals(reference.data);
         allEqual &&= pixelsEqual;
         if (iteration >= 0) console.log(JSON.stringify({ event: "sample", fixture: name,
-          iteration, encoder, width, height, byteSize: png.length, totalMs,
-          syncMs, bitmapMs, swizzleMs, pixelsEqual }));
+          iteration, encoder, width, height, byteSize: png.length,
+          totalMs: roundMs(totalMs), syncMs: roundMs(syncMs),
+          bitmapMs: roundMs(bitmapMs), swizzleMs: roundMs(swizzleMs), pixelsEqual }));
       }
     }
   }

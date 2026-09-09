@@ -156,3 +156,47 @@ level 6 brought UI/gradient sizes near native (24,821 / 21,911 bytes),
 but cost 54.21 / 53.27 ms compared with the same run's native 59.29 /
 58.64 ms. This makes filtering a measured CPU/size tradeoff, not a free
 improvement. Repeat these variants on Windows before selecting settings.
+
+## Expanded Windows results: prefer RGB level 1 for the next hotkey trial
+
+The operator repeated the expanded probe on Windows x64 with the same
+Electron/Sharp versions, ten samples for each of eight encoders and three
+fixtures. All 240 measured pixel comparisons passed. Compare variants
+within this run; the native baseline was slightly faster than in the first
+Windows run.
+
+| Fixture | Native total / sync ms | RGB 1 total / sync ms | RGB 6 total / sync ms |
+|---|---:|---:|---:|
+| Synthetic UI | 203.90 / 203.90 | 42.79 / 23.62 | 44.49 / 23.89 |
+| Gradient | 204.78 / 204.78 | 45.00 / 23.83 | 44.73 / 24.13 |
+| Noise | 749.45 / 749.45 | 221.93 / 22.97 | 422.18 / 23.25 |
+
+RGB level 1 with adaptive filtering off is the preferred candidate for
+the latency-sensitive frozen snapshot. It reduces encoder time by about
+79% for UI, 78% for gradient and 70% for noise, and main-thread synchronous
+work by about 88%, 88% and 97% respectively. Compared with RGB level 6,
+it gives up little or no time on UI/gradient and saves 200.25 ms on noise.
+Its noise PNG is only about 5% larger than native. The price is larger
+simple-screen files:
+
+| Fixture | Native bytes | RGB 1 bytes | RGB 6 bytes |
+|---|---:|---:|---:|
+| Synthetic UI | 23,119 | 259,974 | 96,334 |
+| Gradient | 21,314 | 1,075,038 | 259,561 |
+| Noise | 16,892,933 | 17,785,478 | 16,870,748 |
+
+Adaptive filtering costs about 85–88 ms extra on UI/gradient. Although RGB
+level 6 with filtering approaches native file sizes, its 130 ms encoder
+latency is a poor tradeoff for the immediate selector compared with 43–45
+ms without filtering. Level 0 remains an unsuitable universal choice due
+to its 22.5 MB output even for the synthetic UI.
+
+These results justify moving to a real-capture A/B trial with RGB level 1,
+not another synthetic compression sweep. Preserve the native fallback for
+unsupported bitmap/color/alpha cases, keep full-resolution lossless pixels,
+and measure the existing hotkey-to-presentation stages to include file I/O,
+protocol delivery and decode. Approximately 18 ms of the remaining 23 ms
+sync cost is the bitmap alpha-check/channel-swap loop, a secondary target
+after end-to-end validation. The benchmark itself still does not change
+production capture behavior or prove fidelity for arbitrary display color
+spaces; the current PR remains diagnostic apart from directory-handle cleanup.

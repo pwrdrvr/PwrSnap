@@ -141,7 +141,7 @@ jobs:
 
       # electron-builder compiles build/icon.icon with actool 26+. The
       # macos-26 runner's default Xcode matches the AssetCatalogAgent host.
-      # Unlike release.yml this package step also runs build:native. See
+      # Native helpers were built during stage preparation above. See
       # AGENTS.md "macOS app icon".
       - name: Verify the macOS 26 runner actool
         id: xcode

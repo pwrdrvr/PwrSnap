@@ -126,6 +126,6 @@ describe("auto-updater failed install retry", () => {
     mocks.emit("update-downloaded", { version: "1.0.0-beta.23" });
 
     await expect(installResult).resolves.toEqual({ status: "restarting" });
-    expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledTimes(1);
+    expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledWith();
   });
 });

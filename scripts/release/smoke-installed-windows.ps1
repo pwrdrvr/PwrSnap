@@ -1,0 +1,940 @@
+<#
+.SYNOPSIS
+Installs and launches one Windows NSIS artifact, validates the app-owned
+packaged-readiness report, then uninstalls it.
+
+.DESCRIPTION
+This is the shared preview/release controller contract. The caller supplies an
+exact installer path and, for a signed lane, the expected Authenticode
+publisher. The controller owns every temporary install/profile/data path under
+a new RUNNER_TEMP GUID, sets the app's private smoke environment, launches the
+installed PwrSnap.exe, and exits 0 only after the fixed
+<userData>/packaged-windows-smoke.json report proves causal readiness and the
+application exits cleanly. It always attempts silent uninstall and preserves
+only bounded failure diagnostics under
+RUNNER_TEMP/pwrsnap-windows-smoke-diagnostics-*.
+
+.PARAMETER InstallerPath
+Exact NSIS setup executable to install and launch.
+
+.PARAMETER ExpectedPublisher
+Optional certificate Common Name. When set, the installed PwrSnap.exe must
+have a valid Authenticode signature from this publisher before launch.
+
+.PARAMETER RequireBundledFfmpeg
+Require the signed-release-only PwrSnapFFmpeg.exe payload to execute a real
+PNG decode. Preview installers omit controlled FFmpeg and leave this unset.
+
+.PARAMETER LaunchTimeoutSeconds
+Combined bound for packaged readiness plus graceful application exit.
+#>
+[CmdletBinding()]
+param(
+  [Parameter(Mandatory = $true)]
+  [string]$InstallerPath,
+
+  [string]$ExpectedPublisher = "",
+
+  [switch]$RequireBundledFfmpeg,
+
+  [ValidateRange(15, 180)]
+  [int]$LaunchTimeoutSeconds = 90
+)
+
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+
+if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+  throw "RUNNER_TEMP must be set; the installed-app smoke never uses a user profile for temporary state."
+}
+
+$installer = (Resolve-Path -LiteralPath $InstallerPath).Path
+$runnerTemp = (Resolve-Path -LiteralPath $env:RUNNER_TEMP).Path
+$smokeId = [Guid]::NewGuid().ToString("N")
+$smokeRoot = Join-Path $runnerTemp "pwrsnap-windows-smoke-$smokeId"
+$diagnosticsRoot = Join-Path $runnerTemp "pwrsnap-windows-smoke-diagnostics-$smokeId"
+$installDir = Join-Path $smokeRoot "install"
+$userData = Join-Path $smokeRoot "user-data"
+$dataRoot = Join-Path $smokeRoot "data-root"
+$profileRoot = Join-Path $smokeRoot "profile"
+$appData = Join-Path $profileRoot "AppData/Roaming"
+$localAppData = Join-Path $profileRoot "AppData/Local"
+$tempDir = Join-Path $smokeRoot "temp"
+$stdoutPath = Join-Path $smokeRoot "stdout.log"
+$stderrPath = Join-Path $smokeRoot "stderr.log"
+$reportPath = Join-Path $userData "packaged-windows-smoke.json"
+$installedExe = Join-Path $installDir "PwrSnap.exe"
+$installedResources = Join-Path $installDir "resources"
+$installedWindowListExe = Join-Path $installedResources "PwrSnapWindowList.exe"
+$installedFfmpegExe = Join-Path $installedResources "PwrSnapFFmpeg.exe"
+$databasePath = Join-Path $dataRoot "pwrsnap.db"
+$defaultAppDataRoot = Join-Path $appData "PwrSnap"
+$defaultAppDataSentinelPath = Join-Path $defaultAppDataRoot "default-app-data-uninstall-sentinel"
+$userDataSentinelPath = Join-Path $userData "user-data-uninstall-sentinel"
+$dataRootSentinelPath = Join-Path $dataRoot "data-root-uninstall-sentinel"
+$uninstallSentinelPayload = "pwrsnap-windows-smoke-$smokeId"
+$pwrSnapProductCode = "c8b3bdba-25e5-5dbd-b016-8e6ce14b4982"
+$pwrSnapFileClass = "PwrSnap Capture Bundle"
+$installerSha256 = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+
+$environmentNames = @(
+  "APPDATA",
+  "LOCALAPPDATA",
+  "USERPROFILE",
+  "HOME",
+  "TEMP",
+  "TMP",
+  "NODE_ENV",
+  "PWRSNAP_E2E",
+  "PWRSNAP_E2E_SKIP_REGION_PREWARM",
+  "PWRSNAP_USER_DATA",
+  "PWRSNAP_DATA_ROOT",
+  "PWRSNAP_PACKAGED_WINDOWS_SMOKE",
+  "PWRSNAP_PACKAGED_WINDOWS_SMOKE_ROOT",
+  "PWRSNAP_PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG",
+  "ELECTRON_RENDERER_URL",
+  "ELECTRON_RUN_AS_NODE",
+  "ELECTRON_OVERRIDE_DIST_PATH",
+  "NODE_OPTIONS",
+  "NODE_PATH",
+  "PWRSNAP_ASAR_MODULE_ROOT"
+)
+$originalEnvironment = @{}
+foreach ($name in $environmentNames) {
+  $originalEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
+}
+
+function Restore-ProcessEnvironment {
+  foreach ($name in $environmentNames) {
+    [Environment]::SetEnvironmentVariable($name, $originalEnvironment[$name], "Process")
+  }
+}
+
+function Assert-UninstallPreservedIsolatedData {
+  param([string]$DatabaseSha256BeforeUninstall)
+
+  foreach ($sentinelPath in @(
+    $defaultAppDataSentinelPath,
+    $userDataSentinelPath,
+    $dataRootSentinelPath
+  )) {
+    if (-not (Test-Path -LiteralPath $sentinelPath -PathType Leaf)) {
+      throw "NSIS uninstall deleted isolated app data sentinel: $sentinelPath."
+    }
+    $sentinelValue = Get-Content -LiteralPath $sentinelPath -Raw -ErrorAction Stop
+    if ($sentinelValue -ne $uninstallSentinelPayload) {
+      throw "NSIS uninstall changed isolated app data sentinel: $sentinelPath."
+    }
+  }
+
+  if (-not (Test-Path -LiteralPath $databasePath -PathType Leaf)) {
+    throw "Uninstall changed or deleted the isolated smoke database: $databasePath."
+  }
+  $databaseSha256AfterUninstall = (
+    Get-FileHash -LiteralPath $databasePath -Algorithm SHA256
+  ).Hash.ToLowerInvariant()
+  if ($databaseSha256AfterUninstall -ne $DatabaseSha256BeforeUninstall) {
+    throw "Uninstall changed or deleted the isolated smoke database: $databasePath."
+  }
+}
+
+function Get-PwrSnapProcesses {
+  # A CIM failure is a safety failure, never evidence that no process exists.
+  return @(Get-CimInstance Win32_Process -Filter "Name = 'PwrSnap.exe'" -ErrorAction Stop)
+}
+
+function Get-PwrSnapRegistryResidue {
+  $exactPaths = @(
+    "HKCU:\Software\$pwrSnapProductCode",
+    "HKCU:\Software\{$pwrSnapProductCode}",
+    "HKLM:\Software\$pwrSnapProductCode",
+    "HKLM:\Software\{$pwrSnapProductCode}",
+    "HKCU:\Software\Classes\.pwrsnap",
+    "HKCU:\Software\Classes\$pwrSnapFileClass",
+    "HKCU:\Software\Classes\Applications\PwrSnap.exe",
+    "HKLM:\Software\Classes\.pwrsnap",
+    "HKLM:\Software\Classes\$pwrSnapFileClass",
+    "HKLM:\Software\Classes\Applications\PwrSnap.exe"
+  )
+  $found = @(
+    $exactPaths | Where-Object { Test-Path -LiteralPath $_ -ErrorAction Stop }
+  )
+
+  $uninstallRoots = @(
+    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall",
+    "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall",
+    "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+  )
+  foreach ($root in $uninstallRoots) {
+    if (-not (Test-Path -LiteralPath $root -ErrorAction Stop)) {
+      continue
+    }
+    foreach ($key in @(Get-ChildItem -LiteralPath $root -ErrorAction Stop)) {
+      $normalizedName = $key.PSChildName.Trim([char[]]"{}").ToLowerInvariant()
+      $properties = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction Stop
+      if (
+        $normalizedName -eq $pwrSnapProductCode -or
+        $properties.DisplayName -like "PwrSnap*"
+      ) {
+        $found += $key.PSPath
+      }
+    }
+  }
+
+  return @($found | Sort-Object -Unique)
+}
+
+function Get-PwrSnapShortcutResidue {
+  $folders = @(
+    [Environment]::GetFolderPath([Environment+SpecialFolder]::Desktop),
+    [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonDesktopDirectory),
+    [Environment]::GetFolderPath([Environment+SpecialFolder]::Programs),
+    [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonPrograms)
+  ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+  $candidates = foreach ($folder in $folders) {
+    Join-Path $folder "PwrSnap.lnk"
+    Join-Path $folder "PwrSnap\PwrSnap.lnk"
+  }
+  return @($candidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+}
+
+function Assert-NoExistingPwrSnapInstallation {
+  $processes = @(Get-PwrSnapProcesses)
+  $registry = @(Get-PwrSnapRegistryResidue)
+  $shortcuts = @(Get-PwrSnapShortcutResidue)
+  $defaultInstallPaths = @(
+    (Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) "Programs\PwrSnap")
+    (Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)) "PwrSnap")
+  ) | Where-Object { Test-Path -LiteralPath $_ }
+  if (
+    $processes.Count -ne 0 -or
+    $registry.Count -ne 0 -or
+    $shortcuts.Count -ne 0 -or
+    $defaultInstallPaths.Count -ne 0
+  ) {
+    throw (
+      "Refusing to run the production-identity installer smoke over an existing PwrSnap " +
+      "installation (processes=$($processes.Count), registry=$($registry.Count), " +
+      "shortcuts=$($shortcuts.Count), installPaths=$($defaultInstallPaths.Count))."
+    )
+  }
+}
+
+function Remove-SmokeOwnedFileAssociationRemainder {
+  $extensionPath = "HKCU:\Software\Classes\.pwrsnap"
+  if (-not (Test-Path -LiteralPath $extensionPath -ErrorAction Stop)) {
+    return
+  }
+
+  # NSIS can return from its launcher before the temporary uninstaller has
+  # deleted the PwrSnap OpenWithProgids value. Wait for that owned value to
+  # disappear; never erase it on NSIS's behalf, because that would hide an
+  # uninstaller regression. The extension root itself is deliberately left.
+  # The preflight above proved that this key did not exist before the smoke.
+  # Delete it only when it has the exact inert shape created by this installer;
+  # any foreign value or subkey is user state and must make cleanup fail closed.
+  $extensionKey = Get-Item -LiteralPath $extensionPath -ErrorAction Stop
+  $valueNames = @($extensionKey.GetValueNames())
+  $subkeyNames = @($extensionKey.GetSubKeyNames())
+  $hasExpectedDefault = (
+    $valueNames.Count -eq 1 -and
+    $valueNames[0] -eq "" -and
+    $extensionKey.GetValue("") -eq $pwrSnapFileClass
+  )
+  $hasOnlyExpectedSubkey = (
+    $subkeyNames.Count -eq 0 -or
+    ($subkeyNames.Count -eq 1 -and $subkeyNames[0] -eq "OpenWithProgids")
+  )
+  if (-not $hasExpectedDefault -or -not $hasOnlyExpectedSubkey) {
+    throw "Refusing to remove unexpected .pwrsnap registry state after uninstall."
+  }
+
+  $openWithPath = Join-Path $extensionPath "OpenWithProgids"
+  $openWithDeadline = [DateTime]::UtcNow.AddSeconds(20)
+  while (Test-Path -LiteralPath $openWithPath -ErrorAction Stop) {
+    $openWithKey = Get-Item -LiteralPath $openWithPath -ErrorAction Stop
+    $openWithValueNames = @($openWithKey.GetValueNames())
+    $openWithSubkeyNames = @($openWithKey.GetSubKeyNames())
+    if ($openWithValueNames.Count -eq 0 -and $openWithSubkeyNames.Count -eq 0) {
+      break
+    }
+    $hasOnlyPendingPwrSnapValue = (
+      $openWithValueNames.Count -eq 1 -and
+      $openWithValueNames[0] -eq $pwrSnapFileClass -and
+      [string]::IsNullOrEmpty([string]$openWithKey.GetValue($pwrSnapFileClass)) -and
+      $openWithSubkeyNames.Count -eq 0
+    )
+    if (-not $hasOnlyPendingPwrSnapValue) {
+      throw "Refusing to remove unexpected .pwrsnap OpenWithProgids state after uninstall."
+    }
+    if ([DateTime]::UtcNow -ge $openWithDeadline) {
+      throw "NSIS uninstall did not remove its .pwrsnap OpenWithProgids value within 20 seconds."
+    }
+    Start-Sleep -Milliseconds 250
+  }
+
+  Remove-Item -LiteralPath $extensionPath -Recurse -Force -ErrorAction Stop
+}
+
+function Stop-ProcessTree {
+  param([System.Diagnostics.Process]$Process)
+
+  if ($null -eq $Process -or $Process.HasExited) {
+    return
+  }
+  & taskkill.exe /PID $Process.Id /T /F 2>&1 | Out-Null
+}
+
+function Wait-ForProcessExit {
+  param(
+    [System.Diagnostics.Process]$Process,
+    [int]$TimeoutSeconds,
+    [string]$Label
+  )
+
+  if (-not $Process.WaitForExit($TimeoutSeconds * 1000)) {
+    Stop-ProcessTree -Process $Process
+    throw "$Label timed out after $TimeoutSeconds seconds."
+  }
+  return $Process.ExitCode
+}
+
+function Assert-SamePath {
+  param(
+    [string]$Actual,
+    [string]$Expected,
+    [string]$Label
+  )
+
+  $actualPath = [IO.Path]::GetFullPath($Actual).TrimEnd("\")
+  $expectedPath = [IO.Path]::GetFullPath($Expected).TrimEnd("\")
+  if (-not $actualPath.Equals($expectedPath, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "$Label mismatch: expected $expectedPath, got $actualPath."
+  }
+}
+
+function Assert-PathWithin {
+  param(
+    [string]$Actual,
+    [string]$Root,
+    [string]$Label
+  )
+
+  $rootPath = [IO.Path]::GetFullPath($Root).TrimEnd("\") + "\"
+  $actualPath = [IO.Path]::GetFullPath($Actual)
+  if (-not $actualPath.StartsWith($rootPath, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "$Label escaped the isolated smoke root: $actualPath."
+  }
+}
+
+function Copy-BoundedTextTail {
+  param(
+    [string]$Source,
+    [string]$Destination,
+    [int]$MaxLines = 200,
+    [int]$MaxChars = 65536
+  )
+
+  if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
+    return
+  }
+  $lines = @(Get-Content -LiteralPath $Source -Tail $MaxLines -ErrorAction SilentlyContinue)
+  $text = $lines -join "`n"
+  if ($text.Length -gt $MaxChars) {
+    $text = $text.Substring($text.Length - $MaxChars)
+  }
+  [IO.File]::WriteAllText($Destination, $text + "`n", [Text.UTF8Encoding]::new($false))
+}
+
+function Write-FailureDiagnostics {
+  param([string]$FailureMessage)
+
+  New-Item -ItemType Directory -Path $diagnosticsRoot -Force | Out-Null
+  $boundedMessage = if ($FailureMessage.Length -gt 4096) {
+    $FailureMessage.Substring(0, 4096)
+  } else {
+    $FailureMessage
+  }
+  [IO.File]::WriteAllText(
+    (Join-Path $diagnosticsRoot "failure.txt"),
+    $boundedMessage + "`n",
+    [Text.UTF8Encoding]::new($false)
+  )
+  Copy-BoundedTextTail -Source $stdoutPath -Destination (Join-Path $diagnosticsRoot "stdout-tail.log")
+  Copy-BoundedTextTail -Source $stderrPath -Destination (Join-Path $diagnosticsRoot "stderr-tail.log")
+  Copy-BoundedTextTail -Source $reportPath -Destination (Join-Path $diagnosticsRoot "report-tail.json")
+
+  $logRoots = @($userData, $appData) | Where-Object { Test-Path -LiteralPath $_ -PathType Container }
+  $logIndex = 0
+  foreach ($logFile in @(
+    Get-ChildItem -LiteralPath $logRoots -Recurse -File -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -in @("main.log", "library.log") } |
+      Select-Object -First 8
+  )) {
+    $logIndex += 1
+    Copy-BoundedTextTail `
+      -Source $logFile.FullName `
+      -Destination (Join-Path $diagnosticsRoot "app-log-$logIndex-$($logFile.Name)")
+  }
+  Write-Host "Packaged Windows smoke diagnostics: $diagnosticsRoot"
+}
+
+function Assert-ValidSignature {
+  param(
+    [string]$Path,
+    [string]$Publisher,
+    [string]$Label = "Windows executable"
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Publisher)) {
+    return
+  }
+  $signature = Get-AuthenticodeSignature -LiteralPath $Path
+  if ($signature.Status -ne "Valid") {
+    throw "$Label Authenticode status is $($signature.Status)."
+  }
+  $publisherPattern = "(^|,\s*)CN=$([Regex]::Escape($Publisher))(,|$)"
+  if ($signature.SignerCertificate.Subject -notmatch $publisherPattern) {
+    throw "$Label has unexpected signer: $($signature.SignerCertificate.Subject)."
+  }
+}
+
+function Assert-ReportedSha256 {
+  param(
+    [string]$Path,
+    [string]$ReportedSha256,
+    [string]$Label
+  )
+
+  if ($ReportedSha256 -notmatch '^[0-9a-f]{64}$') {
+    throw "$Label report has an invalid SHA-256 value."
+  }
+  $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($actual -ne $ReportedSha256) {
+    throw "$Label report SHA-256 does not match installed bytes."
+  }
+}
+
+function Assert-InstalledResource {
+  param(
+    [string]$Path,
+    [string]$Label,
+    [switch]$RequireLeaf
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Path)) {
+    throw "$Label path is missing from the packaged smoke report."
+  }
+  Assert-PathWithin -Actual $Path -Root $installedResources -Label $Label
+  if ($RequireLeaf -and -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    throw "$Label is missing from installed resources: $Path."
+  }
+}
+
+function Assert-ReadyReport {
+  param([object]$Report)
+
+  if ($Report.schemaVersion -ne 1 -or $Report.status -ne "ready") {
+    throw "Packaged smoke report was not ready (schema=$($Report.schemaVersion), status=$($Report.status))."
+  }
+  if (
+    $Report.app.name -ne "PwrSnap" -or
+    $Report.app.isPackaged -ne $true -or
+    $Report.app.platform -ne "win32" -or
+    $Report.app.arch -ne "x64" -or
+    [string]::IsNullOrWhiteSpace($Report.app.version) -or
+    [string]::IsNullOrWhiteSpace($Report.app.electronVersion)
+  ) {
+    throw "Packaged smoke report has invalid application identity."
+  }
+  Assert-SamePath -Actual $Report.app.execPath -Expected $installedExe -Label "process.execPath"
+
+  Assert-SamePath -Actual $Report.isolation.smokeRoot -Expected $smokeRoot -Label "smoke root"
+  Assert-SamePath -Actual $Report.isolation.userData -Expected $userData -Label "userData"
+  Assert-SamePath -Actual $Report.isolation.dataRoot -Expected $dataRoot -Label "data root"
+  Assert-SamePath -Actual $Report.isolation.reportPath -Expected $reportPath -Label "report path"
+  Assert-PathWithin -Actual $Report.isolation.documents -Root $userData -Label "documents"
+  Assert-PathWithin -Actual $Report.isolation.appData -Root $smokeRoot -Label "Electron appData"
+  Assert-PathWithin -Actual $Report.isolation.sessionData -Root $smokeRoot -Label "Electron sessionData"
+  Assert-PathWithin -Actual $Report.isolation.logs -Root $smokeRoot -Label "Electron logs"
+  Assert-PathWithin -Actual $Report.isolation.crashDumps -Root $smokeRoot -Label "Electron crashDumps"
+  Assert-PathWithin -Actual $Report.isolation.temp -Root $smokeRoot -Label "Electron temp"
+  Assert-PathWithin -Actual $Report.isolation.mainLogPath -Root $smokeRoot -Label "main log"
+  Assert-SamePath `
+    -Actual $Report.isolation.databasePath `
+    -Expected (Join-Path $dataRoot "pwrsnap.db") `
+    -Label "database"
+  Assert-PathWithin -Actual $Report.isolation.capturesRoot -Root $dataRoot -Label "captures"
+  if ($Report.isolation.e2e -ne $true -or $Report.isolation.regionPrewarmSkipped -ne $true) {
+    throw "Packaged smoke did not report the required E2E isolation posture."
+  }
+  foreach ($name in @("APPDATA", "LOCALAPPDATA", "USERPROFILE", "HOME", "TEMP", "TMP")) {
+    $profilePath = $Report.isolation.profileEnvironment.PSObject.Properties[$name].Value
+    Assert-PathWithin -Actual $profilePath -Root $smokeRoot -Label $name
+  }
+
+  if ($Report.main.bootstrapComplete -ne $true) {
+    throw "Main-process bootstrap did not complete."
+  }
+  if (
+    $Report.main.startup.singleInstanceLockAcquired -ne $true -or
+    $Report.main.startup.tray.installed -ne $true -or
+    $Report.main.startup.tray.iconLoaded -ne $true -or
+    $Report.main.startup.tray.popoverPrewarmed -ne $true
+  ) {
+    throw "Packaged startup did not exercise the first-instance lock and tray/icon/prewarm path."
+  }
+  Assert-SamePath `
+    -Actual $Report.main.startup.tray.iconPath `
+    -Expected (Join-Path $installedResources "tray-icon.png") `
+    -Label "loaded tray icon"
+  Assert-InstalledResource `
+    -Path $Report.main.startup.tray.iconPath `
+    -Label "loaded tray icon" `
+    -RequireLeaf
+  if (
+    $Report.main.startup.globalHotkeysSkipped -ne $true -or
+    $Report.main.startup.launchAtLoginSyncSkipped -ne $true -or
+    $Report.main.startup.appUpdaterSkipped -ne $true -or
+    $Report.main.startup.localAgentLifecycleSkipped -ne $true -or
+    $Report.main.startup.startupCodexProbeSkipped -ne $true
+  ) {
+    throw "Packaged startup did not preserve the required host/network safety suppressions."
+  }
+  if (
+    $Report.renderer.readyState -ne "complete" -or
+    $Report.renderer.stage -ne "library" -or
+    $Report.renderer.title -ne "PwrSnap" -or
+    $Report.renderer.rootMounted -ne $true -or
+    $Report.renderer.libraryMounted -ne $true -or
+    $Report.renderer.libraryUiState -ne "ready" -or
+    $Report.renderer.libraryUiTotalLive -ne 0 -or
+    $Report.renderer.brandVisible -ne $true -or
+    $Report.renderer.preloadBridgeReady -ne $true -or
+    $Report.renderer.libraryListOk -ne $true -or
+    $Report.renderer.windowVisible -ne $true -or
+    $Report.renderer.rowCount -ne 0 -or
+    $Report.renderer.totalLive -ne 0 -or
+    $Report.renderer.trashTotal -ne 0
+  ) {
+    throw "Renderer/React/preload/IPC readiness evidence is incomplete."
+  }
+  if (
+    $Report.nativeModules.betterSqlite3.quickCheck -ne "ok" -or
+    [string]::IsNullOrWhiteSpace($Report.nativeModules.betterSqlite3.sqliteVersion)
+  ) {
+    throw "better-sqlite3 native query evidence is incomplete."
+  }
+  Assert-SamePath `
+    -Actual $Report.nativeModules.resourcesPath `
+    -Expected $installedResources `
+    -Label "native module resources"
+  Assert-SamePath `
+    -Actual $Report.nativeModules.betterSqlite3.databasePath `
+    -Expected (Join-Path $dataRoot "pwrsnap.db") `
+    -Label "open SQLite database"
+  Assert-InstalledResource `
+    -Path $Report.nativeModules.betterSqlite3.packagePath `
+    -Label "better-sqlite3 package"
+  Assert-InstalledResource `
+    -Path $Report.nativeModules.betterSqlite3.bindingPath `
+    -Label "better-sqlite3 binding" `
+    -RequireLeaf
+  if (
+    $Report.nativeModules.sharp.format -ne "png" -or
+    $Report.nativeModules.sharp.width -ne 2 -or
+    $Report.nativeModules.sharp.height -ne 2 -or
+    $Report.nativeModules.sharp.channels -ne 4 -or
+    $Report.nativeModules.sharp.encodedBytes -le 0 -or
+    [string]::IsNullOrWhiteSpace($Report.nativeModules.sharp.sharpVersion) -or
+    [string]::IsNullOrWhiteSpace($Report.nativeModules.sharp.vipsVersion)
+  ) {
+    throw "Sharp/libvips encode/decode evidence is incomplete."
+  }
+  Assert-InstalledResource -Path $Report.nativeModules.sharp.packagePath -Label "Sharp package"
+  Assert-InstalledResource `
+    -Path $Report.nativeModules.sharp.platformPackagePath `
+    -Label "Sharp win32 package"
+  Assert-InstalledResource `
+    -Path $Report.nativeModules.sharp.bindingPath `
+    -Label "Sharp binding" `
+    -RequireLeaf
+  $libvipsDllPaths = @($Report.nativeModules.sharp.libvipsDllPaths)
+  if ($libvipsDllPaths.Count -eq 0) {
+    throw "Sharp report did not identify a packaged libvips DLL."
+  }
+  foreach ($dllPath in $libvipsDllPaths) {
+    Assert-InstalledResource -Path $dllPath -Label "Sharp libvips DLL" -RequireLeaf
+  }
+
+  if (
+    $Report.bundledHelpers.windowList.invocation -ne "direct" -or
+    $Report.bundledHelpers.windowList.jsonEnvelope -ne $true -or
+    $Report.bundledHelpers.windowList.ownWindowDetected -ne $true -or
+    $Report.bundledHelpers.windowList.windowCount -lt 1
+  ) {
+    throw "Bundled window-list execution did not enumerate the installed PwrSnap window."
+  }
+  Assert-InstalledResource `
+    -Path $Report.bundledHelpers.windowList.executablePath `
+    -Label "executed window-list helper" `
+    -RequireLeaf
+  Assert-SamePath `
+    -Actual $Report.bundledHelpers.windowList.executablePath `
+    -Expected (Join-Path $installedResources "PwrSnapWindowList.exe") `
+    -Label "executed window-list helper"
+  Assert-ReportedSha256 `
+    -Path $Report.bundledHelpers.windowList.executablePath `
+    -ReportedSha256 $Report.bundledHelpers.windowList.executableSha256 `
+    -Label "executed window-list helper"
+
+  if ($RequireBundledFfmpeg) {
+    if (
+      $Report.bundledHelpers.ffmpeg.required -ne $true -or
+      $Report.bundledHelpers.ffmpeg.present -ne $true -or
+      $Report.bundledHelpers.ffmpeg.executed -ne $true -or
+      $Report.bundledHelpers.ffmpeg.invocation -ne "direct" -or
+      $Report.bundledHelpers.ffmpeg.versionLine -notmatch '^ffmpeg version '
+    ) {
+      throw "Bundled FFmpeg execution evidence is incomplete."
+    }
+    Assert-InstalledResource `
+      -Path $Report.bundledHelpers.ffmpeg.executablePath `
+      -Label "executed FFmpeg helper" `
+      -RequireLeaf
+    Assert-SamePath `
+      -Actual $Report.bundledHelpers.ffmpeg.executablePath `
+      -Expected (Join-Path $installedResources "PwrSnapFFmpeg.exe") `
+      -Label "executed FFmpeg helper"
+    Assert-ReportedSha256 `
+      -Path $Report.bundledHelpers.ffmpeg.executablePath `
+      -ReportedSha256 $Report.bundledHelpers.ffmpeg.executableSha256 `
+      -Label "executed FFmpeg helper"
+    if (
+      (@($Report.bundledHelpers.ffmpeg.capabilities.encoders) -join ",") -ne "png,h264_mf,aac" -or
+      (@($Report.bundledHelpers.ffmpeg.capabilities.decoders) -join ",") -ne "png" -or
+      (@($Report.bundledHelpers.ffmpeg.capabilities.inputDevices) -join ",") -ne "gdigrab" -or
+      $Report.bundledHelpers.ffmpeg.roundTrip.encodedFormat -ne "png" -or
+      $Report.bundledHelpers.ffmpeg.roundTrip.pixelFormat -ne "rgba" -or
+      $Report.bundledHelpers.ffmpeg.roundTrip.width -ne 2 -or
+      $Report.bundledHelpers.ffmpeg.roundTrip.height -ne 2 -or
+      $Report.bundledHelpers.ffmpeg.roundTrip.exactPixels -ne $true
+    ) {
+      throw "Bundled FFmpeg capability/encode/decode evidence is incomplete."
+    }
+  } elseif (
+    $Report.bundledHelpers.ffmpeg.required -ne $false -or
+    $Report.bundledHelpers.ffmpeg.present -ne $false -or
+    $Report.bundledHelpers.ffmpeg.executed -ne $false -or
+    (Test-Path -LiteralPath $installedFfmpegExe)
+  ) {
+    throw "Preview smoke did not explicitly report bundled FFmpeg absent."
+  }
+}
+
+function Get-InstalledPwrSnapProcesses {
+  $installRoot = [IO.Path]::GetFullPath($installDir).TrimEnd("\") + "\"
+  return @(
+    Get-PwrSnapProcesses |
+      Where-Object {
+        -not [string]::IsNullOrWhiteSpace($_.ExecutablePath) -and
+        [IO.Path]::GetFullPath($_.ExecutablePath).StartsWith(
+          $installRoot,
+          [StringComparison]::OrdinalIgnoreCase
+        )
+      }
+  )
+}
+
+# NSIS uses PwrSnap's stable production ProductCode even when /D points at a
+# temporary directory. Never let a developer/self-hosted runner's real install
+# be upgraded and then removed by this smoke.
+Assert-NoExistingPwrSnapInstallation
+
+New-Item -ItemType Directory -Path @(
+  $smokeRoot,
+  $userData,
+  $dataRoot,
+  $profileRoot,
+  $appData,
+  $localAppData,
+  $tempDir
+) -Force | Out-Null
+
+$failureMessage = $null
+$appProcess = $null
+$installAttempted = $false
+$installCompleted = $false
+$uninstallVerified = $false
+$runtimeHandshakePassed = $false
+$databaseSha256BeforeUninstall = $null
+
+try {
+  Write-Host "Installing $installer into isolated path $installDir"
+  $installAttempted = $true
+  $installerProcess = Start-Process `
+    -FilePath $installer `
+    -ArgumentList @("/S", "/D=$installDir") `
+    -PassThru
+  $installerExitCode = Wait-ForProcessExit `
+    -Process $installerProcess `
+    -TimeoutSeconds 120 `
+    -Label "NSIS install"
+  if ($installerExitCode -ne 0) {
+    throw "NSIS installer exited with code $installerExitCode."
+  }
+  $installCompleted = $true
+  if (-not (Test-Path -LiteralPath $installedExe -PathType Leaf)) {
+    throw "Installed NSIS payload is missing $installedExe."
+  }
+  Assert-ValidSignature `
+    -Path $installedExe `
+    -Publisher $ExpectedPublisher `
+    -Label "installed PwrSnap.exe"
+  if (-not (Test-Path -LiteralPath $installedWindowListExe -PathType Leaf)) {
+    throw "Installed NSIS payload is missing $installedWindowListExe."
+  }
+  Assert-ValidSignature `
+    -Path $installedWindowListExe `
+    -Publisher $ExpectedPublisher `
+    -Label "installed PwrSnapWindowList.exe"
+  if ($RequireBundledFfmpeg -and -not (Test-Path -LiteralPath $installedFfmpegExe -PathType Leaf)) {
+    throw "Signed release NSIS payload is missing $installedFfmpegExe."
+  }
+  if (Test-Path -LiteralPath $installedFfmpegExe -PathType Leaf) {
+    Assert-ValidSignature `
+      -Path $installedFfmpegExe `
+      -Publisher $ExpectedPublisher `
+      -Label "installed PwrSnapFFmpeg.exe"
+  }
+
+  [Environment]::SetEnvironmentVariable("APPDATA", $appData, "Process")
+  [Environment]::SetEnvironmentVariable("LOCALAPPDATA", $localAppData, "Process")
+  [Environment]::SetEnvironmentVariable("USERPROFILE", $profileRoot, "Process")
+  [Environment]::SetEnvironmentVariable("HOME", $profileRoot, "Process")
+  [Environment]::SetEnvironmentVariable("TEMP", $tempDir, "Process")
+  [Environment]::SetEnvironmentVariable("TMP", $tempDir, "Process")
+  [Environment]::SetEnvironmentVariable("NODE_ENV", "production", "Process")
+  [Environment]::SetEnvironmentVariable("PWRSNAP_E2E", "1", "Process")
+  [Environment]::SetEnvironmentVariable("PWRSNAP_E2E_SKIP_REGION_PREWARM", "1", "Process")
+  [Environment]::SetEnvironmentVariable("PWRSNAP_USER_DATA", $userData, "Process")
+  [Environment]::SetEnvironmentVariable("PWRSNAP_DATA_ROOT", $dataRoot, "Process")
+  [Environment]::SetEnvironmentVariable("PWRSNAP_PACKAGED_WINDOWS_SMOKE", "1", "Process")
+  [Environment]::SetEnvironmentVariable(
+    "PWRSNAP_PACKAGED_WINDOWS_SMOKE_ROOT",
+    $smokeRoot,
+    "Process"
+  )
+  if ($RequireBundledFfmpeg) {
+    [Environment]::SetEnvironmentVariable(
+      "PWRSNAP_PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG",
+      "1",
+      "Process"
+    )
+  } else {
+    Remove-Item Env:\PWRSNAP_PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG `
+      -ErrorAction SilentlyContinue
+  }
+  foreach ($name in @(
+    "ELECTRON_RENDERER_URL",
+    "ELECTRON_RUN_AS_NODE",
+    "ELECTRON_OVERRIDE_DIST_PATH",
+    "NODE_OPTIONS",
+    "NODE_PATH",
+    "PWRSNAP_ASAR_MODULE_ROOT"
+  )) {
+    [Environment]::SetEnvironmentVariable($name, $null, "Process")
+  }
+
+  Write-Host "Launching installed packaged application: $installedExe"
+  $appProcess = Start-Process `
+    -FilePath $installedExe `
+    -ArgumentList @("--user-data-dir=`"$userData`"") `
+    -WorkingDirectory $installDir `
+    -RedirectStandardOutput $stdoutPath `
+    -RedirectStandardError $stderrPath `
+    -PassThru
+  $appExitCode = Wait-ForProcessExit `
+    -Process $appProcess `
+    -TimeoutSeconds $LaunchTimeoutSeconds `
+    -Label "installed PwrSnap readiness and clean exit"
+  if ($appExitCode -ne 0) {
+    throw "Installed PwrSnap exited with code $appExitCode."
+  }
+  if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) {
+    throw "Installed PwrSnap exited without writing $reportPath."
+  }
+
+  $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json -Depth 20
+  Assert-ReadyReport -Report $report
+
+  $exitDeadline = [DateTime]::UtcNow.AddSeconds(10)
+  do {
+    $remaining = @(Get-InstalledPwrSnapProcesses)
+    if ($remaining.Count -eq 0) {
+      break
+    }
+    Start-Sleep -Milliseconds 250
+  } while ([DateTime]::UtcNow -lt $exitDeadline)
+  if ($remaining.Count -ne 0) {
+    foreach ($processInfo in $remaining) {
+      & taskkill.exe /PID $processInfo.ProcessId /T /F 2>&1 | Out-Null
+    }
+    throw "Installed PwrSnap left $($remaining.Count) process(es) running after app.quit()."
+  }
+  $unexpectedProcesses = @(Get-PwrSnapProcesses)
+  if ($unexpectedProcesses.Count -ne 0) {
+    throw "A PwrSnap process appeared outside the isolated install; it was not touched."
+  }
+
+  if (-not (Test-Path -LiteralPath $databasePath -PathType Leaf)) {
+    throw "Installed PwrSnap did not leave its isolated database at $databasePath."
+  }
+  New-Item -ItemType Directory -Path (Split-Path $defaultAppDataSentinelPath -Parent) -Force |
+    Out-Null
+  foreach ($sentinelPath in @(
+    $defaultAppDataSentinelPath,
+    $userDataSentinelPath,
+    $dataRootSentinelPath
+  )) {
+    Set-Content `
+      -LiteralPath $sentinelPath `
+      -Value $uninstallSentinelPayload `
+      -NoNewline `
+      -Encoding utf8
+  }
+  $databaseSha256BeforeUninstall = (
+    Get-FileHash -LiteralPath $databasePath -Algorithm SHA256
+  ).Hash.ToLowerInvariant()
+  $runtimeHandshakePassed = $true
+
+  Write-Host "Installed PwrSnap runtime handshake passed; verifying NSIS uninstall cleanup."
+} catch {
+  $failureMessage = $_.Exception.Message
+} finally {
+  if ($null -ne $appProcess -and -not $appProcess.HasExited) {
+    Stop-ProcessTree -Process $appProcess
+    if ($null -eq $failureMessage) {
+      $failureMessage = "Installed PwrSnap was still running during smoke cleanup."
+    }
+  }
+
+  try {
+    $uninstallers = if (Test-Path -LiteralPath $installDir -PathType Container) {
+      @(Get-ChildItem -LiteralPath $installDir -Filter "Uninstall*.exe" -File -ErrorAction Stop)
+    } else {
+      @()
+    }
+    if ($installCompleted -and $uninstallers.Count -ne 1) {
+      throw "Expected exactly one NSIS uninstaller; found $($uninstallers.Count)."
+    }
+    if ($uninstallers.Count -eq 1) {
+      $uninstallerProcess = Start-Process `
+        -FilePath $uninstallers[0].FullName `
+        -ArgumentList @("/S") `
+        -PassThru
+      $uninstallerExitCode = Wait-ForProcessExit `
+        -Process $uninstallerProcess `
+        -TimeoutSeconds 120 `
+        -Label "NSIS uninstall"
+      if ($uninstallerExitCode -ne 0) {
+        throw "NSIS uninstaller exited with code $uninstallerExitCode."
+      }
+    }
+
+    if ($installAttempted) {
+      Remove-SmokeOwnedFileAssociationRemainder
+    }
+
+    if ($installAttempted) {
+      $nsisCleanupVerified = $false
+      $uninstallDeadline = [DateTime]::UtcNow.AddSeconds(20)
+      do {
+        $registryResidue = @(Get-PwrSnapRegistryResidue)
+        $shortcutResidue = @(Get-PwrSnapShortcutResidue)
+        $installDirectoryRemains = Test-Path -LiteralPath $installDir
+        if (
+          $registryResidue.Count -eq 0 -and
+          $shortcutResidue.Count -eq 0 -and
+          -not $installDirectoryRemains
+        ) {
+          $nsisCleanupVerified = $true
+          break
+        }
+        Start-Sleep -Milliseconds 250
+      } while ([DateTime]::UtcNow -lt $uninstallDeadline)
+
+      if (-not $nsisCleanupVerified) {
+        throw (
+          "NSIS uninstall left production-identity residue " +
+          "(installDir=$installDirectoryRemains, registry=$($registryResidue.Count), " +
+          "shortcuts=$($shortcutResidue.Count))."
+        )
+      }
+      if ($runtimeHandshakePassed) {
+        Assert-UninstallPreservedIsolatedData `
+          -DatabaseSha256BeforeUninstall $databaseSha256BeforeUninstall
+      }
+      $uninstallVerified = $true
+    } else {
+      $uninstallVerified = $true
+    }
+
+    $installerShaAfterSmoke = (
+      Get-FileHash -LiteralPath $installer -Algorithm SHA256
+    ).Hash.ToLowerInvariant()
+    if ($installerShaAfterSmoke -ne $installerSha256) {
+      throw "Installed-app smoke modified the source installer bytes."
+    }
+  } catch {
+    $cleanupMessage = "cleanup failed: $($_.Exception.Message)"
+    $failureMessage = if ($null -eq $failureMessage) {
+      $cleanupMessage
+    } else {
+      "$failureMessage; $cleanupMessage"
+    }
+  }
+
+  if ($null -ne $failureMessage) {
+    try {
+      Write-FailureDiagnostics -FailureMessage $failureMessage
+    } catch {
+      Write-Warning "Could not write bounded smoke diagnostics: $($_.Exception.Message)"
+    }
+  }
+
+  if ($uninstallVerified) {
+    try {
+      # Exact GUID-owned path under RUNNER_TEMP; never delete a caller-supplied
+      # profile or install directory. Deletion happens only after the NSIS
+      # uninstall itself proved the payload + production registry state gone.
+      Remove-Item -LiteralPath $smokeRoot -Recurse -Force
+    } catch {
+      $cleanupMessage = "temporary smoke root cleanup failed: $($_.Exception.Message)"
+      if ($null -eq $failureMessage) {
+        $failureMessage = $cleanupMessage
+        try {
+          Write-FailureDiagnostics -FailureMessage $failureMessage
+        } catch {
+          Write-Warning "Could not write bounded smoke diagnostics: $($_.Exception.Message)"
+        }
+      } else {
+        $failureMessage = "$failureMessage; $cleanupMessage"
+      }
+    }
+  }
+
+  # Keep APPDATA/LOCALAPPDATA/USERPROFILE/HOME/TEMP/TMP isolated until after
+  # the uninstaller, sentinel verification, diagnostics, and controller-owned
+  # cleanup. A future NSIS config/default drift must never aim cleanup at the
+  # operator or self-hosted runner's real profile.
+  Restore-ProcessEnvironment
+}
+
+if ($null -ne $failureMessage) {
+  throw $failureMessage
+}
+
+$ffmpegSummary = if ($RequireBundledFfmpeg) { " + bundled FFmpeg" } else { "" }
+Write-Host "Installed PwrSnap readiness smoke passed: main + renderer + better-sqlite3 + Sharp/libvips + bundled window-list$ffmpegSummary + clean uninstall."

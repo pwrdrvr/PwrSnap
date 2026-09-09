@@ -5,6 +5,7 @@
 
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { CaptureRecord } from "@pwrsnap/shared";
+import { createCaptureInvocation } from "@pwrsnap/shared";
 import type { WindowInfo } from "../../capture/window-list";
 
 const mocks = vi.hoisted(() => ({
@@ -259,7 +260,7 @@ describe("capture:interactive selected-window title", () => {
 
     const result = await bus.dispatch(
       "capture:interactive",
-      { mode: "window" },
+      { mode: "window", invocation: createCaptureInvocation({ id: "title-live", origin: "global_hotkey.quick_capture", monotonicNow: () => 0 }) },
       { principal: "ipc" }
     );
 
@@ -286,7 +287,7 @@ describe("capture:interactive selected-window title", () => {
 
     const result = await bus.dispatch(
       "capture:interactive",
-      { mode: "window" },
+      { mode: "window", invocation: createCaptureInvocation({ id: "title-missing", origin: "global_hotkey.quick_capture", monotonicNow: () => 0 }) },
       { principal: "ipc" }
     );
 

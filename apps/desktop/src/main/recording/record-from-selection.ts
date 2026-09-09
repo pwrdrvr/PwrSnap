@@ -168,7 +168,9 @@ export async function startRecordingFromSelection(
     //     any visible BrowserWindow (e.g. that window just closed) →
     //     fall through to the previous-app activation; nothing to raise.
     const cachedSnapshot = getLastWindowListSnapshot();
-    const selectedWindow = findWindowById(selection.snappedWindowId, cachedSnapshot);
+    const selectedWindow = selection.snappedWindowId === undefined
+      ? null
+      : findWindowById(cachedSnapshot, selection.snappedWindowId);
     const trustedWindowIdentity = selectedWindow === null
       ? null
       : { windowId: selectedWindow.windowId, pid: selectedWindow.pid };

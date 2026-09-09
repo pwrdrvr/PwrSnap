@@ -1,16 +1,24 @@
 # Changelog
 
-## v1.1.0-alpha.11 - 2026-09-06
+## v1.1.0-beta.1 - 2026-09-09
 
-This alpha makes screen capture and update selection more dependable across
-Windows and prerelease channels.
+This beta adds local agent connections, stronger Windows media workflows, and
+more reliable capture, recording, export, and update flows.
 
-- Windows Capture - Fixed Windows screen capture to bypass a failing DXGI path,
-  reducing acquisition delays and keeping capture responsive when that driver
-  path cannot supply a frame.
-- Updates - Fixed installed builds to follow their own release feed and
-  improved the Updates page to show all Stable/Beta and Latest/Prerelease
-  choices, so switching channels targets the release you expect.
+- Local Agents - Added direct connection flows for Claude Code and Codex to use
+  PwrSnap's local MCP tools through the existing approval window.
+- Windows Media - Fixed image, GIF, and MP4 Copy actions to place usable files
+  on the clipboard, and improved MP4 export with the supported Windows encoder
+  and packaged FFmpeg.
+- Capture Context - Added source window titles to captured images and videos,
+  where they are shown in the Library and Editor and included in search.
+- Video Export - Added live export progress so longer GIF and MP4 renders show
+  their current state instead of appearing stalled.
+- Capture and Recording Reliability - Improved selector responsiveness, stopped
+  repeated hotkeys from starting duplicate captures, and fixed recording
+  restart recovery with direct access to diagnostics.
+- Updates - Added Restart controls for ready updates in the tray and the
+  post-capture toast.
 
 ## v1.1.0-alpha.6 - 2026-09-03
 

@@ -732,6 +732,7 @@ describe("RecordingService.stop source-app metadata → capture row", () => {
     liveTitle?: unknown,
     livePid = 700
   ): Promise<Record<string, unknown>> {
+    const removedDirsBefore = mocks.removedRecordingDirs.length;
     const { __setRecordingServiceForTests, getRecordingService } = await import(
       "../recording-service"
     );
@@ -785,7 +786,9 @@ describe("RecordingService.stop source-app metadata → capture row", () => {
     });
     await vi.advanceTimersByTimeAsync(0);
     await stopPromise;
-    expect(mocks.removedRecordingDirs).toEqual(["/tmp/pwrsnap-recording-fake"]);
+    expect(mocks.removedRecordingDirs.slice(removedDirsBefore)).toEqual([
+      "/tmp/pwrsnap-recording-fake"
+    ]);
 
     // Pull the row that landed on insertCapture. The mock at
     // the top of this file returns a fixed record; we want the

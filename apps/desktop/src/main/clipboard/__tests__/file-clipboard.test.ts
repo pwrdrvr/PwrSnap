@@ -66,20 +66,20 @@ describe("Windows file clipboard helper paths", () => {
 });
 
 describe("native file clipboard contracts", () => {
-  test("macOS requires public.file-url readback before success", () => {
+  test("macOS verifies native URL bytes when Electron enumerates text/uri-list", () => {
     const buffers = new Map<string, Buffer>();
     const api = {
       writeBuffer: (format: string, value: Buffer): void => {
         buffers.clear();
         buffers.set(format, Buffer.from(value));
       },
-      availableFormats: (): string[] => [...buffers.keys()],
+      availableFormats: (): string[] => buffers.has("public.file-url") ? ["text/uri-list"] : [],
       readBuffer: (format: string): Buffer => buffers.get(format) ?? Buffer.alloc(0)
     };
 
     writeMacFileToClipboard("/tmp/PwrSnap roadmap & notes.gif", api);
 
-    expect(api.availableFormats()).toEqual(["public.file-url"]);
+    expect(api.availableFormats()).toEqual(["text/uri-list"]);
     expect(api.readBuffer("public.file-url").toString("utf8")).toBe(
       pathToFileURL("/tmp/PwrSnap roadmap & notes.gif").toString()
     );
@@ -91,6 +91,16 @@ describe("native file clipboard contracts", () => {
         writeBuffer: () => undefined,
         availableFormats: () => [],
         readBuffer: () => Buffer.alloc(0)
+      })
+    ).toThrow("did not retain");
+  });
+
+  test("macOS rejects a different file URL even when text/uri-list is present", () => {
+    expect(() =>
+      writeMacFileToClipboard("/tmp/export.mp4", {
+        writeBuffer: () => undefined,
+        availableFormats: () => ["text/uri-list"],
+        readBuffer: () => Buffer.from(pathToFileURL("/tmp/other.mp4").toString())
       })
     ).toThrow("did not retain");
   });

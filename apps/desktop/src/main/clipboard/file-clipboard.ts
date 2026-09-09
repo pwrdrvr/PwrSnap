@@ -122,9 +122,10 @@ export function writeMacFileToClipboard(
   const expected = Buffer.from(pathToFileURL(filePath).toString(), "utf8");
   clipboardApi.writeBuffer("public.file-url", expected);
 
-  const formats = clipboardApi.availableFormats();
+  // Electron enumerates normalized MIME types (text/uri-list), not necessarily
+  // the native public.file-url UTI. Verify the payload through that UTI directly.
   const actual = clipboardApi.readBuffer("public.file-url");
-  if (!formats.includes("public.file-url") || actual.length === 0 || !actual.equals(expected)) {
+  if (actual.length === 0 || !actual.equals(expected)) {
     throw new Error("macOS clipboard did not retain the exported file URL");
   }
 }

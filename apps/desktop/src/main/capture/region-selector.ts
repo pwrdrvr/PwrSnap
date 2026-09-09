@@ -1674,11 +1674,14 @@ function createSelectorWindow(
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
-      // On macOS this window is intentionally hidden while it warms.
-      // Keep Chromium from throttling that hidden renderer load,
-      // otherwise the first shortcut after launch can still wait on
-      // the prewarm to finish.
-      ...(process.platform === "darwin" ? { backgroundThrottling: false } : {}),
+      // This window is intentionally hidden while it warms and between
+      // captures. Keep Chromium from throttling the dedicated renderer:
+      // otherwise a reused Windows selector can carry hidden-page scheduling
+      // into the post-show two-rAF presentation barrier and add a background
+      // scheduling bucket before the first interactive frame. The tradeoff is
+      // that selector animations are not power-throttled while hidden; keep
+      // recurring work off this renderer unless it is scoped to an active pick.
+      backgroundThrottling: false,
       // The renderer needs the display id baked in so it can post the
       // right value back to main on commit. Pass via a query string.
       additionalArguments: [`--display-id=${display.id}`]

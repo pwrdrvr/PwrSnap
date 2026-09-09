@@ -191,7 +191,8 @@ function electronBitmapPixelFormat(): ElectronBitmapPixelFormat {
   throw new Error("Electron NativeImage bitmap probe was neither RGBA8 nor BGRA8");
 }
 
-/** Windows fast-path source: one raw desktopCapturer bitmap, no PNG encode. */
+/** Windows fast-path source: one raw desktopCapturer bitmap, no PNG encode.
+ * The caller owns the fresh toBitmap() buffer and may normalize it in place. */
 export async function captureDisplayBitmap(
   display: Display,
   latencyTrace?: CaptureLatencyTrace

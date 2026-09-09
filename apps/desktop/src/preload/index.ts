@@ -93,7 +93,7 @@ const REGION_SELECTOR_KEY_CHANNEL = "region-selector:key";
 // 'auto' | 'region' | 'window' before the first paint.
 const REGION_SELECTOR_MODE_CHANNEL = "region-selector:mode";
 // Renderer → main: the selector acks that the frozen snapshot has painted
-// through either the mapped RGBA canvas path or the PNG <img> fallback.
+// through either the raw RGBA canvas path or the PNG <img> fallback.
 // Main waits for this before
 // showing the (still-hidden) selector window, so it never appears as an
 // empty transparent overlay flashing the live screen behind it.
@@ -156,9 +156,9 @@ export type WindowSnapEntry = {
   rawRect: { x: number; y: number; w: number; h: number };
 };
 
-export type SelectorMappedSnapshotDescriptor = {
+export type SelectorRawSnapshotDescriptor = {
   id: string;
-  transport: "windows-shared-memory";
+  transport: "raw-rgba";
   version: 1;
   width: number;
   height: number;
@@ -167,15 +167,15 @@ export type SelectorMappedSnapshotDescriptor = {
   byteLength: number;
 };
 
-type SelectorMappedSnapshotReadResult =
+type SelectorRawSnapshotReadResult =
   | {
       ok: true;
-      header: Omit<SelectorMappedSnapshotDescriptor, "id" | "transport">;
+      header: Omit<SelectorRawSnapshotDescriptor, "id" | "transport">;
       data: Uint8Array;
     }
   | { ok: false; code: string };
 
-function validatedSelectorSnapshotRead(value: unknown): SelectorMappedSnapshotReadResult {
+function validatedSelectorSnapshotRead(value: unknown): SelectorRawSnapshotReadResult {
   if (typeof value !== "object" || value === null) {
     return { ok: false, code: "malformed" };
   }
@@ -314,7 +314,7 @@ const pwrsnapApi = {
    */
   notifySelectorSnapshotPainted(payload: {
     screenUrl: string;
-    transport: "img" | "windows-shared-memory";
+    transport: "img" | "raw-rgba";
     decodeMs: number;
     mainToRendererBytes: number;
     canvasUploadBytes: number;
@@ -323,10 +323,10 @@ const pwrsnapApi = {
   }): void {
     ipcRenderer.send(REGION_SELECTOR_PAINTED_CHANNEL, payload);
   },
-  /** Read one copy of the currently active mapped selector snapshot. Main
-   * authenticates this exact webContents/top-level frame and never exposes the
-   * Win32 mapping name or handle across the context bridge. */
-  async readSelectorSnapshot(id: string): Promise<SelectorMappedSnapshotReadResult> {
+  /** Read one IPC copy of the currently active raw selector snapshot. Main
+   * authenticates this exact webContents/top-level frame. The retained buffer
+   * remains private to main; IPC and contextBridge copy the returned bytes. */
+  async readSelectorSnapshot(id: string): Promise<SelectorRawSnapshotReadResult> {
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) return { ok: false, code: "invalid_id" };
     const value: unknown = await ipcRenderer.invoke(REGION_SELECTOR_SNAPSHOT_READ_CHANNEL, {
       id
@@ -479,7 +479,7 @@ const pwrsnapApi = {
    *   1. Reconfigure between 'auto' (snap + drag), 'region' (drag-
    *      only, no snap candidates), and 'window' (snap-only, no
    *      drag).
-   *   2. Mount the frozen-screen snapshot via mapped RGBA canvas when a
+   *   2. Mount the frozen-screen snapshot via raw RGBA canvas when a
    *      descriptor is present, or `<img src=screenUrl>` otherwise. The renderer paints the
    *      snapshot, the user drags against it, and on commit the
    *      capture handler crops THAT snapshot (not the live screen).
@@ -491,7 +491,7 @@ const pwrsnapApi = {
     handler: (payload: {
       mode: "auto" | "region" | "window";
       screenUrl?: string;
-      snapshot?: SelectorMappedSnapshotDescriptor;
+      snapshot?: SelectorRawSnapshotDescriptor;
       /** Visual intent: `"video"` triggers the "Recording video"
        *  badge + alternate hint copy so the user knows commit
        *  starts a recording instead of taking a snap. Default
@@ -511,7 +511,7 @@ const pwrsnapApi = {
         payload as {
           mode: "auto" | "region" | "window";
           screenUrl?: string;
-          snapshot?: SelectorMappedSnapshotDescriptor;
+          snapshot?: SelectorRawSnapshotDescriptor;
           intent?: "snap" | "video";
           cursor?: boolean;
           invocationId?: string;

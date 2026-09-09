@@ -1,8 +1,32 @@
 # Windows shared-memory selector snapshot
 
-**Status:** implemented behind a Windows-only runtime branch; native runtime
-validation is still required on Windows. macOS and Linux keep the existing PNG
-file transport.
+**Current status (2026-09-09):** the Windows runtime now retains the raw bitmap
+in main (`transport=raw-rgba`). The mapping helper is bypassed. macOS and Linux
+keep the existing PNG file transport. The original mapping design below is
+retained as the record of the experiment, not the current runtime path.
+
+The operator's Windows timings measured roughly 72–85 ms for the helper read,
+140–160 ms for the whole renderer read round trip, and about 3 ms for canvas
+upload once warm. Since capture already originates in main, the mapping added
+a main → helper → mapping → helper → main round trip without eliminating the
+subsequent Electron IPC/contextBridge copies.
+
+The follow-up uses the fresh `NativeImage.toBitmap()` buffer directly. Main
+validates its dimensions, stride, pixel order, and length against the existing
+bounded layout validator, converts BGRA to RGBA and forces opaque alpha once
+in place before registration, then treats it as read-only. Renderer IPC, crop,
+and lazy PNG fallback all consume that same retained generation. Release still
+waits for admitted leases; each new capture owns an independent buffer.
+
+For A/B testing, the native helper source/build packaging remains available but
+is never called by the snapshot registry. Dropping the follow-up commit restores
+the mapping path. No dependency or sandbox change is involved. Logs now report
+`retainedBitmapBytes` and `bitmapNormalizeMs`, with `mappingWriteBytes` and
+`mappingReadBytes` remaining zero. `mainBitmapReadMs` now measures main buffer
+access/lease overhead; `readRoundTripMs` still includes IPC/contextBridge copies
+and scheduling. Normalization runs in main and its cost must be checked on the
+operator's Windows build, especially with large displays. This change has only
+unit/typecheck/build validation on macOS until that A/B run is performed.
 
 ## Problem
 

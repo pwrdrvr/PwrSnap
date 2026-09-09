@@ -693,10 +693,10 @@ describe("region-selector — mapped snapshot IPC boundary", () => {
     screenSnapshotMocks.captureAndRegister.mockResolvedValueOnce({
       id: "mapped-snapshot-1",
       displayId: 1,
-      transport: "windows-shared-memory",
+      transport: "raw-rgba",
       selectorDescriptor: {
         id: "mapped-snapshot-1",
-        transport: "windows-shared-memory",
+        transport: "raw-rgba",
         version: 1,
         width: 2,
         height: 1,
@@ -797,9 +797,9 @@ describe("region-selector — authenticated post-show presentation trace", () =>
       }
     });
     screenSnapshotMocks.captureAndRegister.mockResolvedValueOnce({
-      id: "late-mapped", displayId: 1, transport: "windows-shared-memory",
+      id: "late-mapped", displayId: 1, transport: "raw-rgba",
       selectorDescriptor: {
-        id: "late-mapped", transport: "windows-shared-memory", version: 1,
+        id: "late-mapped", transport: "raw-rgba", version: 1,
         width: 2, height: 1, stride: 8, pixelFormat: 1, byteLength: 8
       }
     });
@@ -818,7 +818,7 @@ describe("region-selector — authenticated post-show presentation trace", () =>
     }, { id: "late-mapped" });
     const painted = ipcListeners.get("region-selector:painted")!;
     const payload = {
-      screenUrl: "pwrsnap-screen://r/late-mapped", transport: "windows-shared-memory",
+      screenUrl: "pwrsnap-screen://r/late-mapped", transport: "raw-rgba",
       decodeMs: 900, readRoundTripMs: 850, canvasUploadMs: 50,
       mainToRendererBytes: 8, canvasUploadBytes: 8
     };
@@ -839,7 +839,7 @@ describe("region-selector — authenticated post-show presentation trace", () =>
     expect(entries.find((entry) => entry.fields.event === "capture_latency_summary")?.fields)
       .toMatchObject({
         snapshotReadiness: {
-          transport: "windows-shared-memory", gateOutcome: "timeout", late: true,
+          transport: "raw-rgba", gateOutcome: "timeout", late: true,
           mainBitmapReadMs: expect.any(Number), mainBitmapReadOutcome: "read",
           readRoundTripMs: 850, canvasUploadMs: 50, rendererReadyMs: 900
         },

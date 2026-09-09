@@ -1,8 +1,7 @@
 // Registry for the per-pickRegion frozen screen. One registry id owns one
 // pixel generation from selector paint through commit crop.
 //
-// Windows prefers a pagefile-backed Win32 mapping. The mapping name and
-// native handle stay behind main; the selector renderer receives only a
+// Windows retains one raw bitmap in main. The selector renderer receives a
 // validated RGBA copy through a purpose-built preload method. macOS/Linux,
 // and any Windows fast-path failure, retain the PNG/temp-file transport.
 
@@ -15,17 +14,13 @@ import { screen } from "electron";
 import { getMainLogger } from "../log";
 import type { CaptureLatencyTrace } from "./capture-latency-trace";
 import { captureDisplayBitmap, captureScreen } from "./screencapture";
-import {
-  createWindowsSharedSnapshot,
-  type WindowsSharedSnapshot
-} from "./windows-shared-snapshot";
-import type { WindowsSnapshotHeader } from "./windows-snapshot-format";
+import { checkedLayout } from "./windows-snapshot-format";
 
 const log = getMainLogger("pwrsnap:screen-snapshot");
 
-export type SelectorMappedSnapshotDescriptor = Readonly<{
+export type SelectorRawSnapshotDescriptor = Readonly<{
   id: string;
-  transport: "windows-shared-memory";
+  transport: "raw-rgba";
   version: 1;
   width: number;
   height: number;
@@ -36,6 +31,8 @@ export type SelectorMappedSnapshotDescriptor = Readonly<{
 
 type SnapshotMetrics = {
   sourceBitmapBytes: number;
+  retainedBitmapBytes: number;
+  bitmapNormalizeMs: number;
   mappingWriteBytes: number;
   mappingReadBytes: number;
   rendererTransferBytes: number;
@@ -63,14 +60,15 @@ type FileEntry = BaseEntry & {
   filePath: string;
 };
 
-type MappedEntry = BaseEntry & {
-  kind: "windows-shared-memory";
-  mapping: WindowsSharedSnapshot;
+type RawEntry = BaseEntry & {
+  kind: "raw-rgba";
+  data: Buffer;
+  header: Omit<SelectorRawSnapshotDescriptor, "id" | "transport">;
   fallbackFilePath: string | null;
   fallbackPromise: Promise<string> | null;
 };
 
-type Entry = FileEntry | MappedEntry;
+type Entry = FileEntry | RawEntry;
 
 const registry = new Map<string, Entry>();
 const releasing = new Map<string, Promise<void>>();
@@ -78,10 +76,12 @@ const releasing = new Map<string, Promise<void>>();
 export type ScreenSnapshot = Readonly<{
   id: string;
   displayId: number;
-  transport: "png-file" | "windows-shared-memory";
-  selectorDescriptor?: SelectorMappedSnapshotDescriptor;
+  transport: "png-file" | "raw-rgba";
+  selectorDescriptor?: SelectorRawSnapshotDescriptor;
   acquisition: Readonly<{
     sourceBitmapBytes: number;
+    retainedBitmapBytes: number;
+    bitmapNormalizeMs: number;
     mappingWriteBytes: number;
     fullScreenPngEncodeCount: number;
     fullScreenPngBytes: number;
@@ -105,6 +105,8 @@ export type SnapshotRasterLease = Readonly<{
 function emptyMetrics(): SnapshotMetrics {
   return {
     sourceBitmapBytes: 0,
+    retainedBitmapBytes: 0,
+    bitmapNormalizeMs: 0,
     mappingWriteBytes: 0,
     mappingReadBytes: 0,
     rendererTransferBytes: 0,
@@ -118,11 +120,11 @@ function emptyMetrics(): SnapshotMetrics {
 
 function publicDescriptor(
   id: string,
-  header: WindowsSnapshotHeader
-): SelectorMappedSnapshotDescriptor {
+  header: RawEntry["header"]
+): SelectorRawSnapshotDescriptor {
   return {
     id,
-    transport: "windows-shared-memory",
+    transport: "raw-rgba",
     version: header.version,
     width: header.width,
     height: header.height,
@@ -135,6 +137,8 @@ function publicDescriptor(
 function snapshotFromEntry(id: string, entry: Entry): ScreenSnapshot {
   const acquisition = {
     sourceBitmapBytes: entry.metrics.sourceBitmapBytes,
+    retainedBitmapBytes: entry.metrics.retainedBitmapBytes,
+    bitmapNormalizeMs: entry.metrics.bitmapNormalizeMs,
     mappingWriteBytes: entry.metrics.mappingWriteBytes,
     fullScreenPngEncodeCount: entry.metrics.fullScreenPngEncodeCount,
     fullScreenPngBytes: entry.metrics.fullScreenPngBytes,
@@ -146,12 +150,12 @@ function snapshotFromEntry(id: string, entry: Entry): ScreenSnapshot {
         id,
         displayId: entry.displayId,
         transport: entry.kind,
-        selectorDescriptor: publicDescriptor(id, entry.mapping.header),
+        selectorDescriptor: publicDescriptor(id, entry.header),
         acquisition
       };
 }
 
-/** Capture and register one immutable generation, preferring Win32 mapping storage. */
+/** Capture and register one immutable generation in main-owned memory on Windows. */
 export async function captureAndRegister(
   displayId: number,
   latencyTrace?: CaptureLatencyTrace
@@ -164,15 +168,38 @@ export async function captureAndRegister(
     }
     try {
       const captured = await captureDisplayBitmap(display, latencyTrace);
-      const mapping = await createWindowsSharedSnapshot(captured);
+      const { width, height, bitmap, sourcePixelFormat } = captured;
+      const stride = width * 4;
+      const layout = checkedLayout(width, height, stride);
+      if (bitmap.byteLength !== layout.payload ||
+          (sourcePixelFormat !== "rgba8" && sourcePixelFormat !== "bgra8")) {
+        throw new Error("invalid raw snapshot bitmap");
+      }
+      // captureDisplayBitmap transfers ownership of toBitmap()'s fresh buffer.
+      // Normalize once in place, before publishing it; all later consumers
+      // must treat these top-down, tightly packed RGBA8 pixels as read-only.
+      const normalizeStartedAt = performance.now();
+      for (let offset = 0; offset < bitmap.byteLength; offset += 4) {
+        if (sourcePixelFormat === "bgra8") {
+          const blue = bitmap[offset]!;
+          bitmap[offset] = bitmap[offset + 2]!;
+          bitmap[offset + 2] = blue;
+        }
+        bitmap[offset + 3] = 255;
+      }
+      const header: RawEntry["header"] = {
+        version: 1, width, height, stride, pixelFormat: 1, byteLength: layout.payload
+      };
       const metrics = emptyMetrics();
-      metrics.sourceBitmapBytes = captured.bitmap.byteLength;
-      metrics.mappingWriteBytes = mapping.header.totalByteLength;
-      const entry: MappedEntry = {
-        kind: "windows-shared-memory",
+      metrics.sourceBitmapBytes = bitmap.byteLength;
+      metrics.retainedBitmapBytes = bitmap.byteLength;
+      metrics.bitmapNormalizeMs = Math.round((performance.now() - normalizeStartedAt) * 100) / 100;
+      const entry: RawEntry = {
+        kind: "raw-rgba",
         displayId,
         ...(latencyTrace !== undefined ? { latencyTrace } : {}),
-        mapping,
+        data: bitmap,
+        header,
         fallbackFilePath: null,
         fallbackPromise: null,
         metrics,
@@ -186,9 +213,9 @@ export async function captureAndRegister(
         id,
         displayId,
         transport: entry.kind,
-        width: mapping.header.width,
-        height: mapping.header.height,
-        bytes: mapping.header.byteLength,
+        width: header.width,
+        height: header.height,
+        bytes: header.byteLength,
         fullScreenPngEncodeCount: 0,
         fullScreenTempFileWriteBytes: 0
       });
@@ -197,7 +224,7 @@ export async function captureAndRegister(
       // Do not mix generations: no selector was shown yet, so it is safe to
       // take a fresh PNG fallback. That fallback file then backs BOTH paint
       // and crop exactly as before.
-      log.warn("Windows shared snapshot unavailable; falling back to PNG/file", {
+      log.warn("Windows raw snapshot unavailable; falling back to PNG/file", {
         displayId,
         message: cause instanceof Error ? cause.message : String(cause)
       });
@@ -246,8 +273,8 @@ async function endOperation(entry: Entry): Promise<void> {
 async function finalizeEntry(entry: Entry): Promise<void> {
   if (entry.releasePromise !== null) return await entry.releasePromise;
   entry.releasePromise = (async () => {
-    if (entry.kind === "windows-shared-memory") {
-      await entry.mapping.release();
+    if (entry.kind === "raw-rgba") {
+      entry.data = Buffer.alloc(0);
       if (entry.fallbackFilePath !== null) {
         await rm(dirname(entry.fallbackFilePath), { recursive: true, force: true });
       }
@@ -284,17 +311,16 @@ export async function acquireSnapshotRaster(
     if (entry.kind === "png-file") {
       return { source: { kind: "png-file", filePath: entry.filePath }, release };
     }
-    const data = await entry.mapping.read();
-    entry.metrics.mappingReadBytes += entry.mapping.header.totalByteLength;
+    const data = entry.data;
     if (purpose === "renderer") entry.metrics.rendererTransferBytes += data.byteLength;
     if (purpose === "crop") entry.metrics.cropReadBytes += data.byteLength;
     return {
       source: {
         kind: "rgba8",
         data,
-        width: entry.mapping.header.width,
-        height: entry.mapping.header.height,
-        stride: entry.mapping.header.stride
+        width: entry.header.width,
+        height: entry.header.height,
+        stride: entry.header.stride
       },
       release
     };
@@ -308,21 +334,21 @@ export async function acquireSnapshotRaster(
 export async function readSnapshotForRenderer(id: string): Promise<
   | {
       ok: true;
-      header: Omit<SelectorMappedSnapshotDescriptor, "id" | "transport">;
+      header: Omit<SelectorRawSnapshotDescriptor, "id" | "transport">;
       data: Buffer;
     }
-  | { ok: false; code: "not_found" | "not_mapped" | "read_failed" }
+  | { ok: false; code: "not_found" | "not_raw" | "read_failed" }
 > {
   const entry = registry.get(id);
   if (entry === undefined || entry.releaseRequested) return { ok: false, code: "not_found" };
-  if (entry.kind !== "windows-shared-memory") return { ok: false, code: "not_mapped" };
+  if (entry.kind !== "raw-rgba") return { ok: false, code: "not_raw" };
   try {
     const lease = await acquireSnapshotRaster(id, "renderer");
     if (lease === null || lease.source.kind !== "rgba8") {
       await lease?.release();
       return { ok: false, code: "not_found" };
     }
-    const descriptor = publicDescriptor(id, entry.mapping.header);
+    const descriptor = publicDescriptor(id, entry.header);
     const result = {
       ok: true as const,
       header: {
@@ -338,7 +364,7 @@ export async function readSnapshotForRenderer(id: string): Promise<
     await lease.release();
     return result;
   } catch (cause) {
-    log.warn("mapped snapshot renderer read failed", {
+    log.warn("raw snapshot renderer read failed", {
       id,
       message: cause instanceof Error ? cause.message : String(cause)
     });
@@ -351,10 +377,10 @@ export function recordSnapshotCanvasUpload(id: string, byteLength: number): void
   const entry = registry.get(id);
   if (
     entry === undefined ||
-    entry.kind !== "windows-shared-memory" ||
+    entry.kind !== "raw-rgba" ||
     !Number.isSafeInteger(byteLength) ||
     byteLength < 0 ||
-    byteLength > entry.mapping.header.byteLength
+    byteLength > entry.header.byteLength
   ) {
     return;
   }
@@ -362,7 +388,7 @@ export function recordSnapshotCanvasUpload(id: string, byteLength: number): void
 }
 
 /**
- * Resolve the custom-protocol PNG. For a mapping this is a lazy, same-generation
+ * Resolve the custom-protocol PNG. For a raw buffer this is a lazy, same-generation
  * fallback: the fast path performs no PNG encode or temp-file write unless the
  * selector explicitly falls back to its existing <img> transport.
  */
@@ -376,7 +402,7 @@ export async function getSnapshotPngPath(id: string): Promise<string | null> {
     const lease = await acquireSnapshotRaster(id, "fallback");
     if (lease === null || lease.source.kind !== "rgba8") {
       await lease?.release();
-      throw new Error("mapped snapshot disappeared before fallback encode");
+      throw new Error("raw snapshot disappeared before fallback encode");
     }
     let dir: string | null = null;
     try {
@@ -391,7 +417,7 @@ export async function getSnapshotPngPath(id: string): Promise<string | null> {
       entry.metrics.fullScreenPngEncodeCount += 1;
       entry.metrics.fullScreenPngBytes += info.size;
       entry.metrics.fullScreenTempFileWriteBytes += info.size;
-      log.warn("mapped snapshot used lazy PNG/file fallback", {
+      log.warn("raw snapshot used lazy PNG/file fallback", {
         id,
         pngBytes: info.size,
         sourceBytes: lease.source.data.byteLength
@@ -412,7 +438,7 @@ export async function getSnapshotPngPath(id: string): Promise<string | null> {
 }
 
 /** Resolve the PNG protocol target plus its owning latency trace. For a
- * mapped snapshot, this creates the same-generation PNG only when the canvas
+ * raw snapshot, this creates the same-generation PNG only when the canvas
  * transport requests its fallback. Neither the trace nor path crosses IPC. */
 export async function getSnapshotProtocolTarget(id: string): Promise<{
   filePath: string;
@@ -457,7 +483,7 @@ export async function releaseSnapshot(id: string): Promise<void> {
   }
 }
 
-/** Shutdown/crash-teardown hook: stop every mapping owner and delete temp fallbacks. */
+/** Shutdown/crash-teardown hook: release retained buffers and delete temp fallbacks. */
 export async function releaseAllSnapshots(): Promise<void> {
   await Promise.all([
     ...[...registry.keys()].map(async (id) => await releaseSnapshot(id)),

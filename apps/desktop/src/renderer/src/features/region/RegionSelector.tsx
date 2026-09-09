@@ -47,7 +47,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { acceleratorToDisplayKeys, MAX_SELECTOR_EXTENTS } from "@pwrsnap/shared";
 import type { QuickCaptureAction, SelectorTerminalAction } from "@pwrsnap/shared";
 import type {
-  SelectorMappedSnapshotDescriptor,
+  SelectorRawSnapshotDescriptor,
   WindowSnapEntry
 } from "../../preload-types";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
@@ -184,9 +184,9 @@ export function RegionSelector() {
   // not the live screen. Apps starting / stopping during selection
   // can no longer change what's under the cursor.
   const [screenUrl, setScreenUrl] = useState<string | null>(null);
-  const [mappedSnapshot, setMappedSnapshot] =
-    useState<SelectorMappedSnapshotDescriptor | null>(null);
-  const [mappedSnapshotFallback, setMappedSnapshotFallback] = useState(false);
+  const [rawSnapshot, setRawSnapshot] =
+    useState<SelectorRawSnapshotDescriptor | null>(null);
+  const [rawSnapshotFallback, setRawSnapshotFallback] = useState(false);
   // Visual intent: 'video' swaps the rect badge + hint copy so the
   // user knows commit starts a recording, not a snap. Defaults to
   // 'snap' for backwards-compat with every call site that doesn't
@@ -338,36 +338,36 @@ export function RegionSelector() {
   // Windows fast path: ask the narrow preload bridge for one validated RGBA
   // copy, then upload it directly to the canvas. Any read/header/canvas
   // failure switches to the existing protocol <img>; main lazily encodes that
-  // PNG from this exact mapping generation, so paint and crop never diverge.
+  // PNG from this exact retained generation, so paint and crop never diverge.
   useLayoutEffect(() => {
-    if (screenUrl === null || mappedSnapshot === null || mappedSnapshotFallback) return;
+    if (screenUrl === null || rawSnapshot === null || rawSnapshotFallback) return;
     const canvas = snapshotCanvasRef.current;
     const api = window.pwrsnapApi;
     if (canvas === null || api === undefined || typeof api.readSelectorSnapshot !== "function") {
-      setMappedSnapshotFallback(true);
+      setRawSnapshotFallback(true);
       return;
     }
     let cancelled = false;
     const startedAt = performance.now();
     void api
-      .readSelectorSnapshot(mappedSnapshot.id)
+      .readSelectorSnapshot(rawSnapshot.id)
       .then((result) => {
         if (cancelled) return;
         const readFinishedAt = performance.now();
         if (
           !result.ok ||
-          result.header.version !== mappedSnapshot.version ||
-          result.header.width !== mappedSnapshot.width ||
-          result.header.height !== mappedSnapshot.height ||
-          result.header.stride !== mappedSnapshot.stride ||
-          result.header.pixelFormat !== mappedSnapshot.pixelFormat ||
-          result.header.byteLength !== mappedSnapshot.byteLength ||
-          result.data.byteLength !== mappedSnapshot.byteLength
+          result.header.version !== rawSnapshot.version ||
+          result.header.width !== rawSnapshot.width ||
+          result.header.height !== rawSnapshot.height ||
+          result.header.stride !== rawSnapshot.stride ||
+          result.header.pixelFormat !== rawSnapshot.pixelFormat ||
+          result.header.byteLength !== rawSnapshot.byteLength ||
+          result.data.byteLength !== rawSnapshot.byteLength
         ) {
           throw new Error("mapped selector snapshot did not match its descriptor");
         }
-        canvas.width = mappedSnapshot.width;
-        canvas.height = mappedSnapshot.height;
+        canvas.width = rawSnapshot.width;
+        canvas.height = rawSnapshot.height;
         const context = canvas.getContext("2d", { alpha: false });
         if (context === null) throw new Error("selector canvas context unavailable");
         const rgba =
@@ -379,7 +379,7 @@ export function RegionSelector() {
                 result.data.byteLength
               );
         context.putImageData(
-          new ImageData(rgba, mappedSnapshot.width, mappedSnapshot.height),
+          new ImageData(rgba, rawSnapshot.width, rawSnapshot.height),
           0,
           0
         );
@@ -387,7 +387,7 @@ export function RegionSelector() {
         const canvasFinishedAt = performance.now();
         api.notifySelectorSnapshotPainted({
           screenUrl,
-          transport: "windows-shared-memory",
+          transport: "raw-rgba",
           decodeMs: canvasFinishedAt - startedAt,
           readRoundTripMs: readFinishedAt - startedAt,
           canvasUploadMs: canvasFinishedAt - readFinishedAt,
@@ -400,12 +400,12 @@ export function RegionSelector() {
         }
       })
       .catch(() => {
-        if (!cancelled) setMappedSnapshotFallback(true);
+        if (!cancelled) setRawSnapshotFallback(true);
       });
     return () => {
       cancelled = true;
     };
-  }, [mappedSnapshot, mappedSnapshotFallback, screenUrl]);
+  }, [rawSnapshot, rawSnapshotFallback, screenUrl]);
 
   // Diagnostic-only visibility proof. Main sends the request strictly after
   // BrowserWindow show/focus/moveTop. Two renderer frame barriers ensure a
@@ -569,8 +569,8 @@ export function RegionSelector() {
       }
       snapshotLoadStartedAtRef.current = performance.now();
       setScreenUrl(payload.screenUrl ?? null);
-      setMappedSnapshot(payload.snapshot ?? null);
-      setMappedSnapshotFallback(false);
+      setRawSnapshot(payload.snapshot ?? null);
+      setRawSnapshotFallback(false);
       setIntent(payload.intent ?? "snap");
       // Re-seed the cursor toggle from the persisted default each show
       // (defaults ON when unset) so a prior capture's choice can't bleed
@@ -2101,7 +2101,7 @@ export function RegionSelector() {
           screen.  Drawn first so the dim mask + rect sit on top.
           Sized to fill the window via inline styles to avoid waiting
           on a CSS bundle hot-reload during dev. */}
-      {screenUrl !== null && mappedSnapshot !== null && !mappedSnapshotFallback && (
+      {screenUrl !== null && rawSnapshot !== null && !rawSnapshotFallback && (
         <canvas
           ref={snapshotCanvasRef}
           data-testid="region-snapshot-canvas"
@@ -2117,7 +2117,7 @@ export function RegionSelector() {
           }}
         />
       )}
-      {screenUrl !== null && (mappedSnapshot === null || mappedSnapshotFallback) && (
+      {screenUrl !== null && (rawSnapshot === null || rawSnapshotFallback) && (
         <img
           src={screenUrl}
           alt=""

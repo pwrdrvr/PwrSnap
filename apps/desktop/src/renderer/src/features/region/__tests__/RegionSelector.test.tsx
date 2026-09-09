@@ -17,7 +17,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vi
 import { MAX_SELECTOR_EXTENTS } from "@pwrsnap/shared";
 
 import type {
-  SelectorMappedSnapshotDescriptor,
+  SelectorRawSnapshotDescriptor,
   WindowSnapEntry
 } from "../../../preload-types";
 import { RegionSelector } from "../RegionSelector";
@@ -30,7 +30,7 @@ beforeAll(() => {
 type ModePayload = {
   mode: "auto" | "region" | "window";
   screenUrl?: string;
-  snapshot?: SelectorMappedSnapshotDescriptor;
+  snapshot?: SelectorRawSnapshotDescriptor;
   intent?: "snap" | "video";
   cursor?: boolean;
   quickCaptureAction?: "ask" | "snap" | "record";
@@ -404,9 +404,9 @@ describe("diagnostic first-visible acknowledgement", () => {
         ) {}
       }
     );
-    const snapshot: SelectorMappedSnapshotDescriptor = {
+    const snapshot: SelectorRawSnapshotDescriptor = {
       id: "mapped-snapshot-1",
-      transport: "windows-shared-memory",
+      transport: "raw-rgba",
       version: 1,
       width: 1,
       height: 1,
@@ -446,7 +446,7 @@ describe("diagnostic first-visible acknowledgement", () => {
     expect(notifySelectorSnapshotPainted).toHaveBeenCalledWith(
       expect.objectContaining({
         screenUrl: "pwrsnap-screen://r/mapped-snapshot-1",
-        transport: "windows-shared-memory",
+        transport: "raw-rgba",
         mainToRendererBytes: 4,
         canvasUploadBytes: 4,
         readRoundTripMs: 250,
@@ -458,9 +458,9 @@ describe("diagnostic first-visible acknowledgement", () => {
   });
 
   test("falls back to the same snapshot URL when the mapped payload is rejected", async () => {
-    const snapshot: SelectorMappedSnapshotDescriptor = {
+    const snapshot: SelectorRawSnapshotDescriptor = {
       id: "mapped-snapshot-fallback",
-      transport: "windows-shared-memory",
+      transport: "raw-rgba",
       version: 1,
       width: 2,
       height: 1,

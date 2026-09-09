@@ -41,7 +41,7 @@ import {
   releaseAllSnapshots,
   releaseSnapshot,
   type ScreenSnapshot,
-  type SelectorMappedSnapshotDescriptor
+  type SelectorRawSnapshotDescriptor
 } from "./screen-snapshot";
 import { isExtentRect, MAX_SELECTOR_EXTENTS } from "./extent-mask";
 import { hideTrayPopoverIfVisible } from "../tray";
@@ -87,7 +87,7 @@ function diagnosticMs(value: unknown): number | null {
     : null;
 }
 type SnapshotPaintDetails = Readonly<{
-  transport: "img" | "windows-shared-memory";
+  transport: "img" | "raw-rgba";
   decodeMs: number | null;
   mainToRendererBytes: number | null;
   canvasUploadBytes: number | null;
@@ -204,14 +204,14 @@ function waitForSnapshotPainted(
         const transport = details?.transport ?? observation.fields.transport;
         trace?.end(resourceStage, {
           outcome,
-          renderer: transport === "windows-shared-memory" ? "canvas" : "img",
+          renderer: transport === "raw-rgba" ? "canvas" : "img",
           signal:
             outcome === "loaded"
-              ? transport === "windows-shared-memory"
+              ? transport === "raw-rgba"
                 ? "ipc"
                 : "load"
               : "none",
-          canvas: transport === "windows-shared-memory" ? "put_image_data" : "not_used",
+          canvas: transport === "raw-rgba" ? "put_image_data" : "not_used",
           ...(details !== undefined
             ? {
                 decodeMs: details.decodeMs,
@@ -306,7 +306,7 @@ export type SelectorResult =
       displayId: number;
       /** Registry id for the exact generation painted by the selector.
        *  The backing store is a PNG file on macOS/Linux/fallback and a
-       *  pagefile mapping on the Windows fast path. Capture-handlers MUST call
+       *  retained raw buffer on the Windows fast path. Capture-handlers MUST call
        *  `releaseSnapshot(id)` from screen-snapshot.ts after
        *  cropping — ownership transfers from the selector module to
        *  the consumer when this result is produced, so
@@ -394,7 +394,7 @@ const SELECTOR_MODE_CHANNEL = "region-selector:mode";
 // current wait.
 const SELECTOR_PAINTED_CHANNEL = "region-selector:painted";
 // Renderer → main request for one validated RGBA copy of the active Windows
-// pagefile mapping. Accepted only from the active selector's top-level frame.
+// retained raw buffer. Accepted only from the active selector's top-level frame.
 const SELECTOR_SNAPSHOT_READ_CHANNEL = "region-selector:snapshot-read";
 // Main → renderer after show/focus/moveTop; renderer crosses two rAF
 // boundaries then acks on SELECTOR_PRESENTED_CHANNEL. Diagnostic only:
@@ -474,7 +474,7 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
         activeScreenSnapshot?.id !== snapshotId ||
         activeScreenSnapshot.selectorDescriptor === undefined
       ) {
-        log.warn("selector mapped snapshot read rejected", {
+        log.warn("selector raw snapshot read rejected", {
           senderMatches: event.sender.id === activeSelectorSenderId,
           topLevelFrame: isTopLevelSelectorFrame(event),
           snapshotMatches: activeScreenSnapshot?.id === snapshotId
@@ -489,7 +489,7 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
         observation.fields.mainBitmapReadOutcome = result.ok ? "read" : result.code;
       }
       if (!result.ok && result.code === "read_failed") {
-        abortActiveSelector(event.sender.id, "mapped_snapshot_read_failed");
+        abortActiveSelector(event.sender.id, "raw_snapshot_read_failed");
       }
       return result;
     });
@@ -506,10 +506,10 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
       observation.received = true;
       const late = observation.fields.gateOutcome === "timeout";
       const transport =
-        painted.transport === "windows-shared-memory" ? "windows-shared-memory" : "img";
+        painted.transport === "raw-rgba" ? "raw-rgba" : "img";
       const canvasUploadBytes = painted.canvasUploadBytes;
       if (
-        transport === "windows-shared-memory" &&
+        transport === "raw-rgba" &&
         activeScreenSnapshot !== null &&
         Number.isSafeInteger(canvasUploadBytes) &&
         (canvasUploadBytes as number) >= 0
@@ -1098,7 +1098,7 @@ export async function pickRegion(
     pendingResolver = resolve;
     windowListResolver = resolve;
     // Tell the renderer which mode + snapshot descriptor/URL to use, then let
-    // it paint the mapped canvas or decode the fallback <img> while the window is
+    // it paint the raw canvas or decode the fallback <img> while the window is
     // STILL HIDDEN. We reveal the window only once the renderer acks
     // that paint (or a short timeout elapses) — see `reveal()` below.
     // Showing first (the old behavior) made the window appear as an

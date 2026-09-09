@@ -35,9 +35,9 @@ export type WindowSnapEntry = {
   rawRect: { x: number; y: number; w: number; h: number };
 };
 
-export type SelectorMappedSnapshotDescriptor = {
+export type SelectorRawSnapshotDescriptor = {
   id: string;
-  transport: "windows-shared-memory";
+  transport: "raw-rgba";
   version: 1;
   width: number;
   height: number;
@@ -80,7 +80,7 @@ declare global {
       }): void;
       notifySelectorSnapshotPainted(payload: {
         screenUrl: string;
-        transport: "img" | "windows-shared-memory";
+        transport: "img" | "raw-rgba";
         decodeMs: number;
         mainToRendererBytes: number;
         canvasUploadBytes: number;
@@ -90,7 +90,7 @@ declare global {
       readSelectorSnapshot(id: string): Promise<
         | {
             ok: true;
-            header: Omit<SelectorMappedSnapshotDescriptor, "id" | "transport">;
+            header: Omit<SelectorRawSnapshotDescriptor, "id" | "transport">;
             data: Uint8Array;
           }
         | { ok: false; code: string }
@@ -123,7 +123,7 @@ declare global {
         handler: (payload: {
           mode: "auto" | "region" | "window";
           screenUrl?: string;
-          snapshot?: SelectorMappedSnapshotDescriptor;
+          snapshot?: SelectorRawSnapshotDescriptor;
           intent?: "snap" | "video";
           cursor?: boolean;
           invocationId?: string;

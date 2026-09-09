@@ -35,7 +35,7 @@ export class WindowsSnapshotFormatError extends Error {
   }
 }
 
-function checkedLayout(width: number, height: number, stride: number): {
+export function checkedLayout(width: number, height: number, stride: number): {
   payload: number;
   total: number;
 } {

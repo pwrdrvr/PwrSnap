@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import sharp from "sharp";
 
 const captureMocks = vi.hoisted(() => ({
   captureDisplayBitmap: vi.fn(),
@@ -86,10 +87,10 @@ afterEach(async () => {
 });
 
 describe("screen snapshot registry Windows transport", () => {
-  test("falls back to the PNG transport when the helper pipe fails", async () => {
-    mappingMocks.createWindowsSharedSnapshot.mockRejectedValue(
-      Object.assign(new Error("write EPIPE"), { code: "EPIPE" })
-    );
+  test("falls back to the PNG transport when the raw bitmap is malformed", async () => {
+    captureMocks.captureDisplayBitmap.mockResolvedValueOnce({
+      bitmap: Buffer.alloc(4), width: 2, height: 1, sourcePixelFormat: "rgba8"
+    });
     captureMocks.captureScreen.mockResolvedValue({
       ok: true,
       tempPath: "/tmp/pwrsnap-test-shared-snapshot-fallback/snapshot.png",
@@ -109,14 +110,14 @@ describe("screen snapshot registry Windows transport", () => {
     expect(captureMocks.captureScreen).toHaveBeenCalledWith(7, undefined);
   });
 
-  test("keeps the native mapping identity private while paint and crop read one generation", async () => {
+  test("paint and crop lease the retained buffer without invoking a mapping helper", async () => {
     const snapshot = await snapshots!.captureAndRegister(7);
 
     expect(snapshot).toMatchObject({
       displayId: 7,
-      transport: "windows-shared-memory",
+      transport: "raw-rgba",
       selectorDescriptor: {
-        transport: "windows-shared-memory",
+        transport: "raw-rgba",
         version: 1,
         width: 2,
         height: 1,
@@ -124,7 +125,8 @@ describe("screen snapshot registry Windows transport", () => {
       },
       acquisition: {
         sourceBitmapBytes: 8,
-        mappingWriteBytes: 72,
+        mappingWriteBytes: 0,
+        retainedBitmapBytes: 8,
         fullScreenPngEncodeCount: 0,
         fullScreenTempFileWriteBytes: 0
       }
@@ -140,12 +142,16 @@ describe("screen snapshot registry Windows transport", () => {
 
     const crop = await snapshots!.acquireSnapshotRaster(snapshot.id, "crop");
     expect(crop?.source).toMatchObject({ kind: "rgba8", width: 2, height: 1 });
+    if (crop?.source.kind !== "rgba8") throw new Error("raw crop missing");
+    expect(crop.source.data).toBe(renderer.data);
+    expect(mappingMocks.createWindowsSharedSnapshot).not.toHaveBeenCalled();
+    expect(mappingMocks.read).not.toHaveBeenCalled();
     await crop?.release();
     await snapshots!.releaseSnapshot(snapshot.id);
-    expect(mappingMocks.release).toHaveBeenCalledTimes(1);
+    expect(mappingMocks.release).not.toHaveBeenCalled();
   });
 
-  test("creates the PNG protocol fallback lazily from the existing mapping", async () => {
+  test("creates the PNG protocol fallback lazily from the retained pixels", async () => {
     const snapshot = await snapshots!.captureAndRegister(7);
     expect(mappingMocks.read).not.toHaveBeenCalled();
 
@@ -154,11 +160,13 @@ describe("screen snapshot registry Windows transport", () => {
 
     expect(first).toMatch(/\.png$/);
     expect(second).toBe(first);
-    expect(mappingMocks.read).toHaveBeenCalledTimes(1);
+    expect(mappingMocks.read).not.toHaveBeenCalled();
+    const pixels = await sharp(first!).ensureAlpha().raw().toBuffer();
+    expect([...pixels]).toEqual([255, 0, 0, 255, 0, 255, 0, 255]);
     expect(captureMocks.captureScreen).not.toHaveBeenCalled();
   });
 
-  test("release waits for an admitted crop lease before closing the owner", async () => {
+  test("release waits for an admitted crop lease and a new capture cannot replace its bytes", async () => {
     const snapshot = await snapshots!.captureAndRegister(7);
     const crop = await snapshots!.acquireSnapshotRaster(snapshot.id, "crop");
     if (crop === null) throw new Error("crop lease unexpectedly missing");
@@ -175,9 +183,35 @@ describe("screen snapshot registry Windows transport", () => {
     expect(released).toBe(false);
     expect(repeatedReleaseResolved).toBe(false);
     expect(mappingMocks.release).not.toHaveBeenCalled();
+    expect(await snapshots!.acquireSnapshotRaster(snapshot.id, "renderer")).toBeNull();
+    captureMocks.captureDisplayBitmap.mockResolvedValueOnce({
+      bitmap: Buffer.from([0, 0, 255, 0, 255, 0, 0, 0]),
+      width: 2, height: 1, sourcePixelFormat: "rgba8"
+    });
+    const next = await snapshots!.captureAndRegister(7);
+    const nextPixels = await snapshots!.readSnapshotForRenderer(next.id);
+    if (!nextPixels.ok || crop.source.kind !== "rgba8") throw new Error("raw source missing");
+    expect([...nextPixels.data]).toEqual([0, 0, 255, 255, 255, 0, 0, 255]);
+    expect([...crop.source.data]).toEqual([255, 0, 0, 255, 0, 255, 0, 255]);
 
     await crop.release();
     await Promise.all([release, repeatedRelease]);
-    expect(mappingMocks.release).toHaveBeenCalledTimes(1);
+    expect(released).toBe(true);
+    expect(repeatedReleaseResolved).toBe(true);
+    expect(mappingMocks.release).not.toHaveBeenCalled();
+  });
+
+  test("normalizes BGRA channels and opaque alpha once in place before publication", async () => {
+    const bitmap = Buffer.from([10, 20, 30, 0, 40, 50, 60, 128]);
+    captureMocks.captureDisplayBitmap.mockResolvedValueOnce({
+      bitmap, width: 2, height: 1, sourcePixelFormat: "bgra8"
+    });
+    const snapshot = await snapshots!.captureAndRegister(7);
+    for (let i = 0; i < 2; i += 1) {
+      const read = await snapshots!.readSnapshotForRenderer(snapshot.id);
+      if (!read.ok) throw new Error("raw source missing");
+      expect(read.data).toBe(bitmap);
+      expect([...read.data]).toEqual([30, 20, 10, 255, 60, 50, 40, 255]);
+    }
   });
 });

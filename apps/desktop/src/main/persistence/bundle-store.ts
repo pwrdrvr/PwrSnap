@@ -172,12 +172,15 @@ export async function atomicWriteBundle(destPath: string, contents: Buffer): Pro
   // fsync the containing directory so the rename itself is durable
   // across a power loss. On Linux this is required; on macOS it's
   // belt-and-suspenders against APFS quirks. Best-effort — if open()
-  // on a directory isn't supported here (rare, and not on macOS) we
-  // log and continue rather than failing the whole write.
+  // or sync() on a directory isn't supported, continue rather than
+  // failing the whole write. Close even when sync() rejects (Windows).
   try {
     const dirfd = await open(dir, "r");
-    await dirfd.sync();
-    await dirfd.close();
+    try {
+      await dirfd.sync();
+    } finally {
+      await dirfd.close();
+    }
   } catch {
     // Some filesystems / platforms don't support fsync on dirfds.
     // The single-volume rename above is still atomic at the

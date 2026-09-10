@@ -111,11 +111,15 @@ test("library-right-rail: clicking active tab unpins to hover-pop", async () => 
       .locator('[data-testid="psl-right-panel-pinned"]')
       .waitFor({ state: "visible", timeout: 5_000 });
 
-    // Click active Info tab → unpin → hover-pop visible.
+    // Click active Info tab → unpin.
     await win.locator('[data-testid="psl-right-tab-info"]').click();
     await expect(
       win.locator('[data-testid="psl-right-panel-pinned"]')
     ).toHaveCount(0);
+    // Unpinning changes the rail layout. Re-establish pointer hover at
+    // the tab's current bounds before asserting the hover-only panel;
+    // a mouseleave during reflow can dismiss the initial click-open pop.
+    await win.locator('[data-testid="psl-right-tab-info"]').hover();
     await win
       .locator('[data-testid="psl-right-panel-hover"]')
       .waitFor({ state: "visible", timeout: 5_000 });

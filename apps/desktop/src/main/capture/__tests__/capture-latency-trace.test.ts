@@ -30,6 +30,29 @@ const INVOCATION: CaptureInvocation = {
 };
 
 describe("CaptureLatencyTrace", () => {
+  test("rounds stage and nested summary milliseconds without mutating samples", () => {
+    const entries: LogEntry[] = [];
+    const trace = new CaptureLatencyTrace(INVOCATION, "auto", {
+      monotonicNow: () => 200,
+      logger: recordingLogger(entries)
+    });
+    const samples = {
+      decodeMs: 83.80000000074506,
+      readRoundTripMs: 67.6789,
+      mainToRendererBytes: 22451968,
+      ratio: 0.123456,
+      missingMs: null
+    };
+    trace.mark("frozen_source_decode_ready", samples);
+    trace.finish("presented", { snapshotReadiness: samples });
+    const expected = { ...samples, decodeMs: 83.8, readRoundTripMs: 67.68 };
+    expect(entries.find((entry) => entry.fields.stage === "frozen_source_decode_ready")?.fields)
+      .toMatchObject(expected);
+    expect(entries.at(-1)?.fields.snapshotReadiness).toEqual(expected);
+    expect(samples.decodeMs).toBe(83.80000000074506);
+    expect(samples.readRoundTripMs).toBe(67.6789);
+  });
+
   test("pins the production stage vocabulary", () => {
     expect(CAPTURE_LATENCY_STAGES).toEqual([
       "trigger_callback",

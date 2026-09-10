@@ -5,6 +5,7 @@ type UpdateEventHandler = (info?: { version?: string }) => void;
 const mocks = vi.hoisted(() => {
   const handlers = new Map<string, Set<UpdateEventHandler>>();
   return {
+    logInfo: vi.fn(),
     appPaths: { userData: "", home: "" },
     handlers,
     resolveSelection: vi.fn((): { channel: "latest" | "prerelease"; train: "stable" | "beta" } => ({
@@ -54,6 +55,10 @@ vi.mock("electron-updater", () => ({
   default: {
     autoUpdater: mocks.autoUpdater
   }
+}));
+
+vi.mock("../log", () => ({
+  getMainLogger: () => ({ info: mocks.logInfo, warn: vi.fn(), error: vi.fn(), debug: vi.fn() })
 }));
 
 vi.mock("../events", () => ({
@@ -222,6 +227,7 @@ describe("auto updater selection", () => {
     });
     process.env.NODE_ENV = "production";
     mocks.handlers.clear();
+    mocks.logInfo.mockReset();
     mocks.autoUpdater.checkForUpdates.mockReset();
     mocks.autoUpdater.quitAndInstall.mockReset();
     mocks.autoUpdater.setFeedURL.mockReset();
@@ -305,6 +311,48 @@ describe("auto updater selection", () => {
     });
     expect(mocks.autoUpdater.setFeedURL).not.toHaveBeenCalled();
     expect(mocks.autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+  });
+
+  test("releases the check slot after returning an already downloaded update", async () => {
+    const updater = await importAutoUpdater();
+    updater.setUpdateSelectionResolver(() => mocks.resolveSelection());
+    mockGitHubReleases([
+      githubRelease("v1.0.1"),
+      githubRelease("v1.1.0-beta.2", { prerelease: true })
+    ]);
+    mocks.autoUpdater.checkForUpdates.mockResolvedValue({ updateInfo: { version: "1.0.1" } });
+    updater.initAppUpdater();
+    await updater.checkForAppUpdatesNow("manual");
+    mocks.autoUpdater.checkForUpdates.mockClear();
+    mocks.emit("update-downloaded", { version: "1.0.1" });
+
+    await expect(updater.checkForAppUpdatesNow("periodic")).resolves.toEqual({
+      status: "downloaded",
+      version: "1.0.1"
+    });
+
+    // Bound the old microtask loop so a regression fails instead of starving
+    // Vitest's timeout and exhausting the worker's heap.
+    let waits = 0;
+    const info = mocks.logInfo.mockImplementation((message) => {
+      if (String(message).includes("waiting for in-flight") && ++waits > 5) {
+        throw new Error("Update check is spinning on a completed promise");
+      }
+    });
+    try {
+      await expect(updater.checkForAppUpdatesNow("periodic")).resolves.toEqual({
+        status: "downloaded",
+        version: "1.0.1"
+      });
+      mockGitHubReleases([githubRelease("v1.0.1")]);
+      await expect(updater.checkForAppUpdatesNow("manual", {
+        channel: "latest", train: "beta"
+      })).resolves.toEqual({ status: "no-update", version: "1.0.0" });
+      expect(waits).toBe(0);
+      expect(mocks.autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+    } finally {
+      info.mockReset();
+    }
   });
 
   test("does not offer a downloaded update after switching trains", async () => {

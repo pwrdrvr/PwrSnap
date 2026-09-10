@@ -529,7 +529,11 @@ export async function checkForAppUpdatesNow(
   }
 
   updateCheckSelectionInFlight = requestedSelection;
-  updateCheckInFlight = (async (): Promise<AppUpdateCheckResult> => {
+  // Publish the promise before running any check logic. The downloaded-update
+  // fast path (or a synchronous error) can reach finally without an await;
+  // an immediately invoked async function would clear the slot before the
+  // assignment, then leave its settled promise installed forever.
+  updateCheckInFlight = Promise.resolve().then(async (): Promise<AppUpdateCheckResult> => {
     try {
       const updateSelection = requestedSelection;
       reconcileAppUpdateSelection(updateSelection);
@@ -653,7 +657,7 @@ export async function checkForAppUpdatesNow(
       updateCheckSelectionInFlight = undefined;
       updateCheckInFlight = undefined;
     }
-  })();
+  });
 
   return updateCheckInFlight;
 }

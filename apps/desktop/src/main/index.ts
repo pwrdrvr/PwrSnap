@@ -122,6 +122,7 @@ import {
   subscribeToRecordingState
 } from "./recording/recording-state";
 import { videoHotkeyAction } from "./recording/recording-capabilities";
+import { installMediaPermissionPolicy } from "./media-permissions";
 import { videoAssetDir } from "./recording/video-frames";
 import {
   getDesktopSettingsServices,
@@ -1632,6 +1633,13 @@ export function bootstrapApp(): void {
   });
 
   app.whenReady().then(async () => {
+    // Before any window loads. Electron's no-handler default GRANTS
+    // every permission a renderer asks for; this denies by default and
+    // allows only `media` (the selector's level meter + camera preview)
+    // and sanitized clipboard writes, and only from a PwrSnap-loaded
+    // page. See media-permissions.ts for why both hooks are installed.
+    installMediaPermissionPolicy();
+
     if (process.platform === "darwin" && (isE2E || role === "agent")) {
       // Agent role: menubar-only process — no Dock presence, ever.
       // (Phase 4 ships LSUIElement so this becomes the launch default

@@ -76,12 +76,12 @@ afterEach(() => {
   }
 });
 
-function mountStage(reel: boolean): HTMLElement {
+function mountStage(reel: boolean, metadata = video): HTMLElement {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
   act(() => {
-    root!.render(createElement(VideoStage, { record, video, trim, reel }));
+    root!.render(createElement(VideoStage, { record, video: metadata, trim, reel }));
   });
   const stage = container.querySelector<HTMLElement>('[data-testid="video-stage"]');
   if (stage === null) throw new Error("video stage did not render");
@@ -170,6 +170,34 @@ describe("VideoStage keyboard ownership", () => {
     // Now the stage owns the keyboard: frame stepping works and the
     // window handler correctly does NOT also navigate.
     expect(pressArrowRight()).toBe(false);
+  });
+});
+
+describe("VideoStage audio preparation", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  test("shows the original immediately and keeps transport seeking available during the mix", async () => {
+    let finish!: (response: Response) => void;
+    const fetch = vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; }));
+    vi.stubGlobal("fetch", fetch);
+    const stage = mountStage(false, { ...video, hasSystemAudio: true, hasMicrophoneAudio: true });
+    const el = stage.querySelector("video")!;
+    expect(el.src).toBe("pwrsnap-capture://r/cap_1");
+    expect(fetch).toHaveBeenCalledWith("pwrsnap-capture://r/cap_1?playback=1", expect.objectContaining({ method: "HEAD" }));
+    expect(el.muted).toBe(true);
+    expect(stage.querySelector<HTMLButtonElement>('[data-testid="video-transport-mute"]')!.disabled).toBe(true);
+    expect(stage.querySelector<HTMLButtonElement>('[data-testid="video-transport-play"]')!.disabled).toBe(false);
+    el.currentTime = 3;
+    pressArrowRight();
+    expect(el.currentTime).toBeGreaterThan(3);
+    const position = el.currentTime;
+    await act(async () => finish(new Response(null, { status: 200 })));
+    expect(el.src).toBe("pwrsnap-capture://r/cap_1?playback=1");
+    el.currentTime = 0;
+    act(() => el.dispatchEvent(new Event("loadedmetadata")));
+    expect(el.currentTime).toBe(position);
+    expect(el.muted).toBe(false);
+    expect(stage.querySelector<HTMLButtonElement>('[data-testid="video-transport-mute"]')!.disabled).toBe(false);
   });
 });
 

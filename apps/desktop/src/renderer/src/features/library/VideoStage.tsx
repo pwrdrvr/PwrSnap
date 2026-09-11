@@ -25,6 +25,8 @@ import {
 } from "react";
 import type { CaptureRecord, VideoCaptureMetadata } from "@pwrsnap/shared";
 import { captureSrcUrl } from "../../lib/pwrsnap";
+import { usePreparedVideoPlayback } from "../shared/usePreparedVideoPlayback";
+import { VideoPlaybackStatus } from "../shared/VideoPlaybackStatus";
 import { usePlayheadSource } from "../shared/playhead";
 import { VideoTimeline } from "../shared/VideoTimeline";
 import { useVideoTimelineAssets } from "../shared/useVideoTimelineAssets";
@@ -130,6 +132,13 @@ export function VideoStage({
   const durationSec = video.durationSec;
   const rootRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const playback = usePreparedVideoPlayback(
+    videoRef,
+    captureSrcUrl(captureId),
+    video.hasSystemAudio && video.hasMicrophoneAudio
+      ? captureSrcUrl(captureId, { playback: true })
+      : undefined
+  );
 
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
@@ -230,6 +239,7 @@ export function VideoStage({
   );
 
   const pause = useCallback((): void => {
+    playback.cancelResume();
     stopShuttle();
     const el = videoRef.current;
     if (el !== null) {
@@ -238,7 +248,7 @@ export function VideoStage({
     }
     setPlaying(false);
     settleTime();
-  }, [settleTime, stopShuttle]);
+  }, [playback.cancelResume, settleTime, stopShuttle]);
 
   const play = useCallback((): void => {
     stopShuttle();
@@ -442,18 +452,13 @@ export function VideoStage({
       stopShuttle();
       settleTime();
     };
-    const onLoaded = (): void => {
-      setMuted(el.muted);
-    };
     el.addEventListener("play", onPlay);
     el.addEventListener("pause", onPause);
     el.addEventListener("ended", onEnded);
-    el.addEventListener("loadedmetadata", onLoaded);
     return () => {
       el.removeEventListener("play", onPlay);
       el.removeEventListener("pause", onPause);
       el.removeEventListener("ended", onEnded);
-      el.removeEventListener("loadedmetadata", onLoaded);
     };
   }, [captureId, playhead, settleTime, stopShuttle]);
 
@@ -572,10 +577,7 @@ export function VideoStage({
   useEffect(() => () => stopShuttle(), [stopShuttle]);
 
   const toggleMute = (): void => {
-    const el = videoRef.current;
-    if (el === null) return;
-    el.muted = !el.muted;
-    setMuted(el.muted);
+    setMuted((value) => !value);
   };
 
   const toggleFullscreen = (): void => {
@@ -610,13 +612,20 @@ export function VideoStage({
         <video
           ref={videoRef}
           className="psl__video-el"
-          src={captureSrcUrl(captureId, { playback: true })}
+          src={playback.src}
+          muted={muted || playback.audioUnavailable}
+          onLoadedMetadata={(event) => {
+            playback.onLoadedMetadata();
+            publishTime(event.currentTarget.currentTime);
+          }}
+          onError={playback.onError}
           playsInline
           preload="metadata"
           loop={nativeLoop}
           onClick={() => runIntent({ type: "togglePlay" })}
           onDoubleClick={toggleFullscreen}
         />
+        <VideoPlaybackStatus playback={playback} />
       </div>
       <VideoTransport
         playing={playing}
@@ -624,7 +633,8 @@ export function VideoStage({
         playhead={playhead}
         durationSec={durationSec}
         loopInRange={loopInRange}
-        muted={muted}
+        muted={muted || playback.audioUnavailable}
+        audioUnavailable={playback.audioUnavailable}
         onTogglePlay={() => runIntent({ type: "togglePlay" })}
         onToggleLoop={() => setLoopInRange((v) => !v)}
         onToggleMute={toggleMute}

@@ -78,6 +78,37 @@ beforeEach(() => {
 });
 
 describe("pwrsnap-screen protocol latency", () => {
+  test("original ranges finish while background playback HEAD is still encoding", async () => {
+    let publish!: (path: string) => void;
+    const encoding = new Promise<string>((resolve) => { publish = resolve; });
+    const { installProtocolHandlers } = await import("../protocols");
+    installProtocolHandlers({
+      captureSourcePath: async (_id, options) => options?.playback ? await encoding : filePath,
+      sourceBytesPath: async () => null,
+      cacheFile: async () => null,
+      videoAssetPath: async () => null,
+      appIconPath: async () => null,
+      sizzleOutputPath: async () => null
+    });
+    const handler = mocks.handlers.get("pwrsnap-capture")!;
+    let prepared = false;
+    const head = handler(new Request("pwrsnap-capture://r/AbC_123?playback=1", { method: "HEAD" }))
+      .then((response) => { prepared = true; return response; });
+    try {
+      const firstFrame = await handler(new Request("pwrsnap-capture://r/AbC_123", {
+        headers: { Range: "bytes=0-5" }
+      }));
+      expect(firstFrame.status).toBe(206);
+      expect(Buffer.from(await firstFrame.arrayBuffer())).toEqual(content.subarray(0, 6));
+      expect(prepared).toBe(false);
+    } finally {
+      publish(filePath);
+    }
+    const response = await head;
+    expect(response.status).toBe(200);
+    expect(response.body).toBeNull();
+  });
+
   test.each([false, true])("capture playback=%s keeps range serving on the resolved asset", async (playback) => {
     const captureSourcePath = vi.fn(async () => filePath);
     const { installProtocolHandlers } = await import("../protocols");

@@ -448,7 +448,7 @@ export function FloatOverHost({
     });
     const isVideo =
       record.kind === "video" && record.video !== null && record.video !== undefined;
-    const previewSrc = captureSrcUrl(record.id, { playback: isVideo });
+    const previewSrc = captureSrcUrl(record.id);
     // Source PNG paints immediately after capture. Keep the 1440px
     // rendered WebP as a progressive enhancement so cache-miss
     // compose work cannot leave the visible preview blank. The
@@ -469,6 +469,9 @@ export function FloatOverHost({
       ? ({
           kind: "video",
           src: previewSrc,
+          playbackSrc: record.video!.hasSystemAudio && record.video!.hasMicrophoneAudio
+            ? captureSrcUrl(record.id, { playback: true })
+            : undefined,
           captureId: record.id,
           durationSec: record.video!.durationSec,
           widthPx: record.width_px,

@@ -3953,6 +3953,12 @@ export type Commands = {
     req: { mode: RenderCacheMaintenanceMode };
     res: StorageMaintenanceResult;
   };
+  /** Main-process-only bridge command. Cache removal and playback jobs share
+   * one owner so permanent deletion can cancel and drain encodes first. */
+  "storage:runRenderCacheCleanup": {
+    req: { operation: "purge"; captureId: string } | { operation: "clear" | "trim" };
+    res: Record<string, never>;
+  };
   /** Snapshot of macOS permission denials on captures-folder reads.
    *  Renderers read this once on mount, then subscribe to
    *  `events:storage:captures-access` for changes. */
@@ -4541,6 +4547,12 @@ export type Commands = {
   "video:audio": {
     req: { captureId: string };
     res: VideoAudioResult;
+  };
+  /** Main-process-only playback preparation. The agent resolves the source
+   * itself; no peer-provided path or audio metadata is accepted. */
+  "video:preparePlayback": {
+    req: { captureId: string };
+    res: { path: string | null };
   };
   /**
    * Render and return a GIF or MP4 export for the requested range,

@@ -142,6 +142,22 @@ describe("whole-file responses", () => {
 });
 
 describe("range responses", () => {
+  test("HEAD returns validators and length without opening or reading media", async () => {
+    const events: string[] = [];
+    const response = await fileResponse(filePath, new Request("pwrsnap-capture://r/test", {
+      method: "HEAD", headers: { Range: "bytes=0-3" }
+    }), { cors: true, observer: {
+      onOpenStarted: () => events.push("open"),
+      onReadStarted: () => events.push("read")
+    } });
+    expect(response.status).toBe(200);
+    expect(response.body).toBeNull();
+    expect(response.headers.get("content-length")).toBe(String(CONTENT.length));
+    expect(response.headers.get("content-type")).toBe("video/mp4");
+    expect(response.headers.get("etag")).toBe(expectedEtag(filePath));
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+    expect(events).toEqual([]);
+  });
   test("206 slice is correct and cache-control MATCHES the 200 policy", async () => {
     const res = await fileResponse(filePath, req({ range: "bytes=4-9" }), {
       cacheControl: "private, max-age=86400, immutable"

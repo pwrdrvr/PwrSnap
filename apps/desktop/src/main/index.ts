@@ -114,7 +114,7 @@ import { readRecordingReadiness } from "./recording/recording-permissions";
 import { getRecordingService } from "./recording/recording-service";
 import { getRecordingState, isRecordingActive } from "./recording/recording-state";
 import { videoAssetDir } from "./recording/video-frames";
-import { prepareVideoPlayback } from "./sizzle/audio-extract";
+import { installVideoPlaybackCacheOwner, resolvePreparedVideoPlayback } from "./recording/playback-cache-owner";
 import {
   getDesktopSettingsServices,
   getLocalAgentAuditService,
@@ -211,7 +211,7 @@ import {
 import { insertVideoMetadata } from "./persistence/video-repo";
 import { failOrphanedRunsOnBoot } from "./persistence/ai-runs-repo";
 import { migrateLegacyCaptureSources } from "./persistence/capture-source-maintenance";
-import { migrateLegacyRenderCache } from "./persistence/render-cache-maintenance";
+import { migrateLegacyRenderCache, removeLegacyVideoPlaybackCache } from "./persistence/render-cache-maintenance";
 import {
   cancelScheduledRepacks,
   persistCaptureFromTempV2,
@@ -1163,6 +1163,7 @@ async function runInteractiveRecord(
  */
 const protocolResolver: ProtocolResolver = {
   async captureSourcePath(captureId, options) {
+    if (options?.playback) return resolvePreparedVideoPlayback(captureId);
     const record = getCaptureById(captureId);
     if (record === null) {
       return null;
@@ -1173,15 +1174,7 @@ const protocolResolver: ProtocolResolver = {
     // to restore or permanently delete. Bundle-backed live captures
     // lazy-extract source.png from the bundle if the per-capture
     // cache file has been wiped (Storage → Clear/Trim, manual rm).
-    const sourcePath = await ensureEffectiveSrcPath(record);
-    if (options?.playback && sourcePath !== null && record.kind === "video" && record.video) {
-      return await prepareVideoPlayback({
-        videoPath: sourcePath,
-        hasSystemAudio: record.video.hasSystemAudio,
-        hasMicrophoneAudio: record.video.hasMicrophoneAudio
-      });
-    }
-    return sourcePath;
+    return await ensureEffectiveSrcPath(record);
   },
   async sourceBytesPath(captureId, sha256) {
     const record = getCaptureById(captureId);
@@ -1334,6 +1327,7 @@ export function bootstrapApp(): void {
     )
   });
   setRuntimeProcessRole(role);
+  installVideoPlaybackCacheOwner(role);
   if (role !== "combined") {
     log.info("booting with process role", { role, pid: process.pid });
   }
@@ -1712,6 +1706,11 @@ export function bootstrapApp(): void {
       }
       await migrateLegacyCaptureSources();
       await migrateLegacyRenderCache();
+      await removeLegacyVideoPlaybackCache().catch((cause: unknown) => {
+        log.warn("could not remove obsolete playback cache", {
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+      });
       markStartup("main: legacy migrations done");
     }
     if (role === "library") {

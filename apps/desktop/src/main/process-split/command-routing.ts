@@ -48,6 +48,7 @@ const EXACT_OWNERS: Readonly<Record<string, CommandOwner>> = {
   "storage:openCapturesAccessSettings": "agent",
   "storage:checkCapturesAccess": "agent",
   "storage:moveCapturesToDocuments": "agent",
+  "storage:runRenderCacheCleanup": "agent",
   // Library-surface-only utility registered alongside its callers.
   "clipboard:copyText": "library"
 };

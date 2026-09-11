@@ -34,6 +34,7 @@
 }
 
 .psl__video-frame {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -53,6 +54,39 @@
   object-fit: contain;
   background: var(--bg-app);
   cursor: pointer;
+}
+
+.video-playback-status {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  max-width: calc(100% - 16px);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  background: var(--bg-app);
+  color: var(--text-secondary);
+  font: 500 11px/1.4 var(--font-sans);
+  pointer-events: none;
+}
+
+.video-playback-status button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.psl__vt-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* ── Transport ─────────────────────────────────────────────────────── */

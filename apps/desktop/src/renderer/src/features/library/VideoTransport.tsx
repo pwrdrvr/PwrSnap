@@ -25,6 +25,7 @@ export type VideoTransportProps = {
   durationSec: number;
   loopInRange: boolean;
   muted: boolean;
+  audioUnavailable?: boolean;
   onTogglePlay: () => void;
   onToggleLoop: () => void;
   onToggleMute: () => void;
@@ -135,6 +136,7 @@ export function VideoTransport(props: VideoTransportProps): ReactElement {
         type="button"
         className={`psl__vt-btn${muted ? " is-on" : ""}`}
         title={keyHints.mute}
+        disabled={props.audioUnavailable}
         aria-label={muted ? "Unmute" : "Mute"}
         aria-pressed={muted}
         onMouseDown={keepFocus}

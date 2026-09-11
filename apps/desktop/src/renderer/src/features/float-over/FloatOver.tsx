@@ -245,6 +245,8 @@ export type FloatOverAsset =
     }
   | {
       kind: "video";
+      /** Optional mixed-audio derivative prepared independently of first paint. */
+      playbackSrc?: string | undefined;
       /** Source URL the `<video>` element loads. Typically
        *  `pwrsnap-capture://r/<id>` — the Range-aware custom
        *  protocol handler streams the requested byte range. */
@@ -851,7 +853,7 @@ export function FloatOver({
           // controls. Same component the tray uses for its
           // "last recording" preview, so the surfaces behave
           // consistently.
-          <HoverAutoplayVideo src={asset.src} videoRef={previewVideoRef} />
+          <HoverAutoplayVideo src={asset.src} playbackSrc={asset.playbackSrc} videoRef={previewVideoRef} />
         ) : (
           <img
             src={visibleSrc}

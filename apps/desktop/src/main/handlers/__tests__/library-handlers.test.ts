@@ -33,6 +33,8 @@ const mocks = vi.hoisted(() => ({
   getTotalLive: vi.fn(),
   discoverCaptureSearchFacets: vi.fn(),
   hardDeleteCapture: vi.fn(),
+  purgeCacheForCapture: vi.fn(),
+  purgeOneFromTrash: vi.fn(),
   listCaptures: vi.fn(),
   listSoftDeletedIds: vi.fn(),
   restoreCapture: vi.fn(),
@@ -104,8 +106,8 @@ vi.mock("../../persistence/bundle-store", () => ({
 
 vi.mock("../../persistence/source-store", () => ({
   moveSourceToTrash: vi.fn(),
-  purgeCacheForCapture: vi.fn(),
-  purgeOneFromTrash: vi.fn(),
+  purgeCacheForCapture: mocks.purgeCacheForCapture,
+  purgeOneFromTrash: mocks.purgeOneFromTrash,
   restoreSourceFromTrash: vi.fn()
 }));
 
@@ -185,6 +187,35 @@ beforeEach(() => {
   mocks.listEnrichmentsByCaptureIds.mockReset();
   mocks.scheduleRepack.mockReset();
   mocks.send.mockReset();
+  mocks.hardDeleteCapture.mockReset();
+  mocks.purgeCacheForCapture.mockReset();
+  mocks.purgeOneFromTrash.mockReset();
+});
+
+describe("library purge playback admission", () => {
+  test.each(["library:purge", "library:purgeAll"])("%s removes the DB row before any awaited cleanup", async (command) => {
+    const record = makeRecord({ id: "video_1", kind: "video", deleted_at: "2026-09-01T00:00:00Z", legacy_src_path: "/captures/video_1.mp4" });
+    let present = true;
+    mocks.getCaptureById.mockImplementation(() => present ? record : null);
+    mocks.listSoftDeletedIds.mockReturnValue([record.id]);
+    mocks.hardDeleteCapture.mockImplementation(() => { present = false; });
+    let finish!: () => void;
+    mocks.purgeOneFromTrash.mockImplementation(() => {
+      expect(present).toBe(false);
+      return new Promise<void>((resolve) => { finish = resolve; });
+    });
+    mocks.purgeCacheForCapture.mockImplementation(async () => {
+      expect(present).toBe(false);
+    });
+    const { registerLibraryHandlers } = await import("../library-handlers");
+    registerLibraryHandlers();
+    const result = mocks.handlers.get(command)!({ id: record.id });
+    expect(mocks.hardDeleteCapture).toHaveBeenCalledWith(record.id);
+    expect(mocks.purgeCacheForCapture).not.toHaveBeenCalled();
+    finish();
+    expect(await result).toMatchObject({ ok: true });
+    expect(mocks.purgeCacheForCapture).toHaveBeenCalledWith(record.id);
+  });
 });
 
 describe("library:listByIds — handler contract", () => {

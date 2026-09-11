@@ -12,9 +12,12 @@
 // like siblings.
 
 import { useCallback, useEffect, useRef, type ReactElement } from "react";
+import { usePreparedVideoPlayback } from "./usePreparedVideoPlayback";
+import { VideoPlaybackStatus } from "./VideoPlaybackStatus";
 
 export type HoverAutoplayVideoProps = {
   src: string;
+  playbackSrc?: string | undefined;
   /** Optional style overrides; defaults fill the parent and
    *  letterbox the source via `object-fit: contain` on a black
    *  background. */
@@ -35,11 +38,13 @@ const DEFAULT_STYLE: React.CSSProperties = {
 
 export function HoverAutoplayVideo({
   src,
+  playbackSrc,
   style,
   videoRef: externalVideoRef
 }: HoverAutoplayVideoProps): ReactElement {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const playback = usePreparedVideoPlayback(videoRef, src, playbackSrc);
 
   // Mirror the element into the caller's ref so both the internal
   // hover-play effect and the caller see the same node.
@@ -67,6 +72,7 @@ export function HoverAutoplayVideo({
       void video.play().catch(() => undefined);
     };
     const onLeave = (): void => {
+      playback.cancelResume();
       video.pause();
     };
     container.addEventListener("mouseenter", onEnter);
@@ -75,23 +81,26 @@ export function HoverAutoplayVideo({
       container.removeEventListener("mouseenter", onEnter);
       container.removeEventListener("mouseleave", onLeave);
     };
-  }, []);
+  }, [playback.cancelResume]);
 
   return (
     <div
       ref={containerRef}
       data-hover-autoplay
-      style={{ width: "100%", height: "100%", display: "block" }}
+      style={{ width: "100%", height: "100%", display: "block", position: "relative" }}
     >
       <video
         ref={setVideoEl}
-        src={src}
-        controls
+        src={playback.src}
+        controls={!playback.audioUnavailable}
+        onLoadedMetadata={playback.onLoadedMetadata}
+        onError={playback.onError}
         playsInline
         muted
         preload="metadata"
         style={{ ...DEFAULT_STYLE, ...(style ?? {}) }}
       />
+      <VideoPlaybackStatus playback={playback} />
     </div>
   );
 }

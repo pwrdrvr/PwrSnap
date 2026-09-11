@@ -260,6 +260,19 @@ export async function fileResponse(
     }
   }
 
+  // Preparation probes need metadata, never another copy of the whole MP4.
+  // Range is defined for GET; a HEAD response describes the complete file.
+  if (request.method === "HEAD") {
+    return new Response(null, {
+      status: 200,
+      headers: {
+        ...validatorHeaders,
+        "content-type": mimeForPath(filePath),
+        "content-length": String(total)
+      }
+    });
+  }
+
   let rangeHeader = request.headers.get("range");
   if (rangeHeader !== null) {
     // If-Range: serve the partial only when the validator still

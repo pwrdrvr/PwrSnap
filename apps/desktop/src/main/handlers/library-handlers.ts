@@ -343,6 +343,9 @@ export function registerLibraryDataHandlers(): void {
         message: `capture is not in trash: ${req.id}`
       });
     }
+    // Remove admission before any async file cleanup. The playback owner
+    // rechecks this row after source resolution, including across processes.
+    hardDeleteCapture(req.id);
     try {
       // Bundle captures live at <userData>/.trash/<id>/{<id>.pwrsnap, <id>.png};
       // legacy captures live as a single <userData>/.trash/<id><ext> file
@@ -373,7 +376,6 @@ export function registerLibraryDataHandlers(): void {
         message: cause instanceof Error ? cause.message : String(cause)
       });
     }
-    hardDeleteCapture(req.id);
     broadcastCapturesChanged([req.id]);
     return ok(undefined);
   });
@@ -387,8 +389,9 @@ export function registerLibraryDataHandlers(): void {
       // all live in the same `.trash/` directory; the basename
       // alone doesn't tell purgeOneFromTrash which file to remove.
       const record = getCaptureById(id);
+      if (record === null) continue;
+      hardDeleteCapture(id);
       try {
-        if (record === null) continue;
         if (record.bundle_path !== null) {
           await purgeBundlePairFromTrash(id);
         } else if (record.legacy_src_path !== null) {
@@ -408,7 +411,6 @@ export function registerLibraryDataHandlers(): void {
           message: cause instanceof Error ? cause.message : String(cause)
         });
       }
-      hardDeleteCapture(id);
       removed += 1;
     }
     if (removed > 0) broadcastCapturesChanged(ids);

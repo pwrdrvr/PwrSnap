@@ -41,6 +41,15 @@ describe("commandOwner", () => {
     expect(commandOwner("storage:snapshot")).toBe("library");
   });
 
+  test("playback preparation and acknowledged cache cleanup share the agent owner", () => {
+    for (const name of ["video:preparePlayback", "storage:runRenderCacheCleanup"]) {
+      expect(commandOwner(name)).toBe("agent");
+      expect(peerOwnsCommand("library", name)).toBe(true);
+      expect(peerOwnsCommand("agent", name)).toBe(false);
+    }
+    expect(commandOwner("storage:maintainRenderCache")).toBe("library");
+  });
+
   test("chat surfaces route to the library despite the codex: prefix", () => {
     expect(commandOwner("codex:enrich")).toBe("agent");
     expect(commandOwner("codex:libraryChat:send")).toBe("library");

@@ -7,6 +7,9 @@ import { computeTreeRenderHash } from "../render/compose-tree";
 import { getDb } from "./db";
 import { listLayerTree } from "./layers-repo";
 import { getCacheRoot, getLegacyCacheRoot } from "./paths";
+import { removeLegacyVideoPlaybackCache, withVideoPlaybackCacheCleanup } from "./video-playback-cache";
+
+export { removeLegacyVideoPlaybackCache } from "./video-playback-cache";
 
 const log = getMainLogger("pwrsnap:render-cache-maintenance");
 const RAPID_RENDER_WIDTHS = [140, 400] as const;
@@ -27,8 +30,11 @@ export type LegacyRenderCacheMigrationResult = {
 };
 
 export async function clearRenderCache(): Promise<void> {
-  await rm(getCacheRoot(), { recursive: true, force: true });
-  await mkdir(getCacheRoot(), { recursive: true });
+  await withVideoPlaybackCacheCleanup(undefined, async () => {
+    await removeLegacyVideoPlaybackCache();
+    await rm(getCacheRoot(), { recursive: true, force: true });
+    await mkdir(getCacheRoot(), { recursive: true });
+  });
 }
 
 /**
@@ -37,6 +43,13 @@ export async function clearRenderCache(): Promise<void> {
  * rebuilt on demand through pwrsnap-cache://.
  */
 export async function trimRenderCache(): Promise<void> {
+  await withVideoPlaybackCacheCleanup(undefined, async () => {
+    await removeLegacyVideoPlaybackCache();
+    await trimRenderCacheFiles();
+  });
+}
+
+async function trimRenderCacheFiles(): Promise<void> {
   const root = getCacheRoot();
   await mkdir(root, { recursive: true });
   const keepByCaptureId = buildRapidRenderCacheKeepSet();

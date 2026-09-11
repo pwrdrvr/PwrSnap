@@ -28,6 +28,7 @@ import {
 } from "./paths";
 import { getMainLogger } from "../log";
 import { TRASH_RETENTION_DAYS } from "./trash-retention";
+import { removeLegacyVideoPlaybackCache, withVideoPlaybackCacheCleanup } from "./video-playback-cache";
 
 const log = getMainLogger("pwrsnap:source-store");
 
@@ -440,7 +441,7 @@ export async function purgeOneFromTrash(captureId: string, srcPath: string): Pro
 /**
  * Remove every cached derived artifact for a capture. For images
  * the render-cache directory is `<cacheRoot>/<captureId>/...`; for
- * videos the export-cache directory is `<cacheRoot>/video/<captureId>/...`.
+ * videos exports and prepared playback share `<cacheRoot>/video/<captureId>/...`.
  * Best-effort + idempotent — missing dirs are fine. Called from
  * `library:purge` / `library:purgeAll` AFTER `hardDeleteCapture`
  * (which removes the DB rows via cascade).
@@ -451,14 +452,17 @@ export async function purgeOneFromTrash(captureId: string, srcPath: string): Pro
  * file itself.
  */
 export async function purgeCacheForCapture(captureId: string): Promise<void> {
-  const cacheRoot = getCacheRoot();
-  const imageDir = join(cacheRoot, captureId);
-  const videoDir = join(cacheRoot, "video", captureId);
-  await Promise.allSettled([
-    rm(imageDir, { recursive: true, force: true }),
-    rm(videoDir, { recursive: true, force: true }),
-    deletePendingSourcesForCapture(captureId)
-  ]);
+  await withVideoPlaybackCacheCleanup(captureId, async () => {
+    const cacheRoot = getCacheRoot();
+    const imageDir = join(cacheRoot, captureId);
+    const videoDir = join(cacheRoot, "video", captureId);
+    await Promise.allSettled([
+      rm(imageDir, { recursive: true, force: true }),
+      rm(videoDir, { recursive: true, force: true }),
+      deletePendingSourcesForCapture(captureId),
+      removeLegacyVideoPlaybackCache()
+    ]);
+  });
 }
 
 /**

@@ -13,7 +13,7 @@ vi.mock("electron", () => ({ app: {
   getAppPath: () => resolve("apps/desktop"),
   getPath: () => state.root
 } }));
-vi.mock("../../persistence/paths", () => ({ getCacheRoot: () => state.root }));
+vi.mock("../../persistence/paths", () => ({ getCacheRoot: () => join(state.root, "render-cache") }));
 vi.mock("../../persistence/video-repo", () => ({ lookupExport: () => null, recordExport: () => undefined }));
 vi.mock("../../log", () => ({ getMainLogger: () => ({ info() {}, warn() {}, error() {}, debug() {} }) }));
 
@@ -115,7 +115,7 @@ describe.skipIf(ffmpeg === null)("recorded audio through real FFmpeg", () => {
   });
 
   test("playback copies video packets, mixes delayed mic at the right time, and retains system tail", async () => {
-    const path = await prepareVideoPlayback({ videoPath: source, ...dual });
+    const path = await prepareVideoPlayback({ captureId: "fixture", videoPath: source, ...dual });
     expect(path).not.toBe(source);
     expect(await probeAudioStreamCount(path)).toBe(1);
     // A byte-identical elementary video stream proves -c:v copy really ran.
@@ -127,20 +127,20 @@ describe.skipIf(ffmpeg === null)("recorded audio through real FFmpeg", () => {
     expect(magnitude(samples, 880, 0.8, 0.4)).toBeGreaterThan(0.02);
     expect(magnitude(samples, 440, 2.1, 0.2)).toBeGreaterThan(0.02);
     expect(magnitude(samples, 880, 2.1, 0.2)).toBeLessThan(0.003);
-    expect(await prepareVideoPlayback({ videoPath: source, ...dual })).toBe(path);
+    expect(await prepareVideoPlayback({ captureId: "fixture", videoPath: source, ...dual })).toBe(path);
   });
 
   test("playback returns original for single, silent or stale dual recordings", async () => {
-    expect(await prepareVideoPlayback({ videoPath: micOnly, hasSystemAudio: false, hasMicrophoneAudio: true })).toBe(micOnly);
-    expect(await prepareVideoPlayback({ videoPath: systemOnly, ...dual })).toBe(systemOnly);
-    expect(await prepareVideoPlayback({ videoPath: silent, ...dual })).toBe(silent);
+    expect(await prepareVideoPlayback({ captureId: "fixture", videoPath: micOnly, hasSystemAudio: false, hasMicrophoneAudio: true })).toBe(micOnly);
+    expect(await prepareVideoPlayback({ captureId: "fixture", videoPath: systemOnly, ...dual })).toBe(systemOnly);
+    expect(await prepareVideoPlayback({ captureId: "fixture", videoPath: silent, ...dual })).toBe(silent);
   });
 
   test("playback invalidates a derivative after the source revision changes", async () => {
-    const first = await prepareVideoPlayback({ videoPath: source, ...dual });
+    const first = await prepareVideoPlayback({ captureId: "fixture", videoPath: source, ...dual });
     const info = await stat(source);
     await utimes(source, info.atime, new Date(info.mtimeMs + 2000));
-    const next = await prepareVideoPlayback({ videoPath: source, ...dual });
+    const next = await prepareVideoPlayback({ captureId: "fixture", videoPath: source, ...dual });
     expect(next).not.toBe(first);
     expect(await probeAudioStreamCount(next)).toBe(1);
   });

@@ -6,8 +6,12 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   currentRoot: "",
   legacyRoot: "",
+  userDataRoot: "",
   captureRows: [] as Array<{ id: string; width_px?: number; height_px?: number }>
 }));
+
+vi.mock("electron", () => ({ app: { getPath: () => mocks.userDataRoot } }));
+vi.mock("../../log", () => ({ getMainLogger: () => ({ info() {}, warn() {}, error() {}, debug() {} }) }));
 
 vi.mock("../db", () => ({
   getDb: () => ({
@@ -39,6 +43,7 @@ let tempRoot: string;
 beforeEach(async () => {
   vi.resetModules();
   tempRoot = await mkdtemp(join(tmpdir(), "pwrsnap-render-cache-maintenance-"));
+  mocks.userDataRoot = tempRoot;
   mocks.legacyRoot = join(tempRoot, "cache");
   mocks.currentRoot = join(tempRoot, "render-cache");
   mocks.captureRows = [];

@@ -2,6 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, rename, rm, stat } from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
 import { app } from "electron";
+import { getCacheRoot } from "../persistence/paths";
+import { runVideoPlaybackPreparation } from "../persistence/video-playback-cache";
 import {
   AudioExtractError,
   buildRecordingAudioArgs,
@@ -39,14 +41,18 @@ function coalesce(key: string, work: () => Promise<string>): Promise<string> {
 }
 
 /** FFmpeg only sees a unique staging file. Readers only see complete media. */
-async function publishMedia(outPath: string, args: string[]): Promise<string> {
-  await mkdir(dirname(outPath), { recursive: true });
+async function publishMedia(outPath: string, args: string[], signal?: AbortSignal): Promise<string> {
   const stagingPath = `${outPath}.${process.pid}.${randomUUID()}.partial${extname(outPath)}`;
   try {
-    await runAudioFfmpeg(["-y", "-loglevel", "error", ...args, stagingPath]);
+    signal?.throwIfAborted();
+    await mkdir(dirname(outPath), { recursive: true });
+    signal?.throwIfAborted();
+    await runAudioFfmpeg(["-y", "-loglevel", "error", ...args, stagingPath], { signal });
+    signal?.throwIfAborted();
     if (!(await fileExists(stagingPath))) {
       throw new AudioExtractError("ffmpeg_failed", "ffmpeg produced empty or invalid media");
     }
+    signal?.throwIfAborted();
     try {
       await rename(stagingPath, outPath);
     } catch (cause) {
@@ -55,9 +61,10 @@ async function publishMedia(outPath: string, args: string[]): Promise<string> {
       // Windows refuses replacing it; keep that winner instead of removing it.
       if ((code !== "EEXIST" && code !== "EPERM") || !(await fileExists(outPath))) throw cause;
     }
+    signal?.throwIfAborted();
     return outPath;
   } finally {
-    await rm(stagingPath, { force: true }).catch(() => undefined);
+    await rm(stagingPath, { force: true });
   }
 }
 
@@ -125,19 +132,25 @@ export async function extractVideoAudio(args: RecordingAudioSource & AudioTrim):
  * intact so exports can still select either source. Non-dual recordings (also
  * stale metadata with fewer than two actual streams) use the original file.
  */
-export async function prepareVideoPlayback(args: RecordingAudioSource): Promise<string> {
-  if (!args.hasSystemAudio || !args.hasMicrophoneAudio) return args.videoPath;
-  const source = await fingerprint(args);
-  const hash = computeVideoPlaybackCacheKey(source);
-  const outPath = join(app.getPath("userData"), "sizzle-cache", "video-playback", `${hash}.mp4`);
-  return coalesce(outPath, async () => {
-    if (await fileExists(outPath)) return outPath;
-    if (await probeAudioStreamCount(args.videoPath) < 2) return args.videoPath;
+export function prepareVideoPlayback(args: RecordingAudioSource & { captureId: string }): Promise<string> {
+  const key = JSON.stringify([args.videoPath, args.hasSystemAudio, args.hasMicrophoneAudio]);
+  return runVideoPlaybackPreparation(args.captureId, key, async (signal) => {
+    if (!args.hasSystemAudio || !args.hasMicrophoneAudio) return args.videoPath;
+    const source = await fingerprint(args);
+    signal.throwIfAborted();
+    const hash = computeVideoPlaybackCacheKey(source);
+    const outPath = join(getCacheRoot(), "video", args.captureId, `playback-${hash}.mp4`);
+    const cached = await fileExists(outPath);
+    signal.throwIfAborted();
+    if (cached) return outPath;
+    const available = await probeAudioStreamCount(args.videoPath, signal);
+    signal.throwIfAborted();
+    if (available < 2) return args.videoPath;
     return publishMedia(outPath, [
       "-i", args.videoPath, "-map", "0:v:0", "-c:v", "copy",
       ...buildRecordingAudioArgs([0, 1]),
       "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"
-    ]);
+    ], signal);
   });
 }
 

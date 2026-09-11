@@ -133,6 +133,23 @@ describe("compareSemver", () => {
   });
 });
 
+describe("macOS update compatibility assets", () => {
+  test.skipIf(process.platform === "win32")("requires universal fallback and accepts mixed architecture releases", async () => {
+    const { selectAppUpdateReleases } = await importAutoUpdater();
+    const legacy = githubRelease("v1.0.0");
+    const mixed = githubRelease("v1.0.1", { assets: [
+      ...macUpdateAssets("1.0.1"),
+      { name: "PwrSnap-1.0.1-arm64-mac.zip", state: "uploaded" }
+    ] });
+    const incomplete = githubRelease("v1.0.2", { assets: [
+      { name: "latest-mac.yml", state: "uploaded" },
+      { name: "PwrSnap-1.0.2-arm64-mac.zip", state: "uploaded" }
+    ] });
+    expect(selectAppUpdateReleases([legacy, mixed, incomplete]).latest?.tag_name).toBe("v1.0.1");
+    expect(selectAppUpdateReleases([legacy, incomplete]).latest?.tag_name).toBe("v1.0.0");
+  });
+});
+
 describe("selectChannelReleases", () => {
   test("classifies main-train alpha and beta without stealing stable latest", async () => {
     const { selectChannelReleases } = await importAutoUpdater();

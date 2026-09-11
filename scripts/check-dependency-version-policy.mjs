@@ -14,6 +14,7 @@ const SKIP_DIRS = new Set([
   ".agents",
   "node_modules",
   "release-stage",
+  "release-stage-arm64",
   "dist",
   "out",
   "playwright-report",

@@ -13,6 +13,8 @@
  *     a stage dir, then point electron-builder at the stage. This
  *     script encapsulates that.
  *   - Modes:
+ *       --arch=arm64  : isolated Apple Silicon stage (default: universal).
+ *       --with-zip    : include updater ZIP in an ad-hoc dryrun for validation.
  *       --dryrun      : build + package unsigned, no publish (fast iteration
  *                       — the only mode usable today without Apple
  *                       Developer ID provisioning).
@@ -51,13 +53,14 @@ import {
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { releaseArchitecture, stageName, verifyStageTarget, thinStagedHelpers, thinStagedFfmpeg, verifyPackagedArchitecture, pruneStagedArm64Sharp } from "./macos-release-artifacts.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const desktopRoot = resolve(__dirname, "..");
 const repoRoot = resolve(desktopRoot, "..", "..");
-const stageDir = join(desktopRoot, "release-stage");
-const releaseArch = "universal";
+const releaseArch = releaseArchitecture(process.argv.slice(2));
+const stageDir = join(desktopRoot, stageName(releaseArch));
 const pnpmProjectConfigEnv = {
   npm_config_global_pnpmfile: "",
   NPM_CONFIG_GLOBAL_PNPMFILE: ""
@@ -67,6 +70,7 @@ let codesignKeychainCleanup = null;
 const args = process.argv.slice(2);
 const dryrun = args.includes("--dryrun");
 const noPublish = args.includes("--no-publish");
+const withZip = args.includes("--with-zip");
 const prepareOnly = args.includes("--prepare-only");
 const signStageOnly = args.includes("--sign-stage-only");
 // The bundled LGPL ffmpeg is NEVER built here. It is produced by the
@@ -98,6 +102,9 @@ if (skipNotarize && dryrun) {
 }
 
 const publish = !dryrun && !noPublish && !prepareOnly;
+if (publish && releaseArch === "arm64") {
+  throw new Error("ARM64 publication requires the paired CI release; use --no-publish");
+}
 
 /**
  * Returns true when this run is expected to produce a notarizable
@@ -439,7 +446,7 @@ if (!signStageOnly) {
   step("build native helpers");
   runChecked("pnpm", ["--filter", "@pwrsnap/desktop", "build:native"], {
     cwd: repoRoot,
-    env: releaseArch === "universal" ? { PWRSNAP_NATIVE_UNIVERSAL: "1" } : {}
+    env: { PWRSNAP_NATIVE_UNIVERSAL: "1" }
   });
 
   // 3b. The bundled LGPL ffmpeg is injected, not built. See the note by
@@ -478,6 +485,9 @@ if (!signStageOnly) {
   //     bug in Beta.3 — every install was DOA).
   step("inject darwin platform packages from workspace pnpm store");
   injectDarwinPlatformPackages();
+  if (releaseArch === "arm64") {
+    pruneStagedArm64Sharp(stageDir);
+  }
 
   // 6. Build the staged Electron-native sqlite sidecar. The stage contains only
   //    production dependencies, so the script gets the packaged Electron version
@@ -510,6 +520,14 @@ if (!signStageOnly) {
   run(
     `cp ${join(desktopRoot, "electron-builder.yml")} ${join(stageDir, "electron-builder.yml")}`
   );
+  if (releaseArch === "arm64") {
+    const configPath = join(stageDir, "electron-builder.yml");
+    const config = readFileSync(configPath, "utf8");
+    if (config.split("arch: [universal]").length !== 3) {
+      throw new Error("Expected exactly two universal macOS targets (DMG and ZIP)");
+    }
+    writeFileSync(configPath, config.replaceAll("arch: [universal]", "arch: [arm64]"));
+  }
   run(`cp ${join(repoRoot, ".npmrc")} ${join(stageDir, ".npmrc")}`);
   for (const file of ["THIRD_PARTY_LICENSES", "CHANGELOG.md"]) {
     run(`cp ${join(repoRoot, file)} ${join(stageDir, file)}`);
@@ -524,6 +542,13 @@ if (!signStageOnly) {
       rmSync(target, { recursive: true, force: true });
     }
   }
+
+  // Shared build/native stays universal. Thin only isolated staged copies,
+  // avoiding universal→ARM64→universal helper cache contamination.
+  if (releaseArch === "arm64") thinStagedHelpers(stageDir);
+  writeFileSync(join(stageDir, "release-target.json"), JSON.stringify({
+    arch: releaseArch, version: JSON.parse(readFileSync(join(stageDir, "package.json"), "utf8")).version
+  }) + "\n");
 
   // electron-builder also needs electron-builder.yml to resolve
   // electronVersion before signing. The CI sign job re-derives this from
@@ -547,6 +572,9 @@ if (!signStageOnly) {
     throw new Error(`release-stage at ${stageDir} is missing node_modules/; prepare step did not complete`);
   }
 }
+
+verifyStageTarget(stageDir, releaseArch, JSON.parse(readFileSync(join(desktopRoot, "package.json"), "utf8")).version);
+if (releaseArch === "arm64") thinStagedFfmpeg(stageDir);
 
 // 8. electron-builder.
 //    Dryrun mode (preview/dev) builds DMG only — saves ~30s of CI time and
@@ -583,6 +611,7 @@ if (publish) {
 const builderArgs = ["--mac"];
 if (dryrun) {
   builderArgs.push("dmg");
+  if (withZip) builderArgs.push("zip");
 }
 builderArgs.push(`--${releaseArch}`);
 if (dryrun) {
@@ -638,28 +667,13 @@ for (const helper of nativeHelpers) {
   }
 }
 
-// 9. For universal builds, verify both Apple Silicon and Intel slices are
-//    present in the main executable, the bundled Swift helper, and the
-//    better-sqlite3 native addon. A single-arch slice slipping through
-//    means Intel users would launch into an immediate SIGKILL.
-if (releaseArch === "universal" && process.platform === "darwin") {
-  step("verify universal binary slices");
-  const lipoTargets = [
-    join(builtApp, "Contents", "MacOS", "PwrSnap"),
-    ...nativeHelpers,
-    join(
-      builtApp,
-      "Contents",
-      "Resources",
-      "app.asar.unpacked",
-      "node_modules",
-      "better-sqlite3",
-      "electron-native",
-      "better_sqlite3.node"
-    )
-  ];
-  for (const target of lipoTargets) {
-    runChecked("lipo", [target, "-verify_arch", "x86_64", "arm64"]);
+// Check every unpacked Mach-O, including framework dylibs and Quick Look.
+if (process.platform === "darwin") {
+  verifyPackagedArchitecture(builtApp, releaseArch);
+  runChecked("codesign", ["--verify", "--deep", "--strict", "--verbose=2", builtApp]);
+  if (shouldNotarize()) {
+    runChecked("xcrun", ["stapler", "validate", builtApp]);
+    runChecked("spctl", ["--assess", "--type", "execute", "--verbose=2", builtApp]);
   }
 }
 
@@ -669,7 +683,9 @@ if (releaseArch === "universal" && process.platform === "darwin") {
 //    is a belt-and-braces guard against accidental edits to that YAML.
 //    Pass the .app path explicitly so resolution doesn't compound off cwd.
 step("verify packaged asar contents");
-runChecked("node", [join(desktopRoot, "scripts", "verify-asar-contents.mjs"), builtApp]);
+runChecked("node", [join(desktopRoot, "scripts", "verify-asar-contents.mjs"), builtApp], {
+  env: { PWRSNAP_TARGET_ARCH: releaseArch }
+});
 
 step("done");
 const dist = join(stageDir, "dist");

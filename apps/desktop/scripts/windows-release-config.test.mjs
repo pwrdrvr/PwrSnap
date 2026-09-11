@@ -324,7 +324,7 @@ describe("Windows release configuration", () => {
     // platform attaches one version-free copy. Without the Windows half the
     // site has to call the GitHub Releases API from the browser just to learn
     // the installer's URL.
-    expect(workflow).toContain("Prepare stable-name DMG alias");
+    expect(workflow).toContain("Validate paired macOS assets and assemble shared updater metadata");
     expect(workflow).toContain("Prepare stable-name Windows installer alias");
 
     const protectedWindowsJob = workflow

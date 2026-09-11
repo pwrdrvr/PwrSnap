@@ -15,9 +15,13 @@ OpenAI Codex plan, billed to the AI cloud provider you've already set Codex
 up with. No new cloud provider for PwrSnap to talk to, no new account to
 manage, no telemetry.
 
-| macOS | Windows | Documentation |
-| --- | --- | --- |
-| **[Download the signed universal DMG](https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.dmg)** | **[Open the latest release](https://github.com/pwrdrvr/PwrSnap/releases/latest)** and choose `PwrSnap-<version>-windows-x64-setup.exe` | **[Read the docs](https://docs.pwrsnap.com)** |
+**[Download for Apple Silicon](https://github.com/pwrdrvr/PwrSnap/releases)** —
+choose `PwrSnap-<version>-arm64.dmg` for M-series Macs when available.
+The universal download also works on Apple Silicon.
+
+| Universal macOS | Windows x64 | Debian / Linux | Documentation |
+| --- | --- | --- | --- |
+| **[Download universal DMG](https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.dmg)** — Apple Silicon + Intel | **[Download Windows installer](https://github.com/pwrdrvr/PwrSnap/releases/latest)** | **[Installation status](https://docs.pwrsnap.com/install/#linux)** — no Debian package yet | **[Read the docs](https://docs.pwrsnap.com)** |
 
 ## Why you might want it
 
@@ -70,7 +74,7 @@ operator setup + feature reference at
 
 | Platform | Release artifact | Native architecture | Minimum OS | Release verification |
 | --- | --- | --- | --- | --- |
-| macOS | Universal DMG and updater ZIP | Apple Silicon + Intel | macOS 14 or later | Developer ID signed, hardened, and Apple-notarized |
+| macOS | ARM64 and universal DMG / updater ZIP | Apple Silicon; universal also supports Intel | macOS 14 or later | Developer ID signed, hardened, and Apple-notarized |
 | Windows | Per-user NSIS installer | x64 | Windows 10 or Windows 11 | Authenticode-signed; installer and app signatures are verified before publication |
 | Linux | No distributed package | — | — | Linux builds gate releases, but Linux desktop support is not shipped |
 
@@ -82,7 +86,9 @@ processing; normal users do not need to install FFmpeg separately.
 ### Install a stable release
 
 1. Open the [latest stable release](https://github.com/pwrdrvr/PwrSnap/releases/latest).
-2. On macOS, download `PwrSnap.dmg`, open it, and drag PwrSnap to Applications.
+2. On Apple Silicon, choose the release's `PwrSnap-<version>-arm64.dmg` when
+   available. On Intel, or if unsure, use the universal `PwrSnap.dmg`.
+   Open the DMG and drag PwrSnap to Applications.
    On Windows, download `PwrSnap-<version>-windows-x64-setup.exe` and run the
    per-user installer; its default location is
    `%LOCALAPPDATA%\Programs\PwrSnap`.
@@ -105,7 +111,15 @@ Signed release builds update through `electron-updater` using the `latest-mac.ym
 and `latest.yml` metadata published beside their installers. Choose Stable or
 Beta and Latest or Prerelease under **Settings → General → Updates**. The Help
 menu's **Check for Updates** runs the same check on demand; after a download,
-PwrSnap offers **Restart to Update**.
+PwrSnap offers **Restart to Update**. When a release contains both macOS
+architectures, Apple Silicon (including Rosetta) receives the ARM64 ZIP and
+Intel receives universal. Existing universal installations follow the same
+routing; older universal-only releases remain compatible.
+
+The Apple Silicon stable alias, `PwrSnap-arm64.dmg`, becomes available through
+`releases/latest/download/` after the first release containing it is promoted
+stable. Until then, use the Releases page above; existing stable releases may
+only offer universal.
 
 ### Want to hack on it
 

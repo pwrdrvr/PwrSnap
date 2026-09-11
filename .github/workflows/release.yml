@@ -1,4 +1,4 @@
-name: Release Desktop (macOS universal + Windows; Linux-gated)
+name: Release Desktop (macOS universal + Apple Silicon + Windows; Linux-gated)
 
 on:
   push:
@@ -28,7 +28,7 @@ jobs:
     name: Test and prepare signing input
     if: ${{ github.event_name != 'pull_request' }}
     runs-on: macos-26 # Icon Composer's actool requires the matching macOS 26 host.
-    timeout-minutes: 45
+    timeout-minutes: 75
     permissions:
       contents: read
       id-token: none
@@ -71,7 +71,9 @@ jobs:
         run: pnpm test
 
       - name: Prepare release stage
-        run: node apps/desktop/scripts/release.mjs --prepare-only
+        run: |
+          node apps/desktop/scripts/release.mjs --prepare-only
+          node apps/desktop/scripts/release.mjs --prepare-only --arch=arm64
 
       - name: Archive signing input
         id: archive
@@ -90,8 +92,10 @@ jobs:
             apps/desktop/package.json \
             apps/desktop/electron-builder.yml \
             apps/desktop/release-stage \
+            apps/desktop/release-stage-arm64 \
             .github/actions/select-xcode-for-actool \
             apps/desktop/scripts/release.mjs \
+            apps/desktop/scripts/macos-release-artifacts.mjs \
             apps/desktop/scripts/rebuild-native-for-electron.mjs \
             apps/desktop/scripts/sharp-platform-packages.mjs \
             apps/desktop/scripts/verify-asar-contents.mjs \
@@ -115,7 +119,7 @@ jobs:
     name: Sign, notarize, package macOS
     runs-on: macos-26
     needs: prepare
-    timeout-minutes: 60
+    timeout-minutes: 120
     environment: apple-signing
     permissions:
       contents: read
@@ -259,6 +263,10 @@ jobs:
           cp "$manifest" apps/desktop/release-stage/build/ffmpeg-source/ffmpeg-8.1.1-macos-universal-manifest.json
           cp "$dir/SOURCE-OFFER.txt" apps/desktop/release-stage/build/ffmpeg-source/ffmpeg-8.1.1-macos-universal-SOURCE-OFFER.txt
           cp "$dir/LGPL-NOTICE.txt" apps/desktop/release-stage/build/ffmpeg-source/ffmpeg-8.1.1-macos-universal-LGPL-NOTICE.txt
+          # Copy only the verified controlled payload. ARM64 extraction records
+          # both hashes before the ARM64 app is signed; source offers stay intact.
+          cp -R apps/desktop/release-stage/build/ffmpeg apps/desktop/release-stage-arm64/build/
+          cp -R apps/desktop/release-stage/build/ffmpeg-source apps/desktop/release-stage-arm64/build/
 
       # No checkout in this job: the action arrives inside the signing input
       # tarball the prepare job archived (see its tar list).
@@ -287,18 +295,20 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_TEAM_ID: T44CNHC4UH
 
-        run: node apps/desktop/scripts/release.mjs --sign-stage-only --no-publish
-
-      - name: Prepare stable-name DMG alias
-        # PwrSnap.dmg is the canonical download URL referenced from
-        # docs.pwrsnap.com and pwrsnap.com — it always points at the
-        # latest promoted release. Copy the versioned DMG under the alias name;
-        # the final publication job uploads both only after every gate passes.
         run: |
-          set -euo pipefail
-          cd apps/desktop/release-stage/dist
-          versioned=$(ls PwrSnap-*-universal.dmg | head -n 1)
-          cp "$versioned" PwrSnap.dmg
+          node apps/desktop/scripts/release.mjs --sign-stage-only --no-publish
+          node apps/desktop/scripts/release.mjs --sign-stage-only --no-publish --arch=arm64
+
+      - name: Validate paired macOS assets and assemble shared updater metadata
+        # One writer preserves the universal legacy path while adding ARM64.
+        # PwrSnap.dmg stays universal; the new alias is PwrSnap-arm64.dmg.
+        run: |
+          node apps/desktop/scripts/macos-release-artifacts.mjs \
+            apps/desktop/release-stage/dist \
+            apps/desktop/release-stage-arm64/dist \
+            "$(node -p 'JSON.parse(require("fs").readFileSync("apps/desktop/package.json", "utf8")).version')"
+          cp apps/desktop/release-stage-arm64/build/ffmpeg-source/ffmpeg-macos-arm64-slice.json \
+            apps/desktop/release-stage/build/ffmpeg-source/
 
       # Required input to the publication job. This is not a best-effort debug
       # upload: no GitHub Release exists until all platform gates succeed.
@@ -311,6 +321,7 @@ jobs:
             apps/desktop/release-stage/dist/*.zip
             apps/desktop/release-stage/dist/*.blockmap
             apps/desktop/release-stage/dist/latest-mac.yml
+            apps/desktop/release-stage/dist/macos-artifact-sizes.json
             apps/desktop/release-stage/build/ffmpeg-source/*
           retention-days: 30
 
@@ -767,6 +778,7 @@ jobs:
           # signing jobs, so an upload-glob change there would otherwise break
           # a download button silently.
           for stable_alias in mac-dist/dist/PwrSnap.dmg \
+            mac-dist/dist/PwrSnap-arm64.dmg \
             windows-dist/PwrSnap-windows-x64-setup.exe; do
             if [ ! -f "$stable_alias" ]; then
               echo "::error::Stable-name download alias is missing: $stable_alias" >&2
@@ -780,8 +792,12 @@ jobs:
             --title "$RELEASE_TAG" \
             --notes-file "$notes" \
             --prerelease \
+            --draft \
             "${mac_assets[@]}" \
             "${windows_assets[@]}"
+
+          # Hide the shared manifest until every ZIP upload has completed.
+          gh release edit "$RELEASE_TAG" --repo pwrdrvr/PwrSnap --draft=false --prerelease
 
           body_length="$(gh release view "$RELEASE_TAG" \
             --repo pwrdrvr/PwrSnap \

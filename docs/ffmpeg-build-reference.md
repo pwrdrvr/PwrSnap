@@ -27,6 +27,11 @@ downloads that run's artifact:
 | macOS artifact | `ffmpeg-8.1.1-macos-universal` → `release-stage/build/ffmpeg/ffmpeg` |
 | Windows artifact | `ffmpeg-8.1.1-windows-x64` → injected by `scripts/package-win.mjs` as `PwrSnapFFmpeg.exe` |
 
+Apple Silicon packages extract the ARM64 slice of that verified universal
+artifact before signing. The additional `ffmpeg-macos-arm64-slice.json` release
+asset records the original and extracted hashes; it does not replace the
+original universal manifest, source tarball, or LGPL offer.
+
 CI verifies the downloaded `manifest.json` (sha256, forbidden flags, required
 encoders, required decoders, required devices) before packaging.
 

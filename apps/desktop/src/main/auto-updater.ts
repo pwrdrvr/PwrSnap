@@ -917,7 +917,7 @@ function hasUploadedReleaseAsset(
 ): boolean {
   return (
     release.assets?.some((asset) => {
-      if (!asset.name || asset.state === "deleted") return false;
+      if (!asset.name || (asset.state !== undefined && asset.state !== "uploaded")) return false;
       return predicate(asset.name);
     }) ?? false
   );
@@ -939,7 +939,9 @@ function hasPlatformUpdateAssets(release: GitHubRelease): boolean {
     release,
     (name) => name === MAC_UPDATE_CHANNEL_FILE
   );
-  const hasZip = hasUploadedReleaseAsset(release, (name) => name.endsWith(".zip"));
+  // Universal is the compatibility fallback for Intel and historical clients.
+  // An ARM64-only or unrelated ZIP must not make a release eligible.
+  const hasZip = hasUploadedReleaseAsset(release, (name) => name.endsWith("-universal-mac.zip"));
   return hasChannelFile && hasZip;
 }
 

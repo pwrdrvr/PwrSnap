@@ -1274,7 +1274,7 @@ doesn't.
   except through `pnpm licenses:generate`, and do not remove the shipped
   notices/changelog resources from packaged builds. See
   [docs/third-party-license-notices.md](docs/third-party-license-notices.md).
-- macOS and Windows both ship: a signed/notarized universal DMG and a
+- macOS and Windows both ship: signed/notarized Apple Silicon and universal DMGs and a
   signed NSIS x64 installer (plus the winget manifests under
   [docs/windows/winget](docs/windows/winget)). Linux is not a distribution
   target — the Linux CI job is E2E only. The old "macOS-first, cross-platform

@@ -418,3 +418,18 @@ describe("verify-asar-contents", () => {
     );
   });
 });
+
+
+describe("Apple Silicon unpacked runtime", () => {
+  test("requires ARM64 bindings and rejects Intel payloads without weakening universal checks", () => {
+    const { appPath, resources } = fakeApp();
+    writeUnpackedNativeFixtures(resources, allUnpackedNativeFixtures.filter((path) => !path.includes("-x64/")));
+    expect(findMissingUnpackedNative(appPath, "darwin", "arm64")).toEqual([]);
+    expect(findForeignUnpackedNative(appPath, "darwin", "arm64")).toEqual([]);
+    expect(findMissingUnpackedNative(appPath, "darwin", "universal")).toHaveLength(2);
+    writeUnpackedNativeFixtures(resources);
+    expect(findForeignUnpackedNative(appPath, "darwin", "arm64")).toEqual(["sharp-darwin-x64", "sharp-libvips-darwin-x64"]);
+    expect(() => verifyUnpackedNative(appPath, "darwin", "arm64")).toThrow(/foreign Sharp/);
+    expect(findForeignSharpAsarPackages(["/node_modules/@img/sharp-darwin-x64/package.json"], "darwin", "arm64")).toEqual(["sharp-darwin-x64"]);
+  });
+});

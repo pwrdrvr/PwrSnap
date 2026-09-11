@@ -444,8 +444,8 @@ export function registerRecordingHandlers(): void {
     // never staring at "3, 2, 1, …" only to hit a permission wall.
     // Screen Recording is required: the gate fires the macOS prompt on
     // the first-ever attempt and routes to System Settings thereafter
-    // (see screen-permission-gate.ts). Missing audio is a degraded
-    // continuation that the selector dialog handled before calling us.
+    // (see screen-permission-gate.ts). Requested audio must be granted;
+    // interactive callers surface a rejection with recovery instructions.
     const blocked = await guardRecordingAttempt(request.capabilities);
     if (blocked) return blocked;
     try {

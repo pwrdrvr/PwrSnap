@@ -30,9 +30,16 @@ vi.mock("../../capture/rect-overlap", () => ({
   }
 }));
 
+const showMessageBox = vi.fn(async () => ({ response: 1 }));
+const notificationSupported = vi.fn(() => false);
+const hideSelector = vi.fn();
+const releaseSnapshot = vi.fn();
+
 vi.mock("electron", () => ({
+  dialog: { showMessageBox },
   app: { dock: { isVisible: () => true } },
-  Notification: Object.assign(function () {}, { isSupported: () => false }),
+  // A supported notification may accept show() without displaying a banner.
+  Notification: Object.assign(function () { return { show: () => undefined }; }, { isSupported: notificationSupported }),
   screen: { getAllDisplays: () => [SKEWED] }
 }));
 
@@ -46,9 +53,9 @@ vi.mock("../../log", () => ({
 }));
 vi.mock("../../capture/region-selector", () => ({
   getLastWindowListSnapshot: () => [],
-  hideSelector: () => undefined
+  hideSelector
 }));
-vi.mock("../../capture/screen-snapshot", () => ({ releaseSnapshot: () => undefined }));
+vi.mock("../../capture/screen-snapshot", () => ({ releaseSnapshot }));
 vi.mock("../../capture/source-app", () => ({
   findWindowById: (_windows: unknown, id: number) => id === 42 ? { windowId: 42, pid: 123 } : null,
   resolveSelectionSourceApp: () => null,
@@ -72,6 +79,11 @@ beforeEach(() => {
   globalCalls.length = 0;
   displayLocalCalls.length = 0;
   dispatch.mockClear();
+  showMessageBox.mockReset();
+  showMessageBox.mockResolvedValue({ response: 1 });
+  notificationSupported.mockReturnValue(false);
+  hideSelector.mockClear();
+  releaseSnapshot.mockClear();
   attachIdentity.mockClear();
   recordingState = { phase: "idle" };
 });
@@ -147,5 +159,81 @@ describe("startRecordingFromSelection — overlap coordinate space", () => {
     // with this rect is exactly the shipped defect.
     expect(displayLocalCalls).toEqual([]);
     expect(attachIdentity).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("startRecordingFromSelection — preflight feedback", () => {
+  const selection = {
+    ok: true as const, snappedWindowId: 42,
+    rect: { x: 1496, y: -473, w: 600, h: 400 }, displayId: 3,
+    screenSnapshotId: "preflight-snapshot", previousAppPid: null
+  };
+  const defaults = {
+    includeSystemAudio: false, includeMicrophone: true, videoCaptureCursor: false
+  };
+  const microphoneError = {
+    kind: "permission", code: "microphone_not_granted",
+    message: "Microphone permission is required for the selected recording options."
+  };
+
+  test.each([false, true])("shows actionable microphone failure regardless of notification support (%s)", async (supported) => {
+    const { startRecordingFromSelection } = await import("../record-from-selection");
+    notificationSupported.mockReturnValue(supported);
+    dispatch.mockResolvedValueOnce({ ok: false, error: microphoneError } as never);
+    showMessageBox.mockImplementationOnce(async () => {
+      expect(hideSelector).toHaveBeenCalledOnce();
+      expect(releaseSnapshot).toHaveBeenCalledWith("preflight-snapshot");
+      return { response: 0 };
+    });
+
+    await startRecordingFromSelection(selection, defaults);
+
+    expect(showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
+      type: "error", title: "Recording could not start",
+      message: microphoneError.message,
+      detail: expect.stringContaining("Open System Permissions to grant access"),
+      buttons: ["Open System Permissions", "Dismiss"], cancelId: 1
+    }));
+    expect(dispatch).toHaveBeenLastCalledWith(
+      "settings:open", { page: "system-permissions" }, { principal: "ipc" }
+    );
+    expect(attachIdentity).not.toHaveBeenCalled();
+    expect(recordingState).toEqual({ phase: "idle" });
+  });
+
+  test("dismiss leaves permission and audio settings unchanged", async () => {
+    const { startRecordingFromSelection } = await import("../record-from-selection");
+    dispatch.mockResolvedValueOnce({ ok: false, error: microphoneError } as never);
+    await startRecordingFromSelection(selection, defaults);
+    expect(showMessageBox).toHaveBeenCalledOnce();
+    expect(dispatch).toHaveBeenCalledOnce();
+  });
+
+  test("also displays non-permission preflight errors", async () => {
+    const { startRecordingFromSelection } = await import("../record-from-selection");
+    dispatch.mockResolvedValueOnce({ ok: false, error: {
+      kind: "capture", code: "already_recording", message: "A recording is already in progress."
+    } } as never);
+    await startRecordingFromSelection(selection, defaults);
+    expect(showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
+      message: "A recording is already in progress.", buttons: ["Dismiss"], cancelId: 0
+    }));
+    expect(dispatch).toHaveBeenCalledOnce();
+  });
+
+  test.each(["cancelled", "success", "failed controls"])("does not duplicate feedback for %s", async (outcome) => {
+    const { startRecordingFromSelection } = await import("../record-from-selection");
+    if (outcome !== "success") {
+      dispatch.mockImplementationOnce(async () => {
+        if (outcome === "failed controls") recordingState = {
+          phase: "failed", sessionId: "failed-session", code: "recorder_spawn_failed",
+          canRetry: true, displayId: 3
+        };
+        return { ok: false, error: { kind: "capture", code: outcome === "cancelled" ? "cancelled" : "recording_start_failed", message: "Failed" } } as never;
+      });
+    }
+    await startRecordingFromSelection(selection, defaults);
+    expect(showMessageBox).not.toHaveBeenCalled();
   });
 });

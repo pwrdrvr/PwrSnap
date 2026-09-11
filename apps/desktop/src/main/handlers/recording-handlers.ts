@@ -119,16 +119,36 @@ function failedSessionId(req: unknown): string | null {
 async function guardRecordingAttempt(
   capabilities: RecordingCapabilities
 ): Promise<Result<never, PwrSnapError> | null> {
+  if (process.platform !== "darwin" && (capabilities.microphone || capabilities.systemAudio)) {
+    return err(validationError(
+      "recording_audio_unsupported",
+      "Audio recording is currently available only on macOS. Turn off Microphone and System audio to record video on this platform."
+    ));
+  }
   const blocked = await guardScreenCapture();
   if (blocked) return blocked;
   const storageBlocked = await ensureCapturesDirReady();
   if (storageBlocked) return storageBlocked;
   const readiness = readRecordingReadiness();
+  if (capabilities.microphone && readiness.microphone === "not-determined") {
+    try {
+      // Wait for the user's decision before starting the countdown or helper.
+      readiness.microphone = (await requestPermission("microphone")).status;
+    } catch (cause) {
+      log.warn("recording microphone permission request failed", { cause });
+      return err(permissionError(
+        "microphone_request_failed",
+        "PwrSnap couldn't request microphone access. Check Settings > System Permissions, then record again."
+      ));
+    }
+  } else if (capabilities.microphone && readiness.microphone !== "granted") {
+    void bus.dispatch("settings:open", { page: "system-permissions" }, { principal: "ipc" });
+  }
   if (capabilities.microphone && readiness.microphone !== "granted") {
     return err(
       permissionError(
         "microphone_not_granted",
-        "Microphone permission is required for the selected recording options."
+        "Allow PwrSnap in System Settings > Privacy & Security > Microphone, then record again. If you just enabled access, relaunch PwrSnap."
       )
     );
   }
@@ -288,7 +308,7 @@ export function validateRecordingStartRequest(
 
 /** Filename of the extracted full-clip audio under the video asset dir.
  *  Must stay in the `parseVideoAssetUrl` whitelist. */
-const VIDEO_AUDIO_ASSET = "audio.m4a";
+const VIDEO_AUDIO_ASSET = "audio-mixed-v2.m4a";
 /** Matches the timeline's smallest supported trim span. */
 const MIN_VIDEO_RANGE_SEC = 0.1;
 
@@ -310,6 +330,8 @@ async function ensureVideoAudioAsset(input: {
   captureId: string;
   videoPath: string;
   durationSec: number;
+  hasSystemAudio: boolean;
+  hasMicrophoneAudio: boolean;
 }): Promise<void> {
   const existing = videoAudioInFlight.get(input.captureId);
   if (existing !== undefined) return existing;
@@ -320,6 +342,8 @@ async function ensureVideoAudioAsset(input: {
 
     const extracted = await extractVideoAudio({
       videoPath: input.videoPath,
+      hasSystemAudio: input.hasSystemAudio,
+      hasMicrophoneAudio: input.hasMicrophoneAudio,
       startSec: 0,
       durationSec: input.durationSec
     });
@@ -448,8 +472,11 @@ export function registerRecordingHandlers(): void {
     // never staring at "3, 2, 1, …" only to hit a permission wall.
     // Screen Recording is required: the gate fires the macOS prompt on
     // the first-ever attempt and routes to System Settings thereafter
-    // (see screen-permission-gate.ts). Requested audio must be granted;
-    // interactive callers surface a rejection with recovery instructions.
+    // (see screen-permission-gate.ts). Requested audio is mandatory —
+    // never silently downgrade an explicitly enabled microphone — and
+    // interactive callers surface the rejection with recovery
+    // instructions. The selector's source chips make this rare: they
+    // show the grant state, and offer it, before the user commits.
     const blocked = await guardRecordingAttempt(request.capabilities);
     if (blocked) return blocked;
     try {
@@ -750,7 +777,7 @@ export function registerRecordingHandlers(): void {
   // Full-clip audio for the waveform lane. Reuses the sizzle
   // native-audio extractor (content-addressed under sizzle-cache) and
   // mirrors the result into the per-capture video asset dir so the
-  // `pwrsnap-cache://v/<id>/audio.m4a` arm can serve it.
+  // `pwrsnap-cache://v/<id>/audio-mixed-v2.m4a` arm can serve it.
   bus.register("video:audio", async (req) => {
     if (typeof req.captureId !== "string" || req.captureId.length === 0) {
       return err(validationError("invalid_capture_id", "video:audio: captureId must be a non-empty string"));
@@ -772,7 +799,9 @@ export function registerRecordingHandlers(): void {
       await ensureVideoAudioAsset({
         captureId: record.id,
         videoPath: record.legacy_src_path,
-        durationSec: record.video.durationSec
+        durationSec: record.video.durationSec,
+        hasSystemAudio: record.video.hasSystemAudio,
+        hasMicrophoneAudio: record.video.hasMicrophoneAudio
       });
       return ok({
         hasAudio: true as const,

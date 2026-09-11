@@ -66,7 +66,11 @@ let silent: string;
 const dual = { hasSystemAudio: true, hasMicrophoneAudio: true };
 const video: VideoCaptureMetadata = {
   ...dual, durationSec: 2.4, containerFormat: "mp4",
-  defaultRange: { start: 0, end: 2.4 }, previewPath: null, previewStatus: "ready"
+  defaultRange: { start: 0, end: 2.4 }, previewPath: null, previewStatus: "ready",
+  // What the user ASKED for, as opposed to what arrived. The exporter
+  // reads only the `has*` pair; these are carried so the fixture is a
+  // real `VideoCaptureMetadata` and not a lookalike.
+  requestedSystemAudio: true, requestedMicrophone: true
 };
 
 // Extraction and playback use native codecs and run on any ffmpeg host.

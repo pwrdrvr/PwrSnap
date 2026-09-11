@@ -345,6 +345,7 @@ describe("parseVideoAssetUrl", () => {
 
   test("strips cache-buster query and trailing slash", () => {
     expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/audio.m4a?v=3")?.asset).toBe("audio.m4a");
+    expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/audio-mixed-v2.m4a")?.asset).toBe("audio-mixed-v2.m4a");
     expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/frames-n8-w64.jpg/")?.asset).toBe(
       "frames-n8-w64.jpg"
     );

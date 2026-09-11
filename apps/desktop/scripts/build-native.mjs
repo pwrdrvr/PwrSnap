@@ -70,7 +70,10 @@ const targets = [
     // main/recording/recording-service.ts. ABI-stable forever — no
     // node-gyp / Electron-rebuild dance per Electron major bump.
     name: "recorder",
-    sources: [join(nativeRoot, "recorder", "main.swift")],
+    sources: [
+      join(nativeRoot, "recorder", "main.swift"),
+      join(nativeRoot, "recorder", "microphone.swift")
+    ],
     output: join(buildRoot, "recorder")
   },
   {

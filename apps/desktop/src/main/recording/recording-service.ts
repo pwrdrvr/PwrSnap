@@ -51,6 +51,12 @@ import { planWindowsFfmpegCapture } from "./windows-ffmpeg-capture";
 
 const log = getMainLogger("pwrsnap:recording-service");
 
+class NativeRecorderError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(`${code}: ${message}`);
+  }
+}
+
 function snapshotStartOptions(opts: StartOptions): StartOptions {
   return {
     subject:
@@ -521,7 +527,9 @@ class NativeRecorderService implements RecordingService {
       await this.cleanup();
       publishRecordingFailure({
         sessionId,
-        code: startFailureCode,
+        code: cause instanceof NativeRecorderError && cause.code === "microphone_unavailable"
+          ? "microphone_unavailable"
+          : startFailureCode,
         displayId,
         cause
       });
@@ -755,7 +763,7 @@ class NativeRecorderService implements RecordingService {
           this.stopReject = null;
           break;
         case "error": {
-          const err = new Error(`${parsed.code}: ${parsed.message}`);
+          const err = new NativeRecorderError(parsed.code, parsed.message);
           if (this.startReject !== null) {
             this.startReject(err);
             this.startReject = null;

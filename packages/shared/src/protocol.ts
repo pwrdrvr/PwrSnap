@@ -276,6 +276,7 @@ export type RecordingFrameLayout = {
 };
 
 export type RecordingFailureCode =
+  | "microphone_unavailable"
   | "recorder_unavailable"
   | "recorder_start_failed"
   | "recorder_spawn_failed"
@@ -288,6 +289,8 @@ export type RecordingFailureCode =
  * in the owning main-process log and never cross the recording-state event. */
 export function recordingFailureSummary(code: RecordingFailureCode): string {
   switch (code) {
+    case "microphone_unavailable":
+      return "PwrSnap couldn't start your microphone. Check microphone access and the default input in macOS Sound settings, then retry.";
     case "recorder_unavailable":
       return "PwrSnap couldn't find the video recorder.";
     case "recorder_start_failed":

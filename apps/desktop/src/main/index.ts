@@ -152,8 +152,7 @@ import {
 import {
   checkForAppUpdatesNow,
   initAppUpdater,
-  reconcileAppUpdateSelection,
-  setUpdateSelectionResolver
+  reconcileAppUpdateSelection
 } from "./auto-updater";
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
@@ -844,8 +843,6 @@ async function wireHotkeyRegistrations(): Promise<void> {
   // Hotkeys, tray, updater, capture and AI consumers all share the same
   // immutable snapshot instead of independently reading settings.json.
   const service = getDesktopSettingsStore();
-  let currentChannel: Settings["updates"]["channel"] = "latest";
-  let currentTrain: Settings["updates"]["train"] = "stable";
   try {
     const settings = await service.read();
     hotkeyRegistrationManager.initialize(settings.hotkeys);
@@ -856,24 +853,16 @@ async function wireHotkeyRegistrations(): Promise<void> {
     if (settings.general.developerMode !== lastKnownDeveloperMode) {
       installApplicationMenu(settings.general.developerMode);
     }
-    currentChannel = settings.updates.channel;
-    currentTrain = settings.updates.train;
   } catch (cause) {
     log.warn("hotkey wire-up: initial read failed (continuing with no bindings)", {
       message: cause instanceof Error ? cause.message : String(cause)
     });
   }
-  setUpdateSelectionResolver(() => ({
-    channel: currentChannel,
-    train: currentTrain
-  }));
   onSettingsChanged((settings) => {
     setTrayHotkeys(settings.hotkeys, () => hotkeyRegistrationManager.statusSnapshot());
     if (settings.general.developerMode !== lastKnownDeveloperMode) {
       installApplicationMenu(settings.general.developerMode);
     }
-    currentChannel = settings.updates.channel;
-    currentTrain = settings.updates.train;
     reconcileAppUpdateSelection();
     // Theme may have changed — re-color the Windows title-bar overlay so the
     // caption strip tracks the active theme (no-op off win32).
@@ -2075,12 +2064,16 @@ export function bootstrapApp(): void {
       processQueuedOpenFiles();
     }
     if (!isE2E && role !== "library") {
-      // Auto-update needs the channel resolver wired
-      // (wireHotkeyRegistrations sets it). In production, kicks off
+      // Read the already-hydrated settings snapshot directly: async hotkey
+      // wiring may still be pending (or skipped for profiling). Kicks off
       // an initial check after the main window has mounted so the
       // renderer's banner subscription is alive to receive events.
       // No-op in development (skips gracefully).
-      initAppUpdater();
+      initAppUpdater(() => {
+        const settings = getDesktopSettingsStore().getCurrentSnapshot();
+        if (!settings) throw new Error("Update settings have not been loaded");
+        return settings.updates;
+      });
     }
     if (role !== "library") {
       await wireLocalAgentMcpLifecycle();

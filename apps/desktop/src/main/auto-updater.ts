@@ -159,7 +159,7 @@ type GitHubReleaseAsset = {
 /** Inject the function the updater calls to read the current train/track.
  *  Kept as a callback rather than importing the settings store
  *  directly so this module stays testable + free of the singleton
- *  graph. Called by `initAutoUpdater` from main bootstrap. */
+ *  graph. Installed synchronously by `initAppUpdater` before its first check. */
 export function setUpdateSelectionResolver(fn: SelectionResolver): void {
   resolveSelection = fn;
 }
@@ -1323,8 +1323,11 @@ export async function installDownloadedAppUpdate(): Promise<AppUpdateInstallResu
   }
 }
 
-export function initAppUpdater(): void {
+export function initAppUpdater(selectionResolver: SelectionResolver): void {
   if (initialized) return;
+  // Bootstrap must provide the live settings reader before any channel
+  // configuration or automatic check; asynchronous hotkey wiring is too late.
+  setUpdateSelectionResolver(selectionResolver);
   initialized = true;
 
   // Skip in development. The dev binary isn't signed and Squirrel.Mac

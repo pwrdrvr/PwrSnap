@@ -358,7 +358,7 @@ describe("auto updater selection", () => {
       githubRelease("v1.1.0-beta.2", { prerelease: true })
     ]);
     mocks.autoUpdater.checkForUpdates.mockResolvedValue({ updateInfo: { version: "1.0.1" } });
-    updater.initAppUpdater();
+    updater.initAppUpdater(() => mocks.resolveSelection());
     await updater.checkForAppUpdatesNow("manual");
     mocks.autoUpdater.checkForUpdates.mockClear();
     mocks.emit("update-downloaded", { version: "1.0.1" });
@@ -403,7 +403,7 @@ describe("auto updater selection", () => {
     });
     const updater = await importAutoUpdater();
     updater.setUpdateSelectionResolver(() => mocks.resolveSelection());
-    updater.initAppUpdater();
+    updater.initAppUpdater(() => mocks.resolveSelection());
     await vi.waitFor(() => {
       expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
     });
@@ -588,7 +588,7 @@ describe("auto updater selection", () => {
     });
     const updater = await importAutoUpdater();
     updater.setUpdateSelectionResolver(() => mocks.resolveSelection());
-    updater.initAppUpdater();
+    updater.initAppUpdater(() => mocks.resolveSelection());
     // The startup check is background: it must not have reached
     // electron-updater at all.
     await vi.waitFor(() => {
@@ -636,7 +636,7 @@ describe("auto updater selection", () => {
     });
     const updater = await importAutoUpdater();
     updater.setUpdateSelectionResolver(() => mocks.resolveSelection());
-    updater.initAppUpdater();
+    updater.initAppUpdater(() => mocks.resolveSelection());
     await vi.waitFor(() => {
       expect(updater.readAppUpdateStatus().status).toBe("no-update");
     });
@@ -666,7 +666,7 @@ describe("auto updater selection", () => {
     });
     const updater = await importAutoUpdater();
     updater.setUpdateSelectionResolver(() => mocks.resolveSelection());
-    updater.initAppUpdater();
+    updater.initAppUpdater(() => mocks.resolveSelection());
     await vi.waitFor(() => {
       expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
     });

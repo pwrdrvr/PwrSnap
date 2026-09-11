@@ -37,7 +37,6 @@ const COMMITTED = {
   ok: true as const,
   rect: { x: 10, y: 20, w: 400, h: 300 },
   displayId: 1,
-  screenSnapshotPath: "/tmp/snapshot.png",
   screenSnapshotId: "snapshot-1",
   previousAppPid: 4242
 };

@@ -35,6 +35,17 @@ export type WindowSnapEntry = {
   rawRect: { x: number; y: number; w: number; h: number };
 };
 
+export type SelectorRawSnapshotDescriptor = {
+  id: string;
+  transport: "raw-rgba";
+  version: 1;
+  width: number;
+  height: number;
+  stride: number;
+  pixelFormat: 1;
+  byteLength: number;
+};
+
 declare global {
   interface Window {
     pwrsnapApi?: {
@@ -67,11 +78,37 @@ declare global {
          *  the whole box opaque. */
         outputMode?: "windows" | "rectangle";
       }): void;
-      notifySelectorSnapshotPainted(screenUrl: string): void;
+      notifySelectorSnapshotPainted(payload: {
+        screenUrl: string;
+        transport: "img" | "raw-rgba";
+        decodeMs: number;
+        mainToRendererBytes: number;
+        canvasUploadBytes: number;
+        readRoundTripMs?: number;
+        canvasUploadMs?: number;
+      }): void;
+      readSelectorSnapshot(id: string): Promise<
+        | {
+            ok: true;
+            header: Omit<SelectorRawSnapshotDescriptor, "id" | "transport">;
+            data: Uint8Array;
+          }
+        | { ok: false; code: string }
+      >;
       notifySelectorPresented(payload: {
         invocationId: string;
         generation: number;
         screenUrl: string;
+        snapshotWaitMs?: number;
+        firstFrameWaitMs?: number;
+        secondFrameWaitMs?: number;
+        rendererTotalMs?: number;
+        firstTimerWaitMs?: number;
+        secondTimerWaitMs?: number;
+        firstTimerFired?: number;
+        secondTimerFired?: number;
+        hiddenAtFrames?: number;
+        hiddenAtAck?: number;
       }): void;
       onSelectorPresentationRequest(
         handler: (payload: {
@@ -92,6 +129,7 @@ declare global {
         handler: (payload: {
           mode: "auto" | "region" | "window";
           screenUrl?: string;
+          snapshot?: SelectorRawSnapshotDescriptor;
           intent?: "snap" | "video";
           cursor?: boolean;
           invocationId?: string;

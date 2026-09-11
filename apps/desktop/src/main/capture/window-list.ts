@@ -30,6 +30,7 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { performance } from "node:perf_hooks";
 import { app } from "electron";
 import { getMainLogger } from "../log";
 
@@ -313,15 +314,45 @@ export async function listWindowsSnapshot(): Promise<WindowListSnapshot> {
     }
     return { windows: [], frontmostPid: null, frontmostBundleId: null };
   }
+  const startedAt = performance.now();
+  const loopStart = performance.eventLoopUtilization();
+  const diagnostics = (): Record<string, number> => {
+    const loop = performance.eventLoopUtilization(loopStart);
+    return {
+      durationMs: Math.round(performance.now() - startedAt),
+      timeoutMs: 2_000,
+      mainLoopActiveMs: Math.round(loop.active),
+      mainLoopIdleMs: Math.round(loop.idle)
+    };
+  };
   try {
     const { stdout } = await execFileAsync(helper, [], {
       timeout: 2_000,
       maxBuffer: 4 * 1024 * 1024
     });
-    return parseHelperOutput(stdout);
+    const snapshot = parseHelperOutput(stdout);
+    log.debug("window-list helper completed", {
+      ...diagnostics(),
+      stdoutBytes: Buffer.byteLength(stdout),
+      windowCount: snapshot.windows.length
+    });
+    return snapshot;
   } catch (cause) {
+    const error = cause as {
+      code?: string | number;
+      signal?: string;
+      killed?: boolean;
+      stdout?: string;
+      stderr?: string;
+    } | null;
     log.warn("window-list helper failed", {
-      message: cause instanceof Error ? cause.message : String(cause)
+      ...diagnostics(),
+      code: error?.code ?? null,
+      signal: error?.signal ?? null,
+      killed: error?.killed === true,
+      // Output can contain window titles and paths; log sizes, never contents.
+      stdoutBytes: typeof error?.stdout === "string" ? Buffer.byteLength(error.stdout) : 0,
+      stderrBytes: typeof error?.stderr === "string" ? Buffer.byteLength(error.stderr) : 0
     });
     return { windows: [], frontmostPid: null, frontmostBundleId: null };
   }

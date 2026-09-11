@@ -16,7 +16,10 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vi
 
 import { MAX_SELECTOR_EXTENTS } from "@pwrsnap/shared";
 
-import type { WindowSnapEntry } from "../../../preload-types";
+import type {
+  SelectorRawSnapshotDescriptor,
+  WindowSnapEntry
+} from "../../../preload-types";
 import { RegionSelector } from "../RegionSelector";
 
 beforeAll(() => {
@@ -27,6 +30,7 @@ beforeAll(() => {
 type ModePayload = {
   mode: "auto" | "region" | "window";
   screenUrl?: string;
+  snapshot?: SelectorRawSnapshotDescriptor;
   intent?: "snap" | "video";
   cursor?: boolean;
   quickCaptureAction?: "ask" | "snap" | "record";
@@ -54,6 +58,7 @@ let presentationHandler: ((p: PresentationPayload) => void) | null = null;
 const submitRegion = vi.fn();
 const notifySelectorSnapshotPainted = vi.fn();
 const notifySelectorPresented = vi.fn();
+const readSelectorSnapshot = vi.fn();
 
 function installSelectorApi(): void {
   modeHandler = null;
@@ -63,6 +68,8 @@ function installSelectorApi(): void {
   submitRegion.mockReset();
   notifySelectorSnapshotPainted.mockReset();
   notifySelectorPresented.mockReset();
+  readSelectorSnapshot.mockReset();
+  readSelectorSnapshot.mockResolvedValue({ ok: false, code: "not_mapped" });
   window.pwrsnapApi = {
     platform: "test",
     versions: { chrome: "", electron: "", node: "" },
@@ -70,6 +77,7 @@ function installSelectorApi(): void {
     on: vi.fn(() => () => undefined),
     submitRegion,
     notifySelectorSnapshotPainted,
+    readSelectorSnapshot,
     notifySelectorPresented,
     onSelectorPresentationRequest: (h: (p: PresentationPayload) => void) => {
       presentationHandler = h;
@@ -113,6 +121,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   await act(async () => {
     root?.unmount();
   });
@@ -305,7 +314,10 @@ describe("diagnostic first-visible acknowledgement", () => {
   }
 
   test("requires frozen-source decode and two post-request animation frames", async () => {
+    vi.useFakeTimers();
     const frames = installFrameHarness();
+    let now = 100;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
     await mount();
     const request = {
       invocationId: "trace-present-1",
@@ -320,14 +332,35 @@ describe("diagnostic first-visible acknowledgement", () => {
 
     const image = container?.querySelector('img[src="pwrsnap-screen://r/snapshot-present-1"]');
     if (!(image instanceof HTMLImageElement)) throw new Error("snapshot image not found");
+    now = 800;
     await act(async () => image.dispatchEvent(new Event("load")));
 
-    expect(notifySelectorSnapshotPainted).toHaveBeenCalledWith(request.screenUrl);
+    expect(notifySelectorSnapshotPainted).toHaveBeenCalledWith(
+      expect.objectContaining({ screenUrl: request.screenUrl, transport: "img" })
+    );
     expect(frames.callbacks.size).toBe(1);
+    now = 801;
+    await act(async () => vi.advanceTimersByTime(0));
+    now = 830;
     await frames.runNext();
     expect(notifySelectorPresented).not.toHaveBeenCalled();
+    now = 832;
+    await act(async () => vi.advanceTimersByTime(0));
+    now = 850;
     await frames.runNext();
-    expect(notifySelectorPresented).toHaveBeenCalledWith(request);
+    expect(notifySelectorPresented).toHaveBeenCalledWith({
+      ...request,
+      snapshotWaitMs: 700,
+      firstFrameWaitMs: 30,
+      secondFrameWaitMs: 20,
+      rendererTotalMs: 750,
+      firstTimerWaitMs: 1,
+      secondTimerWaitMs: 2,
+      firstTimerFired: 1,
+      secondTimerFired: 1,
+      hiddenAtFrames: Number(document.hidden),
+      hiddenAtAck: Number(document.hidden)
+    });
   });
 
   test("cancels a stale generation before it can acknowledge a reused selector", async () => {
@@ -363,7 +396,116 @@ describe("diagnostic first-visible acknowledgement", () => {
     await frames.runNext();
     await frames.runNext();
     expect(notifySelectorPresented).toHaveBeenCalledTimes(1);
-    expect(notifySelectorPresented).toHaveBeenCalledWith(current);
+    expect(notifySelectorPresented).toHaveBeenCalledWith(expect.objectContaining(current));
+  });
+
+  test("paints a validated mapped RGBA generation to canvas without loading the PNG", async () => {
+    let now = 100;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    const putImageData = vi.fn(() => { now = 375; });
+    const getContext = vi
+      .spyOn(HTMLCanvasElement.prototype, "getContext")
+      .mockReturnValue({ putImageData } as unknown as CanvasRenderingContext2D);
+    vi.stubGlobal(
+      "ImageData",
+      class {
+        constructor(
+          public readonly data: Uint8ClampedArray,
+          public readonly width: number,
+          public readonly height: number
+        ) {}
+      }
+    );
+    const snapshot: SelectorRawSnapshotDescriptor = {
+      id: "mapped-snapshot-1",
+      transport: "raw-rgba",
+      version: 1,
+      width: 1,
+      height: 1,
+      stride: 4,
+      pixelFormat: 1,
+      byteLength: 4
+    };
+    readSelectorSnapshot.mockImplementationOnce(async () => {
+      now = 350;
+      return {
+        ok: true,
+        header: {
+          version: 1,
+          width: 1,
+          height: 1,
+          stride: 4,
+          pixelFormat: 1,
+          byteLength: 4
+        },
+        data: new Uint8Array([255, 0, 0, 255])
+      };
+    });
+    await mount();
+    await emitMode({
+      mode: "auto",
+      screenUrl: "pwrsnap-screen://r/mapped-snapshot-1",
+      snapshot
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(readSelectorSnapshot).toHaveBeenCalledWith(snapshot.id);
+    expect(container?.querySelector('[data-testid="region-snapshot-canvas"]')).not.toBeNull();
+    expect(container?.querySelector("img")).toBeNull();
+    expect(putImageData).toHaveBeenCalledTimes(1);
+    expect(notifySelectorSnapshotPainted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        screenUrl: "pwrsnap-screen://r/mapped-snapshot-1",
+        transport: "raw-rgba",
+        mainToRendererBytes: 4,
+        canvasUploadBytes: 4,
+        readRoundTripMs: 250,
+        canvasUploadMs: 25,
+        decodeMs: 275
+      })
+    );
+    getContext.mockRestore();
+  });
+
+  test("falls back to the same snapshot URL when the mapped payload is rejected", async () => {
+    const snapshot: SelectorRawSnapshotDescriptor = {
+      id: "mapped-snapshot-fallback",
+      transport: "raw-rgba",
+      version: 1,
+      width: 2,
+      height: 1,
+      stride: 8,
+      pixelFormat: 1,
+      byteLength: 8
+    };
+    readSelectorSnapshot.mockResolvedValue({
+      ok: true,
+      header: {
+        version: 1,
+        width: 1,
+        height: 1,
+        stride: 4,
+        pixelFormat: 1,
+        byteLength: 4
+      },
+      data: new Uint8Array(4)
+    });
+    await mount();
+    const screenUrl = "pwrsnap-screen://r/mapped-snapshot-fallback";
+    await emitMode({ mode: "auto", screenUrl, snapshot });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const image = container?.querySelector(`img[src="${screenUrl}"]`);
+    if (!(image instanceof HTMLImageElement)) throw new Error("fallback image not found");
+    expect(container?.querySelector('[data-testid="region-snapshot-canvas"]')).toBeNull();
+    await act(async () => image.dispatchEvent(new Event("load")));
+    expect(notifySelectorSnapshotPainted).toHaveBeenCalledWith(
+      expect.objectContaining({ screenUrl, transport: "img" })
+    );
   });
 });
 

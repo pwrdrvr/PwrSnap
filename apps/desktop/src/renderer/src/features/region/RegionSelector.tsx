@@ -46,7 +46,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { acceleratorToDisplayKeys, MAX_SELECTOR_EXTENTS } from "@pwrsnap/shared";
 import type { QuickCaptureAction, SelectorTerminalAction } from "@pwrsnap/shared";
-import type { WindowSnapEntry } from "../../preload-types";
+import type {
+  SelectorRawSnapshotDescriptor,
+  WindowSnapEntry
+} from "../../preload-types";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import {
   ALL_HANDLES,
@@ -74,6 +77,7 @@ type SelectorPresentationRequest = {
 type SelectorPresentationRaf = {
   first: number | null;
   second: number | null;
+  timers: ReturnType<typeof setTimeout>[];
   generation: number;
 };
 // Escape de-dupe window. A single physical Esc can be delivered twice
@@ -175,11 +179,15 @@ export function RegionSelector() {
   const [mode, setMode] = useState<SelectorMode>("auto");
   // SnagIt-style frozen-screen background. Main captures the screen
   // before show() and ships a `pwrsnap-screen://r/<id>` URL via the
-  // mode signal. We render it as a full-window <img> behind the dim
+  // mode signal. Windows prefers a mapped RGBA canvas; other platforms and
+  // failures render the URL as a full-window <img>, both behind the dim
   // mask + rect overlay; the user is interacting with the snapshot,
   // not the live screen. Apps starting / stopping during selection
   // can no longer change what's under the cursor.
   const [screenUrl, setScreenUrl] = useState<string | null>(null);
+  const [rawSnapshot, setRawSnapshot] =
+    useState<SelectorRawSnapshotDescriptor | null>(null);
+  const [rawSnapshotFallback, setRawSnapshotFallback] = useState(false);
   // Visual intent: 'video' swaps the rect badge + hint copy so the
   // user knows commit starts a recording, not a snap. Defaults to
   // 'snap' for backwards-compat with every call site that doesn't
@@ -298,7 +306,10 @@ export function RegionSelector() {
   // it is — there is nothing to restore.
   const discardingRef = useRef(false);
   const decodedScreenUrlRef = useRef<string | null>(null);
+  const snapshotCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const snapshotLoadStartedAtRef = useRef(0);
   const presentationRequestRef = useRef<SelectorPresentationRequest | null>(null);
+  const presentationReceivedAtRef = useRef(0);
   const presentationRafRef = useRef<SelectorPresentationRaf | null>(null);
   const tryStartPresentationAckRef = useRef<(request: SelectorPresentationRequest) => void>(
     () => undefined
@@ -325,6 +336,78 @@ export function RegionSelector() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Windows fast path: ask the narrow preload bridge for one validated RGBA
+  // copy, then upload it directly to the canvas. Any read/header/canvas
+  // failure switches to the existing protocol <img>; main lazily encodes that
+  // PNG from this exact retained generation, so paint and crop never diverge.
+  useLayoutEffect(() => {
+    if (screenUrl === null || rawSnapshot === null || rawSnapshotFallback) return;
+    const canvas = snapshotCanvasRef.current;
+    const api = window.pwrsnapApi;
+    if (canvas === null || api === undefined || typeof api.readSelectorSnapshot !== "function") {
+      setRawSnapshotFallback(true);
+      return;
+    }
+    let cancelled = false;
+    const startedAt = performance.now();
+    void api
+      .readSelectorSnapshot(rawSnapshot.id)
+      .then((result) => {
+        if (cancelled) return;
+        const readFinishedAt = performance.now();
+        if (
+          !result.ok ||
+          result.header.version !== rawSnapshot.version ||
+          result.header.width !== rawSnapshot.width ||
+          result.header.height !== rawSnapshot.height ||
+          result.header.stride !== rawSnapshot.stride ||
+          result.header.pixelFormat !== rawSnapshot.pixelFormat ||
+          result.header.byteLength !== rawSnapshot.byteLength ||
+          result.data.byteLength !== rawSnapshot.byteLength
+        ) {
+          throw new Error("mapped selector snapshot did not match its descriptor");
+        }
+        canvas.width = rawSnapshot.width;
+        canvas.height = rawSnapshot.height;
+        const context = canvas.getContext("2d", { alpha: false });
+        if (context === null) throw new Error("selector canvas context unavailable");
+        const rgba =
+          result.data instanceof Uint8ClampedArray
+            ? result.data
+            : new Uint8ClampedArray(
+                result.data.buffer as ArrayBuffer,
+                result.data.byteOffset,
+                result.data.byteLength
+              );
+        context.putImageData(
+          new ImageData(rgba, rawSnapshot.width, rawSnapshot.height),
+          0,
+          0
+        );
+        decodedScreenUrlRef.current = screenUrl;
+        const canvasFinishedAt = performance.now();
+        api.notifySelectorSnapshotPainted({
+          screenUrl,
+          transport: "raw-rgba",
+          decodeMs: canvasFinishedAt - startedAt,
+          readRoundTripMs: readFinishedAt - startedAt,
+          canvasUploadMs: canvasFinishedAt - readFinishedAt,
+          mainToRendererBytes: result.data.byteLength,
+          canvasUploadBytes: result.data.byteLength
+        });
+        const request = presentationRequestRef.current;
+        if (request?.screenUrl === screenUrl) {
+          tryStartPresentationAckRef.current(request);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setRawSnapshotFallback(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rawSnapshot, rawSnapshotFallback, screenUrl]);
+
   // Diagnostic-only visibility proof. Main sends the request strictly after
   // BrowserWindow show/focus/moveTop. Two renderer frame barriers ensure a
   // paint opportunity has passed before we acknowledge. A newer generation
@@ -336,17 +419,29 @@ export function RegionSelector() {
       if (pending === null) return;
       if (pending.first !== null) cancelAnimationFrame(pending.first);
       if (pending.second !== null) cancelAnimationFrame(pending.second);
+      pending.timers.forEach(clearTimeout);
       presentationRafRef.current = null;
     };
     tryStartPresentationAckRef.current = (request): void => {
       if (decodedScreenUrlRef.current !== request.screenUrl) return;
       if (presentationRequestRef.current?.generation !== request.generation) return;
+      const framesStartedAt = performance.now();
+      const receivedAt = presentationReceivedAtRef.current;
+      const hiddenAtFrames = Number(document.hidden);
+      let firstTimerWaitMs: number | undefined;
+      let secondTimerWaitMs: number | undefined;
       const state: SelectorPresentationRaf = {
         first: null,
         second: null,
+        timers: [],
         generation: request.generation
       };
       presentationRafRef.current = state;
+      // One timer per frame, no polling. Fast timers with slow rAF suggest
+      // frame scheduling, not a generally stalled renderer event loop.
+      state.timers.push(setTimeout(() => {
+        firstTimerWaitMs = performance.now() - framesStartedAt;
+      }, 0));
       state.first = requestAnimationFrame(() => {
         if (
           presentationRafRef.current?.generation !== request.generation ||
@@ -356,6 +451,10 @@ export function RegionSelector() {
           return;
         }
         state.first = null;
+        const firstFrameAt = performance.now();
+        state.timers.push(setTimeout(() => {
+          secondTimerWaitMs = performance.now() - firstFrameAt;
+        }, 0));
         state.second = requestAnimationFrame(() => {
           if (
             presentationRafRef.current?.generation !== request.generation ||
@@ -366,13 +465,28 @@ export function RegionSelector() {
           }
           presentationRafRef.current = null;
           presentationRequestRef.current = null;
-          window.pwrsnapApi?.notifySelectorPresented(request);
+          const secondFrameAt = performance.now();
+          state.timers.forEach(clearTimeout);
+          window.pwrsnapApi?.notifySelectorPresented({
+            ...request,
+            snapshotWaitMs: framesStartedAt - receivedAt,
+            firstFrameWaitMs: firstFrameAt - framesStartedAt,
+            secondFrameWaitMs: secondFrameAt - firstFrameAt,
+            rendererTotalMs: secondFrameAt - receivedAt,
+            hiddenAtFrames,
+            hiddenAtAck: Number(document.hidden),
+            firstTimerFired: Number(firstTimerWaitMs !== undefined),
+            secondTimerFired: Number(secondTimerWaitMs !== undefined),
+            ...(firstTimerWaitMs === undefined ? {} : { firstTimerWaitMs }),
+            ...(secondTimerWaitMs === undefined ? {} : { secondTimerWaitMs })
+          });
         });
       });
     };
     const unsubscribe = window.pwrsnapApi?.onSelectorPresentationRequest(
       (request) => {
         cancelPending();
+        presentationReceivedAtRef.current = performance.now();
         presentationRequestRef.current = request;
         tryStartPresentationAckRef.current(request);
       }
@@ -474,7 +588,10 @@ export function RegionSelector() {
       if (decodedScreenUrlRef.current !== payload.screenUrl) {
         decodedScreenUrlRef.current = null;
       }
+      snapshotLoadStartedAtRef.current = performance.now();
       setScreenUrl(payload.screenUrl ?? null);
+      setRawSnapshot(payload.snapshot ?? null);
+      setRawSnapshotFallback(false);
       setIntent(payload.intent ?? "snap");
       // Re-seed the cursor toggle from the persisted default each show
       // (defaults ON when unset) so a prior capture's choice can't bleed
@@ -2005,7 +2122,23 @@ export function RegionSelector() {
           screen.  Drawn first so the dim mask + rect sit on top.
           Sized to fill the window via inline styles to avoid waiting
           on a CSS bundle hot-reload during dev. */}
-      {screenUrl !== null && (
+      {screenUrl !== null && rawSnapshot !== null && !rawSnapshotFallback && (
+        <canvas
+          ref={snapshotCanvasRef}
+          data-testid="region-snapshot-canvas"
+          aria-hidden="true"
+          style={{
+            position: "fixed",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            pointerEvents: "none",
+            zIndex: 0,
+            userSelect: "none"
+          }}
+        />
+      )}
+      {screenUrl !== null && (rawSnapshot === null || rawSnapshotFallback) && (
         <img
           src={screenUrl}
           alt=""
@@ -2017,7 +2150,13 @@ export function RegionSelector() {
           // still hidden — onLoad doesn't require a visible paint.
           onLoad={() => {
             decodedScreenUrlRef.current = screenUrl;
-            window.pwrsnapApi?.notifySelectorSnapshotPainted(screenUrl);
+            window.pwrsnapApi?.notifySelectorSnapshotPainted({
+              screenUrl,
+              transport: "img",
+              decodeMs: performance.now() - snapshotLoadStartedAtRef.current,
+              mainToRendererBytes: 0,
+              canvasUploadBytes: 0
+            });
             const request = presentationRequestRef.current;
             if (request?.screenUrl === screenUrl) {
               tryStartPresentationAckRef.current(request);

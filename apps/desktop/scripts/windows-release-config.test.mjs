@@ -64,6 +64,7 @@ describe("Windows release configuration", () => {
     expect(script).toContain("assertRequiredWindowsResources();");
     expect(script).toContain("build/native/window-list.exe");
     expect(script).toContain('"native", "verified-file.exe"');
+    expect(script).toContain('"native", "screen-snapshot.exe"');
     expect(script).toContain("PWRSNAP_WINDOWS_FFMPEG_PATH");
     expect(script).toContain('to: "PwrSnapFFmpeg.exe"');
     expect(script).toContain('from "./sharp-platform-packages.mjs"');
@@ -160,6 +161,16 @@ describe("Windows release configuration", () => {
     const packager = read("apps/desktop/scripts/package-win.mjs");
     expect(packager).toContain('to: "PwrSnapFFmpeg.exe"');
     expect(packager).toContain("assertRequiredWindowsResources();");
+  });
+
+  test("Windows builds and packages the shared snapshot helper", () => {
+    const config = read("apps/desktop/electron-builder.yml");
+    const builder = read("apps/desktop/scripts/build-native.mjs");
+
+    expect(config).toContain('from: "build/native/screen-snapshot.exe"');
+    expect(config).toContain('to: "PwrSnapScreenSnapshot.exe"');
+    expect(builder).toContain('join(nativeRoot, "screen-snapshot-win", "main.cpp")');
+    expect(builder).toContain('join(buildRoot, "screen-snapshot.exe")');
   });
 
   test("macOS release preparation always defers FFmpeg to the injected artifact", () => {

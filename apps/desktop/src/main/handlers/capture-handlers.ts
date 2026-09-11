@@ -61,7 +61,11 @@ import {
   ensureCapturesDirReady,
   runWithCapturesDirFallback
 } from "../capture/capture-storage-gate";
-import { releaseSnapshot } from "../capture/screen-snapshot";
+import {
+  acquireSnapshotRaster,
+  releaseSnapshot,
+  type SnapshotRasterLease
+} from "../capture/screen-snapshot";
 import { listWindows, type WindowInfo } from "../capture/window-list";
 import {
   resolveSelectedWindowTitle,
@@ -556,7 +560,7 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
 
     // We own the screen snapshot now and MUST release it; the try/finally
     // is a safety net (both teardown + release are idempotent).
-    const { screenSnapshotId, screenSnapshotPath } = selection;
+    const { screenSnapshotId } = selection;
     let teardownDone = false;
     const tearDownSelector = async (): Promise<void> => {
       if (teardownDone) return;
@@ -630,13 +634,13 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
           ? await captureWindow(selection.snappedWindowId)
           : maskToExtents
             ? await cropScreenSnapshotExtents(
-                screenSnapshotPath,
+                screenSnapshotId,
                 selection.rect,
                 pickedExtents,
                 selection.displayId
               )
             : await cropScreenSnapshot(
-                screenSnapshotPath,
+                screenSnapshotId,
                 selection.rect,
                 selection.displayId
               );
@@ -1420,6 +1424,22 @@ function fileUrlCandidateToPath(candidate: string): string | null {
   }
 }
 
+async function snapshotRasterDimensions(
+  source: SnapshotRasterLease["source"]
+): Promise<{ width: number; height: number }> {
+  if (source.kind === "rgba8") return { width: source.width, height: source.height };
+  const metadata = await sharp(source.filePath).metadata();
+  return { width: metadata.width ?? 0, height: metadata.height ?? 0 };
+}
+
+function sharpForSnapshotRaster(source: SnapshotRasterLease["source"]) {
+  return source.kind === "rgba8"
+    ? sharp(source.data, {
+        raw: { width: source.width, height: source.height, channels: 4 }
+      })
+    : sharp(source.filePath);
+}
+
 /**
  * Crop the frozen-screen snapshot at `rect`. The snapshot is in
  * PHYSICAL pixels (logical * display.scaleFactor); `rect` is in
@@ -1432,7 +1452,7 @@ function fileUrlCandidateToPath(candidate: string): string | null {
  * as captureRegion so the caller path stays identical.
  */
 async function cropScreenSnapshot(
-  snapshotPath: string,
+  snapshotId: string,
   rect: Rect,
   displayId: number
 ): Promise<
@@ -1451,7 +1471,15 @@ async function cropScreenSnapshot(
     return { ok: false, reason: "validation", message: scaleError };
   }
 
+  let lease: SnapshotRasterLease | null = null;
   try {
+    lease = await acquireSnapshotRaster(snapshotId, "crop");
+    if (lease === null) {
+      return { ok: false, reason: "error", message: "screen snapshot is no longer available" };
+    }
+    const { width: snapshotWidth, height: snapshotHeight } = await snapshotRasterDimensions(
+      lease.source
+    );
     // Geometry via `planExtentMask` with the rect as its own single
     // extent, so the plain crop and the masked crop share ONE rounding
     // rule and ONE clamping rule. They used to have two, and the copy
@@ -1462,13 +1490,12 @@ async function cropScreenSnapshot(
     // and had no zero-scale guard. Because the HUD's Windows/Rectangle
     // toggle routes between the two functions, the same pick could
     // produce two different images depending on which was selected.
-    const meta = await sharp(snapshotPath).metadata();
     const plan = planExtentMask({
       rect,
       extents: [rect],
       displayOrigin: { x: display.bounds.x, y: display.bounds.y },
       scaleFactor: display.scaleFactor,
-      snapshot: { width: meta.width ?? 0, height: meta.height ?? 0 }
+      snapshot: { width: snapshotWidth, height: snapshotHeight }
     });
     if (plan === null) {
       return {
@@ -1479,7 +1506,8 @@ async function cropScreenSnapshot(
     }
     const dir = await mkdtemp(join(tmpdir(), "pwrsnap-crop-"));
     const tempPath = join(dir, `${Date.now()}.png`);
-    await sharp(snapshotPath).extract(plan.box).png().toFile(tempPath);
+    const pipeline = sharpForSnapshotRaster(lease.source);
+    await pipeline.extract(plan.box).png().toFile(tempPath);
     return { ok: true, tempPath, displayId };
   } catch (cause) {
     log.warn("snapshot crop failed", {
@@ -1492,6 +1520,8 @@ async function cropScreenSnapshot(
       reason: "error",
       message: cause instanceof Error ? cause.message : String(cause)
     };
+  } finally {
+    await lease?.release();
   }
 }
 
@@ -1527,7 +1557,7 @@ function degenerateScaleMessage(scaleFactor: number): string | null {
  * stays identical.
  */
 async function cropScreenSnapshotExtents(
-  snapshotPath: string,
+  snapshotId: string,
   rect: Rect,
   extents: readonly Rect[],
   displayId: number
@@ -1550,7 +1580,12 @@ async function cropScreenSnapshotExtents(
     return { ok: false, reason: "validation", message: scaleError };
   }
 
+  let lease: SnapshotRasterLease | null = null;
   try {
+    lease = await acquireSnapshotRaster(snapshotId, "crop");
+    if (lease === null) {
+      return { ok: false, reason: "error", message: "screen snapshot is no longer available" };
+    }
     // Dimensions come from the PNG header, NOT from decoding the frame.
     // The first version decoded the whole display into a raw RGBA
     // Buffer (~59 MB at 5120×2880, ~81 MB at 6K) and then extracted
@@ -1560,13 +1595,15 @@ async function cropScreenSnapshotExtents(
     // MAX_SELECTOR_EXTENTS caps the COUNT of extents, not their area —
     // so a handful of maximized picks reached hundreds of MB and the
     // 64-extent ceiling reached multiple GB.
-    const meta = await sharp(snapshotPath).metadata();
+    const { width: snapshotWidth, height: snapshotHeight } = await snapshotRasterDimensions(
+      lease.source
+    );
     const plan = planExtentMask({
       rect,
       extents,
       displayOrigin: { x: display.bounds.x, y: display.bounds.y },
       scaleFactor: display.scaleFactor,
-      snapshot: { width: meta.width ?? 0, height: meta.height ?? 0 }
+      snapshot: { width: snapshotWidth, height: snapshotHeight }
     });
     if (plan === null) {
       return {
@@ -1596,7 +1633,8 @@ async function cropScreenSnapshotExtents(
 
     const dir = await mkdtemp(join(tmpdir(), "pwrsnap-crop-"));
     const tempPath = join(dir, `${Date.now()}.png`);
-    await sharp(snapshotPath)
+    const pipeline = sharpForSnapshotRaster(lease.source);
+    await pipeline
       .extract(plan.box)
       .ensureAlpha()
       .composite([
@@ -1624,6 +1662,8 @@ async function cropScreenSnapshotExtents(
       reason: "error",
       message: cause instanceof Error ? cause.message : String(cause)
     };
+  } finally {
+    await lease?.release();
   }
 }
 

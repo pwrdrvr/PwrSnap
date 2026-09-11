@@ -90,7 +90,7 @@ describe("startRecordingFromSelection — overlap coordinate space", () => {
     });
     await startRecordingFromSelection(
       { ok: true, snappedWindowId: 42, rect: { x: 0, y: 0, w: 100, h: 100 },
-        displayId: 3, screenSnapshotPath: "/tmp/snap.png",
+        displayId: 3,
         screenSnapshotId: "snap-failed", previousAppPid: null },
       { includeSystemAudio: false, includeMicrophone: false, videoCaptureCursor: false }
     );
@@ -110,7 +110,6 @@ describe("startRecordingFromSelection — overlap coordinate space", () => {
         snappedWindowId: 42,
         rect: { x: 0, y: 0, w: 600, h: 400 },
         displayId: SKEWED.id,
-        screenSnapshotPath: "/tmp/snap.png",
         screenSnapshotId: "snap-title",
         previousAppPid: null
       },
@@ -133,7 +132,6 @@ describe("startRecordingFromSelection — overlap coordinate space", () => {
         ok: true,
         rect: selectorRect,
         displayId: SKEWED.id,
-        screenSnapshotPath: "/tmp/snap.png",
         screenSnapshotId: "snap-1",
         previousAppPid: null
       },

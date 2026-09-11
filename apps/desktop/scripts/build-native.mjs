@@ -20,7 +20,7 @@
  * snap-to-window/source-app metadata and hosts the native CF_HDROP
  * file-clipboard subcommands used by GIF/MP4/image Copy. Verified-file owns
  * the atomic Win32 reparse-point-safe open boundary for untrusted external
- * files.
+ * files. The screen-snapshot helper owns pagefile-backed selector snapshots.
  * The macOS-only Swift/.appex targets are skipped on Windows.
  *
  * Linux — no native helpers; the build is a no-op so unit tests + Linux
@@ -436,6 +436,7 @@ for (const appex of appexTargets) {
  * Compile the Windows C++ helpers:
  *   native/window-list-win/main.cpp → build/native/window-list.exe
  *   native/verified-file-win/main.cpp → build/native/verified-file.exe
+ *   native/screen-snapshot-win/main.cpp → build/native/screen-snapshot.exe
  *
  * Counterpart to the macOS Swift `window-list` binary. Self-contained
  * C++ over Win32 (EnumWindows / DWM / PSAPI plus CF_HDROP clipboard
@@ -474,6 +475,16 @@ function buildWindowsHelpers() {
       source: join(nativeRoot, "verified-file-win", "main.cpp"),
       output: join(buildRoot, "verified-file.exe"),
       libraries: []
+    },
+    {
+      // Owns the Windows selector's frozen RGBA bitmap in a
+      // pagefile-backed CreateFileMapping section. It is a standalone
+      // helper rather than a .node addon so Electron upgrades never create
+      // a Node/Electron ABI rebuild boundary for screen capture.
+      name: "screen-snapshot",
+      source: join(nativeRoot, "screen-snapshot-win", "main.cpp"),
+      output: join(buildRoot, "screen-snapshot.exe"),
+      libraries: ["advapi32.lib"]
     }
   ];
 

@@ -645,6 +645,20 @@ export function VideoStage({
         onInteractingChange={onTimelineInteracting}
         label="Recording timeline"
       />
+      {video.hasSystemAudio && video.hasMicrophoneAudio && (
+        // A recording with both sources holds two separate audio tracks,
+        // and an HTML5 <video> plays only the first. The waveform above
+        // is drawn from the MIXED extraction, so without this line the
+        // user sees their narration in the lane and hears none of it —
+        // which reads exactly like a microphone that failed.
+        //
+        // Mixing the preview too needs a cached, prepared rendition
+        // rather than a filter on the way out; until that lands, say so.
+        <p className="psl__video-audio-note">
+          Preview plays system audio only. Exports and reels include the
+          microphone.
+        </p>
+      )}
     </div>
   );
 }

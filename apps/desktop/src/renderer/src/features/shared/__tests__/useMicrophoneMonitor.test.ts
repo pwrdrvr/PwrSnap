@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
-import { describe, expect, test } from "vitest";
-import { describeMicError, segmentsForRms } from "../useMicrophoneMonitor";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { act, createElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { describeMicError, segmentsForRms, useMicrophoneMonitor } from "../useMicrophoneMonitor";
 
 describe("segmentsForRms", () => {
   test("silence lights nothing", () => {
@@ -81,5 +83,122 @@ describe("describeMicError", () => {
       (name) => describeMicError(err(name)).fault
     );
     expect(faults).toEqual(["denied", "nodevice", "busy", "unknown"]);
+  });
+});
+
+// The last item #74 was still open for: the chip's Settings action sends
+// the user to System Settings, and Chromium never tells a renderer that
+// an OS grant moved. The return of focus is the only signal there is.
+describe("re-probing after a trip to System Settings", () => {
+  const getUserMedia = vi.fn();
+  const enumerateDevices = vi.fn();
+  let root: Root | null = null;
+  let container: HTMLDivElement | null = null;
+
+  function denied(): Error {
+    const e = new Error("NotAllowedError");
+    e.name = "NotAllowedError";
+    return e;
+  }
+
+  function stream(): MediaStream {
+    const track = { stop: vi.fn(), getSettings: () => ({ deviceId: "default" }) };
+    return { getTracks: () => [track], getAudioTracks: () => [track] } as unknown as MediaStream;
+  }
+
+  class FakeAudioContext {
+    createAnalyser(): unknown {
+      return {
+        fftSize: 0,
+        connect: () => undefined,
+        getFloatTimeDomainData: (b: Float32Array) => b.fill(0)
+      };
+    }
+    createMediaStreamSource(): unknown {
+      return { connect: () => undefined };
+    }
+    close(): Promise<void> {
+      return Promise.resolve();
+    }
+  }
+
+  async function mount(enabled: boolean): Promise<void> {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const Probe = (): null => {
+      useMicrophoneMonitor({ enabled });
+      return null;
+    };
+    await act(async () => {
+      root?.render(createElement(Probe));
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+  }
+
+  beforeEach(() => {
+    (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
+      true;
+    getUserMedia.mockReset();
+    enumerateDevices.mockReset();
+    enumerateDevices.mockResolvedValue([]);
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia, enumerateDevices }
+    });
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root?.unmount();
+    });
+    container?.remove();
+    root = null;
+    container = null;
+    Reflect.deleteProperty(navigator, "mediaDevices");
+    vi.unstubAllGlobals();
+  });
+
+  test("a denied chip retries when the window regains focus", async () => {
+    getUserMedia.mockRejectedValue(denied());
+    await mount(true);
+    const afterMount = getUserMedia.mock.calls.length;
+    expect(afterMount).toBeGreaterThan(0);
+
+    getUserMedia.mockResolvedValue(stream());
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await Promise.resolve();
+    });
+    // Without this the chip would keep offering the trip the user just
+    // made, with the answer already sitting in the OS.
+    expect(getUserMedia.mock.calls.length).toBeGreaterThan(afterMount);
+  });
+
+  test("a healthy chip does not re-open the device on focus", async () => {
+    getUserMedia.mockResolvedValue(stream());
+    await mount(true);
+    const afterMount = getUserMedia.mock.calls.length;
+
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await Promise.resolve();
+    });
+    expect(getUserMedia.mock.calls.length).toBe(afterMount);
+  });
+
+  test("a switched-off chip never opens the device, focus or not", async () => {
+    // The rule the whole design rests on: no stream means no macOS
+    // orange indicator and no TCC prompt for someone taking a still.
+    getUserMedia.mockRejectedValue(denied());
+    await mount(false);
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await Promise.resolve();
+    });
+    expect(getUserMedia).not.toHaveBeenCalled();
   });
 });

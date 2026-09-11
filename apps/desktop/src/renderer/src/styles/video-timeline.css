@@ -33,6 +33,18 @@
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
+/* Shown only on a recording that holds BOTH audio tracks, where the
+   waveform lane is drawn from the mixed extraction but the <video>
+   element plays the first track alone. Quiet on purpose: it is a
+   footnote about the preview, not a warning about the recording. */
+.psl__video-audio-note {
+  margin: 0;
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font: 500 11px/1.4 var(--font-sans);
+  text-align: center;
+}
+
 .psl__video-frame {
   flex: 1;
   min-height: 0;

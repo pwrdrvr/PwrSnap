@@ -197,6 +197,27 @@ export function useMicrophoneMonitor({ enabled, deviceId }: MonitorOptions): Mic
     }
   }, [supported, refreshDevices]);
 
+  // Re-probe when this window comes back to the foreground.
+  //
+  // The chip's Settings action opens System Settings; the user grants
+  // access there and switches back. Without this the chip would still
+  // read `denied` — the permission it was told about is the one from
+  // before the trip — and the remedy it offers is the trip they just
+  // made. Chromium does not notify a renderer that an OS grant moved,
+  // so the return of focus is the only signal available.
+  //
+  // Only from `denied`, and only while enabled: a `focus` on a healthy
+  // chip has nothing to learn, and re-running `getUserMedia` on a chip
+  // that is switched off would open the device behind the user's back.
+  useEffect(() => {
+    if (!supported || !enabled || permission !== "denied") return;
+    const onFocus = (): void => {
+      void request();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [supported, enabled, permission, request]);
+
   useEffect(() => {
     if (!supported) {
       setPermission("unsupported");

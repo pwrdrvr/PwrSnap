@@ -208,7 +208,8 @@ describe("recording-controller lead-in Escape shortcut", () => {
       sessionId: "rec-1",
       startedAt: new Date(0).toISOString(),
       rect: { x: 10, y: 20, w: 800, h: 600 },
-      displayId: 1
+      displayId: 1,
+      capabilities: { systemAudio: false, microphone: false }
     });
 
     expect(mocks.unregisterShortcut).toHaveBeenCalledWith("Escape");
@@ -281,7 +282,8 @@ describe("recording-controller lead-in Escape shortcut", () => {
       sessionId: "rec-1",
       startedAt: new Date(0).toISOString(),
       rect: { x: 10, y: 20, w: 800, h: 600 },
-      displayId: 1
+      displayId: 1,
+      capabilities: { systemAudio: false, microphone: false }
     });
 
     expect(mocks.unregisterShortcut).not.toHaveBeenCalled();
@@ -296,7 +298,8 @@ describe("recording-controller lead-in Escape shortcut", () => {
       sessionId: "rec-1",
       startedAt: new Date(0).toISOString(),
       rect: { x: 0, y: 0, w: 0, h: 0 },
-      displayId: 1
+      displayId: 1,
+      capabilities: { systemAudio: false, microphone: false }
     });
 
     const win = mocks.createdWindows[0];
@@ -441,7 +444,8 @@ describe("recording-controller lead-in Escape shortcut", () => {
       sessionId: "rec-1",
       startedAt: new Date(0).toISOString(),
       rect: { x: 100, y: 100, w: 400, h: 300 },
-      displayId: 1
+      displayId: 1,
+      capabilities: { systemAudio: false, microphone: false }
     });
     const win = mocks.createdWindows[0]!;
     win.setPosition.mockClear();
@@ -459,7 +463,8 @@ describe("recording-controller lead-in Escape shortcut", () => {
       sessionId: "rec-close",
       startedAt: new Date(0).toISOString(),
       rect: { x: 10, y: 20, w: 800, h: 600 },
-      displayId: 1
+      displayId: 1,
+      capabilities: { systemAudio: false, microphone: false }
     };
     mocks.currentState = recording;
     applyRecordingStateToController(recording);
@@ -482,7 +487,8 @@ describe("recording-controller lead-in Escape shortcut", () => {
       sessionId: "rec-zoom",
       startedAt: new Date(0).toISOString(),
       rect: { x: 10, y: 20, w: 800, h: 600 },
-      displayId: 1
+      displayId: 1,
+      capabilities: { systemAudio: false, microphone: false }
     };
     mocks.currentState = recording;
     applyRecordingStateToController(recording);

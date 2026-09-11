@@ -182,25 +182,6 @@
   background: inherit;
 }
 
-/* On the recording HUD's black scrim the themed panel tokens have no
-   surface to sit on, so the chips there pin their own legible values.
-   Light theme would otherwise render bone-on-bone. */
-.ps-chip--onScrim[data-state="live"] {
-  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-  color: #fff;
-}
-.ps-chip--onScrim[data-state="silent"],
-.ps-chip--onScrim[data-state="denied"] {
-  color: #fff;
-}
-.ps-chip--onScrim[data-state="off"],
-.ps-chip--onScrim[data-state="nodevice"],
-.ps-chip--onScrim[data-state="unsupported"] {
-  border-color: rgba(255, 255, 255, 0.2);
-  color: rgba(255, 255, 255, 0.62);
-}
-
 /* ---------------- LED meter ---------------- */
 /* Seven 2px segments rather than a continuous bar: at chip size a 30px
    bar moving by 3px reads as noise, while a segment lighting up reads

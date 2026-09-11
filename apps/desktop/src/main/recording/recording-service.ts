@@ -535,7 +535,8 @@ class NativeRecorderService implements RecordingService {
       sessionId,
       startedAt: new Date().toISOString(),
       rect: physicalRect,
-      displayId
+      displayId,
+      capabilities: { ...options.capabilities }
     });
     return { sessionId };
   }
@@ -1118,7 +1119,9 @@ class WindowsFfmpegRecorderService implements RecordingService {
       sessionId,
       startedAt: new Date(this.startedAtMs).toISOString(),
       rect: hudRect,
-      displayId
+      displayId,
+      // gdigrab is video-only; an audio request is rejected upstream.
+      capabilities: { systemAudio: false, microphone: false }
     });
     return { sessionId };
   }

@@ -346,7 +346,8 @@ describe("tray context menu", () => {
       sessionId: "rec-1",
       startedAt: new Date(Date.now() - 65_000).toISOString(),
       rect: { x: 0, y: 0, w: 800, h: 600 },
-      displayId: 1
+      displayId: 1,
+      capabilities: { systemAudio: false, microphone: false }
     };
     mocks.isRecordingActive.mockReturnValue(true);
 

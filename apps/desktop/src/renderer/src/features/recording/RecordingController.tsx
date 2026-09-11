@@ -15,9 +15,12 @@ import {
   EVENT_CHANNELS,
   recordingFailureSummary,
   type RecordingBackendCapabilities,
+  type RecordingCapabilities,
   type RecordingState
 } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
+import { SourceChip } from "../shared/SourceChip";
+import "./RecordingController.css";
 
 function formatHMS(seconds: number): string {
   const total = Math.max(0, Math.floor(seconds));
@@ -165,11 +168,8 @@ export function RecordingController(): ReactElement {
   return (
     <div
       ref={containerRef}
-      style={{
-        display: "inline-block",
-        width: isPreCapture ? "100%" : 420,
-        height: isPreCapture ? "100%" : undefined
-      }}
+      className="rc-root"
+      data-precapture={isPreCapture}
       onKeyDown={(event) => {
         if (event.key === "Escape" && armedAction !== null) {
           event.stopPropagation();
@@ -178,183 +178,162 @@ export function RecordingController(): ReactElement {
       }}
     >
       <div
+        className="rc"
+        data-precapture={isPreCapture}
         data-recording-phase={state.phase}
         role={isPreCapture ? "status" : "region"}
         aria-label={isPreCapture ? "Recording lead-in" : "Recording controls"}
-        style={{
-          boxSizing: "border-box",
-          width: "100%",
-          height: "100%",
-          background: isPreCapture ? "transparent" : "rgba(0, 0, 0, 0.86)",
-          color: "#fff",
-          borderRadius: isPreCapture ? 0 : 12,
-          padding: isPreCapture ? 0 : "10px 14px",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: isPreCapture ? "center" : "space-between",
-          gap: 12,
-          font: "500 13px/1 'Geist', system-ui, sans-serif",
-          WebkitAppRegion: isPreCapture ? "no-drag" : "drag",
-          userSelect: "none",
-          pointerEvents: isPreCapture ? "none" : "auto",
-          position: "relative"
-        } as React.CSSProperties}
       >
         {isCountdown && <CountdownLeader value={state.secondsRemaining} />}
         {state.phase === "starting" && <StartingIndicator />}
 
-      {isRecording && (
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "stretch",
-            gap: 4,
-            width: "100%"
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 12
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <span
-                data-recording-dot
-                style={{
-                  display: "inline-block",
-                  width: 10,
-                  height: 10,
-                  borderRadius: 999,
-                  background: "#ef4444",
-                  boxShadow: "0 0 10px rgba(239, 68, 68, 0.6)",
-                  animation: "ps-rec-pulse 1.2s ease-in-out infinite"
-                }}
-              />
-              <span
-                role="timer"
-                aria-label={`Recording duration ${formatHMS(elapsedSec)}`}
-                style={{ font: "500 12px/1 'Geist Mono', monospace" }}
-              >
-                {formatHMS(elapsedSec)}
-              </span>
+        {isRecording && (
+          <div className="rc__stack">
+            <div className="rc__row">
+              <div className="rc__left">
+                <span data-recording-dot className="rc__dot" />
+                <span
+                  role="timer"
+                  aria-label={`Recording duration ${formatHMS(elapsedSec)}`}
+                  className="rc__timer"
+                >
+                  {formatHMS(elapsedSec)}
+                </span>
+                {/* What this take is capturing, in the same chips the
+                    selector offered and the float-over will confirm.
+                    These are the REQUESTED sources: neither shipped
+                    backend reports live levels
+                    (`backend.sources.liveAudioLevels`), so a moving
+                    meter here would be a fiction. Rendering them as
+                    `live` with a static full meter states "this source
+                    is part of the take" and nothing more. */}
+                {recordingSourceChips(state.capabilities).length > 0 && (
+                  <>
+                    <span className="rc__sep" aria-hidden="true" />
+                    <div
+                      className="rc__sources"
+                      data-testid="rc-sources"
+                      role="group"
+                      aria-label="Recording sources"
+                    >
+                      {recordingSourceChips(state.capabilities).map((source) => (
+                        <SourceChip
+                          key={source}
+                          source={source}
+                          state="live"
+                          density="dense"
+                          onScrim
+                          meterTone="recorded"
+                          testId={`rc-source-${source}`}
+                        />
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+              <div className="rc__actions">
+                {backend?.controls.stop === true && (
+                  <button
+                    type="button"
+                    className="rc__btn rc__btn--stop"
+                    data-recording-action="stop"
+                    aria-label="Stop and save recording"
+                    disabled={busyAction !== null}
+                    onClick={() => void runAction("stop")}
+                  >
+                    {busyAction === "stop" ? "Stopping…" : "Stop"}
+                  </button>
+                )}
+                {backend?.controls.restart === true && (
+                  <button
+                    type="button"
+                    className="rc__btn rc__btn--restart"
+                    data-recording-action="restart"
+                    title="Discard the current take and start over"
+                    aria-label={
+                      armedAction === "restart" ? "Confirm restart recording" : "Restart recording"
+                    }
+                    aria-pressed={armedAction === "restart"}
+                    disabled={busyAction !== null}
+                    onClick={() => void runAction("restart")}
+                  >
+                    {busyAction === "restart"
+                      ? "Restarting…"
+                      : armedAction === "restart"
+                        ? "Confirm restart"
+                        : "Restart"}
+                  </button>
+                )}
+                {backend?.controls.cancel === true && (
+                  <button
+                    type="button"
+                    className="rc__btn rc__btn--cancel"
+                    data-recording-action="cancel"
+                    title="Cancel the recording — clip will be discarded"
+                    aria-label={
+                      armedAction === "cancel"
+                        ? "Confirm cancel and discard recording"
+                        : "Cancel recording"
+                    }
+                    aria-pressed={armedAction === "cancel"}
+                    disabled={busyAction !== null}
+                    onClick={() => void runAction("cancel")}
+                  >
+                    {busyAction === "cancel"
+                      ? "Cancelling…"
+                      : armedAction === "cancel"
+                        ? "Confirm cancel"
+                        : "Cancel"}
+                  </button>
+                )}
+              </div>
             </div>
-            <div style={{ display: "flex", gap: 6, WebkitAppRegion: "no-drag" } as React.CSSProperties}>
-              {backend?.controls.stop === true && (
-                <button
-                  type="button"
-                  data-recording-action="stop"
-                  aria-label="Stop and save recording"
-                  disabled={busyAction !== null}
-                  onClick={() => void runAction("stop")}
-                  style={{
-                    padding: "6px 12px",
-                    borderRadius: 6,
-                    border: "1px solid #ef4444",
-                    background: "#ef4444",
-                    color: "#fff",
-                    font: "600 12px/1 'Geist', system-ui, sans-serif",
-                    cursor: busyAction === null ? "pointer" : "wait",
-                    opacity: busyAction === null ? 1 : 0.65
-                  }}
-                >
-                  {busyAction === "stop" ? "Stopping…" : "Stop"}
-                </button>
-              )}
-              {backend?.controls.restart === true && (
-                <button
-                  type="button"
-                  data-recording-action="restart"
-                  title="Discard the current take and start over"
-                  aria-label={armedAction === "restart" ? "Confirm restart recording" : "Restart recording"}
-                  aria-pressed={armedAction === "restart"}
-                  disabled={busyAction !== null}
-                  onClick={() => void runAction("restart")}
-                  style={{
-                    padding: "6px 10px",
-                    borderRadius: 6,
-                    border: "1px solid rgba(255, 138, 31, 0.6)",
-                    background: "transparent",
-                    color: "#ff8a1f",
-                    font: "500 12px/1 'Geist', system-ui, sans-serif",
-                    cursor: busyAction === null ? "pointer" : "wait",
-                    opacity: busyAction === null ? 1 : 0.65
-                  }}
-                >
-                  {busyAction === "restart" ? "Restarting…" : armedAction === "restart" ? "Confirm restart" : "Restart"}
-                </button>
-              )}
-              {backend?.controls.cancel === true && (
-                <button
-                  type="button"
-                  data-recording-action="cancel"
-                  title="Cancel the recording — clip will be discarded"
-                  aria-label={armedAction === "cancel" ? "Confirm cancel and discard recording" : "Cancel recording"}
-                  aria-pressed={armedAction === "cancel"}
-                  disabled={busyAction !== null}
-                  onClick={() => void runAction("cancel")}
-                  style={{
-                    padding: "6px 10px",
-                    borderRadius: 6,
-                    border: "1px solid rgba(255,255,255,0.2)",
-                    background: "transparent",
-                    color: "#fff",
-                    font: "500 12px/1 'Geist', system-ui, sans-serif",
-                    cursor: busyAction === null ? "pointer" : "wait",
-                    opacity: busyAction === null ? 1 : 0.65
-                  }}
-                >
-                  {busyAction === "cancel" ? "Cancelling…" : armedAction === "cancel" ? "Confirm cancel" : "Cancel"}
-                </button>
-              )}
+            {armedAction !== null && (
+              <div role="status" aria-live="polite" className="rc__armed">
+                {armedAction === "restart"
+                  ? "Restart discards this take. Press Confirm restart again."
+                  : "Cancel discards this take. Press Confirm cancel again."}
+              </div>
+            )}
+            <div data-recording-caption className="rc__caption">
+              {backend === null
+                ? "Checking recorder capabilities…"
+                : backend.controllerExcludedFromCapture
+                  ? "this controller is not visible in the recording"
+                  : state.rect.w === 0 && state.rect.h === 0
+                    ? "Windows full-display recordings may include this controller"
+                    : "PwrSnap keeps this controller outside the recorded region when space allows"}
             </div>
           </div>
-          {armedAction !== null && (
-            <div role="status" aria-live="polite" style={{ textAlign: "center", color: "#ffb36d", fontSize: 10, lineHeight: 1.3 }}>
-              {armedAction === "restart"
-                ? "Restart discards this take. Press Confirm restart again."
-                : "Cancel discards this take. Press Confirm cancel again."}
-            </div>
-          )}
-          <div
-            data-recording-caption
-            style={{
-              textAlign: "center",
-              font: "500 10px/1 'Geist', system-ui, sans-serif",
-              color: "rgba(255, 255, 255, 0.55)",
-              letterSpacing: "0.04em",
-              pointerEvents: "none",
-              marginTop: 2
-            }}
-          >
-            {backend === null
-              ? "Checking recorder capabilities…"
-              : backend.controllerExcludedFromCapture
-                ? "this controller is not visible in the recording"
-                : state.rect.w === 0 && state.rect.h === 0
-                  ? "Windows full-display recordings may include this controller"
-                  : "PwrSnap keeps this controller outside the recorded region when space allows"}
+        )}
+
+        {isStopping && (
+          <div className="rc__finalizing">
+            {state.phase === "stopping" ? "Finalizing…" : "Processing…"}
           </div>
-        </div>
-      )}
-
-      {isStopping && (
-        <div style={{ width: "100%", textAlign: "center", color: "rgba(255,255,255,0.7)" }}>
-          {state.phase === "stopping" ? "Finalizing…" : "Processing…"}
-        </div>
-      )}
-
-      <style>{`@keyframes ps-rec-pulse {
-        0% { opacity: 1; }
-        50% { opacity: 0.45; }
-        100% { opacity: 1; }
-      }`}</style>
+        )}
       </div>
     </div>
   );
+}
+
+/**
+ * Which source chips the in-recording HUD shows.
+ *
+ * Screen is deliberately omitted here, unlike the post-capture receipt.
+ * During the take the user is looking at a bar pinned over the region
+ * they just selected, with a live red dot on it — that screen is being
+ * recorded is the one thing the surface already says unambiguously. A
+ * "Screen" chip would spend width the HUD cannot afford (it has to fit
+ * outside the recorded region) restating it.
+ */
+export function recordingSourceChips(
+  capabilities: RecordingCapabilities
+): ReadonlyArray<"microphone" | "systemAudio"> {
+  const chips: Array<"microphone" | "systemAudio"> = [];
+  if (capabilities.microphone) chips.push("microphone");
+  if (capabilities.systemAudio) chips.push("systemAudio");
+  return chips;
 }
 
 function RecordingFailureCard({
@@ -431,72 +410,27 @@ function RecordingFailureCard({
     }
   };
 
-  const buttonStyle: React.CSSProperties = {
-    padding: "7px 11px",
-    borderRadius: 6,
-    border: "1px solid rgba(255,255,255,0.24)",
-    background: "transparent",
-    color: "#fff",
-    font: "600 12px/1 'Geist', system-ui, sans-serif",
-    cursor: pending === null ? "pointer" : "default",
-    boxSizing: "border-box",
-    maxWidth: "100%",
-    whiteSpace: "normal"
-  };
-
   return (
-    <div
-      ref={contentRef}
-      style={{
-        display: "inline-block",
-        width: "100%"
-      } as React.CSSProperties}
-    >
-      <div
-        role="alert"
-        data-recording-phase="failed"
-        style={{
-          boxSizing: "border-box",
-          width: "100%",
-          padding: "18px 20px",
-          borderRadius: 12,
-          background: "rgba(0, 0, 0, 0.94)",
-          color: "#fff",
-          display: "flex",
-          flexDirection: "column",
-          gap: 12,
-          font: "500 13px/1.35 'Geist', system-ui, sans-serif",
-          WebkitAppRegion: "drag",
-          userSelect: "none"
-        } as React.CSSProperties}
-      >
+    <div ref={contentRef} className="rc-fail-root">
+      <div role="alert" data-recording-phase="failed" className="rc-fail">
         <div>
-          <div style={{ color: "#ff8a1f", fontWeight: 700, marginBottom: 6 }}>
-            Recording failed
-          </div>
+          <div className="rc-fail__title">Recording failed</div>
           <div>{recordingFailureSummary(state.code)}</div>
           {actionError !== null && (
-            <div data-recording-action-error style={{ color: "#fca5a5", marginTop: 6 }}>
+            <div data-recording-action-error className="rc-fail__error">
               {actionError}
             </div>
           )}
         </div>
-        <div
-          style={{
-            display: "flex",
-            flexWrap: "wrap",
-            gap: 8,
-            WebkitAppRegion: "no-drag"
-          } as React.CSSProperties}
-        >
+        <div className="rc-fail__actions">
           {state.canRetry && (
             <button
               ref={primaryRef}
               type="button"
+              className="rc-fail__btn rc-fail__btn--retry"
               data-recording-action="retry"
               disabled={pending !== null}
               onClick={() => void run("retry")}
-              style={{ ...buttonStyle, borderColor: "#ff8a1f", color: "#ff8a1f" }}
             >
               {pending === "retry" ? "Retrying…" : "Retry"}
             </button>
@@ -504,19 +438,19 @@ function RecordingFailureCard({
           <button
             ref={state.canRetry ? undefined : primaryRef}
             type="button"
+            className="rc-fail__btn"
             data-recording-action="reveal-logs"
             disabled={pending !== null}
             onClick={() => void run("logs")}
-            style={buttonStyle}
           >
             {pending === "logs" ? "Opening…" : "Open Logs"}
           </button>
           <button
             type="button"
+            className="rc-fail__btn"
             data-recording-action="dismiss"
             disabled={pending !== null}
             onClick={() => void run("dismiss")}
-            style={buttonStyle}
           >
             Dismiss
           </button>
@@ -549,9 +483,19 @@ function RecordingFailureCard({
  * keyframes — no JS animation loop required.
  */
 function CountdownLeader({ value }: { value: number }): ReactElement {
-  const brandSolid = "#ff8a1f";
-  const brandSoft = "rgba(255, 138, 31, 0.55)";
-  const brandFaint = "rgba(255, 138, 31, 0.35)";
+  // SVG presentation ATTRIBUTES (`stroke="…"`) do not resolve CSS
+  // custom properties, so the brand tint is applied through `style`
+  // instead — the escape hatch the repo's token rule names for exactly
+  // this case. Keeping it on `var(--accent)` means the leader retints
+  // with the palette instead of pinning a stale hex.
+  const brandSolid = { stroke: "var(--accent)" } as const;
+  const brandSolidFill = { fill: "var(--accent)" } as const;
+  const brandSoft = {
+    stroke: "color-mix(in srgb, var(--accent) 55%, transparent)"
+  } as const;
+  const brandFaint = {
+    stroke: "color-mix(in srgb, var(--accent) 35%, transparent)"
+  } as const;
   // Structural color for the outer ring + 12 tick marks. Light gray
   // with reduced opacity so the framing reads as "film leader chrome"
   // rather than a bold white outline competing with the numeral.
@@ -618,8 +562,8 @@ function CountdownLeader({ value }: { value: number }): ReactElement {
               the classic 60s film-leader look. Sized so the numeral
               sits inside the inner ring with breathing room, and
               there's clear visual spacing between the two. */}
-          <circle cx="100" cy="100" r="62" fill="none" stroke={brandSoft} strokeWidth="2" />
-          <circle cx="100" cy="100" r="48" fill="none" stroke={brandFaint} strokeWidth="1.5" />
+          <circle cx="100" cy="100" r="62" fill="none" style={brandSoft} strokeWidth="2" />
+          <circle cx="100" cy="100" r="48" fill="none" style={brandFaint} strokeWidth="1.5" />
 
           {/* 12 hour-style tick marks on the ring */}
           {Array.from({ length: 12 }).map((_, i) => {
@@ -656,17 +600,17 @@ function CountdownLeader({ value }: { value: number }): ReactElement {
             y1="100"
             x2="100"
             y2="-2000"
-            stroke={brandSolid}
             strokeWidth="4"
             strokeLinecap="round"
             style={{
+              ...brandSolid,
               transformOrigin: "100px 100px",
               animation: "ps-leader-sweep 1s linear forwards"
             }}
           />
 
           {/* Center hub */}
-          <circle cx="100" cy="100" r="5" fill={brandSolid} />
+          <circle cx="100" cy="100" r="5" style={brandSolidFill} />
 
           {/* Big numeral — dominantBaseline=central centers vertically;
               textAnchor=middle centers horizontally. White with a black
@@ -716,7 +660,7 @@ function CountdownLeader({ value }: { value: number }): ReactElement {
              dominant once the wedge has nearly full-circled).
              0.12 reads as a faint accent over any background. */
           background: conic-gradient(
-            rgba(255, 138, 31, 0.12) var(--ps-sweep-angle),
+            color-mix(in srgb, var(--accent) 12%, transparent) var(--ps-sweep-angle),
             transparent var(--ps-sweep-angle)
           );
           animation: ps-leader-sweep-fill 1s linear forwards;
@@ -759,8 +703,8 @@ function StartingIndicator(): ReactElement {
           width: 56,
           height: 56,
           borderRadius: 999,
-          border: "4px solid rgba(255, 138, 31, 0.25)",
-          borderTopColor: "#ff8a1f",
+          border: "4px solid color-mix(in srgb, var(--accent) 25%, transparent)",
+          borderTopColor: "var(--accent)",
           animation: "ps-leader-sweep 0.9s linear infinite"
         }}
       />

@@ -85,7 +85,8 @@ describe("recording control policy", () => {
         sessionId: "rec-1",
         startedAt: new Date(0).toISOString(),
         rect,
-        displayId: 1
+        displayId: 1,
+        capabilities: { systemAudio: false, microphone: false }
       },
       "stop"
     ],

@@ -212,7 +212,27 @@ export type RecordingState =
    * working rather than stuck.
    */
   | { phase: "starting"; sessionId: string; rect: Rect; displayId: number }
-  | { phase: "recording"; sessionId: string; startedAt: string; rect: Rect; displayId: number }
+  | {
+      phase: "recording";
+      sessionId: string;
+      startedAt: string;
+      rect: Rect;
+      displayId: number;
+      /**
+       * What this take asked for, so the HUD can show one chip per
+       * requested source while it runs. Carried on the state rather
+       * than fetched separately because the HUD is a pure subscriber:
+       * a second round-trip would let the chips render a frame behind
+       * the timer, and on restart they would briefly describe the
+       * previous take.
+       *
+       * This is the REQUESTED set. Whether a source is actually
+       * producing samples is a live signal the shipped backends do not
+       * expose yet — see `RecordingBackendCapabilities.sources
+       * .liveAudioLevels`.
+       */
+      capabilities: RecordingCapabilities;
+    }
   | { phase: "stopping"; sessionId: string }
   | { phase: "processing"; sessionId: string }
   | { phase: "ready"; sessionId: string; captureId: string }

@@ -5,6 +5,7 @@ import { EVENT_CHANNELS, type CaptureEnrichment, type CaptureRecord, type Settin
 import {
   FloatOver,
   recordingSourcesLabel,
+  recordingSourceReceipts,
   type FloatOverAsset
 } from "../FloatOver";
 import { FloatOverHost } from "../FloatOverHost";
@@ -600,6 +601,82 @@ describe("post-recording source summary", () => {
     ]
   ] as const)("reports persisted sources as $1", (asset, expected) => {
     expect(recordingSourcesLabel(asset)).toBe(expected);
+  });
+
+  // The reason migration 0033 exists. `has*` alone cannot separate
+  // "never asked" from "asked and got silence", and those two need
+  // opposite UI: one is unremarkable, the other is the failure the
+  // whole pre-flight design exists to prevent.
+  test("a source that was never requested is simply absent", () => {
+    const receipts = recordingSourceReceipts({
+      hasSystemAudio: false,
+      hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false
+    });
+    expect(receipts).toEqual([{ source: "screen", state: "live" }]);
+  });
+
+  test("a requested source that captured nothing is flagged, not dropped", () => {
+    const receipts = recordingSourceReceipts({
+      hasSystemAudio: false,
+      hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: true
+    });
+    expect(receipts).toEqual([
+      { source: "screen", state: "live" },
+      { source: "microphone", state: "silent", why: "no audio captured" }
+    ]);
+  });
+
+  test("a requested source that landed reads as live", () => {
+    const receipts = recordingSourceReceipts({
+      hasSystemAudio: true,
+      hasMicrophoneAudio: true,
+      requestedSystemAudio: true,
+      requestedMicrophone: true
+    });
+    expect(receipts.map((r) => [r.source, r.state])).toEqual([
+      ["screen", "live"],
+      ["microphone", "live"],
+      ["systemAudio", "live"]
+    ]);
+  });
+
+  // Rows written before migration 0033 report requested=false. They must
+  // read as an ordinary take, never as a silent-source warning.
+  test("a pre-migration row with audio tracks still reads as live", () => {
+    const receipts = recordingSourceReceipts({
+      hasSystemAudio: true,
+      hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false
+    });
+    expect(receipts.some((r) => r.state === "silent")).toBe(false);
+    expect(receipts.map((r) => r.source)).toEqual(["screen", "systemAudio"]);
+  });
+
+  test("renders one chip per receipt in the toast", async () => {
+    const el = await renderToast({
+      kind: "video",
+      src: "pwrsnap-capture://r/rec-1",
+      captureId: "rec-1",
+      durationSec: 4.2,
+      widthPx: 1280,
+      heightPx: 720,
+      defaultRange: { start: 0, end: 4.2 },
+      hasSystemAudio: false,
+      hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: true
+    });
+    const row = el.querySelector('[data-testid="fo-sources"]');
+    expect(row).not.toBeNull();
+    expect(row?.getAttribute("aria-label")).toBe("Captured: screen only");
+    expect(
+      el.querySelector('[data-testid="fo-source-microphone"]')?.getAttribute("data-state")
+    ).toBe("silent");
   });
 });
 

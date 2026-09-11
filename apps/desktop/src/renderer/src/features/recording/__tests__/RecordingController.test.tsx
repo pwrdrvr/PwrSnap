@@ -3,7 +3,11 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import type { RecordingBackendCapabilities, RecordingState } from "@pwrsnap/shared";
+import type {
+  RecordingBackendCapabilities,
+  RecordingCapabilities,
+  RecordingState
+} from "@pwrsnap/shared";
 
 const mocks = vi.hoisted(() => ({
   dispatch: vi.fn(),
@@ -15,7 +19,7 @@ vi.mock("../../../lib/pwrsnap", () => ({
   dispatch: (...args: unknown[]) => mocks.dispatch(...args)
 }));
 
-import { RecordingController } from "../RecordingController";
+import { RecordingController, recordingSourceChips } from "../RecordingController";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -61,7 +65,8 @@ function recordingState(rect = { x: 10, y: 20, w: 800, h: 600 }): RecordingState
     sessionId: "rec-1",
     startedAt: new Date(Date.now() - 65_000).toISOString(),
     rect,
-    displayId: 1
+    displayId: 1,
+    capabilities: { systemAudio: false, microphone: false }
   };
 }
 
@@ -328,5 +333,64 @@ describe("RecordingController failed state", () => {
     expect(mocks.dispatch).toHaveBeenCalledWith("recording:dismissFailure", {
       sessionId: "failed-session"
     });
+  });
+});
+
+describe("RecordingController source chips", () => {
+  async function renderWithCapabilities(
+    capabilities: RecordingCapabilities
+  ): Promise<void> {
+    mocks.dispatch.mockImplementation(async (name: string) => {
+      if (name === "recording:state") {
+        return { ok: true, value: { ...recordingState(), capabilities } };
+      }
+      if (name === "recording:capabilities") return { ok: true, value: macCapabilities };
+      return { ok: true, value: undefined };
+    });
+    await renderController();
+  }
+
+  // Screen is intentionally not a chip here: the bar is pinned over the
+  // region with a live red dot on it, so "the screen is being recorded"
+  // is already unambiguous and a chip would only spend width.
+  test("shows no source row when the take is screen-only", async () => {
+    await renderWithCapabilities({ systemAudio: false, microphone: false });
+    expect(container.querySelector('[data-testid="rc-sources"]')).toBeNull();
+  });
+
+  test("shows one chip per requested audio source", async () => {
+    await renderWithCapabilities({ systemAudio: true, microphone: true });
+    const row = container.querySelector('[data-testid="rc-sources"]');
+    expect(row).not.toBeNull();
+    expect(row?.getAttribute("aria-label")).toBe("Recording sources");
+    expect(container.querySelector('[data-testid="rc-source-microphone"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="rc-source-systemAudio"]')).not.toBeNull();
+  });
+
+  test("omits a source the take did not request", async () => {
+    await renderWithCapabilities({ systemAudio: false, microphone: true });
+    expect(container.querySelector('[data-testid="rc-source-microphone"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="rc-source-systemAudio"]')).toBeNull();
+  });
+
+  // Neither shipped backend reports live levels, so the chip must not
+  // animate a meter it cannot source. `recorded` draws a static full
+  // read; a `live` tone here would be a fiction.
+  test("meters are static, because no backend reports live levels", async () => {
+    await renderWithCapabilities({ systemAudio: false, microphone: true });
+    const meter = container
+      .querySelector('[data-testid="rc-source-microphone"]')
+      ?.querySelector(".ps-meter");
+    expect(meter?.getAttribute("data-tone")).toBe("recorded");
+    expect(macCapabilities.sources.liveAudioLevels).toBe(false);
+  });
+
+  test.each([
+    [{ systemAudio: false, microphone: false }, []],
+    [{ systemAudio: true, microphone: false }, ["systemAudio"]],
+    [{ systemAudio: false, microphone: true }, ["microphone"]],
+    [{ systemAudio: true, microphone: true }, ["microphone", "systemAudio"]]
+  ] as const)("recordingSourceChips(%o) -> %o", (capabilities, expected) => {
+    expect(recordingSourceChips(capabilities)).toEqual(expected);
   });
 });

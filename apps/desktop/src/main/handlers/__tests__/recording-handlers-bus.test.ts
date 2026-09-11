@@ -246,7 +246,8 @@ describe("recording:* command-bus surface", () => {
       sessionId: "rec-1",
       startedAt: new Date(0).toISOString(),
       rect: { x: 0, y: 0, w: 100, h: 100 },
-      displayId: 1
+      displayId: 1,
+      capabilities: { systemAudio: false, microphone: false }
     });
 
     const result = await bus.dispatch("recording:stop", {}, { principal: "ipc" });

@@ -86,9 +86,11 @@ describe("planRecordingFrame", () => {
       platform: "darwin"
     });
 
-    expect(plan?.inset).toEqual({ left: BAND, top: BAND, right: 0, bottom: 0 });
-    expect(plan?.bounds.x + (plan?.bounds.width ?? 0)).toBe(1440);
-    expect(plan?.bounds.y + (plan?.bounds.height ?? 0)).toBe(900);
+    expect(plan).not.toBeNull();
+    if (plan === null) return;
+    expect(plan.inset).toEqual({ left: BAND, top: BAND, right: 0, bottom: 0 });
+    expect(plan.bounds.x + plan.bounds.width).toBe(1440);
+    expect(plan.bounds.y + plan.bounds.height).toBe(900);
   });
 
   describe("full-display recording", () => {

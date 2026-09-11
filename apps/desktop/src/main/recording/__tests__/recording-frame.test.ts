@@ -177,6 +177,47 @@ describe("recording frame lifecycle", () => {
     mod.disposeRecordingFrame();
   });
 
+  test("survives Stop and fades in place while the encoder exits", async () => {
+    // `stopping` and `processing` carry NO rect — by then there is
+    // nothing left to describe. Replaying the session's plan is what
+    // keeps the frame from blinking out the instant the user clicks
+    // Stop, which would read as "already finished" while ffmpeg is still
+    // writing the file.
+    const mod = await load();
+    mod.installRecordingFrame();
+
+    await emit(REGION);
+    await emit({ phase: "stopping", sessionId: "s1" });
+    await emit({ phase: "processing", sessionId: "s1" });
+
+    expect(mocks.created).toHaveLength(1);
+    expect(mocks.created[0]?.destroy).not.toHaveBeenCalled();
+    const phases = mocks.created[0]?.webContents.send.mock.calls.map(
+      (call) => (call[1] as { phase: string }).phase
+    );
+    expect(phases).toEqual(["recording", "stopping", "stopping"]);
+    // Still hugging the same rect — a fade, not a move.
+    expect(mocks.created[0]?.setBounds).not.toHaveBeenCalled();
+
+    mod.disposeRecordingFrame();
+  });
+
+  test("a new session never inherits the previous session's geometry", async () => {
+    const mod = await load();
+    mod.installRecordingFrame();
+
+    await emit(REGION);
+    await emit({ phase: "idle" });
+    // Second session, stopping first — there is no plan for it, so there
+    // is nothing to draw rather than a frame around the OLD rect.
+    await emit({ phase: "stopping", sessionId: "s2" });
+
+    expect(mocks.created).toHaveLength(1);
+    expect(mod.getRecordingFrameWindowId()).toBeNull();
+
+    mod.disposeRecordingFrame();
+  });
+
   test("is destroyed on every terminal phase, including failure", async () => {
     for (const terminal of ["idle", "ready", "failed"] as const) {
       mocks.created.length = 0;

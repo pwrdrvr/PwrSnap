@@ -35,10 +35,20 @@ let layout: RecordingFrameLayout | null = null;
 /** Bounds the window currently sits at, so a no-op transition is free. */
 let placedAt: string | null = null;
 
-/** Session the `enabled` verdict below belongs to. */
+/** Session the `enabled` verdict and `sessionPlan` below belong to. */
 let verdictSessionId: string | null = null;
 /** `false` once the user's `recording.showRegionFrame` says no. */
 let enabled = true;
+/**
+ * The plan computed from this session's rect.
+ *
+ * `stopping` and `processing` carry NO rect — by then the recorder is
+ * exiting and there is nothing left to describe. Without this the frame
+ * would vanish the instant the user hit Stop, which reads as "it already
+ * ended" while the encoder is still writing. The rect cannot change
+ * inside a session, so replaying the stored plan is exact, not a guess.
+ */
+let sessionPlan: RecordingFramePlan | null = null;
 
 /**
  * Transitions arrive synchronously from the recording-state broadcaster,
@@ -99,6 +109,9 @@ function ensureWindow(plan: RecordingFramePlan): BrowserWindow {
 async function resolveEnabled(sessionId: string): Promise<boolean> {
   if (verdictSessionId === sessionId) return enabled;
   verdictSessionId = sessionId;
+  // A new session invalidates the previous session's geometry — never
+  // let a stale plan outlive the rect it described.
+  sessionPlan = null;
   try {
     enabled = (await getDesktopSettingsStore().readDomain("recording")).showRegionFrame;
   } catch (cause) {
@@ -112,20 +125,27 @@ async function resolveEnabled(sessionId: string): Promise<boolean> {
   return enabled;
 }
 
+function planForRect(
+  rect: { x: number; y: number; w: number; h: number },
+  displayId: number
+): RecordingFramePlan | null {
+  const display = screen.getAllDisplays().find((candidate) => candidate.id === displayId);
+  if (display === undefined) {
+    // The recorded display was unplugged mid-session. The recorder deals
+    // with that on its own; we just stop drawing.
+    return null;
+  }
+  return planRecordingFrame({ rect, display, platform: process.platform });
+}
+
 async function apply(state: RecordingState): Promise<void> {
   const phase = recordingFramePhaseFor(state.phase);
-  if (phase === null) {
+  if (phase === null || !("sessionId" in state)) {
     // idle / ready / failed. `failed` included on purpose: the HUD turns
     // into an actionable failure card, and a frame still hugging a rect
     // nothing is being written to would be a lie.
     destroyWindow();
-    return;
-  }
-
-  // Only the non-terminal phases carry a rect + displayId; the type
-  // narrowing above does not know that, so re-check.
-  if (!("rect" in state) || !("displayId" in state)) {
-    destroyWindow();
+    sessionPlan = null;
     return;
   }
 
@@ -134,28 +154,24 @@ async function apply(state: RecordingState): Promise<void> {
     return;
   }
 
-  const display =
-    screen.getAllDisplays().find((candidate) => candidate.id === state.displayId) ?? null;
-  if (display === null) {
-    // The recorded display was unplugged mid-session. The recorder deals
-    // with that on its own; we just stop drawing.
-    destroyWindow();
-    return;
-  }
+  const plan =
+    "rect" in state && "displayId" in state
+      ? planForRect(state.rect, state.displayId)
+      : // `stopping` / `processing` — no rect in the payload. Replay this
+        // session's plan so the frame fades in place instead of blinking
+        // out while the encoder is still writing.
+        sessionPlan;
 
-  const plan = planRecordingFrame({
-    rect: state.rect,
-    display,
-    platform: process.platform
-  });
   if (plan === null) {
     // No legal place to draw — a full-display recording on Windows or
-    // Linux, or a rect too small to frame. Logged at debug because it is
-    // an expected outcome, not a failure.
+    // Linux, a rect too small to frame, or a display that went away.
+    // Logged at debug because every one of those is an expected outcome,
+    // not a failure.
     log.debug("recording-frame suppressed", { phase: state.phase, platform: process.platform });
     destroyWindow();
     return;
   }
+  sessionPlan = plan;
 
   const win = ensureWindow(plan);
   layout = { inset: plan.inset, mode: plan.mode, phase };
@@ -188,6 +204,7 @@ export function disposeRecordingFrame(): void {
   installed = false;
   verdictSessionId = null;
   enabled = true;
+  sessionPlan = null;
   queue = Promise.resolve();
   destroyWindow();
 }

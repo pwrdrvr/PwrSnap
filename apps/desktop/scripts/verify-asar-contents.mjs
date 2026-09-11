@@ -207,7 +207,7 @@ function requiredResourcesFor(platform) {
 
 function requiredUnpackedNativeFor(platform, arch = "x64") {
   return platform === "darwin"
-    ? macRequiredUnpackedNative
+    ? macRequiredUnpackedNative.filter((entry) => arch !== "arm64" || !entry.dir.includes("-x64/"))
     : windowsRequiredUnpackedRuntime(arch);
 }
 
@@ -244,7 +244,7 @@ function imgPackageNamesFromAsar(listing) {
 }
 
 export function findForeignSharpAsarPackages(listing, platform, arch = "x64") {
-  if (platform !== "win32") return [];
+  if (platform !== "win32" && !(platform === "darwin" && arch === "arm64")) return [];
   return partitionSharpNativePackages(imgPackageNamesFromAsar(listing), {
     platform,
     arch
@@ -311,7 +311,7 @@ export function findForeignUnpackedNative(
   platform = packagedPlatform(appPath),
   arch = "x64"
 ) {
-  if (platform !== "win32") return [];
+  if (platform !== "win32" && !(platform === "darwin" && arch === "arm64")) return [];
   const nodeModulesDir = resolve(
     resourcesPath(appPath, platform),
     "app.asar.unpacked/node_modules"
@@ -395,7 +395,7 @@ export function verifyUnpackedNative(
     "",
     "If sharp packages are missing: pnpm deploy is dropping platform-specific",
     "optionalDependencies — see the release packager's injection step. If",
-    "foreign Windows slices are present, the staged Sharp pruning step did",
+    "foreign native slices are present, the staged Sharp pruning step did",
     "not run. If a native library is missing despite its package being present,",
     "the asarUnpack",
     "rule for @img/** is gone from electron-builder.yml."
@@ -406,9 +406,8 @@ export function verifyUnpackedNative(
 export function runCli(args = process.argv.slice(2)) {
   const appPath = args[0] ?? resolve("release-stage/dist/mac-universal/PwrSnap.app");
   const platform = packagedPlatform(appPath);
-  const arch = platform === "win32"
-    ? process.env.PWRSNAP_TARGET_ARCH?.trim() || "x64"
-    : "x64";
+  const arch = process.env.PWRSNAP_TARGET_ARCH?.trim() || (platform === "darwin" ? "universal" : "x64");
+  if (platform === "darwin" && !["universal", "arm64"].includes(arch)) throw new Error(`Unsupported macOS target: ${arch}`);
   const asarPath = join(resourcesPath(appPath, platform), "app.asar");
   if (!existsSync(asarPath)) {
     console.error(`verify-asar-contents: app.asar not found at ${asarPath}`);

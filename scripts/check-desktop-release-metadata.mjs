@@ -174,11 +174,15 @@ for (const expected of [
   "find mac-dist/dist mac-dist/build/ffmpeg-source",
   '"${mac_assets[@]}"',
   '"${windows_assets[@]}"',
-  // Both stable-name aliases back a releases/latest/download/<name> URL the
+  // Stable-name aliases back a releases/latest/download/<name> URL the
   // websites can hardcode. Each is produced in its platform's protected
   // signing job and must survive into the release, or a published download
   // button silently 404s.
-  "Prepare stable-name DMG alias",
+  "Validate paired macOS assets and assemble shared updater metadata",
+  "apps/desktop/release-stage-arm64",
+  "apps/desktop/scripts/macos-release-artifacts.mjs",
+  "--sign-stage-only --no-publish --arch=arm64",
+  "mac-dist/dist/PwrSnap-arm64.dmg",
   "Prepare stable-name Windows installer alias",
   "mac-dist/dist/PwrSnap.dmg",
   "windows-dist/PwrSnap-windows-x64-setup.exe",

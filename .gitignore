@@ -23,6 +23,7 @@ apps/desktop/build/ffmpeg-source/
 apps/desktop/dist/
 # pnpm deploy stage (a future release.mjs will materialize a flat node_modules tree here)
 apps/desktop/release-stage/
+apps/desktop/release-stage-arm64/
 
 # ---- Test / coverage artifacts ----
 coverage/

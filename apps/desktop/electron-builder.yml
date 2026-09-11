@@ -281,6 +281,9 @@ mac:
         LSHandlerRank: Owner
         LSItemContentTypes:
           - com.pwrdrvr.pwrsnap.bundle
+  # Universal is the compatibility default. release.mjs creates an isolated
+  # arm64 stage by replacing these two target architectures. Each stage emits
+  # its own metadata; macos-release-artifacts.mjs validates and merges once.
   target:
     - target: dmg
       arch: [universal]

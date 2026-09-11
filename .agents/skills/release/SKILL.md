@@ -274,7 +274,7 @@ Push the tag after the release metadata is already on `RELEASE_BRANCH`:
 git push origin v<version>
 ```
 
-The tag push triggers `Release Desktop (macOS universal)`. The workflow must
+The tag push triggers `Release Desktop (macOS universal + Apple Silicon + Windows; Linux-gated)`. The workflow must
 pass `Check release metadata` in the no-secret `Test and prepare signing input`
 job before the environment-gated `Sign, notarize, publish` job can request
 approval and access Apple signing secrets.
@@ -326,8 +326,9 @@ gh release download v<version> --dir .local/release/v<version>
 ls .local/release/v<version>
 ```
 
-Expect signed/notarized universal macOS assets, including DMG/ZIP files and
-`latest-mac.yml`.
+Expect signed/notarized universal and Apple Silicon macOS DMG/ZIP pairs,
+`PwrSnap.dmg` (universal), `PwrSnap-arm64.dmg`, and one merged `latest-mac.yml`
+whose legacy path remains universal. Both ZIPs must have blockmaps.
 
 The workflow automatically replaces electron-builder's generated/empty GitHub
 Release body with the matching `CHANGELOG.md` entry after publishing assets.

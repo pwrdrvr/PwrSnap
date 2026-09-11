@@ -7,7 +7,7 @@
 > living successor and supersedes it.
 
 This runbook covers cutting v0.x and v1.x desktop releases. macOS ships as a
-universal Apple Silicon + Intel build outside the Mac App Store; Windows ships
+pair of Apple Silicon-only and universal Apple Silicon + Intel builds outside the Mac App Store; Windows ships
 as an Azure Artifact Signed x64 NSIS installer. Linux distribution remains
 Phase 8b, but a native Linux desktop build is a required release gate.
 
@@ -395,3 +395,53 @@ Most-common Electron failures:
 - Architecture and direction: [docs/architecture.md](architecture.md)
 - Windows signing: [docs/desktop-windows-signing.md](desktop-windows-signing.md)
 - Windows operator guide: [docs/windows/README.md](windows/README.md)
+
+## Paired macOS artifacts and updater compatibility
+
+The macOS prepare/sign lane runs sequentially for `universal` and `arm64`, using
+`release-stage/` and `release-stage-arm64/`. Each stage records its architecture
+and version in `release-target.json`; the sign phase rejects a mismatch. Shared
+Swift build outputs stay universal; only the ARM64 stage's copies are thinned.
+SQLite is prepared for its target, and ARM64 staging prunes foreign Sharp
+packages. All unpacked Mach-O payloads are checked after packaging.
+
+The ARM64 FFmpeg is extracted from the same hash-verified controlled universal
+artifact before signing. `ffmpeg-macos-arm64-slice.json` records its input and
+output digests; the original manifest and LGPL source offer remain attached.
+This does not change FFmpeg's source, configure profile, or license contract.
+
+Both apps keep the same bundle identity and signing team, and each is signed
+and notarized independently. `macos-release-artifacts.mjs` validates both
+versioned DMGs, ZIPs, ZIP blockmaps, and metadata hashes/sizes before assembling
+one `latest-mac.yml`. Its `files` array contains universal then ARM64; its legacy
+`path` and `sha512` remain universal. Never upload either intermediate manifest
+separately. The pinned updater recognizes `arm64` in ZIP filenames, including
+when the running universal app is translated by Rosetta. Intel receives the
+universal ZIP. Existing train/channel selection and universal-only releases
+remain supported; equal-version installs are not forced to migrate.
+
+`PwrSnap.dmg` remains universal. The new stable alias is `PwrSnap-arm64.dmg`;
+versioned names are `PwrSnap-<version>-arm64.dmg` and
+`PwrSnap-<version>-arm64-mac.zip`. Stable aliases become website targets only
+after the containing release is explicitly promoted to Latest. Both aliases,
+both versioned pairs, the merged feed, blockmaps, source offers, and
+`macos-artifact-sizes.json` are uploaded to a draft after every platform gate; the workflow exposes the
+prerelease only after all uploads succeed.
+Do not publish ARM64 alone: the local release script requires `--no-publish`
+for that target to prevent replacing the shared feed.
+
+For local packaging validation, prepare each target with `--prepare-only`
+(and `--arch=arm64` for ARM64), inject the verified controlled FFmpeg and source
+metadata into both stages, then use `--sign-stage-only --dryrun --with-zip`
+with the corresponding architecture. These ad-hoc builds test packaging only;
+they do not demonstrate notarization or successful production updates.
+
+Before the first paired release is promoted, verify signed upgrades from an
+existing universal app on Intel, native Apple Silicon, and Rosetta; ARM64 to
+ARM64; and an explicit channel switch back to a universal-only version.
+Verify cached ZIP/differential-download fallback, persistent settings/captures,
+Sharp, sqlite, capture helpers, FFmpeg, Quick Look, and Gatekeeper. Use the
+PwrSuiteLab workflow for headed macOS tests. Record actual DMG/ZIP bytes and
+installed size separately; do not advertise half-size downloads based on CPU
+count. Rollback can use a new higher-version universal-only release, preserving
+the shared feed and existing universal alias.

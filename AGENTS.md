@@ -1103,6 +1103,50 @@ clipping chain and the entire class of bug disappears.
   switch off the wrapper pattern; it's strictly more robust and
   keeps the tray and float-over symmetrical.
 
+## The recording frame may never paint inside the recorded rect
+
+**On any platform that cannot hide one of our windows from the recorder
+we are running, every lit pixel of the recording frame must be OUTSIDE
+the recorded rect. This is not a style choice — the alternative is
+tangerine baked into every frame of the user's MP4.**
+
+Owner: [recording-frame-geometry.ts](apps/desktop/src/main/recording/recording-frame-geometry.ts)
+(where to put the window) + [recording-frame.css](apps/desktop/src/renderer/src/styles/recording-frame.css)
+(what each posture paints). Pinned by
+[recording-frame-css-boundary.test.ts](apps/desktop/src/main/recording/__tests__/recording-frame-css-boundary.test.ts),
+which scans the shipped stylesheet — jsdom does not resolve
+`box-shadow`, so a render test cannot catch this.
+
+| Platform | Posture | Why |
+|---|---|---|
+| macOS 13+ | `straddle` — glow may kiss the inside edge | `setContentProtection(true)` → `NSWindow.sharingType = .none`, which SCStream honours. The HUD already relies on it. |
+| Windows 10 2004+ | `outset` — nothing inside, ever | The recorder is FFmpeg `gdigrab` reading the desktop DC. Same reason `anchorAwayFromRecordedRect` exists for the HUD. |
+| Linux | `outset` | No content-protection concept at all. |
+
+Four things that bite:
+
+- **`outset` is the BASE CSS and macOS adds to it.** Writing it the
+  other way round — a safe `[data-mode="outset"]` override on an unsafe
+  base — means a dropped selector fails into the user's file instead of
+  into a slightly plainer frame. Keep the default safe.
+- **A full-display recording on Windows/Linux draws NOTHING.** There is
+  no outside; `planRecordingFrame` returns `null` and the HUD carries
+  the signal alone. Do not "fix" that by insetting the frame.
+- **The planner takes `platform` as an argument and imports no Electron**,
+  so the Windows branch — the one that protects the capture — actually
+  runs on macOS CI. Reading `process.platform` inside it would switch
+  that coverage off silently.
+- **`RECORDING_FRAME_BAND_PX` is how far outside the rect the window
+  extends, and it is derived from the widest shadow in the CSS**
+  (spread + blur / 2). Widening the falloff without raising it gets the
+  glow a hard edge where the window stops. The boundary test asserts
+  the two agree.
+
+`RecordingState.rect` is DISPLAY-LOCAL and the plan's `bounds` are
+GLOBAL — see the coordinate-space note at the head of
+[rect-overlap.ts](apps/desktop/src/main/capture/rect-overlap.ts) before
+touching the arithmetic.
+
 ## Settings substrate — every setting + secret goes through one place
 
 **All user-configurable state lives in `DesktopSettingsService` +

@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.1.0-beta.2 - 2026-09-11
+
+This beta makes Windows capture more responsive and prevents a downloaded
+update from consuming the app's event loop.
+
+- Windows Capture - Improved selector responsiveness by keeping the frozen
+  screen snapshot as raw pixels, avoiding full-screen PNG encoding and
+  temporary-file work on the normal Windows path.
+- Updates - Fixed a post-download update-check loop that could consume the
+  main event loop and leave PwrSnap unresponsive.
+- Capture Storage - Fixed a bundle directory-handle leak during failed
+  best-effort syncs, preventing later capture and file operations from
+  accumulating open handles.
+
 ## v1.1.0-beta.1 - 2026-09-09
 
 This beta adds local agent connections, stronger Windows media workflows, and

@@ -782,6 +782,8 @@ describe("RecordingService.stop source-app metadata → capture row", () => {
       containerFormat: "mp4",
       hasSystemAudio: false,
       hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
       outputPath: "/fake/captures/src-1.mp4"
     });
     await vi.advanceTimersByTimeAsync(0);
@@ -919,6 +921,8 @@ describe("RecordingService trusted window-title timing", () => {
       containerFormat: "mp4",
       hasSystemAudio: false,
       hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
       outputPath: "/fake/captures/src-1.mp4"
     });
     await vi.advanceTimersByTimeAsync(0);
@@ -1033,6 +1037,8 @@ describe("RecordingService trusted window-title timing", () => {
       containerFormat: "mp4",
       hasSystemAudio: false,
       hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
       outputPath: "/tmp/discarded.mp4"
     });
     await vi.advanceTimersByTimeAsync(1_000);
@@ -1090,6 +1096,8 @@ describe.each(["darwin", "win32"])("window-title retries on %s", (platform) => {
     if (platform === "darwin") child.emitLine({
       event: "stopped", durationSec: 2, containerFormat: "mp4",
       hasSystemAudio: false, hasMicrophoneAudio: false,
+ requestedSystemAudio: false,
+ requestedMicrophone: false,
       outputPath: "/fake/captures/src-1.mp4"
     });
     else child.emit("exit", 0, null);
@@ -1134,6 +1142,8 @@ describe("RecordingService.stop recorder temp lifecycle", () => {
       containerFormat: "mp4",
       hasSystemAudio: false,
       hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
       outputPath: recoveryPath
     });
 
@@ -1188,6 +1198,8 @@ describe("RecordingService.stop recorder temp lifecycle", () => {
       containerFormat: "mp4",
       hasSystemAudio: false,
       hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
       outputPath: "/tmp/pwrsnap-recording-fake/native-session.mp4"
     });
 

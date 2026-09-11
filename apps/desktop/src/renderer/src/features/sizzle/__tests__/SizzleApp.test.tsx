@@ -117,6 +117,8 @@ function videoCapture(id: string, defaultRange = { start: 0, end: 5 }): CaptureR
       containerFormat: "mp4",
       hasSystemAudio: false,
       hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
       defaultRange,
       previewPath: null,
       previewStatus: "ready"

@@ -126,6 +126,8 @@ function videoCapture(overrides: Partial<NonNullable<CaptureRecord["video"]>> = 
       containerFormat: "mp4",
       hasSystemAudio: false,
       hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
       defaultRange: { start: 0, end: 16 },
       previewPath: null,
       previewStatus: "ready",

@@ -1612,6 +1612,8 @@ describe("DetailRail video export honors the persisted trim range", () => {
     containerFormat: "mp4" as const,
     hasSystemAudio: false,
     hasMicrophoneAudio: false,
+    requestedSystemAudio: false,
+    requestedMicrophone: false,
     previewPath: null,
     previewStatus: "ready" as const
   };

@@ -144,6 +144,19 @@ export type VideoCaptureMetadata = {
   containerFormat: "mp4" | "mov";
   hasSystemAudio: boolean;
   hasMicrophoneAudio: boolean;
+  /**
+   * What the user ASKED this take to include, as opposed to what the
+   * recorder managed to write. `requestedMicrophone && !hasMicrophoneAudio`
+   * is the "requested but silent" case the post-capture receipt flags —
+   * a muted input, a device grabbed by another app, a Bluetooth mic that
+   * drifted off mid-take. Both false is the ordinary "did not ask" case.
+   *
+   * Rows written before migration 0033 carry `false` for both; that is
+   * deliberately NOT backfilled from the `has*` fields, which would
+   * invent a fact and permanently hide any past silent take.
+   */
+  requestedSystemAudio: boolean;
+  requestedMicrophone: boolean;
   defaultRange: VideoRange;
   /** Relative path under captures/ for the silent hover-preview proxy.
    *  Null while preview generation is still in flight (or failed). */
@@ -387,6 +400,27 @@ export type RecordingReadiness = {
 };
 
 export type RecordingPermission = "screen" | "microphone" | "systemAudio";
+
+/**
+ * Every source a recording can draw from, in the order they are shown.
+ *
+ * Wider than {@link RecordingPermission} by exactly one member: `camera`
+ * is a source the user can preview and choose a device for, but it has
+ * no entry in {@link RecordingPermissionSnapshot} because the recorder
+ * does not yet write a camera track. Keep them separate rather than
+ * widening `RecordingPermission` — the permission snapshot is consumed
+ * by the preflight guard, and adding a member there would make the
+ * guard start blocking takes on a source nothing records.
+ */
+export type RecordingSourceKind = "screen" | "systemAudio" | "microphone" | "camera";
+
+/** Display order for a source row. Screen first — it is always on. */
+export const RECORDING_SOURCE_ORDER: readonly RecordingSourceKind[] = [
+  "screen",
+  "microphone",
+  "systemAudio",
+  "camera"
+];
 
 /**
  * Evidence available to Settings when it explains an OS permission.

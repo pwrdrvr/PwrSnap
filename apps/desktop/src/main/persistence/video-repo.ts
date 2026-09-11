@@ -22,6 +22,8 @@ type VideoRow = {
   duration_sec: number;
   container_format: "mp4" | "mov";
   has_system_audio: number;
+  requested_system_audio: number;
+  requested_microphone: number;
   has_microphone_audio: number;
   default_range_start_sec: number;
   default_range_end_sec: number;
@@ -43,6 +45,13 @@ function rowToMetadata(row: VideoRow): VideoCaptureMetadata {
     containerFormat: row.container_format,
     hasSystemAudio: row.has_system_audio === 1,
     hasMicrophoneAudio: row.has_microphone_audio === 1,
+    // `?? 0` rather than a bare compare: a row read through a
+    // connection opened with migrations:"verify" against a database
+    // one version behind has no such column, and `undefined === 1` in
+    // a boolean field would be a silent `false` either way — but being
+    // explicit keeps the intent greppable.
+    requestedSystemAudio: (row.requested_system_audio ?? 0) === 1,
+    requestedMicrophone: (row.requested_microphone ?? 0) === 1,
     defaultRange: {
       start: row.default_range_start_sec,
       end: row.default_range_end_sec
@@ -58,6 +67,10 @@ export type InsertVideoMetadata = {
   containerFormat: "mp4" | "mov";
   hasSystemAudio: boolean;
   hasMicrophoneAudio: boolean;
+  /** What the take asked for. See VideoCaptureMetadata for why this is
+   *  stored separately from what actually landed. */
+  requestedSystemAudio: boolean;
+  requestedMicrophone: boolean;
   subject: RecordingSubject;
 };
 
@@ -79,6 +92,7 @@ export function insertVideoMetadata(input: InsertVideoMetadata): void {
     `INSERT INTO video_captures (
        capture_id, duration_sec, container_format,
        has_system_audio, has_microphone_audio,
+       requested_system_audio, requested_microphone,
        default_range_start_sec, default_range_end_sec,
        preview_path, preview_status,
        subject_kind,
@@ -89,6 +103,7 @@ export function insertVideoMetadata(input: InsertVideoMetadata): void {
      ) VALUES (
        @capture_id, @duration_sec, @container_format,
        @has_system_audio, @has_microphone_audio,
+       @requested_system_audio, @requested_microphone,
        0, @duration_sec,
        NULL, 'pending',
        @subject_kind,
@@ -104,6 +119,8 @@ export function insertVideoMetadata(input: InsertVideoMetadata): void {
     container_format: input.containerFormat,
     has_system_audio: input.hasSystemAudio ? 1 : 0,
     has_microphone_audio: input.hasMicrophoneAudio ? 1 : 0,
+    requested_system_audio: input.requestedSystemAudio ? 1 : 0,
+    requested_microphone: input.requestedMicrophone ? 1 : 0,
     subject_kind: subject.kind,
     subject_display_id: subject.kind === "region" || subject.kind === "window" || subject.kind === "display"
       ? subject.displayId

@@ -1,0 +1,249 @@
+/* Recording SOURCE CHIP.
+ *
+ * One control carrying four facts at once: WHICH source, whether it is
+ * ON, whether signal is actually ARRIVING, and what is BLOCKING it.
+ *
+ * The same element appears in three surfaces at three densities:
+ *   - region selector  — a control (label + meter + device caret + key)
+ *   - recording HUD    — a monitor  (`--dense`: glyph + meter only)
+ *   - float-over toast — a receipt  (`--static`: no hover, no pointer)
+ *
+ * Geometry is deliberately copied from `.region-hud__toggle` in
+ * region.css (30px tall, 8px radius, 1px border, mono <kbd>) so that in
+ * the selector it reads as a PEER of the shipped "Rec cursor: on [C]"
+ * toggle rather than as a new species of control.
+ *
+ * Every color is a token. The recording HUD it sits in is painted on a
+ * near-opaque black scrim rather than a themed panel, so the few values
+ * that must stay legible against that scrim regardless of theme are
+ * called out individually below.
+ */
+
+.ps-chip {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: 500 12px/1 var(--font-sans);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ps-chip__ico {
+  display: block;
+  flex: 0 0 auto;
+  color: currentColor;
+}
+
+.ps-chip__name {
+  color: inherit;
+}
+
+.ps-chip__why {
+  color: currentColor;
+  font: 500 11px/1 var(--font-sans);
+  opacity: 0.9;
+}
+
+.ps-chip__kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--border-default);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  color: var(--text-secondary);
+  font: 600 10px/1 var(--font-mono);
+}
+
+/* The caret opens the device picker. Rendered only when there is more
+   than one device to choose between — a chip with one microphone is a
+   toggle, not a menu. */
+.ps-chip__caret {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 18px;
+  margin-right: -3px;
+  border-radius: 4px;
+  color: var(--text-muted);
+}
+.ps-chip:hover .ps-chip__caret {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--text-primary) 7%, transparent);
+}
+
+/* The inline grant action. Outlined, never filled: it must not compete
+   with the selector HUD's single accent-filled Record button. */
+.ps-chip__act {
+  appearance: none;
+  padding: 2px 6px;
+  margin-right: -3px;
+  border: 1px solid currentColor;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: 600 10.5px/1 var(--font-sans);
+  cursor: pointer;
+}
+.ps-chip__act:hover {
+  background: color-mix(in srgb, var(--text-primary) 10%, transparent);
+}
+
+/* ---------------- states ---------------- */
+
+/* off — available, not requested. Reads as an offer, not as a fault. */
+.ps-chip[data-state="off"] {
+  color: var(--text-secondary);
+}
+.ps-chip[data-state="off"]:hover {
+  border-color: var(--accent-border);
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+}
+
+/* live — requested, granted, signal arriving. */
+.ps-chip[data-state="live"] {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+/* silent — requested and granted, but nothing has arrived. Amber, never
+   red: the take is still fine, the user may simply not want it to be. */
+.ps-chip[data-state="silent"] {
+  border-color: var(--warn-border);
+  background: var(--warn-soft);
+  color: var(--warn-text);
+}
+
+/* ask — never granted. Carries its own grant action so permission is
+   resolved here, before commit, rather than in a later dialog. */
+.ps-chip[data-state="ask"] {
+  border-color: var(--warn-border);
+  background: var(--warn-soft);
+  color: var(--warn-text);
+}
+
+/* denied — granted once, revoked since. Same shape, different verb. */
+.ps-chip[data-state="denied"] {
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+  color: var(--danger-text);
+}
+
+/* nodevice / unsupported — cannot be switched on at all. Still PRESENT,
+   so the row does not change shape between machines and the absence is
+   explained rather than hidden. */
+.ps-chip[data-state="nodevice"],
+.ps-chip[data-state="unsupported"] {
+  border-color: var(--border-subtle);
+  color: var(--text-subtle);
+  cursor: not-allowed;
+}
+.ps-chip[data-state="nodevice"]:hover,
+.ps-chip[data-state="unsupported"]:hover {
+  background: transparent;
+  border-color: var(--border-subtle);
+}
+
+.ps-chip:disabled {
+  cursor: not-allowed;
+}
+.ps-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---------------- density variants ---------------- */
+
+/* Dense: the in-recording HUD. The label was learned in the selector
+   seconds ago; repeating it costs width the HUD does not have when it
+   must sit outside a recorded region. */
+.ps-chip--dense {
+  height: 26px;
+  padding: 0 8px;
+  gap: 6px;
+}
+
+/* Static: the post-capture receipt. Nothing here is actionable. */
+.ps-chip--static {
+  height: 24px;
+  padding: 0 8px;
+  gap: 6px;
+  font-size: 11px;
+  cursor: default;
+}
+.ps-chip--static:hover {
+  background: inherit;
+}
+
+/* On the recording HUD's black scrim the themed panel tokens have no
+   surface to sit on, so the chips there pin their own legible values.
+   Light theme would otherwise render bone-on-bone. */
+.ps-chip--onScrim[data-state="live"] {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: #fff;
+}
+.ps-chip--onScrim[data-state="silent"],
+.ps-chip--onScrim[data-state="denied"] {
+  color: #fff;
+}
+.ps-chip--onScrim[data-state="off"],
+.ps-chip--onScrim[data-state="nodevice"],
+.ps-chip--onScrim[data-state="unsupported"] {
+  border-color: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.62);
+}
+
+/* ---------------- LED meter ---------------- */
+/* Seven 2px segments rather than a continuous bar: at chip size a 30px
+   bar moving by 3px reads as noise, while a segment lighting up reads
+   as a level. The last two segments go warm so clipping is visible
+   without a second control. */
+.ps-meter {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 11px;
+  flex: 0 0 auto;
+}
+.ps-meter i {
+  display: block;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--text-subtle);
+}
+.ps-meter i:nth-child(1) { height: 4px; }
+.ps-meter i:nth-child(2) { height: 5.5px; }
+.ps-meter i:nth-child(3) { height: 7px; }
+.ps-meter i:nth-child(4) { height: 8.5px; }
+.ps-meter i:nth-child(5) { height: 10px; }
+.ps-meter i:nth-child(6) { height: 11px; }
+.ps-meter i:nth-child(7) { height: 11px; }
+.ps-meter i[data-on="true"] { background: var(--accent); }
+.ps-meter i[data-on="true"]:nth-child(6) { background: var(--warn); }
+.ps-meter i[data-on="true"]:nth-child(7) { background: var(--danger); }
+
+/* Flat: granted and on, but no samples. Distinct from "off" (grey) and
+   from "live at zero" — the segments are tinted, not dark. */
+.ps-meter[data-tone="flat"] i {
+  background: color-mix(in srgb, var(--warn) 34%, transparent);
+}
+
+/* A recorded-and-confirmed source in the receipt has no live level to
+   show, so the meter is a static full read rather than a fake level. */
+.ps-meter[data-tone="recorded"] i {
+  background: color-mix(in srgb, var(--accent) 72%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ps-meter i {
+    transition: none;
+  }
+}

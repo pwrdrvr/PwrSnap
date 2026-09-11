@@ -203,6 +203,8 @@ const video: VideoCaptureMetadata = {
   containerFormat: "mp4",
   hasSystemAudio: false,
   hasMicrophoneAudio: false,
+  requestedSystemAudio: false,
+  requestedMicrophone: false,
   defaultRange: { start: 0, end: 10 },
   previewPath: null,
   previewStatus: "ready"

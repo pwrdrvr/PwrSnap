@@ -96,6 +96,8 @@ describe("video-repo metadata round-trip", () => {
       containerFormat: "mp4",
       hasSystemAudio: true,
       hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
       subject: { kind: "region", rect: { x: 100, y: 200, w: 800, h: 600 }, displayId: 1 }
     });
 
@@ -129,6 +131,8 @@ describe("video-repo metadata round-trip", () => {
         containerFormat: "mp4",
         hasSystemAudio: false,
         hasMicrophoneAudio: false,
+        requestedSystemAudio: false,
+        requestedMicrophone: false,
         subject: { kind: "display", displayId: 1 }
       });
     }
@@ -151,6 +155,8 @@ describe("video-repo metadata round-trip", () => {
       containerFormat: "mp4",
       hasSystemAudio: false,
       hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
       subject: { kind: "display", displayId: 1 }
     });
 
@@ -172,6 +178,8 @@ describe("video-repo metadata round-trip", () => {
       containerFormat: "mp4",
       hasSystemAudio: true,
       hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
       subject: { kind: "display", displayId: 1 }
     });
     expect(getVideoMetadata("cap-trim")!.defaultRange).toEqual({ start: 0, end: 16 });
@@ -205,6 +213,8 @@ describe("video-repo metadata round-trip", () => {
       containerFormat: "mp4",
       hasSystemAudio: false,
       hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
       subject: { kind: "display", displayId: 1 }
     });
     updatePreview("cap-prev", "previews/cap-prev.mp4", "ready");
@@ -222,6 +232,8 @@ describe("video-repo metadata round-trip", () => {
       containerFormat: "mp4",
       hasSystemAudio: false,
       hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
       subject: { kind: "display", displayId: 1 }
     });
     expect(getVideoMetadata("cascade-1")).not.toBeNull();

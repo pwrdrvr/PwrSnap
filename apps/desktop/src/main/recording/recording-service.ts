@@ -548,6 +548,10 @@ class NativeRecorderService implements RecordingService {
     // Snapshot mutable session state before the first await. Temp cleanup after
     // adoption is asynchronous, and a concurrent cancel clears `this.subject`.
     const subject = this.subject!;
+    // Same reason as `subject`: a concurrent cancel nulls this out, and
+    // it is read after several awaits. What was REQUESTED is not
+    // recoverable from `stopped`, which only reports what landed.
+    const requested = this.capabilities ?? { systemAudio: false, microphone: false };
     const displayId = subjectDisplayId(subject);
     this.stopRequested = true;
     setRecordingState({ phase: "stopping", sessionId });
@@ -576,6 +580,8 @@ class NativeRecorderService implements RecordingService {
         containerFormat: stopped.containerFormat,
         hasSystemAudio: stopped.hasSystemAudio,
         hasMicrophoneAudio: stopped.hasMicrophoneAudio,
+        requestedSystemAudio: requested.systemAudio,
+        requestedMicrophone: requested.microphone,
         subject,
         sourceWindowTitle,
         onSourceAdopted: async () => {
@@ -834,6 +840,8 @@ type PersistStoppedRecordingInput = {
   containerFormat: "mp4" | "mov";
   hasSystemAudio: boolean;
   hasMicrophoneAudio: boolean;
+  requestedSystemAudio: boolean;
+  requestedMicrophone: boolean;
   subject: RecordingSubject;
   sourceWindowTitle: string | null;
   /** Runs immediately after the source move is durable, before stat/DB work. */
@@ -873,6 +881,8 @@ async function persistStoppedRecording(stopped: PersistStoppedRecordingInput): P
     containerFormat: stopped.containerFormat,
     hasSystemAudio: stopped.hasSystemAudio,
     hasMicrophoneAudio: stopped.hasMicrophoneAudio,
+    requestedSystemAudio: stopped.requestedSystemAudio,
+    requestedMicrophone: stopped.requestedMicrophone,
     subject
   });
   try {
@@ -1177,6 +1187,10 @@ class WindowsFfmpegRecorderService implements RecordingService {
         containerFormat: "mp4",
         hasSystemAudio: false,
         hasMicrophoneAudio: false,
+        // The gdigrab backend is video-only and rejects an audio
+        // request upstream, so nothing can have been asked for here.
+        requestedSystemAudio: false,
+        requestedMicrophone: false,
         subject,
         sourceWindowTitle,
         onSourceAdopted: async () => {

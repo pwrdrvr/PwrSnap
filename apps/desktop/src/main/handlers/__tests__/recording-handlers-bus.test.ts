@@ -21,7 +21,7 @@
 // systemPreferences + the recording service so we don't touch macOS TCC
 // or spawn the Swift recorder binary.
 
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { PwrSnapError, Result } from "@pwrsnap/shared";
 
 // Full RecordingService surface — only `cancel` and `restart` are
@@ -37,6 +37,7 @@ const mocks = vi.hoisted(() => ({
     throw new Error("not_recording");
   }),
   start: vi.fn(),
+  askForMediaAccess: vi.fn(async () => true),
   stop: vi.fn(),
   retryCapabilities: vi.fn(() => ({ microphone: false, systemAudio: false })),
   retry: vi.fn(async () => ({ sessionId: "retry-session" })),
@@ -70,7 +71,8 @@ vi.mock("electron", (): Partial<typeof import("electron")> => ({
   // is deterministic regardless of the host. Tests that need to assert
   // a specific status can override process.platform locally.
   systemPreferences: {
-    getMediaAccessStatus: (permission: string) => mocks.mediaAccess[permission] ?? "granted"
+    getMediaAccessStatus: (permission: string) => mocks.mediaAccess[permission] ?? "granted",
+    askForMediaAccess: mocks.askForMediaAccess
   } as unknown as typeof import("electron").systemPreferences,
   shell: {
     openExternal: async () => undefined
@@ -130,6 +132,8 @@ beforeEach(() => {
   mocks.cancel.mockClear();
   mocks.restart.mockClear();
   mocks.start.mockClear();
+  mocks.askForMediaAccess.mockReset();
+  mocks.askForMediaAccess.mockResolvedValue(true);
   mocks.retryCapabilities.mockReset();
   mocks.retryCapabilities.mockReturnValue({ microphone: false, systemAudio: false });
   mocks.retry.mockClear();
@@ -142,6 +146,97 @@ beforeEach(() => {
   mocks.mediaAccess.microphone = "granted";
   mocks.capture = null;
   mocks.exportVideoRange.mockClear();
+});
+
+afterEach(() => {
+  Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+});
+
+describe("recording microphone preflight", () => {
+  const request = {
+    subject: { kind: "display" as const, displayId: 1 },
+    capabilities: { microphone: true, systemAudio: false },
+    countdownSeconds: 0
+  };
+
+  beforeEach(() => {
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    mocks.start.mockResolvedValue({ sessionId: "mic-session" });
+  });
+
+  test("waits for first-use consent, then records with the selected microphone", async () => {
+    mocks.mediaAccess.microphone = "not-determined";
+    let grant!: (value: boolean) => void;
+    mocks.askForMediaAccess.mockImplementationOnce(() => new Promise((resolve) => { grant = resolve; }));
+    const pending = bus.dispatch("recording:start", request, { principal: "ipc" });
+    await vi.waitFor(() => expect(mocks.askForMediaAccess).toHaveBeenCalledWith("microphone"));
+    expect(mocks.start).not.toHaveBeenCalled();
+    grant(true);
+    expect(await pending).toEqual({ ok: true, value: { sessionId: "mic-session" } });
+    expect(mocks.start).toHaveBeenCalledWith(expect.objectContaining({ capabilities: request.capabilities }));
+  });
+
+  test("does not start a silent recording when consent is declined", async () => {
+    mocks.mediaAccess.microphone = "not-determined";
+    mocks.askForMediaAccess.mockImplementationOnce(async () => {
+      mocks.mediaAccess.microphone = "denied";
+      return false;
+    });
+    expect(await bus.dispatch("recording:start", request, { principal: "ipc" })).toMatchObject({
+      ok: false, error: { kind: "permission", code: "microphone_not_granted" }
+    });
+    expect(mocks.start).not.toHaveBeenCalled();
+  });
+
+  test.each(["denied", "restricted"])("does not re-prompt a %s microphone", async (status) => {
+    mocks.mediaAccess.microphone = status;
+    expect(await bus.dispatch("recording:start", request, { principal: "ipc" })).toMatchObject({
+      ok: false, error: { code: "microphone_not_granted" }
+    });
+    expect(mocks.askForMediaAccess).not.toHaveBeenCalled();
+    expect(mocks.start).not.toHaveBeenCalled();
+  });
+
+  test("returns an actionable error when the OS prompt fails", async () => {
+    mocks.mediaAccess.microphone = "not-determined";
+    mocks.askForMediaAccess.mockRejectedValueOnce(new Error("TCC unavailable"));
+    expect(await bus.dispatch("recording:start", request, { principal: "ipc" })).toMatchObject({
+      ok: false, error: { kind: "permission", code: "microphone_request_failed" }
+    });
+    expect(mocks.start).not.toHaveBeenCalled();
+  });
+
+  test.each([true, false])("does not prompt when already granted (microphone=%s)", async (microphone) => {
+    expect(await bus.dispatch("recording:start", {
+      ...request, capabilities: { microphone, systemAudio: false }
+    }, { principal: "ipc" })).toMatchObject({ ok: true });
+    expect(mocks.askForMediaAccess).not.toHaveBeenCalled();
+  });
+
+  test("does not ask for unselected microphone access", async () => {
+    mocks.mediaAccess.microphone = "not-determined";
+    expect(await bus.dispatch("recording:start", {
+      ...request, capabilities: { microphone: false, systemAudio: true }
+    }, { principal: "ipc" })).toMatchObject({ ok: true });
+    expect(mocks.askForMediaAccess).not.toHaveBeenCalled();
+  });
+
+  test("retry shares the first-use permission flow", async () => {
+    mocks.mediaAccess.microphone = "not-determined";
+    mocks.retryCapabilities.mockReturnValueOnce(request.capabilities);
+    expect(await bus.dispatch("recording:retry", { sessionId: "failed-session" }, { principal: "ipc" })).toMatchObject({ ok: true });
+    expect(mocks.askForMediaAccess).toHaveBeenCalledOnce();
+    expect(mocks.retry).toHaveBeenCalledWith("failed-session");
+  });
+
+  test.each(["win32", "linux"])("rejects unsupported audio on %s instead of silently discarding it", async (platform) => {
+    Object.defineProperty(process, "platform", { value: platform, configurable: true });
+    expect(await bus.dispatch("recording:start", request, { principal: "ipc" })).toMatchObject({
+      ok: false, error: { code: "recording_audio_unsupported" }
+    });
+    expect(mocks.start).not.toHaveBeenCalled();
+    expect(mocks.askForMediaAccess).not.toHaveBeenCalled();
+  });
 });
 
 describe("recording:* command-bus surface", () => {

@@ -269,3 +269,64 @@ function parseRectStyle(style: string | null): { left: number; top: number } {
   }
   return { left: Number.parseFloat(left), top: Number.parseFloat(top) };
 }
+
+for (const intent of ["video", "snap"] as const) {
+  test(`${intent} selector records audio choices without overlapping wrapped controls`, async ({}, testInfo) => {
+    const app = await launchPwrSnap();
+    try {
+      const selector = await showAndGetRegionSelector(app);
+      await installResultCapture(app);
+      await app.electronApp.evaluate(({ BrowserWindow }, intent) => {
+        const window = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes("stage=region"));
+        if (!window) throw new Error("no selector window");
+        window.webContents.send("region-selector:mode", {
+          mode: "region", intent, quickCaptureAction: "record",
+          recordingCapabilities: { systemAudio: true, microphone: false }
+        });
+      }, intent);
+      await expect(selector.locator("body")).toHaveAttribute("data-mode", "region");
+      await selector.mouse.move(100, 100);
+      await selector.mouse.down();
+      await selector.mouse.move(450, 350, { steps: 5 });
+      await selector.mouse.up();
+      const system = selector.getByRole("button", { name: "System audio", exact: true });
+      const microphone = selector.getByRole("button", { name: "Microphone", exact: true });
+      await expect(system).toBeVisible();
+      await expect(microphone).toBeVisible();
+      if (process.platform === "darwin") {
+        await expect(system).toHaveAttribute("aria-pressed", "true");
+        await system.click();
+        await microphone.click();
+        await expect(microphone).toHaveAttribute("aria-pressed", "true");
+      } else {
+        await expect(system).toBeDisabled();
+        await expect(microphone).toBeDisabled();
+      }
+      // Force the same wrap that a small display / long window chips cause.
+      // The actual BrowserWindow stays fullscreen so this test never relies
+      // on platform-specific fullscreen resize behavior.
+      await selector.addStyleTag({ content: ".region-controls { max-width: 520px; }" });
+      const hud = await selector.getByTestId("region-hud").boundingBox();
+      const hint = await selector.locator(".region-hint").boundingBox();
+      expect(hud).not.toBeNull();
+      expect(hint).not.toBeNull();
+      expect(hint!.y + hint!.height).toBeLessThan(hud!.y);
+      for (const control of [system, microphone, selector.getByTestId("region-hud-capture")]) {
+        const box = await control.boundingBox();
+        expect(box!.x).toBeGreaterThanOrEqual(hud!.x);
+        expect(box!.x + box!.width).toBeLessThanOrEqual(hud!.x + hud!.width);
+        expect(box!.y + box!.height).toBeLessThanOrEqual(hud!.y + hud!.height);
+      }
+      await testInfo.attach(`${intent}-recording-audio-controls`, {
+        body: await selector.screenshot(), contentType: "image/png"
+      });
+      await selector.getByRole("button", { name: "Record (Return)", exact: true }).click();
+      await expect.poll(async () => (await readResults(app)).length).toBe(1);
+      expect((await readResults(app))[0]).toMatchObject({
+        ok: true, recordingCapabilities: { systemAudio: false, microphone: process.platform === "darwin" }
+      });
+    } finally {
+      await app.close();
+    }
+  });
+}

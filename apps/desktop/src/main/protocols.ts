@@ -132,7 +132,7 @@ export type ProtocolResolver = {
    * Resolve a capture id to its source PNG path. Returns null for
    * unknown / soft-deleted captures (renderer gets a 404).
    */
-  captureSourcePath(captureId: string): Promise<string | null>;
+  captureSourcePath(captureId: string, options?: { playback: true }): Promise<string | null>;
   /**
    * Resolve `(captureId, sha256)` to a non-base raster layer source PNG
    * path, extracting it from the capture's bundle on first request.
@@ -263,7 +263,12 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
     try {
       const profiling = startupProfilingEnabled();
       const startedAt = profiling ? Date.now() : 0;
-      const filePath = await resolver.captureSourcePath(captureId);
+      // Playback may mix the original's separate system/microphone tracks
+      // into one browser-playable track. Raw source requests stay untouched.
+      const playback = new URL(request.url).searchParams.get("playback") === "1";
+      const filePath = playback
+        ? await resolver.captureSourcePath(captureId, { playback: true })
+        : await resolver.captureSourcePath(captureId);
       if (filePath === null) {
         log.warn("capture: not found", { captureId });
         return new Response("not found", { status: 404 });

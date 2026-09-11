@@ -78,6 +78,27 @@ beforeEach(() => {
 });
 
 describe("pwrsnap-screen protocol latency", () => {
+  test.each([false, true])("capture playback=%s keeps range serving on the resolved asset", async (playback) => {
+    const captureSourcePath = vi.fn(async () => filePath);
+    const { installProtocolHandlers } = await import("../protocols");
+    installProtocolHandlers({
+      captureSourcePath,
+      sourceBytesPath: async () => null,
+      cacheFile: async () => null,
+      videoAssetPath: async () => null,
+      appIconPath: async () => null,
+      sizzleOutputPath: async () => null
+    });
+    const response = await mocks.handlers.get("pwrsnap-capture")!(new Request(
+      `pwrsnap-capture://r/AbC_123${playback ? "?playback=1" : ""}`,
+      { headers: { Range: "bytes=0-5" } }
+    ));
+    expect(captureSourcePath.mock.calls).toEqual(playback
+      ? [["AbC_123", { playback: true }]]
+      : [["AbC_123"]]);
+    expect(response.status).toBe(206);
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(content.subarray(0, 6));
+  });
   test("correlates file open and streamed read completion with the capture", async () => {
     const entries: LogEntry[] = [];
     const ticks = [201, 202, 203, 204, 205];

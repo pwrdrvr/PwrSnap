@@ -75,6 +75,15 @@ AGENTS.md §"Never block the main thread on a TCC-gated path".
 format specification and its design rationale. Read that document's §Status
 first; it marks which of its own sections are historical.
 
+**Recorded audio remains editable.** On macOS, the video selector offers
+independent system-audio and default-microphone choices, both opt-in.
+The original MP4 retains separate tracks. Playback, native sizzle audio,
+and MP4 exports mix the selected tracks into one AAC track so ordinary
+players hear both; playback copies the video stream without re-encoding.
+Muting or replacing audio in a reel never changes the original recording.
+The current Windows recorder is video-only and must not accept audio
+options it cannot capture.
+
 ## AI runs on the user's machine, through their own agent
 
 PwrSnap makes no direct calls to any model vendor. Every AI feature goes

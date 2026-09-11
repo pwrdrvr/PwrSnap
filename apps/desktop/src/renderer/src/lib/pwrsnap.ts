@@ -156,8 +156,8 @@ export function perfMark(payload: PerfMarkPayload): void {
   api?.perfMark?.(payload);
 }
 
-export function captureSrcUrl(captureId: string): string {
-  return `pwrsnap-capture://r/${captureId}`;
+export function captureSrcUrl(captureId: string, options?: { playback: boolean }): string {
+  return `pwrsnap-capture://r/${captureId}${options?.playback ? "?playback=1" : ""}`;
 }
 
 /**

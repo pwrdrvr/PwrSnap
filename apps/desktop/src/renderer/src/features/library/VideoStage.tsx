@@ -610,7 +610,7 @@ export function VideoStage({
         <video
           ref={videoRef}
           className="psl__video-el"
-          src={captureSrcUrl(captureId)}
+          src={captureSrcUrl(captureId, { playback: true })}
           playsInline
           preload="metadata"
           loop={nativeLoop}

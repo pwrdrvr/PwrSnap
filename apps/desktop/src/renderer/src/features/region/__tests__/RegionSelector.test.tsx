@@ -528,6 +528,9 @@ async function pickWindowSnap(): Promise<void> {
 }
 
 describe("recording audio choices", () => {
+  beforeEach(() => {
+    window.pwrsnapApi!.platform = "darwin";
+  });
   test.each(["video", "quick"] as const)("%s carries selected audio into a recording", async (entry) => {
     await mountScene({ mode: "auto", intent: entry === "video" ? "video" : "snap",
       quickCaptureAction: "record", recordingCapabilities: { systemAudio: true, microphone: false } });
@@ -546,6 +549,32 @@ describe("recording audio choices", () => {
     button.focus();
     await emitKey("Enter");
     expect(submitRegion).not.toHaveBeenCalled();
+  });
+  test("a reused selector restores saved audio choices on every show", async () => {
+    await mountScene({ mode: "auto", intent: "video",
+      recordingCapabilities: { systemAudio: false, microphone: true } });
+    await drawRect();
+    const mic = container!.querySelectorAll<HTMLButtonElement>(".region-audio-controls button")[1]!;
+    await act(async () => mic.click());
+    await emitMode({ mode: "auto", intent: "video",
+      recordingCapabilities: { systemAudio: true, microphone: true } });
+    await drawRect();
+    await keyDown("Enter");
+    expect(submitRegion.mock.calls[0]?.[0].recordingCapabilities).toEqual({ systemAudio: true, microphone: true });
+  });
+  test("Windows disables unsupported audio and clears saved Mac choices", async () => {
+    window.pwrsnapApi!.platform = "win32";
+    await mountScene({ mode: "auto", intent: "video",
+      recordingCapabilities: { systemAudio: true, microphone: true } });
+    await drawRect();
+    const buttons = Array.from(container!.querySelectorAll<HTMLButtonElement>(".region-audio-controls button"));
+    expect(buttons).toHaveLength(2);
+    for (const button of buttons) {
+      expect(button.disabled).toBe(true);
+      expect(button.getAttribute("aria-pressed")).toBe("false");
+    }
+    await keyDown("Enter");
+    expect(submitRegion.mock.calls[0]?.[0].recordingCapabilities).toEqual({ systemAudio: false, microphone: false });
   });
 });
 

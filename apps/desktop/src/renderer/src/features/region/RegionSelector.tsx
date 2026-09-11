@@ -199,6 +199,7 @@ export function RegionSelector() {
   // the pre-warmed window), flipped with the `C` key, and shipped on the
   // commit payload for the hotkey path to pass to `recording:start`.
   const [captureCursor, setCaptureCursor] = useState(true);
+  const recordingAudioSupported = window.pwrsnapApi?.platform === "darwin";
   const [recordingCapabilities, setRecordingCapabilities] = useState<RecordingCapabilities>({
     systemAudio: false, microphone: false
   });
@@ -602,9 +603,11 @@ export function RegionSelector() {
       // (defaults ON when unset) so a prior capture's choice can't bleed
       // into this one through the reused, pre-warmed selector window.
       setCaptureCursor(payload.cursor ?? true);
-      setRecordingCapabilities(payload.recordingCapabilities ?? {
+      const nextAudio = (recordingAudioSupported && payload.recordingCapabilities) || {
         systemAudio: false, microphone: false
-      });
+      };
+      recordingCapabilitiesRef.current = nextAudio;
+      setRecordingCapabilities(nextAudio);
       // Re-read the chooser policy on every show. Like `cursor`, this is
       // per-show state on a pre-warmed window: a selector opened under
       // "record" must not stay record-primary for the next capture after
@@ -2426,6 +2429,7 @@ export function RegionSelector() {
           the Snap-vs-Record chooser once a selection is latched. With
           neither, single-selection capture paints exactly what it always
           did — no bar at all. */}
+      <div className="region-controls">
       {showHud && (
         <div
           className={
@@ -2571,6 +2575,12 @@ export function RegionSelector() {
                   key={key}
                   type="button"
                   className="region-hud__toggle"
+                  disabled={!recordingAudioSupported}
+                  title={!recordingAudioSupported
+                    ? "Audio recording is currently available only on macOS"
+                    : key === "microphone"
+                      ? "Record the default microphone selected in macOS Sound settings"
+                      : "Record audio playing on your Mac"}
                   aria-pressed={recordingCapabilities[key]}
                   onClick={() => setRecordingCapabilities((current) => ({
                     ...current, [key]: !current[key]
@@ -2589,7 +2599,7 @@ export function RegionSelector() {
         {intent === "video" && (
           <>
             <span>
-              <kbd>click / drag</kbd>start recording
+              <kbd>click / drag</kbd>select area
             </span>
             <span className="region-hint-sep">·</span>
             <span>
@@ -2637,6 +2647,7 @@ export function RegionSelector() {
           <kbd>esc</kbd>
           {interaction.kind === "snap" && !hasPicks ? "cancel" : "back"}
         </span>
+      </div>
       </div>
       <style>{`@keyframes ps-rec-pulse {
         0% { opacity: 1; }

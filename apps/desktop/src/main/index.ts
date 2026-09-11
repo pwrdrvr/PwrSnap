@@ -114,6 +114,7 @@ import { readRecordingReadiness } from "./recording/recording-permissions";
 import { getRecordingService } from "./recording/recording-service";
 import { getRecordingState, isRecordingActive } from "./recording/recording-state";
 import { videoAssetDir } from "./recording/video-frames";
+import { prepareVideoPlayback } from "./sizzle/audio-extract";
 import {
   getDesktopSettingsServices,
   getLocalAgentAuditService,
@@ -1161,7 +1162,7 @@ async function runInteractiveRecord(
  * (~0.8µs). The DB lookup is not the expensive part of this path.
  */
 const protocolResolver: ProtocolResolver = {
-  async captureSourcePath(captureId) {
+  async captureSourcePath(captureId, options) {
     const record = getCaptureById(captureId);
     if (record === null) {
       return null;
@@ -1172,7 +1173,15 @@ const protocolResolver: ProtocolResolver = {
     // to restore or permanently delete. Bundle-backed live captures
     // lazy-extract source.png from the bundle if the per-capture
     // cache file has been wiped (Storage → Clear/Trim, manual rm).
-    return await ensureEffectiveSrcPath(record);
+    const sourcePath = await ensureEffectiveSrcPath(record);
+    if (options?.playback && sourcePath !== null && record.kind === "video" && record.video) {
+      return await prepareVideoPlayback({
+        videoPath: sourcePath,
+        hasSystemAudio: record.video.hasSystemAudio,
+        hasMicrophoneAudio: record.video.hasMicrophoneAudio
+      });
+    }
+    return sourcePath;
   },
   async sourceBytesPath(captureId, sha256) {
     const record = getCaptureById(captureId);

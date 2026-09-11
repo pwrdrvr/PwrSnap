@@ -218,12 +218,28 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
   pointer-events: none;
 }
 
-.region-hint {
+.region-controls {
   position: fixed;
   bottom: 24px;
   left: 50%;
   transform: translateX(-50%);
+  z-index: 3;
   display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: max-content;
+  max-width: calc(100vw - 48px);
+  pointer-events: none;
+}
+
+.region-hint {
+  order: -1;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: 100%;
+  box-sizing: border-box;
   gap: 12px;
   padding: 8px 14px;
   background: color-mix(in srgb, var(--bg-panel-hover) 92%, transparent);
@@ -358,15 +374,11 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
 .region-hud {
   flex-wrap: wrap;
   justify-content: center;
-  position: fixed;
-  bottom: 24px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 3;
   display: flex;
   align-items: center;
   gap: 10px;
-  max-width: calc(100vw - 48px);
+  max-width: 100%;
+  box-sizing: border-box;
   padding: 8px;
   background: color-mix(in srgb, var(--bg-panel-hover) 96%, transparent);
   border: 1px solid var(--border-default);
@@ -540,11 +552,12 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
   cursor: pointer;
 }
 .region-hud__alt:hover:not(:disabled),
-.region-hud__toggle:hover {
+.region-hud__toggle:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.06);
   border-color: var(--accent-border);
 }
-.region-hud__alt:disabled {
+.region-hud__alt:disabled,
+.region-hud__toggle:disabled {
   color: var(--text-muted);
   cursor: not-allowed;
 }
@@ -587,14 +600,4 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
 .region-hud button:focus-visible {
   outline: 2px solid var(--accent-border);
   outline-offset: 2px;
-}
-
-/* Lift the keyboard legend clear of the HUD. */
-/* Requires the attribute to be PRESENT and non-zero. A bare
-   `:not([data-pick-count="0"])` would also match the first paint,
-   before the effect stamps anything. */
-body[data-stage="region"][data-pick-count]:not([data-pick-count="0"]) .region-hint,
-/* Same lift for a chooser-only bar, which has no pick set to key off. */
-body[data-stage="region"][data-chooser-bar="true"] .region-hint {
-  bottom: 82px;
 }

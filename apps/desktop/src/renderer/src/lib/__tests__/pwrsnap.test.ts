@@ -8,6 +8,12 @@ import { parseCacheUrl, parseCaptureId } from "../../../../main/protocols-parse"
 import { cacheUrl, captureSrcUrl, sizzleOutputUrl } from "../pwrsnap";
 
 describe("captureSrcUrl ↔ parseCaptureId round-trip", () => {
+  test("playback opts into mixed audio without changing source identity", () => {
+    const url = captureSrcUrl("AbC_123", { playback: true });
+    expect(url).toBe("pwrsnap-capture://r/AbC_123?playback=1");
+    expect(parseCaptureId(url)).toBe("AbC_123");
+    expect(captureSrcUrl("AbC_123", { playback: false })).toBe("pwrsnap-capture://r/AbC_123");
+  });
   test.each([
     "abc123",
     "AbCdEf_GhIjKl",

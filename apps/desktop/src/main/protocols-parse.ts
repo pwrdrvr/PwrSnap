@@ -101,7 +101,7 @@ export function parseCacheUrl(url: string): CacheUrlParts | null {
 }
 
 /** Whitelisted derived-video asset filenames the `v/` arm may serve. */
-const VIDEO_ASSET_PATTERN = /^(frames-n\d{1,3}-w\d{1,4}\.jpg|audio\.m4a)$/;
+const VIDEO_ASSET_PATTERN = /^(frames-n\d{1,3}-w\d{1,4}\.jpg|audio(?:-mixed-v2)?\.m4a)$/;
 
 export type VideoAssetUrlParts = {
   captureId: string;

@@ -275,7 +275,11 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             ]
             let ai = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
             ai.expectsMediaDataInRealTime = true
-            if writer.canAdd(ai) { writer.add(ai) }
+            guard writer.canAdd(ai) else {
+                emitError("audio_input_failed", "The recorder could not add system audio to the output file.")
+                return
+            }
+            writer.add(ai)
             audioInput = ai
         }
 
@@ -291,9 +295,13 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             ]
             let mi = AVAssetWriterInput(mediaType: .audio, outputSettings: micSettings)
             mi.expectsMediaDataInRealTime = true
-            if writer.canAdd(mi) { writer.add(mi) }
+            guard writer.canAdd(mi) else {
+                emitError("microphone_unavailable", "The recorder could not add microphone audio to the output file.")
+                return
+            }
+            writer.add(mi)
             micInput = mi
-            await setUpMicrophoneCapture(into: mi, writer: writer)
+            guard setUpMicrophoneCapture(into: mi, writer: writer) else { return }
         }
 
         // Sleep until the requested wall-clock capture time. The TS
@@ -506,21 +514,41 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private func setUpMicrophoneCapture(
         into input: AVAssetWriterInput,
         writer: AVAssetWriter
-    ) async {
+    ) -> Bool {
         let session = AVCaptureSession()
         session.sessionPreset = .high
-        guard let device = AVCaptureDevice.default(for: .audio),
-              let micInputDevice = try? AVCaptureDeviceInput(device: device) else {
-            return
+        guard let device = AVCaptureDevice.default(for: .audio) else {
+            emitError("microphone_unavailable", "No default microphone is connected. Choose an input in macOS Sound settings.")
+            return false
         }
-        if session.canAddInput(micInputDevice) { session.addInput(micInputDevice) }
+        let micInputDevice: AVCaptureDeviceInput
+        do {
+            micInputDevice = try AVCaptureDeviceInput(device: device)
+        } catch {
+            emitError("microphone_unavailable", "Could not open the default microphone: \(error)")
+            return false
+        }
+        guard session.canAddInput(micInputDevice) else {
+            emitError("microphone_unavailable", "The default microphone could not be connected to the capture session.")
+            return false
+        }
+        session.addInput(micInputDevice)
         let micOutput = AVCaptureAudioDataOutput()
-        if session.canAddOutput(micOutput) { session.addOutput(micOutput) }
+        guard session.canAddOutput(micOutput) else {
+            emitError("microphone_unavailable", "The microphone capture session could not deliver audio samples.")
+            return false
+        }
+        session.addOutput(micOutput)
         let forwarder = MicForwarder(input: input, writer: writer)
         micForwarder = forwarder
         micOutput.setSampleBufferDelegate(forwarder, queue: writeQueue)
         session.startRunning()
+        guard session.isRunning else {
+            emitError("microphone_unavailable", "The default microphone did not start. Check microphone access and the selected input device.")
+            return false
+        }
         micSession = session
+        return true
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer buf: CMSampleBuffer, of type: SCStreamOutputType) {
@@ -682,29 +710,6 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             return
         }
         emitError("stream_stopped", "\(error)")
-    }
-}
-
-@available(macOS 13.0, *)
-final class MicForwarder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
-    let input: AVAssetWriterInput
-    let writer: AVAssetWriter
-    private(set) var samplesReceived: Int = 0
-    private(set) var samplesAppended: Int = 0
-    init(input: AVAssetWriterInput, writer: AVAssetWriter) {
-        self.input = input
-        self.writer = writer
-    }
-    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        samplesReceived += 1
-        // The microphone session starts during the countdown, before
-        // the first screen/system-audio sample starts AVAssetWriter.
-        // Drop that pre-roll instead of appending into an idle writer.
-        if writer.status == .writing &&
-           input.isReadyForMoreMediaData &&
-           input.append(sampleBuffer) {
-            samplesAppended += 1
-        }
     }
 }
 

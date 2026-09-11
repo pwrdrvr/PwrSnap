@@ -25,7 +25,7 @@ import {
   type IpcMainInvokeEvent
 } from "electron";
 import { join } from "node:path";
-import type { QuickCaptureAction } from "@pwrsnap/shared";
+import type { QuickCaptureAction, RecordingCapabilities } from "@pwrsnap/shared";
 import { getMainLogger } from "../log";
 import { getPreloadPath } from "../window";
 import {
@@ -334,6 +334,16 @@ export type SelectorResult =
        *  `settings.recording.videoCaptureCursor`). Undefined for image
        *  captures, which don't consume it yet (Phase 3). */
       captureCursor?: boolean;
+      /** Recording-only: the audio sources the user armed on the
+       *  selector's source chips, seeded per show from
+       *  `settings.recording.includeMicrophone` / `.includeSystemAudio`.
+       *
+       *  Undefined means "the selector did not ask" — an image commit,
+       *  or a show that never rendered the chips — and the recording
+       *  entry point then falls back to the persisted defaults. It does
+       *  NOT mean "both off": a selector that answered the question is
+       *  always explicit about both sources. */
+      sources?: RecordingCapabilities;
       /** The terminal action the user chose at commit (issue #75).
        *  Present ONLY for `"record"`; a snap commit omits it and every
        *  reader treats a missing value as `"snap"`, so a pre-chooser
@@ -682,6 +692,12 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
           if (typeof payload.captureCursor === "boolean") {
             result.captureCursor = payload.captureCursor;
           }
+          if (payload.sources !== undefined) {
+            result.sources = {
+              microphone: payload.sources.microphone,
+              systemAudio: payload.sources.systemAudio
+            };
+          }
           if (payload.action === "record") {
             result.action = "record";
           }
@@ -788,6 +804,16 @@ export async function pickRegion(
      *  when the chooser can reach a recording, or `C` starts from the
      *  wrong default. */
     cursorDefault?: boolean;
+    /** Recording seed for the selector's source chips, from
+     *  `settings.recording.includeMicrophone` / `.includeSystemAudio`.
+     *  Forwarded to the renderer in the mode signal; the committed
+     *  value rides back on the result as `sources`.
+     *
+     *  Omitting it hides the chips entirely, which is the right answer
+     *  for a caller that cannot reach a recording. Pass it on the snap
+     *  path too whenever the chooser can reach one, for the same reason
+     *  `cursorDefault` is passed there. */
+    sourcesDefault?: RecordingCapabilities;
     /** Selector-based image-capture diagnostics. Omitted by video flows. */
     latencyTrace?: CaptureLatencyTrace;
     /** Snap-vs-Record policy for this show (issue #75), from
@@ -808,6 +834,7 @@ export async function pickRegion(
   const protectWindowIds = opts.protectWindowIds ?? [];
   const intent = opts.intent ?? "snap";
   const cursorDefault = opts.cursorDefault;
+  const sourcesDefault = opts.sourcesDefault;
   const latencyTrace = opts.latencyTrace;
   const quickCaptureAction = opts.quickCaptureAction;
   const requestStartedAt = Date.now();
@@ -1123,6 +1150,7 @@ export async function pickRegion(
               : {}),
             intent,
             cursor: cursorDefault,
+            ...(sourcesDefault !== undefined ? { sources: sourcesDefault } : {}),
             quickCaptureAction,
             ...(latencyTrace !== undefined && presentationGeneration !== undefined
               ? {
@@ -2174,6 +2202,7 @@ function isSelectorPayload(value: unknown): value is {
   snappedWindowId?: number;
   fullWindow?: boolean;
   captureCursor?: boolean;
+  sources?: { microphone: boolean; systemAudio: boolean };
   action?: "snap" | "record";
   extents?: { x: number; y: number; w: number; h: number }[];
   outputMode?: "windows" | "rectangle";
@@ -2201,6 +2230,16 @@ function isSelectorPayload(value: unknown): value is {
   }
   if (v.captureCursor !== undefined && typeof v.captureCursor !== "boolean") {
     return false;
+  }
+  if (v.sources !== undefined) {
+    // Both booleans or nothing. A half-filled object would be read as
+    // "the user answered" while silently defaulting one source to
+    // `undefined`, which `recording:start` would then treat as off —
+    // the exact class of quiet lie the chips exist to remove.
+    const sources = v.sources as Record<string, unknown> | null;
+    if (sources === null || typeof sources !== "object") return false;
+    if (typeof sources.microphone !== "boolean") return false;
+    if (typeof sources.systemAudio !== "boolean") return false;
   }
   if (v.action !== undefined && v.action !== "snap" && v.action !== "record") {
     return false;

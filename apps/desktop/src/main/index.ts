@@ -1159,7 +1159,16 @@ async function runInteractiveRecord(
     // Library as a valid target.
     protectWindowIds,
     // Seed the selector's cursor toggle from the persisted default.
-    cursorDefault: settings.recording.videoCaptureCursor
+    cursorDefault: settings.recording.videoCaptureCursor,
+    // Seed the source chips the same way. This is the first path that
+    // makes `recording.includeMicrophone` / `.includeSystemAudio`
+    // reachable from a renderer at all — before the chips they were
+    // read here and never shown, so nothing in the app could tell the
+    // user whether their recording had audio.
+    sourcesDefault: {
+      microphone: settings.recording.includeMicrophone,
+      systemAudio: settings.recording.includeSystemAudio
+    }
   });
   if (!selection.ok) {
     setFloatOverState({ kind: "cancel" });

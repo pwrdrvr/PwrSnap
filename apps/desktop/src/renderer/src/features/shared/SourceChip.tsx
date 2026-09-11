@@ -78,6 +78,18 @@ export type SourceChipProps = {
    * static full read instead of faking one.
    */
   readonly meterTone?: "live" | "flat" | "recorded";
+  /**
+   * Suppress the meter on an audio source that is armed but cannot be
+   * monitored.
+   *
+   * System audio is the case this exists for. macOS exposes no
+   * renderer-reachable system-audio tap — the only way to hear it is
+   * ScreenCaptureKit, inside the recorder, after the take has started —
+   * so that chip has nothing to measure. An idle meter would read as
+   * "armed but silent", which is precisely the wrong thing to tell
+   * someone whose system audio is working fine.
+   */
+  readonly noMeter?: boolean;
   readonly testId?: string;
 };
 
@@ -211,6 +223,7 @@ export function SourceChip({
   density = "control",
   onScrim = false,
   meterTone,
+  noMeter = false,
   testId
 }: SourceChipProps): ReactElement {
   const name = label ?? SOURCE_LABEL[source];
@@ -218,8 +231,9 @@ export function SourceChip({
   const inert = INERT_STATES.has(state);
   const isAudio = source === "microphone" || source === "systemAudio";
   // Screen has no level to report and camera's evidence is a picture,
-  // so neither draws a meter; only the two audio sources do.
-  const showMeter = on && isAudio;
+  // so neither draws a meter; only the two audio sources do — and only
+  // when something can actually measure them (see `noMeter`).
+  const showMeter = on && isAudio && !noMeter;
   const tone: "live" | "flat" | "recorded" =
     meterTone ?? (state === "silent" ? "flat" : "live");
 

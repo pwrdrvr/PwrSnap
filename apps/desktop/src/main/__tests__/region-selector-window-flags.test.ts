@@ -1353,3 +1353,102 @@ describe("region-selector — Snap-vs-Record commit payload (issue #75)", () => 
     await expect(pick).resolves.toMatchObject({ ok: true, action: "record" });
   });
 });
+
+describe("region-selector — recording source chips", () => {
+  test("forwards the per-show seed to the renderer", async () => {
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({
+      intent: "video",
+      sourcesDefault: { microphone: true, systemAudio: false }
+    });
+
+    await vi.waitFor(() => {
+      expect(constructed[0]?.webContents.send).toHaveBeenCalled();
+    });
+    const modeSend = constructed[0]!.webContents.send.mock.calls.find(
+      (call) => call[0] === "region-selector:mode"
+    );
+    expect(modeSend?.[1]).toMatchObject({
+      sources: { microphone: true, systemAudio: false }
+    });
+
+    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    await expect(pick).resolves.toMatchObject({ ok: false });
+  });
+
+  test("a caller that omits the seed sends no `sources` key", async () => {
+    // Omitting it is what hides the chips. Sending `sources: undefined`
+    // would be indistinguishable at the type level but reads as a
+    // present-but-empty answer to anything doing a key check.
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({ intent: "video" });
+    await vi.waitFor(() => {
+      expect(constructed[0]?.webContents.send).toHaveBeenCalled();
+    });
+    const modeSend = constructed[0]!.webContents.send.mock.calls.find(
+      (call) => call[0] === "region-selector:mode"
+    );
+    expect(modeSend?.[1]).not.toHaveProperty("sources");
+
+    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    await expect(pick).resolves.toMatchObject({ ok: false });
+  });
+
+  test("carries the committed answer through to the result", async () => {
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({ intent: "video" });
+    await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalled());
+
+    ipcListeners.get("region-selector:result")?.(
+      {},
+      {
+        ok: true,
+        rect: { x: 10, y: 20, w: 300, h: 200 },
+        displayId: 1,
+        sources: { microphone: true, systemAudio: true }
+      }
+    );
+    await expect(pick).resolves.toMatchObject({
+      ok: true,
+      sources: { microphone: true, systemAudio: true }
+    });
+  });
+
+  test("a commit without sources leaves the field absent", async () => {
+    // Absent means "the selector did not ask", which is what routes the
+    // recording entry point back to the persisted defaults. A `sources`
+    // key holding undefined would defeat that.
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion();
+    await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalled());
+
+    ipcListeners.get("region-selector:result")?.(
+      {},
+      { ok: true, rect: { x: 10, y: 20, w: 300, h: 200 }, displayId: 1 }
+    );
+    const result = await pick;
+    expect(result.ok).toBe(true);
+    expect(result).not.toHaveProperty("sources");
+  });
+
+  test.each([
+    ["a half-filled object", { microphone: true }],
+    ["a non-boolean member", { microphone: true, systemAudio: "yes" }],
+    ["null", null],
+    ["a bare boolean", true]
+  ])("rejects the whole commit when sources is %s", async (_label, sources) => {
+    // A partially-parsed `sources` would read as "the user answered"
+    // while defaulting the missing half to off — a recording quietly
+    // missing audio the user armed. An unparseable payload is a cancel,
+    // the same as a bad `action`.
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({ intent: "video" });
+    await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalled());
+
+    ipcListeners.get("region-selector:result")?.(
+      {},
+      { ok: true, rect: { x: 10, y: 20, w: 300, h: 200 }, displayId: 1, sources }
+    );
+    await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
+  });
+});

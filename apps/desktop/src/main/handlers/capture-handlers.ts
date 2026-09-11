@@ -434,7 +434,20 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       // consumed if the user chooses Record, but it has to be in the
       // mode signal BEFORE the selector shows — there is no second
       // chance to send it once the chooser is on screen.
-      ...(settings !== null ? { cursorDefault: settings.recording.videoCaptureCursor } : {})
+      ...(settings !== null ? { cursorDefault: settings.recording.videoCaptureCursor } : {}),
+      // Same timing constraint as `cursorDefault`, and the same
+      // fail-closed reasoning: a settings read failure omits the seed,
+      // which hides the chips rather than guessing. The recording entry
+      // point then falls back to the persisted defaults exactly as it
+      // did before the chips existed.
+      ...(settings !== null
+        ? {
+            sourcesDefault: {
+              microphone: settings.recording.includeMicrophone,
+              systemAudio: settings.recording.includeSystemAudio
+            }
+          }
+        : {})
     });
     log.info("capture:interactive pickRegion returned", {
       mode,

@@ -364,6 +364,28 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
   display: flex;
   align-items: center;
   gap: 10px;
+  /* `width: max-content` is load-bearing, not a tidy-up.
+   *
+   * A fixed element with `left` set and `right: auto` is SHRINK-TO-FIT
+   * against the space from `left` to the containing block's right edge
+   * — here 50vw − 24px, i.e. HALF the display. The `translateX(-50%)`
+   * then centers whatever came out of that. Below the chooser's three
+   * controls the budget was never reached, so the bar looked correctly
+   * centered and unconstrained; the source chips push it past 700px and
+   * the last chip's border is simply cut off, with no scrollbar and no
+   * visual cue that anything is missing.
+   *
+   * `max-content` opts out of the shrink-to-fit entirely, leaving
+   * `max-width` as the only constraint — which is what the rule below
+   * always read as if it were.
+   *
+   * `flex-wrap` is the safety valve for the case `max-width` finally
+   * does bind (a very narrow display, a long localized label): a second
+   * row is legible, a clipped control is not. */
+  width: max-content;
+  flex-wrap: wrap;
+  justify-content: center;
+  row-gap: 8px;
   max-width: calc(100vw - 48px);
   padding: 8px;
   background: color-mix(in srgb, var(--bg-panel-hover) 96%, transparent);
@@ -564,6 +586,8 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
    before the effect stamps anything. */
 body[data-stage="region"][data-pick-count]:not([data-pick-count="0"]) .region-hint,
 /* Same lift for a chooser-only bar, which has no pick set to key off. */
-body[data-stage="region"][data-chooser-bar="true"] .region-hint {
+body[data-stage="region"][data-chooser-bar="true"] .region-hint,
+/* And for the video selector's source bar, which is neither. */
+body[data-stage="region"][data-source-bar="true"] .region-hint {
   bottom: 82px;
 }

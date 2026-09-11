@@ -33,6 +33,7 @@ type ModePayload = {
   snapshot?: SelectorRawSnapshotDescriptor;
   intent?: "snap" | "video";
   cursor?: boolean;
+  sources?: { microphone: boolean; systemAudio: boolean };
   quickCaptureAction?: "ask" | "snap" | "record";
   invocationId?: string;
   generation?: number;
@@ -140,6 +141,7 @@ afterEach(async () => {
     "pickCount",
     "outputMode",
     "chooserBar",
+    "sourceBar",
     "quickAction"
   ]) {
     delete document.body.dataset[k];
@@ -1488,7 +1490,10 @@ describe("U5 — multi-window pick set", () => {
     });
     await clickWindow(WIN, { metaKey: true });
     expect(pickBoxes()).toHaveLength(0);
-    expect(hud()).toBeNull();
+    // The video selector does carry a HUD now (recording controls), but
+    // it holds no pick chips — the thing multi-select would have added.
+    expect(hudChips()).toHaveLength(0);
+    expect(document.body.dataset.pickCount).toBe("0");
   });
 
   test("region mode has no multi-select", async () => {
@@ -1547,7 +1552,10 @@ describe("U5 — multi-window pick set", () => {
     expect(pickBoxes()).toHaveLength(2);
     await emitMode({ mode: "auto", intent: "video" });
     expect(pickBoxes()).toHaveLength(0);
-    expect(hud()).toBeNull();
+    // Same distinction as above: the new show's HUD is the video
+    // selector's own recording bar, and it carries none of the
+    // abandoned session's chips.
+    expect(hudChips()).toHaveLength(0);
     expect(document.body.dataset.pickCount).toBe("0");
   });
 
@@ -1867,8 +1875,11 @@ describe("U6 — Snap-vs-Record chooser", () => {
     // and `S` must not turn a video hotkey into a screenshot.
     await mountScene({ mode: "auto", intent: "video", quickCaptureAction: "record" });
     await drawRect();
-    expect(hud()).toBeNull();
+    // The HUD here is the video selector's recording bar, not a
+    // chooser: no second action, and `data-chooser-bar` stays false
+    // however the policy is set.
     expect(altButton()).toBeNull();
+    expect(document.body.dataset.chooserBar).toBe("false");
     await keyDown("s");
     expect(submitRegion).not.toHaveBeenCalled();
     await keyDown("Enter");
@@ -1969,5 +1980,277 @@ describe("U6 — Snap-vs-Record chooser", () => {
     expect(hud()).toBeNull();
     await keyDown("Enter");
     expect(submitRegion.mock.calls[0]?.[0]).not.toHaveProperty("action");
+  });
+});
+
+describe("U7 — recording source chips", () => {
+  // The chips open a real microphone through `getUserMedia`, so the
+  // tests stub the two web APIs the monitor reaches for. The stub is
+  // also the assertion surface for the rule that matters most here:
+  // a Quick Capture must not open the device.
+  const getUserMedia = vi.fn();
+  const enumerateDevices = vi.fn();
+
+  function fakeStream(): MediaStream {
+    const track = {
+      stop: vi.fn(),
+      getSettings: () => ({ deviceId: "default" })
+    };
+    return {
+      getTracks: () => [track],
+      getAudioTracks: () => [track]
+    } as unknown as MediaStream;
+  }
+
+  class FakeAudioContext {
+    createAnalyser(): unknown {
+      return {
+        fftSize: 0,
+        connect: () => undefined,
+        getFloatTimeDomainData: (b: Float32Array) => b.fill(0)
+      };
+    }
+    createMediaStreamSource(): unknown {
+      return { connect: () => undefined };
+    }
+    close(): Promise<void> {
+      return Promise.resolve();
+    }
+  }
+
+  beforeEach(() => {
+    getUserMedia.mockReset();
+    enumerateDevices.mockReset();
+    getUserMedia.mockResolvedValue(fakeStream());
+    enumerateDevices.mockResolvedValue([]);
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia, enumerateDevices }
+    });
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+  });
+
+  afterEach(() => {
+    Reflect.deleteProperty(navigator, "mediaDevices");
+  });
+
+  const BOTH_OFF = { microphone: false, systemAudio: false };
+
+  function micChip(): HTMLElement | null {
+    const el = container?.querySelector('[data-testid="region-hud-mic"]');
+    return el instanceof HTMLElement ? el : null;
+  }
+
+  function sysChip(): HTMLElement | null {
+    const el = container?.querySelector('[data-testid="region-hud-system-audio"]');
+    return el instanceof HTMLElement ? el : null;
+  }
+
+  test("the video selector shows a HUD carrying both chips", async () => {
+    // Before the chips this selector had a hint bar and nothing else,
+    // so "will this recording have audio?" was answerable only in
+    // Settings — which no renderer could reach either.
+    await mountScene({ mode: "auto", intent: "video", sources: BOTH_OFF });
+    expect(hud()).not.toBeNull();
+    expect(micChip()?.dataset.state).toBe("off");
+    expect(sysChip()?.dataset.state).toBe("off");
+    // And the hint bar gets out of the way, the same way it does for
+    // the chooser bar.
+    expect(document.body.dataset.sourceBar).toBe("true");
+  });
+
+  test("the video selector's primary button says what the click does", async () => {
+    // `primaryAction()` stays "snap" here — the wire carries no
+    // `action` on the video path — but a button labelled "Capture" in
+    // a recording selector is a lie about the very next click.
+    await mountScene({ mode: "auto", intent: "video", sources: BOTH_OFF });
+    expect(hudButton("region-hud-capture").textContent).toContain("Record");
+  });
+
+  test("no seed means no chips, and no claim on the wire", async () => {
+    // Main omits the seed when its settings read failed. Guessing
+    // "both off" there would silently strip audio from a recording the
+    // user had configured; the commit stays silent instead and main
+    // falls back to the persisted defaults.
+    await mountScene({ mode: "auto", intent: "video" });
+    expect(micChip()).toBeNull();
+    expect(sysChip()).toBeNull();
+    await mouseMove(400, 300);
+    await drawRect();
+    const payload = await commitAndRead();
+    expect(payload).not.toHaveProperty("sources");
+  });
+
+  test("M and A arm each source and the commit carries both", async () => {
+    await mountScene({ mode: "auto", intent: "video", sources: BOTH_OFF });
+    await keyDown("m");
+    await keyDown("a");
+    expect(micChip()?.dataset.state).not.toBe("off");
+    expect(sysChip()?.dataset.state).toBe("live");
+    await drawRect();
+    const payload = await commitAndRead();
+    expect(payload.sources).toEqual({ microphone: true, systemAudio: true });
+  });
+
+  test("the chips are the authority, not the seed", async () => {
+    // Settings SEED. The chip DECIDES. A user who turns the microphone
+    // off for one take gets a silent take — and their persisted default
+    // is untouched, because nothing here writes back.
+    await mountScene({
+      mode: "auto",
+      intent: "video",
+      sources: { microphone: true, systemAudio: true }
+    });
+    await keyDown("m");
+    await drawRect();
+    const payload = await commitAndRead();
+    expect(payload.sources).toEqual({ microphone: false, systemAudio: true });
+  });
+
+  test("⌘M must not disarm the microphone", async () => {
+    // ⌘M is Minimize everywhere on macOS. A bare-key-only binding is
+    // the same guard `C` carries, for the same reason.
+    await mountScene({
+      mode: "auto",
+      intent: "video",
+      sources: { microphone: true, systemAudio: false }
+    });
+    await keyDown("m", { metaKey: true });
+    await drawRect();
+    const payload = await commitAndRead();
+    expect(payload.sources.microphone).toBe(true);
+  });
+
+  test("the seed is re-read on every show of the pre-warmed window", async () => {
+    // Same window, second capture. A flip that survived the show would
+    // decide what the NEXT recording contains.
+    await mountScene({
+      mode: "auto",
+      intent: "video",
+      sources: { microphone: true, systemAudio: false }
+    });
+    await keyDown("m");
+    await emitMode({
+      mode: "auto",
+      intent: "video",
+      sources: { microphone: true, systemAudio: false }
+    });
+    await drawRect();
+    const payload = await commitAndRead();
+    expect(payload.sources).toEqual({ microphone: true, systemAudio: false });
+  });
+
+  test("system audio never draws a meter", async () => {
+    // macOS exposes no renderer-reachable system-audio tap, so an idle
+    // meter on this chip would read as "armed but silent" for someone
+    // whose system audio is working fine.
+    await mountScene({
+      mode: "auto",
+      intent: "video",
+      sources: { microphone: true, systemAudio: true }
+    });
+    expect(sysChip()?.querySelector(".ps-meter")).toBeNull();
+  });
+
+  describe("on a Quick Capture", () => {
+    test("the chips appear only once a selection is latched", async () => {
+      await mountScene({
+        mode: "auto",
+        quickCaptureAction: "ask",
+        sources: BOTH_OFF
+      });
+      await mouseMove(400, 300);
+      expect(micChip()).toBeNull();
+      await drawRect();
+      expect(micChip()).not.toBeNull();
+    });
+
+    test("they do not open the microphone before the user asks", async () => {
+      // The rule the whole `sourcesTouched` latch exists for: someone
+      // about to take a silent screenshot must not get the macOS orange
+      // indicator, or a first-use TCC prompt, because a seeded chip
+      // said the microphone was on.
+      await mountScene({
+        mode: "auto",
+        quickCaptureAction: "ask",
+        sources: { microphone: true, systemAudio: false }
+      });
+      await drawRect();
+      expect(micChip()).not.toBeNull();
+      expect(getUserMedia).not.toHaveBeenCalled();
+      // Armed, with no claim about signal — so no meter to misread.
+      expect(micChip()?.dataset.state).toBe("live");
+      expect(micChip()?.querySelector(".ps-meter")).toBeNull();
+    });
+
+    test("touching a chip is what earns the device", async () => {
+      await mountScene({
+        mode: "auto",
+        quickCaptureAction: "ask",
+        sources: BOTH_OFF
+      });
+      await drawRect();
+      await keyDown("m");
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(getUserMedia).toHaveBeenCalled();
+    });
+
+    test("a record-primary policy opens it without being touched", async () => {
+      // Here ↵ itself starts a recording, so the meter has to be live
+      // before the user commits — there is no later moment.
+      await mountScene({
+        mode: "auto",
+        quickCaptureAction: "record",
+        sources: { microphone: true, systemAudio: false }
+      });
+      await drawRect();
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(getUserMedia).toHaveBeenCalled();
+    });
+
+    test("a snap commit carries no sources at all", async () => {
+      await mountScene({
+        mode: "auto",
+        quickCaptureAction: "ask",
+        sources: { microphone: true, systemAudio: true }
+      });
+      await drawRect();
+      const payload = await commitAndRead();
+      expect(payload).not.toHaveProperty("sources");
+      expect(payload).not.toHaveProperty("captureCursor");
+    });
+
+    test("R ships the chips' answer alongside the cursor bake", async () => {
+      await mountScene({
+        mode: "auto",
+        quickCaptureAction: "ask",
+        sources: { microphone: true, systemAudio: false }
+      });
+      await drawRect();
+      await keyDown("r");
+      const payload = submitRegion.mock.calls[0]?.[0];
+      expect(payload.action).toBe("record");
+      expect(payload.sources).toEqual({ microphone: true, systemAudio: false });
+    });
+
+    test("M is unbound where no recording is reachable", async () => {
+      // Policy "snap": there is no Record affordance at all, so a bare
+      // `M` that silently flipped a recording default would be a key
+      // the user could neither see nor explain.
+      await mountScene({
+        mode: "auto",
+        quickCaptureAction: "snap",
+        sources: BOTH_OFF
+      });
+      await drawRect();
+      await keyDown("m");
+      expect(micChip()).toBeNull();
+      const payload = await commitAndRead();
+      expect(payload).not.toHaveProperty("sources");
+    });
   });
 });

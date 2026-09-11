@@ -237,3 +237,77 @@ describe("startRecordingFromSelection — preflight feedback", () => {
     expect(showMessageBox).not.toHaveBeenCalled();
   });
 });
+
+describe("startRecordingFromSelection — which audio sources the take gets", () => {
+  const RECT = { x: 0, y: 0, w: 600, h: 400 };
+
+  function capabilitiesOf(call: unknown): unknown {
+    return (call as { capabilities: unknown }).capabilities;
+  }
+
+  test("the selector's chips win over the persisted defaults", async () => {
+    // Settings SEED the chips; the chips decide the take. A user who
+    // armed the microphone on the picker must get it even though their
+    // saved default says otherwise — and nothing writes back, so the
+    // default survives for the next recording.
+    const { startRecordingFromSelection } = await import("../record-from-selection");
+    await startRecordingFromSelection(
+      {
+        ok: true,
+        rect: RECT,
+        displayId: SKEWED.id,
+        screenSnapshotId: "snap-sources",
+        previousAppPid: null,
+        sources: { microphone: true, systemAudio: false }
+      },
+      { includeSystemAudio: true, includeMicrophone: false, videoCaptureCursor: false }
+    );
+    expect(capabilitiesOf(dispatch.mock.calls[0]?.[1])).toEqual({
+      microphone: true,
+      systemAudio: false
+    });
+  });
+
+  test("both-off from the chips is an answer, not a missing one", async () => {
+    // The trap a `??` on the individual fields would fall into: a
+    // deliberate silent take would read as "unset" and be overwritten
+    // by the persisted defaults, handing the user audio they turned off.
+    const { startRecordingFromSelection } = await import("../record-from-selection");
+    await startRecordingFromSelection(
+      {
+        ok: true,
+        rect: RECT,
+        displayId: SKEWED.id,
+        screenSnapshotId: "snap-silent",
+        previousAppPid: null,
+        sources: { microphone: false, systemAudio: false }
+      },
+      { includeSystemAudio: true, includeMicrophone: true, videoCaptureCursor: false }
+    );
+    expect(capabilitiesOf(dispatch.mock.calls[0]?.[1])).toEqual({
+      microphone: false,
+      systemAudio: false
+    });
+  });
+
+  test("no chips means the persisted defaults, exactly as before", async () => {
+    // Main omits the seed when its settings read failed, and every
+    // caller that cannot reach a recording omits it too. The renderer
+    // then commits no `sources` and this path is unchanged.
+    const { startRecordingFromSelection } = await import("../record-from-selection");
+    await startRecordingFromSelection(
+      {
+        ok: true,
+        rect: RECT,
+        displayId: SKEWED.id,
+        screenSnapshotId: "snap-default",
+        previousAppPid: null
+      },
+      { includeSystemAudio: true, includeMicrophone: true, videoCaptureCursor: false }
+    );
+    expect(capabilitiesOf(dispatch.mock.calls[0]?.[1])).toEqual({
+      microphone: true,
+      systemAudio: true
+    });
+  });
+});

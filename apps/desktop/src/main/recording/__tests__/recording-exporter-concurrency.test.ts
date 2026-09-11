@@ -456,11 +456,11 @@ describe("exportVideoRange concurrency", () => {
         "60"
       ])
     );
-    expect(spawnQueue[0]?.args.at(-1)).toMatch(/\.low\.gop60\.s0m0\.mp4\..+\.partial\.mp4$/);
+    expect(spawnQueue[0]?.args.at(-1)).toMatch(/\.low\.gop60-mixed-audio-v1\.s0m0\.mp4\..+\.partial\.mp4$/);
 
     await resolveNextSpawn(0);
     const lowResult = await low;
-    expect(lowResult.path).toContain(".low.gop60.s0m0.mp4");
+    expect(lowResult.path).toContain(".low.gop60-mixed-audio-v1.s0m0.mp4");
 
     const med = exportVideoRange({ ...baseInput, preset: "med" });
     await waitForSpawnCount(1);
@@ -475,11 +475,11 @@ describe("exportVideoRange concurrency", () => {
         "60"
       ])
     );
-    expect(spawnQueue[0]?.args.at(-1)).toMatch(/\.med\.gop60\.s0m0\.mp4\..+\.partial\.mp4$/);
+    expect(spawnQueue[0]?.args.at(-1)).toMatch(/\.med\.gop60-mixed-audio-v1\.s0m0\.mp4\..+\.partial\.mp4$/);
 
     await resolveNextSpawn(0);
     const medResult = await med;
-    expect(medResult.path).toContain(".med.gop60.s0m0.mp4");
+    expect(medResult.path).toContain(".med.gop60-mixed-audio-v1.s0m0.mp4");
   });
 
   test("MP4 audio maps tolerate stale track metadata from older recordings", async () => {
@@ -497,10 +497,16 @@ describe("exportVideoRange concurrency", () => {
     });
     await waitForSpawnCount(1);
 
+    expect(spawnQueue[0]?.args).toContain("null");
+    spawnQueue[0]?.child.stderr.emit("data", Buffer.from(
+      "  Stream #0:0[0x1](und): Video: h264\n  Stream #0:1[0x2](und): Audio: aac\n"
+    ));
+    await resolveNextSpawn(0);
+    await waitForSpawnCount(1);
     const args = spawnQueue[0]?.args ?? [];
-    expect(args).toEqual(expect.arrayContaining(["-map", "0:a:0?", "-map", "0:a:1?"]));
-    expect(args).not.toContain("0:a:0");
-    expect(args).not.toContain("0:a:1");
+    expect(args).toContain("0:a:0?");
+    expect(args).not.toContain("0:a:1?");
+    expect(args).not.toContain("-filter_complex");
 
     await resolveNextSpawn(0);
     await encoded;
@@ -571,11 +577,11 @@ describe("exportVideoRange concurrency", () => {
     );
     expect(args).not.toContain("copy");
     expect(args).not.toContain("-vf");
-    expect(args.at(-1)).toMatch(/\.high\.gop60\.s0m0\.mp4\..+\.partial\.mp4$/);
+    expect(args.at(-1)).toMatch(/\.high\.gop60-mixed-audio-v1\.s0m0\.mp4\..+\.partial\.mp4$/);
 
     await resolveNextSpawn(0);
     const result = await high;
-    expect(result.path).toContain(".high.gop60.s0m0.mp4");
+    expect(result.path).toContain(".high.gop60-mixed-audio-v1.s0m0.mp4");
   });
 
   test("HIGH MP4 snaps odd source dimensions to even codec-safe dimensions", async () => {

@@ -343,6 +343,8 @@ async function prepareSceneInput(args: {
     } else if (effectiveAudio === "native") {
       audioPath = await extractVideoAudio({
         videoPath: capture.legacy_src_path!,
+        hasSystemAudio: capture.video?.hasSystemAudio ?? false,
+        hasMicrophoneAudio: capture.video?.hasMicrophoneAudio ?? false,
         startSec: trim.startSec,
         durationSec: trimDur
       });
@@ -731,6 +733,8 @@ export function registerSizzleHandlers(
         };
         const audioPath = await extractVideoAudio({
           videoPath: capture.legacy_src_path,
+          hasSystemAudio: video.hasSystemAudio,
+          hasMicrophoneAudio: video.hasMicrophoneAudio,
           startSec: trim.startSec,
           durationSec: trim.endSec - trim.startSec
         });

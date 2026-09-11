@@ -13,7 +13,7 @@
 // points hand ownership over at the call and must not release the
 // snapshot themselves.
 
-import { app, Notification, type BrowserWindow } from "electron";
+import { app, dialog, type BrowserWindow } from "electron";
 import { RECORDING_MEDIA_DEFAULTS } from "@pwrsnap/shared";
 import type { RecordingSubject, Settings } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
@@ -312,15 +312,32 @@ export async function startRecordingFromSelection(
         message: result.error.message,
       });
       if (getRecordingState().phase === "failed") return;
-      try {
-        if (Notification.isSupported()) {
-          new Notification({
-            title: "Recording failed",
-            body: result.error.message,
-          }).show();
+      // Preflight rejections happen before the recorder enters its state
+      // machine, so there is no failure HUD to explain them. OS notifications
+      // can be disabled or suppressed even when isSupported() returns true.
+      // Use an app dialog after selector teardown so the error stays visible.
+      const permissionFailure = result.error.kind === "permission";
+      const { response } = await dialog.showMessageBox({
+        type: "error",
+        title: "Recording could not start",
+        message: result.error.message,
+        detail: result.error.code === "microphone_not_granted"
+          ? "Microphone audio is enabled for this recording. Open System Permissions to grant access, then start recording again."
+          : "No new recording was started. Resolve the issue, then try again.",
+        buttons: permissionFailure ? ["Open System Permissions", "Dismiss"] : ["Dismiss"],
+        defaultId: 0,
+        cancelId: permissionFailure ? 1 : 0,
+        noLink: true,
+      });
+      if (permissionFailure && response === 0) {
+        const opened = await bus.dispatch(
+          "settings:open", { page: "system-permissions" }, { principal: "ipc" },
+        );
+        if (!opened.ok) {
+          log.warn("could not open recording permissions", {
+            code: opened.error.code, message: opened.error.message,
+          });
         }
-      } catch {
-        /* notification support is best-effort */
       }
     }
   } finally {

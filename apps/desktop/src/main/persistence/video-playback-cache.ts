@@ -1,6 +1,39 @@
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { app } from "electron";
+import { getRuntimeProcessRole } from "../process-role";
+
+/**
+ * In split mode the agent is the sole playback/cache-maintenance owner. The
+ * library forwards whole operations over the existing command bus and awaits
+ * their results. In particular, a cancellation event is insufficient: the
+ * owner must drain the encode AND finish filesystem cleanup before replying.
+ */
+export type VideoPlaybackCacheCleanupOperation =
+  | { operation: "purge"; captureId: string }
+  | { operation: "clear" | "trim" };
+
+type CleanupForwarder = (operation: VideoPlaybackCacheCleanupOperation) => Promise<void>;
+let cleanupForwarder: CleanupForwarder | null = null;
+
+/** Install library-side command-bus forwarding during split bootstrap. */
+export function installVideoPlaybackCacheCleanupForwarder(forward: CleanupForwarder): void {
+  if (cleanupForwarder !== null) throw new Error("Video playback cache cleanup forwarder already installed");
+  cleanupForwarder = forward;
+}
+
+/** No local fallback on startup races, bridge errors, or an orphaned library. */
+export function forwardVideoPlaybackCacheCleanup(operation: VideoPlaybackCacheCleanupOperation): Promise<void> | null {
+  if (getRuntimeProcessRole() !== "library") return null;
+  if (cleanupForwarder === null) return Promise.reject(new Error("Video playback cache agent owner unavailable"));
+  return cleanupForwarder(operation);
+}
+
+function rejectLibraryCacheWork(): void {
+  if (getRuntimeProcessRole() === "library") {
+    throw new Error("Video playback cache work must run in the agent process");
+  }
+}
 
 type PlaybackJob = {
   captureId: string;
@@ -15,14 +48,17 @@ let cleanupTail: Promise<void> = Promise.resolve();
 
 /**
  * Register before any source stat/probe awaits, including coalesced callers.
- * Callers must recheck that the DB capture exists immediately before starting
- * preparation: the per-capture gate covers purge, not stale DB snapshots.
+ * Only agent/combined may prepare. Library protocol requests must forward the
+ * captureId to the agent, which resolves the source and rechecks its own DB
+ * immediately before calling this function, with no intervening await.
+ * The per-capture gate covers purge, not stale DB snapshots from either role.
  */
-export function runVideoPlaybackPreparation(
+export async function runVideoPlaybackPreparation(
   captureId: string,
   sourceKey: string,
   prepare: (signal: AbortSignal) => Promise<string>
 ): Promise<string> {
+  rejectLibraryCacheWork();
   if (allCacheCleanups > 0 || captureCleanups.has(captureId)) {
     return Promise.reject(new DOMException("Video playback cache cleanup in progress", "AbortError"));
   }
@@ -48,10 +84,11 @@ export function runVideoPlaybackPreparation(
  * operations serialize because Clear/Trim and capture purges share directories.
  * An undefined captureId means all playback jobs (Clear/Trim).
  */
-export function withVideoPlaybackCacheCleanup(
+export async function withVideoPlaybackCacheCleanup(
   captureId: string | undefined,
   cleanup: () => Promise<void>
 ): Promise<void> {
+  rejectLibraryCacheWork();
   if (captureId === undefined) allCacheCleanups += 1;
   else captureCleanups.set(captureId, (captureCleanups.get(captureId) ?? 0) + 1);
 

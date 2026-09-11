@@ -7,7 +7,7 @@ import { computeTreeRenderHash } from "../render/compose-tree";
 import { getDb } from "./db";
 import { listLayerTree } from "./layers-repo";
 import { getCacheRoot, getLegacyCacheRoot } from "./paths";
-import { removeLegacyVideoPlaybackCache, withVideoPlaybackCacheCleanup } from "./video-playback-cache";
+import { forwardVideoPlaybackCacheCleanup, removeLegacyVideoPlaybackCache, withVideoPlaybackCacheCleanup } from "./video-playback-cache";
 
 export { removeLegacyVideoPlaybackCache } from "./video-playback-cache";
 
@@ -30,6 +30,8 @@ export type LegacyRenderCacheMigrationResult = {
 };
 
 export async function clearRenderCache(): Promise<void> {
+  const forwarded = forwardVideoPlaybackCacheCleanup({ operation: "clear" });
+  if (forwarded !== null) return forwarded;
   await withVideoPlaybackCacheCleanup(undefined, async () => {
     await removeLegacyVideoPlaybackCache();
     await rm(getCacheRoot(), { recursive: true, force: true });
@@ -43,6 +45,8 @@ export async function clearRenderCache(): Promise<void> {
  * rebuilt on demand through pwrsnap-cache://.
  */
 export async function trimRenderCache(): Promise<void> {
+  const forwarded = forwardVideoPlaybackCacheCleanup({ operation: "trim" });
+  if (forwarded !== null) return forwarded;
   await withVideoPlaybackCacheCleanup(undefined, async () => {
     await removeLegacyVideoPlaybackCache();
     await trimRenderCacheFiles();

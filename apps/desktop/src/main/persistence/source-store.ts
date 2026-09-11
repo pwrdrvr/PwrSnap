@@ -28,7 +28,7 @@ import {
 } from "./paths";
 import { getMainLogger } from "../log";
 import { TRASH_RETENTION_DAYS } from "./trash-retention";
-import { removeLegacyVideoPlaybackCache, withVideoPlaybackCacheCleanup } from "./video-playback-cache";
+import { forwardVideoPlaybackCacheCleanup, removeLegacyVideoPlaybackCache, withVideoPlaybackCacheCleanup } from "./video-playback-cache";
 
 const log = getMainLogger("pwrsnap:source-store");
 
@@ -452,6 +452,8 @@ export async function purgeOneFromTrash(captureId: string, srcPath: string): Pro
  * file itself.
  */
 export async function purgeCacheForCapture(captureId: string): Promise<void> {
+  const forwarded = forwardVideoPlaybackCacheCleanup({ operation: "purge", captureId });
+  if (forwarded !== null) return forwarded;
   await withVideoPlaybackCacheCleanup(captureId, async () => {
     const cacheRoot = getCacheRoot();
     const imageDir = join(cacheRoot, captureId);

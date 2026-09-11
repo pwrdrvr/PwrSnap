@@ -1,35 +1,39 @@
-// Tests for the cache-key helper in `audio-extract.ts`. The
-// extraction itself is ffmpeg-invoking and Darwin-gated alongside
-// the composer's invoking specs. What we CAN cross-platform-test is the
-// content-addressing math: making sure the cache key changes when
-// the source file's bytes change, that's what protects against
-// the "same path, new bytes → stale extraction" footgun the cache
-// existed to enable but didn't initially defend against.
-
 import { describe, expect, test } from "vitest";
-import { computeNativeAudioCacheKey } from "../audio-extract";
+import { createHash } from "node:crypto";
+import { computeNativeAudioCacheKey, computeVideoPlaybackCacheKey } from "../audio-extract";
 
 describe("computeNativeAudioCacheKey", () => {
-  // Pin the actual hash for a baseline input. Locking the value
-  // means a future drift in the key composition (e.g. someone
-  // adding a field to the digest, changing the order, or removing
-  // the trailing-slice) breaks the test loudly — every existing
-  // user's cache would be invalidated by such a change, so the
-  // test failure is the right place to think about it.
   const baseline = {
     videoPath: "/Users/u/Library/Application Support/PwrSnap/captures/abc.mp4",
     mtimeMs: 1748390400000,
     size: 1024 * 1024 * 5,
+    hasSystemAudio: true,
+    hasMicrophoneAudio: true,
     startSec: 1.5,
     durationSec: 3.25
   };
 
-  test("baseline → known stable hex digest (first 24 chars)", () => {
+  test("baseline produces a 24-character hex digest", () => {
     const key = computeNativeAudioCacheKey(baseline);
     expect(key).toMatch(/^[0-9a-f]{24}$/);
-    // Pinned value — DO NOT rotate this without thinking about
-    // every-user cache invalidation.
-    expect(key.length).toBe(24);
+  });
+
+  test("recorded source flags invalidate native and playback cache keys", () => {
+    for (const key of [computeNativeAudioCacheKey, computeVideoPlaybackCacheKey]) {
+      expect(key({ ...baseline, hasMicrophoneAudio: false })).not.toBe(key(baseline));
+      expect(key({ ...baseline, hasSystemAudio: false })).not.toBe(key(baseline));
+    }
+  });
+
+  test("mixing version invalidates old first-track-only extractions", () => {
+    const oldKey = createHash("sha256")
+      .update(baseline.videoPath).update("\0")
+      .update(String(baseline.mtimeMs)).update("\0")
+      .update(String(baseline.size)).update("\0")
+      .update(baseline.startSec.toFixed(3)).update("\0")
+      .update(baseline.durationSec.toFixed(3)).digest("hex").slice(0, 24);
+    expect(computeNativeAudioCacheKey(baseline)).not.toBe(oldKey);
+    expect(computeNativeAudioCacheKey(baseline)).not.toBe(computeVideoPlaybackCacheKey(baseline));
   });
 
   test("returns the same key for the same inputs (deterministic)", () => {

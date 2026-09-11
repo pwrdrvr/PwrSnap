@@ -112,10 +112,9 @@ describe("auto-updater failed install retry", () => {
       ]
     }) as unknown as typeof fetch;
 
-    const { initAppUpdater, installDownloadedAppUpdate, setUpdateSelectionResolver } =
+    const { initAppUpdater, installDownloadedAppUpdate } =
       await import("../auto-updater");
-    setUpdateSelectionResolver(() => ({ channel: "prerelease", train: "stable" }));
-    initAppUpdater();
+    initAppUpdater(() => ({ channel: "prerelease", train: "stable" }));
 
     const installResult = installDownloadedAppUpdate();
     await vi.waitFor(() => {

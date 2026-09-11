@@ -54,6 +54,17 @@ export const EVENT_CHANNELS = {
    * then subscribe for subsequent transitions.
    */
   recordingState: "events:recording:state",
+  /**
+   * Main → the recording-frame window only: where to draw the frame
+   * inside that window, and in which platform posture. Payload type:
+   * `RecordingFrameLayout`.
+   *
+   * The geometry lives in main (`recording-frame-geometry.ts`) because
+   * only main knows the display bounds the window was clamped against;
+   * the renderer is a dumb painter that positions a box at `inset` and
+   * flips two data attributes.
+   */
+  recordingFrame: "events:recording:frame",
   settingsChanged: "events:settings:changed",
   /**
    * Main → every BrowserWindow: latest auto-updater status. Drives the

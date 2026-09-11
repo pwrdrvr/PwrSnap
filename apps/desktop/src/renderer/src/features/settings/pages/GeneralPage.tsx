@@ -43,6 +43,7 @@ export function GeneralPage(): ReactElement {
   const launchAtLogin = settings?.general.launchAtLogin ?? false;
   const videoCaptureCursor = settings?.recording.videoCaptureCursor ?? true;
   const imageCaptureCursor = settings?.recording.imageCaptureCursor ?? true;
+  const showRegionFrame = settings?.recording.showRegionFrame ?? true;
   const quickCaptureAction: QuickCaptureAction =
     settings?.recording.quickCaptureAction ?? "ask";
   const platform = window.pwrsnapApi?.platform;
@@ -160,6 +161,22 @@ export function GeneralPage(): ReactElement {
             onChange={(next) => {
               if (!ready) return;
               void patch({ recording: { videoCaptureCursor: next } });
+            }}
+          />
+        </Row>
+      </Card>
+
+      <Card eyebrow="CAPTURE" title="Recording frame">
+        <Row
+          label="Outline the area being recorded"
+          sub="Draws a tangerine frame around the recorded region while a video capture runs. Never appears in the recording itself."
+          tag="video"
+        >
+          <Switch
+            on={showRegionFrame}
+            onChange={(next) => {
+              if (!ready) return;
+              void patch({ recording: { showRegionFrame: next } });
             }}
           />
         </Row>

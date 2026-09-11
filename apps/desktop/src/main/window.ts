@@ -240,6 +240,7 @@ type RendererStage =
   | "document"
   | "sizzle"
   | "recording-controller"
+  | "recording-frame"
   | "local-agent-consent";
 type RendererTarget = { kind: "url"; url: string } | { kind: "file"; path: string; hash?: string };
 
@@ -1644,6 +1645,78 @@ export function createRecordingControllerWindow(): BrowserWindow {
   //     from our own filter no matter how clever it was.
   window.setContentProtection(true);
   loadRenderer(window, rendererTarget("recording-controller"));
+  window.webContents.setVisualZoomLevelLimits(1, 1);
+  return window;
+}
+
+/**
+ * Click-through overlay that draws the tangerine frame around the
+ * recorded rect for the life of a video capture (see
+ * `recording/recording-frame.ts` for the lifecycle and
+ * `recording/recording-frame-geometry.ts` for where it goes).
+ *
+ * Constructed at the plan's bounds rather than sized afterwards: the
+ * rect is known at preflight and never changes for a session, so there
+ * is no resize-to-content dance here and no `setContentSize` to be
+ * clamped. `setMinimumSize(0, 0)` is still called because a small
+ * region can be narrower than whatever floor Electron inferred, and a
+ * mid-session display change re-plans through `setBounds`.
+ */
+export function createRecordingFrameWindow(bounds: {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}): BrowserWindow {
+  const window = new BrowserWindow({
+    // Non-activating panel, same rationale as the float-over: nothing
+    // this window does may pull focus away from the app the user is
+    // recording.
+    ...(process.platform === "darwin" ? { type: "panel" as const } : {}),
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    show: false,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    focusable: false,
+    // ⚠️  Never `true`. A native window shadow around a transparent
+    // frame paints a dark halo on all four sides of the recorded
+    // region — the opposite of the "blended, no scrim" brief.
+    hasShadow: false,
+    webPreferences: themedWebPreferences()
+  });
+  window.setMinimumSize(0, 0);
+  window.excludedFromShownWindowsMenu = true;
+  // The overlay sits directly over the user's content for minutes at a
+  // time. It must never eat a click, so this is set once at
+  // construction and never flipped — unlike the HUD, which toggles it
+  // per phase because its Stop button has to be hittable.
+  window.setIgnoreMouseEvents(true);
+  if (process.platform === "darwin") {
+    window.setAlwaysOnTop(true, "floating");
+    window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  } else {
+    window.setAlwaysOnTop(true);
+  }
+  window.setMenuBarVisibility(false);
+  // On macOS this is load-bearing: it is what makes the `straddle`
+  // posture legal, letting the glow kiss the inside of the rect without
+  // reaching the file. On Windows it is defence in depth only — FFmpeg
+  // gdigrab reads the desktop DC, so the geometry (strictly outside the
+  // rect) is what actually protects the capture there. Do not let a
+  // future change trade the outset geometry away on the strength of
+  // this call.
+  window.setContentProtection(true);
+  loadRenderer(window, rendererTarget("recording-frame"));
   window.webContents.setVisualZoomLevelLimits(1, 1);
   return window;
 }

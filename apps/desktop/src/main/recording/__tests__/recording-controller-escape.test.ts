@@ -2,8 +2,15 @@
 // renderer cannot reliably receive plain keydown events. Esc during
 // the video lead-in is bridged through Electron's globalShortcut and
 // then routed through the normal recording:cancel command.
+//
+// "Non-activating" is also a capture invariant, not just a keyboard
+// footnote — see the last describe block. Only the HUD window is
+// content-protected; the CONSEQUENCES of activating PwrSnap (menu bar
+// switch, the recorded app's title bar going inactive, its caret
+// disappearing) are inside the recorded rect and land in the file.
 
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import { EVENT_CHANNELS } from "@pwrsnap/shared";
 
 type ShortcutCallback = () => void;
 
@@ -45,6 +52,7 @@ type WindowSpy = {
   listeners: Map<string, (...args: unknown[]) => void>;
   webContents: {
     on: ReturnType<typeof vi.fn>;
+    send: ReturnType<typeof vi.fn>;
     listeners: Map<string, (...args: unknown[]) => void>;
     zoomFactor: number;
     getOSProcessId: ReturnType<typeof vi.fn>;
@@ -78,6 +86,7 @@ function makeWindowSpy(): WindowSpy {
       on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
         webContentsListeners.set(event, listener);
       }),
+      send: vi.fn(),
       listeners: webContentsListeners,
       zoomFactor: 1,
       getOSProcessId: vi.fn(() => 4242)
@@ -501,5 +510,110 @@ describe("recording-controller lead-in Escape shortcut", () => {
 
     expect(win.setMinimumSize).toHaveBeenCalledWith(0, 0);
     expect(win.setContentSize).toHaveBeenCalledWith(1120, 200, false);
+  });
+});
+
+// Nothing PwrSnap shows during a take may end up in the take. The HUD
+// is the one window that is hidden from the recorder on macOS
+// (`setContentProtection(true)`) and anchored outside the recorded rect
+// on Windows, and both of those are properties of the WINDOW only —
+// they do not extend to a native dialog raised from main, nor to the
+// app-activation side effects of letting the HUD take key focus.
+describe("recording HUD must not intrude on the take", () => {
+  const recordingState = {
+    phase: "recording" as const,
+    sessionId: "rec-intrusion",
+    startedAt: new Date(0).toISOString(),
+    rect: { x: 10, y: 20, w: 800, h: 600 },
+    displayId: 1,
+    capabilities: { systemAudio: false, microphone: false }
+  };
+
+  test("the recording-phase HUD stays non-activating, so clicking Stop cannot deactivate the recorded app", async () => {
+    const { applyRecordingStateToController } = await import("../recording-controller");
+    mocks.currentState = recordingState;
+
+    applyRecordingStateToController(recordingState);
+
+    const win = mocks.createdWindows[0]!;
+    // #496 flipped this to `true` so an onKeyDown Escape handler in the
+    // renderer could fire. The cost was that the first frames after a
+    // Restart arm-click recorded the user's app losing focus.
+    expect(win.setFocusable).not.toHaveBeenCalledWith(true);
+    expect(win.setFocusable).toHaveBeenLastCalledWith(false);
+    // showInactive, never show/focus — those activate.
+    expect(win.showInactive).toHaveBeenCalled();
+    expect(win.show).not.toHaveBeenCalled();
+    expect(win.focus).not.toHaveBeenCalled();
+  });
+
+  test.each(["stopping", "processing"] as const)(
+    "the %s HUD stays non-activating while the recorder is still exiting",
+    async (phase) => {
+      const { applyRecordingStateToController } = await import("../recording-controller");
+      mocks.currentState = recordingState;
+      applyRecordingStateToController(recordingState);
+      const win = mocks.createdWindows[0]!;
+      win.setFocusable.mockClear();
+
+      const next = { phase, sessionId: recordingState.sessionId };
+      mocks.currentState = next;
+      applyRecordingStateToController(next as never);
+
+      expect(win.setFocusable).not.toHaveBeenCalledWith(true);
+      expect(win.setFocusable).toHaveBeenLastCalledWith(false);
+      expect(win.focus).not.toHaveBeenCalled();
+    }
+  );
+
+  test("a destructive tray control is confirmed on the HUD, never in a native dialog", async () => {
+    const { applyRecordingStateToController, requestRecordingDiscardConfirmation } = await import(
+      "../recording-controller"
+    );
+    mocks.currentState = recordingState;
+    applyRecordingStateToController(recordingState);
+    const win = mocks.createdWindows[0]!;
+
+    expect(requestRecordingDiscardConfirmation("restart")).toBe(true);
+
+    expect(win.webContents.send).toHaveBeenCalledWith(EVENT_CHANNELS.recordingControllerArm, {
+      action: "restart"
+    });
+    // An NSAlert from main carries no content protection and is centred
+    // on the display — it would be recorded.
+    expect(mocks.showMessageBox).not.toHaveBeenCalled();
+    // Arming is not acting: the HUD still owns the second press.
+    expect(mocks.dispatch).not.toHaveBeenCalled();
+  });
+
+  test("no live HUD means no confirmation and no silent discard", async () => {
+    const { canRecordingControllerConfirmDiscard, requestRecordingDiscardConfirmation } =
+      await import("../recording-controller");
+    // Nothing has created a HUD window in this module instance.
+    mocks.currentState = recordingState;
+
+    expect(canRecordingControllerConfirmDiscard()).toBe(false);
+    expect(requestRecordingDiscardConfirmation("cancel")).toBe(false);
+    expect(mocks.dispatch).not.toHaveBeenCalled();
+    expect(mocks.showMessageBox).not.toHaveBeenCalled();
+  });
+
+  test("a HUD that outlived the recording phase cannot host a discard confirmation", async () => {
+    const { applyRecordingStateToController, canRecordingControllerConfirmDiscard } = await import(
+      "../recording-controller"
+    );
+    mocks.currentState = recordingState;
+    applyRecordingStateToController(recordingState);
+    const win = mocks.createdWindows[0]!;
+
+    // Finalization already owns the backend transition; there is no take
+    // left to discard.
+    mocks.currentState = { phase: "stopping", sessionId: recordingState.sessionId };
+
+    expect(canRecordingControllerConfirmDiscard()).toBe(false);
+    expect(win.webContents.send).not.toHaveBeenCalledWith(
+      EVENT_CHANNELS.recordingControllerArm,
+      expect.anything()
+    );
   });
 });

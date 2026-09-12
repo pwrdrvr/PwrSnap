@@ -3,6 +3,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import type {
   RecordingBackendCapabilities,
   RecordingCapabilities,
@@ -231,6 +232,91 @@ describe("RecordingController normal controls", () => {
     await renderController();
 
     expect(container.querySelector("button")).toBeNull();
+  });
+});
+
+// The tray cannot confirm a destructive recording control itself: a
+// native dialog from main is not content-protected and is centred on
+// the display, so it lands in the take. It sends this event instead
+// and the HUD — the one window the recorder cannot see on macOS, and
+// the one anchored outside the rect on Windows — runs the confirm.
+describe("RecordingController tray-armed confirmation", () => {
+  async function renderRecording(): Promise<void> {
+    mocks.dispatch.mockImplementation(async (command: string) => {
+      if (command === "recording:state") return { ok: true, value: recordingState() };
+      if (command === "recording:capabilities") return { ok: true, value: macCapabilities };
+      return { ok: true, value: undefined };
+    });
+    await renderController();
+  }
+
+  async function arm(payload: unknown): Promise<void> {
+    const listener = mocks.listeners.get(EVENT_CHANNELS.recordingControllerArm);
+    expect(listener).toBeDefined();
+    await act(async () => listener?.(payload));
+  }
+
+  test.each(["restart", "cancel"] as const)(
+    "a tray-sent %s arms the same in-HUD confirm a click would, and acts on nothing",
+    async (action) => {
+      await renderRecording();
+
+      await arm({ action });
+
+      expect(container.textContent).toContain(
+        action === "restart" ? "Restart discards this take" : "Cancel discards this take"
+      );
+      expect(mocks.dispatch).not.toHaveBeenCalledWith(`recording:${action}`, {});
+
+      // The user's confirming press is the HUD's own second click.
+      await click(action);
+      expect(mocks.dispatch).toHaveBeenCalledWith(`recording:${action}`, {});
+    }
+  );
+
+  test("an unrecognised action is ignored rather than arming something", async () => {
+    await renderRecording();
+
+    await arm({ action: "stop" });
+    await arm(null);
+    await arm({});
+
+    expect(container.textContent).not.toContain("discards this take");
+  });
+
+  test("a nudge that lost the race with an action already in flight is ignored", async () => {
+    await renderRecording();
+    // Two clicks put Stop in flight; the dispatch promise never settles,
+    // so `busyAction` stays pinned the way it does mid-stop.
+    mocks.dispatch.mockImplementation(async (command: string) => {
+      if (command === "recording:state") return { ok: true, value: recordingState() };
+      if (command === "recording:capabilities") return { ok: true, value: macCapabilities };
+      if (command === "recording:stop") return new Promise(() => undefined);
+      return { ok: true, value: undefined };
+    });
+    await click("stop");
+
+    await arm({ action: "cancel" });
+
+    expect(container.textContent).not.toContain("discards this take");
+  });
+
+  test("the HUD exposes no key handler, because it can never be the key window", async () => {
+    await renderRecording();
+    await arm({ action: "restart" });
+    expect(container.textContent).toContain("Restart discards this take");
+
+    // `focusable: false` + showInactive() in main is what keeps a click
+    // on Stop from deactivating the recorded app — and the recorded app
+    // visibly losing focus is inside the rect, so it lands in the file.
+    // A keydown listener here would only have been reachable by giving
+    // that up. The 5s auto-disarm and the sibling button are the exits.
+    const root = container.querySelector<HTMLElement>(".rc-root");
+    expect(root).not.toBeNull();
+    await act(async () =>
+      root?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))
+    );
+    expect(container.textContent).toContain("Restart discards this take");
   });
 });
 

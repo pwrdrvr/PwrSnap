@@ -2237,6 +2237,58 @@ describe("U7 — recording source chips", () => {
       expect(payload.sources).toEqual({ microphone: true, systemAudio: false });
     });
 
+    test("the legend advertises M / A exactly where they are bound", async () => {
+      // The legend used to render these rows off the chip-OFFER terms
+      // alone, which are true in live snap, while `sourceKeysBound()`
+      // additionally requires the HUD. So the bar read
+      // "C rec cursor: on · M mic: on · A system audio: on" with `C`
+      // live and the other two dead — three keys on one line, two of
+      // them doing nothing, and the legend reporting a state the user
+      // could not change.
+      await mountScene({
+        mode: "auto",
+        quickCaptureAction: "ask",
+        sources: BOTH_OFF
+      });
+      await mouseMove(400, 300);
+      // Live snap: no HUD, so no chips, so no binding — and now no ad.
+      expect(micChip()).toBeNull();
+      expect(regionHintText()).not.toContain("mic:");
+      expect(regionHintText()).not.toContain("system audio:");
+      // `C` really is bound here (its guard carries no HUD term), so it
+      // stays advertised. That asymmetry is the point: the line is
+      // trustworthy per key, not all-or-nothing.
+      expect(regionHintText()).toContain("rec cursor:");
+
+      await drawRect();
+      expect(micChip()).not.toBeNull();
+      expect(regionHintText()).toContain("mic:");
+      expect(regionHintText()).toContain("system audio:");
+    });
+
+    test("the keys the legend withholds really are dead", async () => {
+      // The other half of the same contract. If this ever starts
+      // passing by binding the keys instead, `M` would open the
+      // microphone with no meter and no permission state anywhere on
+      // screen — which is what the HUD term was added to stop.
+      await mountScene({
+        mode: "auto",
+        quickCaptureAction: "ask",
+        sources: BOTH_OFF
+      });
+      await mouseMove(400, 300);
+      await keyDown("m");
+      await keyDown("a");
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(getUserMedia).not.toHaveBeenCalled();
+      // Latch the selection and the seeded answer is untouched.
+      await drawRect();
+      expect(micChip()?.dataset.state).toBe("off");
+      expect(sysChip()?.dataset.state).toBe("off");
+    });
+
     test("M is unbound where no recording is reachable", async () => {
       // Policy "snap": there is no Record affordance at all, so a bare
       // `M` that silently flipped a recording default would be a key

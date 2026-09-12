@@ -621,8 +621,10 @@ export function RegionSelector() {
   const sourceBar = intent === "video";
   const showHud = picks.length > 0 || chooserBar || sourceBar;
   // Synced here rather than with the refs above because `showHud` is not
-  // known until this point. `sourceKeysBound()` reads it so `M` / `A` can
-  // never be live under chips that are not rendered.
+  // known until this point — and before the return, so the hint legend's
+  // own `sourceKeysBound()` calls see this render's value.
+  // `sourceKeysBound()` reads it so `M` / `A` can never be live, or be
+  // advertised, under chips that are not rendered.
   hudShownRef.current = showHud;
 
   // Surface state to CSS for cursor switching + snap visualization.
@@ -971,10 +973,23 @@ export function RegionSelector() {
    * True when `M` / `A` are bound — exactly where the source chips are
    * on screen.
    *
-   * Ref-reading twin of `sourcesOffered`, for the once-registered
-   * global keydown handler. Built from the same two terms so a key can
-   * never be live under a chip the user cannot see: a bare `M` that
-   * silently disarms the microphone is worse than no shortcut.
+   * Read by BOTH the once-registered global keydown handler and the
+   * hint legend, so the two cannot disagree about whether a key is
+   * live. They did: the legend advertised `M` / `A` off the chip-render
+   * terms alone, which are true in live snap with no pick set and
+   * nothing latched — where `showHud` is false, so there are no chips
+   * and no binding. The bar read `C rec cursor: on · M mic: on · A
+   * system audio: on` with two of those three keys dead.
+   *
+   * Safe to call from JSX: every ref it reads is assigned during render
+   * (see the block above `recordOffered`), and `hudShownRef` is set
+   * before the return, so a render-time call sees this render's values.
+   * It is a call rather than a `const` so the keydown handler — which
+   * captured this scope once at mount — reads the CURRENT show's refs,
+   * which the per-show IPC seed writes before React re-renders.
+   *
+   * A key can never be live under a chip the user cannot see: a bare
+   * `M` that silently disarms the microphone is worse than no shortcut.
    */
   function sourceKeysBound(): boolean {
     return (
@@ -2814,14 +2829,14 @@ export function RegionSelector() {
               <kbd>C</kbd>cursor: {captureCursor ? "on" : "off"}
             </span>
             <span className="region-hint-sep">·</span>
-            {sources !== null && (
+            {sourceKeysBound() && (
               <>
                 <span>
-                  <kbd>M</kbd>mic: {sources.microphone ? "on" : "off"}
+                  <kbd>M</kbd>mic: {sources?.microphone ? "on" : "off"}
                 </span>
                 <span className="region-hint-sep">·</span>
                 <span>
-                  <kbd>A</kbd>system audio: {sources.systemAudio ? "on" : "off"}
+                  <kbd>A</kbd>system audio: {sources?.systemAudio ? "on" : "off"}
                 </span>
                 <span className="region-hint-sep">·</span>
               </>
@@ -2853,15 +2868,15 @@ export function RegionSelector() {
                 <span>
                   <kbd>C</kbd>rec cursor: {captureCursor ? "on" : "off"}
                 </span>
-                {sources !== null && (
+                {sourceKeysBound() && (
                   <>
                     <span className="region-hint-sep">·</span>
                     <span>
-                      <kbd>M</kbd>mic: {sources.microphone ? "on" : "off"}
+                      <kbd>M</kbd>mic: {sources?.microphone ? "on" : "off"}
                     </span>
                     <span className="region-hint-sep">·</span>
                     <span>
-                      <kbd>A</kbd>system audio: {sources.systemAudio ? "on" : "off"}
+                      <kbd>A</kbd>system audio: {sources?.systemAudio ? "on" : "off"}
                     </span>
                   </>
                 )}

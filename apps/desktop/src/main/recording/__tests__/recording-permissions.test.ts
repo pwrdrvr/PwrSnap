@@ -225,9 +225,11 @@ describe("requestPermission", () => {
   test("systemAudio mirrors the screen prompt path", async () => {
     electronMock.status = { screen: "denied", microphone: "granted" };
     const { requestPermission } = await import("../recording-permissions");
-    await requestPermission("systemAudio");
+    const res = await requestPermission("systemAudio");
     expect(electronMock.desktopCapturerCalls).toBe(1);
     expect(electronMock.shellOpenUrls).toEqual([]);
+    // Same read-back as the screen path this mirrors — user hasn't granted yet.
+    expect(res.status).toBe("denied");
   });
 
   test("Windows request reports unknown and never calls a prompt API", async () => {

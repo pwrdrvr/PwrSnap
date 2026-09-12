@@ -818,8 +818,9 @@ Rules the surface keeps, and where each one lives:
 - **TypeScript strict.** `tsconfig.base.json` has `strict`,
   `verbatimModuleSyntax`, `isolatedModules`, (per the deepening plan)
   `exactOptionalPropertyTypes`, and `noUnusedLocals` + `noUnusedParameters`.
-- **Dead imports and locals are a build failure, and `tsc` is what catches
-  them.** There is no ESLint in this repo — no config, no dev dependency, and
+- **Dead imports and locals fail `pnpm typecheck`, and `tsc` is what catches
+  them.** (Not `pnpm build` — electron-vite transpiles with esbuild and type-
+  checks nothing, so a green build proves nothing here.) There is no ESLint in this repo — no config, no dev dependency, and
   `pnpm lint` has no ESLint step. `noUnusedLocals` + `noUnusedParameters` ride
   `pnpm typecheck`, which `pnpm lint` already runs on every PR, so the check
   costs no new dependency and no new CI step.
@@ -838,10 +839,13 @@ Rules the surface keeps, and where each one lives:
   - A write-only private field counts as unused, which is the point: it is
     state nothing reads. Delete the field and its assignments rather than
     adding a read to quiet the compiler.
-  - The flags are all-or-nothing and cannot be scoped per directory, so they
-    apply to `e2e/**`, `scripts/**`, and `__tests__/**` too. That is deliberate
-    — an unused import in a test is the same stale-refactor signal as one in
-    `src/main`.
+  - The flags are all-or-nothing and cannot be scoped per directory, so
+    `e2e/**` and `__tests__/**` are gated too. That is deliberate — an unused
+    import in a test is the same stale-refactor signal as one in `src/main`.
+    What is NOT gated: the root `scripts/*.mjs` policy gates and
+    `apps/desktop/scripts/*.mjs` are plain JS in no tsconfig, so `tsc` never
+    sees them. `apps/desktop/tsconfig.json` does list `scripts/**/*.ts`, but
+    that glob currently matches zero files.
 - **Renderers stay sandboxed.** Every `BrowserWindow` is created with
   `contextIsolation: true, sandbox: true, nodeIntegration: false`. The Phase 6
   sizzle-composer preview player runs in a sandboxed renderer; render

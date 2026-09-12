@@ -9,10 +9,14 @@ import {
   probeAudioStreamCount,
   runAudioFfmpeg,
   selectedRecordingAudioStreams,
+  videoPlaybackNeedsPreparation,
   type RecordingAudioSource
 } from "../recording/recording-audio";
 
 export { AudioExtractError } from "../recording/recording-audio";
+// Re-exported from its shared home so this module stays the one place the
+// audio-derivative consumers import from.
+export { videoPlaybackNeedsPreparation } from "../recording/recording-audio";
 
 // Older native extractions silently selected the first audio stream. Changing
 // the pipeline invalidates those artifacts without touching original captures.
@@ -95,6 +99,31 @@ export function computeNativeAudioCacheKey(args: SourceFingerprint & AudioTrim):
     .slice(0, 24);
 }
 
+/**
+ * Cache identity for the prepared playback rendition.
+ *
+ * Mirrors `computeNativeAudioCacheKey` deliberately: the two lanes derive
+ * from the same source and must invalidate on the same facts, or they
+ * disagree about one recording. #496 addressed the rendition by a name
+ * carrying only `AUDIO_PIPELINE_VERSION`, so the ONLY way to invalidate it
+ * was a pipeline bump — an in-place rewrite of the source, or a later
+ * backfill of the `requested_*` columns, would have been served a stale
+ * rendition forever while the sibling waveform re-derived itself.
+ *
+ * Domain-separated with a `playback` tag so a source can never collide
+ * with its own native-audio key.
+ *
+ * Async because the revision half of the identity (mtime + size) is a
+ * `stat`. Callers run the preparation predicate FIRST, so a recording that
+ * needs no rendition still touches the filesystem not at all.
+ */
+export async function computeVideoPlaybackCacheKey(args: RecordingAudioSource): Promise<string> {
+  return sourceDigest(await fingerprint(args))
+    .update("\0playback\0")
+    .digest("hex")
+    .slice(0, 24);
+}
+
 async function fingerprint(args: RecordingAudioSource): Promise<SourceFingerprint> {
   // Never reuse a cached derivative when its original is no longer readable.
   // Classify the failure: both callers branch on `AudioExtractError`, and a
@@ -142,39 +171,6 @@ export async function extractVideoAudio(args: RecordingAudioSource & AudioTrim):
       "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"
     ]);
   });
-}
-
-/**
- * Whether a player needs a prepared rendition to hear this recording.
- *
- * `<video>` — and most players — play the FIRST audio track and ignore the
- * rest. So the original file is fine in exactly two cases: the audible audio
- * already IS track 0, or there is no audible audio at all. Everything else
- * needs a rendition, and that covers two distinct shapes:
- *
- *   both sources audible  → they must be MIXED, or one is lost
- *   only track 1 audible  → it must be SELECTED, or the player takes the
- *                           silent track 0 and the recording seems mute
- *
- * That second shape is the common one — system audio armed with nothing
- * playing through it, so a silent track sits in front of a good microphone.
- */
-export function videoPlaybackNeedsPreparation(
-  source: Pick<
-    RecordingAudioSource,
-    "hasSystemAudio" | "hasMicrophoneAudio" | "requestedSystemAudio" | "requestedMicrophone"
-  >,
-  availableTracks?: number
-): boolean {
-  // Drop indices the file does not actually have BEFORE deciding. Metadata
-  // claiming two sources over a single-track file resolves to "track 0 is
-  // all there is", which needs no rendition — deciding first and filtering
-  // afterwards would remux a file in order to produce what it already was.
-  const streams = selectedRecordingAudioStreams(source, undefined, availableTracks).filter(
-    (index) => availableTracks === undefined || index < availableTracks
-  );
-  if (streams.length === 0) return false;
-  return !(streams.length === 1 && streams[0] === 0);
 }
 
 /**

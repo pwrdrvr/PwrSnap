@@ -319,9 +319,9 @@ export function validateRecordingStartRequest(
  * Hand-versioning it meant two tokens for one fact, and they had already
  * drifted (`audio-mixed-v2` against `mixed-audio-v1`).
  */
-const VIDEO_AUDIO_ASSET = `${AUDIO_PIPELINE_VERSION}.m4a`;
+export const VIDEO_AUDIO_ASSET = `${AUDIO_PIPELINE_VERSION}.m4a`;
 /** Same derivation, for the prepared playback rendition. */
-const VIDEO_PLAYBACK_ASSET = `playback-${AUDIO_PIPELINE_VERSION}.mp4`;
+export const VIDEO_PLAYBACK_ASSET = `playback-${AUDIO_PIPELINE_VERSION}.mp4`;
 /** Matches the timeline's smallest supported trim span. */
 const MIN_VIDEO_RANGE_SEC = 0.1;
 
@@ -411,7 +411,13 @@ async function ensureVideoAudioAsset(input: {
     // nothing sweeps until the capture is hard-deleted.
     await Promise.all(
       (await readdir(dir).catch(() => [] as string[]))
-        .filter((name) => name !== VIDEO_AUDIO_ASSET && /^(audio|mixed-audio-v\d{1,3})\.m4a$/.test(name))
+        .filter(
+          (name) =>
+            name !== VIDEO_AUDIO_ASSET &&
+            name !== VIDEO_PLAYBACK_ASSET &&
+            (/^(audio|mixed-audio-v\d{1,3})\.m4a$/.test(name) ||
+              /^playback-mixed-audio-v\d{1,3}\.mp4$/.test(name))
+        )
         .map((name) => rm(join(dir, name), { force: true }).catch(() => undefined))
     );
     const tmp = `${target}.${process.pid}.tmp`;

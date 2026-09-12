@@ -6,6 +6,9 @@
 // in commit 8d92916; lock it down.
 
 import { describe, expect, test } from "vitest";
+// Imported for their VALUES, not as literals — this is the pairing that
+// broke, so the test has to read what the handlers really produce.
+import { VIDEO_AUDIO_ASSET, VIDEO_PLAYBACK_ASSET } from "../handlers/recording-handlers";
 import {
   parseAppIconBundleId,
   parseCacheUrl,
@@ -332,6 +335,22 @@ describe("parseAppIconBundleId", () => {
 });
 
 describe("parseVideoAssetUrl", () => {
+  // The producer and the whitelist are two files that must agree on a
+  // filename, and they silently disagreed once: a new playback asset was
+  // added without its pattern, so every URL main handed the player 404'd
+  // and the video rendered as a black frame with no error anywhere. Assert
+  // the REAL constants against the REAL whitelist rather than string
+  // literals, which is the only version of this test that could have
+  // caught it.
+  test("every asset the handlers actually produce is servable", () => {
+    for (const asset of [VIDEO_AUDIO_ASSET, VIDEO_PLAYBACK_ASSET]) {
+      expect(parseVideoAssetUrl(`pwrsnap-cache://v/cap/${asset}`)).toEqual({
+        captureId: "cap",
+        asset
+      });
+    }
+  });
+
   test("parses filmstrip + audio assets and preserves capture-id case", () => {
     expect(parseVideoAssetUrl("pwrsnap-cache://v/AbC_1-x/frames-n24-w96.jpg")).toEqual({
       captureId: "AbC_1-x",
@@ -349,6 +368,9 @@ describe("parseVideoAssetUrl", () => {
     expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/mixed-audio-v2.m4a?v=3")?.asset).toBe(
       "mixed-audio-v2.m4a"
     );
+    expect(
+      parseVideoAssetUrl("pwrsnap-cache://v/cap/playback-mixed-audio-v2.mp4?v=3")?.asset
+    ).toBe("playback-mixed-audio-v2.mp4");
     expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/frames-n8-w64.jpg/")?.asset).toBe(
       "frames-n8-w64.jpg"
     );

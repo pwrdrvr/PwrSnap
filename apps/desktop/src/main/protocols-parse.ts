@@ -110,8 +110,22 @@ export function parseCacheUrl(url: string): CacheUrlParts | null {
  * short-lived spelling of it; both stay addressable for any renderer holding
  * an old URL, and for caches written before the rename.
  */
-const VIDEO_ASSET_PATTERN =
-  /^(frames-n\d{1,3}-w\d{1,4}\.jpg|audio\.m4a|audio-mixed-v\d{1,3}\.m4a|mixed-audio-v\d{1,3}\.m4a)$/;
+const VIDEO_ASSET_PATTERN = new RegExp(
+  `^(${[
+    // Timeline filmstrip.
+    String.raw`frames-n\d{1,3}-w\d{1,4}\.jpg`,
+    // Mixed audio for the waveform lane. Version-generic: the filename is
+    // derived from `AUDIO_PIPELINE_VERSION`, so pinning one version here
+    // would need a matching edit in a second file on every bump.
+    String.raw`mixed-audio-v\d{1,3}\.m4a`,
+    // The prepared playback rendition, same derivation.
+    String.raw`playback-mixed-audio-v\d{1,3}\.mp4`,
+    // Pre-versioning and short-lived spellings of the audio asset, still
+    // addressable for a renderer holding an old URL.
+    String.raw`audio\.m4a`,
+    String.raw`audio-mixed-v\d{1,3}\.m4a`
+  ].join("|")})$`
+);
 
 export type VideoAssetUrlParts = {
   captureId: string;

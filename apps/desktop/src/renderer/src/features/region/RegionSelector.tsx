@@ -632,21 +632,20 @@ export function RegionSelector() {
         ? "true"
         : "false";
     document.body.dataset.mode = mode;
-    // Multi-select is on: the HUD owns the bottom of the screen, so
-    // CSS lifts the hint bar clear of it. Also used by E2E to assert
-    // the pick set without reaching into React state.
+    // Used by E2E to assert the pick set without reaching into React
+    // state.
     // One attribute, not two: `has-picks` was exactly
     // `pick-count !== "0"`, and two encodings of one fact can disagree.
     document.body.dataset.pickCount = String(picks.length);
     document.body.dataset.outputMode = outputMode;
-    // The HUD can now be on screen without a pick set, so the hint-bar
-    // lift can no longer key off pick-count alone. Also the E2E signal
-    // for "the chooser is live in this show".
+    // The E2E signal for "the chooser is live in this show". The HUD can
+    // be on screen without a pick set, so pick-count alone cannot stand
+    // in for it.
     document.body.dataset.chooserBar = chooserBar ? "true" : "false";
-    // The hint-bar lift used to key off the chooser alone. The video
-    // selector now raises the same bar without being a chooser, so it
-    // gets its own flag rather than lying through `chooser-bar` — which
-    // is also the E2E signal for "the Snap-vs-Record chooser is live".
+    // "The video selector's recording bar is up" — distinct from the
+    // chooser, which this selector never offers. Both are E2E signals
+    // now: `.region-controls` stacks the HUD and the legend, so neither
+    // attribute is a style input any more.
     document.body.dataset.sourceBar = sourceBar ? "true" : "false";
     document.body.dataset.quickAction = quickAction;
   }, [
@@ -2572,7 +2571,19 @@ export function RegionSelector() {
           the Snap-vs-Record chooser once a selection is latched. With
           neither, single-selection capture paints exactly what it always
           did — no bar at all. */}
-      {showHud && (
+      {/* One bottom-centred column holding the HUD and the keyboard
+          legend, in that visual order (the legend carries `order: -1`;
+          it comes second in the DOM so the HUD keeps first tab stop).
+
+          Before this wrapper each was independently `position: fixed`
+          and the legend was lifted clear of the HUD by a hardcoded
+          `bottom: 82px`, re-derived from three separate body data-
+          attributes. That number is one HUD row tall — so the moment
+          the HUD wrapped to two rows it sat on top of the legend, and
+          nothing in CSS could detect the wrap. Stacking them in a flex
+          column makes the spacing fall out of layout instead. */}
+      <div className="region-controls">
+        {showHud && (
         <div
           className={
             hasPicks ? "region-hud" : "region-hud region-hud--chooser-only"
@@ -2758,7 +2769,7 @@ export function RegionSelector() {
         </div>
       )}
 
-      <div className="region-hint">
+        <div className="region-hint">
         {intent === "video" && (
           <>
             <span>
@@ -2834,6 +2845,7 @@ export function RegionSelector() {
           <kbd>esc</kbd>
           {interaction.kind === "snap" && !hasPicks ? "cancel" : "back"}
         </span>
+        </div>
       </div>
       <style>{`@keyframes ps-rec-pulse {
         0% { opacity: 1; }

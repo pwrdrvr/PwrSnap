@@ -218,12 +218,47 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
   pointer-events: none;
 }
 
-.region-hint {
+/* The bottom-centred column that owns both the HUD and the keyboard
+ * legend. It exists so their spacing comes out of layout instead of
+ * out of a constant — see the note on `.region-controls` placement in
+ * RegionSelector.tsx.
+ *
+ * `width: max-content` is load-bearing, and was the original bug: an
+ * element positioned with `left: 50%` and `right: auto` is SHRINK-TO-FIT
+ * against the space from `left` to the containing block's right edge —
+ * half the viewport. `translateX(-50%)` then centers whatever came out
+ * of that, so the result LOOKS centered and unconstrained right up
+ * until the content exceeds half the display, at which point the far
+ * edge is simply cut off with no scrollbar and no cue. Opting out of
+ * shrink-to-fit leaves `max-width` as the only constraint, which is
+ * what that line always read as if it were.
+ *
+ * `pointer-events: none` keeps the column out of the way of the
+ * selector's canvas gestures; `.region-hud` opts back in. */
+.region-controls {
   position: fixed;
   bottom: 24px;
   left: 50%;
   transform: translateX(-50%);
+  z-index: 3;
   display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: max-content;
+  max-width: calc(100vw - 48px);
+  pointer-events: none;
+}
+
+.region-hint {
+  /* Above the HUD, while staying SECOND in the DOM so the HUD keeps
+     the first tab stop. */
+  order: -1;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: 100%;
+  box-sizing: border-box;
   gap: 12px;
   padding: 8px 14px;
   background: color-mix(in srgb, var(--bg-panel-hover) 92%, transparent);
@@ -356,37 +391,18 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
 /* --- HUD ------------------------------------------------------------ */
 
 .region-hud {
-  position: fixed;
-  bottom: 24px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 3;
   display: flex;
   align-items: center;
   gap: 10px;
-  /* `width: max-content` is load-bearing, not a tidy-up.
-   *
-   * A fixed element with `left` set and `right: auto` is SHRINK-TO-FIT
-   * against the space from `left` to the containing block's right edge
-   * — here 50vw − 24px, i.e. HALF the display. The `translateX(-50%)`
-   * then centers whatever came out of that. Below the chooser's three
-   * controls the budget was never reached, so the bar looked correctly
-   * centered and unconstrained; the source chips push it past 700px and
-   * the last chip's border is simply cut off, with no scrollbar and no
-   * visual cue that anything is missing.
-   *
-   * `max-content` opts out of the shrink-to-fit entirely, leaving
-   * `max-width` as the only constraint — which is what the rule below
-   * always read as if it were.
-   *
-   * `flex-wrap` is the safety valve for the case `max-width` finally
-   * does bind (a very narrow display, a long localized label): a second
-   * row is legible, a clipped control is not. */
-  width: max-content;
+  /* The safety valve for the case the column's `max-width` finally does
+     bind (a very narrow display, a long localized label): a second row
+     is legible, a clipped control is not. The legend above rides up on
+     its own, because the column is a flex layout and not a constant. */
   flex-wrap: wrap;
   justify-content: center;
   row-gap: 8px;
-  max-width: calc(100vw - 48px);
+  max-width: 100%;
+  box-sizing: border-box;
   padding: 8px;
   background: color-mix(in srgb, var(--bg-panel-hover) 96%, transparent);
   border: 1px solid var(--border-default);
@@ -580,14 +596,12 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
   outline-offset: 2px;
 }
 
-/* Lift the keyboard legend clear of the HUD. */
-/* Requires the attribute to be PRESENT and non-zero. A bare
-   `:not([data-pick-count="0"])` would also match the first paint,
-   before the effect stamps anything. */
-body[data-stage="region"][data-pick-count]:not([data-pick-count="0"]) .region-hint,
-/* Same lift for a chooser-only bar, which has no pick set to key off. */
-body[data-stage="region"][data-chooser-bar="true"] .region-hint,
-/* And for the video selector's source bar, which is neither. */
-body[data-stage="region"][data-source-bar="true"] .region-hint {
-  bottom: 82px;
-}
+/* The keyboard legend used to be lifted clear of the HUD here, by a
+   hardcoded `bottom: 82px` selected off three different body data-
+   attributes. `.region-controls` stacks the two in a flex column, so
+   the gap is now layout and the constant is gone — along with the bug
+   it carried, which was that 82px is exactly ONE HUD row and nothing in
+   CSS can tell when the HUD has wrapped to two.
+
+   `data-pick-count`, `data-chooser-bar` and `data-source-bar` are still
+   stamped. They are E2E signals now rather than style inputs. */

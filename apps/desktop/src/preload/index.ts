@@ -288,6 +288,13 @@ const pwrsnapApi = {
     /** Recording-only: whether the recording bakes in the mouse cursor,
      *  from the selector's `C` toggle. Omitted for image captures. */
     captureCursor?: boolean;
+    /** Recording-only: the audio sources the user armed on the
+     *  selector's source chips. Seeded from `settings.recording.*` per
+     *  show; the chip decides for THIS take and never writes back.
+     *  Omitted for image captures, and omitted by any selector show
+     *  that never offered the chips — main then falls back to the
+     *  persisted defaults, which is the pre-chip behavior. */
+    sources?: { microphone: boolean; systemAudio: boolean };
     /** Multi-window pick. Each entry is one picked window's EXTENT —
      *  a rectangle on the frozen screen, in the same global logical-px
      *  space as `rect`. `rect` is ALWAYS the union bounding box of
@@ -406,9 +413,9 @@ const pwrsnapApi = {
   requestFloatOverResize(payload: { width: number; height: number }): void {
     ipcRenderer.send(FLOAT_OVER_RESIZE_CHANNEL, payload);
   },
-  /** Failed recording HUD renderer → main content measurement. Main converts
-   * CSS pixels through the inherited page zoom before resizing the window. */
-  requestRecordingControllerResize(payload: { height: number }): void {
+  /** Recording HUD renderer → main: fit the BrowserWindow to the measured
+   * outer wrapper so status, confirmations, and failure actions cannot be clipped. */
+  requestRecordingControllerResize(payload: { width?: number; height: number }): void {
     ipcRenderer.send(RECORDING_CONTROLLER_RESIZE_CHANNEL, payload);
   },
   /**

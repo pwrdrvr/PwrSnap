@@ -239,10 +239,13 @@ export async function startRecordingFromSelection(
       scheduleDockReclaim();
       log.debug("video-record left previous app frontmost", { previousAppPid });
     }
-    // Honor the user's persisted audio defaults; the in-context
-    // recording dialog (a later enhancement) can override these. The
-    // caller read these once, before opening the picker.
-    const capabilities = {
+    // The selector's source chips are the authority when they were
+    // shown: settings SEED them per show, the user decides for this
+    // take, and nothing writes back. Falling back to the persisted
+    // defaults covers the two cases where no chips were rendered — a
+    // settings read that failed before the picker opened, and any
+    // caller that never passed `sourcesDefault`.
+    const capabilities = selection.sources ?? {
       systemAudio: recording.includeSystemAudio,
       microphone: recording.includeMicrophone,
     };

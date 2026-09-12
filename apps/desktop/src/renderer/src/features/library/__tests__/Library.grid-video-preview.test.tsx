@@ -148,6 +148,8 @@ const videoRecord: CaptureRecord = {
     containerFormat: "mp4",
     hasSystemAudio: false,
     hasMicrophoneAudio: false,
+    requestedSystemAudio: false,
+    requestedMicrophone: false,
     defaultRange: { start: 0, end: 12 },
     previewPath: null,
     previewStatus: "pending"

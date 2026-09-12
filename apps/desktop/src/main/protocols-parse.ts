@@ -100,8 +100,59 @@ export function parseCacheUrl(url: string): CacheUrlParts | null {
   return { captureId, width, format: format as "png" | "webp" };
 }
 
-/** Whitelisted derived-video asset filenames the `v/` arm may serve. */
-const VIDEO_ASSET_PATTERN = /^(frames-n\d{1,3}-w\d{1,4}\.jpg|audio\.m4a)$/;
+/**
+ * Whitelisted derived-video asset filenames the `v/` arm may serve.
+ *
+ * The audio arm is version-generic on purpose: the mixed-audio filename is
+ * derived from `AUDIO_PIPELINE_VERSION`, so pinning one version here meant a
+ * pipeline bump needed a matching edit in a second file to keep serving.
+ * `audio.m4a` is the pre-versioning name and `audio-mixed-vN.m4a` a
+ * short-lived spelling of it; both stay addressable for any renderer holding
+ * an old URL, and for caches written before the rename.
+ */
+/**
+ * Every spelling the audio + playback derivatives have ever used, in one
+ * list, because two consumers need the same answer: the resolver decides
+ * what it may SERVE, and the orphan sweep decides what it may RECLAIM.
+ * Writing that set out twice is how the sweep ended up skipping
+ * `audio-mixed-vN.m4a` — a name this file still serves — so the orphan it
+ * was added to collect survived every pipeline bump.
+ *
+ * Version-generic on purpose: the live filenames are derived from
+ * `AUDIO_PIPELINE_VERSION`, so pinning one version here would need a
+ * matching edit in a second file on every bump.
+ */
+const DERIVED_AUDIO_ASSET_ALTERNATIVES = [
+  // Mixed audio for the waveform lane.
+  String.raw`mixed-audio-v\d{1,3}\.m4a`,
+  // The prepared playback rendition, same derivation.
+  String.raw`playback-mixed-audio-v\d{1,3}\.mp4`,
+  // Pre-versioning and short-lived spellings of the audio asset, still
+  // addressable for a renderer holding an old URL.
+  String.raw`audio\.m4a`,
+  String.raw`audio-mixed-v\d{1,3}\.m4a`
+];
+
+const DERIVED_AUDIO_ASSET_PATTERN = new RegExp(
+  `^(?:${DERIVED_AUDIO_ASSET_ALTERNATIVES.join("|")})$`
+);
+
+/**
+ * Whether `name` is a derived audio/playback asset from ANY pipeline
+ * version — i.e. the set the per-capture orphan sweep is allowed to
+ * reclaim. Callers exclude the two names currently in use themselves.
+ */
+export function isDerivedAudioAsset(name: string): boolean {
+  return DERIVED_AUDIO_ASSET_PATTERN.test(name);
+}
+
+const VIDEO_ASSET_PATTERN = new RegExp(
+  `^(?:${[
+    // Timeline filmstrip.
+    String.raw`frames-n\d{1,3}-w\d{1,4}\.jpg`,
+    ...DERIVED_AUDIO_ASSET_ALTERNATIVES
+  ].join("|")})$`
+);
 
 export type VideoAssetUrlParts = {
   captureId: string;
@@ -134,6 +185,16 @@ export function parseVideoAssetUrl(url: string): VideoAssetUrlParts | null {
 /** Build the renderer-facing URL for a derived video asset. */
 export function videoAssetUrl(captureId: string, asset: string): string {
   return `${SCHEMES.cache}://v/${captureId}/${asset}`;
+}
+
+/**
+ * Build the renderer-facing URL for a capture's own source bytes. Mirrors
+ * `captureSrcUrl` in the renderer's `lib/pwrsnap`; both exist because
+ * `video:playback` answers with one or the other and the answer is composed
+ * in main.
+ */
+export function captureSrcUrl(captureId: string): string {
+  return `${SCHEMES.capture}://r/${captureId}`;
 }
 
 /**

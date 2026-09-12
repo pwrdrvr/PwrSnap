@@ -9,7 +9,7 @@
 //   • Video export is a derived-artifact path keyed by the same
 //     command bus the renderer uses for image clipboard/drag.
 
-import { copyFile, mkdir, rename, stat } from "node:fs/promises";
+import { copyFile, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { ok, err, recordingFailureSummary } from "@pwrsnap/shared";
 import type {
@@ -51,6 +51,10 @@ import {
 } from "../recording/recording-service";
 import { getRecordingState } from "../recording/recording-state";
 import {
+  canRunRecordingControl,
+  recordingBackendCapabilities
+} from "../recording/recording-capabilities";
+import {
   computeOutputDimensions,
   exportVideoRange,
   GIF_PRESETS,
@@ -64,8 +68,13 @@ import { validateVideoExportRequest } from "../recording/video-export-validation
 import { createVideoExportProgressObserver } from "../recording/video-export-progress";
 import { ensureVideoPoster } from "../recording/video-poster";
 import { ensureVideoFrames, videoAssetDir } from "../recording/video-frames";
-import { extractVideoAudio } from "../sizzle/audio-extract";
-import { videoAssetUrl } from "../protocols-parse";
+import {
+  AUDIO_PIPELINE_VERSION,
+  extractVideoAudio,
+  prepareVideoPlayback,
+  videoPlaybackNeedsPreparation
+} from "../sizzle/audio-extract";
+import { captureSrcUrl, isDerivedAudioAsset, videoAssetUrl } from "../protocols-parse";
 import { broadcastCapturesChanged } from "../events";
 import { prepareRenderedFileAlias } from "../render/file-alias";
 import { buildPresetExportDisplayName } from "../render/export-filename";
@@ -115,16 +124,36 @@ function failedSessionId(req: unknown): string | null {
 async function guardRecordingAttempt(
   capabilities: RecordingCapabilities
 ): Promise<Result<never, PwrSnapError> | null> {
+  if (process.platform !== "darwin" && (capabilities.microphone || capabilities.systemAudio)) {
+    return err(validationError(
+      "recording_audio_unsupported",
+      "Audio recording is currently available only on macOS. Turn off Microphone and System audio to record video on this platform."
+    ));
+  }
   const blocked = await guardScreenCapture();
   if (blocked) return blocked;
   const storageBlocked = await ensureCapturesDirReady();
   if (storageBlocked) return storageBlocked;
   const readiness = readRecordingReadiness();
+  if (capabilities.microphone && readiness.microphone === "not-determined") {
+    try {
+      // Wait for the user's decision before starting the countdown or helper.
+      readiness.microphone = (await requestPermission("microphone")).status;
+    } catch (cause) {
+      log.warn("recording microphone permission request failed", { cause });
+      return err(permissionError(
+        "microphone_request_failed",
+        "PwrSnap couldn't request microphone access. Check Settings > System Permissions, then record again."
+      ));
+    }
+  } else if (capabilities.microphone && readiness.microphone !== "granted") {
+    void bus.dispatch("settings:open", { page: "system-permissions" }, { principal: "ipc" });
+  }
   if (capabilities.microphone && readiness.microphone !== "granted") {
     return err(
       permissionError(
         "microphone_not_granted",
-        "Microphone permission is required for the selected recording options."
+        "Allow PwrSnap in System Settings > Privacy & Security > Microphone, then record again. If you just enabled access, relaunch PwrSnap."
       )
     );
   }
@@ -284,7 +313,15 @@ export function validateRecordingStartRequest(
 
 /** Filename of the extracted full-clip audio under the video asset dir.
  *  Must stay in the `parseVideoAssetUrl` whitelist. */
-const VIDEO_AUDIO_ASSET = "audio.m4a";
+/**
+ * Derived from the pipeline version so a mixing change cannot leave a stale
+ * derivative addressable under a name that no longer describes its contents.
+ * Hand-versioning it meant two tokens for one fact, and they had already
+ * drifted (`audio-mixed-v2` against `mixed-audio-v1`).
+ */
+export const VIDEO_AUDIO_ASSET = `${AUDIO_PIPELINE_VERSION}.m4a`;
+/** Same derivation, for the prepared playback rendition. */
+export const VIDEO_PLAYBACK_ASSET = `playback-${AUDIO_PIPELINE_VERSION}.mp4`;
 /** Matches the timeline's smallest supported trim span. */
 const MIN_VIDEO_RANGE_SEC = 0.1;
 
@@ -302,10 +339,54 @@ async function fileHasBytes(path: string): Promise<boolean> {
   }
 }
 
+const videoPlaybackInFlight = new Map<string, Promise<string | null>>();
+
+/**
+ * Prepare the playback rendition if this recording needs one, and answer
+ * with the asset name to serve (or `null` for "play the original").
+ *
+ * Single-flighted per capture, like the waveform asset: opening a video
+ * mounts the stage and the timeline together, and a second remux of the
+ * same file is pure waste.
+ */
+async function ensureVideoPlaybackAsset(input: {
+  captureId: string;
+  videoPath: string;
+  hasSystemAudio: boolean;
+  hasMicrophoneAudio: boolean;
+  requestedSystemAudio: boolean;
+  requestedMicrophone: boolean;
+}): Promise<string | null> {
+  if (!videoPlaybackNeedsPreparation(input)) return null;
+  const existing = videoPlaybackInFlight.get(input.captureId);
+  if (existing !== undefined) return existing;
+
+  const work = (async () => {
+    const target = join(videoAssetDir(input.captureId), VIDEO_PLAYBACK_ASSET);
+    if (await fileHasBytes(target)) return VIDEO_PLAYBACK_ASSET;
+    await mkdir(videoAssetDir(input.captureId), { recursive: true });
+    const played = await prepareVideoPlayback(target, input);
+    // The probe can still say the file disagrees with its metadata, in
+    // which case nothing was written and the original is correct.
+    return played === target ? VIDEO_PLAYBACK_ASSET : null;
+  })();
+
+  videoPlaybackInFlight.set(input.captureId, work);
+  try {
+    return await work;
+  } finally {
+    videoPlaybackInFlight.delete(input.captureId);
+  }
+}
+
 async function ensureVideoAudioAsset(input: {
   captureId: string;
   videoPath: string;
   durationSec: number;
+  hasSystemAudio: boolean;
+  hasMicrophoneAudio: boolean;
+  requestedSystemAudio: boolean;
+  requestedMicrophone: boolean;
 }): Promise<void> {
   const existing = videoAudioInFlight.get(input.captureId);
   if (existing !== undefined) return existing;
@@ -316,10 +397,32 @@ async function ensureVideoAudioAsset(input: {
 
     const extracted = await extractVideoAudio({
       videoPath: input.videoPath,
+      hasSystemAudio: input.hasSystemAudio,
+      hasMicrophoneAudio: input.hasMicrophoneAudio,
+      requestedSystemAudio: input.requestedSystemAudio,
+      requestedMicrophone: input.requestedMicrophone,
       startSec: 0,
       durationSec: input.durationSec
     });
-    await mkdir(videoAssetDir(input.captureId), { recursive: true });
+    const dir = videoAssetDir(input.captureId);
+    await mkdir(dir, { recursive: true });
+    // Drop derivatives from an earlier pipeline version. Without this each
+    // bump left a full-clip audio file per capture that nothing reads and
+    // nothing sweeps until the capture is hard-deleted.
+    //
+    // `isDerivedAudioAsset` is the SAME list the protocol resolver serves
+    // from, deliberately. Re-spelling it here is what let `audio-mixed-v2`
+    // — still servable, so still a real orphan — slip through every sweep.
+    await Promise.all(
+      (await readdir(dir).catch(() => [] as string[]))
+        .filter(
+          (name) =>
+            name !== VIDEO_AUDIO_ASSET &&
+            name !== VIDEO_PLAYBACK_ASSET &&
+            isDerivedAudioAsset(name)
+        )
+        .map((name) => rm(join(dir, name), { force: true }).catch(() => undefined))
+    );
     const tmp = `${target}.${process.pid}.tmp`;
     await copyFile(extracted, tmp);
     await rename(tmp, target);
@@ -444,8 +547,11 @@ export function registerRecordingHandlers(): void {
     // never staring at "3, 2, 1, …" only to hit a permission wall.
     // Screen Recording is required: the gate fires the macOS prompt on
     // the first-ever attempt and routes to System Settings thereafter
-    // (see screen-permission-gate.ts). Requested audio must be granted;
-    // interactive callers surface a rejection with recovery instructions.
+    // (see screen-permission-gate.ts). Requested audio is mandatory —
+    // never silently downgrade an explicitly enabled microphone — and
+    // interactive callers surface the rejection with recovery
+    // instructions. The selector's source chips make this rare: they
+    // show the grant state, and offer it, before the user commits.
     const blocked = await guardRecordingAttempt(request.capabilities);
     if (blocked) return blocked;
     try {
@@ -483,6 +589,20 @@ export function registerRecordingHandlers(): void {
   });
 
   bus.register("recording:stop", async () => {
+    if (
+      !canRunRecordingControl(
+        getRecordingState(),
+        recordingBackendCapabilities(),
+        "stop"
+      )
+    ) {
+      return err(
+        validationError(
+          "control_unavailable",
+          "Stop is only available while a recording is actively capturing."
+        )
+      );
+    }
     try {
       const { captureId } = await getService().stop();
       return ok({ captureId });
@@ -496,11 +616,32 @@ export function registerRecordingHandlers(): void {
   });
 
   bus.register("recording:cancel", async () => {
-    if (getRecordingState().phase === "failed") {
+    const state = getRecordingState();
+    if (state.phase === "failed") {
       return err(
         validationError(
           "failure_action_required",
           "Use the failed recording's Dismiss action instead of Cancel."
+        )
+      );
+    }
+    if (state.phase === "stopping" || state.phase === "processing") {
+      return err(
+        validationError(
+          "control_unavailable",
+          "Cancel is unavailable while the recording is being finalized."
+        )
+      );
+    }
+    if (
+      state.phase !== "idle" &&
+      state.phase !== "ready" &&
+      !canRunRecordingControl(state, recordingBackendCapabilities(), "cancel")
+    ) {
+      return err(
+        validationError(
+          "control_unavailable",
+          "Cancel is unavailable for the active recording backend."
         )
       );
     }
@@ -520,6 +661,20 @@ export function registerRecordingHandlers(): void {
         validationError(
           "failure_action_required",
           "Use the failed recording's Retry action instead of Restart."
+        )
+      );
+    }
+    if (
+      !canRunRecordingControl(
+        getRecordingState(),
+        recordingBackendCapabilities(),
+        "restart"
+      )
+    ) {
+      return err(
+        validationError(
+          "control_unavailable",
+          "Restart is only available while a recording is actively capturing."
         )
       );
     }
@@ -605,6 +760,10 @@ export function registerRecordingHandlers(): void {
     return ok(getRecordingState());
   });
 
+  bus.register("recording:capabilities", async () => {
+    return ok(recordingBackendCapabilities());
+  });
+
   // ---- video metadata + export ----
 
   bus.register("video:setDefaultRange", async (req) => {
@@ -688,12 +847,55 @@ export function registerRecordingHandlers(): void {
     }
   });
 
+  // ── video:playback ────────────────────────────────────────────────
+  //
+  // What a player should load. The recorder keeps each source as its own
+  // audio track and players take only the first, so a take whose audible
+  // audio is not track 0 needs a stream-copied rendition to be heard at
+  // all. That is the ordinary case for "system audio armed, nothing
+  // playing": a silent track sits in front of a good microphone.
+  bus.register("video:playback", async (req) => {
+    if (typeof req.captureId !== "string" || req.captureId.length === 0) {
+      return err(
+        validationError("invalid_capture_id", "video:playback: captureId must be a non-empty string")
+      );
+    }
+    const record = getCaptureById(req.captureId);
+    if (record === null) {
+      return err(validationError("not_found", `video:playback: capture not found: ${req.captureId}`));
+    }
+    const original = { url: captureSrcUrl(record.id), prepared: false };
+    const video = record.video;
+    if (record.kind !== "video" || video === null || video === undefined) return ok(original);
+    if (record.legacy_src_path === null) return ok(original);
+    try {
+      const asset = await ensureVideoPlaybackAsset({
+        captureId: record.id,
+        videoPath: record.legacy_src_path,
+        hasSystemAudio: video.hasSystemAudio,
+        hasMicrophoneAudio: video.hasMicrophoneAudio,
+        requestedSystemAudio: video.requestedSystemAudio,
+        requestedMicrophone: video.requestedMicrophone
+      });
+      if (asset === null) return ok(original);
+      return ok({ url: videoAssetUrl(record.id, asset), prepared: true });
+    } catch (cause) {
+      // Never fail the player over this. A recording the user can watch
+      // with one source audible beats an error where a video should be.
+      log.warn("video:playback preparation failed; serving the original", {
+        captureId: record.id,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return ok(original);
+    }
+  });
+
   // ── video:audio ───────────────────────────────────────────────────
   //
   // Full-clip audio for the waveform lane. Reuses the sizzle
   // native-audio extractor (content-addressed under sizzle-cache) and
   // mirrors the result into the per-capture video asset dir so the
-  // `pwrsnap-cache://v/<id>/audio.m4a` arm can serve it.
+  // `pwrsnap-cache://v/<id>/<AUDIO_PIPELINE_VERSION>.m4a` arm can serve it.
   bus.register("video:audio", async (req) => {
     if (typeof req.captureId !== "string" || req.captureId.length === 0) {
       return err(validationError("invalid_capture_id", "video:audio: captureId must be a non-empty string"));
@@ -715,7 +917,11 @@ export function registerRecordingHandlers(): void {
       await ensureVideoAudioAsset({
         captureId: record.id,
         videoPath: record.legacy_src_path,
-        durationSec: record.video.durationSec
+        durationSec: record.video.durationSec,
+        hasSystemAudio: record.video.hasSystemAudio,
+        hasMicrophoneAudio: record.video.hasMicrophoneAudio,
+        requestedSystemAudio: record.video.requestedSystemAudio,
+        requestedMicrophone: record.video.requestedMicrophone
       });
       return ok({
         hasAudio: true as const,

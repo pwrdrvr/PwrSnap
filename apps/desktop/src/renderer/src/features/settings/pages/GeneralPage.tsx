@@ -28,11 +28,13 @@
 // preference unconditionally and the blocked row below is a shortcut,
 // not a required errand.
 //
-// The copy here claims ONLY "default for new recordings", which is the
-// whole of what is true while this card is the sole consumer of the
-// pair. pwrdrvr/PwrSnap#496 adds the per-recording source chips to the
-// capture selector and seeds them from these two fields; the "override
-// it per recording" sentence belongs in THAT change, not ahead of it.
+// The copy here said ONLY "default for new recordings" while this card
+// was the sole consumer of the pair. The capture selector's source chips
+// now seed from these two fields and override them per take without
+// writing back, so each row carries that second sentence — the switches
+// are the DEFAULT, and a take that changes its mind does not change them.
+// Saying so is what stops a user from hunting here mid-capture for a
+// control that is already on screen.
 //
 // The EDITOR card hosts `editor.matchingText.enabled`. There is no
 // Settings → Editor page (see settings-categories.ts), and the schema
@@ -310,7 +312,7 @@ export function GeneralPage(): ReactElement {
           label="Include system audio"
           sub={
             audioSupported
-              ? "The default for new recordings — captures what your Mac is playing alongside the screen. Rides the Screen Recording grant you already gave PwrSnap, so there is no second permission to enable."
+              ? "The default for new recordings — captures what your Mac is playing alongside the screen. Rides the Screen Recording grant you already gave PwrSnap, so there is no second permission to enable. Press A in the capture selector to change it for one recording without changing this default."
               : AUDIO_UNSUPPORTED_SUB
           }
           tag="video"
@@ -327,7 +329,7 @@ export function GeneralPage(): ReactElement {
           label="Include your microphone"
           sub={
             audioSupported
-              ? "The default for new recordings — captures your voice alongside the screen, for narration and walkthroughs. macOS asks for access the first time you switch this on."
+              ? "The default for new recordings — captures your voice alongside the screen, for narration and walkthroughs. macOS asks for access the first time you switch this on. Press M in the capture selector to change it for one recording without changing this default."
               : AUDIO_UNSUPPORTED_SUB
           }
           tag="video"

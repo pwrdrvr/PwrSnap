@@ -12,8 +12,8 @@
 //   MED : 720p · 24 fps · "film frame rate"
 //   HIGH: source resolution · 30 fps · max quality
 //
-// MP4: copies the relevant audio tracks based on the user's toggles.
-// Track selection happens via ffmpeg's `-map` flags; the source
+// MP4: mixes the selected audio into one AAC track for ordinary players.
+// Tracks remain individually selectable at export time; the source
 // container places system audio on track 1, microphone on track 2
 // when both are present (the recorder writes them in that order).
 // The preset drives target width + platform-encoder bitrate:
@@ -42,6 +42,12 @@ import {
 } from "../persistence/video-repo";
 import { FfmpegProgressParser, type FfmpegProgressRecord } from "./ffmpeg-progress";
 import { resolveFfmpegPath } from "./ffmpeg-resolver";
+import {
+  AUDIO_PIPELINE_VERSION,
+  buildRecordingAudioArgs,
+  probeAudioStreamCount,
+  selectedRecordingAudioStreams
+} from "./recording-audio";
 
 const log = getMainLogger("pwrsnap:recording-exporter");
 
@@ -113,7 +119,17 @@ export function buildMp4VideoEncoderArgs(
   return args;
 }
 
-const MP4_REENCODE_CACHE_TOKEN = "gop60";
+// Invalidate alternate-track exports: ordinary players only played the first.
+//
+// The audio half is DERIVED, not hand-versioned. A cached export is only
+// valid for the mix that produced it, and that mix is `buildRecordingAudioArgs`
+// — the same function `AUDIO_PIPELINE_VERSION` gates the waveform and playback
+// derivatives on. Spelling it by hand here meant two tokens for one fact, and
+// they had already drifted apart (`mixed-audio-v1` here against
+// `mixed-audio-v2` there): bumping the pipeline version as its own comment
+// instructs would have re-derived those two assets while `lookupExport` kept
+// serving an MP4 mixed the old way, silently.
+const MP4_REENCODE_CACHE_TOKEN = `gop60-${AUDIO_PIPELINE_VERSION}`;
 
 /** Compute output dimensions for a given preset against a source
  *  width × height. LOW / MED scale down (preserving aspect with even
@@ -831,34 +847,21 @@ async function encodeMp4(
   }
   args.push(...buildMp4VideoEncoderArgs(process.platform, spec));
 
-  // Audio track mapping. The recorder writes system audio as the
-  // first audio stream and microphone as the second when both are
-  // recorded. We map zero, one, or both based on the user's toggles
-  // and the source's actual track availability.
-  const mappings: string[] = [];
-  if (audio.includeSystemAudio && video.hasSystemAudio) {
-    mappings.push("0:a:0");
+  let streams = selectedRecordingAudioStreams(video, audio);
+  if (streams.length > 0) {
+    // Probe whenever any audio is selected, not only for a mix. The track
+    // INDEX depends on the recorded layout, so a file that disagrees with
+    // the metadata has to be reconciled before the map is built — filtering
+    // afterwards would delete a microphone that merely sat at a different
+    // index. Filter labels also cannot be optional, so a multi-input graph
+    // must not name a stream the file does not have.
+    const available = await probeAudioStreamCount(src, signal);
+    streams = selectedRecordingAudioStreams(video, audio, available).filter(
+      (index) => index < available
+    );
   }
-  if (audio.includeMicrophone && video.hasMicrophoneAudio) {
-    // If system audio is present but excluded, mic is still source
-    // index 1. If system audio is absent, mic is index 0.
-    const micIndex = video.hasSystemAudio ? 1 : 0;
-    mappings.push(`0:a:${micIndex}`);
-  }
-  if (mappings.length === 0) {
-    args.push("-an");
-  } else {
-    for (const m of mappings) {
-      // `hasSystemAudio` / `hasMicrophoneAudio` is persisted recorder
-      // metadata. Older macOS recordings could claim a microphone
-      // track even when AVCapture delivered no samples, so make each
-      // audio map optional at the ffmpeg boundary. The requested
-      // tracks are still mapped when present; a stale missing track
-      // no longer aborts the entire video export.
-      args.push("-map", `${m}?`);
-    }
-    args.push("-c:a", "aac", "-b:a", "192k");
-  }
+  args.push(...buildRecordingAudioArgs(streams));
+  if (streams.length > 0) args.push("-c:a", "aac", "-b:a", "192k");
   args.push("-movflags", "+faststart", outPath);
 
   await runFfmpeg(ffmpeg, args, {

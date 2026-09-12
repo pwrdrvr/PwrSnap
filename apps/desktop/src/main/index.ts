@@ -117,7 +117,16 @@ import {
 } from "./recording/recording-frame";
 import { readRecordingReadiness } from "./recording/recording-permissions";
 import { getRecordingService } from "./recording/recording-service";
-import { getRecordingState, isRecordingActive } from "./recording/recording-state";
+import {
+  getRecordingState,
+  isRecordingActive,
+  subscribeToRecordingState
+} from "./recording/recording-state";
+import {
+  recordingBackendCapabilities,
+  videoHotkeyAction
+} from "./recording/recording-capabilities";
+import { installMediaPermissionPolicy } from "./media-permissions";
 import { videoAssetDir } from "./recording/video-frames";
 import {
   getDesktopSettingsServices,
@@ -752,8 +761,22 @@ function triggerInteractiveCaptureFromHotkey(
 function triggerInteractiveRecordFromHotkey(kind: "videoCapture"): void {
   const log = getMainLogger("pwrsnap:shortcut");
   const decision = interactiveCaptureHotkeyGate.tryStart(async () => {
-    log.info("global hotkey fired", { kind, mode: "video" });
-    await runInteractiveRecord();
+    // The video hotkey is a toggle: while a take is live it stops or cancels
+    // rather than starting a second one. `videoHotkeyAction` is the single
+    // authority on which of those the current lifecycle phase allows.
+    const action = videoHotkeyAction(getRecordingState());
+    log.info("global hotkey fired", { kind, mode: "video", action });
+    if (action === "stop") {
+      await bus.dispatch("recording:stop", {}, { principal: "ipc" });
+      return;
+    }
+    if (action === "cancel") {
+      await bus.dispatch("recording:cancel", {}, { principal: "ipc" });
+      return;
+    }
+    if (action === "start") {
+      await runInteractiveRecord();
+    }
   });
   log.info("interactive capture hotkey gate decision", {
     kind,
@@ -1128,6 +1151,7 @@ async function runInteractiveRecord(
   // seeds from the persisted default. Reused below for audio
   // capabilities + the cursor value passed to `recording:start`.
   const settings = await getDesktopSettingsStore().read();
+  const recordingSources = recordingBackendCapabilities().sources;
   const selection = await pickRegion({
     mode: "auto",
     keepPwrSnapChrome: false,
@@ -1140,7 +1164,27 @@ async function runInteractiveRecord(
     // Library as a valid target.
     protectWindowIds,
     // Seed the selector's cursor toggle from the persisted default.
-    cursorDefault: settings.recording.videoCaptureCursor
+    cursorDefault: settings.recording.videoCaptureCursor,
+    // Seed the source chips the same way. This is the first path that
+    // makes `recording.includeMicrophone` / `.includeSystemAudio`
+    // reachable from a renderer at all — before the chips they were
+    // read here and never shown, so nothing in the app could tell the
+    // user whether their recording had audio.
+    // Gated on the backend's own capability table, not on the persisted
+    // setting alone. `guardRecordingAttempt` rejects the whole take when a
+    // non-darwin backend is handed either source, so offering the chips
+    // there advertised a control whose only outcome was a failed
+    // recording — worse than the pre-chip behavior, where the same
+    // setting was simply ignored end-to-end. protocol.ts states the rule:
+    // unsupported controls are omitted, not rendered as if they might work.
+    ...(recordingSources.microphone || recordingSources.systemAudio
+      ? {
+          sourcesDefault: {
+            microphone: recordingSources.microphone && settings.recording.includeMicrophone,
+            systemAudio: recordingSources.systemAudio && settings.recording.includeSystemAudio
+          }
+        }
+      : {})
   });
   if (!selection.ok) {
     setFloatOverState({ kind: "cancel" });
@@ -1621,6 +1665,13 @@ export function bootstrapApp(): void {
   });
 
   app.whenReady().then(async () => {
+    // Before any window loads. Electron's no-handler default GRANTS
+    // every permission a renderer asks for; this denies by default and
+    // allows only `media` (the selector's level meter + camera preview)
+    // and sanitized clipboard writes, and only from a PwrSnap-loaded
+    // page. See media-permissions.ts for why both hooks are installed.
+    installMediaPermissionPolicy();
+
     if (process.platform === "darwin" && (isE2E || role === "agent")) {
       // Agent role: menubar-only process — no Dock presence, ever.
       // (Phase 4 ships LSUIElement so this becomes the launch default
@@ -2470,20 +2521,69 @@ export function bootstrapApp(): void {
   // teardown so we don't loop on the will-quit handler firing again
   // after `app.quit()` is called from inside it.
   let quitTeardownInFlight = false;
+  /**
+   * How long ⌘Q waits for a stopping/processing take to finalize before
+   * quitting regardless. Generous enough for an ordinary encode + move,
+   * short enough that a wedged persistence cannot make the app unquittable.
+   */
+  const RECORDING_QUIT_BARRIER_TIMEOUT_MS = 15_000;
   app.on("will-quit", (event) => {
-    // Fast Video Capture (issue #64): if a recording is active when
-    // the user hits ⌘Q, cancel it cleanly BEFORE the rest of teardown
-    // runs. Without this the Swift recorder is orphaned (parent dies,
-    // launchd reparents it) and the user's clip is lost AND a stray
-    // PwrSnapRecorder process sits in their process list until it
-    // hits its own write error or the parent-death watchdog reaps it.
+    // If the user quits with a recording attempt alive, let the recording
+    // service own the transition before ordinary teardown. Lead-in and active
+    // capture are cancelled cleanly. Once Stop has begun, wait for the
+    // authoritative ready/failed transition so quitting cannot discard a clip
+    // while recorder exit or persistence is still in flight.
     if (isRecordingActive() && !quitTeardownInFlight) {
       quitTeardownInFlight = true;
       event.preventDefault();
-      void getRecordingService()
-        .cancel()
+      const phase = getRecordingState().phase;
+      const finish =
+        phase === "stopping" || phase === "processing"
+          ? new Promise<void>((resolve) => {
+              let settled = false;
+              let unsubscribe = (): void => undefined;
+              let deadline: ReturnType<typeof setTimeout> | undefined;
+              const settle = (): void => {
+                settled = true;
+                clearTimeout(deadline);
+                unsubscribe();
+                resolve();
+              };
+              const onState = (state: ReturnType<typeof getRecordingState>): void => {
+                if (state.phase !== "ready" && state.phase !== "failed" && state.phase !== "idle") {
+                  return;
+                }
+                settle();
+              };
+              // Bounded. `preventDefault()` has already run and
+              // `quitTeardownInFlight` is latched, so if this promise never
+              // settles the app can no longer be quit at all — and the two
+              // phases it waits on are exactly the ones `recording:cancel`
+              // refuses, so nothing can break the wait from outside.
+              // Persistence moves the clip into `~/Documents/PwrSnap`, which
+              // is TCC-gated and parks without bound while the consent
+              // prompt is pending (AGENTS.md, "Never block the main thread on
+              // a TCC-gated path"), so the hang is reachable, not theoretical.
+              // Giving up loses at most the finalization of one clip; not
+              // giving up loses the ability to quit.
+              deadline = setTimeout(() => {
+                if (settled) return;
+                getMainLogger("pwrsnap:bootstrap").warn(
+                  "recording quit barrier timed out; quitting anyway",
+                  { phase, waitedMs: RECORDING_QUIT_BARRIER_TIMEOUT_MS }
+                );
+                settle();
+              }, RECORDING_QUIT_BARRIER_TIMEOUT_MS);
+              unsubscribe = subscribeToRecordingState(onState);
+              // subscribeToRecordingState emits synchronously. If finalization
+              // won the race before registration returned, remove the newly
+              // installed listener after its handle becomes available.
+              if (settled) unsubscribe();
+            })
+          : getRecordingService().cancel();
+      void finish
         .catch((cause) => {
-          getMainLogger("pwrsnap:bootstrap").warn("cancel-on-quit failed", {
+          getMainLogger("pwrsnap:bootstrap").warn("recording quit barrier failed", {
             message: cause instanceof Error ? cause.message : String(cause)
           });
         })

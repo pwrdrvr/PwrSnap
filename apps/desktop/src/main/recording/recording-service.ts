@@ -51,6 +51,12 @@ import { planWindowsFfmpegCapture } from "./windows-ffmpeg-capture";
 
 const log = getMainLogger("pwrsnap:recording-service");
 
+class NativeRecorderError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(`${code}: ${message}`);
+  }
+}
+
 function snapshotStartOptions(opts: StartOptions): StartOptions {
   return {
     subject:
@@ -521,7 +527,9 @@ class NativeRecorderService implements RecordingService {
       await this.cleanup();
       publishRecordingFailure({
         sessionId,
-        code: startFailureCode,
+        code: cause instanceof NativeRecorderError && cause.code === "microphone_unavailable"
+          ? "microphone_unavailable"
+          : startFailureCode,
         displayId,
         cause
       });
@@ -535,7 +543,8 @@ class NativeRecorderService implements RecordingService {
       sessionId,
       startedAt: new Date().toISOString(),
       rect: physicalRect,
-      displayId
+      displayId,
+      capabilities: { ...options.capabilities }
     });
     return { sessionId };
   }
@@ -548,6 +557,10 @@ class NativeRecorderService implements RecordingService {
     // Snapshot mutable session state before the first await. Temp cleanup after
     // adoption is asynchronous, and a concurrent cancel clears `this.subject`.
     const subject = this.subject!;
+    // Same reason as `subject`: a concurrent cancel nulls this out, and
+    // it is read after several awaits. What was REQUESTED is not
+    // recoverable from `stopped`, which only reports what landed.
+    const requested = this.capabilities ?? { systemAudio: false, microphone: false };
     const displayId = subjectDisplayId(subject);
     this.stopRequested = true;
     setRecordingState({ phase: "stopping", sessionId });
@@ -576,6 +589,8 @@ class NativeRecorderService implements RecordingService {
         containerFormat: stopped.containerFormat,
         hasSystemAudio: stopped.hasSystemAudio,
         hasMicrophoneAudio: stopped.hasMicrophoneAudio,
+        requestedSystemAudio: requested.systemAudio,
+        requestedMicrophone: requested.microphone,
         subject,
         sourceWindowTitle,
         onSourceAdopted: async () => {
@@ -748,7 +763,7 @@ class NativeRecorderService implements RecordingService {
           this.stopReject = null;
           break;
         case "error": {
-          const err = new Error(`${parsed.code}: ${parsed.message}`);
+          const err = new NativeRecorderError(parsed.code, parsed.message);
           if (this.startReject !== null) {
             this.startReject(err);
             this.startReject = null;
@@ -834,6 +849,8 @@ type PersistStoppedRecordingInput = {
   containerFormat: "mp4" | "mov";
   hasSystemAudio: boolean;
   hasMicrophoneAudio: boolean;
+  requestedSystemAudio: boolean;
+  requestedMicrophone: boolean;
   subject: RecordingSubject;
   sourceWindowTitle: string | null;
   /** Runs immediately after the source move is durable, before stat/DB work. */
@@ -873,6 +890,8 @@ async function persistStoppedRecording(stopped: PersistStoppedRecordingInput): P
     containerFormat: stopped.containerFormat,
     hasSystemAudio: stopped.hasSystemAudio,
     hasMicrophoneAudio: stopped.hasMicrophoneAudio,
+    requestedSystemAudio: stopped.requestedSystemAudio,
+    requestedMicrophone: stopped.requestedMicrophone,
     subject
   });
   try {
@@ -1108,7 +1127,9 @@ class WindowsFfmpegRecorderService implements RecordingService {
       sessionId,
       startedAt: new Date(this.startedAtMs).toISOString(),
       rect: hudRect,
-      displayId
+      displayId,
+      // gdigrab is video-only; an audio request is rejected upstream.
+      capabilities: { systemAudio: false, microphone: false }
     });
     return { sessionId };
   }
@@ -1177,6 +1198,10 @@ class WindowsFfmpegRecorderService implements RecordingService {
         containerFormat: "mp4",
         hasSystemAudio: false,
         hasMicrophoneAudio: false,
+        // The gdigrab backend is video-only and rejects an audio
+        // request upstream, so nothing can have been asked for here.
+        requestedSystemAudio: false,
+        requestedMicrophone: false,
         subject,
         sourceWindowTitle,
         onSourceAdopted: async () => {

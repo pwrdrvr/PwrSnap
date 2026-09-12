@@ -12,7 +12,7 @@
 //
 // ffmpeg, better-sqlite3, and the recorder are all mocked.
 
-import { rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { CaptureRecord, VideoRange } from "@pwrsnap/shared";
 
@@ -64,7 +64,10 @@ vi.mock("../../recording/video-frames", () => ({
 }));
 
 vi.mock("../../sizzle/audio-extract", () => ({
-  extractVideoAudio: mocks.extractVideoAudio
+  extractVideoAudio: mocks.extractVideoAudio,
+  // The asset filename is derived from this, at module scope. Omitting it
+  // made the handler import `undefined.m4a`.
+  AUDIO_PIPELINE_VERSION: "mixed-audio-v2"
 }));
 
 vi.mock("../../recording/recording-service", () => ({
@@ -126,6 +129,8 @@ function videoCapture(overrides: Partial<NonNullable<CaptureRecord["video"]>> = 
       containerFormat: "mp4",
       hasSystemAudio: false,
       hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
       defaultRange: { start: 0, end: 16 },
       previewPath: null,
       previewStatus: "ready",
@@ -284,9 +289,39 @@ describe("video:audio", () => {
     expect(result.error.code).toBe("video_audio_failed");
     expect(mocks.extractVideoAudio).toHaveBeenCalledWith({
       videoPath: "/tmp/vid_Timeline1.mp4",
+      hasSystemAudio: true,
+      hasMicrophoneAudio: false,
+      // Forwarded so the extractor can place the microphone at the index the
+      // recorder actually wrote it to, rather than inferring one from which
+      // sources happened to carry samples.
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
       startSec: 0,
       durationSec: 16
     });
+  });
+
+  test("replaces legacy single-track waveform audio with both recorded tracks", async () => {
+    mocks.capture = videoCapture({ hasSystemAudio: true, hasMicrophoneAudio: true });
+    const dir = "/tmp/pwrsnap-test-cache/video/vid_Timeline1";
+    await mkdir(dir, { recursive: true });
+    await writeFile(`${dir}/audio.m4a`, "old system-only audio");
+    const extracted = `${dir}/extracted.m4a`;
+    await writeFile(extracted, "mixed system and microphone");
+    mocks.extractVideoAudio.mockResolvedValue(extracted);
+    const result = await bus.dispatch("video:audio", { captureId: "vid_Timeline1" }, { principal: "ipc" });
+    expect(result).toEqual({ ok: true, value: {
+      hasAudio: true, url: "pwrsnap-cache://v/vid_Timeline1/mixed-audio-v2.m4a", mimeType: "audio/mp4"
+    } });
+    expect(mocks.extractVideoAudio).toHaveBeenCalledWith({
+      videoPath: "/tmp/vid_Timeline1.mp4", hasSystemAudio: true, hasMicrophoneAudio: true,
+      requestedSystemAudio: false, requestedMicrophone: false,
+      startSec: 0, durationSec: 16
+    });
+    expect(await readFile(`${dir}/mixed-audio-v2.m4a`, "utf8")).toBe("mixed system and microphone");
+    mocks.extractVideoAudio.mockClear();
+    await bus.dispatch("video:audio", { captureId: "vid_Timeline1" }, { principal: "ipc" });
+    expect(mocks.extractVideoAudio).not.toHaveBeenCalled();
   });
 
   test("joins concurrent extraction requests for the same capture", async () => {

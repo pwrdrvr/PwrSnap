@@ -75,6 +75,30 @@ AGENTS.md §"Never block the main thread on a TCC-gated path".
 format specification and its design rationale. Read that document's §Status
 first; it marks which of its own sections are historical.
 
+**Recorded audio remains editable.** On macOS, the capture selector
+offers independent system-audio and default-microphone choices, both
+opt-in, with a live level meter on the microphone. The original MP4
+**retains separate tracks** — that is the invariant; everything else is
+a rendering of it. Muting or replacing audio in a reel never changes the
+original recording. The current Windows recorder is video-only, and main
+gates the audio chips on the backend's own capability table — it simply
+withholds the source set the selector would render — so a source that
+cannot be recorded is absent from the UI, never present-but-doomed.
+
+Because a two-track MP4 plays only its first track in ordinary players,
+every path that hands audio to something outside PwrSnap mixes the
+selected tracks into one AAC stream: MP4 export, native sizzle audio,
+and in-app playback all do. Playback cannot filter on the way out, so it
+asks `video:playback` for a URL and main answers with either the capture
+itself or a cached, stream-copied rendition whose audio is the same mix
+(`prepareVideoPlayback`). A recording whose audible track is not track 0
+— system audio armed with nothing playing through it, in front of a good
+microphone — is the case that needs it.
+
+Keeping the stems in the source file is what leaves that door open:
+mixing at record time would close it permanently, for every recording
+already made.
+
 ## AI runs on the user's machine, through their own agent
 
 PwrSnap makes no direct calls to any model vendor. Every AI feature goes

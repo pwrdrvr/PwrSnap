@@ -14,6 +14,14 @@ import { EventEmitter } from "node:events";
 import { dirname, extname } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { CaptureRecord, VideoCaptureMetadata } from "@pwrsnap/shared";
+import { AUDIO_PIPELINE_VERSION } from "../recording-audio";
+// The export cache token is DERIVED from `AUDIO_PIPELINE_VERSION`, so build
+// the expected filename from the same constant rather than retyping it. These
+// assertions used to spell `gop60-mixed-audio-v1` by hand and went on passing
+// after the mix moved to v2 — a hardcoded copy cannot catch the drift it is
+// the last line of defence against.
+const CACHE_TOKEN = `gop60-${AUDIO_PIPELINE_VERSION}`;
+
 
 // ── Spawn stub ────────────────────────────────────────────────────────
 //
@@ -203,6 +211,8 @@ const video: VideoCaptureMetadata = {
   containerFormat: "mp4",
   hasSystemAudio: false,
   hasMicrophoneAudio: false,
+  requestedSystemAudio: false,
+  requestedMicrophone: false,
   defaultRange: { start: 0, end: 10 },
   previewPath: null,
   previewStatus: "ready"
@@ -454,11 +464,11 @@ describe("exportVideoRange concurrency", () => {
         "60"
       ])
     );
-    expect(spawnQueue[0]?.args.at(-1)).toMatch(/\.low\.gop60\.s0m0\.mp4\..+\.partial\.mp4$/);
+    expect(spawnQueue[0]?.args.at(-1)).toMatch(new RegExp(`\\.low\\.${CACHE_TOKEN}\\.s0m0\\.mp4\\..+\\.partial\\.mp4$`));
 
     await resolveNextSpawn(0);
     const lowResult = await low;
-    expect(lowResult.path).toContain(".low.gop60.s0m0.mp4");
+    expect(lowResult.path).toContain(`.low.${CACHE_TOKEN}.s0m0.mp4`);
 
     const med = exportVideoRange({ ...baseInput, preset: "med" });
     await waitForSpawnCount(1);
@@ -473,11 +483,11 @@ describe("exportVideoRange concurrency", () => {
         "60"
       ])
     );
-    expect(spawnQueue[0]?.args.at(-1)).toMatch(/\.med\.gop60\.s0m0\.mp4\..+\.partial\.mp4$/);
+    expect(spawnQueue[0]?.args.at(-1)).toMatch(new RegExp(`\\.med\\.${CACHE_TOKEN}\\.s0m0\\.mp4\\..+\\.partial\\.mp4$`));
 
     await resolveNextSpawn(0);
     const medResult = await med;
-    expect(medResult.path).toContain(".med.gop60.s0m0.mp4");
+    expect(medResult.path).toContain(`.med.${CACHE_TOKEN}.s0m0.mp4`);
   });
 
   test("MP4 audio maps tolerate stale track metadata from older recordings", async () => {
@@ -495,10 +505,16 @@ describe("exportVideoRange concurrency", () => {
     });
     await waitForSpawnCount(1);
 
+    expect(spawnQueue[0]?.args).toContain("null");
+    spawnQueue[0]?.child.stderr.emit("data", Buffer.from(
+      "  Stream #0:0[0x1](und): Video: h264\n  Stream #0:1[0x2](und): Audio: aac\n"
+    ));
+    await resolveNextSpawn(0);
+    await waitForSpawnCount(1);
     const args = spawnQueue[0]?.args ?? [];
-    expect(args).toEqual(expect.arrayContaining(["-map", "0:a:0?", "-map", "0:a:1?"]));
-    expect(args).not.toContain("0:a:0");
-    expect(args).not.toContain("0:a:1");
+    expect(args).toContain("0:a:0?");
+    expect(args).not.toContain("0:a:1?");
+    expect(args).not.toContain("-filter_complex");
 
     await resolveNextSpawn(0);
     await encoded;
@@ -569,11 +585,11 @@ describe("exportVideoRange concurrency", () => {
     );
     expect(args).not.toContain("copy");
     expect(args).not.toContain("-vf");
-    expect(args.at(-1)).toMatch(/\.high\.gop60\.s0m0\.mp4\..+\.partial\.mp4$/);
+    expect(args.at(-1)).toMatch(new RegExp(`\\.high\\.${CACHE_TOKEN}\\.s0m0\\.mp4\\..+\\.partial\\.mp4$`));
 
     await resolveNextSpawn(0);
     const result = await high;
-    expect(result.path).toContain(".high.gop60.s0m0.mp4");
+    expect(result.path).toContain(`.high.${CACHE_TOKEN}.s0m0.mp4`);
   });
 
   test("HIGH MP4 snaps odd source dimensions to even codec-safe dimensions", async () => {

@@ -2,6 +2,14 @@ import { EventEmitter } from "node:events";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { CaptureRecord, VideoCaptureMetadata, VideoExportResult } from "@pwrsnap/shared";
+import { AUDIO_PIPELINE_VERSION } from "../recording-audio";
+// The export cache token is DERIVED from `AUDIO_PIPELINE_VERSION`, so build
+// the expected filename from the same constant rather than retyping it. These
+// assertions used to spell `gop60-mixed-audio-v1` by hand and went on passing
+// after the mix moved to v2 — a hardcoded copy cannot catch the drift it is
+// the last line of defence against.
+const CACHE_TOKEN = `gop60-${AUDIO_PIPELINE_VERSION}`;
+
 import type {
   ExportInput,
   VideoExportProgressObserver,
@@ -80,6 +88,8 @@ const video: VideoCaptureMetadata = {
   containerFormat: "mp4",
   hasSystemAudio: false,
   hasMicrophoneAudio: false,
+  requestedSystemAudio: false,
+  requestedMicrophone: false,
   defaultRange: { start: 0, end: 30 },
   previewPath: null,
   previewStatus: "ready"
@@ -316,7 +326,7 @@ describe("recording exporter progress", () => {
   });
 
   test("cache hits still publish a complete queued/finalizing/succeeded lifecycle", async () => {
-    const path = "/cache/r0.000-10.000.med.gop60.s0m0.mp4";
+    const path = `/cache/r0.000-10.000.med.${CACHE_TOKEN}.s0m0.mp4`;
     cachedExport = {
       path,
       byteSize: 99,
@@ -339,6 +349,30 @@ describe("recording exporter progress", () => {
       { phase: "finalizing", ratio: 0.99 },
       { phase: "done", ratio: 1, outcome: "succeeded" }
     ]);
+  });
+
+  test("rejects cached MP4s from before audio mixing even when they have bytes", async () => {
+    const path = "/cache/r0.000-10.000.med.gop60.s1m1.mp4";
+    cachedExport = { path, byteSize: 99, durationSec: 10, widthPx: 1920, heightPx: 1080, fromCache: true };
+    existingPaths.add(path);
+    const work = exportVideoRange({
+      ...input({ id: "old-audio-cache" }),
+      video: { ...video, hasSystemAudio: true, hasMicrophoneAudio: true },
+      audio: { includeSystemAudio: true, includeMicrophone: true }
+    });
+    await waitForSpawnCount(1);
+    spawnCalls[0]!.child.stderr.emit("data", Buffer.from(
+      "  Stream #0:1(und): Audio: aac\n  Stream #0:2(und): Audio: aac\n"
+    ));
+    close(spawnCalls[0]!, 0);
+    await waitForSpawnCount(2);
+    expect(spawnCalls[1]!.args).toContain("[recorded_audio]");
+    expect(spawnCalls[1]!.args).not.toContain("0:a:0?");
+    expect(spawnCalls[1]!.args).not.toContain("0:a:1?");
+    close(spawnCalls[1]!, 0);
+    const result = await work;
+    expect(result.fromCache).toBe(false);
+    expect(result.path).toContain(`.${CACHE_TOKEN}.`);
   });
 
   test("reports one failed terminal update for nonzero close and spawn error", async () => {
@@ -421,7 +455,7 @@ describe("recording exporter progress", () => {
       "/tmp/pwrsnap-progress-test",
       "video",
       id,
-      "r0.000-10.000.med.gop60.s0m0.mp4"
+      `r0.000-10.000.med.${CACHE_TOKEN}.s0m0.mp4`
     );
     cachedExport = {
       path: finalPath,

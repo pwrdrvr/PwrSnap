@@ -1,0 +1,278 @@
+/* In-recording HUD.
+ *
+ * This file exists because the component did not have one: every rule
+ * below was an inline style object, including the brand accent written
+ * out as `#ff8a1f` six times, against the repo rule that brand colors
+ * are never hardcoded in component files. Extracting it is what lets
+ * the HUD share `SourceChip` with the selector and the float-over.
+ *
+ * The HUD paints on a near-opaque black scrim rather than a themed
+ * panel, because it floats over arbitrary user content that is about to
+ * be recorded — a themed translucent panel would be unreadable over a
+ * light document and would change appearance between takes. So the few
+ * values that must stay legible against that scrim are literal and
+ * marked; everything else is a token.
+ */
+
+.rc-root {
+  display: inline-block;
+}
+/* Pre-capture (preflight / countdown / starting) fills the recorded
+   rect so the countdown can sit centered on the surface the user is
+   about to record. Recording collapses to the bar's own width. */
+.rc-root[data-precapture="true"] {
+  width: 100%;
+  height: 100%;
+}
+.rc-root[data-precapture="false"] {
+  /* A PREFERRED width, not a fixed one. `.rc-root` is the element the
+     renderer measures and posts to main, so pinning `width` here made
+     `getBoundingClientRect().width` a constant: main's width-fitting path
+     (RECORDING_CONTROLLER_WIDTH_MAX_CSS_PX = 560) could never be reached,
+     and the armed state — timer + two chips + Stop + "Confirm restart" +
+     "Confirm cancel", well past 420px of non-shrinkable content — clipped
+     its right-hand button off the window edge. `min-width` keeps the
+     resting bar its designed size while letting the measurer report what
+     the content actually needs. */
+  width: max-content;
+  min-width: 420px;
+  max-width: 560px;
+}
+
+.rc {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  position: relative;
+  color: #fff; /* on-scrim, not themed */
+  font: 500 13px/1 var(--font-sans);
+  user-select: none;
+}
+.rc[data-precapture="true"] {
+  background: transparent;
+  border-radius: 0;
+  padding: 0;
+  justify-content: center;
+  /* Click-through so the user can keep working on the surface being
+     recorded; main also sets setIgnoreMouseEvents. */
+  pointer-events: none;
+  -webkit-app-region: no-drag;
+}
+.rc[data-precapture="false"] {
+  background: rgba(0, 0, 0, 0.86); /* on-scrim */
+  border-radius: var(--radius-lg, 12px);
+  padding: 10px 14px;
+  justify-content: space-between;
+  pointer-events: auto;
+  -webkit-app-region: drag;
+}
+
+.rc__stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  width: 100%;
+}
+.rc__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.rc__left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.rc__dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-pill, 999px);
+  background: var(--danger);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--danger) 60%, transparent);
+  animation: ps-rec-pulse 1.2s ease-in-out infinite;
+  flex: 0 0 auto;
+}
+@media (prefers-reduced-motion: reduce) {
+  .rc__dot {
+    animation: none;
+  }
+}
+
+.rc__timer {
+  font: 500 12px/1 var(--font-mono);
+  flex: 0 0 auto;
+}
+
+/* Source chips during the take. `no-drag` because the bar itself is a
+   drag region — without it the chips would move the window instead of
+   reporting anything. */
+.rc__sources {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  -webkit-app-region: no-drag;
+}
+.rc__sep {
+  width: 1px;
+  align-self: stretch;
+  background: rgba(255, 255, 255, 0.16); /* on-scrim */
+  flex: 0 0 auto;
+}
+
+.rc__actions {
+  display: flex;
+  gap: 6px;
+  -webkit-app-region: no-drag;
+  flex: 0 0 auto;
+}
+
+.rc__btn {
+  padding: 6px 12px;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid transparent;
+  background: transparent;
+  font: 600 12px/1 var(--font-sans);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.rc__btn:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+.rc__btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.rc__btn--stop {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: #fff; /* on-scrim: always white on the red fill */
+}
+.rc__btn--restart {
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  color: var(--accent);
+  font-weight: 500;
+  padding: 6px 10px;
+}
+.rc__btn--cancel {
+  border-color: rgba(255, 255, 255, 0.2); /* on-scrim */
+  color: #fff;
+  font-weight: 500;
+  padding: 6px 10px;
+}
+
+/* Two-press confirm line for Restart / Cancel. */
+.rc__armed {
+  text-align: center;
+  color: var(--accent-bright);
+  font: 500 10px/1.3 var(--font-sans);
+}
+
+.rc__caption {
+  text-align: center;
+  font: 500 10px/1 var(--font-sans);
+  color: rgba(255, 255, 255, 0.55); /* on-scrim */
+  letter-spacing: 0.04em;
+  pointer-events: none;
+  margin-top: 2px;
+}
+
+.rc__finalizing {
+  width: 100%;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.7); /* on-scrim */
+}
+
+@keyframes ps-rec-pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.45; }
+  100% { opacity: 1; }
+}
+
+/* Durable failure card. Replaces the recording bar in the same window
+   and stays until the user retries or dismisses, so unlike the bar it
+   is sized by its content and wraps its button row. */
+.rc-fail-root {
+  display: inline-block;
+  width: 100%;
+}
+.rc-fail {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 18px 20px;
+  border-radius: var(--radius-lg, 12px);
+  background: rgba(0, 0, 0, 0.94); /* on-scrim */
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font: 500 13px/1.35 var(--font-sans);
+  -webkit-app-region: drag;
+  user-select: none;
+}
+.rc-fail__title {
+  color: var(--accent);
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.rc-fail__error {
+  color: var(--danger-text);
+  margin-top: 6px;
+}
+.rc-fail__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  -webkit-app-region: no-drag;
+}
+.rc-fail__btn {
+  box-sizing: border-box;
+  max-width: 100%;
+  padding: 7px 11px;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid rgba(255, 255, 255, 0.24); /* on-scrim */
+  background: transparent;
+  color: #fff;
+  font: 600 12px/1 var(--font-sans);
+  white-space: normal;
+  cursor: pointer;
+}
+.rc-fail__btn:disabled {
+  cursor: default;
+}
+.rc-fail__btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.rc-fail__btn--retry {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* On the recording HUD's black scrim the themed panel tokens have no
+   surface to sit on, so the chips there pin their own legible values.
+   Light theme would otherwise render bone-on-bone. */
+.ps-chip--onScrim[data-state="live"] {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: #fff;
+}
+.ps-chip--onScrim[data-state="silent"],
+.ps-chip--onScrim[data-state="denied"] {
+  color: #fff;
+}
+.ps-chip--onScrim[data-state="off"],
+.ps-chip--onScrim[data-state="nodevice"],
+.ps-chip--onScrim[data-state="unsupported"] {
+  border-color: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.62);
+}

@@ -99,6 +99,7 @@ import {
   type CursorSample
 } from "../capture/cursor-sample";
 import { startCursorSampleIfEnabled } from "../capture/cursor-capture-settings";
+import { recordingBackendCapabilities } from "../recording/recording-capabilities";
 import { getMainLogger } from "../log";
 import { renderViaCoordinator } from "../render/coordinator";
 import { prepareRenderedFileAlias } from "../render/file-alias";
@@ -424,6 +425,7 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     // for one capture, which is recoverable; the other direction
     // records their screen when they had asked it not to.
     const quickCaptureAction = settings?.recording.quickCaptureAction ?? "snap";
+    const recordingSources = recordingBackendCapabilities().sources;
     const selection = await pickRegion({
       mode: selectorMode,
       keepPwrSnapChrome,
@@ -434,7 +436,24 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       // consumed if the user chooses Record, but it has to be in the
       // mode signal BEFORE the selector shows — there is no second
       // chance to send it once the chooser is on screen.
-      ...(settings !== null ? { cursorDefault: settings.recording.videoCaptureCursor } : {})
+      ...(settings !== null ? { cursorDefault: settings.recording.videoCaptureCursor } : {}),
+      // Same timing constraint as `cursorDefault`, and the same
+      // fail-closed reasoning: a settings read failure omits the seed,
+      // which hides the chips rather than guessing. The recording entry
+      // point then falls back to the persisted defaults exactly as it
+      // did before the chips existed.
+      // Also gated on the backend capability table: a source this platform
+      // cannot record must not be offered, because arming it makes
+      // `recording:start` reject the whole take rather than record silent
+      // video (see `guardRecordingAttempt`).
+      ...(settings !== null && (recordingSources.microphone || recordingSources.systemAudio)
+        ? {
+            sourcesDefault: {
+              microphone: recordingSources.microphone && settings.recording.includeMicrophone,
+              systemAudio: recordingSources.systemAudio && settings.recording.includeSystemAudio
+            }
+          }
+        : {})
     });
     log.info("capture:interactive pickRegion returned", {
       mode,

@@ -145,6 +145,10 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private var videoSamplesAppended: Int = 0
     private var audioSamplesReceived: Int = 0
     private var audioSamplesAppended: Int = 0
+    /// Whether any appended system-audio buffer rose above the silence
+    /// floor. See `peakAmplitude` — an append count cannot tell a live tap
+    /// from one recording a room where nothing is playing.
+    private var audioHeardSound: Bool = false
     /// SCStream's `.microphone` output (macOS 14+). Unused by today's
     /// recorder — mic capture runs through AVCaptureSession — but
     /// counted so a stray sample shows up in the stop() diag totals
@@ -275,7 +279,11 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             ]
             let ai = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
             ai.expectsMediaDataInRealTime = true
-            if writer.canAdd(ai) { writer.add(ai) }
+            guard writer.canAdd(ai) else {
+                emitError("audio_input_failed", "The recorder could not add system audio to the output file.")
+                return
+            }
+            writer.add(ai)
             audioInput = ai
         }
 
@@ -291,9 +299,13 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             ]
             let mi = AVAssetWriterInput(mediaType: .audio, outputSettings: micSettings)
             mi.expectsMediaDataInRealTime = true
-            if writer.canAdd(mi) { writer.add(mi) }
+            guard writer.canAdd(mi) else {
+                emitError("microphone_unavailable", "The recorder could not add microphone audio to the output file.")
+                return
+            }
+            writer.add(mi)
             micInput = mi
-            await setUpMicrophoneCapture(into: mi, writer: writer)
+            guard setUpMicrophoneCapture(into: mi, writer: writer) else { return }
         }
 
         // Sleep until the requested wall-clock capture time. The TS
@@ -506,21 +518,41 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private func setUpMicrophoneCapture(
         into input: AVAssetWriterInput,
         writer: AVAssetWriter
-    ) async {
+    ) -> Bool {
         let session = AVCaptureSession()
         session.sessionPreset = .high
-        guard let device = AVCaptureDevice.default(for: .audio),
-              let micInputDevice = try? AVCaptureDeviceInput(device: device) else {
-            return
+        guard let device = AVCaptureDevice.default(for: .audio) else {
+            emitError("microphone_unavailable", "No default microphone is connected. Choose an input in macOS Sound settings.")
+            return false
         }
-        if session.canAddInput(micInputDevice) { session.addInput(micInputDevice) }
+        let micInputDevice: AVCaptureDeviceInput
+        do {
+            micInputDevice = try AVCaptureDeviceInput(device: device)
+        } catch {
+            emitError("microphone_unavailable", "Could not open the default microphone: \(error)")
+            return false
+        }
+        guard session.canAddInput(micInputDevice) else {
+            emitError("microphone_unavailable", "The default microphone could not be connected to the capture session.")
+            return false
+        }
+        session.addInput(micInputDevice)
         let micOutput = AVCaptureAudioDataOutput()
-        if session.canAddOutput(micOutput) { session.addOutput(micOutput) }
+        guard session.canAddOutput(micOutput) else {
+            emitError("microphone_unavailable", "The microphone capture session could not deliver audio samples.")
+            return false
+        }
+        session.addOutput(micOutput)
         let forwarder = MicForwarder(input: input, writer: writer)
         micForwarder = forwarder
         micOutput.setSampleBufferDelegate(forwarder, queue: writeQueue)
         session.startRunning()
+        guard session.isRunning else {
+            emitError("microphone_unavailable", "The default microphone did not start. Check microphone access and the selected input device.")
+            return false
+        }
         micSession = session
+        return true
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer buf: CMSampleBuffer, of type: SCStreamOutputType) {
@@ -606,7 +638,15 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             }
         case .audio:
             if let ai = audioInput, ai.isReadyForMoreMediaData {
-                if ai.append(buf) { audioSamplesAppended += 1 }
+                if ai.append(buf) {
+                    audioSamplesAppended += 1
+                    // Stop measuring once this source has proven itself —
+                    // the scan is per-buffer and there is nothing left to
+                    // learn after the first sound.
+                    if !audioHeardSound && peakAmplitude(of: buf, stopAt: audioSilenceFloor) >= audioSilenceFloor {
+                        audioHeardSound = true
+                    }
+                }
             }
         case .microphone:
             // Mic samples from SCStream (macOS 14+) are deliberately
@@ -638,6 +678,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         writeQueue.sync { }
         let microphoneSamplesReceived = micForwarder?.samplesReceived ?? 0
         let microphoneSamplesAppended = micForwarder?.samplesAppended ?? 0
+        let microphoneHeardSound = micForwarder?.heardSound ?? false
         diag("microphone samples=\(microphoneSamplesReceived)/\(microphoneSamplesAppended)")
 
         videoInput?.markAsFinished()
@@ -663,8 +704,12 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             "containerFormat": "mp4",
             // Track flags describe what is actually in the finalized
             // file, not what the user requested at start time.
-            "hasSystemAudio": audioSamplesAppended > 0,
-            "hasMicrophoneAudio": microphoneSamplesAppended > 0,
+            // "produced AUDIBLE audio", not "delivered buffers". A source
+            // that was armed but silent reports false here and true in
+            // `requested*`, which is what lets the app say "you asked for
+            // system audio and got none" instead of claiming it captured.
+            "hasSystemAudio": audioHeardSound,
+            "hasMicrophoneAudio": microphoneHeardSound,
             "outputPath": outputURL?.path ?? ""
         ])
     }
@@ -682,29 +727,6 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             return
         }
         emitError("stream_stopped", "\(error)")
-    }
-}
-
-@available(macOS 13.0, *)
-final class MicForwarder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
-    let input: AVAssetWriterInput
-    let writer: AVAssetWriter
-    private(set) var samplesReceived: Int = 0
-    private(set) var samplesAppended: Int = 0
-    init(input: AVAssetWriterInput, writer: AVAssetWriter) {
-        self.input = input
-        self.writer = writer
-    }
-    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        samplesReceived += 1
-        // The microphone session starts during the countdown, before
-        // the first screen/system-audio sample starts AVAssetWriter.
-        // Drop that pre-roll instead of appending into an idle writer.
-        if writer.status == .writing &&
-           input.isReadyForMoreMediaData &&
-           input.append(sampleBuffer) {
-            samplesAppended += 1
-        }
     }
 }
 

@@ -25,9 +25,12 @@ export type VideoTransportProps = {
   durationSec: number;
   loopInRange: boolean;
   muted: boolean;
+  /** 0..1. The element's own level, independent of `muted`. */
+  volume: number;
   onTogglePlay: () => void;
   onToggleLoop: () => void;
   onToggleMute: () => void;
+  onVolumeChange: (next: number) => void;
   onFullscreen: () => void;
   shortcutPlatform?: ShortcutPlatform;
 };
@@ -66,7 +69,7 @@ function TransportTimecode({
 }
 
 export function VideoTransport(props: VideoTransportProps): ReactElement {
-  const { playing, currentTime, playhead, durationSec, loopInRange, muted } = props;
+  const { playing, currentTime, playhead, durationSec, loopInRange, muted, volume } = props;
   const keyHints = videoTransportKeyHints(
     props.shortcutPlatform ?? rendererShortcutPlatform()
   );
@@ -131,6 +134,11 @@ export function VideoTransport(props: VideoTransportProps): ReactElement {
         <span className="psl__vt-btn-label">loop</span>
       </button>
 
+      {/* Mute and level as one group: the slider reveals on hover or focus,
+          so the resting row keeps its single-line shape while the level is
+          still reachable — and reachable by keyboard, which a hover-only
+          affordance would not be. */}
+      <span className="psl__vt-vol" data-testid="video-transport-volume">
       <button
         type="button"
         className={`psl__vt-btn${muted ? " is-on" : ""}`}
@@ -174,6 +182,32 @@ export function VideoTransport(props: VideoTransportProps): ReactElement {
           </svg>
         )}
       </button>
+        {/* This element deliberately carries NO `onMouseDown={keepFocus}`,
+            unlike every button around it. On a <button> that handler only
+            suppresses focus, because a button acts on `click`. On a range
+            input the value change IS the default action — Blink gates
+            `RangeInputType::HandleMouseDownEvent` on
+            `!event.DefaultPrevented()` — so preventing it leaves the
+            slider completely inert to click and drag, keyboard-only, while
+            looking entirely normal. Measured in Chromium with two
+            otherwise identical inputs and the same click: guarded stayed
+            at 1.0 with zero `input` events, unguarded moved to 0.26.
+            Pinned by video-transport-volume.test.ts. */}
+        <input
+          type="range"
+          className="psl__vt-vol-slider"
+          min={0}
+          max={1}
+          step={0.01}
+          // Muted reads as zero: the thumb must not sit at 80% while
+          // nothing is audible.
+          value={muted ? 0 : volume}
+          aria-label="Volume"
+          aria-valuetext={`${Math.round((muted ? 0 : volume) * 100)}%`}
+          onChange={(e) => props.onVolumeChange(Number(e.target.value))}
+          data-testid="video-transport-volume-slider"
+        />
+      </span>
 
       <button
         type="button"

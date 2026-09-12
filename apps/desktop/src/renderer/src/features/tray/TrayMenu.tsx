@@ -1,10 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
+  canStartRecordingAttempt,
   desktopFileManagerName,
+  EVENT_CHANNELS,
   type CaptureInvocationOrigin,
   type CaptureRecord,
   type HotkeyRegistrationStatusSnapshot,
-  type HotkeySettingKey
+  type HotkeySettingKey,
+  type RecordingState
 } from "@pwrsnap/shared";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
@@ -218,6 +221,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
   const [registrationStatusRefresh, setRegistrationStatusRefresh] = useState(0);
   const lastSnap: CaptureRecord | undefined = rows[0];
   const lastSnapIsVideo = lastSnap?.kind === "video";
+  const [recordingState, setRecordingState] = useState<RecordingState | null>(null);
   // Skip the image render-metrics IPC for video captures — the
   // sharp-based preset pipeline returns nothing for `.mp4`, and the
   // tray's video branch uses GIF / MP4 export buttons instead of the
@@ -248,6 +252,30 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
     })();
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void dispatch("recording:state", {}).then((result) => {
+      if (!cancelled && result.ok) setRecordingState(result.value);
+    });
+    const off = window.pwrsnapApi?.on(EVENT_CHANNELS.recordingState, (payload) => {
+      setRecordingState(payload as RecordingState);
+    });
+    return () => {
+      cancelled = true;
+      off?.();
+    };
+  }, []);
+
+  // An unresolved or failed `recording:state` must not disable the button.
+  // The tray popover is kept resident for first-click latency, so this
+  // mount happens once per process: treating `null` as "cannot record"
+  // left the button dead for the whole process lifetime after one failed
+  // dispatch, and dead for the round-trip on every cold open. Main gates
+  // the attempt itself (`capture-video-handler`), so the safe default for
+  // "we do not know yet" is to let the click through.
+  const canRecordVideo =
+    recordingState?.phase === undefined || canStartRecordingAttempt(recordingState);
 
   const hotkeyFingerprint = Object.values(hotkeys).join("\u0000");
   useEffect(() => {
@@ -411,7 +439,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
     // Mirrors the videoCapture global hotkey: opens the auto-mode
     // selector, then records what the user picks. Fire-and-forget — the
     // recording lifecycle surfaces via the events:recording:* broadcasts.
-    void dispatch("capture:videoInteractive", {});
+    if (canRecordVideo) void dispatch("capture:videoInteractive", {});
   };
   const onCopyLastSnap = (preset: "low" | "med" | "high"): void => {
     if (lastSnap === undefined) return;
@@ -518,6 +546,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
       <button
         className="ps-tray__quick ps-tray__quick--video"
         type="button"
+        disabled={!canRecordVideo}
         onClick={onCaptureVideo}
       >
         <span className="ps-tray__quick-icon" aria-hidden="true">

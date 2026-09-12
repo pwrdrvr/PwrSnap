@@ -27,6 +27,7 @@ import { CodexStatusPill } from "../shared/CodexStatusPill";
 import { AiConsentDialog } from "../shared/AiConsentDialog";
 import { useFieldEditor } from "../shared/useFieldEditor";
 import { HoverAutoplayVideo } from "../shared/HoverAutoplayVideo";
+import { SourceChip } from "../shared/SourceChip";
 import { AppUpdateRow } from "../update/AppUpdateRow";
 import type { PresetMetricMap } from "../shared/usePresetRenderMetrics";
 import {
@@ -258,6 +259,15 @@ export type FloatOverAsset =
        *  AND drives the short-clip warning banner (clips under 1.5s
        *  are usually an accidental Stop press right after Start). */
       durationSec: number;
+      /** What the recorder actually persisted, not merely what the user
+       * requested before capture. Drives the post-recording confirmation. */
+      hasSystemAudio?: boolean;
+      hasMicrophoneAudio?: boolean;
+      /** What the take asked for. The pair `requested && !has` is the
+       * one the receipt exists to surface: a source the user turned on
+       * that produced nothing. */
+      requestedSystemAudio?: boolean;
+      requestedMicrophone?: boolean;
       /** Source pixel size — sizes the mini-trim filmstrip cells. */
       widthPx: number;
       heightPx: number;
@@ -830,7 +840,9 @@ export function FloatOver({
           </div>
           <div className="fo__hdr-sub">
             {dimText(srcW, srcH)}
-            {asset?.kind === "video" ? ` · ${fmtDurationLabel(asset.durationSec)}` : " · just now"}
+            {asset?.kind === "video"
+              ? ` · ${fmtDurationLabel(asset.durationSec)}`
+              : " · just now"}
           </div>
         </div>
         <div className="fo__hdr-actions">
@@ -850,6 +862,33 @@ export function FloatOver({
           own primary action. Its dismissal is renderer-scoped, so it
           survives this component's per-capture remount — see
           AppUpdateRow.tsx. */}
+      {/* The receipt. Prose said "screen + microphone"; it could not say
+          "microphone, and it recorded nothing", which is the outcome the
+          whole pre-flight design exists to prevent. Same chips the
+          selector and the recording HUD show, third density. The prose
+          form survives as the accessible name so a screen reader still
+          gets one sentence instead of three controls. */}
+      {asset?.kind === "video" ? (
+        <div
+          className="fo__sources"
+          data-testid="fo-sources"
+          role="group"
+          aria-label={`Captured: ${recordingSourcesLabel(asset)}`}
+        >
+          {recordingSourceReceipts(asset).map((receipt) => (
+            <SourceChip
+              key={receipt.source}
+              source={receipt.source}
+              state={receipt.state}
+              density="static"
+              meterTone="recorded"
+              {...(receipt.why !== undefined ? { why: receipt.why } : {})}
+              testId={`fo-source-${receipt.source}`}
+            />
+          ))}
+        </div>
+      ) : null}
+
       <AppUpdateRow variant="float-over" />
 
       <div className="fo__preview">
@@ -1281,6 +1320,74 @@ export function FloatOver({
       )}
     </div>
   );
+}
+
+/**
+ * Turn the four persisted booleans into the chips the receipt shows.
+ *
+ * Screen is unconditional — every recording has it, and stating it is
+ * what makes "screen only" legible as a complete answer rather than a
+ * row that failed to render.
+ *
+ * An audio source appears only when it is part of the story: it landed
+ * (`live`), or it was asked for and did not (`silent`). A source nobody
+ * requested is simply absent — listing three greyed chips after every
+ * capture would train the user to stop reading the row.
+ */
+export function recordingSourceReceipts(
+  asset: Pick<
+    Extract<FloatOverAsset, { kind: "video" }>,
+    "hasSystemAudio" | "hasMicrophoneAudio" | "requestedSystemAudio" | "requestedMicrophone"
+  >
+): ReadonlyArray<{
+  source: "screen" | "microphone" | "systemAudio";
+  state: "live" | "silent";
+  why?: string;
+}> {
+  const receipts: Array<{
+    source: "screen" | "microphone" | "systemAudio";
+    state: "live" | "silent";
+    why?: string;
+  }> = [{ source: "screen", state: "live" }];
+  if (asset.hasMicrophoneAudio === true) {
+    receipts.push({ source: "microphone", state: "live" });
+  } else if (asset.requestedMicrophone === true) {
+    receipts.push({ source: "microphone", state: "silent", why: "no audio captured" });
+  }
+  if (asset.hasSystemAudio === true) {
+    receipts.push({ source: "systemAudio", state: "live" });
+  } else if (asset.requestedSystemAudio === true) {
+    receipts.push({ source: "systemAudio", state: "silent", why: "no audio captured" });
+  }
+  return receipts;
+}
+
+const RECEIPT_SOURCE_NAMES: Record<"screen" | "microphone" | "systemAudio", string> = {
+  screen: "screen",
+  microphone: "microphone",
+  systemAudio: "system audio"
+};
+
+/**
+ * The accessible name for the receipt row — derived from the SAME receipts
+ * the chips render, never re-read from the flags.
+ *
+ * Reading only `has*Audio` here made the accessible name contradict the
+ * chips on the same element: a take with the microphone armed but silent
+ * drew a `silent` mic chip saying "no audio captured" while announcing
+ * "Captured: screen only", i.e. that no microphone was involved at all.
+ * The two also enumerated sources in different orders, so the name did not
+ * match the visual reading order either.
+ */
+export function recordingSourcesLabel(
+  asset: Parameters<typeof recordingSourceReceipts>[0]
+): string {
+  const receipts = recordingSourceReceipts(asset);
+  const parts = receipts.map((receipt) => {
+    const name = RECEIPT_SOURCE_NAMES[receipt.source];
+    return receipt.state === "silent" ? `${name} (${receipt.why ?? "nothing captured"})` : name;
+  });
+  return parts.length === 1 ? "screen only" : parts.join(" + ");
 }
 
 export function FoDesktopFrame({

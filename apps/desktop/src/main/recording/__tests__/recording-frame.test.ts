@@ -122,12 +122,19 @@ vi.mock("../../log", () => ({
   })
 }));
 
-const REGION: RecordingState = {
+// Narrowed to the recording arm, not the whole union: the tests below read
+// `REGION.rect` and spread it with an override, and neither is expressible
+// against a union whose `idle` member has no `rect` and no `displayId`.
+const REGION: Extract<RecordingState, { phase: "recording" }> = {
   phase: "recording",
   sessionId: "s1",
   startedAt: new Date().toISOString(),
   rect: { x: 300, y: 200, w: 640, h: 400 },
-  displayId: 1
+  displayId: 1,
+  // What the take asked for. The frame does not read it; it is part of the
+  // recording state so the HUD and the post-capture receipt can agree with
+  // each other about what was armed.
+  capabilities: { microphone: false, systemAudio: false }
 };
 
 let loaded: typeof import("../recording-frame") | null = null;

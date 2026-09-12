@@ -144,6 +144,19 @@ export type VideoCaptureMetadata = {
   containerFormat: "mp4" | "mov";
   hasSystemAudio: boolean;
   hasMicrophoneAudio: boolean;
+  /**
+   * What the user ASKED this take to include, as opposed to what the
+   * recorder managed to write. `requestedMicrophone && !hasMicrophoneAudio`
+   * is the "requested but silent" case the post-capture receipt flags —
+   * a muted input, a device grabbed by another app, a Bluetooth mic that
+   * drifted off mid-take. Both false is the ordinary "did not ask" case.
+   *
+   * Rows written before migration 0033 carry `false` for both; that is
+   * deliberately NOT backfilled from the `has*` fields, which would
+   * invent a fact and permanently hide any past silent take.
+   */
+  requestedSystemAudio: boolean;
+  requestedMicrophone: boolean;
   defaultRange: VideoRange;
   /** Relative path under captures/ for the silent hover-preview proxy.
    *  Null while preview generation is still in flight (or failed). */
@@ -199,7 +212,27 @@ export type RecordingState =
    * working rather than stuck.
    */
   | { phase: "starting"; sessionId: string; rect: Rect; displayId: number }
-  | { phase: "recording"; sessionId: string; startedAt: string; rect: Rect; displayId: number }
+  | {
+      phase: "recording";
+      sessionId: string;
+      startedAt: string;
+      rect: Rect;
+      displayId: number;
+      /**
+       * What this take asked for, so the HUD can show one chip per
+       * requested source while it runs. Carried on the state rather
+       * than fetched separately because the HUD is a pure subscriber:
+       * a second round-trip would let the chips render a frame behind
+       * the timer, and on restart they would briefly describe the
+       * previous take.
+       *
+       * This is the REQUESTED set. Whether a source is actually
+       * producing samples is a live signal the shipped backends do not
+       * expose yet — see `RecordingBackendCapabilities.sources
+       * .liveAudioLevels`.
+       */
+      capabilities: RecordingCapabilities;
+    }
   | { phase: "stopping"; sessionId: string }
   | { phase: "processing"; sessionId: string }
   | { phase: "ready"; sessionId: string; captureId: string }
@@ -243,6 +276,7 @@ export type RecordingFrameLayout = {
 };
 
 export type RecordingFailureCode =
+  | "microphone_unavailable"
   | "recorder_unavailable"
   | "recorder_start_failed"
   | "recorder_spawn_failed"
@@ -255,6 +289,8 @@ export type RecordingFailureCode =
  * in the owning main-process log and never cross the recording-state event. */
 export function recordingFailureSummary(code: RecordingFailureCode): string {
   switch (code) {
+    case "microphone_unavailable":
+      return "PwrSnap couldn't start your microphone. Check microphone access and the default input in macOS Sound settings, then retry.";
     case "recorder_unavailable":
       return "PwrSnap couldn't find the video recorder.";
     case "recorder_start_failed":
@@ -270,6 +306,11 @@ export function recordingFailureSummary(code: RecordingFailureCode): string {
   }
 }
 
+/** A new selector may start only when no recording attempt owns the workflow. */
+export function canStartRecordingAttempt(state: RecordingState): boolean {
+  return state.phase === "idle" || state.phase === "ready";
+}
+
 /**
  * Capabilities the user wanted included in this recording session.
  * Screen video is always on. Audio fields are independent — degraded
@@ -280,6 +321,39 @@ export function recordingFailureSummary(code: RecordingFailureCode): string {
 export type RecordingCapabilities = {
   systemAudio: boolean;
   microphone: boolean;
+};
+
+/**
+ * Runtime capabilities of the recorder implementation selected for this
+ * platform. This is deliberately separate from {@link RecordingCapabilities},
+ * which describes the inputs requested for one take.
+ *
+ * The recording HUD uses this snapshot to avoid advertising controls or live
+ * monitoring that the active backend cannot actually perform. In particular,
+ * neither shipped backend can pause/resume, switch audio tracks mid-stream,
+ * report live RMS levels, or record a presenter camera today.
+ */
+export type RecordingBackendCapabilities = {
+  backend: "macos-native" | "windows-ffmpeg" | "unsupported";
+  controls: {
+    stop: boolean;
+    cancel: boolean;
+    restart: boolean;
+    pauseResume: boolean;
+  };
+  sources: {
+    screen: boolean;
+    systemAudio: boolean;
+    microphone: boolean;
+    webcam: boolean;
+    liveAudioLevels: boolean;
+    liveDisconnectDetection: boolean;
+    midRecordingToggles: boolean;
+  };
+  /** macOS content protection excludes the HUD from captured pixels. The
+   * Windows gdigrab backend cannot exclude a window, so its HUD must be kept
+   * outside region recordings and may appear in full-display recordings. */
+  controllerExcludedFromCapture: boolean;
 };
 
 /**
@@ -349,6 +423,27 @@ export type RecordingReadiness = {
 };
 
 export type RecordingPermission = "screen" | "microphone" | "systemAudio";
+
+/**
+ * Every source a recording can draw from, in the order they are shown.
+ *
+ * Wider than {@link RecordingPermission} by exactly one member: `camera`
+ * is a source the user can preview and choose a device for, but it has
+ * no entry in {@link RecordingPermissionSnapshot} because the recorder
+ * does not yet write a camera track. Keep them separate rather than
+ * widening `RecordingPermission` — the permission snapshot is consumed
+ * by the preflight guard, and adding a member there would make the
+ * guard start blocking takes on a source nothing records.
+ */
+export type RecordingSourceKind = "screen" | "systemAudio" | "microphone" | "camera";
+
+/** Display order for a source row. Screen first — it is always on. */
+export const RECORDING_SOURCE_ORDER: readonly RecordingSourceKind[] = [
+  "screen",
+  "microphone",
+  "systemAudio",
+  "camera"
+];
 
 /**
  * Evidence available to Settings when it explains an OS permission.
@@ -519,6 +614,17 @@ export type VideoFramesResult = {
 export type VideoAudioResult =
   | { hasAudio: false }
   | { hasAudio: true; url: string; mimeType: "audio/mp4" };
+
+/**
+ * Result of `video:playback` — the URL a player should actually load.
+ *
+ * A recording keeps its sources as separate audio tracks, and players take
+ * only the first one. When the audible audio is not that first track, main
+ * prepares a stream-copied rendition whose single track is what the user
+ * should hear, and `prepared` is true. Otherwise this is the original file
+ * and the renderer can treat it as it always has.
+ */
+export type VideoPlaybackResult = { url: string; prepared: boolean };
 
 /** Response from `video:prepareDrag` — mirrors `capture:prepareDrag`.
  *  `path` is the human-friendly file alias (e.g.
@@ -4563,6 +4669,15 @@ export type Commands = {
    */
   "recording:state": { req: Record<string, never>; res: RecordingState };
   /**
+   * Truthful capability snapshot for the selected platform backend. Renderers
+   * must gate controls from this response; unsupported controls are omitted,
+   * not rendered disabled as if they might work.
+   */
+  "recording:capabilities": {
+    req: Record<string, never>;
+    res: RecordingBackendCapabilities;
+  };
+  /**
    * Update the persisted default range for a video capture. The
    * float-over scrubber calls this when the user picks a subrange.
    */
@@ -4593,6 +4708,34 @@ export type Commands = {
   "video:audio": {
     req: { captureId: string };
     res: VideoAudioResult;
+  };
+  /**
+   * Resolve what a player should load for this recording. A take whose
+   * audible track is not track 0 — system audio armed with nothing playing
+   * through it, in front of a live microphone — plays silent when a player
+   * is handed the capture URL directly, because `<video>` takes the first
+   * audio track and ignores the rest.
+   *
+   * **Rollout is incomplete, and the gap is audible.** Only `VideoStage`
+   * asks. Every other player still builds `captureSrcUrl(id)` itself:
+   * the post-capture float-over toast and the tray's "last recording"
+   * (both `controls`, so one click from unmuted — and the toast is the
+   * first place a user checks their narration), `Stage`'s
+   * `record.video === null` fallback, and the muted previews in the
+   * Library grid, `DetailRail` and `CartPanel`. So the same recording
+   * behaves differently depending on which surface opened it.
+   *
+   * Converting them is not a one-line change: this verb can spawn a full
+   * stream-copy remux, so a hover preview must not fire it blindly, and
+   * the decision function that would gate it (`videoPlaybackNeedsPreparation`)
+   * lives in main. Worth settling alongside whether a source-sized copy is
+   * the right mechanism at all — `-disposition:a:N default` rewrites
+   * metadata instead of bytes, and the mixed `.m4a` this already builds is
+   * ~2% of the size.
+   */
+  "video:playback": {
+    req: { captureId: string };
+    res: VideoPlaybackResult;
   };
   /**
    * Render and return a GIF or MP4 export for the requested range,

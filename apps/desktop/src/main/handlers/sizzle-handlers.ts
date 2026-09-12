@@ -343,6 +343,10 @@ async function prepareSceneInput(args: {
     } else if (effectiveAudio === "native") {
       audioPath = await extractVideoAudio({
         videoPath: capture.legacy_src_path!,
+        hasSystemAudio: capture.video?.hasSystemAudio ?? false,
+        hasMicrophoneAudio: capture.video?.hasMicrophoneAudio ?? false,
+        requestedSystemAudio: capture.video?.requestedSystemAudio ?? false,
+        requestedMicrophone: capture.video?.requestedMicrophone ?? false,
         startSec: trim.startSec,
         durationSec: trimDur
       });
@@ -731,6 +735,10 @@ export function registerSizzleHandlers(
         };
         const audioPath = await extractVideoAudio({
           videoPath: capture.legacy_src_path,
+          hasSystemAudio: video.hasSystemAudio,
+          hasMicrophoneAudio: video.hasMicrophoneAudio,
+          requestedSystemAudio: video.requestedSystemAudio,
+          requestedMicrophone: video.requestedMicrophone,
           startSec: trim.startSec,
           durationSec: trim.endSec - trim.startSec
         });

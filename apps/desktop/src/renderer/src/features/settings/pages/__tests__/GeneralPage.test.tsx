@@ -354,13 +354,15 @@ describe("GeneralPage — recording audio", () => {
     expect(container?.textContent).not.toContain("recording refuses to start");
   });
 
-  // The audio card's claim is "default for new recordings" and nothing
-  // more. A per-recording override does not exist until #496 lands the
-  // selector's source chips; promising one here is the same stale-copy
-  // bug this card was added to fix. (The Cursor capture card above
-  // legitimately says "Press C in the recording selector" — that key
-  // is real today — so scope the assertion to this card.)
-  test("the audio card promises no per-recording override", async () => {
+  // The audio card has to say BOTH halves now that the selector's source
+  // chips exist: these switches are the default, and a single take can
+  // change its mind without changing them. The card previously promised
+  // only the first half — correct while it was the sole consumer of the
+  // pair, and stale the moment the chips shipped. This test used to
+  // assert the second half was ABSENT, for exactly that reason; it
+  // asserts the opposite now, which is what makes the copy and the
+  // feature land together instead of one drifting behind the other.
+  test("the audio card names the default AND the per-take override", async () => {
     await renderGeneral(baseSettings, healthyStatus);
     const card = Array.from(container?.querySelectorAll(".pss__card") ?? []).find((el) =>
       el.textContent?.includes("Include your microphone")
@@ -368,15 +370,12 @@ describe("GeneralPage — recording audio", () => {
     expect(card).toBeDefined();
     const copy = card?.textContent ?? "";
     expect(copy).toContain("The default for new recordings");
-    for (const claim of [
-      "recording selector",
-      "per-recording",
-      "Press A",
-      "Press M",
-      "override"
-    ]) {
-      expect(copy).not.toContain(claim);
-    }
+    // The key for each source, on the row that source owns.
+    expect(copy).toContain("Press A in the capture selector");
+    expect(copy).toContain("Press M in the capture selector");
+    // And it must stay explicit that overriding does not rewrite the
+    // default — the chips deliberately do not write back.
+    expect(copy).toContain("without changing this default");
   });
 
   test("non-macOS says recording audio is unsupported and never prompts", async () => {

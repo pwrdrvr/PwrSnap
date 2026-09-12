@@ -782,6 +782,8 @@ describe("RecordingService.stop source-app metadata → capture row", () => {
       containerFormat: "mp4",
       hasSystemAudio: false,
       hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
       outputPath: "/fake/captures/src-1.mp4"
     });
     await vi.advanceTimersByTimeAsync(0);
@@ -919,6 +921,8 @@ describe("RecordingService trusted window-title timing", () => {
       containerFormat: "mp4",
       hasSystemAudio: false,
       hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
       outputPath: "/fake/captures/src-1.mp4"
     });
     await vi.advanceTimersByTimeAsync(0);
@@ -1033,6 +1037,8 @@ describe("RecordingService trusted window-title timing", () => {
       containerFormat: "mp4",
       hasSystemAudio: false,
       hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
       outputPath: "/tmp/discarded.mp4"
     });
     await vi.advanceTimersByTimeAsync(1_000);
@@ -1090,6 +1096,8 @@ describe.each(["darwin", "win32"])("window-title retries on %s", (platform) => {
     if (platform === "darwin") child.emitLine({
       event: "stopped", durationSec: 2, containerFormat: "mp4",
       hasSystemAudio: false, hasMicrophoneAudio: false,
+ requestedSystemAudio: false,
+ requestedMicrophone: false,
       outputPath: "/fake/captures/src-1.mp4"
     });
     else child.emit("exit", 0, null);
@@ -1134,6 +1142,8 @@ describe("RecordingService.stop recorder temp lifecycle", () => {
       containerFormat: "mp4",
       hasSystemAudio: false,
       hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
       outputPath: recoveryPath
     });
 
@@ -1188,6 +1198,8 @@ describe("RecordingService.stop recorder temp lifecycle", () => {
       containerFormat: "mp4",
       hasSystemAudio: false,
       hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
       outputPath: "/tmp/pwrsnap-recording-fake/native-session.mp4"
     });
 
@@ -1208,6 +1220,23 @@ describe("RecordingService.stop recorder temp lifecycle", () => {
 });
 
 describe("RecordingService.start startedPromise timeout", () => {
+  test("a microphone setup failure becomes an actionable durable failure", async () => {
+    const { __setRecordingServiceForTests, getRecordingService } = await import("../recording-service");
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+    const result = service.start({
+      subject: SUBJECT,
+      capabilities: { systemAudio: false, microphone: true },
+      countdownSeconds: 0
+    }).catch((cause: unknown) => cause);
+    await vi.advanceTimersByTimeAsync(0);
+    const child = mocks.spawnedChildren[0]!;
+    child.emitLine({ event: "error", code: "microphone_unavailable", message: "private device details" });
+    await result;
+    expect(child.killCalled).toBe(true);
+    expect(mocks.currentState).toMatchObject({ phase: "failed", code: "microphone_unavailable", canRetry: true });
+    expect(JSON.stringify(mocks.stateLogFull)).not.toContain("private device details");
+  });
   test("recorder that never acks `started` is killed after 15s and state goes to failed", async () => {
     const { __setRecordingServiceForTests, getRecordingService } = await import(
       "../recording-service"

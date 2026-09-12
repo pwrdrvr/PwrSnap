@@ -43,6 +43,8 @@ function capture(id: string, kind: "image" | "video", durationSec = 1): CaptureR
             containerFormat: "mp4",
             hasSystemAudio: false,
             hasMicrophoneAudio: false,
+            requestedSystemAudio: false,
+            requestedMicrophone: false,
             defaultRange: { start: 0, end: durationSec },
             previewPath: null,
             previewStatus: "ready"

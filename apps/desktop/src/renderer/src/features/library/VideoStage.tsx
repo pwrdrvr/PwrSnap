@@ -132,8 +132,27 @@ export function VideoStage({
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   const [playing, setPlaying] = useState(false);
-  const [muted, setMuted] = useState(false);
+  // ONE number owns audibility. `muted` is derived, not stored: two
+  // independent states let the pair reach `muted: false, volume: 0` —
+  // the mute button reading "sound is on" over an element nothing can
+  // be heard from, with the slider the only way back.
   const [volume, setVolume] = useState(1);
+  const muted = volume === 0;
+  // Where the mute button returns to. Held in a ref because restoring it
+  // is not a render input — only the level it restores TO is.
+  const lastAudibleRef = useRef(1);
+  // Read by `loadedmetadata`, which fires again on every source swap. A
+  // closure over `volume` there would re-apply whatever the level was
+  // when the listener was attached.
+  const volumeRef = useRef(volume);
+  volumeRef.current = volume;
+  // Position + play state carried across a source swap. Assigning `src`
+  // runs the media load algorithm, which stops the element and resets
+  // `currentTime` to 0 — and does NOT fire `pause`, so nothing else
+  // notices. Measured in Chromium: paused true, currentTime 0, events
+  // abort/emptied/timeupdate/loadstart/suspend/durationchange/
+  // loadedmetadata, no pause.
+  const resumeAfterSwapRef = useRef<{ time: number; playing: boolean } | null>(null);
   // What the <video> should actually load.
   //
   // A recording keeps each source as its own audio track and players take
@@ -456,8 +475,18 @@ export function VideoStage({
       settleTime();
     };
     const onLoaded = (): void => {
-      setMuted(el.muted);
-      el.volume = volume;
+      el.volume = volumeRef.current;
+      el.muted = volumeRef.current === 0;
+      // A swap landed. Put the user back where they were: the element is
+      // at 0 and stopped, and because no `pause` fired, `playing` still
+      // says it is running.
+      const resume = resumeAfterSwapRef.current;
+      resumeAfterSwapRef.current = null;
+      if (resume === null) return;
+      if (resume.time > 0) el.currentTime = resume.time;
+      settleTime();
+      if (!resume.playing) return;
+      void el.play().catch(() => setPlaying(false));
     };
     el.addEventListener("play", onPlay);
     el.addEventListener("pause", onPause);
@@ -587,24 +616,32 @@ export function VideoStage({
 
   useEffect(() => {
     let cancelled = false;
-    setPlaybackUrl(captureSrcUrl(captureId));
-    void dispatch("video:playback", { captureId }).then((res) => {
-      // A failure here is not worth surfacing: the seed above is already
-      // the pre-existing behavior, so the worst case is what shipped
-      // before this resolution existed.
-      if (cancelled || !res.ok) return;
-      setPlaybackUrl(res.value.url);
-    });
+    const seed = captureSrcUrl(captureId);
+    setPlaybackUrl(seed);
+    // `dispatch` forwards to `ipcRenderer.invoke`, which REJECTS when the
+    // main handler throws — and in split mode this verb crosses the agent
+    // bridge, so a teardown mid-flight lands here. Without the catch that
+    // is an unhandled rejection, not the fallback this comment claims.
+    void dispatch("video:playback", { captureId })
+      .then((res) => {
+        // A failure here is not worth surfacing: the seed above is already
+        // the pre-existing behavior, so the worst case is what shipped
+        // before this resolution existed.
+        if (cancelled || !res.ok || res.value.url === seed) return;
+        const el = videoRef.current;
+        if (el !== null) {
+          resumeAfterSwapRef.current = { time: el.currentTime, playing: !el.paused };
+        }
+        setPlaybackUrl(res.value.url);
+      })
+      .catch(() => undefined);
     return () => {
       cancelled = true;
     };
   }, [captureId]);
 
   const toggleMute = (): void => {
-    const el = videoRef.current;
-    if (el === null) return;
-    el.muted = !el.muted;
-    setMuted(el.muted);
+    changeVolume(volume === 0 ? lastAudibleRef.current : 0);
   };
 
   // Volume was previously never assigned at all, so playback sat at 1.0
@@ -613,6 +650,9 @@ export function VideoStage({
   const changeVolume = (next: number): void => {
     const clamped = Math.min(1, Math.max(0, next));
     const el = videoRef.current;
+    // Remember the level the mute button comes back to, so muting is not
+    // a one-way trip to zero.
+    if (clamped > 0) lastAudibleRef.current = clamped;
     setVolume(clamped);
     if (el === null) return;
     el.volume = clamped;
@@ -620,7 +660,6 @@ export function VideoStage({
     // mute. Leaving the two controls independent lets the slider sit at
     // 80% while the element is silent, with nothing on screen saying why.
     el.muted = clamped === 0;
-    setMuted(el.muted);
   };
 
   const toggleFullscreen = (): void => {
@@ -700,7 +739,7 @@ export function VideoStage({
         // already dismissed.
         <p className="psl__video-audio-note">
           System audio was on for this recording but captured nothing —
-          nothing was playing through this Mac.
+          nothing was playing through this computer.
         </p>
       )}
     </div>

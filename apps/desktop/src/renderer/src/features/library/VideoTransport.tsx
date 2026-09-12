@@ -182,6 +182,17 @@ export function VideoTransport(props: VideoTransportProps): ReactElement {
           </svg>
         )}
       </button>
+        {/* This element deliberately carries NO `onMouseDown={keepFocus}`,
+            unlike every button around it. On a <button> that handler only
+            suppresses focus, because a button acts on `click`. On a range
+            input the value change IS the default action — Blink gates
+            `RangeInputType::HandleMouseDownEvent` on
+            `!event.DefaultPrevented()` — so preventing it leaves the
+            slider completely inert to click and drag, keyboard-only, while
+            looking entirely normal. Measured in Chromium with two
+            otherwise identical inputs and the same click: guarded stayed
+            at 1.0 with zero `input` events, unguarded moved to 0.26.
+            Pinned by video-transport-volume.test.ts. */}
         <input
           type="range"
           className="psl__vt-vol-slider"
@@ -193,7 +204,6 @@ export function VideoTransport(props: VideoTransportProps): ReactElement {
           value={muted ? 0 : volume}
           aria-label="Volume"
           aria-valuetext={`${Math.round((muted ? 0 : volume) * 100)}%`}
-          onMouseDown={keepFocus}
           onChange={(e) => props.onVolumeChange(Number(e.target.value))}
           data-testid="video-transport-volume-slider"
         />

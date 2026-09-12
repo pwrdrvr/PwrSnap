@@ -643,7 +643,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
                     // Stop measuring once this source has proven itself —
                     // the scan is per-buffer and there is nothing left to
                     // learn after the first sound.
-                    if !audioHeardSound && peakAmplitude(of: buf) >= audioSilenceFloor {
+                    if !audioHeardSound && peakAmplitude(of: buf, stopAt: audioSilenceFloor) >= audioSilenceFloor {
                         audioHeardSound = true
                     }
                 }

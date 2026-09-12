@@ -2,6 +2,20 @@ import { spawn } from "node:child_process";
 import type { VideoExportAudio } from "@pwrsnap/shared";
 import { resolveFfmpegPath } from "./ffmpeg-resolver";
 
+/**
+ * Version token for the recorded-audio mix produced by
+ * `buildRecordingAudioArgs`. Every artifact derived from that mix — the
+ * waveform asset, the prepared playback rendition, the MP4 export cache —
+ * carries it, so one bump invalidates all of them together.
+ *
+ * It lives HERE, next to the function whose output it describes, rather
+ * than beside any one consumer. When each consumer spelled its own token
+ * they drifted: the export cache still said `mixed-audio-v1` after the
+ * mix moved to v2, so a bump would have re-derived the other two assets
+ * while `lookupExport` quietly kept serving the old mixing.
+ */
+export const AUDIO_PIPELINE_VERSION = "mixed-audio-v2";
+
 export type RecordingAudioSource = {
   videoPath: string;
   /** Samples actually landed for the source. Decides whether to USE a track. */

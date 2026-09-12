@@ -4710,9 +4710,28 @@ export type Commands = {
     res: VideoAudioResult;
   };
   /**
-   * Resolve what a player should load for this recording. Renderers must
-   * use this rather than addressing the capture directly, or a take whose
-   * audible track is not first plays silent.
+   * Resolve what a player should load for this recording. A take whose
+   * audible track is not track 0 — system audio armed with nothing playing
+   * through it, in front of a live microphone — plays silent when a player
+   * is handed the capture URL directly, because `<video>` takes the first
+   * audio track and ignores the rest.
+   *
+   * **Rollout is incomplete, and the gap is audible.** Only `VideoStage`
+   * asks. Every other player still builds `captureSrcUrl(id)` itself:
+   * the post-capture float-over toast and the tray's "last recording"
+   * (both `controls`, so one click from unmuted — and the toast is the
+   * first place a user checks their narration), `Stage`'s
+   * `record.video === null` fallback, and the muted previews in the
+   * Library grid, `DetailRail` and `CartPanel`. So the same recording
+   * behaves differently depending on which surface opened it.
+   *
+   * Converting them is not a one-line change: this verb can spawn a full
+   * stream-copy remux, so a hover preview must not fire it blindly, and
+   * the decision function that would gate it (`videoPlaybackNeedsPreparation`)
+   * lives in main. Worth settling alongside whether a source-sized copy is
+   * the right mechanism at all — `-disposition:a:N default` rewrites
+   * metadata instead of bytes, and the mixed `.m4a` this already builds is
+   * ~2% of the size.
    */
   "video:playback": {
     req: { captureId: string };

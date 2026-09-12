@@ -591,16 +591,35 @@ describe("FloatOver asset mode", () => {
 });
 
 describe("post-recording source summary", () => {
+  // Order follows the CHIPS (screen, microphone, system audio), because the
+  // label is now derived from the same receipts rather than re-reading the
+  // flags. An accessible name that enumerates sources in a different order
+  // from the controls beside it is its own small bug.
   test.each([
     [{ hasSystemAudio: false, hasMicrophoneAudio: false }, "screen only"],
     [{ hasSystemAudio: true, hasMicrophoneAudio: false }, "screen + system audio"],
     [{ hasSystemAudio: false, hasMicrophoneAudio: true }, "screen + microphone"],
     [
       { hasSystemAudio: true, hasMicrophoneAudio: true },
-      "screen + system audio + microphone"
+      "screen + microphone + system audio"
     ]
   ] as const)("reports persisted sources as $1", (asset, expected) => {
     expect(recordingSourcesLabel(asset)).toBe(expected);
+  });
+
+  // A source the user ARMED and got nothing from has to reach the accessible
+  // name too. Reading only `has*Audio` announced "screen only" next to a
+  // visible `silent` microphone chip — the name denied a source the chips
+  // were reporting on.
+  test("names an armed-but-silent source instead of omitting it", () => {
+    expect(
+      recordingSourcesLabel({
+        hasSystemAudio: false,
+        hasMicrophoneAudio: false,
+        requestedSystemAudio: false,
+        requestedMicrophone: true
+      })
+    ).toBe("screen + microphone (no audio captured)");
   });
 
   // The reason migration 0033 exists. `has*` alone cannot separate
@@ -673,10 +692,17 @@ describe("post-recording source summary", () => {
     });
     const row = el.querySelector('[data-testid="fo-sources"]');
     expect(row).not.toBeNull();
-    expect(row?.getAttribute("aria-label")).toBe("Captured: screen only");
     expect(
       el.querySelector('[data-testid="fo-source-microphone"]')?.getAttribute("data-state")
     ).toBe("silent");
+    // This assertion used to read "Captured: screen only" — beside a
+    // microphone chip rendered `silent`. The row said one thing to a
+    // sighted user and the opposite to a screen-reader user, on the same
+    // element, for exactly the failure the pre-flight design exists to
+    // surface. The name must agree with the chips.
+    expect(row?.getAttribute("aria-label")).toBe(
+      "Captured: screen + microphone (no audio captured)"
+    );
   });
 });
 

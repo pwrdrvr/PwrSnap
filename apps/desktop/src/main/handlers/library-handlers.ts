@@ -563,8 +563,20 @@ export function registerLibraryWindowHandlers(): void {
 
 // Reachability for hard-delete during GC sweeps. Not bus-exposed —
 // internal callers only.
+//
+// The cache purge is as load-bearing here as it is on `library:purge`.
+// Boot GC used to drop the rows and leave the per-capture cache dir
+// behind, which was tolerable while the orphan was a filmstrip JPEG and a
+// small `audio.m4a`. It stopped being tolerable when playback began
+// caching a stream-copied rendition — a full second copy of the video, a
+// few hundred MB for a long take — that nothing would ever collect again.
+// Fire-and-forget: a cache file we fail to unlink must not abort the
+// sweep or block startup.
 export function gcHardDeleteCaptures(captureIds: string[]): void {
   for (const id of captureIds) {
     hardDeleteCapture(id);
+    void purgeCacheForCapture(id).catch((cause: unknown) => {
+      log.warn("gc cache purge failed", { captureId: id, cause: String(cause) });
+    });
   }
 }

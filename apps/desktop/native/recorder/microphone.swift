@@ -32,7 +32,7 @@ final class MicForwarder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
            input.append(sampleBuffer) {
             samplesAppended += 1
             // Measured only until this source proves itself; see main.swift.
-            if !heardSound && peakAmplitude(of: sampleBuffer) >= audioSilenceFloor {
+            if !heardSound && peakAmplitude(of: sampleBuffer, stopAt: audioSilenceFloor) >= audioSilenceFloor {
                 heardSound = true
             }
         }

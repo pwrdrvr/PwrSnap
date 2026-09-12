@@ -44,10 +44,19 @@ const log = getMainLogger("pwrsnap:media-permissions");
  * `clipboard-sanitized-write` — Chromium asks for this on some
  *   `navigator.clipboard.write` paths. PwrSnap's copy affordances are
  *   user-initiated by construction.
+ *
+ * `fullscreen` — the Library's video transport has a Fullscreen button,
+ *   and Electron routes `Element.requestFullscreen()` through this same
+ *   handler. Leaving it out did not "keep the default"; it denied the
+ *   request, and `VideoStage` swallows the rejection, so the button went
+ *   quietly dead with no log and no UI feedback. Granting it reveals
+ *   nothing — it makes an element we already render fill a window the
+ *   user already has, and only for pages `isTrustedRendererUrl` accepts.
  */
 const ALLOWED_PERMISSIONS: ReadonlySet<string> = new Set([
   "media",
-  "clipboard-sanitized-write"
+  "clipboard-sanitized-write",
+  "fullscreen"
 ]);
 
 /**

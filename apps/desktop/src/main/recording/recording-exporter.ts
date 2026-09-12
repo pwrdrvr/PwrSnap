@@ -42,7 +42,12 @@ import {
 } from "../persistence/video-repo";
 import { FfmpegProgressParser, type FfmpegProgressRecord } from "./ffmpeg-progress";
 import { resolveFfmpegPath } from "./ffmpeg-resolver";
-import { buildRecordingAudioArgs, probeAudioStreamCount, selectedRecordingAudioStreams } from "./recording-audio";
+import {
+  AUDIO_PIPELINE_VERSION,
+  buildRecordingAudioArgs,
+  probeAudioStreamCount,
+  selectedRecordingAudioStreams
+} from "./recording-audio";
 
 const log = getMainLogger("pwrsnap:recording-exporter");
 
@@ -115,7 +120,16 @@ export function buildMp4VideoEncoderArgs(
 }
 
 // Invalidate alternate-track exports: ordinary players only played the first.
-const MP4_REENCODE_CACHE_TOKEN = "gop60-mixed-audio-v1";
+//
+// The audio half is DERIVED, not hand-versioned. A cached export is only
+// valid for the mix that produced it, and that mix is `buildRecordingAudioArgs`
+// — the same function `AUDIO_PIPELINE_VERSION` gates the waveform and playback
+// derivatives on. Spelling it by hand here meant two tokens for one fact, and
+// they had already drifted apart (`mixed-audio-v1` here against
+// `mixed-audio-v2` there): bumping the pipeline version as its own comment
+// instructs would have re-derived those two assets while `lookupExport` kept
+// serving an MP4 mixed the old way, silently.
+const MP4_REENCODE_CACHE_TOKEN = `gop60-${AUDIO_PIPELINE_VERSION}`;
 
 /** Compute output dimensions for a given preset against a source
  *  width × height. LOW / MED scale down (preserving aspect with even

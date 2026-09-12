@@ -74,7 +74,7 @@ import {
   prepareVideoPlayback,
   videoPlaybackNeedsPreparation
 } from "../sizzle/audio-extract";
-import { captureSrcUrl, videoAssetUrl } from "../protocols-parse";
+import { captureSrcUrl, isDerivedAudioAsset, videoAssetUrl } from "../protocols-parse";
 import { broadcastCapturesChanged } from "../events";
 import { prepareRenderedFileAlias } from "../render/file-alias";
 import { buildPresetExportDisplayName } from "../render/export-filename";
@@ -409,14 +409,17 @@ async function ensureVideoAudioAsset(input: {
     // Drop derivatives from an earlier pipeline version. Without this each
     // bump left a full-clip audio file per capture that nothing reads and
     // nothing sweeps until the capture is hard-deleted.
+    //
+    // `isDerivedAudioAsset` is the SAME list the protocol resolver serves
+    // from, deliberately. Re-spelling it here is what let `audio-mixed-v2`
+    // — still servable, so still a real orphan — slip through every sweep.
     await Promise.all(
       (await readdir(dir).catch(() => [] as string[]))
         .filter(
           (name) =>
             name !== VIDEO_AUDIO_ASSET &&
             name !== VIDEO_PLAYBACK_ASSET &&
-            (/^(audio|mixed-audio-v\d{1,3})\.m4a$/.test(name) ||
-              /^playback-mixed-audio-v\d{1,3}\.mp4$/.test(name))
+            isDerivedAudioAsset(name)
         )
         .map((name) => rm(join(dir, name), { force: true }).catch(() => undefined))
     );

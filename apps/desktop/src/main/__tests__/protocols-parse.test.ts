@@ -10,6 +10,7 @@ import { describe, expect, test } from "vitest";
 // broke, so the test has to read what the handlers really produce.
 import { VIDEO_AUDIO_ASSET, VIDEO_PLAYBACK_ASSET } from "../handlers/recording-handlers";
 import {
+  isDerivedAudioAsset,
   parseAppIconBundleId,
   parseCacheUrl,
   parseCaptureId,
@@ -349,6 +350,36 @@ describe("parseVideoAssetUrl", () => {
         asset
       });
     }
+  });
+
+  // The other half of the same agreement, and the half that drifted next.
+  // The orphan sweep in `ensureVideoAudioAsset` decides what it may DELETE;
+  // this file decides what it may SERVE. When the sweep re-spelled the list
+  // it skipped `audio-mixed-vN.m4a` — a name still served, so still a real
+  // orphan — and that file survived every pipeline bump. Both sides now
+  // read `isDerivedAudioAsset`, so pin that they cannot disagree: anything
+  // servable-but-not-current must be reclaimable, and the live names must
+  // never be.
+  test("the sweep can reclaim every stale audio asset the resolver still serves", () => {
+    const stale = [
+      "audio.m4a",
+      "audio-mixed-v1.m4a",
+      "audio-mixed-v2.m4a",
+      "mixed-audio-v1.m4a",
+      "playback-mixed-audio-v1.mp4"
+    ].filter((name) => name !== VIDEO_AUDIO_ASSET && name !== VIDEO_PLAYBACK_ASSET);
+    expect(stale.length).toBeGreaterThan(0);
+    for (const asset of stale) {
+      // Servable, so a renderer holding an old URL still works…
+      expect(parseVideoAssetUrl(`pwrsnap-cache://v/cap/${asset}`)).not.toBeNull();
+      // …and sweepable, so it does not live forever.
+      expect(isDerivedAudioAsset(asset)).toBe(true);
+    }
+  });
+
+  test("the filmstrip is never mistaken for a sweepable audio derivative", () => {
+    expect(isDerivedAudioAsset("frames-n24-w96.jpg")).toBe(false);
+    expect(isDerivedAudioAsset("poster.png")).toBe(false);
   });
 
   test("parses filmstrip + audio assets and preserves capture-id case", () => {

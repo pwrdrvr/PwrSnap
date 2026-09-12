@@ -3,6 +3,7 @@ import { mkdir, rename, rm, stat } from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
 import { app } from "electron";
 import {
+  AUDIO_PIPELINE_VERSION,
   AudioExtractError,
   buildRecordingAudioArgs,
   probeAudioStreamCount,
@@ -15,7 +16,9 @@ export { AudioExtractError } from "../recording/recording-audio";
 
 // Older native extractions silently selected the first audio stream. Changing
 // the pipeline invalidates those artifacts without touching original captures.
-export const AUDIO_PIPELINE_VERSION = "mixed-audio-v2";
+// Owned by `recording-audio`, next to the mix it versions; re-exported here
+// because this module is where most consumers already reach for it.
+export { AUDIO_PIPELINE_VERSION };
 
 async function fileExists(path: string): Promise<boolean> {
   try {
@@ -115,19 +118,27 @@ export async function extractVideoAudio(args: RecordingAudioSource & AudioTrim):
   const outPath = join(app.getPath("userData"), "sizzle-cache", "native-audio", `${hash}.m4a`);
   return coalesce(outPath, async () => {
     if (await fileExists(outPath)) return outPath;
-    // First pass decides only whether anything is worth probing for; the
-    // second resolves the indices against the file's real track count.
-    const wanted = selectedRecordingAudioStreams(args);
-    const available = wanted.length === 0 ? 0 : await probeAudioStreamCount(args.videoPath);
+    // Probe unconditionally. Short-circuiting the probe when the flags
+    // claim no audio makes the flags unfalsifiable: `has*Audio` now means
+    // "carried sound above the silence floor", so a quiet-but-real take —
+    // or, before the format fix, any PCM layout we could not decode —
+    // reads as no-audio, and we would render silence over a track that is
+    // right there in the file. ffmpeg's own stream selection is what this
+    // path used before, and it never consulted our flags at all.
+    const available = await probeAudioStreamCount(args.videoPath);
     const streams = selectedRecordingAudioStreams(args, undefined, available).filter(
       (index) => index < available
     );
+    // The flags say nothing is worth mixing, but the file has audio. Trust
+    // the file: take its first track rather than silently replacing real
+    // audio with silence.
+    const resolved = streams.length === 0 && available > 0 ? [0] : streams;
     // A valid old recording can claim audio but contain no samples at all.
     // The composer still needs a duration-matched input for that scene.
-    if (streams.length === 0) return synthesizeSilence(args.durationSec);
+    if (resolved.length === 0) return synthesizeSilence(args.durationSec);
     return publishMedia(outPath, [
       "-ss", args.startSec.toFixed(3), "-t", args.durationSec.toFixed(3), "-i", args.videoPath,
-      "-vn", ...buildRecordingAudioArgs(streams),
+      "-vn", ...buildRecordingAudioArgs(resolved),
       "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"
     ]);
   });
@@ -171,10 +182,15 @@ export function videoPlaybackNeedsPreparation(
  * while the audible tracks become one AAC track.
  *
  * Written to `outPath` so the caller owns where it lives — the per-capture
- * asset dir, which `purgeCacheForCapture` already sweeps. It holds a full
- * copy of the video bytes (stream-copied, not re-encoded), which is the
- * standing cost of keeping the recorded stems separate: the original must
- * stay untouched so exports can still select either source.
+ * asset dir. It holds a full copy of the video bytes (stream-copied, not
+ * re-encoded), which is the standing cost of keeping the recorded stems
+ * separate: the original must stay untouched so exports can still select
+ * either source.
+ *
+ * Because it is source-sized, EVERY path that retires a capture has to
+ * purge that dir. `library:purge` always did; boot GC did not, and hard-
+ * deleted the rows while leaving the bytes — which only became expensive
+ * once this file existed. `gcHardDeleteCaptures` now purges too.
  *
  * Returns the path to play — `outPath` when a rendition was needed, or the
  * original when it was not.

@@ -1362,15 +1362,32 @@ export function recordingSourceReceipts(
   return receipts;
 }
 
+const RECEIPT_SOURCE_NAMES: Record<"screen" | "microphone" | "systemAudio", string> = {
+  screen: "screen",
+  microphone: "microphone",
+  systemAudio: "system audio"
+};
+
+/**
+ * The accessible name for the receipt row — derived from the SAME receipts
+ * the chips render, never re-read from the flags.
+ *
+ * Reading only `has*Audio` here made the accessible name contradict the
+ * chips on the same element: a take with the microphone armed but silent
+ * drew a `silent` mic chip saying "no audio captured" while announcing
+ * "Captured: screen only", i.e. that no microphone was involved at all.
+ * The two also enumerated sources in different orders, so the name did not
+ * match the visual reading order either.
+ */
 export function recordingSourcesLabel(
-  asset: Pick<Extract<FloatOverAsset, { kind: "video" }>, "hasSystemAudio" | "hasMicrophoneAudio">
+  asset: Parameters<typeof recordingSourceReceipts>[0]
 ): string {
-  const sources = [
-    "screen",
-    asset.hasSystemAudio === true ? "system audio" : null,
-    asset.hasMicrophoneAudio === true ? "microphone" : null
-  ].filter((source): source is string => source !== null);
-  return sources.length === 1 ? "screen only" : sources.join(" + ");
+  const receipts = recordingSourceReceipts(asset);
+  const parts = receipts.map((receipt) => {
+    const name = RECEIPT_SOURCE_NAMES[receipt.source];
+    return receipt.state === "silent" ? `${name} (${receipt.why ?? "nothing captured"})` : name;
+  });
+  return parts.length === 1 ? "screen only" : parts.join(" + ");
 }
 
 export function FoDesktopFrame({

@@ -37,10 +37,18 @@ describe("renderer trust", () => {
 });
 
 describe("permission policy", () => {
-  test("allows only the two permissions PwrSnap actually uses", () => {
+  test("allows only the permissions PwrSnap actually uses", () => {
     const trusted = "file:///app/index.html";
     expect(decidePermission("media", trusted)).toBe(true);
     expect(decidePermission("clipboard-sanitized-write", trusted)).toBe(true);
+    // Electron routes `Element.requestFullscreen()` through this handler,
+    // so omitting it does not leave the Fullscreen button alone — it
+    // breaks it, silently, because the renderer swallows the rejection.
+    expect(decidePermission("fullscreen", trusted)).toBe(true);
+  });
+
+  test("denies fullscreen to an untrusted origin", () => {
+    expect(decidePermission("fullscreen", "https://example.com/")).toBe(false);
   });
 
   // The reason the handler exists at all: with no handler installed,

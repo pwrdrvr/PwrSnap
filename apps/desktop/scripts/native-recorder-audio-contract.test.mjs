@@ -39,7 +39,7 @@ describe("native recorder audio contract", () => {
   });
 
   test("both sources measure against the shared silence floor", () => {
-    expect(recorderSource).toContain("peakAmplitude(of: buf) >= audioSilenceFloor");
-    expect(microphoneSource).toContain("peakAmplitude(of: sampleBuffer) >= audioSilenceFloor");
+    expect(recorderSource).toContain("peakAmplitude(of: buf, stopAt: audioSilenceFloor) >= audioSilenceFloor");
+    expect(microphoneSource).toContain("peakAmplitude(of: sampleBuffer, stopAt: audioSilenceFloor) >= audioSilenceFloor");
   });
 });

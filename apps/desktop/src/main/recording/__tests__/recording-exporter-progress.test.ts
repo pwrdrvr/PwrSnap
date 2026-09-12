@@ -2,6 +2,14 @@ import { EventEmitter } from "node:events";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { CaptureRecord, VideoCaptureMetadata, VideoExportResult } from "@pwrsnap/shared";
+import { AUDIO_PIPELINE_VERSION } from "../recording-audio";
+// The export cache token is DERIVED from `AUDIO_PIPELINE_VERSION`, so build
+// the expected filename from the same constant rather than retyping it. These
+// assertions used to spell `gop60-mixed-audio-v1` by hand and went on passing
+// after the mix moved to v2 — a hardcoded copy cannot catch the drift it is
+// the last line of defence against.
+const CACHE_TOKEN = `gop60-${AUDIO_PIPELINE_VERSION}`;
+
 import type {
   ExportInput,
   VideoExportProgressObserver,
@@ -318,7 +326,7 @@ describe("recording exporter progress", () => {
   });
 
   test("cache hits still publish a complete queued/finalizing/succeeded lifecycle", async () => {
-    const path = "/cache/r0.000-10.000.med.gop60-mixed-audio-v1.s0m0.mp4";
+    const path = `/cache/r0.000-10.000.med.${CACHE_TOKEN}.s0m0.mp4`;
     cachedExport = {
       path,
       byteSize: 99,
@@ -364,7 +372,7 @@ describe("recording exporter progress", () => {
     close(spawnCalls[1]!, 0);
     const result = await work;
     expect(result.fromCache).toBe(false);
-    expect(result.path).toContain(".gop60-mixed-audio-v1.");
+    expect(result.path).toContain(`.${CACHE_TOKEN}.`);
   });
 
   test("reports one failed terminal update for nonzero close and spawn error", async () => {
@@ -447,7 +455,7 @@ describe("recording exporter progress", () => {
       "/tmp/pwrsnap-progress-test",
       "video",
       id,
-      "r0.000-10.000.med.gop60-mixed-audio-v1.s0m0.mp4"
+      `r0.000-10.000.med.${CACHE_TOKEN}.s0m0.mp4`
     );
     cachedExport = {
       path: finalPath,

@@ -11,7 +11,9 @@
 
 import { copyFile, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { ok, err, recordingFailureSummary } from "@pwrsnap/shared";
+import { ok, err, recordingFailureSummary,
+  videoPlaybackNeedsPreparation
+} from "@pwrsnap/shared";
 import type {
   Commands,
   PwrSnapError,
@@ -72,8 +74,7 @@ import {
   AUDIO_PIPELINE_VERSION,
   extractVideoAudio,
   computeVideoPlaybackCacheKey,
-  prepareVideoPlayback,
-  videoPlaybackNeedsPreparation
+  prepareVideoPlayback
 } from "../sizzle/audio-extract";
 import {
   captureSrcUrl,
@@ -395,37 +396,64 @@ async function ensureVideoPlaybackAsset(input: {
   // already the track a player takes needs no rendition, no cache key, and
   // so no `stat` of the source at all.
   if (!videoPlaybackNeedsPreparation(input)) return null;
-  const existing = videoPlaybackInFlight.get(input.captureId);
+  const dir = videoAssetDir(input.captureId);
+  // Resolve the identity BEFORE joining the in-flight map, so the map can be
+  // keyed by the artifact rather than by the capture. Keying it by capture
+  // made a coalesced caller adopt whatever the first caller's source state
+  // produced — invisible while the name was a constant, wrong once the name
+  // encodes a revision. The cost is one extra `stat` per concurrent caller.
+  const asset = videoPlaybackAsset(await computeVideoPlaybackCacheKey(input));
+  const existing = videoPlaybackInFlight.get(asset);
   if (existing !== undefined) return existing;
 
   const work = (async () => {
-    const asset = videoPlaybackAsset(await computeVideoPlaybackCacheKey(input));
-    const dir = videoAssetDir(input.captureId);
     const target = join(dir, asset);
     if (await fileHasBytes(target)) return asset;
     await mkdir(dir, { recursive: true });
     const played = await prepareVideoPlayback(target, input);
     // The probe can still say the file disagrees with its metadata, in
     // which case nothing was written and the original is correct.
-    if (played !== target) return null;
-    // Retire renditions of earlier revisions of THIS source. Each one is a
-    // full copy of a recording, so leaving them costs source-sized bytes
-    // per stale revision — the reason this lane sweeps itself rather than
-    // riding along with the waveform lane's pipeline-version sweep.
-    await Promise.all(
-      (await readdir(dir).catch(() => [] as string[]))
-        .filter((name) => name !== asset && isDerivedPlaybackAsset(name))
-        .map((name) => rm(join(dir, name), { force: true }).catch(() => undefined))
-    );
-    return asset;
+    return played === target ? asset : null;
   })();
 
-  videoPlaybackInFlight.set(input.captureId, work);
+  videoPlaybackInFlight.set(asset, work);
   try {
-    return await work;
+    const produced = await work;
+    // Retire renditions of every OTHER revision of this source. Each is a
+    // full copy of a recording, so leaving them costs source-sized bytes per
+    // stale revision — the reason this lane sweeps itself rather than riding
+    // along with the waveform lane's pipeline-version sweep.
+    //
+    // Outside the success branch on purpose. When preparation declines
+    // (`produced === null`) the ORIGINAL is what plays, so every rendition
+    // present is stale — and that is exactly the state an early return
+    // stranded: metadata disagreeing with the file makes the decline
+    // permanent, so nothing would ever have collected them, including the
+    // unkeyed rendition #496 left behind.
+    await sweepStalePlaybackRenditions(dir, produced);
+    return produced;
   } finally {
-    videoPlaybackInFlight.delete(input.captureId);
+    if (videoPlaybackInFlight.get(asset) === work) videoPlaybackInFlight.delete(asset);
   }
+}
+
+/**
+ * Delete every prepared rendition in `dir` except `keep` (pass `null` to
+ * remove all of them, i.e. when the original is what plays).
+ *
+ * Deliberately unconditional about whether another window currently has one
+ * of those URLs loaded: a rendition is only swept once the source it was
+ * derived from has changed, so it no longer describes the recording, and a
+ * window still streaming it is already being served the wrong bytes. Leaving
+ * it would cost a source-sized file per stale revision. Recovering is a
+ * reload, which the next `video:playback` answers with the current rendition.
+ */
+async function sweepStalePlaybackRenditions(dir: string, keep: string | null): Promise<void> {
+  await Promise.all(
+    (await readdir(dir).catch(() => [] as string[]))
+      .filter((name) => name !== keep && isDerivedPlaybackAsset(name))
+      .map((name) => rm(join(dir, name), { force: true }).catch(() => undefined))
+  );
 }
 
 async function ensureVideoAudioAsset(input: {

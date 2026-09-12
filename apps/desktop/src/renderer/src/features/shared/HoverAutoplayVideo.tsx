@@ -56,14 +56,42 @@ export function HoverAutoplayVideo({
   videoRef: externalVideoRef
 }: HoverAutoplayVideoProps): ReactElement {
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  // Assigning `src` restarts the element, so hand back a paused preview
-  // rather than one that silently rewound mid-hover.
+  // Where to put the user back after a playback-URL swap.
+  //
+  // Assigning `src` runs the media load algorithm: the element stops and
+  // rewinds to 0, and fires no `pause`. Just pausing is not enough here —
+  // preparing a rendition can take seconds on a large recording, so the
+  // swap routinely lands while someone is already watching, and the hover
+  // listeners are on the CONTAINER, so no `mouseenter` re-fires to restart
+  // it while the pointer sits still. Without this the preview dies at
+  // frame 0 until the user leaves and comes back.
+  const resumeAfterSwapRef = useRef<{ time: number; playing: boolean } | null>(null);
   const src = useVideoPlaybackSrc({
     captureId,
     video,
-    onBeforeSwap: () => videoRef.current?.pause()
+    onBeforeSwap: () => {
+      const el = videoRef.current;
+      if (el === null) return;
+      resumeAfterSwapRef.current = { time: el.currentTime, playing: !el.paused };
+    }
   });
   const containerRef = useRef<HTMLDivElement | null>(null);
+
+  // Restore across the swap. `loadedmetadata` is the first point the new
+  // source can accept a seek.
+  useEffect(() => {
+    const el = videoRef.current;
+    if (el === null) return;
+    const onLoaded = (): void => {
+      const resume = resumeAfterSwapRef.current;
+      resumeAfterSwapRef.current = null;
+      if (resume === null) return;
+      if (resume.time > 0) el.currentTime = resume.time;
+      if (resume.playing) void el.play().catch(() => undefined);
+    };
+    el.addEventListener("loadedmetadata", onLoaded);
+    return () => el.removeEventListener("loadedmetadata", onLoaded);
+  }, []);
 
   // Mirror the element into the caller's ref so both the internal
   // hover-play effect and the caller see the same node.

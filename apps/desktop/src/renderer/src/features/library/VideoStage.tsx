@@ -24,7 +24,6 @@ import {
   type ReactElement
 } from "react";
 import type { CaptureRecord, VideoCaptureMetadata } from "@pwrsnap/shared";
-import { captureSrcUrl, dispatch } from "../../lib/pwrsnap";
 import { usePlayheadSource } from "../shared/playhead";
 import { useVideoPlaybackSrc } from "../shared/useVideoPlaybackSrc";
 import { VideoTimeline } from "../shared/VideoTimeline";

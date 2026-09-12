@@ -43,8 +43,15 @@ export function useVideoPlaybackSrc(args: {
   // Read through a ref so a caller passing an inline closure does not
   // re-run the effect — and re-dispatch — on every render. The float-over
   // re-renders at 60 Hz while its auto-dismiss countdown ticks.
+  //
+  // Assigned in an effect rather than in the render body: a render React
+  // discards (StrictMode's double invoke, an interrupted concurrent render)
+  // must not leave the ref pointing at a callback from props that never
+  // committed.
   const onBeforeSwapRef = useRef(onBeforeSwap);
-  onBeforeSwapRef.current = onBeforeSwap;
+  useEffect(() => {
+    onBeforeSwapRef.current = onBeforeSwap;
+  });
 
   // Gate on the facts the record already carries. The verb can spawn a
   // stream-copy remux of the whole recording, so the dispatch itself is
@@ -74,7 +81,9 @@ export function useVideoPlaybackSrc(args: {
     return () => {
       cancelled = true;
     };
-  }, [captureId, seed, needsPreparation]);
+    // `seed` is a pure function of `captureId`, so it is not a dependency
+    // of its own.
+  }, [captureId, needsPreparation]);
 
   return playbackUrl;
 }

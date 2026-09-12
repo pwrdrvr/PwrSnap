@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, rename, rm, stat } from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
 import { app } from "electron";
+import { videoPlaybackNeedsPreparation } from "@pwrsnap/shared";
 import {
   AUDIO_PIPELINE_VERSION,
   AudioExtractError,
@@ -9,14 +10,10 @@ import {
   probeAudioStreamCount,
   runAudioFfmpeg,
   selectedRecordingAudioStreams,
-  videoPlaybackNeedsPreparation,
   type RecordingAudioSource
 } from "../recording/recording-audio";
 
 export { AudioExtractError } from "../recording/recording-audio";
-// Re-exported from its shared home so this module stays the one place the
-// audio-derivative consumers import from.
-export { videoPlaybackNeedsPreparation } from "../recording/recording-audio";
 
 // Older native extractions silently selected the first audio stream. Changing
 // the pipeline invalidates those artifacts without touching original captures.

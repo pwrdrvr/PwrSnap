@@ -1,16 +1,14 @@
 import { spawn } from "node:child_process";
-import { selectedRecordingAudioStreams, type RecordedAudioTrackFacts } from "@pwrsnap/shared";
+import type { RecordedAudioTrackFacts } from "@pwrsnap/shared";
 import { resolveFfmpegPath } from "./ffmpeg-resolver";
 
-// Track selection and the playback-preparation predicate moved to
-// `@pwrsnap/shared` so renderers can answer the same question without a
-// round trip. Re-exported here because this module is where main's
-// callers already reach for them, and one implementation is the point.
-export {
-  selectedRecordingAudioStreams,
-  videoPlaybackNeedsPreparation,
-  type RecordedAudioTrackFacts
-} from "@pwrsnap/shared";
+// Track selection moved to `@pwrsnap/shared` so renderers can answer the
+// same question without a round trip. Re-exported here because it belongs
+// beside `buildRecordingAudioArgs`, the function that consumes its output,
+// and one implementation is the point. `videoPlaybackNeedsPreparation` is
+// NOT re-exported: its consumers import it from `@pwrsnap/shared` directly,
+// so it is reachable by exactly one path.
+export { selectedRecordingAudioStreams, type RecordedAudioTrackFacts } from "@pwrsnap/shared";
 
 /**
  * Version token for the recorded-audio mix produced by

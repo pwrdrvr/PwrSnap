@@ -1229,6 +1229,32 @@ Rules:
   `kind: "settings", code: "secret_unavailable"`. **Never fall back to
   plaintext.** A unit test grep-asserts the plaintext never appears in
   `pwrsnap-secrets.bin`.
+- **`getValue()` is the ONLY read allowed to decrypt.** On macOS the first
+  `safeStorage` call in a process is what can raise the login-keychain
+  password dialog, so a status read that decrypts turns "user toggled a
+  preference" into "macOS asked for your password" — `broadcastSettingsChanged`
+  calls `getAllStatus()` after every settings write. `pwrsnap-secrets.bin` is
+  therefore a v2 envelope: a PLAINTEXT `index` of `{ name: { lastSetAt } }`
+  next to one encrypted `ciphertext` of `{ name: value }`. Status reads touch
+  only the index; an emptied store writes `"ciphertext": null` so clearing the
+  last secret encrypts nothing. Do not move status metadata back inside the
+  ciphertext, and do not add a new caller of `getValue()` on a path that runs
+  without the user having asked for a secret-backed feature. Nothing in the
+  index is newly exposed — `SecretStatus` is already broadcast to every
+  window, and the `localAgentToken:<clientId>` ids are already cleartext in
+  `pwrsnap-settings.json` as `localAgents.grants[].id`. v1 files (one bare
+  ciphertext) are still read and rewritten as v2 on first access; an
+  undecryptable v1 file is left alone rather than rewritten empty. A rewrite
+  must stitch `lastSetAt` back from the index — the payload carries values
+  only, so forgetting blanks every surviving timestamp.
+- **E2E runs must not touch the real login keychain.**
+  [darwin-keychain-startup-policy.ts](apps/desktop/src/main/darwin-keychain-startup-policy.ts)
+  appends Chromium's `--use-mock-keychain` under `PWRSNAP_E2E`, so an unsigned
+  dev Electron never registers its rebuild-varying cdhash on the access list of
+  the item the installed app uses, and never blocks a spec on a password
+  dialog. It is deliberately NOT applied to `pnpm dev`: `app.setName` is
+  unconditional, so dev shares `userData` — and `pwrsnap-secrets.bin` — with
+  the installed app and must share its key.
 - **Validate at the bus boundary.** Per-verb validators in
   [apps/desktop/src/main/handlers/settings-validators.ts](apps/desktop/src/main/handlers/settings-validators.ts)
   reject unknown secret names, oversize values (>64KB), unknown
@@ -1421,6 +1447,34 @@ Rules:
 
 Full investigation, measurements, and the probe recipe:
 [docs/solutions/2026-09-05-macos-26-legacy-icon-light-plate.md](docs/solutions/2026-09-05-macos-26-legacy-icon-light-plate.md).
+
+### Electron fuses are pinned — including one that is OFF on purpose
+
+Fuses are burned into the packaged binary and **cannot be read back from
+the running app**, so no unit test, E2E run, or review of
+`apps/desktop/src` can observe a wrong one. The only feedback is a shipped
+installer. [scripts/check-electron-fuses-policy.mjs](scripts/check-electron-fuses-policy.mjs)
+therefore pins the posture and runs in `pnpm lint` (every PR) *and* from
+`pnpm release:check`.
+
+**`enableCookieEncryption` must stay `false`, and it is the one entry that
+looks backwards.** Enabling it makes Electron fetch the app's Safe Storage
+key from the login keychain when the network service starts — before any
+window exists, on every launch — which surfaces as a macOS keychain
+*password* prompt for any binary not already on that keychain item's access
+list (a rebuilt local package, a second install, a dev Electron). PwrSnap
+stores no cookies: every window loads `file://` or `data:`, outbound HTTP
+from main goes through Node `fetch` (undici, no Chromium cookie jar), and
+nothing calls `session.cookies`. So it protected an empty database and cost
+the single scariest thing a new user sees. Every other pinned fuse is a
+hardening one; do not "restore" this one to match them. Revisit only if a
+`BrowserWindow` starts loading a remote origin that sets real cookies —
+and note the transition is one-way, so a store encrypted under the fuse
+becomes unreadable if it is later turned off.
+
+Full mechanism, the `security dump-keychain` evidence, and why the prompt
+cannot be predicted or pre-explained from Electron:
+[docs/solutions/2026-09-11-startup-keychain-prompt-cookie-encryption.md](docs/solutions/2026-09-11-startup-keychain-prompt-cookie-encryption.md).
 
 ### `package.json` `description` is shipped UI on Windows
 

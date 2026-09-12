@@ -16,6 +16,7 @@ import {
   recordingFailureSummary,
   type RecordingBackendCapabilities,
   type RecordingCapabilities,
+  type RecordingControllerArmEvent,
   type RecordingState
 } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
@@ -135,6 +136,54 @@ export function RecordingController(): ReactElement {
     return () => clearTimeout(handle);
   }, [armedAction]);
 
+  // This window is deliberately non-activating (`focusable: false` +
+  // showInactive() in main), so it never receives a keydown and there
+  // is no Escape-to-disarm here: making it focusable so a key handler
+  // could fire would activate PwrSnap mid-take, and the recorded app
+  // visibly losing focus IS captured. The 5s timeout above and the
+  // other button are the ways out of an armed state.
+  //
+  // The same non-activating property is why the tray's destructive
+  // recording items arm this HUD instead of raising a native dialog —
+  // a dialog is not content-protected and lands in the file. Main
+  // sends the nudge; the armed state and its timeout stay owned here,
+  // so there is exactly one of them.
+  const armGateRef = useRef<{
+    phase: RecordingState["phase"];
+    busy: boolean;
+    offers: Record<"restart" | "cancel", boolean>;
+  }>({
+    phase: state.phase,
+    busy: busyAction !== null,
+    offers: { restart: true, cancel: true }
+  });
+  useEffect(() => {
+    armGateRef.current = {
+      phase: state.phase,
+      busy: busyAction !== null,
+      // Same expression the buttons are rendered behind, so an armed
+      // prompt can never point at a control that is not on screen.
+      offers: {
+        restart: backend?.controls.restart ?? true,
+        cancel: backend?.controls.cancel ?? true
+      }
+    };
+  }, [state.phase, busyAction, backend]);
+
+  useEffect(() => {
+    const off = window.pwrsnapApi?.on(EVENT_CHANNELS.recordingControllerArm, (payload) => {
+      const action = (payload as Partial<RecordingControllerArmEvent> | null)?.action;
+      if (action !== "restart" && action !== "cancel") return;
+      // A nudge that lost a race with the take ending, or with an
+      // action already in flight, must not resurrect a confirm for a
+      // control that is no longer live.
+      const gate = armGateRef.current;
+      if (gate.phase !== "recording" || gate.busy || !gate.offers[action]) return;
+      setArmedAction(action);
+    });
+    return () => off?.();
+  }, []);
+
   const runAction = async (action: "stop" | "restart" | "cancel"): Promise<void> => {
     if (busyAction !== null) return;
     if ((action === "restart" || action === "cancel") && armedAction !== action) {
@@ -182,12 +231,6 @@ export function RecordingController(): ReactElement {
       ref={containerRef}
       className="rc-root"
       data-precapture={isPreCapture}
-      onKeyDown={(event) => {
-        if (event.key === "Escape" && armedAction !== null) {
-          event.stopPropagation();
-          setArmedAction(null);
-        }
-      }}
     >
       <div
         className="rc"

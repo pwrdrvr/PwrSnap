@@ -19,7 +19,12 @@ import {
   screen,
   type IpcMainEvent
 } from "electron";
-import { recordingFailureSummary, type RecordingState } from "@pwrsnap/shared";
+import {
+  EVENT_CHANNELS,
+  recordingFailureSummary,
+  type RecordingControllerArmEvent,
+  type RecordingState
+} from "@pwrsnap/shared";
 import {
   appWindowsOverlappingRect,
   displayLocalRectToGlobal
@@ -57,6 +62,15 @@ let resizeChannelWired = false;
 let closeCancelPending = false;
 let normalWindowRecreateTimer: ReturnType<typeof setTimeout> | null = null;
 let lastRecordingDisplayId: number | null = null;
+/**
+ * Has the current HUD renderer finished loading, i.e. has it had the
+ * chance to register its `EVENT_CHANNELS.recordingControllerArm`
+ * listener? A `webContents.send` before that is dropped on the floor,
+ * and nothing retries it — the same trap `recording-frame.ts` keeps
+ * `rendererReady` for. Reset whenever a window is created, because a
+ * crash-recreate (or a dev HMR reload) starts a fresh renderer.
+ */
+let normalRendererReady = false;
 
 function clearFailedWindowRecreateTimer(): void {
   if (failedWindowRecreateTimer === null) return;
@@ -192,6 +206,7 @@ let normalRecreateSessionId: string | null = null;
 function ensureWindow(): BrowserWindow {
   if (window !== null && !window.isDestroyed()) return window;
   window = createRecordingControllerWindow();
+  normalRendererReady = false;
   const createdWindow = window;
   window.on("close", (event) => {
     if (disposing || replacingFailedWindow) return;
@@ -221,6 +236,13 @@ function ensureWindow(): BrowserWindow {
   });
   window.on("closed", () => {
     if (window === createdWindow) window = null;
+    if (window === null) normalRendererReady = false;
+  });
+  // `on`, not `once`: a crash-and-reload or a dev HMR reload fires this
+  // again on the same window, and the flag has to come back with it.
+  window.webContents.on("did-finish-load", () => {
+    if (createdWindow.isDestroyed()) return;
+    normalRendererReady = true;
   });
   window.webContents.on("render-process-gone", () => {
     const state = getRecordingState();
@@ -592,6 +614,72 @@ hotkeyRecorderSuspension.registerParticipant({
 });
 
 /**
+ * The HUD window that can host a destructive-action confirmation right
+ * now, or null if there is none.
+ *
+ * Three conditions, and the third is the easy one to forget:
+ *   1. a window that exists and is not destroyed;
+ *   2. the `recording` phase — a take that is already finalizing has
+ *      nothing left to discard;
+ *   3. a renderer that has finished loading, so its arm listener is
+ *      registered. `webContents.send` to a booting renderer is dropped
+ *      silently and nothing retries it, which would turn the tray item
+ *      into a no-op that logs nothing. `recording-frame.ts` keeps
+ *      `rendererReady` for the same reason.
+ *
+ * Condition 3 is reachable: the HUD renderer gets up to three
+ * crash-recreates per session, and each one spends ~100ms plus load
+ * time with a live window and a renderer that cannot hear us yet.
+ */
+function discardConfirmationHost(): BrowserWindow | null {
+  if (window === null || window.isDestroyed()) return null;
+  if (!normalRendererReady || window.webContents.isDestroyed()) return null;
+  return getRecordingState().phase === "recording" ? window : null;
+}
+
+/**
+ * Can a destructive-action confirmation run right now?
+ *
+ * The tray asks before offering "Restart Recording…" / "Cancel
+ * Recording…", because the HUD is the only surface allowed to run that
+ * confirm (see `RecordingControllerArmEvent`). When the answer is no
+ * the tray simply does not offer the destructive items — "Stop and
+ * Save" stays available, so a user with a dead HUD can always end the
+ * take and keep the clip. Losing a take needs a confirmation surface;
+ * keeping one does not.
+ */
+export function canRecordingControllerConfirmDiscard(): boolean {
+  return discardConfirmationHost() !== null;
+}
+
+/**
+ * Ask the HUD to arm its own two-press confirm for `action`, exactly
+ * as if the user had clicked that button on the HUD. Returns false if
+ * there was no HUD able to hear the request, in which case nothing was
+ * armed and nothing was dispatched — the caller reports it, so this
+ * does not log.
+ *
+ * Deliberately one-way: the HUD owns the armed state and its
+ * auto-disarm timeout, and the HUD is what ultimately dispatches
+ * `recording:restart` / `recording:cancel`. Main holds no parallel
+ * armed state that could disagree with what the user can see.
+ */
+export function requestRecordingDiscardConfirmation(
+  action: RecordingControllerArmEvent["action"]
+): boolean {
+  const target = discardConfirmationHost();
+  if (target === null) return false;
+  target.webContents.send(EVENT_CHANNELS.recordingControllerArm, {
+    action
+  } satisfies RecordingControllerArmEvent);
+  // The HUD is alwaysOnTop + floating, but a take can run for minutes
+  // with other floating windows arriving; make sure the surface the
+  // user was just sent to is actually the one on top.
+  target.moveTop();
+  return true;
+}
+
+/**
  * React to a recording-state transition. Idempotent — called from
  * the broadcast pipeline on every transition, branches on phase.
  */
@@ -655,11 +743,26 @@ export function applyRecordingStateToController(state: RecordingState): void {
       lastRecordingDisplayId = state.displayId;
       disarmLeadInEscapeShortcut();
       // Recording-phase pill is compact; tuck it top-center of the
-      // recorded display. PID exclusion keeps it out of the captured
+      // recorded display. `setContentProtection(true)` (set once in
+      // createRecordingControllerWindow) keeps it out of the captured
       // pixels. Width fits the three-button row (Stop / Restart /
       // Cancel); height accommodates the "not visible in recording"
       // reassurance caption underneath.
-      win.setFocusable(true);
+      //
+      // ⚠️  NEVER setFocusable(true) here. The window is constructed
+      // `focusable: false` and shown with showInactive() precisely so
+      // that clicking Stop / Restart / Cancel cannot activate PwrSnap
+      // mid-take. Only the HUD window is content-protected — the
+      // CONSEQUENCES of activating are not. On macOS the menu bar
+      // switches to PwrSnap, the recorded app's title bar goes
+      // inactive and its text caret disappears, and every one of those
+      // is inside the recorded rect and therefore in the file: the
+      // first frames after a Restart arm-click become a recording of
+      // the user's app losing focus. A focusable HUD shipped briefly
+      // in #496 to let a renderer keydown handler see Escape; the
+      // lead-in's globalShortcut bridge above exists because that
+      // trade is not available to this window.
+      win.setFocusable(false);
       win.setIgnoreMouseEvents(false);
       const [width, height] = normalControllerContentSize(win, 420, 80, state.displayId);
       win.setMinimumSize(0, 0);

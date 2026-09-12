@@ -1,4 +1,7 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { MenuItemConstructorOptions } from "electron";
 import {
   DEFAULT_HOTKEYS,
   type HotkeyRegistrationStatusSnapshot,
@@ -9,7 +12,10 @@ import {
 const mocks = vi.hoisted(() => ({
   appQuit: vi.fn(),
   isRecordingActive: vi.fn(() => false),
-  recordingState: { phase: "idle" } as RecordingState
+  recordingState: { phase: "idle" } as RecordingState,
+  canConfirmDiscard: vi.fn(() => true),
+  requestDiscardConfirmation: vi.fn(() => true),
+  dispatch: vi.fn(async () => ({ ok: true, value: undefined }))
 }));
 
 vi.mock("electron", () => ({
@@ -57,6 +63,15 @@ vi.mock("../recording/recording-state", () => ({
   subscribeToRecordingState: vi.fn()
 }));
 
+vi.mock("../recording/recording-controller", () => ({
+  canRecordingControllerConfirmDiscard: mocks.canConfirmDiscard,
+  requestRecordingDiscardConfirmation: mocks.requestDiscardConfirmation
+}));
+
+vi.mock("../command-bus", () => ({
+  bus: { dispatch: mocks.dispatch }
+}));
+
 import {
   buildTrayContextMenuTemplate,
   disposeTray,
@@ -100,6 +115,11 @@ describe("tray context menu", () => {
     mocks.isRecordingActive.mockReset();
     mocks.isRecordingActive.mockReturnValue(false);
     mocks.recordingState = { phase: "idle" };
+    mocks.canConfirmDiscard.mockReset();
+    mocks.canConfirmDiscard.mockReturnValue(true);
+    mocks.requestDiscardConfirmation.mockReset();
+    mocks.requestDiscardConfirmation.mockReturnValue(true);
+    mocks.dispatch.mockClear();
   });
 
   afterEach(() => {
@@ -354,8 +374,10 @@ describe("tray context menu", () => {
     const template = buildTrayContextMenuTemplate();
 
     expect(template[0]?.label).toMatch(/^● Recording 01:0[45] — Stop and Save$/);
-    expect(template[1]).toMatchObject({ label: "Restart Recording" });
-    expect(template[2]).toMatchObject({ label: "Cancel Recording" });
+    // Ellipsis: both discard the take, so both ask first — on the HUD,
+    // which is the only confirmation surface the recorder cannot see.
+    expect(template[1]).toMatchObject({ label: "Restart Recording…" });
+    expect(template[2]).toMatchObject({ label: "Cancel Recording…" });
   });
 
   test.each([
@@ -386,5 +408,99 @@ describe("tray context menu", () => {
     expect(template.find((item) => item.label === "Record Video…")).toMatchObject({
       enabled: false
     });
+  });
+
+  test("a destructive recording item arms the HUD confirm instead of acting", () => {
+    mocks.recordingState = {
+      phase: "recording",
+      sessionId: "rec-1",
+      startedAt: new Date(Date.now() - 5_000).toISOString(),
+      rect: { x: 0, y: 0, w: 800, h: 600 },
+      displayId: 1,
+      capabilities: { systemAudio: false, microphone: false }
+    };
+    mocks.isRecordingActive.mockReturnValue(true);
+    const template = buildTrayContextMenuTemplate();
+
+    template.find((item) => item.label === "Restart Recording…")?.click?.(
+      ...([] as unknown as Parameters<NonNullable<MenuItemConstructorOptions["click"]>>)
+    );
+
+    expect(mocks.requestDiscardConfirmation).toHaveBeenCalledWith("restart");
+    // The take is not discarded until the user presses Confirm on the
+    // HUD — the tray only routes them there.
+    expect(mocks.dispatch).not.toHaveBeenCalled();
+  });
+
+  test("Stop and Save acts immediately — only discarding needs a confirmation", () => {
+    mocks.recordingState = {
+      phase: "recording",
+      sessionId: "rec-1",
+      startedAt: new Date(Date.now() - 5_000).toISOString(),
+      rect: { x: 0, y: 0, w: 800, h: 600 },
+      displayId: 1,
+      capabilities: { systemAudio: false, microphone: false }
+    };
+    mocks.isRecordingActive.mockReturnValue(true);
+    const template = buildTrayContextMenuTemplate();
+
+    template[0]?.click?.(
+      ...([] as unknown as Parameters<NonNullable<MenuItemConstructorOptions["click"]>>)
+    );
+
+    expect(mocks.dispatch).toHaveBeenCalledWith("recording:stop", {}, { principal: "ipc" });
+    expect(mocks.requestDiscardConfirmation).not.toHaveBeenCalled();
+  });
+
+  test("with no HUD to confirm on, the tray offers Stop and Save but nothing destructive", () => {
+    mocks.recordingState = {
+      phase: "recording",
+      sessionId: "rec-1",
+      startedAt: new Date(Date.now() - 5_000).toISOString(),
+      rect: { x: 0, y: 0, w: 800, h: 600 },
+      displayId: 1,
+      capabilities: { systemAudio: false, microphone: false }
+    };
+    mocks.isRecordingActive.mockReturnValue(true);
+    // The HUD renderer crashed past its retry budget. Discarding a take
+    // is unrecoverable and has nowhere left to ask; keeping one is
+    // always safe, so Stop must survive.
+    mocks.canConfirmDiscard.mockReturnValue(false);
+
+    const template = buildTrayContextMenuTemplate();
+
+    expect(template[0]?.label).toMatch(/Stop and Save$/);
+    expect(template.some((item) => item.label?.startsWith("Restart Recording"))).toBe(false);
+    expect(template.some((item) => item.label?.startsWith("Cancel Recording"))).toBe(false);
+  });
+});
+
+// A confirmation raised from the main process is recorded: it has no
+// `setContentProtection`, and it is centred on the display, so it is
+// inside almost any recorded rect. On Windows FFmpeg `gdigrab` reads
+// the desktop DC and captures it no matter where it sits. The tray
+// therefore owns no confirmation UI of its own during a take.
+//
+// Same shape of guard as `tray-instant-hide.test.ts` — the property is
+// "this source never calls that", which no render test can observe.
+describe("tray.ts source — no unprotected confirmation surface during a take", () => {
+  const source = readFileSync(fileURLToPath(new URL("../tray.ts", import.meta.url)), "utf8");
+  // Prose describes the call this file forbids; it must not be mistaken
+  // for the call itself.
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
+  test("the comment stripper still leaves the real tray source to search", () => {
+    expect(code).toMatch(/export function buildTrayContextMenuTemplate/);
+    expect(code).toMatch(/bus\.dispatch\("recording:stop"/);
+  });
+
+  test("the tray raises no native dialog", () => {
+    expect(code).not.toMatch(/dialog\s*\.\s*showMessageBox/);
+  });
+
+  test("the tray does not import Electron's dialog module at all", () => {
+    const electronImport = /import\s*\{([\s\S]*?)\}\s*from\s*"electron";/.exec(source);
+    expect(electronImport).not.toBeNull();
+    expect(electronImport![1]).not.toMatch(/\bdialog\b/);
   });
 });

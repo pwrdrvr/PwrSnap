@@ -77,45 +77,62 @@
    by the renderer) so they never meet in the middle of a small region. */
 .psrf__corner {
   position: absolute;
-  width: var(--psrf-corner, 17px);
-  height: var(--psrf-corner, 17px);
+  /* No fallback on purpose: the renderer is the single authority for
+     this size (`cornerSizeFor` in RecordingFrame.tsx). A second value
+     here would be a constant that can silently drift from it. */
+  width: var(--psrf-corner);
+  height: var(--psrf-corner);
+  --psrf-corner-weight: 2px;
   border: 0 solid var(--accent-bright);
 }
 
+/* ⚠️  Under `outset` the offset must be at least as far out as
+   `--psrf-corner-weight`. A border paints INWARD from the element's own
+   edge (`box-sizing: border-box`, app.css), so a -1px offset against a
+   2px border lights the pixel at rect-relative 0 — one tangerine column
+   INSIDE the capture, at all four corners, on the two platforms that
+   cannot hide this window from their recorder. Pinned by
+   recording-frame-css-boundary.test.ts. */
 .psrf[data-mode="straddle"] .psrf__corner {
   --psrf-corner-offset: 0px;
 }
 
 .psrf[data-mode="outset"] .psrf__corner {
+  --psrf-corner-offset: -2px;
+}
+
+/* The arming edge grows 1px under straddle (below); the ticks move with
+   it so the dashed line and the corners share an outer edge. */
+.psrf[data-phase="arming"][data-mode="straddle"] .psrf__corner {
   --psrf-corner-offset: -1px;
 }
 
 .psrf__corner[data-corner="tl"] {
   left: var(--psrf-corner-offset);
   top: var(--psrf-corner-offset);
-  border-left-width: 2px;
-  border-top-width: 2px;
+  border-left-width: var(--psrf-corner-weight);
+  border-top-width: var(--psrf-corner-weight);
 }
 
 .psrf__corner[data-corner="tr"] {
   right: var(--psrf-corner-offset);
   top: var(--psrf-corner-offset);
-  border-right-width: 2px;
-  border-top-width: 2px;
+  border-right-width: var(--psrf-corner-weight);
+  border-top-width: var(--psrf-corner-weight);
 }
 
 .psrf__corner[data-corner="bl"] {
   left: var(--psrf-corner-offset);
   bottom: var(--psrf-corner-offset);
-  border-left-width: 2px;
-  border-bottom-width: 2px;
+  border-left-width: var(--psrf-corner-weight);
+  border-bottom-width: var(--psrf-corner-weight);
 }
 
 .psrf__corner[data-corner="br"] {
   right: var(--psrf-corner-offset);
   bottom: var(--psrf-corner-offset);
-  border-right-width: 2px;
-  border-bottom-width: 2px;
+  border-right-width: var(--psrf-corner-weight);
+  border-bottom-width: var(--psrf-corner-weight);
 }
 
 /* ---------- phases ----------

@@ -45,6 +45,23 @@ function boxShadowsIn(body: string): string[] {
   return [...body.matchAll(/box-shadow\s*:([^;]*)/g)].map((m) => m[1] ?? "");
 }
 
+/** One property's value out of a rule body, or `undefined`. */
+function declaration(
+  rule: { selector: string; body: string } | undefined,
+  property: string
+): string | undefined {
+  if (rule === undefined) return undefined;
+  const match = new RegExp(`${property}\\s*:([^;]*)`).exec(rule.body);
+  return match?.[1]?.trim();
+}
+
+/** A `px` length as a number. Throws rather than silently reading NaN. */
+function px(value: string | undefined): number {
+  const parsed = Number(String(value).replace(/px\s*$/, ""));
+  if (!Number.isFinite(parsed)) throw new Error(`not a px length: ${String(value)}`);
+  return parsed;
+}
+
 describe("outset posture never paints inside the recorded rect", () => {
   test("the stylesheet was actually found", () => {
     // Guards the rest of this file: a bad path would make every scan
@@ -109,11 +126,39 @@ describe("outset posture never paints inside the recorded rect", () => {
     expect(hairline?.body).toMatch(/border\s*:\s*1px solid/);
   });
 
-  test("corner ticks are offset outward under outset", () => {
-    const corner = rules().find(
-      (r) => r.selector === '.psrf[data-mode="outset"] .psrf__corner'
+  test("corner ticks clear the rect by at least their own border width", () => {
+    // The trap this test exists for: a border is painted INWARD from the
+    // element's own edge (`box-sizing: border-box`, app.css), so an
+    // offset SMALLER than the border width leaves the difference lit
+    // inside the rect. -1px against a 2px border put one tangerine
+    // column at rect-relative 0 on all four corners — outside macOS,
+    // straight into the gdigrab capture on Windows and Linux.
+    const weight = declaration(
+      rules().find((r) => r.selector === ".psrf__corner"),
+      "--psrf-corner-weight"
     );
-    expect(corner?.body).toMatch(/--psrf-corner-offset\s*:\s*-1px/);
+    expect(weight, "corner border width is declared as a variable").not.toBeUndefined();
+
+    const offset = declaration(
+      rules().find((r) => r.selector === '.psrf[data-mode="outset"] .psrf__corner'),
+      "--psrf-corner-offset"
+    );
+    expect(offset, "outset corners declare an offset").not.toBeUndefined();
+
+    // Outward is negative, so the offset must be at most -weight.
+    expect(px(offset)).toBeLessThanOrEqual(-px(weight));
+  });
+
+  test("every corner border width comes from that one variable", () => {
+    // Otherwise the check above is measuring a number nothing paints.
+    for (const rule of rules()) {
+      if (!rule.selector.includes(".psrf__corner[data-corner=")) continue;
+      for (const [, value] of rule.body.matchAll(/border-[a-z]+-width\s*:([^;]*)/g)) {
+        expect(value, `hardcoded border width in ${rule.selector}`).toContain(
+          "var(--psrf-corner-weight)"
+        );
+      }
+    }
   });
 });
 

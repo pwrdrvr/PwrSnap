@@ -1123,8 +1123,18 @@ which scans the shipped stylesheet — jsdom does not resolve
 | Windows 10 2004+ | `outset` — nothing inside, ever | The recorder is FFmpeg `gdigrab` reading the desktop DC. Same reason `anchorAwayFromRecordedRect` exists for the HUD. |
 | Linux | `outset` | No content-protection concept at all. |
 
-Four things that bite:
+Five things that bite:
 
+- **A border paints INWARD from the element's own edge**
+  (`box-sizing: border-box`), so under `outset` an element's offset must
+  be at least its border width or the difference lands inside the rect.
+  This shipped in review: the corner ticks sat at `-1px` with a 2px
+  border, lighting the pixel column at rect-relative 0 on all four
+  corners — one tangerine column per corner, baked into every gdigrab
+  frame. The hairline had it right at `-1px` / 1px, which is exactly why
+  the corners read as correct. The widths are now
+  `var(--psrf-corner-weight)` and the boundary test compares the two
+  numbers rather than asserting a literal.
 - **`outset` is the BASE CSS and macOS adds to it.** Writing it the
   other way round — a safe `[data-mode="outset"]` override on an unsafe
   base — means a dropped selector fails into the user's file instead of

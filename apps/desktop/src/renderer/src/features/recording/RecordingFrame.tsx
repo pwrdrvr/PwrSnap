@@ -11,7 +11,8 @@
 import { useEffect, useState, type CSSProperties, type ReactElement } from "react";
 import { EVENT_CHANNELS, type RecordingFrameLayout } from "@pwrsnap/shared";
 
-/** Corner ticks at their full size, matching the CSS default. */
+/** Corner ticks at their full size. This file is the only authority —
+ *  the stylesheet reads `--psrf-corner` with no fallback. */
 const CORNER_MAX_PX = 17;
 const CORNER_MIN_PX = 8;
 

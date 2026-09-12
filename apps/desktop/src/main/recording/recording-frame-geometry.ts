@@ -9,7 +9,7 @@
 // wants). See the canonical note at the head of `capture/rect-overlap.ts`
 // before touching the arithmetic here.
 
-import type { RecordingFrameMode } from "@pwrsnap/shared";
+import type { RecordingFrameMode, RecordingFramePhase, RecordingState } from "@pwrsnap/shared";
 
 /**
  * Outward extent of the glow in logical px — how far past the rect the
@@ -120,10 +120,17 @@ export function planRecordingFrame(input: {
   };
 }
 
-/** Collapse the recording lifecycle onto the three states the frame has. */
+/**
+ * Collapse the recording lifecycle onto the three states the frame has.
+ *
+ * Exhaustive over `RecordingState["phase"]` with no `default` arm, the
+ * same shape as `isRecordingActive`: a phase added later must be a
+ * compile error here, not a silent "draw nothing" on the one surface
+ * whose entire job is to say that pixels are being written.
+ */
 export function recordingFramePhaseFor(
-  phase: string
-): "arming" | "recording" | "stopping" | null {
+  phase: RecordingState["phase"]
+): RecordingFramePhase | null {
   switch (phase) {
     case "preflight":
     case "countdown":
@@ -134,7 +141,12 @@ export function recordingFramePhaseFor(
     case "stopping":
     case "processing":
       return "stopping";
-    default:
+    case "idle":
+    case "ready":
+    case "failed":
+      // Terminal. `failed` included on purpose: the HUD becomes an
+      // actionable failure card, and a frame still hugging a rect
+      // nothing is being written to would be a lie.
       return null;
   }
 }

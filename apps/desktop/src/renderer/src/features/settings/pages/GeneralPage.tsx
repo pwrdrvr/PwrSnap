@@ -16,9 +16,23 @@
 //
 // The two CAPTURE cards own the `settings.recording.*` defaults for new
 // captures: cursor baking (images + video) and audio sources (video).
-// Audio is the one pair with a hard dependency — `recording:start`
-// refuses to run when a requested source isn't granted — so opting in
-// surfaces a jump to System Permissions.
+//
+// The audio pair is a SEED, not an arming. `recording.includeMicrophone`
+// / `.includeSystemAudio` are read once per capture to seed the source
+// chips in the recording selector; the chip decides what the take
+// actually records, and it deliberately does not write back (a take you
+// recorded silent must not disarm the microphone for every future take).
+// This card is the only place the seed itself can be changed, which is
+// why the pair needs a surface at all.
+//
+// That also means this page is NOT where a microphone grant has to be
+// obtained. The selector's chip renders an `ask` state with an inline
+// Allow that fires the OS prompt at capture time, and a `denied` state
+// whose Settings action opens System Permissions and re-probes on
+// focus; `record-from-selection.ts` puts the same Open System
+// Permissions button on the preflight failure dialog. So the toggle
+// saves the preference unconditionally and the blocked row below is a
+// shortcut, not a required errand.
 //
 // The EDITOR card hosts `editor.matchingText.enabled`. There is no
 // Settings → Editor page (see settings-categories.ts), and the schema
@@ -82,15 +96,15 @@ export function GeneralPage(): ReactElement {
   // bridge — as macOS and show them Mac-specific copy.
   const audioSupported = platform === "darwin";
 
-  // Microphone opt-in has to REQUEST the grant, not just save a flag.
-  // macOS reports `not-determined` until something calls
-  // askForMediaAccess, and nothing else in the app ever does for the mic
-  // — while `recording:start` REJECTS an ungranted microphone rather
-  // than degrading to video-only (recording-handlers.ts preflight). So
-  // persisting `true` on an un-granted mic bricks every subsequent
-  // recording, with the failure surfacing only as a best-effort
-  // notification. index.ts's own routing comment asks for exactly this:
-  // "When mic features ship, request them in-context, not here."
+  // Opting in here also ASKS, because asking from the switch the user
+  // just flipped is the cheapest possible moment: macOS reports
+  // `not-determined` until something calls askForMediaAccess, and the
+  // prompt is one click. But the answer does not gate the write — the
+  // preference is a seed for the selector's chip, and the chip can
+  // obtain the grant itself at capture time. Refusing to persist on a
+  // denial would leave the user unable to express the preference at all,
+  // and would mean this page had to own a grant recovery flow that three
+  // other surfaces already own better.
   //
   // Off darwin `permissions:request` is a no-op that returns "granted",
   // so this costs nothing there.
@@ -108,14 +122,15 @@ export function GeneralPage(): ReactElement {
       void patch({ recording: { includeMicrophone: true } });
       return;
     }
+    // Persist first so the seed lands even if the user walks away from
+    // the OS prompt; the grant probe only decides whether to offer the
+    // shortcut row below.
+    void patch({ recording: { includeMicrophone: true } });
     void (async () => {
       const result = await dispatch("permissions:request", {
         permission: "microphone"
       });
-      const granted = result.ok && result.value.status === "granted";
-      setMicDenied(!granted);
-      // Only persist the opt-in once the OS has actually said yes.
-      if (granted) await patch({ recording: { includeMicrophone: true } });
+      setMicDenied(!(result.ok && result.value.status === "granted"));
     })();
   };
 
@@ -258,7 +273,7 @@ export function GeneralPage(): ReactElement {
           label="Include system audio"
           sub={
             audioSupported
-              ? "Records what your Mac is playing alongside the screen. Shares the Screen Recording grant you already gave PwrSnap — there's no separate permission to enable."
+              ? "Arms system audio on new recordings — what your Mac is playing, alongside the screen. Rides the Screen Recording grant you already gave PwrSnap, so there is no second permission to enable. Press A in the recording selector to override per-recording."
               : AUDIO_UNSUPPORTED_SUB
           }
           tag="video"
@@ -275,7 +290,7 @@ export function GeneralPage(): ReactElement {
           label="Include your microphone"
           sub={
             audioSupported
-              ? "Records your voice alongside the screen — narration, walkthroughs. macOS asks for permission the first time you switch this on."
+              ? "Arms your microphone on new recordings — narration, walkthroughs. macOS asks for access the first time you switch this on; if you miss it, the recording selector asks again when you start a recording. Press M there to override per-recording."
               : AUDIO_UNSUPPORTED_SUB
           }
           tag="video"
@@ -286,16 +301,14 @@ export function GeneralPage(): ReactElement {
           />
         </Row>
         {micDenied ? (
-          // The OS said no (or the user dismissed the prompt). We did NOT
-          // persist the toggle — `recording:start` REJECTS an ungranted
-          // microphone rather than degrading to video-only
-          // (recording-handlers.ts preflight), so saving it here would
-          // brick every subsequent recording with a failure that only
-          // surfaces as a best-effort notification.
+          // The OS said no, or the user dismissed the prompt. The
+          // preference IS saved — this row is a shortcut for someone who
+          // would rather settle the grant now than be asked again by the
+          // selector's microphone chip at capture time.
           <Row
-            label="Microphone is blocked"
-            sub="macOS won't prompt twice. Turn Microphone on for PwrSnap in System Settings → Privacy & Security, then switch this back on."
-            tag="action required"
+            label="macOS hasn't granted microphone access"
+            sub="macOS won't prompt from here twice, so the recording selector will ask again the next time you start a recording. To settle it now, turn Microphone on for PwrSnap in System Settings → Privacy & Security."
+            tag="optional"
           >
             <button
               className="pss__top-btn"

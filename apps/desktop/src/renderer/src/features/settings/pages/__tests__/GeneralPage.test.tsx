@@ -202,12 +202,10 @@ describe("GeneralPage — recording audio", () => {
     expect(findSwitchIn("Include your microphone").getAttribute("aria-checked")).toBe("true");
   });
 
-  // `recording:start` REJECTS an ungranted microphone rather than
-  // degrading to video-only, and macOS never prompts for the mic on its
-  // own — so enabling the toggle has to drive the prompt, and must NOT
-  // persist unless the OS actually says yes. Otherwise every subsequent
-  // recording fails with a notification-only error.
-  test("enabling the microphone requests the grant before persisting", async () => {
+  // macOS never prompts for the mic on its own, so flipping the switch
+  // is the cheapest moment to ask. The ask is a courtesy, not a gate —
+  // see the denial test below.
+  test("enabling the microphone saves the seed and asks for the grant", async () => {
     const api = await renderGeneral(baseSettings, healthyStatus);
     const toggle = findSwitchIn("Include your microphone");
     await act(async () => {
@@ -219,10 +217,15 @@ describe("GeneralPage — recording audio", () => {
     expect(request).toBeDefined();
     expect(request?.req).toEqual({ permission: "microphone" });
     expect(patchMock).toHaveBeenCalledWith({ recording: { includeMicrophone: true } });
-    expect(container?.textContent).not.toContain("Microphone is blocked");
+    expect(container?.textContent).not.toContain("macOS hasn't granted microphone access");
   });
 
-  test("a denied microphone is not persisted and surfaces a recovery row", async () => {
+  // The seed is what this page owns. A denied grant is settled by the
+  // recording selector's microphone chip at capture time (inline Allow /
+  // Settings) or by the preflight dialog's own Open System Permissions
+  // button — so refusing to write the preference here would only take
+  // the preference away, not protect anything.
+  test("a denied microphone still persists and offers an optional shortcut", async () => {
     const api = await renderGeneral(baseSettings, healthyStatus, "darwin", {
       microphoneStatus: "denied"
     });
@@ -233,13 +236,13 @@ describe("GeneralPage — recording audio", () => {
     });
 
     expect(api.calls.some((c) => c.name === "permissions:request")).toBe(true);
-    // The critical half: we must NOT write `true` for a mic the OS
-    // refused, or recording:start hard-fails on every later take.
-    expect(patchMock).not.toHaveBeenCalledWith({ recording: { includeMicrophone: true } });
-    expect(container?.textContent).toContain("Microphone is blocked");
+    expect(patchMock).toHaveBeenCalledWith({ recording: { includeMicrophone: true } });
+    expect(container?.textContent).toContain("macOS hasn't granted microphone access");
+    // Not an errand: the row must not read as a blocking prerequisite.
+    expect(container?.textContent).not.toContain("action required");
   });
 
-  test("turning the microphone back off clears the blocked row and persists", async () => {
+  test("turning the microphone back off clears the shortcut row and persists", async () => {
     await renderGeneral(
       {
         ...baseSettings,
@@ -252,7 +255,7 @@ describe("GeneralPage — recording audio", () => {
       toggle.click();
     });
     expect(patchMock).toHaveBeenCalledWith({ recording: { includeMicrophone: false } });
-    expect(container?.textContent).not.toContain("Microphone is blocked");
+    expect(container?.textContent).not.toContain("macOS hasn't granted microphone access");
   });
 
   test("system audio does not request a grant — it shares Screen Recording", async () => {
@@ -265,7 +268,7 @@ describe("GeneralPage — recording audio", () => {
       await Promise.resolve();
     });
     expect(api.calls.some((c) => c.name === "permissions:request")).toBe(false);
-    expect(container?.textContent).toContain("Shares the Screen Recording grant");
+    expect(container?.textContent).toContain("Rides the Screen Recording grant");
     expect(container?.textContent).not.toContain("recording refuses to start");
   });
 

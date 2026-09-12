@@ -110,17 +110,88 @@ cookies on write, and turning it off afterwards leaves that store
 unreadable. That warning is why this change was safe to make *now*, with
 the cookie store measured empty, and would not be free later.
 
-## Adjacent, deliberately not changed
+## The two follow-ups, also done here
 
-- `DesktopSecretStore.clear()` writes an encrypted empty `{}` rather than
-  deleting the file, so once any secret has ever been set, every
-  `settings:secretStatus` read decrypts. Names and timestamps are not
-  secret, so the status map could live outside the ciphertext and leave
-  `getValue()` as the only keychain consumer. Not done here; it is a
-  behavior change to the secrets file format.
-- Dev Electron and the release app share one keychain item because
-  `app.setName(APP_NAME)` runs before anything else in bootstrap. Giving
-  dev builds a distinct name (or `--use-mock-keychain` under E2E) would
-  keep scratch-worktree code hashes off the installed app's access list,
-  which is how the dev machine's item ended up in the state described
-  above.
+Turning the fuse off removed the prompt at *launch*. Two smaller paths could
+still reach the keychain sooner than the user would expect, and both are fixed
+in the same change.
+
+### Status reads no longer decrypt
+
+`pwrsnap-secrets.bin` used to be one `safeStorage` ciphertext holding
+`{ name: { value, lastSetAt } }`. Because the names and timestamps lived
+*inside* the ciphertext, `getStatus` / `getAllStatus` had to decrypt — and
+`broadcastSettingsChanged` calls `getAllStatus()` after **every** settings
+write. So toggling any unrelated preference, or just opening Settings, could
+be the first `safeStorage` call in the process and therefore the thing that
+raised the password dialog. `clear()` made it permanent: it wrote an encrypted
+empty `{}` rather than deleting the file, so once any secret had ever been
+set, every status read decrypted forever.
+
+The file is now a v2 envelope with a plaintext index and an encrypted payload:
+
+```jsonc
+{ "version": 2,
+  "index": { "openaiApiKey": { "lastSetAt": "2026-..." } },
+  "ciphertext": "<base64 of encryptString({ name: value })>" }
+```
+
+`getValue()` is now the only accessor that decrypts, and an emptied store
+writes `"ciphertext": null` so clearing the last secret encrypts nothing.
+Writing the first secret, and overwriting the only one, also skip the decrypt.
+
+Nothing in the index is newly exposed. `SecretStatus` (the name plus
+`lastSetAt`) is already broadcast to every BrowserWindow on every settings
+change, and the `localAgentToken:<clientId>` ids already sit in cleartext in
+`pwrsnap-settings.json` as `localAgents.grants[].id`. Values stay encrypted,
+and the existing test asserting the plaintext never appears in the file still
+passes.
+
+v1 files are still read, and are rewritten as v2 on first access. That one
+read has to decrypt — the names are inside the ciphertext — so an upgrading
+install pays the old cost exactly once instead of forever. A v1 file that
+cannot be decrypted is deliberately left alone rather than rewritten, so a
+lost or denied key never turns an unreadable store into an authoritative
+empty one.
+
+One trap worth naming: the v2 payload carries values only, so a rewrite has
+to stitch each surviving entry's `lastSetAt` back from the index. Miss that
+and clearing one of several secrets silently blanks every other timestamp.
+
+### E2E runs use Chromium's mock keychain
+
+An E2E launch drives an unsigned dev Electron whose cdhash changes on every
+rebuild. Any spec that exercised `safeStorage` made *that* binary open (or
+create) the shared "PwrSnap Safe Storage" item, which is precisely how a
+scratch-worktree binary ends up on the access list of the item the installed
+app uses. It could also block mid-spec on a password dialog nobody is there to
+answer.
+
+`--use-mock-keychain` is Chromium's own answer:
+`OSCryptImpl::GetKeychain()` substitutes an in-memory `FakeKeychainV2`, so
+`safeStorage` still reports available and still round-trips within the
+process. Verified present on the exact Chromium revision Electron 41 ships
+(146.0.7680.216). Applied in
+[darwin-keychain-startup-policy.ts](../../apps/desktop/src/main/darwin-keychain-startup-policy.ts),
+gated on `PWRSNAP_E2E`, alongside the existing userData / documents / home
+rebasing.
+
+**It is deliberately not applied to `pnpm dev`.** `app.setName("PwrSnap")`
+runs unconditionally, so a dev run shares `userData` — and therefore the same
+`pwrsnap-secrets.bin` — with the installed app. A dev process on a mock
+keychain would fail to read the user's real secrets and would re-encrypt them
+under a key that dies with the process. Separating dev properly means giving
+it its own `userData`, which moves real data and is a bigger decision than
+this change.
+
+## Adjacent, still not changed
+
+- A decrypt failure still reads as an empty store rather than throwing, so a
+  write afterwards persists only what it knows and drops entries it could not
+  recover. That is the pre-existing behavior, kept deliberately: the
+  alternative (refuse every write) locks a user out of re-entering a key when
+  the old one is genuinely unrecoverable. The v1 migration path is the one
+  place that now refuses, because there a rewrite would *destroy* a file that
+  a later launch might read fine.
+- Dev Electron still shares a keychain item with the release app, for the
+  userData reason above.

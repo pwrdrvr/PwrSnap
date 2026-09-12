@@ -1175,6 +1175,32 @@ Rules:
   `kind: "settings", code: "secret_unavailable"`. **Never fall back to
   plaintext.** A unit test grep-asserts the plaintext never appears in
   `pwrsnap-secrets.bin`.
+- **`getValue()` is the ONLY read allowed to decrypt.** On macOS the first
+  `safeStorage` call in a process is what can raise the login-keychain
+  password dialog, so a status read that decrypts turns "user toggled a
+  preference" into "macOS asked for your password" — `broadcastSettingsChanged`
+  calls `getAllStatus()` after every settings write. `pwrsnap-secrets.bin` is
+  therefore a v2 envelope: a PLAINTEXT `index` of `{ name: { lastSetAt } }`
+  next to one encrypted `ciphertext` of `{ name: value }`. Status reads touch
+  only the index; an emptied store writes `"ciphertext": null` so clearing the
+  last secret encrypts nothing. Do not move status metadata back inside the
+  ciphertext, and do not add a new caller of `getValue()` on a path that runs
+  without the user having asked for a secret-backed feature. Nothing in the
+  index is newly exposed — `SecretStatus` is already broadcast to every
+  window, and the `localAgentToken:<clientId>` ids are already cleartext in
+  `pwrsnap-settings.json` as `localAgents.grants[].id`. v1 files (one bare
+  ciphertext) are still read and rewritten as v2 on first access; an
+  undecryptable v1 file is left alone rather than rewritten empty. A rewrite
+  must stitch `lastSetAt` back from the index — the payload carries values
+  only, so forgetting blanks every surviving timestamp.
+- **E2E runs must not touch the real login keychain.**
+  [darwin-keychain-startup-policy.ts](apps/desktop/src/main/darwin-keychain-startup-policy.ts)
+  appends Chromium's `--use-mock-keychain` under `PWRSNAP_E2E`, so an unsigned
+  dev Electron never registers its rebuild-varying cdhash on the access list of
+  the item the installed app uses, and never blocks a spec on a password
+  dialog. It is deliberately NOT applied to `pnpm dev`: `app.setName` is
+  unconditional, so dev shares `userData` — and `pwrsnap-secrets.bin` — with
+  the installed app and must share its key.
 - **Validate at the bus boundary.** Per-verb validators in
   [apps/desktop/src/main/handlers/settings-validators.ts](apps/desktop/src/main/handlers/settings-validators.ts)
   reject unknown secret names, oversize values (>64KB), unknown

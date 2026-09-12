@@ -61,6 +61,7 @@ import { installTransientWindowTeardown } from "./transient-window-teardown";
 import {
   applyWindowsChromiumStartupFeaturePolicy
 } from "./windows-chromium-startup-policy";
+import { applyDarwinKeychainStartupPolicy } from "./darwin-keychain-startup-policy";
 // (showFloatOverForCapture is no longer called from the bootstrap;
 // the capture-handlers `capture:interactive` now drives the entire
 // float-over lifecycle. Kept as an export from float-over.ts for the
@@ -1380,6 +1381,13 @@ export function bootstrapApp(): void {
       "enable-features",
       "ScreenCaptureKitMac,ScreenCaptureKitMacWindow,ScreenCaptureKitMacScreen,ScreenCaptureKitPickerScreen"
     );
+    // E2E hermeticity, same rule as the userData / documents / home rebasing
+    // below: an E2E run must not touch the developer's real login keychain.
+    // See darwin-keychain-startup-policy.ts for why, and why this is
+    // deliberately NOT applied to a plain `pnpm dev` run.
+    if (applyDarwinKeychainStartupPolicy(app.commandLine, { platform: process.platform, isE2E })) {
+      log.info("E2E: using Chromium's mock keychain; the real login keychain is untouched");
+    }
   }
   if (process.platform === "win32") {
     // Disable Chromium's native window occlusion calculation. The post-capture

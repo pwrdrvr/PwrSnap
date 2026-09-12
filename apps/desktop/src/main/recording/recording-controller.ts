@@ -19,7 +19,12 @@ import {
   screen,
   type IpcMainEvent
 } from "electron";
-import { recordingFailureSummary, type RecordingState } from "@pwrsnap/shared";
+import {
+  EVENT_CHANNELS,
+  recordingFailureSummary,
+  type RecordingControllerArmEvent,
+  type RecordingState
+} from "@pwrsnap/shared";
 import {
   appWindowsOverlappingRect,
   displayLocalRectToGlobal
@@ -592,6 +597,54 @@ hotkeyRecorderSuspension.registerParticipant({
 });
 
 /**
+ * Is there a live HUD renderer that can host a destructive-action
+ * confirmation right now?
+ *
+ * The tray asks before offering "Restart Recording…" / "Cancel
+ * Recording…", because the HUD is the only surface allowed to run that
+ * confirm (see `RecordingControllerArmEvent`). When the HUD renderer
+ * has crashed past its retry budget the answer is no, and the tray
+ * simply does not offer the destructive items — "Stop and Save" stays
+ * available, so a user with a dead HUD can always end the take and
+ * keep the clip. Losing a take needs a confirmation surface; keeping
+ * one does not.
+ */
+export function canRecordingControllerConfirmDiscard(): boolean {
+  if (window === null || window.isDestroyed()) return false;
+  return getRecordingState().phase === "recording";
+}
+
+/**
+ * Ask the HUD to arm its own two-press confirm for `action`, exactly
+ * as if the user had clicked that button on the HUD. Returns false if
+ * there was no HUD to ask, in which case nothing was armed and nothing
+ * was dispatched.
+ *
+ * Deliberately one-way: the HUD owns the armed state and its
+ * auto-disarm timeout, and the HUD is what ultimately dispatches
+ * `recording:restart` / `recording:cancel`. Main holds no parallel
+ * armed state that could disagree with what the user can see.
+ */
+export function requestRecordingDiscardConfirmation(
+  action: RecordingControllerArmEvent["action"]
+): boolean {
+  if (!canRecordingControllerConfirmDiscard()) {
+    log.warn("no recording HUD available to confirm a discard", { action });
+    return false;
+  }
+  const target = window;
+  if (target === null) return false;
+  target.webContents.send(EVENT_CHANNELS.recordingControllerArm, {
+    action
+  } satisfies RecordingControllerArmEvent);
+  // The HUD is alwaysOnTop + floating, but a take can run for minutes
+  // with other floating windows arriving; make sure the surface the
+  // user was just sent to is actually the one on top.
+  target.moveTop();
+  return true;
+}
+
+/**
  * React to a recording-state transition. Idempotent — called from
  * the broadcast pipeline on every transition, branches on phase.
  */
@@ -655,11 +708,26 @@ export function applyRecordingStateToController(state: RecordingState): void {
       lastRecordingDisplayId = state.displayId;
       disarmLeadInEscapeShortcut();
       // Recording-phase pill is compact; tuck it top-center of the
-      // recorded display. PID exclusion keeps it out of the captured
+      // recorded display. `setContentProtection(true)` (set once in
+      // createRecordingControllerWindow) keeps it out of the captured
       // pixels. Width fits the three-button row (Stop / Restart /
       // Cancel); height accommodates the "not visible in recording"
       // reassurance caption underneath.
-      win.setFocusable(true);
+      //
+      // ⚠️  NEVER setFocusable(true) here. The window is constructed
+      // `focusable: false` and shown with showInactive() precisely so
+      // that clicking Stop / Restart / Cancel cannot activate PwrSnap
+      // mid-take. Only the HUD window is content-protected — the
+      // CONSEQUENCES of activating are not. On macOS the menu bar
+      // switches to PwrSnap, the recorded app's title bar goes
+      // inactive and its text caret disappears, and every one of those
+      // is inside the recorded rect and therefore in the file: the
+      // first frames after a Restart arm-click become a recording of
+      // the user's app losing focus. A focusable HUD shipped briefly
+      // in #496 to let a renderer keydown handler see Escape; the
+      // lead-in's globalShortcut bridge above exists because that
+      // trade is not available to this window.
+      win.setFocusable(false);
       win.setIgnoreMouseEvents(false);
       const [width, height] = normalControllerContentSize(win, 420, 80, state.displayId);
       win.setMinimumSize(0, 0);

@@ -275,6 +275,31 @@ export type RecordingFrameLayout = {
   phase: RecordingFramePhase;
 };
 
+/**
+ * Main → the recording-controller (HUD) renderer only: arm the HUD's
+ * own two-press confirm for a destructive control, as if the user had
+ * pressed Restart / Cancel on the HUD itself.
+ *
+ * This exists so the tray's destructive recording items have somewhere
+ * to ask "are you sure?" that is NOT a native dialog. An `NSAlert`
+ * raised from the main process carries no content protection and is
+ * centred on the display, so ScreenCaptureKit records it — and on
+ * Windows `gdigrab` reads the desktop DC, so it is captured
+ * unconditionally. A user who opened the tray, picked Restart, then
+ * thought better of it got several seconds of a PwrSnap alert baked
+ * into a take they kept. The HUD is the one surface that is both
+ * content-protected (macOS) and anchored outside the recorded rect
+ * (Windows), so the confirmation belongs there.
+ *
+ * The HUD owns the armed state, including its auto-disarm timeout;
+ * this event only nudges it. A nudge that arrives outside the
+ * recording phase, or while an action is already in flight, is
+ * ignored by the renderer.
+ */
+export type RecordingControllerArmEvent = {
+  action: "restart" | "cancel";
+};
+
 export type RecordingFailureCode =
   | "microphone_unavailable"
   | "recorder_unavailable"

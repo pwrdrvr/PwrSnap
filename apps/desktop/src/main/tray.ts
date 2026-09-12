@@ -16,7 +16,6 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   app,
-  dialog,
   ipcMain,
   Menu,
   type MenuItemConstructorOptions,
@@ -48,30 +47,50 @@ import {
   canRunRecordingControl,
   recordingBackendCapabilities
 } from "./recording/recording-capabilities";
+import {
+  canRecordingControllerConfirmDiscard,
+  requestRecordingDiscardConfirmation
+} from "./recording/recording-controller";
 import { createTrayWindow, positionTrayWindow } from "./window";
 
 const log = getMainLogger("pwrsnap:tray");
 
 const BLUR_DISMISS_DEBOUNCE_MS = 120;
 
-async function confirmDiscardRecording(action: "restart" | "cancel"): Promise<void> {
-  const restart = action === "restart";
-  const { response } = await dialog.showMessageBox({
-    type: "warning",
-    title: restart ? "Restart recording?" : "Cancel recording?",
-    message: restart
-      ? "Restarting discards the current take."
-      : "Cancelling discards the current take.",
-    detail: restart
-      ? "Choose Restart to discard this clip and begin a new countdown."
-      : "Choose Stop and Save instead if you want to keep this clip.",
-    buttons: [restart ? "Restart" : "Cancel Recording", "Keep Recording"],
-    defaultId: 1,
-    cancelId: 1,
-    noLink: true
+/**
+ * Hand a destructive recording control off to the HUD's own confirm.
+ *
+ * ⚠️  This must never become a `dialog.showMessageBox`. A native alert
+ * raised from the main process has no content protection and is
+ * centred on the display, so it is squarely inside almost any recorded
+ * rect: ScreenCaptureKit records it on macOS (only the HUD window is
+ * excluded, via `setContentProtection(true)`) and FFmpeg `gdigrab`
+ * records it unconditionally on Windows, where the tray offers both
+ * items too. The dialog's default button was "Keep Recording", so the
+ * path that ruined a take was the one where the user changed their
+ * mind: the take survived with several seconds of a PwrSnap alert
+ * baked into the MP4.
+ *
+ * Same class as the two invariants in AGENTS.md — "Tray popover hide"
+ * (an NSPanel fade landed in users' screenshots) and "The recording
+ * frame may never paint inside the recorded rect".
+ *
+ * The HUD already owns a two-press arm/confirm for exactly these two
+ * actions, and it is the only surface that is content-protected on
+ * macOS and anchored outside the rect on Windows. So the tray arms it
+ * and gets out of the way; the user confirms where they are already
+ * looking at the recording controls.
+ */
+function confirmDiscardRecording(action: "restart" | "cancel"): void {
+  if (requestRecordingDiscardConfirmation(action)) return;
+  // The menu only offers these items while the HUD can host the
+  // confirm, so this is the narrow race where it died in between.
+  // Dispatching anyway would discard the take with no confirmation at
+  // all, which is worse than doing nothing: Stop and Save is still in
+  // the menu.
+  log.warn("discarded a tray recording control with no confirmation surface", {
+    action
   });
-  if (response !== 0) return;
-  await bus.dispatch(`recording:${action}`, {}, { principal: "ipc" });
 }
 
 /**
@@ -912,6 +931,7 @@ export function buildTrayContextMenuTemplate(
   const openLibraryAccelerator = activeTrayAccelerator("openLibrary", platform);
   const recordingState = getRecordingState();
   const recordingCapabilities = recordingBackendCapabilities();
+  const canHostDiscardConfirmation = canRecordingControllerConfirmDiscard();
   // Controls are phase- and backend-aware. In particular, Stop is not shown
   // during the Windows countdown (FFmpeg has not spawned yet), and no action
   // is offered while finalization already owns the backend transition.
@@ -942,22 +962,31 @@ export function buildTrayContextMenuTemplate(
             void bus.dispatch("recording:stop", {}, { principal: "ipc" });
           }
         },
-        ...(canRunRecordingControl(recordingState, recordingCapabilities, "restart")
+        // Both discard the take, so both need a confirmation, and the
+        // only legal place to run one mid-take is the HUD (see
+        // `confirmDiscardRecording`). The trailing ellipsis is the
+        // platform convention for "this asks before it acts" and is
+        // load-bearing here: the click arms the HUD rather than
+        // discarding anything. If the HUD renderer is gone the items
+        // are simply not offered — Stop and Save above always is.
+        ...(canHostDiscardConfirmation &&
+        canRunRecordingControl(recordingState, recordingCapabilities, "restart")
           ? [
               {
-                label: "Restart Recording",
+                label: "Restart Recording…",
                 click: () => {
-                  void confirmDiscardRecording("restart");
+                  confirmDiscardRecording("restart");
                 }
               } satisfies MenuItemConstructorOptions
             ]
           : []),
-        ...(canRunRecordingControl(recordingState, recordingCapabilities, "cancel")
+        ...(canHostDiscardConfirmation &&
+        canRunRecordingControl(recordingState, recordingCapabilities, "cancel")
           ? [
               {
-                label: "Cancel Recording",
+                label: "Cancel Recording…",
                 click: () => {
-                  void confirmDiscardRecording("cancel");
+                  confirmDiscardRecording("cancel");
                 }
               } satisfies MenuItemConstructorOptions
             ]

@@ -65,6 +65,18 @@ export const EVENT_CHANNELS = {
    * flips two data attributes.
    */
   recordingFrame: "events:recording:frame",
+  /**
+   * Main → the recording-controller (HUD) window only: arm that
+   * window's own destructive-action confirm. Payload type:
+   * `RecordingControllerArmEvent`.
+   *
+   * The tray's "Restart Recording…" / "Cancel Recording…" items send
+   * this instead of raising a native dialog. Nothing PwrSnap paints
+   * during a take may land in the recorded rect, and only the HUD
+   * window is content-protected (macOS) / anchored outside the rect
+   * (Windows) — see the type's doc comment for the take this ruined.
+   */
+  recordingControllerArm: "events:recording-controller:arm",
   settingsChanged: "events:settings:changed",
   /**
    * Main → every BrowserWindow: latest auto-updater status. Drives the

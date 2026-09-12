@@ -88,7 +88,7 @@ function confirmDiscardRecording(action: "restart" | "cancel"): void {
   // Dispatching anyway would discard the take with no confirmation at
   // all, which is worse than doing nothing: Stop and Save is still in
   // the menu.
-  log.warn("discarded a tray recording control with no confirmation surface", {
+  log.warn("no HUD could host the confirm; tray recording control did nothing", {
     action
   });
 }

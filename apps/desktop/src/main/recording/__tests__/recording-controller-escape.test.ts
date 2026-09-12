@@ -53,6 +53,7 @@ type WindowSpy = {
   webContents: {
     on: ReturnType<typeof vi.fn>;
     send: ReturnType<typeof vi.fn>;
+    isDestroyed: ReturnType<typeof vi.fn>;
     listeners: Map<string, (...args: unknown[]) => void>;
     zoomFactor: number;
     getOSProcessId: ReturnType<typeof vi.fn>;
@@ -87,6 +88,7 @@ function makeWindowSpy(): WindowSpy {
         webContentsListeners.set(event, listener);
       }),
       send: vi.fn(),
+      isDestroyed: vi.fn(() => false),
       listeners: webContentsListeners,
       zoomFactor: 1,
       getOSProcessId: vi.fn(() => 4242)
@@ -558,7 +560,7 @@ describe("recording HUD must not intrude on the take", () => {
 
       const next = { phase, sessionId: recordingState.sessionId };
       mocks.currentState = next;
-      applyRecordingStateToController(next as never);
+      applyRecordingStateToController(next);
 
       expect(win.setFocusable).not.toHaveBeenCalledWith(true);
       expect(win.setFocusable).toHaveBeenLastCalledWith(false);
@@ -573,6 +575,7 @@ describe("recording HUD must not intrude on the take", () => {
     mocks.currentState = recordingState;
     applyRecordingStateToController(recordingState);
     const win = mocks.createdWindows[0]!;
+    win.webContents.listeners.get("did-finish-load")?.();
 
     expect(requestRecordingDiscardConfirmation("restart")).toBe(true);
 
@@ -599,21 +602,52 @@ describe("recording HUD must not intrude on the take", () => {
   });
 
   test("a HUD that outlived the recording phase cannot host a discard confirmation", async () => {
-    const { applyRecordingStateToController, canRecordingControllerConfirmDiscard } = await import(
-      "../recording-controller"
-    );
+    const {
+      applyRecordingStateToController,
+      canRecordingControllerConfirmDiscard,
+      requestRecordingDiscardConfirmation
+    } = await import("../recording-controller");
     mocks.currentState = recordingState;
     applyRecordingStateToController(recordingState);
     const win = mocks.createdWindows[0]!;
+    win.webContents.listeners.get("did-finish-load")?.();
 
     // Finalization already owns the backend transition; there is no take
     // left to discard.
     mocks.currentState = { phase: "stopping", sessionId: recordingState.sessionId };
 
     expect(canRecordingControllerConfirmDiscard()).toBe(false);
+    // Exercise the sender itself, so the phase gate on the SEND path is
+    // pinned — asserting `send` was never called without calling this
+    // would hold for any implementation.
+    expect(requestRecordingDiscardConfirmation("restart")).toBe(false);
     expect(win.webContents.send).not.toHaveBeenCalledWith(
       EVENT_CHANNELS.recordingControllerArm,
       expect.anything()
     );
+  });
+
+  test("an arm for a renderer that has not finished loading is refused, not dropped", async () => {
+    const { applyRecordingStateToController, requestRecordingDiscardConfirmation } = await import(
+      "../recording-controller"
+    );
+    mocks.currentState = recordingState;
+    applyRecordingStateToController(recordingState);
+    const win = mocks.createdWindows[0]!;
+
+    // No did-finish-load yet — the window exists and the phase is right,
+    // but the renderer has not registered its arm listener. This is the
+    // ~100ms+ crash-recreate window. A send here would be dropped on the
+    // floor with nothing to retry it, so the tray must be told no rather
+    // than reporting a confirmation it never delivered.
+    expect(requestRecordingDiscardConfirmation("restart")).toBe(false);
+    expect(win.webContents.send).not.toHaveBeenCalled();
+
+    win.webContents.listeners.get("did-finish-load")?.();
+
+    expect(requestRecordingDiscardConfirmation("restart")).toBe(true);
+    expect(win.webContents.send).toHaveBeenCalledWith(EVENT_CHANNELS.recordingControllerArm, {
+      action: "restart"
+    });
   });
 });

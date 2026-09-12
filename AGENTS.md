@@ -1159,9 +1159,12 @@ touching the arithmetic.
 
 ## Mid-take UI: the HUD is the only surface, and it never takes focus
 
-**During a live take, the recording-controller HUD is the ONLY window
-PwrSnap may show the user, and it must stay non-activating for the whole
-take. No native dialog, and no `setFocusable(true)`.** Owners:
+**During a live take, the recording-controller HUD is the ONLY surface
+PwrSnap may ask the user anything on, and it must stay non-activating
+for the whole take. No native dialog, and no `setFocusable(true)`.**
+(The frame overlay is also on screen throughout — it is click-through
+and asks nothing, and the section above governs where it may paint.)
+Owners:
 [recording-controller.ts](apps/desktop/src/main/recording/recording-controller.ts)
 (the phase arms) and [tray.ts](apps/desktop/src/main/tray.ts)
 (`confirmDiscardRecording`). Pinned by

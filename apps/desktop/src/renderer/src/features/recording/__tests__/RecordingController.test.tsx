@@ -308,8 +308,8 @@ describe("RecordingController tray-armed confirmation", () => {
 
   test("a nudge that lost the race with an action already in flight is ignored", async () => {
     await renderRecording();
-    // Two clicks put Stop in flight; the dispatch promise never settles,
-    // so `busyAction` stays pinned the way it does mid-stop.
+    // Stop needs no arming, so one click puts it in flight; the dispatch
+    // promise never settles, so `busyAction` stays pinned mid-stop.
     mocks.dispatch.mockImplementation(async (command: string) => {
       if (command === "recording:state") return { ok: true, value: recordingState() };
       if (command === "recording:capabilities") return { ok: true, value: macCapabilities };

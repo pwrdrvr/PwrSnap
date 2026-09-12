@@ -390,6 +390,9 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
                       ×
                     </span>
                   ) : isVideo ? (
+                    // `muted`, no controls: silent by construction, so the
+                    // audible-track resolution (`video:playback`) would buy
+                    // nothing and can cost a source-sized remux per row.
                     <video
                       src={captureSrcUrl(row.record.id)}
                       preload="metadata"

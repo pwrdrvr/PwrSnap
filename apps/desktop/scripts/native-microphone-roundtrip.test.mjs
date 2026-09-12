@@ -13,7 +13,8 @@ test.skipIf(process.platform !== "darwin")("microphone samples survive a real AV
     const native = resolve(import.meta.dirname, "..", "native", "recorder");
     const binary = join(dir, "verify");
     await run("xcrun", ["swiftc", "-parse-as-library", "-o", binary,
-      join(native, "microphone.swift"), join(native, "tests", "microphone-roundtrip.swift")], { timeout: 90_000 });
+      join(native, "microphone.swift"), join(native, "audio-level.swift"),
+      join(native, "tests", "microphone-roundtrip.swift")], { timeout: 90_000 });
     const result = await run(binary, [join(dir, "microphone.mp4")], { timeout: 30_000 });
     expect(result.stdout).toContain("microphone AAC roundtrip: appended=48");
   } finally {

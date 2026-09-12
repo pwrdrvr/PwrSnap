@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { createHash } from "node:crypto";
-import { computeNativeAudioCacheKey, computeVideoPlaybackCacheKey } from "../audio-extract";
+import { computeNativeAudioCacheKey } from "../audio-extract";
 
 describe("computeNativeAudioCacheKey", () => {
   const baseline = {
@@ -18,11 +18,21 @@ describe("computeNativeAudioCacheKey", () => {
     expect(key).toMatch(/^[0-9a-f]{24}$/);
   });
 
-  test("recorded source flags invalidate native and playback cache keys", () => {
-    for (const key of [computeNativeAudioCacheKey, computeVideoPlaybackCacheKey]) {
-      expect(key({ ...baseline, hasMicrophoneAudio: false })).not.toBe(key(baseline));
-      expect(key({ ...baseline, hasSystemAudio: false })).not.toBe(key(baseline));
-    }
+  test("recorded source flags invalidate the cache key", () => {
+    // Which sources carried sound decides which tracks the extraction
+    // selects, so it has to be part of the identity of the result.
+    expect(computeNativeAudioCacheKey({ ...baseline, hasMicrophoneAudio: false })).not.toBe(
+      computeNativeAudioCacheKey(baseline)
+    );
+    expect(computeNativeAudioCacheKey({ ...baseline, hasSystemAudio: false })).not.toBe(
+      computeNativeAudioCacheKey(baseline)
+    );
+  });
+
+  test("the armed record invalidates it too, because it decides track order", () => {
+    expect(computeNativeAudioCacheKey({ ...baseline, requestedSystemAudio: false })).not.toBe(
+      computeNativeAudioCacheKey({ ...baseline, requestedSystemAudio: true })
+    );
   });
 
   test("mixing version invalidates old first-track-only extractions", () => {
@@ -33,7 +43,6 @@ describe("computeNativeAudioCacheKey", () => {
       .update(baseline.startSec.toFixed(3)).update("\0")
       .update(baseline.durationSec.toFixed(3)).digest("hex").slice(0, 24);
     expect(computeNativeAudioCacheKey(baseline)).not.toBe(oldKey);
-    expect(computeNativeAudioCacheKey(baseline)).not.toBe(computeVideoPlaybackCacheKey(baseline));
   });
 
   test("returns the same key for the same inputs (deterministic)", () => {

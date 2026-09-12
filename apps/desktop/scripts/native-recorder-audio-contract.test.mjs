@@ -27,8 +27,19 @@ describe("native recorder audio contract", () => {
     expect(recorderSource).toContain('emitError("microphone_unavailable"');
   });
 
-  test("reports only audio tracks that appended at least one sample", () => {
-    expect(recorderSource).toContain('"hasSystemAudio": audioSamplesAppended > 0');
-    expect(recorderSource).toContain('"hasMicrophoneAudio": microphoneSamplesAppended > 0');
+  // An append COUNT cannot answer "did this source capture audio". A muted
+  // input, or a system tap with nothing playing through it, delivers
+  // buffers on schedule and appends every one — so counting appends
+  // reported a healthy source for a track holding six seconds of digital
+  // silence. That is what let a recording claim system audio it never had.
+  test("reports audio tracks that carried SOUND, not merely samples", () => {
+    expect(recorderSource).toContain('"hasSystemAudio": audioHeardSound');
+    expect(recorderSource).toContain('"hasMicrophoneAudio": microphoneHeardSound');
+    expect(recorderSource).not.toContain('"hasSystemAudio": audioSamplesAppended > 0');
+  });
+
+  test("both sources measure against the shared silence floor", () => {
+    expect(recorderSource).toContain("peakAmplitude(of: buf) >= audioSilenceFloor");
+    expect(microphoneSource).toContain("peakAmplitude(of: sampleBuffer) >= audioSilenceFloor");
   });
 });

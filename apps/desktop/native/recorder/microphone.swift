@@ -7,6 +7,10 @@ final class MicForwarder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
     let writer: AVAssetWriter
     private(set) var samplesReceived: Int = 0
     private(set) var samplesAppended: Int = 0
+    /// Whether any appended buffer rose above the silence floor. A muted
+    /// or disconnected input still delivers buffers, so the append count
+    /// alone reports a working microphone for a track holding nothing.
+    private(set) var heardSound: Bool = false
 
     init(input: AVAssetWriterInput, writer: AVAssetWriter) {
         self.input = input
@@ -27,6 +31,10 @@ final class MicForwarder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
            input.isReadyForMoreMediaData &&
            input.append(sampleBuffer) {
             samplesAppended += 1
+            // Measured only until this source proves itself; see main.swift.
+            if !heardSound && peakAmplitude(of: sampleBuffer) >= audioSilenceFloor {
+                heardSound = true
+            }
         }
     }
 }

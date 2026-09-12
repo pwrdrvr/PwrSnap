@@ -147,6 +147,16 @@ export function videoAssetUrl(captureId: string, asset: string): string {
 }
 
 /**
+ * Build the renderer-facing URL for a capture's own source bytes. Mirrors
+ * `captureSrcUrl` in the renderer's `lib/pwrsnap`; both exist because
+ * `video:playback` answers with one or the other and the answer is composed
+ * in main.
+ */
+export function captureSrcUrl(captureId: string): string {
+  return `${SCHEMES.capture}://r/${captureId}`;
+}
+
+/**
  * Parse `pwrsnap-app-icon://r/<identifier>` → the platform app identifier.
  * macOS bundle ids remain unescaped and use `A-Za-z0-9._-`. Windows absolute
  * executable paths are encodeURIComponent-encoded by the renderer and are

@@ -68,8 +68,13 @@ import { validateVideoExportRequest } from "../recording/video-export-validation
 import { createVideoExportProgressObserver } from "../recording/video-export-progress";
 import { ensureVideoPoster } from "../recording/video-poster";
 import { ensureVideoFrames, videoAssetDir } from "../recording/video-frames";
-import { AUDIO_PIPELINE_VERSION, extractVideoAudio } from "../sizzle/audio-extract";
-import { videoAssetUrl } from "../protocols-parse";
+import {
+  AUDIO_PIPELINE_VERSION,
+  extractVideoAudio,
+  prepareVideoPlayback,
+  videoPlaybackNeedsPreparation
+} from "../sizzle/audio-extract";
+import { captureSrcUrl, videoAssetUrl } from "../protocols-parse";
 import { broadcastCapturesChanged } from "../events";
 import { prepareRenderedFileAlias } from "../render/file-alias";
 import { buildPresetExportDisplayName } from "../render/export-filename";
@@ -315,6 +320,8 @@ export function validateRecordingStartRequest(
  * drifted (`audio-mixed-v2` against `mixed-audio-v1`).
  */
 const VIDEO_AUDIO_ASSET = `${AUDIO_PIPELINE_VERSION}.m4a`;
+/** Same derivation, for the prepared playback rendition. */
+const VIDEO_PLAYBACK_ASSET = `playback-${AUDIO_PIPELINE_VERSION}.mp4`;
 /** Matches the timeline's smallest supported trim span. */
 const MIN_VIDEO_RANGE_SEC = 0.1;
 
@@ -329,6 +336,46 @@ async function fileHasBytes(path: string): Promise<boolean> {
     return s.isFile() && s.size > 0;
   } catch {
     return false;
+  }
+}
+
+const videoPlaybackInFlight = new Map<string, Promise<string | null>>();
+
+/**
+ * Prepare the playback rendition if this recording needs one, and answer
+ * with the asset name to serve (or `null` for "play the original").
+ *
+ * Single-flighted per capture, like the waveform asset: opening a video
+ * mounts the stage and the timeline together, and a second remux of the
+ * same file is pure waste.
+ */
+async function ensureVideoPlaybackAsset(input: {
+  captureId: string;
+  videoPath: string;
+  hasSystemAudio: boolean;
+  hasMicrophoneAudio: boolean;
+  requestedSystemAudio: boolean;
+  requestedMicrophone: boolean;
+}): Promise<string | null> {
+  if (!videoPlaybackNeedsPreparation(input)) return null;
+  const existing = videoPlaybackInFlight.get(input.captureId);
+  if (existing !== undefined) return existing;
+
+  const work = (async () => {
+    const target = join(videoAssetDir(input.captureId), VIDEO_PLAYBACK_ASSET);
+    if (await fileHasBytes(target)) return VIDEO_PLAYBACK_ASSET;
+    await mkdir(videoAssetDir(input.captureId), { recursive: true });
+    const played = await prepareVideoPlayback(target, input);
+    // The probe can still say the file disagrees with its metadata, in
+    // which case nothing was written and the original is correct.
+    return played === target ? VIDEO_PLAYBACK_ASSET : null;
+  })();
+
+  videoPlaybackInFlight.set(input.captureId, work);
+  try {
+    return await work;
+  } finally {
+    videoPlaybackInFlight.delete(input.captureId);
   }
 }
 
@@ -788,6 +835,49 @@ export function registerRecordingHandlers(): void {
       const message = cause instanceof Error ? cause.message : String(cause);
       log.error("video:frames failed", { captureId: req.captureId, message });
       return err({ kind: "render", code: "video_frames_failed", message, cause });
+    }
+  });
+
+  // ── video:playback ────────────────────────────────────────────────
+  //
+  // What a player should load. The recorder keeps each source as its own
+  // audio track and players take only the first, so a take whose audible
+  // audio is not track 0 needs a stream-copied rendition to be heard at
+  // all. That is the ordinary case for "system audio armed, nothing
+  // playing": a silent track sits in front of a good microphone.
+  bus.register("video:playback", async (req) => {
+    if (typeof req.captureId !== "string" || req.captureId.length === 0) {
+      return err(
+        validationError("invalid_capture_id", "video:playback: captureId must be a non-empty string")
+      );
+    }
+    const record = getCaptureById(req.captureId);
+    if (record === null) {
+      return err(validationError("not_found", `video:playback: capture not found: ${req.captureId}`));
+    }
+    const original = { url: captureSrcUrl(record.id), prepared: false };
+    const video = record.video;
+    if (record.kind !== "video" || video === null || video === undefined) return ok(original);
+    if (record.legacy_src_path === null) return ok(original);
+    try {
+      const asset = await ensureVideoPlaybackAsset({
+        captureId: record.id,
+        videoPath: record.legacy_src_path,
+        hasSystemAudio: video.hasSystemAudio,
+        hasMicrophoneAudio: video.hasMicrophoneAudio,
+        requestedSystemAudio: video.requestedSystemAudio,
+        requestedMicrophone: video.requestedMicrophone
+      });
+      if (asset === null) return ok(original);
+      return ok({ url: videoAssetUrl(record.id, asset), prepared: true });
+    } catch (cause) {
+      // Never fail the player over this. A recording the user can watch
+      // with one source audible beats an error where a video should be.
+      log.warn("video:playback preparation failed; serving the original", {
+        captureId: record.id,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return ok(original);
     }
   });
 

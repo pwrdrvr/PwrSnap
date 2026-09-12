@@ -2,7 +2,7 @@
 // PCM measurements. No microphone, screen capture, Electron or operator data.
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
-import { stat, utimes } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
@@ -63,6 +63,7 @@ let source: string;
 let systemOnly: string;
 let micOnly: string;
 let silent: string;
+let silentSystem: string;
 const dual = { hasSystemAudio: true, hasMicrophoneAudio: true };
 const video: VideoCaptureMetadata = {
   ...dual, durationSec: 2.4, containerFormat: "mp4",
@@ -83,6 +84,7 @@ describe.skipIf(ffmpeg === null)("recorded audio through real FFmpeg", () => {
     systemOnly = join(state.root, "system-only.mp4");
     micOnly = join(state.root, "mic-only.mp4");
     silent = join(state.root, "silent.mp4");
+    silentSystem = join(state.root, "silent-system-live-mic.mp4");
     run([
       "-f", "lavfi", "-i", "color=c=black:s=160x90:r=20:d=2.4",
       "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=2.4",
@@ -93,6 +95,16 @@ describe.skipIf(ffmpeg === null)("recorded audio through real FFmpeg", () => {
     run(["-i", source, "-map", "0:v", "-map", "0:a:0", "-c", "copy", systemOnly]);
     run(["-i", source, "-map", "0:v", "-map", "0:a:1", "-c", "copy", micOnly]);
     run(["-i", source, "-map", "0:v", "-c", "copy", "-an", silent]);
+    // Two audio tracks where the FIRST is digital silence — system audio
+    // armed with nothing playing through the Mac, which is the ordinary
+    // way to end up with a good microphone behind a mute track.
+    run([
+      "-f", "lavfi", "-i", "color=c=black:s=160x90:r=20:d=2.4",
+      "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo:d=2.4",
+      "-itsoffset", "0.5", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000:duration=1.5",
+      "-map", "0:v", "-map", "1:a", "-map", "2:a", "-c:v", "mpeg4", "-c:a", "aac",
+      "-shortest", silentSystem
+    ]);
   }, 30_000);
   afterAll(() => { if (state.root) rmSync(state.root, { recursive: true, force: true }); });
 
@@ -119,8 +131,9 @@ describe.skipIf(ffmpeg === null)("recorded audio through real FFmpeg", () => {
   });
 
   test("playback copies video packets, mixes delayed mic at the right time, and retains system tail", async () => {
-    const path = await prepareVideoPlayback({ videoPath: source, ...dual });
-    expect(path).not.toBe(source);
+    const out = join(state.root, "playback-dual.mp4");
+    const path = await prepareVideoPlayback(out, { videoPath: source, ...dual });
+    expect(path).toBe(out);
     expect(await probeAudioStreamCount(path)).toBe(1);
     // A byte-identical elementary video stream proves -c:v copy really ran.
     const elementary = (p: string) => run(["-i", p, "-map", "0:v:0", "-c:v", "copy", "-f", "data", "pipe:1"]);
@@ -131,22 +144,56 @@ describe.skipIf(ffmpeg === null)("recorded audio through real FFmpeg", () => {
     expect(magnitude(samples, 880, 0.8, 0.4)).toBeGreaterThan(0.02);
     expect(magnitude(samples, 440, 2.1, 0.2)).toBeGreaterThan(0.02);
     expect(magnitude(samples, 880, 2.1, 0.2)).toBeLessThan(0.003);
-    expect(await prepareVideoPlayback({ videoPath: source, ...dual })).toBe(path);
+    expect(await prepareVideoPlayback(out, { videoPath: source, ...dual })).toBe(path);
   });
 
-  test("playback returns original for single, silent or stale dual recordings", async () => {
-    expect(await prepareVideoPlayback({ videoPath: micOnly, hasSystemAudio: false, hasMicrophoneAudio: true })).toBe(micOnly);
-    expect(await prepareVideoPlayback({ videoPath: systemOnly, ...dual })).toBe(systemOnly);
-    expect(await prepareVideoPlayback({ videoPath: silent, ...dual })).toBe(silent);
+  // The shape that sent someone hunting for a volume slider: the recording
+  // has real audio, the player takes track 0, and track 0 is silence.
+  test("playback selects an audible microphone sitting behind a silent system track", async () => {
+    const out = join(state.root, "playback-silent-system.mp4");
+    const path = await prepareVideoPlayback(out, {
+      videoPath: silentSystem,
+      // What silence detection reports for this recording: system audio was
+      // armed and produced nothing, the microphone produced sound.
+      hasSystemAudio: false,
+      hasMicrophoneAudio: true,
+      requestedSystemAudio: true,
+      requestedMicrophone: true
+    });
+    expect(path).toBe(out);
+    expect(await probeAudioStreamCount(path)).toBe(1);
+    // The single track is the microphone's 880 Hz tone, not the silence.
+    expectTones(path, false, true);
   });
 
-  test("playback invalidates a derivative after the source revision changes", async () => {
-    const first = await prepareVideoPlayback({ videoPath: source, ...dual });
-    const info = await stat(source);
-    await utimes(source, info.atime, new Date(info.mtimeMs + 2000));
-    const next = await prepareVideoPlayback({ videoPath: source, ...dual });
-    expect(next).not.toBe(first);
-    expect(await probeAudioStreamCount(next)).toBe(1);
+  test("playback returns original when the audible track is already first", async () => {
+    // One track, and it is track 0.
+    expect(
+      await prepareVideoPlayback(join(state.root, "p1.mp4"), {
+        videoPath: micOnly,
+        hasSystemAudio: false,
+        hasMicrophoneAudio: true,
+        requestedSystemAudio: false,
+        requestedMicrophone: true
+      })
+    ).toBe(micOnly);
+    // Stale dual metadata over a file that only has the system track.
+    expect(
+      await prepareVideoPlayback(join(state.root, "p2.mp4"), { videoPath: systemOnly, ...dual })
+    ).toBe(systemOnly);
+    // Nothing audible at all — no rendition can improve on the original.
+    expect(
+      await prepareVideoPlayback(join(state.root, "p3.mp4"), { videoPath: silent, ...dual })
+    ).toBe(silent);
+  });
+
+  test("a published rendition is reused rather than remuxed again", async () => {
+    const out = join(state.root, "playback-reuse.mp4");
+    const first = await prepareVideoPlayback(out, { videoPath: source, ...dual });
+    const before = (await stat(first)).mtimeMs;
+    const next = await prepareVideoPlayback(out, { videoPath: source, ...dual });
+    expect(next).toBe(first);
+    expect((await stat(next)).mtimeMs).toBe(before);
   });
 
   describe.skipIf(process.platform !== "darwin" && process.platform !== "win32")("MP4 exports", () => {

@@ -145,6 +145,10 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private var videoSamplesAppended: Int = 0
     private var audioSamplesReceived: Int = 0
     private var audioSamplesAppended: Int = 0
+    /// Whether any appended system-audio buffer rose above the silence
+    /// floor. See `peakAmplitude` — an append count cannot tell a live tap
+    /// from one recording a room where nothing is playing.
+    private var audioHeardSound: Bool = false
     /// SCStream's `.microphone` output (macOS 14+). Unused by today's
     /// recorder — mic capture runs through AVCaptureSession — but
     /// counted so a stray sample shows up in the stop() diag totals
@@ -634,7 +638,15 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             }
         case .audio:
             if let ai = audioInput, ai.isReadyForMoreMediaData {
-                if ai.append(buf) { audioSamplesAppended += 1 }
+                if ai.append(buf) {
+                    audioSamplesAppended += 1
+                    // Stop measuring once this source has proven itself —
+                    // the scan is per-buffer and there is nothing left to
+                    // learn after the first sound.
+                    if !audioHeardSound && peakAmplitude(of: buf) >= audioSilenceFloor {
+                        audioHeardSound = true
+                    }
+                }
             }
         case .microphone:
             // Mic samples from SCStream (macOS 14+) are deliberately
@@ -666,6 +678,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         writeQueue.sync { }
         let microphoneSamplesReceived = micForwarder?.samplesReceived ?? 0
         let microphoneSamplesAppended = micForwarder?.samplesAppended ?? 0
+        let microphoneHeardSound = micForwarder?.heardSound ?? false
         diag("microphone samples=\(microphoneSamplesReceived)/\(microphoneSamplesAppended)")
 
         videoInput?.markAsFinished()
@@ -691,8 +704,12 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             "containerFormat": "mp4",
             // Track flags describe what is actually in the finalized
             // file, not what the user requested at start time.
-            "hasSystemAudio": audioSamplesAppended > 0,
-            "hasMicrophoneAudio": microphoneSamplesAppended > 0,
+            // "produced AUDIBLE audio", not "delivered buffers". A source
+            // that was armed but silent reports false here and true in
+            // `requested*`, which is what lets the app say "you asked for
+            // system audio and got none" instead of claiming it captured.
+            "hasSystemAudio": audioHeardSound,
+            "hasMicrophoneAudio": microphoneHeardSound,
             "outputPath": outputURL?.path ?? ""
         ])
     }

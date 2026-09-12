@@ -92,10 +92,6 @@ export function computeNativeAudioCacheKey(args: SourceFingerprint & AudioTrim):
     .slice(0, 24);
 }
 
-export function computeVideoPlaybackCacheKey(args: SourceFingerprint): string {
-  return sourceDigest(args).update("\0playback").digest("hex").slice(0, 24);
-}
-
 async function fingerprint(args: RecordingAudioSource): Promise<SourceFingerprint> {
   // Never reuse a cached derivative when its original is no longer readable.
   // Classify the failure: both callers branch on `AudioExtractError`, and a
@@ -138,34 +134,68 @@ export async function extractVideoAudio(args: RecordingAudioSource & AudioTrim):
 }
 
 /**
- * Playback-only derivative: video packets are copied without re-encoding,
- * while system + microphone become one AAC track. The stored recording stays
- * intact so exports can still select either source. Non-dual recordings (also
- * stale metadata with fewer than two actual streams) use the original file.
+ * Whether a player needs a prepared rendition to hear this recording.
  *
- * NOT WIRED YET, deliberately. Preview mixing is deferred with the rest of
- * that subsystem, so nothing in production calls this and `<video>` still
- * plays the original file — which is why `VideoStage` carries a note saying
- * the preview is system-audio-only. It is kept, built and tested because the
- * expensive question it answers (what a cached, stream-copied rendition costs
- * and how it invalidates) is already settled here; wiring it is a call site
- * plus a loading state on the protocol resolver, not a rewrite. Delete it
- * rather than let it rot if that work is dropped for good.
+ * `<video>` — and most players — play the FIRST audio track and ignore the
+ * rest. So the original file is fine in exactly two cases: the audible audio
+ * already IS track 0, or there is no audible audio at all. Everything else
+ * needs a rendition, and that covers two distinct shapes:
+ *
+ *   both sources audible  → they must be MIXED, or one is lost
+ *   only track 1 audible  → it must be SELECTED, or the player takes the
+ *                           silent track 0 and the recording seems mute
+ *
+ * That second shape is the common one — system audio armed with nothing
+ * playing through it, so a silent track sits in front of a good microphone.
  */
-export async function prepareVideoPlayback(args: RecordingAudioSource): Promise<string> {
-  if (!args.hasSystemAudio || !args.hasMicrophoneAudio) return args.videoPath;
-  const source = await fingerprint(args);
-  const hash = computeVideoPlaybackCacheKey(source);
-  const outPath = join(app.getPath("userData"), "sizzle-cache", "video-playback", `${hash}.mp4`);
+export function videoPlaybackNeedsPreparation(
+  source: Pick<
+    RecordingAudioSource,
+    "hasSystemAudio" | "hasMicrophoneAudio" | "requestedSystemAudio" | "requestedMicrophone"
+  >,
+  availableTracks?: number
+): boolean {
+  // Drop indices the file does not actually have BEFORE deciding. Metadata
+  // claiming two sources over a single-track file resolves to "track 0 is
+  // all there is", which needs no rendition — deciding first and filtering
+  // afterwards would remux a file in order to produce what it already was.
+  const streams = selectedRecordingAudioStreams(source, undefined, availableTracks).filter(
+    (index) => availableTracks === undefined || index < availableTracks
+  );
+  if (streams.length === 0) return false;
+  return !(streams.length === 1 && streams[0] === 0);
+}
+
+/**
+ * Playback-only derivative: video packets are copied without re-encoding,
+ * while the audible tracks become one AAC track.
+ *
+ * Written to `outPath` so the caller owns where it lives — the per-capture
+ * asset dir, which `purgeCacheForCapture` already sweeps. It holds a full
+ * copy of the video bytes (stream-copied, not re-encoded), which is the
+ * standing cost of keeping the recorded stems separate: the original must
+ * stay untouched so exports can still select either source.
+ *
+ * Returns the path to play — `outPath` when a rendition was needed, or the
+ * original when it was not.
+ */
+export async function prepareVideoPlayback(
+  outPath: string,
+  args: RecordingAudioSource
+): Promise<string> {
+  if (!videoPlaybackNeedsPreparation(args)) return args.videoPath;
   return coalesce(outPath, async () => {
     if (await fileExists(outPath)) return outPath;
-    if (await probeAudioStreamCount(args.videoPath) < 2) return args.videoPath;
+    const available = await probeAudioStreamCount(args.videoPath);
+    // Re-ask against the real track count. Metadata that disagrees with the
+    // file can flip the answer back to "nothing to do".
+    if (!videoPlaybackNeedsPreparation(args, available)) return args.videoPath;
+    const streams = selectedRecordingAudioStreams(args, undefined, available).filter(
+      (index) => index < available
+    );
     return publishMedia(outPath, [
       "-i", args.videoPath, "-map", "0:v:0", "-c:v", "copy",
-      // Resolve the indices rather than hardcoding [0, 1]: the microphone's
-      // slot depends on whether a system track was ADDED, which is not the
-      // same question as whether system samples landed.
-      ...buildRecordingAudioArgs(selectedRecordingAudioStreams(args)),
+      ...buildRecordingAudioArgs(streams),
       "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"
     ]);
   });

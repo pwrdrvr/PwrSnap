@@ -41,6 +41,10 @@ import { probeAudioStreamCount } from "../../recording/recording-audio";
 function source() {
   return { videoPath: join(state.root, "source.mp4"), hasSystemAudio: true, hasMicrophoneAudio: true };
 }
+/** Where the caller wants the prepared rendition written.
+ *  Its own directory, so the staging-file assertions below see only what
+ *  this function produced and not the source fixture beside it. */
+function outPath() { return join(state.root, "out", "playback.mp4"); }
 function encodes() { return state.calls.filter((call) => call.args.at(-1) !== "-"); }
 async function nextEncode() {
   await vi.waitFor(() => expect(encodes().length).toBeGreaterThan(0));
@@ -62,7 +66,7 @@ afterEach(() => { rmSync(state.root, { recursive: true, force: true }); });
 
 describe("audio derivative cache lifecycle", () => {
   test.each(["playback", "extraction"])("%s coalesces cold requests and publishes only after FFmpeg closes", async (kind) => {
-    const start = () => kind === "playback" ? prepareVideoPlayback(source()) : extractVideoAudio({ ...source(), startSec: 0, durationSec: 2 });
+    const start = () => kind === "playback" ? prepareVideoPlayback(outPath(), source()) : extractVideoAudio({ ...source(), startSec: 0, durationSec: 2 });
     const a = start();
     const b = start();
     const encode = await nextEncode();
@@ -86,30 +90,30 @@ describe("audio derivative cache lifecycle", () => {
   });
 
   test.each(["failed", "empty"])("%s encode removes staging, clears shared failure, and allows retry", async (kind) => {
-    const pending = prepareVideoPlayback(source());
+    const pending = prepareVideoPlayback(outPath(), source());
     const rejection = expect(pending).rejects.toThrow(/ffmpeg/);
     const encode = await nextEncode();
     finish(encode, kind === "failed" ? 1 : 0, kind === "empty" ? "" : "truncated");
     await rejection;
     expect(await readdir(dirname(encode.args.at(-1)!))).toEqual([]);
     state.calls.length = 0;
-    const retry = prepareVideoPlayback(source());
+    const retry = prepareVideoPlayback(outPath(), source());
     finish(await nextEncode());
     await expect(retry).resolves.toMatch(/\.mp4$/);
   });
 
   test("failed probe is surfaced instead of silently assuming no audio", async () => {
     state.probeError = true;
-    await expect(prepareVideoPlayback(source())).rejects.toThrow(/ffmpeg exited/);
+    await expect(prepareVideoPlayback(outPath(), source())).rejects.toThrow(/ffmpeg exited/);
     expect(encodes()).toHaveLength(0);
     state.probeError = false;
     state.available = 1;
-    await expect(prepareVideoPlayback(source())).resolves.toBe(source().videoPath);
+    await expect(prepareVideoPlayback(outPath(), source())).resolves.toBe(source().videoPath);
     expect(encodes()).toHaveLength(0);
   });
 
   test("single-track playback uses the original without stat, probing or encoding", async () => {
-    await expect(prepareVideoPlayback({ ...source(), videoPath: "/not-read.mp4", hasSystemAudio: false })).resolves.toBe("/not-read.mp4");
+    await expect(prepareVideoPlayback(outPath(), { ...source(), videoPath: "/not-read.mp4", hasSystemAudio: false, requestedSystemAudio: false })).resolves.toBe("/not-read.mp4");
     expect(state.calls).toHaveLength(0);
   });
 

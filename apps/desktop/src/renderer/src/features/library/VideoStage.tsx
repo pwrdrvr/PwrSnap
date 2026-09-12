@@ -24,7 +24,7 @@ import {
   type ReactElement
 } from "react";
 import type { CaptureRecord, VideoCaptureMetadata } from "@pwrsnap/shared";
-import { captureSrcUrl } from "../../lib/pwrsnap";
+import { captureSrcUrl, dispatch } from "../../lib/pwrsnap";
 import { usePlayheadSource } from "../shared/playhead";
 import { VideoTimeline } from "../shared/VideoTimeline";
 import { useVideoTimelineAssets } from "../shared/useVideoTimelineAssets";
@@ -133,6 +133,19 @@ export function VideoStage({
 
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
+  const [volume, setVolume] = useState(1);
+  // What the <video> should actually load.
+  //
+  // A recording keeps each source as its own audio track and players take
+  // only the FIRST one, so the capture's own URL is not always the right
+  // answer: a take with system audio armed but nothing playing through it
+  // has a silent track sitting in front of a perfectly good microphone,
+  // and loading the original plays that silence at full volume. `main`
+  // answers with a prepared, stream-copied rendition in that case.
+  //
+  // Seeded with the capture URL so the first frame still paints while the
+  // question is being answered — the video element is not left empty.
+  const [playbackUrl, setPlaybackUrl] = useState(() => captureSrcUrl(captureId));
   const [loopInRange, setLoopInRange] = useState(true);
   // `currentTime` is the DISCRETE head — seek, pause, capture switch.
   // The per-frame head rides `playhead` instead, straight to the two
@@ -444,6 +457,7 @@ export function VideoStage({
     };
     const onLoaded = (): void => {
       setMuted(el.muted);
+      el.volume = volume;
     };
     el.addEventListener("play", onPlay);
     el.addEventListener("pause", onPause);
@@ -571,10 +585,41 @@ export function VideoStage({
 
   useEffect(() => () => stopShuttle(), [stopShuttle]);
 
+  useEffect(() => {
+    let cancelled = false;
+    setPlaybackUrl(captureSrcUrl(captureId));
+    void dispatch("video:playback", { captureId }).then((res) => {
+      // A failure here is not worth surfacing: the seed above is already
+      // the pre-existing behavior, so the worst case is what shipped
+      // before this resolution existed.
+      if (cancelled || !res.ok) return;
+      setPlaybackUrl(res.value.url);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [captureId]);
+
   const toggleMute = (): void => {
     const el = videoRef.current;
     if (el === null) return;
     el.muted = !el.muted;
+    setMuted(el.muted);
+  };
+
+  // Volume was previously never assigned at all, so playback sat at 1.0
+  // with mute as the only control — which made "I cannot hear it" and "it
+  // is playing quietly" indistinguishable from the UI.
+  const changeVolume = (next: number): void => {
+    const clamped = Math.min(1, Math.max(0, next));
+    const el = videoRef.current;
+    setVolume(clamped);
+    if (el === null) return;
+    el.volume = clamped;
+    // Moving the slider off zero is an unmute; dragging it to zero is a
+    // mute. Leaving the two controls independent lets the slider sit at
+    // 80% while the element is silent, with nothing on screen saying why.
+    el.muted = clamped === 0;
     setMuted(el.muted);
   };
 
@@ -610,7 +655,7 @@ export function VideoStage({
         <video
           ref={videoRef}
           className="psl__video-el"
-          src={captureSrcUrl(captureId)}
+          src={playbackUrl}
           playsInline
           preload="metadata"
           loop={nativeLoop}
@@ -625,6 +670,8 @@ export function VideoStage({
         durationSec={durationSec}
         loopInRange={loopInRange}
         muted={muted}
+        volume={volume}
+        onVolumeChange={changeVolume}
         onTogglePlay={() => runIntent({ type: "togglePlay" })}
         onToggleLoop={() => setLoopInRange((v) => !v)}
         onToggleMute={toggleMute}
@@ -645,18 +692,15 @@ export function VideoStage({
         onInteractingChange={onTimelineInteracting}
         label="Recording timeline"
       />
-      {video.hasSystemAudio && video.hasMicrophoneAudio && (
-        // A recording with both sources holds two separate audio tracks,
-        // and an HTML5 <video> plays only the first. The waveform above
-        // is drawn from the MIXED extraction, so without this line the
-        // user sees their narration in the lane and hears none of it —
-        // which reads exactly like a microphone that failed.
-        //
-        // Mixing the preview too needs a cached, prepared rendition
-        // rather than a filter on the way out; until that lands, say so.
+      {video.requestedSystemAudio && !video.hasSystemAudio && (
+        // The one thing left worth saying. The preview now plays what the
+        // waveform draws, so the old "system audio only" apology is gone —
+        // but a source the user ARMED and got nothing from is still worth
+        // a line, or the only evidence is a receipt on a toast they have
+        // already dismissed.
         <p className="psl__video-audio-note">
-          Preview plays system audio only. Exports and reels include the
-          microphone.
+          System audio was on for this recording but captured nothing —
+          nothing was playing through this Mac.
         </p>
       )}
     </div>

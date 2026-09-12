@@ -72,7 +72,8 @@ const targets = [
     name: "recorder",
     sources: [
       join(nativeRoot, "recorder", "main.swift"),
-      join(nativeRoot, "recorder", "microphone.swift")
+      join(nativeRoot, "recorder", "microphone.swift"),
+      join(nativeRoot, "recorder", "audio-level.swift")
     ],
     output: join(buildRoot, "recorder")
   },

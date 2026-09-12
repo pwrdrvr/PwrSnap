@@ -615,6 +615,17 @@ export type VideoAudioResult =
   | { hasAudio: false }
   | { hasAudio: true; url: string; mimeType: "audio/mp4" };
 
+/**
+ * Result of `video:playback` — the URL a player should actually load.
+ *
+ * A recording keeps its sources as separate audio tracks, and players take
+ * only the first one. When the audible audio is not that first track, main
+ * prepares a stream-copied rendition whose single track is what the user
+ * should hear, and `prepared` is true. Otherwise this is the original file
+ * and the renderer can treat it as it always has.
+ */
+export type VideoPlaybackResult = { url: string; prepared: boolean };
+
 /** Response from `video:prepareDrag` — mirrors `capture:prepareDrag`.
  *  `path` is the human-friendly file alias (e.g.
  *  `<filename-stem>-<preset>.<ext>`); `iconPath` points at the poster
@@ -4697,6 +4708,15 @@ export type Commands = {
   "video:audio": {
     req: { captureId: string };
     res: VideoAudioResult;
+  };
+  /**
+   * Resolve what a player should load for this recording. Renderers must
+   * use this rather than addressing the capture directly, or a take whose
+   * audible track is not first plays silent.
+   */
+  "video:playback": {
+    req: { captureId: string };
+    res: VideoPlaybackResult;
   };
   /**
    * Render and return a GIF or MP4 export for the requested range,

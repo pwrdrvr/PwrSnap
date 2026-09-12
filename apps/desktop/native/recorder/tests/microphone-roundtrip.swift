@@ -8,7 +8,7 @@ func check(_ condition: Bool, _ message: String) throws {
     if !condition { throw NSError(domain: "MicrophoneRoundtrip", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
 }
 
-func sample(packet: Int) throws -> CMSampleBuffer {
+func sample(packet: Int, amplitude: Float = 0.3) throws -> CMSampleBuffer {
     let count = 1024
     var format = AudioStreamBasicDescription(
         mSampleRate: 48_000, mFormatID: kAudioFormatLinearPCM,
@@ -29,7 +29,7 @@ func sample(packet: Int) throws -> CMSampleBuffer {
         offsetToData: 0, dataLength: count * 4, flags: 0, blockBufferOut: &block
     ) == noErr, "sample storage")
     let values = (0..<count).map { index in
-        Float(0.3 * sin(2 * Double.pi * 440 * Double(packet * count + index) / 48_000))
+        amplitude * Float(sin(2 * Double.pi * 440 * Double(packet * count + index) / 48_000))
     }
     let status = values.withUnsafeBytes { bytes in
         CMBlockBufferReplaceDataBytes(with: bytes.baseAddress!, blockBuffer: block!, offsetIntoDestination: 0, dataLength: bytes.count)
@@ -79,6 +79,37 @@ struct MicrophoneRoundtrip {
         try check(writer.status == .completed, "finish AAC: \(writer.error?.localizedDescription ?? "unknown")")
         forwarder.append(try sample(packet: 48))
         try check(forwarder.samplesReceived == 50 && forwarder.samplesAppended == 48, "sample lifecycle counts")
+        // Silence detection over real Float32 PCM. A tone must register as
+        // heard; digital silence must not, or a recording claims to have
+        // captured a microphone that produced nothing — which is what made
+        // a silent track play back at full volume with no explanation.
+        try check(forwarder.heardSound, "a 0.3-amplitude tone must register as heard")
+
+        let quietWriter = try AVAssetWriter(
+            outputURL: url.deletingLastPathComponent().appendingPathComponent("quiet.mp4"),
+            fileType: .mp4
+        )
+        let quietInput = AVAssetWriterInput(mediaType: .audio, outputSettings: [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVNumberOfChannelsKey: 1, AVSampleRateKey: 48_000,
+            AVEncoderBitRateKey: 128_000
+        ])
+        quietInput.expectsMediaDataInRealTime = true
+        quietWriter.add(quietInput)
+        let quiet = MicForwarder(input: quietInput, writer: quietWriter)
+        try check(quietWriter.startWriting(), "start quiet writing")
+        quietWriter.startSession(atSourceTime: CMTime(value: 20, timescale: 1))
+        for packet in 0..<4 {
+            let deadline = Date().addingTimeInterval(5)
+            while !quietInput.isReadyForMoreMediaData && Date() < deadline {
+                try await Task.sleep(nanoseconds: 2_000_000)
+            }
+            quiet.append(try sample(packet: packet, amplitude: 0))
+        }
+        quietInput.markAsFinished()
+        await quietWriter.finishWriting()
+        try check(quiet.samplesAppended == 4, "silent buffers still append")
+        try check(!quiet.heardSound, "digital silence must not register as heard")
 
         let asset = AVURLAsset(url: url)
         let tracks = try await asset.loadTracks(withMediaType: .audio)

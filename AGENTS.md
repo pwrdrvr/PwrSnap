@@ -816,8 +816,32 @@ Rules the surface keeps, and where each one lives:
   exactly one place to register a command and exactly one place to enforce
   auth + capability checks.
 - **TypeScript strict.** `tsconfig.base.json` has `strict`,
-  `verbatimModuleSyntax`, `isolatedModules`, and (per the deepening plan)
-  `exactOptionalPropertyTypes`.
+  `verbatimModuleSyntax`, `isolatedModules`, (per the deepening plan)
+  `exactOptionalPropertyTypes`, and `noUnusedLocals` + `noUnusedParameters`.
+- **Dead imports and locals are a build failure, and `tsc` is what catches
+  them.** There is no ESLint in this repo — no config, no dev dependency, and
+  `pnpm lint` has no ESLint step. `noUnusedLocals` + `noUnusedParameters` ride
+  `pnpm typecheck`, which `pnpm lint` already runs on every PR, so the check
+  costs no new dependency and no new CI step.
+  - This closes a real gap. A refactor in
+    [#585](https://github.com/pwrdrvr/PwrSnap/pull/585) extracted a hook and
+    left two imports behind in `VideoStage.tsx`, and `recording-audio.ts` kept
+    the dead *value* half of a mixed `import { x, type X }` after only the type
+    was still needed. Both survived a fully green CI run — 8 checks, 6121 tests
+    — and were caught by a human reading the diff. `TS6133` catches both
+    shapes, including the value-vs-type one.
+  - **The `_` prefix is an escape hatch for PARAMETERS ONLY.**
+    `noUnusedParameters` skips a parameter named `_foo`; `noUnusedLocals` does
+    NOT skip a local or an import named `_foo`. Use it for a callback that must
+    accept a positional argument it ignores. There is no escape hatch for a
+    dead import — delete it.
+  - A write-only private field counts as unused, which is the point: it is
+    state nothing reads. Delete the field and its assignments rather than
+    adding a read to quiet the compiler.
+  - The flags are all-or-nothing and cannot be scoped per directory, so they
+    apply to `e2e/**`, `scripts/**`, and `__tests__/**` too. That is deliberate
+    — an unused import in a test is the same stale-refactor signal as one in
+    `src/main`.
 - **Renderers stay sandboxed.** Every `BrowserWindow` is created with
   `contextIsolation: true, sandbox: true, nodeIntegration: false`. The Phase 6
   sizzle-composer preview player runs in a sandboxed renderer; render

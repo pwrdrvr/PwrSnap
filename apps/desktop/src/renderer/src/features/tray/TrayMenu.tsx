@@ -283,6 +283,17 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
   };
   const quickHk = activeHk("quickCapture");
   const videoHk = activeHk("videoCapture");
+  // Open Library is UNBOUND by default, so the header button's tooltip
+  // has to read live from settings rather than hard-coding a chord.
+  // (It used to advertise a flat "(⌘⇧L)" that main never registered —
+  // the button worked, the chord did nothing.) `activeHk` returns [] both
+  // when it's unbound and when registration failed, so the tooltip only
+  // ever promises a chord the OS actually handed us.
+  const openLibraryHk = activeHk("openLibrary");
+  const openLibraryTitle =
+    openLibraryHk.length > 0
+      ? `Open Library  (${openLibraryHk.join("")})`
+      : "Open Library";
 
   // Measure the popover's natural content height and tell main to
   // setContentSize the BrowserWindow to match. Mirrors the float-
@@ -440,7 +451,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
           <button
             className="ps-tray__hdr-btn"
             type="button"
-            title="Open Library"
+            title={openLibraryTitle}
             onClick={() => { void dispatch("library:focus", {}); }}
           >
             <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

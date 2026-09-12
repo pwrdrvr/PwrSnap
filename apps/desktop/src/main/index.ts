@@ -827,6 +827,14 @@ function handlerFor(kind: HotkeyKind): () => void {
         log.info("global hotkey fired", { kind });
         return runReshowLastFloatOver();
       };
+    case "openLibrary":
+      // Bring the Library forward (creating the window if it was
+      // closed). Same `library:focus` verb the tray's folder button
+      // dispatches; unbound by default (see the schema doc).
+      return () => {
+        log.info("global hotkey fired", { kind });
+        void runOpenLibrary();
+      };
   }
 }
 
@@ -1040,6 +1048,30 @@ function runReshowLastFloatOver(): void {
     setFloatOverState({ kind: "show-loaded", captureId: last.id, record: last });
   } catch (cause) {
     log.warn("re-show last float-over failed", {
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+  }
+}
+
+/** Open Library hotkey — raise the singleton Library window, creating
+ *  it if the user closed it. Routed through the bus (not
+ *  `bringLibraryForward` directly) so two-process mode dispatches it to
+ *  whichever process owns the window, same as the tray's folder button.
+ *  Rejections are swallowed + logged for the same reason
+ *  `runReshowLastFloatOver` swallows: this runs inside a globalShortcut
+ *  callback, where a throw has nowhere to go. */
+async function runOpenLibrary(): Promise<void> {
+  const log = getMainLogger("pwrsnap:shortcut");
+  try {
+    const result = await bus.dispatch("library:focus", {}, { principal: "ipc" });
+    if (!result.ok) {
+      log.warn("library:focus failed", {
+        code: result.error.code,
+        message: result.error.message
+      });
+    }
+  } catch (cause) {
+    log.warn("library:focus threw", {
       message: cause instanceof Error ? cause.message : String(cause)
     });
   }

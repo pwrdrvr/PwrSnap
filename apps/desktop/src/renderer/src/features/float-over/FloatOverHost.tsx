@@ -499,6 +499,20 @@ export function FloatOverHost({
           onDragPreset: (preset: "low" | "med" | "high") => startCaptureDrag(record.id, preset)
         });
 
+    // Shared by Edit and by the preview hover row's folder button.
+    // Hand off to the Library window's inline editor (Focus mode +
+    // Stage), not the standalone Edit Window: `library:openInLibrary`
+    // is the only "show me this capture in the Library" path there is —
+    // it raises the window and tells its renderer to navigate to the
+    // record in Focus (see open-file.ts, which uses it for
+    // double-clicked .pwrsnap files). The dismiss rides along either
+    // way: attention transfers to the Library, and leaving the toast
+    // open behind it is visual noise.
+    const openInLibraryAndDismiss = (): void => {
+      void dispatch("library:openInLibrary", { captureId: record.id });
+      void dispatch("float-over:dismiss", {});
+    };
+
     body = (
       <FloatOver
         key={record.id}
@@ -589,16 +603,8 @@ export function FloatOverHost({
           // resets us to IDLE.
           void dispatch("float-over:dismiss", {});
         }}
-        onEdit={() => {
-          // Hand off to the Library window's inline editor (Focus mode
-          // + Stage), not the standalone Edit Window. Library:open
-          // brings the Library forward and tells its renderer to
-          // navigate to this capture in Focus. Dismiss the toast as
-          // attention transfers — keeping it open behind the Library
-          // would be visual noise.
-          void dispatch("library:openInLibrary", { captureId: record.id });
-          void dispatch("float-over:dismiss", {});
-        }}
+        onEdit={openInLibraryAndDismiss}
+        onReveal={openInLibraryAndDismiss}
       />
     );
   }

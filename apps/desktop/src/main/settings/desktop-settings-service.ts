@@ -327,8 +327,8 @@ function defaultEditorSettings(): EditorSettings {
     },
     matchingText: {
       // "+ Add label" affordance appears after arrow placement by
-      // default. User can disable from Settings → Editor if it feels
-      // intrusive for their workflow.
+      // default. User can disable it from the EDITOR card on
+      // Settings → General if it feels intrusive for their workflow.
       enabled: true
     },
     sidebar: {
@@ -766,7 +766,10 @@ function parseV1(
     reshowFloatOver: pickString(
       hotkeys.reshowFloatOver,
       defaults.hotkeys.reshowFloatOver
-    )
+    ),
+    // `openLibrary` landed after v1 shipped; older files won't have it.
+    // pickString fills in the current default ("" = unbound).
+    openLibrary: pickString(hotkeys.openLibrary, defaults.hotkeys.openLibrary)
   };
   const storedDefaultsMigrationIndex =
     storedDefaultsMigrationVersion === undefined

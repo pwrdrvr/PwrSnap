@@ -223,6 +223,12 @@
   flex-shrink: 0;
 }
 .pss__top-btn {
+  /* `.pss__row-r` is a stretch column, so a bare button inside a Row
+     fills the row's full width. Every other Row control hugs via
+     align-self (.pss__seg, .pss__hk, .pss__select, .pss__switch); this
+     one was the outlier. Harmless in the header, where the parent is a
+     row flexbox. */
+  align-self: flex-start;
   height: 28px;
   padding: 0 12px;
   background: var(--bg-panel);

@@ -883,6 +883,7 @@ export function buildTrayContextMenuTemplate(
 ): MenuItemConstructorOptions[] {
   const quickCaptureAccelerator = activeTrayAccelerator("quickCapture", platform);
   const videoCaptureAccelerator = activeTrayAccelerator("videoCapture", platform);
+  const openLibraryAccelerator = activeTrayAccelerator("openLibrary", platform);
   // Top of menu changes while recording — the user almost certainly
   // came here to stop, so make Stop the first item and demote the
   // Capture row. Cancel sits next to Stop so a botched recording
@@ -940,12 +941,19 @@ export function buildTrayContextMenuTemplate(
     { type: "separator" },
     {
       // Same conditional-accelerator treatment as Quick Capture and
-      // Record Video above. `openLibrary` ships unbound, so this usually
-      // renders bare — but once the user binds a chord it has to show up
-      // here too, or the native menu goes back to hiding a real binding.
+      // Record Video above — including `activeTrayAccelerator`, which is
+      // what keeps this label honest: it omits the chord unless main
+      // currently OWNS that registration, and re-parses the persisted
+      // spelling for this platform. Reading `currentTrayHotkeys` raw
+      // here would print a chord `globalShortcut.register` refused,
+      // which is the same fiction the hard-coded "(⌘⇧L)" tooltip was.
+      // `openLibrary` ships unbound, so this usually renders bare.
       label: "Open Library",
-      ...(currentTrayHotkeys.openLibrary !== ""
-        ? { accelerator: currentTrayHotkeys.openLibrary }
+      ...(openLibraryAccelerator !== null
+        ? {
+            accelerator: openLibraryAccelerator,
+            ...(platform !== "darwin" ? { registerAccelerator: false } : {})
+          }
         : {}),
       click: () => {
         void bus.dispatch("library:focus", {}, { principal: "ipc" });

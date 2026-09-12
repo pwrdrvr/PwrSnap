@@ -26,13 +26,15 @@
 // why the pair needs a surface at all.
 //
 // That also means this page is NOT where a microphone grant has to be
-// obtained. The selector's chip renders an `ask` state with an inline
-// Allow that fires the OS prompt at capture time, and a `denied` state
-// whose Settings action opens System Permissions and re-probes on
-// focus; `record-from-selection.ts` puts the same Open System
-// Permissions button on the preflight failure dialog. So the toggle
-// saves the preference unconditionally and the blocked row below is a
-// shortcut, not a required errand.
+// obtained. The selector's chip (pwrdrvr/PwrSnap#496 — this page and
+// that one are meant to land together, and the per-recording "Press M
+// / A" copy below describes ITS chips) renders an `ask` state with an
+// inline Allow that fires the OS prompt at capture time, and a `denied`
+// state whose Settings action opens System Permissions and re-probes on
+// focus. Independently of #496, `record-from-selection.ts` already puts
+// an Open System Permissions button on the preflight failure dialog. So
+// the toggle saves the preference unconditionally and the blocked row
+// below is a shortcut, not a required errand.
 //
 // The EDITOR card hosts `editor.matchingText.enabled`. There is no
 // Settings → Editor page (see settings-categories.ts), and the schema
@@ -40,7 +42,7 @@
 // "+ Add label" chip was hand-editing pwrsnap-settings.json. One card
 // here beats a page for a single toggle.
 
-import { useEffect, useState, type ReactElement } from "react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
 import {
   type AppearanceTheme,
   type LaunchAtLoginStatus,
@@ -106,11 +108,24 @@ export function GeneralPage(): ReactElement {
   // and would mean this page had to own a grant recovery flow that three
   // other surfaces already own better.
   //
-  // Off darwin `permissions:request` is a no-op that returns "granted",
-  // so this costs nothing there.
+  // The `audioSupported` guard below is load-bearing, not an
+  // optimization: off darwin `requestPermission` is unsupported and the
+  // handler returns `"unknown"` — never `"granted"` — so routing the
+  // non-macOS path through it would light the blocked row on every
+  // Windows and Linux opt-in.
   const [micDenied, setMicDenied] = useState(false);
+  // Monotonic guard for the two async probes below. AGENTS.md
+  // §"Settings substrate": "Late resolutions are dropped." Without it,
+  // toggling ON and then OFF before the OS prompt is answered lets the
+  // ON probe's `denied` land afterwards and paint the blocked row under
+  // a switch that now reads off.
+  const micProbeSeq = useRef(0);
   const onMicrophoneChange = (next: boolean): void => {
     if (!ready) return;
+    // Bump on EVERY flip, including off — a toggle is exactly what makes
+    // an in-flight probe's answer stale, so the off path has to
+    // invalidate it too, not just decline to start one.
+    const seq = (micProbeSeq.current += 1);
     if (!next) {
       setMicDenied(false);
       void patch({ recording: { includeMicrophone: false } });
@@ -130,9 +145,32 @@ export function GeneralPage(): ReactElement {
       const result = await dispatch("permissions:request", {
         permission: "microphone"
       });
+      if (micProbeSeq.current !== seq) return;
       setMicDenied(!(result.ok && result.value.status === "granted"));
     })();
   };
+
+  // The shortcut row's whole point is that the user can go settle the
+  // grant elsewhere — in System Permissions, or at capture time. So it
+  // has to notice when they have. `permissions:readiness` READS the
+  // status without prompting (unlike `permissions:request`), which is
+  // what makes it safe to run on every focus; same pattern
+  // SystemPermissionsPage uses to catch an out-of-window grant change.
+  // Without this the row keeps claiming access is denied after it has
+  // been granted, with no affordance that clears it.
+  useEffect(() => {
+    if (!micDenied) return;
+    const reprobe = (): void => {
+      const seq = (micProbeSeq.current += 1);
+      void (async () => {
+        const result = await dispatch("permissions:readiness", {});
+        if (micProbeSeq.current !== seq) return;
+        if (result.ok && result.value.microphone === "granted") setMicDenied(false);
+      })();
+    };
+    window.addEventListener("focus", reprobe);
+    return () => window.removeEventListener("focus", reprobe);
+  }, [micDenied]);
 
   // Live OS-side registration state, distinct from the saved toggle —
   // macOS/Windows let the user disable a registered login item OS-side

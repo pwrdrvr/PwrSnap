@@ -224,6 +224,56 @@ describe("tray context menu", () => {
     expect(template[0]).not.toHaveProperty("accelerator");
   });
 
+  // Open Library is the newest item to carry a conditional accelerator.
+  // It ships unbound, so the interesting cases are the two ways a BOUND
+  // chord must still not be advertised — the same fiction the tooltip's
+  // hard-coded "(⌘⇧L)" was, one surface over.
+  test("shows Open Library's accelerator only while main owns the registration", () => {
+    const hotkeys = {
+      ...DEFAULT_HOTKEYS,
+      openLibrary: "Control+Alt+Shift+L"
+    };
+    setActiveTrayHotkeys(hotkeys);
+
+    const active = buildTrayContextMenuTemplate(undefined, "win32").find(
+      (item) => item.label === "Open Library"
+    );
+    expect(active).toMatchObject({
+      accelerator: "Control+Alt+Shift+L",
+      // Display-only off macOS: PwrSnap's transactional manager already
+      // owns this chord globally, and letting Electron install a second
+      // menu-owned registration for it is a double claim.
+      registerAccelerator: false
+    });
+
+    setTrayHotkeys(
+      hotkeys,
+      () => registrationStatus(hotkeys, {
+        openLibrary: {
+          key: "openLibrary",
+          accelerator: hotkeys.openLibrary,
+          state: "inactive",
+          failure: { code: "unavailable", message: "Taken by another application." }
+        }
+      })
+    );
+
+    const refused = buildTrayContextMenuTemplate(undefined, "win32").find(
+      (item) => item.label === "Open Library"
+    );
+    expect(refused).not.toHaveProperty("accelerator");
+  });
+
+  test("Open Library renders bare at its shipped unbound default", () => {
+    setActiveTrayHotkeys({ ...DEFAULT_HOTKEYS });
+
+    const item = buildTrayContextMenuTemplate(undefined, "darwin").find(
+      (entry) => entry.label === "Open Library"
+    );
+    expect(item).toBeDefined();
+    expect(item).not.toHaveProperty("accelerator");
+  });
+
   test("normalizes an active Windows accelerator before displaying it", () => {
     const hotkeys = {
       ...DEFAULT_HOTKEYS,

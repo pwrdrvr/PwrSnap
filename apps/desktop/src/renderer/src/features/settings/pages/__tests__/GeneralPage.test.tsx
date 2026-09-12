@@ -35,7 +35,14 @@ type AnyResult = { ok: true; value: unknown } | { ok: false; error: { message: s
 function installFakeApi(
   status: LaunchAtLoginStatus,
   platform: NodeJS.Platform = "darwin",
-  opts: { microphoneStatus?: "granted" | "denied" } = {}
+  opts: {
+    microphoneStatus?: "granted" | "denied";
+    /** Held promise for `permissions:request`, so a test can toggle
+     *  again while the OS prompt is still unanswered. */
+    microphoneGate?: Promise<void>;
+    /** What a non-prompting `permissions:readiness` read reports. */
+    readinessMicrophone?: "granted" | "denied";
+  } = {}
 ): {
   calls: { name: string; req: unknown }[];
   pushEvent: (channel: string, payload: unknown) => void;
@@ -50,7 +57,14 @@ function installFakeApi(
         calls.push({ name, req });
         if (name === "app:launchAtLoginStatus") return { ok: true, value: status };
         if (name === "permissions:request") {
+          if (opts.microphoneGate !== undefined) await opts.microphoneGate;
           return { ok: true, value: { status: opts.microphoneStatus ?? "granted" } };
+        }
+        if (name === "permissions:readiness") {
+          return {
+            ok: true,
+            value: { microphone: opts.readinessMicrophone ?? "denied" }
+          };
         }
         return { ok: true, value: undefined };
       },
@@ -79,7 +93,7 @@ async function renderGeneral(
   settings: Settings,
   status: LaunchAtLoginStatus,
   platform: NodeJS.Platform = "darwin",
-  opts: { microphoneStatus?: "granted" | "denied" } = {}
+  opts: Parameters<typeof installFakeApi>[2] = {}
 ): Promise<{
   calls: { name: string; req: unknown }[];
   pushEvent: (channel: string, payload: unknown) => void;
@@ -240,6 +254,74 @@ describe("GeneralPage — recording audio", () => {
     expect(container?.textContent).toContain("macOS hasn't granted microphone access");
     // Not an errand: the row must not read as a blocking prerequisite.
     expect(container?.textContent).not.toContain("action required");
+  });
+
+  // AGENTS.md §"Settings substrate": "Late resolutions are dropped."
+  // The OS prompt leaves the Settings window interactive, so the user
+  // can flip back off before answering it.
+  test("a probe that resolves after the user toggles back off is ignored", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await renderGeneral(baseSettings, healthyStatus, "darwin", {
+      microphoneStatus: "denied",
+      microphoneGate: gate
+    });
+    await act(async () => {
+      findSwitchIn("Include your microphone").click();
+    });
+    // The seed write lands immediately (that is the point of writing
+    // before probing), so reflect it back through the context the way a
+    // real settings broadcast would — otherwise the switch stays off and
+    // the second click repeats the first.
+    contextValue = {
+      settings: {
+        ...baseSettings,
+        recording: { ...baseSettings.recording, includeMicrophone: true }
+      },
+      patch: patchMock as unknown as UseSettingsValue["patch"]
+    };
+    await act(async () => {
+      root?.render(createElement(GeneralPage));
+    });
+    // Still waiting on the OS prompt — the user changes their mind.
+    await act(async () => {
+      findSwitchIn("Include your microphone").click();
+    });
+    await act(async () => {
+      release();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(patchMock).toHaveBeenCalledWith({ recording: { includeMicrophone: false } });
+    // Without the seq guard the stale `denied` lands here and paints a
+    // "grant me the microphone" row under a switch that reads off.
+    expect(container?.textContent).not.toContain("macOS hasn't granted microphone access");
+  });
+
+  // The row exists so the user can go settle the grant elsewhere. If it
+  // cannot notice that they did, it is a dead end that outlives its own
+  // reason for existing.
+  test("the shortcut row clears once the grant is settled outside the window", async () => {
+    await renderGeneral(baseSettings, healthyStatus, "darwin", {
+      microphoneStatus: "denied",
+      readinessMicrophone: "granted"
+    });
+    await act(async () => {
+      findSwitchIn("Include your microphone").click();
+      await Promise.resolve();
+    });
+    expect(container?.textContent).toContain("macOS hasn't granted microphone access");
+
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container?.textContent).not.toContain("macOS hasn't granted microphone access");
   });
 
   test("turning the microphone back off clears the shortcut row and persists", async () => {

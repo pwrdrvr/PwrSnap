@@ -111,7 +111,21 @@ extraResources:
 
 electronFuses:
   runAsNode: false
-  enableCookieEncryption: true
+  # MUST stay false. This fuse encrypts the Chromium cookie store, and to do
+  # that Electron fetches the "PwrSnap Safe Storage" key from the login
+  # keychain when the network service starts -- before any window exists, on
+  # every launch. PwrSnap has no cookies to protect: every window loads
+  # file:// or data:, and the only outbound HTTP comes from the main process
+  # via Node fetch, which has no Chromium cookie jar. So the fuse bought
+  # nothing and cost the one thing users notice -- a macOS keychain password
+  # prompt at startup for any binary not already on that keychain item's
+  # access list (a rebuilt local package, a second install, a dev Electron).
+  # Turning it off leaves ONE keychain consumer: DesktopSecretStore, which
+  # runs only when the user saves an API key or approves an agent pairing --
+  # moments our own UI can explain first.
+  # See docs/solutions/2026-09-11-startup-keychain-prompt-cookie-encryption.md.
+  # Pinned by scripts/check-electron-fuses-policy.mjs.
+  enableCookieEncryption: false
   enableNodeOptionsEnvironmentVariable: false
   enableNodeCliInspectArguments: false
   enableEmbeddedAsarIntegrityValidation: true

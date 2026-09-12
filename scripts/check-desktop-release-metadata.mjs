@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { checkAppMetadataPolicy } from "./check-app-metadata-policy.mjs";
+import { checkElectronFusesPolicy } from "./check-electron-fuses-policy.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const desktopPackagePath = resolve(repoRoot, "apps/desktop/package.json");
@@ -116,6 +117,15 @@ if (desktopPackage.version !== expectedVersion) {
 // that introduces it; re-running it here keeps a release tag from shipping one
 // that reached main some other way.
 for (const failure of checkAppMetadataPolicy(repoRoot)) {
+  fail(failure);
+}
+
+// Fuses are burned into the packaged binary and cannot be read back from the
+// running app, so a wrong one is invisible until an installer ships. Same
+// belt-and-braces reasoning as the metadata check above: the rule lives in
+// check-electron-fuses-policy.mjs and runs in `pnpm lint`, and re-running it
+// here stops a tag from shipping a flip that reached main another way.
+for (const failure of checkElectronFusesPolicy(repoRoot)) {
   fail(failure);
 }
 

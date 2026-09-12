@@ -1368,6 +1368,34 @@ Rules:
 Full investigation, measurements, and the probe recipe:
 [docs/solutions/2026-09-05-macos-26-legacy-icon-light-plate.md](docs/solutions/2026-09-05-macos-26-legacy-icon-light-plate.md).
 
+### Electron fuses are pinned — including one that is OFF on purpose
+
+Fuses are burned into the packaged binary and **cannot be read back from
+the running app**, so no unit test, E2E run, or review of
+`apps/desktop/src` can observe a wrong one. The only feedback is a shipped
+installer. [scripts/check-electron-fuses-policy.mjs](scripts/check-electron-fuses-policy.mjs)
+therefore pins the posture and runs in `pnpm lint` (every PR) *and* from
+`pnpm release:check`.
+
+**`enableCookieEncryption` must stay `false`, and it is the one entry that
+looks backwards.** Enabling it makes Electron fetch the app's Safe Storage
+key from the login keychain when the network service starts — before any
+window exists, on every launch — which surfaces as a macOS keychain
+*password* prompt for any binary not already on that keychain item's access
+list (a rebuilt local package, a second install, a dev Electron). PwrSnap
+stores no cookies: every window loads `file://` or `data:`, outbound HTTP
+from main goes through Node `fetch` (undici, no Chromium cookie jar), and
+nothing calls `session.cookies`. So it protected an empty database and cost
+the single scariest thing a new user sees. Every other pinned fuse is a
+hardening one; do not "restore" this one to match them. Revisit only if a
+`BrowserWindow` starts loading a remote origin that sets real cookies —
+and note the transition is one-way, so a store encrypted under the fuse
+becomes unreadable if it is later turned off.
+
+Full mechanism, the `security dump-keychain` evidence, and why the prompt
+cannot be predicted or pre-explained from Electron:
+[docs/solutions/2026-09-11-startup-keychain-prompt-cookie-encryption.md](docs/solutions/2026-09-11-startup-keychain-prompt-cookie-encryption.md).
+
 ### `package.json` `description` is shipped UI on Windows
 
 **It is not inert metadata.** electron-builder reads

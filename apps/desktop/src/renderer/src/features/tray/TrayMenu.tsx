@@ -275,7 +275,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
   // the attempt itself (`capture-video-handler`), so the safe default for
   // "we do not know yet" is to let the click through.
   const canRecordVideo =
-    recordingState === null || canStartRecordingAttempt(recordingState);
+    recordingState?.phase === undefined || canStartRecordingAttempt(recordingState);
 
   const hotkeyFingerprint = Object.values(hotkeys).join("\u0000");
   useEffect(() => {

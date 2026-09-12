@@ -211,6 +211,37 @@ export type RecordingState =
       displayId: number;
     };
 
+/**
+ * How the recording frame is allowed to relate to the recorded rect.
+ *
+ * `straddle` — the overlay may paint INSIDE the rect, because the
+ *   platform can hide one of our windows from the recorder that is
+ *   running (macOS: `setContentProtection(true)` →
+ *   `NSWindow.sharingType = .none`, which ScreenCaptureKit honours).
+ * `outset` — every lit pixel must be outside the rect. Windows records
+ *   through FFmpeg `gdigrab`, which reads the desktop DC and bakes in
+ *   whatever is over the capture region; Linux has no content-
+ *   protection concept at all. This is the safe default, and the
+ *   straddle posture is additive on top of it.
+ */
+export type RecordingFrameMode = "straddle" | "outset";
+
+/** Lifecycle of the frame itself, collapsed from `RecordingState.phase`. */
+export type RecordingFramePhase = "arming" | "recording" | "stopping";
+
+/**
+ * Main → the recording-frame renderer. Distances are CSS px from each
+ * edge of that window's content box to the recorded rect, so the
+ * renderer can position the frame without knowing anything about
+ * displays or coordinate spaces. A side whose band was clipped by the
+ * display edge arrives as `0`.
+ */
+export type RecordingFrameLayout = {
+  inset: { left: number; top: number; right: number; bottom: number };
+  mode: RecordingFrameMode;
+  phase: RecordingFramePhase;
+};
+
 export type RecordingFailureCode =
   | "recorder_unavailable"
   | "recorder_start_failed"
@@ -2600,6 +2631,16 @@ export type Settings = {
      *  default preserves that. The pre-capture selector toggle can
      *  override it per recording. */
     videoCaptureCursor: boolean;
+    /** Whether a tangerine frame is drawn around the recorded rect for
+     *  the duration of a video capture. Defaults ON: without it nothing
+     *  on screen says which pixels are being recorded — the HUD is
+     *  content-protected and anchored to the top of the display, not to
+     *  the subject.
+     *
+     *  Turning it off is a real preference (some users find any overlay
+     *  distracting), not a workaround: the frame never reaches the
+     *  recorded file on any platform. */
+    showRegionFrame: boolean;
     /** Whether IMAGE captures include the mouse cursor. Defaults ON.
      *  Reserved for the Phase 3 image-cursor work — the field is
      *  persisted now so adding it later needs no schema change, but

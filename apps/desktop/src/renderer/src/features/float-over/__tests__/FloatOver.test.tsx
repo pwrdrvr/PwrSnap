@@ -83,6 +83,7 @@ const baseSettings: Settings = {
     includeSystemAudio: false,
     includeMicrophone: false,
     videoCaptureCursor: true,
+    showRegionFrame: true,
     imageCaptureCursor: true,
     lastRoutedPermissionFingerprint: "",
     screenCapturePrompted: false

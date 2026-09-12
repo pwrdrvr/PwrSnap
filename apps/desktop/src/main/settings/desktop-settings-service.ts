@@ -256,6 +256,10 @@ export function defaultSettings(
       // Image cursor capture is settings-only (consumed by the still
       // pipeline, never by a recording), so it stays local.
       imageCaptureCursor: true,
+      // The region frame is ON: a recording with no on-screen boundary
+      // was the reported gap, and the overlay never reaches the file on
+      // any platform. Off is a taste preference, not a safety valve.
+      showRegionFrame: true,
       lastRoutedPermissionFingerprint: "",
       // Fresh install has never triggered the macOS Screen Recording
       // prompt, so the System Permissions page + the capture gate show
@@ -945,6 +949,11 @@ function parseV1(
       // pre-setting behavior (video bakes in the cursor).
       videoCaptureCursor: pickBoolean(recording.videoCaptureCursor, defaults.recording.videoCaptureCursor),
       imageCaptureCursor: pickBoolean(recording.imageCaptureCursor, defaults.recording.imageCaptureCursor),
+      // `showRegionFrame` landed with the recording-frame overlay; older
+      // files won't have it. pickBoolean fills the ON default, so an
+      // existing install gains the frame on first launch after the
+      // update rather than having to find the switch.
+      showRegionFrame: pickBoolean(recording.showRegionFrame, defaults.recording.showRegionFrame),
       lastRoutedPermissionFingerprint: pickString(
         recording.lastRoutedPermissionFingerprint,
         defaults.recording.lastRoutedPermissionFingerprint

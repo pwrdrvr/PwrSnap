@@ -138,6 +138,7 @@ function makeSettings(matchingTextEnabled = true): Settings {
       includeSystemAudio: false,
       includeMicrophone: false,
       videoCaptureCursor: true,
+      showRegionFrame: true,
       imageCaptureCursor: true,
       lastRoutedPermissionFingerprint: "",
       screenCapturePrompted: false

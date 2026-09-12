@@ -10,6 +10,7 @@
 @import "./documents.css";
 @import "./logs.css";
 @import "./local-agent-consent.css";
+@import "./recording-frame.css";
 
 /* Thin, themed scrollbars on every scroll container — sidebar, grid,
    inspector rail, reel, chat transcript, settings, dropdowns, … — in
@@ -146,7 +147,8 @@ textarea,
    recorded surface through a translucent dim. */
 body[data-stage="tray"],
 body[data-stage="float-over"],
-body[data-stage="recording-controller"] {
+body[data-stage="recording-controller"],
+body[data-stage="recording-frame"] {
   background: transparent;
 }
 
@@ -154,7 +156,9 @@ body[data-stage="recording-controller"] {
    backdrops; `#root` fills the BrowserWindow it's hosted in so the
    overlay covers the entire rect. */
 body[data-stage="recording-controller"],
-body[data-stage="recording-controller"] #root {
+body[data-stage="recording-controller"] #root,
+body[data-stage="recording-frame"],
+body[data-stage="recording-frame"] #root {
   background: transparent;
   width: 100%;
   height: 100%;

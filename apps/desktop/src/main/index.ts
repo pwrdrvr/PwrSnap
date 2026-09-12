@@ -110,6 +110,10 @@ import {
   disposeRecordingController,
   installRecordingController
 } from "./recording/recording-controller";
+import {
+  disposeRecordingFrame,
+  installRecordingFrame
+} from "./recording/recording-frame";
 import { readRecordingReadiness } from "./recording/recording-permissions";
 import { getRecordingService } from "./recording/recording-service";
 import { getRecordingState, isRecordingActive } from "./recording/recording-state";
@@ -1296,6 +1300,7 @@ export function bootstrapApp(): void {
       disposeTray,
       disposeFloatOver,
       disposeRecordingController,
+      disposeRecordingFrame,
       disposeRegionSelector,
       disposeFocusSink,
       destroyTextBakePool
@@ -1875,6 +1880,9 @@ export function bootstrapApp(): void {
     // a BrowserWindow on the first state transition.
     if (role !== "library") {
       installRecordingController();
+      // Region frame — same install gate and the same reason: it
+      // creates a BrowserWindow on the first non-idle transition.
+      installRecordingFrame();
     }
     // Dev seeder — gated on DEV at static-substitution time + a
     // belt-and-suspenders runtime NODE_ENV check. Production builds

@@ -559,6 +559,7 @@ export function validateSettingsWrite(
       "includeMicrophone",
       "videoCaptureCursor",
       "imageCaptureCursor",
+      "showRegionFrame",
       "screenCapturePrompted"
     ] as const) {
       const v = recording[key];

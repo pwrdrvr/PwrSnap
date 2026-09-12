@@ -33,7 +33,7 @@
 // COUNT changes, so a steady voice re-renders a couple of times a
 // second and silence re-renders not at all.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 /** Number of lit segments the meter can show. Matches SourceChip.css. */
 const METER_SEGMENTS = 7;

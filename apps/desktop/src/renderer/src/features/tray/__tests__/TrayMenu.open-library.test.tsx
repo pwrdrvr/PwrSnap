@@ -10,7 +10,7 @@
 
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import {
   DEFAULT_HOTKEYS,
   type HotkeyRegistrationStatusSnapshot,

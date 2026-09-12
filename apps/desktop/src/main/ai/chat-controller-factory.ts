@@ -17,7 +17,6 @@ import type {
 } from "@pwrdrvr/agent-client";
 import type { AgentBackend, NormalizedApprovalDecision } from "@pwrdrvr/agent-core";
 import {
-  AcpAgentClient,
   strategyByBackendId,
   type AcpMcpServerConfig,
   type DiscoveredAcpAgent,

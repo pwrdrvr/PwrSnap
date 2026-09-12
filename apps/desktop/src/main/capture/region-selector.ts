@@ -40,8 +40,7 @@ import {
   recordSnapshotCanvasUpload,
   releaseAllSnapshots,
   releaseSnapshot,
-  type ScreenSnapshot,
-  type SelectorRawSnapshotDescriptor
+  type ScreenSnapshot
 } from "./screen-snapshot";
 import { isExtentRect, MAX_SELECTOR_EXTENTS } from "./extent-mask";
 import { hideTrayPopoverIfVisible } from "../tray";

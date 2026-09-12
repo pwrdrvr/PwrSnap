@@ -66,40 +66,6 @@ type AiRunUsageRow = {
 
 type AiRunUsageListRow = AiRunJoinedRow & Partial<AiRunUsageRow>;
 
-type AiThreadUsageRow = {
-  thread_id: string;
-  surface: AiUsageThreadSurface;
-  anchor_id: string | null;
-  name: string;
-  task: string;
-  trigger_source: AiEnrichmentTriggerSource;
-  turn_count: number;
-  usage_unavailable_count: number;
-  price_unavailable_count: number;
-  last_turn_id: string | null;
-  model: string | null;
-  model_provider: string | null;
-  service_tier: string | null;
-  total_tokens: number;
-  input_tokens: number;
-  cached_input_tokens: number;
-  output_tokens: number;
-  reasoning_output_tokens: number;
-  model_context_window: number | null;
-  currency: "USD" | null;
-  catalog_version: string | null;
-  pricing_source_url: string | null;
-  priced_at: string | null;
-  rate_snapshot_json: string | null;
-  uncached_input_tokens: number;
-  estimated_uncached_input_cost_micros: number;
-  estimated_cached_input_cost_micros: number;
-  estimated_output_cost_micros: number;
-  estimated_total_cost_micros: number;
-  created_at: string;
-  updated_at: string;
-};
-
 type AiUsageActivityListRow = AiRunUsageListRow & {
   subject_kind: "run" | "thread";
   thread_id: string | null;

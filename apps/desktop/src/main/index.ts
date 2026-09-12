@@ -30,7 +30,6 @@ import {
   pickRegion,
   preWarmRegionSelector
 } from "./capture/region-selector";
-import { activateApp } from "./capture/window-list";
 import { startRecordingFromSelection } from "./recording/record-from-selection";
 import { guardScreenCapture } from "./capture/screen-permission-gate";
 import { ensureCapturesDirReady } from "./capture/capture-storage-gate";

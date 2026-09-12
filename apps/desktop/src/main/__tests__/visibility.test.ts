@@ -31,6 +31,24 @@ const W = (id: number, x: number, y: number, width: number, height: number): W =
   bounds: { x, y, width, height }
 });
 
+describe("pointInRect", () => {
+  test("a point inside the rect is inside", () => {
+    expect(pointInRect(R(0, 0, 100, 100), 50, 50)).toBe(true);
+  });
+  test("edges are INCLUSIVE — unlike rectsIntersect's half-open rects", () => {
+    // pickWindowAt hit-tests a cursor position, so a click exactly on a
+    // window's right/bottom edge must still land on that window.
+    expect(pointInRect(R(0, 0, 100, 100), 0, 0)).toBe(true);
+    expect(pointInRect(R(0, 0, 100, 100), 100, 100)).toBe(true);
+  });
+  test("a point past any edge is outside", () => {
+    expect(pointInRect(R(0, 0, 100, 100), 101, 50)).toBe(false);
+    expect(pointInRect(R(0, 0, 100, 100), 50, 101)).toBe(false);
+    expect(pointInRect(R(0, 0, 100, 100), -1, 50)).toBe(false);
+    expect(pointInRect(R(0, 0, 100, 100), 50, -1)).toBe(false);
+  });
+});
+
 describe("rectsIntersect", () => {
   test("overlapping rects intersect", () => {
     expect(rectsIntersect(R(0, 0, 100, 100), R(50, 50, 100, 100))).toBe(true);

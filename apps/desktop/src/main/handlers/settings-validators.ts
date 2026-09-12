@@ -923,13 +923,6 @@ function validateChatPatch(raw: unknown): PwrSnapError | null {
 // Unknown surface keys are rejected so a buggy/forged renderer can't
 // stash arbitrary blobs under `ai.defaults`.
 
-/** Shape check for a Codex provider/model token. Same alphabet as
- *  `isCodexCaptionModel` but tolerant of the empty-string clear
- *  sentinel (checked separately by the caller). */
-function isAiTokenShape(value: string): boolean {
-  return value.length > 0 && value.length <= 120 && /^[A-Za-z0-9._:/-]+$/.test(value);
-}
-
 /** Shape check for a per-surface `model` id. UNLIKE Codex tokens, an ACP
  *  agent's model id is an OPAQUE, agent-advertised string we persist verbatim
  *  and only feed back to its `session/set_model` — never a path/shell/Codex

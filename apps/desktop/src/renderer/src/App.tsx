@@ -125,7 +125,7 @@ export function App() {
 
   const app = (() => {
     if (STAGE === "tray") {
-      return <TrayMenu activeMode="auto" />;
+      return <TrayMenu />;
     }
     if (STAGE === "float-over") {
       return <FloatOverHost />;

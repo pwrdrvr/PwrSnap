@@ -8,7 +8,7 @@
 // up the new command for free.
 
 import type { BundleLayerNode } from "./bundle-manifest-schema-v2";
-import type { CaptureEnrichment, SuggestedTag, AiRunStatus } from "./ai-enrichment-schemas";
+import type { CaptureEnrichment, AiRunStatus } from "./ai-enrichment-schemas";
 
 export type CaptureInvocationOrigin =
   | "global_hotkey.quick_capture"

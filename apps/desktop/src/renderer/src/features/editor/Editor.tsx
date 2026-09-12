@@ -44,7 +44,6 @@ import type {
   HighlightToolStyle,
   Overlay,
   OverlayOutlineAutoColor,
-  OverlayOutlineMode,
   OverlayRow,
   PwrSnapError,
   Result,
@@ -144,10 +143,7 @@ import {
 import {
   MIN_DRAG_LENGTH,
   rectFromDrag,
-  type Draft,
-  type DraftArrow,
-  type DraftShape,
-  type DraftText
+  type Draft
 } from "./editor-types";
 import type { PasteImagePosition } from "./usePasteImage";
 import { useDropImage } from "./useDropImage";
@@ -248,6 +244,11 @@ export type LayersPanelApi = {
    *  changing the active drawing tool's defaults. */
   updateLayerStyle: (id: string, field: string, value: unknown) => void;
 };
+
+/** Multiplier for one ⌘+ / ⌘- press. Deliberately NOT ZoomMenu's
+ *  `ZOOM_STEP` (1.2): the keyboard steps coarser than the +/- buttons.
+ *  ⌘- uses the reciprocal so a press pair returns to the original scale. */
+const KEYBOARD_ZOOM_STEP = 1.25;
 
 const STYLED_TOOLS: ReadonlySet<Tool> = new Set<Tool>([
   "arrow",
@@ -6366,10 +6367,10 @@ function EditorLoaded({
         zoom.resetToFit();
       } else if (shortcut === "in") {
         e.preventDefault();
-        zoom.zoomBy(1.25);
+        zoom.zoomBy(KEYBOARD_ZOOM_STEP);
       } else if (shortcut === "out") {
         e.preventDefault();
-        zoom.zoomBy(1 / 1.25);
+        zoom.zoomBy(1 / KEYBOARD_ZOOM_STEP);
       }
     }
     window.addEventListener("keydown", onKey);

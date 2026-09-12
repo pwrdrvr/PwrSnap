@@ -53,7 +53,6 @@ import {
 import { DeleteConfirm } from "../shared/DeleteConfirm";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import type { CopyPreset } from "../shared/CopyButton";
-import type { Tool } from "../editor/editor-tools";
 import { useEditorToolState } from "../editor/useEditorToolState";
 import { DEFAULT_BLUR_STYLE, type BlurStyle } from "@pwrsnap/shared";
 import {

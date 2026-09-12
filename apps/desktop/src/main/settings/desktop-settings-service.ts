@@ -7,7 +7,7 @@
 // one promise chain and replace the snapshot only after rename succeeds.
 
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import type {
   AcpAgentPreference,
   AcpSettings,

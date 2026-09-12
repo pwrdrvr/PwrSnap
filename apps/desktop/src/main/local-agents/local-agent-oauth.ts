@@ -21,10 +21,7 @@ import type {
   LocalAgentCapability,
   LocalAgentOAuthClient
 } from "@pwrsnap/shared";
-import {
-  LOCAL_AGENT_CAPABILITIES,
-  isLocalAgentCapability
-} from "@pwrsnap/shared";
+import { isLocalAgentCapability } from "@pwrsnap/shared";
 import {
   LocalAgentGrantError,
   type LocalAgentGrantService

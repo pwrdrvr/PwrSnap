@@ -79,7 +79,6 @@ export type SequenceSceneCardProps = {
   scene: SizzleScene;
   idx: number;
   sceneCount: number;
-  captureMap: Map<string, CaptureRecord>;
   onEditScene: (patch: Partial<SizzleScene>) => void;
   onPickSequenceBeat: () => void;
   /** Seek the ONE reel player to this scene and play. There is no
@@ -96,7 +95,6 @@ export function SequenceSceneCard(props: SequenceSceneCardProps): ReactElement {
     scene,
     idx,
     sceneCount,
-    captureMap,
     onEditScene,
     onPickSequenceBeat,
     onPlayFrom,

@@ -1,4 +1,3 @@
-import { BrowserWindow, app } from "electron";
 import {
   AcceptAllDraftsRequestSchema,
   AcceptDescriptionRequestSchema,
@@ -602,7 +601,9 @@ export function registerCodexHandlers(params?: {
     // Codex; "acp:<id>" → an ACP agent). The selected model is resolved against
     // that backend so an ACP run carries its OWN model id (or "" → agent
     // default), not a Codex fallback. Computed here so the run record reports
-    // the model that will actually run.
+    // the model that will actually run — and so it is SNAPSHOT at enqueue
+    // time. Re-reading the setting inside `runCaptureEnrichment` would mean a
+    // Settings flip mid-run silently swaps providers and skews run metrics.
     const enrichmentAgent = enrichmentAcpAgentId(settings);
     const run = createAiRun({
       captureId: capture.id,
@@ -622,12 +623,6 @@ export function registerCodexHandlers(params?: {
     });
     const enrichment = setLatestEnrichmentRun(capture.id, run.id);
     broadcastAiRunUpdated({ run, enrichment });
-    // Snapshot the caption-model setting at enqueue time. The user can
-    // flip the picker mid-run, but the model passed to `thread/start`
-    // must match what the run record reports — re-reading it inside
-    // `runCaptureEnrichment` would mean a Settings flip during a run
-    // silently swaps providers and skews run-level metrics.
-    const captionModel = settings.codex.captionModel;
     // Source-path resolution (re-extracting source.png from the
     // bundle when Storage → Clear/Trim wiped the per-capture cache)
     // happens INSIDE runCaptureEnrichment so the extraction cost

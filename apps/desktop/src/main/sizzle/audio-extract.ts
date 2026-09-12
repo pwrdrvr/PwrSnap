@@ -42,15 +42,30 @@ function coalesce(key: string, work: () => Promise<string>): Promise<string> {
   return pending;
 }
 
-/** FFmpeg only sees a unique staging file. Readers only see complete media. */
-async function publishMedia(outPath: string, args: string[]): Promise<string> {
+/**
+ * FFmpeg only sees a unique staging file. Readers only see complete media.
+ *
+ * `signal` is checked around every step, not just handed to ffmpeg. The
+ * publishing `rename` is the dangerous one: a cleanup that deletes this
+ * capture's cache directory while ffmpeg is finishing would otherwise have
+ * the rename land afterwards and recreate the tree. `runAudioFfmpeg` already
+ * kills its child on abort, so the encode itself needs nothing more.
+ */
+async function publishMedia(
+  outPath: string,
+  args: string[],
+  signal?: AbortSignal | undefined
+): Promise<string> {
+  signal?.throwIfAborted();
   await mkdir(dirname(outPath), { recursive: true });
   const stagingPath = `${outPath}.${process.pid}.${randomUUID()}.partial${extname(outPath)}`;
   try {
-    await runAudioFfmpeg(["-y", "-loglevel", "error", ...args, stagingPath]);
+    await runAudioFfmpeg(["-y", "-loglevel", "error", ...args, stagingPath], { signal });
     if (!(await fileExists(stagingPath))) {
       throw new AudioExtractError("ffmpeg_failed", "ffmpeg produced empty or invalid media");
     }
+    // Last check before the artifact becomes visible to readers.
+    signal?.throwIfAborted();
     try {
       await rename(stagingPath, outPath);
     } catch (cause) {
@@ -61,6 +76,8 @@ async function publishMedia(outPath: string, args: string[]): Promise<string> {
     }
     return outPath;
   } finally {
+    // Unconditional: an aborted run still leaves a staging file behind, and
+    // it is named per-process-per-uuid so nothing else can claim it.
     await rm(stagingPath, { force: true }).catch(() => undefined);
   }
 }
@@ -190,7 +207,8 @@ export async function extractVideoAudio(args: RecordingAudioSource & AudioTrim):
  */
 export async function prepareVideoPlayback(
   outPath: string,
-  args: RecordingAudioSource
+  args: RecordingAudioSource,
+  signal?: AbortSignal | undefined
 ): Promise<string> {
   if (!videoPlaybackNeedsPreparation(args)) return args.videoPath;
   return coalesce(outPath, async () => {
@@ -206,7 +224,7 @@ export async function prepareVideoPlayback(
       "-i", args.videoPath, "-map", "0:v:0", "-c:v", "copy",
       ...buildRecordingAudioArgs(streams),
       "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"
-    ]);
+    ], signal);
   });
 }
 

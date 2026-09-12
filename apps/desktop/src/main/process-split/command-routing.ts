@@ -48,6 +48,11 @@ const EXACT_OWNERS: Readonly<Record<string, CommandOwner>> = {
   "storage:openCapturesAccessSettings": "agent",
   "storage:checkCapturesAccess": "agent",
   "storage:moveCapturesToDocuments": "agent",
+  // Derived-cache cleanup belongs with the WRITERS of <cacheRoot>, which is
+  // the agent (`video:*`). The library forwards whole operations here so the
+  // agent's admission gate can abort and drain an in-flight remux before any
+  // file is removed — a delete issued library-side could not.
+  "storage:runCacheCleanup": "agent",
   // Library-surface-only utility registered alongside its callers.
   "clipboard:copyText": "library"
 };

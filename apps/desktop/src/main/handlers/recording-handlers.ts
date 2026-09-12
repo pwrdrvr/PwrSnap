@@ -28,6 +28,7 @@ import type {
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
 import { getCaptureById } from "../persistence/captures-repo";
+import { runGatedCacheWrite } from "../persistence/derived-cache-gate";
 import {
   getVideoMetadata,
   lookupExport,
@@ -374,15 +375,21 @@ async function fileHasBytes(path: string): Promise<boolean> {
   }
 }
 
-const videoPlaybackInFlight = new Map<string, Promise<string | null>>();
-
 /**
  * Prepare the playback rendition if this recording needs one, and answer
  * with the asset name to serve (or `null` for "play the original").
  *
- * Single-flighted per capture, like the waveform asset: opening a video
+ * Single-flighted per ARTIFACT, like the waveform asset: opening a video
  * mounts the stage and the timeline together, and a second remux of the
  * same file is pure waste.
+ *
+ * This handler's single-flighting is the derived-cache gate's, not a local
+ * map of its own. The gate has to know about every in-flight write anyway —
+ * it is what aborts and drains them when a purge or a Clear arrives — so a
+ * second map here would be a registry that must agree with it about what is
+ * running, and could not be relied on to. (`prepareVideoPlayback` keeps its
+ * own `coalesce`; that is audio-extract's module-level contract, shared with
+ * `extractVideoAudio` and `synthesizeSilence` and pinned by its own tests.)
  */
 async function ensureVideoPlaybackAsset(input: {
   captureId: string;
@@ -402,23 +409,26 @@ async function ensureVideoPlaybackAsset(input: {
   // made a coalesced caller adopt whatever the first caller's source state
   // produced — invisible while the name was a constant, wrong once the name
   // encodes a revision. The cost is one extra `stat` per concurrent caller.
+  //
+  // The `stat` behind the cache key happens before the gate admits this
+  // write, so a cleanup can start in between — and is caught, because
+  // admission stays closed for the whole cleanup including its `rm`s. What
+  // is NOT covered is a write admitted after a purge has fully finished; the
+  // `getCaptureById` in `video:playback` is the guard there, and the window
+  // it leaves is the synchronous gap between `purgeCacheForCapture` and
+  // `hardDeleteCapture` in `library:purge`.
   const asset = videoPlaybackAsset(await computeVideoPlaybackCacheKey(input));
-  const existing = videoPlaybackInFlight.get(asset);
-  if (existing !== undefined) return existing;
-
-  const work = (async () => {
-    const target = join(dir, asset);
-    if (await fileHasBytes(target)) return asset;
-    await mkdir(dir, { recursive: true });
-    const played = await prepareVideoPlayback(target, input);
-    // The probe can still say the file disagrees with its metadata, in
-    // which case nothing was written and the original is correct.
-    return played === target ? asset : null;
-  })();
-
-  videoPlaybackInFlight.set(asset, work);
   try {
-    const produced = await work;
+    const outPath = join(dir, asset);
+    // The output path IS the artifact identity — same bytes wanted, same key.
+    const produced = await runGatedCacheWrite(input.captureId, outPath, async (signal) => {
+      if (await fileHasBytes(outPath)) return asset;
+      await mkdir(dir, { recursive: true });
+      const played = await prepareVideoPlayback(outPath, input, signal);
+      // The probe can still say the file disagrees with its metadata, in
+      // which case nothing was written and the original is correct.
+      return played === outPath ? asset : null;
+    });
     // Retire renditions of every OTHER revision of this source. Each is a
     // full copy of a recording, so leaving them costs source-sized bytes per
     // stale revision — the reason this lane sweeps itself rather than riding
@@ -432,8 +442,16 @@ async function ensureVideoPlaybackAsset(input: {
     // unkeyed rendition #496 left behind.
     await sweepStalePlaybackRenditions(dir, produced);
     return produced;
-  } finally {
-    if (videoPlaybackInFlight.get(asset) === work) videoPlaybackInFlight.delete(asset);
+  } catch (cause) {
+    // A cleanup owns this capture's cache right now (or took it mid-encode).
+    // There is nothing to serve but the original, and nothing went wrong.
+    if (cause instanceof Error && cause.name === "AbortError") {
+      log.debug("video:playback: preparation yielded to a cache cleanup", {
+        captureId: input.captureId
+      });
+      return null;
+    }
+    throw cause;
   }
 }
 

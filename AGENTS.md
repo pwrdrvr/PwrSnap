@@ -696,6 +696,57 @@ bump orphans existing files. We do NOT auto-sweep — see
 [docs/solutions/2026-05-28-bake-render-cache-orphans.md](docs/solutions/2026-05-28-bake-render-cache-orphans.md)
 for rationale, when-to-bump rules, and the adjacent-code map.
 
+## Every deleter of `<cacheRoot>` goes through the admission gate
+
+**Nothing may `rm` inside `<cacheRoot>` without first taking
+`withDerivedCacheCleanup`, and no long-running write into it may run
+outside `runGatedCacheWrite`.** Owner:
+[derived-cache-gate.ts](apps/desktop/src/main/persistence/derived-cache-gate.ts).
+
+The writers publish through a staging file and a final `rename`
+([`publishMedia`](apps/desktop/src/main/sizzle/audio-extract.ts)). The
+deleters `rm -rf` whole directories underneath them. Ungated, the
+`rename` lands after the `rm -rf` and recreates the tree it was just
+deleted from: purging a capture mid-remux left an orphaned
+`<cacheRoot>/video/<deleted-id>/playback-*.mp4` that nothing would ever
+collect — the capture row is gone, so no later `purgeCacheForCapture`
+for that id can run — and "Clear cache" during preparation did not
+clear, reporting a `clearedBytes` short by a whole recording.
+
+The in-flight maps are not a substitute. They coalesce DUPLICATE WORK
+and have no idea a deletion happened.
+
+Four things that bite:
+
+- **Both sides must register SYNCHRONOUSLY, before their first `await`.**
+  A write registered in the gap after a cleanup's check runs against a
+  directory the cleanup is about to remove. That is why
+  `runGatedCacheWrite` takes a callback rather than a promise — by the
+  time a caller could hand you a promise, it has already started.
+- **Abort is not enough; you must DRAIN.** An aborted ffmpeg still holds
+  its staging file open when `abort()` returns. The gate aborts, waits
+  for every matching write to settle, and only then runs the cleanup —
+  with admission still closed for the whole of it.
+- **Cleanups serialize with each other.** Clear/Trim walk the whole root
+  and a purge walks part of it, so two at once race an `rm -rf` against
+  a `readdir` that already listed the entries. The chain is a
+  `.catch`-ed tail so one failure does not poison every later cleanup.
+- **Split mode has no shared event loop to save you.** `video:*` is
+  agent-owned and `storage:*` / `library:purge` are reached from the
+  library, so the library forwards the whole operation over
+  `storage:runCacheCleanup` and awaits it. Forwarding the OPERATION, not
+  a cancellation, is deliberate: a "stop writing" message needs a lease
+  with a release, and a crashed library never sends one. A library with
+  no forwarder **fails closed** — not cleaning is safe, cleaning locally
+  is the bug.
+
+Pinned by
+[derived-cache-gate.test.ts](apps/desktop/src/main/persistence/__tests__/derived-cache-gate.test.ts)
+(the ordering) and
+[derived-cache-cleanup-wiring.test.ts](apps/desktop/src/main/persistence/__tests__/derived-cache-cleanup-wiring.test.ts)
+(that the three real deleters actually call it — the regression a fourth
+deleter added later would otherwise ship silently).
+
 ## Startup profiling harness — `PWRSNAP_STARTUP_PROFILE=1`
 
 Env-gated, kept wired in production builds. Captures main + renderer

@@ -28,6 +28,10 @@ import {
 } from "./paths";
 import { getMainLogger } from "../log";
 import { TRASH_RETENTION_DAYS } from "./trash-retention";
+import {
+  forwardDerivedCacheCleanup,
+  withDerivedCacheCleanup
+} from "./derived-cache-gate";
 
 const log = getMainLogger("pwrsnap:source-store");
 
@@ -451,14 +455,22 @@ export async function purgeOneFromTrash(captureId: string, srcPath: string): Pro
  * file itself.
  */
 export async function purgeCacheForCapture(captureId: string): Promise<void> {
-  const cacheRoot = getCacheRoot();
-  const imageDir = join(cacheRoot, captureId);
-  const videoDir = join(cacheRoot, "video", captureId);
-  await Promise.allSettled([
-    rm(imageDir, { recursive: true, force: true }),
-    rm(videoDir, { recursive: true, force: true }),
-    deletePendingSourcesForCapture(captureId)
-  ]);
+  const forwarded = forwardDerivedCacheCleanup({ operation: "purge", captureId });
+  if (forwarded !== null) return forwarded;
+  // Through the gate: a playback rendition being remuxed for this capture
+  // publishes by `rename`, which would otherwise land after these `rm`s and
+  // recreate the directory — an orphan no later purge can reach, because the
+  // capture row is gone by then.
+  await withDerivedCacheCleanup({ captureId }, async () => {
+    const cacheRoot = getCacheRoot();
+    const imageDir = join(cacheRoot, captureId);
+    const videoDir = join(cacheRoot, "video", captureId);
+    await Promise.allSettled([
+      rm(imageDir, { recursive: true, force: true }),
+      rm(videoDir, { recursive: true, force: true }),
+      deletePendingSourcesForCapture(captureId)
+    ]);
+  });
 }
 
 /**

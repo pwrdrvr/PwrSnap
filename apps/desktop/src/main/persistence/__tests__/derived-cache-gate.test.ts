@@ -222,6 +222,70 @@ describe("serialization", () => {
   });
 });
 
+describe("deadlock guards", () => {
+  test("a cleanup that re-enters the gate is refused, not deadlocked", async () => {
+    // The inner call would chain on a `cleanupTail` the outer cleanup is
+    // itself holding, and hang forever with admission closed.
+    let inner: unknown = null;
+    await withDerivedCacheCleanup("all", async () => {
+      inner = await withDerivedCacheCleanup({ captureId: "cap-a" }, async () => undefined).catch(
+        (cause: unknown) => cause
+      );
+    });
+    expect(inner).toBeInstanceOf(Error);
+    expect((inner as Error).message).toMatch(/re-entered/);
+    // And the refusal leaked no admission on the way out.
+    await expect(
+      runGatedCacheWrite("cap-a", "cap-a/playback.mp4", async () => "x")
+    ).resolves.toBe("x");
+  });
+
+  test("a CONCURRENT cleanup still queues rather than being refused", async () => {
+    // The counterpart the guard must not break: same module state, different
+    // async context. A boolean flag would reject this one too.
+    const blocked = deferred<void>();
+    const first = withDerivedCacheCleanup("all", () => blocked.promise);
+    await settle();
+    const second = withDerivedCacheCleanup("all", async () => undefined);
+    blocked.resolve();
+    await expect(Promise.all([first, second])).resolves.toBeDefined();
+  });
+
+  test("the reset aborts what it drops instead of orphaning it", async () => {
+    const write = runGatedCacheWrite("cap-a", "cap-a/playback.mp4", (signal) =>
+      new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      })
+    ).catch((cause: unknown) => cause);
+    await settle();
+
+    resetDerivedCacheGateForTests();
+    await expect(write).resolves.toMatchObject({ name: "AbortError" });
+  });
+
+  test("a reset mid-cleanup cannot leave admission reported as open", async () => {
+    // The reset zeroes the counters while a queued cleanup's `.finally` is
+    // still pending. Unclamped, that finally decrements to -1, a later real
+    // cleanup brings it back to 0, and `globalCleanups > 0` then says "no
+    // cleanup running" while one is deleting files.
+    const blocked = deferred<void>();
+    const cleanup = withDerivedCacheCleanup("all", () => blocked.promise);
+    await settle();
+    resetDerivedCacheGateForTests();
+    blocked.resolve();
+    await cleanup;
+
+    const held = deferred<void>();
+    const second = withDerivedCacheCleanup("all", () => held.promise);
+    await settle();
+    await expect(
+      runGatedCacheWrite("cap-a", "cap-a/playback.mp4", async () => "x")
+    ).rejects.toMatchObject({ name: "AbortError" });
+    held.resolve();
+    await second;
+  });
+});
+
 describe("coalescing", () => {
   test("two writers of the same artifact share one run", async () => {
     const work = vi.fn(async () => "shared");
@@ -241,6 +305,17 @@ describe("coalescing", () => {
       runGatedCacheWrite("cap-a", "cap-a/playback-k2.mp4", async () => "k2")
     ]);
     expect([a, b]).toEqual(["k1", "k2"]);
+  });
+
+  test("the same artifact key under two captures does not coalesce", async () => {
+    // The map entry keeps the FIRST caller's captureId. If a second capture
+    // adopted it, a cleanup scoped to that capture would match neither the
+    // abort filter nor the drain, and its write could publish after the rm.
+    const [a, b] = await Promise.all([
+      runGatedCacheWrite("cap-a", "shared-key", async () => "a"),
+      runGatedCacheWrite("cap-b", "shared-key", async () => "b")
+    ]);
+    expect([a, b]).toEqual(["a", "b"]);
   });
 
   test("a settled write is retired, so the next call re-runs the work", async () => {

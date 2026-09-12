@@ -7,6 +7,8 @@
 // their own suites; what matters here is the verb's boundary.
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { inMemoryChannelPair } from "../../process-bridge/channel";
+import { BridgeEndpoint } from "../../process-bridge/endpoint";
 
 const mocks = vi.hoisted(() => ({
   purgeCacheForCapture: vi.fn(async (_id: string) => undefined),
@@ -134,5 +136,72 @@ describe("role wiring", () => {
     expect(forwardDerivedCacheCleanup({ operation: "clear" })).toBeNull();
     await bus.dispatch("storage:runCacheCleanup", { operation: "clear" }, { principal: "bridge" });
     expect(mocks.clearRenderCache).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("split-mode round trip", () => {
+  test("a library-side cleanup reaches the agent's handler with its principal intact", async () => {
+    // The in-process tests prove each half in isolation. This is the join:
+    // the whole reason the verb is `bridge`-only is that the bridge preserves
+    // `context.principal`, and if it ever stopped doing so every forwarded
+    // cleanup would come back `internal_command` — `purgeCacheForCapture`
+    // silently no-opping under `experimental.processSplit`, with the rest of
+    // the suite still green.
+    const [agentSide, librarySide] = inMemoryChannelPair();
+    // The agent end answers out of the real bus, where the handler is
+    // registered by `beforeEach`.
+    const agent = new BridgeEndpoint({
+      role: "agent",
+      channel: agentSide,
+      dispatchLocal: (name, req, context) =>
+        bus.dispatch(name as Parameters<typeof bus.dispatch>[0], req as never, context)
+    });
+    const library = new BridgeEndpoint({
+      role: "library",
+      channel: librarySide,
+      dispatchLocal: async (name) => ({
+        ok: false as const,
+        error: { kind: "validation" as const, code: "unknown_command", message: name }
+      })
+    });
+
+    const result = await library.dispatchRemote(
+      "storage:runCacheCleanup",
+      { operation: "purge", captureId: "abc123" },
+      { principal: "bridge" }
+    );
+
+    expect(result).toMatchObject({ ok: true });
+    expect(mocks.purgeCacheForCapture).toHaveBeenCalledWith("abc123");
+    void agent;
+  });
+
+  test("a renderer principal is still refused after crossing the bridge", async () => {
+    // The guard has to survive the hop, not just hold in-process.
+    const [agentSide, librarySide] = inMemoryChannelPair();
+    const agent = new BridgeEndpoint({
+      role: "agent",
+      channel: agentSide,
+      dispatchLocal: (name, req, context) =>
+        bus.dispatch(name as Parameters<typeof bus.dispatch>[0], req as never, context)
+    });
+    const library = new BridgeEndpoint({
+      role: "library",
+      channel: librarySide,
+      dispatchLocal: async (name) => ({
+        ok: false as const,
+        error: { kind: "validation" as const, code: "unknown_command", message: name }
+      })
+    });
+
+    const result = await library.dispatchRemote(
+      "storage:runCacheCleanup",
+      { operation: "clear" },
+      { principal: "ipc" }
+    );
+
+    expect(result).toMatchObject({ ok: false, error: { code: "internal_command" } });
+    expect(mocks.clearRenderCache).not.toHaveBeenCalled();
+    void agent;
   });
 });

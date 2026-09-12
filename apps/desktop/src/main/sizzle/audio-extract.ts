@@ -154,8 +154,18 @@ async function fingerprint(args: RecordingAudioSource): Promise<SourceFingerprin
   }
 }
 
-/** Extract selected native audio as ONE AAC stream, mixed when both exist. */
-export async function extractVideoAudio(args: RecordingAudioSource & AudioTrim): Promise<string> {
+/**
+ * Extract selected native audio as ONE AAC stream, mixed when both exist.
+ *
+ * `signal` is optional because the sizzle callers have no gate to answer to.
+ * The Library's waveform lane passes one: its result is copied into
+ * `<cacheRoot>`, so a cleanup has to be able to cut the extraction short
+ * rather than wait out a full-clip encode.
+ */
+export async function extractVideoAudio(
+  args: RecordingAudioSource & AudioTrim,
+  signal?: AbortSignal | undefined
+): Promise<string> {
   const source = await fingerprint(args);
   const hash = computeNativeAudioCacheKey({ ...source, startSec: args.startSec, durationSec: args.durationSec });
   const outPath = join(app.getPath("userData"), "sizzle-cache", "native-audio", `${hash}.m4a`);
@@ -168,7 +178,7 @@ export async function extractVideoAudio(args: RecordingAudioSource & AudioTrim):
     // reads as no-audio, and we would render silence over a track that is
     // right there in the file. ffmpeg's own stream selection is what this
     // path used before, and it never consulted our flags at all.
-    const available = await probeAudioStreamCount(args.videoPath);
+    const available = await probeAudioStreamCount(args.videoPath, signal);
     const streams = selectedRecordingAudioStreams(args, undefined, available).filter(
       (index) => index < available
     );
@@ -183,7 +193,7 @@ export async function extractVideoAudio(args: RecordingAudioSource & AudioTrim):
       "-ss", args.startSec.toFixed(3), "-t", args.durationSec.toFixed(3), "-i", args.videoPath,
       "-vn", ...buildRecordingAudioArgs(resolved),
       "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"
-    ]);
+    ], signal);
   });
 }
 
@@ -213,7 +223,10 @@ export async function prepareVideoPlayback(
   if (!videoPlaybackNeedsPreparation(args)) return args.videoPath;
   return coalesce(outPath, async () => {
     if (await fileExists(outPath)) return outPath;
-    const available = await probeAudioStreamCount(args.videoPath);
+    // The probe spawns its own ffmpeg, so it needs the signal too — without
+    // it an abort is ignored for the whole probe and the cleanup waiting to
+    // drain this write blocks until the probe finishes on its own.
+    const available = await probeAudioStreamCount(args.videoPath, signal);
     // Re-ask against the real track count. Metadata that disagrees with the
     // file can flip the answer back to "nothing to do".
     if (!videoPlaybackNeedsPreparation(args, available)) return args.videoPath;

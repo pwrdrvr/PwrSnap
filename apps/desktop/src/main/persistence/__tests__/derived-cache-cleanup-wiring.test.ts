@@ -1,4 +1,5 @@
-// Pins that the three deleters of `<cacheRoot>` actually go THROUGH the gate.
+// Pins that the deleters of `<cacheRoot>` — and the writers that must — go
+// THROUGH the gate.
 //
 // `derived-cache-gate.test.ts` proves the gate sequences correctly; nothing
 // there proves anyone calls it. This file is the other half: it starts a real
@@ -8,10 +9,10 @@
 // production is an orphaned rendition for a capture that no longer exists,
 // which nothing collects and no test would otherwise notice.
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -119,6 +120,15 @@ describe("purgeCacheForCapture", () => {
     await purgeCacheForCapture(CAPTURE_ID);
 
     expect(other.aborted()).toBe(false);
+
+    // Settle it before leaving. A write that never resolves outlives the
+    // test with its `abort` listener attached, and makes the gate's
+    // "reset with work outstanding" warning fire on every run — training
+    // the reader to ignore the warning that exists to catch real leaks.
+    // `resetDerivedCacheGateForTests` aborts what it drops, so this is what
+    // that abort resolves into.
+    resetDerivedCacheGateForTests();
+    await expect(other.settled).resolves.toMatchObject({ name: "AbortError" });
   });
 });
 
@@ -150,5 +160,39 @@ describe("trimRenderCache", () => {
 
     expect(write.aborted()).toBe(true);
     await expect(write.settled).resolves.toMatchObject({ name: "AbortError" });
+  });
+});
+
+// The writer half. A behavioural test per lane would need a full ffmpeg mock
+// harness for each of four modules; what actually regresses is someone
+// deleting one `runGatedCacheWrite` call, and a source scan catches exactly
+// that for the price of reading four files. Same reasoning as
+// `video-transport-volume.test.ts`: pin the thing that breaks, not a
+// reconstruction of the machinery around it.
+describe("gated writers", () => {
+  const LANES = [
+    ["the playback rendition", "../../handlers/recording-handlers.ts", "ensureVideoPlaybackAsset"],
+    ["the waveform asset", "../../handlers/recording-handlers.ts", "ensureVideoAudioAsset"],
+    ["the contact strip", "../../recording/video-frames.ts", "ensureVideoFrames"],
+    ["the poster frame", "../../recording/video-poster.ts", "ensureVideoPoster"]
+  ] as const;
+
+  test.each(LANES)("%s publishes inside the gate", (_label, file, entry) => {
+    const source = readFileSync(resolve(import.meta.dirname, file), "utf8");
+    expect(source).toContain(`function ${entry}`);
+    expect(source).toContain("runGatedCacheWrite");
+    // The import too, so a stale mention in a comment cannot satisfy this.
+    expect(source).toMatch(/import \{[^}]*runGatedCacheWrite[^}]*\}/);
+  });
+
+  test("the exporter is deliberately NOT gated", () => {
+    // Stated in the gate's header and in AGENTS.md: a user-requested export
+    // must not be killed by a background cache trim. If someone gates it,
+    // this fails and they have to change the documented decision too.
+    const source = readFileSync(
+      resolve(import.meta.dirname, "../../recording/recording-exporter.ts"),
+      "utf8"
+    );
+    expect(source).not.toContain("runGatedCacheWrite");
   });
 });

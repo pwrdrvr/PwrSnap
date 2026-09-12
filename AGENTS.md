@@ -699,9 +699,17 @@ for rationale, when-to-bump rules, and the adjacent-code map.
 ## Every deleter of `<cacheRoot>` goes through the admission gate
 
 **Nothing may `rm` inside `<cacheRoot>` without first taking
-`withDerivedCacheCleanup`, and no long-running write into it may run
-outside `runGatedCacheWrite`.** Owner:
+`withDerivedCacheCleanup`, and the four per-capture derived-video lanes —
+the playback rendition, the waveform asset, the contact strip and the
+poster frame — must publish inside `runGatedCacheWrite`.** Owner:
 [derived-cache-gate.ts](apps/desktop/src/main/persistence/derived-cache-gate.ts).
+
+The deleter half is absolute; the writer half is scoped, and the module
+header says exactly which lanes are in and which are deliberately out
+(MP4/GIF exports carry their own cancellation — a background trim must not
+kill a user's export; render bakes re-derive in milliseconds, so an orphan
+there is cheap). **A new writer that spends seconds under `<cacheRoot>` and
+publishes by `rename` belongs behind the gate.**
 
 The writers publish through a staging file and a final `rename`
 ([`publishMedia`](apps/desktop/src/main/sizzle/audio-extract.ts)). The
@@ -716,7 +724,7 @@ clear, reporting a `clearedBytes` short by a whole recording.
 The in-flight maps are not a substitute. They coalesce DUPLICATE WORK
 and have no idea a deletion happened.
 
-Four things that bite:
+Five things that bite:
 
 - **Both sides must register SYNCHRONOUSLY, before their first `await`.**
   A write registered in the gap after a cleanup's check runs against a
@@ -731,6 +739,14 @@ Four things that bite:
   and a purge walks part of it, so two at once race an `rm -rf` against
   a `readdir` that already listed the entries. The chain is a
   `.catch`-ed tail so one failure does not poison every later cleanup.
+- **The drain is bounded, and re-entry is refused.** Without a bound, one
+  write that never settles leaves admission closed and `cleanupTail`
+  pending for the life of the process — every later write rejected, every
+  later cleanup queued behind a promise that never resolves. And a cleanup
+  callback that calls another gated cleanup would await a tail it is itself
+  holding; that is caught by an `AsyncLocalStorage` marker, which (unlike a
+  boolean) can tell a NESTED call from a merely concurrent one that should
+  queue.
 - **Split mode has no shared event loop to save you.** `video:*` is
   agent-owned and `storage:*` / `library:purge` are reached from the
   library, so the library forwards the whole operation over

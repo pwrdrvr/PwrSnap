@@ -18,10 +18,30 @@
 // have no idea a deletion happened.
 //
 // The gate is deliberately at the cache boundary rather than inside any one
-// writer. There are four writers under `<cacheRoot>` today (playback
-// renditions, the waveform asset, video frames, render bakes) and three
-// deleters, and pairing them off one at a time is twelve places to get right.
-// One gate that both sides pass through is one place.
+// writer: four lanes write `<cacheRoot>/video/<id>/` and three paths delete
+// it, and pairing those off one at a time is twelve places to get right.
+//
+// ## What it covers, and what it does not
+//
+// GATED — the four per-capture derived-video lanes, each an ffmpeg run whose
+// output is published by `rename` and can be source-sized:
+//   • the playback rendition   (`ensureVideoPlaybackAsset`)
+//   • the waveform asset       (`ensureVideoAudioAsset`)
+//   • the contact strip        (`ensureVideoFrames`)
+//   • the poster frame         (`ensureVideoPoster`)
+//
+// NOT GATED, on purpose:
+//   • MP4/GIF exports (`recording-exporter.ts`), which also write this
+//     directory. They carry their own cancellation and progress, and a user
+//     who asked for an export should not have it killed by a background
+//     cache trim. An orphaned export is the better outcome.
+//   • Render bakes (`compose-tree.ts`) and the other `<cacheRoot>` buckets.
+//     A bake re-derives on demand in milliseconds and is small, so an
+//     orphan costs little and the next Clear collects it — not worth
+//     putting a cleanup in the way of the editor's paint path.
+//
+// The rule for anything NEW: a writer that spends seconds under
+// `<cacheRoot>` and publishes by `rename` belongs behind the gate.
 //
 // ## The ordering that makes it correct
 //
@@ -45,10 +65,40 @@
 // chains them. The tail is kept as a `.catch`-ed promise so one failed
 // cleanup does not poison every later one.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { getMainLogger } from "../log";
 import { getRuntimeProcessRole } from "../process-role";
 
 const log = getMainLogger("pwrsnap:derived-cache-gate");
+
+/**
+ * How long a cleanup waits for aborted writes before giving up on them.
+ *
+ * Generous on purpose: `runAudioFfmpeg` falls back to SIGKILL 5s after an
+ * abort, so anything approaching this bound means a child is wedged in
+ * uninterruptible I/O, not merely slow.
+ *
+ * The bound exists because the alternative is unrecoverable. Without it one
+ * write that never settles leaves the admission counters incremented and
+ * `cleanupTail` pending forever: every later write is rejected and every
+ * later cleanup queues behind a promise that never resolves, for the life of
+ * the process. Timing out re-opens admission and lets the next cleanup run;
+ * the cost is that the undrained write may still publish afterwards, which is
+ * the orphan this module prevents — recoverable (the next Clear removes it)
+ * where the wedge was not.
+ */
+const DRAIN_TIMEOUT_MS = 30_000;
+
+/**
+ * Marks the async context of a running `cleanup()` body.
+ *
+ * A cleanup that transitively calls another gated cleanup would chain onto a
+ * `cleanupTail` it is itself holding, and hang forever with admission closed.
+ * A plain boolean cannot catch that — it could not tell a NESTED call from a
+ * merely CONCURRENT one, which must queue rather than fail — so the flag
+ * rides the async context instead.
+ */
+const runningCleanup = new AsyncLocalStorage<true>();
 
 /** A cleanup's blast radius: one capture's derivatives, or all of them. */
 export type DerivedCacheCleanupScope = { captureId: string } | "all";
@@ -59,9 +109,17 @@ type GatedWrite = {
   pending: Promise<unknown>;
 };
 
-/** Keyed by artifact identity, so two callers wanting the same file share
- *  one encode — the coalescing the writers used to do for themselves. */
+/** Keyed by capture AND artifact identity, so two callers wanting the same
+ *  file share one encode — the coalescing the writers used to do for
+ *  themselves. The capture is part of the key, not just of the value: an
+ *  entry adopted across two capture ids would keep the FIRST caller's id, and
+ *  a cleanup scoped to the second would then neither abort nor drain it.
+ *  Callers pass paths that already embed the capture id, so this changes no
+ *  behavior today — it removes the way it could stop being true. */
 const writes = new Map<string, GatedWrite>();
+
+const writeKey = (captureId: string, key: string): string => `${captureId}\u0000${key}`;
+
 /** Ref-counted rather than boolean: purges of the same capture can overlap
  *  (a `library:purge` and a boot GC sweep), and the first to finish must not
  *  reopen admission while the second is still deleting. */
@@ -99,7 +157,10 @@ export async function runGatedCacheWrite<T>(
   if (cleanupInProgressFor(captureId)) {
     throw new DOMException(`derived cache cleanup in progress for ${captureId}`, "AbortError");
   }
-  const existing = writes.get(key);
+  const mapKey = writeKey(captureId, key);
+  const existing = writes.get(mapKey);
+  // Safe because `mapKey` pins both the capture and the artifact, and callers
+  // derive `key` from the output path: same key, same bytes, same `T`.
   if (existing !== undefined) return existing.pending as Promise<T>;
 
   const controller = new AbortController();
@@ -113,9 +174,9 @@ export async function runGatedCacheWrite<T>(
       return result;
     })
     .finally(() => {
-      if (writes.get(key)?.controller === controller) writes.delete(key);
+      if (writes.get(mapKey)?.controller === controller) writes.delete(mapKey);
     });
-  writes.set(key, { captureId, controller, pending });
+  writes.set(mapKey, { captureId, controller, pending });
   return pending;
 }
 
@@ -130,6 +191,12 @@ export async function withDerivedCacheCleanup(
   scope: DerivedCacheCleanupScope,
   cleanup: () => Promise<void>
 ): Promise<void> {
+  // Before the counters move, so a refused re-entry leaks no admission.
+  if (runningCleanup.getStore() === true) {
+    throw new Error(
+      "derived cache cleanup re-entered from inside another cleanup; this would deadlock on cleanupTail"
+    );
+  }
   const captureId = scope === "all" ? null : scope.captureId;
   if (captureId === null) globalCleanups += 1;
   else captureCleanups.set(captureId, (captureCleanups.get(captureId) ?? 0) + 1);
@@ -146,11 +213,14 @@ export async function withDerivedCacheCleanup(
 
   const pending = cleanupTail
     .then(async () => {
-      await drained;
-      await cleanup();
+      await drainWithin(drained, scope === "all" ? "all captures" : scope.captureId);
+      await runningCleanup.run(true, cleanup);
     })
     .finally(() => {
-      if (captureId === null) globalCleanups -= 1;
+      // Clamped: `resetDerivedCacheGateForTests` can zero these while this
+      // cleanup is still queued, and a negative `globalCleanups` would make
+      // `cleanupInProgressFor` report admission OPEN during a later cleanup.
+      if (captureId === null) globalCleanups = Math.max(0, globalCleanups - 1);
       else {
         const remaining = (captureCleanups.get(captureId) ?? 1) - 1;
         if (remaining <= 0) captureCleanups.delete(captureId);
@@ -161,6 +231,32 @@ export async function withDerivedCacheCleanup(
   // caller sees its own failure; the next cleanup just does not inherit it.
   cleanupTail = pending.catch(() => undefined);
   return pending;
+}
+
+/** Wait for aborted writes, but never forever — see `DRAIN_TIMEOUT_MS`. */
+async function drainWithin(drained: Promise<unknown>, scope: string): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expiry = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(
+        new Error(`derived cache cleanup timed out draining writes for ${scope}`)
+      );
+    }, DRAIN_TIMEOUT_MS);
+    // Never hold the event loop open on a cleanup's behalf; quitting while a
+    // drain is pending must not wait out the bound.
+    timer.unref?.();
+  });
+  try {
+    await Promise.race([drained, expiry]);
+  } catch (cause) {
+    log.error("derived cache cleanup abandoned an undrained write", {
+      scope,
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+    throw cause;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -226,7 +322,14 @@ export function resetDerivedCacheCleanupForwarderForTests(): void {
   cleanupForwarder = null;
 }
 
-/** Test seam. Production never needs this — the maps empty themselves. */
+/**
+ * Test seam. Production never needs this — the maps empty themselves.
+ *
+ * Aborts what it drops rather than merely forgetting it: a write left
+ * pending outlives the reset, keeps its `abort` listener, and would report
+ * as outstanding on every subsequent reset. A queued cleanup's `.finally`
+ * still runs after this, which is why the decrement above is clamped.
+ */
 export function resetDerivedCacheGateForTests(): void {
   if (writes.size > 0 || captureCleanups.size > 0 || globalCleanups > 0) {
     log.warn("derived cache gate reset with work outstanding", {
@@ -235,6 +338,7 @@ export function resetDerivedCacheGateForTests(): void {
       globalCleanups
     });
   }
+  for (const write of writes.values()) write.controller.abort();
   writes.clear();
   captureCleanups.clear();
   globalCleanups = 0;

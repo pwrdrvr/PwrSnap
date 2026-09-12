@@ -361,11 +361,6 @@ export function videoPlaybackAsset(cacheKey: string): string {
 /** Matches the timeline's smallest supported trim span. */
 const MIN_VIDEO_RANGE_SEC = 0.1;
 
-// The Library and float-over can ask for the same waveform asset at once.
-// Coalesce extraction + the final atomic copy so they never race on the
-// per-process temporary filename.
-const videoAudioInFlight = new Map<string, Promise<void>>();
-
 async function fileHasBytes(path: string): Promise<boolean> {
   try {
     const s = await stat(path);
@@ -427,20 +422,28 @@ async function ensureVideoPlaybackAsset(input: {
       const played = await prepareVideoPlayback(outPath, input, signal);
       // The probe can still say the file disagrees with its metadata, in
       // which case nothing was written and the original is correct.
-      return played === outPath ? asset : null;
+      const produced = played === outPath ? asset : null;
+      // Retire renditions of every OTHER revision of this source. Each is a
+      // full copy of a recording, so leaving them costs source-sized bytes
+      // per stale revision — the reason this lane sweeps itself rather than
+      // riding along with the waveform lane's pipeline-version sweep.
+      //
+      // Outside the success branch on purpose. When preparation declines
+      // (`produced === null`) the ORIGINAL is what plays, so every rendition
+      // present is stale — and that is exactly the state an early return
+      // stranded: metadata disagreeing with the file makes the decline
+      // permanent, so nothing would ever have collected them, including the
+      // unkeyed rendition #496 left behind.
+      //
+      // INSIDE the gated work, so it runs once per artifact rather than once
+      // per coalesced caller: opening a video mounts the stage and the
+      // timeline together, and each extra caller was another `readdir` plus
+      // `rm` pass over the same directory. It is also a delete under
+      // `<cacheRoot>`, so it belongs inside the admission the gate is
+      // already holding.
+      await sweepStalePlaybackRenditions(dir, produced);
+      return produced;
     });
-    // Retire renditions of every OTHER revision of this source. Each is a
-    // full copy of a recording, so leaving them costs source-sized bytes per
-    // stale revision — the reason this lane sweeps itself rather than riding
-    // along with the waveform lane's pipeline-version sweep.
-    //
-    // Outside the success branch on purpose. When preparation declines
-    // (`produced === null`) the ORIGINAL is what plays, so every rendition
-    // present is stale — and that is exactly the state an early return
-    // stranded: metadata disagreeing with the file makes the decline
-    // permanent, so nothing would ever have collected them, including the
-    // unkeyed rendition #496 left behind.
-    await sweepStalePlaybackRenditions(dir, produced);
     return produced;
   } catch (cause) {
     // A cleanup owns this capture's cache right now (or took it mid-encode).
@@ -483,11 +486,13 @@ async function ensureVideoAudioAsset(input: {
   requestedSystemAudio: boolean;
   requestedMicrophone: boolean;
 }): Promise<void> {
-  const existing = videoAudioInFlight.get(input.captureId);
-  if (existing !== undefined) return existing;
-
-  const work = (async () => {
-    const target = join(videoAssetDir(input.captureId), VIDEO_AUDIO_ASSET);
+  const target = join(videoAssetDir(input.captureId), VIDEO_AUDIO_ASSET);
+  // Through the gate, for the same reason the playback lane is: this lane
+  // also publishes into `<cacheRoot>/video/<id>/` by `rename`, so ungated it
+  // recreates a directory a purge has just removed. The gate also supplies
+  // the in-flight de-dup this function used to keep for itself — the Library
+  // and the float-over can ask for the same waveform at once.
+  await runGatedCacheWrite(input.captureId, target, async (signal) => {
     if (await fileHasBytes(target)) return;
 
     const extracted = await extractVideoAudio({
@@ -498,7 +503,7 @@ async function ensureVideoAudioAsset(input: {
       requestedMicrophone: input.requestedMicrophone,
       startSec: 0,
       durationSec: input.durationSec
-    });
+    }, signal);
     const dir = videoAssetDir(input.captureId);
     await mkdir(dir, { recursive: true });
     // Drop derivatives from an earlier pipeline version. Without this each
@@ -519,16 +524,10 @@ async function ensureVideoAudioAsset(input: {
     );
     const tmp = `${target}.${process.pid}.tmp`;
     await copyFile(extracted, tmp);
+    // Last check before the asset becomes visible to readers.
+    signal.throwIfAborted();
     await rename(tmp, target);
-  })();
-  videoAudioInFlight.set(input.captureId, work);
-  try {
-    await work;
-  } finally {
-    if (videoAudioInFlight.get(input.captureId) === work) {
-      videoAudioInFlight.delete(input.captureId);
-    }
-  }
+  });
 }
 
 /**

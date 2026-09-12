@@ -274,6 +274,28 @@ describe("RecordingController tray-armed confirmation", () => {
     }
   );
 
+  test("a control this backend does not offer arms nothing, so no prompt points at a missing button", async () => {
+    mocks.dispatch.mockImplementation(async (command: string) => {
+      if (command === "recording:state") return { ok: true, value: recordingState() };
+      if (command === "recording:capabilities") {
+        return {
+          ok: true,
+          value: {
+            ...macCapabilities,
+            controls: { stop: true, cancel: false, restart: false, pauseResume: false }
+          }
+        };
+      }
+      return { ok: true, value: undefined };
+    });
+    await renderController();
+
+    await arm({ action: "restart" });
+    await arm({ action: "cancel" });
+
+    expect(container.textContent).not.toContain("discards this take");
+  });
+
   test("an unrecognised action is ignored rather than arming something", async () => {
     await renderRecording();
 

@@ -148,13 +148,27 @@ export function RecordingController(): ReactElement {
   // a dialog is not content-protected and lands in the file. Main
   // sends the nudge; the armed state and its timeout stay owned here,
   // so there is exactly one of them.
-  const armGateRef = useRef<{ phase: RecordingState["phase"]; busy: boolean }>({
+  const armGateRef = useRef<{
+    phase: RecordingState["phase"];
+    busy: boolean;
+    offers: Record<"restart" | "cancel", boolean>;
+  }>({
     phase: state.phase,
-    busy: busyAction !== null
+    busy: busyAction !== null,
+    offers: { restart: true, cancel: true }
   });
   useEffect(() => {
-    armGateRef.current = { phase: state.phase, busy: busyAction !== null };
-  }, [state.phase, busyAction]);
+    armGateRef.current = {
+      phase: state.phase,
+      busy: busyAction !== null,
+      // Same expression the buttons are rendered behind, so an armed
+      // prompt can never point at a control that is not on screen.
+      offers: {
+        restart: backend?.controls.restart ?? true,
+        cancel: backend?.controls.cancel ?? true
+      }
+    };
+  }, [state.phase, busyAction, backend]);
 
   useEffect(() => {
     const off = window.pwrsnapApi?.on(EVENT_CHANNELS.recordingControllerArm, (payload) => {
@@ -164,7 +178,7 @@ export function RecordingController(): ReactElement {
       // action already in flight, must not resurrect a confirm for a
       // control that is no longer live.
       const gate = armGateRef.current;
-      if (gate.phase !== "recording" || gate.busy) return;
+      if (gate.phase !== "recording" || gate.busy || !gate.offers[action]) return;
       setArmedAction(action);
     });
     return () => off?.();

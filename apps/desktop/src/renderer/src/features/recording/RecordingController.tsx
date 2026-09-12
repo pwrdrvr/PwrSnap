@@ -48,10 +48,22 @@ export function RecordingController(): ReactElement {
       if (cancelled) return;
       if (res.ok) setState(res.value);
     });
-    void dispatch("recording:capabilities", {}).then((res) => {
-      if (cancelled || !res.ok) return;
-      setBackend(res.value);
-    });
+    void dispatch("recording:capabilities", {})
+      .then((res) => {
+        if (cancelled || !res.ok) return;
+        setBackend(res.value);
+      })
+      // A failed or never-resolving capabilities fetch must not leave the
+      // running take with no Stop button. Capabilities are a pure,
+      // platform-derived table, so the honest fallback for "we could not
+      // ask" is "assume the controls exist" — main re-checks every control
+      // against the real backend anyway (`canRunRecordingControl`) and
+      // returns `control_unavailable` for one that does not. Showing a
+      // button that might be refused is strictly better than showing no way
+      // to stop a recording.
+      .catch(() => {
+        if (!cancelled) setBackend(null);
+      });
     const off = window.pwrsnapApi?.on(EVENT_CHANNELS.recordingState, (payload) => {
       setState(payload as RecordingState);
     });
@@ -232,7 +244,7 @@ export function RecordingController(): ReactElement {
                 )}
               </div>
               <div className="rc__actions">
-                {backend?.controls.stop === true && (
+                {(backend?.controls.stop ?? true) && (
                   <button
                     type="button"
                     className="rc__btn rc__btn--stop"
@@ -244,7 +256,7 @@ export function RecordingController(): ReactElement {
                     {busyAction === "stop" ? "Stopping…" : "Stop"}
                   </button>
                 )}
-                {backend?.controls.restart === true && (
+                {(backend?.controls.restart ?? true) && (
                   <button
                     type="button"
                     className="rc__btn rc__btn--restart"
@@ -264,7 +276,7 @@ export function RecordingController(): ReactElement {
                         : "Restart"}
                   </button>
                 )}
-                {backend?.controls.cancel === true && (
+                {(backend?.controls.cancel ?? true) && (
                   <button
                     type="button"
                     className="rc__btn rc__btn--cancel"

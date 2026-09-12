@@ -267,8 +267,15 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
     };
   }, []);
 
+  // An unresolved or failed `recording:state` must not disable the button.
+  // The tray popover is kept resident for first-click latency, so this
+  // mount happens once per process: treating `null` as "cannot record"
+  // left the button dead for the whole process lifetime after one failed
+  // dispatch, and dead for the round-trip on every cold open. Main gates
+  // the attempt itself (`capture-video-handler`), so the safe default for
+  // "we do not know yet" is to let the click through.
   const canRecordVideo =
-    recordingState !== null && canStartRecordingAttempt(recordingState);
+    recordingState === null || canStartRecordingAttempt(recordingState);
 
   const hotkeyFingerprint = Object.values(hotkeys).join("\u0000");
   useEffect(() => {

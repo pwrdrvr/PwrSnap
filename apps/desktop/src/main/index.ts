@@ -121,7 +121,10 @@ import {
   isRecordingActive,
   subscribeToRecordingState
 } from "./recording/recording-state";
-import { videoHotkeyAction } from "./recording/recording-capabilities";
+import {
+  recordingBackendCapabilities,
+  videoHotkeyAction
+} from "./recording/recording-capabilities";
 import { installMediaPermissionPolicy } from "./media-permissions";
 import { videoAssetDir } from "./recording/video-frames";
 import {
@@ -1147,6 +1150,7 @@ async function runInteractiveRecord(
   // seeds from the persisted default. Reused below for audio
   // capabilities + the cursor value passed to `recording:start`.
   const settings = await getDesktopSettingsStore().read();
+  const recordingSources = recordingBackendCapabilities().sources;
   const selection = await pickRegion({
     mode: "auto",
     keepPwrSnapChrome: false,
@@ -1165,10 +1169,21 @@ async function runInteractiveRecord(
     // reachable from a renderer at all — before the chips they were
     // read here and never shown, so nothing in the app could tell the
     // user whether their recording had audio.
-    sourcesDefault: {
-      microphone: settings.recording.includeMicrophone,
-      systemAudio: settings.recording.includeSystemAudio
-    }
+    // Gated on the backend's own capability table, not on the persisted
+    // setting alone. `guardRecordingAttempt` rejects the whole take when a
+    // non-darwin backend is handed either source, so offering the chips
+    // there advertised a control whose only outcome was a failed
+    // recording — worse than the pre-chip behavior, where the same
+    // setting was simply ignored end-to-end. protocol.ts states the rule:
+    // unsupported controls are omitted, not rendered as if they might work.
+    ...(recordingSources.microphone || recordingSources.systemAudio
+      ? {
+          sourcesDefault: {
+            microphone: recordingSources.microphone && settings.recording.includeMicrophone,
+            systemAudio: recordingSources.systemAudio && settings.recording.includeSystemAudio
+          }
+        }
+      : {})
   });
   if (!selection.ok) {
     setFloatOverState({ kind: "cancel" });
@@ -2498,6 +2513,12 @@ export function bootstrapApp(): void {
   // teardown so we don't loop on the will-quit handler firing again
   // after `app.quit()` is called from inside it.
   let quitTeardownInFlight = false;
+  /**
+   * How long ⌘Q waits for a stopping/processing take to finalize before
+   * quitting regardless. Generous enough for an ordinary encode + move,
+   * short enough that a wedged persistence cannot make the app unquittable.
+   */
+  const RECORDING_QUIT_BARRIER_TIMEOUT_MS = 15_000;
   app.on("will-quit", (event) => {
     // If the user quits with a recording attempt alive, let the recording
     // service own the transition before ordinary teardown. Lead-in and active
@@ -2513,14 +2534,38 @@ export function bootstrapApp(): void {
           ? new Promise<void>((resolve) => {
               let settled = false;
               let unsubscribe = (): void => undefined;
+              let deadline: ReturnType<typeof setTimeout> | undefined;
+              const settle = (): void => {
+                settled = true;
+                clearTimeout(deadline);
+                unsubscribe();
+                resolve();
+              };
               const onState = (state: ReturnType<typeof getRecordingState>): void => {
                 if (state.phase !== "ready" && state.phase !== "failed" && state.phase !== "idle") {
                   return;
                 }
-                settled = true;
-                unsubscribe();
-                resolve();
+                settle();
               };
+              // Bounded. `preventDefault()` has already run and
+              // `quitTeardownInFlight` is latched, so if this promise never
+              // settles the app can no longer be quit at all — and the two
+              // phases it waits on are exactly the ones `recording:cancel`
+              // refuses, so nothing can break the wait from outside.
+              // Persistence moves the clip into `~/Documents/PwrSnap`, which
+              // is TCC-gated and parks without bound while the consent
+              // prompt is pending (AGENTS.md, "Never block the main thread on
+              // a TCC-gated path"), so the hang is reachable, not theoretical.
+              // Giving up loses at most the finalization of one clip; not
+              // giving up loses the ability to quit.
+              deadline = setTimeout(() => {
+                if (settled) return;
+                getMainLogger("pwrsnap:bootstrap").warn(
+                  "recording quit barrier timed out; quitting anyway",
+                  { phase, waitedMs: RECORDING_QUIT_BARRIER_TIMEOUT_MS }
+                );
+                settle();
+              }, RECORDING_QUIT_BARRIER_TIMEOUT_MS);
               unsubscribe = subscribeToRecordingState(onState);
               // subscribeToRecordingState emits synchronously. If finalization
               // won the race before registration returned, remove the newly

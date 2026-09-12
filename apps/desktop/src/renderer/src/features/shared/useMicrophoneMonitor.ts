@@ -178,24 +178,17 @@ export function useMicrophoneMonitor({ enabled, deviceId }: MonitorOptions): Mic
       setPermission("unsupported");
       return;
     }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      // Release immediately — this call exists to move the OS grant,
-      // not to hold the device. The monitor effect opens the real
-      // stream once `enabled` is true.
-      stream.getTracks().forEach((track) => track.stop());
-      setPermission("granted");
-      setFault("none");
-      setError(null);
-      await refreshDevices();
-      setAttempt((n) => n + 1);
-    } catch (cause) {
-      const described = describeMicError(cause);
-      setPermission(described.permission);
-      setFault(described.fault);
-      setError(described.message);
-    }
-  }, [supported, refreshDevices]);
+    // Re-arm the monitor effect and let ITS `getUserMedia` be the single
+    // device open. Opening a probe stream here and stopping it immediately
+    // meant every retry cost two opens of the same device microseconds
+    // apart — and because Chromium's macOS audio teardown is asynchronous,
+    // the second could land on a device the first had not finished
+    // releasing and come back `NotReadableError`, leaving the chip
+    // claiming another app held the microphone as a direct result of the
+    // user clicking Allow. The effect reports permission, fault and error
+    // from the real open, so nothing is lost by not duplicating it.
+    setAttempt((n) => n + 1);
+  }, [supported]);
 
   // Re-probe when this window comes back to the foreground.
   //
@@ -206,17 +199,27 @@ export function useMicrophoneMonitor({ enabled, deviceId }: MonitorOptions): Mic
   // made. Chromium does not notify a renderer that an OS grant moved,
   // so the return of focus is the only signal available.
   //
-  // Only from `denied`, and only while enabled: a `focus` on a healthy
+  // Only while FAULTED, and only while enabled: a `focus` on a healthy
   // chip has nothing to learn, and re-running `getUserMedia` on a chip
   // that is switched off would open the device behind the user's back.
+  //
+  // `denied` is not the only recoverable fault, and it is not even the
+  // only one the user fixes by leaving. `describeMicError` reports both
+  // `busy` ("quit the other app") and `nodevice` ("plug one in") with
+  // `permission: "granted"`, and neither gets an act button — so gating
+  // this on `permission === "denied"` left the two faults whose remedy
+  // happens OUTSIDE the app as the two the app never re-checked. The
+  // monitor effect's deps cannot change on their own, so the chip stayed
+  // wrong until it was toggled off and on.
+  const faulted = permission === "denied" || fault !== "none";
   useEffect(() => {
-    if (!supported || !enabled || permission !== "denied") return;
+    if (!supported || !enabled || !faulted) return;
     const onFocus = (): void => {
       void request();
     };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [supported, enabled, permission, request]);
+  }, [supported, enabled, faulted, request]);
 
   useEffect(() => {
     if (!supported) {

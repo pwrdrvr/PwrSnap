@@ -15,7 +15,7 @@ export { AudioExtractError } from "../recording/recording-audio";
 
 // Older native extractions silently selected the first audio stream. Changing
 // the pipeline invalidates those artifacts without touching original captures.
-const AUDIO_PIPELINE_VERSION = "mixed-audio-v1";
+export const AUDIO_PIPELINE_VERSION = "mixed-audio-v2";
 
 async function fileExists(path: string): Promise<boolean> {
   try {
@@ -74,7 +74,11 @@ function sourceDigest(args: SourceFingerprint): ReturnType<typeof createHash> {
     .update("\0")
     .update(args.size.toString())
     .update("\0")
-    .update(`${Number(args.hasSystemAudio)}:${Number(args.hasMicrophoneAudio)}`);
+    .update(`${Number(args.hasSystemAudio)}:${Number(args.hasMicrophoneAudio)}`)
+    .update("\0")
+    .update(
+      `${Number(args.requestedSystemAudio === true)}:${Number(args.requestedMicrophone === true)}`
+    );
 }
 
 /** Path, file revision, recorded tracks, trim and mixing version all invalidate. */
@@ -94,8 +98,18 @@ export function computeVideoPlaybackCacheKey(args: SourceFingerprint): string {
 
 async function fingerprint(args: RecordingAudioSource): Promise<SourceFingerprint> {
   // Never reuse a cached derivative when its original is no longer readable.
-  const info = await stat(args.videoPath);
-  return { ...args, mtimeMs: info.mtimeMs, size: info.size };
+  // Classify the failure: both callers branch on `AudioExtractError`, and a
+  // raw ENOENT from here fell through to their `kind: "unknown"` arm.
+  try {
+    const info = await stat(args.videoPath);
+    return { ...args, mtimeMs: info.mtimeMs, size: info.size };
+  } catch (cause) {
+    throw new AudioExtractError(
+      "ffmpeg_failed",
+      "The recording file could not be read",
+      cause instanceof Error ? cause.message : String(cause)
+    );
+  }
 }
 
 /** Extract selected native audio as ONE AAC stream, mixed when both exist. */
@@ -105,9 +119,13 @@ export async function extractVideoAudio(args: RecordingAudioSource & AudioTrim):
   const outPath = join(app.getPath("userData"), "sizzle-cache", "native-audio", `${hash}.m4a`);
   return coalesce(outPath, async () => {
     if (await fileExists(outPath)) return outPath;
-    const selected = selectedRecordingAudioStreams(args);
-    const available = selected.length === 0 ? 0 : await probeAudioStreamCount(args.videoPath);
-    const streams = selected.filter((index) => index < available);
+    // First pass decides only whether anything is worth probing for; the
+    // second resolves the indices against the file's real track count.
+    const wanted = selectedRecordingAudioStreams(args);
+    const available = wanted.length === 0 ? 0 : await probeAudioStreamCount(args.videoPath);
+    const streams = selectedRecordingAudioStreams(args, undefined, available).filter(
+      (index) => index < available
+    );
     // A valid old recording can claim audio but contain no samples at all.
     // The composer still needs a duration-matched input for that scene.
     if (streams.length === 0) return synthesizeSilence(args.durationSec);
@@ -124,6 +142,15 @@ export async function extractVideoAudio(args: RecordingAudioSource & AudioTrim):
  * while system + microphone become one AAC track. The stored recording stays
  * intact so exports can still select either source. Non-dual recordings (also
  * stale metadata with fewer than two actual streams) use the original file.
+ *
+ * NOT WIRED YET, deliberately. Preview mixing is deferred with the rest of
+ * that subsystem, so nothing in production calls this and `<video>` still
+ * plays the original file — which is why `VideoStage` carries a note saying
+ * the preview is system-audio-only. It is kept, built and tested because the
+ * expensive question it answers (what a cached, stream-copied rendition costs
+ * and how it invalidates) is already settled here; wiring it is a call site
+ * plus a loading state on the protocol resolver, not a rewrite. Delete it
+ * rather than let it rot if that work is dropped for good.
  */
 export async function prepareVideoPlayback(args: RecordingAudioSource): Promise<string> {
   if (!args.hasSystemAudio || !args.hasMicrophoneAudio) return args.videoPath;
@@ -135,7 +162,10 @@ export async function prepareVideoPlayback(args: RecordingAudioSource): Promise<
     if (await probeAudioStreamCount(args.videoPath) < 2) return args.videoPath;
     return publishMedia(outPath, [
       "-i", args.videoPath, "-map", "0:v:0", "-c:v", "copy",
-      ...buildRecordingAudioArgs([0, 1]),
+      // Resolve the indices rather than hardcoding [0, 1]: the microphone's
+      // slot depends on whether a system track was ADDED, which is not the
+      // same question as whether system samples landed.
+      ...buildRecordingAudioArgs(selectedRecordingAudioStreams(args)),
       "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"
     ]);
   });

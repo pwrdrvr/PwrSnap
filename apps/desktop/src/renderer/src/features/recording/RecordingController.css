@@ -25,7 +25,18 @@
   height: 100%;
 }
 .rc-root[data-precapture="false"] {
-  width: 420px;
+  /* A PREFERRED width, not a fixed one. `.rc-root` is the element the
+     renderer measures and posts to main, so pinning `width` here made
+     `getBoundingClientRect().width` a constant: main's width-fitting path
+     (RECORDING_CONTROLLER_WIDTH_MAX_CSS_PX = 560) could never be reached,
+     and the armed state — timer + two chips + Stop + "Confirm restart" +
+     "Confirm cancel", well past 420px of non-shrinkable content — clipped
+     its right-hand button off the window edge. `min-width` keeps the
+     resting bar its designed size while letting the measurer report what
+     the content actually needs. */
+  width: max-content;
+  min-width: 420px;
+  max-width: 560px;
 }
 
 .rc {

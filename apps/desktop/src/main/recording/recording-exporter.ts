@@ -834,11 +834,17 @@ async function encodeMp4(
   args.push(...buildMp4VideoEncoderArgs(process.platform, spec));
 
   let streams = selectedRecordingAudioStreams(video, audio);
-  if (streams.length > 1) {
-    // Filter labels cannot be optional. A stale mic flag with only system
-    // audio must still export successfully, preserving the optional-map path.
+  if (streams.length > 0) {
+    // Probe whenever any audio is selected, not only for a mix. The track
+    // INDEX depends on the recorded layout, so a file that disagrees with
+    // the metadata has to be reconciled before the map is built — filtering
+    // afterwards would delete a microphone that merely sat at a different
+    // index. Filter labels also cannot be optional, so a multi-input graph
+    // must not name a stream the file does not have.
     const available = await probeAudioStreamCount(src, signal);
-    streams = streams.filter((index) => index < available);
+    streams = selectedRecordingAudioStreams(video, audio, available).filter(
+      (index) => index < available
+    );
   }
   args.push(...buildRecordingAudioArgs(streams));
   if (streams.length > 0) args.push("-c:a", "aac", "-b:a", "192k");

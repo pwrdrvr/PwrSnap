@@ -67,6 +67,22 @@ describe("microphoneChipState", () => {
     test("a device held by another app reads as silent, not denied", () => {
       expect(microphoneChipState({ ...HEALTHY, fault: "busy" })).toBe("silent");
     });
+
+    test("an unclassifiable failure reads as silent, never as a grant prompt", () => {
+      // `describeMicError` pairs `fault: "unknown"` with `permission:
+      // "prompt"` — it has no idea whether a grant exists. Testing `prompt`
+      // first therefore offered "Allow" for a failure no grant can fix,
+      // whose only effect was to re-run the same call and land back here.
+      expect(
+        microphoneChipState({ ...HEALTHY, permission: "prompt", fault: "unknown" })
+      ).toBe("silent");
+    });
+
+    test("a fault outranks an unasked permission generally", () => {
+      for (const fault of ["busy", "unknown"] as const) {
+        expect(microphoneChipState({ ...HEALTHY, permission: "prompt", fault })).not.toBe("ask");
+      }
+    });
   });
 
   // An off chip is not going to be recorded, so nagging about a missing
@@ -94,6 +110,12 @@ describe("microphoneChipWhy", () => {
     expect(microphoneChipWhy("ask", null)).toBe("needs access");
     expect(microphoneChipWhy("denied", null)).toBe("blocked");
     expect(microphoneChipWhy("nodevice", null)).toBe("no microphone");
+  });
+
+  test("an unclassifiable failure surfaces its own sentence, not a remedy", () => {
+    expect(microphoneChipWhy("silent", "Microphone could not be opened")).toBe(
+      "Microphone could not be opened"
+    );
   });
 
   test("silent prefers the monitor's own sentence", () => {

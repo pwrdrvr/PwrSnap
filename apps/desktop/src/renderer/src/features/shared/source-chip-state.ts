@@ -43,9 +43,13 @@ export type MicrophoneChipInput = {
  *   off          the user switched it off; say nothing else
  *   nodevice     plug something in
  *   denied       open System Settings
+ *   silent       check the input — nothing is arriving
  *   ask          click Allow
- *   silent       check the input — it is open and hearing nothing
  *   live         carry on
+ *
+ * `silent` sits above `ask` because a fault is a fact and `prompt` is
+ * the absence of one: the monitor reports `permission: "prompt"` both
+ * before it has asked and after a failure it could not classify.
  *
  * `off` sits above the fault states on purpose: a chip the user turned
  * off must not nag about a microphone that is missing or blocked. It
@@ -65,12 +69,18 @@ export function microphoneChipState({
   if (!armed) return "live";
   if (fault === "nodevice") return "nodevice";
   if (permission === "denied") return "denied";
-  if (permission === "prompt") return "ask";
   // `busy` and `unknown` both leave the device unopened with the grant
   // intact. There is no button that fixes either one, so the chip
   // reports it as armed-but-not-arriving and lets `why` carry the
   // sentence — the same shape a genuinely silent microphone gets.
+  //
+  // This MUST outrank the `prompt` branch below. `describeMicError`
+  // pairs `fault: "unknown"` with `permission: "prompt"`, so testing
+  // `prompt` first made this line unreachable for `unknown` and put an
+  // "Allow" button in front of a failure no grant can fix — one whose
+  // only effect was to re-run the same call and land back here.
   if (fault !== "none") return "silent";
+  if (permission === "prompt") return "ask";
   return silent ? "silent" : "live";
 }
 

@@ -64,7 +64,10 @@ vi.mock("../../recording/video-frames", () => ({
 }));
 
 vi.mock("../../sizzle/audio-extract", () => ({
-  extractVideoAudio: mocks.extractVideoAudio
+  extractVideoAudio: mocks.extractVideoAudio,
+  // The asset filename is derived from this, at module scope. Omitting it
+  // made the handler import `undefined.m4a`.
+  AUDIO_PIPELINE_VERSION: "mixed-audio-v2"
 }));
 
 vi.mock("../../recording/recording-service", () => ({
@@ -288,6 +291,11 @@ describe("video:audio", () => {
       videoPath: "/tmp/vid_Timeline1.mp4",
       hasSystemAudio: true,
       hasMicrophoneAudio: false,
+      // Forwarded so the extractor can place the microphone at the index the
+      // recorder actually wrote it to, rather than inferring one from which
+      // sources happened to carry samples.
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
       startSec: 0,
       durationSec: 16
     });
@@ -303,13 +311,14 @@ describe("video:audio", () => {
     mocks.extractVideoAudio.mockResolvedValue(extracted);
     const result = await bus.dispatch("video:audio", { captureId: "vid_Timeline1" }, { principal: "ipc" });
     expect(result).toEqual({ ok: true, value: {
-      hasAudio: true, url: "pwrsnap-cache://v/vid_Timeline1/audio-mixed-v2.m4a", mimeType: "audio/mp4"
+      hasAudio: true, url: "pwrsnap-cache://v/vid_Timeline1/mixed-audio-v2.m4a", mimeType: "audio/mp4"
     } });
     expect(mocks.extractVideoAudio).toHaveBeenCalledWith({
       videoPath: "/tmp/vid_Timeline1.mp4", hasSystemAudio: true, hasMicrophoneAudio: true,
+      requestedSystemAudio: false, requestedMicrophone: false,
       startSec: 0, durationSec: 16
     });
-    expect(await readFile(`${dir}/audio-mixed-v2.m4a`, "utf8")).toBe("mixed system and microphone");
+    expect(await readFile(`${dir}/mixed-audio-v2.m4a`, "utf8")).toBe("mixed system and microphone");
     mocks.extractVideoAudio.mockClear();
     await bus.dispatch("video:audio", { captureId: "vid_Timeline1" }, { principal: "ipc" });
     expect(mocks.extractVideoAudio).not.toHaveBeenCalled();

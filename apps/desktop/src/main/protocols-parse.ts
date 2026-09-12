@@ -100,8 +100,18 @@ export function parseCacheUrl(url: string): CacheUrlParts | null {
   return { captureId, width, format: format as "png" | "webp" };
 }
 
-/** Whitelisted derived-video asset filenames the `v/` arm may serve. */
-const VIDEO_ASSET_PATTERN = /^(frames-n\d{1,3}-w\d{1,4}\.jpg|audio(?:-mixed-v2)?\.m4a)$/;
+/**
+ * Whitelisted derived-video asset filenames the `v/` arm may serve.
+ *
+ * The audio arm is version-generic on purpose: the mixed-audio filename is
+ * derived from `AUDIO_PIPELINE_VERSION`, so pinning one version here meant a
+ * pipeline bump needed a matching edit in a second file to keep serving.
+ * `audio.m4a` is the pre-versioning name and `audio-mixed-vN.m4a` a
+ * short-lived spelling of it; both stay addressable for any renderer holding
+ * an old URL, and for caches written before the rename.
+ */
+const VIDEO_ASSET_PATTERN =
+  /^(frames-n\d{1,3}-w\d{1,4}\.jpg|audio\.m4a|audio-mixed-v\d{1,3}\.m4a|mixed-audio-v\d{1,3}\.m4a)$/;
 
 export type VideoAssetUrlParts = {
   captureId: string;

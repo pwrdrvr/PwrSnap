@@ -9,7 +9,7 @@
 //   • Video export is a derived-artifact path keyed by the same
 //     command bus the renderer uses for image clipboard/drag.
 
-import { copyFile, mkdir, rename, stat } from "node:fs/promises";
+import { copyFile, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { ok, err, recordingFailureSummary } from "@pwrsnap/shared";
 import type {
@@ -68,7 +68,7 @@ import { validateVideoExportRequest } from "../recording/video-export-validation
 import { createVideoExportProgressObserver } from "../recording/video-export-progress";
 import { ensureVideoPoster } from "../recording/video-poster";
 import { ensureVideoFrames, videoAssetDir } from "../recording/video-frames";
-import { extractVideoAudio } from "../sizzle/audio-extract";
+import { AUDIO_PIPELINE_VERSION, extractVideoAudio } from "../sizzle/audio-extract";
 import { videoAssetUrl } from "../protocols-parse";
 import { broadcastCapturesChanged } from "../events";
 import { prepareRenderedFileAlias } from "../render/file-alias";
@@ -308,7 +308,13 @@ export function validateRecordingStartRequest(
 
 /** Filename of the extracted full-clip audio under the video asset dir.
  *  Must stay in the `parseVideoAssetUrl` whitelist. */
-const VIDEO_AUDIO_ASSET = "audio-mixed-v2.m4a";
+/**
+ * Derived from the pipeline version so a mixing change cannot leave a stale
+ * derivative addressable under a name that no longer describes its contents.
+ * Hand-versioning it meant two tokens for one fact, and they had already
+ * drifted (`audio-mixed-v2` against `mixed-audio-v1`).
+ */
+const VIDEO_AUDIO_ASSET = `${AUDIO_PIPELINE_VERSION}.m4a`;
 /** Matches the timeline's smallest supported trim span. */
 const MIN_VIDEO_RANGE_SEC = 0.1;
 
@@ -332,6 +338,8 @@ async function ensureVideoAudioAsset(input: {
   durationSec: number;
   hasSystemAudio: boolean;
   hasMicrophoneAudio: boolean;
+  requestedSystemAudio: boolean;
+  requestedMicrophone: boolean;
 }): Promise<void> {
   const existing = videoAudioInFlight.get(input.captureId);
   if (existing !== undefined) return existing;
@@ -344,10 +352,21 @@ async function ensureVideoAudioAsset(input: {
       videoPath: input.videoPath,
       hasSystemAudio: input.hasSystemAudio,
       hasMicrophoneAudio: input.hasMicrophoneAudio,
+      requestedSystemAudio: input.requestedSystemAudio,
+      requestedMicrophone: input.requestedMicrophone,
       startSec: 0,
       durationSec: input.durationSec
     });
-    await mkdir(videoAssetDir(input.captureId), { recursive: true });
+    const dir = videoAssetDir(input.captureId);
+    await mkdir(dir, { recursive: true });
+    // Drop derivatives from an earlier pipeline version. Without this each
+    // bump left a full-clip audio file per capture that nothing reads and
+    // nothing sweeps until the capture is hard-deleted.
+    await Promise.all(
+      (await readdir(dir).catch(() => [] as string[]))
+        .filter((name) => name !== VIDEO_AUDIO_ASSET && /^(audio|mixed-audio-v\d{1,3})\.m4a$/.test(name))
+        .map((name) => rm(join(dir, name), { force: true }).catch(() => undefined))
+    );
     const tmp = `${target}.${process.pid}.tmp`;
     await copyFile(extracted, tmp);
     await rename(tmp, target);
@@ -777,7 +796,7 @@ export function registerRecordingHandlers(): void {
   // Full-clip audio for the waveform lane. Reuses the sizzle
   // native-audio extractor (content-addressed under sizzle-cache) and
   // mirrors the result into the per-capture video asset dir so the
-  // `pwrsnap-cache://v/<id>/audio-mixed-v2.m4a` arm can serve it.
+  // `pwrsnap-cache://v/<id>/<AUDIO_PIPELINE_VERSION>.m4a` arm can serve it.
   bus.register("video:audio", async (req) => {
     if (typeof req.captureId !== "string" || req.captureId.length === 0) {
       return err(validationError("invalid_capture_id", "video:audio: captureId must be a non-empty string"));
@@ -801,7 +820,9 @@ export function registerRecordingHandlers(): void {
         videoPath: record.legacy_src_path,
         durationSec: record.video.durationSec,
         hasSystemAudio: record.video.hasSystemAudio,
-        hasMicrophoneAudio: record.video.hasMicrophoneAudio
+        hasMicrophoneAudio: record.video.hasMicrophoneAudio,
+        requestedSystemAudio: record.video.requestedSystemAudio,
+        requestedMicrophone: record.video.requestedMicrophone
       });
       return ok({
         hasAudio: true as const,

@@ -4,8 +4,18 @@ import { resolveFfmpegPath } from "./ffmpeg-resolver";
 
 export type RecordingAudioSource = {
   videoPath: string;
+  /** Samples actually landed for the source. Decides whether to USE a track. */
   hasSystemAudio: boolean;
   hasMicrophoneAudio: boolean;
+  /**
+   * A writer input was ADDED for the source. Decides which INDEX a track has.
+   *
+   * Optional because recordings written before migration 0033 have no such
+   * column; for those, `hasX` is the only evidence a track exists and is used
+   * as the fallback (see `selectedRecordingAudioStreams`).
+   */
+  requestedSystemAudio?: boolean | undefined;
+  requestedMicrophone?: boolean | undefined;
 };
 
 export class AudioExtractError extends Error {
@@ -109,15 +119,45 @@ export async function probeAudioStreamCount(videoPath: string, signal?: AbortSig
   return streams.size;
 }
 
-/** Recorder order is system first, mic second; mic-only uses audio index 0. */
+/**
+ * Recorder order is system first, mic second; mic-only uses audio index 0.
+ *
+ * Track POSITION and track USE are two different questions and must be read
+ * from two different facts. The recorder adds a writer input when a source is
+ * ARMED (main.swift `writer.add(ai)` / `writer.add(mi)`), so that is what
+ * decides the index; `hasX` only records whether samples later landed, and a
+ * source that was armed and stayed silent still occupies its slot. Reading the
+ * index off `hasX` shifted the microphone to 0 whenever system audio was armed
+ * but quiet, so the export mapped the empty system track and dropped the voice.
+ *
+ * `requestedX` is absent on recordings older than migration 0033; there `hasX`
+ * is the only evidence a track exists, which is exactly the pre-0033 behavior.
+ */
 export function selectedRecordingAudioStreams(
-  source: Pick<RecordingAudioSource, "hasSystemAudio" | "hasMicrophoneAudio">,
-  audio: VideoExportAudio = { includeSystemAudio: true, includeMicrophone: true }
+  source: Pick<
+    RecordingAudioSource,
+    "hasSystemAudio" | "hasMicrophoneAudio" | "requestedSystemAudio" | "requestedMicrophone"
+  >,
+  audio: VideoExportAudio = { includeSystemAudio: true, includeMicrophone: true },
+  availableTracks?: number
 ): number[] {
+  const systemArmed = source.requestedSystemAudio === true || source.hasSystemAudio;
+  const micArmed = source.requestedMicrophone === true || source.hasMicrophoneAudio;
+  const claimedTracks = (systemArmed ? 1 : 0) + (micArmed ? 1 : 0);
+  // Stale metadata: the file holds fewer audio tracks than the arm record
+  // claims, so the recorder that wrote it did not add an input per armed
+  // source (a pre-0033 recording, or one whose setup failed after the flag
+  // was persisted). Position by which source actually carried samples
+  // instead — the pre-0033 rule, and the only evidence left. Out-of-range
+  // indices are still dropped by the caller's `index < available` filter;
+  // this decides the index BEFORE that, so a stale claim relocates the
+  // microphone rather than deleting it.
+  const trustArmedLayout = availableTracks === undefined || availableTracks >= claimedTracks;
+  const systemOccupiesFirstSlot = trustArmedLayout ? systemArmed : source.hasSystemAudio;
   const streams: number[] = [];
   if (source.hasSystemAudio && audio.includeSystemAudio) streams.push(0);
   if (source.hasMicrophoneAudio && audio.includeMicrophone) {
-    streams.push(source.hasSystemAudio ? 1 : 0);
+    streams.push(systemOccupiesFirstSlot ? 1 : 0);
   }
   return streams;
 }
@@ -131,15 +171,24 @@ export function buildRecordingAudioArgs(streams: readonly number[]): string[] {
   if (streams.length === 0) return ["-an"];
   if (streams.length === 1) return ["-map", `0:a:${streams[0]}?`];
   // Preserve delayed starts and gaps against the video's zero-based clock.
-  // Normalize prevents clipping when both sources are loud; longest retains
-  // the full voice/system tail when one stream ends before the other.
+  // `longest` retains the full voice/system tail when one stream ends first.
+  //
+  // `normalize=0` is load-bearing. amix's default divides every input by the
+  // input count, so a two-source mix came out exactly 6 dB quieter than the
+  // single-`-map` path — measured -27.1 dB against -21.1 dB for the same
+  // content with a silent second track. That made loudness a function of how
+  // many sources were ARMED rather than of what was captured: arming a mic and
+  // never speaking halved the system audio. It also stepped: with
+  // `duration=longest`, amix renormalizes the instant the shorter input ends,
+  // a measured +6.1 dB jump mid-file. Summing without normalization matches
+  // what every single-source export already does.
   const inputs = streams.map((index, i) =>
     `[0:a:${index}]aresample=async=1:first_pts=0[recorded_audio_${i}]`
   );
   const labels = streams.map((_, i) => `[recorded_audio_${i}]`).join("");
   return [
     "-filter_complex",
-    [...inputs, `${labels}amix=inputs=${streams.length}:duration=longest:dropout_transition=0:normalize=1[recorded_audio]`].join(";"),
+    [...inputs, `${labels}amix=inputs=${streams.length}:duration=longest:dropout_transition=0:normalize=0[recorded_audio]`].join(";"),
     "-map", "[recorded_audio]"
   ];
 }

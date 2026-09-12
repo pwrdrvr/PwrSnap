@@ -184,6 +184,11 @@ function scheduleFailedWindowRecreate(crashedWindow: BrowserWindow): void {
   }, delay);
 }
 
+/** Retry budget for a crashing non-failure HUD renderer, per session. */
+const NORMAL_RECREATE_MAX_ATTEMPTS = 3;
+let normalRecreateAttempts = 0;
+let normalRecreateSessionId: string | null = null;
+
 function ensureWindow(): BrowserWindow {
   if (window !== null && !window.isDestroyed()) return window;
   window = createRecordingControllerWindow();
@@ -227,6 +232,26 @@ function ensureWindow(): BrowserWindow {
     if (window === createdWindow) window = null;
     if (!createdWindow.isDestroyed()) createdWindow.destroy();
     clearNormalWindowRecreateTimer();
+    // Cap the retries, the way the `failed` path does. A deterministic
+    // crash — GPU process loss, OOM, a throw during module init — made this
+    // an unbounded loop: destroy, wait 100 ms, respawn, crash, repeat, at
+    // roughly ten renderer launches a second for the whole take, competing
+    // for CPU with the recorder the HUD is annotating, and logging nothing.
+    // The recording itself is owned by the recorder process and survives a
+    // missing HUD, so giving up on the overlay is the safe end state.
+    const sessionId = "sessionId" in state ? state.sessionId : null;
+    if (sessionId !== normalRecreateSessionId) {
+      normalRecreateSessionId = sessionId;
+      normalRecreateAttempts = 0;
+    }
+    normalRecreateAttempts += 1;
+    if (normalRecreateAttempts > NORMAL_RECREATE_MAX_ATTEMPTS) {
+      log.error("recording controller renderer crashed repeatedly; leaving it down", {
+        attempts: normalRecreateAttempts,
+        phase: state.phase
+      });
+      return;
+    }
     normalWindowRecreateTimer = setTimeout(() => {
       normalWindowRecreateTimer = null;
       if (disposing) return;

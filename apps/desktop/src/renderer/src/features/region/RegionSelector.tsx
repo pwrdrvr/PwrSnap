@@ -320,6 +320,8 @@ export function RegionSelector() {
   const captureCursorRef = useRef(true);
   const sourcesRef = useRef<RecordingCapabilities | null>(null);
   const quickActionRef = useRef<QuickCaptureAction>("snap");
+  /** Whether the HUD — and so the source chips — is on screen this render. */
+  const hudShownRef = useRef(false);
   // Cursor-tracking crosshair guide-lines (auto/region modes). Rendered
   // once and repositioned by direct DOM writes from `onMouseMove` /
   // the window-list cursor — never via React state, so they impose no
@@ -618,6 +620,10 @@ export function RegionSelector() {
   // reaching for one moves the selection out from under the cursor.
   const sourceBar = intent === "video";
   const showHud = picks.length > 0 || chooserBar || sourceBar;
+  // Synced here rather than with the refs above because `showHud` is not
+  // known until this point. `sourceKeysBound()` reads it so `M` / `A` can
+  // never be live under chips that are not rendered.
+  hudShownRef.current = showHud;
 
   // Surface state to CSS for cursor switching + snap visualization.
   useLayoutEffect(() => {
@@ -678,11 +684,21 @@ export function RegionSelector() {
       setScreenUrl(payload.screenUrl ?? null);
       setRawSnapshot(payload.snapshot ?? null);
       setRawSnapshotFallback(false);
-      setIntent(payload.intent ?? "snap");
+      // Written to the ref synchronously for the same reason `sourcesRef`
+      // is below: `commit()` is captured once at mount by the global
+      // keydown listener and reads refs, so a `↵` arriving between this
+      // callback and React's commit would otherwise use the PREVIOUS
+      // show's values — the exact leak this per-show re-seed exists to
+      // stop.
+      const nextIntent = payload.intent ?? "snap";
+      intentRef.current = nextIntent;
+      setIntent(nextIntent);
       // Re-seed the cursor toggle from the persisted default each show
       // (defaults ON when unset) so a prior capture's choice can't bleed
       // into this one through the reused, pre-warmed selector window.
-      setCaptureCursor(payload.cursor ?? true);
+      const nextCursor = payload.cursor ?? true;
+      captureCursorRef.current = nextCursor;
+      setCaptureCursor(nextCursor);
       // Same per-show re-seed for the source chips, and for the same
       // reason: on a pre-warmed window a previous capture's flip would
       // otherwise decide what the next one records. Written to the ref
@@ -961,7 +977,18 @@ export function RegionSelector() {
    * silently disarms the microphone is worse than no shortcut.
    */
   function sourceKeysBound(): boolean {
-    return sourcesRef.current !== null && (intentRef.current === "video" || recordAvailable());
+    return (
+      sourcesRef.current !== null &&
+      (intentRef.current === "video" || recordAvailable()) &&
+      // The chips only render inside the HUD, and the HUD is not always up:
+      // in live snap with no pick set and nothing latched, `showHud` is
+      // false while the two terms above are both true. Without this the
+      // keys were live under a chip the user could not see — pressing `M`
+      // opened the microphone with no meter and no permission state
+      // anywhere on screen, which is exactly what this predicate's contract
+      // above says must never happen.
+      hudShownRef.current
+    );
   }
 
   /**
@@ -1280,6 +1307,13 @@ export function RegionSelector() {
     // drop the dim + flag so they don't survive into the next gesture or
     // the next show of this pre-warmed window.
     clearDiscardPending();
+    // Release the microphone. `enabled` is derived from `sourcesTouched`
+    // (and from `sources`, which the next mode signal re-seeds), so leaving
+    // it latched kept the `getUserMedia` stream — and the macOS orange
+    // indicator — alive after the selector was dismissed: `hideSelector()`
+    // only blurs and hides this pre-warmed window, so the React tree and its
+    // effects survive and the monitor's cleanup never runs.
+    setSourcesTouched(false);
   }
 
   function cancel(): void {
@@ -2723,7 +2757,7 @@ export function RegionSelector() {
               <kbd>C</kbd>
             </button>
           )}
-          {sourcesOffered && sources !== null && (
+          {sourcesOffered && (
             <>
               <SourceChip
                 source="microphone"

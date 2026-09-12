@@ -100,14 +100,35 @@ const SOURCE_LABEL: Record<RecordingSourceKind, string> = {
   camera: "Camera"
 };
 
-/** States in which the source is switched on for this take. */
-const ON_STATES: ReadonlySet<SourceChipState> = new Set<SourceChipState>(["live", "silent"]);
-
-/** States the user cannot act on at all. */
-const INERT_STATES: ReadonlySet<SourceChipState> = new Set<SourceChipState>([
-  "nodevice",
-  "unsupported"
+/**
+ * States in which the source is switched on for this take.
+ *
+ * This is the user's arm/disarm choice, not the device's health, so every
+ * state the mapper can only reach with `on === true` belongs here. `ask`,
+ * `denied` and `nodevice` all describe a source that IS armed and WILL ride
+ * the commit payload; reporting `aria-pressed={false}` for them told a
+ * screen-reader user the opposite of what the take was about to do.
+ */
+const ON_STATES: ReadonlySet<SourceChipState> = new Set<SourceChipState>([
+  "live",
+  "silent",
+  "ask",
+  "denied",
+  "nodevice"
 ]);
+
+/**
+ * States the user cannot act on at all.
+ *
+ * `nodevice` is deliberately NOT here. `microphoneChipState` only returns it
+ * when the source is ON, so disabling the chip removed the one control that
+ * could switch off a microphone the machine does not have — and the take then
+ * failed outright in the recorder (`microphone_unavailable` aborts the start).
+ * The `M` key stayed live throughout, so mouse and keyboard disagreed about
+ * the same control. `unsupported` is genuinely inert: there is no device
+ * subsystem to arm.
+ */
+const INERT_STATES: ReadonlySet<SourceChipState> = new Set<SourceChipState>(["unsupported"]);
 
 function SourceGlyph({ source }: { readonly source: RecordingSourceKind }): ReactElement {
   const common = {
@@ -233,9 +254,18 @@ export function SourceChip({
   // Screen has no level to report and camera's evidence is a picture,
   // so neither draws a meter; only the two audio sources do — and only
   // when something can actually measure them (see `noMeter`).
-  const showMeter = on && isAudio && !noMeter;
+  // A meter claims "a level is being measured", which is only true where a
+  // stream is actually open. `on` is now the broader arm/disarm fact, so it
+  // cannot be the meter's gate: `ask` / `denied` / `nodevice` are armed but
+  // have nothing to measure and must draw no meter at all.
+  const measurable = state === "live" || state === "silent";
+  const showMeter = measurable && isAudio && !noMeter;
+  // `silent` outranks an explicit tone. Callers pass `meterTone="recorded"`
+  // for a whole receipt row, and letting that win painted a full accent
+  // meter for a source that captured nothing — pixel-identical to one that
+  // worked, which is the single thing this row exists to distinguish.
   const tone: "live" | "flat" | "recorded" =
-    meterTone ?? (state === "silent" ? "flat" : "live");
+    state === "silent" ? "flat" : (meterTone ?? "live");
 
   const className = [
     "ps-chip",

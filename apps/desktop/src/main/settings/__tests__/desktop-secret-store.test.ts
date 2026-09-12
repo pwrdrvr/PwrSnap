@@ -21,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const safeStorageMock = vi.hoisted(() => {
   let available = true;
+  let failDecrypt = false;
   return {
     isEncryptionAvailable: vi.fn(() => available),
     encryptString: vi.fn((s: string): Buffer => {
@@ -28,6 +29,9 @@ const safeStorageMock = vi.hoisted(() => {
       return Buffer.from(`PWR-ENC|${b64}`, "utf8");
     }),
     decryptString: vi.fn((b: Buffer): string => {
+      // Simulates the keychain going away mid-session: a denied prompt, a
+      // rotated key, or a copy of the file from another machine.
+      if (failDecrypt) throw new Error("keychain access denied");
       const text = b.toString("utf8");
       if (!text.startsWith("PWR-ENC|")) {
         throw new Error("not a PWR-ENC blob");
@@ -37,6 +41,9 @@ const safeStorageMock = vi.hoisted(() => {
     }),
     __setAvailable(value: boolean): void {
       available = value;
+    },
+    __setFailDecrypt(value: boolean): void {
+      failDecrypt = value;
     }
   };
 });
@@ -55,6 +62,7 @@ let workDir = "";
 beforeEach(() => {
   workDir = mkdtempSync(join(tmpdir(), "pwrsnap-secret-store-"));
   safeStorageMock.__setAvailable(true);
+  safeStorageMock.__setFailDecrypt(false);
 });
 
 afterEach(() => {
@@ -311,7 +319,12 @@ describe("DesktopSecretStore v1 migration", () => {
     const store = makeStore();
 
     expect((await store.getAllStatus()).openaiApiKey.configured).toBe(false);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Settle the write queue deterministically rather than guessing with a
+    // timer: the migration task awaits an fs read, so a single macrotask turn
+    // can finish before it has even looked at the file, and the assertion
+    // below would then pass whether or not the guard exists. `clear` runs
+    // through the same FIFO queue, and on a legacy file it writes nothing.
+    await store.clear("openaiApiKey");
 
     expect(readFileSync(join(workDir, "secrets.bin")).toString("utf8")).toBe(
       "v10-not-our-ciphertext"
@@ -359,5 +372,83 @@ describe("DesktopSecretStore envelope consistency", () => {
 
     expect(cleared.configured).toBe(false);
     expect((await store.getAllStatus()).openaiApiKey.configured).toBe(false);
+  });
+});
+
+// A write re-encrypts only the entries it holds, and a failed decrypt makes
+// the read look empty — so without an explicit guard a write silently
+// discards every secret it could not read back. The plaintext index is what
+// makes that detectable, so these are the cases the envelope must not make
+// worse than the single-ciphertext layout it replaced.
+describe("DesktopSecretStore undecryptable payload", () => {
+  async function storeWithTwoSecrets(): Promise<DesktopSecretStore> {
+    const store = makeStore();
+    await store.replace("openaiApiKey", "keep-me");
+    await store.replace("localAgentToken:client-a", "token-a");
+    return store;
+  }
+
+  test("replace refuses rather than destroying the secrets it cannot read", async () => {
+    const store = await storeWithTwoSecrets();
+    safeStorageMock.__setFailDecrypt(true);
+
+    await expect(store.replace("openaiApiKey", "new-value")).rejects.toBeInstanceOf(
+      SecretUnavailableError
+    );
+
+    // Both originals survive once keychain access comes back.
+    safeStorageMock.__setFailDecrypt(false);
+    expect(await store.getValue("openaiApiKey")).toBe("keep-me");
+    expect(await store.getValue("localAgentToken:client-a")).toBe("token-a");
+  });
+
+  test("clear refuses rather than reporting a removal that did not happen", async () => {
+    const store = await storeWithTwoSecrets();
+    safeStorageMock.__setFailDecrypt(true);
+
+    // Returning `{ configured: false }` here would contradict the very next
+    // status broadcast, which reads the still-intact plaintext index.
+    await expect(store.clear("openaiApiKey")).rejects.toBeInstanceOf(
+      SecretUnavailableError
+    );
+
+    safeStorageMock.__setFailDecrypt(false);
+    expect((await store.getStatus("openaiApiKey")).configured).toBe(true);
+    expect(await store.getValue("openaiApiKey")).toBe("keep-me");
+  });
+
+  test("clearing the last secret still succeeds — it needs no payload", async () => {
+    const store = makeStore();
+    await store.replace("openaiApiKey", "only-one");
+    safeStorageMock.__setFailDecrypt(true);
+
+    const cleared = await store.clear("openaiApiKey");
+
+    expect(cleared.configured).toBe(false);
+    expect((await store.getAllStatus()).openaiApiKey.configured).toBe(false);
+  });
+
+  test("overwriting the only secret still succeeds — it preserves nothing", async () => {
+    const store = makeStore();
+    await store.replace("openaiApiKey", "first");
+    safeStorageMock.__setFailDecrypt(true);
+
+    await expect(store.replace("openaiApiKey", "second")).resolves.toMatchObject({
+      configured: true
+    });
+
+    safeStorageMock.__setFailDecrypt(false);
+    expect(await store.getValue("openaiApiKey")).toBe("second");
+  });
+
+  test("a v1 file keeps the older lenient behavior — it has no index to check", async () => {
+    // The names live inside a v1 ciphertext, so "absent" and "undecryptable"
+    // are indistinguishable there and the guard cannot apply.
+    writeFileSync(join(workDir, "secrets.bin"), Buffer.from("v10-not-our-ciphertext"));
+    const store = makeStore();
+
+    await expect(store.clear("openaiApiKey")).resolves.toMatchObject({
+      configured: false
+    });
   });
 });

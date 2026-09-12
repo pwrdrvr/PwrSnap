@@ -186,12 +186,21 @@ this change.
 
 ## Adjacent, still not changed
 
-- A decrypt failure still reads as an empty store rather than throwing, so a
-  write afterwards persists only what it knows and drops entries it could not
-  recover. That is the pre-existing behavior, kept deliberately: the
-  alternative (refuse every write) locks a user out of re-entering a key when
-  the old one is genuinely unrecoverable. The v1 migration path is the one
-  place that now refuses, because there a rewrite would *destroy* a file that
-  a later launch might read fine.
+- A decrypt failure still reads as an empty store rather than throwing, so
+  `getValue` returns null and the feature degrades. That is the pre-existing
+  behavior and it is right for a read.
+
+  WRITES no longer share it. Because a write re-encrypts only what it holds,
+  the pre-envelope code silently destroyed every secret it could not decrypt
+  — replacing an API key under a denied keychain prompt took the user's
+  paired agent tokens with it — and `clear()` returned "removed" for an entry
+  that stayed on disk and came straight back as `configured` in the next
+  status broadcast. The plaintext index is what finally makes that
+  detectable, so `assertPayloadRecovered` compares the two and fails with
+  `secret_unavailable` instead. That is recoverable (restore keychain access
+  and retry); overwriting was not. Clearing the last secret and overwriting
+  the only one still succeed, since neither preserves anything. A v1 file
+  keeps the lenient behavior: its names live inside the ciphertext, so there
+  is no way to tell "absent" from "undecryptable".
 - Dev Electron still shares a keychain item with the release app, for the
   userData reason above.

@@ -115,12 +115,13 @@ export class DesktopSecretStore {
       );
     }
     return this.serialize(async () => {
+      const state = await this.readFileState();
       // Only decrypt when there is a value we must preserve. Writing the
       // first secret, or overwriting the only one, needs no read of the
       // existing payload.
-      const blob = await this.readBlobUnless(
-        (index) => onlyKeyIs(index, name)
-      );
+      const skipRead = state.kind === "envelope" && onlyKeyIs(state.index, name);
+      const blob = skipRead ? {} : await this.blobFrom(state);
+      if (!skipRead) this.assertPayloadRecovered(state, blob);
       const nextEntry: StoredSecret = {
         value,
         lastSetAt: new Date().toISOString()
@@ -150,6 +151,7 @@ export class DesktopSecretStore {
       }
 
       const blob = await this.blobFrom(state);
+      this.assertPayloadRecovered(state, blob);
       if (blob[name] === undefined) {
         return toStatus(undefined);
       }
@@ -236,10 +238,11 @@ export class DesktopSecretStore {
     try {
       plaintext = safeStorage.decryptString(Buffer.from(state.ciphertext, "base64"));
     } catch (cause) {
-      // Same posture as before the envelope: an undecryptable payload reads
-      // as empty rather than throwing. The index is still readable, so a
-      // later write will drop the entries it cannot recover -- see
-      // `writeBlob`, which logs that case.
+      // A read of an undecryptable payload stays lenient: callers of
+      // `getValue` treat a missing secret as "not configured" and degrade.
+      // WRITES do not -- `assertPayloadRecovered` compares this result
+      // against the still-readable index and refuses, because re-encrypting
+      // what we could not read back would destroy it.
       this.log.warn("secret-store: decrypt failed, returning empty", {
         path: this.filePath,
         message: cause instanceof Error ? cause.message : String(cause)
@@ -273,14 +276,29 @@ export class DesktopSecretStore {
     return parseBlob(plaintext, this.log);
   }
 
-  /** Read the full blob unless `skip` says the caller does not need the
-   *  existing values, in which case return an empty one without decrypting. */
-  private async readBlobUnless(
-    skip: (index: SecretsIndex) => boolean
-  ): Promise<SecretsBlob> {
-    const state = await this.readFileState();
-    if (state.kind === "envelope" && skip(state.index)) return {};
-    return this.blobFrom(state);
+  /** Refuse to rewrite the file when the plaintext index proves there are
+   *  entries the payload would not give back.
+   *
+   *  A decrypt failure makes `blobFrom` read as empty, and every write
+   *  re-encrypts only what it holds — so without this guard a write silently
+   *  destroys every secret it could not decrypt, and `clear()` reports
+   *  "removed" for an entry that is still on disk and still `configured` in
+   *  the very next status broadcast. Failing with `secret_unavailable` (which
+   *  the settings handler already surfaces) is recoverable: the user restores
+   *  keychain access and retries. Overwriting is not.
+   *
+   *  Envelope-only by design. A v1 file keeps its names inside the ciphertext,
+   *  so there is no way to tell "absent" from "undecryptable" there, and the
+   *  pre-envelope leniency is preserved for it. */
+  private assertPayloadRecovered(state: FileState, blob: SecretsBlob): void {
+    if (state.kind !== "envelope") return;
+    const missing = Object.keys(state.index).filter(
+      (name) => blob[name as DesktopSettingsSecretName] === undefined
+    );
+    if (missing.length === 0) return;
+    throw new SecretUnavailableError(
+      `safeStorage could not decrypt ${missing.length} stored secret(s) — refusing to write, which would discard them`
+    );
   }
 
   private async writeBlob(blob: SecretsBlob): Promise<void> {

@@ -354,6 +354,31 @@ describe("GeneralPage — recording audio", () => {
     expect(container?.textContent).not.toContain("recording refuses to start");
   });
 
+  // The audio card's claim is "default for new recordings" and nothing
+  // more. A per-recording override does not exist until #496 lands the
+  // selector's source chips; promising one here is the same stale-copy
+  // bug this card was added to fix. (The Cursor capture card above
+  // legitimately says "Press C in the recording selector" — that key
+  // is real today — so scope the assertion to this card.)
+  test("the audio card promises no per-recording override", async () => {
+    await renderGeneral(baseSettings, healthyStatus);
+    const card = Array.from(container?.querySelectorAll(".pss__card") ?? []).find((el) =>
+      el.textContent?.includes("Include your microphone")
+    );
+    expect(card).toBeDefined();
+    const copy = card?.textContent ?? "";
+    expect(copy).toContain("The default for new recordings");
+    for (const claim of [
+      "recording selector",
+      "per-recording",
+      "Press A",
+      "Press M",
+      "override"
+    ]) {
+      expect(copy).not.toContain(claim);
+    }
+  });
+
   test("non-macOS says recording audio is unsupported and never prompts", async () => {
     // Windows records through FFmpeg (video only) and Linux has no
     // recorder at all, so the card must not imply audio either way.

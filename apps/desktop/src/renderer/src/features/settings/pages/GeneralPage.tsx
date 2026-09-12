@@ -17,24 +17,22 @@
 // The two CAPTURE cards own the `settings.recording.*` defaults for new
 // captures: cursor baking (images + video) and audio sources (video).
 //
-// The audio pair is a SEED, not an arming. `recording.includeMicrophone`
-// / `.includeSystemAudio` are read once per capture to seed the source
-// chips in the recording selector; the chip decides what the take
-// actually records, and it deliberately does not write back (a take you
-// recorded silent must not disarm the microphone for every future take).
-// This card is the only place the seed itself can be changed, which is
-// why the pair needs a surface at all.
+// The audio pair is a DEFAULT for new recordings, and this card is the
+// only place it can be changed — the fields were unreachable from every
+// renderer before it, which is why the pair needs a surface at all.
 //
 // That also means this page is NOT where a microphone grant has to be
-// obtained. The selector's chip (pwrdrvr/PwrSnap#496 — this page and
-// that one are meant to land together, and the per-recording "Press M
-// / A" copy below describes ITS chips) renders an `ask` state with an
-// inline Allow that fires the OS prompt at capture time, and a `denied`
-// state whose Settings action opens System Permissions and re-probes on
-// focus. Independently of #496, `record-from-selection.ts` already puts
-// an Open System Permissions button on the preflight failure dialog. So
-// the toggle saves the preference unconditionally and the blocked row
-// below is a shortcut, not a required errand.
+// obtained. `record-from-selection.ts` puts an Open System Permissions
+// button on the preflight failure dialog, so a recording started
+// without the grant recovers in place. So the toggle saves the
+// preference unconditionally and the blocked row below is a shortcut,
+// not a required errand.
+//
+// The copy here claims ONLY "default for new recordings", which is the
+// whole of what is true while this card is the sole consumer of the
+// pair. pwrdrvr/PwrSnap#496 adds the per-recording source chips to the
+// capture selector and seeds them from these two fields; the "override
+// it per recording" sentence belongs in THAT change, not ahead of it.
 //
 // The EDITOR card hosts `editor.matchingText.enabled`. There is no
 // Settings → Editor page (see settings-categories.ts), and the schema
@@ -101,12 +99,13 @@ export function GeneralPage(): ReactElement {
   // Opting in here also ASKS, because asking from the switch the user
   // just flipped is the cheapest possible moment: macOS reports
   // `not-determined` until something calls askForMediaAccess, and the
-  // prompt is one click. But the answer does not gate the write — the
-  // preference is a seed for the selector's chip, and the chip can
-  // obtain the grant itself at capture time. Refusing to persist on a
-  // denial would leave the user unable to express the preference at all,
-  // and would mean this page had to own a grant recovery flow that three
-  // other surfaces already own better.
+  // prompt is one click. But the answer does not gate the write — this
+  // is a stored preference, not an arming, and a recording that starts
+  // without the grant already recovers in place through the preflight
+  // dialog's own Open System Permissions button. Refusing to persist on
+  // a denial would leave the user unable to express the preference at
+  // all, and would make this page the owner of a grant recovery flow it
+  // is the worst-placed surface to run.
   //
   // The `audioSupported` guard below is load-bearing, not an
   // optimization: off darwin `requestPermission` is unsupported and the
@@ -311,7 +310,7 @@ export function GeneralPage(): ReactElement {
           label="Include system audio"
           sub={
             audioSupported
-              ? "Arms system audio on new recordings — what your Mac is playing, alongside the screen. Rides the Screen Recording grant you already gave PwrSnap, so there is no second permission to enable. Press A in the recording selector to override per-recording."
+              ? "The default for new recordings — captures what your Mac is playing alongside the screen. Rides the Screen Recording grant you already gave PwrSnap, so there is no second permission to enable."
               : AUDIO_UNSUPPORTED_SUB
           }
           tag="video"
@@ -328,7 +327,7 @@ export function GeneralPage(): ReactElement {
           label="Include your microphone"
           sub={
             audioSupported
-              ? "Arms your microphone on new recordings — narration, walkthroughs. macOS asks for access the first time you switch this on; if you miss it, the recording selector asks again when you start a recording. Press M there to override per-recording."
+              ? "The default for new recordings — captures your voice alongside the screen, for narration and walkthroughs. macOS asks for access the first time you switch this on."
               : AUDIO_UNSUPPORTED_SUB
           }
           tag="video"
@@ -340,12 +339,13 @@ export function GeneralPage(): ReactElement {
         </Row>
         {micDenied ? (
           // The OS said no, or the user dismissed the prompt. The
-          // preference IS saved — this row is a shortcut for someone who
-          // would rather settle the grant now than be asked again by the
-          // selector's microphone chip at capture time.
+          // preference IS saved — this row is a shortcut for settling
+          // the grant now rather than meeting the preflight dialog on
+          // the next recording. It clears itself on the focus re-probe
+          // below, so it cannot outlive the denial it describes.
           <Row
             label="macOS hasn't granted microphone access"
-            sub="macOS won't prompt from here twice, so the recording selector will ask again the next time you start a recording. To settle it now, turn Microphone on for PwrSnap in System Settings → Privacy & Security."
+            sub="macOS won't prompt from here twice. Turn Microphone on for PwrSnap in System Settings → Privacy & Security; this row clears itself when you come back."
             tag="optional"
           >
             <button

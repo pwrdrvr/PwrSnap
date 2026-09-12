@@ -57,7 +57,6 @@
   align-items: center;
   align-self: stretch;
   gap: inherit;
-  min-width: 0;
   margin: 0;
   padding: 0;
   border: 0;
@@ -84,18 +83,18 @@
   border-radius: inherit;
 }
 
-/* Positioned so they stay above `.ps-chip__body::after`. Both are later
-   in DOM order than the body, and z-index:auto positioned boxes paint in
+/* `position` keeps both above `.ps-chip__body::after`. Both are later in
+   DOM order than the body, and z-index:auto positioned boxes paint in
    tree order, so no z-index is needed — and adding one would start a
    stacking contest with the HUD's scrim. */
-.ps-chip__act,
-.ps-chip__devices {
+.ps-chip__act {
   position: relative;
 }
 
 /* The caret's own button: a bare hit target around the glyph, which
    keeps its `.ps-chip__caret` geometry below. */
 .ps-chip__devices {
+  position: relative;
   appearance: none;
   display: flex;
   margin: 0;
@@ -233,6 +232,18 @@
 .ps-chip__devices:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+/* …and the toggle draws none of its own, or the chip wears two rings.
+   region.css's `.region-hud button:focus-visible` used to land on the
+   chip itself, because the chip WAS the button; it now also matches
+   `.ps-chip__body`, so measured in Chromium the group ringed in
+   `--accent` while the body ringed in `--accent-border` inside it.
+   Two classes plus the pseudo-class (0,3,0) is what it takes to outrank
+   that rule's (0,2,1) — a bare `.ps-chip__body:focus-visible` (0,2,0)
+   loses and changes nothing. Pinned by SourceChip.css.test.ts, because
+   jsdom resolves no cascade and no render test can see this. */
+.ps-chip .ps-chip__body:focus-visible {
+  outline: none;
 }
 
 /* ---------------- density variants ---------------- */

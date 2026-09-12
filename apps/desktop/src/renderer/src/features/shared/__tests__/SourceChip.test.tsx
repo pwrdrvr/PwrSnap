@@ -175,12 +175,12 @@ describe("SourceChip", () => {
         testId="chip"
       />
     );
-    const act = el.querySelector<HTMLButtonElement>(".ps-chip__act")!;
+    const allow = el.querySelector<HTMLButtonElement>(".ps-chip__act")!;
     const devices = el.querySelector<HTMLButtonElement>(".ps-chip__devices")!;
-    expect(act.tagName).toBe("BUTTON");
-    expect(act.textContent).toBe("Allow");
+    expect(allow.tagName).toBe("BUTTON");
+    expect(allow.textContent).toBe("Allow");
     expect(devices.getAttribute("aria-label")).toBe("Choose microphone device");
-    act.click();
+    allow.click();
     devices.click();
     expect([acted, opened]).toEqual([1, 1]);
     // Siblings, so neither click can reach the toggle — there is no
@@ -188,6 +188,50 @@ describe("SourceChip", () => {
     expect(toggled).toBe(0);
     toggle(el).click();
     expect(toggled).toBe(1);
+  });
+
+  // The enclosing <button> used to be `disabled` for an inert chip, which
+  // Chromium made swallow clicks on everything inside it. As siblings the
+  // action is only as inert as it says it is, and "Allow" on a source with
+  // no device subsystem to arm is a control that cannot do anything.
+  test("an inert chip exposes no live action", () => {
+    let acted = 0;
+    const el = mount(
+      <SourceChip
+        source="microphone"
+        state="unsupported"
+        act="Allow"
+        onAct={() => { acted += 1; }}
+        hasDevices
+        testId="chip"
+      />
+    );
+    expect(el.querySelector(".ps-chip__act")).toBeNull();
+    expect(el.querySelector(".ps-chip__devices")).toBeNull();
+    expect(el.querySelector("[data-testid='chip']")!.getAttribute("role")).toBeNull();
+    expect(acted).toBe(0);
+  });
+
+  // The callbacks are typed `() => void`, so TypeScript accepts any
+  // narrower arity; passing them straight to `onClick` would hand the
+  // SyntheticEvent to a caller whose function takes an optional first
+  // parameter and have it read as a truthy argument.
+  test("the action callbacks are called with no arguments", () => {
+    const seen: unknown[][] = [];
+    const el = mount(
+      <SourceChip
+        source="microphone"
+        state="ask"
+        act="Allow"
+        onAct={(...args: unknown[]) => { seen.push(args); }}
+        hasDevices
+        onOpenDevices={(...args: unknown[]) => { seen.push(args); }}
+        testId="chip"
+      />
+    );
+    el.querySelector<HTMLButtonElement>(".ps-chip__act")!.click();
+    el.querySelector<HTMLButtonElement>(".ps-chip__devices")!.click();
+    expect(seen).toEqual([[], []]);
   });
 
   // Wrapping a lone toggle in a group would make every chip announce
@@ -216,6 +260,18 @@ describe("SourceChip", () => {
     const el = mount(<SourceChip source="microphone" state="off" kbd="M" testId="chip" />);
     expect(toggle(el).getAttribute("aria-keyshortcuts")).toBe("M");
     expect(el.querySelector(".ps-chip__kbd")!.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  // One predicate for the badge and the announcement. Only the control
+  // density draws the badge AND has a key handler behind it — announcing
+  // a shortcut the surface neither draws nor binds is the same
+  // two-predicates-that-must-agree bug as the hint legend's.
+  test("a density that draws no badge announces no shortcut", () => {
+    const el = mount(
+      <SourceChip source="microphone" state="live" density="dense" kbd="M" testId="chip" />
+    );
+    expect(el.querySelector(".ps-chip__kbd")).toBeNull();
+    expect(toggle(el).getAttribute("aria-keyshortcuts")).toBeNull();
   });
 
   // Dense drops the visible label, which left the toggle with an aria-hidden

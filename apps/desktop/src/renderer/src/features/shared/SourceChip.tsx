@@ -298,9 +298,17 @@ export function SourceChip({
   // one of these exists; only then is it a group of controls that a
   // screen reader should be told about, and only then does announcing
   // "group" around a single button stop being noise.
-  const hasAct = act !== undefined;
+  // Both carry `!inert`. The enclosing <button> used to be `disabled`,
+  // which Chromium made swallow clicks on everything inside it; as
+  // siblings they are only as inert as they say they are, and an
+  // "Allow" on a source with no device subsystem to arm is a control
+  // that cannot do anything.
+  const hasAct = act !== undefined && !inert;
   const hasCaret = hasDevices === true && !inert;
   const grouped = hasAct || hasCaret;
+  // Only the selector's control density both draws the badge and has a
+  // key handler behind it.
+  const showKbd = kbd !== undefined && density === "control";
 
   // The chip is a GROUP, not a button.
   //
@@ -341,8 +349,10 @@ export function SourceChip({
         {...(density === "dense" ? { "aria-label": name } : {})}
         // The real home for "press M". It rode in as a trailing "M" on
         // the button's name before, which said nothing about what it
-        // was.
-        {...(kbd !== undefined ? { "aria-keyshortcuts": kbd } : {})}
+        // was. Gated on `showKbd`, not on `kbd` alone: announcing a
+        // shortcut the surface neither draws nor binds is the same
+        // two-predicates-that-must-agree bug as the hint legend's.
+        {...(showKbd ? { "aria-keyshortcuts": kbd } : {})}
         onClick={onToggle}
       >
         <SourceGlyph source={source} />
@@ -352,8 +362,12 @@ export function SourceChip({
       </button>
       {hasAct ? (
         // No stopPropagation any more: there is no enclosing button left
-        // for a click to reach.
-        <button type="button" className="ps-chip__act" onClick={onAct}>
+        // for a click to reach. Wrapped rather than passed straight to
+        // `onClick`, which would hand the SyntheticEvent to a callback
+        // the prop type declares as zero-argument — a caller whose
+        // function takes an optional first parameter would read it as a
+        // truthy argument.
+        <button type="button" className="ps-chip__act" onClick={() => onAct?.()}>
           {act}
         </button>
       ) : null}
@@ -362,12 +376,12 @@ export function SourceChip({
           type="button"
           className="ps-chip__devices"
           aria-label={`Choose ${name.toLowerCase()} device`}
-          onClick={onOpenDevices}
+          onClick={() => onOpenDevices?.()}
         >
           <Caret />
         </button>
       ) : null}
-      {kbd !== undefined && density === "control" ? (
+      {showKbd ? (
         // Decorative now that `aria-keyshortcuts` carries the fact.
         <kbd className="ps-chip__kbd" aria-hidden="true">
           {kbd}

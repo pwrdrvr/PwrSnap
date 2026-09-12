@@ -291,6 +291,11 @@ function StageBody({
               reel={!dismissible}
             />
           ) : (
+            // Degenerate case: a video row whose `video_captures` metadata
+            // is missing. Audible, but deliberately NOT resolved through
+            // `video:playback` — that verb answers from the same metadata,
+            // and returns the capture URL unchanged when it is absent. The
+            // dispatch could only ever be a round trip to this same value.
             <video
               src={captureSrcUrl(record.id)}
               controls

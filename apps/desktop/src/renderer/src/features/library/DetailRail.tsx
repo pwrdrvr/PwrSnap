@@ -2234,6 +2234,9 @@ function ProjectTab({
                   {r === null ? (
                     <span className="psl__proj-scene-missing">×</span>
                   ) : r.kind === "video" ? (
+                    // `muted`, no controls: silent by construction, so the
+                    // audible-track resolution (`video:playback`) would buy
+                    // nothing and can cost a source-sized remux per row.
                     <video
                       src={captureSrcUrl(r.id)}
                       preload="metadata"

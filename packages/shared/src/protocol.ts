@@ -4736,27 +4736,27 @@ export type Commands = {
   };
   /**
    * Resolve what a player should load for this recording. A take whose
-   * audible track is not track 0 — system audio armed with nothing playing
-   * through it, in front of a live microphone — plays silent when a player
-   * is handed the capture URL directly, because `<video>` takes the first
-   * audio track and ignores the rest.
+   * audible track is not the one a player picks up — system audio armed
+   * with nothing playing through it, in front of a live microphone — plays
+   * silent when a player is handed the capture URL directly, because
+   * `<video>` plays ONE audio track and ignores the rest. (Which one is
+   * measured, not assumed: Chromium takes the track flagged `default`, and
+   * AVAssetWriter flags them all, so in practice that is track 0. See
+   * `docs/solutions/2026-09-12-video-playback-audio-track-selection.md`.)
    *
-   * **Rollout is incomplete, and the gap is audible.** Only `VideoStage`
-   * asks. Every other player still builds `captureSrcUrl(id)` itself:
-   * the post-capture float-over toast and the tray's "last recording"
-   * (both `controls`, so one click from unmuted — and the toast is the
-   * first place a user checks their narration), `Stage`'s
-   * `record.video === null` fallback, and the muted previews in the
-   * Library grid, `DetailRail` and `CartPanel`. So the same recording
-   * behaves differently depending on which surface opened it.
+   * **The rule: every AUDIBLE player resolves through this verb; a player
+   * that cannot be heard must NOT.** This can spawn a stream-copy remux the
+   * size of the recording, so the dispatch itself is what a silent surface
+   * is avoiding — firing it per cell across a grid is the hazard.
    *
-   * Converting them is not a one-line change: this verb can spawn a full
-   * stream-copy remux, so a hover preview must not fire it blindly, and
-   * the decision function that would gate it (`videoPlaybackNeedsPreparation`)
-   * lives in main. Worth settling alongside whether a source-sized copy is
-   * the right mechanism at all — `-disposition:a:N default` rewrites
-   * metadata instead of bytes, and the mixed `.m4a` this already builds is
-   * ~2% of the size.
+   * Renderers do not decide that by hand. `useVideoPlaybackSrc` gates on
+   * the shared `videoPlaybackNeedsPreparation`, which is pure over four
+   * booleans already on `VideoCaptureMetadata`, so a capture that cannot
+   * need a rendition never crosses the bus. `HoverAutoplayVideo` — the
+   * audible preview shared by the float-over toast and the tray's "last
+   * recording" — takes the capture rather than a URL so its callers cannot
+   * forget. The muted thumbnails (Library grid, `DetailRail`, `CartPanel`)
+   * stay on `captureSrcUrl` and say why at the call site.
    */
   "video:playback": {
     req: { captureId: string };

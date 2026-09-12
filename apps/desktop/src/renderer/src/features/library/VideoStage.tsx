@@ -24,8 +24,8 @@ import {
   type ReactElement
 } from "react";
 import type { CaptureRecord, VideoCaptureMetadata } from "@pwrsnap/shared";
-import { captureSrcUrl, dispatch } from "../../lib/pwrsnap";
 import { usePlayheadSource } from "../shared/playhead";
+import { useVideoPlaybackSrc } from "../shared/useVideoPlaybackSrc";
 import { VideoTimeline } from "../shared/VideoTimeline";
 import { useVideoTimelineAssets } from "../shared/useVideoTimelineAssets";
 import type { UseVideoTrimRange } from "../shared/useVideoTrimRange";
@@ -153,18 +153,21 @@ export function VideoStage({
   // abort/emptied/timeupdate/loadstart/suspend/durationchange/
   // loadedmetadata, no pause.
   const resumeAfterSwapRef = useRef<{ time: number; playing: boolean } | null>(null);
-  // What the <video> should actually load.
-  //
-  // A recording keeps each source as its own audio track and players take
-  // only the FIRST one, so the capture's own URL is not always the right
-  // answer: a take with system audio armed but nothing playing through it
-  // has a silent track sitting in front of a perfectly good microphone,
-  // and loading the original plays that silence at full volume. `main`
-  // answers with a prepared, stream-copied rendition in that case.
-  //
-  // Seeded with the capture URL so the first frame still paints while the
-  // question is being answered — the video element is not left empty.
-  const [playbackUrl, setPlaybackUrl] = useState(() => captureSrcUrl(captureId));
+  // What the <video> should actually load — the capture URL, or a prepared
+  // rendition when the audible audio is not the track a player would take.
+  // Seeded with the capture URL, so the first frame still paints while the
+  // question is being answered.
+  const playbackUrl = useVideoPlaybackSrc({
+    captureId,
+    video,
+    // Record where to come back to BEFORE the src changes: assigning it
+    // resets the element to 0 and stops it, silently (see above).
+    onBeforeSwap: () => {
+      const el = videoRef.current;
+      if (el === null) return;
+      resumeAfterSwapRef.current = { time: el.currentTime, playing: !el.paused };
+    }
+  });
   const [loopInRange, setLoopInRange] = useState(true);
   // `currentTime` is the DISCRETE head — seek, pause, capture switch.
   // The per-frame head rides `playhead` instead, straight to the two
@@ -613,32 +616,6 @@ export function VideoStage({
   }, [captureId, reel]);
 
   useEffect(() => () => stopShuttle(), [stopShuttle]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const seed = captureSrcUrl(captureId);
-    setPlaybackUrl(seed);
-    // `dispatch` forwards to `ipcRenderer.invoke`, which REJECTS when the
-    // main handler throws — and in split mode this verb crosses the agent
-    // bridge, so a teardown mid-flight lands here. Without the catch that
-    // is an unhandled rejection, not the fallback this comment claims.
-    void dispatch("video:playback", { captureId })
-      .then((res) => {
-        // A failure here is not worth surfacing: the seed above is already
-        // the pre-existing behavior, so the worst case is what shipped
-        // before this resolution existed.
-        if (cancelled || !res.ok || res.value.url === seed) return;
-        const el = videoRef.current;
-        if (el !== null) {
-          resumeAfterSwapRef.current = { time: el.currentTime, playing: !el.paused };
-        }
-        setPlaybackUrl(res.value.url);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [captureId]);
 
   const toggleMute = (): void => {
     changeVolume(volume === 0 ? lastAudibleRef.current : 0);

@@ -11,7 +11,9 @@
 
 import { copyFile, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { ok, err, recordingFailureSummary } from "@pwrsnap/shared";
+import { ok, err, recordingFailureSummary,
+  videoPlaybackNeedsPreparation
+} from "@pwrsnap/shared";
 import type {
   Commands,
   PwrSnapError,
@@ -71,10 +73,15 @@ import { ensureVideoFrames, videoAssetDir } from "../recording/video-frames";
 import {
   AUDIO_PIPELINE_VERSION,
   extractVideoAudio,
-  prepareVideoPlayback,
-  videoPlaybackNeedsPreparation
+  computeVideoPlaybackCacheKey,
+  prepareVideoPlayback
 } from "../sizzle/audio-extract";
-import { captureSrcUrl, isDerivedAudioAsset, videoAssetUrl } from "../protocols-parse";
+import {
+  captureSrcUrl,
+  isDerivedAudioAsset,
+  isDerivedPlaybackAsset,
+  videoAssetUrl
+} from "../protocols-parse";
 import { broadcastCapturesChanged } from "../events";
 import { prepareRenderedFileAlias } from "../render/file-alias";
 import { buildPresetExportDisplayName } from "../render/export-filename";
@@ -335,8 +342,21 @@ export function validateRecordingStartRequest(
  * drifted (`audio-mixed-v2` against `mixed-audio-v1`).
  */
 export const VIDEO_AUDIO_ASSET = `${AUDIO_PIPELINE_VERSION}.m4a`;
-/** Same derivation, for the prepared playback rendition. */
-export const VIDEO_PLAYBACK_ASSET = `playback-${AUDIO_PIPELINE_VERSION}.mp4`;
+/**
+ * Filename of the prepared playback rendition, for one source revision.
+ *
+ * Carries a content key as well as the pipeline version, because the two
+ * invalidate on different facts. The waveform asset is a pure function of
+ * the pipeline, so its name needs only the version. The rendition is a
+ * function of the SOURCE — its bytes and the four track flags — and #496
+ * left that out, so `fileHasBytes` short-circuited on a name that could
+ * no longer describe its contents and nothing ever revalidated. A key in
+ * the name makes the short-circuit correct again: different inputs, and
+ * the lookup simply misses.
+ */
+export function videoPlaybackAsset(cacheKey: string): string {
+  return `playback-${AUDIO_PIPELINE_VERSION}-${cacheKey}.mp4`;
+}
 /** Matches the timeline's smallest supported trim span. */
 const MIN_VIDEO_RANGE_SEC = 0.1;
 
@@ -372,26 +392,68 @@ async function ensureVideoPlaybackAsset(input: {
   requestedSystemAudio: boolean;
   requestedMicrophone: boolean;
 }): Promise<string | null> {
+  // Answer the cheap question first. A recording whose audible audio is
+  // already the track a player takes needs no rendition, no cache key, and
+  // so no `stat` of the source at all.
   if (!videoPlaybackNeedsPreparation(input)) return null;
-  const existing = videoPlaybackInFlight.get(input.captureId);
+  const dir = videoAssetDir(input.captureId);
+  // Resolve the identity BEFORE joining the in-flight map, so the map can be
+  // keyed by the artifact rather than by the capture. Keying it by capture
+  // made a coalesced caller adopt whatever the first caller's source state
+  // produced — invisible while the name was a constant, wrong once the name
+  // encodes a revision. The cost is one extra `stat` per concurrent caller.
+  const asset = videoPlaybackAsset(await computeVideoPlaybackCacheKey(input));
+  const existing = videoPlaybackInFlight.get(asset);
   if (existing !== undefined) return existing;
 
   const work = (async () => {
-    const target = join(videoAssetDir(input.captureId), VIDEO_PLAYBACK_ASSET);
-    if (await fileHasBytes(target)) return VIDEO_PLAYBACK_ASSET;
-    await mkdir(videoAssetDir(input.captureId), { recursive: true });
+    const target = join(dir, asset);
+    if (await fileHasBytes(target)) return asset;
+    await mkdir(dir, { recursive: true });
     const played = await prepareVideoPlayback(target, input);
     // The probe can still say the file disagrees with its metadata, in
     // which case nothing was written and the original is correct.
-    return played === target ? VIDEO_PLAYBACK_ASSET : null;
+    return played === target ? asset : null;
   })();
 
-  videoPlaybackInFlight.set(input.captureId, work);
+  videoPlaybackInFlight.set(asset, work);
   try {
-    return await work;
+    const produced = await work;
+    // Retire renditions of every OTHER revision of this source. Each is a
+    // full copy of a recording, so leaving them costs source-sized bytes per
+    // stale revision — the reason this lane sweeps itself rather than riding
+    // along with the waveform lane's pipeline-version sweep.
+    //
+    // Outside the success branch on purpose. When preparation declines
+    // (`produced === null`) the ORIGINAL is what plays, so every rendition
+    // present is stale — and that is exactly the state an early return
+    // stranded: metadata disagreeing with the file makes the decline
+    // permanent, so nothing would ever have collected them, including the
+    // unkeyed rendition #496 left behind.
+    await sweepStalePlaybackRenditions(dir, produced);
+    return produced;
   } finally {
-    videoPlaybackInFlight.delete(input.captureId);
+    if (videoPlaybackInFlight.get(asset) === work) videoPlaybackInFlight.delete(asset);
   }
+}
+
+/**
+ * Delete every prepared rendition in `dir` except `keep` (pass `null` to
+ * remove all of them, i.e. when the original is what plays).
+ *
+ * Deliberately unconditional about whether another window currently has one
+ * of those URLs loaded: a rendition is only swept once the source it was
+ * derived from has changed, so it no longer describes the recording, and a
+ * window still streaming it is already being served the wrong bytes. Leaving
+ * it would cost a source-sized file per stale revision. Recovering is a
+ * reload, which the next `video:playback` answers with the current rendition.
+ */
+async function sweepStalePlaybackRenditions(dir: string, keep: string | null): Promise<void> {
+  await Promise.all(
+    (await readdir(dir).catch(() => [] as string[]))
+      .filter((name) => name !== keep && isDerivedPlaybackAsset(name))
+      .map((name) => rm(join(dir, name), { force: true }).catch(() => undefined))
+  );
 }
 
 async function ensureVideoAudioAsset(input: {
@@ -428,14 +490,13 @@ async function ensureVideoAudioAsset(input: {
     // `isDerivedAudioAsset` is the SAME list the protocol resolver serves
     // from, deliberately. Re-spelling it here is what let `audio-mixed-v2`
     // — still servable, so still a real orphan — slip through every sweep.
+    //
+    // Scoped to the waveform lane: playback renditions are swept by
+    // `ensureVideoPlaybackAsset`, against a key this function cannot
+    // compute, so a name it does not recognise must be left alone.
     await Promise.all(
       (await readdir(dir).catch(() => [] as string[]))
-        .filter(
-          (name) =>
-            name !== VIDEO_AUDIO_ASSET &&
-            name !== VIDEO_PLAYBACK_ASSET &&
-            isDerivedAudioAsset(name)
-        )
+        .filter((name) => name !== VIDEO_AUDIO_ASSET && isDerivedAudioAsset(name))
         .map((name) => rm(join(dir, name), { force: true }).catch(() => undefined))
     );
     const tmp = `${target}.${process.pid}.tmp`;

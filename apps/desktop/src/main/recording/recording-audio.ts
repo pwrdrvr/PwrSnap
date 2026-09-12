@@ -1,6 +1,14 @@
 import { spawn } from "node:child_process";
-import type { VideoExportAudio } from "@pwrsnap/shared";
+import type { RecordedAudioTrackFacts } from "@pwrsnap/shared";
 import { resolveFfmpegPath } from "./ffmpeg-resolver";
+
+// Track selection moved to `@pwrsnap/shared` so renderers can answer the
+// same question without a round trip. Re-exported here because it belongs
+// beside `buildRecordingAudioArgs`, the function that consumes its output,
+// and one implementation is the point. `videoPlaybackNeedsPreparation` is
+// NOT re-exported: its consumers import it from `@pwrsnap/shared` directly,
+// so it is reachable by exactly one path.
+export { selectedRecordingAudioStreams, type RecordedAudioTrackFacts } from "@pwrsnap/shared";
 
 /**
  * Version token for the recorded-audio mix produced by
@@ -16,20 +24,9 @@ import { resolveFfmpegPath } from "./ffmpeg-resolver";
  */
 export const AUDIO_PIPELINE_VERSION = "mixed-audio-v2";
 
-export type RecordingAudioSource = {
+/** A file on disk plus the track facts that describe its audio layout. */
+export type RecordingAudioSource = RecordedAudioTrackFacts & {
   videoPath: string;
-  /** Samples actually landed for the source. Decides whether to USE a track. */
-  hasSystemAudio: boolean;
-  hasMicrophoneAudio: boolean;
-  /**
-   * A writer input was ADDED for the source. Decides which INDEX a track has.
-   *
-   * Optional because recordings written before migration 0033 have no such
-   * column; for those, `hasX` is the only evidence a track exists and is used
-   * as the fallback (see `selectedRecordingAudioStreams`).
-   */
-  requestedSystemAudio?: boolean | undefined;
-  requestedMicrophone?: boolean | undefined;
 };
 
 export class AudioExtractError extends Error {
@@ -131,49 +128,6 @@ export async function probeAudioStreamCount(videoPath: string, signal?: AbortSig
     }
   });
   return streams.size;
-}
-
-/**
- * Recorder order is system first, mic second; mic-only uses audio index 0.
- *
- * Track POSITION and track USE are two different questions and must be read
- * from two different facts. The recorder adds a writer input when a source is
- * ARMED (main.swift `writer.add(ai)` / `writer.add(mi)`), so that is what
- * decides the index; `hasX` only records whether samples later landed, and a
- * source that was armed and stayed silent still occupies its slot. Reading the
- * index off `hasX` shifted the microphone to 0 whenever system audio was armed
- * but quiet, so the export mapped the empty system track and dropped the voice.
- *
- * `requestedX` is absent on recordings older than migration 0033; there `hasX`
- * is the only evidence a track exists, which is exactly the pre-0033 behavior.
- */
-export function selectedRecordingAudioStreams(
-  source: Pick<
-    RecordingAudioSource,
-    "hasSystemAudio" | "hasMicrophoneAudio" | "requestedSystemAudio" | "requestedMicrophone"
-  >,
-  audio: VideoExportAudio = { includeSystemAudio: true, includeMicrophone: true },
-  availableTracks?: number
-): number[] {
-  const systemArmed = source.requestedSystemAudio === true || source.hasSystemAudio;
-  const micArmed = source.requestedMicrophone === true || source.hasMicrophoneAudio;
-  const claimedTracks = (systemArmed ? 1 : 0) + (micArmed ? 1 : 0);
-  // Stale metadata: the file holds fewer audio tracks than the arm record
-  // claims, so the recorder that wrote it did not add an input per armed
-  // source (a pre-0033 recording, or one whose setup failed after the flag
-  // was persisted). Position by which source actually carried samples
-  // instead — the pre-0033 rule, and the only evidence left. Out-of-range
-  // indices are still dropped by the caller's `index < available` filter;
-  // this decides the index BEFORE that, so a stale claim relocates the
-  // microphone rather than deleting it.
-  const trustArmedLayout = availableTracks === undefined || availableTracks >= claimedTracks;
-  const systemOccupiesFirstSlot = trustArmedLayout ? systemArmed : source.hasSystemAudio;
-  const streams: number[] = [];
-  if (source.hasSystemAudio && audio.includeSystemAudio) streams.push(0);
-  if (source.hasMicrophoneAudio && audio.includeMicrophone) {
-    streams.push(systemOccupiesFirstSlot ? 1 : 0);
-  }
-  return streams;
 }
 
 /**

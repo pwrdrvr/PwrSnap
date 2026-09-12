@@ -5,12 +5,14 @@
 // 404s. The capture-id case-preservation rule is the one that bit us
 // in commit 8d92916; lock it down.
 
+import { createHash } from "node:crypto";
 import { describe, expect, test } from "vitest";
 // Imported for their VALUES, not as literals — this is the pairing that
 // broke, so the test has to read what the handlers really produce.
-import { VIDEO_AUDIO_ASSET, VIDEO_PLAYBACK_ASSET } from "../handlers/recording-handlers";
+import { VIDEO_AUDIO_ASSET, videoPlaybackAsset } from "../handlers/recording-handlers";
 import {
   isDerivedAudioAsset,
+  isDerivedPlaybackAsset,
   parseAppIconBundleId,
   parseCacheUrl,
   parseCaptureId,
@@ -344,7 +346,11 @@ describe("parseVideoAssetUrl", () => {
   // literals, which is the only version of this test that could have
   // caught it.
   test("every asset the handlers actually produce is servable", () => {
-    for (const asset of [VIDEO_AUDIO_ASSET, VIDEO_PLAYBACK_ASSET]) {
+    // `videoPlaybackAsset` takes the source cache key, so exercise it with a
+    // real digest slice rather than a placeholder — the key's alphabet and
+    // width are part of what the whitelist has to admit.
+    const key = createHash("sha256").update("source").digest("hex").slice(0, 24);
+    for (const asset of [VIDEO_AUDIO_ASSET, videoPlaybackAsset(key)]) {
       expect(parseVideoAssetUrl(`pwrsnap-cache://v/cap/${asset}`)).toEqual({
         captureId: "cap",
         asset
@@ -365,9 +371,8 @@ describe("parseVideoAssetUrl", () => {
       "audio.m4a",
       "audio-mixed-v1.m4a",
       "audio-mixed-v2.m4a",
-      "mixed-audio-v1.m4a",
-      "playback-mixed-audio-v1.mp4"
-    ].filter((name) => name !== VIDEO_AUDIO_ASSET && name !== VIDEO_PLAYBACK_ASSET);
+      "mixed-audio-v1.m4a"
+    ].filter((name) => name !== VIDEO_AUDIO_ASSET);
     expect(stale.length).toBeGreaterThan(0);
     for (const asset of stale) {
       // Servable, so a renderer holding an old URL still works…
@@ -377,9 +382,38 @@ describe("parseVideoAssetUrl", () => {
     }
   });
 
+  // The playback lane sweeps itself, against a key the waveform lane cannot
+  // compute. Each rendition is a FULL COPY of a recording, so a spelling the
+  // resolver serves but no sweep recognises strands source-sized bytes until
+  // the capture is hard-deleted. The unkeyed name is the one that matters
+  // here: #496 shipped it, so it is already on disk in the wild.
+  test("the playback sweep can reclaim every rendition spelling ever shipped", () => {
+    for (const asset of [
+      "playback-mixed-audio-v1.mp4",
+      "playback-mixed-audio-v2.mp4",
+      "playback-mixed-audio-v2-0123456789abcdef01234567.mp4"
+    ]) {
+      expect(parseVideoAssetUrl(`pwrsnap-cache://v/cap/${asset}`)).not.toBeNull();
+      expect(isDerivedPlaybackAsset(asset)).toBe(true);
+    }
+  });
+
+  // The two sweeps delete on different schedules, so each must decline the
+  // other's files. An audio sweep that claimed renditions would drop the one
+  // a player is loading right now; a playback sweep that claimed the mixed
+  // audio would take the waveform out from under the timeline.
+  test("the two sweeps never claim each other's assets", () => {
+    expect(isDerivedPlaybackAsset(VIDEO_AUDIO_ASSET)).toBe(false);
+    expect(isDerivedPlaybackAsset("audio.m4a")).toBe(false);
+    expect(isDerivedAudioAsset("playback-mixed-audio-v2.mp4")).toBe(false);
+    expect(isDerivedAudioAsset("playback-mixed-audio-v2-0123456789abcdef01234567.mp4")).toBe(false);
+  });
+
   test("the filmstrip is never mistaken for a sweepable audio derivative", () => {
-    expect(isDerivedAudioAsset("frames-n24-w96.jpg")).toBe(false);
-    expect(isDerivedAudioAsset("poster.png")).toBe(false);
+    for (const predicate of [isDerivedAudioAsset, isDerivedPlaybackAsset]) {
+      expect(predicate("frames-n24-w96.jpg")).toBe(false);
+      expect(predicate("poster.png")).toBe(false);
+    }
   });
 
   test("parses filmstrip + audio assets and preserves capture-id case", () => {

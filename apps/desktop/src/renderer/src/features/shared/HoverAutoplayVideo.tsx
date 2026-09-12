@@ -10,11 +10,27 @@
 // Shared between the post-capture float-over toast and the tray
 // popover's "last recording" preview so the two surfaces feel
 // like siblings.
+//
+// Takes the CAPTURE, not a URL, and resolves what to load itself. Both
+// consumers render native controls over a `muted` element, so both are one
+// click from audible — and a recording whose audible track is not the one a
+// player takes needs a prepared rendition or it plays silence. Owning that
+// here is what keeps the two surfaces from drifting: this is the audible
+// preview component, so the resolution cannot be forgotten at a call site.
 
 import { useCallback, useEffect, useRef, type ReactElement } from "react";
+import type { RecordedAudioTrackFacts } from "@pwrsnap/shared";
+import { useVideoPlaybackSrc } from "./useVideoPlaybackSrc";
 
 export type HoverAutoplayVideoProps = {
-  src: string;
+  /** The recording to play. */
+  captureId: string;
+  /**
+   * Its recorded audio track facts, used to decide whether resolving the
+   * playback URL is worth a round trip at all. `null` when the capture
+   * carries no video metadata — then the capture URL is all there is.
+   */
+  video: RecordedAudioTrackFacts | null | undefined;
   /** Optional style overrides; defaults fill the parent and
    *  letterbox the source via `object-fit: contain` on a black
    *  background. */
@@ -34,12 +50,48 @@ const DEFAULT_STYLE: React.CSSProperties = {
 };
 
 export function HoverAutoplayVideo({
-  src,
+  captureId,
+  video,
   style,
   videoRef: externalVideoRef
 }: HoverAutoplayVideoProps): ReactElement {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  // Where to put the user back after a playback-URL swap.
+  //
+  // Assigning `src` runs the media load algorithm: the element stops and
+  // rewinds to 0, and fires no `pause`. Just pausing is not enough here —
+  // preparing a rendition can take seconds on a large recording, so the
+  // swap routinely lands while someone is already watching, and the hover
+  // listeners are on the CONTAINER, so no `mouseenter` re-fires to restart
+  // it while the pointer sits still. Without this the preview dies at
+  // frame 0 until the user leaves and comes back.
+  const resumeAfterSwapRef = useRef<{ time: number; playing: boolean } | null>(null);
+  const src = useVideoPlaybackSrc({
+    captureId,
+    video,
+    onBeforeSwap: () => {
+      const el = videoRef.current;
+      if (el === null) return;
+      resumeAfterSwapRef.current = { time: el.currentTime, playing: !el.paused };
+    }
+  });
   const containerRef = useRef<HTMLDivElement | null>(null);
+
+  // Restore across the swap. `loadedmetadata` is the first point the new
+  // source can accept a seek.
+  useEffect(() => {
+    const el = videoRef.current;
+    if (el === null) return;
+    const onLoaded = (): void => {
+      const resume = resumeAfterSwapRef.current;
+      resumeAfterSwapRef.current = null;
+      if (resume === null) return;
+      if (resume.time > 0) el.currentTime = resume.time;
+      if (resume.playing) void el.play().catch(() => undefined);
+    };
+    el.addEventListener("loadedmetadata", onLoaded);
+    return () => el.removeEventListener("loadedmetadata", onLoaded);
+  }, []);
 
   // Mirror the element into the caller's ref so both the internal
   // hover-play effect and the caller see the same node.

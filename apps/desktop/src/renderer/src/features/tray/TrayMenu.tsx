@@ -21,7 +21,6 @@ import { AppUpdateRow } from "../update/AppUpdateRow";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import {
   cacheUrl,
-  captureSrcUrl,
   dispatch,
   dispatchInteractiveCapture,
   startCaptureDrag
@@ -690,7 +689,8 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
                    click the volume control to hear sound. */
                 <HoverAutoplayVideo
                   key={lastSnap.id}
-                  src={captureSrcUrl(lastSnap.id)}
+                  captureId={lastSnap.id}
+                  video={lastSnap.video}
                 />
               ) : (
                 <img

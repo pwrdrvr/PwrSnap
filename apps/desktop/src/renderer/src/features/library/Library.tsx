@@ -544,6 +544,12 @@ function VideoCellThumb({
   record: CaptureRecord;
   showPlayButton?: boolean;
 }): React.ReactElement {
+  // Deliberately the capture's own URL, not a `video:playback` resolution.
+  // `PreviewVideoThumb` is `muted` with `pointerEvents: none` and no
+  // controls, so it has no way to become audible and cannot play the wrong
+  // track audibly. Resolving here would also be the one place it is most
+  // harmful: the verb can spawn a source-sized remux, and this renders once
+  // per video cell in a grid.
   return (
     <PreviewVideoThumb
       src={captureSrcUrl(record.id)}

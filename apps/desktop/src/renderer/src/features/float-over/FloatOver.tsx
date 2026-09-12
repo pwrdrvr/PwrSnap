@@ -246,9 +246,16 @@ export type FloatOverAsset =
     }
   | {
       kind: "video";
-      /** Source URL the `<video>` element loads. Typically
-       *  `pwrsnap-capture://r/<id>` — the Range-aware custom
-       *  protocol handler streams the requested byte range. */
+      /**
+       * The capture's own URL (`pwrsnap-capture://r/<id>` — the Range-aware
+       * protocol handler streams the requested byte range).
+       *
+       * NOT what the preview player loads, and must not be wired to one:
+       * a recording whose audible track is not the one a player takes needs
+       * a prepared rendition, or it plays silence. `HoverAutoplayVideo`
+       * resolves that from `captureId` + the flags below. Kept because the
+       * toast's generic `src` prop is shared with the image variant.
+       */
       src: string;
       /** Video capture id. Threads into the 6-card export grid
        *  (`VideoExportPresetsPanel`) which owns its own hooks for
@@ -897,7 +904,20 @@ export function FloatOver({
           // controls. Same component the tray uses for its
           // "last recording" preview, so the surfaces behave
           // consistently.
-          <HoverAutoplayVideo src={asset.src} videoRef={previewVideoRef} />
+          <HoverAutoplayVideo
+            captureId={asset.captureId}
+            // The descriptor's flags are optional on the type; a video
+            // asset always carries all four (FloatOverHost fills them from
+            // the record), and a missing one only costs a round trip that
+            // resolves to the capture URL.
+            video={{
+              hasSystemAudio: asset.hasSystemAudio === true,
+              hasMicrophoneAudio: asset.hasMicrophoneAudio === true,
+              requestedSystemAudio: asset.requestedSystemAudio,
+              requestedMicrophone: asset.requestedMicrophone
+            }}
+            videoRef={previewVideoRef}
+          />
         ) : (
           <img
             src={visibleSrc}

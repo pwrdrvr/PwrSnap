@@ -12,7 +12,7 @@
 //
 // ffmpeg, better-sqlite3, and the recorder are all mocked.
 
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { CaptureRecord, VideoRange } from "@pwrsnap/shared";
 
@@ -21,7 +21,8 @@ const mocks = vi.hoisted(() => ({
   setDefaultRange: vi.fn((_: string, range: VideoRange) => range),
   broadcast: vi.fn(),
   ensureVideoFrames: vi.fn(),
-  extractVideoAudio: vi.fn()
+  extractVideoAudio: vi.fn(),
+  prepareVideoPlayback: vi.fn()
 }));
 
 vi.mock("electron", (): Partial<typeof import("electron")> => ({
@@ -65,10 +66,15 @@ vi.mock("../../recording/video-frames", () => ({
 
 vi.mock("../../sizzle/audio-extract", () => ({
   extractVideoAudio: mocks.extractVideoAudio,
+  prepareVideoPlayback: (...args: unknown[]) => mocks.prepareVideoPlayback(...args),
+  // Fixed so the expected filename is spelled once, in PLAYBACK_KEY.
+  computeVideoPlaybackCacheKey: async () => PLAYBACK_KEY,
   // The asset filename is derived from this, at module scope. Omitting it
   // made the handler import `undefined.m4a`.
   AUDIO_PIPELINE_VERSION: "mixed-audio-v2"
 }));
+
+const PLAYBACK_KEY = "0123456789abcdef01234567";
 
 vi.mock("../../recording/recording-service", () => ({
   getRecordingService: () => ({
@@ -145,7 +151,79 @@ beforeEach(async () => {
   mocks.broadcast.mockClear();
   mocks.ensureVideoFrames.mockReset();
   mocks.extractVideoAudio.mockReset();
+  mocks.prepareVideoPlayback.mockReset();
   await rm("/tmp/pwrsnap-test-cache/video/vid_Timeline1", { recursive: true, force: true });
+});
+
+// The prepared rendition is a FULL COPY of a recording, so the lane that
+// writes them is also the only thing that reclaims them. These pin the
+// deletion itself — the predicates are pinned in protocols-parse.test.ts,
+// but nothing there says this handler actually removes the right files.
+describe("video:playback rendition sweep", () => {
+  const DIR = "/tmp/pwrsnap-test-cache/video/vid_Timeline1";
+  const CURRENT = `playback-mixed-audio-v2-${PLAYBACK_KEY}.mp4`;
+  // Everything that must survive: the other lane's asset, an older spelling
+  // of it, and the filmstrip.
+  const BYSTANDERS = ["mixed-audio-v2.m4a", "audio.m4a", "frames-n24-w96.jpg"];
+  // Renditions of earlier revisions of the same source, including the
+  // unkeyed name #496 shipped.
+  const STALE = ["playback-mixed-audio-v2.mp4", "playback-mixed-audio-v2-feedfacefeedfacefeedface.mp4"];
+
+  async function seed(): Promise<void> {
+    await mkdir(DIR, { recursive: true });
+    for (const name of [...BYSTANDERS, ...STALE]) await writeFile(`${DIR}/${name}`, "x");
+  }
+  async function present(): Promise<string[]> {
+    return (await readdir(DIR).catch(() => [] as string[])).sort();
+  }
+  /** Both audible, so the predicate demands a rendition. */
+  const dualAudio = {
+    hasSystemAudio: true,
+    hasMicrophoneAudio: true,
+    requestedSystemAudio: true,
+    requestedMicrophone: true
+  };
+
+  test("keeps the rendition it just published and retires the older ones", async () => {
+    mocks.capture = videoCapture(dualAudio);
+    await seed();
+    mocks.prepareVideoPlayback.mockImplementation(async (target: string) => {
+      await writeFile(target, "rendition");
+      return target;
+    });
+
+    const result = await bus.dispatch("video:playback", { captureId: "vid_Timeline1" }, { principal: "ipc" });
+    expect(result).toMatchObject({ ok: true, value: { prepared: true } });
+    expect((result as { value: { url: string } }).value.url).toContain(CURRENT);
+    expect(await present()).toEqual([...BYSTANDERS, CURRENT].sort());
+  });
+
+  // The decline path: metadata claims two tracks, the file disagrees, so
+  // preparation hands back the original. Returning early here is what left
+  // a source-sized rendition that nothing would EVER collect — every later
+  // call takes the same early return.
+  test("retires every rendition when preparation declines and the original plays", async () => {
+    mocks.capture = videoCapture(dualAudio);
+    await seed();
+    mocks.prepareVideoPlayback.mockImplementation(
+      async (_target: string, args: { videoPath: string }) => args.videoPath
+    );
+
+    const result = await bus.dispatch("video:playback", { captureId: "vid_Timeline1" }, { principal: "ipc" });
+    expect(result).toMatchObject({ ok: true, value: { prepared: false } });
+    expect(await present()).toEqual([...BYSTANDERS].sort());
+  });
+
+  test("a capture that needs no rendition sweeps nothing and never prepares", async () => {
+    // Mic only: it already occupies the slot a player takes.
+    mocks.capture = videoCapture({ hasMicrophoneAudio: true, requestedMicrophone: true });
+    await seed();
+
+    const result = await bus.dispatch("video:playback", { captureId: "vid_Timeline1" }, { principal: "ipc" });
+    expect(result).toMatchObject({ ok: true, value: { prepared: false } });
+    expect(mocks.prepareVideoPlayback).not.toHaveBeenCalled();
+    expect(await present()).toEqual([...BYSTANDERS, ...STALE].sort());
+  });
 });
 
 describe("video:setDefaultRange", () => {

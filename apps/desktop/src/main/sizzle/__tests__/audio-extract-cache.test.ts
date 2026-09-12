@@ -1,7 +1,7 @@
 // Process/cache lifecycle tests. Audio fidelity is verified separately by
 // recording-exporter-audio-ffmpeg.test.ts using real generated tone fixtures.
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -35,7 +35,12 @@ vi.mock("node:child_process", () => ({ spawn: (_bin: string, args: string[]) => 
   return child;
 } }));
 
-import { extractVideoAudio, prepareVideoPlayback } from "../audio-extract";
+import {
+  computeNativeAudioCacheKey,
+  computeVideoPlaybackCacheKey,
+  extractVideoAudio,
+  prepareVideoPlayback
+} from "../audio-extract";
 import { probeAudioStreamCount } from "../../recording/recording-audio";
 
 function source() {
@@ -131,4 +136,68 @@ describe("audio derivative cache lifecycle", () => {
     await rejection;
     expect(state.calls[0]?.child.kill).toHaveBeenCalledWith("SIGKILL");
   });
+
+/**
+ * The rendition is a full copy of a recording addressed by a filename, and
+ * `fileHasBytes` short-circuits on that name before anything revalidates.
+ * So the name IS the cache identity, and #496's name carried only the
+ * pipeline version — leaving a pipeline bump as the one and only
+ * invalidator, while the sibling waveform derivative re-derived itself from
+ * `computeNativeAudioCacheKey`. These pin the facts that must move the key,
+ * because each one is a way the served rendition stops describing the file.
+ */
+describe("prepared playback cache identity", () => {
+  test("is stable for an unchanged source", async () => {
+    await expect(computeVideoPlaybackCacheKey(source())).resolves.toBe(
+      await computeVideoPlaybackCacheKey(source())
+    );
+  });
+
+  test("moves when the source file is rewritten in place", async () => {
+    const before = await computeVideoPlaybackCacheKey(source());
+    // Same path, different contents — the shape an in-place rewrite takes.
+    writeFileSync(source().videoPath, "fixture-rewritten-longer");
+    await expect(computeVideoPlaybackCacheKey(source())).resolves.not.toBe(before);
+  });
+
+  test("moves when any of the four recorded track flags changes", async () => {
+    const before = await computeVideoPlaybackCacheKey(source());
+    // A later backfill of the `requested_*` columns relocates the
+    // microphone, so the rendition prepared under the old reading maps the
+    // wrong stream. This is the case that would have been served forever.
+    for (const flags of [
+      { requestedSystemAudio: true },
+      { requestedMicrophone: true },
+      { hasSystemAudio: false },
+      { hasMicrophoneAudio: false }
+    ]) {
+      await expect(
+        computeVideoPlaybackCacheKey({ ...source(), ...flags })
+      ).resolves.not.toBe(before);
+    }
+  });
+
+  test("is domain-separated from the native-audio key for the same source", async () => {
+    // Both lanes digest the same fingerprint; only the domain tag keeps a
+    // full-clip mix and a playback rendition from claiming one identity.
+    await expect(computeVideoPlaybackCacheKey(source())).resolves.not.toBe(
+      computeNativeAudioCacheKey({
+        ...source(),
+        mtimeMs: statSync(source().videoPath).mtimeMs,
+        size: statSync(source().videoPath).size,
+        startSec: 0,
+        durationSec: 2
+      })
+    );
+  });
+
+  test("reports an unreadable source as an extraction failure, not a raw ENOENT", async () => {
+    // Callers branch on `AudioExtractError`; a bare ENOENT fell through to
+    // their `kind: "unknown"` arm.
+    await expect(
+      computeVideoPlaybackCacheKey({ ...source(), videoPath: join(state.root, "gone.mp4") })
+    ).rejects.toMatchObject({ name: "AudioExtractError", code: "ffmpeg_failed" });
+  });
+});
+
 });

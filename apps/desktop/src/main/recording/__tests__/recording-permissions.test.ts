@@ -225,7 +225,7 @@ describe("requestPermission", () => {
   test("systemAudio mirrors the screen prompt path", async () => {
     electronMock.status = { screen: "denied", microphone: "granted" };
     const { requestPermission } = await import("../recording-permissions");
-    const res = await requestPermission("systemAudio");
+    await requestPermission("systemAudio");
     expect(electronMock.desktopCapturerCalls).toBe(1);
     expect(electronMock.shellOpenUrls).toEqual([]);
   });

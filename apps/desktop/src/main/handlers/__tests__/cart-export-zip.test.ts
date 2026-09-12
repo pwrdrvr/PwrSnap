@@ -206,7 +206,7 @@ describe("cart:exportZip", () => {
 
   test("colliding stems get a numeric suffix (no overwrite)", async () => {
     // Two captures with the same source_app_name → same stem.
-    mocks.getCaptureById.mockImplementation((id) => imageRecord("samestem"));
+    mocks.getCaptureById.mockImplementation(() => imageRecord("samestem"));
     await callExportZip({ captureIds: ["a", "b"], preset: "high" });
     const entries = mocks.addFile.mock.calls.map((c) => c[1]);
     expect(entries).toEqual(["samestem-high.png", "samestem-high-2.png"]);

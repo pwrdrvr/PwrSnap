@@ -18,7 +18,6 @@
 //   - the `dispatchEdit` so callers can write layer ops.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { nanoid } from "nanoid";
 import {
   err,
   readHighlightColor,

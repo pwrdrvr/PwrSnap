@@ -18,7 +18,6 @@
 
 import type {
   CommandName,
-  Commands,
   LocalAgentCapability,
   LocalAgentRoleBudgets,
   Req,

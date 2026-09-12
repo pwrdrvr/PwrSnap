@@ -44,7 +44,6 @@ import {
   ArrowStemStyle,
   BlurStyle,
   HighlightBlendModeSchema,
-  Overlay,
   OverlayThickness,
   ShapeKind
 } from "@pwrsnap/shared/overlay";

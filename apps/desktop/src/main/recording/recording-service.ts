@@ -215,7 +215,6 @@ class NativeRecorderService implements RecordingService {
    *  `undefined` lets the recorder apply its own default. */
   private captureCursor: boolean | undefined = undefined;
   private tempDir: string | null = null;
-  private outputPath: string | null = null;
   private startedPromise: Promise<void> | null = null;
   private stoppedPromise: Promise<RecorderStoppedEvent> | null = null;
   private startResolve: (() => void) | null = null;
@@ -331,7 +330,6 @@ class NativeRecorderService implements RecordingService {
     this.capabilities = options.capabilities;
     this.captureCursor = options.captureCursor;
     this.tempDir = tmpDir;
-    this.outputPath = outputPath;
     this.stopRequested = false;
 
     setRecordingState({ phase: "preflight", sessionId, rect: physicalRect, displayId });
@@ -821,7 +819,6 @@ class NativeRecorderService implements RecordingService {
     this.subject = null;
     this.capabilities = null;
     this.captureCursor = undefined;
-    this.outputPath = null;
     this.startedPromise = null;
     this.stoppedPromise = null;
     this.startResolve = null;

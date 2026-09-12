@@ -137,15 +137,13 @@ function ensurePoolWindow(): BrowserWindow {
  *  pixel-identical to what the editor shows. */
 export function buildBakeHtml(args: {
   data: Extract<Overlay, { kind: "text" }>;
-  renderWidthPx: number;
   renderHeightPx: number;
   canvasWidthPx: number;
   canvasHeightPx: number;
   sourceWidthPx: number;
   sourceHeightPx: number;
 }): string {
-  const { data, renderWidthPx, renderHeightPx, canvasWidthPx, canvasHeightPx, sourceWidthPx, sourceHeightPx } =
-    args;
+  const { data, renderHeightPx, canvasWidthPx, canvasHeightPx, sourceWidthPx, sourceHeightPx } = args;
   const colorHex = data.color === "auto" ? AUTO_ACCENT_HEX : data.color;
   const style = computeTextHtmlStyle({
     point: data.point,
@@ -253,7 +251,6 @@ export async function rasterizeTextHtmlForV2(
     win.setContentSize(renderWidthPx, renderHeightPx);
     const html = buildBakeHtml({
       data,
-      renderWidthPx,
       renderHeightPx,
       canvasWidthPx,
       canvasHeightPx,

@@ -44,7 +44,6 @@ import type {
   HighlightToolStyle,
   Overlay,
   OverlayOutlineAutoColor,
-  OverlayOutlineMode,
   OverlayRow,
   PwrSnapError,
   Result,
@@ -144,10 +143,7 @@ import {
 import {
   MIN_DRAG_LENGTH,
   rectFromDrag,
-  type Draft,
-  type DraftArrow,
-  type DraftShape,
-  type DraftText
+  type Draft
 } from "./editor-types";
 import type { PasteImagePosition } from "./usePasteImage";
 import { useDropImage } from "./useDropImage";

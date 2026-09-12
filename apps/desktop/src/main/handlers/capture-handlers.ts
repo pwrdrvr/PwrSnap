@@ -37,8 +37,7 @@ import type {
   PwrSnapError,
   Rect,
   RenderPreset,
-  Result,
-  Settings
+  Result
 } from "@pwrsnap/shared";
 import { bus, type CommandContext } from "../command-bus";
 import {

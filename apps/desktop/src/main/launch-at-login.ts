@@ -46,7 +46,7 @@
 import { app } from "electron";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { join as joinPosix } from "node:path/posix";
 import type { LaunchAtLoginStatus } from "@pwrsnap/shared";
 import { getDesktopSettingsStore } from "./settings/desktop-settings-store";

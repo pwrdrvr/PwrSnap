@@ -16,7 +16,6 @@ import { BridgeEndpoint } from "../process-bridge/endpoint";
 import { processRoleFlag } from "../process-role";
 import {
   deliverRelayedProcessEvent,
-  deliverRelayedRendererEventToMain,
   LIBRARY_WINDOW_READY_CHANNEL
 } from "./event-relay";
 

@@ -16,7 +16,6 @@ import {
   computeVisibility,
   largestFragment,
   pickWindowAt,
-  pointInRect,
   rectsIntersect,
   subtractAll,
   subtractRect,

@@ -212,7 +212,7 @@ function relativeTime(iso: string): string {
 // formatBytes moved to features/shared/CopyButton.tsx (used internally
 // by presetMetrics there; not exported separately).
 
-export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
+export function TrayMenu() {
   const shortcutPlatform = rendererShortcutPlatform();
   const { rows } = useLibrary();
   const hotkeys = useHotkeys();

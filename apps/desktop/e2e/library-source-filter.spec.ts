@@ -679,15 +679,6 @@ async function disableCacheImageLoading(page: SourceFilterApp["window"]): Promis
   });
 }
 
-async function reloadLibraryWindow(page: SourceFilterApp["window"]): Promise<void> {
-  await page.reload({ waitUntil: "domcontentloaded" });
-  await expect(page.getByRole("button", { name: /All Captures\s+\d+/ })).toBeVisible({
-    timeout: 10_000
-  });
-  await disableAnimations(page);
-  await disableCacheImageLoading(page);
-}
-
 async function clickSourceFilterButton(
   page: SourceFilterApp["window"],
   filterCase: SourceFilterCase

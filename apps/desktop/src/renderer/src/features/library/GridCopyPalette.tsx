@@ -163,7 +163,6 @@ export function GridCopyPalette({
   // write updates the visible state first, but must roll back to this
   // value when persistence fails rather than leaving a session-only mode.
   const confirmedAnchor = useRef<GridCopyPaletteAnchor>("follow");
-  const pendingPreviewOpen = useRef<PendingWrite<boolean>>(null);
   // One anchor flip per drag — a burst of pointermoves inside a single
   // React batch would otherwise fire several identical settings writes.
   const flippedThisDrag = useRef(false);

@@ -22,7 +22,7 @@ import {
   test,
   vi
 } from "vitest";
-import type { BundleLayerNode, CaptureRecord, OverlayRow } from "@pwrsnap/shared";
+import type { BundleLayerNode, CaptureRecord } from "@pwrsnap/shared";
 
 // ---- Mocks ----------------------------------------------------------
 //
@@ -72,8 +72,7 @@ import {
   inverseCropRect,
   cropRectFromCanvas,
   applyGeometryToLayer,
-  type CaptureModel,
-  type LayerView
+  type CaptureModel
 } from "../useCaptureModel";
 
 beforeAll(() => {
@@ -105,27 +104,6 @@ function makeRecord(id: string, formatVersion: number): CaptureRecord {
     edits_version: 0,
     has_alpha: false,
     deleted_at: null
-  };
-}
-
-function makeOverlayRow(id: string, captureId: string): OverlayRow {
-  return {
-    id,
-    capture_id: captureId,
-    data: {
-      kind: "arrow",
-      from: { x: 0.1, y: 0.1 },
-      to: { x: 0.5, y: 0.5 },
-      color: "auto"
-    },
-    schema_version: 1,
-    created_at: "2026-05-23T12:00:00.000Z",
-    applied_at: "2026-05-23T12:00:00.000Z",
-    rejected_at: null,
-    superseded_by: null,
-    ai_run_id: null,
-    source: "user",
-    z_index: 0
   };
 }
 
@@ -314,15 +292,7 @@ describe("useCaptureModel", () => {
       return Promise.resolve({ ok: true, value: null });
     });
 
-    let model: CaptureModel | null = null;
-    render(
-      createElement(Probe, {
-        captureId: "cap_2",
-        onSnapshot: (m) => {
-          model = m;
-        }
-      })
-    );
+    render(createElement(Probe, { captureId: "cap_2", onSnapshot: () => {} }));
     await flush();
 
     const verbs = dispatchMock.mock.calls.map((c) => c[0]);
@@ -1146,15 +1116,7 @@ describe("useCaptureModel", () => {
       return Promise.resolve({ ok: true, value: null });
     });
 
-    let model: CaptureModel | null = null;
-    render(
-      createElement(Probe, {
-        captureId: "cap_1",
-        onSnapshot: (m) => {
-          model = m;
-        }
-      })
-    );
+    render(createElement(Probe, { captureId: "cap_1", onSnapshot: () => {} }));
     await flush();
 
     expect(listCalls).toBe(1);

@@ -146,9 +146,24 @@ async function guardRecordingAttempt(
         "PwrSnap couldn't request microphone access. Check Settings > System Permissions, then record again."
       ));
     }
-  } else if (capabilities.microphone && readiness.microphone !== "granted") {
-    void bus.dispatch("settings:open", { page: "system-permissions" }, { principal: "ipc" });
   }
+  // Nothing is opened from here. A guard decides; it does not act.
+  //
+  // This used to `void bus.dispatch("settings:open", ...)` for every
+  // non-`not-determined` microphone status — `denied`, `restricted`,
+  // `unavailable` AND `unknown` — so a hotkey-driven recording threw a
+  // PwrSnap window the user had not asked for on top of the error
+  // below, which sends them to *macOS* System Settings instead. For
+  // `restricted` (MDM-managed) and `unavailable` that page has nothing
+  // actionable on it at all, and the dispatch re-fired on every press
+  // of Retry on the failure card. It was also `void`-ed with no
+  // `.catch`.
+  //
+  // The caller that CAN offer it as a choice already does:
+  // `record-from-selection.ts` puts the message in a dialog with
+  // "Open System Permissions" / "Dismiss" and dispatches `settings:open`
+  // on the first button, logging a failure. Doing it here as well only
+  // took the choice away and got there first.
   if (capabilities.microphone && readiness.microphone !== "granted") {
     return err(
       permissionError(

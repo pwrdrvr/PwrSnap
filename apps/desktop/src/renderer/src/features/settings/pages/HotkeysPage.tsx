@@ -319,14 +319,13 @@ export function HotkeysPage(): ReactElement {
         </Row>
         <Row
           label="Open Library"
-          sub="Brings the Library window forward, reopening it if you closed it. Unbound by default — ⌘⇧L is taken by editors and by PwrSnap's own Sizzle window, and a global chord would shadow both."
+          sub={`Brings the Library window forward, reopening it if you closed it. Unbound by default — ${acceleratorToDisplayText(
+            "CommandOrControl+Shift+L",
+            platform
+          )} is taken by editors and by PwrSnap's own Sizzle window, and a global chord would shadow both.`}
           tag="global"
         >
-          <HotkeyCapture
-            value={hk?.openLibrary ?? ""}
-            onCommit={onCommit("openLibrary")}
-            onUnbind={onUnbind("openLibrary")}
-          />
+          {hotkeyControl("openLibrary", hk?.openLibrary ?? "")}
         </Row>
       </Card>
 

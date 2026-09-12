@@ -3,14 +3,20 @@
 // Regression pin: the button's tooltip used to hard-code "(⌘⇧L)", but
 // main never registered a global ⌘⇧L — the chord was pure fiction (the
 // only ⌘⇧L in the app toggles the reel rail *inside* the Sizzle
-// window). The tooltip now reads `settings.hotkeys.openLibrary`, which
-// ships UNBOUND, so a fresh install advertises no chord at all and a
-// user-bound chord shows up verbatim.
+// window). The tooltip now reads `settings.hotkeys.openLibrary` through
+// `activeTrayHotkeyKeys`, which shows a chord only when main reports it
+// REGISTERED — so a fresh install (openLibrary ships unbound) advertises
+// nothing, and a chord the OS refused doesn't get advertised either.
 
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import { DEFAULT_HOTKEYS, type Settings } from "@pwrsnap/shared";
+import {
+  DEFAULT_HOTKEYS,
+  type HotkeyRegistrationStatusSnapshot,
+  type HotkeySettingKey,
+  type Settings
+} from "@pwrsnap/shared";
 import { TrayMenu } from "../TrayMenu";
 
 // `useLibrary` owns a MODULE-LEVEL store (`let snapshot`, `subscribed`, a
@@ -61,19 +67,46 @@ let root: Root | null = null;
 
 type EventHandler = (payload: unknown) => void;
 
+/** A snapshot in which every bound chord registered cleanly — the happy
+ *  path the tooltip is allowed to advertise. */
+function allRegistered(hotkeys: Settings["hotkeys"]): HotkeyRegistrationStatusSnapshot {
+  const entries = (Object.keys(hotkeys) as HotkeySettingKey[]).map((key) => [
+    key,
+    {
+      key,
+      accelerator: hotkeys[key],
+      state: hotkeys[key] === "" ? ("unbound" as const) : ("active" as const),
+      failure: null
+    }
+  ]);
+  return Object.fromEntries(entries) as HotkeyRegistrationStatusSnapshot;
+}
+
 /** Minimal `window.pwrsnapApi` for the tray: `useHotkeys` reads
- *  `settings:read` and the display strip reads `system:listDisplays`.
- *  (`useLibrary` is mocked above, so no `library:list` stub is needed.)
- *  Everything else resolves empty. */
-function installTrayApi(hotkeys: Partial<Settings["hotkeys"]>): {
+ *  `settings:read`, the tooltip gate reads `settings:hotkeyStatus`, and
+ *  the display strip reads `system:listDisplays`. (`useLibrary` is
+ *  mocked above, so no `library:list` stub is needed.) Everything else
+ *  resolves empty. */
+function installTrayApi(
+  hotkeys: Partial<Settings["hotkeys"]>,
+  status?: HotkeyRegistrationStatusSnapshot
+): {
   calls: string[];
 } {
   const calls: string[] = [];
+  const merged: Settings["hotkeys"] = { ...DEFAULT_HOTKEYS, ...hotkeys };
   window.pwrsnapApi = {
+    // The tooltip renders through `acceleratorToDisplayKeys`, which is
+    // platform-aware (#508): without a platform the bridge falls back to
+    // the Windows keycaps and the ⌘ assertions below become untestable.
+    platform: "darwin",
     dispatch: vi.fn(async (name: string) => {
       calls.push(name);
       if (name === "settings:read") {
-        return { ok: true, value: { hotkeys: { ...DEFAULT_HOTKEYS, ...hotkeys } } };
+        return { ok: true, value: { hotkeys: merged } };
+      }
+      if (name === "settings:hotkeyStatus") {
+        return { ok: true, value: status ?? allRegistered(merged) };
       }
       if (name === "system:listDisplays") return { ok: true, value: { displays: [] } };
       if (name === "capture:presetMetrics") return { ok: true, value: { metrics: [] } };
@@ -140,6 +173,32 @@ describe("TrayMenu — Open Library button", () => {
     const el = await renderTray();
 
     expect(openLibraryButton(el).title).toBe("Open Library  (⌘⌥⇧L)");
+  });
+
+  test("stays silent about a bound chord main could not register", async () => {
+    // The whole point of the original bug was a tooltip promising a
+    // chord nothing handled. A chord the OS refused is the same lie by
+    // a different route, so the registration gate has to cover it.
+    const merged: Settings["hotkeys"] = {
+      ...DEFAULT_HOTKEYS,
+      openLibrary: "CommandOrControl+Alt+Shift+L"
+    };
+    const status = allRegistered(merged);
+    installTrayApi(
+      { openLibrary: "CommandOrControl+Alt+Shift+L" },
+      {
+        ...status,
+        openLibrary: {
+          key: "openLibrary",
+          accelerator: "CommandOrControl+Alt+Shift+L",
+          state: "inactive",
+          failure: null
+        }
+      }
+    );
+    const el = await renderTray();
+
+    expect(openLibraryButton(el).title).toBe("Open Library");
   });
 
   test("clicking it dispatches library:focus", async () => {

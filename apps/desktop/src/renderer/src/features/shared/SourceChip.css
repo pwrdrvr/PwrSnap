@@ -19,8 +19,19 @@
  * called out individually below.
  */
 
+/* The chip is a GROUP, not a button — see the block comment in
+   SourceChip.tsx. It keeps every rule it had as a <button>, so the
+   `[data-state=...]` cascade below and RecordingController.css's
+   `--onScrim` overrides are untouched; what changed is that the toggle
+   is now `.ps-chip__body` inside it, alongside the grant action and the
+   device caret as real sibling <button>s. */
 .ps-chip {
-  appearance: none;
+  position: relative;
+  /* Pinned, not inherited from app.css's `*` reset. As a <button> this
+     came free from the UA stylesheet; a <span> defaults to content-box,
+     which put the 1px border OUTSIDE `height: 30px` and made every chip
+     32px tall. The one measurable difference the split introduced. */
+  box-sizing: border-box;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -33,6 +44,64 @@
   color: var(--text-secondary);
   font: 500 12px/1 var(--font-sans);
   white-space: nowrap;
+  cursor: pointer;
+}
+
+/* The toggle. Carries NO chrome and NO box of its own — the group draws
+   all of it — so splitting the element off changed no width, no gap and
+   no height. `gap: inherit` is what keeps the 8px/6px density variants
+   working across the new nesting level. */
+.ps-chip__body {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  align-self: stretch;
+  gap: inherit;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  /* `inherit` takes the group's 8px — border-radius is not an inherited
+     property, so this is the explicit keyword, and it is what lets the
+     overlay below round off the same four corners the group does. */
+  border-radius: inherit;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: inherit;
+}
+
+/* Before the split the chip WAS the button, so its padding and its
+   trailing <kbd> toggled too. This stretches the toggle's hit area back
+   over the whole group; the two action buttons below are positioned, so
+   they paint — and hit-test — above it. Nothing here is painted. */
+.ps-chip__body::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  /* Measured: without this the square overlay hit-tests the ~1px the
+     radius rounds off each corner, which the <button> used to reject. */
+  border-radius: inherit;
+}
+
+/* `position` keeps both above `.ps-chip__body::after`. Both are later in
+   DOM order than the body, and z-index:auto positioned boxes paint in
+   tree order, so no z-index is needed — and adding one would start a
+   stacking contest with the HUD's scrim. */
+.ps-chip__act {
+  position: relative;
+}
+
+/* The caret's own button: a bare hit target around the glyph, which
+   keeps its `.ps-chip__caret` geometry below. */
+.ps-chip__devices {
+  position: relative;
+  appearance: none;
+  display: flex;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
   cursor: pointer;
 }
 
@@ -151,12 +220,30 @@
   border-color: var(--border-subtle);
 }
 
-.ps-chip:disabled {
+.ps-chip__body:disabled {
   cursor: not-allowed;
 }
-.ps-chip:focus-visible {
+/* The toggle stands for the whole chip, so its ring is drawn on the
+   group — the ring that shipped when the chip was one button. The two
+   action buttons ring themselves instead: a user tabbing to Allow has
+   to see that they are on Allow and not on the chip. */
+.ps-chip:has(> .ps-chip__body:focus-visible),
+.ps-chip__act:focus-visible,
+.ps-chip__devices:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+/* …and the toggle draws none of its own, or the chip wears two rings.
+   region.css's `.region-hud button:focus-visible` used to land on the
+   chip itself, because the chip WAS the button; it now also matches
+   `.ps-chip__body`, so measured in Chromium the group ringed in
+   `--accent` while the body ringed in `--accent-border` inside it.
+   Two classes plus the pseudo-class (0,3,0) is what it takes to outrank
+   that rule's (0,2,1) — a bare `.ps-chip__body:focus-visible` (0,2,0)
+   loses and changes nothing. Pinned by SourceChip.css.test.ts, because
+   jsdom resolves no cascade and no render test can see this. */
+.ps-chip .ps-chip__body:focus-visible {
+  outline: none;
 }
 
 /* ---------------- density variants ---------------- */

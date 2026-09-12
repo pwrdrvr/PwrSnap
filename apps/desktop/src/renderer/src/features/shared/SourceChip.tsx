@@ -294,64 +294,99 @@ export function SourceChip({
     );
   }
 
+  // Anything that is NOT the toggle. The chip is a plain wrapper until
+  // one of these exists; only then is it a group of controls that a
+  // screen reader should be told about, and only then does announcing
+  // "group" around a single button stop being noise.
+  // Both carry `!inert`. The enclosing <button> used to be `disabled`,
+  // which Chromium made swallow clicks on everything inside it; as
+  // siblings they are only as inert as they say they are, and an
+  // "Allow" on a source with no device subsystem to arm is a control
+  // that cannot do anything.
+  const hasAct = act !== undefined && !inert;
+  const hasCaret = hasDevices === true && !inert;
+  const grouped = hasAct || hasCaret;
+  // Only the selector's control density both draws the badge and has a
+  // key handler behind it.
+  const showKbd = kbd !== undefined && density === "control";
+
+  // The chip is a GROUP, not a button.
+  //
+  // The grant action and the device caret used to be `role="button"`
+  // spans NESTED inside the chip's own <button>. `role="button"` has
+  // presentational children per ARIA, and Chromium prunes descendant
+  // roles out of a button's accessibility tree, so neither was
+  // reachable: a VoiceOver user on the microphone chip in `ask` heard
+  // one button named "Microphone needs access Allow M" and had no way
+  // to press Allow — the only in-chip affordance that fires the macOS
+  // TCC grant. Same for `denied` -> Settings. Interactive content
+  // inside <button> is also invalid HTML, so no engine owed us the
+  // behavior it happened to give.
+  //
+  // Siblings inside a non-interactive wrapper is the fix. The wrapper
+  // keeps every class, data attribute and `title` the <button> carried,
+  // so all the `.ps-chip[data-state=...]` rules and both test suites
+  // still resolve against one element; `.ps-chip__body` adds no chrome
+  // and no width of its own (see SourceChip.css).
   return (
-    <button
-      type="button"
+    <span
       className={className}
       data-state={state}
       data-source={source}
-      aria-pressed={on}
-      disabled={inert}
       title={why}
-      onClick={onToggle}
+      {...(grouped ? { role: "group", "aria-label": name } : {})}
       {...(testId !== undefined ? { "data-testid": testId } : {})}
     >
-      <SourceGlyph source={source} />
-      {density === "dense" ? null : <span className="ps-chip__name">{name}</span>}
-      {showMeter ? <SourceMeter level={level} tone={tone} /> : null}
-      {why !== undefined ? <span className="ps-chip__why">{why}</span> : null}
-      {act !== undefined ? (
-        <span
-          className="ps-chip__act"
-          role="button"
-          tabIndex={0}
-          onClick={(event) => {
-            // The chip itself is a toggle; the grant action is not.
-            event.stopPropagation();
-            onAct?.();
-          }}
-          onKeyDown={(event) => {
-            if (event.key !== "Enter" && event.key !== " ") return;
-            event.preventDefault();
-            event.stopPropagation();
-            onAct?.();
-          }}
-        >
+      <button
+        type="button"
+        className="ps-chip__body"
+        aria-pressed={on}
+        disabled={inert}
+        // Dense drops the visible label, which left the button with an
+        // aria-hidden glyph and an aria-hidden meter — no accessible
+        // name at all. Elsewhere the name comes from the visible text,
+        // which is what voice control needs to match.
+        {...(density === "dense" ? { "aria-label": name } : {})}
+        // The real home for "press M". It rode in as a trailing "M" on
+        // the button's name before, which said nothing about what it
+        // was. Gated on `showKbd`, not on `kbd` alone: announcing a
+        // shortcut the surface neither draws nor binds is the same
+        // two-predicates-that-must-agree bug as the hint legend's.
+        {...(showKbd ? { "aria-keyshortcuts": kbd } : {})}
+        onClick={onToggle}
+      >
+        <SourceGlyph source={source} />
+        {density === "dense" ? null : <span className="ps-chip__name">{name}</span>}
+        {showMeter ? <SourceMeter level={level} tone={tone} /> : null}
+        {why !== undefined ? <span className="ps-chip__why">{why}</span> : null}
+      </button>
+      {hasAct ? (
+        // No stopPropagation any more: there is no enclosing button left
+        // for a click to reach. Wrapped rather than passed straight to
+        // `onClick`, which would hand the SyntheticEvent to a callback
+        // the prop type declares as zero-argument — a caller whose
+        // function takes an optional first parameter would read it as a
+        // truthy argument.
+        <button type="button" className="ps-chip__act" onClick={() => onAct?.()}>
           {act}
-        </span>
+        </button>
       ) : null}
-      {hasDevices === true && !inert ? (
-        <span
-          role="button"
-          tabIndex={0}
+      {hasCaret ? (
+        <button
+          type="button"
+          className="ps-chip__devices"
           aria-label={`Choose ${name.toLowerCase()} device`}
-          onClick={(event) => {
-            event.stopPropagation();
-            onOpenDevices?.();
-          }}
-          onKeyDown={(event) => {
-            if (event.key !== "Enter" && event.key !== " ") return;
-            event.preventDefault();
-            event.stopPropagation();
-            onOpenDevices?.();
-          }}
+          onClick={() => onOpenDevices?.()}
         >
           <Caret />
-        </span>
+        </button>
       ) : null}
-      {kbd !== undefined && density === "control" ? (
-        <kbd className="ps-chip__kbd">{kbd}</kbd>
+      {showKbd ? (
+        // Decorative now that `aria-keyshortcuts` carries the fact.
+        <kbd className="ps-chip__kbd" aria-hidden="true">
+          {kbd}
+        </kbd>
       ) : null}
-    </button>
+    </span>
   );
 }

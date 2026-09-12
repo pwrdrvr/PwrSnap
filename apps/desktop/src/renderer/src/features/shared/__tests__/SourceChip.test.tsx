@@ -7,6 +7,11 @@
 //   • When a meter is drawn, and what it is allowed to claim. A meter asserts
 //     "a level is being measured"; for a post-capture receipt it asserts
 //     "this source captured something".
+//   • That the chip's controls are SIBLINGS. The grant action and the device
+//     caret were `role="button"` spans nested inside the chip's own <button>,
+//     which put them outside the accessibility tree entirely — the Allow
+//     control that fires the macOS TCC grant was unreachable by keyboard and
+//     by screen reader.
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -41,6 +46,13 @@ function mount(node: React.ReactElement): HTMLDivElement {
   return container;
 }
 
+/** The toggle. `testId` names the GROUP; the chip's controls live inside it. */
+function toggle(el: HTMLElement): HTMLButtonElement {
+  const body = el.querySelector<HTMLButtonElement>(".ps-chip__body");
+  if (body === null) throw new Error("no .ps-chip__body");
+  return body;
+}
+
 describe("SourceChip", () => {
   // `microphoneChipState` only returns `nodevice` when the source is ON, so
   // disabling the chip there removed the one control that could switch off a
@@ -49,14 +61,14 @@ describe("SourceChip", () => {
   // mouse and keyboard disagreed about the same control.
   test("a missing device leaves the chip clickable so it can be switched off", () => {
     const el = mount(<SourceChip source="microphone" state="nodevice" testId="chip" />);
-    const chip = el.querySelector<HTMLButtonElement>("[data-testid='chip']")!;
+    const chip = toggle(el.querySelector<HTMLElement>("[data-testid='chip']")!);
     expect(chip.disabled).toBe(false);
     expect(chip.getAttribute("aria-pressed")).toBe("true");
   });
 
   test("only a source with no subsystem at all is inert", () => {
     const el = mount(<SourceChip source="microphone" state="unsupported" testId="chip" />);
-    expect(el.querySelector<HTMLButtonElement>("[data-testid='chip']")!.disabled).toBe(true);
+    expect(toggle(el.querySelector<HTMLElement>("[data-testid='chip']")!).disabled).toBe(true);
   });
 
   // `aria-pressed` is the user's arm/disarm choice, not the device's health.
@@ -66,7 +78,7 @@ describe("SourceChip", () => {
   test("armed-but-faulted states report themselves as pressed", () => {
     for (const state of ["live", "silent", "ask", "denied", "nodevice"] as const) {
       const el = mount(<SourceChip source="microphone" state={state} testId="chip" />);
-      expect(el.querySelector("[data-testid='chip']")!.getAttribute("aria-pressed")).toBe("true");
+      expect(toggle(el).getAttribute("aria-pressed")).toBe("true");
       act(() => root!.unmount());
       el.remove();
     }
@@ -76,7 +88,7 @@ describe("SourceChip", () => {
 
   test("off is not pressed", () => {
     const el = mount(<SourceChip source="microphone" state="off" testId="chip" />);
-    expect(el.querySelector("[data-testid='chip']")!.getAttribute("aria-pressed")).toBe("false");
+    expect(toggle(el).getAttribute("aria-pressed")).toBe("false");
   });
 
   // A meter claims a level is being measured, which is only true where a
@@ -116,5 +128,159 @@ describe("SourceChip", () => {
       <SourceChip source="microphone" state="live" density="static" meterTone="recorded" />
     );
     expect(el.querySelector(".ps-meter")!.getAttribute("data-tone")).toBe("recorded");
+  });
+
+  // The Allow control is the only in-chip affordance that fires the macOS TCC
+  // grant. As a `role="button"` span nested in the chip's <button> it was
+  // pruned from the accessibility tree — `role="button"` has presentational
+  // children — so a VoiceOver user heard one button named "Microphone needs
+  // access Allow M" with no way to press Allow. Interactive content inside
+  // <button> is invalid HTML too, so no engine owed us the behavior.
+  test("no control is nested inside another control", () => {
+    const el = mount(
+      <SourceChip
+        source="microphone"
+        state="ask"
+        why="needs access"
+        act="Allow"
+        onAct={() => undefined}
+        kbd="M"
+        hasDevices
+        onOpenDevices={() => undefined}
+        testId="chip"
+      />
+    );
+    const chip = el.querySelector<HTMLElement>("[data-testid='chip']")!;
+    expect(chip.tagName).toBe("SPAN");
+    for (const button of chip.querySelectorAll("button")) {
+      expect(button.closest("button")).toBe(button);
+    }
+    // Three peers: the toggle, the grant action, the device picker.
+    expect(chip.querySelectorAll(":scope > button")).toHaveLength(3);
+  });
+
+  test("the grant action and the device caret are reachable controls", () => {
+    let acted = 0;
+    let opened = 0;
+    let toggled = 0;
+    const el = mount(
+      <SourceChip
+        source="microphone"
+        state="ask"
+        act="Allow"
+        onAct={() => { acted += 1; }}
+        hasDevices
+        onOpenDevices={() => { opened += 1; }}
+        onToggle={() => { toggled += 1; }}
+        testId="chip"
+      />
+    );
+    const allow = el.querySelector<HTMLButtonElement>(".ps-chip__act")!;
+    const devices = el.querySelector<HTMLButtonElement>(".ps-chip__devices")!;
+    expect(allow.tagName).toBe("BUTTON");
+    expect(allow.textContent).toBe("Allow");
+    expect(devices.getAttribute("aria-label")).toBe("Choose microphone device");
+    allow.click();
+    devices.click();
+    expect([acted, opened]).toEqual([1, 1]);
+    // Siblings, so neither click can reach the toggle — there is no
+    // enclosing button left for one to bubble into.
+    expect(toggled).toBe(0);
+    toggle(el).click();
+    expect(toggled).toBe(1);
+  });
+
+  // The enclosing <button> used to be `disabled` for an inert chip, which
+  // Chromium made swallow clicks on everything inside it. As siblings the
+  // action is only as inert as it says it is, and "Allow" on a source with
+  // no device subsystem to arm is a control that cannot do anything.
+  test("an inert chip exposes no live action", () => {
+    let acted = 0;
+    const el = mount(
+      <SourceChip
+        source="microphone"
+        state="unsupported"
+        act="Allow"
+        onAct={() => { acted += 1; }}
+        hasDevices
+        testId="chip"
+      />
+    );
+    expect(el.querySelector(".ps-chip__act")).toBeNull();
+    expect(el.querySelector(".ps-chip__devices")).toBeNull();
+    expect(el.querySelector("[data-testid='chip']")!.getAttribute("role")).toBeNull();
+    expect(acted).toBe(0);
+  });
+
+  // The callbacks are typed `() => void`, so TypeScript accepts any
+  // narrower arity; passing them straight to `onClick` would hand the
+  // SyntheticEvent to a caller whose function takes an optional first
+  // parameter and have it read as a truthy argument.
+  test("the action callbacks are called with no arguments", () => {
+    const seen: unknown[][] = [];
+    const el = mount(
+      <SourceChip
+        source="microphone"
+        state="ask"
+        act="Allow"
+        onAct={(...args: unknown[]) => { seen.push(args); }}
+        hasDevices
+        onOpenDevices={(...args: unknown[]) => { seen.push(args); }}
+        testId="chip"
+      />
+    );
+    el.querySelector<HTMLButtonElement>(".ps-chip__act")!.click();
+    el.querySelector<HTMLButtonElement>(".ps-chip__devices")!.click();
+    expect(seen).toEqual([[], []]);
+  });
+
+  // Wrapping a lone toggle in a group would make every chip announce
+  // "group" for nothing — including each of the three dense chips already
+  // inside the recording HUD's own "Recording sources" group.
+  test("only a chip with more than one control announces as a group", () => {
+    const bare = mount(<SourceChip source="microphone" state="off" testId="chip" />);
+    expect(bare.querySelector("[data-testid='chip']")!.getAttribute("role")).toBeNull();
+    act(() => root!.unmount());
+    bare.remove();
+    container = null;
+    root = null;
+
+    const grouped = mount(
+      <SourceChip source="microphone" state="ask" act="Allow" testId="chip" />
+    );
+    const chip = grouped.querySelector("[data-testid='chip']")!;
+    expect(chip.getAttribute("role")).toBe("group");
+    expect(chip.getAttribute("aria-label")).toBe("Microphone");
+  });
+
+  // The hotkey rode in as a trailing "M" on the button's accessible name,
+  // which said nothing about what it was. `aria-keyshortcuts` is the
+  // attribute for exactly this, so the visible badge is decorative.
+  test("the hotkey is announced as a shortcut, not as part of the name", () => {
+    const el = mount(<SourceChip source="microphone" state="off" kbd="M" testId="chip" />);
+    expect(toggle(el).getAttribute("aria-keyshortcuts")).toBe("M");
+    expect(el.querySelector(".ps-chip__kbd")!.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  // One predicate for the badge and the announcement. Only the control
+  // density draws the badge AND has a key handler behind it — announcing
+  // a shortcut the surface neither draws nor binds is the same
+  // two-predicates-that-must-agree bug as the hint legend's.
+  test("a density that draws no badge announces no shortcut", () => {
+    const el = mount(
+      <SourceChip source="microphone" state="live" density="dense" kbd="M" testId="chip" />
+    );
+    expect(el.querySelector(".ps-chip__kbd")).toBeNull();
+    expect(toggle(el).getAttribute("aria-keyshortcuts")).toBeNull();
+  });
+
+  // Dense drops the visible label, which left the toggle with an aria-hidden
+  // glyph, an aria-hidden meter, and so no accessible name at all.
+  test("a dense chip still has a name", () => {
+    const el = mount(
+      <SourceChip source="systemAudio" state="live" density="dense" testId="chip" />
+    );
+    expect(el.querySelector(".ps-chip__name")).toBeNull();
+    expect(toggle(el).getAttribute("aria-label")).toBe("System audio");
   });
 });

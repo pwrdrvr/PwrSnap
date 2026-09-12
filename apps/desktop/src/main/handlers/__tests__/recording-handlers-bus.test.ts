@@ -232,6 +232,39 @@ describe("recording microphone preflight", () => {
     expect(mocks.retry).toHaveBeenCalledWith("failed-session");
   });
 
+  // A guard decides; it does not act. The preflight used to
+  // `void bus.dispatch("settings:open", ...)` for every microphone status
+  // that was not `not-determined` — `denied`, `restricted`, `unavailable`
+  // AND `unknown` — so a hotkey-driven recording threw a PwrSnap window
+  // the user had not asked for on top of an error that sends them to
+  // *macOS* System Settings instead, and re-threw it on every Retry. For
+  // `restricted` and `unavailable` that page has nothing actionable on
+  // it at all. The interactive caller (record-from-selection.ts) already
+  // offers the same window as a dialog BUTTON, which is where the choice
+  // belongs.
+  test.each(["denied", "restricted", "unavailable", "unknown"])(
+    "opens no window of its own for a %s microphone",
+    async (status) => {
+      mocks.mediaAccess.microphone = status;
+      const opened = vi.fn(async () => ({ ok: true as const, value: undefined }));
+      bus.register("settings:open", opened);
+      try {
+        expect(await bus.dispatch("recording:start", request, { principal: "ipc" })).toMatchObject({
+          ok: false, error: { kind: "permission", code: "microphone_not_granted" }
+        });
+        // And again on the retry the failure card offers, which shares
+        // this guard.
+        mocks.retryCapabilities.mockReturnValueOnce(request.capabilities);
+        expect(
+          await bus.dispatch("recording:retry", { sessionId: "failed-session" }, { principal: "ipc" })
+        ).toMatchObject({ ok: false, error: { code: "microphone_not_granted" } });
+        expect(opened).not.toHaveBeenCalled();
+      } finally {
+        bus.unregister("settings:open");
+      }
+    }
+  );
+
   test.each(["win32", "linux"])("rejects unsupported audio on %s instead of silently discarding it", async (platform) => {
     Object.defineProperty(process, "platform", { value: platform, configurable: true });
     expect(await bus.dispatch("recording:start", request, { principal: "ipc" })).toMatchObject({

@@ -99,6 +99,7 @@ MIT
 - @pwrdrvr/agent-core@0.2.0 | https://github.com/pwrdrvr/agent-kit
 - @pwrdrvr/agent-transport@0.1.7 | https://github.com/pwrdrvr/agent-kit
 - @pwrdrvr/codex-app-server-protocol@0.144.0 | https://github.com/pwrdrvr/codex-app-server-protocol
+- @pwrdrvr/codex-app-server-protocol@0.153.4 | https://github.com/pwrdrvr/codex-app-server-protocol
 - @pwrdrvr/codex-discovery@0.4.0 | https://github.com/pwrdrvr/agent-kit
 - @shutterstock/p-map-iterable@1.1.2 | https://github.com/shutterstock/p-map-iterable
 - @tanstack/react-virtual@3.14.10 | https://github.com/TanStack/virtual
@@ -1250,6 +1251,7 @@ Applies to:
 - @pwrdrvr/agent-core@0.2.0 (MIT)
 - @pwrdrvr/agent-transport@0.1.7 (MIT)
 - @pwrdrvr/codex-app-server-protocol@0.144.0 (MIT)
+- @pwrdrvr/codex-app-server-protocol@0.153.4 (MIT)
 - @pwrdrvr/codex-discovery@0.4.0 (MIT)
 
 Representative file: @pwrdrvr/agent-acp@0.15.0/LICENSE

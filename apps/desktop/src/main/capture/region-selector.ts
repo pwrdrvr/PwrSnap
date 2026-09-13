@@ -43,6 +43,7 @@ import {
   type ScreenSnapshot
 } from "./screen-snapshot";
 import { isExtentRect, MAX_SELECTOR_EXTENTS } from "./extent-mask";
+import { regionSelectorUnsupported } from "./linux-session";
 import { hideTrayPopoverIfVisible } from "../tray";
 import { setFloatOverState, ensureFloatOverTopmost } from "../float-over";
 import { hotkeyRecorderSuspension } from "../hotkeys/hotkey-recorder-suspension-instance";
@@ -425,6 +426,12 @@ export type SelectorMode = "auto" | "region" | "window";
  * once at boot; safe to call again to refresh after display changes.
  */
 export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup"): void {
+  // Nothing to pre-warm where the selector is refused outright: a Wayland
+  // client cannot place these windows, and `capture:interactive` returns
+  // WAYLAND_SELECTOR_ERROR_CODE before it would ever ask for one. Building
+  // them anyway costs a renderer process per display at boot for machinery
+  // that can never be shown.
+  if (regionSelectorUnsupported()) return;
   // Build one window per display we don't already have.
   const displays = screen.getAllDisplays();
   const liveIds = new Set<number>();

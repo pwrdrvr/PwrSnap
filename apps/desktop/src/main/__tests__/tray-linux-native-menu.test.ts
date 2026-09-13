@@ -61,6 +61,10 @@ const mocks = vi.hoisted(() => ({
     | null,
   logDiagnostics: vi.fn(async () => undefined),
   setTemplateImage: vi.fn(),
+  /** Paths handed to `nativeImage.createFromPath`, in call order. */
+  iconPaths: [] as string[],
+  /** Make the loaded image report itself as empty, as a missing file would. */
+  iconIsEmpty: false,
   /** Simulate a platform that refuses the menu — e.g. no session bus. */
   buildThrows: false,
   dispatch: vi.fn(async () => ({ ok: true, value: undefined }))
@@ -86,10 +90,14 @@ vi.mock("electron", () => ({
     })
   },
   nativeImage: {
-    createFromPath: vi.fn(() => ({
-      isEmpty: () => false,
-      setTemplateImage: mocks.setTemplateImage
-    }))
+    createFromPath: vi.fn((iconPath: string) => {
+      mocks.iconPaths.push(iconPath);
+      return {
+        __nativeImage: true,
+        isEmpty: () => mocks.iconIsEmpty,
+        setTemplateImage: mocks.setTemplateImage
+      };
+    })
   },
   screen: {
     getDisplayMatching: vi.fn(),
@@ -179,6 +187,7 @@ vi.mock("../recording/recording-capabilities", async (importOriginal) => {
 
 vi.mock("../command-bus", () => ({ bus: { dispatch: mocks.dispatch } }));
 
+import { ipcMain as electronIpcMain } from "electron";
 import {
   buildTrayContextMenuTemplate,
   disposeTray,
@@ -240,6 +249,8 @@ beforeEach(() => {
   mocks.capabilitiesFor = null;
   mocks.templateNumber = 0;
   mocks.buildThrows = false;
+  mocks.iconPaths.length = 0;
+  mocks.iconIsEmpty = false;
   mocks.setTemplateImage.mockReset();
   mocks.createTrayWindow.mockReset();
   mocks.positionTrayWindow.mockReset();
@@ -292,6 +303,10 @@ describe("installTray on Linux", () => {
     // Wayland — so the renderer is not spawned at all.
     expect(mocks.createTrayWindow).not.toHaveBeenCalled();
     expect(mocks.positionTrayWindow).not.toHaveBeenCalled();
+    // And no resize channel either: `tray:resize` only ever arrives from the
+    // popover renderer, so registering a listener for it on Linux would be a
+    // handler for a message that cannot be sent.
+    expect(vi.mocked(electronIpcMain.on)).not.toHaveBeenCalled();
   });
 
   test("wires no popover-only tray events", () => {
@@ -306,7 +321,7 @@ describe("installTray on Linux", () => {
     expect(latestTray().calls).not.toContain("setIgnoreDoubleClickEvents");
   });
 
-  test("takes the bare 48px icon PATH, not the @Nx NativeImage set", () => {
+  test("loads the bare 48px Linux icon file, not the @Nx set", () => {
     installTray();
 
     // StatusIconLinuxDbus publishes the image's scale-1 bitmap into the SNI
@@ -320,10 +335,33 @@ describe("installTray on Linux", () => {
     // and ignores the `process.platform` this suite fakes. A hardcoded "/"
     // passes locally and on the macOS runner, then fails on the Windows one
     // with backslashes — which is exactly what it did.
-    expect(latestTray().iconArg).toBe(join("/fake/app", "build", "tray-icon-linux.png"));
+    expect(mocks.iconPaths).toEqual([join("/fake/app", "build", "tray-icon-linux.png")]);
     // Template images are a macOS concept; marking a colored icon as one
     // blanks it out.
     expect(mocks.setTemplateImage).not.toHaveBeenCalled();
+  });
+
+  test("hands Tray the NativeImage, never the path", () => {
+    installTray();
+
+    // Measured on Electron 41.10.7 under Linux: `new Tray(<missing path>)`
+    // THROWS ("Failed to load image from path") where
+    // `new Tray(<empty NativeImage>)` returns normally — and the NativeImage
+    // form publishes an identical pixmap. Since `installTray` runs un-awaited
+    // inside `app.whenReady().then(...)`, the path form turns a missing icon
+    // resource into an aborted boot.
+    expect(latestTray().iconArg).toMatchObject({ __nativeImage: true });
+    expect(typeof latestTray().iconArg).not.toBe("string");
+  });
+
+  test("a missing icon file warns and still installs a working tray", () => {
+    mocks.iconIsEmpty = true;
+
+    // The whole reason the NativeImage form is used: a blank icon is
+    // recoverable and diagnosable, an aborted boot is neither. The menu must
+    // still publish so the user can reach Quit and Settings.
+    expect(() => installTray()).not.toThrow();
+    expect(latestTray().calls).toContain("setContextMenu");
   });
 
   test("logs the StatusNotifierItem host diagnostic without gating the tray", () => {
@@ -415,6 +453,89 @@ describe("the Linux menu is re-published on every input that can change it", () 
     // `setTrayHotkeys` runs during boot on some paths before the tray exists.
     expect(() => setTrayHotkeys(DEFAULT_HOTKEYS, activeStatusFor(DEFAULT_HOTKEYS))).not.toThrow();
     expect(mocks.trays).toHaveLength(0);
+  });
+});
+
+describe("the menu is published only when it would look different", () => {
+  beforeEach(() => {
+    setPlatform("linux");
+  });
+
+  function publishCount(): number {
+    return latestTray().contextMenus.length;
+  }
+
+  test("boot publishes exactly once", () => {
+    installTray();
+
+    // `subscribeToRecordingState` invokes its handler synchronously on
+    // subscribe, which reaches `refreshNativeTrayMenu` before the native-menu
+    // arm's own call does — so without change detection boot exported two
+    // identical menus.
+    expect(publishCount()).toBe(1);
+  });
+
+  test("a settings write that changes no label publishes nothing", () => {
+    installTray();
+    const hotkeys = { ...DEFAULT_HOTKEYS, quickCapture: "Control+Shift+C" };
+    setTrayHotkeys(hotkeys, activeStatusFor(hotkeys));
+    const afterRealChange = publishCount();
+
+    // `setTrayHotkeys` is wired to `onSettingsChanged`, which broadcasts on
+    // EVERY settings and secret write — a theme toggle, an AI provider
+    // change, anything. Re-exporting the menu for those is not just waste:
+    // `setContextMenu` replaces the exported object, and some SNI hosts close
+    // an open menu when it is replaced.
+    setTrayHotkeys(hotkeys, activeStatusFor(hotkeys));
+    setTrayHotkeys(hotkeys, activeStatusFor(hotkeys));
+
+    expect(publishCount()).toBe(afterRealChange);
+  });
+
+  test("a phase change that does alter a label still publishes", () => {
+    installTray();
+    const before = publishCount();
+
+    emitRecordingState({ phase: "stopping", sessionId: "rec-1" });
+
+    // Change detection must not suppress a real change — the whole point of
+    // the refresh is that a persistent D-Bus menu cannot go stale.
+    expect(publishCount()).toBe(before + 1);
+    expect(labelsOf(latestTray().templates.at(-1)!)[0]).toBe("Finalizing recording…");
+  });
+
+  test("a submenu label change is not mistaken for no change", () => {
+    installTray();
+    const restore = setExtraTrayMenuItems([
+      { label: "Seed perf dataset", submenu: [{ label: "profile-a" }] }
+    ]);
+    const afterFirst = publishCount();
+
+    // The dev seeder's items are submenus, so a signature that stopped at the
+    // top level would see "Seed perf dataset" both times and skip the export.
+    setExtraTrayMenuItems([
+      { label: "Seed perf dataset", submenu: [{ label: "profile-b" }] }
+    ]);
+
+    expect(publishCount()).toBe(afterFirst + 1);
+    restore();
+  });
+
+  test("a failed publish is not remembered, so the next refresh retries", () => {
+    installTray();
+    const before = publishCount();
+    mocks.buildThrows = true;
+    emitRecordingState({ phase: "stopping", sessionId: "rec-1" });
+    expect(publishCount()).toBe(before);
+
+    // Recording the signature of a menu that never reached the host would
+    // make every later refresh a no-op — the tray would stay frozen at the
+    // last menu that DID publish, with no way back.
+    mocks.buildThrows = false;
+    emitRecordingState({ phase: "processing", sessionId: "rec-1" });
+
+    expect(publishCount()).toBe(before + 1);
+    expect(labelsOf(latestTray().templates.at(-1)!)[0]).toBe("Processing recording…");
   });
 });
 

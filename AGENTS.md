@@ -1377,8 +1377,23 @@ resize-to-fit design rests on (see "Tray + float-over popover sizing").
 
 Five things that bite:
 
+- **Always hand `new Tray()` the `NativeImage`, never the path.** Both are
+  accepted and behave identically — until the file is missing, where measured
+  on 41.10.7 the path form THROWS (`Failed to load image from path`) and the
+  NativeImage form returns a blank icon. `installTray` runs un-awaited inside
+  `app.whenReady().then(...)`, so that throw aborts the rest of the boot
+  (focus sink, selector pre-warm) instead of degrading to a blank spot in the
+  panel. The `icon.isEmpty()` warning is the intended handling.
 - **Every input that can change a menu label must call
-  `refreshNativeTrayMenu`.** The Linux menu is a PERSISTENT D-Bus object,
+  `refreshNativeTrayMenu`, and it publishes only on a real difference.** It
+  compares a signature of the template — labels, accelerators, enabled flags,
+  `type`, recursing into submenus — against the last export. `setTrayHotkeys`
+  is wired to `onSettingsChanged`, which fires on EVERY settings and secret
+  write, so without that gate a theme toggle re-exports the tray menu; and
+  because `setContextMenu` REPLACES the exported object, some SNI hosts close
+  an open menu when it happens. A failed export must not update the
+  signature, or the next refresh skips the retry and the tray freezes at the
+  last menu that did publish. The Linux menu is a PERSISTENT D-Bus object,
   and Electron's docs are explicit that "in order for changes made to
   individual `MenuItem`s to take effect, you have to call `setContextMenu`
   again." Today that is recording phase, hotkey ownership, and the dev

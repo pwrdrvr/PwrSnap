@@ -1,0 +1,379 @@
+// Linux capture diagnostic probe.
+//
+// Answers, in one run, every question the region-selector design has an
+// unverifiable assumption about on Linux — and which no test on this repo's
+// CI can answer, because the Docker/xvfb E2E harness has neither an
+// xdg-desktop-portal nor a window manager:
+//
+//   1. Is this an X11 or a Wayland session, and which ozone backend did
+//      Electron actually pick? (A Wayland session commonly runs Electron as
+//      an XWayland *X11* client, which behaves differently again.)
+//   2. Does `desktopCapturer.getSources({types:["screen"]})` return one
+//      source per display with a usable `display_id` (what
+//      `captureDisplayNativeImage` matches on), or a single opaque
+//      portal/PipeWire source with `display_id: ""`?
+//   3. Do the returned pixels have the dimensions the selector assumes —
+//      `display.bounds * display.scaleFactor`? The renderer paints the grab
+//      with `object-fit: fill`, so a mismatch is STRETCHED rather than
+//      reported, and the crop then maps the user's rect through
+//      `display.scaleFactor` onto pixels that are not at that scale.
+//   4. Does a selector-shaped window (frameless, transparent, always-on-top,
+//      constructed at `display.bounds`) actually land where it was asked to?
+//      Wayland clients cannot position their own toplevels; under fractional
+//      scaling, XWayland ones can land at the wrong size.
+//   5. Does `screen.getCursorScreenPoint()` report the real pointer? It is
+//      how `pickRegion` chooses which display to show the selector on, and
+//      Wayland has no protocol to query the global pointer.
+//
+// Run it on the affected machine:
+//
+//   node_modules/.bin/electron apps/desktop/scripts/linux-capture-probe.mjs
+//
+// or, from the repo root:
+//
+//   pnpm --filter @pwrsnap/desktop probe:linux-capture
+//
+// Step 4 puts a translucent full-display overlay on screen for a few
+// seconds with its own edge/corner/centre markers — look at whether those
+// markers line up with the real edges and centre of the monitor. Step 5
+// will raise the OS screen-share prompt and source picker on a portal
+// session; pick "Entire screen" / the monitor you are looking at, which is
+// what a user would pick. Nothing is captured to the library and no PwrSnap
+// state is touched: the probe runs with its own throwaway userData.
+//
+// Flags:
+//   --no-overlay        skip the overlay geometry test (step 4)
+//   --no-capture        skip the screen grab (step 5) — no portal prompt
+//   --overlay-ms=<n>    how long to leave the overlay up (default 4000)
+//   --grabs=<n>         repeat the grab n times (default 1) to see whether
+//                       the portal re-prompts per call
+//   --out=<dir>         where to write grabbed PNGs (default: a temp dir)
+
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { app, BrowserWindow, desktopCapturer, screen } from "electron";
+
+const argv = process.argv.slice(2);
+const flag = (name) => argv.includes(`--${name}`);
+const value = (name, fallback) => {
+  const hit = argv.find((a) => a.startsWith(`--${name}=`));
+  return hit === undefined ? fallback : hit.slice(name.length + 3);
+};
+
+const DO_OVERLAY = !flag("no-overlay");
+const DO_CAPTURE = !flag("no-capture");
+const OVERLAY_MS = Number(value("overlay-ms", "4000"));
+const GRABS = Math.max(1, Number(value("grabs", "1")));
+
+const lines = [];
+function say(text = "") {
+  lines.push(text);
+  // eslint-disable-next-line no-console
+  console.log(text);
+}
+function head(text) {
+  say("");
+  say(`── ${text} ${"─".repeat(Math.max(0, 66 - text.length))}`);
+}
+const num = (n) => (typeof n === "number" && Number.isFinite(n) ? String(Math.round(n * 1000) / 1000) : String(n));
+const rect = (b) => (b === undefined || b === null ? "—" : `${num(b.x)},${num(b.y)} ${num(b.width)}×${num(b.height)}`);
+
+// Keep the probe entirely out of the real app's profile.
+app.setPath("userData", join(tmpdir(), `pwrsnap-capture-probe-${process.pid}`));
+app.setName("PwrSnapCaptureProbe");
+
+async function reportEnvironment() {
+  head("1. Session + ozone backend");
+  const env = [
+    "XDG_SESSION_TYPE",
+    "WAYLAND_DISPLAY",
+    "DISPLAY",
+    "XDG_CURRENT_DESKTOP",
+    "XDG_SESSION_DESKTOP",
+    "GDMSESSION",
+    "DESKTOP_SESSION",
+    "GDK_BACKEND",
+    "QT_QPA_PLATFORM",
+    "ELECTRON_OZONE_PLATFORM_HINT"
+  ];
+  for (const key of env) {
+    say(`  ${key.padEnd(28)} ${process.env[key] ?? "(unset)"}`);
+  }
+  say(`  ${"process.platform".padEnd(28)} ${process.platform}`);
+  say(`  ${"electron".padEnd(28)} ${process.versions.electron}`);
+  say(`  ${"chrome".padEnd(28)} ${process.versions.chrome}`);
+  const ozoneArg = process.argv.find((a) => a.startsWith("--ozone-platform"));
+  say(`  ${"--ozone-platform*".padEnd(28)} ${ozoneArg ?? "(not passed)"}`);
+
+  const sessionType = (process.env.XDG_SESSION_TYPE ?? "").toLowerCase();
+  const waylandSession = sessionType === "wayland" || (process.env.WAYLAND_DISPLAY ?? "") !== "";
+  say("");
+  say(`  VERDICT: session is ${waylandSession ? "WAYLAND" : sessionType === "x11" ? "X11" : `UNKNOWN (${sessionType || "no XDG_SESSION_TYPE"})`}`);
+  if (waylandSession && (process.env.DISPLAY ?? "") !== "") {
+    say("  NOTE:    DISPLAY is also set — Electron may be running as an XWayland");
+    say("           (X11) client inside a Wayland session. Window positioning can");
+    say("           then work while the screen grab still goes through the portal.");
+  }
+  return { waylandSession, sessionType };
+}
+
+function reportDisplays() {
+  head("2. Displays + cursor");
+  const displays = screen.getAllDisplays();
+  const primary = screen.getPrimaryDisplay();
+  for (const d of displays) {
+    say(`  display ${d.id}${d.id === primary.id ? " (primary)" : ""}`);
+    say(`    bounds        ${rect(d.bounds)}`);
+    say(`    workArea      ${rect(d.workArea)}`);
+    say(`    scaleFactor   ${num(d.scaleFactor)}`);
+    say(`    rotation      ${num(d.rotation)}`);
+    say(`    expected grab ${Math.round(d.bounds.width * d.scaleFactor)}×${Math.round(d.bounds.height * d.scaleFactor)} px`);
+  }
+  let cursor = null;
+  try {
+    cursor = screen.getCursorScreenPoint();
+    say(`  getCursorScreenPoint()  ${num(cursor.x)},${num(cursor.y)}`);
+    const nearest = screen.getDisplayNearestPoint(cursor);
+    say(`  getDisplayNearestPoint  display ${nearest.id}`);
+    if (cursor.x === 0 && cursor.y === 0) {
+      say("  WARNING: cursor reads (0,0). If the pointer is not actually in the");
+      say("           top-left corner, the global pointer position is unavailable —");
+      say("           pickRegion() would route the selector to the wrong display.");
+    }
+  } catch (cause) {
+    say(`  getCursorScreenPoint()  THREW: ${cause instanceof Error ? cause.message : String(cause)}`);
+  }
+  return { displays, primary, cursor };
+}
+
+async function reportOverlayGeometry(display) {
+  head("3. Selector-shaped overlay geometry");
+  say(`  Constructing a window exactly like createSelectorWindow() does, at`);
+  say(`  display ${display.id} bounds ${rect(display.bounds)}.`);
+  say(`  It will be on screen for ${OVERLAY_MS}ms — LOOK AT IT: its markers should`);
+  say(`  sit on the real edges and centre of that monitor.`);
+
+  const win = new BrowserWindow({
+    x: display.bounds.x,
+    y: display.bounds.y,
+    width: display.bounds.width,
+    height: display.bounds.height,
+    show: false,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    hasShadow: false,
+    backgroundColor: "#00000000",
+    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false }
+  });
+  win.setAlwaysOnTop(true, "screen-saver");
+
+  const html = `<!doctype html><meta charset="utf-8"><style>
+    html,body{margin:0;height:100%;overflow:hidden;background:rgba(255,138,31,.12);
+      font:600 13px/1.4 system-ui,sans-serif;color:#fff;-webkit-user-select:none}
+    .edge{position:fixed;background:#ff8a1f}
+    .t,.b{left:0;right:0;height:4px}.t{top:0}.b{bottom:0}
+    .l,.r{top:0;bottom:0;width:4px}.l{left:0}.r{right:0}
+    .c{position:fixed;width:80px;height:80px;border:4px solid #ff8a1f}
+    .tl{top:0;left:0;border-right:0;border-bottom:0}
+    .tr{top:0;right:0;border-left:0;border-bottom:0}
+    .bl{bottom:0;left:0;border-right:0;border-top:0}
+    .br{bottom:0;right:0;border-left:0;border-top:0}
+    .x,.y{position:fixed;background:#ff8a1f}
+    .x{left:0;right:0;top:50%;height:2px}.y{top:0;bottom:0;left:50%;width:2px}
+    #info{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+      background:#000;padding:14px 18px;border:2px solid #ff8a1f;white-space:pre;text-align:center}
+  </style>
+  <div class="edge t"></div><div class="edge b"></div><div class="edge l"></div><div class="edge r"></div>
+  <div class="c tl"></div><div class="c tr"></div><div class="c bl"></div><div class="c br"></div>
+  <div class="x"></div><div class="y"></div>
+  <div id="info">PwrSnap overlay geometry probe
+The orange border should hug the monitor edges
+and the cross should meet at its centre.</div>`;
+
+  await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+  win.show();
+  await new Promise((r) => setTimeout(r, 300));
+
+  const actualBounds = win.getBounds();
+  const actualContent = win.getContentBounds();
+  let rendererView = null;
+  try {
+    rendererView = await win.webContents.executeJavaScript(
+      `({innerWidth:window.innerWidth,innerHeight:window.innerHeight,` +
+        `outerWidth:window.outerWidth,outerHeight:window.outerHeight,` +
+        `devicePixelRatio:window.devicePixelRatio,` +
+        `screenW:window.screen.width,screenH:window.screen.height,` +
+        `availW:window.screen.availWidth,availH:window.screen.availHeight})`
+    );
+  } catch (cause) {
+    say(`  executeJavaScript THREW: ${cause instanceof Error ? cause.message : String(cause)}`);
+  }
+
+  await new Promise((r) => setTimeout(r, Math.max(0, OVERLAY_MS - 300)));
+  win.hide();
+  win.destroy();
+
+  say("");
+  say(`  requested bounds      ${rect(display.bounds)}`);
+  say(`  getBounds()           ${rect(actualBounds)}`);
+  say(`  getContentBounds()    ${rect(actualContent)}`);
+  if (rendererView !== null) {
+    say(`  renderer inner        ${num(rendererView.innerWidth)}×${num(rendererView.innerHeight)} CSS px`);
+    say(`  renderer outer        ${num(rendererView.outerWidth)}×${num(rendererView.outerHeight)} CSS px`);
+    say(`  devicePixelRatio      ${num(rendererView.devicePixelRatio)}`);
+    say(`  window.screen         ${num(rendererView.screenW)}×${num(rendererView.screenH)} (avail ${num(rendererView.availW)}×${num(rendererView.availH)})`);
+  }
+
+  const positioned =
+    actualBounds.x === display.bounds.x && actualBounds.y === display.bounds.y;
+  const sized =
+    actualBounds.width === display.bounds.width && actualBounds.height === display.bounds.height;
+  say("");
+  say(`  VERDICT: position honoured = ${positioned ? "YES" : "NO"}, size honoured = ${sized ? "YES" : "NO"}`);
+  if (rendererView !== null) {
+    const cssScale = rendererView.innerWidth / display.bounds.width;
+    say(`           renderer CSS px per display logical px = ${num(cssScale)}`);
+    if (Math.abs(cssScale - 1) > 0.01) {
+      say("           ^ the selector's coord space is NOT 1:1 with display logical px.");
+      say("             region-selector.ts's header states the design depends on that.");
+    }
+  }
+  if (!positioned || !sized) {
+    say("           ^ the overlay did not land where it was asked to. A frozen");
+    say("             full-display snapshot painted into it cannot line up with");
+    say("             the real screen — this alone produces the reported offset.");
+  }
+  return { actualBounds, actualContent, rendererView, positioned, sized };
+}
+
+async function reportCapture(displays, outDir) {
+  head("4. desktopCapturer screen sources");
+  const target = displays[0];
+  const requested = {
+    width: Math.max(1, Math.round(target.bounds.width * target.scaleFactor)),
+    height: Math.max(1, Math.round(target.bounds.height * target.scaleFactor))
+  };
+  say(`  Calling getSources({types:["screen"], thumbnailSize: ${requested.width}×${requested.height}})`);
+  say("  — the exact call captureDisplayNativeImage() makes for display");
+  say(`    ${target.id}. On a portal session this raises the share prompt + picker.`);
+
+  for (let attempt = 1; attempt <= GRABS; attempt += 1) {
+    const startedAt = Date.now();
+    let sources;
+    try {
+      sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: requested });
+    } catch (cause) {
+      say(`  grab ${attempt}: THREW after ${Date.now() - startedAt}ms: ${cause instanceof Error ? cause.message : String(cause)}`);
+      continue;
+    }
+    say("");
+    say(`  grab ${attempt}: ${sources.length} source(s) in ${Date.now() - startedAt}ms`);
+    for (const [i, s] of sources.entries()) {
+      const size = s.thumbnail.isEmpty() ? null : s.thumbnail.getSize();
+      say(`    [${i}] id=${s.id}`);
+      say(`        name        ${JSON.stringify(s.name)}`);
+      say(`        display_id  ${JSON.stringify(s.display_id)}`);
+      say(`        thumbnail   ${size === null ? "EMPTY" : `${size.width}×${size.height}`}`);
+      if (size !== null) {
+        const aspect = size.width / size.height;
+        const expectAspect = target.bounds.width / target.bounds.height;
+        const drift = Math.abs(aspect - expectAspect) / expectAspect;
+        say(`        aspect      ${num(aspect)} vs display ${num(expectAspect)} (${num(drift * 100)}% off)`);
+        if (drift > 0.01) {
+          say("        ^ ASPECT MISMATCH. The selector paints this with object-fit:fill,");
+          say("          so it is STRETCHED to the window — content shifts away from");
+          say("          where it really is, by a different amount on each axis.");
+        }
+        if (size.width !== requested.width || size.height !== requested.height) {
+          say(`        ^ size != requested ${requested.width}×${requested.height}; the snapshot crop maps the`);
+          say(`          user's rect through display.scaleFactor (${num(target.scaleFactor)}), which`);
+          say("          assumes exactly the requested size.");
+        }
+        if (outDir !== null) {
+          const file = join(outDir, `grab${attempt}-source${i}.png`);
+          try {
+            await writeFile(file, s.thumbnail.toPNG());
+            say(`        written     ${file}`);
+          } catch (cause) {
+            say(`        write FAILED ${cause instanceof Error ? cause.message : String(cause)}`);
+          }
+        }
+      }
+    }
+
+    const matched = sources.find((s) => s.display_id === String(target.id));
+    const strategy =
+      matched !== undefined
+        ? "display_id (correct — the authoritative match)"
+        : sources.length === 1
+          ? "single_source (taken WITHOUT a warning — the log line the bug report"
+          : "display_index / first_source (logs 'no source matched display_id')";
+    say("");
+    say(`    screencapture.ts would select via: ${strategy}`);
+    if (matched === undefined && sources.length === 1) {
+      say("      suggests grepping for is NEVER emitted on this configuration).");
+      say("      Whatever the portal picker returned is treated as this display.");
+    }
+  }
+}
+
+app.whenReady().then(async () => {
+  say("PwrSnap Linux capture probe");
+  say(`run at ${new Date().toISOString()}`);
+
+  const { waylandSession } = await reportEnvironment();
+  const { displays, primary, cursor } = reportDisplays();
+  const target =
+    cursor === null ? primary : screen.getDisplayNearestPoint(cursor);
+
+  if (DO_OVERLAY) {
+    await reportOverlayGeometry(target);
+  } else {
+    head("3. Selector-shaped overlay geometry");
+    say("  skipped (--no-overlay)");
+  }
+
+  let outDir = null;
+  if (DO_CAPTURE) {
+    const requestedOut = value("out", null);
+    outDir = requestedOut ?? (await mkdtemp(join(tmpdir(), "pwrsnap-probe-")));
+    await reportCapture(
+      [target, ...displays.filter((d) => d.id !== target.id)],
+      outDir
+    );
+  } else {
+    head("4. desktopCapturer screen sources");
+    say("  skipped (--no-capture)");
+  }
+
+  head("Summary");
+  say(`  session            ${waylandSession ? "Wayland" : "X11 / unknown"}`);
+  say(`  displays           ${displays.length}`);
+  if (outDir !== null) say(`  grabbed PNGs in    ${outDir}`);
+  say("");
+  say("  Paste this whole report back. The grabbed PNG answers the last");
+  say("  question on its own: open it and see whether it is the monitor you");
+  say("  expected, at the size this report says the selector assumes.");
+
+  const reportPath = join(
+    value("out", null) ?? tmpdir(),
+    `pwrsnap-capture-probe-${Date.now()}.txt`
+  );
+  try {
+    await writeFile(reportPath, `${lines.join("\n")}\n`, "utf8");
+    // eslint-disable-next-line no-console
+    console.log(`\nreport written to ${reportPath}`);
+  } catch {
+    /* best effort */
+  }
+  app.exit(0);
+});
+
+app.on("window-all-closed", () => {
+  /* the probe controls its own exit */
+});

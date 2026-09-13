@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   WINDOWS_ALIAS_NAMES,
+  installerName as productionInstallerName,
   writeWindowsChecksums,
   writeWindowsReleaseAliases,
 } from "./windows-release-artifacts.mjs";
@@ -94,10 +95,37 @@ describe("Windows release aliases", () => {
       expect(name).not.toMatch(/\d+\.\d+\.\d+/);
       expect(name).toBe(name.replace(/ /g, "."));
     }
+    // The alias must not look like an installer. INSTALLER_SUFFIX is what
+    // windowsInstallerArtifacts scans for, so a name ending in "-setup.exe"
+    // (PwrSnap-Setup.exe, say) would be picked up by writeWindowsChecksums and
+    // listed in SHA256SUMS as a second build — the outcome this module exists
+    // to avoid — and would make the workflow's separate upload glob redundant.
+    for (const name of Object.values(WINDOWS_ALIAS_NAMES)) {
+      expect(name.endsWith("-setup.exe"), `${name} must not look like an installer`).toBe(false);
+    }
     expect(WINDOWS_ALIAS_NAMES).toEqual({
       x64: "PwrSnap.Setup.exe",
       arm64: "PwrSnap.Setup.Arm.exe",
     });
+  });
+
+  // installerName reconstructs electron-builder's output to resolve an
+  // architecture, so a productName or template change that is not mirrored
+  // here fails the release inside the protected Windows job, after Azure
+  // signing has run. Bind the two rather than hoping they stay in step.
+  test("installerName reproduces electron-builder's nsis artifactName", () => {
+    const builder = readFileSync(join(import.meta.dirname, "..", "electron-builder.yml"), "utf8");
+    const template = /^\s*artifactName: "(.+)"$/m.exec(builder);
+    expect(template, "electron-builder.yml declares no nsis artifactName").not.toBeNull();
+    const productName = /^productName:\s*(\S+)$/m.exec(builder);
+    expect(productName, "electron-builder.yml declares no productName").not.toBeNull();
+
+    const rendered = template[1]
+      .replace("${productName}", productName[1])
+      .replace("${version}", version)
+      .replace("${arch}", "x64")
+      .replace("${ext}", "exe");
+    expect(rendered).toBe(productionInstallerName(version, "x64"));
   });
 
   test("keeps the versioned installer and leaves the alias out of SHA256SUMS", () => {

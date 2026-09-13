@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test } from "vitest";
+import { WINDOWS_ALIAS_NAMES } from "./windows-release-artifacts.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..", "..");
 
@@ -127,8 +128,20 @@ describe("Windows release configuration", () => {
     );
     // A copy, never a second trip through Azure signing.
     expect(aliasStep).not.toContain("Invoke-TrustedSigning");
+    // The workflow spells the alias three times — this presence filter, the
+    // upload glob, and the publication guard — and the script spells it once.
+    // Bind them to WINDOWS_ALIAS_NAMES: a rename there must not be able to
+    // leave the workflow checking a stale name, which fails the release inside
+    // the protected Windows job after Azure signing has already run, or worse
+    // publishes with no alias at all and 404s the stable URL.
+    const aliasGlob = "PwrSnap.Setup*.exe";
+    const globPattern = new RegExp(`^${aliasGlob.replace(/[.]/g, "\\.").replace(/\*/g, ".*")}$`);
+    for (const name of Object.values(WINDOWS_ALIAS_NAMES)) {
+      expect(name, `the ${aliasGlob} glob must carry ${name}`).toMatch(globPattern);
+    }
+
     // A script that no-ops still exits 0, so the step asserts the file landed.
-    expect(aliasStep).toContain('Filter "PwrSnap.Setup*.exe"');
+    expect(aliasStep).toContain(`Filter "${aliasGlob}"`);
 
     // The alias must never reach updater metadata: electron-updater resolves
     // latest.yml and the .blockmap by exact filename, so aiming either at a
@@ -144,8 +157,10 @@ describe("Windows release configuration", () => {
     // upload line. Anchor to end-of-line: a plain toContain of the installer
     // glob is also satisfied by the ".blockmap" line below it.
     expect(workflow).toMatch(/release-stage\/dist\/\*-setup\.exe\r?$/m);
-    expect(workflow).toMatch(/release-stage\/dist\/PwrSnap\.Setup\*\.exe\r?$/m);
-    expect(workflow).toContain("windows-dist/PwrSnap.Setup.exe");
+    expect(workflow).toMatch(
+      new RegExp(`release-stage/dist/${aliasGlob.replace(/[.*]/g, "\\$&")}\\r?$`, "m"),
+    );
+    expect(workflow).toContain(`windows-dist/${WINDOWS_ALIAS_NAMES.x64}`);
 
     // The signing job has no checkout, so the script and everything it imports
     // only exist there if the archive carries them — an omission that fails

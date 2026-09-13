@@ -634,11 +634,19 @@
      internal rhythm. */
   gap: 12px;
   position: relative;
-  /* leave room for the macOS traffic-light buttons under hiddenInset */
-  padding: 0 16px 0 92px;
+  /* Reserve nothing for OS chrome — Linux has an ordinary window frame, so its
+     buttons are outside this bar entirely. macOS and Windows opt in below. */
+  padding: 0 16px;
   background: var(--bg-sidebar);
   border-bottom: 1px solid var(--border-subtle);
   -webkit-app-region: drag;
+}
+/* macOS: `titleBarStyle: "hiddenInset"` insets the traffic lights INTO this
+   bar, so reserve room on the left for them. Scoped to darwin rather than left
+   on the base rule — unscoped, it spent 92px of every Linux top bar on buttons
+   that platform never draws. */
+:root[data-platform="darwin"] .psl__topbar {
+  padding-left: var(--mac-traffic-light-reserve);
 }
 /* Windows: the native title bar is reclaimed via titleBarOverlay — no macOS
    stoplights to clear on the left. We custom-render the menu bar INSIDE this
@@ -646,7 +654,6 @@
    top-right of this same bar — reserve room on the right so the toolbar's
    right-aligned content (search, toggles, gear) clears them. */
 :root[data-platform="win32"] .psl__topbar {
-  padding-left: 16px;
   padding-right: var(--win-caption-reserve);
   column-gap: 12px;
 }

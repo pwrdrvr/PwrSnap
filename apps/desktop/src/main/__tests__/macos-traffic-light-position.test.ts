@@ -64,8 +64,6 @@ const GROUP_WIDTH_PT = BUTTON_SIZE_PT + 2 * BUTTON_PITCH_PT; // 60
 
 /** Content inset of the bars the `x` value is derived from. */
 const RAIL_INSET_PX = 16;
-/** Left pad every chrome bar reserves for the OS buttons. */
-const RESERVED_LEFT_PX = 92;
 /** The chrome bar's `border-bottom` — the last pixel of the row is the
  *  divider, not part of the band the buttons sit on. */
 const DIVIDER_PX = 1;
@@ -104,11 +102,51 @@ function firstGridRowPx(css: string, selector: string): number {
   return Number(match[1]);
 }
 
-/** `padding: 0 <right>px 0 <left>px` → `{ right, left }`. */
-function barPadding(css: string, selector: string): { right: number; left: number } {
-  const match = /padding:\s*0\s+(\d+)px\s+0\s+(\d+)px/.exec(ruleBody(css, selector));
-  if (match === null) throw new Error(`\`${selector}\` has no four-value px padding`);
-  return { right: Number(match[1]), left: Number(match[2]) };
+/**
+ * The bar's own content inset, from its base (platform-agnostic) rule:
+ * `padding: 0 <inset>px`. The two-value form is load-bearing — the left pad is
+ * the inset too, because the base rule reserves nothing for OS chrome. A bar
+ * that grows a four-value padding here has put a reservation back on every
+ * platform, which is the Linux defect this shape exists to prevent.
+ */
+function barRailInset(css: string, selector: string): number {
+  const body = ruleBody(css, selector);
+  const match = /padding:\s*0\s+(\d+)px\s*;/.exec(body);
+  if (match === null) {
+    throw new Error(
+      `\`${selector}\` has no two-value px padding — a base rule that reserves ` +
+        "left pad charges Linux for buttons it never draws"
+    );
+  }
+  return Number(match[1]);
+}
+
+/**
+ * The left pad the macOS-only override reserves for the traffic lights,
+ * resolved through the shared token. Scoped to `[data-platform="darwin"]` on
+ * purpose: Linux keeps an ordinary OS frame (see platformWindowChrome) and has
+ * no in-window buttons to clear, and Windows reserves on the right instead.
+ */
+function macReservedLeftPx(css: string, selector: string): number {
+  const body = ruleBody(css, `:root[data-platform="darwin"] ${selector}`);
+  const match = /padding-left:\s*var\(\s*(--[a-z-]+)\s*\)/.exec(body);
+  if (match === null) {
+    throw new Error(`\`${selector}\` darwin override sets no \`padding-left: var(...)\``);
+  }
+  const name = match[1];
+  if (name !== MAC_RESERVE_TOKEN) {
+    throw new Error(`\`${selector}\` reserves via \`${name}\`, not \`${MAC_RESERVE_TOKEN}\``);
+  }
+  return macReserveTokenPx();
+}
+
+const MAC_RESERVE_TOKEN = "--mac-traffic-light-reserve";
+
+/** `--mac-traffic-light-reserve` from tokens.css, in px. */
+function macReserveTokenPx(): number {
+  const match = new RegExp(`${MAC_RESERVE_TOKEN}:\\s*(\\d+)px`).exec(readStyle("styles/tokens.css"));
+  if (match === null) throw new Error(`tokens.css declares no \`${MAC_RESERVE_TOKEN}\``);
+  return Number(match[1]);
 }
 
 /**
@@ -184,12 +222,12 @@ describe("MACOS_TRAFFIC_LIGHT_POSITION", () => {
   });
 
   test("x sits on the same rail as the chrome bars' own content inset", () => {
-    // Library / Settings / Sizzle share `padding: 0 16px 0 92px`. The buttons
-    // are the leftmost thing in that bar, so they start on that same rail.
+    // Library / Settings / Sizzle share `padding: 0 16px`. The buttons are the
+    // leftmost thing in that bar, so they start on that same rail.
     const railBars = BARRED.filter((s) => s.railInset);
     expect(railBars.length).toBeGreaterThan(0);
     for (const surface of railBars) {
-      expect(barPadding(readStyle(surface.file), surface.bar).right, surface.factory).toBe(
+      expect(barRailInset(readStyle(surface.file), surface.bar), surface.factory).toBe(
         RAIL_INSET_PX
       );
     }
@@ -198,12 +236,37 @@ describe("MACOS_TRAFFIC_LIGHT_POSITION", () => {
 
   test("the 60pt button group still clears every bar's reserved left pad", () => {
     const groupEnd = MACOS_TRAFFIC_LIGHT_POSITION.x + GROUP_WIDTH_PT;
+    const reserve = macReserveTokenPx();
     for (const surface of BARRED) {
-      expect(barPadding(readStyle(surface.file), surface.bar).left, surface.factory).toBe(
-        RESERVED_LEFT_PX
+      expect(macReservedLeftPx(readStyle(surface.file), surface.bar), surface.factory).toBe(
+        reserve
       );
     }
-    expect(groupEnd).toBeLessThanOrEqual(RESERVED_LEFT_PX);
+    expect(groupEnd).toBeLessThanOrEqual(reserve);
+  });
+
+  test("only macOS pays the reservation — the base rule reserves nothing", () => {
+    // The reservation is for buttons `titleBarStyle: "hiddenInset"` draws
+    // INSIDE our bar. Linux takes an ordinary OS frame and Windows puts its
+    // caption buttons on the right, so neither has anything to clear on the
+    // left. This lived on the base rule until 2026-09 with only a win32
+    // opt-out, which spent 92px of every Linux top bar on nothing.
+    //
+    // `barRailInset` throws on a four-value padding, so the assertion that the
+    // base rule is two-value is the assertion that it reserves nothing; this
+    // adds the other half — that each bar's left pad comes back on darwin, and
+    // through the one shared token rather than a fifth copy of the number.
+    for (const surface of BARRED) {
+      const css = readStyle(surface.file);
+      const base = barRailInset(css, surface.bar);
+      expect(macReservedLeftPx(css, surface.bar), surface.factory).toBeGreaterThan(base);
+      // A win32 override that still re-states `padding-left` is dead weight
+      // now that the base rule carries the rail inset for every platform.
+      expect(
+        ruleBody(css, `:root[data-platform="win32"] ${surface.bar}`),
+        surface.factory
+      ).not.toMatch(/padding-left:/);
+    }
   });
 
   test("y centres the button in the band every barred surface shares", () => {

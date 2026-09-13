@@ -12,7 +12,9 @@
   display: flex;
   align-items: center;
   gap: 18px;
-  padding: 0 20px 0 92px; /* left pad clears the OS traffic lights */
+  /* Reserve nothing for OS chrome — Linux has an ordinary window frame. macOS
+     and Windows opt in below. */
+  padding: 0 20px;
   border-bottom: 1px solid var(--border-subtle);
   /* Match every other window's title bar (--bg-sidebar). The document windows
      previously used --bg-surface, which left their title bar a different shade
@@ -20,10 +22,14 @@
      overlay (whose color tracks --bg-sidebar). */
   background: var(--bg-sidebar);
 }
+/* macOS: `titleBarStyle: "hiddenInset"` draws the real traffic lights inside
+   this bar — left pad clears them. */
+:root[data-platform="darwin"] .ps-doc__titlebar {
+  padding-left: var(--mac-traffic-light-reserve);
+}
 /* Windows: no macOS stoplights on the left; native caption buttons drawn
    top-right via titleBarOverlay (menu hidden on this window) — reserve right. */
 :root[data-platform="win32"] .ps-doc__titlebar {
-  padding-left: 20px;
   padding-right: var(--win-caption-reserve);
 }
 

@@ -160,12 +160,16 @@ function reportDisplays() {
   return { displays, primary, cursor };
 }
 
-async function reportOverlayGeometry(display) {
-  head("3. Selector-shaped overlay geometry");
-  say(`  Constructing a window exactly like createSelectorWindow() does, at`);
-  say(`  display ${display.id} bounds ${rect(display.bounds)}.`);
-  say(`  It will be on screen for ${OVERLAY_MS}ms — LOOK AT IT: its markers should`);
-  say(`  sit on the real edges and centre of that monitor.`);
+async function reportOverlayGeometry(display, strategy) {
+  const label = {
+    bare: "as createSelectorWindow() + show() leaves it on Linux today",
+    fullscreen: "with setFullScreen(true) — what Windows already does",
+    reanchor: "with setBounds(display.bounds) re-asserted after show()"
+  }[strategy];
+  say("");
+  say(`  ── ${strategy.toUpperCase()}: ${label}`);
+  say(`     On screen for ${OVERLAY_MS}ms — LOOK AT IT: the markers should sit on`);
+  say(`     the real edges and centre of the monitor.`);
 
   const win = new BrowserWindow({
     x: display.bounds.x,
@@ -210,7 +214,15 @@ and the cross should meet at its centre.</div>`;
 
   await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
   win.show();
-  await new Promise((r) => setTimeout(r, 300));
+  if (strategy === "fullscreen") win.setFullScreen(true);
+  if (strategy === "reanchor") {
+    // A window manager that ignores the constructor position may still honour
+    // an explicit move once the window is mapped. Give it a beat to place the
+    // window first, otherwise this races the placement it is meant to undo.
+    await new Promise((r) => setTimeout(r, 200));
+    win.setBounds(display.bounds);
+  }
+  await new Promise((r) => setTimeout(r, 600));
 
   const actualBounds = win.getBounds();
   const actualContent = win.getContentBounds();
@@ -221,7 +233,12 @@ and the cross should meet at its centre.</div>`;
         `outerWidth:window.outerWidth,outerHeight:window.outerHeight,` +
         `devicePixelRatio:window.devicePixelRatio,` +
         `screenW:window.screen.width,screenH:window.screen.height,` +
-        `availW:window.screen.availWidth,availH:window.screen.availHeight})`
+        `availW:window.screen.availWidth,availH:window.screen.availHeight,` +
+        // The renderer's own idea of where it is on screen. Chromium derives
+        // this from the window's real position rather than from what main
+        // asked for, so when it disagrees with getBounds() the window manager
+        // has moved us and getBounds() is reporting the request, not reality.
+        `screenX:window.screenX,screenY:window.screenY})`
     );
   } catch (cause) {
     say(`  executeJavaScript THREW: ${cause instanceof Error ? cause.message : String(cause)}`);
@@ -232,14 +249,17 @@ and the cross should meet at its centre.</div>`;
   win.destroy();
 
   say("");
-  say(`  requested bounds      ${rect(display.bounds)}`);
-  say(`  getBounds()           ${rect(actualBounds)}`);
-  say(`  getContentBounds()    ${rect(actualContent)}`);
+  say(`     requested bounds      ${rect(display.bounds)}`);
+  say(`     getBounds()           ${rect(actualBounds)}`);
+  say(`     getContentBounds()    ${rect(actualContent)}`);
   if (rendererView !== null) {
-    say(`  renderer inner        ${num(rendererView.innerWidth)}×${num(rendererView.innerHeight)} CSS px`);
-    say(`  renderer outer        ${num(rendererView.outerWidth)}×${num(rendererView.outerHeight)} CSS px`);
-    say(`  devicePixelRatio      ${num(rendererView.devicePixelRatio)}`);
-    say(`  window.screen         ${num(rendererView.screenW)}×${num(rendererView.screenH)} (avail ${num(rendererView.availW)}×${num(rendererView.availH)})`);
+    say(`     renderer screenX/Y    ${num(rendererView.screenX)},${num(rendererView.screenY)}`);
+  }
+  if (rendererView !== null) {
+    say(`     renderer inner        ${num(rendererView.innerWidth)}×${num(rendererView.innerHeight)} CSS px`);
+    say(`     renderer outer        ${num(rendererView.outerWidth)}×${num(rendererView.outerHeight)} CSS px`);
+    say(`     devicePixelRatio      ${num(rendererView.devicePixelRatio)}`);
+    say(`     window.screen         ${num(rendererView.screenW)}×${num(rendererView.screenH)} (avail ${num(rendererView.availW)}×${num(rendererView.availH)})`);
   }
 
   // NOTE for a macOS control run: the real selector follows construction with
@@ -250,26 +270,38 @@ and the cross should meet at its centre.</div>`;
   // failure mode, since a window asked for 0,0 that lands at 0,29 paints the
   // snapshot 29px down and doubles every edge by 29px. On Linux nothing calls
   // setSimpleFullScreen, so there the verdict means what it says.
-  const positioned =
-    actualBounds.x === display.bounds.x && actualBounds.y === display.bounds.y;
+  // `getBounds()` is what Chromium ASKED the window manager for. The renderer's
+  // `window.screenX/Y` is derived from where the window actually is. When the
+  // two disagree, the WM has placed us somewhere else and main cannot tell
+  // from the main side alone — which is exactly how a misaligned selector
+  // ships without anything logging a complaint.
+  const trueX = rendererView === null ? actualBounds.x : rendererView.screenX;
+  const trueY = rendererView === null ? actualBounds.y : rendererView.screenY;
+  const offsetX = trueX - display.bounds.x;
+  const offsetY = trueY - display.bounds.y;
+  const positioned = offsetX === 0 && offsetY === 0;
   const sized =
     actualBounds.width === display.bounds.width && actualBounds.height === display.bounds.height;
   say("");
-  say(`  VERDICT: position honoured = ${positioned ? "YES" : "NO"}, size honoured = ${sized ? "YES" : "NO"}`);
+  say(`     VERDICT: really at ${num(trueX)},${num(trueY)} — offset ${num(offsetX)},${num(offsetY)} from the display origin`);
+  say(`              position honoured = ${positioned ? "YES" : "NO"}, size honoured = ${sized ? "YES" : "NO"}`);
+  if (!positioned && actualBounds.x === display.bounds.x && actualBounds.y === display.bounds.y) {
+    say("              ^ getBounds() REPORTS 0,0 AND IS WRONG. Nothing on the main");
+    say("                side can see this; only the renderer knows where it is.");
+  }
   if (rendererView !== null) {
     const cssScale = rendererView.innerWidth / display.bounds.width;
-    say(`           renderer CSS px per display logical px = ${num(cssScale)}`);
+    say(`              renderer CSS px per display logical px = ${num(cssScale)}`);
     if (Math.abs(cssScale - 1) > 0.01) {
-      say("           ^ the selector's coord space is NOT 1:1 with display logical px.");
-      say("             region-selector.ts's header states the design depends on that.");
+      say("              ^ the selector's coord space is NOT 1:1 with display logical px.");
+      say("                region-selector.ts's header states the design depends on that.");
     }
   }
   if (!positioned || !sized) {
-    say("           ^ the overlay did not land where it was asked to. A frozen");
-    say("             full-display snapshot painted into it cannot line up with");
-    say("             the real screen — this alone produces the reported offset.");
+    say(`              ^ a frozen snapshot painted into this window appears shifted`);
+    say(`                by ${num(offsetX)},${num(offsetY)} — every edge doubles by that much.`);
   }
-  return { actualBounds, actualContent, rendererView, positioned, sized };
+  return { actualBounds, actualContent, rendererView, positioned, sized, offsetX, offsetY };
 }
 
 async function reportCapture(displays, outDir) {
@@ -486,8 +518,42 @@ app.whenReady().then(async () => {
   const target =
     cursor === null ? primary : screen.getDisplayNearestPoint(cursor);
 
+  let overlay = null;
   if (DO_OVERLAY) {
-    await reportOverlayGeometry(target);
+    head("3. Selector-shaped overlay geometry");
+    say(`  Two windows, both constructed exactly like createSelectorWindow() at`);
+    say(`  display ${target.id} bounds ${rect(target.bounds)}. The only difference is`);
+    say("  whether anything re-anchors them after show(). Linux currently does");
+    say("  not: enterMenuBarOverlayMode() returns early for every platform that");
+    say("  is neither win32 nor darwin, so the window manager places the");
+    say("  selector wherever it likes.");
+    const bare = await reportOverlayGeometry(target, "bare");
+    const full = await reportOverlayGeometry(target, "fullscreen");
+    const anchored = await reportOverlayGeometry(target, "reanchor");
+    overlay = { bare, full, anchored };
+    const offsets = (r) => `${num(r.offsetX)},${num(r.offsetY)}`;
+    say("");
+    say("  A/B/C offsets from the display origin");
+    say(`    bare        ${offsets(bare)}${bare.positioned ? "   <- correct" : ""}`);
+    say(`    fullscreen  ${offsets(full)}${full.positioned ? "   <- correct" : ""}`);
+    say(`    reanchor    ${offsets(anchored)}${anchored.positioned ? "   <- correct" : ""}`);
+    const winners = [
+      full.positioned ? "setFullScreen(true)" : null,
+      anchored.positioned ? "setBounds() after show()" : null
+    ].filter((x) => x !== null);
+    say("");
+    if (bare.positioned) {
+      say("  The bare window was already correct on this machine — the offset is");
+      say("  not reproduced here, so look elsewhere before changing placement.");
+    } else if (winners.length > 0) {
+      say(`  FIX CONFIRMED: ${winners.join(" and ")} land${winners.length === 1 ? "s" : ""} the overlay on the`);
+      say("  display origin. Linux makes neither call today; Windows already makes");
+      say("  the first. That is the shipped bug.");
+    } else {
+      say("  Neither candidate lands the overlay correctly. The window manager is");
+      say("  refusing both, and the selector needs to compensate for its own real");
+      say("  position (renderer screenX/Y) rather than assume display.bounds.");
+    }
   } else {
     head("3. Selector-shaped overlay geometry");
     say("  skipped (--no-overlay)");

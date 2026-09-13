@@ -848,13 +848,20 @@ changes.
 npx react-devtools
 ```
 
-Then launch this checkout with the bridge enabled. Use the isolated
-userData recipe, never your real profile:
+Then launch this checkout with the bridge enabled. Use a scratch userData
+root, never your real profile — `PWRSNAP_E2E=1` **together with**
+`PWRSNAP_USER_DATA` is what rebases `documents` into userData, so a
+profiling run cannot touch `~/Documents/PwrSnap`:
 
 ```bash
-env HOME=$S PWRSNAP_USER_DATA=$S PWRSNAP_E2E=1 PWRSNAP_REACT_DEVTOOLS=1 \
+S="$(mktemp -d)"                     # scratch profile; purge it afterwards
+env HOME="$S" PWRSNAP_USER_DATA="$S" PWRSNAP_E2E=1 PWRSNAP_REACT_DEVTOOLS=1 \
   pnpm --filter @pwrsnap/desktop dev --remoteDebuggingPort=9333
 ```
+
+Do not paste that `env` line without setting `S` first: with it unset both
+variables expand to the empty string, `PWRSNAP_E2E=1` alone does not rebase
+`documents`, and the run reads the operator's real library.
 
 `npx react-devtools` must already be listening when the renderer loads —
 the script tag is a synchronous classic script, and a refused connection
@@ -889,7 +896,12 @@ PWRSNAP_REACT_DEVTOOLS=1 PWRSNAP_REACT_DEVTOOLS_PORT=8098 …
 ```
 
 Every window in the process loads the same renderer bundle, so the tray,
-float-over, settings, and region-selector windows carry the bridge too.
+float-over, settings, and region-selector windows carry the bridge too —
+and **the standalone server keeps only one connection**, closing the
+previous one with "Only one connection allowed at a time". So the window
+you are profiling is whichever connected LAST, which is often the region
+selector rather than the Library. Confirm the tree in the Components tab
+before recording, or close the other windows first.
 
 ### Which build to use for what
 
@@ -965,12 +977,21 @@ fails packaging when any packaged HTML loads a remote script, and
 rule is written against the shape — a remote `<script src>` in a shipped
 renderer — not against the flag.
 
-Three things about that gate are deliberate, and pinned by
-[packaged-html-rules.test.mjs](apps/desktop/scripts/packaged-html-rules.test.mjs):
+Four things about that gate are deliberate. The two content rules are
+pinned by
+[packaged-html-rules.test.mjs](apps/desktop/scripts/packaged-html-rules.test.mjs),
+the two failure modes by
+[verify-asar-contents.test.mjs](apps/desktop/scripts/verify-asar-contents.test.mjs)
+§"packaged renderer HTML":
 
-- **It fails closed.** An HTML entry that cannot be read is reported, not
-  skipped. This is a check whose whole job is to stop something shipping,
-  so "could not look" has to be as loud as "looked and found it".
+- **It fails closed on an unreadable entry.** An HTML entry that cannot be
+  read is reported, not skipped. This is a check whose whole job is to stop
+  something shipping, so "could not look" has to be as loud as "looked and
+  found it".
+- **It fails closed on an empty scan.** Matching zero files is a failure,
+  not a pass. Without that, a renderer that stopped landing under `/out/`
+  would leave the check inspecting nothing and printing OK, for every
+  release after the one that moved it.
 - **It is scoped to `/out/`.** electron-builder ships `out/**` plus the
   auto-included production `node_modules`; a dependency that vendors a
   playground page pointing at a CDN would otherwise fail a release with a

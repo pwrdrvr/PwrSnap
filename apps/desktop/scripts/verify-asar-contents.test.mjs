@@ -4,17 +4,18 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
 import {
+  asarLookupPath,
   findForbiddenAsarEntries,
-  findPackagedHtmlIssues,
   findForeignSharpAsarPackages,
   findForeignUnpackedNative,
   findMissingPackagedResources,
   findMissingSharpAsarRuntime,
   findMissingUnpackedNative,
+  findPackagedHtmlIssues,
   sharpEsmRuntimePaths,
   verifyAsarListing,
-  verifyPackagedResources,
   verifyPackagedHtml,
+  verifyPackagedResources,
   verifySharpAsarRuntime,
   verifyUnpackedNative,
 } from "./verify-asar-contents.mjs";
@@ -448,7 +449,8 @@ describe("packaged renderer HTML", () => {
     const listing = ["/out/renderer/index.html", "/out/main/index.js"];
     expect(findPackagedHtmlIssues(listing, cleanReader)).toEqual({
       remoteScripts: [],
-      unreadable: []
+      unreadable: [],
+      scanned: 1
     });
     expect(() => verifyPackagedHtml(listing, cleanReader)).not.toThrow();
   });
@@ -486,8 +488,38 @@ describe("packaged renderer HTML", () => {
     };
     expect(findPackagedHtmlIssues(listing, reader)).toEqual({
       remoteScripts: [],
-      unreadable: []
+      unreadable: [],
+      scanned: 0
     });
+  });
+
+  test("fails closed when the scan matched no app HTML at all", () => {
+    // A gate that inspects zero files and prints OK is indistinguishable from
+    // one that inspected the renderer and cleared it. If electron-builder ever
+    // stops putting the renderer HTML under /out/, the remote-script check
+    // must fail loudly rather than pass vacuously for every later release.
+    const reader = () => {
+      throw new Error("should not be read");
+    };
+    expect(() => verifyPackagedHtml(["/out/main/index.js"], reader)).toThrow(
+      /no packaged renderer HTML to inspect/
+    );
+    expect(() => verifyPackagedHtml([], reader)).toThrow(
+      /expected at least one \/out\/\*\*\/\*\.html entry/
+    );
+  });
+
+  test("rebuilds the platform lookup path @electron/asar resolves", () => {
+    // asar resolves a node by splitting on path.sep, so a forward-slash path
+    // finds nothing on Windows and EVERY html entry reports as unreadable —
+    // a release that fails for the wrong reason. The separator is a parameter
+    // so the Windows branch is testable from a POSIX host.
+    expect(asarLookupPath("/out/renderer/index.html", "/")).toBe(
+      "out/renderer/index.html"
+    );
+    expect(asarLookupPath("/out/renderer/index.html", "\\")).toBe(
+      "out\\renderer\\index.html"
+    );
   });
 
   test("normalizes a Windows-built listing before matching", () => {

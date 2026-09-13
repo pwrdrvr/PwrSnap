@@ -32,8 +32,14 @@ export function isRendererHtmlEntry(entry) {
  * hyphenated attributes (`data-src`, `x-src`) that lazy-loaders use as inert
  * placeholders, and flagging one of those would fail a release over markup
  * that loads nothing.
+ *
+ * The trailing `[^"'\s>]*` carries the rest of the URL into the match. The
+ * rule is written against the SHAPE, not against the DevTools flag, so the
+ * offender is often not the one the failure message can name — and a snippet
+ * that stops at `//` tells an operator the protocol but not the host.
  */
-const REMOTE_SCRIPT_PATTERN = /<script\b[^>]*\ssrc\s*=\s*["']?(?:https?:)?\/\//i;
+const REMOTE_SCRIPT_PATTERN =
+  /<script\b[^>]*\ssrc\s*=\s*["']?(?:https?:)?\/\/[^"'\s>]*/i;
 
 export function findRemoteScript(contents) {
   return REMOTE_SCRIPT_PATTERN.exec(contents)?.[0] ?? null;

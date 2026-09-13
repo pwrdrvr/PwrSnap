@@ -380,11 +380,17 @@ export function verifySharpAsarRuntime(listing, platform, arch = "x64") {
  * found it". (`@electron/asar`'s `readFileSync` does resolve unpacked files
  * out of the `.unpacked` sidecar, so the throwing cases are directories,
  * links, and real I/O errors — exactly the ones that must not pass quietly.)
+ *
+ * A listing that matches NOTHING is reported too, via `scanned`. A gate that
+ * inspects zero files and prints OK is indistinguishable from one that
+ * inspected the renderer and cleared it — and it stays that way, silently,
+ * for every release after the one where `out/` stopped holding the HTML.
  */
 export function findPackagedHtmlIssues(listing, readEntry) {
   const remoteScripts = [];
   const unreadable = [];
-  for (const entry of normalizedAsarEntries(listing).filter(isRendererHtmlEntry)) {
+  const matched = normalizedAsarEntries(listing).filter(isRendererHtmlEntry);
+  for (const entry of matched) {
     let contents;
     try {
       contents = readEntry(entry);
@@ -398,11 +404,40 @@ export function findPackagedHtmlIssues(listing, readEntry) {
     const snippet = findRemoteScript(contents);
     if (snippet !== null) remoteScripts.push({ entry, snippet });
   }
-  return { remoteScripts, unreadable };
+  return { remoteScripts, unreadable, scanned: matched.length };
+}
+
+/**
+ * Turn a POSIX-normalized listing entry back into the form
+ * `@electron/asar` resolves. It looks a node up by splitting on `path.sep`,
+ * so on Windows a forward-slash path resolves to nothing and EVERY html
+ * entry would report as unreadable — a release that fails for the wrong
+ * reason. Exported so that branch is testable from a POSIX host, where
+ * `sep` is `/` and the conversion is otherwise a no-op.
+ */
+export function asarLookupPath(entry, pathSep = sep) {
+  return entry.replace(/^\//, "").replaceAll("/", pathSep);
 }
 
 export function verifyPackagedHtml(listing, readEntry) {
-  const { remoteScripts, unreadable } = findPackagedHtmlIssues(listing, readEntry);
+  const { remoteScripts, unreadable, scanned } = findPackagedHtmlIssues(
+    listing,
+    readEntry
+  );
+  if (scanned === 0) {
+    throw new Error(
+      [
+        "verify-asar-contents: no packaged renderer HTML to inspect",
+        "",
+        "  expected at least one /out/**/*.html entry in app.asar",
+        "",
+        "The remote-script scan matched nothing, so it cleared nothing. Either",
+        "the renderer HTML is missing from the bundle or it no longer lands",
+        "under /out/ — update isRendererHtmlEntry in packaged-html-rules.mjs",
+        "to match wherever electron-builder now puts it."
+      ].join("\n")
+    );
+  }
   if (remoteScripts.length === 0 && unreadable.length === 0) return;
 
   const lines = [];
@@ -495,14 +530,8 @@ export function runCli(args = process.argv.slice(2)) {
   try {
     verifyAsarListing(listing);
     verifySharpAsarRuntime(listing, platform, arch);
-    // `findPackagedHtmlIssues` hands back POSIX-normalized entries, but
-    // @electron/asar looks a node up by splitting on `path.sep` — so on
-    // Windows a forward-slash path resolves to nothing and every HTML entry
-    // would report as unreadable. Put the platform separator back.
     verifyPackagedHtml(listing, (entry) =>
-      asar
-        .extractFile(asarPath, entry.replace(/^\//, "").replaceAll("/", sep))
-        .toString("utf8")
+      asar.extractFile(asarPath, asarLookupPath(entry)).toString("utf8")
     );
     verifyPackagedResources(appPath, platform);
     verifyUnpackedNative(appPath, platform, arch);

@@ -23,7 +23,24 @@ describe("packaged HTML rules", () => {
     // carry enough of the tag for an operator to recognize the offender.
     const snippet = findRemoteScript('<script src="http://localhost:8097"></script>');
     expect(snippet).toContain("<script");
-    expect(snippet).toContain("http://");
+    expect(snippet).toContain("http://localhost:8097");
+  });
+
+  test("carries the whole URL into the snippet, not just the protocol", () => {
+    // The rule is written against the shape, so the offender is often NOT the
+    // DevTools bridge the remediation text names. A snippet that stopped at
+    // `//` would leave the operator with a filename, a protocol, and advice
+    // about a flag that has nothing to do with their file.
+    expect(
+      findRemoteScript('<script src="https://cdn.jsdelivr.net/npm/thing@1/x.js"></script>')
+    ).toContain("cdn.jsdelivr.net/npm/thing@1/x.js");
+    expect(findRemoteScript('<script src="//cdn.example.com/x.js"></script>')).toContain(
+      "cdn.example.com/x.js"
+    );
+    // Stops at the quote — the closing tag is not part of the offender.
+    expect(findRemoteScript('<script src="https://cdn.example.com/x.js"></script>')).not.toContain(
+      "</script>"
+    );
   });
 
   test("detects remote scripts across quoting and protocol forms", () => {

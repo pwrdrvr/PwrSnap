@@ -87,6 +87,8 @@ jobs:
             .npmrc \
             CHANGELOG.md \
             scripts/check-desktop-release-metadata.mjs \
+            scripts/check-app-metadata-policy.mjs \
+            scripts/check-electron-fuses-policy.mjs \
             scripts/check-bundled-ffmpeg-notice.mjs \
             scripts/lib/cli-entrypoint.mjs \
             apps/desktop/package.json \

@@ -667,25 +667,16 @@ describe("Windows release configuration", () => {
     expect(archiveScript).toContain("scripts/check-bundled-ffmpeg-notice.mjs");
   });
 
-  test("windows signing input covers every transitive import", () => {
-    // The windows-sign job has no checkout: it unpacks this allowlist and
-    // nothing else. A script whose import is missing does not fail lint, it
-    // throws ERR_MODULE_NOT_FOUND inside the protected job AFTER Azure signing.
-    // That is not hypothetical — verify-asar-contents.mjs gained an import of
-    // scripts/lib/cli-entrypoint.mjs in #426, which updated the macOS allowlist
-    // in release.yml and missed this one, breaking every Windows release.
-    const listed = [
-      ...read("scripts/release/archive-windows-signing-input.ps1")
-        .split("$paths = @(")[1]
-        .split(")")[0]
-        .matchAll(/"([^"]+)"/g),
-    ].map((match) => match[1]);
-
-    // The allowlist is written with forward slashes (it is consumed by tar and
-    // by PowerShell string matching), but node:path yields native separators —
-    // on Windows `relative()` returns "scripts\\lib\\cli-entrypoint.mjs", which
-    // matches no entry and reports every import as missing. Compare in one
-    // separator style.
+  // Neither signing job has a checkout: each unpacks an allowlist and nothing
+  // else. A script whose import is missing does not fail lint — it throws
+  // ERR_MODULE_NOT_FOUND inside the protected job AFTER signing has run.
+  //
+  // The allowlists are written with forward slashes (consumed by tar and by
+  // PowerShell string matching) but node:path yields native separators — on
+  // Windows `relative()` returns "scripts\\lib\\cli-entrypoint.mjs", which
+  // matches no entry and would report every import as missing. Compare in one
+  // separator style.
+  function findMissingTransitiveImports(listed) {
     const posix = (path) => path.split(sep).join("/");
     const covered = (path) =>
       listed.some((entry) => path === entry || path.startsWith(`${entry}/`));
@@ -702,7 +693,48 @@ describe("Windows release configuration", () => {
       }
     };
     for (const entry of listed.filter((path) => path.endsWith(".mjs"))) walk(entry);
+    return missing;
+  }
 
-    expect(missing, `Windows signing input is missing transitive imports`).toEqual([]);
+  test("windows signing input covers every transitive import", () => {
+    // Not hypothetical — verify-asar-contents.mjs gained an import of
+    // scripts/lib/cli-entrypoint.mjs in #426, which updated the macOS allowlist
+    // in release.yml and missed this one, breaking every Windows release.
+    const listed = [
+      ...read("scripts/release/archive-windows-signing-input.ps1")
+        .split("$paths = @(")[1]
+        .split(")")[0]
+        .matchAll(/"([^"]+)"/g),
+    ].map((match) => match[1]);
+
+    expect(
+      findMissingTransitiveImports(listed),
+      `Windows signing input is missing transitive imports`,
+    ).toEqual([]);
+  });
+
+  test("macOS signing input covers every transitive import", () => {
+    // The mirror of the test above, and the half that had no guard. #426 broke
+    // the Windows release by updating only this list; the reverse — updating
+    // only the PowerShell one — would break the macOS release the same way,
+    // after notarization, with the Windows test still green. Both lists are
+    // hand-maintained allowlists, so both need the same walk.
+    const listed = read(".github/workflows/release.yml")
+      .split("tar -czf")[1]
+      .split("sha256=")[0]
+      .split("\n")
+      .map((line) => line.replace(/\\$/, "").trim())
+      .filter((line) => /^[\w.@][\w./@-]*$/.test(line));
+
+    // Guard the parse itself: a reformatted workflow that yields an empty or
+    // tiny list would make this assertion pass by inspecting nothing.
+    expect(listed, "could not parse the macOS tar list from release.yml").toContain(
+      "apps/desktop/scripts/verify-asar-contents.mjs",
+    );
+
+    expect(
+      findMissingTransitiveImports(listed),
+      `macOS signing input is missing transitive imports`,
+    ).toEqual([]);
   });
 });

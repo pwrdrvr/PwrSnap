@@ -28,8 +28,11 @@ func sample(packet: Int, amplitude: Float = 0.3) throws -> CMSampleBuffer {
         blockAllocator: kCFAllocatorDefault, customBlockSource: nil,
         offsetToData: 0, dataLength: count * 4, flags: 0, blockBufferOut: &block
     ) == noErr, "sample storage")
-    let values = (0..<count).map { index in
-        amplitude * Float(sin(2 * Double.pi * 440 * Double(packet * count + index) / 48_000))
+    let firstSample = packet * count
+    let values = (0..<count).map { index -> Float in
+        let seconds = Double(firstSample + index) / 48_000
+        let phase = 2 * Double.pi * 440 * seconds
+        return amplitude * Float(sin(phase))
     }
     let status = values.withUnsafeBytes { bytes in
         CMBlockBufferReplaceDataBytes(with: bytes.baseAddress!, blockBuffer: block!, offsetIntoDestination: 0, dataLength: bytes.count)

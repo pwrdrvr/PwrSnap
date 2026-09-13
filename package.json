@@ -29,7 +29,9 @@
     "test:desktop-e2e": "pnpm --filter @pwrsnap/desktop build && pnpm --filter @pwrsnap/desktop test:e2e",
     "test:desktop-e2e:windows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/e2e/run-windows.ps1",
     "test:desktop-e2e:docker": "./scripts/e2e/run-docker.sh",
-    "release:check": "node ./scripts/check-desktop-release-metadata.mjs"
+    "release:check": "node ./scripts/check-desktop-release-metadata.mjs",
+    "fix:linux-sandbox": "node ./scripts/linux-sandbox.mjs --fix",
+    "check:linux-sandbox": "node ./scripts/linux-sandbox.mjs --warn"
   },
   "devDependencies": {
     "@types/node": "24.12.4",

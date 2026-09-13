@@ -19,11 +19,18 @@
 //      `display.scaleFactor` onto pixels that are not at that scale.
 //   4. Does a selector-shaped window (frameless, transparent, always-on-top,
 //      constructed at `display.bounds`) actually land where it was asked to?
-//      Wayland clients cannot position their own toplevels; under fractional
-//      scaling, XWayland ones can land at the wrong size.
+//      A Wayland-native client cannot place its own toplevel at all, but an
+//      XWayland one usually can — and under fractional scaling can land at
+//      the wrong size. Measured, not assumed: on GNOME/XWayland it has been
+//      seen honoured exactly.
 //   5. Does `screen.getCursorScreenPoint()` report the real pointer? It is
 //      how `pickRegion` chooses which display to show the selector on, and
 //      Wayland has no protocol to query the global pointer.
+//   6. And the one that infers nothing: paint the grab into the overlay
+//      exactly as the selector does, at partial opacity, so the frozen copy
+//      can be compared against the live desktop underneath it. Aligned looks
+//      faded but single; misaligned doubles every edge, and a 100px ruler
+//      says by how much and in which direction.
 //
 // Run it on the affected machine:
 //
@@ -33,17 +40,23 @@
 //
 //   pnpm --filter @pwrsnap/desktop probe:linux-capture
 //
-// Step 4 puts a translucent full-display overlay on screen for a few
-// seconds with its own edge/corner/centre markers — look at whether those
-// markers line up with the real edges and centre of the monitor. Step 5
-// will raise the OS screen-share prompt and source picker on a portal
+// Two steps put something on screen and expect you to LOOK at it.
+//
+// Step 3 shows an EMPTY full-display overlay with edge, corner and centre
+// markers: do those sit on the real edges and centre of the monitor, or are
+// they pushed off them? Step 5 paints the grabbed frame into that same
+// overlay at 55% opacity: does the screen merely look faded (aligned), or
+// does every edge double (misaligned)? If it doubles, read the offset off
+// the ruler — that number is the bug.
+//
+// Step 4 raises the OS screen-share prompt and source picker on a portal
 // session; pick "Entire screen" / the monitor you are looking at, which is
 // what a user would pick. Nothing is captured to the library and no PwrSnap
 // state is touched: the probe runs with its own throwaway userData.
 //
 // Flags:
-//   --no-overlay        skip the overlay geometry test (step 4)
-//   --no-capture        skip the screen grab (step 5) — no portal prompt
+//   --no-overlay        skip both on-screen steps (3 and 5)
+//   --no-capture        skip the screen grab (step 4) — no portal prompt
 //   --overlay-ms=<n>    how long to leave the overlay up (default 4000)
 //   --grabs=<n>         repeat the grab n times (default 1) to see whether
 //                       the portal re-prompts per call
@@ -229,6 +242,14 @@ and the cross should meet at its centre.</div>`;
     say(`  window.screen         ${num(rendererView.screenW)}×${num(rendererView.screenH)} (avail ${num(rendererView.availW)}×${num(rendererView.availH)})`);
   }
 
+  // NOTE for a macOS control run: the real selector follows construction with
+  // `setSimpleFullScreen(true)` (`enterMenuBarOverlayMode`) and this probe
+  // deliberately does not, so macOS reports the window parked below the menu
+  // bar and "position honoured = NO". That is the probe being honest about a
+  // bare window, not a product bug — and it is a useful demonstration of the
+  // failure mode, since a window asked for 0,0 that lands at 0,29 paints the
+  // snapshot 29px down and doubles every edge by 29px. On Linux nothing calls
+  // setSimpleFullScreen, so there the verdict means what it says.
   const positioned =
     actualBounds.x === display.bounds.x && actualBounds.y === display.bounds.y;
   const sized =
@@ -253,6 +274,7 @@ and the cross should meet at its centre.</div>`;
 
 async function reportCapture(displays, outDir) {
   head("4. desktopCapturer screen sources");
+  let grabbed = null;
   const target = displays[0];
   const requested = {
     width: Math.max(1, Math.round(target.bounds.width * target.scaleFactor)),
@@ -303,6 +325,7 @@ async function reportCapture(displays, outDir) {
             say(`        write FAILED ${cause instanceof Error ? cause.message : String(cause)}`);
           }
         }
+        if (grabbed === null) grabbed = { dataUrl: s.thumbnail.toDataURL(), size };
       }
     }
 
@@ -319,6 +342,138 @@ async function reportCapture(displays, outDir) {
       say("      suggests grepping for is NEVER emitted on this configuration).");
       say("      Whatever the portal picker returned is treated as this display.");
     }
+  }
+  return grabbed;
+}
+
+
+// The step that reproduces the reported symptom instead of inferring it.
+//
+// The selector paints the frozen grab as a full-window background with
+// `object-fit: fill` and the user drags against THAT, so "misaligned" means
+// the painted copy of the desktop does not sit on top of the desktop it was
+// copied from. At full opacity — which is what the real selector uses — a
+// shift is only visible where something of PwrSnap's own is still on screen
+// to compare against, which is why the bug reads as vague "duplication".
+//
+// Painting the same grab the same way but at partial opacity turns that into
+// a measurement: where the copy lines up, the screen looks washed out but
+// single; where it does not, every edge doubles, and the ruler says by how
+// many pixels and in which direction.
+async function reportSelectorSimulation(display, grabbed) {
+  head("5. Selector simulation — the frozen grab painted over the live screen");
+  if (grabbed === null) {
+    say("  skipped (no grab to paint)");
+    return;
+  }
+  say(`  Painting the ${grabbed.size.width}x${grabbed.size.height} grab into a`);
+  say(`  ${display.bounds.width}x${display.bounds.height} overlay with object-fit:fill — exactly what`);
+  say("  RegionSelector.tsx does — but at 55% opacity so the live desktop shows");
+  say("  through it.");
+  say("");
+  say(`  WATCH FOR ${OVERLAY_MS}ms:`);
+  say("    aligned  -> the screen looks faded but SINGLE. No doubled edges.");
+  say("    offset   -> every window edge, the top bar and the dock appear TWICE.");
+  say("                Read the shift off the 100px ruler and note its direction.");
+
+  const win = new BrowserWindow({
+    x: display.bounds.x,
+    y: display.bounds.y,
+    width: display.bounds.width,
+    height: display.bounds.height,
+    show: false,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    hasShadow: false,
+    backgroundColor: "#00000000",
+    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false }
+  });
+  win.setAlwaysOnTop(true, "screen-saver");
+
+  const html = `<!doctype html><meta charset="utf-8"><style>
+    html,body{margin:0;height:100%;overflow:hidden;background:transparent;
+      font:600 11px/1 ui-monospace,monospace;color:#ff8a1f;-webkit-user-select:none}
+    #snap{position:fixed;inset:0;width:100%;height:100%;object-fit:fill;opacity:.55;z-index:0}
+    #grid{position:fixed;inset:0;z-index:1;pointer-events:none}
+    .v,.h{position:absolute;background:rgba(255,138,31,.55)}
+    .v{top:0;bottom:0;width:1px}.h{left:0;right:0;height:1px}
+    .v.major,.h.major{background:#ff8a1f}
+    .lbl{position:absolute;background:#000;padding:1px 3px}
+    #edge{position:fixed;inset:0;border:2px solid #ff8a1f;z-index:2;pointer-events:none}
+    #info{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:3;
+      background:#000;padding:12px 16px;border:2px solid #ff8a1f;white-space:pre;
+      text-align:center;font:600 13px/1.5 system-ui,sans-serif;color:#fff}
+  </style>
+  <img id="snap" alt="">
+  <div id="grid"></div><div id="edge"></div>
+  <div id="info">Frozen grab at 55% over the live desktop.
+Doubled edges = misaligned. Read the shift off the 100px ruler.</div>
+  <script>
+    const g = document.getElementById("grid");
+    for (let x = 0; x < window.innerWidth; x += 100) {
+      const l = document.createElement("div");
+      l.className = "v" + (x % 500 === 0 ? " major" : "");
+      l.style.left = x + "px"; g.appendChild(l);
+      if (x % 200 === 0) {
+        const t = document.createElement("div");
+        t.className = "lbl"; t.style.left = (x + 2) + "px"; t.style.top = "2px";
+        t.textContent = "x" + x; g.appendChild(t);
+      }
+    }
+    for (let y = 0; y < window.innerHeight; y += 100) {
+      const l = document.createElement("div");
+      l.className = "h" + (y % 500 === 0 ? " major" : "");
+      l.style.top = y + "px"; g.appendChild(l);
+      if (y % 200 === 0) {
+        const t = document.createElement("div");
+        t.className = "lbl"; t.style.left = "2px"; t.style.top = (y + 2) + "px";
+        t.textContent = "y" + y; g.appendChild(t);
+      }
+    }
+  <\/script>`;
+
+  await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+  // The grab rides in through executeJavaScript rather than the page URL: a
+  // full-screen PNG as a nested data: URL makes the outer URL enormous.
+  await win.webContents.executeJavaScript(
+    `new Promise((resolve) => { const i = document.getElementById("snap");
+       i.onload = () => resolve(true); i.onerror = () => resolve(false);
+       i.src = ${JSON.stringify(grabbed.dataUrl)}; })`
+  );
+  win.show();
+
+  // Does the pointer ever become readable once one of our windows is up? The
+  // earlier (0,0) reading is taken with nothing of ours on screen, and on
+  // Wayland a client only learns the pointer position from events delivered
+  // to its own surfaces — so this is the fairer test of whether pickRegion
+  // could route by cursor at the moment it actually needs to.
+  const samples = [];
+  const started = Date.now();
+  while (Date.now() - started < OVERLAY_MS) {
+    await new Promise((r) => setTimeout(r, 500));
+    try {
+      const p = screen.getCursorScreenPoint();
+      samples.push(`${p.x},${p.y}`);
+    } catch {
+      samples.push("threw");
+    }
+  }
+  win.hide();
+  win.destroy();
+
+  const unique = [...new Set(samples)];
+  say("");
+  say(`  getCursorScreenPoint() while the overlay was up: ${unique.join("  ")}`);
+  if (unique.length === 1 && unique[0] === "0,0") {
+    say("  ^ never moved off 0,0. The global pointer is genuinely unavailable,");
+    say("    so pickRegion() cannot route by cursor and the selector's opening");
+    say("    crosshair lands in the top-left regardless of where the mouse is.");
+  } else if (unique.length > 1) {
+    say("  ^ it tracks. Move the mouse during this step to confirm it follows.");
   }
 }
 
@@ -342,10 +497,15 @@ app.whenReady().then(async () => {
   if (DO_CAPTURE) {
     const requestedOut = value("out", null);
     outDir = requestedOut ?? (await mkdtemp(join(tmpdir(), "pwrsnap-probe-")));
-    await reportCapture(
+    const grabbed = await reportCapture(
       [target, ...displays.filter((d) => d.id !== target.id)],
       outDir
     );
+    if (DO_OVERLAY) await reportSelectorSimulation(target, grabbed);
+    else {
+      head("5. Selector simulation");
+      say("  skipped (--no-overlay)");
+    }
   } else {
     head("4. desktopCapturer screen sources");
     say("  skipped (--no-capture)");

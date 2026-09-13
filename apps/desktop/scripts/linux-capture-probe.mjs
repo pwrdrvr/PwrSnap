@@ -60,12 +60,13 @@
 //   --overlay-ms=<n>    how long to leave the overlay up (default 4000)
 //   --grabs=<n>         repeat the grab n times (default 1) to see whether
 //                       the portal re-prompts per call
+//   --no-fiducials      skip step 6 (which costs a SECOND portal prompt)
 //   --out=<dir>         where to write grabbed PNGs (default: a temp dir)
 
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { app, BrowserWindow, desktopCapturer, screen } from "electron";
+import { app, BrowserWindow, desktopCapturer, nativeImage, screen } from "electron";
 
 const argv = process.argv.slice(2);
 const flag = (name) => argv.includes(`--${name}`);
@@ -78,6 +79,7 @@ const DO_OVERLAY = !flag("no-overlay");
 const DO_CAPTURE = !flag("no-capture");
 const OVERLAY_MS = Number(value("overlay-ms", "4000"));
 const GRABS = Math.max(1, Number(value("grabs", "1")));
+const DO_FIDUCIALS = !flag("no-fiducials");
 
 const lines = [];
 function say(text = "") {
@@ -509,6 +511,263 @@ Doubled edges = misaligned. Read the shift off the 100px ruler.</div>
   }
 }
 
+
+// The measurement that needs no human eye: put a known pattern ON the screen,
+// grab it, and find the pattern inside the grab.
+//
+// Every other step compares a number main reported against a number main also
+// reported. This one closes the loop through the actual capture pipeline: the
+// overlay paints four corner fiducials at coordinates we chose, the portal
+// hands back a frame, and the frame says where those corners ended up. The
+// difference IS the screen-to-grab transform — translation and scale, per
+// axis, in pixels — with nothing inferred and nothing eyeballed.
+//
+// Fullscreen, because a bare overlay leaves gnome-shell's top bar and dock
+// painted OVER it: those would land on top of the fiducials and corrupt the
+// very corners being measured.
+const FIDUCIAL = 120;
+const FIDUCIALS = [
+  { key: "top-left", rgb: [255, 0, 0], name: "red" },
+  { key: "top-right", rgb: [0, 255, 0], name: "green" },
+  { key: "bottom-left", rgb: [0, 0, 255], name: "blue" },
+  { key: "bottom-right", rgb: [255, 255, 255], name: "white" }
+];
+const FIELD = [255, 0, 255]; // magenta everywhere else
+
+/** Electron documents toBitmap() as platform-dependent. Probe it with one
+ *  opaque red pixel, the same way `electronBitmapPixelFormat()` does in the
+ *  app, rather than assuming a channel order and misreading every colour. */
+function bitmapChannelOrder() {
+  const px = nativeImage.createFromDataURL(
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADUlEQVQImWP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=="
+  );
+  const b = px.toBitmap({ scaleFactor: 1 });
+  if (b.length < 4) return null;
+  if (b[0] > 0xf0 && b[1] < 0x10 && b[2] < 0x10) return "rgba";
+  if (b[2] > 0xf0 && b[0] < 0x10 && b[1] < 0x10) return "bgra";
+  return null;
+}
+
+async function reportGrabAlignment(display) {
+  head("6. Grab alignment — where the screen actually lands inside the frame");
+  const order = bitmapChannelOrder();
+  if (order === null) {
+    say("  skipped: could not determine this Electron's bitmap channel order.");
+    return;
+  }
+  say("  Painting four corner fiducials at known coordinates, then grabbing.");
+  say("  THE PORTAL WILL PROMPT A SECOND TIME — pick the same source as before.");
+  say("  The screen will be solid magenta with coloured corners for a moment.");
+
+  const win = new BrowserWindow({
+    x: display.bounds.x, y: display.bounds.y,
+    width: display.bounds.width, height: display.bounds.height,
+    show: false, frame: false, resizable: false, movable: false,
+    skipTaskbar: true, alwaysOnTop: true, hasShadow: false,
+    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false }
+  });
+  win.setAlwaysOnTop(true, "screen-saver");
+  const css = (c) => `rgb(${c[0]},${c[1]},${c[2]})`;
+  const corner = (f) => {
+    const pos = {
+      "top-left": "top:0;left:0", "top-right": "top:0;right:0",
+      "bottom-left": "bottom:0;left:0", "bottom-right": "bottom:0;right:0"
+    }[f.key];
+    return `<div style="position:fixed;${pos};width:${FIDUCIAL}px;height:${FIDUCIAL}px;background:${css(f.rgb)}"></div>`;
+  };
+  await win.loadURL(
+    `data:text/html;charset=utf-8,${encodeURIComponent(
+      `<!doctype html><meta charset="utf-8"><style>html,body{margin:0;height:100%;overflow:hidden;background:${css(FIELD)}}</style>` +
+        FIDUCIALS.map(corner).join("")
+    )}`
+  );
+  win.show();
+  // Cover gnome-shell's top bar and dock, which otherwise paint OVER a plain
+  // always-on-top window and land on the very corners being measured. macOS
+  // uses the same call the real selector does.
+  if (process.platform === "darwin") win.setSimpleFullScreen(true);
+  else win.setFullScreen(true);
+  // Wait for the compositor to have actually shown this, not just for the
+  // main-side call to return: a grab taken during the fullscreen transition
+  // photographs the screen as it was and finds no fiducial at all.
+  await win.webContents.executeJavaScript(
+    "new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(true))))"
+  );
+  await new Promise((r) => setTimeout(r, 1500));
+
+  let image = null;
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ["screen"],
+      thumbnailSize: {
+        width: Math.round(display.bounds.width * display.scaleFactor),
+        height: Math.round(display.bounds.height * display.scaleFactor)
+      }
+    });
+    const pick = sources.find((s) => s.display_id === String(display.id)) ?? sources[0];
+    if (pick !== undefined && !pick.thumbnail.isEmpty()) image = pick.thumbnail;
+  } catch (cause) {
+    say(`  grab THREW: ${cause instanceof Error ? cause.message : String(cause)}`);
+  }
+  win.hide();
+  win.destroy();
+  if (image === null) {
+    say("  skipped: no usable grab.");
+    return;
+  }
+
+  const { width: gw, height: gh } = image.getSize(1);
+  const buf = image.toBitmap({ scaleFactor: 1 });
+  if (buf.length !== gw * gh * 4) {
+    say(`  skipped: bitmap is ${buf.length} bytes, expected ${gw * gh * 4}.`);
+    return;
+  }
+  // Classify by NEAREST reference colour rather than by per-channel tolerance.
+  // A display colour profile shifts pure channels — a painted rgb(255,0,255)
+  // came back with green around 50 on the macOS control run — so an absolute
+  // threshold rejects every fiducial while the frame is plainly correct. The
+  // five references are maximally separated, so nearest-match is unambiguous
+  // and immune to that shift.
+  const REFS = [...FIDUCIALS.map((f) => ({ key: f.key, rgb: f.rgb })), { key: "field", rgb: FIELD }];
+  const CUTOFF_SQ = 140 * 140;
+  const boxes = new Map();
+  for (let y = 0; y < gh; y += 1) {
+    for (let x = 0; x < gw; x += 1) {
+      const o = (y * gw + x) * 4;
+      const r = order === "rgba" ? buf[o] : buf[o + 2];
+      const g = buf[o + 1];
+      const b = order === "rgba" ? buf[o + 2] : buf[o];
+      let key = null;
+      let best = CUTOFF_SQ;
+      for (const ref of REFS) {
+        const dr = r - ref.rgb[0];
+        const dg = g - ref.rgb[1];
+        const db = b - ref.rgb[2];
+        const d = dr * dr + dg * dg + db * db;
+        if (d < best) { best = d; key = ref.key; }
+      }
+      if (key === null) continue;
+      let cur = boxes.get(key);
+      if (cur === undefined) {
+        // Per-axis histograms rather than a running min/max. A raw bbox is
+        // decided by its two most extreme pixels, so a single stray match
+        // anywhere in the frame — an antialiased edge, the composited mouse
+        // cursor — stretches it across the whole image and destroys the
+        // measurement. Histograms let the span be trimmed by mass instead.
+        cur = { xs: new Int32Array(gw), ys: new Int32Array(gh), n: 0 };
+        boxes.set(key, cur);
+      }
+      cur.xs[x] += 1;
+      cur.ys[y] += 1;
+      cur.n += 1;
+    }
+  }
+  /**
+   * Smallest span holding all but `drop` of the mass, walked in from both ends.
+   *
+   * `drop` must stay far below the share of the mass in one row or column of a
+   * real fiducial, or trimming becomes a systematic inset: a 240x240 block has
+   * 240 pixels per column, so a 1% budget over 57,600 pixels eats two whole
+   * columns and every corner reads +2. At 0.2% the budget is smaller than one
+   * real column but still far above an isolated stray.
+   */
+  const span = (counts, n, drop = 0.002) => {
+    const budget = Math.floor(n * drop);
+    let lo = 0;
+    let hi = counts.length - 1;
+    let spent = 0;
+    while (lo < hi && spent + counts[lo] <= budget) { spent += counts[lo]; lo += 1; }
+    spent = 0;
+    while (hi > lo && spent + counts[hi] <= budget) { spent += counts[hi]; hi -= 1; }
+    return [lo, hi];
+  };
+  for (const [, v] of boxes) {
+    const [x0, x1] = span(v.xs, v.n);
+    const [y0, y1] = span(v.ys, v.n);
+    v.x0 = x0; v.x1 = x1; v.y0 = y0; v.y1 = y1;
+  }
+
+  say("");
+  say(`  grab ${gw}x${gh}, channel order ${order}, screen ${display.bounds.width}x${display.bounds.height} @${num(display.scaleFactor)}`);
+  const field = boxes.get("field");
+  if (field === undefined) {
+    say("  The magenta field is NOT in the grab at all.");
+    say("");
+    // Say what WAS there. "Not found" alone cannot distinguish a grab of the
+    // wrong source from a grab taken before the overlay painted.
+    const tally = new Map();
+    for (let i = 0; i < buf.length; i += 4 * 97) {
+      const r = order === "rgba" ? buf[i] : buf[i + 2];
+      const g = buf[i + 1];
+      const b = order === "rgba" ? buf[i + 2] : buf[i];
+      const key = `${r >> 5},${g >> 5},${b >> 5}`;
+      tally.set(key, (tally.get(key) ?? 0) + 1);
+    }
+    const top = [...tally.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+    const sampled = [...tally.values()].reduce((a, b) => a + b, 0);
+    say("  Most common colours in the frame (8-level buckets, % of samples):");
+    for (const [key, n] of top) {
+      const [r, g, b] = key.split(",").map((v) => Number(v) * 32);
+      say(`    rgb(~${r},~${g},~${b})  ${num((n / sampled) * 100)}%`);
+    }
+    say("");
+    say("  Mostly magenta-ish (~224,0,~224) would mean the overlay painted but");
+    say("  the corner match is too strict. Anything else means the frame is not");
+    say("  showing our overlay: either the grab beat it onto the screen, or the");
+    say("  portal handed back a source that is not this display.");
+    return;
+  }
+  say(`  magenta field spans ${field.x0},${field.y0} .. ${field.x1},${field.y1}`);
+  say("");
+  say("  fiducial      drawn at (screen px)     found at (grab px)      delta");
+  const sx = gw / display.bounds.width;
+  const sy = gh / display.bounds.height;
+  const deltas = [];
+  for (const f of FIDUCIALS) {
+    const drawnX = f.key.endsWith("left") ? 0 : display.bounds.width - FIDUCIAL;
+    const drawnY = f.key.startsWith("top") ? 0 : display.bounds.height - FIDUCIAL;
+    const expX = Math.round(drawnX * sx);
+    const expY = Math.round(drawnY * sy);
+    const got = boxes.get(f.key);
+    if (got === undefined) {
+      say(`  ${f.key.padEnd(13)} ${String(drawnX + "," + drawnY).padEnd(23)} NOT FOUND (${f.name})`);
+      continue;
+    }
+    const dx = got.x0 - expX;
+    const dy = got.y0 - expY;
+    deltas.push({ key: f.key, dx, dy, w: got.x1 - got.x0 + 1, h: got.y1 - got.y0 + 1 });
+    say(
+      `  ${f.key.padEnd(13)} ${String(drawnX + "," + drawnY).padEnd(23)} ` +
+        `${String(got.x0 + "," + got.y0).padEnd(23)} ${dx >= 0 ? "+" : ""}${dx},${dy >= 0 ? "+" : ""}${dy}`
+    );
+  }
+  if (deltas.length === 0) {
+    say("");
+    say("  No fiducial was found. The grab is not showing our overlay.");
+    return;
+  }
+  const same =
+    deltas.every((d) => d.dx === deltas[0].dx) && deltas.every((d) => d.dy === deltas[0].dy);
+  say("");
+  if (same && deltas[0].dx === 0 && deltas[0].dy === 0) {
+    say("  VERDICT: the grab is EXACTLY this screen. Pixel (0,0) of the frame is");
+    say("           pixel (0,0) of the display, at 1:1. The misalignment is not");
+    say("           in the grab — look at what the selector does with it.");
+  } else if (same) {
+    say(`  VERDICT: the grab is TRANSLATED by ${deltas[0].dx},${deltas[0].dy} grab px and not scaled.`);
+    say("           Every corner moved by the same amount, so the frame covers a");
+    say("           region offset from the display origin. Painting it at the");
+    say("           overlay's origin shifts every pixel by exactly this much —");
+    say("           which is the reported duplication, measured.");
+  } else {
+    say("  VERDICT: the corners moved by DIFFERENT amounts — the frame is scaled");
+    say("           or cropped, not merely offset:");
+    for (const d of deltas) {
+      say(`           ${d.key.padEnd(13)} delta ${d.dx},${d.dy}  size ${d.w}x${d.h} (drawn ${Math.round(FIDUCIAL * sx)}x${Math.round(FIDUCIAL * sy)})`);
+    }
+  }
+}
+
 app.whenReady().then(async () => {
   say("PwrSnap Linux capture probe");
   say(`run at ${new Date().toISOString()}`);
@@ -567,8 +826,14 @@ app.whenReady().then(async () => {
       [target, ...displays.filter((d) => d.id !== target.id)],
       outDir
     );
-    if (DO_OVERLAY) await reportSelectorSimulation(target, grabbed);
-    else {
+    if (DO_OVERLAY) {
+      await reportSelectorSimulation(target, grabbed);
+      if (DO_FIDUCIALS) await reportGrabAlignment(target);
+      else {
+        head("6. Grab alignment");
+        say("  skipped (--no-fiducials)");
+      }
+    } else {
       head("5. Selector simulation");
       say("  skipped (--no-overlay)");
     }

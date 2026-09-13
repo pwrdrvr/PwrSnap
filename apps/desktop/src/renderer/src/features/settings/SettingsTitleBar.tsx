@@ -6,6 +6,7 @@
 
 import type { ReactElement } from "react";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
+import { WindowControls } from "../shared/WindowControls";
 
 type SettingsTitleBarProps = {
   here: string;
@@ -23,6 +24,9 @@ export function SettingsTitleBar({ here }: SettingsTitleBarProps): ReactElement 
       <span className="pss__title-crumb">
         Settings <span className="sep">›</span> <span className="here">{here}</span>
       </span>
+      {/* Linux: a frameless window gets neither traffic lights nor a
+          `titleBarOverlay` — nobody draws min/max/close but us. */}
+      {window.pwrsnapApi?.platform === "linux" ? <WindowControls /> : null}
     </header>
   );
 }

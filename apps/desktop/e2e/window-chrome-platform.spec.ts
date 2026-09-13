@@ -77,10 +77,11 @@ test("the library top bar reserves traffic-light room on macOS only", async () =
   }
 });
 
-test("secondary windows follow the same rule", async () => {
-  // A second stylesheet: `.pss__titlebar` lives in settings.css, not
-  // library.css, and each of the four chrome bars carries its own copy of the
-  // reservation rules.
+test("secondary windows follow the same rule, and Linux paints its own chrome", async () => {
+  // One launch covers two things: a second stylesheet (`.pss__titlebar` lives
+  // in settings.css, not library.css) and the rest of the Linux chrome, which
+  // needs a second window to show that the posture is per-window and not a
+  // property of the Library alone.
   const app = await launchPwrSnap();
   try {
     const opened = await app.dispatch("settings:open", {});
@@ -99,6 +100,98 @@ test("secondary windows follow the same rule", async () => {
 
     expectPlatformInset(await measureBar(settings, ".pss__titlebar"), ".pss__titlebar");
 
+    // Linux is frameless: `titleBarStyle: "hidden"` is `frame: false` there, so
+    // the OS draws no title bar, no caption buttons, and — because
+    // `RootView::SetMenu` returns early on `!has_frame()` — no menu bar. Every
+    // one of those is now ours to paint, and nothing but this job runs on the
+    // platform where that is true.
+    if (process.platform === "linux") {
+      const nativeMenuBars = await app.electronApp.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows()
+          .filter((win) => !win.isDestroyed())
+          .map((win) => ({ url: win.webContents.getURL(), visible: win.isMenuBarVisible() }))
+      );
+      for (const win of nativeMenuBars) {
+        expect(win.visible, `native menu bar on ${win.url}`).toBe(false);
+      }
+
+      // The Library paints the menu the native bar would have carried. Settings
+      // does not, exactly as on Windows — `menu: "hidden"`.
+      await app.window.waitForSelector(".psl__menubar", { timeout: 15_000 });
+      expect(await settings.locator(".psl__menubar").count()).toBe(0);
+
+      // The hairline that stands in for the border a frameless window is given
+      // none of. Stamped before the first paint, on every window kind.
+      for (const [page, label] of [
+        [app.window, "library"],
+        [settings, "settings"]
+      ] as const) {
+        expect(
+          await page.evaluate(() => document.documentElement.dataset["windowFrame"]),
+          label
+        ).toBe("restored");
+      }
+
+      // The caption buttons, end to end — in the two halves that are OURS.
+      //
+      // Not asserted here: that `maximize()` maximizes. Maximizing is a window
+      // manager operation (`_NET_WM_STATE_MAXIMIZED`), and this job runs under
+      // bare `xvfb` with no WM at all, so the call lands nowhere and
+      // `isMaximized()` stays false forever. An earlier draft polled on it and
+      // timed out after 10s against a perfectly working build. What the WM
+      // does with the request is the platform's business; what has to be right
+      // is the wire on either side of it.
+
+      // Half one — main's push reaches the glyph. `trackWindowFrameState`
+      // reads `isMaximized()` when the event fires, so the stub is what a
+      // working WM would have made true by then.
+      const emitFrameEvent = async (event: "maximize" | "unmaximize", maximized: boolean) =>
+        app.electronApp.evaluate(
+          ({ BrowserWindow }, { name, value, urlPart }) => {
+            const win = BrowserWindow.getAllWindows().find(
+              (candidate) =>
+                !candidate.isDestroyed() &&
+                candidate.webContents.getURL().includes(urlPart) &&
+                !candidate.webContents.getURL().includes("stage=")
+            );
+            if (win === undefined) throw new Error("library BrowserWindow missing");
+            win.isMaximized = () => value;
+            win.emit(name);
+          },
+          { name: event, value: maximized, urlPart: "/renderer/index.html" }
+        );
+
+      await emitFrameEvent("maximize", true);
+      await expect(app.window.getByRole("button", { name: "Restore" })).toBeVisible();
+      // ...and the hairline stands down: a maximized window has no edge left.
+      await expect
+        .poll(() => app.window.evaluate(() => document.documentElement.dataset["windowFrame"]), {
+          timeout: 10_000
+        })
+        .toBe("maximized");
+
+      await emitFrameEvent("unmaximize", false);
+      await expect(app.window.getByRole("button", { name: "Maximize" })).toBeVisible();
+      await expect
+        .poll(() => app.window.evaluate(() => document.documentElement.dataset["windowFrame"]), {
+          timeout: 10_000
+        })
+        .toBe("restored");
+
+      // Half two — a painted button's click reaches the real BrowserWindow.
+      // Close is the one control that needs no WM, and the one worth being
+      // surest of: on Linux it is the only way to close the window from
+      // inside the app.
+      const settingsWindowCount = async (): Promise<number> =>
+        app.electronApp.evaluate(({ BrowserWindow }) =>
+          BrowserWindow.getAllWindows().filter(
+            (win) => !win.isDestroyed() && win.webContents.getURL().includes("stage=settings")
+          ).length
+        );
+      expect(await settingsWindowCount()).toBe(1);
+      await settings.getByRole("button", { name: "Close" }).click();
+      await expect.poll(settingsWindowCount, { timeout: 10_000 }).toBe(0);
+    }
   } finally {
     await app.close();
   }

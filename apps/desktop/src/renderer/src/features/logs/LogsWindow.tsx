@@ -12,6 +12,7 @@ import { EVENT_CHANNELS, type AppLogEntry, type AppLogSnapshot } from "@pwrsnap/
 import { dispatch, subscribe } from "../../lib/pwrsnap";
 import { useCopyText } from "../../lib/useCopyText";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
+import { WindowControls } from "../shared/WindowControls";
 
 const MAX_RENDERED_LOG_ENTRIES = 5000;
 const BOTTOM_THRESHOLD_PX = 32;
@@ -198,6 +199,9 @@ export function LogsWindow(): ReactElement {
         <div className="ps-doc__crumb">
           <span>Help</span><span aria-hidden="true">/</span><b>Logs</b>
         </div>
+        {/* Linux: a frameless window gets neither traffic lights nor a
+            `titleBarOverlay` — nobody draws min/max/close but us. */}
+        {window.pwrsnapApi?.platform === "linux" ? <WindowControls /> : null}
       </header>
       <main className="log-window__content">
         <div className="log-window__toolbar" aria-label="Log controls">

@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactElement } from "react";
 import type { AppDocument, AppDocumentKind } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
+import { WindowControls } from "../shared/WindowControls";
 
 type Props = {
   kind: AppDocumentKind | null;
@@ -47,6 +48,9 @@ export function AppDocumentWindow({ kind }: Props): ReactElement {
           <span aria-hidden="true">/</span>
           <b>{document?.title ?? title}</b>
         </div>
+        {/* Linux: a frameless window gets neither traffic lights nor a
+            `titleBarOverlay` — nobody draws min/max/close but us. */}
+        {window.pwrsnapApi?.platform === "linux" ? <WindowControls /> : null}
       </header>
       <main className="ps-doc__main">
         {error !== null ? (

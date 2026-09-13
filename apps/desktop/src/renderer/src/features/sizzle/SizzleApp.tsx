@@ -39,6 +39,7 @@ import { isTypingTarget } from "./sizzle-helpers";
 import { isPrimaryAccel } from "../shared/keyboard";
 import { useSizzleProject } from "./useSizzleProject";
 import "./sizzle.css";
+import { WindowControls } from "../shared/WindowControls";
 
 // Re-exported for the tests that pin these helpers at this module path.
 export {
@@ -278,6 +279,9 @@ export function SizzleApp({
             </button>
           </>
         ) : null}
+        {/* Linux: a frameless window gets neither traffic lights nor a
+            `titleBarOverlay` — nobody draws min/max/close but us. */}
+        {window.pwrsnapApi?.platform === "linux" ? <WindowControls /> : null}
       </header>
       {loadError !== null || actionFailure !== null || backgroundSaveFailure !== undefined ? (
         <div className="szl__failure-stack">

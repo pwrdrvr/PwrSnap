@@ -1,3 +1,21 @@
+/* Linux-only chrome strip for a window that has no title bar.
+   Frameless on Linux means no OS drag region and no OS caption buttons, and
+   this window paints neither of its own — see the note in App.tsx. Fixed
+   across the top 52px, which is exactly the padding `.local-agent-consent`
+   already reserves, so it displaces nothing. */
+.ps-consent-chrome {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 16px;
+  -webkit-app-region: drag;
+}
+
 body[data-stage="local-agent-consent"] {
   overflow: auto;
 }

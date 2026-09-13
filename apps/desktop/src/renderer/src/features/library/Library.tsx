@@ -124,6 +124,7 @@ import { useCapturesLocationDisplayState } from "../../lib/useCapturesLocationDi
 import { useHotkeys } from "../shared/useHotkeys";
 import { useVideoTrimRange } from "../shared/useVideoTrimRange";
 import { AppMenuBar } from "../shared/AppMenuBar";
+import { WindowControls } from "../shared/WindowControls";
 import { LayoutToggleButtons } from "../shared/LayoutToggleButtons";
 import "../shared/LayoutToggleButtons.css";
 import {
@@ -4060,9 +4061,12 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
             </span>
             <PwrSnapWordmark />
           </div>
-          {/* Windows: custom title-bar menu bar (the native one is gone under
-              titleBarStyle:"hidden"). No-op on macOS/Linux. */}
-          {window.pwrsnapApi?.platform === "win32" ? <AppMenuBar /> : null}
+          {/* Windows and Linux: custom title-bar menu bar. Both hide the
+              native title bar (`titleBarStyle: "hidden"`), and with it the
+              menu — Windows because the menu lived in that bar, Linux because
+              a frameless window never builds one (`RootView::SetMenu` returns
+              early on `!has_frame()`). macOS keeps the system menu bar. */}
+          {window.pwrsnapApi?.platform !== "darwin" ? <AppMenuBar /> : null}
           <div className="psl__history" aria-label="Navigation history">
             <button
               type="button"
@@ -4314,6 +4318,10 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                 : "Quick Capture"}
             </span>
           </button>
+          {/* Linux: a frameless window gets neither traffic lights nor a
+              `titleBarOverlay`, so nobody draws min/max/close but us. Last in
+              the right cluster, which is GNOME's side. */}
+          {window.pwrsnapApi?.platform === "linux" ? <WindowControls /> : null}
         </div>
       </header>
 
@@ -5477,15 +5485,32 @@ const TOOLBAR_TIER_RANK: Readonly<Record<ToolbarTier, number>> = {
 };
 
 const TOOLBAR_BREAKPOINTS = [1024, 960, 840, 720, 640, 560] as const;
-const WINDOWS_MENU_BAR_RESPONSIVE_RESERVE_PX = 300;
+/** Width the in-toolbar menu bar spends before any control gets a pixel.
+ *  Charged on every platform that paints `AppMenuBar` — see
+ *  `menuBarIsInToolbar`. */
+const IN_TOOLBAR_MENU_BAR_RESERVE_PX = 300;
+
+/**
+ * Does this platform render File / Edit / View / Window / Library / Help
+ * INSIDE the Library toolbar?
+ *
+ * True wherever the native title bar is hidden and takes the menu bar with it:
+ * Windows (the menu lived in that bar) and Linux (a frameless window never
+ * builds one). macOS keeps the system menu bar, so its toolbar is all its own.
+ * Keep in step with the `AppMenuBar` mount condition in the header below —
+ * a platform that paints the bar without charging for it picks a tier too wide
+ * and crowds every control, which is what Linux did the day it grew one.
+ */
+function menuBarIsInToolbar(platform: string | undefined): boolean {
+  return platform === "win32" || platform === "linux";
+}
 
 function toolbarTierForWidth(width: number, platform: string | undefined): ToolbarTier {
-  // Unlike macOS, Windows renders File / Edit / View / Window / Library / Help
-  // inside the Library toolbar. Treat that fixed menu as already-spent width;
-  // otherwise a 1218px VM viewport selects the wide tier even though the
-  // controls have only about 918px available and visibly crowd one another.
+  // Treat that fixed menu as already-spent width; otherwise a 1218px VM
+  // viewport selects the wide tier even though the controls have only about
+  // 918px available and visibly crowd one another.
   const availableWidth =
-    width - (platform === "win32" ? WINDOWS_MENU_BAR_RESPONSIVE_RESERVE_PX : 0);
+    width - (menuBarIsInToolbar(platform) ? IN_TOOLBAR_MENU_BAR_RESERVE_PX : 0);
   if (availableWidth <= 560) return "tiny";
   if (availableWidth <= 640) return "minimal";
   if (availableWidth <= 720) return "small";
@@ -5510,8 +5535,7 @@ function useToolbarTier(): ToolbarTier {
       return;
     }
     const platform = window.pwrsnapApi?.platform;
-    const responsiveReserve =
-      platform === "win32" ? WINDOWS_MENU_BAR_RESPONSIVE_RESERVE_PX : 0;
+    const responsiveReserve = menuBarIsInToolbar(platform) ? IN_TOOLBAR_MENU_BAR_RESERVE_PX : 0;
     const queries = TOOLBAR_BREAKPOINTS.map((width) =>
       window.matchMedia(`(max-width: ${width + responsiveReserve}px)`)
     );

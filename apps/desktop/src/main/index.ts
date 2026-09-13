@@ -268,6 +268,10 @@ import { installContentTraceHook } from "./diagnostics/content-trace-recorder";
 import { installLaunchAtLoginSync, wasLaunchedAtLogin } from "./launch-at-login";
 import { wireAppMenuBridge } from "./app-menu-bridge";
 import {
+  trackWindowFrameState,
+  wireWindowControlsBridge
+} from "./window-controls-bridge";
+import {
   enableOpenFileForwardingToPrimary,
   forwardQueuedOpenFilesToPrimary,
   handleSecondInstanceArgv,
@@ -1820,11 +1824,27 @@ export function bootstrapApp(): void {
     } else {
       installApplicationMenu();
     }
-    // Windows custom title-bar menu bar: lets the renderer pop the real native
-    // submenus (the native menu bar is gone under titleBarStyle:"hidden").
-    // No-op surface off Windows — the renderer only mounts the bar on win32.
+    // Custom title-bar menu bar: lets the renderer pop the real native
+    // submenus. Both platforms that hide the native title bar need it —
+    // Windows because the menu lived in the bar `titleBarStyle: "hidden"`
+    // removed, Linux because a frameless window never builds a menu bar at
+    // all. No-op surface on macOS, which keeps the system menu bar and where
+    // the renderer mounts no bar of its own.
     if (role !== "agent") {
       wireAppMenuBridge();
+      // The other half of a renderer-painted Linux strip: minimize / maximize
+      // / close, which no OS API provides for a frameless window there.
+      // Registered on every platform (the channels are inert where nothing
+      // calls them) so the wiring has one story, not three.
+      wireWindowControlsBridge();
+      // Every window, whoever opens it — including any added later. The
+      // renderer draws two things from the maximize state on Linux (the
+      // caption glyph and the hairline standing in for the border a frameless
+      // window is not given), and the window manager changes it behind our
+      // back.
+      app.on("browser-window-created", (_event, window) => {
+        trackWindowFrameState(window);
+      });
     }
     // Issue #139 — wire the menu refresh + renderer broadcast to OUR
     // clipboard writes. menu-will-show alone was insufficient on macOS;

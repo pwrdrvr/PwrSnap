@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   findForbiddenAsarEntries,
+  findPackagedHtmlIssues,
   findForeignSharpAsarPackages,
   findForeignUnpackedNative,
   findMissingPackagedResources,
@@ -13,6 +14,7 @@ import {
   sharpEsmRuntimePaths,
   verifyAsarListing,
   verifyPackagedResources,
+  verifyPackagedHtml,
   verifySharpAsarRuntime,
   verifyUnpackedNative,
 } from "./verify-asar-contents.mjs";
@@ -431,5 +433,72 @@ describe("Apple Silicon unpacked runtime", () => {
     expect(findForeignUnpackedNative(appPath, "darwin", "arm64")).toEqual(["sharp-darwin-x64", "sharp-libvips-darwin-x64"]);
     expect(() => verifyUnpackedNative(appPath, "darwin", "arm64")).toThrow(/foreign Sharp/);
     expect(findForeignSharpAsarPackages(["/node_modules/@img/sharp-darwin-x64/package.json"], "darwin", "arm64")).toEqual(["sharp-darwin-x64"]);
+  });
+});
+
+describe("packaged renderer HTML", () => {
+  const cleanReader = (entry) => {
+    if (entry === "/out/renderer/index.html") {
+      return '<!doctype html><html><head><script type="module" crossorigin src="./assets/index.js"></script></head></html>';
+    }
+    throw new Error(`unexpected read of ${entry}`);
+  };
+
+  test("passes a clean bundle", () => {
+    const listing = ["/out/renderer/index.html", "/out/main/index.js"];
+    expect(findPackagedHtmlIssues(listing, cleanReader)).toEqual({
+      remoteScripts: [],
+      unreadable: []
+    });
+    expect(() => verifyPackagedHtml(listing, cleanReader)).not.toThrow();
+  });
+
+  test("fails a bundle carrying the React DevTools bridge", () => {
+    const reader = () =>
+      '<!doctype html><html><head><script src="http://localhost:8097"></script></head></html>';
+    expect(() => verifyPackagedHtml(["/out/renderer/index.html"], reader)).toThrow(
+      /1 packaged HTML file\(s\) load a remote script/
+    );
+    // The remediation has to name the variable, or an operator reading CI has
+    // no way to connect the failure to the build they made.
+    expect(() => verifyPackagedHtml(["/out/renderer/index.html"], reader)).toThrow(
+      /PWRSNAP_REACT_DEVTOOLS/
+    );
+  });
+
+  test("fails closed when an HTML entry cannot be read", () => {
+    // The whole job of this gate is to stop something shipping, so "could not
+    // look" has to be as loud as "looked and found it".
+    const reader = () => {
+      throw new Error("Expected to find file at: /out/renderer/index.html but found a directory or link");
+    };
+    expect(() => verifyPackagedHtml(["/out/renderer/index.html"], reader)).toThrow(
+      /could not be read/
+    );
+  });
+
+  test("ignores dependency HTML the app never loads", () => {
+    // An unscoped scan would read a vendored playground page and fail the
+    // release with a message about a flag that has nothing to do with it.
+    const listing = ["/node_modules/some-dep/demo/playground.html"];
+    const reader = () => {
+      throw new Error("should not be read");
+    };
+    expect(findPackagedHtmlIssues(listing, reader)).toEqual({
+      remoteScripts: [],
+      unreadable: []
+    });
+  });
+
+  test("normalizes a Windows-built listing before matching", () => {
+    // `listPackage` joins with `path.sep`, so a Windows run yields
+    // backslashes and `isRendererHtmlEntry`'s `^/out/` would miss the file.
+    const reader = () => '<script src="http://localhost:8097"></script>';
+    const { remoteScripts } = findPackagedHtmlIssues(
+      ["\\out\\renderer\\index.html"],
+      reader
+    );
+    expect(remoteScripts).toHaveLength(1);
+    expect(remoteScripts[0].entry).toBe("/out/renderer/index.html");
   });
 });

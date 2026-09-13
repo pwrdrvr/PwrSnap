@@ -98,6 +98,7 @@ jobs:
             apps/desktop/scripts/macos-release-artifacts.mjs \
             apps/desktop/scripts/rebuild-native-for-electron.mjs \
             apps/desktop/scripts/sharp-platform-packages.mjs \
+            apps/desktop/scripts/packaged-html-rules.mjs \
             apps/desktop/scripts/verify-asar-contents.mjs \
             apps/desktop/node_modules \
             node_modules

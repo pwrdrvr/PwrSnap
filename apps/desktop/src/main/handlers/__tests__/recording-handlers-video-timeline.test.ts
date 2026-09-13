@@ -12,12 +12,52 @@
 //
 // ffmpeg, better-sqlite3, and the recorder are all mocked.
 
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { tmpdir } from "node:os";
+// Aliased because a `vi.mock` factory references it, and those are hoisted
+// above the imports — the alias keeps the two uses visibly distinct.
+import { join, join as joinPath } from "node:path";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import type { CaptureRecord, VideoRange } from "@pwrsnap/shared";
 
 const mocks = vi.hoisted(() => ({
   capture: null as CaptureRecord | null,
+  /**
+   * Cache root the mocked `videoAssetDir` answers from — a FRESH temp
+   * directory per test (see `beforeEach`).
+   *
+   * This file used to point every path at the fixed, absolute
+   * `/tmp/pwrsnap-test-cache`, and that is what made the sweep specs flaky
+   * under load. Two things wipe that directory out from under a running
+   * test:
+   *
+   *   • a SECOND `pnpm test` on the same machine — a second worktree, a
+   *     second agent session, another shard on the same runner. Its
+   *     `beforeEach` `rm -rf` lands between this run's `seed()` and its
+   *     assertion, the handler's `mkdir` puts the (empty) directory back,
+   *     and `present()` reports `[]` — bystanders the test itself wrote
+   *     included;
+   *   • this very run, when a test body exceeds the 5s default timeout.
+   *     Vitest abandons the body but does NOT cancel it, then runs the next
+   *     test's hooks — so a shared-path `rm -rf` from test N+1 could race
+   *     the abandoned continuation of test N.
+   *
+   * A private directory per test closes both: no other process can guess
+   * it, and no sibling test shares it. It also keeps the derived-cache
+   * gate's module-global in-flight map from coalescing two tests onto one
+   * entry, since that map is keyed by the output path.
+   */
+  cacheRoot: "",
+  /** `cacheRoot` before the first `beforeEach`, so a caller that reaches for a
+   *  path during module import fails here instead of being handed `/userdata`
+   *  — a directory at the ROOT of the filesystem, which a container running as
+   *  root would happily create. */
+  requireCacheRoot(): string {
+    if (mocks.cacheRoot === "") {
+      throw new Error("mocks.cacheRoot read before beforeEach assigned a per-test temp root");
+    }
+    return mocks.cacheRoot;
+  },
   setDefaultRange: vi.fn((_: string, range: VideoRange) => range),
   broadcast: vi.fn(),
   ensureVideoFrames: vi.fn(),
@@ -36,7 +76,7 @@ vi.mock("electron", (): Partial<typeof import("electron")> => ({
     getAllWindows: () => []
   } as unknown as typeof import("electron").BrowserWindow,
   app: {
-    getPath: () => "/tmp/pwrsnap-test-userdata"
+    getPath: () => `${mocks.requireCacheRoot()}/userdata`
   } as unknown as typeof import("electron").app
 }));
 
@@ -61,7 +101,7 @@ vi.mock("../../events", () => ({
 
 vi.mock("../../recording/video-frames", () => ({
   ensureVideoFrames: mocks.ensureVideoFrames,
-  videoAssetDir: (id: string) => `/tmp/pwrsnap-test-cache/video/${id}`
+  videoAssetDir: (id: string) => joinPath(mocks.requireCacheRoot(), "video", id)
 }));
 
 vi.mock("../../sizzle/audio-extract", () => ({
@@ -95,6 +135,7 @@ vi.mock("../../render/file-alias", () => ({
 }));
 
 const { bus } = await import("../../command-bus");
+const { resetDerivedCacheGateForTests } = await import("../../persistence/derived-cache-gate");
 const { registerRecordingHandlers } = await import("../recording-handlers");
 
 registerRecordingHandlers();
@@ -145,6 +186,31 @@ function videoCapture(overrides: Partial<NonNullable<CaptureRecord["video"]>> = 
   } as CaptureRecord;
 }
 
+/** Per-run root, removed wholesale in `afterAll`. */
+let runRoot = "";
+/** Every root handed out, so the guard spec below can prove they differ. */
+const handedOut: string[] = [];
+
+/**
+ * The capture's asset directory for the CURRENTLY running test.
+ *
+ * Resolve it ONCE, at the top of the test, and pass the result around. The
+ * root moves in `beforeEach`, so a helper that calls this again later reads
+ * whichever test is running THEN — which for a body vitest abandoned at its
+ * 5s timeout is somebody else's fixture.
+ */
+function videoDir(): string {
+  return joinPath(mocks.requireCacheRoot(), "video", "vid_Timeline1");
+}
+
+beforeAll(async () => {
+  runRoot = await mkdtemp(join(tmpdir(), "pwrsnap-video-timeline-"));
+});
+
+afterAll(async () => {
+  await rm(runRoot, { recursive: true, force: true });
+});
+
 beforeEach(async () => {
   mocks.capture = videoCapture();
   mocks.setDefaultRange.mockClear();
@@ -152,7 +218,15 @@ beforeEach(async () => {
   mocks.ensureVideoFrames.mockReset();
   mocks.extractVideoAudio.mockReset();
   mocks.prepareVideoPlayback.mockReset();
-  await rm("/tmp/pwrsnap-test-cache/video/vid_Timeline1", { recursive: true, force: true });
+  // A fresh directory rather than emptying a shared one: nothing to race.
+  // It also moves the gate's in-flight key, which is the output path — so no
+  // leaked entry from an earlier test can be ADOPTED by this one.
+  mocks.cacheRoot = await mkdtemp(join(runRoot, "t-"));
+  handedOut.push(mocks.cacheRoot);
+  // Not redundant with the line above: that stops adoption, this drops the
+  // leaked entry itself along with its abort listener, so a write abandoned
+  // by a timed-out test cannot publish into a directory we still own.
+  resetDerivedCacheGateForTests();
 });
 
 // The prepared rendition is a FULL COPY of a recording, so the lane that
@@ -160,7 +234,6 @@ beforeEach(async () => {
 // deletion itself — the predicates are pinned in protocols-parse.test.ts,
 // but nothing there says this handler actually removes the right files.
 describe("video:playback rendition sweep", () => {
-  const DIR = "/tmp/pwrsnap-test-cache/video/vid_Timeline1";
   const CURRENT = `playback-mixed-audio-v2-${PLAYBACK_KEY}.mp4`;
   // Everything that must survive: the other lane's asset, an older spelling
   // of it, and the filmstrip.
@@ -169,12 +242,17 @@ describe("video:playback rendition sweep", () => {
   // unkeyed name #496 shipped.
   const STALE = ["playback-mixed-audio-v2.mp4", "playback-mixed-audio-v2-feedfacefeedfacefeedface.mp4"];
 
-  async function seed(): Promise<void> {
-    await mkdir(DIR, { recursive: true });
-    for (const name of [...BYSTANDERS, ...STALE]) await writeFile(`${DIR}/${name}`, "x");
+  async function seed(dir: string): Promise<void> {
+    await mkdir(dir, { recursive: true });
+    for (const name of [...BYSTANDERS, ...STALE]) await writeFile(joinPath(dir, name), "x");
   }
-  async function present(): Promise<string[]> {
-    return (await readdir(DIR).catch(() => [] as string[])).sort();
+  // Takes the directory rather than re-resolving it, and deliberately does NOT
+  // swallow a read failure. The old `.catch(() => [])` turned "the directory is
+  // gone" into a perfectly plausible empty listing, which is how a cross-run
+  // collision read as "the sweep took the bystanders with it" for as long as
+  // it did.
+  async function present(dir: string): Promise<string[]> {
+    return (await readdir(dir)).sort();
   }
   /** Both audible, so the predicate demands a rendition. */
   const dualAudio = {
@@ -185,8 +263,9 @@ describe("video:playback rendition sweep", () => {
   };
 
   test("keeps the rendition it just published and retires the older ones", async () => {
+    const dir = videoDir();
     mocks.capture = videoCapture(dualAudio);
-    await seed();
+    await seed(dir);
     mocks.prepareVideoPlayback.mockImplementation(async (target: string) => {
       await writeFile(target, "rendition");
       return target;
@@ -195,7 +274,7 @@ describe("video:playback rendition sweep", () => {
     const result = await bus.dispatch("video:playback", { captureId: "vid_Timeline1" }, { principal: "ipc" });
     expect(result).toMatchObject({ ok: true, value: { prepared: true } });
     expect((result as { value: { url: string } }).value.url).toContain(CURRENT);
-    expect(await present()).toEqual([...BYSTANDERS, CURRENT].sort());
+    expect(await present(dir)).toEqual([...BYSTANDERS, CURRENT].sort());
   });
 
   // The decline path: metadata claims two tracks, the file disagrees, so
@@ -203,26 +282,28 @@ describe("video:playback rendition sweep", () => {
   // a source-sized rendition that nothing would EVER collect — every later
   // call takes the same early return.
   test("retires every rendition when preparation declines and the original plays", async () => {
+    const dir = videoDir();
     mocks.capture = videoCapture(dualAudio);
-    await seed();
+    await seed(dir);
     mocks.prepareVideoPlayback.mockImplementation(
       async (_target: string, args: { videoPath: string }) => args.videoPath
     );
 
     const result = await bus.dispatch("video:playback", { captureId: "vid_Timeline1" }, { principal: "ipc" });
     expect(result).toMatchObject({ ok: true, value: { prepared: false } });
-    expect(await present()).toEqual([...BYSTANDERS].sort());
+    expect(await present(dir)).toEqual([...BYSTANDERS].sort());
   });
 
   test("a capture that needs no rendition sweeps nothing and never prepares", async () => {
     // Mic only: it already occupies the slot a player takes.
+    const dir = videoDir();
     mocks.capture = videoCapture({ hasMicrophoneAudio: true, requestedMicrophone: true });
-    await seed();
+    await seed(dir);
 
     const result = await bus.dispatch("video:playback", { captureId: "vid_Timeline1" }, { principal: "ipc" });
     expect(result).toMatchObject({ ok: true, value: { prepared: false } });
     expect(mocks.prepareVideoPlayback).not.toHaveBeenCalled();
-    expect(await present()).toEqual([...BYSTANDERS, ...STALE].sort());
+    expect(await present(dir)).toEqual([...BYSTANDERS, ...STALE].sort());
   });
 });
 
@@ -293,7 +374,7 @@ describe("video:setDefaultRange", () => {
 describe("video:frames", () => {
   test("returns a v/ cache URL plus the strip geometry from the extractor", async () => {
     mocks.ensureVideoFrames.mockResolvedValue({
-      path: "/tmp/pwrsnap-test-cache/video/vid_Timeline1/frames-n24-w96.jpg",
+      path: joinPath(videoDir(), "frames-n24-w96.jpg"),
       fileName: "frames-n24-w96.jpg",
       spec: { count: 24, frameWidth: 96, frameHeight: 54 }
     });
@@ -383,10 +464,10 @@ describe("video:audio", () => {
 
   test("replaces legacy single-track waveform audio with both recorded tracks", async () => {
     mocks.capture = videoCapture({ hasSystemAudio: true, hasMicrophoneAudio: true });
-    const dir = "/tmp/pwrsnap-test-cache/video/vid_Timeline1";
+    const dir = videoDir();
     await mkdir(dir, { recursive: true });
-    await writeFile(`${dir}/audio.m4a`, "old system-only audio");
-    const extracted = `${dir}/extracted.m4a`;
+    await writeFile(joinPath(dir, "audio.m4a"), "old system-only audio");
+    const extracted = joinPath(dir, "extracted.m4a");
     await writeFile(extracted, "mixed system and microphone");
     mocks.extractVideoAudio.mockResolvedValue(extracted);
     const result = await bus.dispatch("video:audio", { captureId: "vid_Timeline1" }, { principal: "ipc" });
@@ -398,7 +479,9 @@ describe("video:audio", () => {
       requestedSystemAudio: false, requestedMicrophone: false,
       startSec: 0, durationSec: 16
     }, expect.any(AbortSignal));
-    expect(await readFile(`${dir}/mixed-audio-v2.m4a`, "utf8")).toBe("mixed system and microphone");
+    expect(await readFile(joinPath(dir, "mixed-audio-v2.m4a"), "utf8")).toBe(
+      "mixed system and microphone"
+    );
     mocks.extractVideoAudio.mockClear();
     await bus.dispatch("video:audio", { captureId: "vid_Timeline1" }, { principal: "ipc" });
     expect(mocks.extractVideoAudio).not.toHaveBeenCalled();
@@ -406,7 +489,7 @@ describe("video:audio", () => {
 
   test("joins concurrent extraction requests for the same capture", async () => {
     mocks.capture = videoCapture({ hasSystemAudio: true });
-    const extracted = `/tmp/video-audio-${Date.now().toString(36)}.m4a`;
+    const extracted = joinPath(mocks.requireCacheRoot(), "video-audio.m4a");
     let finishExtraction: ((path: string) => void) | undefined;
     mocks.extractVideoAudio.mockImplementation(
       () =>
@@ -436,8 +519,6 @@ describe("video:audio", () => {
     expect(firstResult.ok).toBe(true);
     expect(secondResult.ok).toBe(true);
     expect(mocks.extractVideoAudio).toHaveBeenCalledTimes(1);
-    await rm(extracted, { force: true });
-    await rm("/tmp/pwrsnap-test-cache/video/vid_Timeline1", { recursive: true, force: true });
   });
 });
 
@@ -458,5 +539,24 @@ describe("video:presetMetrics honors the persisted range", () => {
     const fullMed = full.value.metrics.find((m) => m.format === "mp4" && m.preset === "med")!;
     const trimMed = trimmed.value.metrics.find((m) => m.format === "mp4" && m.preset === "med")!;
     expect(trimMed.byteSize).toBe(fullMed.byteSize / 2);
+  });
+});
+
+// Pins the isolation the specs above depend on. Reverting any path in this
+// file to a fixed absolute one — the shape it shipped with — fails here
+// rather than as an unreproducible `[]` in the sweep specs weeks later.
+describe("fixture isolation", () => {
+  test("each test gets a private cache root under the OS temp dir", () => {
+    // `mkdtemp` actually ran: a fixed absolute path fails the first two, and
+    // a root that IS `tmpdir()` (no unique segment) fails the third.
+    expect(runRoot.startsWith(tmpdir())).toBe(true);
+    expect(videoDir().startsWith(runRoot)).toBe(true);
+    expect(runRoot).not.toBe(tmpdir());
+    // Distinct per test, so a sibling's teardown cannot reach into this one —
+    // including the teardown of a test vitest abandoned at its 5s timeout.
+    // No lower bound on the count: under a `-t` filter this spec is the only
+    // one that runs, and a floor of 2 would fail on the very filter someone
+    // reaches for while debugging the isolation this pins.
+    expect(new Set(handedOut).size).toBe(handedOut.length);
   });
 });

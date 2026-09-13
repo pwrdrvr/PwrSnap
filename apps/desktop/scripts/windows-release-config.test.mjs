@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test } from "vitest";
+import { WINDOWS_ALIAS_NAMES } from "./windows-release-artifacts.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..", "..");
 
@@ -91,5 +92,81 @@ describe("Windows release configuration", () => {
     expect(workflow).not.toContain("WINDOWS_UNSIGNED_RELEASE");
     expect(workflow).not.toContain("WIN_CSC_LINK");
     expect(workflow).not.toContain("FFMPEG_BUILDS_PAT");
+  });
+
+  test("the signed Windows installer also publishes under a stable alias", () => {
+    const workflow = read(".github/workflows/release.yml");
+
+    // A download link should never have to name a version. macOS already has
+    // PwrSnap.dmg; this is the Windows half.
+    expect(workflow).toContain("Prepare stable-name Windows installer alias");
+
+    const protectedWindowsJob = workflow
+      .split("\n  windows-sign:\n")[1]
+      ?.split("\n  publish-release-assets:\n")[0];
+    expect(protectedWindowsJob, "the protected Windows job is missing").toBeDefined();
+
+    // The alias has to be born inside the protected job, after Authenticode
+    // verification and before the upload: anywhere earlier and it is an
+    // unsigned file wearing a trusted name.
+    const order = (needle) => protectedWindowsJob.indexOf(needle);
+    expect(order("Prepare stable-name Windows installer alias")).toBeGreaterThan(
+      order("Verify Authenticode signatures"),
+    );
+    expect(order("Prepare stable-name Windows installer alias")).toBeLessThan(
+      order("Upload Windows installer artifact"),
+    );
+
+    const aliasStep = protectedWindowsJob
+      .split("- name: Prepare stable-name Windows installer alias")[1]
+      .split("\n      - name:")[0];
+
+    // The naming rule and every refusal live in the script, where unit tests
+    // can reach them; the workflow only invokes it.
+    expect(aliasStep).toContain(
+      "node apps/desktop/scripts/windows-release-artifacts.mjs apps/desktop/release-stage",
+    );
+    // A copy, never a second trip through Azure signing.
+    expect(aliasStep).not.toContain("Invoke-TrustedSigning");
+    // The workflow spells the alias three times — this presence filter, the
+    // upload glob, and the publication guard — and the script spells it once.
+    // Bind them to WINDOWS_ALIAS_NAMES: a rename there must not be able to
+    // leave the workflow checking a stale name, which fails the release inside
+    // the protected Windows job after Azure signing has already run, or worse
+    // publishes with no alias at all and 404s the stable URL.
+    const aliasGlob = "PwrSnap.Setup*.exe";
+    const globPattern = new RegExp(`^${aliasGlob.replace(/[.]/g, "\\.").replace(/\*/g, ".*")}$`);
+    for (const name of Object.values(WINDOWS_ALIAS_NAMES)) {
+      expect(name, `the ${aliasGlob} glob must carry ${name}`).toMatch(globPattern);
+    }
+
+    // A script that no-ops still exits 0, so the step asserts the file landed.
+    expect(aliasStep).toContain(`Filter "${aliasGlob}"`);
+
+    // The alias must never reach updater metadata: electron-updater resolves
+    // latest.yml and the .blockmap by exact filename, so aiming either at a
+    // name that moves every release breaks updates and delta downloads.
+    const aliasScript = aliasStep
+      .split("\n")
+      .filter((line) => !/^\s*#/.test(line))
+      .join("\n");
+    expect(aliasScript).not.toContain("latest.yml");
+    expect(aliasScript).not.toContain("blockmap");
+
+    // PwrSnap.Setup.exe does not end in "-setup.exe", so it needs its own
+    // upload line. Anchor to end-of-line: a plain toContain of the installer
+    // glob is also satisfied by the ".blockmap" line below it.
+    expect(workflow).toMatch(/release-stage\/dist\/\*-setup\.exe\r?$/m);
+    expect(workflow).toMatch(
+      new RegExp(`release-stage/dist/${aliasGlob.replace(/[.*]/g, "\\$&")}\\r?$`, "m"),
+    );
+    expect(workflow).toContain(`windows-dist/${WINDOWS_ALIAS_NAMES.x64}`);
+
+    // The signing job has no checkout, so the script and everything it imports
+    // only exist there if the archive carries them — an omission that fails
+    // after Azure signing has already run.
+    const archive = read("scripts/release/archive-windows-signing-input.ps1");
+    expect(archive).toContain('"apps/desktop/scripts/windows-release-artifacts.mjs"');
+    expect(archive).toContain('"scripts/lib/cli-entrypoint.mjs"');
   });
 });

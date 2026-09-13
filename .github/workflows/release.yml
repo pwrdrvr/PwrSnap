@@ -549,13 +549,45 @@ jobs:
             }
           }
 
+      - name: Prepare stable-name Windows installer alias
+        # A byte-for-byte copy of the installer under a stable, version-free
+        # name, so a download link can point at
+        # releases/latest/download/PwrSnap.Setup.exe instead of the releases
+        # page — the Windows counterpart to PwrSnap.dmg. It must be cut here,
+        # from the installer that just passed Authenticode verification, and
+        # never from an unsigned intermediate. The versioned installer stays:
+        # latest.yml names it and electron-updater fetches it by that name.
+        #
+        # The naming rule, why the alias stays out of SHA256SUMS, and every
+        # refusal live in the script, next to the unit tests that pin them.
+        shell: pwsh
+        run: |
+          node apps/desktop/scripts/windows-release-artifacts.mjs apps/desktop/release-stage
+          if ($LASTEXITCODE -ne 0) {
+            throw "Cutting the stable Windows alias failed (exit code $LASTEXITCODE)."
+          }
+          # Assert the file exists rather than trusting the exit code: a script
+          # that no-ops still exits 0, and the upload step only warns when one
+          # of several globs matches nothing. Without this the release ships
+          # without its stable URL and nothing goes red.
+          $aliases = @(Get-ChildItem "apps/desktop/release-stage/dist" -File -Filter "PwrSnap.Setup*.exe")
+          if ($aliases.Count -eq 0) {
+            throw "No PwrSnap.Setup*.exe was produced; the stable download URL would 404."
+          }
+          $aliases | ForEach-Object { "cut alias $($_.Name) ($($_.Length) bytes)" }
+
       - name: Upload Windows installer artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ github.event_name == 'pull_request' && 'windows-signed-installer-pr' || 'windows-installer' }}
+          # PwrSnap.Setup*.exe is listed on its own: the stable alias drops the
+          # "-setup.exe" suffix, so the glob above does not carry it. The alias
+          # deliberately has no .blockmap and no SHA256SUMS line — only the
+          # versioned file is an updater target.
           path: |
             apps/desktop/release-stage/dist/*-setup.exe
             apps/desktop/release-stage/dist/*-setup.exe.blockmap
+            apps/desktop/release-stage/dist/PwrSnap.Setup*.exe
             apps/desktop/release-stage/dist/latest.yml
             apps/desktop/release-stage/dist/SHA256SUMS
           retention-days: 7
@@ -635,6 +667,18 @@ jobs:
             echo "::error::No Windows release asset files were downloaded." >&2
             exit 1
           fi
+
+          # The stable download URLs (releases/latest/download/<name>) only
+          # resolve while these aliases are attached to the release. They are
+          # produced in the platform signing jobs, so an upload-glob change
+          # there would otherwise break a download button silently.
+          for stable_alias in mac-dist/dist/PwrSnap.dmg \
+            windows-dist/PwrSnap.Setup.exe; do
+            if [ ! -f "$stable_alias" ]; then
+              echo "::error::Stable-name download alias is missing: $stable_alias" >&2
+              exit 1
+            fi
+          done
 
           gh release create "$RELEASE_TAG" \
             --repo pwrdrvr/PwrSnap \

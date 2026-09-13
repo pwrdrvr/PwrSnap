@@ -209,13 +209,61 @@ The release workflow separates preparation, signing, and publication:
    signing credentials. It archives the stage and records its SHA-256.
 5. **`windows-sign`** runs inside `windows-signing`, verifies the archive,
    injects the pinned Windows FFmpeg artifact, installs `TrustedSigning`, and
-   packages via `--sign-stage-only --release --require-signing`. It does not
+   packages via `--sign-stage-only --release --require-signing`. It verifies
+   Authenticode on both the app executable and the installer, then copies the
+   verified installer to the stable `PwrSnap.Setup.exe` alias. It does not
    check out source or install dependencies. See
    [desktop-windows-signing.md](desktop-windows-signing.md).
 6. **`publish-release-assets`** depends on successful Linux, macOS, and Windows
    jobs. Only this job creates the GitHub Pre-release, with changelog notes,
    macOS DMG/ZIP/updater metadata, the stable `PwrSnap.dmg` alias, the signed
-   Windows installer/updater metadata, and checksums.
+   Windows installer/updater metadata, the stable `PwrSnap.Setup.exe` alias,
+   and checksums.
+
+Both stable-name aliases exist so a download link never has to name a version:
+
+| Alias | Stable URL |
+| --- | --- |
+| `PwrSnap.dmg` | `https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.dmg` |
+| `PwrSnap.Setup.exe` | `https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.Setup.exe` |
+
+Each is a byte-identical copy of its versioned artifact, made inside the
+platform's signing job after signing, so the macOS notarization and the Windows
+Authenticode signature carry over without re-signing. Neither alias is an
+updater target: `latest-mac.yml`, `latest.yml`, and the `.blockmap` files keep
+naming the versioned artifacts, because electron-updater resolves updates and
+delta downloads through them. `publish-release-assets` fails if either alias is
+missing from the downloaded artifacts.
+
+`PwrSnap.Setup.exe` is deliberately **absent** from
+`PwrSnap-windows-SHA256SUMS`. It is the same bytes under a second name, so a
+second line states no new fact, and a manifest listing one build twice reads
+like two builds — nothing in the format marks one entry as an alias. The bytes
+are still covered: hash what you downloaded and find that digest beside the
+versioned name, which also tells you which build you got.
+
+```bash
+shasum -a 256 PwrSnap.Setup.exe
+grep -- -setup.exe PwrSnap-windows-SHA256SUMS
+```
+
+`apps/desktop/scripts/windows-release-artifacts.mjs` cuts the alias, checking
+each installer against its `SHA256SUMS` entry before copying and the copy
+against the original after, and refusing an architecture it has no agreed alias
+for rather than pointing a stable URL at the wrong installer. A future Windows
+ARM build takes `PwrSnap.Setup.Arm.exe`.
+
+The name has no space on purpose. GitHub Releases replaces spaces in an
+uploaded asset's filename with periods — on `gh`, the REST API and the web UI
+alike — and a later rename cannot restore one, so `PwrSnap Setup.exe` would
+publish as `PwrSnap.Setup.exe` regardless. Naming the build output that way
+keeps it spelled the same as the published asset. This does not match the macOS
+alias `PwrSnap.dmg`, which is an already-published URL that must keep working;
+each platform keeps its own spelling deliberately.
+
+`releases/latest/download/` resolves only for the release marked Latest, and
+every release is published as a Pre-release, so the stable aliases start working
+at promotion and not before.
 
 No signing job publishes directly. A macOS or Windows signing failure, an
 unapproved environment, or a Linux build failure leaves no partial GitHub

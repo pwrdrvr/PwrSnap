@@ -160,17 +160,26 @@ get backwards.
 
 | Call | Result on Linux |
 |---|---|
-| `new Tray(<path>)` | succeeds, even with **no** `DBUS_SESSION_BUS_ADDRESS` at all |
-| `tray.setContextMenu(menu)` | succeeds, and is safe to repeat (the refresh replaces the menu) |
+| `new Tray(<NativeImage>)` + `setContextMenu` | succeeds, even with **no** `DBUS_SESSION_BUS_ADDRESS` at all |
+| `new Tray(<path>)` + `setContextMenu` | succeeds — identical behavior to the NativeImage form |
+| `new Tray(<missing path>)` | **THROWS** `Failed to load image from path` |
+| `new Tray(<empty NativeImage>)` | succeeds — a blank icon, no throw |
 | `tray.getBounds()` | `{x: 0, y: 0, width: 0, height: 0}` |
 | `tray.setTitle("● REC")` | returns without throwing, and shows nothing |
 | `createFromPath("tray-icon.png").toBitmap()` | 1024 bytes — 16×16×4, **not** the @2x/@3x siblings |
 | `createFromPath("tray-icon-linux.png").toBitmap()` | 9216 bytes — 48×48×4 |
 
-Two of those are the reason the change is shaped as it is: `setContextMenu`
-is safe on a bus-less system (so `installTray` can call it unconditionally
-on Linux without risking the boot), and the `@Nx` siblings genuinely do not
-raise the published bitmap (so the extra 48px asset is doing real work).
+Three of those are the reason the change is shaped as it is. `setContextMenu`
+is safe on a bus-less system, so `installTray` can call it unconditionally on
+Linux without risking the boot. The `@Nx` siblings genuinely do not raise the
+published bitmap, so the extra 48px asset is doing real work. And rows 2–4
+settle a question that looks like a coin flip: `Tray`'s constructor takes
+either a `NativeImage` or a path, the path form is folklore-preferred on
+Linux, and it behaves identically — right up until the file is missing, where
+it throws and the NativeImage form does not. Since `installTray` runs
+un-awaited inside `app.whenReady().then(...)`, that throw would abort the
+rest of the boot rather than degrade to a blank icon, so **PwrSnap always
+passes the `NativeImage`** and lets the `isEmpty()` warning explain a blank.
 
 The recipe, which needs no PwrSnap build — a standalone Electron script
 under `xvfb-run` in a `node:24-bookworm` container, run twice: once with
@@ -209,6 +218,27 @@ a visible indicator needs a real desktop session with a real SNI host.
   with every control false, so the menu's Stop / Restart / Cancel rows are
   correctly absent there. "Record Video…" is still offered, matching the rest
   of the app's surfaces.
+- **A StatusNotifierItem "activate" does nothing.** Electron does emit
+  `click` on Linux when the item is activated, but the SNI spec does not say
+  which gesture causes an activation — Electron's own docs note it is left
+  click in some environments and double left click in others. PwrSnap wires
+  no `click` handler on Linux, because the two candidate responses are both
+  wrong somewhere: doing nothing leaves the icon unresponsive on a host that
+  maps left-click to Activate and the menu to another gesture, while opening
+  the Library raises a window on every click on a host that both opens the
+  menu and sends Activate. `popUpContextMenu` is `@platform darwin,win32`, so
+  "show the menu" is not available as the response. Deciding this needs
+  measurement across real desktops rather than a guess; until then the menu
+  gesture is the only tray affordance.
+- **The menu is only re-exported when it would look different.**
+  `refreshNativeTrayMenu` compares a signature of the template (labels,
+  accelerators, enabled flags, `type`, and submenus) against what was last
+  exported and skips `setContextMenu` on a match. This is not only a saving:
+  `setTrayHotkeys` is wired to `onSettingsChanged`, which fires on every
+  settings and secret write, and replacing the exported menu object can close
+  an open menu on some SNI hosts. A failed export deliberately does not
+  update the signature, so the next refresh retries rather than treating a
+  menu the host never received as the live one.
 - **All Electron apps share one indicator id.** Since the
   `StatusIconLinuxDbus` migration, Electron apps register as
   `chrome_status_icon_1` rather than under the application name — reported as

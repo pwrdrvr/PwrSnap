@@ -76,8 +76,18 @@ export function writeWindowsChecksums(distDir) {
 }
 
 function readChecksums(dist) {
+  // package-win.mjs writes SHA256SUMS at the end of packaging. Say so, rather
+  // than letting a bare ENOENT surface from inside the protected signing job
+  // after Azure signing has already run.
+  const checksumPath = join(dist, "SHA256SUMS");
+  if (!existsSync(checksumPath)) {
+    throw new Error(
+      `${checksumPath} is missing. The alias step runs on a stage packaged by ` +
+        `package-win.mjs, which writes the manifest the aliases are checked against.`,
+    );
+  }
   const entries = new Map();
-  for (const line of readFileSync(join(dist, "SHA256SUMS"), "utf8").split(/\r?\n/)) {
+  for (const line of readFileSync(checksumPath, "utf8").split(/\r?\n/)) {
     if (line.trim() === "") continue;
     const match = CHECKSUM_LINE.exec(line);
     if (match === null) throw new Error(`Malformed SHA256SUMS line: ${line}`);
@@ -139,8 +149,10 @@ export function writeWindowsReleaseAliases(dist, version) {
       );
     }
 
-    const size = statSync(join(dist, installer)).size;
-    const digest = sha256(readFileSync(join(dist, installer)));
+    // One read, not a stat beside it: the buffer already knows its own length.
+    const bytes = readFileSync(join(dist, installer));
+    const size = bytes.length;
+    const digest = sha256(bytes);
     const recorded = checksums.get(installer);
     if (recorded === undefined) throw new Error(`SHA256SUMS has no entry for ${installer}`);
     if (recorded !== digest) {
@@ -174,7 +186,17 @@ if (isCliEntrypoint(import.meta.url)) {
     console.error("usage: windows-release-artifacts.mjs <release-stage-dir>");
     process.exit(1);
   }
-  const { version } = JSON.parse(readFileSync(join(stage, "package.json"), "utf8"));
+  // Name the argument when it is wrong. Passing dist/ instead of the stage is
+  // the easy mistake — every other path in the workflow step names dist.
+  const manifest = join(stage, "package.json");
+  if (!existsSync(manifest)) {
+    console.error(
+      `${manifest} does not exist. Pass the release stage package-win.mjs built ` +
+        `(apps/desktop/release-stage), not its dist directory.`,
+    );
+    process.exit(1);
+  }
+  const { version } = JSON.parse(readFileSync(manifest, "utf8"));
   const aliases = writeWindowsReleaseAliases(join(stage, "dist"), version);
   for (const { installer, alias } of aliases) {
     console.log(`  ${alias} <- ${installer}`);

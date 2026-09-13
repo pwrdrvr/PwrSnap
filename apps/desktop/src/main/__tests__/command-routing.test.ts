@@ -41,6 +41,17 @@ describe("commandOwner", () => {
     expect(commandOwner("storage:snapshot")).toBe("library");
   });
 
+  test("derived-cache cleanup follows the WRITERS, not the storage prefix", () => {
+    // `<cacheRoot>` is written by video:* in the agent. A cleanup dispatched
+    // library-side could not abort or drain an in-flight remux, so the whole
+    // operation is forwarded to the agent and awaited there.
+    expect(commandOwner("storage:runCacheCleanup")).toBe("agent");
+    expect(peerOwnsCommand("library", "storage:runCacheCleanup")).toBe(true);
+    expect(peerOwnsCommand("agent", "storage:runCacheCleanup")).toBe(false);
+    // Same process as the writer it has to sequence against.
+    expect(commandOwner("storage:runCacheCleanup")).toBe(commandOwner("video:playback"));
+  });
+
   test("chat surfaces route to the library despite the codex: prefix", () => {
     expect(commandOwner("codex:enrich")).toBe("agent");
     expect(commandOwner("codex:libraryChat:send")).toBe("library");

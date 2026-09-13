@@ -42,15 +42,30 @@ function coalesce(key: string, work: () => Promise<string>): Promise<string> {
   return pending;
 }
 
-/** FFmpeg only sees a unique staging file. Readers only see complete media. */
-async function publishMedia(outPath: string, args: string[]): Promise<string> {
+/**
+ * FFmpeg only sees a unique staging file. Readers only see complete media.
+ *
+ * `signal` is checked around every step, not just handed to ffmpeg. The
+ * publishing `rename` is the dangerous one: a cleanup that deletes this
+ * capture's cache directory while ffmpeg is finishing would otherwise have
+ * the rename land afterwards and recreate the tree. `runAudioFfmpeg` already
+ * kills its child on abort, so the encode itself needs nothing more.
+ */
+async function publishMedia(
+  outPath: string,
+  args: string[],
+  signal?: AbortSignal | undefined
+): Promise<string> {
+  signal?.throwIfAborted();
   await mkdir(dirname(outPath), { recursive: true });
   const stagingPath = `${outPath}.${process.pid}.${randomUUID()}.partial${extname(outPath)}`;
   try {
-    await runAudioFfmpeg(["-y", "-loglevel", "error", ...args, stagingPath]);
+    await runAudioFfmpeg(["-y", "-loglevel", "error", ...args, stagingPath], { signal });
     if (!(await fileExists(stagingPath))) {
       throw new AudioExtractError("ffmpeg_failed", "ffmpeg produced empty or invalid media");
     }
+    // Last check before the artifact becomes visible to readers.
+    signal?.throwIfAborted();
     try {
       await rename(stagingPath, outPath);
     } catch (cause) {
@@ -61,6 +76,8 @@ async function publishMedia(outPath: string, args: string[]): Promise<string> {
     }
     return outPath;
   } finally {
+    // Unconditional: an aborted run still leaves a staging file behind, and
+    // it is named per-process-per-uuid so nothing else can claim it.
     await rm(stagingPath, { force: true }).catch(() => undefined);
   }
 }
@@ -137,8 +154,18 @@ async function fingerprint(args: RecordingAudioSource): Promise<SourceFingerprin
   }
 }
 
-/** Extract selected native audio as ONE AAC stream, mixed when both exist. */
-export async function extractVideoAudio(args: RecordingAudioSource & AudioTrim): Promise<string> {
+/**
+ * Extract selected native audio as ONE AAC stream, mixed when both exist.
+ *
+ * `signal` is optional because the sizzle callers have no gate to answer to.
+ * The Library's waveform lane passes one: its result is copied into
+ * `<cacheRoot>`, so a cleanup has to be able to cut the extraction short
+ * rather than wait out a full-clip encode.
+ */
+export async function extractVideoAudio(
+  args: RecordingAudioSource & AudioTrim,
+  signal?: AbortSignal | undefined
+): Promise<string> {
   const source = await fingerprint(args);
   const hash = computeNativeAudioCacheKey({ ...source, startSec: args.startSec, durationSec: args.durationSec });
   const outPath = join(app.getPath("userData"), "sizzle-cache", "native-audio", `${hash}.m4a`);
@@ -151,7 +178,7 @@ export async function extractVideoAudio(args: RecordingAudioSource & AudioTrim):
     // reads as no-audio, and we would render silence over a track that is
     // right there in the file. ffmpeg's own stream selection is what this
     // path used before, and it never consulted our flags at all.
-    const available = await probeAudioStreamCount(args.videoPath);
+    const available = await probeAudioStreamCount(args.videoPath, signal);
     const streams = selectedRecordingAudioStreams(args, undefined, available).filter(
       (index) => index < available
     );
@@ -166,7 +193,7 @@ export async function extractVideoAudio(args: RecordingAudioSource & AudioTrim):
       "-ss", args.startSec.toFixed(3), "-t", args.durationSec.toFixed(3), "-i", args.videoPath,
       "-vn", ...buildRecordingAudioArgs(resolved),
       "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"
-    ]);
+    ], signal);
   });
 }
 
@@ -190,12 +217,16 @@ export async function extractVideoAudio(args: RecordingAudioSource & AudioTrim):
  */
 export async function prepareVideoPlayback(
   outPath: string,
-  args: RecordingAudioSource
+  args: RecordingAudioSource,
+  signal?: AbortSignal | undefined
 ): Promise<string> {
   if (!videoPlaybackNeedsPreparation(args)) return args.videoPath;
   return coalesce(outPath, async () => {
     if (await fileExists(outPath)) return outPath;
-    const available = await probeAudioStreamCount(args.videoPath);
+    // The probe spawns its own ffmpeg, so it needs the signal too — without
+    // it an abort is ignored for the whole probe and the cleanup waiting to
+    // drain this write blocks until the probe finishes on its own.
+    const available = await probeAudioStreamCount(args.videoPath, signal);
     // Re-ask against the real track count. Metadata that disagrees with the
     // file can flip the answer back to "nothing to do".
     if (!videoPlaybackNeedsPreparation(args, available)) return args.videoPath;
@@ -206,7 +237,7 @@ export async function prepareVideoPlayback(
       "-i", args.videoPath, "-map", "0:v:0", "-c:v", "copy",
       ...buildRecordingAudioArgs(streams),
       "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"
-    ]);
+    ], signal);
   });
 }
 

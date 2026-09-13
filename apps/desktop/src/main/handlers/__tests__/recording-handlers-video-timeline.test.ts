@@ -376,7 +376,9 @@ describe("video:audio", () => {
       requestedMicrophone: false,
       startSec: 0,
       durationSec: 16
-    });
+    // The gate's signal, threaded so a purge can cut a full-clip extract
+    // short instead of waiting it out.
+    }, expect.any(AbortSignal));
   });
 
   test("replaces legacy single-track waveform audio with both recorded tracks", async () => {
@@ -395,7 +397,7 @@ describe("video:audio", () => {
       videoPath: "/tmp/vid_Timeline1.mp4", hasSystemAudio: true, hasMicrophoneAudio: true,
       requestedSystemAudio: false, requestedMicrophone: false,
       startSec: 0, durationSec: 16
-    });
+    }, expect.any(AbortSignal));
     expect(await readFile(`${dir}/mixed-audio-v2.m4a`, "utf8")).toBe("mixed system and microphone");
     mocks.extractVideoAudio.mockClear();
     await bus.dispatch("video:audio", { captureId: "vid_Timeline1" }, { principal: "ipc" });

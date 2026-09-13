@@ -4136,6 +4136,24 @@ export type Commands = {
     req: { mode: RenderCacheMaintenanceMode };
     res: StorageMaintenanceResult;
   };
+  /**
+   * Internal, agent-owned: run one derived-cache cleanup to completion.
+   *
+   * Not a renderer verb. Under `experimental.processSplit` the writers of
+   * `<cacheRoot>` live in the agent (`video:*`) while the deleters are
+   * reached from the library (`library:purge`, Settings → Storage), so the
+   * library hands the whole operation to the agent and awaits it — the
+   * agent's in-process admission gate is the only thing that can sequence a
+   * delete against an in-flight remux. Rejected for any principal but
+   * `bridge`; see `persistence/derived-cache-gate.ts`.
+   */
+  "storage:runCacheCleanup": {
+    req:
+      | { operation: "purge"; captureId: string }
+      | { operation: "clear" }
+      | { operation: "trim" };
+    res: Record<string, never>;
+  };
   /** Snapshot of macOS permission denials on captures-folder reads.
    *  Renderers read this once on mount, then subscribe to
    *  `events:storage:captures-access` for changes. */

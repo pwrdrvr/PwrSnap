@@ -25,6 +25,7 @@ import { join } from "node:path";
 import type { CaptureRecord, VideoCaptureMetadata } from "@pwrsnap/shared";
 import { getMainLogger } from "../log";
 import { getCacheRoot } from "../persistence/paths";
+import { runGatedCacheWrite } from "../persistence/derived-cache-gate";
 import { resolveFfmpegPath } from "./ffmpeg-resolver";
 
 const log = getMainLogger("pwrsnap:video-frames");
@@ -131,11 +132,6 @@ export type FramesResult = {
   spec: FramesSpec;
 };
 
-// In-flight de-dup, same rationale as video-poster.ts — the Library
-// timeline and a float-over can both ask for the same strip in the
-// same second.
-const inFlight = new Map<string, Promise<FramesResult>>();
-
 /**
  * Resolve (extract on miss) the contact strip for a video capture.
  * Throws when ffmpeg is unavailable or fails, or when the source path
@@ -152,16 +148,17 @@ export async function ensureVideoFrames(
     sourceWidthPx: record.width_px,
     sourceHeightPx: record.height_px
   });
-  const key = `${record.id}:${framesFileName(spec)}`;
-  const existing = inFlight.get(key);
-  if (existing !== undefined) return existing;
-  const promise = extractFrames(record, video, spec);
-  inFlight.set(key, promise);
-  try {
-    return await promise;
-  } finally {
-    inFlight.delete(key);
-  }
+  // Through the derived-cache gate: the strip is published by `rename` into
+  // `<cacheRoot>/video/<id>/`, which `purgeCacheForCapture` and Clear/Trim
+  // `rm -rf`. Ungated, that rename lands after the delete and recreates the
+  // directory for a capture that may no longer exist. The gate also does the
+  // in-flight de-dup this function used to keep for itself — the Library
+  // timeline and a float-over can both ask for the same strip in the same
+  // second — so there is one registry, not two that must agree.
+  const fileName = framesFileName(spec);
+  return runGatedCacheWrite(record.id, join(videoAssetDir(record.id), fileName), (signal) =>
+    extractFrames(record, video, spec, signal)
+  );
 }
 
 /** Per-capture directory that holds every derived video asset the
@@ -173,7 +170,8 @@ export function videoAssetDir(captureId: string): string {
 async function extractFrames(
   record: CaptureRecord,
   video: VideoCaptureMetadata,
-  spec: FramesSpec
+  spec: FramesSpec,
+  signal?: AbortSignal | undefined
 ): Promise<FramesResult> {
   const dir = videoAssetDir(record.id);
   const fileName = framesFileName(spec);
@@ -210,6 +208,9 @@ async function extractFrames(
     outputPath: tmpPath
   });
   await runFfmpeg(ffmpeg, args);
+  // Last check before the strip becomes visible: a cleanup that removed this
+  // directory while ffmpeg ran must not have it recreated by this rename.
+  signal?.throwIfAborted();
   const { rename } = await import("node:fs/promises");
   await rename(tmpPath, outputPath);
   log.info("video frames extracted", { captureId: record.id, fileName, ...spec });

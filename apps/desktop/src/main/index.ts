@@ -106,6 +106,7 @@ import {
   registerLibraryWindowHandlers
 } from "./handlers/library-handlers";
 import { registerRecordingHandlers } from "./handlers/recording-handlers";
+import { registerDerivedCacheCleanupOwner } from "./handlers/derived-cache-handlers";
 import {
   disposeRecordingController,
   installRecordingController
@@ -1402,6 +1403,10 @@ export function bootstrapApp(): void {
     )
   });
   setRuntimeProcessRole(role);
+  // Before anything can purge or clear: the library needs its forwarder and
+  // the agent needs the verb behind it. Registration only — the first
+  // dispatch happens whenever a cleanup actually runs.
+  registerDerivedCacheCleanupOwner(role);
   if (role !== "combined") {
     log.info("booting with process role", { role, pid: process.pid });
   }

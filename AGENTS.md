@@ -1649,6 +1649,25 @@ nvm use
 pnpm rebuild:electron-native
 ```
 
+## Linux sandbox setup
+
+Install and desktop dev/preview warn when Electron's setuid helper is not
+root-owned with mode 4755. The warning is advisory: user namespaces may allow
+launch without it. For the fatal SUID sandbox error, use
+`pnpm fix:linux-sandbox`; it resolves this checkout's Electron helper and uses
+sudo only for chown/chmod. Do not run the app as root or disable its sandbox.
+Run `pnpm check:linux-sandbox` from the repository root for a read-only advisory
+check. Both commands
+safely no-op on non-Linux platforms. The helper may need repair after
+reinstallation or Electron replacement. This fixes permissions,
+not renderer/window visibility or host mount/security policy.
+
+Keep a separate `pnpm install` per checkout/worktree. Root `node_modules` alone
+cannot supply a fresh workspace's package-local dependency links. Sharing
+package node_modules can resolve workspace imports into the donor checkout,
+and installs/native staging then mutate shared dependencies. A symlink to the
+same repaired helper inherits its permissions but is not a complete setup fix.
+
 ## better-sqlite3 + Electron native binding repair
 
 PwrSnap uses `better-sqlite3`, which ships a native `.node` binary. The

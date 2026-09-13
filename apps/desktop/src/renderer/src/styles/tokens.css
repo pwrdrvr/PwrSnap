@@ -154,13 +154,26 @@
   --space-8: 64px;
   --space-9: 96px;
 
-  /* ---------- WINDOWS CHROME ----------
-     Right-side room a `:root[data-platform="win32"]` title bar reserves for
-     the native min/max/close caption buttons drawn by `titleBarOverlay` (see
-     platformWindowChrome in apps/desktop/src/main/window.ts). Every win32
-     title bar (.psl__topbar, .pss__titlebar, .szl__titlebar, .ps-doc__titlebar)
-     pads its right edge by this so right-aligned content clears the buttons.
-     One knob instead of the same magic number in four stylesheets. */
+  /* ---------- PLATFORM CHROME ----------
+     Two mirror-image reservations, one per platform that draws OS buttons
+     INSIDE our 52px title bar. Both are opt-in: the base rule for every bar
+     (.psl__topbar, .pss__titlebar, .szl__titlebar, .ps-doc__titlebar) reserves
+     nothing, because Linux gets an ordinary OS frame and has no in-window
+     buttons to clear. See platformWindowChrome in
+     apps/desktop/src/main/window.ts for the main-process half.
+
+     Left-side room a `:root[data-platform="darwin"]` title bar reserves for the
+     macOS traffic lights, which `titleBarStyle: "hiddenInset"` insets into our
+     bar. MACOS_TRAFFIC_LIGHT_POSITION (window.ts) places the 60pt button group
+     at x=16, so it ends at x=76 — inside this. The two are pinned against each
+     other by macos-traffic-light-position.test.ts; change one there and the
+     other in the same commit. */
+  --mac-traffic-light-reserve: 92px;
+  /* Right-side room a `:root[data-platform="win32"]` title bar reserves for
+     the native min/max/close caption buttons drawn by `titleBarOverlay`. Every
+     win32 title bar pads its right edge by this so right-aligned content clears
+     the buttons. One knob instead of the same magic number in four
+     stylesheets. */
   --win-caption-reserve: 150px;
 
   /* ---------- TYPE SCALE ---------- */

@@ -23,7 +23,7 @@ export type AppMenuTopLevel = { index: number; label: string };
  * Top-level entries of the current application menu, for the renderer's custom
  * menu bar. `buildFromTemplate` has already expanded roles, so labels like
  * "Edit" / "Window" are concrete. The macOS app menu (role: "appMenu") is
- * excluded — it never appears on Windows, where this bridge is used.
+ * excluded — it never appears on the two platforms that use this bridge.
  */
 function appMenuTopLevel(): AppMenuTopLevel[] {
   const menu = Menu.getApplicationMenu();

@@ -26,27 +26,31 @@
   position: relative;
 }
 
-/* Title bar — Electron renders the real macOS traffic lights via
- * `titleBarStyle: "hiddenInset"`. Left padding clears them. Matches
- * the main library window's `.psl__topbar` chrome so the two surfaces
- * read as the same app. */
+/* Title bar — matches the main library window's `.psl__topbar` chrome so the
+ * two surfaces read as the same app, including its platform reservations: the
+ * base rule clears nothing (Linux has an ordinary frame) and macOS / Windows
+ * opt in below. */
 .pss__titlebar {
   grid-column: 1 / -1;
   grid-row: 1;
   display: flex;
   align-items: center;
-  padding: 0 16px 0 92px; /* left pad clears the OS traffic lights */
+  padding: 0 16px;
   background: var(--bg-sidebar);
   border-bottom: 1px solid var(--border-subtle);
   gap: 14px;
   position: relative;
   -webkit-app-region: drag;
 }
+/* macOS: `titleBarStyle: "hiddenInset"` draws the real traffic lights inside
+   this bar — left pad clears them. */
+:root[data-platform="darwin"] .pss__titlebar {
+  padding-left: var(--mac-traffic-light-reserve);
+}
 /* Windows: no macOS stoplights on the left; the native min/max/close buttons
    are drawn top-right via titleBarOverlay (the menu bar is hidden on Settings),
    so reserve room on the right so the title-bar icons clear them. */
 :root[data-platform="win32"] .pss__titlebar {
-  padding-left: 16px;
   padding-right: var(--win-caption-reserve);
 }
 .pss__titlebar button,

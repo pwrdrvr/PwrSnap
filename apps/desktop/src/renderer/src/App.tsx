@@ -1,6 +1,8 @@
 import { AppDocumentWindow } from "./features/documents/AppDocumentWindow";
 import { Library } from "./features/library/Library";
 import { LocalAgentConsent } from "./features/local-agents/LocalAgentConsent";
+import { WindowControls } from "./features/shared/WindowControls";
+import { paintsOwnCaptionButtons, rendererPlatform } from "./lib/window-chrome";
 import { LogsWindow } from "./features/logs/LogsWindow";
 import { CapturesAccessBanner } from "./features/library/CapturesAccessBanner";
 import { CodexCompatibilityBanner } from "./features/library/CodexCompatibilityBanner";
@@ -18,6 +20,7 @@ import { RendererErrorBoundary } from "./RendererErrorBoundary";
 import { useAppearanceSync } from "./lib/useAppearance";
 import { useEditMenuBridge } from "./lib/editMenuBridge";
 import { usePreventBrowserZoom } from "./lib/usePreventBrowserZoom";
+import { isWindowChromeStage } from "@pwrsnap/shared";
 
 type Stage =
   | "library"
@@ -67,6 +70,16 @@ function readDocumentKind(): AppDocumentKind | null {
 const STAGE = readStage();
 const DOCUMENT_KIND = readDocumentKind();
 document.body.dataset.stage = STAGE;
+/**
+ * Is this stage a WINDOW (title bar, caption buttons, its own edge) or a
+ * popover surface? library.css keys the Linux window hairline off the
+ * attribute rather than re-listing stage names, `main.tsx` imports the flag to
+ * decide whether to subscribe to frame state, and main's window-controls
+ * bridge asks the same shared predicate before it will minimize or close
+ * anything — so the four cannot drift as stages are added or renamed.
+ */
+export const IS_WINDOW_CHROME = isWindowChromeStage(STAGE);
+if (IS_WINDOW_CHROME) document.body.dataset.chrome = "window";
 
 // Distinct document.title per stage. Every PwrSnap window loads
 // the same `index.html` whose `<title>` tag would otherwise stamp
@@ -149,7 +162,25 @@ export function App() {
       return <RecordingFrame />;
     }
     if (STAGE === "local-agent-consent") {
-      return <LocalAgentConsent />;
+      return (
+        <>
+          {/* This window is the one `platformWindowChrome()` consumer with no
+              title bar of its own — a centred column with 52px of top padding
+              and no drag region. macOS still draws its traffic lights into
+              that space and Windows still fills its `titleBarOverlay`, so on
+              both the window can be moved and closed without us. Linux is
+              frameless with nothing but what we paint, so without this strip
+              the authorization prompt could not be dragged, minimized or
+              closed at all. It occupies exactly the padding the design
+              already leaves. */}
+          {paintsOwnCaptionButtons(rendererPlatform()) ? (
+            <div className="ps-consent-chrome">
+              <WindowControls />
+            </div>
+          ) : null}
+          <LocalAgentConsent />
+        </>
+      );
     }
     if (STAGE === "document") {
       return <AppDocumentWindow kind={DOCUMENT_KIND} />;

@@ -634,19 +634,137 @@
      internal rhythm. */
   gap: 12px;
   position: relative;
-  /* leave room for the macOS traffic-light buttons under hiddenInset */
-  padding: 0 16px 0 92px;
+  /* Reserve nothing for OS chrome — Linux has an ordinary window frame, so its
+     buttons are outside this bar entirely. macOS and Windows opt in below. */
+  padding: 0 16px;
   background: var(--bg-sidebar);
   border-bottom: 1px solid var(--border-subtle);
   -webkit-app-region: drag;
 }
+/* macOS: `titleBarStyle: "hiddenInset"` insets the traffic lights INTO this
+   bar, so reserve room on the left for them. Scoped to darwin rather than left
+   on the base rule — unscoped, it spent 92px of every Linux top bar on buttons
+   that platform never draws. */
+:root[data-platform="darwin"] .psl__topbar {
+  padding-left: var(--mac-traffic-light-reserve);
+}
+/* ---------- Linux caption buttons + window edge ----------
+
+   A frameless Linux window gets neither of the two things the other platforms
+   hand us: no traffic lights inset into the strip (macOS) and no
+   `titleBarOverlay` reserved at the right edge (Windows). So the strip paints
+   min/max/close itself — GNOME's side, order and roundness, in our palette —
+   and the window paints its own border.
+
+   These live in library.css rather than each window's own stylesheet because
+   all four title bars mount the same `<WindowControls />`, and the hairline is
+   on `#root`, which every window kind shares. library.css is the one sheet all
+   of them load. */
+.ps-wincontrols {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* Pins the cluster to the right edge of bars that have no spacer element of
+     their own — `.pss__titlebar`, `.szl__titlebar`, `.ps-doc__titlebar` are
+     brand + crumb and nothing else. */
+  margin-left: auto;
+  /* The bar is a drag region; the buttons inside it must not be. */
+  -webkit-app-region: no-drag;
+}
+/* Not in the Library's right cluster, though. `.psl__topbar-r` is
+   `flex: 1 1 auto` with `justify-content: flex-end` and nothing inside it
+   grows (`.psl__search-wrap` is `flex: 0 1 220px`), so there is real free
+   space in it — and `margin: auto` claims free space BEFORE `justify-content`
+   gets to distribute it. The auto margin would have absorbed the lot and
+   shoved search, the layout toggles, the gear and both capture buttons away
+   from the caption buttons, across the middle of the bar. The container's own
+   `gap` is all the separation this needs. */
+.psl__topbar-r .ps-wincontrols {
+  margin-left: 0;
+}
+.ps-wincontrols__btn {
+  appearance: none;
+  border: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--bg-panel-hover);
+  color: var(--text-secondary);
+  cursor: default;
+}
+.ps-wincontrols__btn:hover {
+  background: var(--bg-row-active);
+  color: var(--text-primary);
+}
+/* Close hovers to the danger wash rather than a solid red fill: the glyph has
+   to stay legible in both themes, and `--danger` is a mid red in one and a
+   deeper red in the other. */
+.ps-wincontrols__btn--close:hover {
+  background: var(--danger-soft);
+  color: var(--danger-text);
+}
+.ps-wincontrols__btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Every window's own edge, on the one platform that draws us none.
+
+   Electron gives a frameless Linux window an `OpaqueFrameView`: no border, no
+   rounded corners, and no X11 drop shadow. `roundedCorners` is a Windows
+   option, and the only way to round a frameless window's corners is
+   `transparent: true`, which Electron documents as giving up resizing — so the
+   corners stay square and the edge is a hairline we paint.
+
+   Fixed and `pointer-events: none` so it costs no layout and swallows no
+   clicks, including the frameless resize border Electron keeps just inside
+   these bounds (`FramelessView::ResizingBorderHitTest`). It goes away when the
+   frame is flush with the screen — a maximized window has no edge to show, and
+   `data-window-frame` is stamped by `lib/window-frame.ts` from main's own
+   maximize/unmaximize events.
+
+   On Wayland Electron does give frameless windows a GTK drop shadow, which is
+   what really separates a GNOME window from the one behind it; on X11 this
+   hairline is all there is.
+
+   Scoped by `body[data-chrome="window"]` — App.tsx stamps that from the
+   shared `WINDOW_CHROME_STAGES` list, which is also what decides who gets a
+   drag region, caption buttons and a frame-state subscription. The popover
+   surfaces share this stylesheet and this `#root`: the tray popover, the
+   float-over toast, the region selector, the recording HUD and the recording
+   frame. Each of those already paints its own rounded, shadowed shape — or,
+   in the recording frame's case, may not paint inside the recorded rect at
+   all — and a 1px box drawn around its full viewport would be a rectangle
+   where the design has none. An allow-list rather than a deny-list, so a
+   stage added later has to opt in rather than inherit an edge nobody looked
+   at — and one list rather than a copy of it here, so a stage cannot be added
+   to the chrome and forgotten by the edge.
+
+   Top of the stack, because it is the WINDOW's edge and not part of any pane:
+   `.pss__modal-backdrop` is `inset: 0` at 2147483646, so anything lower has
+   the scrim painted over the hairline and the window loses its only border
+   for as long as a modal is open. */
+:root[data-platform="linux"]:not([data-window-frame="maximized"])
+  body[data-chrome="window"]
+  #root::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  border: 1px solid var(--border-strong);
+  pointer-events: none;
+  z-index: 2147483647;
+}
+
 /* Windows: the native title bar is reclaimed via titleBarOverlay — no macOS
    stoplights to clear on the left. We custom-render the menu bar INSIDE this
    toolbar (AppMenuBar), so the native min/max/close buttons overlay the
    top-right of this same bar — reserve room on the right so the toolbar's
    right-aligned content (search, toggles, gear) clears them. */
 :root[data-platform="win32"] .psl__topbar {
-  padding-left: 16px;
   padding-right: var(--win-caption-reserve);
   column-gap: 12px;
 }
@@ -803,7 +921,10 @@
 .psl__topbar.is-narrow .psl__search-wrap { flex-basis: 150px; }
 .psl__topbar.is-tight .psl__topbar-r { gap: 6px; }
 .psl__topbar.is-tight .psl__search-wrap { flex-basis: 120px; }
-:root:not([data-platform="win32"]) .psl__topbar.is-tight .psl__topbar-c {
+/* Absolute-centring the REEL/GRID pair only works when nothing else is
+   competing for the left half of the bar. macOS is the only platform where
+   that holds — Windows and Linux both paint the app menu there. */
+:root[data-platform="darwin"] .psl__topbar.is-tight .psl__topbar-c {
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
@@ -823,14 +944,15 @@
 .psl__topbar.is-minimal .psl__search-wrap,
 .psl__topbar.is-minimal .lyt-toggle { display: none; }
 
-/* Windows spends substantially more title-bar width on the custom menu and
-   native caption-button overlay. Shed low-priority left/center chrome one
-   tier earlier there so the actions never slide beneath min/max/close. */
-:root[data-platform="win32"] .psl__topbar.is-compact .psl__history,
-:root[data-platform="win32"] .psl__topbar.is-compact .psl__count,
-:root[data-platform="win32"] .psl__topbar.is-compact .psl__search-wrap,
-:root[data-platform="win32"] .psl__topbar.is-compact .psl__topbar-c { display: none; }
-:root[data-platform="win32"] .psl__topbar.is-tiny .psl__title { display: none; }
+/* Windows and Linux spend substantially more title-bar width on the custom
+   menu bar plus caption buttons — the native overlay on Windows, the ones we
+   paint on Linux. Shed low-priority left/center chrome one tier earlier on
+   both so the actions never slide beneath min/max/close. */
+:root:is([data-platform="win32"], [data-platform="linux"]) .psl__topbar.is-compact .psl__history,
+:root:is([data-platform="win32"], [data-platform="linux"]) .psl__topbar.is-compact .psl__count,
+:root:is([data-platform="win32"], [data-platform="linux"]) .psl__topbar.is-compact .psl__search-wrap,
+:root:is([data-platform="win32"], [data-platform="linux"]) .psl__topbar.is-compact .psl__topbar-c { display: none; }
+:root:is([data-platform="win32"], [data-platform="linux"]) .psl__topbar.is-tiny .psl__title { display: none; }
 
 /* Left: Source Apps.
  *

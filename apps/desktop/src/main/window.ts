@@ -63,7 +63,33 @@ const hotCpuProfilerSyncHandlers = new Map<number, (reason: string) => void>();
  *   hide the native menu bar (`autoHideMenuBar`) — they don't need
  *   File/Edit/View; the main Library window keeps it visible for
  *   discoverability (Alt still toggles it).
- * - **Linux** (deferred): default frame.
+ * - **Linux**: frameless, and the renderer paints the whole strip — the same
+ *   menu bar Windows draws, plus the caption buttons (`WindowControls.tsx`,
+ *   backed by `window-controls-bridge.ts`) that neither the traffic lights nor
+ *   `titleBarOverlay` exist to provide there. `titleBarStyle: "hidden"` IS
+ *   `frame: false` on Linux (`has_frame_` is false for any style but
+ *   `kNormal`), and a frameless window never builds a native menu bar —
+ *   `RootView::SetMenu` returns early on `!has_frame()`, *after* registering
+ *   that menu's accelerators, so ⌘-equivalents keep working with no bar to
+ *   hang them on. Nothing needs `autoHideMenuBar`.
+ *
+ *   This brings PwrSnap in line with PwrAgent and PwrGit, which already ship
+ *   this chrome on Linux. The window keeps its resize borders — frameless
+ *   windows are still resizable via `FramelessView::ResizingBorderHitTest`
+ *   (inside-bounds border, 16px corner grabs) — but Electron gives it an
+ *   `OpaqueFrameView`: no border, no rounded corners, and no X11 drop shadow.
+ *   That is what the `#root::after` hairline in library.css stands in for.
+ *   `roundedCorners` is Windows-only and the one way to round a frameless
+ *   window is `transparent: true`, which Electron documents as giving up
+ *   resizing — so the corners stay square.
+ *
+ *   Until 2026-09 this branch did not exist: every non-win32 platform was
+ *   handed `titleBarStyle: "hiddenInset"`, and Linux kept an ordinary frame
+ *   only because Electron's option converter accepts that value under
+ *   `#if BUILDFLAG(IS_MAC)` (shell/browser/native_window.cc) — off macOS the
+ *   string fails to convert and the option is dropped. The result was a title
+ *   bar, a native menu bar, and our own top bar stacked three deep, with the
+ *   product name written twice.
  */
 type MenuVisibility = "visible" | "hidden";
 
@@ -127,14 +153,25 @@ function platformWindowChrome(menu: MenuVisibility): BrowserWindowConstructorOpt
       autoHideMenuBar: menu === "hidden"
     };
   }
-  // macOS (and Linux, deferred) keep the prior chrome unchanged: hidden-inset
-  // title bar + inset traffic-light position. `trafficLightPosition` is a no-op
-  // off macOS but harmless, and matching the prior unconditional behavior keeps
-  // the Linux E2E frame identical.
-  // Spread, don't share: the frozen constant guards against an importer
-  // mutating our source of truth, while the copy keeps one window's options
-  // object from being reachable by any other.
-  return { titleBarStyle: "hiddenInset", trafficLightPosition: { ...MACOS_TRAFFIC_LIGHT_POSITION } };
+  if (process.platform === "darwin") {
+    // Hidden-inset title bar + inset traffic lights. The renderer clears room
+    // for them with `--mac-traffic-light-reserve`, scoped to
+    // `:root[data-platform="darwin"]` — the two halves are pinned against each
+    // other by macos-traffic-light-position.test.ts.
+    // Spread, don't share: the frozen constant guards against an importer
+    // mutating our source of truth, while the copy keeps one window's options
+    // object from being reachable by any other.
+    return {
+      titleBarStyle: "hiddenInset",
+      trafficLightPosition: { ...MACOS_TRAFFIC_LIGHT_POSITION }
+    };
+  }
+  // Linux: plain frameless. There is no overlay API to hand the caption
+  // buttons to and no traffic lights to inset, so the renderer paints both the
+  // buttons and the menu bar into the strip — see the header comment. `menu`
+  // is deliberately not consulted here: a frameless window builds no native
+  // menu bar, so there is nothing for `autoHideMenuBar` to act on.
+  return { titleBarStyle: "hidden" };
 }
 
 // Title-bar (caption-button strip) background. This MUST match the renderer's

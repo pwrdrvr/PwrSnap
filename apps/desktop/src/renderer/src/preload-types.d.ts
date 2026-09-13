@@ -14,7 +14,9 @@ import type {
   PwrSnapError,
   Result,
   ShortcutPlatform,
-  VideoPreset
+  VideoPreset,
+  WindowControlAction,
+  WindowFrameState
 } from "@pwrsnap/shared";
 
 export type WindowSnapEntry = {
@@ -153,6 +155,13 @@ declare global {
       requestRecordingControllerResize(payload: { width?: number; height: number }): void;
       getAppMenuModel(): Promise<Array<{ index: number; label: string }>>;
       popupAppMenu(payload: { index: number; x: number; y: number }): void;
+      /** Linux painted caption buttons: run one window-control action.
+       *  Resolves with nothing — the button redraws from the frame-state
+       *  pushes on `EVENT_CHANNELS.windowFrameState`, never from its click. */
+      runWindowControl(action: WindowControlAction): Promise<void>;
+      /** This window's maximize state right now, or `null` if the window is
+       *  already gone. */
+      readWindowFrameState(): Promise<WindowFrameState | null>;
       startCaptureDrag(payload: { captureId: string; preset: RenderPreset }): void;
       startVideoDrag(payload: {
         captureId: string;

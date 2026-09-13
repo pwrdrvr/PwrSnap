@@ -16,6 +16,12 @@
 
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import { shortcutPlatformFromString } from "@pwrsnap/shared/shortcut-semantics";
+import {
+  WINDOW_CONTROL_CHANNEL,
+  WINDOW_FRAME_STATE_CHANNEL,
+  type WindowControlAction,
+  type WindowFrameState
+} from "@pwrsnap/shared/ipc";
 
 // **Re-enable pinch gestures.** Electron disables visual zoom by
 // default, and "disabled" here means more than "no zooming
@@ -433,6 +439,26 @@ const pwrsnapApi = {
    */
   popupAppMenu(payload: { index: number; x: number; y: number }): void {
     ipcRenderer.send(APP_MENU_POPUP_CHANNEL, payload);
+  },
+
+  /**
+   * Linux painted caption buttons: run one window-control action.
+   *
+   * macOS insets its traffic lights into our title bar and Windows fills the
+   * `titleBarOverlay` strip it reserves; a frameless Linux window has neither,
+   * so nothing minimizes, maximizes or closes it from inside the app but this.
+   *
+   * `invoke`, not `send`: a control that never reached a handler should reject
+   * rather than look like it worked. It resolves with nothing — the button
+   * redraws from the frame-state pushes, never from its own click.
+   */
+  runWindowControl(action: WindowControlAction): Promise<void> {
+    return ipcRenderer.invoke(WINDOW_CONTROL_CHANNEL, action) as Promise<void>;
+  },
+  /** This window's maximize state right now. The changes that follow arrive
+   *  on `EVENT_CHANNELS.windowFrameState` through the generic `on()`. */
+  readWindowFrameState(): Promise<WindowFrameState | null> {
+    return ipcRenderer.invoke(WINDOW_FRAME_STATE_CHANNEL) as Promise<WindowFrameState | null>;
   },
   /**
    * Renderer -> main native file drag. Main validates the capture id,

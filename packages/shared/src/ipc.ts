@@ -79,6 +79,18 @@ export const EVENT_CHANNELS = {
   recordingControllerArm: "events:recording-controller:arm",
   settingsChanged: "events:settings:changed",
   /**
+   * Main → one BrowserWindow: that window's maximize state changed.
+   * Payload type: `WindowFrameState`.
+   *
+   * Linux only in practice. A frameless Linux window draws its own
+   * caption buttons and its own 1px edge, and both have to follow the
+   * WINDOW rather than the last button press — a double-click on the
+   * drag region, Super+Up, or a tiling keybind all maximize behind our
+   * back. Per-window, not a broadcast: two windows can disagree about
+   * being maximized.
+   */
+  windowFrameState: "events:window:frame-state",
+  /**
    * Main → every BrowserWindow: latest auto-updater status. Drives the
    * library window's update banner. The payload shape is
    * `AppUpdateStatus` (see protocol.ts) — discriminated union over
@@ -534,6 +546,7 @@ export type AiUsageUpdatedEvent = {
 
 export type EventPayloads = {
   [EVENT_CHANNELS.logEntry]: import("./protocol").AppLogEntry;
+  [EVENT_CHANNELS.windowFrameState]: WindowFrameState;
   [EVENT_CHANNELS.appUpdateStatus]: AppUpdateStatus;
   [EVENT_CHANNELS.codexCompatibilityAlertChanged]:
     | import("./protocol").CodexCliCompatibilityAlert
@@ -588,3 +601,58 @@ export type TypedEventChannel = keyof EventPayloads;
  * time. A pick larger than this is a bug or an attack, not a user.
  */
 export const MAX_SELECTOR_EXTENTS = 64;
+
+/**
+ * Renderer → main: run one painted caption-button action.
+ *
+ * macOS insets its traffic lights into our title bar and Windows fills the
+ * `titleBarOverlay` strip it reserves, so on both the OS owns minimize /
+ * maximize / close. A frameless Linux window has neither — nothing draws those
+ * buttons but us, and nothing acts on them but this.
+ *
+ * Off the command bus for the same reason `app-menu:*` is: this is chrome
+ * plumbing for a renderer-painted title bar, not a `<domain>:<verb>` command
+ * with a Result envelope. `window-controls-bridge.ts` owns the main half.
+ */
+export const WINDOW_CONTROL_CHANNEL = "window-controls:invoke";
+
+/** Renderer → main: read this window's maximize state once, on mount. The
+ *  changes that follow arrive on `EVENT_CHANNELS.windowFrameState`. */
+export const WINDOW_FRAME_STATE_CHANNEL = "window-controls:state";
+
+/** What a painted caption button asks the main process to do. */
+export type WindowControlAction = "minimize" | "toggle-maximize" | "close";
+
+/** What the maximize button and the window hairline draw from. */
+export type WindowFrameState = { maximized: boolean };
+
+/**
+ * The renderer stages that are a WINDOW rather than a popover surface — the
+ * six that `platformWindowChrome()` builds, and the only ones that paint a
+ * title bar, caption buttons, or a window edge of their own.
+ *
+ * Shared because three places need the same answer and must not drift: the
+ * renderer stamps `data-chrome="window"` from it (App.tsx), library.css keys
+ * the Linux hairline off that attribute instead of re-listing stage names, and
+ * the main-process window-controls bridge refuses to minimize/maximize/close
+ * anything else — the tray popover, float-over toast, region selector and
+ * recording surfaces must never be reachable that way.
+ */
+export const WINDOW_CHROME_STAGES = [
+  "library",
+  "settings",
+  "sizzle",
+  "logs",
+  "document",
+  "local-agent-consent"
+] as const;
+
+export type WindowChromeStage = (typeof WINDOW_CHROME_STAGES)[number];
+
+export function isWindowChromeStage(stage: string | undefined | null): boolean {
+  return (
+    stage !== undefined &&
+    stage !== null &&
+    (WINDOW_CHROME_STAGES as readonly string[]).includes(stage)
+  );
+}

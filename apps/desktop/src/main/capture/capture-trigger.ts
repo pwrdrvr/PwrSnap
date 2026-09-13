@@ -34,9 +34,16 @@ export function dispatchInteractiveCapture(
       : triggerOrOrigin;
   const invocation = finalizeCaptureInvocation(trigger, monotonicNow);
   const dispatched = bus.dispatch("capture:interactive", { mode, invocation }, options);
-  void dispatched.then((result) => {
-    if (!result.ok) explainRefusalIfNeeded(result.error.code, result.error.message);
-  });
+  // Observe-only: the caller still owns `dispatched`. The rejection arm is
+  // required, not defensive noise — a bare `.then` here would fork a second
+  // promise whose rejection nobody handles, turning a rare `bus.dispatch`
+  // throw into an unhandled rejection that did not exist before.
+  void dispatched.then(
+    (result) => {
+      if (!result.ok) explainRefusalIfNeeded(result.error.code, result.error.message);
+    },
+    () => undefined
+  );
   return dispatched;
 }
 

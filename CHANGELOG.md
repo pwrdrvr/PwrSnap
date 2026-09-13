@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.1.0-beta.3 - 2026-09-12
+
+This beta makes recording audio dependable end to end, adds Apple Silicon
+downloads, and tightens recording, update, and playback reliability.
+
+- Recording Audio - Added microphone and system-audio controls with source
+  status, live microphone feedback, and clear permission guidance; recordings,
+  Library playback, and exports now use the audible audio tracks correctly.
+- Recording Experience - Improved recording with a visible tangerine capture
+  frame, actionable preflight errors, and safeguards that keep PwrSnap's own
+  controls out of the finished recording.
+- Apple Silicon - Added native Apple Silicon macOS DMG and updater ZIP
+  downloads alongside the universal macOS release assets.
+- Updates and Startup - Fixed PwrSnap to honor the saved update channel at
+  startup and stopped unexpected Keychain password prompts before access is
+  needed.
+- Capture Controls - Fixed the Float-Over Reveal action, made Open Library an
+  optional configurable hotkey, and surfaced recording-audio and matching-text
+  defaults in Settings.
+- Video Cache - Fixed cache clearing, trimming, and capture cleanup so they do
+  not race with in-progress video playback preparation or leave stale media.
+
 ## v1.1.0-beta.2 - 2026-09-11
 
 This beta makes Windows capture more responsive and prevents a downloaded

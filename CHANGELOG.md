@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.0.4 - 2026-09-13
+
+- Windows Download - Added a stable PwrSnap.Setup.exe installer asset, so a Windows download link no longer has to name a version. The versioned installer still ships beside it and remains the file updates download.
+- Minor - No application changes since v1.0.3. This release exists to publish the new Windows download asset.
+
 ## v1.0.3 - 2026-08-19
 
 - Update Checks - Fixed update checks that stopped working after the app asked GitHub for the release list too many times. PwrSnap now reuses a recent answer instead of asking again, and when GitHub does turn it away, it says when checks will start working again rather than showing an error that looked like a sign-in problem.

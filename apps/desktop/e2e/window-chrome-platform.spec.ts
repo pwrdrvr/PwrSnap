@@ -130,6 +130,31 @@ test("secondary windows follow the same rule, and Linux paints its own chrome", 
           await page.evaluate(() => document.documentElement.dataset["windowFrame"]),
           label
         ).toBe("restored");
+
+        // And the edge itself, not just the attribute it keys off. Three
+        // files have to agree for a pixel to appear — App.tsx stamps
+        // `data-chrome` from the shared stage list, library.css matches it,
+        // and window-frame.ts stamps `data-window-frame` — and nothing but
+        // this job runs where the result is visible.
+        const edge = await page.evaluate(() => {
+          const root = document.getElementById("root");
+          if (root === null) return null;
+          const style = getComputedStyle(root, "::after");
+          return {
+            chrome: document.body.dataset["chrome"],
+            content: style.content,
+            borderTopWidth: style.borderTopWidth,
+            pointerEvents: style.pointerEvents
+          };
+        });
+        expect(edge, label).not.toBeNull();
+        expect(edge?.chrome, label).toBe("window");
+        // `content: none` is what a rule that did not match leaves behind.
+        expect(edge?.content, label).not.toBe("none");
+        expect(edge?.borderTopWidth, label).toBe("1px");
+        // It sits over every pane, so it must swallow no click — including
+        // the frameless resize border just inside these bounds.
+        expect(edge?.pointerEvents, label).toBe("none");
       }
 
       // The caption buttons, end to end — in the two halves that are OURS.

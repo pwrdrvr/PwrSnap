@@ -15,11 +15,15 @@ import {
 
 type Handler = (payload: unknown) => void;
 
-function installApi(platform: string, initial: { maximized: boolean } | null) {
+function installApi(
+  platform: string,
+  initial: { maximized: boolean } | null,
+  read: () => Promise<{ maximized: boolean } | null> = () => Promise.resolve(initial)
+) {
   const handlers = new Map<string, Handler>();
   const api = {
     platform,
-    readWindowFrameState: vi.fn(() => Promise.resolve(initial)),
+    readWindowFrameState: vi.fn(read),
     on: vi.fn((channel: string, handler: Handler) => {
       handlers.set(channel, handler);
       return () => handlers.delete(channel);
@@ -72,6 +76,27 @@ describe("startWindowFrameSync", () => {
     push?.({ maximized: false });
     expect(seen).toEqual([true, false]);
     expect(document.documentElement.dataset["windowFrame"]).toBe("restored");
+  });
+
+  test("a push that lands mid-read wins over the read it raced", async () => {
+    // Super+Up during the initial round trip. The read was issued before the
+    // window was maximized, so its answer is already wrong when it arrives —
+    // taking it would draw a Maximize glyph and a painted edge on a maximized
+    // window, and leave them wrong until the next WM event.
+    let resolveRead: (state: { maximized: boolean } | null) => void = () => undefined;
+    const { handlers } = installApi(
+      "linux",
+      null,
+      () => new Promise((resolve) => (resolveRead = resolve))
+    );
+    startWindowFrameSync();
+
+    handlers.get("events:window:frame-state")?.({ maximized: true });
+    expect(isWindowMaximized()).toBe(true);
+
+    resolveRead({ maximized: false });
+    await vi.waitFor(() => expect(isWindowMaximized()).toBe(true));
+    expect(document.documentElement.dataset["windowFrame"]).toBe("maximized");
   });
 
   test("does nothing off Linux — no attribute, no IPC", () => {

@@ -40,6 +40,7 @@ import { isPrimaryAccel } from "../shared/keyboard";
 import { useSizzleProject } from "./useSizzleProject";
 import "./sizzle.css";
 import { WindowControls } from "../shared/WindowControls";
+import { paintsOwnCaptionButtons, rendererPlatform } from "../../lib/window-chrome";
 
 // Re-exported for the tests that pin these helpers at this module path.
 export {
@@ -281,7 +282,7 @@ export function SizzleApp({
         ) : null}
         {/* Linux: a frameless window gets neither traffic lights nor a
             `titleBarOverlay` — nobody draws min/max/close but us. */}
-        {window.pwrsnapApi?.platform === "linux" ? <WindowControls /> : null}
+        {paintsOwnCaptionButtons(rendererPlatform()) ? <WindowControls /> : null}
       </header>
       {loadError !== null || actionFailure !== null || backgroundSaveFailure !== undefined ? (
         <div className="szl__failure-stack">

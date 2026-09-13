@@ -125,6 +125,11 @@ import { useHotkeys } from "../shared/useHotkeys";
 import { useVideoTrimRange } from "../shared/useVideoTrimRange";
 import { AppMenuBar } from "../shared/AppMenuBar";
 import { WindowControls } from "../shared/WindowControls";
+import {
+  menuBarIsInToolbar,
+  paintsOwnCaptionButtons,
+  rendererPlatform
+} from "../../lib/window-chrome";
 import { LayoutToggleButtons } from "../shared/LayoutToggleButtons";
 import "../shared/LayoutToggleButtons.css";
 import {
@@ -4066,7 +4071,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
               menu — Windows because the menu lived in that bar, Linux because
               a frameless window never builds one (`RootView::SetMenu` returns
               early on `!has_frame()`). macOS keeps the system menu bar. */}
-          {window.pwrsnapApi?.platform !== "darwin" ? <AppMenuBar /> : null}
+          {menuBarIsInToolbar(rendererPlatform()) ? <AppMenuBar /> : null}
           <div className="psl__history" aria-label="Navigation history">
             <button
               type="button"
@@ -4321,7 +4326,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
           {/* Linux: a frameless window gets neither traffic lights nor a
               `titleBarOverlay`, so nobody draws min/max/close but us. Last in
               the right cluster, which is GNOME's side. */}
-          {window.pwrsnapApi?.platform === "linux" ? <WindowControls /> : null}
+          {paintsOwnCaptionButtons(rendererPlatform()) ? <WindowControls /> : null}
         </div>
       </header>
 
@@ -5489,21 +5494,6 @@ const TOOLBAR_BREAKPOINTS = [1024, 960, 840, 720, 640, 560] as const;
  *  Charged on every platform that paints `AppMenuBar` — see
  *  `menuBarIsInToolbar`. */
 const IN_TOOLBAR_MENU_BAR_RESERVE_PX = 300;
-
-/**
- * Does this platform render File / Edit / View / Window / Library / Help
- * INSIDE the Library toolbar?
- *
- * True wherever the native title bar is hidden and takes the menu bar with it:
- * Windows (the menu lived in that bar) and Linux (a frameless window never
- * builds one). macOS keeps the system menu bar, so its toolbar is all its own.
- * Keep in step with the `AppMenuBar` mount condition in the header below —
- * a platform that paints the bar without charging for it picks a tier too wide
- * and crowds every control, which is what Linux did the day it grew one.
- */
-function menuBarIsInToolbar(platform: string | undefined): boolean {
-  return platform === "win32" || platform === "linux";
-}
 
 function toolbarTierForWidth(width: number, platform: string | undefined): ToolbarTier {
   // Treat that fixed menu as already-spent width; otherwise a 1218px VM

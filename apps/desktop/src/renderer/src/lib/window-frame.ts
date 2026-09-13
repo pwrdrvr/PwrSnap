@@ -20,6 +20,10 @@ import { EVENT_CHANNELS, type WindowFrameState } from "@pwrsnap/shared";
 
 let maximized = false;
 let started = false;
+/** Set once a push from main has landed. The one-shot initial read must not
+ *  overwrite a newer state that arrived while its round trip was in flight —
+ *  the same late-resolution rule the settings substrate follows. */
+let pushed = false;
 const listeners = new Set<() => void>();
 
 function apply(next: boolean): void {
@@ -41,11 +45,18 @@ export function startWindowFrameSync(
   const api = window.pwrsnapApi;
   if (api === undefined) return;
   void api.readWindowFrameState().then((state) => {
-    if (state !== null) apply(state.maximized);
+    // Dropped if the window has already told us something newer: a Super+Up
+    // during the round trip would otherwise be undone by this stale answer,
+    // leaving a Maximize glyph and a painted edge on a maximized window until
+    // the next WM event.
+    if (state !== null && !pushed) apply(state.maximized);
   });
   api.on(EVENT_CHANNELS.windowFrameState, (payload) => {
     const state = payload as WindowFrameState | null;
-    if (state !== null && typeof state === "object") apply(state.maximized === true);
+    if (state !== null && typeof state === "object") {
+      pushed = true;
+      apply(state.maximized === true);
+    }
   });
 }
 
@@ -64,6 +75,7 @@ export function isWindowMaximized(): boolean {
 export function __resetWindowFrameForTests(): void {
   started = false;
   maximized = false;
+  pushed = false;
   listeners.clear();
   delete document.documentElement.dataset["windowFrame"];
 }

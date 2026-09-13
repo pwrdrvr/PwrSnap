@@ -3,6 +3,7 @@
 // wrong silently are worth pinning: an action arriving over IPC that is not
 // one of ours, and a glyph that stops following the window.
 
+import { BrowserWindow } from "electron";
 import { describe, expect, test, vi } from "vitest";
 
 vi.mock("electron", () => ({
@@ -12,6 +13,7 @@ vi.mock("electron", () => ({
 
 import {
   applyWindowControl,
+  controllableWindowFor,
   trackWindowFrameState,
   windowFrameState,
   type ControllableWindow,
@@ -86,7 +88,11 @@ describe("windowFrameState", () => {
 });
 
 describe("trackWindowFrameState", () => {
-  function observable(maximized: () => boolean, destroyed = (): boolean => false) {
+  function observable(
+    maximized: () => boolean,
+    destroyed = (): boolean => false,
+    contentsDestroyed = (): boolean => false
+  ) {
     const handlers = new Map<string, () => void>();
     const sent: Array<[string, unknown]> = [];
     const window = {
@@ -96,7 +102,10 @@ describe("trackWindowFrameState", () => {
       },
       isDestroyed: destroyed,
       isMaximized: maximized,
-      webContents: { send: (channel: string, payload: unknown) => void sent.push([channel, payload]) }
+      webContents: {
+        isDestroyed: contentsDestroyed,
+        send: (channel: string, payload: unknown) => void sent.push([channel, payload])
+      }
     } as unknown as ObservableWindow;
     return { window, handlers, sent };
   }
@@ -127,5 +136,68 @@ describe("trackWindowFrameState", () => {
     trackWindowFrameState(window);
     handlers.get("maximize")?.();
     expect(sent).toEqual([]);
+  });
+
+  test("does not send into a live window whose webContents is gone", () => {
+    // A reloading or crashed renderer destroys its webContents while the
+    // BrowserWindow lives on, and `send` on a destroyed webContents throws —
+    // from inside an Electron event handler, where there is no caller to catch
+    // it. `isDestroyed()` on the window alone does not see that.
+    const { window, handlers, sent } = observable(
+      () => true,
+      () => false,
+      () => true
+    );
+    trackWindowFrameState(window);
+    handlers.get("maximize")?.();
+    expect(sent).toEqual([]);
+  });
+});
+
+describe("controllableWindowFor", () => {
+  // Every renderer in the process can reach these channels; only the six that
+  // paint a title bar may act on their window. The popovers must not be
+  // closeable this way — destroying the recording HUD mid-take is the class of
+  // intrusion AGENTS.md forbids, and it would take one bug in one renderer.
+  const fromWebContents = vi.mocked(BrowserWindow.fromWebContents);
+
+  function sender(url: string): Electron.WebContents {
+    return { getURL: () => url } as unknown as Electron.WebContents;
+  }
+
+  function windowFor(url: string): BrowserWindow | null {
+    const window = {} as BrowserWindow;
+    fromWebContents.mockReturnValue(window);
+    const resolved = controllableWindowFor(sender(url));
+    return resolved === null ? null : (expect(resolved).toBe(window), resolved);
+  }
+
+  test.each([
+    ["file:///app/index.html", "library (no hash at all)"],
+    ["file:///app/index.html#stage=library", "library"],
+    ["file:///app/index.html#stage=settings", "settings"],
+    ["file:///app/index.html#stage=sizzle", "sizzle"],
+    ["file:///app/index.html#stage=logs", "logs"],
+    ["file:///app/index.html#stage=document", "document"],
+    ["file:///app/index.html#stage=local-agent-consent", "consent"]
+  ])("%s resolves — %s paints caption buttons", (url) => {
+    expect(windowFor(url)).not.toBeNull();
+  });
+
+  test.each([
+    ["file:///app/index.html#stage=tray", "tray popover"],
+    ["file:///app/index.html#stage=float-over", "float-over toast"],
+    ["file:///app/index.html#stage=region", "region selector"],
+    ["file:///app/index.html#stage=recording-controller", "recording HUD"],
+    ["file:///app/index.html#stage=recording-frame", "recording frame"],
+    ["file:///app/index.html#stage=not-a-stage", "an unknown stage"]
+  ])("%s is refused — %s paints none", (url) => {
+    expect(windowFor(url)).toBeNull();
+  });
+
+  test("a webContents with no window of its own is refused", () => {
+    // A destroyed window, or a webview: nothing to act on.
+    fromWebContents.mockReturnValue(null);
+    expect(controllableWindowFor(sender("file:///app/index.html"))).toBeNull();
   });
 });

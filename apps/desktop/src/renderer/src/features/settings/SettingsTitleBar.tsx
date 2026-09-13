@@ -7,6 +7,7 @@
 import type { ReactElement } from "react";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import { WindowControls } from "../shared/WindowControls";
+import { paintsOwnCaptionButtons, rendererPlatform } from "../../lib/window-chrome";
 
 type SettingsTitleBarProps = {
   here: string;
@@ -26,7 +27,7 @@ export function SettingsTitleBar({ here }: SettingsTitleBarProps): ReactElement 
       </span>
       {/* Linux: a frameless window gets neither traffic lights nor a
           `titleBarOverlay` — nobody draws min/max/close but us. */}
-      {window.pwrsnapApi?.platform === "linux" ? <WindowControls /> : null}
+      {paintsOwnCaptionButtons(rendererPlatform()) ? <WindowControls /> : null}
     </header>
   );
 }

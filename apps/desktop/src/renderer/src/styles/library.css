@@ -731,24 +731,32 @@
    what really separates a GNOME window from the one behind it; on X11 this
    hairline is all there is.
 
-   Scoped by `body[data-stage]` (App.tsx stamps it) to the window kinds that
-   are a WINDOW. The popover surfaces share this stylesheet and this `#root`:
-   the tray popover, the float-over toast, the region selector, the recording
-   HUD and the recording frame. Each of those already paints its own rounded,
-   shadowed shape — or, in the recording frame's case, may not paint inside the
-   recorded rect at all — and a 1px box drawn around its full viewport would be
-   a rectangle where the design has none. An allow-list rather than a
-   deny-list, so a stage added later has to opt in rather than inherit an edge
-   nobody looked at. */
+   Scoped by `body[data-chrome="window"]` — App.tsx stamps that from the
+   shared `WINDOW_CHROME_STAGES` list, which is also what decides who gets a
+   drag region, caption buttons and a frame-state subscription. The popover
+   surfaces share this stylesheet and this `#root`: the tray popover, the
+   float-over toast, the region selector, the recording HUD and the recording
+   frame. Each of those already paints its own rounded, shadowed shape — or,
+   in the recording frame's case, may not paint inside the recorded rect at
+   all — and a 1px box drawn around its full viewport would be a rectangle
+   where the design has none. An allow-list rather than a deny-list, so a
+   stage added later has to opt in rather than inherit an edge nobody looked
+   at — and one list rather than a copy of it here, so a stage cannot be added
+   to the chrome and forgotten by the edge.
+
+   Top of the stack, because it is the WINDOW's edge and not part of any pane:
+   `.pss__modal-backdrop` is `inset: 0` at 2147483646, so anything lower has
+   the scrim painted over the hairline and the window loses its only border
+   for as long as a modal is open. */
 :root[data-platform="linux"]:not([data-window-frame="maximized"])
-  body:is([data-stage="library"], [data-stage="settings"], [data-stage="sizzle"], [data-stage="logs"], [data-stage="document"], [data-stage="local-agent-consent"])
+  body[data-chrome="window"]
   #root::after {
   content: "";
   position: fixed;
   inset: 0;
   border: 1px solid var(--border-strong);
   pointer-events: none;
-  z-index: 200;
+  z-index: 2147483647;
 }
 
 /* Windows: the native title bar is reclaimed via titleBarOverlay — no macOS

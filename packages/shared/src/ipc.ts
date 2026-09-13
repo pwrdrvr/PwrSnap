@@ -625,3 +625,34 @@ export type WindowControlAction = "minimize" | "toggle-maximize" | "close";
 
 /** What the maximize button and the window hairline draw from. */
 export type WindowFrameState = { maximized: boolean };
+
+/**
+ * The renderer stages that are a WINDOW rather than a popover surface — the
+ * six that `platformWindowChrome()` builds, and the only ones that paint a
+ * title bar, caption buttons, or a window edge of their own.
+ *
+ * Shared because three places need the same answer and must not drift: the
+ * renderer stamps `data-chrome="window"` from it (App.tsx), library.css keys
+ * the Linux hairline off that attribute instead of re-listing stage names, and
+ * the main-process window-controls bridge refuses to minimize/maximize/close
+ * anything else — the tray popover, float-over toast, region selector and
+ * recording surfaces must never be reachable that way.
+ */
+export const WINDOW_CHROME_STAGES = [
+  "library",
+  "settings",
+  "sizzle",
+  "logs",
+  "document",
+  "local-agent-consent"
+] as const;
+
+export type WindowChromeStage = (typeof WINDOW_CHROME_STAGES)[number];
+
+export function isWindowChromeStage(stage: string | undefined | null): boolean {
+  return (
+    stage !== undefined &&
+    stage !== null &&
+    (WINDOW_CHROME_STAGES as readonly string[]).includes(stage)
+  );
+}

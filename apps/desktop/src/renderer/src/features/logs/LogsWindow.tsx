@@ -13,6 +13,7 @@ import { dispatch, subscribe } from "../../lib/pwrsnap";
 import { useCopyText } from "../../lib/useCopyText";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import { WindowControls } from "../shared/WindowControls";
+import { paintsOwnCaptionButtons, rendererPlatform } from "../../lib/window-chrome";
 
 const MAX_RENDERED_LOG_ENTRIES = 5000;
 const BOTTOM_THRESHOLD_PX = 32;
@@ -201,7 +202,7 @@ export function LogsWindow(): ReactElement {
         </div>
         {/* Linux: a frameless window gets neither traffic lights nor a
             `titleBarOverlay` — nobody draws min/max/close but us. */}
-        {window.pwrsnapApi?.platform === "linux" ? <WindowControls /> : null}
+        {paintsOwnCaptionButtons(rendererPlatform()) ? <WindowControls /> : null}
       </header>
       <main className="log-window__content">
         <div className="log-window__toolbar" aria-label="Log controls">

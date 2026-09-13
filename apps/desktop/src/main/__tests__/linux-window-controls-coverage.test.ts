@@ -19,6 +19,22 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
 const windowSource = readFileSync(fileURLToPath(new URL("../window.ts", import.meta.url)), "utf8");
+const indexSource = readFileSync(fileURLToPath(new URL("../index.ts", import.meta.url)), "utf8");
+
+/** The body of the first `if (<head>) {` block, brace-matched. */
+function blockBody(source: string, head: string): string {
+  const start = source.indexOf(head);
+  if (start < 0) throw new Error(`no block matching ${head}`);
+  let depth = 0;
+  for (let i = source.indexOf("{", start); i < source.length; i += 1) {
+    if (source[i] === "{") depth += 1;
+    else if (source[i] === "}") {
+      depth -= 1;
+      if (depth === 0) return source.slice(start, i + 1);
+    }
+  }
+  throw new Error(`unbalanced block matching ${head}`);
+}
 
 function renderer(relativePath: string): string {
   return readFileSync(
@@ -50,11 +66,43 @@ describe("Linux caption-button coverage", () => {
     (_factory, file) => {
       const source = renderer(file);
       expect(source).toContain("WindowControls");
-      // Gated on Linux, not rendered unconditionally: on macOS and Windows the
-      // OS draws these, and a second set would be a duplicate.
-      expect(source).toMatch(/platform === "linux"/);
+      // Gated, not rendered unconditionally: on macOS and Windows the OS draws
+      // these, and a second set would be a duplicate. Through the shared
+      // predicate, so the six agree by construction rather than by six copies
+      // of the same string comparison.
+      expect(source).toContain("paintsOwnCaptionButtons");
     }
   );
+
+  test("the bridge behind the buttons is wired in every process role", () => {
+    // The buttons are painted by a renderer; the window they act on is moved
+    // by main. Wiring the bridge under `role !== "agent"` — the gate the menu
+    // bridge uses — leaves the consent window uncloseable in split mode: it is
+    // built by the AGENT process (the consent broker runs there), it is
+    // frameless on Linux, and its three buttons would invoke a channel with no
+    // handler. Same failure this file exists to prevent, reached by a
+    // different door.
+    const calls = indexSource.match(/wireWindowControlsBridge\(\)/g) ?? [];
+    expect(calls).toHaveLength(1);
+    expect(blockBody(indexSource, 'if (role !== "agent") {')).not.toContain(
+      "wireWindowControlsBridge"
+    );
+    // Same for the per-window frame-state tracking the glyph reads.
+    expect(blockBody(indexSource, 'if (role !== "agent") {')).not.toContain(
+      "trackWindowFrameState"
+    );
+  });
+
+  test("the predicate the six share is Linux-only, and fails closed", () => {
+    // The six assertions above are only worth their salt if the one function
+    // they all call still means "Linux". An absent `pwrsnapApi` — a preload
+    // that failed to load — must answer false rather than paint a second set
+    // of buttons next to the OS's own.
+    const predicates = renderer("lib/window-chrome.ts");
+    expect(predicates).toMatch(
+      /export function paintsOwnCaptionButtons\([^)]*\): boolean \{\s*return platform === "linux";\s*\}/
+    );
+  });
 
   test("every frameless consumer is classified here", () => {
     // A seventh window spreading platformWindowChrome() inherits framelessness

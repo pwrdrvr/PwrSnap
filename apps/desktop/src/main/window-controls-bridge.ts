@@ -15,6 +15,7 @@
 import { BrowserWindow, ipcMain } from "electron";
 import {
   EVENT_CHANNELS,
+  isWindowChromeStage,
   WINDOW_CONTROL_CHANNEL,
   WINDOW_FRAME_STATE_CHANNEL,
   type WindowFrameState
@@ -78,13 +79,39 @@ export function applyWindowControl(window: ControllableWindow, action: unknown):
  */
 export function trackWindowFrameState(window: ObservableWindow): void {
   const push = (): void => {
-    if (window.isDestroyed()) return;
+    // Both halves: a window can outlive its webContents (renderer crash, or a
+    // `maximize` that lands mid-teardown), and `send` on a destroyed
+    // webContents throws — from inside an Electron event handler, where there
+    // is no caller to catch it.
+    if (window.isDestroyed() || window.webContents.isDestroyed()) return;
     window.webContents.send(EVENT_CHANNELS.windowFrameState, {
       maximized: window.isMaximized()
     } satisfies WindowFrameState);
   };
   window.on("maximize", push);
   window.on("unmaximize", push);
+}
+
+/**
+ * The window a request is allowed to act on, or `null`.
+ *
+ * Every renderer in the process can reach these channels, and only six of them
+ * paint a title bar with caption buttons. The rest — the tray popover, the
+ * float-over toast, the region selector, the recording HUD and the recording
+ * frame — must never be minimized or closed this way: destroying the HUD
+ * mid-take is exactly the class of intrusion AGENTS.md forbids, and it would
+ * take one bug in one of those renderers.
+ *
+ * The stage rides in the renderer URL's hash (`rendererTarget()` in window.ts
+ * writes `#stage=<name>`); no hash is the Library. `isWindowChromeStage` is
+ * shared with App.tsx so the two cannot disagree about what a window is.
+ */
+export function controllableWindowFor(sender: Electron.WebContents): BrowserWindow | null {
+  const window = BrowserWindow.fromWebContents(sender);
+  if (window === null) return null;
+  const hash = sender.getURL().split("#")[1] ?? "";
+  const stage = new URLSearchParams(hash).get("stage") ?? "library";
+  return isWindowChromeStage(stage) ? window : null;
 }
 
 let wired = false;
@@ -95,19 +122,13 @@ export function wireWindowControlsBridge(): void {
   wired = true;
 
   ipcMain.handle(WINDOW_CONTROL_CHANNEL, (event, action: unknown) => {
-    const window = BrowserWindow.fromWebContents(event.sender);
+    const window = controllableWindowFor(event.sender);
     if (window !== null) applyWindowControl(window, action);
   });
 
   ipcMain.handle(WINDOW_FRAME_STATE_CHANNEL, (event) => {
-    const window = BrowserWindow.fromWebContents(event.sender);
+    const window = controllableWindowFor(event.sender);
     if (window === null) return null;
     return windowFrameState(window);
   });
-}
-
-/** Test seam: `wireWindowControlsBridge` is idempotent for the life of the
- *  process, which one test file would otherwise get exactly one use of. */
-export function __resetWindowControlsBridgeForTests(): void {
-  wired = false;
 }

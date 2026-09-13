@@ -1832,20 +1832,26 @@ export function bootstrapApp(): void {
     // the renderer mounts no bar of its own.
     if (role !== "agent") {
       wireAppMenuBridge();
-      // The other half of a renderer-painted Linux strip: minimize / maximize
-      // / close, which no OS API provides for a frameless window there.
-      // Registered on every platform (the channels are inert where nothing
-      // calls them) so the wiring has one story, not three.
-      wireWindowControlsBridge();
-      // Every window, whoever opens it — including any added later. The
-      // renderer draws two things from the maximize state on Linux (the
-      // caption glyph and the hairline standing in for the border a frameless
-      // window is not given), and the window manager changes it behind our
-      // back.
-      app.on("browser-window-created", (_event, window) => {
-        trackWindowFrameState(window);
-      });
     }
+    // The other half of a renderer-painted Linux strip: minimize / maximize /
+    // close, which no OS API provides for a frameless window there.
+    //
+    // NOT gated on role, unlike the menu bridge above. The local-agent consent
+    // window spreads `platformWindowChrome()` — so it is frameless on Linux and
+    // paints its own caption buttons — and it is built by the AGENT process
+    // (`role !== "library"`, where the consent broker lives). Gating this the
+    // same way as the menu bridge left that window in split mode with no OS
+    // frame and three dead buttons: nothing could close it. Registered on every
+    // platform and every role; the channels are inert where nothing calls them,
+    // and the bridge itself refuses any window that is not a chrome window.
+    wireWindowControlsBridge();
+    // Every window, whoever opens it — including any added later. The renderer
+    // draws two things from the maximize state on Linux (the caption glyph and
+    // the hairline standing in for the border a frameless window is not given),
+    // and the window manager changes it behind our back.
+    app.on("browser-window-created", (_event, window) => {
+      trackWindowFrameState(window);
+    });
     // Issue #139 — wire the menu refresh + renderer broadcast to OUR
     // clipboard writes. menu-will-show alone was insufficient on macOS;
     // the in-app "Copy MED" flow now updates the menu state at write

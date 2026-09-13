@@ -2,7 +2,13 @@
    Frameless on Linux means no OS drag region and no OS caption buttons, and
    this window paints neither of its own — see the note in App.tsx. Fixed
    across the top 52px, which is exactly the padding `.local-agent-consent`
-   already reserves, so it displaces nothing. */
+   already reserves, so it displaces nothing at rest.
+
+   Opaque, not transparent: the body scrolls (`overflow: auto` below) and this
+   strip is `position: fixed`, so on a short window the consent heading rides
+   up UNDER it — a transparent strip would show that text with a drag region
+   over it, unreadable and unclickable. The background is what makes the strip
+   read as a title bar instead of a hole. */
 .ps-consent-chrome {
   position: fixed;
   top: 0;
@@ -13,7 +19,9 @@
   align-items: center;
   justify-content: flex-end;
   padding: 0 16px;
+  background: var(--bg-app);
   -webkit-app-region: drag;
+  z-index: 10;
 }
 
 body[data-stage="local-agent-consent"] {

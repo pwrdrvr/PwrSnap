@@ -1,5 +1,9 @@
 import { useCallback, useSyncExternalStore, type ReactElement } from "react";
 import type { WindowControlAction } from "@pwrsnap/shared";
+import {
+  createRendererErrorReport,
+  reportRendererError
+} from "../../lib/renderer-error-reporting";
 import { isWindowMaximized, subscribeWindowFrame } from "../../lib/window-frame";
 
 /** One glyph geometry for all three buttons, so their weights match. */
@@ -38,7 +42,15 @@ export function WindowControls(): ReactElement {
   );
 
   const run = useCallback((action: WindowControlAction): void => {
-    void window.pwrsnapApi?.runWindowControl(action);
+    // These three buttons ARE the window's close/minimize/maximize — a
+    // frameless Linux window has no OS affordance behind them. A rejected
+    // invoke (no handler registered, the bridge wired in the wrong process)
+    // is therefore a window the user cannot close, and swallowing it with a
+    // bare `void` leaves nothing in the log to find that from. The button
+    // still does nothing; the difference is that we said so.
+    void window.pwrsnapApi?.runWindowControl(action).catch((error: unknown) => {
+      reportRendererError(createRendererErrorReport("unhandled-rejection", error));
+    });
   }, []);
 
   return (

@@ -20,6 +20,7 @@ import { desktopCapturer, nativeImage, screen, type Display, type NativeImage } 
 import sharp from "sharp";
 import { getMainLogger } from "../log";
 import type { CaptureLatencyTrace } from "./capture-latency-trace";
+import { checkGrabMatchesDisplay } from "./grab-geometry";
 import { classifyCaptureError } from "./permissions";
 import type { ElectronBitmapPixelFormat } from "./windows-shared-snapshot";
 
@@ -123,6 +124,32 @@ async function captureDisplayNativeImage(
   }
   if (source.thumbnail.isEmpty()) {
     throw new Error("desktopCapturer screen thumbnail was empty");
+  }
+  // Last gate before these pixels become "this display" to everything
+  // downstream. Neither branch above proves the source IS this display:
+  // `single_source` takes the lone source precisely because it cannot
+  // check, and on an xdg-desktop-portal session that lone source is
+  // whatever the user picked in the portal's own dialog — possibly
+  // another monitor, a single window, or the whole desktop. Downstream
+  // never asks again: the selector paints the grab stretched to the
+  // overlay and the crop scales the user's rect by `display.scaleFactor`,
+  // so a mismatch here is silently wrong pixels rather than an error.
+  // See grab-geometry.ts for why aspect ratio is the checkable part.
+  const geometry = checkGrabMatchesDisplay({
+    grab: source.thumbnail.getSize(),
+    bounds: { width: display.bounds.width, height: display.bounds.height }
+  });
+  if (!geometry.ok) {
+    log.error("desktopCapturer grab does not match the display it was asked for", {
+      displayId: display.id,
+      strategy,
+      sourceCount: sources.length,
+      sourceId: source.id,
+      sourceName: source.name,
+      sourceDisplayId: source.display_id,
+      message: geometry.message
+    });
+    throw new Error(`${geometry.message} (selected via ${strategy})`);
   }
   return source.thumbnail;
 }

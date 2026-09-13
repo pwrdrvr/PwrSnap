@@ -45,6 +45,11 @@ import {
   getLastWindowListSnapshot,
   hideSelector
 } from "../capture/region-selector";
+import {
+  regionSelectorUnsupported,
+  WAYLAND_SELECTOR_ERROR_CODE,
+  WAYLAND_SELECTOR_MESSAGE
+} from "../capture/linux-session";
 import { captureRegion, captureScreen, captureWindow } from "../capture/screencapture";
 import { displayScaleFactorForId } from "../capture/display-density";
 import { planExtentMask } from "../capture/extent-mask";
@@ -277,6 +282,25 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     }
     const trace = new CaptureLatencyTrace(req.invocation, mode);
     trace.mark("dispatch_receive", { principal: ctx.principal });
+    // Refuse a Wayland session BEFORE anything else touches the screen.
+    // The selector cannot work there — a Wayland client may not place its
+    // own overlay, may not pin it on top, and may not ask where the
+    // pointer is — and the grab comes from the desktop portal, which
+    // picks its own source and does not say which display it gave back.
+    // Ahead of guardScreenCapture so a capture we are going to refuse
+    // never raises the portal's permission prompt. See linux-session.ts.
+    if (regionSelectorUnsupported()) {
+      trace.finish("error", { code: WAYLAND_SELECTOR_ERROR_CODE });
+      log.warn("interactive capture refused: Wayland session", {
+        mode,
+        principal: ctx.principal
+      });
+      return err({
+        kind: "capture",
+        code: WAYLAND_SELECTOR_ERROR_CODE,
+        message: WAYLAND_SELECTOR_MESSAGE
+      });
+    }
     try {
       const permissionStage = trace.begin("permission_preflight");
     // Gate BEFORE pickRegion: the selector freezes a screen snapshot on

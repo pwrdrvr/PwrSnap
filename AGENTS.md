@@ -586,6 +586,67 @@ History + the `sample` recipe:
 §"Addendum (2026-08-22)". Pinned by
 [chat-thread-store-documents-access.test.ts](apps/desktop/src/main/ai/__tests__/chat-thread-store-documents-access.test.ts).
 
+## A screen grab must prove it is the display it claims to be
+
+**Nothing may treat `desktopCapturer` pixels as a given display without
+first checking their shape against that display's bounds, and the
+region-selector overlay may not be shown on a Wayland session at all.**
+Owners: [grab-geometry.ts](apps/desktop/src/main/capture/grab-geometry.ts)
+and [linux-session.ts](apps/desktop/src/main/capture/linux-session.ts).
+Pinned by their unit tests plus the two production-wiring tests —
+[screencapture-grab-geometry.test.ts](apps/desktop/src/main/capture/__tests__/screencapture-grab-geometry.test.ts)
+and [capture-handlers-wayland-refusal.test.ts](apps/desktop/src/main/handlers/__tests__/capture-handlers-wayland-refusal.test.ts).
+
+macOS is exempt by construction: `screencapture -R <bounds>` is TOLD the
+rect. Everywhere else the grab comes from `getSources`, which returns a
+LIST, and the only authoritative key — `display_id` — is documented as
+"an empty string if not available".
+
+- **The silent branch is `single_source`, not the warned fallback.** When
+  `display_id` is empty and there is exactly one source,
+  `captureDisplayNativeImage` takes it deliberately and logs nothing. On
+  an xdg-desktop-portal session that lone source is whatever the user
+  picked in the portal's own dialog. Triage that greps for
+  `no source matched display_id` will therefore find **nothing** on the
+  configuration that is actually broken.
+- **A wrong-shaped grab used to be stretched, not reported.** The selector
+  renderer paints the snapshot with `object-fit: fill`, and
+  `cropScreenSnapshot` maps the user's rect through `display.scaleFactor`
+  — which describes the display and knows nothing about the grab. So a
+  mismatch produced a misaligned picker and a file of pixels the user
+  never saw. `checkGrabMatchesDisplay` now refuses it.
+- **The check is aspect ratio, and that is on purpose.** `thumbnailSize`
+  is a MAXIMUM and Chromium preserves aspect scaling into it, so a healthy
+  grab matches the display's shape whatever size it arrives at — a size
+  check would reject good grabs. It is necessary, not sufficient: two 16:9
+  monitors are indistinguishable this way. Do not widen
+  `GRAB_ASPECT_TOLERANCE` to make something pass; 1% is already ~14× the
+  worst pixel-rounding drift.
+- **Wayland does not get the overlay, and the reason is not the grab.** A
+  Wayland client cannot position its own toplevel (the pre-warmed
+  per-display windows are built at `display.bounds`), cannot pin one on
+  top, and cannot ask where the pointer is (`pickRegion` routes off
+  `getCursorScreenPoint`). All three are load-bearing, and none is
+  fixable in PwrSnap. `capture:interactive` refuses ahead of
+  `guardScreenCapture` so a refused capture never raises the portal's
+  permission prompt.
+- **`capture:fullScreen` / `capture:allScreens` stay available there** —
+  no overlay, no rect arithmetic, so the portal's picker IS the source
+  selection and the editor's crop tool is the region selection. That is
+  what the refusal notice points users at; keep it pointing somewhere.
+- **Detection fails OPEN.** Only a positively-identified Wayland session
+  is refused; an unrecognised environment keeps region capture, because a
+  miss on X11 deletes a working feature while a miss on Wayland still
+  fails legibly at the geometry check.
+- **Neither CI job can catch any of this.** The Docker/xvfb harness has no
+  portal and no window manager, and macOS never runs the code. Confirm on
+  a real session with
+  `pnpm --filter @pwrsnap/desktop probe:linux-capture`
+  ([linux-capture-probe.mjs](apps/desktop/scripts/linux-capture-probe.mjs)),
+  which reports session type, the source list with `display_id` and
+  measured dimensions, whether a selector-shaped window lands where it was
+  asked to, and whether the cursor point is real.
+
 ## Never mix a post-transform rect with a layout measure
 
 **`getBoundingClientRect()` is POST-TRANSFORM. `offsetWidth` /

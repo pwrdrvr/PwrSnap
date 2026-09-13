@@ -648,9 +648,9 @@ function recordPendingDownloadSelection(
   pendingDownloadSelectionsByVersion.set(version, updateSelection);
 }
 
-/** What `autoUpdater.checkForUpdates()` hands back, narrowed to the two
- *  fields that make a download stoppable. Typed structurally so the shape
- *  survives an electron-updater bump that widens the result. */
+/** What `autoUpdater.checkForUpdates()` hands back, narrowed to the fields
+ *  that make a download stoppable and name it. Typed structurally so the
+ *  shape survives an electron-updater bump that widens the result. */
 type UpdateCheckDownloadHandle = {
   cancellationToken?: { cancel: () => void };
   downloadPromise?: Promise<unknown> | null;

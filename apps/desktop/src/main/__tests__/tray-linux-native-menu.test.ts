@@ -26,6 +26,7 @@
 // tray-instant-hide.test.ts; nothing here touches the popover platforms'
 // visibility transitions.
 
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { RecordingBackendCapabilities, RecordingState } from "@pwrsnap/shared";
 import { DEFAULT_HOTKEYS, type HotkeyRegistrationStatusSnapshot } from "@pwrsnap/shared";
@@ -308,11 +309,18 @@ describe("installTray on Linux", () => {
   test("takes the bare 48px icon PATH, not the @Nx NativeImage set", () => {
     installTray();
 
-    // StatusIconLinuxDbus publishes the image's scale-1 representation into
-    // the SNI IconPixmap property. For `tray-icon.png` that rep is the 16×16
-    // base and the @2x/@3x siblings are never consulted, so a HiDPI panel
-    // upscales 16px. `tray-icon-linux.png` is 48px with no siblings.
-    expect(latestTray().iconArg).toBe("/fake/app/build/tray-icon-linux.png");
+    // StatusIconLinuxDbus publishes the image's scale-1 bitmap into the SNI
+    // IconPixmap property. For `tray-icon.png` that is the 16×16 base — the
+    // @2x/@3x siblings are representations of one 16pt image and are never
+    // the one published — so a HiDPI panel upscales 16px.
+    // `tray-icon-linux.png` is 48px with no siblings.
+    //
+    // Joined, not a literal: `resolveTrayIconPath` builds the path with
+    // `node:path`, which picks its separator from the REAL platform at import
+    // and ignores the `process.platform` this suite fakes. A hardcoded "/"
+    // passes locally and on the macOS runner, then fails on the Windows one
+    // with backslashes — which is exactly what it did.
+    expect(latestTray().iconArg).toBe(join("/fake/app", "build", "tray-icon-linux.png"));
     // Template images are a macOS concept; marking a colored icon as one
     // blanks it out.
     expect(mocks.setTemplateImage).not.toHaveBeenCalled();

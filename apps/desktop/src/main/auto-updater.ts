@@ -53,6 +53,33 @@ function autoUpdater(): typeof electronUpdater.autoUpdater {
   return electronUpdater.autoUpdater;
 }
 
+let warnedAboutUnavailableAutoUpdater = false;
+
+/**
+ * The same lazy access, for the paths that must survive not getting one.
+ *
+ * That constructor parses `app.getVersion()` and THROWS
+ * `ERR_UPDATER_INVALID_VERSION` for anything that is not semver — and an
+ * unpackaged Electron on Linux reports `"0.0"`. Nothing in such a build can
+ * auto-update anyway, so a status read (or the dev/QA fake, which reconciles
+ * its held download the same way a real one does) must not blow up on it.
+ * Reads that only make sense against a real updater keep using
+ * `autoUpdater()` directly.
+ */
+function optionalAutoUpdater(): typeof electronUpdater.autoUpdater | undefined {
+  try {
+    return autoUpdater();
+  } catch (err) {
+    if (!warnedAboutUnavailableAutoUpdater) {
+      warnedAboutUnavailableAutoUpdater = true;
+      log.warn("electron-updater is unavailable in this build", {
+        message: err instanceof Error ? err.message : String(err)
+      });
+    }
+    return undefined;
+  }
+}
+
 const log = getMainLogger("pwrsnap:updater");
 const GITHUB_RELEASES_URL = "https://api.github.com/repos/pwrdrvr/PwrSnap/releases";
 const GITHUB_LATEST_RELEASE_URL = `${GITHUB_RELEASES_URL}/latest`;
@@ -161,6 +188,8 @@ type ActiveDownload = {
 };
 
 let activeDownload: ActiveDownload | undefined;
+/** See `isUserUpdateCheckRunning`. Only `runMenuUpdateCheck` moves it. */
+let userCheckRunning = false;
 
 /** Take a cancel the user asked for before there was anything to ask. Called
  *  wherever a download becomes stoppable, so a click that landed early is
@@ -577,7 +606,9 @@ function syncAutoInstallOnAppQuit(updateSelection: UpdateSelectionKey): void {
   // and the user only ever asked to see what was available. Hold it for the
   // explicit Restart in the banner rather than applying it on the next quit
   // — dismissing that banner hides the notice, it does not decline the move.
-  autoUpdater().autoInstallOnAppQuit =
+  const updater = optionalAutoUpdater();
+  if (updater === undefined) return;
+  updater.autoInstallOnAppQuit =
     (matching !== undefined && matching.downgrade !== true) ||
     heldDownloadedUpdate === undefined;
 }
@@ -597,7 +628,7 @@ export function reconcileAppUpdateSelection(
     return;
   }
   if (updateStatus.status === "downloaded" || updateStatus.status === "install-failed") {
-    const currentVersion = autoUpdater().currentVersion?.version ?? currentAppVersion();
+    const currentVersion = optionalAutoUpdater()?.currentVersion?.version ?? currentAppVersion();
     log.info("hiding downloaded update from the unselected train", {
       currentVersion,
       heldSelection: heldDownloadedUpdate?.selection,
@@ -1523,20 +1554,39 @@ function emitUpdateCheckResult(result: AppUpdateCheckResult): void {
  * run, which is the defect this channel exists to fix.
  */
 export async function runMenuUpdateCheck(): Promise<AppUpdateCheckResult> {
+  userCheckRunning = true;
   emitUpdateCheckResult({ status: "checking" });
-  let result: AppUpdateCheckResult;
   try {
-    result = await checkForAppUpdatesNow("menu");
-  } catch (err) {
-    result = {
-      status: "error",
-      message: err instanceof Error ? err.message : String(err)
-    };
+    let result: AppUpdateCheckResult;
+    try {
+      result = await checkForAppUpdatesNow("menu");
+    } catch (err) {
+      result = {
+        status: "error",
+        message: err instanceof Error ? err.message : String(err)
+      };
+    }
+    const settled =
+      result.status === "available" ? await waitForDownloadOutcome(result.version) : result;
+    emitUpdateCheckResult(settled);
+    return settled;
+  } finally {
+    userCheckRunning = false;
   }
-  const settled =
-    result.status === "available" ? await waitForDownloadOutcome(result.version) : result;
-  emitUpdateCheckResult(settled);
-  return settled;
+}
+
+/**
+ * Whether a check the user asked for is still running.
+ *
+ * The `checking` tick above is edge-triggered and never replayed, so a window
+ * that subscribes a moment late misses the entire check — and React flushes
+ * passive effects AFTER paint, which makes that gap reachable even for a
+ * window that was already on screen when the menu item was picked. This is
+ * the mount-time snapshot, the same shape of answer `readAppUpdateStatus`
+ * gives a renderer that mounts mid-download.
+ */
+export function isUserUpdateCheckRunning(): boolean {
+  return userCheckRunning;
 }
 
 /**
@@ -1747,6 +1797,8 @@ export function disposeAutoUpdater(): void {
     periodicUpdateCheckTimer = undefined;
   }
   initialized = false;
+  warnedAboutUnavailableAutoUpdater = false;
+  userCheckRunning = false;
   activeDownload = undefined;
   heldDownloadedUpdate = undefined;
   heldInstallFailed = undefined;

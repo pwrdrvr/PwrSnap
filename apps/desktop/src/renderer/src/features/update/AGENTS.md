@@ -93,6 +93,24 @@ described as an "update" reads as a bug, so `updateProgressCopy` and
 `appUpdateNotice` already does. Main carries the flag onto `downloading` and
 `canceled` so they can.
 
+## The `checking` tick is edge-triggered, so there is a snapshot beside it
+
+`events:app-update:check-result` is fired once and never replayed. A window
+that subscribes a beat later misses the whole check and shows nothing until
+the finished offer arrives — and **React flushes passive effects AFTER
+paint**, so that gap is reachable even for a window that was already on
+screen when the user picked the menu item. It showed up as an e2e flake
+where the first thing the Library ever rendered was "Update ready".
+
+So `use-user-update-check.ts` also reads `app:update:userCheckRunning` on
+mount and races it against the live event — the same shape of recovery
+`useAppUpdateStatus` already does with `app:update:status`, and for the same
+reason. A real event always wins. Main holds the flag in `runMenuUpdateCheck`
+alone, so the snapshot cannot raise a card for a background download.
+
+Anything else that comes to be driven off this channel needs the same pair:
+the event for liveness, the snapshot for a late arrival.
+
 ## The stand-in `checking` is held here, never written into the status
 
 The result channel's `checking` tick outruns the status event it mirrors by

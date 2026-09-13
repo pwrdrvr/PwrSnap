@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => {
   const handlers = new Map<string, Set<UpdateEventHandler>>();
   return {
     appPaths: { userData: "", home: "" },
+    autoUpdaterConstructionError: undefined as Error | undefined,
     handlers,
     broadcast: vi.fn(),
     relay: vi.fn(),
@@ -69,7 +70,16 @@ vi.mock("electron", (): Partial<typeof import("electron")> => ({
 }));
 
 vi.mock("electron-updater", () => ({
-  default: { autoUpdater: mocks.autoUpdater }
+  default: {
+    // A getter, like the real package's: it constructs the platform updater on
+    // first access, and that constructor can throw.
+    get autoUpdater() {
+      if (mocks.autoUpdaterConstructionError !== undefined) {
+        throw mocks.autoUpdaterConstructionError;
+      }
+      return mocks.autoUpdater;
+    }
+  }
 }));
 
 vi.mock("../events", () => ({
@@ -136,6 +146,7 @@ beforeEach(() => {
   mocks.autoUpdater.setFeedURL.mockReset();
   mocks.autoUpdater.on.mockClear();
   mocks.autoUpdater.currentVersion = { version: "1.0.0" };
+  mocks.autoUpdaterConstructionError = undefined;
   const root = mkdtempSync(join(tmpdir(), "pwrsnap-updater-cancel-"));
   roots.push(root);
   mocks.appPaths.userData = root;
@@ -272,6 +283,28 @@ describe("dev/QA fake update check", () => {
     });
   });
 
+  test("finishes even where electron-updater refuses to construct", async () => {
+    // electron-updater parses `app.getVersion()` in its platform updater's
+    // constructor and throws ERR_UPDATER_INVALID_VERSION for anything that is
+    // not semver — an unpackaged Electron on Linux reports "0.0". Nothing in
+    // such a build can auto-update anyway, so reconciling the fake's held
+    // download (and every status read) has to survive it. It did not: the
+    // throw escaped as an "Update check failed" card on the Linux e2e lane.
+    mocks.autoUpdaterConstructionError = new Error(
+      'App version is not a valid semver version: "0.0"'
+    );
+    const updater = await importAutoUpdater();
+
+    const pending = updater.runMenuUpdateCheck();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await expect(pending).resolves.toEqual({ status: "downloaded", version: FAKE_VERSION });
+    expect(updater.readAppUpdateStatus()).toEqual({
+      status: "downloaded",
+      version: FAKE_VERSION
+    });
+  });
+
   test("announces a menu check on the user-initiated channel and nothing else", async () => {
     const updater = await importAutoUpdater();
 
@@ -290,6 +323,31 @@ describe("dev/QA fake update check", () => {
     expect(mocks.relay).toHaveBeenCalledWith(EVENT_CHANNELS.appUpdateCheckResult, {
       status: "checking"
     });
+  });
+
+  test("answers the mount-time snapshot only while a menu check is running", async () => {
+    // The `checking` tick is never replayed, so this is what a window that
+    // subscribed a beat late reads instead.
+    const updater = await importAutoUpdater();
+    expect(updater.isUserUpdateCheckRunning()).toBe(false);
+
+    const pending = updater.runMenuUpdateCheck();
+    expect(updater.isUserUpdateCheckRunning()).toBe(true);
+    await vi.advanceTimersByTimeAsync(STEP_MS * 3);
+    expect(updater.isUserUpdateCheckRunning()).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await pending;
+    expect(updater.isUserUpdateCheckRunning()).toBe(false);
+  });
+
+  test("leaves the snapshot alone for a check nobody asked for", async () => {
+    const updater = await importAutoUpdater();
+
+    const pending = updater.checkForAppUpdatesNow("manual");
+    expect(updater.isUserUpdateCheckRunning()).toBe(false);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await pending;
   });
 
   test("keeps background checks off the user-initiated channel entirely", async () => {

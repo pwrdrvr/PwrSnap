@@ -4614,6 +4614,17 @@ export type Commands = {
    *  the click was in flight), not a fault — the caller has a check result
    *  coming either way. */
   "app:update:cancel": { req: Record<string, never>; res: AppUpdateCancelResult };
+  /** Whether an update check THE USER ASKED FOR is still running. Mount-time
+   *  companion to `events:app-update:check-result`, which is edge-triggered
+   *  and never replayed: a window whose subscription lands after the
+   *  `checking` tick would otherwise show nothing for the whole check.
+   *  React flushes passive effects AFTER paint, so that gap is real even for
+   *  a window that was already on screen when the user picked the menu
+   *  item. */
+  "app:update:userCheckRunning": {
+    req: Record<string, never>;
+    res: { running: boolean };
+  };
   /** Latest release versions from the GitHub API (independent of the
    *  electron-updater channel). Used by Settings → Updates to show the
    *  candidate version for each channel. */

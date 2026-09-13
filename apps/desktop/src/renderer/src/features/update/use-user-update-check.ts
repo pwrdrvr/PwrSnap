@@ -86,11 +86,14 @@ export function useUserUpdateCheck(): UserUpdateCheck {
   statusRef.current = status;
 
   useEffect(() => {
+    let cancelled = false;
+    let receivedEvent = false;
     const unsubscribe = window.pwrsnapApi?.on(
       EVENT_CHANNELS.appUpdateCheckResult,
       (payload) => {
         const next = asAppUpdateCheckResult(payload);
         if (next === undefined) return;
+        receivedEvent = true;
         if (next.status === "checking") {
           // The only mid-flight tick on this channel; everything else on it is
           // an outcome. The live card takes it from here, driven by the status
@@ -115,7 +118,26 @@ export function useUserUpdateCheck(): UserUpdateCheck {
         setResult(next);
       }
     );
-    return () => unsubscribe?.();
+    // Race the snapshot against the live event, exactly as `useAppUpdateStatus`
+    // does — and for a sharper reason. The `checking` tick is edge-triggered
+    // and never replayed, and React flushes passive effects AFTER paint, so a
+    // window that was already on screen when the user picked the menu item can
+    // still subscribe a beat too late and then show nothing for the whole
+    // download. A real event always wins.
+    void (async () => {
+      const result = await dispatch("app:update:userCheckRunning", {});
+      // Same posture as `asAppUpdateCheckResult`: the reply crosses IPC as
+      // `unknown`, and this hook rides on surfaces that must keep working
+      // without it.
+      if (cancelled || receivedEvent || !result.ok) return;
+      if (result.value?.running !== true) return;
+      setWatching(true);
+      setSeedChecking(!isUpdateCheckInProgress(statusRef.current));
+    })();
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
   }, []);
 
   useEffect(() => {

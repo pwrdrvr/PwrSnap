@@ -9,6 +9,7 @@
 //                               default browser (About page links)
 //   - app:update:check        — force a fresh electron-updater check
 //   - app:update:cancel       — stop the download the update card reports
+//   - app:update:userCheckRunning — mount-time snapshot of "the user asked"
 //   - app:update:status       — snapshot of the current updater state
 //   - app:update:install      — restart-into-the-downloaded-update
 //   - app:update:releases     — GitHub Releases list (independent of the
@@ -25,6 +26,7 @@ import {
   cancelAppUpdateDownload,
   checkForAppUpdatesNow,
   installDownloadedAppUpdate,
+  isUserUpdateCheckRunning,
   readAppUpdateReleaseVersions,
   readAppUpdateStatus
 } from "../auto-updater";
@@ -196,6 +198,9 @@ export function registerAppUpdateHandlers(): void {
   });
   bus.register("app:update:cancel", async () => {
     return ok(cancelAppUpdateDownload());
+  });
+  bus.register("app:update:userCheckRunning", async () => {
+    return ok({ running: isUserUpdateCheckRunning() });
   });
   bus.register("app:update:releases", async () => {
     return ok(await readAppUpdateReleaseVersions());

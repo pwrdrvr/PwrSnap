@@ -14,7 +14,10 @@ beforeAll(() => {
 
 type AnyResult = { ok: true; value: unknown } | { ok: false; error: { message: string } };
 
-function installFakeApi(initialStatus: AppUpdateStatus): {
+function installFakeApi(
+  initialStatus: AppUpdateStatus,
+  userCheckRunning = false
+): {
   calls: { name: string; req: unknown }[];
   pushEvent: (channel: string, payload: unknown) => void;
 } {
@@ -27,6 +30,11 @@ function installFakeApi(initialStatus: AppUpdateStatus): {
         calls.push({ name, req });
         if (name === "app:update:status") return { ok: true, value: initialStatus };
         if (name === "app:update:install") return { ok: true, value: { status: "restarting" } };
+        // The mount-time snapshot of "a user check is running". These cases
+        // drive the check-result channel directly, so main always answers no.
+        if (name === "app:update:userCheckRunning") {
+          return { ok: true, value: { running: userCheckRunning } };
+        }
         return { ok: true, value: undefined };
       },
       on: (channel: string, handler: (payload: unknown) => void): (() => void) => {
@@ -50,11 +58,14 @@ function installFakeApi(initialStatus: AppUpdateStatus): {
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
-async function renderBanner(initialStatus: AppUpdateStatus = { status: "idle" }): Promise<{
+async function renderBanner(
+  initialStatus: AppUpdateStatus = { status: "idle" },
+  userCheckRunning = false
+): Promise<{
   calls: { name: string; req: unknown }[];
   pushEvent: (channel: string, payload: unknown) => void;
 }> {
-  const api = installFakeApi(initialStatus);
+  const api = installFakeApi(initialStatus, userCheckRunning);
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -329,6 +340,37 @@ describe("AppUpdateBanner", () => {
     // The sticky Restart notice owns a downloaded update — one offer, not two.
     expect(container?.textContent).toContain("Restart to update to v1.0.0.");
     expect(timerStrip()).toBeNull();
+  });
+
+  test("recovers a check already running when it subscribes a beat late", async () => {
+    // The `checking` tick is edge-triggered and never replayed, and React
+    // flushes passive effects AFTER paint — so a window that was already on
+    // screen when the user picked the menu item can still subscribe too late
+    // and then show NOTHING for the whole download. Caught as an e2e flake
+    // where the first thing the Library ever showed was the finished offer.
+    const api = await renderBanner({ status: "downloading", version: "1.0.0", percent: 20 }, true);
+
+    expect(container?.textContent).toContain("Downloading update");
+    expect(container?.textContent).toContain("PwrSnap v1.0.0 - 20%");
+
+    // And a real event still wins from there.
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.appUpdateCheckResult, {
+        status: "no-update",
+        version: "1.0.0"
+      } satisfies AppUpdateCheckResult);
+    });
+    expect(container?.textContent).not.toContain("Downloading update");
+    expect(container?.textContent).toContain("PwrSnap is up to date");
+  });
+
+  test("still says nothing when no user check is running", async () => {
+    // The default answer. Without this the snapshot would raise a card for
+    // every background download, which is exactly what the second channel
+    // exists to prevent.
+    await renderBanner({ status: "downloading", version: "1.0.0", percent: 20 });
+
+    expect(container?.textContent).toBe("");
   });
 
   test("keeps a standing Restart offer while a fresh check runs beside it", async () => {

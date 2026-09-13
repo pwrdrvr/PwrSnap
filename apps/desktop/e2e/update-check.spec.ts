@@ -20,8 +20,12 @@ import { expect, launchPwrSnap, test, type LaunchedApp } from "./fixtures/electr
 
 const FAKE_VERSION = "420.0.0";
 /** Slow enough that the mid-download card is a target, not a race. Seven
- *  percent ticks at this pace give roughly six seconds to act. */
+ *  percent ticks at this pace give roughly six seconds to act, inside
+ *  Playwright's 30s default test timeout. */
 const UPDATE_STEP_MS = 800;
+/** The cancel spec has to CLICK something that only exists mid-download, so
+ *  it buys twice the window — the whole walk is still ~13s. */
+const CANCEL_STEP_MS = 1500;
 
 async function launchWithFakeUpdates(): Promise<LaunchedApp> {
   return await launchPwrSnap({
@@ -86,7 +90,12 @@ test.describe("Help → Check for Updates", () => {
   });
 
   test("Cancel stops the download and says so without crying failure", async () => {
-    const app = await launchWithFakeUpdates();
+    const app = await launchPwrSnap({
+      env: {
+        PWRSNAP_E2E_UPDATE_FAKE: "1",
+        PWRSNAP_E2E_UPDATE_STEP_MS: String(CANCEL_STEP_MS)
+      }
+    });
     try {
       await clickCheckForUpdates(app);
 
@@ -97,16 +106,28 @@ test.describe("Help → Check for Updates", () => {
 
       const notice = app.window.locator(".app-toast-stack .app-update-banner").first();
       await expect(notice).toContainText("Download canceled", { timeout: 20_000 });
-      await expect(notice).toContainText(`PwrSnap v${FAKE_VERSION} is still available`);
+      // Read the settled card in ONE round trip. It is on its own dismiss
+      // countdown from the moment it appears, so asserting its shape with a
+      // series of retrying locators races that countdown on a slow runner.
+      const settled = await app.window.evaluate(() => {
+        const el = document.querySelector(".app-toast-stack .app-update-banner");
+        return {
+          text: el?.textContent ?? "",
+          hasTimer: el?.querySelector(".app-update-banner__timer") != null,
+          hasTrack: el?.querySelector(".app-update-banner__track") != null,
+          isError: el?.classList.contains("app-update-banner--error") ?? true
+        };
+      });
+      expect(settled.text).toContain(`PwrSnap v${FAKE_VERSION} is still available`);
+      // Now it IS a finished notice, so it goes on the dismiss countdown and
+      // the live progress track is gone.
+      expect(settled.hasTimer).toBe(true);
+      expect(settled.hasTrack).toBe(false);
       // A cancel is not a failure — nothing broke, so no danger tint.
-      await expect(
-        app.window.locator(".app-toast-stack .app-update-banner--error")
-      ).toHaveCount(0);
-      // Now it IS a finished notice, so it goes on the dismiss countdown.
-      await expect(notice.locator(".app-update-banner__timer")).toBeVisible();
-      await expect(notice.locator(".app-update-banner__track")).toHaveCount(0);
+      expect(settled.isError).toBe(false);
 
-      // Nothing was downloaded, so nothing is offered to restart into.
+      // Nothing was downloaded, so nothing is offered to restart into. Safe
+      // to assert after the countdown: it stays 0 either way.
       await expect(app.window.getByRole("button", { name: "Restart" })).toHaveCount(0);
     } finally {
       await app.close();

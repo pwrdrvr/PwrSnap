@@ -195,7 +195,7 @@ for (const expected of [
   "mac-dist/dist/PwrSnap-arm64.dmg",
   "Prepare stable-name Windows installer alias",
   "mac-dist/dist/PwrSnap.dmg",
-  "windows-dist/PwrSnap-windows-x64-setup.exe",
+  "windows-dist/PwrSnap.Setup.exe",
 ]) {
   if (!releaseWorkflow.includes(expected)) {
     fail(`.github/workflows/release.yml must contain ${JSON.stringify(expected)}`);

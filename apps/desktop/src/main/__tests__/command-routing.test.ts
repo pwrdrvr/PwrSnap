@@ -15,6 +15,9 @@ describe("commandOwner", () => {
     expect(commandOwner("clipboard:copy")).toBe("agent");
     expect(commandOwner("permissions:request")).toBe("agent");
     expect(commandOwner("app:update:check")).toBe("agent");
+    // The Cancel button lives in the Library window; the download it stops
+    // lives in the agent, which is where `activeDownload` is held.
+    expect(commandOwner("app:update:cancel")).toBe("agent");
     // video:* registers in recording-handlers next to the recorder —
     // the library grid's video chips forward to the agent.
     expect(commandOwner("video:prepareDrag")).toBe("agent");

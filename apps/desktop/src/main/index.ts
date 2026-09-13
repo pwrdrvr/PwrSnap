@@ -164,9 +164,9 @@ import {
   registerHotkeyRecorderSuspensionHandlers
 } from "./handlers/hotkey-recorder-handlers";
 import {
-  checkForAppUpdatesNow,
   initAppUpdater,
-  reconcileAppUpdateSelection
+  reconcileAppUpdateSelection,
+  runMenuUpdateCheck
 } from "./auto-updater";
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
@@ -597,7 +597,11 @@ function installApplicationMenu(developerMode: boolean = lastKnownDeveloperMode)
         {
           label: "Check for Updates",
           click: () => {
-            void checkForAppUpdatesNow("menu");
+            // NOT `checkForAppUpdatesNow` directly: the menu is the one place
+            // that also announces "a user is waiting for this answer" on
+            // EVENT_CHANNELS.appUpdateCheckResult, which is what raises the
+            // live progress card. See runMenuUpdateCheck.
+            void runMenuUpdateCheck();
           }
         },
         {

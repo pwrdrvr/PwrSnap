@@ -8,6 +8,7 @@
 //   - app:openExternal        — open an allowlisted https URL in the
 //                               default browser (About page links)
 //   - app:update:check        — force a fresh electron-updater check
+//   - app:update:cancel       — stop the download the update card reports
 //   - app:update:status       — snapshot of the current updater state
 //   - app:update:install      — restart-into-the-downloaded-update
 //   - app:update:releases     — GitHub Releases list (independent of the
@@ -21,6 +22,7 @@ import { readLaunchAtLoginStatus } from "../launch-at-login";
 import { resolveDevelopmentRuntimeIdentity } from "../runtime-identity";
 import { showAppDocumentWindow } from "../window";
 import {
+  cancelAppUpdateDownload,
   checkForAppUpdatesNow,
   installDownloadedAppUpdate,
   readAppUpdateReleaseVersions,
@@ -191,6 +193,9 @@ export function registerAppUpdateHandlers(): void {
   });
   bus.register("app:update:install", async () => {
     return ok(await installDownloadedAppUpdate());
+  });
+  bus.register("app:update:cancel", async () => {
+    return ok(cancelAppUpdateDownload());
   });
   bus.register("app:update:releases", async () => {
     return ok(await readAppUpdateReleaseVersions());

@@ -20,6 +20,7 @@ const VERSIONED_STATUSES = new Set([
   "available",
   "downloading",
   "downloaded",
+  "canceled",
   "install-failed"
 ]);
 

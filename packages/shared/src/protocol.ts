@@ -3568,7 +3568,22 @@ export type AppUpdateCheckResult =
   | { status: "checking" }
   | { status: "no-update"; version: string }
   | { status: "downloaded"; version: string; downgrade?: true }
-  | { status: "available"; version: string; downgrade?: true };
+  | { status: "available"; version: string; downgrade?: true }
+  | { status: "canceled"; version: string; downgrade?: true };
+
+/** Bytes moved so far on the update payload. Optional throughout: a feed that
+ *  reports no content length gives electron-updater a percent and nothing
+ *  else, and the meter has to degrade to that rather than print `NaN MB`. */
+export type AppUpdateDownloadProgress = {
+  percent?: number;
+  transferred?: number;
+  total?: number;
+  bytesPerSecond?: number;
+};
+
+/** Whether a download was actually running to stop. `false` is the ordinary
+ *  race — the download finished while the click was in flight — not a fault. */
+export type AppUpdateCancelResult = { canceled: boolean };
 
 // `downgrade` marks the move BACK to a selected slot that sits behind the
 // running build — the way out of a train the user did not pick. It is not
@@ -3581,8 +3596,12 @@ export type AppUpdateStatus =
   | { status: "checking" }
   | { status: "no-update"; version: string }
   | { status: "available"; version: string; downgrade?: true }
-  | { status: "downloading"; version: string; percent?: number; downgrade?: true }
+  | ({ status: "downloading"; version: string; downgrade?: true } & AppUpdateDownloadProgress)
   | { status: "downloaded"; version: string; downgrade?: true }
+  /** The user stopped the download. The release is still published, so this
+   *  is not `available` (which promises a download is under way) and not an
+   *  `error` (nothing failed) — it stands until the next check. */
+  | { status: "canceled"; version: string; downgrade?: true }
   | {
       status: "install-failed";
       version: string;
@@ -4590,6 +4609,11 @@ export type Commands = {
   /** Restart-into-the-downloaded-update. Only valid when status is
    *  `downloaded`; otherwise returns an error. */
   "app:update:install": { req: Record<string, never>; res: AppUpdateInstallResult };
+  /** Stop the download the live update card is reporting. `canceled: false`
+   *  is the ordinary race (the download finished, or never started, while
+   *  the click was in flight), not a fault — the caller has a check result
+   *  coming either way. */
+  "app:update:cancel": { req: Record<string, never>; res: AppUpdateCancelResult };
   /** Latest release versions from the GitHub API (independent of the
    *  electron-updater channel). Used by Settings → Updates to show the
    *  candidate version for each channel. */

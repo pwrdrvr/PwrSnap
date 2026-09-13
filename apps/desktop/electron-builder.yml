@@ -89,11 +89,11 @@ extraResources:
   - from: "CHANGELOG.md"
     to: "CHANGELOG.md"
   # Tray icons. macOS reads the alpha-only *template* PNG (system tints
-  # it for dark/light/accent menubars); Windows/Linux read the colored
+  # it for dark/light/accent menubars); Windows reads the colored
   # `tray-icon.png`. Electron's nativeImage auto-loads the @Nx siblings
   # when given the base path, so each base PNG needs its @2x/@3x next to
   # it under resourcesPath. resolveTrayIconPath() in main/tray.ts picks
-  # the right base per platform. Both sets are tiny (<2 KB total) and
+  # the right base per platform. All three sets are tiny (<4 KB total) and
   # exist in the repo on every platform, so they ship everywhere rather
   # than fiddling with per-platform tray-icon resource lists.
   - from: "build/tray-icon-template.png"
@@ -108,6 +108,16 @@ extraResources:
     to: "tray-icon@2x.png"
   - from: "build/tray-icon@3x.png"
     to: "tray-icon@3x.png"
+  # Linux reads its OWN 48px PNG with no @Nx siblings — Electron's
+  # StatusIconLinuxDbus publishes the image's scale-1 representation into
+  # the StatusNotifierItem `IconPixmap` property, which for the set above
+  # is the 16×16 base. See scripts/generate-tray-icon.mjs. There is no
+  # `linux:` target in this file (Linux is not a distribution target — the
+  # Linux CI job is E2E only), so this entry only matters to a build run
+  # by hand; it lives here with its siblings rather than in a fourth
+  # per-platform list that nothing would keep in step.
+  - from: "build/tray-icon-linux.png"
+    to: "tray-icon-linux.png"
 
 electronFuses:
   runAsNode: false

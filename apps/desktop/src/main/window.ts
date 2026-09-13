@@ -1403,6 +1403,16 @@ export function createTrayWindow(): BrowserWindow {
   // plain frameless, transparent, always-on-top window and the renderer paints
   // the rounded popover surface itself. (Native window shadow doesn't apply to
   // transparent Windows windows — acceptable for now.)
+  //
+  // ⚠️  ON LINUX THIS FACTORY IS E2E-ONLY. Production never reaches it:
+  // `installTray` builds a native `setContextMenu` menu there instead
+  // (`traySurfaceForPlatform` in tray.ts has the four-part reason). The
+  // popover survives on Linux purely so `showTrayPopoverForE2E` can drive the
+  // tray renderer under xvfb — which is where tray-sizing.spec.ts and the
+  // zoom-remeasure specs run — and that path positions the window at a fixed
+  // point on the primary display rather than anchoring it to anything. Do not
+  // read "the Linux E2E tray popover works" as "the Linux tray popover
+  // works"; xvfb is X11, and there is no indicator driving it.
   const macChrome =
     process.platform === "darwin"
       ? ({ type: "panel", vibrancy: "popover", visualEffectState: "active" } as const)
@@ -1492,6 +1502,16 @@ export function createTrayWindow(): BrowserWindow {
   return window;
 }
 
+/**
+ * Anchor the popover to the tray icon.
+ *
+ * ⚠️  Never called on Linux in production, and cannot be: its only input is
+ * `tray.getBounds()`, which Electron declares `@platform darwin,win32`. Even
+ * with a rectangle to work from, `setPosition` is inert under Wayland — a
+ * client cannot place its own windows there. That is half of why the Linux
+ * tray is a native menu (see `traySurfaceForPlatform` in tray.ts); the
+ * non-darwin arm below is Windows-only in practice.
+ */
 export function positionTrayWindow(window: BrowserWindow, trayBounds: Rectangle): void {
   const winBounds = window.getBounds();
   // getDisplayMatching is more accurate than getDisplayNearestPoint for
@@ -1503,9 +1523,9 @@ export function positionTrayWindow(window: BrowserWindow, trayBounds: Rectangle)
   // keeps it on-screen near the right edge where the Windows tray lives.
   const x = Math.round(trayBounds.x + trayBounds.width / 2 - winBounds.width / 2);
   // Vertical anchor differs: macOS's menubar is at the top, so the popover
-  // drops straight down from the icon. The Windows/Linux system tray sits at
-  // the bottom-right, so the popover rises ABOVE the taskbar (the work area
-  // already excludes it).
+  // drops straight down from the icon. The Windows system tray sits at the
+  // bottom-right, so the popover rises ABOVE the taskbar (the work area
+  // already excludes it). No Linux case — see the note above.
   const y =
     process.platform === "darwin"
       ? Math.round(trayBounds.y + trayBounds.height + margin)

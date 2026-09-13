@@ -163,6 +163,12 @@ for (const expected of [
   "find mac-dist/dist mac-dist/build/ffmpeg-source",
   '"${mac_assets[@]}"',
   '"${windows_assets[@]}"',
+  // Stable-name aliases back a releases/latest/download/<name> URL a download
+  // button can hardcode. Each is produced in its platform's signing job and
+  // must survive into the release, or the button silently 404s.
+  "Prepare stable-name Windows installer alias",
+  "mac-dist/dist/PwrSnap.dmg",
+  "windows-dist/PwrSnap.Setup.exe",
 ]) {
   if (!releaseWorkflow.includes(expected)) {
     fail(`.github/workflows/release.yml must contain ${JSON.stringify(expected)}`);

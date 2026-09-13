@@ -18,6 +18,11 @@ if (Test-Path -LiteralPath $workspaceLinkRoot) {
 $paths = @(
   "apps/desktop/release-stage",
   "apps/desktop/scripts/package-win.mjs",
+  # Cuts the stable PwrSnap.Setup.exe alias after Authenticode verification,
+  # and owns the SHA256SUMS format package-win.mjs writes. The signing job has
+  # no checkout, so anything it imports must travel with it too.
+  "apps/desktop/scripts/windows-release-artifacts.mjs",
+  "scripts/lib/cli-entrypoint.mjs",
   "apps/desktop/scripts/verify-asar-contents.mjs",
   "scripts/release/install-trusted-signing.ps1"
 )

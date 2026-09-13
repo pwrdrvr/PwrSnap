@@ -108,6 +108,19 @@ mount and races it against the live event — the same shape of recovery
 reason. A real event always wins. Main holds the flag in `runMenuUpdateCheck`
 alone, so the snapshot cannot raise a card for a background download.
 
+The flag is a COUNT, not a boolean: the menu item has no disabled state, so a
+second click gives a second `runMenuUpdateCheck` frame, and whichever finished
+first would otherwise answer "nobody asked" while the other still held the
+card open.
+
+**The menu item goes over the bus, not straight to the function.** The
+application menu is installed by whichever process owns the windows — the
+LIBRARY process under the experimental split — while `app:update:*` routes to
+the agent. `index.ts` therefore dispatches `app:update:menuCheck`; calling
+`runMenuUpdateCheck()` locally ran a second, uninitialized electron-updater in
+the wrong process and set a flag that `app:update:userCheckRunning` (also
+agent-routed) never read, so the recovery above was dead in split mode.
+
 Anything else that comes to be driven off this channel needs the same pair:
 the event for liveness, the snapshot for a late arrival.
 

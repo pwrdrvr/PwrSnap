@@ -31,7 +31,7 @@
 // AppUpdateBanner.tsx, adapted to PwrSnap's `dispatch` + `on` helpers
 // instead of PwrAgnt's per-method DesktopApi shape.
 
-import { useEffect, useState, type ReactElement } from "react";
+import { useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { appUpdateNotice } from "./app-update-notice";
 import { useAppUpdateInstall } from "./use-app-update";
 import { useUserUpdateCheck } from "./use-user-update-check";
@@ -39,6 +39,78 @@ import { useUserUpdateCheck } from "./use-user-update-check";
 /** How long a settled outcome stands before it dismisses itself. Matches the
  *  Library's undo toast so the two transient notices read as one language. */
 export const UPDATE_OUTCOME_DISMISS_MS = 8000;
+
+type UpdateCardProps = {
+  /** Headline. The card's live region announces this, so it is the phase or
+   *  the answer — never the detail. */
+  eyebrow: string;
+  message: string;
+  /** Danger tint. Only a failed check is one: a cancel is what the user
+   *  asked for, and a download in flight has not failed yet. */
+  isError?: boolean;
+  /** Draw the auto-dismiss countdown, timed to whatever will actually
+   *  dismiss the card. Omitted for a card reporting work still running —
+   *  that has no fixed duration to drain toward. */
+  timerMs?: number;
+  /**
+   * Whether a change anywhere in the card re-announces the WHOLE card.
+   *
+   * `role="status"` implies `aria-atomic="true"`, which is right for a card
+   * that says one thing once and wrong for one whose percent and byte meter
+   * tick every second — atomic wins over a descendant's `aria-live="off"`,
+   * so without turning it off here the opt-outs below do nothing and the
+   * phase changes are buried under "42%... 44%... 47%".
+   */
+  atomic?: boolean;
+  /** Keep the message out of the announcements (it carries the percent). */
+  quietMessage?: boolean;
+  /** Track, meter, restart error — whatever sits under the message. */
+  children?: ReactNode;
+  actions?: ReactNode;
+};
+
+/** The one card shell all three notices share, so their a11y wiring and
+ *  markup cannot drift apart. */
+function UpdateCard({
+  eyebrow,
+  message,
+  isError = false,
+  timerMs,
+  atomic = true,
+  quietMessage = false,
+  children,
+  actions
+}: UpdateCardProps): ReactElement {
+  return (
+    <aside
+      className={isError ? "app-update-banner app-update-banner--error" : "app-update-banner"}
+      role="status"
+      aria-live="polite"
+      aria-atomic={atomic}
+    >
+      {timerMs === undefined ? null : (
+        <span
+          className="app-update-banner__timer"
+          style={{ animationDuration: `${String(timerMs)}ms` }}
+          aria-hidden="true"
+        />
+      )}
+      <div className="app-update-banner__content">
+        <p className="app-update-banner__eyebrow">{eyebrow}</p>
+        <p
+          className="app-update-banner__message"
+          {...(quietMessage ? ({ "aria-live": "off" } as const) : {})}
+        >
+          {message}
+        </p>
+        {children}
+      </div>
+      {actions === undefined ? null : (
+        <div className="app-update-banner__actions">{actions}</div>
+      )}
+    </aside>
+  );
+}
 
 export function AppUpdateBanner(): ReactElement | null {
   const { status, progress, outcome, canceling, cancel, dismissOutcome, checkSeq } =
@@ -83,51 +155,19 @@ export function AppUpdateBanner(): ReactElement | null {
   return (
     <>
       {progress !== undefined ? (
-        <aside className="app-update-banner" role="status" aria-live="polite">
-          <div className="app-update-banner__content">
-            <p className="app-update-banner__eyebrow">{progress.title}</p>
-            {/* `role="status"` above makes this card a polite live region, so
-                the eyebrow announces each phase — which is what a screen
-                reader user wants to hear. The percent, the bar and the byte
-                meter change about once a second, and announcing every tick
-                would bury the phase changes in "42%... 44%... 47%". They opt
-                out; the progressbar keeps its value for anyone who asks. */}
-            <p className="app-update-banner__message" aria-live="off">
-              {progress.message}
-            </p>
-            <div
-              className={
-                progress.percent === undefined
-                  ? "app-update-banner__track app-update-banner__track--indeterminate"
-                  : "app-update-banner__track"
-              }
-              role="progressbar"
-              aria-live="off"
-              aria-label={progress.title}
-              aria-valuemin={progress.percent === undefined ? undefined : 0}
-              aria-valuemax={progress.percent === undefined ? undefined : 100}
-              aria-valuenow={progress.percent}
-            >
-              <span
-                style={
-                  progress.percent === undefined
-                    ? undefined
-                    : { width: `${String(progress.percent)}%` }
-                }
-              />
-            </div>
-            {progress.meter !== undefined ? (
-              <p className="app-update-banner__meter" aria-live="off">
-                {progress.meter}
-              </p>
-            ) : null}
-          </div>
-          {progress.cancelable ? (
-            <div className="app-update-banner__actions">
-              {/* aria-disabled, never `disabled`: Chromium blurs an element
-                  the moment it becomes disabled, which would throw focus to
-                  <body> at the instant the user asked to stop. The handler
-                  guards instead. */}
+        // The one card that reports work in flight: no countdown, and not
+        // atomic, because its percent and byte meter move every second.
+        <UpdateCard
+          eyebrow={progress.title}
+          message={progress.message}
+          atomic={false}
+          quietMessage
+          actions={
+            progress.cancelable ? (
+              // aria-disabled, never `disabled`: Chromium blurs an element
+              // the moment it becomes disabled, which would throw focus to
+              // <body> at the instant the user asked to stop. The handler
+              // guards instead.
               <button
                 className="app-update-banner__dismiss"
                 type="button"
@@ -139,33 +179,47 @@ export function AppUpdateBanner(): ReactElement | null {
               >
                 {canceling ? "Canceling..." : "Cancel"}
               </button>
-            </div>
+            ) : undefined
+          }
+        >
+          <div
+            className={
+              progress.percent === undefined
+                ? "app-update-banner__track app-update-banner__track--indeterminate"
+                : "app-update-banner__track"
+            }
+            role="progressbar"
+            aria-live="off"
+            aria-label={progress.title}
+            aria-valuemin={progress.percent === undefined ? undefined : 0}
+            aria-valuemax={progress.percent === undefined ? undefined : 100}
+            aria-valuenow={progress.percent}
+          >
+            <span
+              style={
+                progress.percent === undefined
+                  ? undefined
+                  : { width: `${String(progress.percent)}%` }
+              }
+            />
+          </div>
+          {progress.meter !== undefined ? (
+            <p className="app-update-banner__meter" aria-live="off">
+              {progress.meter}
+            </p>
           ) : null}
-        </aside>
+        </UpdateCard>
       ) : null}
       {outcome !== undefined ? (
-        <aside
+        // Finished talking, so it goes on the countdown the strip draws. Keyed
+        // on the outcome so a later answer restarts that animation.
+        <UpdateCard
           key={outcome.key}
-          className={
-            outcome.isError
-              ? "app-update-banner app-update-banner--error"
-              : "app-update-banner"
-          }
-          role="status"
-          aria-live="polite"
-        >
-          {/* The countdown this card IS on, drawn so the dismissal is not a
-              surprise. The live card above deliberately has none. */}
-          <span
-            className="app-update-banner__timer"
-            style={{ animationDuration: `${String(UPDATE_OUTCOME_DISMISS_MS)}ms` }}
-            aria-hidden="true"
-          />
-          <div className="app-update-banner__content">
-            <p className="app-update-banner__eyebrow">{outcome.title}</p>
-            <p className="app-update-banner__message">{outcome.message}</p>
-          </div>
-          <div className="app-update-banner__actions">
+          eyebrow={outcome.title}
+          message={outcome.message}
+          isError={outcome.isError}
+          timerMs={UPDATE_OUTCOME_DISMISS_MS}
+          actions={
             <button
               className="app-update-banner__dismiss"
               type="button"
@@ -174,38 +228,39 @@ export function AppUpdateBanner(): ReactElement | null {
             >
               Dismiss
             </button>
-          </div>
-        </aside>
+          }
+        />
       ) : null}
       {offered && notice !== undefined ? (
-        <aside className="app-update-banner" role="status" aria-live="polite">
-          <div className="app-update-banner__content">
-            <p className="app-update-banner__eyebrow">{notice.title}</p>
-            <p className="app-update-banner__message">{notice.message}</p>
-            {restartError !== undefined ? (
-              <p className="app-update-banner__error">{restartError}</p>
-            ) : null}
-          </div>
-          <div className="app-update-banner__actions">
-            <button
-              className="app-update-banner__restart"
-              type="button"
-              disabled={restarting}
-              onClick={handleRestart}
-            >
-              {restarting ? notice.busyAction : notice.action}
-            </button>
-            <button
-              className="app-update-banner__dismiss"
-              type="button"
-              disabled={restarting}
-              aria-label="Dismiss update notification"
-              onClick={() => setDismissedKey(notice.key)}
-            >
-              Dismiss
-            </button>
-          </div>
-        </aside>
+        <UpdateCard
+          eyebrow={notice.title}
+          message={notice.message}
+          actions={
+            <>
+              <button
+                className="app-update-banner__restart"
+                type="button"
+                disabled={restarting}
+                onClick={handleRestart}
+              >
+                {restarting ? notice.busyAction : notice.action}
+              </button>
+              <button
+                className="app-update-banner__dismiss"
+                type="button"
+                disabled={restarting}
+                aria-label="Dismiss update notification"
+                onClick={() => setDismissedKey(notice.key)}
+              >
+                Dismiss
+              </button>
+            </>
+          }
+        >
+          {restartError !== undefined ? (
+            <p className="app-update-banner__error">{restartError}</p>
+          ) : null}
+        </UpdateCard>
       ) : null}
     </>
   );

@@ -4609,6 +4609,18 @@ export type Commands = {
   /** Restart-into-the-downloaded-update. Only valid when status is
    *  `downloaded`; otherwise returns an error. */
   "app:update:install": { req: Record<string, never>; res: AppUpdateInstallResult };
+  /** Help → Check for Updates. Unlike `app:update:check` this one announces
+   *  itself on `events:app-update:check-result`, which is what raises the
+   *  Library's live progress card, and it does not answer until the download
+   *  the check started has settled.
+   *
+   *  It is a bus verb rather than a direct call because the application menu
+   *  is installed by whichever process owns the windows — the LIBRARY process
+   *  under the experimental split — while the updater (and the
+   *  `userCheckRunning` flag `app:update:userCheckRunning` reports) lives in
+   *  the agent. Calling the function locally would run a second, uninitialized
+   *  updater in the wrong process and set a flag nobody reads. */
+  "app:update:menuCheck": { req: Record<string, never>; res: AppUpdateCheckResult };
   /** Stop the download the live update card is reporting. `canceled: false`
    *  is the ordinary race (the download finished, or never started, while
    *  the click was in flight), not a fault — the caller has a check result

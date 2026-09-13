@@ -74,15 +74,19 @@ export function updateProgressCopy(status: AppUpdateProgressStatus): UpdateProgr
       cancelable: true
     };
   }
+  // ONE number for the bar and the label. `percent` reaches us as
+  // `(transferred / total) * 100`, so a feed that reports no content length
+  // makes it NaN, and a differential download can overshoot 100 — printing
+  // the raw value beside a clamped bar gives "- NaN%" or "- 104%" over a bar
+  // that says something else entirely.
+  const percent = clampPercent(status.percent);
   return {
     title: switching ? "Downloading switch" : "Downloading update",
-    message: `PwrSnap v${status.version}${
-      status.percent === undefined ? "" : ` - ${status.percent}%`
-    }`,
+    message: `PwrSnap v${status.version}${percent === undefined ? "" : ` - ${percent}%`}`,
     // A feed that sends no content length leaves electron-updater nothing to
     // compute a percent from. Fall back to the sweep rather than pinning the
     // bar at 0% for the length of the download.
-    percent: clampPercent(status.percent),
+    percent,
     meter: downloadMeter(status),
     cancelable: true
   };

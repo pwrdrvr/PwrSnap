@@ -26,12 +26,18 @@ const UPDATE_STEP_MS = 800;
 /** The cancel spec has to CLICK something that only exists mid-download, so
  *  it buys twice the window — the whole walk is still ~13s. */
 const CANCEL_STEP_MS = 1500;
+/** The background-check spec never has to act mid-flight, so it runs the walk
+ *  as fast as the poll can still catch `downloading`. */
+const BACKGROUND_STEP_MS = 400;
 
-async function launchWithFakeUpdates(): Promise<LaunchedApp> {
+/** The env contract for the fake lives here alone: `PWRSNAP_E2E_UPDATE_FAKE`
+ *  puts it back under the harness's `NODE_ENV=production`, and the step paces
+ *  it. */
+async function launchWithFakeUpdates(stepMs: number = UPDATE_STEP_MS): Promise<LaunchedApp> {
   return await launchPwrSnap({
     env: {
       PWRSNAP_E2E_UPDATE_FAKE: "1",
-      PWRSNAP_E2E_UPDATE_STEP_MS: String(UPDATE_STEP_MS)
+      PWRSNAP_E2E_UPDATE_STEP_MS: String(stepMs)
     }
   });
 }
@@ -90,12 +96,7 @@ test.describe("Help → Check for Updates", () => {
   });
 
   test("Cancel stops the download and says so without crying failure", async () => {
-    const app = await launchPwrSnap({
-      env: {
-        PWRSNAP_E2E_UPDATE_FAKE: "1",
-        PWRSNAP_E2E_UPDATE_STEP_MS: String(CANCEL_STEP_MS)
-      }
-    });
+    const app = await launchWithFakeUpdates(CANCEL_STEP_MS);
     try {
       await clickCheckForUpdates(app);
 
@@ -139,9 +140,7 @@ test.describe("Help → Check for Updates", () => {
     // through the same status machine, and must raise NO live card: they never
     // emit the user-initiated channel the card is gated on. The only thing
     // that reaches the Library is the actionable offer at the end.
-    const app = await launchPwrSnap({
-      env: { PWRSNAP_E2E_UPDATE_FAKE: "1", PWRSNAP_E2E_UPDATE_STEP_MS: "400" }
-    });
+    const app = await launchWithFakeUpdates(BACKGROUND_STEP_MS);
     try {
       const pending = app.dispatch("app:update:check", {});
 

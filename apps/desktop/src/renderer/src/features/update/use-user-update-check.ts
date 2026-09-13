@@ -149,11 +149,19 @@ export function useUserUpdateCheck(): UserUpdateCheck {
 
   const cancel = useCallback((): void => {
     setCanceling(true);
-    void dispatch("app:update:cancel", {});
-    // No state change on the reply: main answers the click with a check
-    // outcome either way, and a `canceled: false` race means the download
-    // finished — which is about to raise the Restart notice, not un-press
-    // this.
+    void (async () => {
+      const result = await dispatch("app:update:cancel", {});
+      // A successful reply needs no state change: main answers the click with
+      // a check outcome either way, and a `canceled: false` race means the
+      // download finished — which is about to raise the Restart notice, not
+      // un-press this.
+      if (result.ok) return;
+      // The click never reached main (a dropped split-mode bridge, an agent
+      // that died mid-download). No outcome is coming, so nothing else would
+      // ever clear this — and the button's own handler is guarded off while
+      // it is set, leaving a dead control reading "Canceling...".
+      setCanceling(false);
+    })();
   }, []);
 
   const dismissOutcome = useCallback((): void => {

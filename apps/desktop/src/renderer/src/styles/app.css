@@ -382,17 +382,6 @@ body[data-stage="float-over"] .fo {
   .app-update-banner {
     animation: none;
   }
-
-  /* Killing the sweep outright would leave a 35% bar that looks like a
-     download stuck at 35%. Fill the track instead, dimmed: "working, extent
-     unknown". The countdown strip keeps animating — it is the only thing
-     telling the user when the card will go, and it is a linear scale rather
-     than the kind of motion this setting is about. */
-  .app-update-banner__track--indeterminate > span {
-    width: 100%;
-    opacity: 0.5;
-    animation: none;
-  }
 }
 
 .app-update-banner__content {
@@ -461,6 +450,24 @@ body[data-stage="float-over"] .fo {
   }
   to {
     transform: translateX(300%);
+  }
+}
+
+/* Killing the sweep outright would leave a 35% bar that looks like a download
+   stuck at 35%. Fill the track instead, dimmed: "working, extent unknown".
+   The countdown strip keeps animating — it is the only thing telling the user
+   when the card will go, and it is a linear scale rather than the kind of
+   motion this setting is about.
+
+   This block MUST stay after the rule it overrides: the two selectors are
+   identical, a media query adds no specificity, and so source order is the
+   only thing deciding the winner. Declared beside the other reduced-motion
+   rule further up, it silently lost and the sweep kept running. */
+@media (prefers-reduced-motion: reduce) {
+  .app-update-banner__track--indeterminate > span {
+    width: 100%;
+    opacity: 0.5;
+    animation: none;
   }
 }
 

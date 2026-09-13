@@ -163,11 +163,7 @@ import {
   registerHotkeyRecorderInputScopeHandler,
   registerHotkeyRecorderSuspensionHandlers
 } from "./handlers/hotkey-recorder-handlers";
-import {
-  initAppUpdater,
-  reconcileAppUpdateSelection,
-  runMenuUpdateCheck
-} from "./auto-updater";
+import { initAppUpdater, reconcileAppUpdateSelection } from "./auto-updater";
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
 import {
@@ -597,11 +593,18 @@ function installApplicationMenu(developerMode: boolean = lastKnownDeveloperMode)
         {
           label: "Check for Updates",
           click: () => {
-            // NOT `checkForAppUpdatesNow` directly: the menu is the one place
-            // that also announces "a user is waiting for this answer" on
-            // EVENT_CHANNELS.appUpdateCheckResult, which is what raises the
-            // live progress card. See runMenuUpdateCheck.
-            void runMenuUpdateCheck();
+            // NOT `app:update:check`: this verb also announces "a user is
+            // waiting for this answer" on EVENT_CHANNELS.appUpdateCheckResult,
+            // which is what raises the live progress card, and it holds its
+            // answer until the download settles. See runMenuUpdateCheck.
+            //
+            // Over the bus rather than a direct call because THIS process may
+            // not be the one that owns the updater: under the process split
+            // the menu is installed by the library while `app:update:*` is
+            // routed to the agent. Calling locally would run a second,
+            // uninitialized updater and set a `userCheckRunning` flag that
+            // `app:update:userCheckRunning` — also agent-routed — never reads.
+            void bus.dispatch("app:update:menuCheck", {}, { principal: "ipc" });
           }
         },
         {

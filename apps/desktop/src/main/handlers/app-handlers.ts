@@ -8,6 +8,8 @@
 //   - app:openExternal        — open an allowlisted https URL in the
 //                               default browser (About page links)
 //   - app:update:check        — force a fresh electron-updater check
+//   - app:update:menuCheck    — Help → Check for Updates, announced on the
+//                               user-initiated result channel
 //   - app:update:cancel       — stop the download the update card reports
 //   - app:update:userCheckRunning — mount-time snapshot of "the user asked"
 //   - app:update:status       — snapshot of the current updater state
@@ -28,7 +30,8 @@ import {
   installDownloadedAppUpdate,
   isUserUpdateCheckRunning,
   readAppUpdateReleaseVersions,
-  readAppUpdateStatus
+  readAppUpdateStatus,
+  runMenuUpdateCheck
 } from "../auto-updater";
 
 /**
@@ -195,6 +198,12 @@ export function registerAppUpdateHandlers(): void {
   });
   bus.register("app:update:install", async () => {
     return ok(await installDownloadedAppUpdate());
+  });
+  // Registered here, not called straight from the menu: under the process
+  // split the menu is installed by the library process and this prefix routes
+  // to the agent, which is the only place the updater actually lives.
+  bus.register("app:update:menuCheck", async () => {
+    return ok(await runMenuUpdateCheck());
   });
   bus.register("app:update:cancel", async () => {
     return ok(cancelAppUpdateDownload());

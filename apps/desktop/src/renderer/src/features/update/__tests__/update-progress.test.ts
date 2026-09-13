@@ -102,6 +102,29 @@ describe("updateProgressCopy", () => {
       updateProgressCopy({ status: "downloading", version: "1.0.0", percent: -3 }).percent
     ).toBe(0);
   });
+
+  test("says the same number the bar draws", () => {
+    // The label and the bar divide ONE clamped value. Reading the raw percent
+    // for the label put "- 104%" next to a bar sitting at 100.
+    expect(
+      updateProgressCopy({ status: "downloading", version: "1.0.0", percent: 104 }).message
+    ).toBe("PwrSnap v1.0.0 - 100%");
+  });
+
+  test("prints no percent at all for one that is not a number", () => {
+    // `percent` reaches main as `(transferred / total) * 100`, so a feed that
+    // reports no content length makes it NaN — and NaN survives Electron's
+    // structured-clone IPC. The bar degrades to the sweep; the label must not
+    // read "- NaN%" beside it.
+    const copy = updateProgressCopy({
+      status: "downloading",
+      version: "1.0.0",
+      percent: Number.NaN
+    });
+
+    expect(copy.percent).toBeUndefined();
+    expect(copy.message).toBe("PwrSnap v1.0.0");
+  });
 });
 
 describe("downloadMeter", () => {

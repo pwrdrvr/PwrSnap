@@ -341,6 +341,21 @@ describe("dev/QA fake update check", () => {
     expect(updater.isUserUpdateCheckRunning()).toBe(false);
   });
 
+  test("holds the snapshot open across overlapping checks", async () => {
+    // The menu item has no disabled state, so two clicks give two frames and
+    // the flag is a COUNT: whichever settles first must not answer "nobody
+    // asked" while the other is still holding the live card open.
+    const updater = await importAutoUpdater();
+
+    const first = updater.runMenuUpdateCheck();
+    const second = updater.runMenuUpdateCheck();
+    expect(updater.isUserUpdateCheckRunning()).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await Promise.all([first, second]);
+    expect(updater.isUserUpdateCheckRunning()).toBe(false);
+  });
+
   test("leaves the snapshot alone for a check nobody asked for", async () => {
     const updater = await importAutoUpdater();
 
@@ -530,6 +545,36 @@ describe("cancelling a real electron-updater download", () => {
     // Not `available`, which promises a download is under way, and not
     // `error`, which claims something broke.
     expect(updater.readAppUpdateStatus()).toEqual({ status: "canceled", version: "1.0.1" });
+  });
+
+  test("does not answer a menu check with an abort of a different version", async () => {
+    // The waiter holds the live card open. A late `update-cancelled` for some
+    // OTHER version must not resolve it, or the card comes down mid-download
+    // and the notice names a release nobody was fetching.
+    const download = createDeferred<string[]>();
+    mocks.autoUpdater.checkForUpdates.mockResolvedValue({
+      isUpdateAvailable: true,
+      updateInfo: { version: "1.0.1" },
+      cancellationToken: { cancel: vi.fn() },
+      downloadPromise: download.promise
+    });
+    const updater = await importAutoUpdater();
+    updater.initAppUpdater(() => ({ channel: "latest", train: "stable" }));
+
+    const pending = updater.runMenuUpdateCheck();
+    await vi.waitFor(() => {
+      expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalled();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    mocks.emit("update-cancelled", { version: "0.9.9" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Still only the opening tick: the check has not been answered.
+    expect(broadcastCheckResults()).toEqual([{ status: "checking" }]);
+
+    mocks.emit("update-downloaded", { version: "1.0.1" });
+    download.resolve([]);
+    await expect(pending).resolves.toEqual({ status: "downloaded", version: "1.0.1" });
   });
 
   test("keeps a held download when a cancel arrives for something else", async () => {

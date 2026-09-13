@@ -70,11 +70,20 @@ function optionalAutoUpdater(): typeof electronUpdater.autoUpdater | undefined {
   try {
     return autoUpdater();
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    // Expected in a build that could not auto-update anyway, and noisy on
+    // every status read — so say it once. A PACKAGED build failing here is a
+    // real fault (a downloaded update will not install on quit, because
+    // `syncAutoInstallOnAppQuit` has nothing to set), and muffling that to a
+    // single warn for the life of the process would hide it: log every time,
+    // at error.
+    if (!devFakeUpdateCheckEnabled()) {
+      log.error("electron-updater is unavailable in this build", { message });
+      return undefined;
+    }
     if (!warnedAboutUnavailableAutoUpdater) {
       warnedAboutUnavailableAutoUpdater = true;
-      log.warn("electron-updater is unavailable in this build", {
-        message: err instanceof Error ? err.message : String(err)
-      });
+      log.warn("electron-updater is unavailable in this build", { message });
     }
     return undefined;
   }
@@ -188,14 +197,18 @@ type ActiveDownload = {
 };
 
 let activeDownload: ActiveDownload | undefined;
-/** See `isUserUpdateCheckRunning`. Only `runMenuUpdateCheck` moves it. */
-let userCheckRunning = false;
+/** How many user-initiated checks are in flight. See
+ *  `isUserUpdateCheckRunning`. A COUNT, not a flag: the menu item has no
+ *  disabled state, so two clicks give two `runMenuUpdateCheck` frames, and a
+ *  boolean would be cleared by whichever finished first while the other was
+ *  still holding the live card open. Only `runMenuUpdateCheck` moves it. */
+let userCheckDepth = 0;
 
 /** Take a cancel the user asked for before there was anything to ask. Called
  *  wherever a download becomes stoppable, so a click that landed early is
  *  honoured instead of dropped. */
-function applyPendingCancel(download: ActiveDownload): boolean {
-  if (!download.canceled) return false;
+function applyPendingCancel(download: ActiveDownload): void {
+  if (!download.canceled) return;
   try {
     download.cancel();
   } catch (err) {
@@ -203,7 +216,6 @@ function applyPendingCancel(download: ActiveDownload): boolean {
       message: err instanceof Error ? err.message : String(err)
     });
   }
-  return true;
 }
 
 /** The `canceled` status for a download, carrying its switch-back flag so the
@@ -283,10 +295,18 @@ function notifyRetryDownloadWaiters(nextStatus: AppUpdateStatus): void {
         version: nextStatus.version,
         ...(nextStatus.downgrade === true ? ({ downgrade: true } as const) : {})
       });
-    } else if (nextStatus.status === "canceled") {
+    } else if (
+      nextStatus.status === "canceled" &&
+      nextStatus.version === waiter.expectedVersion
+    ) {
       // A stopped download is an outcome like any other: the waiter is what
       // holds the live card open, and leaving it armed would keep a progress
       // card on screen for bytes that stopped moving when the user said so.
+      //
+      // Matched on version for the same reason `downloaded` is: a late abort
+      // of some OTHER version (a downgrade the user stopped earlier) must not
+      // answer this waiter, or the live card comes down mid-download and the
+      // notice names a release nobody was fetching.
       clearTimeout(waiter.timer);
       retryDownloadWaiters.delete(waiter);
       waiter.resolve({
@@ -700,7 +720,17 @@ function adoptDownloadCancellation(
     // as a failure would put a danger banner in front of someone who got
     // exactly what they asked for.
     if (download.canceled) {
-      setUpdateStatusUnlessActionable(canceledStatusFor(download));
+      // `update-cancelled` normally beats this rejection and has already
+      // settled the status; re-setting it would broadcast and relay the same
+      // event to every window a second time. This arm is the fallback for a
+      // build where that handler was never registered (`initAppUpdater` is
+      // skipped outside production and under the e2e harness).
+      if (
+        updateStatus.status !== "canceled" ||
+        updateStatus.version !== download.version
+      ) {
+        setUpdateStatusUnlessActionable(canceledStatusFor(download));
+      }
       log.info("update download canceled", { version: download.version });
       return;
     }
@@ -949,7 +979,7 @@ async function simulateDevUpdateCheck(
       await delay(stepMs);
       for (const percent of DEV_FAKE_UPDATE_PERCENT_STEPS) {
         if (download.canceled) {
-          setUpdateStatus(canceled);
+          setUpdateStatusUnlessActionable(canceled);
           return canceled;
         }
         setUpdateStatus({
@@ -965,7 +995,7 @@ async function simulateDevUpdateCheck(
       // otherwise be dropped, and the preview would offer a Restart for an
       // update the user had just declined.
       if (download.canceled) {
-        setUpdateStatus(canceled);
+        setUpdateStatusUnlessActionable(canceled);
         return canceled;
       }
     } finally {
@@ -1554,7 +1584,7 @@ function emitUpdateCheckResult(result: AppUpdateCheckResult): void {
  * run, which is the defect this channel exists to fix.
  */
 export async function runMenuUpdateCheck(): Promise<AppUpdateCheckResult> {
-  userCheckRunning = true;
+  userCheckDepth += 1;
   emitUpdateCheckResult({ status: "checking" });
   try {
     let result: AppUpdateCheckResult;
@@ -1571,7 +1601,7 @@ export async function runMenuUpdateCheck(): Promise<AppUpdateCheckResult> {
     emitUpdateCheckResult(settled);
     return settled;
   } finally {
-    userCheckRunning = false;
+    userCheckDepth = Math.max(0, userCheckDepth - 1);
   }
 }
 
@@ -1586,7 +1616,7 @@ export async function runMenuUpdateCheck(): Promise<AppUpdateCheckResult> {
  * gives a renderer that mounts mid-download.
  */
 export function isUserUpdateCheckRunning(): boolean {
-  return userCheckRunning;
+  return userCheckDepth > 0;
 }
 
 /**
@@ -1798,7 +1828,7 @@ export function disposeAutoUpdater(): void {
   }
   initialized = false;
   warnedAboutUnavailableAutoUpdater = false;
-  userCheckRunning = false;
+  userCheckDepth = 0;
   activeDownload = undefined;
   heldDownloadedUpdate = undefined;
   heldInstallFailed = undefined;

@@ -126,9 +126,35 @@ only offer universal.
 ```bash
 git clone https://github.com/pwrdrvr/PwrSnap.git
 cd PwrSnap
+source ~/.nvm/nvm.sh
+nvm use
 pnpm install
 pnpm dev
 ```
+
+For Linux development, install and desktop dev/preview warn when Electron's
+setuid sandbox helper lacks root ownership or mode `4755`. If Electron reports
+the SUID sandbox error, run these commands from the repository root:
+
+```bash
+pnpm fix:linux-sandbox
+pnpm dev
+```
+
+The fixer resolves this checkout's installed Electron helper, runs `sudo chown
+root:root` followed by `sudo chmod 4755`, and verifies the result. It is safe to
+repeat; run PwrSnap as your normal user. Reinstallation or Electron replacement
+may require repeating the repair. `pnpm check:linux-sandbox` repeats the read-only
+advisory check. User namespaces may permit launch without the setuid helper;
+mount policy (such as `nosuid`) and other security restrictions can still prevent
+startup after repair. Install and launch never request sudo automatically or
+disable sandboxing. Both commands safely do nothing on non-Linux platforms.
+
+Keep a separate `pnpm install` in each worktree. Sharing root `node_modules`
+does not supply all package-local dependency links, and sharing package
+`node_modules` can bind workspace imports to the donor checkout's source and
+make native staging mutate shared dependencies. Sharing a repaired helper is
+not a complete setup fix.
 
 PwrSnap is a pnpm workspace (`apps/desktop` + `packages/*`). The Codex
 App Server protocol types are consumed from

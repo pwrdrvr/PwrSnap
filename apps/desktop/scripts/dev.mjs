@@ -3,6 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { runCli as checkLinuxSandbox } from "../../../scripts/linux-sandbox.mjs";
 import { ensureWindowsDevFfmpeg } from "./dev-ffmpeg.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -428,6 +429,9 @@ export async function main(argv = process.argv.slice(2), inputEnv = process.env)
 
   const electronStatus = ensureElectronInstalled(env);
   if (electronStatus !== 0) return electronStatus;
+
+  // Check after install repair, which may replace the sandbox helper.
+  checkLinuxSandbox(["--warn"]);
 
   const node = process.execPath;
   for (const script of [

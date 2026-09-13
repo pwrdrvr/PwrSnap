@@ -102,6 +102,24 @@ export const EVENT_CHANNELS = {
    */
   appUpdateStatus: "events:app-update:status",
   /**
+   * Main → every BrowserWindow: the outcome of an update check THE USER
+   * ASKED FOR. Emitted from exactly one place — the Help → Check for
+   * Updates menu item (`runMenuUpdateCheck` in auto-updater.ts) — and it
+   * is the only thing that distinguishes "someone is waiting for this
+   * answer" from "the hour hand looked again". Settings → Updates has its
+   * own Check for Updates button and deliberately does NOT emit here: that
+   * surface reports its result inline, and a second card repeating the
+   * answer beside it would say the same thing twice.
+   *
+   * `checking` is the one mid-flight value on this channel; every other
+   * value is an outcome. Payload: `AppUpdateCheckResult`.
+   *
+   * Collapsing this into `appUpdateStatus` breaks the feature — that
+   * channel moves for background checks too, and the live progress card
+   * must stay silent for those.
+   */
+  appUpdateCheckResult: "events:app-update:check-result",
+  /**
    * Main → every BrowserWindow: the exact App Server compatibility guard
    * observed an incompatible Codex CLI, or later observed a compatible CLI
    * and cleared the condition. The Library's App-level toast subscribes so
@@ -548,6 +566,7 @@ export type EventPayloads = {
   [EVENT_CHANNELS.logEntry]: import("./protocol").AppLogEntry;
   [EVENT_CHANNELS.windowFrameState]: WindowFrameState;
   [EVENT_CHANNELS.appUpdateStatus]: AppUpdateStatus;
+  [EVENT_CHANNELS.appUpdateCheckResult]: import("./protocol").AppUpdateCheckResult;
   [EVENT_CHANNELS.codexCompatibilityAlertChanged]:
     | import("./protocol").CodexCliCompatibilityAlert
     | null;

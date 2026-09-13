@@ -73,6 +73,16 @@ function sameVersion(a: string | undefined, b: string | undefined): boolean {
   return a.trim().replace(/^v/i, "") === b.trim().replace(/^v/i, "");
 }
 
+/** A stopped download is neither "available" (nothing is downloading) nor an
+ *  error (nothing failed), so it gets its own line — and says how to get the
+ *  release back, because the only thing that changed is that we stopped
+ *  fetching it. */
+function canceledUpdateText(version: string, switching: boolean): string {
+  return switching
+    ? `Download canceled. v${version} is still available - check again to switch.`
+    : `Download canceled. v${version} is still available - check again to download it.`;
+}
+
 function updateResultText(result: AppUpdateCheckResult): string {
   if (result.status === "skipped") return result.reason;
   if (result.status === "error") return `Update check failed: ${result.message}`;
@@ -82,6 +92,9 @@ function updateResultText(result: AppUpdateCheckResult): string {
     return result.downgrade === true
       ? `v${result.version} ready. Restart to switch.`
       : `Update ready: v${result.version}. Restart to install.`;
+  }
+  if (result.status === "canceled") {
+    return canceledUpdateText(result.version, result.downgrade === true);
   }
   return result.downgrade === true
     ? `Switching to v${result.version}. Downloading in the background.`
@@ -105,6 +118,9 @@ function updateStatusText(status: AppUpdateStatus): string | undefined {
     return status.downgrade === true
       ? `v${status.version} ready. Restart to switch.`
       : `Update ready: v${status.version}. Restart to install.`;
+  }
+  if (status.status === "canceled") {
+    return canceledUpdateText(status.version, status.downgrade === true);
   }
   if (status.status === "install-failed") {
     return `Update to v${status.version} did not finish installing. Retry to download it again and restart.`;

@@ -343,6 +343,11 @@ body[data-stage="float-over"] .fo {
  * warm-near-black palette.
  */
 .app-update-banner {
+  /* Anchor for `.app-update-banner__timer`, which is drawn across the top
+     edge of the settled-outcome card; `overflow: hidden` keeps it tucked
+     inside the corner radius. */
+  position: relative;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -403,6 +408,118 @@ body[data-stage="float-over"] .fo {
   margin: 4px 0 0;
   color: var(--danger-text);
   font: 500 11px/1.4 var(--font-sans);
+}
+
+/* Live progress for a user-initiated update check. This card carries no
+   countdown strip (see `.app-update-banner__timer`), because the work it
+   reports has no fixed duration — this track is the only bar on it, and it
+   means the thing the user is actually waiting on.
+
+   The min-width is the point of the rule: `.app-update-banner` is
+   `width: max-content`, so without it the card would breathe in and out as
+   the percent text changed width, and the bar would be as narrow as the
+   shortest line on the card. */
+.app-update-banner__track {
+  overflow: hidden;
+  height: 4px;
+  min-width: 236px;
+  margin: 9px 0 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-muted) 25%, transparent);
+}
+
+.app-update-banner__track > span {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 120ms linear;
+}
+
+/* No percent to draw — a release read, or a feed that sends no content
+   length. A bar parked at 0 would read as a stalled download. */
+.app-update-banner__track--indeterminate > span {
+  width: 35%;
+  animation: app-update-banner-sweep 1.1s ease-in-out infinite;
+}
+
+@keyframes app-update-banner-sweep {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}
+
+/* Killing the sweep outright would leave a 35% bar that looks like a download
+   stuck at 35%. Fill the track instead, dimmed: "working, extent unknown".
+   The countdown strip keeps animating — it is the only thing telling the user
+   when the card will go, and it is a linear scale rather than the kind of
+   motion this setting is about.
+
+   This block MUST stay after the rule it overrides: the two selectors are
+   identical, a media query adds no specificity, and so source order is the
+   only thing deciding the winner. Declared beside the other reduced-motion
+   rule further up, it silently lost and the sweep kept running. */
+@media (prefers-reduced-motion: reduce) {
+  .app-update-banner__track--indeterminate > span {
+    width: 100%;
+    opacity: 0.5;
+    animation: none;
+  }
+}
+
+.app-update-banner__meter {
+  margin: 5px 0 0;
+  color: var(--text-muted);
+  font: 500 10.5px/1.3 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Auto-dismiss countdown for a SETTLED outcome — a depleting strip across the
+   top, same language as the undo toast's `.ps-undo-toast__progress` and the
+   float-over's `.fo__progress`. Duration comes from the component so the
+   strip and the timer that actually dismisses the card cannot disagree. */
+.app-update-banner__timer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent-strong) 100%);
+  transform-origin: left center;
+  animation: app-update-banner-drain linear forwards;
+}
+
+@keyframes app-update-banner-drain {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
+/* An update check that FAILED. The other two cards this component renders are
+   never an error: a cancel is what the user asked for, and a download in
+   flight has not failed yet. */
+.app-update-banner--error {
+  border-color: var(--danger-border);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--danger) 14%, var(--bg-panel-elevated)),
+    color-mix(in srgb, var(--danger) 7%, var(--bg-panel-elevated))
+  );
+}
+
+.app-update-banner--error .app-update-banner__eyebrow {
+  color: var(--danger-text);
+}
+
+.app-update-banner--error .app-update-banner__timer {
+  background: var(--danger);
 }
 
 .app-update-banner__actions {

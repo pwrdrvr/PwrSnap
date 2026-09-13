@@ -18,6 +18,9 @@ if (Test-Path -LiteralPath $workspaceLinkRoot) {
 $paths = @(
   "apps/desktop/release-stage",
   "apps/desktop/scripts/package-win.mjs",
+  # Cuts the stable PwrSnap.Setup.exe alias after Authenticode verification,
+  # and owns the SHA256SUMS format package-win.mjs writes.
+  "apps/desktop/scripts/windows-release-artifacts.mjs",
   "apps/desktop/scripts/sharp-platform-packages.mjs",
   "apps/desktop/scripts/packaged-html-rules.mjs",
   "apps/desktop/scripts/verify-asar-contents.mjs",

@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
 import { describe, expect, test } from "vitest";
 import { BUNDLED_FFMPEG } from "../../../scripts/generate-third-party-licenses.mjs";
+import { WINDOWS_ALIAS_NAMES } from "./windows-release-artifacts.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..", "..");
 
@@ -339,6 +340,11 @@ describe("Windows release configuration", () => {
     expect(order("Prepare stable-name Windows installer alias")).toBeGreaterThan(
       order("--sign-stage-only --release --require-signing"),
     );
+    // Specifically after Authenticode verification, not merely after packaging:
+    // the alias is a copy and inherits whatever it copies, unsigned included.
+    expect(order("Prepare stable-name Windows installer alias")).toBeGreaterThan(
+      order("Verify Authenticode signatures"),
+    );
     expect(order("Prepare stable-name Windows installer alias")).toBeLessThan(
       order("Upload Windows installer artifact"),
     );
@@ -347,20 +353,37 @@ describe("Windows release configuration", () => {
       .split("- name: Prepare stable-name Windows installer alias")[1]
       .split("\n      - name:")[0];
 
-    expect(aliasStep).toContain('$aliasName = "PwrSnap-windows-x64-setup.exe"');
+    // The naming rule and every refusal live in the script, where unit tests
+    // can reach them; the workflow only invokes it. Re-inlining the logic as
+    // PowerShell would put it back beyond the reach of `pnpm test`.
+    expect(aliasStep).toContain(
+      "node apps/desktop/scripts/windows-release-artifacts.mjs apps/desktop/release-stage",
+    );
     // A copy, never a second trip through Azure signing — identical bytes keep
     // the Authenticode signature the previous step just verified.
-    expect(aliasStep).toContain("Copy-Item -LiteralPath $versioned.FullName");
     expect(aliasStep).not.toContain("Invoke-TrustedSigning");
-    // PwrSnap-windows-SHA256SUMS stays authoritative for every installer that
-    // ships, alias included.
-    expect(aliasStep).toContain('$lines += "$actual  $aliasName"');
-    // ...but the alias must never reach updater metadata. electron-updater
-    // resolves latest.yml and the .blockmap by exact filename, so aiming
-    // either at a name that moves every release breaks update resolution and
-    // delta downloads for everyone already installed. Assert against the
-    // executable lines only — the comment explaining the rule names both
-    // files, and should keep naming them.
+    // The workflow spells the alias three times — this presence filter, the
+    // upload glob, and the publication guard — and the script spells it once.
+    // Bind them to WINDOWS_ALIAS_NAMES: a rename there must not be able to
+    // leave the workflow checking a stale name, which fails the release inside
+    // the protected Windows job after Azure signing has already run, or worse
+    // publishes with no alias at all and 404s the stable URL.
+    const aliasGlob = "PwrSnap.Setup*.exe";
+    const globPattern = new RegExp(`^${aliasGlob.replace(/[.]/g, "\\.").replace(/\*/g, ".*")}$`);
+    for (const name of Object.values(WINDOWS_ALIAS_NAMES)) {
+      expect(name, `the ${aliasGlob} glob must carry ${name}`).toMatch(globPattern);
+    }
+
+    // A script that no-ops still exits 0, so the step asserts the file landed.
+    expect(aliasStep).toContain(`Filter "${aliasGlob}"`);
+    expect(aliasStep).toContain("the stable download URL would 404");
+
+    // The alias must never reach updater metadata. electron-updater resolves
+    // latest.yml and the .blockmap by exact filename, so aiming either at a
+    // name that moves every release breaks update resolution and delta
+    // downloads for everyone already installed. Assert against the executable
+    // lines only — the comment explaining the rule names both files, and
+    // should keep naming them.
     const aliasScript = aliasStep
       .split("\n")
       .filter((line) => !/^\s*#/.test(line))
@@ -372,10 +395,27 @@ describe("Windows release configuration", () => {
     // that carries the Windows one is easy to narrow by accident. Anchor to
     // end-of-line: a plain toContain("...dist/*-setup.exe") is also satisfied
     // by the "...dist/*-setup.exe.blockmap" line below it, so deleting the
-    // installer glob outright would still have passed.
+    // installer glob outright would still have passed. PwrSnap.Setup.exe does
+    // not end in "-setup.exe", so it needs its own line.
     expect(workflow).toMatch(/release-stage\/dist\/\*-setup\.exe\r?$/m);
+    expect(workflow).toMatch(
+      new RegExp(`release-stage/dist/${aliasGlob.replace(/[.*]/g, "\\$&")}\\r?$`, "m"),
+    );
     expect(workflow).toContain("mac-dist/dist/PwrSnap.dmg");
-    expect(workflow).toContain("windows-dist/PwrSnap-windows-x64-setup.exe");
+    expect(workflow).toContain(`windows-dist/${WINDOWS_ALIAS_NAMES.x64}`);
+
+    // The signing job has no checkout, so the script only exists there if the
+    // archive carries it — an omission that fails after Azure signing has run.
+    expect(read("scripts/release/archive-windows-signing-input.ps1")).toContain(
+      '"apps/desktop/scripts/windows-release-artifacts.mjs"',
+    );
+
+    // PwrSnap-windows-x64-setup.exe (#463) named an architecture no download
+    // button mentions and never resolved at releases/latest/download: it
+    // shipped from v1.1.0-alpha.6 while v1.0.3 held the Latest marker, and
+    // neither website ever linked it. Publishing both would give Windows two
+    // competing "canonical" stable URLs.
+    expect(workflow).not.toContain("PwrSnap-windows-x64-setup.exe");
   });
 
   test("install and support docs describe the shipping Windows contract", () => {
@@ -440,7 +480,12 @@ describe("Windows release configuration", () => {
       "The real public release still needs final Authenticode signing",
       "Settings → Experimental",
       "Captures land under `~/Library/Application Support/PwrSnap/`",
-      "https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap-windows-x64-setup.exe",
+      // releases/latest/download/ resolves only for the release marked Latest,
+      // and every release is published as a Pre-release. v1.0.3 holds the
+      // marker and carries no Windows alias, so a download button pointing
+      // here is a 404 until the first release carrying PwrSnap.Setup.exe is
+      // promoted. Drop this line in the same change that flips the chip.
+      "https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.Setup.exe",
       "The 1.1 line is currently a prerelease",
       "For the current 1.1 prerelease line",
       "Windows video currently includes the pointer",

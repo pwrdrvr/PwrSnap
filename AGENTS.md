@@ -619,17 +619,26 @@ LIST, and the only authoritative key — `display_id` — is documented as
   is a MAXIMUM and Chromium preserves aspect scaling into it, so a healthy
   grab matches the display's shape whatever size it arrives at — a size
   check would reject good grabs. It is necessary, not sufficient: two 16:9
-  monitors are indistinguishable this way. Do not widen
-  `GRAB_ASPECT_TOLERANCE` to make something pass; 1% is already ~14× the
-  worst pixel-rounding drift.
-- **Wayland does not get the overlay, and the reason is not the grab.** A
-  Wayland client cannot position its own toplevel (the pre-warmed
-  per-display windows are built at `display.bounds`), cannot pin one on
-  top, and cannot ask where the pointer is (`pickRegion` routes off
-  `getCursorScreenPoint`). All three are load-bearing, and none is
-  fixable in PwrSnap. `capture:interactive` refuses ahead of
-  `guardScreenCapture` so a refused capture never raises the portal's
-  permission prompt.
+  monitors are indistinguishable this way, **and on a single-display
+  machine it cannot separate a right portal answer from a wrong one at
+  all** — the measured Ubuntu grab came back 0% off. Treat it as a
+  backstop for the multi-source cases, never as proof the grab is right.
+  Do not widen `GRAB_ASPECT_TOLERANCE` to make something pass; 1% is
+  already ~14× the worst pixel-rounding drift.
+- **Wayland does not get the overlay, and the reason is not the grab.**
+  Measured on Ubuntu 24 / GNOME: `getCursorScreenPoint()` returns 0,0
+  wherever the mouse is — `pickRegion` routes off it and hands it to the
+  renderer for the opening crosshair — and the portal round trip costs a
+  permission prompt, a picker, and ~3 seconds per capture, which is not
+  "freeze the screen and drag" by any reading. `capture:interactive`
+  refuses ahead of `guardScreenCapture` so a refused capture never raises
+  that prompt.
+- **Do NOT repeat the claim that a Wayland client cannot place the
+  overlay.** It is the obvious guess and it was wrong: Electron defaults
+  to the X11 ozone backend, so on a Wayland session it usually runs as an
+  XWayland client, and the probe measured position and size honoured
+  exactly with the renderer 1:1 with display logical px. A Wayland-native
+  client could not; an XWayland one can. Measure before asserting.
 - **`capture:fullScreen` / `capture:allScreens` stay available there** —
   no overlay, no rect arithmetic, so the portal's picker IS the source
   selection and the editor's crop tool is the region selection. That is

@@ -125,12 +125,12 @@ export function useUserUpdateCheck(): UserUpdateCheck {
     // still subscribe a beat too late and then show nothing for the whole
     // download. A real event always wins.
     void (async () => {
-      const result = await dispatch("app:update:userCheckRunning", {});
+      const snapshot = await dispatch("app:update:userCheckRunning", {});
       // Same posture as `asAppUpdateCheckResult`: the reply crosses IPC as
       // `unknown`, and this hook rides on surfaces that must keep working
       // without it.
-      if (cancelled || receivedEvent || !result.ok) return;
-      if (result.value?.running !== true) return;
+      if (cancelled || receivedEvent || !snapshot.ok) return;
+      if (snapshot.value?.running !== true) return;
       setWatching(true);
       setSeedChecking(!isUpdateCheckInProgress(statusRef.current));
     })();

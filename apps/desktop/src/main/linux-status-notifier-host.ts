@@ -47,6 +47,9 @@ const STATUS_NOTIFIER_WATCHER = "org.kde.StatusNotifierWatcher";
  */
 export const STATUS_NOTIFIER_PROBE_TIMEOUT_MS = 2_000;
 
+/** Hard ceiling on buffered stdout. The reply we parse is `(true,)`/`(false,)`. */
+const STDOUT_CAP = 256;
+
 export type StatusNotifierHostState = "present" | "absent" | "unknown";
 
 export type LinuxTrayEnvironment = {
@@ -165,8 +168,11 @@ export function probeStatusNotifierHost(
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {
       // Bounded: a well-behaved reply is ~8 bytes, and this keeps a
-      // misbehaving `gdbus` from growing a string without limit.
-      if (stdout.length < 256) stdout += chunk;
+      // misbehaving `gdbus` from growing a string without limit. Clamp the
+      // RESULT rather than gating the append — a guard that only checks the
+      // length first still admits one arbitrarily large chunk whole, which
+      // is the case the bound exists for.
+      if (stdout.length < STDOUT_CAP) stdout = (stdout + chunk).slice(0, STDOUT_CAP);
     });
     // ENOENT (no `gdbus` on PATH) lands here, not in the try/catch above.
     child.on("error", () => {

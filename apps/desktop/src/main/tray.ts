@@ -166,6 +166,11 @@ let trayWindow: BrowserWindow | null = null;
  */
 let lastTrayResizeRequest: { cssHeight: number; dipHeight: number } | null = null;
 let pendingDismiss: ReturnType<typeof setTimeout> | null = null;
+/**
+ * Signature of the menu template currently exported to the Linux SNI host,
+ * or `null` when nothing has been exported yet. See `refreshNativeTrayMenu`.
+ */
+let publishedTrayMenuSignature: string | null = null;
 let currentTrayHotkeys: Settings["hotkeys"] = { ...DEFAULT_HOTKEYS };
 let resolveTrayHotkeyStatus: (() => HotkeyRegistrationStatusSnapshot) | null = null;
 
@@ -545,7 +550,12 @@ export function installTray(): Tray {
   const iconPath = resolveTrayIconPath(platform);
   const icon = nativeImage.createFromPath(iconPath);
   if (icon.isEmpty()) {
-    log.warn("tray icon image is empty — falling back to setTitle text", { iconPath });
+    // Says what actually happens. There is no text fallback: `setTitle` is
+    // `@platform darwin` (see `setTrayTitleIfSupported`) and nothing sets a
+    // persistent title on any platform — the two callers are the transient
+    // recording dot and the timed countdown. An empty image means a blank
+    // spot in the menubar/panel, and this line is what explains it.
+    log.warn("tray icon image is empty — the tray will render blank", { iconPath });
   }
   // Template image is a macOS concept (alpha-only, system-tinted). On
   // Windows/Linux the icon carries its own color — marking it as a template
@@ -554,12 +564,21 @@ export function installTray(): Tray {
     icon.setTemplateImage(true);
   }
 
-  // Linux takes the PATH, not the NativeImage. `StatusIconLinuxDbus`
-  // publishes the image as an SNI pixmap either way, so this is belt-and-
-  // braces against Electron's long-standing Linux preference for a real
-  // file on disk — and it costs nothing, because the `isEmpty()` probe
-  // above already gave us the diagnostic a NativeImage was worth.
-  tray = new Tray(surface === "native-menu" ? iconPath : icon);
+  // ⚠️  Always the NativeImage, never the path — on every platform.
+  //
+  // `Tray`'s constructor accepts either, and it is tempting to hand Linux the
+  // path on the theory that Electron prefers a real file there. Measured on
+  // Electron 41.10.7 under Linux, that theory is wrong twice over:
+  // `new Tray(<NativeImage>)` followed by `setContextMenu` works exactly like
+  // the path form, AND `new Tray(<missing path>)` THROWS ("Failed to load
+  // image from path") where `new Tray(<empty NativeImage>)` returns normally.
+  //
+  // A throw here is not survivable in the way a blank icon is: `installTray`
+  // runs un-awaited inside `app.whenReady().then(...)`, so it would abort the
+  // rest of the boot — focus sink, selector pre-warm, everything after it.
+  // The `isEmpty()` warning above is the whole point: detect a missing icon,
+  // say so, and keep going.
+  tray = new Tray(icon);
   tray.setToolTip(idleTrayTooltip());
 
   // Recording state → tray indicator. While recording, prepend "● " to
@@ -586,7 +605,7 @@ export function installTray(): Tray {
     // that starts AFTER us is picked up by Chromium's own NameOwnerChanged
     // handling, so a missing host now is not permanent.
     void logLinuxTrayHostDiagnostics();
-    log.info("tray installed", { iconPath, surface });
+    logTrayInstalled(iconPath, surface);
     return tray;
   }
 
@@ -646,8 +665,13 @@ export function installTray(): Tray {
   // click; `wireTrayResizeChannel` sizes the (hidden) window to match.
   prewarmTrayWindow();
 
-  log.info("tray installed", { iconPath, surface });
+  logTrayInstalled(iconPath, surface);
   return tray;
+}
+
+/** One shape for the install log, whichever arm of `installTray` exits. */
+function logTrayInstalled(iconPath: string, surface: TraySurface): void {
+  log.info("tray installed", { iconPath, surface });
 }
 
 /**
@@ -668,6 +692,15 @@ export function installTray(): Tray {
  *
  * No-op before `installTray` and on the popover platforms.
  *
+ * Callers are unconditional and may fire far more often than the menu
+ * actually changes — `setTrayHotkeys` is wired to `onSettingsChanged`, which
+ * broadcasts on EVERY settings and secret write — so this compares what the
+ * menu would look like against what was last exported and publishes only on
+ * a difference. That is not just a saving: `setContextMenu` REPLACES the
+ * exported menu object, and some SNI hosts close an open menu when it is
+ * replaced, so a republish the user did not need is a republish that can
+ * shut the menu under their cursor.
+ *
  * Non-fatal on purpose. Its callers are not places a failure may propagate
  * from: `installTray` runs un-awaited inside `app.whenReady().then(...)`, so
  * a throw there aborts the rest of the boot (focus sink, selector pre-warm);
@@ -687,12 +720,49 @@ function refreshNativeTrayMenu(): void {
     // No `trayBounds`: `getBounds()` is `@platform darwin,win32`, so there is
     // nothing honest to pass. `settings:open` already treats `sourceBounds` as
     // optional and centres the window without it.
-    tray.setContextMenu(Menu.buildFromTemplate(buildTrayContextMenuTemplate()));
+    const template = buildTrayContextMenuTemplate();
+    const signature = trayMenuSignature(template);
+    if (signature === publishedTrayMenuSignature) return;
+    tray.setContextMenu(Menu.buildFromTemplate(template));
+    publishedTrayMenuSignature = signature;
   } catch (cause) {
+    // Leave the signature alone: a failed publish must not be remembered as
+    // the exported state, or the next refresh would skip the retry.
     log.error("failed to publish the linux tray menu", {
       message: cause instanceof Error ? cause.message : String(cause)
     });
   }
+}
+
+/**
+ * Everything about a menu template that a user can SEE, flattened to a
+ * string. Two templates with the same signature render identically, so
+ * re-exporting one over the other is pure cost.
+ *
+ * Covers `label`, `enabled`, `accelerator`, `type` and recurses into
+ * `submenu` — the dev seeder's items are submenus, so a signature that
+ * stopped at the top level would miss a changed profile name. `click`
+ * handlers are deliberately NOT part of it: they are fresh closures on every
+ * build and would make every signature unique, defeating the comparison.
+ * That is safe because a handler's identity is invisible until it is invoked,
+ * and the exported menu is rebuilt from the same live module state either way.
+ */
+function trayMenuSignature(template: readonly MenuItemConstructorOptions[]): string {
+  return template
+    .map((item) => {
+      const submenu = Array.isArray(item.submenu) ? trayMenuSignature(item.submenu) : "";
+      // `enabled` defaults to true when absent, so normalize rather than
+      // printing "undefined" — otherwise adding an explicit `enabled: true`
+      // would read as a change.
+      return [
+        item.type ?? "normal",
+        item.label ?? "",
+        item.accelerator ?? "",
+        item.enabled === false ? "off" : "on",
+        submenu
+      ].join("\u0001");
+    })
+    .join("\u0002");
 }
 
 /**
@@ -776,6 +846,7 @@ export function disposeTray(): void {
     tray.destroy();
     tray = null;
   }
+  publishedTrayMenuSignature = null;
   currentTrayHotkeys = { ...DEFAULT_HOTKEYS };
   // Reset the RESOLVER too, not just the spellings. The two are read together
   // by `activeTrayAccelerator` — it compares the resolver's live accelerator

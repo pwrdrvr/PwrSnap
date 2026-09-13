@@ -6,7 +6,7 @@
 
 import { existsSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 // NOTE: this path must stay in the signing tarball's file list in
 // .github/workflows/release.yml — that list is an allowlist, not a glob.
 import { isCliEntrypoint } from "../../../scripts/lib/cli-entrypoint.mjs";
@@ -15,6 +15,7 @@ import {
   partitionSharpNativePackages,
   sharpNativePackagesForTarget
 } from "./sharp-platform-packages.mjs";
+import { findRemoteScript, isRendererHtmlEntry } from "./packaged-html-rules.mjs";
 
 // @electron/asar is declared as a direct devDependency of @pwrsnap/desktop.
 // The protected Windows signing job receives a self-contained staged toolchain,
@@ -363,6 +364,115 @@ export function verifySharpAsarRuntime(listing, platform, arch = "x64") {
   throw new Error(lines.join("\n"));
 }
 
+/**
+ * A packaged renderer must load every script from inside the asar. The one
+ * thing that has ever wanted to break that rule is the opt-in React DevTools
+ * bridge (`PWRSNAP_REACT_DEVTOOLS`), which injects
+ * `<script src="http://localhost:8097">` as the first head script at Vite
+ * config time. That is a build-time decision, so nothing at app runtime can
+ * undo it — this is where it gets caught. The rule is written against the
+ * shape, not against the flag, so any remote script trips it.
+ *
+ * `readEntry` is injected so this is testable without packing an asar, and
+ * so the caller owns the `@electron/asar` handle. An entry it cannot read is
+ * reported rather than skipped: this is a check whose whole job is to stop
+ * something shipping, so "could not look" has to be as loud as "looked and
+ * found it". (`@electron/asar`'s `readFileSync` does resolve unpacked files
+ * out of the `.unpacked` sidecar, so the throwing cases are directories,
+ * links, and real I/O errors — exactly the ones that must not pass quietly.)
+ *
+ * A listing that matches NOTHING is reported too, via `scanned`. A gate that
+ * inspects zero files and prints OK is indistinguishable from one that
+ * inspected the renderer and cleared it — and it stays that way, silently,
+ * for every release after the one where `out/` stopped holding the HTML.
+ */
+export function findPackagedHtmlIssues(listing, readEntry) {
+  const remoteScripts = [];
+  const unreadable = [];
+  const matched = normalizedAsarEntries(listing).filter(isRendererHtmlEntry);
+  for (const entry of matched) {
+    let contents;
+    try {
+      contents = readEntry(entry);
+    } catch (error) {
+      unreadable.push({
+        entry,
+        reason: error instanceof Error ? error.message : String(error)
+      });
+      continue;
+    }
+    const snippet = findRemoteScript(contents);
+    if (snippet !== null) remoteScripts.push({ entry, snippet });
+  }
+  return { remoteScripts, unreadable, scanned: matched.length };
+}
+
+/**
+ * Turn a POSIX-normalized listing entry back into the form
+ * `@electron/asar` resolves. It looks a node up by splitting on `path.sep`,
+ * so on Windows a forward-slash path resolves to nothing and EVERY html
+ * entry would report as unreadable — a release that fails for the wrong
+ * reason. Exported so that branch is testable from a POSIX host, where
+ * `sep` is `/` and the conversion is otherwise a no-op.
+ */
+export function asarLookupPath(entry, pathSep = sep) {
+  return entry.replace(/^\//, "").replaceAll("/", pathSep);
+}
+
+export function verifyPackagedHtml(listing, readEntry) {
+  const { remoteScripts, unreadable, scanned } = findPackagedHtmlIssues(
+    listing,
+    readEntry
+  );
+  if (scanned === 0) {
+    throw new Error(
+      [
+        "verify-asar-contents: no packaged renderer HTML to inspect",
+        "",
+        "  expected at least one /out/**/*.html entry in app.asar",
+        "",
+        "The remote-script scan matched nothing, so it cleared nothing. Either",
+        "the renderer HTML is missing from the bundle or it no longer lands",
+        "under /out/ — update isRendererHtmlEntry in packaged-html-rules.mjs",
+        "to match wherever electron-builder now puts it."
+      ].join("\n")
+    );
+  }
+  if (remoteScripts.length === 0 && unreadable.length === 0) return;
+
+  const lines = [];
+  if (remoteScripts.length > 0) {
+    lines.push(
+      `verify-asar-contents: ${remoteScripts.length} packaged HTML file(s) load a remote script`,
+      ""
+    );
+    for (const { entry, snippet } of remoteScripts) {
+      lines.push(`  ${entry}`, `    ${snippet}`);
+    }
+    lines.push(
+      "",
+      "Build without PWRSNAP_REACT_DEVTOOLS set. That bridge is for local",
+      "profiling builds only and must never reach a packaged app."
+    );
+  }
+  if (unreadable.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push(
+      `verify-asar-contents: ${unreadable.length} packaged HTML file(s) could not be read`,
+      ""
+    );
+    for (const { entry, reason } of unreadable) {
+      lines.push(`  ${entry}`, `    ${reason}`);
+    }
+    lines.push(
+      "",
+      "These were not inspected for remote scripts, so the bundle is not cleared.",
+      "A renderer HTML entry should be a readable, packed file."
+    );
+  }
+  throw new Error(lines.join("\n"));
+}
+
 export function verifyPackagedResources(appPath, platform = packagedPlatform(appPath)) {
   const missingResources = findMissingPackagedResources(appPath, platform);
   if (missingResources.length === 0) return;
@@ -420,6 +530,9 @@ export function runCli(args = process.argv.slice(2)) {
   try {
     verifyAsarListing(listing);
     verifySharpAsarRuntime(listing, platform, arch);
+    verifyPackagedHtml(listing, (entry) =>
+      asar.extractFile(asarPath, asarLookupPath(entry)).toString("utf8")
+    );
     verifyPackagedResources(appPath, platform);
     verifyUnpackedNative(appPath, platform, arch);
   } catch (error) {
@@ -427,7 +540,9 @@ export function runCli(args = process.argv.slice(2)) {
     process.exit(1);
   }
 
-  console.log(`verify-asar-contents: OK (${listing.length} entries, no forbidden patterns)`);
+  console.log(
+    `verify-asar-contents: OK (${listing.length} entries, no forbidden patterns, no remote scripts)`
+  );
 }
 
 if (isCliEntrypoint(import.meta.url)) {

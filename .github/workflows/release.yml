@@ -87,6 +87,8 @@ jobs:
             .npmrc \
             CHANGELOG.md \
             scripts/check-desktop-release-metadata.mjs \
+            scripts/check-app-metadata-policy.mjs \
+            scripts/check-electron-fuses-policy.mjs \
             scripts/check-bundled-ffmpeg-notice.mjs \
             scripts/lib/cli-entrypoint.mjs \
             apps/desktop/package.json \
@@ -98,6 +100,7 @@ jobs:
             apps/desktop/scripts/macos-release-artifacts.mjs \
             apps/desktop/scripts/rebuild-native-for-electron.mjs \
             apps/desktop/scripts/sharp-platform-packages.mjs \
+            apps/desktop/scripts/packaged-html-rules.mjs \
             apps/desktop/scripts/verify-asar-contents.mjs \
             apps/desktop/node_modules \
             node_modules

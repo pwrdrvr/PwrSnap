@@ -196,7 +196,10 @@ jobs:
         run: pnpm run test
 
   desktop-e2e:
-    name: Desktop E2E
+    # Renamed from "Desktop E2E": that name is now the aggregate job at the
+    # bottom of this file, which is what the branch-protection ruleset
+    # requires. This job is one platform of three feeding it.
+    name: Linux Desktop E2E
     runs-on: ubuntu-latest
     needs: [changes, install-deps]
     if: needs.changes.outputs.code_impacting == 'true'
@@ -382,3 +385,68 @@ jobs:
             apps/desktop/playwright-report/
             apps/desktop/test-results/
           retention-days: 30
+
+  desktop-e2e-result:
+    # Aggregate gate over every Desktop E2E platform.
+    #
+    # `Desktop E2E` is a required status check in the "Protect main branch"
+    # ruleset, and it used to be the Linux job's own name — so the macOS and
+    # Windows lanes ran on every code-impacting PR but nothing required them,
+    # and a platform-specific regression merged green. Moving the name onto
+    # this job keeps that required context reporting (so the ruleset needs no
+    # edit) while widening what it actually covers.
+    #
+    # `always()` is load-bearing. Without it a failed upstream lane leaves this
+    # job *skipped*, and branch protection counts a skipped required check as
+    # satisfied — the gate would silently stop gating.
+    name: Desktop E2E
+    runs-on: ubuntu-latest
+    needs: [changes, desktop-e2e, desktop-e2e-macos, windows-e2e]
+    if: >-
+      always() &&
+      needs.changes.outputs.code_impacting == 'true'
+    timeout-minutes: 5
+    steps:
+      - name: Require every Desktop E2E platform
+        env:
+          LINUX_RESULT: ${{ needs.desktop-e2e.result }}
+          MACOS_RESULT: ${{ needs.desktop-e2e-macos.result }}
+          WINDOWS_RESULT: ${{ needs.windows-e2e.result }}
+          # `desktop-e2e-macos` is deliberately not scheduled for fork PRs —
+          # self-hosted runners must not execute arbitrary fork code — so it
+          # reports `skipped` there. This mirrors that job's own guard rather
+          # than treating every `skipped` as acceptable: requiring success
+          # unconditionally would leave fork PRs permanently blocked on a lane
+          # that can never run, and accepting any `skipped` would let a
+          # genuinely skipped macOS lane pass the gate on our own PRs.
+          MACOS_SCHEDULED: >-
+            ${{ github.event_name == 'push'
+            || (github.event_name == 'pull_request'
+            && github.event.pull_request.head.repo.full_name == github.repository) }}
+        run: |
+          set -uo pipefail
+          status=0
+
+          require() {
+            if [[ "$2" == "success" ]]; then
+              echo "  PASS  $1 ($2)"
+            else
+              echo "  FAIL  $1 ($2)"
+              status=1
+            fi
+          }
+
+          echo "Desktop E2E platform results:"
+          require "Linux" "$LINUX_RESULT"
+          if [[ "$MACOS_SCHEDULED" == "true" ]]; then
+            require "macOS" "$MACOS_RESULT"
+          else
+            echo "  SKIP  macOS ($MACOS_RESULT) - fork PR, self-hosted lane not scheduled"
+            echo "::warning::macOS Desktop E2E did not run for this fork PR; macOS-only coverage is unverified."
+          fi
+          require "Windows" "$WINDOWS_RESULT"
+
+          if [[ "$status" -ne 0 ]]; then
+            echo "::error::One or more Desktop E2E platforms did not succeed."
+          fi
+          exit "$status"

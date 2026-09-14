@@ -446,6 +446,19 @@ describe("Windows release configuration", () => {
     expect(rootReadme).toContain("Linux desktop support is not shipped");
     expect(rootReadme).toContain("Developer ID signed, hardened, and Apple-notarized");
     expect(rootReadme).toContain("Authenticode-signed");
+    // The Windows stable alias was forbidden in user-facing docs while no
+    // promoted release carried it — releases/latest/download/ resolves only
+    // for the release marked Latest, so a button pointing there 404'd. v1.0.4
+    // carries the alias #597 added (verified: 206), so the README may now link
+    // it, and this asserts the link the download chip depends on.
+    expect(rootReadme).toContain(
+      "https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.Setup.exe"
+    );
+    // The macOS arm64 alias has NOT shipped to a stable release yet, so the
+    // README must not link it. Drop this in the change that flips that chip.
+    expect(rootReadme).not.toContain(
+      "https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap-arm64.dmg"
+    );
     expect(rootReadme).toMatch(/To install a\s+1\.1 prerelease/);
     expect(rootReadme).toMatch(/Once 1\.1 is promoted\s+stable/);
 
@@ -480,12 +493,6 @@ describe("Windows release configuration", () => {
       "The real public release still needs final Authenticode signing",
       "Settings → Experimental",
       "Captures land under `~/Library/Application Support/PwrSnap/`",
-      // releases/latest/download/ resolves only for the release marked Latest,
-      // and every release is published as a Pre-release. v1.0.3 holds the
-      // marker and carries no Windows alias, so a download button pointing
-      // here is a 404 until the first release carrying PwrSnap.Setup.exe is
-      // promoted. Drop this line in the same change that flips the chip.
-      "https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.Setup.exe",
       "The 1.1 line is currently a prerelease",
       "For the current 1.1 prerelease line",
       "Windows video currently includes the pointer",

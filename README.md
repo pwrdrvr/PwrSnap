@@ -1,27 +1,47 @@
-# PwrSnap
+<div align="center">
 
-**Capture stays on your laptop until you opt in. Enable AI and your captures
-ride your existing OpenAI Codex install — no new cloud provider, no new
-account.**
+<img src="docs/assets/pwrsnap-icon.png" alt="" width="96" height="96">
+
+<h1>PwrSnap</h1>
+
+<strong>Screen capture for the agent age.</strong>
+
+<p>
+  <a href="https://github.com/pwrdrvr/PwrSnap/releases/latest"><img src="docs/assets/buttons/download-mac-apple-silicon.png" alt="Download for Mac — Apple Silicon" width="250"></a>
+  <a href="https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.dmg"><img src="docs/assets/buttons/download-mac-universal.png" alt="Download for Mac — Universal, Intel and Apple Silicon" width="250"></a>
+  <a href="https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.Setup.exe"><img src="docs/assets/buttons/download-windows.png" alt="Download for Windows — x64 installer" width="250"></a>
+</p>
+
+<p>
+  <a href="https://docs.pwrsnap.com"><img src="docs/assets/buttons/link-docs.png" alt="Documentation" width="180"></a>
+  <a href="https://pwrsnap.com"><img src="docs/assets/buttons/link-website.png" alt="pwrsnap.com" width="180"></a>
+  <a href="https://pwrdrvr.com/about"><img src="docs/assets/buttons/link-about.png" alt="About PwrDrvr" width="180"></a>
+</p>
+
+<sub>macOS 14 or newer · Windows 10 or newer · MIT · Developer ID-signed and Apple-notarized; the Windows installer is Authenticode-signed
+No account, no telemetry, no PwrSnap server. AI is optional, and rides the Codex you already have.</sub>
+
+<br>
+
+<img src="https://pwrsnap.com/assets/screenshots/desktop-hero.png" alt="PwrSnap's Library — captures grouped by source app in the sidebar, a virtualized grid of the day's snaps, and Quick Capture in the title bar.">
+
+</div>
+
+Not sure which Mac? **Apple Silicon** is the right download for an M-series
+Mac, and the smaller one. **Universal** runs natively on both Intel and Apple
+Silicon. The Apple Silicon chip opens the latest release rather than a file:
+`PwrSnap-arm64.dmg` is built and published on the 1.1 prereleases, but no
+promoted stable release carries it yet, so `releases/latest/download/` has
+nothing to point at. It becomes a direct link once one does.
 
 A local-first macOS and Windows capture + library app with global hotkeys for
 region, window, and full-screen snaps. A float-over toast that copies a Low /
 Med / High render to the clipboard in one click. A menu-bar or system-tray
 surface that keeps the last capture ready for instant re-copy or edit. And —
-because the AI brain is the
-Codex CLI / Codex Desktop you already have installed — annotation, smart
-filenames, descriptions, and sensitive-data review go through your existing
-OpenAI Codex plan, billed to the AI cloud provider you've already set Codex
-up with. No new cloud provider for PwrSnap to talk to, no new account to
-manage, no telemetry.
-
-**[Download for Apple Silicon](https://github.com/pwrdrvr/PwrSnap/releases)** —
-choose `PwrSnap-<version>-arm64.dmg` for M-series Macs when available.
-The universal download also works on Apple Silicon.
-
-| Universal macOS | Windows x64 | Debian / Linux | Documentation |
-| --- | --- | --- | --- |
-| **[Download universal DMG](https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.dmg)** — Apple Silicon + Intel | **[Download Windows installer](https://github.com/pwrdrvr/PwrSnap/releases/latest)** | **[Installation status](https://docs.pwrsnap.com/install/#linux)** — no Debian package yet | **[Read the docs](https://docs.pwrsnap.com)** |
+because the AI brain is the Codex CLI / Codex Desktop you already have
+installed — annotation, smart filenames, descriptions, and sensitive-data
+review go through your existing OpenAI Codex plan, billed to the AI cloud
+provider you've already set Codex up with.
 
 ## Why you might want it
 
@@ -85,13 +105,29 @@ processing; normal users do not need to install FFmpeg separately.
 
 ### Install a stable release
 
-1. Open the [latest stable release](https://github.com/pwrdrvr/PwrSnap/releases/latest).
-2. On Apple Silicon, choose the release's `PwrSnap-<version>-arm64.dmg` when
-   available. On Intel, or if unsure, use the universal `PwrSnap.dmg`.
-   Open the DMG and drag PwrSnap to Applications.
-   On Windows, download `PwrSnap-<version>-windows-x64-setup.exe` and run the
-   per-user installer; its default location is
-   `%LOCALAPPDATA%\Programs\PwrSnap`.
+1. **Download PwrSnap.** The chips at the top of this page are the shortest
+   route; every file below is also on the
+   [latest stable release](https://github.com/pwrdrvr/PwrSnap/releases/latest)
+   under a version-stamped name.
+   - macOS, universal —
+     [`PwrSnap.dmg`](https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.dmg).
+     One build for Apple Silicon + Intel, running natively on both, and the
+     right choice if you are not sure which Mac you have.
+   - macOS on Apple Silicon — `PwrSnap-arm64.dmg`, the native build and a
+     substantially smaller download. Pick it from the
+     [Releases page](https://github.com/pwrdrvr/PwrSnap/releases) for now: it
+     is published on the 1.1 prereleases, and the stable
+     `releases/latest/download/PwrSnap-arm64.dmg` alias starts resolving with
+     the first stable release that carries it.
+   - Windows —
+     [`PwrSnap.Setup.exe`](https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.Setup.exe),
+     the x64 installer. Every release also carries the same bytes version-
+     stamped as `PwrSnap-<version>-windows-x64-setup.exe`, which is the name
+     you will see in the release's asset list.
+2. **Install it.** On macOS, open the DMG and drag PwrSnap to Applications;
+   both macOS builds are Developer ID-signed and Apple-notarized, so first
+   launch is a single Gatekeeper prompt. On Windows, run the per-user
+   installer; its default location is `%LOCALAPPDATA%\Programs\PwrSnap`.
 3. Optionally connect Codex from **Settings → AI Providers**. Capture, editing,
    the Library, and export continue to work without an AI provider.
 
@@ -115,11 +151,6 @@ PwrSnap offers **Restart to Update**. When a release contains both macOS
 architectures, Apple Silicon (including Rosetta) receives the ARM64 ZIP and
 Intel receives universal. Existing universal installations follow the same
 routing; older universal-only releases remain compatible.
-
-The Apple Silicon stable alias, `PwrSnap-arm64.dmg`, becomes available through
-`releases/latest/download/` after the first release containing it is promoted
-stable. Until then, use the Releases page above; existing stable releases may
-only offer universal.
 
 ### Want to hack on it
 
@@ -190,9 +221,10 @@ A few load-bearing design rules:
 
 ## Roadmap
 
-macOS and Windows are shipping desktop targets. The 1.1 release line ships
-signed Windows and universal macOS artifacts through the same guarded release;
-Linux remains a build-only release gate with no supported installer. The
+macOS and Windows are shipping desktop targets. The 1.1 release line ships an
+Apple Silicon macOS DMG, a universal macOS DMG for Intel and Apple Silicon, and
+a signed Windows x64 installer through the same guarded release; Linux remains
+a build-only release gate with no supported installer. The
 durable architecture and direction live in
 [docs/architecture.md](docs/architecture.md); platform specifics are in the
 [Windows guide](docs/windows/README.md).
@@ -221,6 +253,10 @@ notarization, updater metadata, and stable-name aliases) is documented in
 PwrSnap is licensed under the [MIT License](LICENSE). Third-party
 dependency notices are aggregated in
 [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES) and shipped with desktop
-distributions.
+distributions. The bundled FFmpeg sidecar is LGPL-2.1, so every release also
+publishes its `ffmpeg-<version>-…-LGPL-NOTICE.txt` and `-SOURCE-OFFER.txt`
+beside the installers — legal disclosures rather than downloads. How all of it
+is generated and gated is in
+[docs/third-party-license-notices.md](docs/third-party-license-notices.md).
 
 Created by [PwrDrvr LLC](https://pwrdrvr.com). Copyright © 2026 PwrDrvr LLC.

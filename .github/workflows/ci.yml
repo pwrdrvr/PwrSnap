@@ -196,7 +196,10 @@ jobs:
         run: pnpm run test
 
   desktop-e2e:
-    name: Desktop E2E
+    # Renamed from "Desktop E2E": that name is now the aggregate job at the
+    # bottom of this file, which is what the branch-protection ruleset
+    # requires. This job is one platform of three feeding it.
+    name: Linux Desktop E2E
     runs-on: ubuntu-latest
     needs: [changes, install-deps]
     if: needs.changes.outputs.code_impacting == 'true'
@@ -382,3 +385,77 @@ jobs:
             apps/desktop/playwright-report/
             apps/desktop/test-results/
           retention-days: 30
+
+  desktop-e2e-result:
+    # Aggregate gate over every Desktop E2E platform.
+    #
+    # `Desktop E2E` is a required status check in the "Protect main branch"
+    # ruleset, and it used to be the Linux job's own name — so the macOS and
+    # Windows lanes ran on every code-impacting PR but nothing required them,
+    # and a platform-specific regression merged green. Moving the name onto
+    # this job keeps that required context reporting (so the ruleset needs no
+    # edit) while widening what it actually covers.
+    #
+    # `always()` is load-bearing. Without it a failed upstream lane leaves this
+    # job *skipped*, and branch protection counts a skipped required check as
+    # satisfied — the gate would silently stop gating.
+    name: Desktop E2E
+    runs-on: ubuntu-latest
+    needs: [changes, desktop-e2e, desktop-e2e-macos, windows-e2e]
+    if: >-
+      always() &&
+      needs.changes.outputs.code_impacting == 'true'
+    timeout-minutes: 5
+    steps:
+      - name: Require every Desktop E2E platform
+        env:
+          LINUX_RESULT: ${{ needs.desktop-e2e.result }}
+          MACOS_RESULT: ${{ needs.desktop-e2e-macos.result }}
+          WINDOWS_RESULT: ${{ needs.windows-e2e.result }}
+          # `desktop-e2e-macos` is deliberately not scheduled for fork PRs —
+          # self-hosted runners must not execute arbitrary fork code — so it
+          # reports `skipped` there, and requiring it unconditionally would
+          # leave fork PRs blocked on a lane that can never run.
+          #
+          # Test only for the fork and let every OTHER missing macOS result
+          # fail the gate. Re-stating that job's whole scheduling expression
+          # here would be a second copy of it that can drift: once the two
+          # disagree, the gate either blocks fork PRs or passes with no macOS
+          # coverage. This way an event neither job anticipated (a
+          # `workflow_dispatch` or `merge_group` trigger added later) fails
+          # closed instead of silently dropping macOS from the gate.
+          IS_FORK_PR: >-
+            ${{ github.event_name == 'pull_request'
+            && github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          set -euo pipefail
+          status=0
+
+          # Mirror each line into the job summary so the PR checks page names
+          # the platform that broke without anyone opening the job log.
+          say() {
+            echo "$1"
+            echo "$1" >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          require() {
+            if [[ "$2" == "success" ]]; then
+              say "- PASS \`$1\` ($2)"
+            else
+              say "- FAIL \`$1\` ($2)"
+              echo "::error::$1 Desktop E2E did not succeed ($2)."
+              status=1
+            fi
+          }
+
+          say "### Desktop E2E platform results"
+          require "Linux" "$LINUX_RESULT"
+          if [[ "$IS_FORK_PR" == "true" && "$MACOS_RESULT" == "skipped" ]]; then
+            say "- SKIP \`macOS\` (skipped) — fork PR; self-hosted lane not scheduled"
+            echo "::warning::macOS Desktop E2E did not run for this fork PR; macOS-only coverage is unverified."
+          else
+            require "macOS" "$MACOS_RESULT"
+          fi
+          require "Windows" "$WINDOWS_RESULT"
+
+          exit "$status"

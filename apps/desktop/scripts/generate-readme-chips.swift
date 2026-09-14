@@ -4,10 +4,18 @@ import AppKit
 import CoreText
 import Foundation
 
-// Regenerates the repository README's download and link chips. Run from
-// apps/desktop, as the sibling asset generators here are:
+// Regenerates the repository README's download and link chips:
 //
-//   swift scripts/generate-readme-chips.swift
+//   swift scripts/generate-readme-chips.swift        # from apps/desktop
+//   pnpm --filter @pwrsnap/desktop generate:readme-chips
+//
+// Every path it touches is resolved from THIS FILE's location, not the process
+// cwd, so either invocation — or one from the repo root — writes the same six
+// PNGs from the same vendored face. That is a deliberate divergence from
+// PwrGit's copy, which is cwd-relative: run PwrGit's from the wrong directory
+// and the font silently falls back to the system face while the output lands
+// outside the repository, with exit code 0. Port this back rather than
+// reverting it.
 //
 // It is the one generator in this directory that writes OUTSIDE
 // apps/desktop/build — its output is repository documentation, at
@@ -40,8 +48,9 @@ struct Brand {
   let surfaceBorder: NSColor
   let text: NSColor
   let muted: NSColor
-  /// Geist Bold, relative to apps/desktop. Falls back to the system bold face
-  /// when absent, which shifts metrics — keep the file present.
+  /// Geist Bold, relative to apps/desktop (resolved via `desktopRoot` below,
+  /// never the cwd). Falls back to the system bold face when absent, which
+  /// shifts metrics — keep the file present.
   let boldFontPath: String
 }
 
@@ -49,7 +58,7 @@ let brand = Brand(
   // From apps/desktop/src/renderer/src/styles/tokens.css. deviceRGB, not
   // calibratedRGB: the design-system tangerine is #ff8a1f and calibrated
   // drifts it to #ee894a. Same pin as generate-dmg-background.swift, and the
-  // rule design/CLAUDE.md states for every native generator.
+  // rule design/AGENTS.md states for every native generator.
   accent: NSColor(deviceRed: 255 / 255.0, green: 138 / 255.0, blue: 31 / 255.0, alpha: 1),
   // --accent-strong, the lift PwrSnap's own primary buttons take on hover.
   accentTop: NSColor(deviceRed: 255 / 255.0, green: 163 / 255.0, blue: 61 / 255.0, alpha: 1),
@@ -114,7 +123,32 @@ let chips: [Chip] = [
   Chip(file: "link-about.png", family: .link, style: .secondary, title: "About PwrDrvr", subtitle: ""),
 ]
 
-let outputDirectory = CommandLine.arguments.dropFirst().first ?? "../../docs/assets/buttons"
+/// `apps/desktop`, derived from this file's own path (`.../apps/desktop/scripts`).
+/// Everything below resolves against this rather than the process cwd.
+///
+/// `#filePath` is the path AS TYPED on the command line, so it is relative
+/// whenever the caller's is — `swift scripts/generate-readme-chips.swift`
+/// yields exactly that. Resolving it against the cwd and standardizing is what
+/// makes the two components below climb from the real directory instead of
+/// from a fragment: unresolved, `apps/desktop/scripts/…` climbs to `apps/` and
+/// the output path then escapes to `/docs/assets/buttons`.
+/// Joined by hand rather than with `URL(fileURLWithPath:relativeTo:)`: that
+/// keeps the URL relative, and `standardized` then collapses a leading `..`
+/// it cannot climb past instead of resolving it, which silently aims the
+/// output at `apps/desktop/docs/assets/buttons`.
+let scriptPath = URL(
+  fileURLWithPath: #filePath.hasPrefix("/")
+    ? #filePath
+    : FileManager.default.currentDirectoryPath + "/" + #filePath
+).standardized
+let desktopRoot = scriptPath
+  .deletingLastPathComponent()  // scripts/
+  .deletingLastPathComponent()  // apps/desktop/
+
+/// An explicit argument is honoured as given (relative to the cwd, so a caller
+/// can aim it anywhere); with none, the repository's own docs/assets/buttons.
+let outputDirectory = CommandLine.arguments.dropFirst().first
+  ?? desktopRoot.appendingPathComponent("../../docs/assets/buttons").standardized.path
 
 // MARK: - Geometry
 
@@ -162,7 +196,9 @@ func registerFont(at path: String) -> String? {
   return psName
 }
 
-let geistBoldName = registerFont(at: brand.boldFontPath)
+let geistBoldName = registerFont(
+  at: desktopRoot.appendingPathComponent(brand.boldFontPath).standardized.path
+)
 if geistBoldName == nil {
   FileHandle.standardError.write(
     Data("warning: \(brand.boldFontPath) not found — falling back to the system bold face.\n".utf8)
@@ -256,8 +292,13 @@ func render(_ chip: Chip) -> NSBitmapImageRep {
     body.setClip()
     // A two-stop vertical wash, not a decorative gradient: it is the same
     // lift the app's primary button carries, and it survives grayscale.
-    NSGradient(starting: brand.accentTop, ending: brand.accent)?
-      .draw(in: bounds, angle: -90)
+    // Not optional-chained: the clip is already set, so a nil gradient would
+    // write a TRANSPARENT chip carrying near-black ink — invisible on GitHub
+    // dark — and still exit 0. Same idiom as the bitmap and encode paths.
+    guard let wash = NSGradient(starting: brand.accentTop, ending: brand.accent) else {
+      fatalError("Unable to build the primary wash for \(chip.file)")
+    }
+    wash.draw(in: bounds, angle: -90)
   case .secondary:
     let body = NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius)
     brand.surface.setFill()

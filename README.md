@@ -111,8 +111,8 @@ processing; normal users do not need to install FFmpeg separately.
    under a version-stamped name.
    - macOS, universal —
      [`PwrSnap.dmg`](https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.dmg).
-     Runs natively on both Intel and Apple Silicon, and is the right choice if
-     you are not sure which Mac you have.
+     One build for Apple Silicon + Intel, running natively on both, and the
+     right choice if you are not sure which Mac you have.
    - macOS on Apple Silicon — `PwrSnap-arm64.dmg`, the native build and a
      substantially smaller download. Pick it from the
      [Releases page](https://github.com/pwrdrvr/PwrSnap/releases) for now: it
@@ -121,7 +121,9 @@ processing; normal users do not need to install FFmpeg separately.
      the first stable release that carries it.
    - Windows —
      [`PwrSnap.Setup.exe`](https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.Setup.exe),
-     the x64 installer.
+     the x64 installer. Every release also carries the same bytes version-
+     stamped as `PwrSnap-<version>-windows-x64-setup.exe`, which is the name
+     you will see in the release's asset list.
 2. **Install it.** On macOS, open the DMG and drag PwrSnap to Applications;
    both macOS builds are Developer ID-signed and Apple-notarized, so first
    launch is a single Gatekeeper prompt. On Windows, run the per-user

@@ -100,6 +100,10 @@
 - Keep a sibling `CLAUDE.md` symlink next to every `AGENTS.md`, pointing at
   that `AGENTS.md`, so Codex and Claude read the same local guidance.
 - Project root: `CLAUDE.md → AGENTS.md` (this file).
+- `design/`: `CLAUDE.md → AGENTS.md` — the brand-mark, wordmark, token and
+  Claude Design provenance rules for `design/**`. It was a bare `CLAUDE.md`
+  until the README-chip work put a load-bearing path rule in it that Codex
+  could not see.
 
 ## Brand and Identity
 

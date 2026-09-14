@@ -22,8 +22,8 @@
     this repo (design/)          ../docs/assets/…  and  ../apps/desktop/build/…
     Claude Design project        docs/assets/…     and  apps/desktop/build/…
 
-  The project id is 019deed3-8009-7107-bd1e-68bcd3fd192f. See design/CLAUDE.md
-  § "Where this lives in Claude Design".
+  The project id is 019deed3-8009-7107-bd1e-68bcd3fd192f. See design/AGENTS.md
+  § "PwrSnap README Header.html".
 -->
 
 <style>
@@ -165,7 +165,7 @@
 
     <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
 
-      <div class="card" style="gap:14px; background:var(--bg-panel)">
+      <div class="card" style="gap:14px">
         <div class="eyebrow">Download · 276×64</div>
         <div style="display:flex; flex-direction:column; gap:10px">
           <div style="display:flex; flex-direction:column; gap:6px">
@@ -223,6 +223,10 @@
       all — they belong to the chip system and are identical family-wide.
     </div>
 
+    <!-- These hexes are deliberately literal, against design/AGENTS.md §3's
+         "never hardcode brand colors" rule: a swatch documents the value the
+         generator pins in deviceRGB. Convert one to var(--accent) and it stops
+         documenting anything — it renders whatever the token later becomes. -->
     <div class="swatches">
       <div class="swatch">
         <div style="background:linear-gradient(#ffa33d, #ff8a1f)"></div>

@@ -21,6 +21,12 @@ permissions:
   contents: read
   pull-requests: read
 
+# Supersede obsolete PR runs; give each branch commit its own group so pending
+# main/release runs cannot replace one another even with cancellation disabled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # Keep the pull_request trigger path-unfiltered so the required check jobs
   # exist on every PR. Documentation-only PRs skip those jobs below instead.

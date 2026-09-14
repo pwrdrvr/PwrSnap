@@ -196,7 +196,12 @@ jobs:
         run: pnpm run test
 
   desktop-e2e:
-    name: Desktop E2E
+    # Renamed off `Desktop E2E`: that context is the required status check in
+    # the `Protect main` and `Protect maintenance release branches` rulesets,
+    # and it now belongs to the `desktop-e2e-result` aggregate below so that
+    # the macOS and Windows lanes gate merges too. This job keeps running
+    # exactly as before under a platform-specific name.
+    name: Linux Desktop E2E
     runs-on: ubuntu-latest
     needs: [changes, install-deps]
     if: needs.changes.outputs.code_impacting == 'true'
@@ -243,6 +248,74 @@ jobs:
             apps/desktop/playwright-report/
             apps/desktop/test-results/
           retention-days: 30
+
+  desktop-e2e-result:
+    # The required status-check context. It exists so branch protection can
+    # name one check while the work runs as three platform jobs, and so a lane
+    # can be added or renamed without editing a repository setting.
+    #
+    # `always()` is required: without it this job would inherit the default
+    # `success()` and be *skipped* when a lane fails, and branch protection
+    # treats a skipped required check as satisfied. The gate would then fail
+    # open in exactly the case it exists for. Every lane is instead read from
+    # `needs.*.result` inside the step below.
+    name: Desktop E2E
+    runs-on: ubuntu-latest
+    needs: [changes, desktop-e2e, desktop-e2e-macos, windows-e2e]
+    if: >-
+      always() &&
+      needs.changes.outputs.code_impacting == 'true'
+    timeout-minutes: 5
+    steps:
+      - name: Require the Linux, macOS and Windows Desktop E2E lanes
+        env:
+          LINUX_E2E_RESULT: ${{ needs.desktop-e2e.result }}
+          MACOS_E2E_RESULT: ${{ needs.desktop-e2e-macos.result }}
+          WINDOWS_E2E_RESULT: ${{ needs.windows-e2e.result }}
+          # `desktop-e2e-macos` carries a fork guard, so a PR from a public
+          # fork skips it rather than running arbitrary code on a self-hosted
+          # runner. Mirror that guard here instead of accepting `skipped`
+          # outright: a blanket skip-accept would also swallow the skip that
+          # `install-deps` failing produces, which is a real failure.
+          # GitHub Actions does not support YAML anchors, so this condition is
+          # necessarily a copy of the one on `desktop-e2e-macos`. Change both.
+          MACOS_E2E_EXPECTED: >-
+            ${{ github.event_name == 'push'
+            || (github.event_name == 'pull_request'
+            && github.event.pull_request.head.repo.full_name == github.repository) }}
+        run: |
+          echo "Linux Desktop E2E result:   $LINUX_E2E_RESULT"
+          echo "macOS Desktop E2E result:   $MACOS_E2E_RESULT" \
+            "(expected to run: $MACOS_E2E_EXPECTED)"
+          echo "Windows Desktop E2E result: $WINDOWS_E2E_RESULT"
+
+          # Evaluate every platform before exiting, so a red gate names the
+          # platform that broke instead of stopping at the first check and
+          # hiding whether the others were healthy.
+          failed=0
+
+          if [[ "$LINUX_E2E_RESULT" != "success" ]]; then
+            echo "::error::Linux Desktop E2E did not succeed: $LINUX_E2E_RESULT"
+            failed=1
+          fi
+
+          if [[ "$MACOS_E2E_EXPECTED" == "true" ]]; then
+            if [[ "$MACOS_E2E_RESULT" != "success" ]]; then
+              echo "::error::macOS Desktop E2E did not succeed: $MACOS_E2E_RESULT"
+              failed=1
+            fi
+          elif [[ "$MACOS_E2E_RESULT" != "skipped" ]]; then
+            echo "::error::macOS Desktop E2E was fork-guarded off but reported:" \
+              "$MACOS_E2E_RESULT"
+            failed=1
+          fi
+
+          if [[ "$WINDOWS_E2E_RESULT" != "success" ]]; then
+            echo "::error::Windows Desktop E2E did not succeed: $WINDOWS_E2E_RESULT"
+            failed=1
+          fi
+
+          exit "$failed"
 
   desktop-e2e-macos:
     name: macOS Desktop E2E (self-hosted VM)

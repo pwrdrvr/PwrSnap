@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>PwrSnap — README header</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="ds/colors_and_type.css" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+
+<!--
+  Static artboard. Unlike the other surfaces in this bundle it loads no React
+  and no Babel: nothing here is a component, and the images it frames are the
+  shipped PNGs rather than a re-drawing of them. That is deliberate — an
+  artboard that re-implemented the chips in CSS could agree with itself while
+  disagreeing with the files the README actually serves.
+
+  IMAGE PATHS DIFFER BETWEEN THE TWO COPIES OF THIS FILE, and getting it
+  backwards renders every chip broken with no error:
+
+    this repo (design/)          ../docs/assets/…  and  ../apps/desktop/build/…
+    Claude Design project        docs/assets/…     and  apps/desktop/build/…
+
+  The project id is 019deed3-8009-7107-bd1e-68bcd3fd192f. See design/CLAUDE.md
+  § "Where this lives in Claude Design".
+-->
+
+<style>
+  body {
+    margin: 0;
+    background: var(--bg-app);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+  }
+  .sheet { padding: 40px 44px 72px; display: flex; flex-direction: column; gap: 44px; }
+  .eyebrow {
+    font: 500 10px/1 var(--font-mono);
+    letter-spacing: .14em;
+    color: var(--text-muted);
+    text-transform: uppercase;
+  }
+  .note { font: 400 13px/1.6 var(--font-sans); color: #a8a094; max-width: 640px; }
+  .block { display: flex; flex-direction: column; gap: 18px; }
+  .card {
+    padding: 20px 22px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--bg-panel);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .card h3 { margin: 0; font: 600 13px/1.3 var(--font-sans); color: var(--text-primary); }
+  .card p { margin: 0; font: 400 12px/1.6 var(--font-sans); color: #a8a094; }
+  .pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; max-width: 900px; }
+  code { font-family: var(--font-mono); color: var(--accent); }
+  /* The two GitHub surfaces, drawn with GitHub's own colours rather than
+     PwrSnap's — the whole point of the frame is that it is NOT our canvas. */
+  .gh {
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    padding: 28px 24px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 18px;
+  }
+  .gh img { display: block; }
+  .gh--dark { background: #0d1117; }
+  .gh--light { background: #ffffff; }
+  .gh__name { font: 700 26px/1.1 var(--font-sans); letter-spacing: -.02em; }
+  .gh--dark .gh__name { color: #e6edf3; }
+  .gh--light .gh__name { color: #1f2328; }
+  .gh__pitch { font: 400 12px/1.5 var(--font-sans); text-align: center; max-width: 360px; }
+  .gh--dark .gh__pitch { color: #8d96a0; }
+  .gh--light .gh__pitch { color: #59636e; }
+  .gh__row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+  .swatches { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 14px; max-width: 840px; }
+  .swatch { display: flex; flex-direction: column; gap: 8px; }
+  .swatch div:first-child { height: 56px; border-radius: 6px; }
+  .swatch span { font: 400 10px/1.4 var(--font-mono); color: #6f685e; }
+  .took { border-color: var(--accent-border); background: var(--accent-tint); }
+  .took h3 { color: var(--accent); }
+  .spec { display: flex; flex-direction: column; gap: 9px; font: 400 11px/1.5 var(--font-sans); color: #a8a094; }
+  .spec b { color: var(--text-primary); font-weight: 500; }
+  .caption { font: 400 10px/1 var(--font-mono); color: #6f685e; }
+</style>
+</head>
+<body>
+<div class="sheet">
+
+  <div style="display:flex; flex-direction:column; gap:8px">
+    <div class="eyebrow">PwrSnap · repository landing page</div>
+    <div style="font:600 24px/1.2 var(--font-sans); letter-spacing:-.01em">README header</div>
+    <div class="note">
+      GitHub is the landing page for most people who arrive at PwrSnap, and the
+      first screenful has one job: hand them the right binary. Six chips do
+      that — three downloads, three places to go instead. Ported from PwrGit,
+      which owns the reference version of this system; only the accent ink, the
+      labels and the hrefs are PwrSnap's.
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- The composition, on both GitHub surfaces                     -->
+  <!-- ============================================================ -->
+
+  <div class="block">
+    <div class="eyebrow">Composition · 836px content column</div>
+    <div class="note">
+      Same PNGs on both surfaces. Nothing here is theme-switched, and that is
+      the point — see the rule below.
+    </div>
+
+    <div style="display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:24px">
+
+      <div style="display:flex; flex-direction:column; gap:10px">
+        <div class="caption">GitHub dark · #0d1117</div>
+        <div class="gh gh--dark">
+          <img src="../docs/assets/pwrsnap-icon.png" width="72" height="72" alt="PwrSnap">
+          <div class="gh__name">PwrSnap</div>
+          <div class="gh__pitch">Screen capture for the agent age.</div>
+          <div class="gh__row">
+            <img src="../docs/assets/buttons/download-mac-apple-silicon.png" width="184" alt="Download for Mac — Apple Silicon">
+            <img src="../docs/assets/buttons/download-mac-universal.png" width="184" alt="Download for Mac — Universal">
+            <img src="../docs/assets/buttons/download-windows.png" width="184" alt="Download for Windows">
+          </div>
+          <div class="gh__row" style="gap:8px">
+            <img src="../docs/assets/buttons/link-docs.png" width="126" alt="Documentation">
+            <img src="../docs/assets/buttons/link-website.png" width="126" alt="pwrsnap.com">
+            <img src="../docs/assets/buttons/link-about.png" width="126" alt="About PwrDrvr">
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:10px">
+        <div class="caption">GitHub light · #ffffff</div>
+        <div class="gh gh--light">
+          <img src="../docs/assets/pwrsnap-icon.png" width="72" height="72" alt="PwrSnap">
+          <div class="gh__name">PwrSnap</div>
+          <div class="gh__pitch">Screen capture for the agent age.</div>
+          <div class="gh__row">
+            <img src="../docs/assets/buttons/download-mac-apple-silicon.png" width="184" alt="Download for Mac — Apple Silicon">
+            <img src="../docs/assets/buttons/download-mac-universal.png" width="184" alt="Download for Mac — Universal">
+            <img src="../docs/assets/buttons/download-windows.png" width="184" alt="Download for Windows">
+          </div>
+          <div class="gh__row" style="gap:8px">
+            <img src="../docs/assets/buttons/link-docs.png" width="126" alt="Documentation">
+            <img src="../docs/assets/buttons/link-website.png" width="126" alt="pwrsnap.com">
+            <img src="../docs/assets/buttons/link-about.png" width="126" alt="About PwrDrvr">
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- The chips at true size                                       -->
+  <!-- ============================================================ -->
+
+  <div class="block">
+    <div class="eyebrow">Chips at 1× · 2× PNGs displayed at half</div>
+
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <div class="card" style="gap:14px; background:var(--bg-panel)">
+        <div class="eyebrow">Download · 276×64</div>
+        <div style="display:flex; flex-direction:column; gap:10px">
+          <div style="display:flex; flex-direction:column; gap:6px">
+            <img src="../docs/assets/buttons/download-mac-apple-silicon.png" width="276" alt="Download for Mac — Apple Silicon" style="display:block">
+            <div class="caption">primary · the one tangerine chip on the page</div>
+          </div>
+          <div style="display:flex; flex-direction:column; gap:6px">
+            <img src="../docs/assets/buttons/download-mac-universal.png" width="276" alt="Download for Mac — Universal" style="display:block">
+            <div class="caption">secondary</div>
+          </div>
+          <div style="display:flex; flex-direction:column; gap:6px">
+            <img src="../docs/assets/buttons/download-windows.png" width="276" alt="Download for Windows" style="display:block">
+            <div class="caption">secondary</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="gap:14px">
+        <div class="eyebrow">Link · 200×44</div>
+        <div style="display:flex; flex-direction:column; gap:10px">
+          <img src="../docs/assets/buttons/link-docs.png" width="200" alt="Documentation" style="display:block">
+          <img src="../docs/assets/buttons/link-website.png" width="200" alt="pwrsnap.com" style="display:block">
+          <img src="../docs/assets/buttons/link-about.png" width="200" alt="About PwrDrvr" style="display:block">
+        </div>
+        <div class="caption" style="line-height:1.5; max-width:200px">secondary only — a second tangerine chip would compete with the download</div>
+      </div>
+
+      <div class="card" style="gap:14px; max-width:300px">
+        <div class="eyebrow">Anatomy</div>
+        <div class="spec">
+          <div><b>Asset</b> 276×64 and 200×44, written at 2×. README displays them at 250 and 180 so three download chips hold one row in GitHub's ~836px column.</div>
+          <div><b>Radius</b> 12 on download, 10 on link.</div>
+          <div><b>Padding</b> 18 leading, 14 between icon and text.</div>
+          <div><b>Title</b> Geist Bold 15 / 13.</div>
+          <div><b>Subtitle</b> system medium 11 — only Geist Bold is vendored, and Bold at 11 reads as a second heading.</div>
+          <div><b>Icons</b> lucide <code>arrow-down-to-line</code> at 20, <code>arrow-up-right</code> at 14 — published coordinates, stroke 2 on the 24 grid.</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- Colour                                                       -->
+  <!-- ============================================================ -->
+
+  <div class="block">
+    <div class="eyebrow">Colour · app tokens, pinned in deviceRGB</div>
+    <div class="note">
+      Two values differ from PwrGit's chips, and both come from PwrSnap's own
+      <code>tokens.css</code>: the wash tops out at <code>--accent-strong</code>
+      <code>#ffa33d</code>, and the ink on tangerine is
+      <code>--button-text-on-accent</code> <code>#000000</code> rather than a
+      warm near-black. The secondary fill and subtitle ink are not tokens at
+      all — they belong to the chip system and are identical family-wide.
+    </div>
+
+    <div class="swatches">
+      <div class="swatch">
+        <div style="background:linear-gradient(#ffa33d, #ff8a1f)"></div>
+        <span>#ffa33d → #ff8a1f<br>primary fill</span>
+      </div>
+      <div class="swatch">
+        <div style="background:#000000; border:1px solid var(--border-subtle)"></div>
+        <span>#000000<br>--button-text-on-accent</span>
+      </div>
+      <div class="swatch">
+        <div style="background:#0d0d0d; border:1px solid rgba(247,243,235,.16)"></div>
+        <span>#0d0d0d<br>secondary fill</span>
+      </div>
+      <div class="swatch">
+        <div style="background:#f7f3eb"></div>
+        <span>#f7f3eb<br>title ink</span>
+      </div>
+      <div class="swatch">
+        <div style="background:#a8a094"></div>
+        <span>#a8a094<br>subtitle ink</span>
+      </div>
+      <div class="swatch">
+        <div style="background:#ff8a1f"></div>
+        <span>#ff8a1f<br>--accent, icons</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- Rules                                                        -->
+  <!-- ============================================================ -->
+
+  <div class="block">
+    <div class="eyebrow">Rules that decided the design</div>
+
+    <div class="pair">
+
+      <div class="card">
+        <h3>One opaque chip, not two theme variants</h3>
+        <p>Every chip carries its own fill and clears contrast on white and on #0d1117 alike, so there is no <code>&lt;picture&gt;</code> and no doubled asset count. It also keeps the header correct where <code>&lt;picture&gt;</code> is ignored: npm, VS Code's preview, GitHub mobile.</p>
+      </div>
+
+      <div class="card">
+        <h3>Apple Silicon is the one primary</h3>
+        <p>It is the build most arrivals want and the smaller download. Universal and Windows sit beside it in secondary, so the row still answers “which one is mine?” without a paragraph above it.</p>
+      </div>
+
+      <div class="card">
+        <h3>The subtitle names the build, not the benefit</h3>
+        <p>“Universal · Intel + Apple Silicon”, “x64 installer”. Someone standing at a download chip is picking an artifact, and the second line is the only place that question gets answered.</p>
+      </div>
+
+      <div class="card">
+        <h3>Text that does not fit fails the build</h3>
+        <p>A clipped label is silent in a PNG. <code>apps/desktop/scripts/generate-readme-chips.swift</code> measures every label against its chip and exits non-zero rather than writing one.</p>
+      </div>
+
+      <div class="card" style="grid-column:1 / -1">
+        <h3>A chip may not point at a file that does not exist</h3>
+        <p>The set is designed for everything PwrSnap builds, but an href is only direct once <code>curl -sI -L</code> says so. At the time of writing <code>PwrSnap.dmg</code> and <code>PwrSnap.Setup.exe</code> both resolve from <code>releases/latest/download/</code>, while <code>PwrSnap-arm64.dmg</code> exists only on the 1.1 prereleases — which <code>releases/latest</code> deliberately ignores — so the primary chip opens the Releases page and one sentence under the row says why. Flip the href in the commit after the first stable release carries the file; PwrGit did exactly this for its Windows alias.</p>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- Not borrowed                                                 -->
+  <!-- ============================================================ -->
+
+  <div class="block">
+    <div class="eyebrow">Looked at DockDoor · took some, left some</div>
+    <div class="note">Inherited from PwrGit's review of the same repository; recorded here so PwrSnap's copy does not re-open settled questions.</div>
+
+    <div class="pair">
+      <div class="card took">
+        <h3>Took</h3>
+        <div class="spec" style="gap:7px">
+          <div>Centred icon, wordmark and one-line pitch above the fold.</div>
+          <div>A hero screenshot immediately under the chips — the app before the prose.</div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Left</h3>
+        <div class="spec" style="gap:7px">
+          <div><b>Download counters.</b> DockDoor's are proof. PwrSnap's would be a number arguing against the product.</div>
+          <div><b>for-the-badge stack shields.</b> Electron / TypeScript / macOS tells a visitor nothing they came for.</div>
+          <div><b>Hand-rolled table of contents and back-to-top links.</b> GitHub renders its own outline.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

@@ -156,6 +156,34 @@ Earlier revisions of this file called `019debaf-…` "the PwrAgent design system
 project (read-only)". It is neither PwrAgent's nor read-only — its name is
 **PwrDrvr Design System** and it is writable.
 
+### `PwrSnap README Header.html` — image paths differ between the two copies
+
+That artboard specifies the repository landing page (the download and link
+chips in [README.md](../README.md), produced by
+`apps/desktop/scripts/generate-readme-chips.swift`). It was authored in this
+repo and pushed **up** into the project with `DesignSync`, and its images are
+the shipped PNGs rather than a CSS re-drawing of them — an artboard that
+re-implemented the chips could agree with itself while disagreeing with the
+files GitHub actually serves.
+
+Because it frames real repository files, its image `src`s are the one thing
+that is **not** identical in the two copies:
+
+| | spelling |
+|---|---|
+| repo (`design/`) | `../docs/assets/…` |
+| Claude Design project | `docs/assets/…` |
+
+The project carries its own copy of those PNGs (uploaded alongside the
+artboard), the way PwrGit's project carries `apps/desktop/build/**`. Push the
+repo spelling up by accident and every chip renders as a broken image, with no
+error — that is exactly what happened the first time PwrGit wrote its version,
+which is why the rule is here rather than left to memory. `ds/colors_and_type.css`
+needs no rewrite: the project root maps to this directory.
+
+The generator itself is mirrored at `handoff/generate-readme-chips.swift` in
+the project, next to the icon, tray, and DMG generators already there.
+
 Note the token file: this project carries its **own** `ds/colors_and_type.css`,
 and that is what its mockups resolve against — not the design system's copy. When
 checking for palette drift, diff *that* file against `design/ds/colors_and_type.css`

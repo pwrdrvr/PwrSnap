@@ -72,7 +72,7 @@ export function initializeMainLogger(): void {
   // directory. Keep their durable files separate so rotation cannot race.
   const roleFlag = parseProcessRoleFlag(process.argv);
   if (roleFlag === "library") electronLog.transports.file.fileName = "library.log";
-  const consoleTag = roleFlag === "library" ? "lib " : "";
+  const consoleTag = roleFlag === "library" ? " lib" : "";
 
   installStdioErrorHandlers();
   guardConsoleTransport();
@@ -97,10 +97,10 @@ export function initializeMainLogger(): void {
     return compacted;
   });
 
-  electronLog.transports.console.format = ({ message }) => {
-    const scope = message.scope ?? "?";
-    return [`${formatLocalLogTime(message.date)} ${consoleTag}(${scope})`, ...message.data];
-  };
+  // A string template lets electron-log apply its level colors and TTY
+  // detection. Its time tokens already use local time, just like our file logs.
+  const separator = process.platform === "win32" ? ">" : "›";
+  electronLog.transports.console.format = `%c{h}:{i}:{s}.{ms}${consoleTag}{scope}%c ${separator} {text}`;
 }
 
 export function getMainLogger(scope: string) {

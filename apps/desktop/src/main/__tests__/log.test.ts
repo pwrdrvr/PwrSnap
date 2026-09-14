@@ -1,3 +1,5 @@
+import { stripVTControlCharacters } from "node:util";
+import nodeLog from "electron-log/node.js";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 type ErrorListener = (error: Error) => void;
@@ -128,28 +130,50 @@ describe("initializeMainLogger", () => {
     expect(mocks.electronLog.scope.labelPadding).toBe(false);
   });
 
-  test("formats terminal timestamps in local time", async () => {
-    const { initializeMainLogger } = await import("../log");
-    initializeMainLogger();
+  test.each([
+    { level: "info", color: "36", useStyles: true, role: "combined" },
+    { level: "warn", color: "33", useStyles: true, role: "combined" },
+    { level: "error", color: "31", useStyles: true, role: "combined" },
+    { level: "debug", color: "90", useStyles: true, role: "library" },
+    { level: "info", color: "36", useStyles: false, role: "library" }
+  ] as const)("formats local $role timestamps for $level with styles=$useStyles", async ({
+    level, color, useStyles, role
+  }) => {
+    const argv = process.argv;
+    process.argv = [...argv, `--pwrsnap-role=${role}`];
+    try {
+      const { initializeMainLogger } = await import("../log");
+      initializeMainLogger();
+    } finally {
+      process.argv = argv;
+    }
 
-    const format = mocks.consoleTransport.format as unknown as (params: {
-      message: {
-        data: unknown[];
-        date: Date;
-        level: string;
-        scope?: string;
-      };
-    }) => unknown[];
-    const localDate = new Date(2026, 7, 4, 9, 8, 7, 6);
+    // Exercise electron-log's actual transform pipeline: a formatter callback
+    // can produce correct text while silently bypassing its level colors.
+    const logger = nodeLog.create({ logId: `console-${level}-${useStyles}-${role}` });
+    logger.scope.labelPadding = false;
+    const transport = logger.transports.console;
+    transport.format = mocks.consoleTransport.format;
+    transport.useStyles = useStyles;
+    const write = vi.fn();
+    transport.writeFn = write;
+    transport({
+      data: ["hello"],
+      date: new Date(2026, 7, 4, 9, 8, 7, 6),
+      level,
+      scope: "pwrsnap:test"
+    });
 
-    expect(format({
-      message: {
-        data: ["hello"],
-        date: localDate,
-        level: "info",
-        scope: "pwrsnap:test"
-      }
-    })).toEqual(["09:08:07.006 (pwrsnap:test)", "hello"]);
+    const tag = role === "library" ? " lib" : "";
+    const prefix = `09:08:07.006${tag} (pwrsnap:test)`;
+    const separator = process.platform === "win32" ? ">" : "›";
+    const output = write.mock.calls[0]?.[0].message.data[0] as string;
+    expect(stripVTControlCharacters(output)).toBe(`${prefix} ${separator} hello`);
+    if (useStyles) {
+      expect(output).toContain(`\x1b[${color}m${prefix}\x1b[0m`);
+    } else {
+      expect(output).toBe(stripVTControlCharacters(output));
+    }
   });
 
   test("keeps Windows paths human-readable in compact structured logs", async () => {

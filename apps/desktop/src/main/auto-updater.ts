@@ -1175,19 +1175,24 @@ export type SelectedUpdateReleases = {
 // Resolve slots by semver identifier and GitHub Latest, not publish order:
 //   - stable latest      → highest GitHub non-prerelease (the 1.0 / normie feed)
 //   - stable prerelease  → max(stable latest, 1.0 `-prerelease` / legacy `-beta`)
-//   - beta latest        → highest `-beta` whose core is ahead of Stable Latest
-//   - beta prerelease    → max(beta latest, highest `-alpha` on a newer core)
-// Empty Beta slots stay empty. The Settings Beta control remains selectable
-// so an operator can follow the next `main` tag after a Stable promotion.
+//   - beta latest        → highest newer-core `-beta`, falling back to stable final
+//   - beta prerelease    → highest newer-core alpha/beta, falling back to stable final
+// Stable promotion must keep Beta followers on an upgrade path without changing
+// their saved selection; the next main-train release takes precedence again.
 export function selectChannelReleases(releases: GitHubRelease[]): SelectedUpdateReleases {
   const publicReleases = releases.filter((release) => release.draft !== true);
   const byPrecedenceDesc = [...publicReleases].sort((a, b) =>
     compareSemver(b.tag_name, a.tag_name)
   );
   const stableLatest = byPrecedenceDesc.find((release) => release.prerelease !== true);
+  // Historical GitHub non-prereleases can have beta tags. Only a final
+  // version is a stable fallback, never those legacy prerelease builds.
+  const stableFinal = parseSemver(stableLatest?.tag_name)?.pre.length === 0
+    ? stableLatest
+    : undefined;
   const betaLatest = byPrecedenceDesc.find((release) =>
     isBetaLatestRelease(release, stableLatest, publicReleases)
-  );
+  ) ?? stableFinal;
   const stablePrerelease = byPrecedenceDesc.find((release) => {
     if (release === stableLatest) return true;
     if (release.prerelease !== true) return false;
@@ -1196,7 +1201,7 @@ export function selectChannelReleases(releases: GitHubRelease[]): SelectedUpdate
   });
   const betaPrerelease = byPrecedenceDesc.find((release) =>
     isBetaTrainRelease(release, stableLatest, publicReleases)
-  );
+  ) ?? stableFinal;
   return {
     latest: stableLatest,
     prerelease: stablePrerelease,

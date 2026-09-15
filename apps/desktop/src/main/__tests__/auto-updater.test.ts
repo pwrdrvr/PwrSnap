@@ -430,7 +430,7 @@ describe("auto updater selection", () => {
         status: "downloaded",
         version: "1.0.1"
       });
-      mockGitHubReleases([githubRelease("v1.0.1")]);
+      mockGitHubReleases([]);
       await expect(updater.checkForAppUpdatesNow("manual", {
         channel: "latest", train: "beta"
       })).resolves.toEqual({ status: "no-update", version: "1.0.0" });

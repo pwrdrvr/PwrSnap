@@ -283,17 +283,15 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     }
     const trace = new CaptureLatencyTrace(req.invocation, mode);
     trace.mark("dispatch_receive", { principal: ctx.principal });
-    // Refuse a Wayland session BEFORE anything else touches the screen.
-    // The selector cannot work there — the pointer position reads 0,0
-    // wherever the mouse actually is, and the grab comes from the desktop
-    // portal, which picks its own source, charges a permission prompt and
-    // a picker per capture, and hands back a frame that does not line up
-    // with the screen. Ahead of guardScreenCapture so a capture we are
-    // going to refuse never raises the portal's prompt. See
-    // linux-session.ts.
-    if (regionSelectorUnsupported()) {
+    // Refuse the one Linux configuration the selector genuinely cannot
+    // serve — Wayland with more than one display, where the pointer reads
+    // 0,0 wherever the mouse is and we therefore cannot tell which display
+    // to open on. Ahead of guardScreenCapture so a capture we are going to
+    // refuse never raises the portal's permission prompt. See
+    // linux-session.ts for why this is no longer every Wayland session.
+    if (regionSelectorUnsupported(screen.getAllDisplays().length)) {
       trace.finish("error", { code: WAYLAND_SELECTOR_ERROR_CODE });
-      log.warn("interactive capture refused: Wayland session", {
+      log.warn("interactive capture refused: Wayland session with multiple displays", {
         mode,
         principal: ctx.principal
       });

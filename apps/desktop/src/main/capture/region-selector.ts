@@ -426,15 +426,14 @@ export type SelectorMode = "auto" | "region" | "window";
  * once at boot; safe to call again to refresh after display changes.
  */
 export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup"): void {
+  // Build one window per display we don't already have.
+  const displays = screen.getAllDisplays();
   // Nothing to pre-warm where the selector is refused outright:
   // `capture:interactive` returns WAYLAND_SELECTOR_ERROR_CODE before it
   // would ever ask for one, so building these costs a renderer process per
-  // display at boot for machinery that can never be shown. (The reason is
-  // the dead pointer and the portal, NOT window placement — XWayland
-  // honours that exactly. See linux-session.ts.)
-  if (regionSelectorUnsupported()) return;
-  // Build one window per display we don't already have.
-  const displays = screen.getAllDisplays();
+  // display at boot for machinery that can never be shown. Narrow — only
+  // Wayland with multiple displays; see linux-session.ts.
+  if (regionSelectorUnsupported(displays.length)) return;
   const liveIds = new Set<number>();
   for (const display of displays) {
     liveIds.add(display.id);
@@ -1824,13 +1823,29 @@ function hideAllSelectors(): void {
  * window can return to its normal-bounds state for next time.
  */
 function enterMenuBarOverlayMode(win: BrowserWindow): void {
-  if (process.platform === "win32") {
+  if (process.platform === "win32" || process.platform === "linux") {
     // Windows: the taskbar (Shell_TrayWnd) is itself topmost, so a plain
     // always-on-top overlay renders BELOW it — the real taskbar shows through
     // on top of the frozen screenshot (which already includes a taskbar →
     // "two taskbars"). Native fullscreen spans the whole monitor including the
     // taskbar, so the overlay covers it. (Verified working on Windows; the
     // earlier 0xC0000005 crash was an unrelated tray-right-click bug.)
+    //
+    // Linux is the SAME pathology, and it was the whole Ubuntu bug. GNOME's
+    // top bar and the Ubuntu dock are drawn by the compositor above every
+    // client window, so `alwaysOnTop` + "screen-saver" does not get over
+    // them — measured on Ubuntu 24 / GNOME, where the selector window sat at
+    // exactly 0,0 2560x1440 with the renderer 1:1, and the shell still
+    // painted its chrome on top. The frozen snapshot underneath carries its
+    // own copy of that chrome (the grab is the whole screen, verified
+    // pixel-exact by the probe's fiducials), so the user saw the live top bar
+    // and dock next to the snapshot's copy of them — which reads as a
+    // duplicated, offset desktop. Nothing was offset; ~32px of our overlay
+    // was simply behind the shell. setFullScreen(true) covers it, measured
+    // with the same probe.
+    //
+    // This branch used to `return` for every platform that is neither win32
+    // nor darwin, which is why Linux never entered overlay mode at all.
     //
     // Note: setFullScreen(true) grows the window to the full display (taskbar
     // covered) but isFullScreen() stays false on Windows, and the
@@ -1864,7 +1879,7 @@ function enterMenuBarOverlayMode(win: BrowserWindow): void {
 }
 
 function leaveMenuBarOverlayMode(win: BrowserWindow): void {
-  if (process.platform === "win32") {
+  if (process.platform === "win32" || process.platform === "linux") {
     // Unconditional, NOT guarded on isFullScreen(): that getter stays false on
     // Windows even while the window is grown full-screen (see
     // enterMenuBarOverlayMode), so `if (win.isFullScreen())` would never fire
@@ -1924,11 +1939,11 @@ function createSelectorWindow(
     movable: false,
     minimizable: false,
     maximizable: false,
-    // Windows needs native fullscreen (enterMenuBarOverlayMode) to draw OVER
-    // the taskbar (a topmost window a plain always-on-top overlay can't cover),
-    // so it must be fullscreenable there. macOS uses setSimpleFullScreen and
-    // keeps this false.
-    fullscreenable: process.platform === "win32",
+    // Windows and Linux both need native fullscreen (enterMenuBarOverlayMode)
+    // to draw OVER shell chrome a plain always-on-top overlay cannot cover —
+    // the Windows taskbar, and GNOME's top bar + dock. Both must therefore be
+    // fullscreenable. macOS uses setSimpleFullScreen and keeps this false.
+    fullscreenable: process.platform !== "darwin",
     skipTaskbar: true,
     alwaysOnTop: true,
     hasShadow: false,

@@ -63,9 +63,11 @@
 //   --no-fiducials      skip step 6 (which costs a SECOND portal prompt)
 //   --out=<dir>         where to write grabbed PNGs (default: a temp dir)
 
+import { execFileSync } from "node:child_process";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, desktopCapturer, nativeImage, screen } from "electron";
 
 const argv = process.argv.slice(2);
@@ -768,9 +770,35 @@ async function reportGrabAlignment(display) {
   }
 }
 
+/**
+ * Which commit is this probe actually running?
+ *
+ * Asked for after a run was pasted back that predated the fix it was meant
+ * to exercise — and neither of us could tell from the output. A probe whose
+ * report cannot be tied to a tree is a probe whose conclusions cannot be
+ * trusted later, so the banner now says. `-dirty` matters as much as the
+ * sha: a probe run against uncommitted edits is the normal case here.
+ */
+function describeCheckout() {
+  const repo = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+  const git = (...args) =>
+    execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  try {
+    const sha = git("rev-parse", "--short", "HEAD");
+    const branch = git("rev-parse", "--abbrev-ref", "HEAD");
+    const dirty = git("status", "--porcelain") === "" ? "" : " -dirty";
+    return `${sha} (${branch})${dirty}`;
+  } catch {
+    // Not a git checkout, or no git on PATH. Say so rather than printing
+    // nothing — "unknown" is a fact, an absent line reads like an old build.
+    return "unknown (not a git checkout, or git unavailable)";
+  }
+}
+
 app.whenReady().then(async () => {
   say("PwrSnap Linux capture probe");
   say(`run at ${new Date().toISOString()}`);
+  say(`build   ${describeCheckout()}`);
 
   const { waylandSession } = await reportEnvironment();
   const { displays, primary, cursor } = reportDisplays();
@@ -782,10 +810,21 @@ app.whenReady().then(async () => {
     head("3. Selector-shaped overlay geometry");
     say(`  Two windows, both constructed exactly like createSelectorWindow() at`);
     say(`  display ${target.id} bounds ${rect(target.bounds)}. The only difference is`);
-    say("  whether anything re-anchors them after show(). Linux currently does");
-    say("  not: enterMenuBarOverlayMode() returns early for every platform that");
-    say("  is neither win32 nor darwin, so the window manager places the");
-    say("  selector wherever it likes.");
+    say("  whether anything re-anchors them after show().");
+    say("");
+    say("  THE NUMBERS BELOW ARE ONLY HALF THE QUESTION, and the half that");
+    say("  misleads. They measure where the window IS. They cannot see what is");
+    say("  painted OVER it — and on GNOME the top bar and the dock are drawn by");
+    say("  the compositor above every client window, so a window sitting");
+    say("  perfectly at 0,0 can still have ~32px of its top edge and the whole");
+    say("  left dock strip hidden behind shell chrome. The frozen snapshot");
+    say("  carries its own copy of that chrome, so the result reads as a");
+    say("  DUPLICATED, OFFSET desktop even though nothing moved. That is the");
+    say("  Ubuntu bug, and an earlier run of this probe reported the bare window");
+    say("  as 'already correct' and sent the investigation elsewhere.");
+    say("");
+    say("  So LOOK at each of the three, and judge them on one thing: does the");
+    say("  GNOME top bar / dock cover any part of the orange border?");
     const bare = await reportOverlayGeometry(target, "bare");
     const full = await reportOverlayGeometry(target, "fullscreen");
     const anchored = await reportOverlayGeometry(target, "reanchor");
@@ -802,8 +841,13 @@ app.whenReady().then(async () => {
     ].filter((x) => x !== null);
     say("");
     if (bare.positioned) {
-      say("  The bare window was already correct on this machine — the offset is");
-      say("  not reproduced here, so look elsewhere before changing placement.");
+      say("  All three are GEOMETRICALLY correct here — the window lands where it");
+      say("  was asked to. That does NOT mean the bare one is usable: compare what");
+      say("  you just saw. If the shell's top bar and dock covered the bare");
+      say("  overlay's border but not the fullscreen one's, the bug is occlusion,");
+      say("  not placement, and setFullScreen(true) is the fix. Step 6's fiducial");
+      say("  overlay makes the same call, so it is a second look at the same");
+      say("  question.");
     } else if (winners.length > 0) {
       say(`  FIX CONFIRMED: ${winners.join(" and ")} land${winners.length === 1 ? "s" : ""} the overlay on the`);
       say("  display origin. Linux makes neither call today; Windows already makes");

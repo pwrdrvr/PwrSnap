@@ -191,8 +191,8 @@ describe("selectChannelReleases", () => {
     ]);
     expect(selected.stableLatest?.tag_name).toBe("v1.0.1");
     expect(selected.stablePrerelease?.tag_name).toBe("v1.0.1");
-    expect(selected.betaLatest).toBeUndefined();
-    expect(selected.betaPrerelease).toBeUndefined();
+    expect(selected.betaLatest?.tag_name).toBe(selected.stableLatest?.tag_name);
+    expect(selected.betaPrerelease?.tag_name).toBe(selected.stableLatest?.tag_name);
   });
 
   test("does not advertise leftover same-core betas after that train becomes Latest", async () => {
@@ -204,8 +204,8 @@ describe("selectChannelReleases", () => {
       { tag_name: "v1.0.1", prerelease: false, draft: false }
     ]);
     expect(selected.stableLatest?.tag_name).toBe("v1.1.0");
-    expect(selected.betaLatest).toBeUndefined();
-    expect(selected.betaPrerelease).toBeUndefined();
+    expect(selected.betaLatest?.tag_name).toBe(selected.stableLatest?.tag_name);
+    expect(selected.betaPrerelease?.tag_name).toBe(selected.stableLatest?.tag_name);
   });
 
   test("keeps a newer main-train alpha on Beta after Stable is promoted", async () => {
@@ -216,7 +216,7 @@ describe("selectChannelReleases", () => {
       { tag_name: "v1.2.0-alpha.1", prerelease: true, draft: false }
     ]);
     expect(selected.stableLatest?.tag_name).toBe("v1.1.0");
-    expect(selected.betaLatest).toBeUndefined();
+    expect(selected.betaLatest?.tag_name).toBe(selected.stableLatest?.tag_name);
     expect(selected.betaPrerelease?.tag_name).toBe("v1.2.0-alpha.1");
   });
 
@@ -226,7 +226,7 @@ describe("selectChannelReleases", () => {
       { tag_name: "v1.1.0-alpha.7", prerelease: true, draft: false },
       { tag_name: "v1.0.0", prerelease: false, draft: false }
     ]);
-    expect(selected.betaLatest).toBeUndefined();
+    expect(selected.betaLatest?.tag_name).toBe(selected.stableLatest?.tag_name);
     expect(selected.betaPrerelease?.tag_name).toBe("v1.1.0-alpha.7");
   });
 });
@@ -328,6 +328,38 @@ describe("auto updater selection", () => {
     expect(mocks.autoUpdater.allowPrerelease).toBe(true);
   });
 
+  test.each(
+    ["1.1.0-alpha.7", "1.1.0-beta.5"].flatMap((currentVersion) =>
+      (["latest", "prerelease"] as const).flatMap((channel) =>
+        (["manual", "periodic"] as const).map((trigger) => ({ currentVersion, channel, trigger }))
+      )
+    )
+  )("offers final 1.1.0 from $currentVersion on Beta/$channel during $trigger checks", async ({ currentVersion, channel, trigger }) => {
+    mocks.autoUpdater.currentVersion = { version: currentVersion };
+    mocks.resolveSelection.mockReturnValue({ channel, train: "beta" });
+    mockGitHubReleases([
+      githubRelease("v1.1.0"),
+      githubRelease("v1.1.0-beta.5", { prerelease: true }),
+      githubRelease("v1.1.0-alpha.7", { prerelease: true })
+    ]);
+    mocks.autoUpdater.checkForUpdates.mockResolvedValue({ updateInfo: { version: "1.1.0" } });
+    const updater = await importAutoUpdater();
+    updater.setUpdateSelectionResolver(() => mocks.resolveSelection());
+
+    const versions = await updater.readAppUpdateReleaseVersions();
+    expect(versions.beta[channel].version).toBe("v1.1.0");
+    await expect(updater.checkForAppUpdatesNow(trigger)).resolves.toEqual({
+      status: "available",
+      version: "1.1.0"
+    });
+    expect(mocks.autoUpdater.setFeedURL).toHaveBeenCalledWith({
+      provider: "generic",
+      url: "https://github.com/pwrdrvr/PwrSnap/releases/download/v1.1.0/"
+    });
+    expect(mocks.autoUpdater.allowDowngrade).toBe(false);
+    expect(mocks.resolveSelection()).toEqual({ channel, train: "beta" });
+  });
+
   test("pins the beta train to the smoke-checked main-train tag", async () => {
     mocks.resolveSelection.mockReturnValue({ channel: "latest", train: "beta" });
     mockGitHubReleases([
@@ -398,7 +430,7 @@ describe("auto updater selection", () => {
         status: "downloaded",
         version: "1.0.1"
       });
-      mockGitHubReleases([githubRelease("v1.0.1")]);
+      mockGitHubReleases([]);
       await expect(updater.checkForAppUpdatesNow("manual", {
         channel: "latest", train: "beta"
       })).resolves.toEqual({ status: "no-update", version: "1.0.0" });

@@ -407,11 +407,69 @@ async function reportSelectorSimulation(display, grabbed) {
   say("  RegionSelector.tsx does — but at 55% opacity so the live desktop shows");
   say("  through it.");
   say("");
-  say(`  WATCH FOR ${OVERLAY_MS}ms:`);
-  say("    aligned  -> the screen looks faded but SINGLE. No doubled edges.");
-  say("    offset   -> every window edge, the top bar and the dock appear TWICE.");
-  say("                Read the shift off the 100px ruler and note its direction.");
+  say("  THIS IS THE ONE THAT COMBINES BOTH HALVES. Step 6 proves the overlay");
+  say("  CAN cover the shell chrome but paints no desktop; this step paints the");
+  say("  real grab — top bar, dock and all — and now runs three times so you can");
+  say("  see the difference the fullscreen call makes on identical content.");
+  say("");
+  say(`  Each pass is on screen for ${OVERLAY_MS}ms at 55% opacity.`);
+  say("    SINGLE  -> aligned and covering. This is what a fixed selector looks like.");
+  say("    DOUBLED -> every window edge, the top bar and the dock appear twice.");
+  say("               Read the shift off the 100px ruler.");
 
+  const samples = [];
+  for (const mode of SNAPSHOT_COVERAGE) {
+    say("");
+    say(`  ── ${mode.label}`);
+    say(`     EXPECT ${mode.expect}`);
+    samples.push(...(await showSnapshotOverlay(display, grabbed, mode.key)));
+  }
+
+  const unique = [...new Set(samples)];
+  say("");
+  say(`  getCursorScreenPoint() while the overlay was up: ${unique.join("  ")}`);
+  if (unique.length === 1 && unique[0] === "0,0") {
+    say("  ^ never moved off 0,0. The global pointer is genuinely unavailable,");
+    say("    so pickRegion() cannot route by cursor and the selector's opening");
+    say("    crosshair lands in the top-left regardless of where the mouse is.");
+  } else if (unique.length > 1) {
+    say("  ^ it tracks. Move the mouse during this step to confirm it follows.");
+  }
+}
+
+/**
+ * Cover the shell chrome the same way the real selector does.
+ *
+ * Shared with step 6 so the two cannot drift: if this call ever stops being
+ * what `enterMenuBarOverlayMode` makes, both measurements stop meaning
+ * anything about the shipped selector.
+ */
+function enterFullScreen(win) {
+  if (process.platform === "darwin") win.setSimpleFullScreen(true);
+  else win.setFullScreen(true);
+}
+
+const SNAPSHOT_COVERAGE = [
+  {
+    key: "bare",
+    label: "BARE — always-on-top only, what Linux shipped with",
+    expect: "the shell's top bar and dock stay ON TOP, so their live copy sits\n       next to the snapshot's copy of them: DOUBLED."
+  },
+  {
+    key: "fullscreen-after-show",
+    label: "FULLSCREEN AFTER show() — the ordering step 6 already proves covers",
+    expect: "the overlay should cover the top bar and dock, and the screen should\n       look faded but SINGLE."
+  },
+  {
+    key: "fullscreen-before-show",
+    label: "FULLSCREEN BEFORE show() — the ordering the selector ACTUALLY uses",
+    expect: "same as above. If this one doubles and the previous did not, the fix\n       is landing on an unmapped window and enterMenuBarOverlayMode() has to\n       move after win.show()."
+  }
+];
+
+/** One pass of the simulation: paint the grab into a selector-shaped overlay
+ *  under one coverage strategy, and sample the cursor while it is up. */
+async function showSnapshotOverlay(display, grabbed, coverage) {
   const win = new BrowserWindow({
     x: display.bounds.x,
     y: display.bounds.y,
@@ -480,7 +538,12 @@ Doubled edges = misaligned. Read the shift off the 100px ruler.</div>
        i.onload = () => resolve(true); i.onerror = () => resolve(false);
        i.src = ${JSON.stringify(grabbed.dataUrl)}; })`
   );
+  // The coverage strategy under test. `bare` is what the Linux selector
+  // shipped with; the two fullscreen variants are what it does now, and they
+  // differ ONLY in whether the window is mapped when the call lands.
+  if (coverage === "fullscreen-before-show") enterFullScreen(win);
   win.show();
+  if (coverage === "fullscreen-after-show") enterFullScreen(win);
 
   // Does the pointer ever become readable once one of our windows is up? The
   // earlier (0,0) reading is taken with nothing of ours on screen, and on
@@ -500,17 +563,7 @@ Doubled edges = misaligned. Read the shift off the 100px ruler.</div>
   }
   win.hide();
   win.destroy();
-
-  const unique = [...new Set(samples)];
-  say("");
-  say(`  getCursorScreenPoint() while the overlay was up: ${unique.join("  ")}`);
-  if (unique.length === 1 && unique[0] === "0,0") {
-    say("  ^ never moved off 0,0. The global pointer is genuinely unavailable,");
-    say("    so pickRegion() cannot route by cursor and the selector's opening");
-    say("    crosshair lands in the top-left regardless of where the mouse is.");
-  } else if (unique.length > 1) {
-    say("  ^ it tracks. Move the mouse during this step to confirm it follows.");
-  }
+  return samples;
 }
 
 
@@ -585,10 +638,8 @@ async function reportGrabAlignment(display) {
   );
   win.show();
   // Cover gnome-shell's top bar and dock, which otherwise paint OVER a plain
-  // always-on-top window and land on the very corners being measured. macOS
-  // uses the same call the real selector does.
-  if (process.platform === "darwin") win.setSimpleFullScreen(true);
-  else win.setFullScreen(true);
+  // always-on-top window and land on the very corners being measured.
+  enterFullScreen(win);
   // Wait for the compositor to have actually shown this, not just for the
   // main-side call to return: a grab taken during the fullscreen transition
   // photographs the screen as it was and finds no fiducial at all.

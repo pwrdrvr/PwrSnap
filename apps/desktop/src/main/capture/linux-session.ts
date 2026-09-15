@@ -90,24 +90,46 @@ export function linuxSessionType(
   return "unknown";
 }
 
-/** True only when the region-selector overlay is known not to work here. */
+/**
+ * True only when the region-selector overlay is known not to work here —
+ * which is now a MUCH narrower set than this function once returned.
+ *
+ * It used to refuse every Wayland session, as a stopgap while the Ubuntu
+ * misalignment was unexplained. It is explained: the overlay was never
+ * entering fullscreen on Linux, so GNOME's top bar and dock stayed painted
+ * over it (see `enterMenuBarOverlayMode`). Everything else the refusal was
+ * justified by has been measured working — placement, size, a 1:1 renderer,
+ * and a pixel-exact grab.
+ *
+ * What is left is the dead pointer, and it is only load-bearing for ONE
+ * decision: which display to open the selector on. `getCursorScreenPoint()`
+ * returns 0,0 wherever the mouse is, so with more than one display
+ * `pickRegion` reliably picks the wrong one. With a single display there is
+ * nothing to get wrong — the opening crosshair starts in the corner and
+ * corrects on the first mouse move, which is cosmetic.
+ *
+ * So: refuse Wayland + multi-display, and nothing else.
+ */
 export function regionSelectorUnsupported(
+  displayCount: number,
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform
 ): boolean {
-  return linuxSessionType(env, platform) === "wayland";
+  return linuxSessionType(env, platform) === "wayland" && displayCount > 1;
 }
 
 /** Error code carried on the refusal, and the text the user is shown. */
 export const WAYLAND_SELECTOR_ERROR_CODE = "wayland_selector_unsupported";
 
-// Only measured facts belong in here. An earlier draft told users that
-// "Wayland does not let an app place its own selection overlay on the
-// screen", which the probe disproved — Electron runs as an XWayland
-// client and the overlay lands exactly where it is put. See the header.
+// Only measured facts belong in here. Two earlier drafts did not manage it:
+// one told users that "Wayland does not let an app place its own selection
+// overlay on the screen" (the probe disproved it — Electron runs as an
+// XWayland client and the overlay lands exactly where it is put), and one
+// refused drag-to-select on Wayland outright, which was a symptom of our own
+// missing fullscreen call and not of Wayland at all.
 export const WAYLAND_SELECTOR_MESSAGE =
-  "Drag-to-select capture is not available on a Wayland session. Screen capture there " +
-  "goes through the desktop portal, which asks permission and makes you pick a source " +
-  "for every capture, and PwrSnap cannot read the pointer position to follow your drag. " +
-  "Use Full Screen capture and crop in the editor, or log in to an Xorg (X11) session, " +
-  "where drag-to-select works.";
+  "Drag-to-select capture is not available on a Wayland session with more than one " +
+  "display. Wayland does not let PwrSnap read the pointer position, so it cannot tell " +
+  "which display to open the selector on. Use Full Screen capture — the desktop " +
+  "portal's own picker lets you choose the display — and crop in the editor, or log in " +
+  "to an Xorg (X11) session, where drag-to-select works on every display.";

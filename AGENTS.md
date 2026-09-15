@@ -630,17 +630,51 @@ LIST, and the only authoritative key — `display_id` — is documented as
   backstop for the multi-source cases, never as proof the grab is right.
   Do not widen `GRAB_ASPECT_TOLERANCE` to make something pass; 1% is
   already ~14× the worst pixel-rounding drift.
-- **Wayland does not get the overlay, and the reason is not the grab.**
-  Measured on Ubuntu 24 / GNOME: `getCursorScreenPoint()` returns 0,0
-  wherever the mouse is — `pickRegion` routes off it and hands it to the
-  renderer for the opening crosshair — and the portal round trip costs a
-  permission prompt, a picker, and ~3 seconds per capture, which is not
-  "freeze the screen and drag" by any reading. `capture:interactive`
+- **The Ubuntu misalignment was OURS, and the fix is
+  `setFullScreen(true)`.** `enterMenuBarOverlayMode` returned early for
+  every platform that was neither win32 nor darwin, so the Linux selector
+  never entered fullscreen — and GNOME's top bar and the Ubuntu dock are
+  drawn by the compositor ABOVE every client window, which `alwaysOnTop`
+  + `"screen-saver"` cannot beat. The window itself was never wrong:
+  measured at exactly `0,0 2560x1440`, renderer 1:1 with display logical
+  px, over a grab whose four corner fiducials all landed `+0,+0`. What the
+  user saw was ~32px of our overlay hidden behind live shell chrome, next
+  to the frozen snapshot's own copy of that chrome — which reads as a
+  duplicated, offset desktop even though nothing moved. Windows had the
+  identical bug ("two taskbars") and already had the identical fix.
+  `fullscreenable` must be true there too, or the call is a silent no-op.
+  Pinned by
+  [selector-overlay-fullscreen.test.ts](apps/desktop/src/main/capture/__tests__/selector-overlay-fullscreen.test.ts).
+- **Geometry-correct is not the same as visible, and a probe that measures
+  only geometry will send you the wrong way.** `getBounds()`,
+  `getContentBounds()` and the renderer's own `screenX/screenY` all agreed
+  the overlay was perfectly placed, and the probe duly reported "the bare
+  window was already correct on this machine — look elsewhere before
+  changing placement." That sentence cost three wrong hypotheses. None of
+  those APIs can see what is painted OVER a window. When an overlay looks
+  wrong, ask whether it is MIS-PLACED or OCCLUDED before measuring, and
+  make the operator LOOK at the two candidates side by side.
+- **Wayland keeps region capture on a single display.** The refusal is now
+  Wayland AND `displayCount > 1`, and nothing else. The only capability
+  fullscreen does not restore is `getCursorScreenPoint()`, which returns
+  0,0 wherever the mouse is — and that is load-bearing for exactly one
+  decision, which display `pickRegion` opens on. With one display there is
+  nothing to get wrong (the opening crosshair starts in the corner and
+  corrects on the first mouse move); with two it reliably picks the wrong
+  one. The portal still charges a permission prompt and a source picker per
+  capture (~3s), which is a cost, not a defect. `capture:interactive`
   refuses ahead of `guardScreenCapture` so a refused capture never raises
   that prompt.
+- **⇧-snap-to-window and source-app metadata do not work on Linux at all,
+  X11 included.** `build-native.mjs` builds the `window-list` helper for
+  darwin (Swift) and win32 (C++) only, so `listWindowsSnapshot()` returns
+  an empty list behind one `warn`. That is why no hover highlight follows
+  the pointer over windows there. It is a missing native helper, not a
+  Wayland limitation — though a Wayland-native session has no protocol to
+  enumerate other apps' windows, so any Linux helper would be X11-only.
 - **The refusal must SHOW itself, and the notice hangs off the refusal —
   not off the trigger.** A refusal only the log can see is a dead button,
-  which is strictly worse than the misaligned selector it replaced. The
+  which is strictly worse than the broken selector it replaced. The
   first version explained itself from `capture-trigger.ts`, which only the
   global hotkeys and the native tray menu route through; the Library's
   Quick Capture button and the tray popover's tiles dispatch straight over
@@ -654,10 +688,11 @@ LIST, and the only authoritative key — `display_id` — is documented as
   user dismiss an alert and go find a different button is the same dead
   end wearing a hat.
 - **`WAYLAND_SELECTOR_MESSAGE` is user-visible text, so only measured
-  claims go in it.** It shipped once asserting that Wayland will not let
-  an app place its own overlay — the very claim the probe disproved two
-  paragraphs down. Correcting a header comment is not enough; grep the
-  strings.
+  claims go in it.** Two drafts failed that: one asserted Wayland will not
+  let an app place its own overlay (the claim the probe disproved two
+  paragraphs down), and one told users drag-to-select was unavailable on
+  Wayland when the real cause was our own missing fullscreen call.
+  Correcting a header comment is not enough; grep the strings.
 - **Do NOT repeat the claim that a Wayland client cannot place the
   overlay.** It is the obvious guess and it was wrong: Electron defaults
   to the X11 ozone backend, so on a Wayland session it usually runs as an

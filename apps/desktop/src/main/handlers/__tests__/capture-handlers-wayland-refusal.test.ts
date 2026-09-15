@@ -1,16 +1,21 @@
 // `capture:interactive` must refuse a Wayland session BEFORE it touches the
 // screen.
 //
-// The refusal is not a nicety. Measured on Ubuntu 24 / GNOME: the pointer
-// position reads 0,0 wherever the mouse is, so the selector opens its
-// crosshair in the wrong place, and the grab comes from xdg-desktop-portal,
-// which picks its own source, charges a prompt and a picker per capture, and
-// hands back a frame offset from the screen. Showing the overlay anyway
-// paints a frozen image that does not line up with what is under it, and
-// crops the user's drag out of the wrong pixels.
+// The refusal is NARROW, and keeping it narrow is most of what this file is
+// for. It covers Wayland with more than one display and nothing else.
 //
-// Two things are pinned here, and both shipped broken once:
+// It started as every Wayland session, as a stopgap for a misalignment we
+// could not explain. The explanation was our own: `enterMenuBarOverlayMode`
+// returned early on Linux, so the overlay never went fullscreen and GNOME's
+// top bar and dock stayed painted over a window that was otherwise sitting
+// at exactly the display origin, 1:1, over a pixel-exact grab. Refusing the
+// whole platform for that deleted a working feature. What survives is the
+// one thing fullscreen does not fix: `getCursorScreenPoint()` reads 0,0
+// wherever the mouse is, and `pickRegion` routes off it to choose a display.
 //
+// Three things are pinned here, and all three shipped broken once:
+//
+//  - SCOPE. One display on Wayland reaches the selector; two do not.
 //  - ORDERING. The refusal sits ahead of `guardScreenCapture` so a capture we
 //    have already decided to refuse never raises the portal's permission
 //    prompt, and ahead of `pickRegion` so no selector window is ever shown.
@@ -36,7 +41,8 @@ const mocks = vi.hoisted(() => ({
   readDesktopSettings: vi.fn(),
   getRecordingState: vi.fn(),
   isRecordingActive: vi.fn(),
-  showWaylandRefusalNotice: vi.fn()
+  showWaylandRefusalNotice: vi.fn(),
+  getAllDisplays: vi.fn()
 }));
 
 function settingsWith(quickCaptureAction: QuickCaptureAction) {
@@ -66,7 +72,7 @@ vi.mock("electron", () => ({
     readText: () => "",
     writeText: () => undefined
   },
-  screen: { getAllDisplays: () => [] },
+  screen: { getAllDisplays: mocks.getAllDisplays },
   BrowserWindow: { getAllWindows: () => [] }
 }));
 
@@ -222,6 +228,8 @@ beforeEach(() => {
   mocks.getRecordingState.mockReturnValue({ phase: "idle" });
   mocks.isRecordingActive.mockReturnValue(false);
   mocks.readDesktopSettings.mockResolvedValue(settingsWith("snap"));
+  // Two displays by default — the configuration the refusal exists for.
+  mocks.getAllDisplays.mockReturnValue([{ id: 1 }, { id: 2 }]);
 });
 
 afterEach(() => {
@@ -234,7 +242,22 @@ afterEach(() => {
 });
 
 describe("capture:interactive on a Wayland session", () => {
-  test("refuses without showing a selector", async () => {
+  test("a single-display Wayland session reaches the selector", async () => {
+    // The regression guard for the blanket refusal. Everything it was
+    // justified by has been measured working on Ubuntu 24 except the
+    // pointer, and the pointer only decides WHICH display to open on.
+    setSession("linux", { XDG_SESSION_TYPE: "wayland", WAYLAND_DISPLAY: "wayland-0" });
+    mocks.getAllDisplays.mockReturnValue([{ id: 1 }]);
+    mocks.pickRegion.mockResolvedValue({ ok: false, reason: "cancelled" });
+    const result = await interactive();
+
+    expect(mocks.pickRegion).toHaveBeenCalledTimes(1);
+    expect(mocks.showWaylandRefusalNotice).not.toHaveBeenCalled();
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("cancelled");
+  });
+
+  test("refuses a multi-display Wayland session without showing a selector", async () => {
     setSession("linux", { XDG_SESSION_TYPE: "wayland", WAYLAND_DISPLAY: "wayland-0" });
     const result = await interactive();
 
@@ -250,7 +273,7 @@ describe("capture:interactive on a Wayland session", () => {
     expect(mocks.pickRegion).not.toHaveBeenCalled();
   });
 
-  test("refuses every interactive mode, including timed", async () => {
+  test("refuses every interactive mode on multi-display Wayland, including timed", async () => {
     for (const mode of ["auto", "region", "window", "timed"] as const) {
       setSession("linux", { XDG_SESSION_TYPE: "wayland", WAYLAND_DISPLAY: "wayland-0" });
       const result = await interactive(mode);

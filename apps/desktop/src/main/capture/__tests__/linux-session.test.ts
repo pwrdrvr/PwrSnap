@@ -10,7 +10,7 @@ describe("linuxSessionType", () => {
     // region capture there.
     expect(linuxSessionType(env({ WAYLAND_DISPLAY: "wayland-0" }), "darwin")).toBe("not-linux");
     expect(linuxSessionType(env({ WAYLAND_DISPLAY: "wayland-0" }), "win32")).toBe("not-linux");
-    expect(regionSelectorUnsupported(env({ XDG_SESSION_TYPE: "wayland" }), "darwin")).toBe(false);
+    expect(regionSelectorUnsupported(2, env({ XDG_SESSION_TYPE: "wayland" }), "darwin")).toBe(false);
   });
 
   test("XDG_SESSION_TYPE=wayland is Wayland", () => {
@@ -65,13 +65,37 @@ describe("linuxSessionType", () => {
     // geometry check rather than painting a misaligned selector.
     expect(linuxSessionType(env({}), "linux")).toBe("unknown");
     expect(linuxSessionType(env({ XDG_SESSION_TYPE: "tty" }), "linux")).toBe("unknown");
-    expect(regionSelectorUnsupported(env({}), "linux")).toBe(false);
+    expect(regionSelectorUnsupported(2, env({}), "linux")).toBe(false);
   });
 
-  test("regionSelectorUnsupported is true for Wayland only", () => {
-    expect(regionSelectorUnsupported(env({ XDG_SESSION_TYPE: "wayland" }), "linux")).toBe(true);
-    expect(
-      regionSelectorUnsupported(env({ XDG_SESSION_TYPE: "x11", DISPLAY: ":0" }), "linux")
-    ).toBe(false);
+  test("Wayland keeps region capture on a single display", () => {
+    // The blanket Wayland refusal is GONE, and this is the test that stops it
+    // coming back. It was a stopgap for a misalignment we could not explain,
+    // and the explanation turned out to be our own missing setFullScreen(true)
+    // on Linux — the overlay was geometrically perfect and simply had GNOME's
+    // top bar and dock painted over it. Measured on Ubuntu 24: placement
+    // honoured exactly, renderer 1:1, and a pixel-exact grab (all four
+    // fiducials +0,+0).
+    expect(regionSelectorUnsupported(1, env({ XDG_SESSION_TYPE: "wayland" }), "linux")).toBe(
+      false
+    );
+  });
+
+  test("Wayland with more than one display is refused — the pointer is dead", () => {
+    // The one thing the fullscreen fix does not reach. getCursorScreenPoint()
+    // returns 0,0 wherever the mouse is, and pickRegion routes off it to
+    // choose a display, so with two displays it reliably picks the wrong one.
+    // With one there is nothing to get wrong.
+    expect(regionSelectorUnsupported(2, env({ XDG_SESSION_TYPE: "wayland" }), "linux")).toBe(true);
+    expect(regionSelectorUnsupported(3, env({ XDG_SESSION_TYPE: "wayland" }), "linux")).toBe(true);
+  });
+
+  test("X11 is never refused, at any display count", () => {
+    for (const count of [1, 2, 3]) {
+      expect(
+        regionSelectorUnsupported(count, env({ XDG_SESSION_TYPE: "x11", DISPLAY: ":0" }), "linux"),
+        `${count} display(s)`
+      ).toBe(false);
+    }
   });
 });

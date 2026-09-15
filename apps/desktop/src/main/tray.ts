@@ -52,6 +52,7 @@ import { bus } from "./command-bus";
 import { dispatchInteractiveCapture } from "./capture/capture-trigger";
 import { getMainLogger } from "./log";
 import { logLinuxTrayHostDiagnostics } from "./linux-status-notifier-host";
+import { windowPlacementIsOurs } from "./linux-window-placement";
 import { getRuntimeProcessRole } from "./process-role";
 import {
   getRecordingState,
@@ -430,6 +431,12 @@ function ensureTrayWindow(): BrowserWindow {
   const window = createTrayWindow();
   trayWindow = window;
   wireBlurDismiss(window);
+  // Linux only — see `wireEscapeDismiss`. macOS and Windows dismiss on a
+  // click outside, which is reliable there, and adding a key handler to them
+  // would be a behavior change this Wayland work has no business making.
+  if (traySurfaceForPlatform(shortcutPlatformFromString(process.platform)) === "native-menu") {
+    wireEscapeDismiss(window);
+  }
   // NOTE: there is deliberately no `zoom-changed` hook here. That
   // event is mouse-wheel-only — it does NOT fire for setZoomFactor,
   // the View-menu zoomIn/zoomOut roles, or Chromium HostZoomMap
@@ -498,9 +505,22 @@ function wireTrayResizeChannel(): void {
     trayWindow.setMinimumSize(0, 0);
     trayWindow.setContentSize(TRAY_WIDTH, clamped, false);
     lastTrayResizeRequest = { cssHeight: requestedCss, dipHeight: clamped };
-    if (tray !== null && trayWindow.isVisible()) {
-      positionTrayWindow(trayWindow, tray.getBounds());
+    // Linux re-places itself: `tray.getBounds()` is `@platform darwin,win32`
+    // and measured `{0,0,0,0}` there, so feeding it to `positionTrayWindow`
+    // would anchor the popover to the top-left corner of the primary display
+    // — a worse answer than the one `placeLinuxTrayPopover` gives, and under
+    // Wayland it would be inert anyway.
+    if (trayWindow.isVisible()) {
+      if (traySurfaceForPlatform(shortcutPlatformFromString(process.platform)) === "native-menu") {
+        placeLinuxTrayPopover(trayWindow);
+      } else if (tray !== null) {
+        positionTrayWindow(trayWindow, tray.getBounds());
+      }
     }
+    // Unblock a Linux popover open that is waiting for the renderer's first
+    // measurement so it can show at the right size instead of flashing the
+    // constructor frame. Harmless on the popover platforms, which pre-warm.
+    notifyTrayMeasured();
   });
 }
 
@@ -786,6 +806,151 @@ export function prewarmTrayWindow(): BrowserWindow {
   return ensureTrayWindow();
 }
 
+/**
+ * How long a Linux popover open waits for the renderer's first measurement
+ * before showing anyway.
+ *
+ * Linux does not pre-warm the popover (the native menu is the primary surface
+ * and most Linux users never open this window), so the first open races the
+ * renderer's mount. Showing immediately would paint the constructor frame and
+ * then jump to the measured height — very visible, because the constructor
+ * frame is deliberately TALLER than typical content there (see
+ * `trayPopoverConstructedHeight`). Waiting for one measurement removes the
+ * jump; the deadline means a renderer that never posts still opens a window.
+ *
+ * Exported so a test can exercise the deadline without waiting out the
+ * production one.
+ */
+export const LINUX_TRAY_FIRST_MEASURE_WAIT_MS = 1_200;
+
+/** Resolvers for opens parked in `waitForFirstTrayMeasurement`. */
+let trayMeasureWaiters: Array<() => void> = [];
+
+/** Release every parked open. Called from the resize handler and disposal. */
+function notifyTrayMeasured(): void {
+  if (trayMeasureWaiters.length === 0) return;
+  const waiters = trayMeasureWaiters;
+  trayMeasureWaiters = [];
+  for (const resolve of waiters) resolve();
+}
+
+function waitForFirstTrayMeasurement(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(finish, LINUX_TRAY_FIRST_MEASURE_WAIT_MS);
+    // A parked open must never hold the app open at quit.
+    timer.unref?.();
+    trayMeasureWaiters.push(finish);
+  });
+}
+
+/**
+ * Place the Linux popover, or deliberately decline to.
+ *
+ * ⚠️  Under Wayland this does NOTHING, and that is the honest answer rather
+ * than a missing feature. Three separate things have to be true to put a
+ * popover next to our indicator, and on Wayland none of them are:
+ *
+ *   1. We would have to know where the indicator IS. `tray.getBounds()` is
+ *      `@platform darwin,win32` and measured `{0,0,0,0}` on Linux.
+ *   2. We would have to be able to move a window there. `setPosition` is
+ *      documented "Not supported on Wayland (Linux)" — a Wayland client
+ *      cannot place its own toplevel.
+ *   3. Failing both, we would have to anchor to a parent surface. The
+ *      indicator is drawn by the PANEL's process, not ours, so there is no
+ *      surface of ours to anchor to and Electron exposes no `xdg_positioner`
+ *      or layer-shell path to reach for.
+ *
+ * So on Wayland the compositor chooses, and for a frameless always-on-top
+ * toplevel on GNOME that is roughly the centre of the screen. A centred
+ * popover that opens is worth more than no popover at all — but do not read
+ * this function as a placement that could be improved with more arithmetic.
+ *
+ * X11 is materially better and gets a real anchor: `setPosition` works there,
+ * and while `getBounds()` is still zeros, the POINTER is on the indicator at
+ * the moment the menu item is clicked, so the cursor is a good stand-in.
+ */
+function placeLinuxTrayPopover(window: BrowserWindow): void {
+  if (!windowPlacementIsOurs()) return;
+  const cursor = screen.getCursorScreenPoint();
+  const display = screen.getDisplayNearestPoint(cursor);
+  const wa = display.workArea;
+  const margin = 8;
+  const [width, height] = window.getSize();
+  const clamp = (value: number, low: number, high: number): number =>
+    Math.round(Math.min(Math.max(value, low), Math.max(low, high)));
+  // Centred under the pointer, then clamped into the work area — which is
+  // what makes this correct for a bottom panel as well as a top one: a cursor
+  // near the bottom edge clamps the popover up above it.
+  window.setPosition(
+    clamp(cursor.x - width / 2, wa.x + margin, wa.x + wa.width - width - margin),
+    clamp(cursor.y + margin, wa.y + margin, wa.y + wa.height - height - margin),
+    false
+  );
+}
+
+/**
+ * Linux: open (or close) the tray popover from the native menu.
+ *
+ * This is the ONLY way the popover is reached on Linux — there is no
+ * left-click toggle, because `Tray`'s `click` event fires on some SNI hosts
+ * and not others and PwrSnap deliberately wires no handler for it (see
+ * docs/linux-tray-support.md §"A StatusNotifierItem activate does nothing").
+ *
+ * It TOGGLES, and that is load-bearing rather than a nicety: on Wayland the
+ * popover may never take keyboard focus (a client cannot activate itself
+ * without an activation token), and blur-dismiss and Escape both need focus.
+ * Re-picking the menu row needs neither, so it is the one dismissal that is
+ * guaranteed to work on every host.
+ */
+function toggleLinuxTrayPopover(): void {
+  wireTrayResizeChannel();
+  const window = ensureTrayWindow();
+  if (window.isVisible()) {
+    hideTrayWindowNow(window);
+    return;
+  }
+  const open = (): void => {
+    if (window.isDestroyed()) return;
+    placeLinuxTrayPopover(window);
+    showTrayWindowNow(window);
+  };
+  // Already measured once (the user has opened it before) — show immediately.
+  if (lastTrayResizeRequest !== null) {
+    open();
+    return;
+  }
+  void waitForFirstTrayMeasurement().then(open);
+}
+
+/**
+ * Escape closes the popover, handled in MAIN rather than the renderer.
+ *
+ * `before-input-event` sees the key before the page does, so this works
+ * without the tray renderer growing a keydown listener it has never needed.
+ *
+ * LINUX ONLY, deliberately. On macOS and Windows a click outside the popover
+ * dismisses it reliably, so they need no second exit and this Wayland work
+ * should not change how they behave.
+ *
+ * It needs keyboard focus to fire at all — which on Wayland is exactly what
+ * may be missing — so this is a second exit, not the guaranteed one. The menu
+ * row's toggle is the guaranteed one.
+ */
+function wireEscapeDismiss(window: BrowserWindow): void {
+  window.webContents.on("before-input-event", (_event, input) => {
+    if (input.type !== "keyDown" || input.key !== "Escape") return;
+    if (window.isDestroyed() || !window.isVisible()) return;
+    hideTrayWindowNow(window);
+  });
+}
+
 function toggleTrayWindow(): void {
   const window = ensureTrayWindow();
   if (window.isVisible()) {
@@ -837,6 +1002,9 @@ export function disposeTray(): void {
   }
   ipcMain.removeAllListeners(TRAY_RESIZE_CHANNEL);
   trayResizeChannelWired = false;
+  // Release any parked Linux open so a disposed tray cannot leave a promise
+  // pending for the life of the process.
+  notifyTrayMeasured();
   if (trayWindow !== null && !trayWindow.isDestroyed()) {
     trayWindow.destroy();
     trayWindow = null;
@@ -1360,6 +1528,28 @@ export function buildTrayContextMenuTemplate(
       }
     },
     { type: "separator" },
+    // Linux only: the popover is not reachable any other way there, because
+    // the tray's own surface IS this menu (`traySurfaceForPlatform`). macOS
+    // and Windows already open it on left-click, so offering a row for it in
+    // their right-click menu would be a second door to the same room.
+    //
+    // The label is static on purpose. This menu is a PERSISTENT D-Bus object
+    // on Linux and anything time-varying in it goes stale (see
+    // `refreshNativeTrayMenu`), so it must not name the last capture, or say
+    // whether one exists, or flip to "Hide" while the popover is open — each
+    // of those would need a per-capture republish, and a republish can close
+    // the menu under the user's cursor. The row toggles regardless of what it
+    // says.
+    ...(menuIsPersistent
+      ? [
+          {
+            label: "Show Last Capture…",
+            click: () => {
+              toggleLinuxTrayPopover();
+            }
+          } satisfies MenuItemConstructorOptions
+        ]
+      : []),
     {
       // Same conditional-accelerator treatment as Quick Capture and
       // Record Video above — including `activeTrayAccelerator`, which is

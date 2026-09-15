@@ -1347,13 +1347,20 @@ Full measurements, the probe recipe, and the dead ends:
 
 ## The Linux tray is a native menu, not the popover
 
-**On Linux the tray's ONLY surface is a native `Menu` attached with
-`tray.setContextMenu`. Do not try to bring the popover there, and do not
-let a new tray affordance be wired only through the popover-platform
-events.** Owner: `traySurfaceForPlatform` + `refreshNativeTrayMenu` in
-[tray.ts](apps/desktop/src/main/tray.ts). Reference:
-[docs/linux-tray-support.md](docs/linux-tray-support.md). Pinned by
-[tray-linux-native-menu.test.ts](apps/desktop/src/main/__tests__/tray-linux-native-menu.test.ts).
+**On Linux the tray's PRIMARY surface is a native `Menu` attached with
+`tray.setContextMenu`, and nothing may anchor a window to the indicator
+there. Do not let a new tray affordance be wired only through the
+popover-platform events.** Owner: `traySurfaceForPlatform` +
+`refreshNativeTrayMenu` in [tray.ts](apps/desktop/src/main/tray.ts).
+Reference: [docs/linux-tray-support.md](docs/linux-tray-support.md). Pinned by
+[tray-linux-native-menu.test.ts](apps/desktop/src/main/__tests__/tray-linux-native-menu.test.ts)
+and
+[tray-linux-wayland-popover.test.ts](apps/desktop/src/main/__tests__/tray-linux-wayland-popover.test.ts).
+
+The popover IS reachable on Linux — the menu's `Show Last Capture…` row opens
+it (`toggleLinuxTrayPopover`). What is not reachable is opening it **at the
+indicator**, which is what a tray popover is; the compositor places it. That
+distinction is the whole of the Wayland bullet below.
 
 PwrSnap shipped with no working Linux tray, and the failure mode is worth
 remembering because nothing in the code looked wrong: the `Tray` was
@@ -1408,11 +1415,44 @@ Five things that bite:
   `NSStatusItem` it hands left-click to the menu and suppresses the `click`
   event `toggleTrayWindow` is wired to — deleting the popover UI on the two
   platforms where it works. The test asserts the absence.
-- **Linux does not create the popover `BrowserWindow` at all** (no
-  `prewarmTrayWindow`, no resize channel). `createTrayWindow` still runs on
-  Linux under E2E, where `showTrayPopoverForE2E` pins it at a fixed point —
-  so **a green Linux E2E tray spec proves nothing about the Linux tray.**
-  xvfb is X11 and no indicator is driving it.
+- **Linux does not PRE-WARM the popover `BrowserWindow`** — it is built on
+  the first `Show Last Capture…` click and kept. Do not add
+  `prewarmTrayWindow` to the Linux arm of `installTray`: the native menu is
+  the primary surface and most Linux users never open the popover, so that
+  would be a resident renderer at boot for nothing. The consequence is that
+  the first open races the renderer's mount, which is what
+  `LINUX_TRAY_FIRST_MEASURE_WAIT_MS` and the taller Linux constructor frame
+  exist for (see "Tray + float-over popover sizing"). `showTrayPopoverForE2E`
+  still pins a window at a fixed point under E2E — so **a green Linux E2E
+  tray spec proves nothing about the Linux tray.** xvfb is X11 and no
+  indicator is driving it.
+- **On Wayland the compositor owns placement, and the code must say so by
+  not calling `setPosition`.** `placeLinuxTrayPopover` and the float-over's
+  `placeBottomRightOn` both return early when
+  `windowPlacementIsOurs()` is false. Calling an inert API instead would read
+  as a placement that works. Three things would have to be true to mount the
+  popover by the icon and none are: `getBounds()` is zeros, `setPosition` is
+  inert, and the indicator lives in the PANEL's process so there is no
+  surface of ours to anchor to (Electron exposes no `xdg_positioner` /
+  layer-shell path). X11 keeps a real cursor anchor.
+- **Detect the backend with `app.commandLine.getSwitchValue("ozone-platform")`,
+  never with a geometry readback.** Owner:
+  [linux-window-placement.ts](apps/desktop/src/main/linux-window-placement.ts).
+  Measured on 41.10.7 against headless weston AND xvfb, `setPosition(400,300)`
+  → `getPosition()` returns `[400,300]` on BOTH — every geometry getter echoes
+  Chromium's cached widget bounds whether or not the compositor honoured the
+  request, and the two runs were byte-identical. The switch is preferred over
+  `XDG_SESSION_TYPE` because Electron-on-XWayland is an X11 process that CAN
+  place its windows. Note the measured default: on a Wayland session Electron
+  takes **wayland**, even with XWayland available — `pnpm dev` on Ubuntu GNOME
+  cannot place its own windows.
+- **The `Show Last Capture…` row must TOGGLE, and its label must stay
+  static.** Toggle because on Wayland the popover may never take keyboard
+  focus (a client cannot activate itself), so blur-dismiss and the Escape
+  handler can both be unavailable — re-picking the row is the only dismissal
+  guaranteed to work. Static because this menu is persistent: a label naming
+  the last capture, or flipping to "Hide" while open, would need a per-capture
+  republish, and a republish can close the menu under the user's cursor.
 - **There is no `libayatana-appindicator3` dependency to declare.** Electron
   stopped routing the tray through libappindicator in Electron 22
   (electron/electron#36333) and speaks StatusNotifierItem over D-Bus itself.
@@ -1623,6 +1663,51 @@ All three encode the same lesson: as long as we measure the styled
 container, we're fighting browser-implementation quirks of
 `overflow: hidden`. Measure an `inline-block` wrapper outside the
 clipping chain and the entire class of bug disappears.
+
+### Linux: the measurer still runs, but it cannot be the only guarantee
+
+**On Linux the resize-to-fit path is unchanged — the same wrapper, the same
+IPC, the same `setContentSize`. What Linux adds is a floor under it, because
+nothing in the process can verify the resize landed.** Owners:
+`trayPopoverConstructedHeight` in
+[window.ts](apps/desktop/src/main/window.ts) and
+`LINUX_TRAY_FIRST_MEASURE_WAIT_MS` + `toggleLinuxTrayPopover` in
+[tray.ts](apps/desktop/src/main/tray.ts). Pinned by
+[tray-linux-wayland-popover.test.ts](apps/desktop/src/main/__tests__/tray-linux-wayland-popover.test.ts).
+
+- **`getContentSize()` CANNOT tell you whether `setContentSize` worked.** It
+  echoes the requested value on every backend — measured, byte-identical
+  between headless weston and xvfb. The honest check is the renderer's own
+  `window.innerHeight`, and by that measure `setContentSize` **does** work on
+  Wayland (`440→620→300→812` all followed exactly). But that was weston, not
+  mutter, and Electron still documents the call as "may not work" there, so
+  the design does not depend on it.
+- **The Linux constructor frame is TALLER (880, not 440)** and that is the
+  floor: the constructor frame is the last size the popover is guaranteed to
+  have. A refused resize then renders content at the top of a taller
+  transparent window — dead area that still hit-tests — which beats clipping
+  the bottom rows off. Do not "tidy" Linux back to 440 on the strength of the
+  weston measurement.
+- **The first Linux open waits for one measurement before showing.** Linux
+  does not pre-warm the popover, so without the wait the first open paints the
+  constructor frame and visibly jumps. The wait has a deadline
+  (`LINUX_TRAY_FIRST_MEASURE_WAIT_MS`) so a renderer that never posts still
+  gets a window — which is the *other* reason the constructor frame has to fit
+  the content.
+- **The float-over's Linux problem was never sizing — it was `setOpacity`.**
+  That call is `@platform win32,darwin` and measured inert on BOTH Linux
+  backends, so the toast's opacity park hid nothing and the once-only
+  `showInactive()` (burned by the selector's `show-idle`) meant the commit
+  never showed. Linux now uses the real `hide()` / `showInactive()` cycle
+  Windows already proves — `floatOverHideModelForPlatform`, where macOS is the
+  exception that has to earn its way out rather than the rule everyone else
+  survives. Pinned by
+  [float-over-linux-visibility.test.ts](apps/desktop/src/main/__tests__/float-over-linux-visibility.test.ts).
+- **Linux E2E green proves nothing here.** xvfb is X11. Reproducing any of
+  this needs a nested Wayland compositor — recipe in
+  [docs/linux-tray-support.md](docs/linux-tray-support.md) §"Repeating the
+  Wayland half" — and confirming where a window actually LANDS needs a real
+  GNOME session, because weston is not mutter.
 
 ### When to revisit
 

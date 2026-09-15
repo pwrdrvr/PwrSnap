@@ -603,16 +603,9 @@ function bitmapChannelOrder() {
   return null;
 }
 
-async function reportGrabAlignment(display) {
-  head("6. Grab alignment — where the screen actually lands inside the frame");
-  const order = bitmapChannelOrder();
-  if (order === null) {
-    say("  skipped: could not determine this Electron's bitmap channel order.");
-    return;
-  }
-  say("  Painting four corner fiducials at known coordinates, then grabbing.");
-  say("  THE PORTAL WILL PROMPT A SECOND TIME — pick the same source as before.");
-  say("  The screen will be solid magenta with coloured corners for a moment.");
+async function reportGrabAlignment(display, coverage, order) {
+  say("");
+  say(`  ── ${coverage.label}`);
 
   const win = new BrowserWindow({
     x: display.bounds.x, y: display.bounds.y,
@@ -636,10 +629,9 @@ async function reportGrabAlignment(display) {
         FIDUCIALS.map(corner).join("")
     )}`
   );
+  if (coverage.key === "fullscreen-before-show") enterFullScreen(win);
   win.show();
-  // Cover gnome-shell's top bar and dock, which otherwise paint OVER a plain
-  // always-on-top window and land on the very corners being measured.
-  enterFullScreen(win);
+  if (coverage.key === "fullscreen-after-show") enterFullScreen(win);
   // Wait for the compositor to have actually shown this, not just for the
   // main-side call to return: a grab taken during the fullscreen transition
   // photographs the screen as it was and finds no fiducial at all.
@@ -665,15 +657,15 @@ async function reportGrabAlignment(display) {
   win.hide();
   win.destroy();
   if (image === null) {
-    say("  skipped: no usable grab.");
-    return;
+    say("     skipped: no usable grab.");
+    return undefined;
   }
 
   const { width: gw, height: gh } = image.getSize(1);
   const buf = image.toBitmap({ scaleFactor: 1 });
   if (buf.length !== gw * gh * 4) {
-    say(`  skipped: bitmap is ${buf.length} bytes, expected ${gw * gh * 4}.`);
-    return;
+    say(`     skipped: bitmap is ${buf.length} bytes, expected ${gw * gh * 4}.`);
+    return undefined;
   }
   // Classify by NEAREST reference colour rather than by per-channel tolerance.
   // A display colour profile shifts pure channels — a painted rgb(255,0,255)
@@ -684,6 +676,13 @@ async function reportGrabAlignment(display) {
   const REFS = [...FIDUCIALS.map((f) => ({ key: f.key, rgb: f.rgb })), { key: "field", rgb: FIELD }];
   const CUTOFF_SQ = 140 * 140;
   const boxes = new Map();
+  // Foreign mass per row and per column. A pixel that matches none of the five
+  // references is something ELSE painted over our full-screen overlay — which
+  // on GNOME means the top bar or the dock. This is the occlusion measurement:
+  // it needs no human eye, and unlike step 5 it is not confounded by the
+  // overlay's own translucency, because this overlay is fully opaque.
+  const foreignRow = new Int32Array(gh);
+  const foreignCol = new Int32Array(gw);
   for (let y = 0; y < gh; y += 1) {
     for (let x = 0; x < gw; x += 1) {
       const o = (y * gw + x) * 4;
@@ -699,7 +698,11 @@ async function reportGrabAlignment(display) {
         const d = dr * dr + dg * dg + db * db;
         if (d < best) { best = d; key = ref.key; }
       }
-      if (key === null) continue;
+      if (key === null) {
+        foreignRow[y] += 1;
+        foreignCol[x] += 1;
+        continue;
+      }
       let cur = boxes.get(key);
       if (cur === undefined) {
         // Per-axis histograms rather than a running min/max. A raw bbox is
@@ -715,6 +718,35 @@ async function reportGrabAlignment(display) {
       cur.n += 1;
     }
   }
+
+  // ── The occlusion answer, measured.
+  //
+  // The overlay is opaque and covers the whole display, so in a grab taken
+  // while it is up EVERY pixel should be one of our five colours. Anything
+  // else is something the compositor drew on top of us — on GNOME, the top
+  // bar and the dock. Leading rows/columns of foreign pixels are exactly the
+  // strip of our overlay the user cannot see.
+  const intrusion = (counts, extent) => {
+    let n = 0;
+    while (n < counts.length && counts[n] > extent * 0.2) n += 1;
+    return n;
+  };
+  const topRows = intrusion(foreignRow, gw);
+  const leftCols = intrusion(foreignCol, gh);
+  const totalForeign = foreignRow.reduce((a, b) => a + b, 0);
+  say("");
+  say(`  occlusion: ${topRows} row(s) covered at the top, ${leftCols} column(s) at the left`);
+  say(`             (${((totalForeign / (gw * gh)) * 100).toFixed(2)}% of the frame is not ours)`);
+  if (topRows === 0 && leftCols === 0) {
+    say("  ^ NOTHING is painted over the overlay. This coverage strategy works:");
+    say("    the selector would own the whole screen, and the frozen snapshot's");
+    say("    copy of the top bar would sit exactly where the real one is.");
+  } else {
+    say("  ^ the shell is painting OVER the overlay. A frozen snapshot underneath");
+    say("    carries its own copy of that chrome, so the user sees the live bar");
+    say("    AND the captured bar — the duplication, with nothing misaligned.");
+  }
+
   /**
    * Smallest span holding all but `drop` of the mass, walked in from both ends.
    *
@@ -768,7 +800,7 @@ async function reportGrabAlignment(display) {
     say("  the corner match is too strict. Anything else means the frame is not");
     say("  showing our overlay: either the grab beat it onto the screen, or the");
     say("  portal handed back a source that is not this display.");
-    return;
+    return { topRows, leftCols };
   }
   say(`  magenta field spans ${field.x0},${field.y0} .. ${field.x1},${field.y1}`);
   say("");
@@ -797,7 +829,7 @@ async function reportGrabAlignment(display) {
   if (deltas.length === 0) {
     say("");
     say("  No fiducial was found. The grab is not showing our overlay.");
-    return;
+    return { topRows, leftCols };
   }
   const same =
     deltas.every((d) => d.dx === deltas[0].dx) && deltas.every((d) => d.dy === deltas[0].dy);
@@ -818,6 +850,58 @@ async function reportGrabAlignment(display) {
     for (const d of deltas) {
       say(`           ${d.key.padEnd(13)} delta ${d.dx},${d.dy}  size ${d.w}x${d.h} (drawn ${Math.round(FIDUCIAL * sx)}x${Math.round(FIDUCIAL * sy)})`);
     }
+  }
+
+  return { topRows, leftCols };
+}
+
+/**
+ * Step 6 across all three coverage strategies.
+ *
+ * This replaced asking a human to eyeball a 55%-opacity overlay, which failed
+ * twice: at that opacity the live desktop shows through BY DESIGN, so "covered
+ * by the shell" and "showing through my own translucency" look identical. An
+ * opaque overlay plus a grab turns the question into an integer.
+ */
+async function reportCoverageStrategies(display) {
+  head("6. Coverage — which strategy actually owns the screen (measured)");
+  const order = bitmapChannelOrder();
+  if (order === null) {
+    say("  skipped: could not determine this Electron's bitmap channel order.");
+    return;
+  }
+  say("  For each strategy: paint an OPAQUE full-display field with four corner");
+  say("  fiducials, grab the screen, and count how many pixels in the grab are");
+  say("  not ours. Leading rows at the top are the GNOME top bar sitting over");
+  say("  the overlay; leading columns at the left are the dock.");
+  say("");
+  say("  Costs one portal grab per strategy. --no-fiducials skips this step.");
+
+  const results = [];
+  for (const coverage of SNAPSHOT_COVERAGE) {
+    const r = await reportGrabAlignment(display, coverage, order);
+    results.push({ coverage, r });
+  }
+
+  say("");
+  say("  SUMMARY — rows covered at the top / columns at the left");
+  for (const { coverage, r } of results) {
+    const cells = r === undefined ? "no grab" : `${r.topRows} / ${r.leftCols}`;
+    say(`    ${coverage.key.padEnd(24)} ${cells}`);
+  }
+  const before = results.find((x) => x.coverage.key === "fullscreen-before-show")?.r;
+  const after = results.find((x) => x.coverage.key === "fullscreen-after-show")?.r;
+  say("");
+  if (before !== undefined && before.topRows === 0 && before.leftCols === 0) {
+    say("  The selector's own ordering (enterMenuBarOverlayMode then show) covers");
+    say("  the screen. The shipped fix is correct as written.");
+  } else if (after !== undefined && after.topRows === 0 && after.leftCols === 0) {
+    say("  ONLY the after-show ordering covers. setFullScreen() is being dropped");
+    say("  on an unmapped window, so enterMenuBarOverlayMode(win) must move to");
+    say("  AFTER win.show() in region-selector.ts. That is the remaining fix.");
+  } else {
+    say("  Neither fullscreen ordering covers the shell chrome here. Something");
+    say("  other than mapping order is at work — do not guess; report this table.");
   }
 }
 
@@ -923,14 +1007,18 @@ app.whenReady().then(async () => {
     );
     if (DO_OVERLAY) {
       await reportSelectorSimulation(target, grabbed);
-      if (DO_FIDUCIALS) await reportGrabAlignment(target);
-      else {
-        head("6. Grab alignment");
-        say("  skipped (--no-fiducials)");
-      }
     } else {
       head("5. Selector simulation");
       say("  skipped (--no-overlay)");
+    }
+    // Step 6 is NOT part of the translucent simulation and must not hang off
+    // its flag: it is the measured answer to the same question, and the one
+    // worth keeping when you skip the eyeball steps. It used to be nested
+    // under DO_OVERLAY, so `--no-overlay` silently took the measurement away.
+    if (DO_FIDUCIALS) await reportCoverageStrategies(target);
+    else {
+      head("6. Coverage");
+      say("  skipped (--no-fiducials)");
     }
   } else {
     head("4. desktopCapturer screen sources");

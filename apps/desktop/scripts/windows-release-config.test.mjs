@@ -454,13 +454,12 @@ describe("Windows release configuration", () => {
     expect(rootReadme).toContain(
       "https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.Setup.exe"
     );
-    // The macOS arm64 alias has NOT shipped to a stable release yet, so the
-    // README must not link it. Drop this in the change that flips that chip.
-    expect(rootReadme).not.toContain(
+    // v1.1.0 is the first stable release carrying the native Apple Silicon
+    // alias, so the primary download chip may now resolve it through Latest.
+    expect(rootReadme).toContain(
       "https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap-arm64.dmg"
     );
-    expect(rootReadme).toMatch(/To install a\s+1\.1 prerelease/);
-    expect(rootReadme).toMatch(/Once 1\.1 is promoted\s+stable/);
+    expect(rootReadme).toMatch(/For\s+prerelease testing/);
 
     for (const docs of [rootReadme, windowsReadme]) {
       expect(docs).toContain("PwrSnap-<version>-windows-x64-setup.exe");
@@ -480,8 +479,7 @@ describe("Windows release configuration", () => {
     expect(windowsReadme).toContain("Windows video capture records the screen");
     expect(windowsReadme).toContain("Arm64 is not packaged");
     expect(windowsReadme).toContain("Help → Logs");
-    expect(windowsReadme).toMatch(/To install a\s+1\.1 prerelease/);
-    expect(windowsReadme).toMatch(/Once 1\.1 is promoted\s+stable/);
+    expect(windowsReadme).toContain("For prerelease testing");
     expect(windowsReadme).toContain("preserves the previous working binding");
     expect(windowsReadme).toContain("Full-window capture on Windows depends on Electron");
     expect(wingetReadme).toContain("PwrSnap is not published there yet");

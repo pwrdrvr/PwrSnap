@@ -7,7 +7,7 @@
 <strong>Screen capture for the agent age.</strong>
 
 <p>
-  <a href="https://github.com/pwrdrvr/PwrSnap/releases/latest"><img src="docs/assets/buttons/download-mac-apple-silicon.png" alt="Download for Mac — Apple Silicon" width="250"></a>
+  <a href="https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap-arm64.dmg"><img src="docs/assets/buttons/download-mac-apple-silicon.png" alt="Download for Mac — Apple Silicon" width="250"></a>
   <a href="https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.dmg"><img src="docs/assets/buttons/download-mac-universal.png" alt="Download for Mac — Universal, Intel and Apple Silicon" width="250"></a>
   <a href="https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.Setup.exe"><img src="docs/assets/buttons/download-windows.png" alt="Download for Windows — x64 installer" width="250"></a>
 </p>
@@ -29,10 +29,8 @@ No account, no telemetry, no PwrSnap server. AI is optional, and rides the Codex
 
 Not sure which Mac? **Apple Silicon** is the right download for an M-series
 Mac, and the smaller one. **Universal** runs natively on both Intel and Apple
-Silicon. The Apple Silicon chip opens the latest release rather than a file:
-`PwrSnap-arm64.dmg` is built and published on the 1.1 prereleases, but no
-promoted stable release carries it yet, so `releases/latest/download/` has
-nothing to point at. It becomes a direct link once one does.
+Silicon. The Apple Silicon chip downloads the native `PwrSnap-arm64.dmg` from
+the latest stable release.
 
 A local-first macOS and Windows capture + library app with global hotkeys for
 region, window, and full-screen snaps. A float-over toast that copies a Low /
@@ -113,12 +111,9 @@ processing; normal users do not need to install FFmpeg separately.
      [`PwrSnap.dmg`](https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.dmg).
      One build for Apple Silicon + Intel, running natively on both, and the
      right choice if you are not sure which Mac you have.
-   - macOS on Apple Silicon — `PwrSnap-arm64.dmg`, the native build and a
-     substantially smaller download. Pick it from the
-     [Releases page](https://github.com/pwrdrvr/PwrSnap/releases) for now: it
-     is published on the 1.1 prereleases, and the stable
-     `releases/latest/download/PwrSnap-arm64.dmg` alias starts resolving with
-     the first stable release that carries it.
+   - macOS on Apple Silicon —
+     [`PwrSnap-arm64.dmg`](https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap-arm64.dmg),
+     the native build and a substantially smaller download.
    - Windows —
      [`PwrSnap.Setup.exe`](https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.Setup.exe),
      the x64 installer. Every release also carries the same bytes version-
@@ -131,12 +126,11 @@ processing; normal users do not need to install FFmpeg separately.
 3. Optionally connect Codex from **Settings → AI Providers**. Capture, editing,
    the Library, and export continue to work without an AI provider.
 
-GitHub's `releases/latest` route deliberately ignores prereleases. To install a
-1.1 prerelease, use the main
+GitHub's `releases/latest` route serves the current stable release. For
+prerelease testing, use the main
 [Releases page](https://github.com/pwrdrvr/PwrSnap/releases) and choose the
-versioned artifact for your platform. Once 1.1 is promoted stable, install it
-from the latest stable release linked above. Pull-request preview artifacts are
-not production-signed and expire after 14 days; the Windows preview is unsigned,
+versioned artifact for your platform. Pull-request preview artifacts are not
+production-signed and expire after 14 days; the Windows preview is unsigned,
 and the macOS preview is not notarized. They are for development testing rather
 than normal installation.
 

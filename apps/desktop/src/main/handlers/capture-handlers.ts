@@ -50,6 +50,7 @@ import {
   WAYLAND_SELECTOR_ERROR_CODE,
   WAYLAND_SELECTOR_MESSAGE
 } from "../capture/linux-session";
+import { showWaylandRefusalNotice } from "../capture/wayland-refusal-notice";
 import { captureRegion, captureScreen, captureWindow } from "../capture/screencapture";
 import { displayScaleFactorForId } from "../capture/display-density";
 import { planExtentMask } from "../capture/extent-mask";
@@ -283,18 +284,24 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     const trace = new CaptureLatencyTrace(req.invocation, mode);
     trace.mark("dispatch_receive", { principal: ctx.principal });
     // Refuse a Wayland session BEFORE anything else touches the screen.
-    // The selector cannot work there — a Wayland client may not place its
-    // own overlay, may not pin it on top, and may not ask where the
-    // pointer is — and the grab comes from the desktop portal, which
-    // picks its own source and does not say which display it gave back.
-    // Ahead of guardScreenCapture so a capture we are going to refuse
-    // never raises the portal's permission prompt. See linux-session.ts.
+    // The selector cannot work there — the pointer position reads 0,0
+    // wherever the mouse actually is, and the grab comes from the desktop
+    // portal, which picks its own source, charges a permission prompt and
+    // a picker per capture, and hands back a frame that does not line up
+    // with the screen. Ahead of guardScreenCapture so a capture we are
+    // going to refuse never raises the portal's prompt. See
+    // linux-session.ts.
     if (regionSelectorUnsupported()) {
       trace.finish("error", { code: WAYLAND_SELECTOR_ERROR_CODE });
       log.warn("interactive capture refused: Wayland session", {
         mode,
         principal: ctx.principal
       });
+      // Tell the user, and only the user. `ipc` is every human entry point
+      // — the Library button, the tray tiles, the global hotkeys, the
+      // native tray menu. An agent over `mcp`/`rpc` gets the Result and no
+      // dialog: nobody is sitting in front of it to dismiss one.
+      if (ctx.principal === "ipc") showWaylandRefusalNotice();
       return err({
         kind: "capture",
         code: WAYLAND_SELECTOR_ERROR_CODE,

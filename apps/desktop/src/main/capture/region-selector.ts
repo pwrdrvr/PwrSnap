@@ -426,11 +426,12 @@ export type SelectorMode = "auto" | "region" | "window";
  * once at boot; safe to call again to refresh after display changes.
  */
 export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup"): void {
-  // Nothing to pre-warm where the selector is refused outright: a Wayland
-  // client cannot place these windows, and `capture:interactive` returns
-  // WAYLAND_SELECTOR_ERROR_CODE before it would ever ask for one. Building
-  // them anyway costs a renderer process per display at boot for machinery
-  // that can never be shown.
+  // Nothing to pre-warm where the selector is refused outright:
+  // `capture:interactive` returns WAYLAND_SELECTOR_ERROR_CODE before it
+  // would ever ask for one, so building these costs a renderer process per
+  // display at boot for machinery that can never be shown. (The reason is
+  // the dead pointer and the portal, NOT window placement — XWayland
+  // honours that exactly. See linux-session.ts.)
   if (regionSelectorUnsupported()) return;
   // Build one window per display we don't already have.
   const displays = screen.getAllDisplays();

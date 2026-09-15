@@ -637,11 +637,25 @@ LIST, and the only authoritative key — `display_id` — is documented as
   drawn by the compositor ABOVE every client window, which `alwaysOnTop`
   + `"screen-saver"` cannot beat. The window itself was never wrong:
   measured at exactly `0,0 2560x1440`, renderer 1:1 with display logical
-  px, over a grab whose four corner fiducials all landed `+0,+0`. What the
-  user saw was ~32px of our overlay hidden behind live shell chrome, next
-  to the frozen snapshot's own copy of that chrome — which reads as a
-  duplicated, offset desktop even though nothing moved. Windows had the
-  identical bug ("two taskbars") and already had the identical fix.
+  px, over a grab whose four corner fiducials all landed `+0,+0`.
+  Measured on Ubuntu 24 / GNOME with the probe's occlusion table:
+
+  ```
+  bare                     32 rows at the top / 67 columns at the left
+  fullscreen-after-show     0 / 0
+  fullscreen-before-show    0 / 0
+  ```
+
+  32 rows is the top bar, 67 columns is the dock — and under `bare` the
+  opaque test field starts at `72,34`, i.e. exactly after them. So the
+  user was seeing the live bar and dock next to the frozen snapshot's own
+  copy of the same chrome, which reads as a duplicated, offset desktop
+  even though nothing moved. Windows had the identical bug ("two
+  taskbars") and already had the identical fix. **Both orderings cover**,
+  so `enterMenuBarOverlayMode(win)` may stay ahead of `win.show()` — that
+  was checked, because fullscreen on an unmapped X11 window is a
+  different operation (a `_NET_WM_STATE` property before map vs a
+  ClientMessage after it) and could have been dropped by mutter.
   `fullscreenable` must be true there too, or the call is a silent no-op.
   Pinned by
   [selector-overlay-fullscreen.test.ts](apps/desktop/src/main/capture/__tests__/selector-overlay-fullscreen.test.ts).
@@ -652,8 +666,15 @@ LIST, and the only authoritative key — `display_id` — is documented as
   window was already correct on this machine — look elsewhere before
   changing placement." That sentence cost three wrong hypotheses. None of
   those APIs can see what is painted OVER a window. When an overlay looks
-  wrong, ask whether it is MIS-PLACED or OCCLUDED before measuring, and
-  make the operator LOOK at the two candidates side by side.
+  wrong, ask whether it is MIS-PLACED or OCCLUDED before measuring.
+  **And do not resolve occlusion by eye** — that failed twice here. The
+  translucent simulation (step 5) is unanswerable that way by
+  construction: at 55% opacity the live desktop shows through BY DESIGN,
+  so "covered by the shell" and "showing through my own translucency"
+  look identical. Step 6 answers it as an integer instead — paint an
+  OPAQUE full-display field of known colours, grab the screen, and count
+  the pixels in the grab that are not ours. Leading foreign rows are the
+  top bar; leading columns are the dock.
 - **Wayland keeps region capture on a single display.** The refusal is now
   Wayland AND `displayCount > 1`, and nothing else. The only capability
   fullscreen does not restore is `getCursorScreenPoint()`, which returns
@@ -714,7 +735,11 @@ LIST, and the only authoritative key — `display_id` — is documented as
   ([linux-capture-probe.mjs](apps/desktop/scripts/linux-capture-probe.mjs)),
   which reports session type, the source list with `display_id` and
   measured dimensions, whether a selector-shaped window lands where it was
-  asked to, and whether the cursor point is real.
+  asked to, whether anything is painted over it (the occlusion table
+  above), and whether the cursor point is real. `--no-overlay` keeps the
+  measured steps and drops every watch-and-judge one; the banner prints
+  the checked-out sha and `-dirty`, because a run was once pasted back
+  that predated the commit it was meant to exercise.
 
 ## Overlays get Escape, Tab and focus from the renderer's focus hooks
 

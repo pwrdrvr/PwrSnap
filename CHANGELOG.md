@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.1.1 - 2026-09-15
+
+This patch makes update delivery more reliable after a stable release is
+promoted.
+
+- Updates - Fixed Beta-channel installs so they continue to receive a promoted
+  stable release until a newer prerelease is available.
+- Updates - Fixed a completed update request from repeatedly retrying while a
+  different update channel is selected, preventing the app from becoming
+  unresponsive.
+
 ## v1.1.0-beta.5 - 2026-09-15
 
 This beta makes manual update checks easier to follow and cancel, keeps local

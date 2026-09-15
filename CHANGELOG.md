@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.1.0-beta.4 - 2026-09-14
+## v1.1.0-beta.5 - 2026-09-15
 
 This beta makes manual update checks easier to follow and cancel, keeps local
 Codex integration current, and makes Windows installs and diagnostics clearer.
@@ -8,7 +8,8 @@ Codex integration current, and makes Windows installs and diagnostics clearer.
 - Update Checks - Improved manual update checks with live progress, clear
   download state, and cancellation, while background checks remain quiet.
 - Codex Integration - Updated PwrSnap's local Codex App Server protocol support
-  so AI features remain compatible with current Codex releases.
+  and fixed audio tool-result translation so local agent requests retain
+  produced media across supported protocol versions.
 - Windows Downloads - Added a stable `PwrSnap.Setup.exe` installer alias for a
   consistent Windows download link while updater metadata stays versioned.
 - Terminal Logs - Restored level colors in terminal logs so warnings and errors

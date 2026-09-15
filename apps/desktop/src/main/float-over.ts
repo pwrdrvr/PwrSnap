@@ -32,6 +32,7 @@ import {
 } from "@pwrsnap/shared";
 import { bus } from "./command-bus";
 import { hotkeyRecorderSuspension } from "./hotkeys/hotkey-recorder-suspension-instance";
+import { windowPlacementIsOurs } from "./linux-window-placement";
 import { getMainLogger } from "./log";
 import { createFloatOverWindow } from "./window";
 
@@ -77,10 +78,12 @@ let rendererReady = false;
  *  listeners are attached. Cleared on disposal so a late callback cannot
  *  revive state after the singleton has been destroyed. */
 let rendererReadyTimer: ReturnType<typeof setTimeout> | null = null;
-/** True after the first `showInactive()` call on the singleton. Subsequent
- *  show transitions skip `showInactive()` because we never `hide()` the
- *  window — see parkOffScreen() / restoreOnScreen() for the off-screen
- *  pseudo-hide model. Reset when the singleton is recreated. */
+/** True after the first `showInactive()` call on the singleton.
+ *  GATES ANYTHING ONLY ON macOS: there the window is never `hide()`-n, so
+ *  later show transitions skip `showInactive()`. On the `hide` model
+ *  (Windows, Linux) every restore shows for real and this is just a record
+ *  that the toast has been up at least once. Reset when the singleton is
+ *  recreated. See parkOffScreen() / restoreOnScreen(). */
 let everShown = false;
 /** One bounded Windows topmost retry chain. Disposal cancels it so no
  *  float-over-owned timer survives app teardown. */
@@ -115,9 +118,32 @@ function resetFloatOverRuntimeState(): void {
 }
 
 /**
- * Park the float-over off-screen with opacity 0 and mouse events
- * disabled — our pseudo-hide. The reason we don't call `BrowserWindow.hide()`
- * (which is `[NSWindow orderOut:]` under the hood):
+ * How this platform makes the toast go away.
+ *
+ * `opacity-park` — macOS only, and only because a real `hide()` there is
+ * actively harmful (see the comment on `parkOffScreen`).
+ *
+ * `hide` — everyone else, including an unknown platform. This is the honest
+ * default: `hide()` has no `@platform` annotation and works on every backend.
+ * macOS is the exception that has to earn its way out, rather than the park
+ * being the rule that every other platform has to survive.
+ *
+ * Pure and exported so the split is testable from any CI host.
+ */
+export type FloatOverHideModel = "opacity-park" | "hide";
+
+export function floatOverHideModelForPlatform(
+  platform: NodeJS.Platform
+): FloatOverHideModel {
+  return platform === "darwin" ? "opacity-park" : "hide";
+}
+
+/**
+ * Make the toast go away. Two models — see `floatOverHideModelForPlatform`.
+ *
+ * On macOS this parks the window off-screen at opacity 0 with mouse events
+ * disabled — a pseudo-hide. The reason we don't call `BrowserWindow.hide()`
+ * there (which is `[NSWindow orderOut:]` under the hood):
  *
  * `orderOut:` removes the window from AppKit's on-screen list, which
  * triggers a key-window cascade for our app (PwrSnap). The cascade
@@ -135,22 +161,32 @@ function resetFloatOverRuntimeState(): void {
  * AppKit's list, no cascade, no ripple. The transparent panel at
  * opacity 0 has effectively zero compositor cost (AppKit special-
  * cases windows offscreen + opacity 0).
+ *
+ * Every word of that is about AppKit, so NONE of it applies to Windows or
+ * Linux — which is why both of those really hide the window.
  */
 function parkOffScreen(window: BrowserWindow): void {
-  if (process.platform === "win32") {
-    // Windows: a REAL hide() — not the macOS opacity-park. On Windows
-    // setOpacity() drives whole-window layered alpha
-    // (SetLayeredWindowAttributes), which is mutually exclusive with
-    // transparent:true's per-pixel alpha (UpdateLayeredWindow). A
-    // setOpacity(0)→setOpacity(1) round-trip leaves the toast unable to
-    // composite its content — it comes back BLANK (visible + opaque per the API,
-    // but nothing painted). The tray uses a plain hide()/show() cycle and works;
-    // mirror that here and never touch opacity on Windows.
-    window.setIgnoreMouseEvents(true);
+  window.setIgnoreMouseEvents(true);
+  if (floatOverHideModelForPlatform(process.platform) === "hide") {
+    // Windows AND Linux: a REAL hide().
+    //
+    // Windows, because `setOpacity` there drives whole-window layered alpha
+    // (`SetLayeredWindowAttributes`), which is mutually exclusive with the
+    // per-pixel alpha (`UpdateLayeredWindow`) a `transparent: true` window
+    // composites through — a setOpacity(0)→setOpacity(1) round-trip leaves
+    // the toast BLANK (visible + opaque per the API, but nothing painted).
+    //
+    // Linux, because `setOpacity` is `@platform win32,darwin` and does
+    // NOTHING there. Measured on Electron 41.10.7 under both a headless
+    // weston and xvfb: `getOpacity()` still reports 1 after `setOpacity(0)`.
+    // So on Linux the opacity half of the park never hid anything, and the
+    // position half only worked under X11 — leaving the toast permanently on
+    // screen under Wayland, where `setPosition` is inert too. Both halves of
+    // the macOS park are unavailable on Wayland; `hide()` is available on
+    // every backend, so Linux uses the model Windows already proves.
     window.hide();
     return;
   }
-  window.setIgnoreMouseEvents(true);
   window.setOpacity(0);
   window.setPosition(PARK_X, PARK_Y, false);
 }
@@ -167,34 +203,40 @@ function parkOffScreen(window: BrowserWindow): void {
  * window at PARK_X/PARK_Y and we don't want a one-frame flash.
  */
 function restoreOnScreen(window: BrowserWindow): void {
-  if (process.platform === "win32") {
-    // Windows: real show + topmost, and DELIBERATELY no setOpacity (see
-    // parkOffScreen — opacity breaks transparent-window compositing on Windows).
-    // The toast was hide()-d while parked, so showInactive() genuinely re-shows
-    // it (and doesn't steal focus).
-    window.setIgnoreMouseEvents(false);
+  window.setIgnoreMouseEvents(false);
+  if (floatOverHideModelForPlatform(process.platform) === "hide") {
+    // `parkOffScreen` really hid this window, so every restore has to really
+    // show it — there is no once-only shortcut here. (That shortcut is what
+    // broke Linux: `everShown` was burned by the selector's `show-idle`, and
+    // the two calls left on the commit path were both no-ops.)
     window.showInactive();
     everShown = true;
-    // Raise ABOVE the Library / foreground window WITHOUT stealing focus.
-    // setAlwaysOnTop(true) → SetWindowPos(HWND_TOPMOST, SWP_NOACTIVATE). We do
-    // NOT moveTop(): on Windows that's SetWindowPos(HWND_TOP), which CLEARS
-    // WS_EX_TOPMOST and drops the toast back under the Library. (Topmost won't
-    // actually stick while the fullscreen selector is up — hideAllSelectors
-    // re-asserts it via ensureFloatOverTopmost once the selector hides.)
-    window.setAlwaysOnTop(true);
+    if (process.platform === "win32") {
+      // Raise ABOVE the Library / foreground window WITHOUT stealing focus.
+      // setAlwaysOnTop(true) → SetWindowPos(HWND_TOPMOST, SWP_NOACTIVATE). We
+      // do NOT moveTop(): on Windows that's SetWindowPos(HWND_TOP), which
+      // CLEARS WS_EX_TOPMOST and drops the toast back under the Library.
+      // (Topmost won't actually stick while the fullscreen selector is up —
+      // hideAllSelectors re-asserts it via ensureFloatOverTopmost once the
+      // selector hides.)
+      window.setAlwaysOnTop(true);
+      return;
+    }
+    // Linux: same raise as macOS below. `moveTop` has no platform annotation
+    // and carries none of the WS_EX_TOPMOST baggage.
+    window.moveTop();
     return;
   }
-  window.setIgnoreMouseEvents(false);
   window.setOpacity(1);
   // macOS: once-only showInactive to add the parked panel to AppKit's window
   // list (re-showing it on later captures is unnecessary and can reshuffle key
-  // state). Linux follows the same once-only opacity-park model.
+  // state).
   if (!everShown) {
     window.showInactive();
     everShown = true;
   }
-  // macOS/Linux: moveTop within the floating level beats other floating
-  // windows that may have come up since our last show.
+  // moveTop within the floating level beats other floating windows that may
+  // have come up since our last show.
   window.moveTop();
 }
 
@@ -334,7 +376,13 @@ function getOrCreate(): BrowserWindow {
 
 /**
  * Anchor the float-over in the bottom-right of the display the cursor
- * is currently on. Called only on explicit state transitions
+ * is currently on.
+ *
+ * Under Wayland `screen.getCursorScreenPoint()` is not a reliable global
+ * pointer read (a Wayland client is not told where the pointer is outside its
+ * own surfaces), so the chosen display may be wrong on a multi-monitor
+ * session — and the corner is not applied there anyway. Harmless on the
+ * single-monitor case, which is what the fallback resolves to. Called only on explicit state transitions
  * (show-idle / show-loaded) — NEVER from a content-driven resize
  * path. Records the chosen display id in `anchoredDisplayId` so
  * subsequent resize-triggered re-anchors stick to the same monitor.
@@ -344,6 +392,28 @@ function anchorBottomRight(window: BrowserWindow): void {
   const cursor = screen.getCursorScreenPoint();
   const display = screen.getDisplayNearestPoint(cursor);
   anchoredDisplayId = display.id;
+  placeBottomRightOn(window, display);
+}
+
+/**
+ * The one place the toast's corner is computed and applied.
+ *
+ * ⚠️  Under Wayland this cannot place anything and deliberately does not try.
+ * `setPosition` is documented "Not supported on Wayland (Linux)" and a Wayland
+ * client cannot position its own toplevel by protocol design — the compositor
+ * decides, and for a frameless always-on-top window on GNOME that is roughly
+ * the centre of the screen. Calling it anyway would read as a placement that
+ * works; skipping it is what makes the limitation greppable.
+ *
+ * `anchoredDisplayId` is still recorded by the callers, because the toast is
+ * still logically ON a display even when we did not choose which.
+ *
+ * Note this is why `getPosition()`-style verification is not attempted: the
+ * getter echoes whatever was last set on BOTH backends (measured — see
+ * linux-window-placement.ts), so a readback proves nothing.
+ */
+function placeBottomRightOn(window: BrowserWindow, display: Electron.Display): void {
+  if (!windowPlacementIsOurs()) return;
   const wa = display.workArea;
   const margin = FLOAT_OVER_ANCHOR_MARGIN_DIP;
   const [w, h] = window.getSize();
@@ -374,12 +444,7 @@ function reanchorOnCurrentDisplay(window: BrowserWindow): void {
     display = screen.getDisplayNearestPoint(cursor);
     anchoredDisplayId = display.id;
   }
-  const wa = display.workArea;
-  const margin = FLOAT_OVER_ANCHOR_MARGIN_DIP;
-  const [w, h] = window.getSize();
-  const x = Math.round(wa.x + wa.width - w - margin);
-  const y = Math.round(wa.y + wa.height - h - margin);
-  window.setPosition(x, y, false);
+  placeBottomRightOn(window, display);
 }
 
 /**

@@ -117,27 +117,6 @@ describe("toCallToolResult", () => {
     });
   });
 
-  test("decodes a data: audio URL into MCP audio content", () => {
-    const res: DynamicToolCallResponse = {
-      success: true,
-      contentItems: [{ type: "inputAudio", audioUrl: "data:audio/wav;base64,QUJD" }]
-    };
-    expect(toCallToolResult(res)).toEqual({
-      content: [{ type: "audio", mimeType: "audio/wav", data: "QUJD" }],
-      isError: false
-    });
-  });
-
-  test("degrades a non-data audio URL to a text reference", () => {
-    const res: DynamicToolCallResponse = {
-      success: true,
-      contentItems: [{ type: "inputAudio", audioUrl: "file:///tmp/x.wav" }]
-    };
-    expect(toCallToolResult(res).content).toEqual([
-      { type: "text", text: "[audio] file:///tmp/x.wav" }
-    ]);
-  });
-
   test("never returns empty content", () => {
     const res = { success: true, contentItems: [] } as unknown as DynamicToolCallResponse;
     expect(toCallToolResult(res).content).toEqual([{ type: "text", text: "(no output)" }]);

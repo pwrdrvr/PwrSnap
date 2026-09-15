@@ -19,6 +19,7 @@
 //     has had a chance to mount the banner subscription).
 
 import { app } from "electron";
+import { waitForUpdateCheckSlot } from "./update-check-wait";
 import electronUpdater from "electron-updater";
 import type {
   AppUpdateCancelResult,
@@ -753,25 +754,35 @@ export async function checkForAppUpdatesNow(
   }
 
   const requestedSelection = updateSelectionKey(selection);
-  if (updateCheckInFlight && updateCheckSelectionInFlight === requestedSelection) {
-    log.info("joining in-flight update check", {
+  return waitForUpdateCheckSlot(
+    requestedSelection,
+    () => updateCheckInFlight ? {
+      selection: updateCheckSelectionInFlight,
+      promise: updateCheckInFlight
+    } : undefined,
+    (check) => log.info("waiting for in-flight update check before switching selection", {
       trigger,
+      inFlightSelection: check.selection,
       updateChannel: selection.channel,
       updateTrain: selection.train
-    });
-    return updateCheckInFlight;
-  }
-  if (updateCheckInFlight) {
-    log.info("waiting for in-flight update check before switching selection", {
-      trigger,
-      inFlightSelection: updateCheckSelectionInFlight,
-      updateChannel: selection.channel,
-      updateTrain: selection.train
-    });
-    await updateCheckInFlight.catch(() => undefined);
-    return checkForAppUpdatesNow(trigger, selection);
-  }
+    }),
+    () => startAppUpdateCheck(trigger, selection, requestedSelection)
+  ).catch((err: unknown): AppUpdateCheckResult => {
+    const result = {
+      status: "error",
+      message: err instanceof Error ? err.message : String(err)
+    } as const;
+    log.error("stopped unsafe update check wait", { trigger, selection, message: result.message });
+    setUpdateStatusUnlessActionable(result);
+    return result;
+  });
+}
 
+function startAppUpdateCheck(
+  trigger: AppUpdateCheckTrigger,
+  selection: UpdateSelection,
+  requestedSelection: UpdateSelectionKey
+): Promise<AppUpdateCheckResult> {
   updateCheckSelectionInFlight = requestedSelection;
   // Publish the promise before running any check logic. The downloaded-update
   // fast path (or a synchronous error) can reach finally without an await;

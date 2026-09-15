@@ -1,5 +1,32 @@
 # Changelog
 
+## v1.1.0 - 2026-09-15
+
+PwrSnap 1.1 expands capture, video, and local-agent workflows across macOS and
+Windows.
+
+- Windows - Added signed Windows releases with a faster capture selector,
+  platform-native clipboard and hotkey behavior, and a stable installer
+  download.
+- Recording and Video Editing - Added microphone and system-audio recording,
+  recording preflight guidance, timeline trimming, filmstrips, waveforms, and
+  reliable audio playback and export.
+- Sizzle Reels - Added a multi-scene video-reel editor with timeline editing,
+  clip retiming, transitions, Ken Burns previews, narration timing, and reel
+  playback.
+- Library Filters - Improved Library filtering with composable include,
+  exclude, and only facets, visible filter chips, and result counts that track
+  the active match set.
+- Local Agent Access - Added PwrSnap MCP access for local agents including
+  Codex and PwrAgent, with roles, scopes, consent, approvals, and media
+  handling controlled in PwrSnap.
+- Editor and Capture Sharing - Improved annotation styling, outlines,
+  rotation, and transform interactions; added portable PwrSnap bundle import
+  for captures from other devices.
+- Updates and Reliability - Added clearer Stable and Beta update channels,
+  restart-to-update controls, cancellable manual checks, and lower CPU use
+  during video playback.
+
 ## v1.1.0-beta.5 - 2026-09-15
 
 This beta makes manual update checks easier to follow and cancel, keeps local

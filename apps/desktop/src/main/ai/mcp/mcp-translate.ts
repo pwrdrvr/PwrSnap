@@ -17,6 +17,22 @@ export type FlatDynamicTool = {
   spec: DynamicToolNamespaceTool;
 };
 
+type InputAudioItem = {
+  type: "inputAudio";
+  audioUrl: string;
+};
+
+function isInputAudioItem(item: unknown): item is InputAudioItem {
+  return (
+    typeof item === "object" &&
+    item !== null &&
+    "type" in item &&
+    item.type === "inputAudio" &&
+    "audioUrl" in item &&
+    typeof item.audioUrl === "string"
+  );
+}
+
 /**
  * MCP exposes one flat tool list, while Codex 0.144 groups namespaced dynamic
  * tools under namespace objects. Flatten the Codex catalog without losing the
@@ -51,9 +67,9 @@ export function toMcpTool(spec: DynamicToolNamespaceTool): Tool {
   };
 }
 
-/** Translate PwrSnap's tool response into an MCP CallToolResult. Image data:
- *  URLs become MCP media content; non-data URLs degrade to a text reference so
- *  the agent still knows media was produced. */
+/** Translate PwrSnap's tool response into an MCP CallToolResult. Image and
+ *  audio data: URLs become MCP media content; non-data URLs degrade to a text
+ *  reference so the agent still knows media was produced. */
 export function toCallToolResult(response: DynamicToolCallResponse): CallToolResult {
   const content: CallToolResult["content"] = [];
   for (const item of response.contentItems) {
@@ -67,6 +83,15 @@ export function toCallToolResult(response: DynamicToolCallResponse): CallToolRes
         content.push({ type: "image", mimeType: dataUrl[1]!, data: dataUrl[2]! });
       } else {
         content.push({ type: "text", text: `[image] ${item.imageUrl}` });
+      }
+      continue;
+    }
+    if (isInputAudioItem(item)) {
+      const dataUrl = /^data:([^;]+);base64,(.*)$/s.exec(item.audioUrl);
+      if (dataUrl) {
+        content.push({ type: "audio", mimeType: dataUrl[1]!, data: dataUrl[2]! });
+      } else {
+        content.push({ type: "text", text: `[audio] ${item.audioUrl}` });
       }
       continue;
     }

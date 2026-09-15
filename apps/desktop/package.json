@@ -29,6 +29,7 @@
     "generate:readme-chips": "swift ./scripts/generate-readme-chips.swift",
     "verify:asar-contents": "node ./scripts/verify-asar-contents.mjs",
     "tray-icon": "node ./scripts/generate-tray-icon.mjs",
+    "probe:linux-capture": "electron ./scripts/linux-capture-probe.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

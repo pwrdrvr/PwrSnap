@@ -122,25 +122,28 @@ since it is not a secret.
 
 ## Release trains and maintenance branches
 
-`main` carries the active next-version train. Long-lived maintenance branches
-carry stable promotions from accepted prereleases and later patch releases for
-that major/minor train. Name them `releases/<major>.<minor>`, for example
-`releases/1.0` or `releases/1.1`; do not include the patch component.
+`main` carries the active major/minor train. It remains the release branch for
+that train's alpha, beta, first stable, and follow-up patch releases until the
+team decides to begin the next major/minor effort.
 
-When an accepted beta must become the first stable release while `main` has
-continued onto newer work, create the maintenance branch from the exact signed
-beta tag, prepare the stable metadata there, and tag the resulting commit:
+At that point, cut `releases/<major>.<minor>` from the chosen current `main`
+commit, then bump `main` to the next train. Name the branch without a patch
+component, for example `releases/1.0` or `releases/1.1`. The chosen branch
+point commonly includes small post-release fixes and enhancements, so do not
+assume the previous stable tag is the right point.
 
 ```bash
 git fetch origin --tags
-git switch -c releases/1.0 v1.0.0-beta.<n>
-git push -u origin releases/1.0
+git switch main
+git pull --ff-only
+git switch -c releases/1.1
+git push -u origin releases/1.1
 ```
 
-After the stable `v1.0.0` tag is cut, `releases/1.0` remains the only branch
-for `v1.0.x` patches. Before `main` moves to the next major/minor train, verify
-that the prior train's branch exists; create it from the exact prior release
-tag if it does not.
+Create a maintenance branch only for that transition. Do not create one merely
+to promote an accepted beta to its first stable release. Once cut,
+`releases/1.1` is the only branch for `v1.1.x` maintenance candidates and
+patches; `main` carries the next major/minor train.
 
 CI runs for pushes to `main` and `releases/**`, and pull requests targeting a
 maintenance branch use the same CI workflow. Backport release-workflow fixes to

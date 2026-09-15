@@ -409,6 +409,31 @@ describe("auto updater selection", () => {
     }
   });
 
+  test("reports a stalled wait as an error without starting another update check", async () => {
+    const updater = await importAutoUpdater();
+    const waitModule = await import("../update-check-wait");
+    const wait = waitModule.waitForUpdateCheckSlot;
+    const orphan = {
+      selection: undefined,
+      promise: Promise.resolve({ status: "no-update", version: "1.1.0" } as const)
+    };
+    const spy = vi.spyOn(waitModule, "waitForUpdateCheckSlot")
+      .mockImplementationOnce((selection, _read, onWait, start) =>
+        wait(selection, () => orphan, onWait, start));
+    try {
+      const result = await updater.checkForAppUpdatesNow("periodic");
+      expect(result).toEqual({
+        status: "error",
+        message: expect.stringContaining("did not release its completed request")
+      });
+      expect(updater.readAppUpdateStatus()).toEqual(result);
+      expect(mocks.autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   test("does not offer a downloaded update after switching trains", async () => {
     mocks.resolveSelection.mockReturnValue({ channel: "latest", train: "beta" });
     mockGitHubReleases([

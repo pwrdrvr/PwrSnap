@@ -31,10 +31,9 @@ but PwrSnap does not distribute a Linux desktop package.
 
 1. For the current stable release, open
    [GitHub Releases — Latest](https://github.com/pwrdrvr/PwrSnap/releases/latest).
-   To install a 1.1 prerelease, open the main
+   For prerelease testing, open the main
    [Releases page](https://github.com/pwrdrvr/PwrSnap/releases); GitHub's
-   `latest` route intentionally excludes prereleases. Once 1.1 is promoted
-   stable, it appears under the Latest link instead.
+   `latest` route intentionally excludes prereleases.
 2. Download `PwrSnap-<version>-windows-x64-setup.exe`. The `.blockmap` and
    `latest.yml` assets are for the updater, not manual installation.
 3. Run the installer. It installs for the current user and lets you change the

@@ -633,6 +633,26 @@ LIST, and the only authoritative key — `display_id` — is documented as
   "freeze the screen and drag" by any reading. `capture:interactive`
   refuses ahead of `guardScreenCapture` so a refused capture never raises
   that prompt.
+- **The refusal must SHOW itself, and the notice hangs off the refusal —
+  not off the trigger.** A refusal only the log can see is a dead button,
+  which is strictly worse than the misaligned selector it replaced. The
+  first version explained itself from `capture-trigger.ts`, which only the
+  global hotkeys and the native tray menu route through; the Library's
+  Quick Capture button and the tray popover's tiles dispatch straight over
+  IPC from the renderer and `void` the promise, so on Ubuntu the app's
+  headline button did nothing at all. `showWaylandRefusalNotice()`
+  ([wayland-refusal-notice.ts](apps/desktop/src/main/capture/wayland-refusal-notice.ts))
+  is now raised from the handler, for `principal === "ipc"` only — every
+  human entry point is `ipc`, and an agent has nobody to dismiss a modal.
+  It offers **Capture Full Screen** rather than only naming it: the
+  message already says that is the way to capture here, and making the
+  user dismiss an alert and go find a different button is the same dead
+  end wearing a hat.
+- **`WAYLAND_SELECTOR_MESSAGE` is user-visible text, so only measured
+  claims go in it.** It shipped once asserting that Wayland will not let
+  an app place its own overlay — the very claim the probe disproved two
+  paragraphs down. Correcting a header comment is not enough; grep the
+  strings.
 - **Do NOT repeat the claim that a Wayland client cannot place the
   overlay.** It is the obvious guess and it was wrong: Electron defaults
   to the X11 ozone backend, so on a Wayland session it usually runs as an

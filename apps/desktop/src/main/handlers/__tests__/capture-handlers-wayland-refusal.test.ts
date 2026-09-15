@@ -1,17 +1,25 @@
 // `capture:interactive` must refuse a Wayland session BEFORE it touches the
 // screen.
 //
-// The refusal is not a nicety. On Wayland the selector's three load-bearing
-// capabilities are all absent — a client cannot place its own overlay, cannot
-// pin it on top, and cannot ask where the pointer is — and the grab comes
-// from xdg-desktop-portal, which picks its own source and does not say which
-// display it handed back. Showing the overlay anyway paints a frozen image
-// of something else, stretched to fit, and crops the user's drag out of it.
+// The refusal is not a nicety. Measured on Ubuntu 24 / GNOME: the pointer
+// position reads 0,0 wherever the mouse is, so the selector opens its
+// crosshair in the wrong place, and the grab comes from xdg-desktop-portal,
+// which picks its own source, charges a prompt and a picker per capture, and
+// hands back a frame offset from the screen. Showing the overlay anyway
+// paints a frozen image that does not line up with what is under it, and
+// crops the user's drag out of the wrong pixels.
 //
-// Ordering is the part worth pinning: the refusal sits ahead of
-// `guardScreenCapture` so a capture we have already decided to refuse never
-// raises the portal's permission prompt, and ahead of `pickRegion` so no
-// selector window is ever shown.
+// Two things are pinned here, and both shipped broken once:
+//
+//  - ORDERING. The refusal sits ahead of `guardScreenCapture` so a capture we
+//    have already decided to refuse never raises the portal's permission
+//    prompt, and ahead of `pickRegion` so no selector window is ever shown.
+//  - VISIBILITY. A refusal the user cannot see is a dead button. The notice
+//    hangs off the refusal itself rather than off `capture-trigger.ts`,
+//    because the Library's Quick Capture button and the tray popover's tiles
+//    dispatch straight over IPC and never look at the result — which is how
+//    the first version of this refusal turned the app's headline button into
+//    a no-op on Ubuntu with nothing but a log line to show for it.
 //
 // MAINTENANCE: the mock wall below mirrors capture-handlers-record-handoff's
 // — capture-handlers.ts imports a lot at module load, and vi.mock only
@@ -27,7 +35,8 @@ const mocks = vi.hoisted(() => ({
   startRecordingFromSelection: vi.fn(),
   readDesktopSettings: vi.fn(),
   getRecordingState: vi.fn(),
-  isRecordingActive: vi.fn()
+  isRecordingActive: vi.fn(),
+  showWaylandRefusalNotice: vi.fn()
 }));
 
 function settingsWith(quickCaptureAction: QuickCaptureAction) {
@@ -84,6 +93,10 @@ vi.mock("../../capture/screencapture", () => ({
 
 vi.mock("../../capture/screen-permission-gate", () => ({
   guardScreenCapture: async () => null
+}));
+
+vi.mock("../../capture/wayland-refusal-notice", () => ({
+  showWaylandRefusalNotice: mocks.showWaylandRefusalNotice
 }));
 
 vi.mock("../../recording/record-from-selection", () => ({
@@ -186,7 +199,10 @@ function setSession(
   }
 }
 
-async function interactive(mode: "auto" | "region" | "window" | "timed" = "auto") {
+async function interactive(
+  mode: "auto" | "region" | "window" | "timed" = "auto",
+  principal: "ipc" | "rpc" = "ipc"
+) {
   return await bus.dispatch(
     "capture:interactive",
     {
@@ -197,7 +213,7 @@ async function interactive(mode: "auto" | "region" | "window" | "timed" = "auto"
         monotonicNow: () => 0
       })
     },
-    { principal: "ipc" }
+    { principal }
   );
 }
 
@@ -243,6 +259,28 @@ describe("capture:interactive on a Wayland session", () => {
     }
     // Timed mode must not have spent its countdown before refusing.
     expect(mocks.pickRegion).not.toHaveBeenCalled();
+  });
+
+  test("the user is told — a silent refusal is a dead button", async () => {
+    // The regression this pins: the Library's Quick Capture button dispatches
+    // over IPC and voids the promise, so when the explanation lived on the
+    // trigger helper instead of on the refusal, pressing it did nothing at
+    // all. Whatever else changes here, something must reach the screen.
+    setSession("linux", { XDG_SESSION_TYPE: "wayland", WAYLAND_DISPLAY: "wayland-0" });
+    await interactive();
+    expect(mocks.showWaylandRefusalNotice).toHaveBeenCalledTimes(1);
+  });
+
+  test("a programmatic caller gets the Result and no dialog", async () => {
+    // An agent over RPC (or MCP, which the bus stops even earlier for want
+    // of a local-agent context) has nobody in front of it to dismiss a
+    // modal, and a dialog nobody answers would hold the notice's
+    // re-entrancy guard shut for every later human trigger.
+    setSession("linux", { XDG_SESSION_TYPE: "wayland", WAYLAND_DISPLAY: "wayland-0" });
+    const result = await interactive("auto", "rpc");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("wayland_selector_unsupported");
+    expect(mocks.showWaylandRefusalNotice).not.toHaveBeenCalled();
   });
 
   test("an X11 session is left alone — it reaches the selector", async () => {

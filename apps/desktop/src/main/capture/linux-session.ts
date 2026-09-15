@@ -44,7 +44,9 @@
 // `capture:fullScreen` and `capture:allScreens` remain usable on Wayland —
 // they have no overlay and no rect arithmetic, so the portal's own picker
 // IS the source selection and the editor's crop tool is the region
-// selection. That is what the refusal points users at.
+// selection. That is what the refusal points users at — and, from the
+// notice's "Capture Full Screen" button, what it actually runs. See
+// wayland-refusal-notice.ts.
 //
 // Anything that is not positively Wayland is left alone: an unrecognised
 // environment keeps today's behavior rather than losing region capture to
@@ -99,9 +101,13 @@ export function regionSelectorUnsupported(
 /** Error code carried on the refusal, and the text the user is shown. */
 export const WAYLAND_SELECTOR_ERROR_CODE = "wayland_selector_unsupported";
 
+// Only measured facts belong in here. An earlier draft told users that
+// "Wayland does not let an app place its own selection overlay on the
+// screen", which the probe disproved — Electron runs as an XWayland
+// client and the overlay lands exactly where it is put. See the header.
 export const WAYLAND_SELECTOR_MESSAGE =
-  "Drag-to-select capture is not available on a Wayland session. Wayland does not let " +
-  "an app place its own selection overlay on the screen, and screen capture is handled " +
-  "by the desktop portal — which asks you to pick a source and does not tell PwrSnap " +
-  "which display it gave back. Use Full Screen capture and crop in the editor, or log " +
-  "in to an Xorg (X11) session, where drag-to-select works.";
+  "Drag-to-select capture is not available on a Wayland session. Screen capture there " +
+  "goes through the desktop portal, which asks permission and makes you pick a source " +
+  "for every capture, and PwrSnap cannot read the pointer position to follow your drag. " +
+  "Use Full Screen capture and crop in the editor, or log in to an Xorg (X11) session, " +
+  "where drag-to-select works.";

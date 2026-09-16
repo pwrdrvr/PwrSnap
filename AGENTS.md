@@ -1109,10 +1109,95 @@ Rules the surface keeps, and where each one lives:
 - **Renderers stay sandboxed.** Every `BrowserWindow` is created with
   `contextIsolation: true, sandbox: true, nodeIntegration: false`. The Phase 6
   sizzle-composer preview player runs in a sandboxed renderer; render
-  orchestration runs in a Node child process. Lifecycle test enforces.
+  orchestration runs in a Node child process. Lifecycle test enforces. Those
+  three flags harden a renderer; they do not stop one from being pointed
+  somewhere else — see the navigation-guard section below.
 - **Result-pattern for cross-process errors.** Electron `invoke` strips
   `instanceof`. All command handlers return `Result<Res, PwrSnapError>` —
   `{ ok: false, error: { kind, code, message, cause? } }`.
+
+## No webContents opens a window, and none navigates away
+
+**Every webContents PwrSnap creates is covered by a `setWindowOpenHandler`
+that denies, and a `will-navigate` handler that refuses any target which is
+not PwrSnap's own content. A URL leaves the app only by clearing
+`isAllowedExternalUrl`, and only into the user's browser.** Owner:
+[navigation-guard.ts](apps/desktop/src/main/navigation-guard.ts), armed from
+`app.whenReady()` in [index.ts](apps/desktop/src/main/index.ts) beside
+`installMediaPermissionPolicy()`. Pinned by
+[navigation-guard.test.ts](apps/desktop/src/main/__tests__/navigation-guard.test.ts).
+
+Electron's default for both hooks is "yes", and the default `window.open`
+creates a new `BrowserWindow` carrying the SAME webPreferences — our preload
+and its IPC bridge — pointed at content we did not choose. `contextIsolation`
++ `sandbox` + `nodeIntegration: false` do not help here: they harden the
+renderer that lands, they do not decide what lands.
+
+**The reachable path was a modifier key.** Settings → About renders three real
+`<a href="https://…">` rows. Each `onClick` calls `preventDefault()` and routes
+through `app:openExternal`, which is correct for a plain left-click and **is
+not consulted for a middle-click or a cmd/ctrl-click** — Chromium turns those
+into a window-open. So the one surface that deliberately routes links through
+an allowlist could be made to bypass it without exploiting anything.
+
+Five things that bite:
+
+- **`URL.origin` is the STRING `"null"` for every opaque scheme** — `file:`,
+  `data:`, and anything non-special all report it, so two unrelated opaque
+  URLs compare EQUAL. That is why `file:` is decided in its own branch and
+  returns there unconditionally (a `file://host/…` whose `fileURLToPath`
+  throws must be refused, not handed to an origin test), and why the
+  dev-server branch requires an http/https target before comparing. Before
+  that, an `ELECTRON_RENDERER_URL` with an opaque origin would have made
+  every `data:` URL a permitted navigation target.
+- **The allowlist lives in exactly one module.**
+  [external-url-allowlist.ts](apps/desktop/src/main/external-url-allowlist.ts)
+  holds `isAllowedExternalUrl`; `app:openExternal` and the guard both import
+  it. It is not an export of `app-handlers.ts` because the guard would then
+  pull the command bus, the window factory and electron-updater into a file
+  whose job is one string predicate — and into every test of it. Two copies of
+  a security predicate drift; that is the whole point of the module.
+- **The navigation predicate is deliberately stricter than
+  `isTrustedRendererUrl`** in `media-permissions.ts`, which answers a different
+  question ("did this request come from a page we loaded?") and accepts ANY
+  `file:` URL and ANY loopback port. Those are fine for classifying a request
+  already made and too loose for a navigation TARGET, where any `file:` would
+  let a renderer pull an arbitrary local HTML file — a downloaded one — into a
+  window that still has our preload. Do not unify them; it can only loosen
+  this one.
+- **The dev-server origin must stay allowed or `pnpm dev` breaks.** The
+  renderer is served from `http://localhost:<port>` there, not `file://`, and
+  Vite's HMR full-reload is a renderer-initiated navigation. It is
+  origin-compared against `ELECTRON_RENDERER_URL` and gated on
+  `!app.isPackaged`, so a stray env var cannot open a path in a shipped build.
+  A self-navigation (reload) of the page already loaded is allowed for the same
+  class of reason: the renderer error boundary's Reload button is the recovery
+  path when everything else has failed.
+- **`will-frame-navigate` takes subframes ONLY.** It is a superset of
+  `will-navigate` — both fire for the main frame — so acting on both would hand
+  an allowlisted URL to the browser twice. PwrSnap renders no iframes today,
+  which is exactly why the arm exists: one that appears later inherits the
+  policy instead of silently escaping it.
+
+Two smaller rules, both learned the hard way. **`installNavigationGuard` is
+idempotent** because it APPENDS an emitter listener rather than replacing a
+session handler the way `installMediaPermissionPolicy` does — installing twice
+would give every webContents two `will-navigate` listeners, and one click on
+an allowlisted link would open two browser tabs. And **a refused URL is logged
+as origin + path only**: it is renderer-supplied, can carry a secret in its
+query, and the main log goes to disk and rides along in bug reports.
+
+**Tests here must build file URLs with `pathToFileURL`, never by
+concatenating `file://` onto a POSIX path.** `file:///Applications/…` is not a
+valid file URL on Windows — `fileURLToPath` throws with no drive letter — so a
+hardcoded POSIX fixture passes on macOS and Linux and fails the whole Windows
+lane.
+
+An `<a href>` is safe again now that the guard exists, and it is what About
+uses: a real, copyable URL, with `onClick` → `app:openExternal` kept in front
+of it because that path reports a failure inline (the "Link status" row) where
+the guard can only log. Keep that pairing — the guard is the backstop, not the
+mechanism.
 
 ## BrowserWindow sizing — `setMinimumSize(0, 0)` after construction
 

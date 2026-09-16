@@ -127,6 +127,7 @@ import {
   videoHotkeyAction
 } from "./recording/recording-capabilities";
 import { installMediaPermissionPolicy } from "./media-permissions";
+import { installNavigationGuard } from "./navigation-guard";
 import { videoAssetDir } from "./recording/video-frames";
 import {
   getDesktopSettingsServices,
@@ -1686,6 +1687,12 @@ export function bootstrapApp(): void {
     // and sanitized clipboard writes, and only from a PwrSnap-loaded
     // page. See media-permissions.ts for why both hooks are installed.
     installMediaPermissionPolicy();
+    // Same seam, same reason: `web-contents-created` is not replayed, so
+    // this has to be armed before the first window exists. Denies every
+    // `window.open` (what a middle-click or cmd-click on a link becomes)
+    // and every navigation away from PwrSnap's own content, routing an
+    // allowlisted https URL to the user's browser instead.
+    installNavigationGuard();
 
     if (process.platform === "darwin" && (isE2E || role === "agent")) {
       // Agent role: menubar-only process — no Dock presence, ever.

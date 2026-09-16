@@ -48,7 +48,8 @@ const log = getMainLogger("pwrsnap:navigation-guard");
  * `__dirname`, `app.isPackaged` or the environment.
  */
 export type NavigationContext = {
-  /** Absolute path of the packaged renderer entry (`…/out/renderer/index.html`). */
+  /** Absolute, ALREADY NORMALIZED path of the packaged renderer entry
+   *  (`…/out/renderer/index.html`) — compared verbatim. */
   rendererEntryPath: string;
   /** Vite dev-server URL in `pnpm dev`; `undefined` in a packaged build. */
   devServerUrl: string | undefined;
@@ -61,9 +62,23 @@ export type NavigationDecision =
   | { action: "external"; url: string }
   | { action: "block" };
 
-/** `file:` path of a URL, or `undefined` when it is not a parseable file URL. */
+/**
+ * Absolute path of the packaged renderer entry.
+ *
+ * Same expression as `rendererTarget()` in window.ts, and it has to stay
+ * that way: `__dirname` is resolved per EMITTED FILE, and electron-vite
+ * code-splits main (`out/main/chunks/`). This module is bundled into
+ * `out/main/index.js`, so `__dirname` is `out/main` and this resolves to
+ * `out/renderer/index.html`. Move it into a shared module that Rollup
+ * decides to emit as a chunk and the same expression silently resolves
+ * to `out/main/renderer/index.html` instead. Verified against the built
+ * bundle; if it ever is wrong, the self-navigation arm below still keeps
+ * reload working.
+ */
+const RENDERER_ENTRY_PATH = normalize(join(__dirname, "../renderer/index.html"));
+
+/** Normalized `file:` path of a URL, or `undefined` if it has none. */
 function filePathOf(url: URL): string | undefined {
-  if (url.protocol !== "file:") return undefined;
   try {
     return normalize(fileURLToPath(url));
   } catch {
@@ -116,29 +131,37 @@ export function isAppNavigationTarget(rawUrl: string, ctx: NavigationContext): b
 
   if (url.protocol === "devtools:") return true;
 
-  const targetPath = filePathOf(url);
-  if (targetPath !== undefined) {
-    if (targetPath === normalize(ctx.rendererEntryPath)) return true;
-    // Self-navigation (reload) of a file: page we are already showing.
+  // `file:` is decided here and NOWHERE else. Falling through to the
+  // origin comparison below would be unsound: `URL.origin` is the STRING
+  // "null" for every opaque scheme — `file:`, `data:`, anything
+  // non-special — so two unrelated opaque URLs compare equal. A
+  // `file://host/…` whose `fileURLToPath` throws must be refused, not
+  // handed to an origin test that cannot tell it apart from a data: URL.
+  if (url.protocol === "file:") {
+    const targetPath = filePathOf(url);
+    if (targetPath === undefined) return false;
+    if (targetPath === ctx.rendererEntryPath) return true;
+    // Self-navigation (reload) of the file: page we are already showing.
+    let currentPath: string | undefined;
     try {
-      const current = new URL(ctx.currentUrl);
-      const currentPath = filePathOf(current);
-      if (currentPath !== undefined && currentPath === targetPath) return true;
+      currentPath = filePathOf(new URL(ctx.currentUrl));
     } catch {
       /* no current URL to compare against */
     }
+    return currentPath !== undefined && currentPath === targetPath;
+  }
+
+  // Dev server only. Restricted to http/https for the same reason: an
+  // opaque-origin target must never be able to match an opaque-origin
+  // `ELECTRON_RENDERER_URL`.
+  if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+  if (ctx.devServerUrl === undefined) return false;
+  try {
+    return url.origin === new URL(ctx.devServerUrl).origin;
+  } catch {
+    // Malformed ELECTRON_RENDERER_URL — treat as no dev server.
     return false;
   }
-
-  if (ctx.devServerUrl !== undefined) {
-    try {
-      if (url.origin === new URL(ctx.devServerUrl).origin) return true;
-    } catch {
-      /* malformed ELECTRON_RENDERER_URL — treat as no dev server */
-    }
-  }
-
-  return false;
 }
 
 /**
@@ -159,6 +182,25 @@ export function decideNavigation(
   return { action: "block" };
 }
 
+/**
+ * What a refused URL is allowed to leave behind in the log.
+ *
+ * A blocked URL is renderer-supplied and can carry a secret in its query
+ * — an OAuth-shaped `?code=…` being the obvious one — and the main log
+ * is written to disk and attached to bug reports. Origin + path is what
+ * makes the block diagnosable ("where did it try to go"); the query and
+ * fragment add nothing to that and are dropped. Same instinct as the
+ * enrichment denial logs, which record a tool NAME and never arguments.
+ */
+function loggableUrl(raw: string): string {
+  try {
+    const url = new URL(raw);
+    return `${url.origin === "null" ? url.protocol : url.origin}${url.pathname}`;
+  } catch {
+    return "<unparseable>";
+  }
+}
+
 /** Hand an allowlisted URL to the user's browser. */
 function openExternally(url: string, reason: string): void {
   void shell.openExternal(url).catch((cause: unknown) => {
@@ -177,8 +219,19 @@ function openExternally(url: string, reason: string): void {
  * Must be called BEFORE any window loads. `web-contents-created` is not
  * replayed for webContents that already exist, so a late install leaves
  * whatever booted first unguarded.
+ *
+ * Idempotent, like `installMediaPermissionPolicy` beside it — but for a
+ * different reason, so do not "simplify" it away. That one REPLACES a
+ * session handler, so a second call is naturally harmless; this one
+ * APPENDS an emitter listener, so a second call would give every
+ * webContents two `will-navigate` listeners and one click on an
+ * allowlisted link would open two browser tabs.
  */
+let installed = false;
+
 export function installNavigationGuard(): void {
+  if (installed) return;
+  installed = true;
   app.on("web-contents-created", (_event, contents) => {
     const context = (): NavigationContext => {
       let currentUrl = "";
@@ -188,7 +241,7 @@ export function installNavigationGuard(): void {
         /* destroyed mid-navigation */
       }
       return {
-        rendererEntryPath: join(__dirname, "../renderer/index.html"),
+        rendererEntryPath: RENDERER_ENTRY_PATH,
         // Read per-call, not once at module load: the dev server URL is
         // an environment input and `app.isPackaged` is the production
         // kill switch for it.
@@ -206,7 +259,7 @@ export function installNavigationGuard(): void {
       if (decision.action === "external") {
         openExternally(decision.url, "window-open");
       } else {
-        log.warn("blocked window open", { url, disposition });
+        log.warn("blocked window open", { url: loggableUrl(url), disposition });
       }
       return { action: "deny" };
     });
@@ -218,7 +271,7 @@ export function installNavigationGuard(): void {
       if (decision.action === "external") {
         openExternally(decision.url, "will-navigate");
       } else {
-        log.warn("blocked navigation", { url });
+        log.warn("blocked navigation", { url: loggableUrl(url) });
       }
     });
 
@@ -237,7 +290,7 @@ export function installNavigationGuard(): void {
       const decision = decideNavigation(details.url, context(), { allowSameApp: true });
       if (decision.action === "allow") return;
       details.preventDefault();
-      log.warn("blocked subframe navigation", { url: details.url });
+      log.warn("blocked subframe navigation", { url: loggableUrl(details.url) });
     });
   });
 }

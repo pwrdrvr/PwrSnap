@@ -1140,8 +1140,16 @@ not consulted for a middle-click or a cmd/ctrl-click** — Chromium turns those
 into a window-open. So the one surface that deliberately routes links through
 an allowlist could be made to bypass it without exploiting anything.
 
-Four things that bite:
+Five things that bite:
 
+- **`URL.origin` is the STRING `"null"` for every opaque scheme** — `file:`,
+  `data:`, and anything non-special all report it, so two unrelated opaque
+  URLs compare EQUAL. That is why `file:` is decided in its own branch and
+  returns there unconditionally (a `file://host/…` whose `fileURLToPath`
+  throws must be refused, not handed to an origin test), and why the
+  dev-server branch requires an http/https target before comparing. Before
+  that, an `ELECTRON_RENDERER_URL` with an opaque origin would have made
+  every `data:` URL a permitted navigation target.
 - **The allowlist lives in exactly one module.**
   [external-url-allowlist.ts](apps/desktop/src/main/external-url-allowlist.ts)
   holds `isAllowedExternalUrl`; `app:openExternal` and the guard both import
@@ -1170,6 +1178,20 @@ Four things that bite:
   an allowlisted URL to the browser twice. PwrSnap renders no iframes today,
   which is exactly why the arm exists: one that appears later inherits the
   policy instead of silently escaping it.
+
+Two smaller rules, both learned the hard way. **`installNavigationGuard` is
+idempotent** because it APPENDS an emitter listener rather than replacing a
+session handler the way `installMediaPermissionPolicy` does — installing twice
+would give every webContents two `will-navigate` listeners, and one click on
+an allowlisted link would open two browser tabs. And **a refused URL is logged
+as origin + path only**: it is renderer-supplied, can carry a secret in its
+query, and the main log goes to disk and rides along in bug reports.
+
+**Tests here must build file URLs with `pathToFileURL`, never by
+concatenating `file://` onto a POSIX path.** `file:///Applications/…` is not a
+valid file URL on Windows — `fileURLToPath` throws with no drive letter — so a
+hardcoded POSIX fixture passes on macOS and Linux and fails the whole Windows
+lane.
 
 An `<a href>` is safe again now that the guard exists, and it is what About
 uses: a real, copyable URL, with `onClick` → `app:openExternal` kept in front

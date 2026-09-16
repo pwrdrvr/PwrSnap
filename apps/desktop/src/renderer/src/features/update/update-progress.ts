@@ -14,7 +14,7 @@
 // An outcome that IS actionable (a downloaded update) belongs to
 // `appUpdateNotice`, which the three update surfaces already share.
 
-import { releaseNotesUrl, type AppUpdateCheckResult, type AppUpdateStatus } from "@pwrsnap/shared";
+import type { AppUpdateCheckResult, AppUpdateStatus } from "@pwrsnap/shared";
 import { formatBytes } from "../../lib/format-bytes";
 
 /** The statuses a check passes through before it has an answer. While the
@@ -45,9 +45,9 @@ export type UpdateProgressCopy = {
   meter: string | undefined;
   /** A download is running, so there is something for Cancel to stop. */
   cancelable: boolean;
-  /** The release page for the version being fetched, when it names one.
-   *  `undefined` while `checking`, which has no version yet. */
-  notesUrl: string | undefined;
+  /** The version being fetched, for `ReleaseNotesLink`. `undefined` while
+   *  `checking`, which has no version yet. */
+  version: string | undefined;
 };
 
 export function updateProgressCopy(status: AppUpdateProgressStatus): UpdateProgressCopy {
@@ -58,7 +58,7 @@ export function updateProgressCopy(status: AppUpdateProgressStatus): UpdateProgr
       percent: undefined,
       meter: undefined,
       cancelable: false,
-      notesUrl: undefined
+      version: undefined
     };
   }
   // A downgrade is the way back to the train the user picked, not an update.
@@ -76,7 +76,7 @@ export function updateProgressCopy(status: AppUpdateProgressStatus): UpdateProgr
       // Offered from here, before a single byte has moved. Main registers its
       // cancellable download at the same moment for exactly this reason.
       cancelable: true,
-      notesUrl: releaseNotesUrl(status.version)
+      version: status.version
     };
   }
   // ONE number for the bar and the label. `percent` reaches us as
@@ -94,7 +94,7 @@ export function updateProgressCopy(status: AppUpdateProgressStatus): UpdateProgr
     percent,
     meter: downloadMeter(status),
     cancelable: true,
-    notesUrl: releaseNotesUrl(status.version)
+    version: status.version
   };
 }
 
@@ -137,9 +137,9 @@ export type UpdateCheckOutcomeNotice = {
   message: string;
   /** Danger eyebrow. A cancel is deliberately NOT one — see below. */
   isError: boolean;
-  /** The release page for whichever version the outcome names. `undefined`
-   *  for `skipped` and `error`, which name none. */
-  notesUrl: string | undefined;
+  /** The version the outcome names, for `ReleaseNotesLink`. `undefined` for
+   *  `skipped` and `error`, which name none. */
+  version: string | undefined;
 };
 
 /**
@@ -160,7 +160,7 @@ export function updateCheckOutcomeNotice(
       title: "Updates unavailable",
       message: result.reason,
       isError: false,
-      notesUrl: undefined
+      version: undefined
     };
   }
   if (result.status === "error") {
@@ -169,7 +169,7 @@ export function updateCheckOutcomeNotice(
       title: "Update check failed",
       message: result.message,
       isError: true,
-      notesUrl: undefined
+      version: undefined
     };
   }
   if (result.status === "canceled") {
@@ -184,7 +184,7 @@ export function updateCheckOutcomeNotice(
           ? `PwrSnap v${result.version} is still available - check again to switch.`
           : `PwrSnap v${result.version} is still available - check again to download it.`,
       isError: false,
-      notesUrl: releaseNotesUrl(result.version)
+      version: result.version
     };
   }
   if (result.status === "available") {
@@ -195,7 +195,7 @@ export function updateCheckOutcomeNotice(
       title: result.downgrade === true ? "Switch available" : "Update available",
       message: `PwrSnap v${result.version} is downloading in the background.`,
       isError: false,
-      notesUrl: releaseNotesUrl(result.version)
+      version: result.version
     };
   }
   return {
@@ -206,6 +206,6 @@ export function updateCheckOutcomeNotice(
     // Up to date is exactly when "what did I get?" is the live question, and
     // the bundled CHANGELOG is the one case where it CAN answer — but it
     // opens a second window to do it, so the link stays for symmetry.
-    notesUrl: releaseNotesUrl(result.version)
+    version: result.version
   };
 }

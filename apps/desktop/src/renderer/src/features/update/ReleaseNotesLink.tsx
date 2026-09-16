@@ -19,16 +19,24 @@
 //     rows predate this and still use anchors; this component is what the
 //     update surfaces use instead of multiplying them.
 //
-// Render nothing when there is no URL. `releaseNotesUrl` answers undefined
-// for a version that is not a published release — a dev build, an E2E
-// version override — and a dead "Release notes" control is worse than none.
+// It takes a VERSION, not a URL, and composes the URL itself. That is what
+// keeps "a version that is not a published release gets no control" a single
+// decision: callers cannot compose a URL of their own, cannot forget the
+// undefined case, and the copy modules that produce the surrounding wording
+// (`app-update-notice.ts`, `update-progress.ts`) need no knowledge of GitHub
+// at all. It renders nothing when `releaseNotesUrl` declines the version — a
+// dev build, an E2E version override — because a dead "Release notes" control
+// is worse than none, and on the two popovers, which size themselves to their
+// content, it would also cost width for nothing.
 
 import type { ReactElement } from "react";
+import { releaseNotesUrl } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
 
 export type ReleaseNotesLinkProps = {
-  /** From `releaseNotesUrl(version)`. `undefined` renders nothing. */
-  url: string | undefined;
+  /** Bare (`1.1.1`) or tagged (`v1.1.1`). Anything `releaseNotesUrl` does not
+   *  recognise as a published release renders nothing. */
+  version: string | undefined | null;
   /** Surface skin. Every caller styles it in its own namespace. */
   className: string;
   /** Visible text. The compact rows have room for less. */
@@ -40,20 +48,26 @@ export type ReleaseNotesLinkProps = {
    * is not a usable list.
    */
   ariaLabel?: string;
+  /** Greys out with the surface's other controls while their shared action is
+   *  in flight. A row that disables Restart but not this one is reporting two
+   *  different states for one click. */
+  disabled?: boolean;
 };
 
 export function ReleaseNotesLink({
-  url,
+  version,
   className,
   label = "Release notes",
-  ariaLabel
+  ariaLabel,
+  disabled = false
 }: ReleaseNotesLinkProps): ReactElement | null {
+  const url = releaseNotesUrl(version);
   if (url === undefined) return null;
   return (
     <button
       type="button"
       className={className}
-      title={url}
+      disabled={disabled}
       {...(ariaLabel === undefined ? {} : { "aria-label": ariaLabel })}
       onClick={() => {
         // Fire and forget. The bus answers a Result, but the only failure it

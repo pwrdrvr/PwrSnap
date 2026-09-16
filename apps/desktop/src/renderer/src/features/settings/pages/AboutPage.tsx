@@ -53,7 +53,15 @@ export function AboutPage(): ReactElement {
     }
   }
 
-  const releasesUrl = releaseNotesUrl(info?.version) ?? PWRSNAP_RELEASES_URL;
+  // Kept as `undefined` rather than collapsed into the index URL: the rest of
+  // the row needs to know WHICH of the two it got, and recovering that by
+  // comparing a composed URL against a constant would be a coincidence rather
+  // than a decision.
+  const taggedReleaseUrl = releaseNotesUrl(info?.version);
+  // `info` is null until `app:version` answers. Every other row on this page
+  // prints "—" rather than guessing, so this one must not spend that window
+  // claiming the running build has no published release.
+  const versionKnown = info !== null;
 
   return (
     <>
@@ -140,20 +148,23 @@ export function AboutPage(): ReactElement {
         <Row
           label="On GitHub"
           sub={
-            releasesUrl === PWRSNAP_RELEASES_URL
-              ? "Notes for every published build."
-              : "Notes for this version, plus everything published since."
+            !versionKnown
+              ? "Reading this build's version..."
+              : taggedReleaseUrl === undefined
+                ? "Notes for every published build."
+                : "Notes for this version, plus everything published since."
           }
           tag="github"
         >
           <button
             className="pss__top-btn"
             type="button"
+            disabled={!versionKnown}
             onClick={() => {
-              void openExternal(releasesUrl);
+              void openExternal(taggedReleaseUrl ?? PWRSNAP_RELEASES_URL);
             }}
           >
-            {releasesUrl === PWRSNAP_RELEASES_URL ? "Open releases" : "Open release notes"}
+            {taggedReleaseUrl === undefined ? "Open releases" : "Open release notes"}
           </button>
         </Row>
       </Card>

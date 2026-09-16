@@ -37,9 +37,11 @@ export const PWRSNAP_REPO_URL = "https://github.com/pwrdrvr/PwrSnap";
 export const PWRSNAP_RELEASES_URL = `${PWRSNAP_REPO_URL}/releases`;
 
 /** Tag shape the release lane publishes: `1.2.3`, `1.2.3-beta.4`, with an
- *  optional `+build` suffix. Anchored, so a version carrying a path
- *  separator, a scheme or a query cannot reach the template below. */
-const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+([0-9A-Za-z.-]+))?$/;
+ *  optional `+build` suffix. Only ever used with `.test()`, so every group is
+ *  non-capturing — the anchors and the character classes are the whole point,
+ *  and they are what stop a version carrying a path separator, a scheme or a
+ *  query from reaching the template below. */
+const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 /**
  * The GitHub release page for one version, or `undefined` when the version

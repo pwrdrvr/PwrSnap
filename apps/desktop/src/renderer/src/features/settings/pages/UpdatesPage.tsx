@@ -30,7 +30,6 @@ import {
   EVENT_CHANNELS,
   UPDATE_CHANNELS,
   UPDATE_TRAINS,
-  releaseNotesUrl,
   type AppUpdateCheckResult,
   type AppUpdateReleaseInfo,
   type AppUpdateReleaseVersions,
@@ -369,7 +368,6 @@ export function UpdatesPage(): ReactElement {
       : updateResult !== undefined
         ? payloadVersion(updateResult)
         : undefined;
-  const visibleUpdateNotesUrl = releaseNotesUrl(visibleUpdateVersion);
 
   const checkForUpdates = async (): Promise<void> => {
     setUpdateChecking(true);
@@ -478,9 +476,9 @@ export function UpdatesPage(): ReactElement {
                         }}
                       />
                       <ReleaseNotesLink
-                        url={releaseNotesUrl(release?.version)}
+                        version={release?.version}
                         className="pss__slot-notes"
-                        ariaLabel={`Release notes for ${TRAIN_LABEL[rowTrain]} ${CHANNEL_LABEL[slotChannel]} ${release?.version ?? ""}`}
+                        ariaLabel={`Release notes for ${TRAIN_LABEL[rowTrain]} ${CHANNEL_LABEL[slotChannel]} ${release?.version}`}
                       />
                     </div>
                   );
@@ -547,7 +545,7 @@ export function UpdatesPage(): ReactElement {
                     with no way to find out what v1.1.1 is was the gap this
                     whole change closes. */}
                 <ReleaseNotesLink
-                  url={visibleUpdateNotesUrl}
+                  version={visibleUpdateVersion}
                   className="pss__update-notes"
                   {...(visibleUpdateVersion === undefined
                     ? {}

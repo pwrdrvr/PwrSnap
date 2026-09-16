@@ -16,7 +16,7 @@
 // while the tray popover is open would resize the window for no
 // reason. Settings → Updates renders the full status machine.
 
-import { releaseNotesUrl, type AppUpdateStatus } from "@pwrsnap/shared";
+import type { AppUpdateStatus } from "@pwrsnap/shared";
 
 export type AppUpdateNoticeKind = "ready" | "retry";
 
@@ -25,8 +25,12 @@ export type AppUpdateNotice = {
    *  actionable state brings a dismissed notice back. */
   key: string;
   kind: AppUpdateNoticeKind;
-  /** The version the notice is about, bare (no leading `v`). Surfaces that
-   *  render several controls for it need it for accessible names. */
+  /** The version the notice is about, bare (no leading `v`).
+   *
+   *  Surfaces need it for accessible names, and `ReleaseNotesLink` takes it
+   *  directly — this module deliberately does NOT compose a release URL of
+   *  its own. Whether a version has a published page to link to is one
+   *  decision, and it lives in that component.  */
   version: string;
   /** Banner eyebrow / compact-row title. */
   title: string;
@@ -40,16 +44,6 @@ export type AppUpdateNotice = {
   compactAction: string;
   /** Replaces whichever verb is showing while the install is in flight. */
   busyAction: string;
-  /**
-   * The published release page for `version`, when there is one.
-   *
-   * Carried here rather than derived per surface because every surface that
-   * renders this notice offers to restart into a version it cannot describe:
-   * the CHANGELOG bundled in the RUNNING build has nothing to say about the
-   * one being offered. `undefined` for a version that is not a published
-   * release — see `releaseNotesUrl`.
-   */
-  notesUrl: string | undefined;
 };
 
 export function appUpdateNotice(status: AppUpdateStatus): AppUpdateNotice | undefined {
@@ -75,8 +69,7 @@ export function appUpdateNotice(status: AppUpdateStatus): AppUpdateNotice | unde
         : `v${status.version} · restart to install`,
       action: "Restart",
       compactAction: "Restart",
-      busyAction: "Restarting...",
-      notesUrl: releaseNotesUrl(status.version)
+      busyAction: "Restarting..."
     };
   }
   if (status.status === "install-failed") {
@@ -89,8 +82,7 @@ export function appUpdateNotice(status: AppUpdateStatus): AppUpdateNotice | unde
       compact: `v${status.version} didn't finish installing`,
       action: "Retry update",
       compactAction: "Retry",
-      busyAction: "Retrying...",
-      notesUrl: releaseNotesUrl(status.version)
+      busyAction: "Retrying..."
     };
   }
   return undefined;

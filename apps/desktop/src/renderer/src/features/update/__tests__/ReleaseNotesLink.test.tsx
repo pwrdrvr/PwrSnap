@@ -6,7 +6,6 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
-import { releaseNotesUrl } from "@pwrsnap/shared";
 import { ReleaseNotesLink } from "../ReleaseNotesLink";
 
 beforeAll(() => {
@@ -52,7 +51,7 @@ afterEach(async () => {
 describe("ReleaseNotesLink", () => {
   test("hands the URL to the bus rather than navigating", async () => {
     const api = installFakeApi();
-    await render({ url: releaseNotesUrl("1.2.0"), className: "x" });
+    await render({ version: "1.2.0", className: "x" });
 
     const control = container?.querySelector("button");
     expect(control?.textContent).toBe("Release notes");
@@ -69,13 +68,43 @@ describe("ReleaseNotesLink", () => {
     ]);
   });
 
+  test("composes the URL itself, so a caller cannot pass one in", async () => {
+    // The whole reason the prop is a version: the "is this a published
+    // release?" decision is made here, once, and not re-decided by each of
+    // the copy modules that produce the surrounding wording.
+    const api = installFakeApi();
+    await render({ version: "v1.1.0-beta.5", className: "x" });
+    await act(async () => {
+      container?.querySelector("button")?.click();
+      await Promise.resolve();
+    });
+    expect(api.calls[0]?.req).toEqual({
+      url: "https://github.com/pwrdrvr/PwrSnap/releases/tag/v1.1.0-beta.5"
+    });
+  });
+
+  test("goes quiet with its siblings while their shared action is in flight", async () => {
+    installFakeApi();
+    await render({ version: "1.2.0", className: "x", disabled: true });
+    expect(container?.querySelector("button")?.disabled).toBe(true);
+  });
+
+  test("does not put the URL in the accessible description", async () => {
+    // `title` is only used for the accessible NAME as a last resort; with a
+    // name already present it becomes the description, and a screen reader
+    // reads the whole URL aloud after every announcement of the button.
+    installFakeApi();
+    await render({ version: "1.2.0", className: "x" });
+    expect(container?.querySelector("button")?.getAttribute("title")).toBeNull();
+  });
+
   test("is a button with no href, so no click can navigate a window", async () => {
     // PwrSnap installs no `will-navigate` / `setWindowOpenHandler` guard, so
     // a real anchor's middle-click or cmd-click is the one input that could
     // put a remote origin inside an app BrowserWindow. There is nothing to
     // middle-click here.
     installFakeApi();
-    await render({ url: releaseNotesUrl("1.2.0"), className: "x" });
+    await render({ version: "1.2.0", className: "x" });
 
     expect(container?.querySelector("a")).toBeNull();
     const control = container?.querySelector("button");
@@ -87,7 +116,7 @@ describe("ReleaseNotesLink", () => {
     // A dev build, or an E2E version override. An offer to read notes that
     // land on a 404 is worse than no offer.
     installFakeApi();
-    await render({ url: releaseNotesUrl("dev-build"), className: "x" });
+    await render({ version: "dev-build", className: "x" });
 
     expect(container?.querySelector("button")).toBeNull();
     expect(container?.textContent).toBe("");
@@ -98,7 +127,7 @@ describe("ReleaseNotesLink", () => {
     // named "Release notes" is not a usable list.
     installFakeApi();
     await render({
-      url: releaseNotesUrl("v1.1.0-beta.5"),
+      version: "v1.1.0-beta.5",
       className: "x",
       label: "Notes",
       ariaLabel: "Release notes for Beta Latest v1.1.0-beta.5"
@@ -108,11 +137,6 @@ describe("ReleaseNotesLink", () => {
     expect(control?.textContent).toBe("Notes");
     expect(control?.getAttribute("aria-label")).toBe(
       "Release notes for Beta Latest v1.1.0-beta.5"
-    );
-    // The URL is also the tooltip, so the destination is inspectable without
-    // opening it — there is no status bar in a renderer window.
-    expect(control?.getAttribute("title")).toBe(
-      "https://github.com/pwrdrvr/PwrSnap/releases/tag/v1.1.0-beta.5"
     );
   });
 });

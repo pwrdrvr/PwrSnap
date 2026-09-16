@@ -168,8 +168,15 @@ from `releaseNotesUrl` in
 [packages/shared/src/release-notes.ts](../../../../../../packages/shared/src/release-notes.ts)
 — never composed at the call site.
 
-Four things about that are load-bearing:
+Five things about that are load-bearing:
 
+- **The control takes a VERSION, never a URL.** That is what keeps "a
+  version that is not a published release gets no control" a single
+  decision. `app-update-notice.ts` and `update-progress.ts` carry a
+  `version` on their copy objects and know nothing about GitHub; they must
+  not grow a `notesUrl` field again, because a URL alongside the version it
+  is derived from is state that can disagree with itself, and it drags the
+  composer into every module that writes wording.
 - **The URL is DERIVED from the version, not read from the feed.**
   `AppUpdateReleaseInfo.url` carries GitHub's `html_url` for the four
   published slots, but the STATUS surfaces have no feed record at all —
@@ -180,20 +187,36 @@ Four things about that are load-bearing:
   the version (`configureAutoUpdaterFeedForRelease` already assumes it).
 - **No URL means no control.** `releaseNotesUrl` answers `undefined` for
   anything this repo could not have tagged — a dev build, a
-  `PWRSNAP_E2E_APP_VERSION` override — and `ReleaseNotesLink` renders
-  `null` for it. A link onto a 404 is worse than none, and in the tray and
-  float-over it would also cost popover width for nothing.
-- **It is a `<button>`, never an `<a href>`.** PwrSnap installs no
-  `will-navigate` / `setWindowOpenHandler` guard, so a real anchor's
-  middle-click or cmd-click is the one input that could put a remote origin
-  inside an app BrowserWindow. Settings → About's three link rows predate
-  this; don't add more. Pinned by `ReleaseNotesLink.test.tsx`.
+  `PWRSNAP_E2E_APP_VERSION` override, a tag like `nightly` — and
+  `ReleaseNotesLink` renders `null` for it. A link onto a 404 is worse than
+  none, and in the tray and float-over it would also cost popover width for
+  nothing.
+- **It is a `<button>`, never an `<a href>`, and it carries no `title`.**
+  PwrSnap installs no `will-navigate` / `setWindowOpenHandler` guard, so a
+  real anchor's middle-click or cmd-click is the one input that could put a
+  remote origin inside an app BrowserWindow. Settings → About's three link
+  rows predate this; don't add more. `title` is out because with an
+  accessible name already present it becomes the accessible DESCRIPTION,
+  and a screen reader then reads the whole URL aloud after the button —
+  and PwrSnap wires no context menu, so it could not be copied anyway.
+  Both pinned by `ReleaseNotesLink.test.tsx`.
 - **Settings → Updates hangs it OUTSIDE the tile.** The slot tile is a
   `role="radio"`, and an interactive element nested in one is neither valid
   HTML nor keyboard-reachable — hence `.pss__slot-cell` wrapping the two.
   All four slots get a link, not just the selected one: picking a slot
   rewrites which build the app installs, so reading the notes has to be
-  possible without picking.
+  possible without picking. Pinned by
+  `features/settings/__tests__/UpdatesPage.test.tsx`, which also pins that
+  the status line's link follows the LIVE status rather than the settled
+  check result — the same precedence the sentence beside it uses.
 
 The one surface that deliberately renders NO link is the `checking` card —
 it has no version yet.
+
+**On the two compact rows the control takes `.psu__x`'s tones, not
+`.psu__go`'s.** It has no opaque background, so its label sits directly on
+the row's `--accent-tint` (and on `--warn-soft` in the retry variant),
+where `--accent` measures 4.29:1 in the light theme — under the 4.5:1 AA
+floor for 10px bold. The comment above `.psu__go` in
+[update-row.css](../../styles/update-row.css) is where that number comes
+from. Do not brighten it to accent without giving it an opaque fill first.

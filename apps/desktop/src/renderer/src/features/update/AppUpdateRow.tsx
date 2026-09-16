@@ -140,10 +140,11 @@ export function AppUpdateRow({
             resizes the popover. The accessible name carries the full
             phrase and the version. */}
         <ReleaseNotesLink
-          url={notice.notesUrl}
+          version={notice.version}
           className="psu__notes"
           label="Notes"
           ariaLabel={`Release notes for v${notice.version}`}
+          disabled={busy}
         />
         <button className="psu__go" type="button" disabled={busy} onClick={install}>
           {busy ? notice.busyAction : notice.compactAction}

@@ -587,9 +587,17 @@ body[data-stage="float-over"] .fo {
   cursor: pointer;
   transition: color 120ms ease;
 }
-.app-update-banner__notes:hover {
+.app-update-banner__notes:hover:not(:disabled) {
   color: var(--text-primary);
   text-decoration: underline;
+}
+.app-update-banner__notes:hover:disabled {
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+.app-update-banner__notes:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .app-update-banner__notes:focus-visible {
   outline: 2px solid var(--accent);

@@ -170,7 +170,7 @@ export function AppUpdateBanner(): ReactElement | null {
                     doing WHILE it downloads — this is the only card that
                     stands for minutes. */}
                 <ReleaseNotesLink
-                  url={progress.notesUrl}
+                  version={progress.version}
                   className="app-update-banner__notes"
                 />
                 {/* aria-disabled, never `disabled`: Chromium blurs an element
@@ -232,7 +232,7 @@ export function AppUpdateBanner(): ReactElement | null {
           actions={
             <>
               <ReleaseNotesLink
-                url={outcome.notesUrl}
+                version={outcome.version}
                 className="app-update-banner__notes"
               />
               <button
@@ -264,7 +264,11 @@ export function AppUpdateBanner(): ReactElement | null {
               {/* Between Restart and Dismiss on purpose: the question this
                   card raises is "what is in it?", and the answer belongs
                   next to the button that commits to it. */}
-              <ReleaseNotesLink url={notice.notesUrl} className="app-update-banner__notes" />
+              <ReleaseNotesLink
+                version={notice.version}
+                className="app-update-banner__notes"
+                disabled={restarting}
+              />
               <button
                 className="app-update-banner__dismiss"
                 type="button"

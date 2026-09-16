@@ -168,8 +168,8 @@ describe("updateCheckOutcomeNotice", () => {
       // for is the whole reason `canceled` is not `error`.
       isError: false,
       // The release is still published — that is the entire claim this notice
-      // makes — so the way to read about it stands too.
-      notesUrl: "https://github.com/pwrdrvr/PwrSnap/releases/tag/v1.0.0"
+      // makes — so the version the link is built from travels with it.
+      version: "1.0.0"
     });
   });
 

@@ -153,10 +153,19 @@
 /* "Notes" — deliberately NOT a second `.psu__go`. The row has exactly one
    action (Restart) and this is a way to read about it first; giving it the
    same accent outline would put two equal-looking controls in a 24px strip
-   that already sits above the tray's solid Quick Capture fill. Muted text,
-   accent on hover, and it drops out entirely when the version has no
-   published page (`ReleaseNotesLink` renders null), so the row's width is
-   unchanged for a dev build. */
+   that already sits above the tray's solid Quick Capture fill. It drops out
+   entirely when the version has no published page (`ReleaseNotesLink` renders
+   null), so the row's width is unchanged for a dev build.
+
+   It takes `.psu__x`'s tones, NOT `.psu__go`'s, and that is the contrast
+   requirement the comment above `.psu__go` spells out rather than a style
+   choice: this control has no opaque background, so its label sits directly
+   on the row's `--accent-tint` (and on `--warn-soft` in the retry variant),
+   where `--accent` measures 4.29:1 in the light theme — under the 4.5:1 AA
+   floor for 10px bold. `--text-secondary` is what `.psu__sub` already uses on
+   this exact ground, and `--text-primary` is the hover `.psu__x` uses. Do not
+   "brighten" either to accent without giving the control an opaque fill
+   first. */
 .psu__notes {
   height: 24px;
   padding: 0 4px;
@@ -166,14 +175,18 @@
   background: none;
   border: 0;
   border-radius: 5px;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font: 600 10px/1 var(--font-sans);
   cursor: pointer;
-  transition: color 120ms var(--ease-out);
+  transition: color 120ms var(--ease-out), background 120ms var(--ease-out);
 }
-.psu__notes:hover {
-  color: var(--accent);
-  text-decoration: underline;
+.psu__notes:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+}
+.psu__notes:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 .psu__notes:focus-visible {
   outline: 2px solid var(--accent-bright);

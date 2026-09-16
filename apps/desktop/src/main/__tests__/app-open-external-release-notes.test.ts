@@ -10,7 +10,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { releaseNotesUrl, PWRSNAP_RELEASES_URL, PWRSNAP_REPO_URL } from "@pwrsnap/shared";
 
-const openExternal = vi.fn(async () => undefined);
+const openExternal = vi.fn(async (_url: string): Promise<void> => undefined);
 
 vi.mock("electron", (): Partial<typeof import("electron")> => ({
   app: {

@@ -16,7 +16,7 @@
 // while the tray popover is open would resize the window for no
 // reason. Settings → Updates renders the full status machine.
 
-import type { AppUpdateStatus } from "@pwrsnap/shared";
+import { releaseNotesUrl, type AppUpdateStatus } from "@pwrsnap/shared";
 
 export type AppUpdateNoticeKind = "ready" | "retry";
 
@@ -25,6 +25,9 @@ export type AppUpdateNotice = {
    *  actionable state brings a dismissed notice back. */
   key: string;
   kind: AppUpdateNoticeKind;
+  /** The version the notice is about, bare (no leading `v`). Surfaces that
+   *  render several controls for it need it for accessible names. */
+  version: string;
   /** Banner eyebrow / compact-row title. */
   title: string;
   /** Full sentence, for the Library toast. */
@@ -37,6 +40,16 @@ export type AppUpdateNotice = {
   compactAction: string;
   /** Replaces whichever verb is showing while the install is in flight. */
   busyAction: string;
+  /**
+   * The published release page for `version`, when there is one.
+   *
+   * Carried here rather than derived per surface because every surface that
+   * renders this notice offers to restart into a version it cannot describe:
+   * the CHANGELOG bundled in the RUNNING build has nothing to say about the
+   * one being offered. `undefined` for a version that is not a published
+   * release — see `releaseNotesUrl`.
+   */
+  notesUrl: string | undefined;
 };
 
 export function appUpdateNotice(status: AppUpdateStatus): AppUpdateNotice | undefined {
@@ -52,6 +65,7 @@ export function appUpdateNotice(status: AppUpdateStatus): AppUpdateNotice | unde
       // key would let a dismissed switch silence the update.
       key: `downloaded:${switching ? "switch" : "update"}:${status.version}`,
       kind: "ready",
+      version: status.version,
       title: switching ? "Switch ready" : "Update ready",
       message: switching
         ? `Restart to switch to v${status.version}.`
@@ -61,19 +75,22 @@ export function appUpdateNotice(status: AppUpdateStatus): AppUpdateNotice | unde
         : `v${status.version} · restart to install`,
       action: "Restart",
       compactAction: "Restart",
-      busyAction: "Restarting..."
+      busyAction: "Restarting...",
+      notesUrl: releaseNotesUrl(status.version)
     };
   }
   if (status.status === "install-failed") {
     return {
       key: `install-failed:${status.version}`,
       kind: "retry",
+      version: status.version,
       title: "Update retry needed",
       message: `The update to v${status.version} did not finish installing. Retry to download it again and restart.`,
       compact: `v${status.version} didn't finish installing`,
       action: "Retry update",
       compactAction: "Retry",
-      busyAction: "Retrying..."
+      busyAction: "Retrying...",
+      notesUrl: releaseNotesUrl(status.version)
     };
   }
   return undefined;

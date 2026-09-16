@@ -146,6 +146,32 @@ describe("AppUpdateBanner", () => {
   // A downgrade back to the selected train is not an update. Reading
   // "Restart to update to v1.0.1" while running 1.1.0-alpha.2 looks like
   // the app got the version wrong.
+  test("puts the release notes beside the button that commits to them", async () => {
+    // "Update ready: v1.2.0" with no way to find out what v1.2.0 is was the
+    // gap this control closes — the bundled CHANGELOG describes the build
+    // the user is leaving, not the one they are being offered.
+    const api = await renderBanner();
+
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.appUpdateStatus, {
+        status: "downloaded",
+        version: "1.2.0"
+      } satisfies AppUpdateStatus);
+    });
+
+    const notes = button("Release notes");
+    expect(notes).toBeDefined();
+    await act(async () => {
+      notes?.click();
+      await Promise.resolve();
+    });
+
+    expect(api.calls).toContainEqual({
+      name: "app:openExternal",
+      req: { url: "https://github.com/pwrdrvr/PwrSnap/releases/tag/v1.2.0" }
+    });
+  });
+
   test("words a downloaded downgrade as a switch", async () => {
     const api = await renderBanner();
 

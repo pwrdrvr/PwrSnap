@@ -456,6 +456,19 @@
   text-transform: none;
   color: var(--text-secondary);
 }
+/* The grid cell, not the tile. The tile is a radio and cannot contain an
+   interactive element, so its "Release notes" link is a sibling below it —
+   the cell is what makes the two read as one unit and keeps tiles in a row
+   the same height whether or not their slot resolved to a version. */
+.pss__slot-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.pss__slot-cell > .pss__slot {
+  flex: 1 1 auto;
+}
 .pss__slot {
   display: flex;
   flex-direction: column;
@@ -526,6 +539,47 @@
   background: var(--success-soft);
   color: var(--success-text);
 }
+/* "Release notes" — quiet by default, accent on hover. It sits under a tile
+   the user is deciding about, so it must not compete with the tile itself
+   for the click; the underline only appears on hover/focus for the same
+   reason. Text-sized rather than button-sized: four of these in the matrix
+   at button weight would out-shout the four versions above them. */
+.pss__slot-notes,
+.pss__update-notes {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--text-muted);
+  font: 500 10px/1.2 var(--font-sans);
+  cursor: pointer;
+  transition: color 120ms var(--ease-out);
+}
+.pss__slot-notes:hover,
+.pss__update-notes:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.pss__slot-notes:focus-visible,
+.pss__update-notes:focus-visible {
+  outline: 2px solid var(--accent-bright);
+  outline-offset: 2px;
+  border-radius: 3px;
+  color: var(--accent);
+}
+.pss__slot-notes {
+  align-self: flex-start;
+  padding-left: 2px;
+}
+/* Inline with the status sentence it qualifies — it is scoped to the
+   version that sentence just named, so it must not float away from it. */
+.pss__update-notes {
+  margin-left: 6px;
+  vertical-align: baseline;
+}
+
 .pss__update-actions {
   display: flex;
   flex-wrap: wrap;

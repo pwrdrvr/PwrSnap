@@ -151,3 +151,49 @@ can click a button that only exists mid-download). Both are gated on
 `PWRSNAP_E2E=1`. Unlike PwrGit's, this path has no platform branch — the fake
 runs the same on the Linux CI lane as on macOS — so the spec needs no
 `test.skip(LINUX)`.
+
+## A version the app names, it must also be able to describe
+
+Every update surface prints a version number the user has never seen and
+cannot look up from inside the app. Settings → About's **Open changelog**
+reads the `CHANGELOG.md` that shipped INSIDE the running build, so by
+construction it says nothing about the build being offered — a v1.1.0
+install cannot carry v1.1.1's notes. Before this the four-slot matrix, the
+`Update ready: v1.1.1` line, the Library toast and the two compact rows all
+named a version with no way out to what is in it.
+
+So: **any surface that renders a version renders a
+[`ReleaseNotesLink`](./ReleaseNotesLink.tsx) beside it**, and the URL comes
+from `releaseNotesUrl` in
+[packages/shared/src/release-notes.ts](../../../../../../packages/shared/src/release-notes.ts)
+— never composed at the call site.
+
+Four things about that are load-bearing:
+
+- **The URL is DERIVED from the version, not read from the feed.**
+  `AppUpdateReleaseInfo.url` carries GitHub's `html_url` for the four
+  published slots, but the STATUS surfaces have no feed record at all —
+  `AppUpdateStatus` carries a bare version through every transition,
+  including the ones electron-updater raises, which never saw our GitHub
+  read. One composer that takes a version is the only thing all five
+  surfaces can share. Deriving is exact because the release tag is `v` +
+  the version (`configureAutoUpdaterFeedForRelease` already assumes it).
+- **No URL means no control.** `releaseNotesUrl` answers `undefined` for
+  anything this repo could not have tagged — a dev build, a
+  `PWRSNAP_E2E_APP_VERSION` override — and `ReleaseNotesLink` renders
+  `null` for it. A link onto a 404 is worse than none, and in the tray and
+  float-over it would also cost popover width for nothing.
+- **It is a `<button>`, never an `<a href>`.** PwrSnap installs no
+  `will-navigate` / `setWindowOpenHandler` guard, so a real anchor's
+  middle-click or cmd-click is the one input that could put a remote origin
+  inside an app BrowserWindow. Settings → About's three link rows predate
+  this; don't add more. Pinned by `ReleaseNotesLink.test.tsx`.
+- **Settings → Updates hangs it OUTSIDE the tile.** The slot tile is a
+  `role="radio"`, and an interactive element nested in one is neither valid
+  HTML nor keyboard-reachable — hence `.pss__slot-cell` wrapping the two.
+  All four slots get a link, not just the selected one: picking a slot
+  rewrites which build the app installs, so reading the notes has to be
+  possible without picking.
+
+The one surface that deliberately renders NO link is the `checking` card —
+it has no version yet.

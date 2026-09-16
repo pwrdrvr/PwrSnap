@@ -150,6 +150,36 @@
   outline-offset: 2px;
 }
 
+/* "Notes" — deliberately NOT a second `.psu__go`. The row has exactly one
+   action (Restart) and this is a way to read about it first; giving it the
+   same accent outline would put two equal-looking controls in a 24px strip
+   that already sits above the tray's solid Quick Capture fill. Muted text,
+   accent on hover, and it drops out entirely when the version has no
+   published page (`ReleaseNotesLink` renders null), so the row's width is
+   unchanged for a dev build. */
+.psu__notes {
+  height: 24px;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: none;
+  border: 0;
+  border-radius: 5px;
+  color: var(--text-muted);
+  font: 600 10px/1 var(--font-sans);
+  cursor: pointer;
+  transition: color 120ms var(--ease-out);
+}
+.psu__notes:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.psu__notes:focus-visible {
+  outline: 2px solid var(--accent-bright);
+  outline-offset: 2px;
+}
+
 .psu__x {
   width: 22px;
   height: 22px;

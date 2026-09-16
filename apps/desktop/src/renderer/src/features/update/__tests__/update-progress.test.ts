@@ -166,7 +166,10 @@ describe("updateCheckOutcomeNotice", () => {
       message: "PwrSnap v1.0.0 is still available - check again to download it.",
       // A danger eyebrow in front of someone who got exactly what they asked
       // for is the whole reason `canceled` is not `error`.
-      isError: false
+      isError: false,
+      // The release is still published — that is the entire claim this notice
+      // makes — so the way to read about it stands too.
+      notesUrl: "https://github.com/pwrdrvr/PwrSnap/releases/tag/v1.0.0"
     });
   });
 

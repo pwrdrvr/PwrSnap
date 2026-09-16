@@ -4,6 +4,7 @@
 // repo LICENSE file); links open the changelog + third-party notices.
 
 import { useEffect, useState, type ReactElement } from "react";
+import { PWRSNAP_RELEASES_URL, releaseNotesUrl } from "@pwrsnap/shared";
 import { Card, Row } from "../components";
 import { dispatch } from "../../../lib/pwrsnap";
 
@@ -51,6 +52,8 @@ export function AboutPage(): ReactElement {
       setLinkError(result.error.message);
     }
   }
+
+  const releasesUrl = releaseNotesUrl(info?.version) ?? PWRSNAP_RELEASES_URL;
 
   return (
     <>
@@ -126,6 +129,31 @@ export function AboutPage(): ReactElement {
             }}
           >
             Open changelog
+          </button>
+        </Row>
+        {/* The bundled changelog can only describe the build it shipped
+            inside. Everything published since — including whatever the
+            updater is currently offering — is on GitHub, so the card that
+            is literally called "Release notes" has to point there too. A
+            build whose version is not a published release (a dev build, an
+            E2E override) falls back to the index rather than a dead tag. */}
+        <Row
+          label="On GitHub"
+          sub={
+            releasesUrl === PWRSNAP_RELEASES_URL
+              ? "Notes for every published build."
+              : "Notes for this version, plus everything published since."
+          }
+          tag="github"
+        >
+          <button
+            className="pss__top-btn"
+            type="button"
+            onClick={() => {
+              void openExternal(releasesUrl);
+            }}
+          >
+            {releasesUrl === PWRSNAP_RELEASES_URL ? "Open releases" : "Open release notes"}
           </button>
         </Row>
       </Card>

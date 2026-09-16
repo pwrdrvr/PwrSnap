@@ -246,6 +246,24 @@
 .pss__top-btn.is-active { color: var(--text-primary); }
 .pss__top-btn.is-muted { color: var(--text-muted); border-color: var(--border-subtle); }
 .pss__top-btn + .pss__top-btn { margin-left: 6px; }
+/* About's "On GitHub" row wears this skin on an `<a href>` — it reaches a
+   URL, while its two siblings open an in-app document window. Additive and
+   anchor-scoped on purpose: a `<button>` already centres its label and
+   honours `height`, an inline anchor does neither, and `:disabled` does not
+   exist for one. */
+a.pss__top-btn {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+a.pss__top-btn[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: default;
+}
+a.pss__top-btn[aria-disabled="true"]:hover {
+  color: var(--text-secondary);
+  border-color: var(--border-default);
+}
 
 /* ============================================================
    CARD — collapsible settings card
@@ -549,16 +567,16 @@
    for the click; the underline only appears on hover/focus for the same
    reason. Text-sized rather than button-sized: four of these in the matrix
    at button weight would out-shout the four versions above them. */
+/* Real `<a href>`s (see ReleaseNotesLink.tsx), hence `text-decoration: none`
+   at rest — the underline below is the hover affordance. */
 .pss__slot-notes,
 .pss__update-notes {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 0;
-  background: none;
-  border: 0;
   color: var(--text-muted);
   font: 500 10px/1.2 var(--font-sans);
+  text-decoration: none;
   cursor: pointer;
   transition: color 120ms var(--ease-out);
 }

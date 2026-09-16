@@ -1,8 +1,19 @@
 // The two halves of the release-notes link have to agree, and they live in
 // different packages: `releaseNotesUrl` (packages/shared) composes the URL,
-// and `isAllowedExternalUrl` (this folder's app-handlers) decides whether
-// the process that owns `shell.openExternal` will open it. A shared-package
-// test can only re-state the allowlist rule; this one runs it.
+// and `isAllowedExternalUrl` (main/external-url-allowlist.ts) decides
+// whether the process that owns `shell.openExternal` will open it. A
+// shared-package test can only re-state the allowlist rule; this one runs
+// it — through BOTH consumers of that predicate, because the control is an
+// `<a href>` and therefore has two ways out of the renderer:
+//
+//   - a plain click, which `onClick` cancels and routes through the
+//     `app:openExternal` verb;
+//   - a middle-click or cmd-click, which `onClick` never sees at all —
+//     Chromium turns it into a `window.open` that only the navigation guard
+//     is there to answer.
+//
+// A URL the verb opens and the guard blocks would be a control that works
+// on one input and silently does nothing on the other.
 //
 // The composer is deliberately narrow — anchored semver, one path template —
 // so the interesting case is not "does a good URL pass" alone but "can the
@@ -44,6 +55,7 @@ vi.mock("../auto-updater", () => ({
 
 const { bus } = await import("../command-bus");
 const { registerAppCommonHandlers } = await import("../handlers/app-handlers");
+const { decideNavigation } = await import("../navigation-guard");
 
 registerAppCommonHandlers();
 
@@ -52,11 +64,23 @@ async function open(url: string): Promise<boolean> {
   return result.ok;
 }
 
+/** What the navigation guard does with a `window.open` for `url` — the path
+ *  a cmd-click takes, which never reaches `onClick`. `allowSameApp: false`
+ *  is how `setWindowOpenHandler` calls it: PwrSnap opens no windows of its
+ *  own this way, so nothing is "same app" here. */
+function modifierClick(url: string): ReturnType<typeof decideNavigation> {
+  return decideNavigation(
+    url,
+    { rendererEntryPath: "/app/out/renderer/index.html", devServerUrl: undefined, currentUrl: "" },
+    { allowSameApp: false }
+  );
+}
+
 afterEach(() => {
   openExternal.mockClear();
 });
 
-describe("app:openExternal accepts what releaseNotesUrl composes", () => {
+describe("both gates accept what releaseNotesUrl composes", () => {
   test.each([
     ["a stable tag", "1.1.1"],
     ["a tag carrying the leading v", "v1.1.0"],
@@ -68,6 +92,9 @@ describe("app:openExternal accepts what releaseNotesUrl composes", () => {
     expect(url).toBeDefined();
     expect(await open(url as string)).toBe(true);
     expect(openExternal).toHaveBeenCalledWith(url);
+    // Same URL, other input: the guard hands it to the browser rather than
+    // blocking it or letting it navigate a BrowserWindow.
+    expect(modifierClick(url as string)).toEqual({ action: "external", url });
   });
 
   test("opens the two constants the About page falls back to", async () => {
@@ -83,5 +110,14 @@ describe("app:openExternal accepts what releaseNotesUrl composes", () => {
     expect(await open("https://github.com/someone-else/PwrSnap/releases")).toBe(false);
     expect(await open("http://github.com/pwrdrvr/PwrSnap/releases")).toBe(false);
     expect(openExternal).not.toHaveBeenCalled();
+
+    // And the other input refuses them too, so the anchor cannot become the
+    // way around the verb that the guard was added to close.
+    expect(modifierClick("https://github.com/someone-else/PwrSnap/releases")).toEqual({
+      action: "block"
+    });
+    expect(modifierClick("http://github.com/pwrdrvr/PwrSnap/releases")).toEqual({
+      action: "block"
+    });
   });
 });

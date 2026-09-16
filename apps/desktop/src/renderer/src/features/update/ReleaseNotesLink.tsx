@@ -7,17 +7,24 @@
 // reason they share `appUpdateNotice`: the wording and the behaviour must
 // not drift. Only the skin differs, which is what `className` is for.
 //
-// It is a BUTTON, not an anchor, and that is deliberate on both counts:
+// It is a real `<a href>` with `onClick` -> `preventDefault()` ->
+// `app:openExternal` in front of it — the pairing Settings -> About's link
+// rows use, and the one the root AGENTS.md section "No webContents opens a
+// window, and none navigates away" tells you to keep. The verb is the
+// mechanism: it is what actually opens the page, and it is the only path
+// that can report a failure. The `href` is what makes the element honest —
+// it is a link, it announces as one, and a middle-click or cmd-click (which
+// Chromium turns into a `window.open` that `onClick` never sees) reaches the
+// same page instead of doing nothing, because the navigation guard denies
+// the window and hands the URL to the browser after clearing the SAME
+// allowlist. Before that guard existed this was a `<button>` precisely
+// because a modifier-click would otherwise have loaded github.com inside a
+// BrowserWindow carrying our preload.
 //
-//   - Semantically it performs an action — hand a URL to the OS browser —
-//     rather than navigating this document. `app:openExternal` is the only
-//     thing that ever opens it.
-//   - No `href` means no navigation vector. PwrSnap installs no
-//     `will-navigate` / `setWindowOpenHandler` guard, so a middle-click or
-//     cmd-click on a real anchor is the one input that could put a remote
-//     origin inside an app BrowserWindow. Settings -> About's three link
-//     rows predate this and still use anchors; this component is what the
-//     update surfaces use instead of multiplying them.
+// It still carries no `title`. With an accessible name already present a
+// `title` becomes the accessible DESCRIPTION, so a screen reader reads the
+// whole URL aloud after every announcement — and PwrSnap wires no
+// context-menu handler, so there is no "Copy Link Address" it would feed.
 //
 // It takes a VERSION, not a URL, and composes the URL itself. That is what
 // keeps "a version that is not a published release gets no control" a single
@@ -64,12 +71,22 @@ export function ReleaseNotesLink({
   const url = releaseNotesUrl(version);
   if (url === undefined) return null;
   return (
-    <button
-      type="button"
+    <a
       className={className}
-      disabled={disabled}
+      // Disabled drops the `href` rather than only marking the element
+      // aria-disabled, because the href is exactly what a modifier-click
+      // reaches WITHOUT going through `onClick`. Leaving it would make a
+      // greyed-out control the one thing on the surface still answering a
+      // cmd-click. `tabIndex: -1` takes it out of the tab order to match,
+      // and an anchor with no href is not focusable by default anyway.
+      {...(disabled ? { "aria-disabled": true, tabIndex: -1 } : { href: url })}
       {...(ariaLabel === undefined ? {} : { "aria-label": ariaLabel })}
-      onClick={() => {
+      onClick={(event) => {
+        // The verb opens the page, never the href — an in-app navigation to
+        // github.com is precisely what the guard exists to refuse, and
+        // `preventDefault` is what keeps this a request rather than one.
+        event.preventDefault();
+        if (disabled) return;
         // Fire and forget. The bus answers a Result, but the only failure it
         // can report is a refused URL — which this component cannot compose,
         // since `releaseNotesUrl` builds every one of them inside the
@@ -94,6 +111,6 @@ export function ReleaseNotesLink({
         <path d="M20 4 11 13" />
         <path d="M18 14.5V19a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h4.5" />
       </svg>
-    </button>
+    </a>
   );
 }

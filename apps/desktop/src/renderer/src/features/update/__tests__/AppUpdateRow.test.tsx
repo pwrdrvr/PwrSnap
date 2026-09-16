@@ -108,6 +108,12 @@ function button(label: string): HTMLButtonElement | undefined {
   );
 }
 
+/** The release-notes control is an `<a href>`, not a button — see
+ *  ReleaseNotesLink.tsx. */
+function notesLink(): HTMLAnchorElement | null {
+  return container?.querySelector("a.psu__notes") ?? null;
+}
+
 beforeEach(() => {
   resetAppUpdateDismissals();
 });
@@ -169,10 +175,15 @@ describe("AppUpdateRow", () => {
     await mountRow("tray");
     await api.pushStatus({ status: "downloaded", version: "1.2.0" });
 
-    const notes = button("Notes");
+    const notes = notesLink();
+    expect(notes?.textContent).toBe("Notes");
     // "Notes" fits the 24px strip; the accessible name carries the phrase
     // and the version, which is what a screen reader announces.
     expect(notes?.getAttribute("aria-label")).toBe("Release notes for v1.2.0");
+    // The href is what a cmd-click reaches, and `onClick` never sees one.
+    expect(notes?.getAttribute("href")).toBe(
+      "https://github.com/pwrdrvr/PwrSnap/releases/tag/v1.2.0"
+    );
 
     await act(async () => {
       notes?.click();
@@ -192,7 +203,7 @@ describe("AppUpdateRow", () => {
     await mountRow("tray");
     await api.pushStatus({ status: "downloaded", version: "dev-build" });
 
-    expect(button("Notes")).toBeUndefined();
+    expect(notesLink()).toBeNull();
     expect(button("Restart")).toBeDefined();
   });
 

@@ -156,16 +156,25 @@ export function AboutPage(): ReactElement {
           }
           tag="github"
         >
-          <button
+          {/* An `<a href>`, unlike the two buttons above it, because this row
+              reaches a URL and they open an in-app document window — there is
+              no address for those to carry. The `onClick` -> `openExternal`
+              pairing is the same one the Links card uses, and the navigation
+              guard is what makes the href safe (root AGENTS.md, "No
+              webContents opens a window, and none navigates away"). */}
+          <a
             className="pss__top-btn"
-            type="button"
-            disabled={!versionKnown}
-            onClick={() => {
+            {...(versionKnown
+              ? { href: taggedReleaseUrl ?? PWRSNAP_RELEASES_URL }
+              : { "aria-disabled": true, tabIndex: -1 })}
+            onClick={(e) => {
+              e.preventDefault();
+              if (!versionKnown) return;
               void openExternal(taggedReleaseUrl ?? PWRSNAP_RELEASES_URL);
             }}
           >
             {taggedReleaseUrl === undefined ? "Open releases" : "Open release notes"}
-          </button>
+          </a>
         </Row>
       </Card>
 

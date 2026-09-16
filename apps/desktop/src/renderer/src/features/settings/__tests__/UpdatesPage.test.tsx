@@ -124,10 +124,17 @@ function notesLabels(selector: string): (string | null)[] {
   );
 }
 
+/** Every release-notes control on the page, by its `href`. */
+function notesHrefs(selector: string): (string | null)[] {
+  return Array.from(container?.querySelectorAll(selector) ?? []).map((el) =>
+    el.getAttribute("href")
+  );
+}
+
 async function clickNotes(selector: string, index = 0): Promise<void> {
   const el = Array.from(container?.querySelectorAll(selector) ?? [])[index];
   await act(async () => {
-    (el as HTMLButtonElement | undefined)?.click();
+    (el as HTMLElement | undefined)?.click();
     await Promise.resolve();
   });
 }
@@ -142,6 +149,13 @@ describe("UpdatesPage release notes", () => {
     expect(notesLabels(".pss__slot-notes")).toEqual([
       "Release notes for Stable Latest v1.1.0",
       "Release notes for Stable Prerelease v1.1.1"
+    ]);
+
+    // Each is a real `<a href>`, so its own release page is what a
+    // cmd-click reaches — the path `onClick` never sees.
+    expect(notesHrefs(".pss__slot-notes")).toEqual([
+      "https://github.com/pwrdrvr/PwrSnap/releases/tag/v1.1.0",
+      "https://github.com/pwrdrvr/PwrSnap/releases/tag/v1.1.1"
     ]);
 
     await clickNotes(".pss__slot-notes", 1);
@@ -192,6 +206,7 @@ describe("UpdatesPage release notes", () => {
     for (const link of Array.from(container?.querySelectorAll(".pss__slot-notes") ?? [])) {
       expect(link.closest("[role='radio']")).toBeNull();
     }
+    expect(container?.querySelectorAll("a.pss__slot-notes").length).toBe(2);
     expect(container?.querySelectorAll("[role='radio']").length).toBe(4);
   });
 });

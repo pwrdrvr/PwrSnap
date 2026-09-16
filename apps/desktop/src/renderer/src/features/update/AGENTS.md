@@ -191,15 +191,29 @@ Five things about that are load-bearing:
   `ReleaseNotesLink` renders `null` for it. A link onto a 404 is worse than
   none, and in the tray and float-over it would also cost popover width for
   nothing.
-- **It is a `<button>`, never an `<a href>`, and it carries no `title`.**
-  PwrSnap installs no `will-navigate` / `setWindowOpenHandler` guard, so a
-  real anchor's middle-click or cmd-click is the one input that could put a
-  remote origin inside an app BrowserWindow. Settings → About's three link
-  rows predate this; don't add more. `title` is out because with an
+- **It is an `<a href>` whose click is cancelled, and it carries no
+  `title`.** The `onClick` → `preventDefault()` → `app:openExternal`
+  pairing is the mechanism — it is what opens the page and the only path
+  that could report a failure — and the `href` is what makes a
+  middle-click or cmd-click land somewhere, since Chromium turns those into
+  a `window.open` that `onClick` never sees. That input is safe because of
+  the navigation guard (root AGENTS.md, "No webContents opens a window, and
+  none navigates away"), which denies the window and hands the URL to the
+  browser after clearing the SAME allowlist the verb uses. It was written as
+  a `<button>` first, in the window before that guard landed, when a
+  modifier-click on a real anchor would have loaded github.com inside a
+  BrowserWindow carrying our preload — so if the guard is ever removed, this
+  goes back to a button rather than losing the `onClick`. **`disabled` drops the `href`, not just marks it
+  aria-disabled** — otherwise a greyed-out control is the one thing on the
+  surface still answering a cmd-click. `title` is out because with an
   accessible name already present it becomes the accessible DESCRIPTION,
-  and a screen reader then reads the whole URL aloud after the button —
-  and PwrSnap wires no context menu, so it could not be copied anyway.
-  Both pinned by `ReleaseNotesLink.test.tsx`.
+  and a screen reader then reads the whole URL aloud after the link — and
+  PwrSnap wires no context-menu handler, so there is no "Copy Link Address"
+  it would feed. All pinned by `ReleaseNotesLink.test.tsx`, and
+  `main/__tests__/app-open-external-release-notes.test.ts` runs every
+  composed URL through BOTH gates — a URL the verb opens and the guard
+  blocks is a control that works on one input and silently does nothing on
+  the other.
 - **Settings → Updates hangs it OUTSIDE the tile.** The slot tile is a
   `role="radio"`, and an interactive element nested in one is neither valid
   HTML nor keyboard-reachable — hence `.pss__slot-cell` wrapping the two.

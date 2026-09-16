@@ -165,26 +165,29 @@
    floor for 10px bold. `--text-secondary` is what `.psu__sub` already uses on
    this exact ground, and `--text-primary` is the hover `.psu__x` uses. Do not
    "brighten" either to accent without giving the control an opaque fill
-   first. */
+   first.
+
+   It is a real `<a href>` (see ReleaseNotesLink.tsx), so it carries
+   `text-decoration: none` and states "disabled" as `aria-disabled` — an
+   anchor has no `:disabled` to hang either the wash or the dimming off. */
 .psu__notes {
   height: 24px;
   padding: 0 4px;
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  background: none;
-  border: 0;
   border-radius: 5px;
   color: var(--text-secondary);
   font: 600 10px/1 var(--font-sans);
+  text-decoration: none;
   cursor: pointer;
   transition: color 120ms var(--ease-out), background 120ms var(--ease-out);
 }
-.psu__notes:hover:not(:disabled) {
+.psu__notes:hover:not([aria-disabled="true"]) {
   color: var(--text-primary);
   background: color-mix(in srgb, var(--text-primary) 6%, transparent);
 }
-.psu__notes:disabled {
+.psu__notes[aria-disabled="true"] {
   opacity: 0.5;
   cursor: default;
 }

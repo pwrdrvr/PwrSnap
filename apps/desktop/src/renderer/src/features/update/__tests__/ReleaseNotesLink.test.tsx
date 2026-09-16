@@ -1,7 +1,8 @@
 // The one control that takes a version out to its published release page.
-// Four surfaces render it, so its three rules are pinned here rather than
-// four times over: it opens through the bus, it never navigates this
-// document, and it disappears rather than offering a dead link.
+// Four surfaces render it, so its rules are pinned here rather than four
+// times over: it is a real `<a href>`, a plain click opens through the bus
+// rather than navigating this document, and it disappears rather than
+// offering a dead link.
 
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -53,7 +54,7 @@ describe("ReleaseNotesLink", () => {
     const api = installFakeApi();
     await render({ version: "1.2.0", className: "x" });
 
-    const control = container?.querySelector("button");
+    const control = container?.querySelector("a");
     expect(control?.textContent).toBe("Release notes");
     await act(async () => {
       control?.click();
@@ -75,7 +76,7 @@ describe("ReleaseNotesLink", () => {
     const api = installFakeApi();
     await render({ version: "v1.1.0-beta.5", className: "x" });
     await act(async () => {
-      container?.querySelector("button")?.click();
+      container?.querySelector("a")?.click();
       await Promise.resolve();
     });
     expect(api.calls[0]?.req).toEqual({
@@ -84,32 +85,55 @@ describe("ReleaseNotesLink", () => {
   });
 
   test("goes quiet with its siblings while their shared action is in flight", async () => {
-    installFakeApi();
+    // An anchor has no `disabled`, and `aria-disabled` alone would leave the
+    // `href` — the one thing a cmd-click reaches without `onClick` — live on
+    // a control that has been greyed out. So the href goes too.
+    const api = installFakeApi();
     await render({ version: "1.2.0", className: "x", disabled: true });
-    expect(container?.querySelector("button")?.disabled).toBe(true);
+
+    const control = container?.querySelector("a");
+    expect(control?.getAttribute("aria-disabled")).toBe("true");
+    expect(control?.getAttribute("href")).toBeNull();
+    expect(control?.getAttribute("tabindex")).toBe("-1");
+
+    await act(async () => {
+      control?.click();
+      await Promise.resolve();
+    });
+    expect(api.calls).toEqual([]);
   });
 
   test("does not put the URL in the accessible description", async () => {
     // `title` is only used for the accessible NAME as a last resort; with a
     // name already present it becomes the description, and a screen reader
-    // reads the whole URL aloud after every announcement of the button.
+    // reads the whole URL aloud after every announcement of the link.
     installFakeApi();
     await render({ version: "1.2.0", className: "x" });
-    expect(container?.querySelector("button")?.getAttribute("title")).toBeNull();
+    expect(container?.querySelector("a")?.getAttribute("title")).toBeNull();
   });
 
-  test("is a button with no href, so no click can navigate a window", async () => {
-    // PwrSnap installs no `will-navigate` / `setWindowOpenHandler` guard, so
-    // a real anchor's middle-click or cmd-click is the one input that could
-    // put a remote origin inside an app BrowserWindow. There is nothing to
-    // middle-click here.
+  test("carries the href a modifier-click reaches, and cancels the plain one", async () => {
+    // `onClick` is NOT consulted for a middle-click or a cmd-click —
+    // Chromium turns those into a `window.open` — so the href is the only
+    // thing those inputs can follow, and the navigation guard
+    // (main/navigation-guard.ts) is what turns the window it would have
+    // opened into a browser tab. A plain click must still be cancelled:
+    // an in-app navigation to github.com is what the guard exists to refuse.
     installFakeApi();
     await render({ version: "1.2.0", className: "x" });
 
-    expect(container?.querySelector("a")).toBeNull();
-    const control = container?.querySelector("button");
-    expect(control?.getAttribute("type")).toBe("button");
-    expect(control?.getAttribute("href")).toBeNull();
+    expect(container?.querySelector("button")).toBeNull();
+    const control = container?.querySelector("a");
+    expect(control?.getAttribute("href")).toBe(
+      "https://github.com/pwrdrvr/PwrSnap/releases/tag/v1.2.0"
+    );
+
+    const event = new MouseEvent("click", { bubbles: true, cancelable: true });
+    await act(async () => {
+      control?.dispatchEvent(event);
+      await Promise.resolve();
+    });
+    expect(event.defaultPrevented).toBe(true);
   });
 
   test("renders nothing when the version has no published page", async () => {
@@ -118,7 +142,7 @@ describe("ReleaseNotesLink", () => {
     installFakeApi();
     await render({ version: "dev-build", className: "x" });
 
-    expect(container?.querySelector("button")).toBeNull();
+    expect(container?.querySelector("a")).toBeNull();
     expect(container?.textContent).toBe("");
   });
 
@@ -133,7 +157,7 @@ describe("ReleaseNotesLink", () => {
       ariaLabel: "Release notes for Beta Latest v1.1.0-beta.5"
     });
 
-    const control = container?.querySelector("button");
+    const control = container?.querySelector("a");
     expect(control?.textContent).toBe("Notes");
     expect(control?.getAttribute("aria-label")).toBe(
       "Release notes for Beta Latest v1.1.0-beta.5"

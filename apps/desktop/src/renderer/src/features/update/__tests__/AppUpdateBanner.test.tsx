@@ -94,6 +94,12 @@ function button(label: string): HTMLButtonElement | undefined {
   );
 }
 
+/** The release-notes control is an `<a href>`, not a button — see
+ *  ReleaseNotesLink.tsx. */
+function notesLink(): HTMLAnchorElement | null {
+  return container?.querySelector("a.app-update-banner__notes") ?? null;
+}
+
 function progressBar(): HTMLElement | null {
   return container?.querySelector("[role='progressbar']") ?? null;
 }
@@ -159,8 +165,11 @@ describe("AppUpdateBanner", () => {
       } satisfies AppUpdateStatus);
     });
 
-    const notes = button("Release notes");
-    expect(notes).toBeDefined();
+    const notes = notesLink();
+    expect(notes?.textContent).toBe("Release notes");
+    expect(notes?.getAttribute("href")).toBe(
+      "https://github.com/pwrdrvr/PwrSnap/releases/tag/v1.2.0"
+    );
     await act(async () => {
       notes?.click();
       await Promise.resolve();

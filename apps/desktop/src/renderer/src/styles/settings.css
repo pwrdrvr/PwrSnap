@@ -436,7 +436,12 @@
 .pss__slots {
   display: grid;
   grid-template-columns: 92px minmax(0, 1fr) minmax(0, 1fr);
-  gap: 8px;
+  column-gap: 8px;
+  /* Wider than the column gap on purpose. Each cell now ends in a
+     "Release notes" link, and with an even 8px both ways that link sat as
+     close to the NEXT row's tile as to its own — it has to read as a
+     caption on the tile above it. */
+  row-gap: 14px;
   align-items: stretch;
 }
 .pss__slots-colhdr,
@@ -569,9 +574,11 @@
   border-radius: 3px;
   color: var(--accent);
 }
+/* Indented to the tile's own text column (12px padding + 1px border) so it
+   hangs under the version rather than off the tile's outer edge. */
 .pss__slot-notes {
   align-self: flex-start;
-  padding-left: 2px;
+  padding-left: 13px;
 }
 /* Inline with the status sentence it qualifies — it is scoped to the
    version that sentence just named, so it must not float away from it. */

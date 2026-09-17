@@ -1,6 +1,6 @@
 ---
 name: release-download-stats
-description: Check and summarize PwrSnap GitHub Release asset download statistics. Use when the user asks for download counts, bytes served, DMG stats, mac updater ZIP traffic, Windows installer traffic, per-release stats such as beta.20/beta.18, or whether GitHub release downloads show any traffic.
+description: Check and summarize PwrSnap GitHub Release asset download statistics. Use when the user asks for download counts, bytes served, DMG stats, mac updater ZIP traffic, Windows setup EXE traffic, per-release stats such as beta.20/beta.18, or whether GitHub release downloads show any traffic.
 ---
 
 # Release Download Stats
@@ -33,7 +33,7 @@ does not identify users and it does not count update-check polls.
    - mac updater ZIP downloads separately from DMG downloads.
    - `PwrSnap.dmg` stable alias separately from versioned DMG assets.
    - Total DMG as `stable alias + versioned DMG` only when useful.
-   - Windows setup EXE downloads separately from macOS assets.
+   - Stable Windows setup aliases separately from versioned Windows setup EXEs.
    - GiB totals for approximate transfer volume.
 
 ## Interpretation Rules
@@ -45,6 +45,10 @@ does not identify users and it does not count update-check polls.
   represented by these asset counts unless those files are reported as assets.
 - When both `PwrSnap.dmg` and a versioned `.dmg` are present, do not collapse
   them unless the user asks for total DMG traffic.
+- `PwrSnap.Setup.exe` is the current stable Windows setup alias.
+  `PwrSnap-windows-x64-setup.exe` is an older stable alias and is reported in
+  the same stable Windows category. All other `.exe` assets are versioned
+  Windows setup builds, including the early `unsigned` releases.
 - Use UTC timestamps unless the user asks for a local timezone conversion.
 
 ## Common Commands

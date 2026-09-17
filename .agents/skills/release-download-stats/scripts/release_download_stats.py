@@ -13,6 +13,13 @@ from typing import Any
 
 DEFAULT_REPO = "pwrdrvr/PwrSnap"
 STABLE_DMG_ALIAS = "PwrSnap.dmg"
+STABLE_WINDOWS_SETUP_ALIASES = frozenset(
+    {
+        "PwrSnap.Setup.exe",
+        # Published before PwrSnap.Setup.exe became the stable Windows name.
+        "PwrSnap-windows-x64-setup.exe",
+    }
+)
 
 
 def run_gh(repo: str) -> list[dict[str, Any]]:
@@ -116,7 +123,7 @@ def classify_asset(name: str) -> str | None:
     if lowered.endswith(".dmg"):
         return "stable_dmg" if name == STABLE_DMG_ALIAS else "versioned_dmg"
     if lowered.endswith(".exe"):
-        return "windows_installer"
+        return "stable_windows_setup" if name in STABLE_WINDOWS_SETUP_ALIASES else "versioned_windows_setup"
     return None
 
 
@@ -170,10 +177,19 @@ def release_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         zip_downloads = sum(row["downloads"] for row in group if row["kind"] == "zip")
         stable_downloads = sum(row["downloads"] for row in group if row["kind"] == "stable_dmg")
         versioned_downloads = sum(row["downloads"] for row in group if row["kind"] == "versioned_dmg")
-        windows_downloads = sum(row["downloads"] for row in group if row["kind"] == "windows_installer")
+        stable_windows_downloads = sum(
+            row["downloads"] for row in group if row["kind"] == "stable_windows_setup"
+        )
+        versioned_windows_downloads = sum(
+            row["downloads"] for row in group if row["kind"] == "versioned_windows_setup"
+        )
         zip_bytes = sum(row["bytes"] for row in group if row["kind"] == "zip")
         dmg_bytes = sum(row["bytes"] for row in group if row["kind"] in {"stable_dmg", "versioned_dmg"})
-        windows_bytes = sum(row["bytes"] for row in group if row["kind"] == "windows_installer")
+        windows_bytes = sum(
+            row["bytes"]
+            for row in group
+            if row["kind"] in {"stable_windows_setup", "versioned_windows_setup"}
+        )
         first = group[0]
         summaries.append(
             {
@@ -186,7 +202,10 @@ def release_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "versioned_dmg_downloads": versioned_downloads,
                 "total_dmg_downloads": stable_downloads + versioned_downloads,
                 "dmg_gib": round(dmg_bytes / 1_073_741_824, 2),
-                "windows_downloads": windows_downloads,
+                "stable_windows_setup_downloads": stable_windows_downloads,
+                "versioned_windows_setup_downloads": versioned_windows_downloads,
+                "total_windows_setup_downloads": stable_windows_downloads
+                + versioned_windows_downloads,
                 "windows_gib": round(windows_bytes / 1_073_741_824, 2),
             }
         )
@@ -214,7 +233,12 @@ def print_markdown(repo: str, rows: list[dict[str, Any]], selected_count: int) -
     zip_dl, zip_bytes, zip_gib = sum_rows(rows, "zip")
     stable_dl, stable_bytes, stable_gib = sum_rows(rows, "stable_dmg")
     versioned_dl, versioned_bytes, versioned_gib = sum_rows(rows, "versioned_dmg")
-    windows_dl, windows_bytes, windows_gib = sum_rows(rows, "windows_installer")
+    stable_windows_dl, stable_windows_bytes, stable_windows_gib = sum_rows(
+        rows, "stable_windows_setup"
+    )
+    versioned_windows_dl, versioned_windows_bytes, versioned_windows_gib = sum_rows(
+        rows, "versioned_windows_setup"
+    )
     print("## Totals")
     print()
     print(
@@ -230,7 +254,24 @@ def print_markdown(repo: str, rows: list[dict[str, Any]], selected_count: int) -
                     stable_bytes + versioned_bytes,
                     round(stable_gib + versioned_gib, 2),
                 ],
-                ["Windows setup EXE assets", windows_dl, windows_bytes, windows_gib],
+                [
+                    "Stable Windows setup aliases",
+                    stable_windows_dl,
+                    stable_windows_bytes,
+                    stable_windows_gib,
+                ],
+                [
+                    "Versioned Windows setup EXE assets",
+                    versioned_windows_dl,
+                    versioned_windows_bytes,
+                    versioned_windows_gib,
+                ],
+                [
+                    "All Windows setup EXE assets",
+                    stable_windows_dl + versioned_windows_dl,
+                    stable_windows_bytes + versioned_windows_bytes,
+                    round(stable_windows_gib + versioned_windows_gib, 2),
+                ],
             ],
         )
     )
@@ -250,7 +291,9 @@ def print_markdown(repo: str, rows: list[dict[str, Any]], selected_count: int) -
                 "Versioned DMG dl",
                 "Total DMG dl",
                 "DMG GiB",
-                "Windows dl",
+                "Stable setup dl",
+                "Versioned setup dl",
+                "Total setup dl",
                 "Windows GiB",
             ],
             [
@@ -264,7 +307,9 @@ def print_markdown(repo: str, rows: list[dict[str, Any]], selected_count: int) -
                     row["versioned_dmg_downloads"],
                     row["total_dmg_downloads"],
                     row["dmg_gib"],
-                    row["windows_downloads"],
+                    row["stable_windows_setup_downloads"],
+                    row["versioned_windows_setup_downloads"],
+                    row["total_windows_setup_downloads"],
                     row["windows_gib"],
                 ]
                 for row in release_summary(rows)
@@ -316,8 +361,17 @@ def main() -> int:
                         "versioned_dmg": dict(
                             zip(["downloads", "bytes", "gib"], sum_rows(rows, "versioned_dmg"))
                         ),
-                        "windows_installer": dict(
-                            zip(["downloads", "bytes", "gib"], sum_rows(rows, "windows_installer"))
+                        "stable_windows_setup": dict(
+                            zip(
+                                ["downloads", "bytes", "gib"],
+                                sum_rows(rows, "stable_windows_setup"),
+                            )
+                        ),
+                        "versioned_windows_setup": dict(
+                            zip(
+                                ["downloads", "bytes", "gib"],
+                                sum_rows(rows, "versioned_windows_setup"),
+                            )
                         ),
                     },
                     "by_release": release_summary(rows),

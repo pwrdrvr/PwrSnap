@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.1.2 - 2026-09-17
+
+This security patch keeps every PwrSnap window on trusted app content.
+
+- App Security - Fixed PwrSnap to block untrusted navigations, pop-up windows,
+  and embedded page loads while opening approved product links only in the
+  default browser.
+
 ## v1.1.1 - 2026-09-15
 
 This patch makes update delivery more reliable after a stable release is

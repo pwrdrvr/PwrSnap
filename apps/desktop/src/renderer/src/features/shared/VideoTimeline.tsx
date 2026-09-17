@@ -124,17 +124,42 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
   }, []);
 
   // Measure the strip so px↔sec math and the frames request agree.
+  //
+  // A LAYOUT measure, deliberately — see AGENTS.md "Never mix a
+  // post-transform rect with a layout measure". In the Library the
+  // timeline mounts inside `.psl__focus`, whose 180ms `psl-focus-in`
+  // entrance animates `scale(0.985)` -> `scale(1)`, and
+  // `getBoundingClientRect()` is POST-TRANSFORM: a rect read inside
+  // that window comes back ~1.5% short (measured: 985 on a 1000px
+  // strip). A ResizeObserver reports LAYOUT boxes, so the finishing
+  // transform notifies nothing and the short value sticks for the life
+  // of the view — the out handle, the ticks and the playhead all park
+  // ~14px inside the right edge, and the right scrim dims that band
+  // even at FULL CLIP. It never self-heals, and it always disappears
+  // the moment you resize the window to look at it.
+  //
+  // It is the CONTENT box, not the border box, because that is the
+  // containing block the absolutely-positioned handles and scrims
+  // resolve `left` against (the strip has a 1px border and no
+  // padding). The border-box width put `outX` 2px past the inner right
+  // edge, where the strip's `overflow: hidden` clipped the last 2px of
+  // the out handle along with its rounded corner.
   useLayoutEffect(() => {
     const el = stripRef.current;
     if (el === null) return;
-    const post = (): void => {
-      const w = Math.round(el.getBoundingClientRect().width);
+    const post = (inlineSize: number): void => {
+      const w = Math.round(inlineSize);
       setWidth(w);
       onWidthChange?.(w);
     };
-    post();
+    post(el.clientWidth);
     if (typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(post);
+    const ro = new ResizeObserver((entries) => {
+      // `contentBoxSize` is the fractional, transform-independent
+      // equivalent of the rect width; `clientWidth` is the integer
+      // fallback for an engine that doesn't report it.
+      post(entries[0]?.contentBoxSize?.[0]?.inlineSize ?? el.clientWidth);
+    });
     ro.observe(el);
     return () => ro.disconnect();
   }, [onWidthChange]);

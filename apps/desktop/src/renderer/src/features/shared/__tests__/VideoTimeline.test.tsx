@@ -2,7 +2,9 @@
 // `commit=false` while moving and `commit=true` on release, the strip
 // body scrubs (seek), the scrim / labels follow the range, and the
 // compact variant hides playhead + waveform. jsdom has no layout, so
-// the strip's bounding rect is stubbed to 800 px.
+// the strip is stubbed to 800 px twice over: `clientWidth`, which is
+// what SIZES the handles / ticks / playhead, and the bounding rect,
+// which is what MAPS pointer coordinates.
 
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -18,8 +20,10 @@ beforeAll(() => {
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 let rectSpy: ReturnType<typeof vi.spyOn> | null = null;
+let clientWidthSpy: ReturnType<typeof vi.spyOn> | null = null;
 
 beforeEach(() => {
+  clientWidthSpy = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(800);
   rectSpy = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
     () =>
       ({
@@ -45,6 +49,8 @@ afterEach(() => {
   container = null;
   rectSpy?.mockRestore();
   rectSpy = null;
+  clientWidthSpy?.mockRestore();
+  clientWidthSpy = null;
 });
 
 function render(
@@ -134,6 +140,51 @@ describe("VideoTimeline", () => {
     act(() => inHandle.click());
 
     expect(parentClicks).toBe(0);
+  });
+
+  // Regression: the strip is SIZED from a layout measure, never from
+  // `getBoundingClientRect()`. In the Library the timeline mounts
+  // inside `.psl__focus`, whose `psl-focus-in` entrance animates
+  // `scale(0.985)` -> `scale(1)`, and the rect is post-transform — so
+  // a rect-sized strip came up ~1.5% short and, because a
+  // ResizeObserver only reports layout boxes, never corrected. The
+  // out handle, the ticks and the playhead sat ~14px inside the right
+  // edge and the right scrim dimmed that band at FULL CLIP.
+  //
+  // Standing in for the entrance transform: the rect reads 788 (800 x
+  // 0.985) while the layout box is still 800. Everything sized must
+  // follow the 800.
+  test("sizes off the layout box, not a transform-polluted rect", () => {
+    rectSpy!.mockImplementation(
+      () =>
+        ({
+          x: 0,
+          y: 0,
+          left: 0,
+          top: 0,
+          right: 788,
+          bottom: 80,
+          width: 788,
+          height: 80,
+          toJSON: () => ({})
+        }) as DOMRect
+    );
+    const widths: number[] = [];
+    const { el } = render({
+      range: { start: 0, end: 16 },
+      durationSec: 16,
+      onWidthChange: (w) => widths.push(w)
+    });
+
+    expect(widths.at(-1)).toBe(800);
+    // Full range: the out handle's own 8px sit just inside the right
+    // edge of the content box, and the right scrim collapses to zero.
+    const outHandle = el.querySelector('[data-testid="video-timeline-out"]') as HTMLElement;
+    const inHandle = el.querySelector('[data-testid="video-timeline-in"]') as HTMLElement;
+    expect(inHandle.style.left).toBe("0px");
+    expect(outHandle.style.left).toBe("792px");
+    const rightScrim = el.querySelector(".vtl__scrim.is-right") as HTMLElement;
+    expect(rightScrim.style.left).toBe("800px");
   });
 
   test("dragging a trim handle seeks the preview to the edge it lands on", () => {

@@ -211,10 +211,15 @@
   -webkit-user-select: none;
 }
 
+/* Ticks are positioned with the same px↔sec math as the handles, and
+   that math is against the strip's CONTENT box (see the measure in
+   VideoTimeline.tsx). This lane has no border of its own, so the 1px
+   inline margin is the strip's border width — without it the ruler is
+   2px wider than, and 1px left of, the space it is describing. */
 .vtl__ticks {
   position: relative;
   height: 12px;
-  margin: 0;
+  margin: 0 1px;
 }
 
 .vtl__tick {

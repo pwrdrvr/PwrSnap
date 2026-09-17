@@ -4,7 +4,7 @@
 
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { RecordingState } from "@pwrsnap/shared";
-import { RECORDING_FRAME_BAND_PX } from "../recording-frame-geometry";
+import { planRecordingFrame, RECORDING_FRAME_BAND_PX } from "../recording-frame-geometry";
 
 type WindowSpy = {
   id: number;
@@ -357,30 +357,62 @@ describe("recording frame lifecycle", () => {
     // only `bounds` would type-check (structural typing does not notice
     // a field that is never read at the call site) and would ship a
     // window AppKit slides down by the menu bar height.
-    const mod = await load();
-    mod.installRecordingFrame();
+    //
+    // `process.platform` is PINNED because this test goes through
+    // `recording-frame.ts`, which reads the real one — and the clamp is
+    // darwin-only by design. Without the pin this passes on a Mac and
+    // fails on the Linux and Windows lanes, which is exactly what it
+    // did. The geometry module itself takes `platform` as an argument
+    // precisely so its branches do not depend on the runner; a wiring
+    // test that reaches for `process.platform` has to re-establish that
+    // by hand.
+    const realPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    try {
+      const mod = await load();
+      mod.installRecordingFrame();
 
-    // Flush under the menu bar — the maximized-window case, and the one
-    // that was reported.
+      // Flush under the menu bar — the maximized-window case, and the
+      // one that was reported.
+      const display = mocks.displays[0];
+      const rect = { x: 120, y: display.workArea.y - display.bounds.y, w: 1200, h: 700 };
+      await emit({ ...REGION, rect, displayId: 1 });
+
+      const bounds = mocks.createdBounds[0];
+      expect(bounds).toBeDefined();
+      if (bounds === undefined) return;
+      expect(bounds.y).toBeGreaterThanOrEqual(display.workArea.y);
+      expect(bounds.y + bounds.height).toBeLessThanOrEqual(
+        display.workArea.y + display.workArea.height
+      );
+
+      // ...and the frame still lands on the rect: window origin + inset.
+      const [, payload] = mocks.created[0]?.webContents.send.mock.calls.at(-1) ?? [];
+      const inset = (payload as { inset: { left: number; top: number } }).inset;
+      expect(bounds.x + inset.left).toBe(display.bounds.x + rect.x);
+      expect(bounds.y + inset.top).toBe(display.bounds.y + rect.y);
+
+      mod.disposeRecordingFrame();
+    } finally {
+      Object.defineProperty(process, "platform", {
+        value: realPlatform,
+        configurable: true
+      });
+    }
+  });
+
+  test("off macOS the same rect keeps the full band — the clamp is darwin-only", () => {
+    // The other half of the split, asserted against the planner
+    // directly so it runs on every lane rather than only on Windows.
+    // There is no `constrainFrameRect` off macOS and the `outset`
+    // posture needs every pixel of band it can get.
     const display = mocks.displays[0];
     const rect = { x: 120, y: display.workArea.y - display.bounds.y, w: 1200, h: 700 };
-    await emit({ ...REGION, rect, displayId: 1 });
-
-    const bounds = mocks.createdBounds[0];
-    expect(bounds).toBeDefined();
-    if (bounds === undefined) return;
-    expect(bounds.y).toBeGreaterThanOrEqual(display.workArea.y);
-    expect(bounds.y + bounds.height).toBeLessThanOrEqual(
-      display.workArea.y + display.workArea.height
-    );
-
-    // ...and the frame still lands on the rect: window origin + inset.
-    const [, payload] = mocks.created[0]?.webContents.send.mock.calls.at(-1) ?? [];
-    const inset = (payload as { inset: { left: number; top: number } }).inset;
-    expect(bounds.x + inset.left).toBe(display.bounds.x + rect.x);
-    expect(bounds.y + inset.top).toBe(display.bounds.y + rect.y);
-
-    mod.disposeRecordingFrame();
+    for (const platform of ["win32", "linux"] as const) {
+      const plan = planRecordingFrame({ rect, display, platform });
+      expect(plan?.bounds.y, platform).toBe(display.bounds.y + rect.y - RECORDING_FRAME_BAND_PX);
+      expect(plan?.inset.top, platform).toBe(RECORDING_FRAME_BAND_PX);
+    }
   });
 
   test("draws nothing when the recorded display has gone away", async () => {

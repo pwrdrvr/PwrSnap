@@ -173,18 +173,37 @@ describe("VideoTimeline", () => {
     const { el } = render({
       range: { start: 0, end: 16 },
       durationSec: 16,
+      currentTime: 16,
       onWidthChange: (w) => widths.push(w)
     });
 
     expect(widths.at(-1)).toBe(800);
-    // Full range: the out handle's own 8px sit just inside the right
-    // edge of the content box, and the right scrim collapses to zero.
+
+    // All four consumers of `width`, because the bug hit all four and a
+    // partial fix would leave the ruler describing a different space
+    // than the strip. Each reads 788 (or a proportional short) when the
+    // measure regresses.
+    //
+    // 1. The out handle's own 8px sit just inside the right edge...
     const outHandle = el.querySelector('[data-testid="video-timeline-out"]') as HTMLElement;
-    const inHandle = el.querySelector('[data-testid="video-timeline-in"]') as HTMLElement;
-    expect(inHandle.style.left).toBe("0px");
     expect(outHandle.style.left).toBe("792px");
+    // 2. ...and the right scrim collapses to zero rather than dimming a
+    //    band of live filmstrip at FULL CLIP.
     const rightScrim = el.querySelector(".vtl__scrim.is-right") as HTMLElement;
     expect(rightScrim.style.left).toBe("800px");
+    // 3. The last tick lands ON the right edge, not short of it.
+    const ticks = el.querySelectorAll<HTMLElement>(".vtl__tick");
+    expect(ticks[ticks.length - 1]?.style.left).toBe("800px");
+    // 4. The playhead at the end of the clip reaches it.
+    const head = el.querySelector('[data-testid="video-timeline-playhead"]') as HTMLElement;
+    expect(head.style.transform).toBe("translateX(800px)");
+
+    // The control, and the reason this reads as "the RIGHT handle is
+    // broken": `inX` is `secToPx(0, …)`, which is 0 at every width
+    // including the wrong one. This assertion cannot fail — it is here
+    // to say so, not to cover anything.
+    const inHandle = el.querySelector('[data-testid="video-timeline-in"]') as HTMLElement;
+    expect(inHandle.style.left).toBe("0px");
   });
 
   test("dragging a trim handle seeks the preview to the edge it lands on", () => {

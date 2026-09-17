@@ -138,28 +138,33 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
   // even at FULL CLIP. It never self-heals, and it always disappears
   // the moment you resize the window to look at it.
   //
-  // It is the CONTENT box, not the border box, because that is the
-  // containing block the absolutely-positioned handles and scrims
-  // resolve `left` against (the strip has a 1px border and no
-  // padding). The border-box width put `outX` 2px past the inner right
-  // edge, where the strip's `overflow: hidden` clipped the last 2px of
-  // the out handle along with its rounded corner.
+  // `clientWidth` specifically, on BOTH paths. The handles, scrims and
+  // tooltip are absolutely positioned, and an absolutely-positioned
+  // child resolves `left` against its containing block's PADDING box —
+  // which is what `clientWidth` reports. Measured in Chromium on a
+  // `border: 1px; padding: 0 10px` box: a child at `left: 0` lands on
+  // the padding edge, `clientWidth` is 498 and
+  // `contentBoxSize[0].inlineSize` is 478. They agree here only because
+  // `.vtl__strip` has no padding, so reading the observer entry would
+  // make the mount measure and the resize measure disagree the moment
+  // one is added — right on open, wrong after the first resize. There
+  // is nothing to gain by it either: `Math.round` below discards the
+  // sub-pixel precision that is the entry's only advantage.
+  //
+  // The border-box width (what the rect reports) put `outX` 2px past
+  // the inner right edge, where the strip's `overflow: hidden` clipped
+  // the last 2px of the out handle along with its rounded corner.
   useLayoutEffect(() => {
     const el = stripRef.current;
     if (el === null) return;
-    const post = (inlineSize: number): void => {
-      const w = Math.round(inlineSize);
+    const post = (): void => {
+      const w = Math.round(el.clientWidth);
       setWidth(w);
       onWidthChange?.(w);
     };
-    post(el.clientWidth);
+    post();
     if (typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver((entries) => {
-      // `contentBoxSize` is the fractional, transform-independent
-      // equivalent of the rect width; `clientWidth` is the integer
-      // fallback for an engine that doesn't report it.
-      post(entries[0]?.contentBoxSize?.[0]?.inlineSize ?? el.clientWidth);
-    });
+    const ro = new ResizeObserver(post);
     ro.observe(el);
     return () => ro.disconnect();
   }, [onWidthChange]);

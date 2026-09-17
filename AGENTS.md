@@ -658,13 +658,22 @@ Rules:
   fractional, transform-independent equivalent of `rect.height` (block
   axis — height only under a horizontal writing mode).
 - **Sizing the coordinate space of absolutely-positioned children? That
-  space is the CONTENT box, not the border box** —
-  `contentBoxSize[0].inlineSize` or `clientWidth`. A bordered element fed
-  its own border-box width puts the far edge 1px per border past where
-  `left: <width>` lands, and under `overflow: hidden` the overshoot is
-  clipped rather than visible. That was a second, quieter defect in
-  `VideoTimeline`: the out handle rendered 6 of its 8px with its rounded
-  corner cut off, while the in handle at `left: 0` was flush.
+  space is the PADDING box** — `clientWidth` / `clientHeight`, and
+  nothing else. A bordered element fed its own border-box width puts the
+  far edge 1px per border past where `left: <width>` lands, and under
+  `overflow: hidden` the overshoot is clipped rather than visible. That
+  was a second, quieter defect in `VideoTimeline`: the out handle
+  rendered 6 of its 8px with its rounded corner cut off, while the in
+  handle at `left: 0` was flush.
+  - **`contentBoxSize` is the wrong box here**, and it is the one you
+    reach for after reading the rule above it. The content box excludes
+    padding; the containing block does not. Measured in Chromium on a
+    `border: 1px; padding: 0 10px` box: a child at `left: 0` lands on the
+    padding edge, `clientWidth` reads 498 and
+    `contentBoxSize[0].inlineSize` reads 478. Zero padding is the only
+    reason they ever look interchangeable, and a measure that is right at
+    mount and wrong after the first resize is worse than one that is
+    always wrong.
 - Mapping pointer coordinates? The post-transform rect is correct — but
   **a cached `DOMRect` is only valid until something moves**, and a
   ResizeObserver never tells you an element MOVED. Re-read at the moment

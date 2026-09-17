@@ -1281,6 +1281,64 @@ overflow rules) before landing on the actual platform behavior. If
 you find yourself debugging "popover is stuck at its initial size,"
 check for `setMinimumSize(0, 0)` first.
 
+## macOS MOVES a window placed outside the work area
+
+**Any window positioned to line up with something on screen — an
+overlay, a frame, a HUD pinned to a rect — must be planned against
+`display.workArea`, not `display.bounds`.** AppKit runs
+`-[NSWindow constrainFrameRect:toScreen:]` on show and slides any
+window whose frame falls outside `NSScreen.visibleFrame` (the menu bar
+at the top, the Dock at the bottom) back inside it. It is not a
+refusal and not an error; the window simply ends up somewhere else.
+
+Owner for the recording frame:
+[recording-frame-geometry.ts](apps/desktop/src/main/recording/recording-frame-geometry.ts)
+(`clampBox`). Pinned by
+[recording-frame-geometry.test.ts](apps/desktop/src/main/recording/__tests__/recording-frame-geometry.test.ts)
+§"the window server moves a window it does not like" and by
+[recording-frame.test.ts](apps/desktop/src/main/recording/__tests__/recording-frame.test.ts)
+§"the window is placed inside the recorded display's work area".
+
+This shipped: the tangerine recording frame drew ~26px below the window
+it was framing and hung off the bottom by the same amount, while the
+picker and the recorded MP4 were both correct.
+
+Four things that bite:
+
+- **The ORIGIN moves; the SIZE never does.** So the window slides and
+  keeps its height — which reads as "shifted down, hanging off the
+  bottom by the same amount", not as a sizing bug. Measured on macOS 26
+  / Electron 41.10.7 with a 30px menu bar: `y=0 → 30`, `y=4 → 30`,
+  `y=23 → 30`, `y=600 h=500 → y=491` (pulled up off the Dock),
+  `x=-50 → 0`.
+- **`getBounds()` right after the constructor returns what you ASKED
+  for.** The move lands on `show()`. Nothing in main can observe it, so
+  a read-back proves nothing — same invisibility as the
+  `setMinimumSize(0, 0)` clamp above, and for the same reason: the
+  main-side getter answers from the value we set, not from AppKit.
+- **AppKit only moves a window that FITS** in the work area. One taller
+  than it is left alone — so the bug reproduces on an ordinary window
+  and vanishes on a big one.
+- **No window level escapes it.** `floating`, `status`, `pop-up-menu`
+  and `screen-saver` were all measured; all four were moved. Covering
+  the menu bar needs `setSimpleFullScreen`, which is what
+  `region-selector.ts` uses and is far too heavy for a small overlay.
+
+The fix shape is "never ask": clamp to the work area so the window
+always fits, and let whatever geometry protocol the window has carry
+the difference. For the recording frame that protocol is
+`RecordingFrameLayout.inset`, **which is why those insets may be
+negative** — a rect edge no window can reach is drawn as an overhang
+and clipped, which keeps the frame ON the rect. Do not "tidy" a
+negative inset to zero; that is the original bug wearing a clean face.
+
+Windows and Linux have no equivalent, and the recording frame's
+`outset` posture depends on every pixel of band it can get, so the
+clamp is darwin-only and the platform split is pinned by test.
+
+Full measurements, the probe recipe, and the dead ends:
+[docs/solutions/2026-09-17-recording-frame-appkit-window-constraint.md](docs/solutions/2026-09-17-recording-frame-appkit-window-constraint.md).
+
 ## Tray popover hide — `setOpacity(0)` before `hide()` on macOS
 
 **The tray popover must never be hidden with a bare `hide()`, and never

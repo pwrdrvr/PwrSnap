@@ -93,6 +93,31 @@ describe("RecordingFrame", () => {
     expect(frame()?.dataset.phase).toBe("arming");
   });
 
+  test("a negative inset overhangs the window instead of being clamped to zero", async () => {
+    // A full-display macOS recording: the window covers the work area,
+    // so the rect's top edge is under the menu bar and its bottom edge
+    // is behind the Dock — places no window may be. Main describes that
+    // with negative insets and the box is drawn overhanging, for
+    // Chromium to clip. Clamping to 0 here would be the same defect
+    // main just stopped committing: the frame would sit on the work
+    // area instead of on the recorded rect.
+    await render();
+    await push({
+      inset: { left: 0, top: -30, right: 0, bottom: -89 },
+      mode: "straddle",
+      phase: "recording"
+    });
+
+    const el = frame();
+    expect(el?.style.getPropertyValue("--psrf-top")).toBe("-30px");
+    expect(el?.style.getPropertyValue("--psrf-bottom")).toBe("-89px");
+    // The short side the corner ticks are scaled from is the RECT's, so
+    // the overhang has to be added back, not dropped: 452 + 30 + 89.
+    expect(el?.style.getPropertyValue("--psrf-corner")).toBe(
+      `${Math.max(8, Math.min(17, Math.floor(Math.min(692, 452 + 30 + 89) / 4)))}px`
+    );
+  });
+
   test("an asymmetric layout is not normalized away", async () => {
     // A region flush against the left edge of the display: no band on
     // that side. Averaging or mirroring here would drag the frame off

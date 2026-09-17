@@ -75,10 +75,14 @@ export type RecordingFramePlan = {
  *
  * Three traps, all of which cost real debugging time:
  *
- *   - `getBounds()` right after the constructor returns what we ASKED
- *     for. The move happens on `show()`, and `recording-frame.ts`
- *     treats the constructor bounds as placed — so nothing in main can
- *     observe the difference. Do not "verify" this with a read-back.
+ *   - The move happens on `show()`, NOT on construction. `getBounds()`
+ *     right after the constructor still returns what we asked for, and
+ *     `recording-frame.ts` records exactly that as placed and never
+ *     reads back afterwards — so today nothing in main notices. A
+ *     read-back AFTER `show()` does see it (that is where the `30`s in
+ *     the table above came from), which makes comparing `getBounds()`
+ *     to `plan.bounds` once shown a cheap backstop worth adding if a
+ *     platform we do not model here starts moving windows too.
  *   - No window level escapes it. `floating`, `status`, `pop-up-menu`
  *     and `screen-saver` were all measured and all four were moved.
  *     (The region selector covers the menu bar via
@@ -146,10 +150,15 @@ export function planRecordingFrame(input: {
   const right = Math.min(clamp.x + clamp.width, globalX + rect.w + RECORDING_FRAME_BAND_PX);
   const bottom = Math.min(clamp.y + clamp.height, globalY + rect.h + RECORDING_FRAME_BAND_PX);
 
-  // Degenerate: the rect sits so far outside the clamp box that the
-  // window would have no area at all. Unreachable with any real menu
-  // bar, but a zero/negative-sized BrowserWindow is not something to
-  // discover at the window server.
+  // Degenerate: the rect does not intersect the clamp box at all, so
+  // the window would have zero or negative area. NOT hypothetical, and
+  // not about menu-bar size — `onDisplayMetricsChanged` re-plans this
+  // session's stored rect against the display's NEW bounds with no
+  // recording transition, so shrinking the recorded display mid-take
+  // (2560x1440 -> 1440x900) leaves a rect at x=2000 entirely off it.
+  // Before this guard that produced `width: -534` and handed it
+  // straight to `createRecordingFrameWindow`. Do not delete it as
+  // unreachable.
   if (right <= left || bottom <= top) return null;
 
   // Deliberately signed. A side whose band was clipped gives a smaller

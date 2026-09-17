@@ -1311,11 +1311,16 @@ Four things that bite:
   / Electron 41.10.7 with a 30px menu bar: `y=0 → 30`, `y=4 → 30`,
   `y=23 → 30`, `y=600 h=500 → y=491` (pulled up off the Dock),
   `x=-50 → 0`.
-- **`getBounds()` right after the constructor returns what you ASKED
-  for.** The move lands on `show()`. Nothing in main can observe it, so
-  a read-back proves nothing — same invisibility as the
-  `setMinimumSize(0, 0)` clamp above, and for the same reason: the
-  main-side getter answers from the value we set, not from AppKit.
+- **The move lands on `show()`, not on construction.** `getBounds()`
+  right after the constructor still returns what you asked for, and
+  `ensureWindow` records exactly that as placed and never reads back —
+  so today nothing in main notices, which is why this shipped. A
+  read-back AFTER `show()` DOES see the moved origin (it is where the
+  measurements above come from), so comparing `getBounds()` to the
+  planned bounds once shown is a cheap backstop for any platform this
+  clamp does not model. That is the one thing it has over the
+  `setMinimumSize(0, 0)` clamp above, where the main-side getter really
+  does answer from the value we set.
 - **AppKit only moves a window that FITS** in the work area. One taller
   than it is left alone — so the bug reproduces on an ordinary window
   and vanishes on a big one.

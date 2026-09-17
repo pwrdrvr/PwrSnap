@@ -111,11 +111,28 @@ describe("RecordingFrame", () => {
     const el = frame();
     expect(el?.style.getPropertyValue("--psrf-top")).toBe("-30px");
     expect(el?.style.getPropertyValue("--psrf-bottom")).toBe("-89px");
-    // The short side the corner ticks are scaled from is the RECT's, so
-    // the overhang has to be added back, not dropped: 452 + 30 + 89.
-    expect(el?.style.getPropertyValue("--psrf-corner")).toBe(
-      `${Math.max(8, Math.min(17, Math.floor(Math.min(692, 452 + 30 + 89) / 4)))}px`
-    );
+  });
+
+  test("the overhang counts toward the rect the corner ticks are scaled from", async () => {
+    // The sizes here are chosen so the two answers DIFFER. At the
+    // window's own 692x452 they do not: rect short side 571 and
+    // viewport 452 both floor past `CORNER_MAX_PX`, so an
+    // implementation that dropped the overhang would produce 17px
+    // either way and an assertion there would prove nothing.
+    //
+    // 92 wide x 40 tall with 10px of overhang top and bottom:
+    //   correct  -> rect short side min(92, 40 + 10 + 10) = 60 -> 15px
+    //   dropped  -> rect short side min(92, 40)           = 40 -> 10px
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 92 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 40 });
+    await render();
+    await push({
+      inset: { left: 0, top: -10, right: 0, bottom: -10 },
+      mode: "straddle",
+      phase: "recording"
+    });
+
+    expect(frame()?.style.getPropertyValue("--psrf-corner")).toBe("15px");
   });
 
   test("an asymmetric layout is not normalized away", async () => {

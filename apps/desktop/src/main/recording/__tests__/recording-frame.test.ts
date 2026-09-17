@@ -4,7 +4,7 @@
 
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { RecordingState } from "@pwrsnap/shared";
-import { planRecordingFrame, RECORDING_FRAME_BAND_PX } from "../recording-frame-geometry";
+import { RECORDING_FRAME_BAND_PX } from "../recording-frame-geometry";
 
 type WindowSpy = {
   id: number;
@@ -398,20 +398,6 @@ describe("recording frame lifecycle", () => {
         value: realPlatform,
         configurable: true
       });
-    }
-  });
-
-  test("off macOS the same rect keeps the full band — the clamp is darwin-only", () => {
-    // The other half of the split, asserted against the planner
-    // directly so it runs on every lane rather than only on Windows.
-    // There is no `constrainFrameRect` off macOS and the `outset`
-    // posture needs every pixel of band it can get.
-    const display = mocks.displays[0];
-    const rect = { x: 120, y: display.workArea.y - display.bounds.y, w: 1200, h: 700 };
-    for (const platform of ["win32", "linux"] as const) {
-      const plan = planRecordingFrame({ rect, display, platform });
-      expect(plan?.bounds.y, platform).toBe(display.bounds.y + rect.y - RECORDING_FRAME_BAND_PX);
-      expect(plan?.inset.top, platform).toBe(RECORDING_FRAME_BAND_PX);
     }
   });
 

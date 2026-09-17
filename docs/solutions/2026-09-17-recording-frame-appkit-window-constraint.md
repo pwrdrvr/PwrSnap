@@ -64,13 +64,18 @@ Three properties of the behavior are what made this expensive to find:
    and keeps its height — exactly "shifted down, hanging off the bottom
    by the same amount". A clamp that resized would have looked like a
    layout bug and been chased far sooner.
-2. **`getBounds()` right after the constructor returns what was
-   ASKED for.** The move lands on `show()`, and `ensureWindow` in
-   `recording-frame.ts` deliberately records the constructor bounds as
-   placed and never re-asserts them (a `setBounds` during construction
-   fights the implicit-minimum-size clamp — see AGENTS.md). So nothing
-   in the main process could observe the difference. A read-back
-   "verification" proves nothing here.
+2. **The move lands on `show()`, not on construction.** `getBounds()`
+   right after the constructor still returns what was asked for, and
+   `ensureWindow` in `recording-frame.ts` deliberately records the
+   constructor bounds as placed and never re-asserts them (a
+   `setBounds` during construction fights the implicit-minimum-size
+   clamp — see AGENTS.md). So nothing in the main process observed the
+   difference, which is why it shipped. Note the limit of that claim: a
+   read-back AFTER `show()` does see the moved origin — every `30` in
+   the table above is a post-`show()` `getBounds()`. Comparing
+   `getBounds()` to the planned bounds once shown would be a cheap
+   backstop for a clamp this fix does not model (a Linux WM strut, a
+   future macOS rule); it is not currently wired.
 3. **AppKit only moves a window that FITS.** A window taller than the
    work area is left where it was asked (`y=30 h=1000` → untouched).
    So the bug reproduces on an ordinary window and evaporates on a
@@ -88,6 +93,14 @@ mechanism and far too heavy for a small click-through overlay.
 to occupy — `display.workArea` on darwin, `display.bounds` everywhere
 else (there is no `constrainFrameRect` off macOS, and the `outset`
 posture needs every pixel of band it can get).
+
+It also adds a guard for a plan whose rect does not intersect the clamp
+box at all. That is not hypothetical and is not about menu-bar size:
+`onDisplayMetricsChanged` re-plans the session's stored rect against the
+display's new bounds, so shrinking the recorded display mid-take leaves
+a rect off it entirely — which before this change produced a negative
+`width` and handed it to `createRecordingFrameWindow`. A second,
+pre-existing bug, fixed incidentally.
 
 The window therefore always fits where AppKit is willing to put it, and
 never moves. The difference is carried by the insets, which are now

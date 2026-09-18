@@ -93,6 +93,48 @@ describe("RecordingFrame", () => {
     expect(frame()?.dataset.phase).toBe("arming");
   });
 
+  test("a negative inset overhangs the window instead of being clamped to zero", async () => {
+    // A full-display macOS recording: the window covers the work area,
+    // so the rect's top edge is under the menu bar and its bottom edge
+    // is behind the Dock — places no window may be. Main describes that
+    // with negative insets and the box is drawn overhanging, for
+    // Chromium to clip. Clamping to 0 here would be the same defect
+    // main just stopped committing: the frame would sit on the work
+    // area instead of on the recorded rect.
+    await render();
+    await push({
+      inset: { left: 0, top: -30, right: 0, bottom: -89 },
+      mode: "straddle",
+      phase: "recording"
+    });
+
+    const el = frame();
+    expect(el?.style.getPropertyValue("--psrf-top")).toBe("-30px");
+    expect(el?.style.getPropertyValue("--psrf-bottom")).toBe("-89px");
+  });
+
+  test("the overhang counts toward the rect the corner ticks are scaled from", async () => {
+    // The sizes here are chosen so the two answers DIFFER. At the
+    // window's own 692x452 they do not: rect short side 571 and
+    // viewport 452 both floor past `CORNER_MAX_PX`, so an
+    // implementation that dropped the overhang would produce 17px
+    // either way and an assertion there would prove nothing.
+    //
+    // 92 wide x 40 tall with 10px of overhang top and bottom:
+    //   correct  -> rect short side min(92, 40 + 10 + 10) = 60 -> 15px
+    //   dropped  -> rect short side min(92, 40)           = 40 -> 10px
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 92 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 40 });
+    await render();
+    await push({
+      inset: { left: 0, top: -10, right: 0, bottom: -10 },
+      mode: "straddle",
+      phase: "recording"
+    });
+
+    expect(frame()?.style.getPropertyValue("--psrf-corner")).toBe("15px");
+  });
+
   test("an asymmetric layout is not normalized away", async () => {
     // A region flush against the left edge of the display: no band on
     // that side. Averaging or mirroring here would drag the frame off

@@ -32,15 +32,77 @@ const MIN_RECT_PX = 16;
 
 export type RecordingFrameDisplay = {
   bounds: { x: number; y: number; width: number; height: number };
+  /**
+   * GLOBAL logical px with the menu bar / Dock / taskbar removed. On
+   * macOS this is `NSScreen.visibleFrame`, which is not advice: AppKit
+   * runs `-[NSWindow constrainFrameRect:toScreen:]` and MOVES any
+   * window whose frame falls outside it. See `clampBox` below.
+   */
+  workArea: { x: number; y: number; width: number; height: number };
 };
 
 export type RecordingFramePlan = {
   /** GLOBAL logical px, ready for `BrowserWindow.setBounds`. */
   bounds: { x: number; y: number; width: number; height: number };
-  /** CSS px from each window edge to the recorded rect. */
+  /**
+   * CSS px from each window edge to the recorded rect.
+   *
+   * **May be NEGATIVE**, and the renderer must keep honouring that: it
+   * means the rect extends past the window on that side, because the
+   * window was not allowed to reach it (a rect under the menu bar or
+   * behind the Dock). The frame's box is still described relative to
+   * the true rect and Chromium clips the overhang — which is the only
+   * honest answer, and much better than moving the frame off the rect
+   * to make every inset non-negative.
+   */
   inset: { left: number; top: number; right: number; bottom: number };
   mode: RecordingFrameMode;
 };
+
+/**
+ * The box the frame window may actually occupy, in GLOBAL logical px.
+ *
+ * **macOS: the work area, not the display.** `BrowserWindow` is not the
+ * last word on where a window goes. AppKit runs
+ * `-[NSWindow constrainFrameRect:toScreen:]` on show and MOVES any
+ * window whose frame falls outside `NSScreen.visibleFrame` — the menu
+ * bar at the top, the Dock at the bottom. It moves the ORIGIN and
+ * leaves the SIZE alone, so an overlay asked to sit 26px above a
+ * maximized window came back 26px below it, hanging off the bottom by
+ * the same amount. Measured on macOS 26 / Electron 41.10.7, 30px menu
+ * bar: `y=0 -> 30`, `y=4 -> 30`, `y=23 -> 30`, `y=600 h=500 -> y=491`
+ * (pulled up off the Dock), `x=-50 -> 0`.
+ *
+ * Three traps, all of which cost real debugging time:
+ *
+ *   - The move happens on `show()`, NOT on construction. `getBounds()`
+ *     right after the constructor still returns what we asked for, and
+ *     `recording-frame.ts` records exactly that as placed and never
+ *     reads back afterwards — so today nothing in main notices. A
+ *     read-back AFTER `show()` does see it (that is where the `30`s in
+ *     the table above came from), which makes comparing `getBounds()`
+ *     to `plan.bounds` once shown a cheap backstop worth adding if a
+ *     platform we do not model here starts moving windows too.
+ *   - No window level escapes it. `floating`, `status`, `pop-up-menu`
+ *     and `screen-saver` were all measured and all four were moved.
+ *     (The region selector covers the menu bar via
+ *     `setSimpleFullScreen`, which is a different mechanism entirely
+ *     and far too heavy for a small overlay.)
+ *   - AppKit only moves a window that FITS. One taller than the work
+ *     area is left where it was asked — so a bug here reproduces on a
+ *     small region and vanishes on a big one.
+ *
+ * **Everything else: the display.** There is no `constrainFrameRect`
+ * off macOS, and the `outset` posture depends on every pixel of band
+ * it can get — clamping to the work area there would cost glow around
+ * a region near the taskbar to dodge a constraint that does not exist.
+ */
+function clampBox(
+  display: RecordingFrameDisplay,
+  platform: NodeJS.Platform
+): { x: number; y: number; width: number; height: number } {
+  return platform === "darwin" ? display.workArea : display.bounds;
+}
 
 /**
  * `null` means **draw nothing** — either the rect is too small to frame,
@@ -76,22 +138,34 @@ export function planRecordingFrame(input: {
   const globalX = display.bounds.x + rect.x;
   const globalY = display.bounds.y + rect.y;
 
-  // Inflate by the band, then clamp to THIS display. Clamping matters
-  // twice over: a neighbouring display would otherwise get a stripe of
-  // orange along its edge, and on a single display the band would
-  // extend past the virtual screen and be dropped by the window server
-  // anyway.
-  const left = Math.max(display.bounds.x, globalX - RECORDING_FRAME_BAND_PX);
-  const top = Math.max(display.bounds.y, globalY - RECORDING_FRAME_BAND_PX);
-  const right = Math.min(
-    display.bounds.x + display.bounds.width,
-    globalX + rect.w + RECORDING_FRAME_BAND_PX
-  );
-  const bottom = Math.min(
-    display.bounds.y + display.bounds.height,
-    globalY + rect.h + RECORDING_FRAME_BAND_PX
-  );
+  // Inflate by the band, then clamp to the box this window is ALLOWED
+  // to occupy. Clamping matters three times over: a neighbouring
+  // display would otherwise get a stripe of orange along its edge, a
+  // band past the virtual screen is dropped by the window server
+  // anyway, and on macOS a window placed outside the work area is not
+  // refused — it is silently MOVED (see `clampBox`).
+  const clamp = clampBox(display, platform);
+  const left = Math.max(clamp.x, globalX - RECORDING_FRAME_BAND_PX);
+  const top = Math.max(clamp.y, globalY - RECORDING_FRAME_BAND_PX);
+  const right = Math.min(clamp.x + clamp.width, globalX + rect.w + RECORDING_FRAME_BAND_PX);
+  const bottom = Math.min(clamp.y + clamp.height, globalY + rect.h + RECORDING_FRAME_BAND_PX);
 
+  // Degenerate: the rect does not intersect the clamp box at all, so
+  // the window would have zero or negative area. NOT hypothetical, and
+  // not about menu-bar size — `onDisplayMetricsChanged` re-plans this
+  // session's stored rect against the display's NEW bounds with no
+  // recording transition, so shrinking the recorded display mid-take
+  // (2560x1440 -> 1440x900) leaves a rect at x=2000 entirely off it.
+  // Before this guard that produced `width: -534` and handed it
+  // straight to `createRecordingFrameWindow`. Do not delete it as
+  // unreachable.
+  if (right <= left || bottom <= top) return null;
+
+  // Deliberately signed. A side whose band was clipped gives a smaller
+  // inset; a side the window could not reach AT ALL gives a negative
+  // one, and the renderer draws the box overhanging the window and lets
+  // Chromium clip it. Both keep the drawn box ON the recorded rect,
+  // which is the property that matters — see `RecordingFramePlan`.
   const inset = {
     left: globalX - left,
     top: globalY - top,

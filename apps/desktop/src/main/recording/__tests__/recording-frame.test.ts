@@ -22,6 +22,34 @@ type WindowSpy = {
   reload: () => void;
 };
 
+/**
+ * A display shaped like a real one: `workArea` is `bounds` minus the
+ * menu bar and the Dock. It is not decoration — `planRecordingFrame`
+ * clamps the frame window to the work area on macOS, because AppKit
+ * moves any window placed outside it. A fixture carrying only `bounds`
+ * used to produce `undefined` there and no window at all.
+ */
+function fakeDisplay(
+  id: number,
+  bounds: { x: number; y: number; width: number; height: number }
+) {
+  // Literals, not module consts: `vi.hoisted` below runs before any
+  // `const` in this file is initialized, and only the function
+  // declaration is hoisted with it.
+  const menuBar = 30;
+  const dock = 89;
+  return {
+    id,
+    bounds,
+    workArea: {
+      x: bounds.x,
+      y: bounds.y + menuBar,
+      width: bounds.width,
+      height: bounds.height - menuBar - dock
+    }
+  };
+}
+
 const mocks = vi.hoisted(() => ({
   created: [] as WindowSpy[],
   createdBounds: [] as { x: number; y: number; width: number; height: number }[],
@@ -31,8 +59,8 @@ const mocks = vi.hoisted(() => ({
   /** What `getRecordingState()` answers when the display metrics change. */
   currentState: { phase: "idle" } as unknown,
   displays: [
-    { id: 1, bounds: { x: 0, y: 0, width: 1440, height: 900 } },
-    { id: 2, bounds: { x: 1440, y: 0, width: 1920, height: 1080 } }
+    fakeDisplay(1, { x: 0, y: 0, width: 1440, height: 900 }),
+    fakeDisplay(2, { x: 1440, y: 0, width: 1920, height: 1080 })
   ],
   showRegionFrame: true,
   readDomain: vi.fn()
@@ -163,8 +191,8 @@ beforeEach(() => {
   mocks.displayListeners.clear();
   mocks.currentState = { phase: "idle" };
   mocks.displays = [
-    { id: 1, bounds: { x: 0, y: 0, width: 1440, height: 900 } },
-    { id: 2, bounds: { x: 1440, y: 0, width: 1920, height: 1080 } }
+    fakeDisplay(1, { x: 0, y: 0, width: 1440, height: 900 }),
+    fakeDisplay(2, { x: 1440, y: 0, width: 1920, height: 1080 })
   ];
   mocks.showRegionFrame = true;
   mocks.readDomain.mockReset();
@@ -322,6 +350,57 @@ describe("recording frame lifecycle", () => {
     mod.disposeRecordingFrame();
   });
 
+  test("the window is placed inside the recorded display's work area", async () => {
+    // Pins the PRODUCTION wiring, not the planner's own contract: main
+    // has to hand `planRecordingFrame` the whole Electron `Display`, so
+    // that `workArea` reaches the clamp. A `planForRect` that forwarded
+    // only `bounds` would type-check (structural typing does not notice
+    // a field that is never read at the call site) and would ship a
+    // window AppKit slides down by the menu bar height.
+    //
+    // `process.platform` is PINNED because this test goes through
+    // `recording-frame.ts`, which reads the real one — and the clamp is
+    // darwin-only by design. Without the pin this passes on a Mac and
+    // fails on the Linux and Windows lanes, which is exactly what it
+    // did. The geometry module itself takes `platform` as an argument
+    // precisely so its branches do not depend on the runner; a wiring
+    // test that reaches for `process.platform` has to re-establish that
+    // by hand.
+    const realPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    try {
+      const mod = await load();
+      mod.installRecordingFrame();
+
+      // Flush under the menu bar — the maximized-window case, and the
+      // one that was reported.
+      const display = mocks.displays[0];
+      const rect = { x: 120, y: display.workArea.y - display.bounds.y, w: 1200, h: 700 };
+      await emit({ ...REGION, rect, displayId: 1 });
+
+      const bounds = mocks.createdBounds[0];
+      expect(bounds).toBeDefined();
+      if (bounds === undefined) return;
+      expect(bounds.y).toBeGreaterThanOrEqual(display.workArea.y);
+      expect(bounds.y + bounds.height).toBeLessThanOrEqual(
+        display.workArea.y + display.workArea.height
+      );
+
+      // ...and the frame still lands on the rect: window origin + inset.
+      const [, payload] = mocks.created[0]?.webContents.send.mock.calls.at(-1) ?? [];
+      const inset = (payload as { inset: { left: number; top: number } }).inset;
+      expect(bounds.x + inset.left).toBe(display.bounds.x + rect.x);
+      expect(bounds.y + inset.top).toBe(display.bounds.y + rect.y);
+
+      mod.disposeRecordingFrame();
+    } finally {
+      Object.defineProperty(process, "platform", {
+        value: realPlatform,
+        configurable: true
+      });
+    }
+  });
+
   test("draws nothing when the recorded display has gone away", async () => {
     const mod = await load();
     mod.installRecordingFrame();
@@ -353,7 +432,7 @@ describe("recording frame lifecycle", () => {
     await emit({ phase: "preflight", sessionId: "s1", rect: REGION.rect, displayId: 1 });
     expect(mod.getRecordingFrameWindowId()).not.toBeNull();
 
-    mocks.displays = [{ id: 2, bounds: { x: 1440, y: 0, width: 1920, height: 1080 } }];
+    mocks.displays = [fakeDisplay(2, { x: 1440, y: 0, width: 1920, height: 1080 })];
     await emit(REGION);
     expect(mod.getRecordingFrameWindowId()).toBeNull();
 
@@ -416,8 +495,8 @@ describe("recording frame lifecycle", () => {
     // The display's origin moved; the recorded rect's global position
     // moved with it, and no recording transition says so.
     mocks.displays = [
-      { id: 1, bounds: { x: 0, y: 0, width: 1440, height: 900 } },
-      { id: 2, bounds: { x: 1600, y: 0, width: 1920, height: 1080 } }
+      fakeDisplay(1, { x: 0, y: 0, width: 1440, height: 900 }),
+      fakeDisplay(2, { x: 1600, y: 0, width: 1920, height: 1080 })
     ];
     mocks.displayListeners.get("display-metrics-changed")?.();
     await mod.whenRecordingFrameIdle();

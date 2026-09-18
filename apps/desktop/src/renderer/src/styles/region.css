@@ -331,20 +331,27 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
 
 /* Per-pick outline. Solid accent, matching a window snap, so a picked
    window looks like a window snap that stuck. */
-.region-pick {
+.region-pick,
+.region-pick-hover {
   position: fixed;
+  pointer-events: none;
+}
+
+/* The outline + tint live on a child so `clip-path` (set inline where a
+   picked window in front covers part of this one) cuts the frame and
+   never the badge. */
+.region-pick__frame {
+  position: absolute;
+  inset: 0;
   border: 2px solid var(--accent);
   background: rgba(255, 138, 31, 0.08);
-  pointer-events: none;
 }
 
 /* Next-click preview: the un-picked window under the cursor. Dashed +
    dimmer so it reads as "not yet part of the selection". */
-.region-pick-hover {
-  position: fixed;
+.region-pick-hover .region-pick__frame {
   border: 2px dashed color-mix(in srgb, var(--accent) 70%, transparent);
   background: rgba(255, 138, 31, 0.04);
-  pointer-events: none;
 }
 
 /* Ordinal badge — matches the HUD chip number, so the user can tell

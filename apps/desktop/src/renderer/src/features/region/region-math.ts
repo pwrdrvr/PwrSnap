@@ -116,3 +116,85 @@ export function exceedsDragThreshold(dx: number, dy: number): boolean {
 export function rectIsMeaningful(rect: Rect): boolean {
   return rect.w * rect.h >= MIN_RECT_AREA_PX;
 }
+
+/**
+ * `base` minus the union of `cutters`, as disjoint rects. Cutters that
+ * only touch `base` along an edge cut nothing. Empty result = `base` is
+ * fully covered.
+ *
+ * Each cutter splits every piece it overlaps into up to four bands —
+ * full-width above and below the overlap, then left and right of it
+ * within the overlap's rows — so the pieces never overlap each other.
+ */
+export function subtractRects(base: Rect, cutters: readonly Rect[]): Rect[] {
+  let pieces: Rect[] = base.w > 0 && base.h > 0 ? [base] : [];
+  for (const c of cutters) {
+    const next: Rect[] = [];
+    for (const p of pieces) {
+      const left = Math.max(p.x, c.x);
+      const right = Math.min(p.x + p.w, c.x + c.w);
+      const top = Math.max(p.y, c.y);
+      const bottom = Math.min(p.y + p.h, c.y + c.h);
+      if (left >= right || top >= bottom) {
+        next.push(p);
+        continue;
+      }
+      if (top > p.y) next.push({ x: p.x, y: p.y, w: p.w, h: top - p.y });
+      if (bottom < p.y + p.h) {
+        next.push({ x: p.x, y: bottom, w: p.w, h: p.y + p.h - bottom });
+      }
+      if (left > p.x) next.push({ x: p.x, y: top, w: left - p.x, h: bottom - top });
+      if (right < p.x + p.w) {
+        next.push({ x: right, y: top, w: p.x + p.w - right, h: bottom - top });
+      }
+    }
+    pieces = next;
+  }
+  return pieces;
+}
+
+/**
+ * How to draw one window frame when other frames sit in front of it.
+ *
+ *   - `clipPath` — CSS `clip-path` for the frame, in the frame's own
+ *     coordinates. `null` when nothing in front overlaps it (draw it
+ *     whole), `"hidden"` when it is covered entirely (skip it).
+ *   - `badge` — where the ordinal badge's corner goes, relative to the
+ *     frame's origin. The frame's own corner unless that corner is
+ *     covered; then the top-left of the highest visible piece, so the
+ *     number stays next to an edge that belongs to it.
+ */
+export type OccludedFrame = {
+  clipPath: string | null | "hidden";
+  badge: Point;
+};
+
+export function occludedFrame(base: Rect, inFront: readonly Rect[]): OccludedFrame {
+  const pieces = subtractRects(base, inFront);
+  const origin: Point = { x: 0, y: 0 };
+  if (pieces.length === 0) return { clipPath: "hidden", badge: origin };
+  const only = pieces.length === 1 ? pieces[0] : undefined;
+  if (
+    only !== undefined &&
+    only.x === base.x &&
+    only.y === base.y &&
+    only.w === base.w &&
+    only.h === base.h
+  ) {
+    return { clipPath: null, badge: origin };
+  }
+  // Nonzero fill over same-winding, disjoint subpaths is their union.
+  const n = (v: number): string => String(Math.round(v * 1000) / 1000);
+  const d = pieces
+    .map(
+      (p) => `M${n(p.x - base.x)} ${n(p.y - base.y)}h${n(p.w)}v${n(p.h)}h${n(-p.w)}Z`
+    )
+    .join("");
+  const cornerVisible = pieces.some((p) => p.x === base.x && p.y === base.y);
+  let badge = origin;
+  if (!cornerVisible) {
+    const top = pieces.reduce((a, b) => (b.y < a.y || (b.y === a.y && b.x < a.x) ? b : a));
+    badge = { x: top.x - base.x, y: top.y - base.y };
+  }
+  return { clipPath: `path("${d}")`, badge };
+}

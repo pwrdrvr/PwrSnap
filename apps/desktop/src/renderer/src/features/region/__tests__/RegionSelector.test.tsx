@@ -1417,6 +1417,64 @@ describe("U5 — multi-window pick set", () => {
     expect(holes).toEqual(["200", "400"]);
   });
 
+  test("a picked window's frame is clipped where a picked window in front covers it", async () => {
+    // WIN (z 0, 200,150 400x300) sits in front of WIN_OVERLAP (z 3,
+    // 400,250 300x200). With both picked, the overlap is already in the
+    // selection through WIN, so WIN_OVERLAP's outline must not run
+    // across it — only the strip past WIN's right edge keeps a frame.
+    await mountScene();
+    await clickWindow(WIN, { metaKey: true });
+    await mouseMove(650, 350);
+    await mouseDown(650, 350);
+    await mouseUp(650, 350);
+    const byId = (id: number): HTMLElement => {
+      const el = pickBoxes().find((e) => e.dataset.windowId === String(id));
+      if (el === undefined) throw new Error(`no pick box for ${id}`);
+      return el;
+    };
+    const frameOf = (el: HTMLElement): HTMLElement | null => el.querySelector(".region-pick__frame");
+
+    const front = byId(WIN.windowId);
+    expect(front.dataset.occluded).toBeUndefined();
+    expect(frameOf(front)?.style.clipPath).toBe("");
+
+    const back = byId(WIN_OVERLAP.windowId);
+    expect(back.dataset.occluded).toBe("partial");
+    // Frame-local: x 200..300 (window x 600..700), full height.
+    expect(frameOf(back)?.style.clipPath).toBe('path("M200 0h100v200h-100Z")');
+    // Its top-left corner is under WIN, so the badge follows the edge
+    // it still has instead of floating inside WIN.
+    expect(back.querySelector<HTMLElement>(".region-pick__badge")?.style.transform).toBe(
+      "translate(200px, 0px)"
+    );
+
+    // The occluded frame is geometry only — the mask still keeps the
+    // whole extent, which is what the capture keeps.
+    expect(maskHoles()).toBe(2);
+  });
+
+  test("the add preview is clipped under picks in front of it; unpicked windows clip nothing", async () => {
+    await mountScene();
+    await clickWindow(WIN, { metaKey: true });
+    await mouseMove(650, 350); // over WIN_OVERLAP, past WIN's right edge
+    const hover = container?.querySelector<HTMLElement>(".region-pick-hover");
+    expect(hover?.dataset.occluded).toBe("partial");
+    expect(hover?.querySelector<HTMLElement>(".region-pick__frame")?.style.clipPath).toBe(
+      'path("M200 0h100v200h-100Z")'
+    );
+
+    // Picked alone, WIN_OVERLAP is not clipped by WIN: WIN is unpicked,
+    // so whatever it composites over the extent is in the capture and
+    // the edge across it is honest.
+    await clickWindow(WIN); // drop WIN
+    await mouseDown(650, 350);
+    await mouseUp(650, 350);
+    const boxes = pickBoxes();
+    expect(boxes).toHaveLength(1);
+    expect(boxes[0]?.dataset.windowId).toBe(String(WIN_OVERLAP.windowId));
+    expect(boxes[0]?.dataset.occluded).toBeUndefined();
+  });
+
   test("HUD: the segmented control sets the mode and a chip removes its pick", async () => {
     await mountScene();
     await clickWindow(WIN, { metaKey: true });

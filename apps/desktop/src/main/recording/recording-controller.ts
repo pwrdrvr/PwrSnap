@@ -744,16 +744,24 @@ export function applyRecordingStateToController(state: RecordingState): void {
       // first recorded frame sit ~3s of countdown, and the only signal
       // from inside it was a bare Dock-reclaim line.
       //
-      // `focusedWindowTitle: null` is the tell. macOS hands no key
-      // window to an inactive app, and an inactive app's `moveTop()`
-      // orders the window only among our OWN windows — so the loop
-      // above can run every tick, report a healthy overlap set, and
-      // change nothing the user can see.
+      // `focusedIsOverlapping: false` is the tell: none of the windows
+      // being recorded holds key. An inactive app's `moveTop()` orders
+      // the window only among our OWN windows, so the loop above can
+      // run every tick, report a healthy overlap set, and change
+      // nothing the user can see.
+      //
+      // The title alone cannot answer that. The Library is titled
+      // "PwrSnap", and so may be any other window of ours — including
+      // the focus-sink, a non-activating panel that can hold key while
+      // PwrSnap is INACTIVE. `focusedWindowTitle` stays for the case
+      // where the key window is something else of ours.
+      const focused = BrowserWindow.getFocusedWindow();
       log.debug("recording lead-in z-order tick", {
         phase: state.phase,
         overlappingCount: ourOverlapping.length,
         overlappingTitles: ourOverlapping.map((other) => other.getTitle()),
-        focusedWindowTitle: BrowserWindow.getFocusedWindow()?.getTitle() ?? null,
+        focusedWindowTitle: focused?.getTitle() ?? null,
+        focusedIsOverlapping: focused !== null && ourOverlapping.includes(focused),
         dockVisible: app.dock?.isVisible() ?? null
       });
       break;

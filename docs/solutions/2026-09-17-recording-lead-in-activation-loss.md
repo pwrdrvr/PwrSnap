@@ -47,9 +47,12 @@ Instrumented take, all times relative to the commit-time raise at t=0
 Read the two columns separately and the whole thing falls out:
 
 1. By +94ms the Dock tile is already stripped — AppKit has demoted us to
-   Accessory — but we are **still active**. An Accessory app can hold
-   activation; the two are not the same bit.
-2. Between +101ms and +125ms AppKit finishes the job and deactivates us.
+   Accessory — but a window titled `PwrSnap` still holds key. That is
+   most likely the Library, with the app still active (an Accessory app
+   can hold activation; the two are not the same bit) — but see the
+   caveat below: the title cannot rule out the focus-sink.
+2. Between +101ms and +125ms the last PwrSnap window loses key; by the
+   reclaim nothing of ours is key and another app is frontmost.
 3. At +125ms the spread reclaim fires and re-asserts Regular policy. The
    Dock tile comes back (`dockVisible=true` from +1.1s on). **Activation
    does not**, and nothing else asks for it.
@@ -74,11 +77,11 @@ follows the second.
 `scheduleLeadInReraise` in
 [record-from-selection.ts](../../apps/desktop/src/main/recording/record-from-selection.ts):
 a spread of deferred checks alongside the Dock reclaim's, each of which
-re-activates **only if activation is actually gone**. Pinned by
+re-activates **only if the recorded window has lost key**. Pinned by
 `record-from-selection-overlap.test.ts` §"holding z-order through the
 lead-in".
 
-Three scoping decisions, all load-bearing, all mutation-tested:
+The scoping decisions, all load-bearing, all mutation-tested:
 
 - **Only the raise branch schedules it.** Case two — the user snapped to
   another app's window — must never pull PwrSnap forward. The
@@ -93,16 +96,39 @@ Three scoping decisions, all load-bearing, all mutation-tested:
   all inside the rect and all in the file. See AGENTS.md "Mid-take UI".
   The same guard is what stops an Escape-cancelled countdown from
   yanking us forward a second later, since the phase leaves the set.
-- **Only when `BrowserWindow.getFocusedWindow() === null`.** A key window
-  exists only while the app is active, so this is the free "still
-  frontmost" probe. The common case spawns no helper process at all, and
-  the later attempts stop once the first one wins.
+- **macOS only.** The demotion is AppKit's; on Windows and Linux
+  `activateApp` is a no-op, so all that would remain is `focus()`ing the
+  Library over whatever the user clicked.
+- **Only when none of the windows we raised holds key.** The first
+  version asked `getFocusedWindow() !== null` instead, on the theory
+  that a key window implies an active app. It does not here: the
+  focus-sink is a focusable **non-activating** panel and can hold key
+  while another app is frontmost — which would have skipped the
+  re-raise in exactly the state it exists for. `win.isFocused()` on the
+  recorded window asks the real question, and the common case still
+  spawns no helper.
+- **Each timer belongs to its take, and checks the phase on both sides
+  of the helper.** A selection-generation counter stops a cancelled
+  take's timers acting on the next one (a quick case-two commit), and
+  the phase is checked again after `activateApp` returns, because the
+  helper can take up to its 1.5s timeout.
+- **The spread stops at 1s on purpose.** Activation happens inside the
+  helper, where nothing can recall it; ending at 1s keeps a stalled
+  helper's activation (≤2.5s) ahead of `starting`. A later demotion is
+  not covered — none was measured — and covering one means cutting the
+  helper timeout in step.
 
 ## If you are chasing this again
 
 - **`dockVisibleAfter=true` proves nothing about z-order.** It was in the
   log from the start and is what made the first hypothesis look wrong-ish
-  but survivable. Read `focusedWindowTitle` instead.
+  but survivable. Read `focusedIsOverlapping` / `focusedIsLibrary`
+  instead.
+- **A focused-window TITLE proves little.** The Library is titled
+  `PwrSnap`, and the focus-sink — which can be key in an inactive app —
+  may fall back to the same app name. The +94ms reading above predates
+  the `focusedIs*` fields and cannot tell the two apart; the fix does
+  not depend on which it was.
 - **A healthy-looking overlap set proves nothing either.** Every tick in
   the failing take reported the right windows.
 - The demotion is not unique to recording — the first reclaim of any
@@ -111,7 +137,7 @@ Three scoping decisions, all load-bearing, all mutation-tested:
   because nothing is being recorded yet.
 - The instrumentation that settled it is still in place:
   `recording lead-in z-order tick` (debug, in `recording-controller.ts`)
-  and the `focusedWindowTitle` field on the reclaim line (info, in
-  `window.ts`). The reclaim line is deliberately **info**, so a field
+  and the `focusedWindowTitle` / `focusedIsLibrary` fields on the
+  reclaim line (info, in `window.ts`). The reclaim line is deliberately **info**, so a field
   report distinguishes the two failure modes without the user having to
   turn debug collection on first.

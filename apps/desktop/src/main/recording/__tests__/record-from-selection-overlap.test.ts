@@ -30,6 +30,7 @@ type WindowSpy = {
   show: ReturnType<typeof vi.fn>;
   moveTop: ReturnType<typeof vi.fn>;
   focus: ReturnType<typeof vi.fn>;
+  isFocused: ReturnType<typeof vi.fn>;
   getTitle: () => string;
 };
 const overlapping: WindowSpy[] = [];
@@ -42,12 +43,15 @@ function makeWindowSpy(): WindowSpy {
     show: vi.fn(),
     moveTop: vi.fn(),
     focus: vi.fn(),
+    isFocused: vi.fn(() => false),
     getTitle: () => "PwrSnap"
   };
 }
 
-/** What `BrowserWindow.getFocusedWindow()` reports. `null` is macOS's
- *  "this app is not active" — no key window exists. */
+/** What `BrowserWindow.getFocusedWindow()` reports. The code under test
+ *  must NOT consult it — see the re-activation test, which makes it
+ *  non-null (the focus-sink holding key in an inactive app) precisely so
+ *  that a regression to that probe fails. */
 let focusedWindow: unknown = null;
 
 /** Case one (snap to one of OUR windows) unless a test says otherwise. */
@@ -380,26 +384,37 @@ describe("startRecordingFromSelection — holding z-order through the lead-in", 
     await running;
   }
 
+  const originalPlatform = process.platform;
+  const COUNTDOWN = { phase: "countdown" } as unknown as RecordingState;
+
   beforeEach(() => {
     vi.useFakeTimers();
+    // The re-raise is macOS-only. Pin it so these run the same on the
+    // Linux and Windows CI lanes.
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
   });
 
   test("re-activates when the lead-in demotion takes our activation away", async () => {
     const win = makeWindowSpy();
     overlapping.push(win);
-    recordingState = { phase: "countdown", sessionId: "s", secondsRemaining: 2, rect: { x: 0, y: 0, w: 600, h: 400 }, displayId: SKEWED.id } as unknown as RecordingState;
+    recordingState = COUNTDOWN;
 
     await commitAndSettle();
     const activationsAtCommit = activateApp.mock.calls.length;
     const moveTopsAtCommit = win.moveTop.mock.calls.length;
     expect(activationsAtCommit).toBe(1);
 
-    // No key window — macOS's "this app is not active".
-    focusedWindow = null;
+    // The recorded window has lost key — while ANOTHER window of ours
+    // holds it. That is the focus-sink: a non-activating panel that can
+    // be key while PwrSnap is inactive. "Some window of ours is key"
+    // must not read as "we are still frontmost".
+    win.isFocused.mockReturnValue(false);
+    focusedWindow = makeWindowSpy();
     await vi.advanceTimersByTimeAsync(RERAISE_WINDOW_MS);
 
     expect(activateApp.mock.calls.length).toBeGreaterThan(activationsAtCommit);
@@ -410,15 +425,15 @@ describe("startRecordingFromSelection — holding z-order through the lead-in", 
   test("stays out of the way while PwrSnap is still frontmost", async () => {
     const win = makeWindowSpy();
     overlapping.push(win);
-    recordingState = { phase: "countdown" } as unknown as RecordingState;
+    recordingState = COUNTDOWN;
 
     await commitAndSettle();
     const activationsAtCommit = activateApp.mock.calls.length;
 
-    // A key window exists, so the app is active and the commit-time
-    // raise is still holding. Re-activating here would spawn a helper
-    // process four times for nothing.
-    focusedWindow = makeWindowSpy();
+    // The recorded window itself is key, so the commit-time raise is
+    // still holding. Re-activating here would spawn a helper process
+    // four times for nothing.
+    win.isFocused.mockReturnValue(true);
     await vi.advanceTimersByTimeAsync(RERAISE_WINDOW_MS);
 
     expect(activateApp.mock.calls.length).toBe(activationsAtCommit);
@@ -436,7 +451,6 @@ describe("startRecordingFromSelection — holding z-order through the lead-in", 
     // inactive, caret vanishing — all inside the rect and all in the
     // file. The lead-in is the only window where this recovery is legal.
     recordingState = { phase: "recording" } as unknown as RecordingState;
-    focusedWindow = null;
     await vi.advanceTimersByTimeAsync(RERAISE_WINDOW_MS);
 
     expect(activateApp.mock.calls.length).toBe(activationsAtCommit);
@@ -451,7 +465,6 @@ describe("startRecordingFromSelection — holding z-order through the lead-in", 
 
     // Escape during the countdown returns the state machine to idle.
     recordingState = { phase: "idle" };
-    focusedWindow = null;
     await vi.advanceTimersByTimeAsync(RERAISE_WINDOW_MS);
 
     expect(activateApp.mock.calls.length).toBe(activationsAtCommit);
@@ -464,14 +477,76 @@ describe("startRecordingFromSelection — holding z-order through the lead-in", 
     // nothing to re-raise.
     shouldRaise = false;
     overlapping.push(makeWindowSpy());
-    recordingState = { phase: "countdown" } as unknown as RecordingState;
+    recordingState = COUNTDOWN;
 
     await commitAndSettle();
     expect(activateApp).not.toHaveBeenCalled();
 
-    focusedWindow = null;
     await vi.advanceTimersByTimeAsync(RERAISE_WINDOW_MS);
 
     expect(activateApp).not.toHaveBeenCalled();
+  });
+
+  test("a leftover timer never acts on the next take", async () => {
+    // Take one snaps to the Library, so re-raise timers are pending.
+    overlapping.push(makeWindowSpy());
+    recordingState = COUNTDOWN;
+    await commitAndSettle();
+    expect(activateApp).toHaveBeenCalledTimes(1);
+
+    // Escape, then a quick second take that snaps to ANOTHER app's
+    // window — committed inside take one's first second, before any of
+    // its timers fire. Take two's lead-in reads `countdown` just like
+    // take one's would have, so only the take identity tells them apart.
+    shouldRaise = false;
+    await commitAndSettle();
+    await vi.advanceTimersByTimeAsync(RERAISE_WINDOW_MS);
+
+    expect(activateApp).toHaveBeenCalledTimes(1);
+  });
+
+  test("a cancel while the helper is running orders nothing front", async () => {
+    const win = makeWindowSpy();
+    overlapping.push(win);
+    recordingState = COUNTDOWN;
+    await commitAndSettle();
+    const moveTopsAtCommit = win.moveTop.mock.calls.length;
+    const focusesAtCommit = win.focus.mock.calls.length;
+
+    // The helper can run up to its 1.5s timeout. Hold it open.
+    let release!: () => void;
+    activateApp.mockImplementationOnce(
+      () => new Promise<undefined>((resolve) => { release = () => resolve(undefined); })
+    );
+    await vi.advanceTimersByTimeAsync(120);
+    expect(activateApp).toHaveBeenCalledTimes(2);
+
+    // The user presses Escape before the helper comes back. The same
+    // check stands between a take going live and a mid-take activation.
+    recordingState = { phase: "idle" };
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(win.moveTop.mock.calls.length).toBe(moveTopsAtCommit);
+    expect(win.focus.mock.calls.length).toBe(focusesAtCommit);
+  });
+
+  test("does nothing off macOS, where there is no demotion to recover from", async () => {
+    // On Windows and Linux `activateApp` is a no-op, so without the gate
+    // this would repeatedly focus() the Library over whatever the user
+    // clicked during the countdown.
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    const win = makeWindowSpy();
+    overlapping.push(win);
+    recordingState = COUNTDOWN;
+    await commitAndSettle();
+    const moveTopsAtCommit = win.moveTop.mock.calls.length;
+    const focusesAtCommit = win.focus.mock.calls.length;
+
+    await vi.advanceTimersByTimeAsync(RERAISE_WINDOW_MS);
+
+    expect(activateApp).toHaveBeenCalledTimes(1);
+    expect(win.moveTop.mock.calls.length).toBe(moveTopsAtCommit);
+    expect(win.focus.mock.calls.length).toBe(focusesAtCommit);
   });
 });

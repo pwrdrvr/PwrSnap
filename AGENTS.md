@@ -1733,15 +1733,21 @@ another app and got recorded that way.
   `applyRecordingStateToController`'s per-tick re-raise loop runs, logs a
   correct overlap set, and cannot lift the window above the active app.
   A healthy-looking tick log is not evidence.
-- **`BrowserWindow.getFocusedWindow() === null` is the app-active
-  probe** — a key window exists only while the app is active. Both
-  diagnostic log lines (`recording lead-in z-order tick` at debug,
-  the reclaim line at info) carry it for this reason.
-- **Re-activation is scoped to the raise branch and to the lead-in
-  phases** (`scheduleLeadInReraise` in `record-from-selection.ts`).
-  Widening either is a bug: case two must leave the user's app
-  frontmost, and activating mid-take records the recorded app losing
-  focus (see "Mid-take UI" above). The recording-controller's tick
+- **`getFocusedWindow() !== null` does NOT mean PwrSnap is active.**
+  The focus-sink is a focusable non-activating panel and can hold key
+  while another app is frontmost — the exact state this bug lives in.
+  Ask the question you mean: is the window you want on top key
+  (`win.isFocused()`)? Both diagnostic lines log which window is key
+  AND whether it is the one that matters (`focusedIsOverlapping` on
+  the debug `recording lead-in z-order tick`, `focusedIsLibrary` on the
+  info-level reclaim line), because the Library and the sink can share
+  a title.
+- **Re-activation is scoped: macOS, the raise branch's own take, and
+  the lead-in phases** (`scheduleLeadInReraise` in
+  `record-from-selection.ts`). Widening any of them is a bug: case two
+  must leave the user's app frontmost, activating mid-take records the
+  recorded app losing focus (see "Mid-take UI" above), and on Windows
+  there is no demotion to recover from. The recording-controller's tick
   cannot host this — it cannot tell case one from case two.
 
 Measurements, the two hypotheses it replaced, and the log recipe:

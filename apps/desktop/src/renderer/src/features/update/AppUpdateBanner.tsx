@@ -33,6 +33,7 @@
 
 import { useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { appUpdateNotice } from "./app-update-notice";
+import { ReleaseNotesLink } from "./ReleaseNotesLink";
 import { useAppUpdateInstall } from "./use-app-update";
 import { useUserUpdateCheck } from "./use-user-update-check";
 
@@ -164,21 +165,30 @@ export function AppUpdateBanner(): ReactElement | null {
           quietMessage
           actions={
             progress.cancelable ? (
-              // aria-disabled, never `disabled`: Chromium blurs an element
-              // the moment it becomes disabled, which would throw focus to
-              // <body> at the instant the user asked to stop. The handler
-              // guards instead.
-              <button
-                className="app-update-banner__dismiss"
-                type="button"
-                aria-disabled={canceling}
-                onClick={() => {
-                  if (canceling) return;
-                  cancel();
-                }}
-              >
-                {canceling ? "Canceling..." : "Cancel"}
-              </button>
+              <>
+                {/* Reading what is being downloaded is the one thing worth
+                    doing WHILE it downloads — this is the only card that
+                    stands for minutes. */}
+                <ReleaseNotesLink
+                  version={progress.version}
+                  className="app-update-banner__notes"
+                />
+                {/* aria-disabled, never `disabled`: Chromium blurs an element
+                    the moment it becomes disabled, which would throw focus to
+                    <body> at the instant the user asked to stop. The handler
+                    guards instead. */}
+                <button
+                  className="app-update-banner__dismiss"
+                  type="button"
+                  aria-disabled={canceling}
+                  onClick={() => {
+                    if (canceling) return;
+                    cancel();
+                  }}
+                >
+                  {canceling ? "Canceling..." : "Cancel"}
+                </button>
+              </>
             ) : undefined
           }
         >
@@ -220,14 +230,20 @@ export function AppUpdateBanner(): ReactElement | null {
           isError={outcome.isError}
           timerMs={UPDATE_OUTCOME_DISMISS_MS}
           actions={
-            <button
-              className="app-update-banner__dismiss"
-              type="button"
-              aria-label="Dismiss update check result"
-              onClick={dismissOutcome}
-            >
-              Dismiss
-            </button>
+            <>
+              <ReleaseNotesLink
+                version={outcome.version}
+                className="app-update-banner__notes"
+              />
+              <button
+                className="app-update-banner__dismiss"
+                type="button"
+                aria-label="Dismiss update check result"
+                onClick={dismissOutcome}
+              >
+                Dismiss
+              </button>
+            </>
           }
         />
       ) : null}
@@ -245,6 +261,14 @@ export function AppUpdateBanner(): ReactElement | null {
               >
                 {restarting ? notice.busyAction : notice.action}
               </button>
+              {/* Between Restart and Dismiss on purpose: the question this
+                  card raises is "what is in it?", and the answer belongs
+                  next to the button that commits to it. */}
+              <ReleaseNotesLink
+                version={notice.version}
+                className="app-update-banner__notes"
+                disabled={restarting}
+              />
               <button
                 className="app-update-banner__dismiss"
                 type="button"

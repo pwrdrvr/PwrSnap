@@ -25,6 +25,13 @@ export type AppUpdateNotice = {
    *  actionable state brings a dismissed notice back. */
   key: string;
   kind: AppUpdateNoticeKind;
+  /** The version the notice is about, bare (no leading `v`).
+   *
+   *  Surfaces need it for accessible names, and `ReleaseNotesLink` takes it
+   *  directly — this module deliberately does NOT compose a release URL of
+   *  its own. Whether a version has a published page to link to is one
+   *  decision, and it lives in that component.  */
+  version: string;
   /** Banner eyebrow / compact-row title. */
   title: string;
   /** Full sentence, for the Library toast. */
@@ -52,6 +59,7 @@ export function appUpdateNotice(status: AppUpdateStatus): AppUpdateNotice | unde
       // key would let a dismissed switch silence the update.
       key: `downloaded:${switching ? "switch" : "update"}:${status.version}`,
       kind: "ready",
+      version: status.version,
       title: switching ? "Switch ready" : "Update ready",
       message: switching
         ? `Restart to switch to v${status.version}.`
@@ -68,6 +76,7 @@ export function appUpdateNotice(status: AppUpdateStatus): AppUpdateNotice | unde
     return {
       key: `install-failed:${status.version}`,
       kind: "retry",
+      version: status.version,
       title: "Update retry needed",
       message: `The update to v${status.version} did not finish installing. Retry to download it again and restart.`,
       compact: `v${status.version} didn't finish installing`,

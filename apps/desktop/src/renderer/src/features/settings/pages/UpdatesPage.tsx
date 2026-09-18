@@ -38,6 +38,7 @@ import {
   type UpdateTrain
 } from "@pwrsnap/shared";
 import { Card, Row } from "../components";
+import { ReleaseNotesLink } from "../../update/ReleaseNotesLink";
 import { dispatch, subscribe } from "../../../lib/pwrsnap";
 import { useSettingsContext } from "../SettingsContext";
 
@@ -127,6 +128,17 @@ function updateStatusText(status: AppUpdateStatus): string | undefined {
   }
   if (status.status === "error") return `Update check failed: ${status.message}`;
   return undefined;
+}
+
+/** The version the visible status line is talking about — so the link beside
+ *  it points at THAT release and not at whatever is installed.
+ *
+ *  Written as a property test rather than a status list on purpose: every
+ *  member of both unions either carries a `version` or has nothing to link
+ *  to (`idle`, `checking`, `skipped`, `error`), so a status added later is
+ *  covered the day it lands. */
+function payloadVersion(payload: AppUpdateStatus | AppUpdateCheckResult): string | undefined {
+  return "version" in payload ? payload.version : undefined;
 }
 
 type SlotTileProps = {
@@ -348,6 +360,14 @@ export function UpdatesPage(): ReactElement {
     liveUpdateStatus !== undefined
       ? updateStatus.status === "error"
       : updateResult?.status === "error";
+  // Follows the same live-then-settled precedence as the text above it, so
+  // the link can never point at a different release than the sentence.
+  const visibleUpdateVersion =
+    liveUpdateStatus !== undefined
+      ? payloadVersion(updateStatus)
+      : updateResult !== undefined
+        ? payloadVersion(updateResult)
+        : undefined;
 
   const checkForUpdates = async (): Promise<void> => {
     setUpdateChecking(true);
@@ -431,23 +451,36 @@ export function UpdatesPage(): ReactElement {
                   );
                   const release = releaseVersions?.[rowTrain]?.[slotChannel];
                   return (
-                    <SlotTile
-                      key={slotChannel}
-                      train={rowTrain}
-                      channel={slotChannel}
-                      release={release}
-                      loading={!releasesSettled}
-                      selected={index === selectedIndex}
-                      installed={sameVersion(release?.version, appVersion)}
-                      tabbable={index === selectedIndex}
-                      onSelect={() => {
-                        selectSlot({ train: rowTrain, channel: slotChannel });
-                      }}
-                      onKeyDown={onSlotKeyDown(index)}
-                      registerRef={(el) => {
-                        slotRefs.current[index] = el;
-                      }}
-                    />
+                    // The link is a SIBLING of the tile, not a child: the tile
+                    // is the radio, and an interactive element nested inside
+                    // one is neither valid HTML nor reachable by keyboard.
+                    // Picking a slot rewrites which build the app installs, so
+                    // reading the notes first has to be possible WITHOUT
+                    // picking — that is the whole reason all four are here
+                    // rather than one link under the selected slot.
+                    <div key={slotChannel} className="pss__slot-cell">
+                      <SlotTile
+                        train={rowTrain}
+                        channel={slotChannel}
+                        release={release}
+                        loading={!releasesSettled}
+                        selected={index === selectedIndex}
+                        installed={sameVersion(release?.version, appVersion)}
+                        tabbable={index === selectedIndex}
+                        onSelect={() => {
+                          selectSlot({ train: rowTrain, channel: slotChannel });
+                        }}
+                        onKeyDown={onSlotKeyDown(index)}
+                        registerRef={(el) => {
+                          slotRefs.current[index] = el;
+                        }}
+                      />
+                      <ReleaseNotesLink
+                        version={release?.version}
+                        className="pss__slot-notes"
+                        ariaLabel={`Release notes for ${TRAIN_LABEL[rowTrain]} ${CHANNEL_LABEL[slotChannel]} ${release?.version}`}
+                      />
+                    </div>
                   );
                 })}
               </Fragment>
@@ -507,6 +540,17 @@ export function UpdatesPage(): ReactElement {
                 role={visibleUpdateStatusIsError ? "alert" : undefined}
               >
                 {visibleUpdateStatus}
+                {/* Inline, inside the same line, because it is scoped to the
+                    version that line just named — an "Update ready: v1.1.1"
+                    with no way to find out what v1.1.1 is was the gap this
+                    whole change closes. */}
+                <ReleaseNotesLink
+                  version={visibleUpdateVersion}
+                  className="pss__update-notes"
+                  {...(visibleUpdateVersion === undefined
+                    ? {}
+                    : { ariaLabel: `Release notes for v${visibleUpdateVersion.replace(/^v/i, "")}` })}
+                />
               </span>
             ) : null}
             {updateRestartError !== undefined ? (

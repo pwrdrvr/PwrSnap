@@ -571,6 +571,38 @@ body[data-stage="float-over"] .fo {
   cursor: not-allowed;
 }
 
+/* "Release notes" — a text link among two real buttons, on purpose. The
+   card already carries the one action it exists for (Restart / Cancel) and
+   the one way out of it (Dismiss); a third pill would make the user pick
+   between three things that look equally like the point. */
+/* A real `<a href>` (see ReleaseNotesLink.tsx), so the underline is the
+   hover affordance rather than the resting state, and "disabled" is
+   `aria-disabled` — an anchor has no `:disabled`. */
+.app-update-banner__notes {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 2px;
+  color: var(--text-secondary);
+  font: 600 12px/1.2 var(--font-sans);
+  text-decoration: none;
+  cursor: pointer;
+  transition: color 120ms ease;
+}
+.app-update-banner__notes:hover:not([aria-disabled="true"]) {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+.app-update-banner__notes[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.app-update-banner__notes:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 /* Captures-access and Codex-compatibility toasts reuse the update toast's
    card layout/typography, tinted danger instead of accent: a permission or
    compatibility failure is a problem notice, not a release notice. */

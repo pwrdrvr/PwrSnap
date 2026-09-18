@@ -45,6 +45,9 @@ export type UpdateProgressCopy = {
   meter: string | undefined;
   /** A download is running, so there is something for Cancel to stop. */
   cancelable: boolean;
+  /** The version being fetched, for `ReleaseNotesLink`. `undefined` while
+   *  `checking`, which has no version yet. */
+  version: string | undefined;
 };
 
 export function updateProgressCopy(status: AppUpdateProgressStatus): UpdateProgressCopy {
@@ -54,7 +57,8 @@ export function updateProgressCopy(status: AppUpdateProgressStatus): UpdateProgr
       message: "Asking GitHub for the latest release...",
       percent: undefined,
       meter: undefined,
-      cancelable: false
+      cancelable: false,
+      version: undefined
     };
   }
   // A downgrade is the way back to the train the user picked, not an update.
@@ -71,7 +75,8 @@ export function updateProgressCopy(status: AppUpdateProgressStatus): UpdateProgr
       meter: undefined,
       // Offered from here, before a single byte has moved. Main registers its
       // cancellable download at the same moment for exactly this reason.
-      cancelable: true
+      cancelable: true,
+      version: status.version
     };
   }
   // ONE number for the bar and the label. `percent` reaches us as
@@ -88,7 +93,8 @@ export function updateProgressCopy(status: AppUpdateProgressStatus): UpdateProgr
     // bar at 0% for the length of the download.
     percent,
     meter: downloadMeter(status),
-    cancelable: true
+    cancelable: true,
+    version: status.version
   };
 }
 
@@ -131,6 +137,9 @@ export type UpdateCheckOutcomeNotice = {
   message: string;
   /** Danger eyebrow. A cancel is deliberately NOT one — see below. */
   isError: boolean;
+  /** The version the outcome names, for `ReleaseNotesLink`. `undefined` for
+   *  `skipped` and `error`, which name none. */
+  version: string | undefined;
 };
 
 /**
@@ -150,7 +159,8 @@ export function updateCheckOutcomeNotice(
       key: `skipped:${result.reason}`,
       title: "Updates unavailable",
       message: result.reason,
-      isError: false
+      isError: false,
+      version: undefined
     };
   }
   if (result.status === "error") {
@@ -158,7 +168,8 @@ export function updateCheckOutcomeNotice(
       key: `error:${result.message}`,
       title: "Update check failed",
       message: result.message,
-      isError: true
+      isError: true,
+      version: undefined
     };
   }
   if (result.status === "canceled") {
@@ -172,7 +183,8 @@ export function updateCheckOutcomeNotice(
         result.downgrade === true
           ? `PwrSnap v${result.version} is still available - check again to switch.`
           : `PwrSnap v${result.version} is still available - check again to download it.`,
-      isError: false
+      isError: false,
+      version: result.version
     };
   }
   if (result.status === "available") {
@@ -182,13 +194,18 @@ export function updateCheckOutcomeNotice(
       key: `available:${result.version}`,
       title: result.downgrade === true ? "Switch available" : "Update available",
       message: `PwrSnap v${result.version} is downloading in the background.`,
-      isError: false
+      isError: false,
+      version: result.version
     };
   }
   return {
     key: `no-update:${result.version}`,
     title: "PwrSnap is up to date",
     message: `You're running v${result.version}.`,
-    isError: false
+    isError: false,
+    // Up to date is exactly when "what did I get?" is the live question, and
+    // the bundled CHANGELOG is the one case where it CAN answer — but it
+    // opens a second window to do it, so the link stays for symmetry.
+    version: result.version
   };
 }

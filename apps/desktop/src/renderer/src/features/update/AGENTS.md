@@ -151,3 +151,86 @@ can click a button that only exists mid-download). Both are gated on
 `PWRSNAP_E2E=1`. Unlike PwrGit's, this path has no platform branch — the fake
 runs the same on the Linux CI lane as on macOS — so the spec needs no
 `test.skip(LINUX)`.
+
+## A version the app names, it must also be able to describe
+
+Every update surface prints a version number the user has never seen and
+cannot look up from inside the app. Settings → About's **Open changelog**
+reads the `CHANGELOG.md` that shipped INSIDE the running build, so by
+construction it says nothing about the build being offered — a v1.1.0
+install cannot carry v1.1.1's notes. Before this the four-slot matrix, the
+`Update ready: v1.1.1` line, the Library toast and the two compact rows all
+named a version with no way out to what is in it.
+
+So: **any surface that renders a version renders a
+[`ReleaseNotesLink`](./ReleaseNotesLink.tsx) beside it**, and the URL comes
+from `releaseNotesUrl` in
+[packages/shared/src/release-notes.ts](../../../../../../packages/shared/src/release-notes.ts)
+— never composed at the call site.
+
+Five things about that are load-bearing:
+
+- **The control takes a VERSION, never a URL.** That is what keeps "a
+  version that is not a published release gets no control" a single
+  decision. `app-update-notice.ts` and `update-progress.ts` carry a
+  `version` on their copy objects and know nothing about GitHub; they must
+  not grow a `notesUrl` field again, because a URL alongside the version it
+  is derived from is state that can disagree with itself, and it drags the
+  composer into every module that writes wording.
+- **The URL is DERIVED from the version, not read from the feed.**
+  `AppUpdateReleaseInfo.url` carries GitHub's `html_url` for the four
+  published slots, but the STATUS surfaces have no feed record at all —
+  `AppUpdateStatus` carries a bare version through every transition,
+  including the ones electron-updater raises, which never saw our GitHub
+  read. One composer that takes a version is the only thing all five
+  surfaces can share. Deriving is exact because the release tag is `v` +
+  the version (`configureAutoUpdaterFeedForRelease` already assumes it).
+- **No URL means no control.** `releaseNotesUrl` answers `undefined` for
+  anything this repo could not have tagged — a dev build, a
+  `PWRSNAP_E2E_APP_VERSION` override, a tag like `nightly` — and
+  `ReleaseNotesLink` renders `null` for it. A link onto a 404 is worse than
+  none, and in the tray and float-over it would also cost popover width for
+  nothing.
+- **It is an `<a href>` whose click is cancelled, and it carries no
+  `title`.** The `onClick` → `preventDefault()` → `app:openExternal`
+  pairing is the mechanism — it is what opens the page and the only path
+  that could report a failure — and the `href` is what makes a
+  middle-click or cmd-click land somewhere, since Chromium turns those into
+  a `window.open` that `onClick` never sees. That input is safe because of
+  the navigation guard (root AGENTS.md, "No webContents opens a window, and
+  none navigates away"), which denies the window and hands the URL to the
+  browser after clearing the SAME allowlist the verb uses. It was written as
+  a `<button>` first, in the window before that guard landed, when a
+  modifier-click on a real anchor would have loaded github.com inside a
+  BrowserWindow carrying our preload — so if the guard is ever removed, this
+  goes back to a button rather than losing the `onClick`. **`disabled` drops the `href`, not just marks it
+  aria-disabled** — otherwise a greyed-out control is the one thing on the
+  surface still answering a cmd-click. `title` is out because with an
+  accessible name already present it becomes the accessible DESCRIPTION,
+  and a screen reader then reads the whole URL aloud after the link — and
+  PwrSnap wires no context-menu handler, so there is no "Copy Link Address"
+  it would feed. All pinned by `ReleaseNotesLink.test.tsx`, and
+  `main/__tests__/app-open-external-release-notes.test.ts` runs every
+  composed URL through BOTH gates — a URL the verb opens and the guard
+  blocks is a control that works on one input and silently does nothing on
+  the other.
+- **Settings → Updates hangs it OUTSIDE the tile.** The slot tile is a
+  `role="radio"`, and an interactive element nested in one is neither valid
+  HTML nor keyboard-reachable — hence `.pss__slot-cell` wrapping the two.
+  All four slots get a link, not just the selected one: picking a slot
+  rewrites which build the app installs, so reading the notes has to be
+  possible without picking. Pinned by
+  `features/settings/__tests__/UpdatesPage.test.tsx`, which also pins that
+  the status line's link follows the LIVE status rather than the settled
+  check result — the same precedence the sentence beside it uses.
+
+The one surface that deliberately renders NO link is the `checking` card —
+it has no version yet.
+
+**On the two compact rows the control takes `.psu__x`'s tones, not
+`.psu__go`'s.** It has no opaque background, so its label sits directly on
+the row's `--accent-tint` (and on `--warn-soft` in the retry variant),
+where `--accent` measures 4.29:1 in the light theme — under the 4.5:1 AA
+floor for 10px bold. The comment above `.psu__go` in
+[update-row.css](../../styles/update-row.css) is where that number comes
+from. Do not brighten it to accent without giving it an opaque fill first.

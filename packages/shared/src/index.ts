@@ -33,3 +33,4 @@ export * from "./desktop-platform";
 export * from "./shortcut-semantics";
 export * from "./capture-invocation";
 export * from "./recording-audio-tracks";
+export * from "./release-notes";

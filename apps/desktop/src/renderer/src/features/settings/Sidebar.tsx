@@ -14,13 +14,16 @@
 // labels align down the column.
 
 import { Fragment, useEffect, useState, type ReactElement } from "react";
-import type { SettingsPage } from "@pwrsnap/shared";
+import { SETTINGS_PAGE_SUBS, type SettingsPage } from "@pwrsnap/shared";
 import { useAiProvidersContext } from "./AiProvidersContext";
 import { SETTINGS_CATEGORIES } from "./settings-categories";
 import { setActivePage } from "./useActivePage";
 
-/** Pages whose nav row expands into a sublist of child screens. */
-const NAV_GROUPS: ReadonlySet<SettingsPage> = new Set<SettingsPage>(["ai"]);
+/** Pages whose nav row expands into a sublist of child screens — exactly
+ *  the pages that HAVE child screens, per the shared route allowlist. */
+const NAV_GROUPS: ReadonlySet<SettingsPage> = new Set(
+  Object.keys(SETTINGS_PAGE_SUBS) as SettingsPage[]
+);
 
 type SidebarProps = {
   active: SettingsPage;

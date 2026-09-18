@@ -7,18 +7,17 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import { EVENT_CHANNELS, SETTINGS_PAGE_SUBS } from "@pwrsnap/shared";
 import { AI_PROVIDER_SUBS } from "../ai-provider-status";
-import {
-  pageFromHash,
-  routeFromHash,
-  useActiveRoute,
-  type SettingsRoute
-} from "../useActivePage";
+import { routeFromHash, useActiveRoute, type SettingsRoute } from "../useActivePage";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 });
 
-describe("pageFromHash", () => {
+// The page half of the route. `routeFromHash(...).page` is what the
+// Settings shell renders from.
+const pageFromHash = (hash: string) => routeFromHash(hash).page;
+
+describe("routeFromHash — page", () => {
   test("defaults to 'general' when no hash is set", () => {
     expect(pageFromHash("")).toBe("general");
     expect(pageFromHash("#")).toBe("general");

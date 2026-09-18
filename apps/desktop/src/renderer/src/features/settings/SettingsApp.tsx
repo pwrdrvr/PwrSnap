@@ -10,6 +10,7 @@
 // unbuilt pages left.
 
 import { useLayoutEffect, useRef, type ReactElement } from "react";
+import type { SettingsPage } from "@pwrsnap/shared";
 import { AiProvidersProvider, useAiProvidersContext } from "./AiProvidersContext";
 import { SettingsProvider } from "./SettingsContext";
 import { SETTINGS_PAGES_FLAT } from "./settings-categories";
@@ -39,14 +40,6 @@ export function SettingsApp(): ReactElement {
 
 function SettingsShell(): ReactElement {
   const { page: active, sub } = useActiveRoute();
-  const { statuses } = useAiProvidersContext();
-  const item = SETTINGS_PAGES_FLAT.find((i) => i.id === active) ?? SETTINGS_PAGES_FLAT[0]!;
-  // Crumb label from the same catalog the sidebar renders, so the two
-  // can't name a screen differently.
-  const subLabel =
-    sub !== null && active === "ai"
-      ? statuses.find((status) => status.sub === sub)?.label
-      : undefined;
 
   // `<main>` outlives every page switch, so without this a page opened
   // from a scrolled one lands mid-way down. Layout effect: reset before
@@ -99,18 +92,39 @@ function SettingsShell(): ReactElement {
 
   return (
     <div className="pss" data-screen-label="Settings">
-      {subLabel !== undefined ? (
-        <SettingsTitleBar
-          here={subLabel}
-          parent={{ label: item.name, onOpen: () => setActivePage(active) }}
-        />
-      ) : (
-        <SettingsTitleBar here={item.name} />
-      )}
+      <SettingsRouteTitleBar active={active} sub={sub} />
       <Sidebar active={active} sub={sub} />
       <main className="pss__main" ref={mainRef}>
         {page}
       </main>
     </div>
+  );
+}
+
+/** The title bar's crumb for the current route. Its own component so the
+ *  provider-status subscription it needs re-renders the crumb alone, not
+ *  the shell and whatever page is open. */
+function SettingsRouteTitleBar({
+  active,
+  sub
+}: {
+  active: SettingsPage;
+  sub: string | null;
+}): ReactElement {
+  const { statuses } = useAiProvidersContext();
+  const item = SETTINGS_PAGES_FLAT.find((i) => i.id === active) ?? SETTINGS_PAGES_FLAT[0]!;
+  // Crumb label from the same catalog the sidebar renders, so the two
+  // can't name a screen differently.
+  const subLabel =
+    sub !== null && active === "ai"
+      ? statuses.find((status) => status.sub === sub)?.label
+      : undefined;
+  return subLabel !== undefined ? (
+    <SettingsTitleBar
+      here={subLabel}
+      parent={{ label: item.name, onOpen: () => setActivePage(active) }}
+    />
+  ) : (
+    <SettingsTitleBar here={item.name} />
   );
 }

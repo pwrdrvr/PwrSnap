@@ -104,9 +104,17 @@ export function AiProvidersProvider({ children }: { children: ReactNode }): Reac
     setAcpDiscoveryLoading(false);
   }, []);
 
+  // Per agent, last-issued-wins like the reads above: the page's first-pass
+  // probe and a Refresh overlap routinely. An older probe settling last must
+  // not overwrite the newer answer, nor clear the loading flag the newer
+  // probe still holds.
+  const acpModelsSeq = useRef<Record<string, number>>({});
   const fetchAcpModels = useCallback(async (agentId: string, refresh = false): Promise<void> => {
+    const seq = (acpModelsSeq.current[agentId] ?? 0) + 1;
+    acpModelsSeq.current[agentId] = seq;
     setAcpModelsLoadingIds((ids) => (ids.includes(agentId) ? ids : [...ids, agentId]));
     const result = await dispatch("acp:models", { agentId, refresh });
+    if (acpModelsSeq.current[agentId] !== seq) return;
     setAcpModelErrors((prev) => ({ ...prev, [agentId]: result.ok ? undefined : result.error.message }));
     setAcpModels((prev) => {
       if (result.ok) return { ...prev, [agentId]: result.value.models };
@@ -131,16 +139,28 @@ export function AiProvidersProvider({ children }: { children: ReactNode }): Reac
   }, [refreshCodexSnapshot, refreshAcpDiscovery]);
 
   // Re-read when a setting that discovery depends on changes — Codex mode /
-  // pinned path / profile, or an agent's picked install / override. The
-  // page used to get this for free by re-reading on every mount; state that
-  // outlives the page has to ask. Still `force: false`: the settings store
-  // invalidates exactly the publication whose inputs moved, so this re-runs
-  // discovery for what changed and serves everything else from cache.
+  // pinned path / profile, or an agent's enablement / picked install /
+  // override. The page used to get this for free by re-reading on every
+  // mount; state that outlives the page has to ask. Still `force: false`:
+  // the settings store invalidates exactly the publication whose inputs
+  // moved, so this re-runs discovery for what changed and serves everything
+  // else from cache.
+  //
+  // Enablement IS a discovery input: the store's ACP fingerprint includes
+  // it, and an agent's `overridePath` is only applied while it is enabled.
+  // An agent installed only at its override reads "missing" until enabled,
+  // and must re-read the moment it is.
   const codexDepsKey =
     settings === null
       ? null
       : JSON.stringify([settings.codex.mode, settings.codex.pinnedPath, settings.codex.profile]);
-  const acpDepsKey = settings === null ? null : JSON.stringify(settings.ai.acp.agents ?? {});
+  const acpDepsKey =
+    settings === null
+      ? null
+      : JSON.stringify([
+          [...settings.ai.acp.enabledAgentIds].sort(),
+          settings.ai.acp.agents ?? {}
+        ]);
   const seenDepsRef = useRef<{ codex: string | null; acp: string | null }>({
     codex: null,
     acp: null

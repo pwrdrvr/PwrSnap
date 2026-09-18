@@ -64,6 +64,9 @@ const SECRETS = {
 const refreshCodexMock = vi.fn(async (): Promise<DesktopCodexDiscoverySnapshot | null> => CODEX);
 const dispatchCalls: Array<{ name: string; req: unknown }> = [];
 let modelsProbeFails = false;
+let discoveryResponse: AcpAgentDiscovery = DISCOVERY;
+/** When set, the next `acp:models` call answers with this instead. */
+let heldModelsProbe: Promise<unknown> | null = null;
 
 function installFakeApi(): void {
   Object.defineProperty(window, "pwrsnapApi", {
@@ -72,8 +75,11 @@ function installFakeApi(): void {
       platform: "darwin",
       dispatch: async (name: string, req: unknown) => {
         dispatchCalls.push({ name, req });
-        if (name === "acp:discover") return { ok: true, value: DISCOVERY };
+        if (name === "acp:discover") return { ok: true, value: discoveryResponse };
         if (name === "acp:models") {
+          const held = heldModelsProbe;
+          heldModelsProbe = null;
+          if (held !== null) return held;
           return modelsProbeFails
             ? { ok: false, error: { kind: "acp", code: "auth", message: "Kimi is not logged in" } }
             : { ok: true, value: { agentId: "kimi", models: [] } };
@@ -184,6 +190,8 @@ afterEach(async () => {
   root = null;
   dispatchCalls.length = 0;
   modelsProbeFails = false;
+  discoveryResponse = DISCOVERY;
+  heldModelsProbe = null;
   refreshCodexMock.mockClear();
   window.location.hash = "";
   Reflect.deleteProperty(window, "pwrsnapApi");
@@ -265,18 +273,18 @@ describe("Settings sidebar — AI Providers children", () => {
     expect(refreshCodexMock).toHaveBeenLastCalledWith(false);
     expect(acpReads()).toBe(1);
 
-    // Enabling an agent is NOT a discovery input — the status derivation
-    // applies enablement — so it must not cost a re-read.
+    // Enablement is a discovery input: the store's ACP fingerprint carries
+    // it (an override only applies while enabled), so toggling one re-reads.
     const s = contextValue.settings!;
     contextValue = {
       ...contextValue,
       settings: { ...s, ai: { ...s.ai, acp: { ...s.ai.acp, enabledAgentIds: ["kimi"] } } }
     };
     await rerender(createElement(Sidebar, { active: "ai", sub: null }));
-    expect(acpReads()).toBe(1);
+    expect(acpReads()).toBe(2);
     expect([dotTone(subRow("Qwen Code")), chip(subRow("Qwen Code"))]).toEqual(["off", "missing"]);
 
-    // Picking an agent install is.
+    // Picking an agent install is one too.
     const s2 = contextValue.settings!;
     contextValue = {
       ...contextValue,
@@ -293,7 +301,57 @@ describe("Settings sidebar — AI Providers children", () => {
       name: "acp:discover",
       req: { force: false }
     });
-    expect(acpReads()).toBe(2);
+    expect(acpReads()).toBe(3);
+  });
+
+  test("enabling an agent installed only at its override path re-reads and turns it on", async () => {
+    // Gemini lives only at a manual path. While it is disabled the store
+    // ignores that override, so discovery reports it missing.
+    const base = settings();
+    await render(createElement(Sidebar, { active: "ai", sub: null }), {
+      ...base,
+      ai: {
+        ...base.ai,
+        acp: {
+          enabledAgentIds: ["kimi", "qwen"],
+          agents: { gemini: { overridePath: "/opt/gemini/bin/gemini" } }
+        }
+      }
+    });
+    expect([dotTone(subRow("Gemini CLI")), chip(subRow("Gemini CLI"))]).toEqual([
+      "off",
+      "missing"
+    ]);
+
+    // Enabled, the override applies and the next read finds it.
+    discoveryResponse = {
+      agents: DISCOVERY.agents.map((agent) =>
+        agent.id === "gemini"
+          ? {
+              ...agent,
+              installed: true,
+              version: "0.40.0",
+              instances: [{ command: "/opt/gemini/bin/gemini", source: "override", version: "0.40.0" }],
+              activeCommand: "/opt/gemini/bin/gemini"
+            }
+          : agent
+      )
+    };
+    const s = contextValue.settings!;
+    contextValue = {
+      ...contextValue,
+      settings: {
+        ...s,
+        ai: { ...s.ai, acp: { ...s.ai.acp, enabledAgentIds: ["kimi", "qwen", "gemini"] } }
+      }
+    };
+    await rerender(createElement(Sidebar, { active: "ai", sub: null }));
+
+    expect(dispatchCalls.filter((c) => c.name === "acp:discover").at(-1)).toEqual({
+      name: "acp:discover",
+      req: { force: false }
+    });
+    expect([dotTone(subRow("Gemini CLI")), chip(subRow("Gemini CLI"))]).toEqual(["ok", null]);
   });
 
   test("an older Codex read that resolves last cannot overwrite a newer one", async () => {
@@ -429,5 +487,40 @@ describe("AI Providers page — hub and provider screens", () => {
       (el) => el.querySelector(".pss__prov-name")?.textContent === "Kimi Code CLI"
     );
     expect(hubRow?.querySelector(".pss__badge")?.textContent).toBe("Unavailable");
+  });
+
+  test("an older model probe that settles last cannot overwrite a newer one", async () => {
+    // The page's first-pass probe is slow and will fail; a Refresh issues a
+    // newer probe that succeeds. The stale failure must not win.
+    let releaseFirst: (value: unknown) => void = () => undefined;
+    heldModelsProbe = new Promise((resolve) => {
+      releaseFirst = resolve;
+    });
+    const s = settings({
+      defaults: { libraryChat: { provider: "acp:kimi" }, sizzleChat: {}, enrichment: {} }
+    });
+    await render(
+      createElement(
+        "div",
+        null,
+        createElement(Sidebar, { active: "ai", sub: "kimi" }),
+        createElement(AIProvidersPage, { sub: "kimi" })
+      ),
+      s
+    );
+
+    await click(container?.querySelector(".pss__card-hdr-action button"));
+    expect(dispatchCalls.filter((c) => c.name === "acp:models")).toHaveLength(2);
+    expect([dotTone(subRow("Kimi Code CLI")), chip(subRow("Kimi Code CLI"))]).toEqual(["ok", null]);
+
+    await act(async () => {
+      releaseFirst({
+        ok: false,
+        error: { kind: "acp", code: "auth", message: "Kimi is not logged in" }
+      });
+    });
+    await flush();
+
+    expect([dotTone(subRow("Kimi Code CLI")), chip(subRow("Kimi Code CLI"))]).toEqual(["ok", null]);
   });
 });

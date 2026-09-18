@@ -51,10 +51,6 @@ export function routeFromHash(hash: string): SettingsRoute {
   return { page, sub: isSettingsSub(page, sub) ? sub : null };
 }
 
-export function pageFromHash(hash: string): SettingsPage {
-  return routeFromHash(hash).page;
-}
-
 export function useActiveRoute(): SettingsRoute {
   const [route, setRoute] = useState<SettingsRoute>(() => routeFromHash(window.location.hash));
   useEffect(() => {

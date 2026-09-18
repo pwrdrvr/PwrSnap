@@ -3334,7 +3334,7 @@ export type ChatSettings = {
    *  the per-row `redactionStyle` field as YAGNI; one global default
    *  + agent picks per call is sufficient). */
   defaultRedactionStyle: RedactionStyle;
-  /** True once the user has dismissed the Settings → AI → Chat
+  /** True once the user has dismissed the Settings → AI Features → Guidance
    *  first-launch disclosure banner (which warns about iCloud +
    *  Time Machine + plaintext exposure at ~/Documents/PwrSnap/Chats/).
    *  Persisted so the banner doesn't re-appear after a relaunch. */

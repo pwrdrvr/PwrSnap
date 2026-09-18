@@ -74,11 +74,12 @@ let root: Root | null = null;
 
 async function renderPage(
   consentAcceptedAt: string | null,
-  ai: Partial<Settings["ai"]> = {}
+  ai: Partial<Settings["ai"]> = {},
+  loaded = true
 ): Promise<HTMLDivElement> {
   installFakeApi();
   contextValue = {
-    settings: settingsWithConsent(consentAcceptedAt, ai),
+    settings: loaded ? settingsWithConsent(consentAcceptedAt, ai) : null,
     secrets: null,
     loading: false,
     error: null,
@@ -212,6 +213,18 @@ describe("AIFeaturesPage — enrichment consent", () => {
         budgetSafetyDisabledAt: null
       }
     });
+  });
+
+  test("before settings load, switching on asks for consent instead of enabling blind", async () => {
+    const page = await renderPage(null, {}, false);
+
+    await act(async () => {
+      enrichSwitch().click();
+      await Promise.resolve();
+    });
+
+    expect(page.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(patchMock).not.toHaveBeenCalled();
   });
 
   test("enrichment is an on/off switch that reflects the setting", async () => {

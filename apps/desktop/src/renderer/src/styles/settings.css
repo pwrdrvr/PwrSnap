@@ -890,8 +890,9 @@
 }
 .pss__prov-row:hover .pss__prov-chev { color: var(--accent-bright); }
 
-/* Provider screen — which jobs actually run on this provider, with the
-   way back to Job routing. Sits between the page header and the card. */
+/* Provider screen — which jobs actually run on this provider, with a link
+   to AI Features → Default agents. Sits between the page header and the
+   card. */
 .pss__prov-strip {
   display: flex;
   align-items: center;
@@ -1386,7 +1387,7 @@
   align-self: center;
 }
 
-/* Codex auth-profile management (Settings → AI → Codex) */
+/* Codex auth-profile management (Settings → AI Providers → Codex) */
 .pss__codex-profiles {
   display: flex;
   flex-direction: column;
@@ -2186,7 +2187,7 @@
    * `pss__main-hdr` rules. Reserved for future per-page tweaks. */
 }
 
-/* ---- Library Chat settings card (Settings → AI → Library Chat) ---- */
+/* ---- Chat guidance card (Settings → AI Features → Guidance) ---- */
 .pss__chat-banner {
   display: flex;
   gap: 12px;

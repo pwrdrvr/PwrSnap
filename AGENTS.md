@@ -309,8 +309,9 @@ protocol surface lands that PwrSnap wants to consume.
 ### Connecting at runtime
 
 PwrSnap discovers and connects to the user's local Codex install — same model
-as PwrAgnt. Settings → AI surfaces every detected Codex binary, lets the user
-pick newest / pin a specific path, and persists the choice. Discovery code in
+as PwrAgnt. Settings → AI Providers → Codex surfaces every detected Codex
+binary, lets the user pick newest / pin a specific path, and persists the
+choice. Discovery code in
 `apps/desktop/src/main/settings/codex-discovery.ts` mirrors PwrAgnt's
 implementation; see plan §"Phase 0.5".
 

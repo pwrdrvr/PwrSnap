@@ -836,7 +836,7 @@ function validateChatPatch(raw: unknown): PwrSnapError | null {
     if (hit !== null) {
       return validationError(
         "secret_shape_in_userGuidance",
-        `settings:write: ai.chat.userGuidance contains what looks like a real ${hit}. Don't paste real secrets here — see Settings → AI → Chat for guidance on the shape-only pattern format.`
+        `settings:write: ai.chat.userGuidance contains what looks like a real ${hit}. Don't paste real secrets here — see Settings → AI Features → Guidance for the shape-only pattern format.`
       );
     }
   }

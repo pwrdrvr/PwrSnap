@@ -195,6 +195,14 @@ export const AI_SURFACE_LABELS: Readonly<Record<AiSurfaceId, string>> = {
 
 const AI_SURFACE_ORDER: readonly AiSurfaceId[] = ["enrichment", "libraryChat", "sizzleChat"];
 
+/** The ACP agent a job's stored `provider` names (`acp:<id>`), or `null`
+ *  for Codex / unset. Says nothing about whether that agent is enabled. */
+export function acpAgentIdOfProvider(provider: string | undefined): string | null {
+  return provider !== undefined && provider.startsWith("acp:")
+    ? provider.slice("acp:".length)
+    : null;
+}
+
 /**
  * The jobs that will actually RUN on `sub`, in Default agents order.
  *
@@ -208,8 +216,7 @@ export function routedSurfaces(settings: Settings | null, sub: AiProviderSub): A
   if (settings === null || sub === "openai") return [];
   const enabled = new Set(settings.ai.acp.enabledAgentIds);
   return AI_SURFACE_ORDER.filter((surface) => {
-    const provider = settings.ai.defaults[surface].provider ?? "";
-    const agentId = provider.startsWith("acp:") ? provider.slice("acp:".length) : null;
+    const agentId = acpAgentIdOfProvider(settings.ai.defaults[surface].provider);
     const backend = agentId !== null && enabled.has(agentId) ? agentId : "codex";
     return backend === sub;
   });
@@ -233,11 +240,7 @@ export function enabledAcpAgentIdsForModelProbes(
   return [
     ...new Set(
       providers
-        .map((provider) =>
-          provider !== undefined && provider.startsWith("acp:")
-            ? provider.slice("acp:".length)
-            : null
-        )
+        .map(acpAgentIdOfProvider)
         .filter((id): id is string => id !== null && enabled.has(id))
     )
   ];

@@ -125,7 +125,13 @@ export function setActivePage(page: SettingsPage, sub?: string): void {
     sub === undefined
       ? `stage=settings&page=${page}`
       : `stage=settings&page=${page}&sub=${encodeURIComponent(sub)}`;
-  if (window.location.hash === `#${hash}`) {
+  // Already there: still a request (a re-click re-scrolls a section), but
+  // `hashchange` would drop it — as it drops any rewrite that moves neither
+  // page nor sub. Compare ROUTES, not strings, so a hash spelling the same
+  // route differently cannot swallow the request.
+  const current = routeFromHash(window.location.hash);
+  const next = routeFromHash(`#${hash}`);
+  if (current.page === next.page && current.sub === next.sub) {
     window.dispatchEvent(new Event(ROUTE_REREQUEST_EVENT));
     return;
   }

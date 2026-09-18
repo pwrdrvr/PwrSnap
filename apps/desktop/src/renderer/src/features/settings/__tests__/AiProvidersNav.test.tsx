@@ -4,16 +4,23 @@
 // Both render through the real `AiProvidersProvider`, so these tests pin the
 // thing that matters most: the sidebar and the page read ONE status.
 
-import { act, createElement, type ReactElement } from "react";
+import { act, createElement, type ReactElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
-import type { AcpAgentDiscovery, DesktopCodexDiscoverySnapshot, Settings } from "@pwrsnap/shared";
+import type {
+  AcpAgentDiscovery,
+  DesktopCodexDiscoverySnapshot,
+  Settings,
+  SettingsPage
+} from "@pwrsnap/shared";
 import { SETTINGS_PAGE_SUBS } from "@pwrsnap/shared";
 import { AiProvidersProvider } from "../AiProvidersContext";
 import { AIFeaturesPage } from "../pages/AIFeaturesPage";
 import { AIProvidersPage } from "../pages/AIProvidersPage";
 import { AI_FEATURE_SECTION_LABELS, settingsSectionId } from "../settings-nav";
+import { SettingsApp } from "../SettingsApp";
 import { Sidebar } from "../Sidebar";
+import { setActivePage } from "../useActivePage";
 import type { SecretMap, UseSettingsValue } from "../useSettings";
 import { baseSettings } from "./settings-fixture";
 
@@ -23,7 +30,10 @@ beforeAll(() => {
 
 let contextValue: UseSettingsValue;
 vi.mock("../SettingsContext", () => ({
-  useSettingsContext: (): UseSettingsValue => contextValue
+  useSettingsContext: (): UseSettingsValue => contextValue,
+  // `SettingsApp` wraps itself in the real provider; the value comes from
+  // `contextValue` either way.
+  SettingsProvider: ({ children }: { children: ReactNode }): ReactNode => children
 }));
 
 const CODEX: DesktopCodexDiscoverySnapshot = {
@@ -608,6 +618,65 @@ describe("AI Features — jump-to sections", () => {
         behavior: "smooth"
       });
       expect(calls).toHaveLength(2);
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+});
+
+describe("Settings shell — the pane's scroll on a jump", () => {
+  // A section's card scrolls itself into view in a layout effect, and the
+  // shell's own layout effect runs AFTER it (child before parent). So the
+  // shell must leave a section route alone: resetting the pane there undoes
+  // the card's scroll, and every jump link leaps to the top instead. Only a
+  // render of the shell and a real card together can catch that.
+  test("a jump lands where its card put the pane; another page starts at the top", async () => {
+    window.location.hash = "#stage=settings&page=ai";
+    const page = await render(createElement(SettingsApp));
+    const main = page.querySelector<HTMLElement>("main.pss__main");
+    if (main === null) throw new Error("settings pane not found");
+    // jsdom has no layout: record the pane's scroll by hand, and have each
+    // card "scroll into view" by moving the pane to a fixed offset.
+    let scrollTop = 0;
+    const writes: number[] = [];
+    Object.defineProperty(main, "scrollTop", {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value;
+        writes.push(value);
+      }
+    });
+    const cardOffsets: Record<string, number> = {
+      [settingsSectionId("ai-features", "usage")]: 900,
+      [settingsSectionId("ai-features", "guidance")]: 1250
+    };
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element) {
+      const top = cardOffsets[this.id];
+      if (top !== undefined) main.scrollTop = top;
+    };
+    const go = async (next: SettingsPage, sub?: string): Promise<void> => {
+      await act(async () => {
+        setActivePage(next, sub);
+        // `hashchange` is dispatched as a task, not a microtask.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      await flush();
+    };
+    try {
+      main.scrollTop = 300; // scrolled down the AI Providers hub
+      await go("ai-features", "usage");
+      expect(page.querySelector("h1")?.textContent).toBe("AI Features");
+      expect(main.scrollTop).toBe(900);
+
+      await go("ai-features", "guidance");
+      expect(main.scrollTop).toBe(1250);
+      // Never back to the top on the way.
+      expect(writes).toEqual([300, 900, 1250]);
+
+      await go("ai");
+      expect(main.scrollTop).toBe(0);
     } finally {
       Element.prototype.scrollIntoView = original;
     }

@@ -35,7 +35,7 @@ import { dispatch, subscribe } from "../../../lib/pwrsnap";
 import { Card, Row, Switch } from "../components";
 import { AiConsentDialog } from "../../shared/AiConsentDialog";
 import { useAiProvidersContext, useInUseAcpModelProbes } from "../AiProvidersContext";
-import { AI_SURFACE_LABELS } from "../ai-provider-status";
+import { acpAgentIdOfProvider, AI_SURFACE_LABELS } from "../ai-provider-status";
 import { AI_FEATURE_SECTION_LABELS, settingsSectionId } from "../settings-nav";
 import { useSettingsContext } from "../SettingsContext";
 import { setActivePage } from "../useActivePage";
@@ -164,23 +164,19 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
   const enabledAgentIds = settings?.ai.acp.enabledAgentIds ?? [];
   const enabledAgentIdSet = new Set(enabledAgentIds);
   const acpChatProviderOptions = buildAcpProviderOptions(enabledAgentIds, acpDiscovery);
-  const agentIdFromProvider = (provider: string | undefined): string | null =>
-    provider !== undefined && provider.startsWith("acp:")
-      ? provider.slice("acp:".length)
-      : null;
   const acpModelsForProvider = (
     provider: string | undefined
   ): readonly AcpAgentModelOption[] | undefined => {
-    const id = agentIdFromProvider(provider);
+    const id = acpAgentIdOfProvider(provider);
     if (id === null) return undefined;
     return enabledAgentIdSet.has(id) ? acpModels[id] : [];
   };
   const acpModelsLoadingForProvider = (provider: string | undefined): boolean => {
-    const id = agentIdFromProvider(provider);
+    const id = acpAgentIdOfProvider(provider);
     return id !== null && enabledAgentIdSet.has(id) && acpModelsLoadingIds.includes(id);
   };
   const acpModelErrorForProvider = (provider: string | undefined): string | undefined => {
-    const id = agentIdFromProvider(provider);
+    const id = acpAgentIdOfProvider(provider);
     return id === null || !enabledAgentIdSet.has(id) ? undefined : acpModelErrors[id];
   };
 
@@ -289,8 +285,10 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
               // First time on: show the disclosure; the switch stays off
               // unless it is accepted. Turning on also clears a cost-safety
               // cutoff — the breaker turns enrichment off, so this is how
-              // the operator lifts it.
-              if (enabled && settings?.ai.consentAcceptedAt === null) {
+              // the operator lifts it. Settings not loaded yet counts as no
+              // consent: enabling blind would switch on a job main refuses
+              // to run, and never show the disclosure.
+              if (enabled && (settings?.ai.consentAcceptedAt ?? null) === null) {
                 setAiConsentDialogOpen(true);
                 return;
               }

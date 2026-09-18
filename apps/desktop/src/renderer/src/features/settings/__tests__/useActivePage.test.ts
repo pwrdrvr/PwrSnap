@@ -221,5 +221,12 @@ describe("useActiveRoute — main's settingsNavigate deep link", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(latest).toBe(before);
+
+    // …but asking for that route IS one, however the hash happens to spell it.
+    const request = latest?.request ?? -1;
+    await act(async () => {
+      setActivePage("ai-features", "usage");
+    });
+    expect(latest?.request).toBe(request + 1);
   });
 });

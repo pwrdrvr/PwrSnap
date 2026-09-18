@@ -2,7 +2,9 @@
 // `commit=false` while moving and `commit=true` on release, the strip
 // body scrubs (seek), the scrim / labels follow the range, and the
 // compact variant hides playhead + waveform. jsdom has no layout, so
-// the strip's bounding rect is stubbed to 800 px.
+// the strip is stubbed to 800 px twice over: `clientWidth`, which is
+// what SIZES the handles / ticks / playhead, and the bounding rect,
+// which is what MAPS pointer coordinates.
 
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -18,8 +20,10 @@ beforeAll(() => {
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 let rectSpy: ReturnType<typeof vi.spyOn> | null = null;
+let clientWidthSpy: ReturnType<typeof vi.spyOn> | null = null;
 
 beforeEach(() => {
+  clientWidthSpy = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(800);
   rectSpy = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
     () =>
       ({
@@ -45,6 +49,8 @@ afterEach(() => {
   container = null;
   rectSpy?.mockRestore();
   rectSpy = null;
+  clientWidthSpy?.mockRestore();
+  clientWidthSpy = null;
 });
 
 function render(
@@ -134,6 +140,70 @@ describe("VideoTimeline", () => {
     act(() => inHandle.click());
 
     expect(parentClicks).toBe(0);
+  });
+
+  // Regression: the strip is SIZED from a layout measure, never from
+  // `getBoundingClientRect()`. In the Library the timeline mounts
+  // inside `.psl__focus`, whose `psl-focus-in` entrance animates
+  // `scale(0.985)` -> `scale(1)`, and the rect is post-transform — so
+  // a rect-sized strip came up ~1.5% short and, because a
+  // ResizeObserver only reports layout boxes, never corrected. The
+  // out handle, the ticks and the playhead sat ~14px inside the right
+  // edge and the right scrim dimmed that band at FULL CLIP.
+  //
+  // Standing in for the entrance transform: the rect reads 788 (800 x
+  // 0.985) while the layout box is still 800. Everything sized must
+  // follow the 800.
+  test("sizes off the layout box, not a transform-polluted rect", () => {
+    rectSpy!.mockImplementation(
+      () =>
+        ({
+          x: 0,
+          y: 0,
+          left: 0,
+          top: 0,
+          right: 788,
+          bottom: 80,
+          width: 788,
+          height: 80,
+          toJSON: () => ({})
+        }) as DOMRect
+    );
+    const widths: number[] = [];
+    const { el } = render({
+      range: { start: 0, end: 16 },
+      durationSec: 16,
+      currentTime: 16,
+      onWidthChange: (w) => widths.push(w)
+    });
+
+    expect(widths.at(-1)).toBe(800);
+
+    // All four consumers of `width`, because the bug hit all four and a
+    // partial fix would leave the ruler describing a different space
+    // than the strip. Each reads 788 (or a proportional short) when the
+    // measure regresses.
+    //
+    // 1. The out handle's own 8px sit just inside the right edge...
+    const outHandle = el.querySelector('[data-testid="video-timeline-out"]') as HTMLElement;
+    expect(outHandle.style.left).toBe("792px");
+    // 2. ...and the right scrim collapses to zero rather than dimming a
+    //    band of live filmstrip at FULL CLIP.
+    const rightScrim = el.querySelector(".vtl__scrim.is-right") as HTMLElement;
+    expect(rightScrim.style.left).toBe("800px");
+    // 3. The last tick lands ON the right edge, not short of it.
+    const ticks = el.querySelectorAll<HTMLElement>(".vtl__tick");
+    expect(ticks[ticks.length - 1]?.style.left).toBe("800px");
+    // 4. The playhead at the end of the clip reaches it.
+    const head = el.querySelector('[data-testid="video-timeline-playhead"]') as HTMLElement;
+    expect(head.style.transform).toBe("translateX(800px)");
+
+    // The control, and the reason this reads as "the RIGHT handle is
+    // broken": `inX` is `secToPx(0, …)`, which is 0 at every width
+    // including the wrong one. This assertion cannot fail — it is here
+    // to say so, not to cover anything.
+    const inHandle = el.querySelector('[data-testid="video-timeline-in"]') as HTMLElement;
+    expect(inHandle.style.left).toBe("0px");
   });
 
   test("dragging a trim handle seeks the preview to the edge it lands on", () => {
@@ -335,6 +405,94 @@ describe("VideoTimeline", () => {
     // `transform`, not `left`: the head is written straight to the node
     // at up to 60 Hz, so it must stay off the layout path.
     expect(playhead.style.transform).toBe("translateX(200px)");
+  });
+
+  // The drag tooltip used to render inside `.vtl__strip`, which carries
+  // `overflow: hidden` for its border-radius — so a drag that reached
+  // either end had the tip's trailing digits sliced off at the strip
+  // edge ("0:01" where the value was "0:01.4"). Two halves to the fix
+  // and both are load-bearing: the tip has to sit OUTSIDE the clipping
+  // box, and it has to stay inside the strip once it is free of it,
+  // because the Library's `.psl__stage-wrap` clips at the stage edge and
+  // would take over where the strip left off.
+  describe("drag tooltip", () => {
+    // jsdom lays nothing out, so `offsetWidth` is 0 and the clamp is a
+    // no-op unless the tip's width is stubbed. 44px is about what the
+    // real `0:01.4` box measures at 10px mono + 6px padding + border.
+    const TIP_W = 44;
+    let tipSpy: ReturnType<typeof vi.spyOn> | null = null;
+    function stubTipWidth(px = TIP_W): void {
+      tipSpy = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(px);
+    }
+    afterEach(() => {
+      tipSpy?.mockRestore();
+      tipSpy = null;
+    });
+
+    /** Press the out handle at `clientX` and return the live tip. The
+     *  handle, not the strip body: that is the gesture in the report,
+     *  and it needs no `onSeek` to arm. `drag.sec` is the RAW pointer
+     *  time, so the tip reads the edge of the strip even where
+     *  `clampRange` holds the range back. */
+    function tipDuring(clientX: number): HTMLElement {
+      const { el } = render({ range: { start: 0, end: 16 } });
+      pointer(el.querySelector('[data-testid="video-timeline-out"]')!, "pointerdown", clientX);
+      return el.querySelector('[data-testid="video-timeline-tip"]') as HTMLElement;
+    }
+
+    test("renders outside the strip, so `overflow: hidden` cannot clip it", () => {
+      stubTipWidth();
+      const tip = tipDuring(400);
+      expect(tip).not.toBeNull();
+      expect(tip.closest(".vtl__strip")).toBeNull();
+      expect(tip.closest(".vtl__strip-wrap")).not.toBeNull();
+    });
+
+    test("is centred on the pointer away from the edges", () => {
+      stubTipWidth();
+      // 800px over 16s, pressed at 400px → 8s, dead centre. jsdom lays
+      // nothing out so `clientLeft` is 0 here; the border conversion is
+      // covered by the test below.
+      expect(tipDuring(400).style.left).toBe("400px");
+    });
+
+    // The tip's containing block is the WRAPPER, whose padding box is
+    // the strip's BORDER box — one border wider on each side than the
+    // padding box `tooltipX` is measured in. Without adding it back the
+    // tip drifts a border off the pointer, which is the same class of
+    // mistake as the ruler's inline margin.
+    test("converts out of the strip's padding box into the wrapper's", () => {
+      stubTipWidth();
+      const borderSpy = vi
+        .spyOn(Element.prototype, "clientLeft", "get")
+        .mockReturnValue(3);
+      try {
+        expect(tipDuring(400).style.left).toBe("403px");
+      } finally {
+        borderSpy.mockRestore();
+      }
+    });
+
+    test("stops at the right edge instead of hanging off it", () => {
+      stubTipWidth();
+      // Pressed at the far right, `translateX(-50%)` would put half the
+      // box past 800 — the case in the bug report.
+      expect(tipDuring(800).style.left).toBe(`${800 - TIP_W / 2}px`);
+    });
+
+    test("stops at the left edge too", () => {
+      stubTipWidth();
+      expect(tipDuring(0).style.left).toBe(`${TIP_W / 2}px`);
+    });
+
+    test("a strip narrower than the tip still yields a usable position", () => {
+      // Lower bound (half the tip) above upper bound (width - half):
+      // the clamp must not invert and put the tip off the far end.
+      stubTipWidth(900);
+      const left = Number(tipDuring(400).style.left.replace("px", ""));
+      expect(Number.isFinite(left)).toBe(true);
+      expect(left).toBe(450);
+    });
   });
 
   test("a playhead source moves the head without re-rendering, and keeps aria in step", () => {

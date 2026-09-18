@@ -607,7 +607,7 @@ transient, it is permanent until some unrelated real resize happens.
 That is what makes this class so hard to spot: it never self-heals, but
 it always disappears the moment you resize the window to look at it.
 
-Two confirmed instances, both in
+Three confirmed instances. The first two are in
 [Editor.tsx](apps/desktop/src/renderer/src/features/editor/Editor.tsx):
 
 - `canvasCssHeight` — the rect was the WRONG KIND. It is divided into
@@ -629,12 +629,51 @@ Two confirmed instances, both in
   replay of the staleness (it re-applies the entrance transform, forces
   re-measures under it, removes it, then asserts render-vs-live).
 
+The third is in
+[VideoTimeline.tsx](apps/desktop/src/renderer/src/features/shared/VideoTimeline.tsx),
+and it is the cleanest example of why the ResizeObserver is no rescue:
+
+- `width` — the strip's own size, measured once in a `useLayoutEffect`
+  with `getBoundingClientRect()` and thereafter only from a
+  `ResizeObserver`. The video stage mounts inside `.psl__focus`, so the
+  mount measure landed mid-`psl-focus-in` and came back ~1.5% short
+  (measured: **985 on a 1000px strip**); the finishing transform changed
+  no layout box, so the observer never fired again and the short value
+  was permanent. It sizes the out handle, the ticks, the playhead and
+  the filmstrip request, so the out handle and the ruler parked ~14px
+  inside the right edge and the right scrim dimmed that band even at
+  FULL CLIP. The IN handle is `left: 0` and looked perfect throughout —
+  which is how it reads as "the right handle is broken" rather than "the
+  strip is mis-measured". Drags were unaffected: `secAt()` re-reads a
+  live rect per pointer event, the same render-wrong/gesture-right split
+  as `canvasRect` above. Fixed by measuring `clientWidth` /
+  `contentBoxSize`; pinned by `VideoTimeline.test.tsx` §"sizes off the
+  layout box, not a transform-polluted rect", which stands the two boxes
+  apart (rect 788, layout 800) and asserts the sized output follows 800.
+
 Rules:
 
 - Sizing something that will be compared against a layout measure? Use a
   layout measure. `ResizeObserverEntry.borderBoxSize[0].blockSize` is the
   fractional, transform-independent equivalent of `rect.height` (block
   axis — height only under a horizontal writing mode).
+- **Sizing the coordinate space of absolutely-positioned children? That
+  space is the PADDING box** — `clientWidth` / `clientHeight`, and
+  nothing else. A bordered element fed its own border-box width puts the
+  far edge 1px per border past where `left: <width>` lands, and under
+  `overflow: hidden` the overshoot is clipped rather than visible. That
+  was a second, quieter defect in `VideoTimeline`: the out handle
+  rendered 6 of its 8px with its rounded corner cut off, while the in
+  handle at `left: 0` was flush.
+  - **`contentBoxSize` is the wrong box here**, and it is the one you
+    reach for after reading the rule above it. The content box excludes
+    padding; the containing block does not. Measured in Chromium on a
+    `border: 1px; padding: 0 10px` box: a child at `left: 0` lands on the
+    padding edge, `clientWidth` reads 498 and
+    `contentBoxSize[0].inlineSize` reads 478. Zero padding is the only
+    reason they ever look interchangeable, and a measure that is right at
+    mount and wrong after the first resize is worse than one that is
+    always wrong.
 - Mapping pointer coordinates? The post-transform rect is correct — but
   **a cached `DOMRect` is only valid until something moves**, and a
   ResizeObserver never tells you an element MOVED. Re-read at the moment

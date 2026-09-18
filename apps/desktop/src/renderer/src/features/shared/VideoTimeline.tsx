@@ -103,7 +103,20 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
 
   const stripRef = useRef<HTMLDivElement | null>(null);
   const playheadRef = useRef<HTMLDivElement | null>(null);
+  const tipRef = useRef<HTMLDivElement | null>(null);
   const [width, setWidth] = useState(0);
+  // The strip's left border width. The drag tooltip lives in a wrapper
+  // BESIDE the strip — it has to escape `.vtl__strip`'s `overflow:
+  // hidden` — and that wrapper's padding box is the strip's BORDER box,
+  // one border wider on each side than the padding box every other
+  // `left` here is measured in. Read from the DOM rather than written
+  // as `1`, so the stylesheet stays free to change the border.
+  const [stripBorderLeft, setStripBorderLeft] = useState(0);
+  // The tooltip's own width, so it can be held inside the strip instead
+  // of hanging off the end. Measured because CSS cannot reference an
+  // element's own width in a `calc()`, so `translateX(-50%)` has
+  // nothing to clamp against.
+  const [tipWidth, setTipWidth] = useState(0);
   const [drag, setDrag] = useState<{ mode: DragMode; sec: number } | null>(null);
   const dragRef = useRef<{ mode: DragMode; pointerId: number } | null>(null);
   // Where the drag started, so Escape can put things back. Captured at
@@ -124,11 +137,44 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
   }, []);
 
   // Measure the strip so px↔sec math and the frames request agree.
+  //
+  // A LAYOUT measure, deliberately — see AGENTS.md "Never mix a
+  // post-transform rect with a layout measure". In the Library the
+  // timeline mounts inside `.psl__focus`, whose 180ms `psl-focus-in`
+  // entrance animates `scale(0.985)` -> `scale(1)`, and
+  // `getBoundingClientRect()` is POST-TRANSFORM: a rect read inside
+  // that window comes back ~1.5% short (measured: 985 on a 1000px
+  // strip). A ResizeObserver reports LAYOUT boxes, so the finishing
+  // transform notifies nothing and the short value sticks for the life
+  // of the view — the out handle, the ticks and the playhead all park
+  // ~14px inside the right edge, and the right scrim dims that band
+  // even at FULL CLIP. It never self-heals, and it always disappears
+  // the moment you resize the window to look at it.
+  //
+  // `clientWidth` specifically, on BOTH paths. The handles, scrims and
+  // tooltip are absolutely positioned, and an absolutely-positioned
+  // child resolves `left` against its containing block's PADDING box —
+  // which is what `clientWidth` reports. Measured in Chromium on a
+  // `border: 1px; padding: 0 10px` box: a child at `left: 0` lands on
+  // the padding edge, `clientWidth` is 498 and
+  // `contentBoxSize[0].inlineSize` is 478. They agree here only because
+  // `.vtl__strip` has no padding, so reading the observer entry would
+  // make the mount measure and the resize measure disagree the moment
+  // one is added — right on open, wrong after the first resize. There
+  // is nothing to gain by it either: `Math.round` below discards the
+  // sub-pixel precision that is the entry's only advantage.
+  //
+  // The border-box width (what the rect reports) put `outX` 2px past
+  // the inner right edge, where the strip's `overflow: hidden` clipped
+  // the last 2px of the out handle along with its rounded corner.
   useLayoutEffect(() => {
     const el = stripRef.current;
     if (el === null) return;
     const post = (): void => {
-      const w = Math.round(el.getBoundingClientRect().width);
+      const w = Math.round(el.clientWidth);
+      // `clientLeft` IS the left border width — no magic number, and it
+      // follows the stylesheet on its own.
+      setStripBorderLeft(el.clientLeft);
       setWidth(w);
       onWidthChange?.(w);
     };
@@ -385,7 +431,26 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
 
   const dragging = drag !== null;
   const tooltipSec = drag?.sec ?? null;
+  const tooltipText = tooltipSec === null ? null : formatTimecode(tooltipSec);
   const tooltipX = tooltipSec === null ? 0 : secToPx(tooltipSec, durationSec, width);
+  // Centred on the pointer, then pushed back inside the strip at either
+  // end: the tip labels a position rather than points at one, so a
+  // legible box that stops at the edge beats a perfectly centred one
+  // with half its digits cut off. `stripBorderLeft` converts from the
+  // strip's padding box (where `tooltipX` lives) into the wrapper's,
+  // and the outer `max` keeps a strip narrower than the tip from
+  // producing a lower bound above its upper one.
+  const tipHalf = tipWidth / 2;
+  const tooltipLeft =
+    stripBorderLeft + Math.min(Math.max(tooltipX, tipHalf), Math.max(tipHalf, width - tipHalf));
+
+  // A LAYOUT measure (AGENTS.md), keyed on the text rather than run on
+  // every render: through a drag the timecode changes ten times a
+  // second while pointermove fires at frame rate.
+  useLayoutEffect(() => {
+    const el = tipRef.current;
+    setTipWidth(el === null ? 0 : el.offsetWidth);
+  }, [tooltipText]);
 
   const resetRange = (): void => {
     onRangeChange(fullRange(durationSec), true);
@@ -444,100 +509,113 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
         </div>
       )}
 
-      <div
-        ref={stripRef}
-        className="vtl__strip"
-        style={{ height: `${filmH + waveH}px` }}
-        onPointerDown={beginDrag("scrub")}
-        onPointerMove={onPointerMove}
-        onPointerUp={endDrag}
-        onPointerCancel={endDrag}
-        onLostPointerCapture={onLostPointerCapture}
-        role="slider"
-        aria-label={props.label ?? "Video timeline"}
-        aria-valuemin={0}
-        aria-valuemax={durationSec}
-        aria-valuenow={currentTime}
-        aria-valuetext={formatTimecode(currentTime)}
-        tabIndex={-1}
-      >
-        {/* Filmstrip lane */}
+      {/* The strip, and BESIDE it the drag tooltip. The tip cannot live
+          inside the strip: `.vtl__strip` carries `overflow: hidden` to
+          keep the filmstrip and the handles tucked inside its
+          border-radius, and that clipped the tip's trailing digits off
+          whenever a drag reached either end. */}
+      <div className="vtl__strip-wrap">
         <div
-          className="vtl__film"
-          style={
-            {
-              height: `${filmH}px`,
-              "--vtl-cells": frames?.frameCount ?? 24
-            } as CSSProperties
-          }
-          aria-hidden="true"
+          ref={stripRef}
+          className="vtl__strip"
+          style={{ height: `${filmH + waveH}px` }}
+          onPointerDown={beginDrag("scrub")}
+          onPointerMove={onPointerMove}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+          onLostPointerCapture={onLostPointerCapture}
+          role="slider"
+          aria-label={props.label ?? "Video timeline"}
+          aria-valuemin={0}
+          aria-valuemax={durationSec}
+          aria-valuenow={currentTime}
+          aria-valuetext={formatTimecode(currentTime)}
+          tabIndex={-1}
         >
-          {frames !== null ? (
-            <img
-              className="vtl__film-img"
-              src={frames.url}
-              alt=""
-              draggable={false}
-              decoding="async"
+          {/* Filmstrip lane */}
+          <div
+            className="vtl__film"
+            style={
+              {
+                height: `${filmH}px`,
+                "--vtl-cells": frames?.frameCount ?? 24
+              } as CSSProperties
+            }
+            aria-hidden="true"
+          >
+            {frames !== null ? (
+              <img
+                className="vtl__film-img"
+                src={frames.url}
+                alt=""
+                draggable={false}
+                decoding="async"
+              />
+            ) : (
+              <div className="vtl__film-empty" />
+            )}
+          </div>
+
+          {/* Waveform lane */}
+          {!compact && (
+            <div className="vtl__wave" style={{ height: `${waveH}px` }} aria-hidden="true">
+              {audioBlob instanceof Blob ? (
+                <SequenceWaveform audioBlob={audioBlob} height={waveH} className="vtl__wave-surfer" />
+              ) : (
+                <div className={`vtl__wave-empty${audioBlob === undefined ? " is-loading" : ""}`} />
+              )}
+            </div>
+          )}
+
+          {/* Dimming scrim outside the range */}
+          <div className="vtl__scrim is-left" style={{ width: `${inX}px` }} aria-hidden="true" />
+          <div
+            className="vtl__scrim is-right"
+            style={{ left: `${outX}px`, right: 0 }}
+            aria-hidden="true"
+          />
+
+          {/* In / out handles */}
+          <button
+            type="button"
+            className={`vtl__handle is-in${drag?.mode === "in" ? " is-active" : ""}`}
+            style={{ left: `${inX}px` }}
+            title="Trim in — drag, or press I at the playhead"
+            aria-label={`Trim in ${formatTimecode(range.start)}`}
+            onPointerDown={beginDrag("in")}
+            data-testid="video-timeline-in"
+          />
+          <button
+            type="button"
+            className={`vtl__handle is-out${drag?.mode === "out" ? " is-active" : ""}`}
+            style={{ left: `${outX - HANDLE_W}px` }}
+            title="Trim out — drag, or press O at the playhead"
+            aria-label={`Trim out ${formatTimecode(range.end)}`}
+            onPointerDown={beginDrag("out")}
+            data-testid="video-timeline-out"
+          />
+
+          {/* Playhead */}
+          {!compact && (
+            <div
+              ref={playheadRef}
+              className="vtl__playhead"
+              aria-hidden="true"
+              data-testid="video-timeline-playhead"
             />
-          ) : (
-            <div className="vtl__film-empty" />
           )}
         </div>
 
-        {/* Waveform lane */}
-        {!compact && (
-          <div className="vtl__wave" style={{ height: `${waveH}px` }} aria-hidden="true">
-            {audioBlob instanceof Blob ? (
-              <SequenceWaveform audioBlob={audioBlob} height={waveH} className="vtl__wave-surfer" />
-            ) : (
-              <div className={`vtl__wave-empty${audioBlob === undefined ? " is-loading" : ""}`} />
-            )}
-          </div>
-        )}
-
-        {/* Dimming scrim outside the range */}
-        <div className="vtl__scrim is-left" style={{ width: `${inX}px` }} aria-hidden="true" />
-        <div
-          className="vtl__scrim is-right"
-          style={{ left: `${outX}px`, right: 0 }}
-          aria-hidden="true"
-        />
-
-        {/* In / out handles */}
-        <button
-          type="button"
-          className={`vtl__handle is-in${drag?.mode === "in" ? " is-active" : ""}`}
-          style={{ left: `${inX}px` }}
-          title="Trim in — drag, or press I at the playhead"
-          aria-label={`Trim in ${formatTimecode(range.start)}`}
-          onPointerDown={beginDrag("in")}
-          data-testid="video-timeline-in"
-        />
-        <button
-          type="button"
-          className={`vtl__handle is-out${drag?.mode === "out" ? " is-active" : ""}`}
-          style={{ left: `${outX - HANDLE_W}px` }}
-          title="Trim out — drag, or press O at the playhead"
-          aria-label={`Trim out ${formatTimecode(range.end)}`}
-          onPointerDown={beginDrag("out")}
-          data-testid="video-timeline-out"
-        />
-
-        {/* Playhead */}
-        {!compact && (
-          <div
-            ref={playheadRef}
-            className="vtl__playhead"
-            aria-hidden="true"
-            data-testid="video-timeline-playhead"
-          />
-        )}
-
         {/* Timecode tooltip while dragging */}
-        {tooltipSec !== null && (
-          <div className="vtl__tip" style={{ left: `${tooltipX}px` }} aria-hidden="true">
-            {formatTimecode(tooltipSec)}
+        {tooltipText !== null && (
+          <div
+            ref={tipRef}
+            className="vtl__tip"
+            style={{ left: `${tooltipLeft}px` }}
+            aria-hidden="true"
+            data-testid="video-timeline-tip"
+          >
+            {tooltipText}
           </div>
         )}
       </div>

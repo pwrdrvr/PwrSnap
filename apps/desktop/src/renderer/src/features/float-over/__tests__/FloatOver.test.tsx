@@ -479,6 +479,11 @@ describe("FloatOver asset mode", () => {
   // the handles go, which makes the trim UI useless.
   test("dragging a trim handle updates the preview and the global-shortcut export range", async () => {
     // jsdom has no layout; pin the strip to 800 px so px↔sec math runs.
+    // Both boxes: the timeline SIZES off `clientWidth` (a layout measure
+    // — see VideoTimeline.tsx) and MAPS pointers off the rect. Without
+    // the first the strip measures 0, `framesSpecFor` returns null, and
+    // this test silently stops exercising the `video:frames` request.
+    const clientWidth = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(800);
     const rect = vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
       x: 0,
       y: 0,
@@ -559,6 +564,7 @@ describe("FloatOver asset mode", () => {
       });
     } finally {
       rect.mockRestore();
+      clientWidth.mockRestore();
     }
   });
 

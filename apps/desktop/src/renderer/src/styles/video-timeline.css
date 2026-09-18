@@ -211,10 +211,15 @@
   -webkit-user-select: none;
 }
 
+/* Ticks are positioned with the same px↔sec math as the handles, and
+   that math is against the strip's CONTENT box (see the measure in
+   VideoTimeline.tsx). This lane has no border of its own, so the 1px
+   inline margin is the strip's border width — without it the ruler is
+   2px wider than, and 1px left of, the space it is describing. */
 .vtl__ticks {
   position: relative;
   height: 12px;
-  margin: 0;
+  margin: 0 1px;
 }
 
 .vtl__tick {
@@ -240,6 +245,19 @@
   font-style: normal;
   color: var(--text-muted);
   white-space: nowrap;
+}
+
+/* Holds the strip and the drag tooltip as siblings, so the tip escapes
+   `.vtl__strip`'s `overflow: hidden` — which exists to keep the
+   filmstrip and the handles inside the strip's border-radius, and which
+   was cutting the tip's trailing digits off at either end of a drag.
+   No border, no padding, no overflow of its own: its padding box is
+   exactly the strip's BORDER box, which is the 1px-per-side offset
+   `stripBorderLeft` puts back in VideoTimeline.tsx. */
+.vtl__strip-wrap {
+  position: relative;
+  width: 100%;
+  min-width: 0;
 }
 
 .vtl__strip {

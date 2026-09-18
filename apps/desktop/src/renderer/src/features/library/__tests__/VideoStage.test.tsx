@@ -248,6 +248,10 @@ describe("VideoStage timeline drag vs playback", () => {
   test("Escape-cancel resumes against the restored range, not the abandoned one", () => {
     const media = stubMedia();
     // jsdom has no layout; 800 px over a 10 s clip → 80 px per second.
+    // Both boxes — see `stubRect` below for why.
+    const clientWidth = vi
+      .spyOn(Element.prototype, "clientWidth", "get")
+      .mockReturnValue(800);
     const rect = vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
       x: 0,
       y: 0,
@@ -283,6 +287,7 @@ describe("VideoStage timeline drag vs playback", () => {
       expect(el.currentTime).toBe(0);
     } finally {
       rect.mockRestore();
+      clientWidth.mockRestore();
       media.restore();
     }
   });
@@ -398,6 +403,9 @@ describe("VideoStage playhead loop", () => {
 
   function stubRect(widthPx: number): void {
     // jsdom has no layout; 800 px over a 10 s clip → 80 px per second.
+    // Both boxes: the timeline SIZES off `clientWidth` (a layout
+    // measure — see VideoTimeline.tsx) and MAPS pointers off the rect.
+    vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(widthPx);
     vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
       x: 0,
       y: 0,

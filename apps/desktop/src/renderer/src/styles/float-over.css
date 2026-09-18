@@ -1,75 +1,5 @@
 /* PwrSnap Float-Over — capture confirmation toast */
 
-/* ---- Faux mac desktop wallpaper for context ---- */
-.fo-desktop {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
-  background:
-    radial-gradient(1200px 700px at 18% 12%, color-mix(in srgb, var(--accent) 8%, transparent) 0%, transparent 55%),
-    radial-gradient(900px 600px at 88% 92%, color-mix(in srgb, var(--brand-blue) 6%, transparent) 0%, transparent 55%),
-    linear-gradient(140deg, var(--bg-app) 0%, var(--bg-panel-hover) 50%, var(--bg-app) 100%);
-  font-family: var(--font-sans);
-}
-.fo-desktop::before {
-  content: "";
-  position: absolute; inset: 0;
-  background-image:
-    linear-gradient(color-mix(in srgb, var(--surface-highlight) 1%, transparent) 1px, transparent 1px),
-    linear-gradient(90deg, color-mix(in srgb, var(--surface-highlight) 1%, transparent) 1px, transparent 1px);
-  background-size: 36px 36px;
-  pointer-events: none;
-}
-.fo-menubar {
-  position: absolute; top: 0; left: 0; right: 0;
-  height: 26px;
-  background: color-mix(in srgb, var(--bg-app) 72%, transparent);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border-bottom: 1px solid color-mix(in srgb, var(--surface-highlight) 4%, transparent);
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 0 14px;
-  font: 500 12px/1 var(--font-sans);
-  color: var(--text-secondary);
-  z-index: 5;
-}
-.fo-menubar__l { display: flex; gap: 16px; align-items: center; }
-.fo-menubar__r { display: flex; gap: 14px; align-items: center; color: var(--text-muted); font-size: 11px; }
-.fo-menubar__active { color: var(--text-primary); font-weight: 600; }
-.fo-menubar__pwr {
-  display: inline-flex; align-items: center; gap: 6px;
-  color: var(--accent-bright);
-}
-.fo-menubar__pwr-dot {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: var(--success);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--success) 18%, transparent);
-}
-
-/* fake window underneath toast, for spatial context */
-.fo-window {
-  position: absolute;
-  border-radius: 10px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border-subtle);
-  box-shadow: 0 24px 64px color-mix(in srgb, var(--shadow-base) 50%, transparent);
-  overflow: hidden;
-}
-.fo-window img { display: block; width: 100%; height: 100%; object-fit: cover; opacity: 0.82; }
-
-/* dock-ish bottom hint */
-.fo-dock {
-  position: absolute;
-  bottom: 14px; left: 50%; transform: translateX(-50%);
-  height: 56px; width: 360px;
-  background: color-mix(in srgb, var(--bg-panel-hover) 55%, transparent);
-  border: 1px solid var(--border-subtle);
-  border-radius: 14px;
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-}
-
 /* ============================================================
    FLOAT-OVER TOAST
    ============================================================ */
@@ -782,50 +712,6 @@
   color: var(--text-primary);
   padding: 2px 4px;
   border-radius: 3px;
-}
-
-/* ============================================================
-   DESIGN-CANVAS ARTBOARD — desktop frame to display variants
-   ============================================================ */
-.fo-frame {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  border-radius: 12px;
-  overflow: hidden;
-  background: var(--bg-app);
-  border: 1px solid var(--border-default);
-  box-shadow: var(--shadow-lg);
-}
-
-/* annotated callouts on artboards */
-.fo-callout {
-  position: absolute;
-  background: var(--accent);
-  color: var(--button-text-on-accent);
-  font: 700 10px/1 var(--font-mono);
-  padding: 4px 7px;
-  border-radius: 4px;
-  letter-spacing: 0.02em;
-  pointer-events: none;
-  z-index: 100;
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 40%, transparent);
-}
-.fo-callout::after {
-  content: "";
-  position: absolute;
-  width: 6px; height: 6px;
-  background: var(--accent);
-  transform: rotate(45deg);
-}
-.fo-callout.is-bottom-arrow::after {
-  bottom: -3px; left: 12px;
-}
-.fo-callout.is-top-arrow::after {
-  top: -3px; left: 12px;
-}
-.fo-callout.is-left-arrow::after {
-  left: -3px; top: 9px;
 }
 
 /* Post-capture source receipt — the chips under the header that say

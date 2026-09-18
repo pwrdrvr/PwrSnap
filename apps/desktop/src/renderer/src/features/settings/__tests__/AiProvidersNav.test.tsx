@@ -8,8 +8,11 @@ import { act, createElement, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import type { AcpAgentDiscovery, DesktopCodexDiscoverySnapshot, Settings } from "@pwrsnap/shared";
+import { SETTINGS_PAGE_SUBS } from "@pwrsnap/shared";
 import { AiProvidersProvider } from "../AiProvidersContext";
+import { AIFeaturesPage } from "../pages/AIFeaturesPage";
 import { AIProvidersPage } from "../pages/AIProvidersPage";
+import { AI_FEATURE_SECTION_LABELS, settingsSectionId } from "../settings-nav";
 import { Sidebar } from "../Sidebar";
 import type { SecretMap, UseSettingsValue } from "../useSettings";
 import { baseSettings } from "./settings-fixture";
@@ -223,9 +226,9 @@ describe("Settings sidebar — AI Providers children", () => {
   test("each child shows its status as a dot AND a word", async () => {
     await render(createElement(Sidebar, { active: "ai", sub: null }));
 
-    const labels = Array.from(container?.querySelectorAll(".pss__sb-sublabel") ?? []).map(
-      (el) => el.textContent
-    );
+    const labels = Array.from(
+      container?.querySelectorAll("#pss-sb-sublist-ai .pss__sb-sublabel") ?? []
+    ).map((el) => el.textContent);
     expect(labels).toEqual(["Codex", "Grok", "Kimi Code CLI", "Qwen Code", "Gemini CLI", "OpenAI"]);
 
     expect([dotTone(subRow("Codex")), chip(subRow("Codex"))]).toEqual(["ok", null]);
@@ -399,8 +402,10 @@ describe("AI Providers page — hub and provider screens", () => {
   test("the hub lists every provider instead of every provider's settings", async () => {
     const page = await render(createElement(AIProvidersPage, { sub: null }));
 
-    expect(page.textContent).toContain("Backends & credentials");
-    expect(page.textContent).toContain("Capture enrichment");
+    expect(page.querySelector("h1")?.textContent).toBe("AI Providers");
+    // What PwrSnap does WITH a provider lives on AI Features now.
+    expect(page.textContent).not.toContain("Default agents");
+    expect(page.textContent).not.toContain("Enrich new captures");
     const names = Array.from(page.querySelectorAll(".pss__prov-name")).map((el) => el.textContent);
     expect(names).toEqual(["Codex", "Grok", "Kimi Code CLI", "Qwen Code", "Gemini CLI", "OpenAI"]);
     // The per-provider controls moved to their own screens.
@@ -424,7 +429,7 @@ describe("AI Providers page — hub and provider screens", () => {
     expect(page.querySelector("h1")?.textContent).toBe("Codex");
     expect(page.textContent).toContain("Codex selection");
     expect(page.textContent).toContain("Auth profile");
-    expect(page.textContent).not.toContain("Capture enrichment");
+    expect(page.textContent).not.toContain("Enrich new captures");
     // Nothing is routed to an ACP agent, so every job runs on Codex.
     expect(page.querySelector(".pss__prov-strip-items")?.textContent).toBe(
       "Capture captions, tags & OCR · Library chat · Sizzle Reel chat"
@@ -445,9 +450,9 @@ describe("AI Providers page — hub and provider screens", () => {
     expect(page.querySelector(".pss__prov-strip-items")?.textContent).toBe("Library chat");
 
     await click(
-      Array.from(page.querySelectorAll("button")).find((b) => b.textContent === "Edit routing")
+      Array.from(page.querySelectorAll("button")).find((b) => b.textContent === "Change defaults")
     );
-    expect(window.location.hash).toBe("#stage=settings&page=ai");
+    expect(window.location.hash).toBe("#stage=settings&page=ai-features&sub=default-agents");
   });
 
   test("the OpenAI screen carries the key and no routing strip", async () => {
@@ -522,5 +527,62 @@ describe("AI Providers page — hub and provider screens", () => {
     await flush();
 
     expect([dotTone(subRow("Kimi Code CLI")), chip(subRow("Kimi Code CLI"))]).toEqual(["ok", null]);
+  });
+});
+
+describe("AI Features — jump-to sections", () => {
+  test("the sidebar lists the page's sections, with no status of their own", async () => {
+    await render(createElement(Sidebar, { active: "ai-features", sub: null }));
+    const rows = Array.from(
+      container?.querySelectorAll("#pss-sb-sublist-ai-features .pss__sb-sub") ?? []
+    );
+    expect(rows.map((row) => row.querySelector(".pss__sb-sublabel")?.textContent)).toEqual([
+      "Default agents",
+      "Enrichment",
+      "Usage",
+      "Guidance"
+    ]);
+    for (const row of rows) {
+      expect([dotTone(row), chip(row)]).toEqual([null, null]);
+    }
+    // The AI Providers group is still collapsed, so nothing was discovered.
+    expect(refreshCodexMock).not.toHaveBeenCalled();
+
+    await click(rows[2]);
+    expect(window.location.hash).toBe("#stage=settings&page=ai-features&sub=usage");
+  });
+
+  test("every section link names a card on the page", async () => {
+    const page = await render(createElement(AIFeaturesPage, { sub: null, request: 0 }));
+    for (const sub of SETTINGS_PAGE_SUBS["ai-features"]) {
+      const card = page.querySelector(`#${settingsSectionId("ai-features", sub)}`);
+      expect(card?.querySelector(".pss__card-title")?.textContent).toBe(
+        AI_FEATURE_SECTION_LABELS[sub]
+      );
+    }
+  });
+
+  test("a section expands its card and takes focus — again on a repeat request", async () => {
+    const page = await render(createElement(AIFeaturesPage, { sub: "usage", request: 0 }));
+    const card = (): Element | null =>
+      page.querySelector(`#${settingsSectionId("ai-features", "usage")}`);
+    const header = (): Element | null | undefined => card()?.querySelector(".pss__card-hdr");
+    expect(document.activeElement).toBe(header());
+
+    // Collapsed and left behind, then asked for again (a second click on
+    // "Usage"): it has to come back open and focused.
+    await click(header());
+    expect(card()?.classList.contains("is-collapsed")).toBe(true);
+    (document.activeElement as HTMLElement | null)?.blur();
+    await rerender(createElement(AIFeaturesPage, { sub: "usage", request: 1 }));
+    expect(card()?.classList.contains("is-collapsed")).toBe(false);
+    expect(document.activeElement).toBe(header());
+  });
+
+  test("the Default agents intro sits inside the padded body, not on the card edge", async () => {
+    const page = await render(createElement(AIFeaturesPage, { sub: null, request: 0 }));
+    const intro = page.querySelector(".pss__role-intro");
+    expect(intro?.parentElement?.classList.contains("pss__roles")).toBe(true);
+    expect(intro?.closest(".pss__card-body")).not.toBeNull();
   });
 });

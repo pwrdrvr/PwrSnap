@@ -4,12 +4,12 @@
 // on `hashchange` so deep-link navigation updates the visible page
 // without a full reload.
 //
-// `sub` is a screen WITHIN a page — today only the AI Providers page has
-// them (one per provider, reached from the sidebar's child rows). It is
-// validated against the page's own sub-id set (`SETTINGS_PAGE_SUBS` in
-// @pwrsnap/shared — the same list main checks `settings:open` against); an
-// unknown or misplaced sub drops to the page's hub rather than rendering a
-// blank screen.
+// `sub` is a place WITHIN a page, reached from the sidebar's child rows:
+// a provider screen on AI Providers, or a section AI Features scrolls to.
+// It is validated against the page's own sub-id set (`SETTINGS_PAGE_SUBS`
+// in @pwrsnap/shared — the same list main checks `settings:open` against);
+// an unknown or misplaced sub drops to the page's hub rather than rendering
+// a blank screen.
 //
 // Two navigation drivers feed this hook:
 //   1. In-renderer sidebar clicks → `setActivePage` (below) sets the
@@ -35,6 +35,18 @@ export type SettingsRoute = {
   sub: string | null;
 };
 
+export type ActiveSettingsRoute = SettingsRoute & {
+  /** Bumps on every navigation request, INCLUDING a request for the route
+   *  already shown (a re-click of the current sidebar row). A section sub
+   *  keys its scroll on this, so clicking "Usage" again after scrolling
+   *  away brings the card back. */
+  request: number;
+};
+
+/** Fired by `setActivePage` when asked for the route already on the hash:
+ *  assigning an unchanged hash fires no `hashchange`. */
+const ROUTE_REREQUEST_EVENT = "pss:settings-route-rerequest";
+
 /**
  * Pure parser. Extracted so it's trivially testable without a DOM —
  * the hook just wraps this + a `hashchange` listener.
@@ -51,16 +63,27 @@ export function routeFromHash(hash: string): SettingsRoute {
   return { page, sub: isSettingsSub(page, sub) ? sub : null };
 }
 
-export function useActiveRoute(): SettingsRoute {
-  const [route, setRoute] = useState<SettingsRoute>(() => routeFromHash(window.location.hash));
+export function useActiveRoute(): ActiveSettingsRoute {
+  const [route, setRoute] = useState<ActiveSettingsRoute>(() => ({
+    ...routeFromHash(window.location.hash),
+    request: 0
+  }));
   useEffect(() => {
     const onHashChange = (): void => {
       const next = routeFromHash(window.location.hash);
       // Keep the same object when nothing moved so consumers keyed on the
       // route don't re-run for an unrelated hash write.
-      setRoute((prev) => (prev.page === next.page && prev.sub === next.sub ? prev : next));
+      setRoute((prev) =>
+        prev.page === next.page && prev.sub === next.sub
+          ? prev
+          : { ...next, request: prev.request + 1 }
+      );
+    };
+    const onRerequest = (): void => {
+      setRoute((prev) => ({ ...prev, request: prev.request + 1 }));
     };
     window.addEventListener("hashchange", onHashChange);
+    window.addEventListener(ROUTE_REREQUEST_EVENT, onRerequest);
     const unsubscribe = subscribe(
       EVENT_CHANNELS.settingsNavigate,
       (payload: unknown) => {
@@ -86,6 +109,7 @@ export function useActiveRoute(): SettingsRoute {
     );
     return () => {
       window.removeEventListener("hashchange", onHashChange);
+      window.removeEventListener(ROUTE_REREQUEST_EVENT, onRerequest);
       unsubscribe();
     };
   }, []);
@@ -97,8 +121,13 @@ export function useActiveRoute(): SettingsRoute {
  *  `useActiveRoute`. Omitting `sub` lands on the page's hub — which is also
  *  what a main-process `settings:open { page }` deep link does. */
 export function setActivePage(page: SettingsPage, sub?: string): void {
-  window.location.hash =
+  const hash =
     sub === undefined
       ? `stage=settings&page=${page}`
       : `stage=settings&page=${page}&sub=${encodeURIComponent(sub)}`;
+  if (window.location.hash === `#${hash}`) {
+    window.dispatchEvent(new Event(ROUTE_REREQUEST_EVENT));
+    return;
+  }
+  window.location.hash = hash;
 }

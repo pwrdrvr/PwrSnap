@@ -152,8 +152,22 @@ test("settings:open with a page (and sub) deep-links and re-navigates the existi
       /page=ai$/
     );
     await settingsWindow
-      .locator('h1.pss__main-title:has-text("Backends & credentials")')
+      .locator('h1.pss__main-title:text-is("AI Providers")')
       .waitFor({ timeout: 30_000 });
+
+    // An AI Features section keeps that page rendered and brings the
+    // section's card into view.
+    const fifth = await app.dispatch("settings:open", { page: "ai-features", sub: "usage" });
+    expect(fifth.ok).toBe(true);
+    await expect.poll(() => settingsWindow.url(), { timeout: 30_000 }).toContain(
+      "page=ai-features&sub=usage"
+    );
+    await settingsWindow
+      .locator('h1.pss__main-title:text-is("AI Features")')
+      .waitFor({ timeout: 30_000 });
+    await expect(settingsWindow.locator("#pss-section-ai-features-usage")).toBeInViewport({
+      timeout: 30_000
+    });
 
     // Sanity-check the count: deep-link nav must not spawn a 2nd window.
     expect(countSettingsWindows(app)).toBe(1);

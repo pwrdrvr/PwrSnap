@@ -8,19 +8,23 @@ import type { AcpAgentDiscovery } from "@pwrsnap/shared";
 import type { Settings } from "@pwrsnap/shared";
 import {
   AcpAgentList,
+  buildAcpOverridePatch,
+  CodexCandidates,
+  SecretKeyControl
+} from "../AIProvidersPage";
+import {
   AiSurfaceDefaultControl,
   type AiSurfaceDefaultControlProps,
-  buildAcpProviderOptions,
-  buildAcpOverridePatch,
-  enabledAcpAgentIdsForModelProbes,
+  buildAcpProviderOptions
+} from "../AIFeaturesPage";
+import {
   formatCostMicros,
   formatLastSetAt,
   formatNextTokenAt,
   formatTokenCount,
-  formatUsageTokenBreakdown,
-  CodexCandidates,
-  SecretKeyControl
-} from "../AIProvidersPage";
+  formatUsageTokenBreakdown
+} from "../ai-format";
+import { enabledAcpAgentIdsForModelProbes } from "../../ai-provider-status";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =

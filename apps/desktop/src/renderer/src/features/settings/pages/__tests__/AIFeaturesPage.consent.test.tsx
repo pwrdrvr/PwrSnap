@@ -4,7 +4,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import type { Settings } from "@pwrsnap/shared";
-import { AIProvidersPage } from "../AIProvidersPage";
+import { AIFeaturesPage } from "../AIFeaturesPage";
 import { AiProvidersProvider } from "../../AiProvidersContext";
 import type { UseSettingsValue } from "../../useSettings";
 
@@ -86,7 +86,11 @@ async function renderPage(consentAcceptedAt: string | null): Promise<HTMLDivElem
   root = createRoot(container);
   await act(async () => {
     root?.render(
-      createElement(AiProvidersProvider, null, createElement(AIProvidersPage, { sub: null }))
+      createElement(
+        AiProvidersProvider,
+        null,
+        createElement(AIFeaturesPage, { sub: null, request: 0 })
+      )
     );
   });
   await flushEffects();
@@ -123,11 +127,11 @@ afterEach(async () => {
   clearSecretMock.mockClear();
 });
 
-describe("AIProvidersPage — enrichment consent", () => {
+describe("AIFeaturesPage — enrichment consent", () => {
   test("renders existing partial settings without a storage section", async () => {
     const page = await renderPage(null);
 
-    expect(page.textContent).toContain("Library Chat");
+    expect(page.textContent).toContain("Guidance");
     expect(page.textContent).toContain("Where your chats live.");
   });
 

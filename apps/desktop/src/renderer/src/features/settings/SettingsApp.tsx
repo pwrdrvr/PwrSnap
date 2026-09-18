@@ -14,6 +14,7 @@ import type { SettingsPage } from "@pwrsnap/shared";
 import { AiProvidersProvider, useAiProvidersContext } from "./AiProvidersContext";
 import { SettingsProvider } from "./SettingsContext";
 import { SETTINGS_PAGES_FLAT } from "./settings-categories";
+import { settingsNavChildren } from "./settings-nav";
 import { SettingsTitleBar } from "./SettingsTitleBar";
 import { Sidebar } from "./Sidebar";
 import { setActivePage, useActiveRoute } from "./useActivePage";
@@ -21,6 +22,7 @@ import { HotkeysPage } from "./pages/HotkeysPage";
 import { AboutPage } from "./pages/AboutPage";
 import { GeneralPage } from "./pages/GeneralPage";
 import { UpdatesPage } from "./pages/UpdatesPage";
+import { AIFeaturesPage } from "./pages/AIFeaturesPage";
 import { AIProvidersPage } from "./pages/AIProvidersPage";
 import { LocalAgentsPage } from "./pages/LocalAgentsPage";
 import { StoragePage } from "./pages/StoragePage";
@@ -39,7 +41,7 @@ export function SettingsApp(): ReactElement {
 }
 
 function SettingsShell(): ReactElement {
-  const { page: active, sub } = useActiveRoute();
+  const { page: active, sub, request } = useActiveRoute();
 
   // `<main>` outlives every page switch, so without this a page opened
   // from a scrolled one lands mid-way down. Layout effect: reset before
@@ -62,6 +64,9 @@ function SettingsShell(): ReactElement {
       break;
     case "ai":
       page = <AIProvidersPage sub={sub} />;
+      break;
+    case "ai-features":
+      page = <AIFeaturesPage sub={sub} request={request} />;
       break;
     case "local-agents":
       page = <LocalAgentsPage />;
@@ -116,8 +121,8 @@ function SettingsRouteTitleBar({
   // Crumb label from the same catalog the sidebar renders, so the two
   // can't name a screen differently.
   const subLabel =
-    sub !== null && active === "ai"
-      ? statuses.find((status) => status.sub === sub)?.label
+    sub !== null
+      ? settingsNavChildren(active, statuses).find((child) => child.sub === sub)?.label
       : undefined;
   return subLabel !== undefined ? (
     <SettingsTitleBar

@@ -455,6 +455,15 @@
 .pss__card-hdr:hover {
   background: var(--bg-panel-hover);
 }
+/* Keyboard focus, and where a sidebar jump link parks focus. Inset rather
+   than an outline because `.pss__card` clips its overflow — and on-brand
+   rather than the browser's default blue ring. */
+.pss__card-hdr:focus-visible {
+  outline: none;
+  box-shadow:
+    inset 0 0 0 1px var(--accent),
+    inset 0 0 0 4px var(--accent-shadow);
+}
 .pss__card-hdr-action {
   display: inline-flex;
   align-items: center;
@@ -490,6 +499,34 @@
 }
 .pss__card.is-collapsed .pss__card-body {
   display: none;
+}
+/* A sidebar jump link scrolls its card to the top of the pane; leave a
+   little air above it rather than parking the border on the edge. */
+.pss__card {
+  scroll-margin-top: 20px;
+}
+
+/* Inline link inside running copy (a page's header text pointing at a
+   sibling page). A button, since it routes in-app rather than to a URL. */
+.pss__text-link {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: var(--accent-bright);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent-bright) 40%, transparent);
+  text-underline-offset: 3px;
+}
+.pss__text-link:hover {
+  text-decoration-color: currentColor;
+}
+.pss__text-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 
 /* ============================================================
@@ -1969,7 +2006,15 @@
 }
 .pss__role-control b { font: 600 12px/1 var(--font-sans); color: var(--accent-bright); }
 
-/* Short intro line at the top of the consolidated Job-routing card. */
+/* AI Features → Default agents body. `.pss__card-body` has no padding of
+   its own (every other card child is a self-padding Row), so the intro and
+   the job rows carry the same 20px inset a Row does — without it the intro
+   text sat flush against the card's left edge. */
+.pss__roles {
+  padding: 16px 20px 20px;
+}
+
+/* Short intro line at the top of the Default agents card. */
 .pss__role-intro {
   margin: 0 0 12px;
   font: 500 12px/1.5 var(--font-sans);

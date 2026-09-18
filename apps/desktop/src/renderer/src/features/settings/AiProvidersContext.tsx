@@ -15,9 +15,10 @@
 // cached discovery publications (see AGENTS.md "Installed-agent discovery
 // is store-owned"); only the page's explicit Refresh passes `force: true`.
 //
-// `acp:models` probes are NOT issued from here. They spawn the agent, so
-// they stay on the page (in-use agents only); the provider just holds the
-// results so the sidebar can reflect a failure the page already found.
+// `acp:models` probes are NOT issued by the provider. They spawn the agent,
+// so only the two AI pages issue them, through `useInUseAcpModelProbes`
+// (in-use agents only); the provider just holds the results so the sidebar
+// can reflect a failure a page already found.
 
 import {
   createContext,
@@ -36,7 +37,11 @@ import type {
   DesktopCodexDiscoverySnapshot
 } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
-import { describeAiProviders, type AiProviderStatus } from "./ai-provider-status";
+import {
+  describeAiProviders,
+  enabledAcpAgentIdsForModelProbes,
+  type AiProviderStatus
+} from "./ai-provider-status";
 import { useSettingsContext } from "./SettingsContext";
 
 export type AiProvidersValue = {
@@ -247,4 +252,29 @@ export function useAiProvidersContext(): AiProvidersValue {
     throw new Error("useAiProvidersContext must be called within <AiProvidersProvider>");
   }
   return value;
+}
+
+/**
+ * Probe the model list of every enabled agent a job is routed to, once per
+ * Settings window, and return those agent ids (for a Refresh to re-probe).
+ *
+ * The first probe bypasses the persisted model cache, so it doubles as the
+ * runtime availability / sign-in check — without it a logged-out or retired
+ * CLI looks selectable until the next capture fails. Both AI pages call this:
+ * AI Features needs the model lists for its pickers, and AI Providers needs
+ * the result so a provider's status is honest on the page that lists it.
+ */
+export function useInUseAcpModelProbes(): readonly string[] {
+  const { settings } = useSettingsContext();
+  const { acpModels, acpModelsLoadingIds, fetchAcpModels } = useAiProvidersContext();
+  const key = [...new Set(enabledAcpAgentIdsForModelProbes(settings))].sort().join(",");
+  const ids = useMemo(() => (key.length > 0 ? key.split(",") : []), [key]);
+  useEffect(() => {
+    for (const id of ids) {
+      if (acpModels[id] === undefined && !acpModelsLoadingIds.includes(id)) {
+        void fetchAcpModels(id, true);
+      }
+    }
+  }, [ids, acpModels, acpModelsLoadingIds, fetchAcpModels]);
+  return ids;
 }

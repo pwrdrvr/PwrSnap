@@ -27,13 +27,28 @@ describe("validateSettingsOpen", () => {
     });
   });
 
-  test("every AI Providers screen is accepted on the AI page", () => {
-    for (const sub of SETTINGS_PAGE_SUBS.ai) {
-      expect(open({ page: "ai", sub })).toEqual({
-        ok: true,
-        value: { page: "ai", sub, droppedSub: false }
-      });
+  test("every listed sub is accepted on the page that owns it", () => {
+    for (const [page, subs] of Object.entries(SETTINGS_PAGE_SUBS) as Array<
+      [SettingsPage, readonly string[]]
+    >) {
+      for (const sub of subs) {
+        expect(open({ page, sub })).toEqual({
+          ok: true,
+          value: { page, sub, droppedSub: false }
+        });
+      }
     }
+  });
+
+  test("a sub belongs to one page: an AI Features section is not a provider screen", () => {
+    expect(open({ page: "ai", sub: "usage" })).toEqual({
+      ok: true,
+      value: { page: "ai", sub: undefined, droppedSub: true }
+    });
+    expect(open({ page: "ai-features", sub: "codex" })).toEqual({
+      ok: true,
+      value: { page: "ai-features", sub: undefined, droppedSub: true }
+    });
   });
 
   test.each([

@@ -7,23 +7,19 @@
 // an item updates the URL hash; `useActiveRoute` listens for
 // `hashchange` in `SettingsApp` and re-renders.
 //
-// Group rows (today only AI Providers) carry a caret and a collapsible
-// sublist of child screens, each with a status dot so the operator can
-// read which providers are installed and configured without opening
-// the page. Every row reserves the caret gutter, caret or not, so the
-// labels align down the column.
+// Group rows carry a caret and a collapsible sublist of children (see
+// `settings-nav.ts`): AI Providers lists one screen per provider, each
+// with a status dot so the operator can read which providers are
+// installed and configured without opening the page; AI Features lists
+// jump-to links to its sections. Every row reserves the caret gutter,
+// caret or not, so the labels align down the column.
 
 import { Fragment, useEffect, useState, type ReactElement } from "react";
-import { SETTINGS_PAGE_SUBS, type SettingsPage } from "@pwrsnap/shared";
+import type { SettingsPage } from "@pwrsnap/shared";
 import { useAiProvidersContext } from "./AiProvidersContext";
 import { SETTINGS_CATEGORIES } from "./settings-categories";
+import { SETTINGS_NAV_GROUPS as NAV_GROUPS, settingsNavChildren } from "./settings-nav";
 import { setActivePage } from "./useActivePage";
-
-/** Pages whose nav row expands into a sublist of child screens — exactly
- *  the pages that HAVE child screens, per the shared route allowlist. */
-const NAV_GROUPS: ReadonlySet<SettingsPage> = new Set(
-  Object.keys(SETTINGS_PAGE_SUBS) as SettingsPage[]
-);
 
 type SidebarProps = {
   active: SettingsPage;
@@ -74,7 +70,7 @@ export function Sidebar({ active, sub }: SidebarProps): ReactElement {
             // must always show where the operator is.
             const marksRoute = holdsRoute && (sub === null || (isGroup && !open));
             const sublistId = `pss-sb-sublist-${it.id}`;
-            const children = it.id === "ai" ? statuses : [];
+            const children = settingsNavChildren(it.id, statuses);
             return (
               <Fragment key={it.id}>
                 <div className={"pss__sb-row" + (marksRoute ? " is-active" : "")}>
@@ -127,23 +123,31 @@ export function Sidebar({ active, sub }: SidebarProps): ReactElement {
                             type="button"
                             className={"pss__sb-sub" + (childActive ? " is-active" : "")}
                             aria-current={childActive ? "page" : undefined}
-                            title={`${child.label} — ${child.badge}`}
+                            title={
+                              child.status !== undefined
+                                ? `${child.label} — ${child.status.badge}`
+                                : undefined
+                            }
                             onClick={() => {
                               setActivePage(it.id, child.sub);
                             }}
                           >
                             {/* Always rendered so labels don't shift when a
-                                status lands; toneless = not known yet. */}
+                                status lands, and line up across groups;
+                                toneless = not known yet, or a jump link
+                                with no status at all. */}
                             <span
                               aria-hidden="true"
                               className={
                                 "pss__status-dot" +
-                                (child.tone !== undefined ? ` pss__status-dot--${child.tone}` : "")
+                                (child.status?.tone !== undefined
+                                  ? ` pss__status-dot--${child.status.tone}`
+                                  : "")
                               }
                             />
                             <span className="pss__sb-sublabel">{child.label}</span>
-                            {child.chip !== undefined ? (
-                              <span className="pss__sb-subchip">{child.chip}</span>
+                            {child.status?.chip !== undefined ? (
+                              <span className="pss__sb-subchip">{child.status.chip}</span>
                             ) : null}
                           </button>
                         );

@@ -186,7 +186,7 @@ export function describeAiProviders(input: AiProviderStatusInput): AiProviderSta
   ];
 }
 
-/** Job names as the hub's Job routing card labels them. */
+/** Job names as AI Features → Default agents labels them. */
 export const AI_SURFACE_LABELS: Readonly<Record<AiSurfaceId, string>> = {
   enrichment: "Capture captions, tags & OCR",
   libraryChat: "Library chat",
@@ -196,7 +196,7 @@ export const AI_SURFACE_LABELS: Readonly<Record<AiSurfaceId, string>> = {
 const AI_SURFACE_ORDER: readonly AiSurfaceId[] = ["enrichment", "libraryChat", "sizzleChat"];
 
 /**
- * The jobs that will actually RUN on `sub`, in Job routing order.
+ * The jobs that will actually RUN on `sub`, in Default agents order.
  *
  * Mirrors the runtime's resolution, not the stored string: `""`, `"codex"`
  * and an `acp:<id>` whose agent is no longer enabled all land on Codex, so a
@@ -213,4 +213,32 @@ export function routedSurfaces(settings: Settings | null, sub: AiProviderSub): A
     const backend = agentId !== null && enabled.has(agentId) ? agentId : "codex";
     return backend === sub;
   });
+}
+
+/**
+ * The enabled ACP agents a job is routed to — the ones whose model list the
+ * AI pages probe. Disabled agents are skipped: a job routed to one runs on
+ * Codex, so probing it would spawn a CLI nothing uses.
+ */
+export function enabledAcpAgentIdsForModelProbes(
+  settings: Settings | null | undefined
+): string[] {
+  if (settings === null || settings === undefined) return [];
+  const enabled = new Set(settings.ai.acp.enabledAgentIds);
+  const providers = [
+    settings.ai.defaults.enrichment.provider,
+    settings.ai.defaults.libraryChat.provider,
+    settings.ai.defaults.sizzleChat.provider
+  ];
+  return [
+    ...new Set(
+      providers
+        .map((provider) =>
+          provider !== undefined && provider.startsWith("acp:")
+            ? provider.slice("acp:".length)
+            : null
+        )
+        .filter((id): id is string => id !== null && enabled.has(id))
+    )
+  ];
 }

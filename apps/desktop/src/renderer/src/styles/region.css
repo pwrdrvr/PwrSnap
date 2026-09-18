@@ -329,17 +329,18 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
   opacity: 0.8;
 }
 
-/* Per-pick outline. Solid accent, matching a window snap, so a picked
-   window looks like a window snap that stuck. */
+/* A picked window's box, and the next-click preview's. Positioning
+   only: the outline + tint live on the `__frame` child so `clip-path`
+   (set inline where a picked window in front covers part of this one)
+   cuts the frame and never the badge. */
 .region-pick,
 .region-pick-hover {
   position: fixed;
   pointer-events: none;
 }
 
-/* The outline + tint live on a child so `clip-path` (set inline where a
-   picked window in front covers part of this one) cuts the frame and
-   never the badge. */
+/* Per-pick outline. Solid accent, matching a window snap, so a picked
+   window looks like a window snap that stuck. */
 .region-pick__frame {
   position: absolute;
   inset: 0;

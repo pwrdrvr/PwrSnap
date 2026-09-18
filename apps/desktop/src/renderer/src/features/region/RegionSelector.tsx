@@ -43,7 +43,7 @@
 // the selector window covers the whole display). Main converts to
 // global virtual coords + display id before screencapture.
 
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { acceleratorToDisplayKeys, MAX_SELECTOR_EXTENTS } from "@pwrsnap/shared";
 import type {
   QuickCaptureAction,
@@ -65,7 +65,9 @@ import {
   occludedFrame,
   rectFromTwoPoints,
   rectIsMeaningful,
+  UNOCCLUDED_FRAME,
   type HandleId,
+  type OccludedFrame,
   type Point,
   type Rect
 } from "./region-math";
@@ -185,33 +187,33 @@ function picksInFrontOf(
 }
 
 /**
- * One window's outline + tint, clipped out from under the picks in
- * front of it. The frame is a child so the clip never takes the badge
- * with it: a window whose top-left corner is covered moves its badge to
- * the first corner it still has.
+ * One window's outline + tint, clipped per `frame` (see
+ * `occludedFrame`). The outline is a child so the clip never takes the
+ * badge with it: a window whose top-left corner is covered moves its
+ * badge to the first corner it still has.
  */
 function WindowFrame({
   entry,
-  inFront,
+  frame,
   className,
   badgeClassName,
   badge,
   testId
 }: {
   entry: WindowSnapEntry;
-  inFront: readonly Rect[];
+  frame: Readonly<OccludedFrame>;
   className: string;
   badgeClassName: string;
   badge: ReactNode;
   testId?: string;
 }) {
-  const { clipPath, badge: badgeAt } = occludedFrame(entry.rawRect, inFront);
+  const { hidden, clipPath, badge: badgeAt } = frame;
   return (
     <div
       className={className}
       data-testid={testId}
       data-window-id={entry.windowId}
-      data-occluded={clipPath === null ? undefined : clipPath === "hidden" ? "full" : "partial"}
+      data-occluded={hidden ? "full" : clipPath !== null ? "partial" : undefined}
       style={{
         left: entry.rawRect.x,
         top: entry.rawRect.y,
@@ -219,7 +221,7 @@ function WindowFrame({
         height: entry.rawRect.h
       }}
     >
-      {clipPath !== "hidden" && (
+      {!hidden && (
         <div
           className="region-pick__frame"
           style={clipPath === null ? undefined : { clipPath }}
@@ -2230,6 +2232,26 @@ export function RegionSelector() {
     !picks.some((p) => p.windowId === snapTarget.entry.windowId)
       ? snapTarget.entry
       : null;
+  // Frames are recomputed only when the pick set changes — this
+  // component re-renders on every mousemove in `snap`, and a set can
+  // hold up to MAX_SELECTOR_EXTENTS windows, each subtracted against
+  // every pick in front of it.
+  const pickFrames = useMemo(
+    () =>
+      new Map(
+        picks.map((p) => [p.windowId, occludedFrame(p.rawRect, picksInFrontOf(p, picks))])
+      ),
+    [picks]
+  );
+  // The preview is clipped like a pick — unless nothing of it would be
+  // left. That is exactly the window Tab reaches when it is buried under
+  // a pick, and a "+" floating over another window says nothing about
+  // which window the next click adds; its whole outline does.
+  const hoverFrame = useMemo(() => {
+    if (hoverEntry === null) return UNOCCLUDED_FRAME;
+    const f = occludedFrame(hoverEntry.rawRect, picksInFrontOf(hoverEntry, picks));
+    return f.hidden ? UNOCCLUDED_FRAME : f;
+  }, [hoverEntry, picks]);
 
   // What ↵ actually does, in hint-legend words. Every ↵ legend below
   // reads this rather than hardcoding "capture" / "commit": under the
@@ -2568,7 +2590,7 @@ export function RegionSelector() {
         <WindowFrame
           key={p.windowId}
           entry={p}
-          inFront={picksInFrontOf(p, picks)}
+          frame={pickFrames.get(p.windowId) ?? UNOCCLUDED_FRAME}
           className="region-pick"
           testId="region-pick"
           badgeClassName="region-pick__badge"
@@ -2576,13 +2598,13 @@ export function RegionSelector() {
         />
       ))}
 
-      {/* Next-click preview while a set is live. Clipped the same way:
-          a dashed edge running across a window already in the set reads
-          as that window being split. */}
+      {/* Next-click preview while a set is live. Clipped the same way
+          (see `hoverFrame`): a dashed edge running across a window
+          already in the set reads as that window being split. */}
       {hoverEntry !== null && (
         <WindowFrame
           entry={hoverEntry}
-          inFront={picksInFrontOf(hoverEntry, picks)}
+          frame={hoverFrame}
           className="region-pick-hover"
           badgeClassName="region-pick__badge region-pick__badge--add"
           badge="+"

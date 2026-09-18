@@ -379,15 +379,32 @@ describe("occludedFrame", () => {
   const base: Rect = { x: 100, y: 100, w: 400, h: 300 };
 
   test("nothing in front: no clip, badge at the frame's own corner", () => {
-    expect(occludedFrame(base, [])).toEqual({ clipPath: null, badge: { x: 0, y: 0 } });
-    expect(occludedFrame(base, [{ x: 700, y: 0, w: 10, h: 10 }])).toEqual({
+    const whole = { hidden: false, clipPath: null, badge: { x: 0, y: 0 } };
+    expect(occludedFrame(base, [])).toEqual(whole);
+    expect(occludedFrame(base, [{ x: 700, y: 0, w: 10, h: 10 }])).toEqual(whole);
+  });
+
+  test("fully covered: the frame is hidden and carries no clip path", () => {
+    expect(occludedFrame(base, [{ x: 50, y: 50, w: 500, h: 400 }])).toEqual({
+      hidden: true,
       clipPath: null,
       badge: { x: 0, y: 0 }
     });
   });
 
-  test("fully covered: the frame is hidden", () => {
-    expect(occludedFrame(base, [{ x: 50, y: 50, w: 500, h: 400 }]).clipPath).toBe("hidden");
+  test("windows sharing an edge do not clip each other through float noise", () => {
+    // The renderer scales rects by innerWidth / displayBounds.width. At
+    // 1024/1348, 1*s + 22*s exceeds 23*s by ~3.6e-15 — a window ending
+    // at x=23 "overlaps" its neighbour starting there.
+    const s = 1024 / 1348;
+    const front: Rect = { x: 1 * s, y: 0, w: 22 * s, h: 100 * s };
+    const back: Rect = { x: 23 * s, y: 0, w: 50 * s, h: 100 * s };
+    expect(front.x + front.w).toBeGreaterThan(back.x);
+    expect(occludedFrame(back, [front])).toEqual({
+      hidden: false,
+      clipPath: null,
+      badge: { x: 0, y: 0 }
+    });
   });
 
   test("the clip path is in the frame's own coordinates", () => {
@@ -403,6 +420,12 @@ describe("occludedFrame", () => {
     // a right band starting at the top edge, and a bottom band.
     const { badge } = occludedFrame(base, [{ x: 0, y: 0, w: 250, h: 200 }]);
     expect(badge).toEqual({ x: 150, y: 0 });
+    // Rounded like the path: 50.3 - 0.1 is 50.199999999999996.
+    const { badge: scaled } = occludedFrame(
+      { x: 0.1, y: 0.2, w: 100, h: 100 },
+      [{ x: 0, y: 0, w: 50.3, h: 50 }]
+    );
+    expect(scaled).toEqual({ x: 50.2, y: 0 });
   });
 
   test("fractional CSS px (scaled displays) are rounded, not printed raw", () => {

@@ -1475,6 +1475,40 @@ describe("U5 — multi-window pick set", () => {
     expect(boxes[0]?.dataset.occluded).toBeUndefined();
   });
 
+  test("a window buried under a pick: its pick box drops the frame, its preview keeps it", async () => {
+    // BIG (z 0) sits in front of SMALL (z 1), and SMALL is entirely
+    // inside it — only Tab can reach SMALL. Once BIG is picked:
+    //   - the Tab preview of SMALL shows its whole dashed outline,
+    //     because a clipped one would be nothing but a floating "+";
+    //   - once picked, SMALL adds nothing BIG's extent does not already
+    //     hold, so its box draws no frame — only its badge.
+    const BIG = { ...WIN, windowId: 601, zIndex: 0, rect: { x: 100, y: 100, w: 500, h: 400 }, rawRect: { x: 100, y: 100, w: 500, h: 400 } };
+    const SMALL = { ...WIN, windowId: 602, zIndex: 1, rect: { x: 200, y: 200, w: 200, h: 150 }, rawRect: { x: 200, y: 200, w: 200, h: 150 } };
+    await mount();
+    await emitMode({ mode: "auto" });
+    await emitSnapshot({
+      windows: [BIG, SMALL],
+      displayBounds: { width: window.innerWidth, height: window.innerHeight }
+    });
+    await clickWindow(BIG);
+    const p = { x: 300, y: 275 }; // inside both
+    await mouseMove(p.x, p.y);
+    await keyDown("Tab");
+    const hover = container?.querySelector<HTMLElement>(".region-pick-hover");
+    expect(hover?.dataset.windowId).toBe(String(SMALL.windowId));
+    expect(hover?.dataset.occluded).toBeUndefined();
+    const hoverFrame = hover?.querySelector<HTMLElement>(".region-pick__frame");
+    expect(hoverFrame).not.toBeNull();
+    expect(hoverFrame?.style.clipPath).toBe("");
+
+    await mouseDown(p.x, p.y);
+    await mouseUp(p.x, p.y);
+    const small = pickBoxes().find((e) => e.dataset.windowId === String(SMALL.windowId));
+    expect(small?.dataset.occluded).toBe("full");
+    expect(small?.querySelector(".region-pick__frame")).toBeNull();
+    expect(small?.querySelector(".region-pick__badge")?.textContent).toBe("2");
+  });
+
   test("HUD: the segmented control sets the mode and a chip removes its pick", async () => {
     await mountScene();
     await clickWindow(WIN, { metaKey: true });

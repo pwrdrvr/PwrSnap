@@ -225,6 +225,13 @@ export function SizzleApp({
     []
   );
 
+  const inspectorOpen = selectedClipId !== null || selectedSceneId !== null;
+  // Below RAIL_NARROW_PX an open inspector folds the chat to a one-line bar.
+  const chatFolded = inspectorOpen && chatWidth < RAIL_NARROW_PX;
+  // The inspector is the rail's only pane — it fills it instead of sitting
+  // as a content-sized drawer under an empty space.
+  const inspectorOnly = inspectorOpen && (!showChat || chatFolded);
+
   return (
     <div
       className={
@@ -358,7 +365,7 @@ export function SizzleApp({
               onSelectSceneId={setSelectedSceneId}
               inspectorHost={inspectorHost}
             />
-            {showChat || selectedClipId !== null || selectedSceneId !== null ? (
+            {showChat || inspectorOpen ? (
               // The right rail: chat above, the clip inspector as a bottom
               // drawer (plan §4.6) — beside the chat, never replacing it.
               // Below RAIL_NARROW_PX the two cannot share the rail, so the
@@ -368,7 +375,8 @@ export function SizzleApp({
               <aside
                 className={
                   "szl__chat" +
-                  (selectedClipId !== null || selectedSceneId !== null ? " has-inspector" : "") +
+                  (inspectorOpen ? " has-inspector" : "") +
+                  (inspectorOnly ? " is-inspector-only" : "") +
                   (chatWidth < RAIL_NARROW_PX ? " is-narrow" : "")
                 }
                 style={{ flexBasis: chatWidth }}
@@ -377,7 +385,7 @@ export function SizzleApp({
                 <ChatResizer width={chatWidth} onResize={setChatWidth} />
                 {showChat ? (
                   <>
-                    {(selectedClipId !== null || selectedSceneId !== null) && chatWidth < RAIL_NARROW_PX ? (
+                    {chatFolded ? (
                       <div className="szl__chat-folded" data-testid="sizzle-chat-folded">
                         <span>Chat folded while the inspector is open — widen the rail, or</span>
                         <button
@@ -391,12 +399,7 @@ export function SizzleApp({
                         </button>
                       </div>
                     ) : null}
-                    <div
-                      className={
-                        "szl__chat-pane" +
-                        ((selectedClipId !== null || selectedSceneId !== null) && chatWidth < RAIL_NARROW_PX ? " is-folded" : "")
-                      }
-                    >
+                    <div className={"szl__chat-pane" + (chatFolded ? " is-folded" : "")}>
                       <SizzleChatPanel key={active.id} projectId={active.id} />
                     </div>
                   </>

@@ -1544,10 +1544,22 @@
 /* ── Right rail: chat above, the clip inspector as a bottom drawer ──────
    (plan §4.6) Both visible; the drawer collapses when nothing is selected.
    Below RAIL_NARROW_PX (SizzleApp) the inspector takes the rail and the
-   chat folds to a one-line bar — still mounted, its state survives. */
+   chat folds to a one-line bar — still mounted, its state survives.
+
+   How the two split the height: the inspector drawer is content-sized and
+   the chat takes whatever is left, down to a floor that keeps the thread
+   bar, the composer and a few lines of messages usable.
+
+   The chat's flex-basis MUST be 0, not auto. `auto` resolves to the
+   conversation's full content height (the message list's scroller only
+   limits what is painted, not the flex base size), and flex-shrink divides
+   a shortfall in proportion to base size. So a long thread claimed the
+   rail and crushed the inspector to a sliver — 49 px, 20 of them body,
+   under a 4000 px thread in a 768 px rail, with Transition and Structure
+   hidden and no visible scrollbar to say so. */
 .szl__chat-pane {
-  flex: 1 1 auto;
-  min-height: 0;
+  flex: 1 1 0;
+  min-height: 200px;
   display: flex;
   flex-direction: column;
 }
@@ -1573,23 +1585,28 @@
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+/* No percentage cap: the chat pane's floor is what bounds the drawer, and
+   past that the drawer's own body scrolls. */
 .szl__inspector-host {
   flex: 0 1 auto;
   min-height: 0;
-  max-height: 58%;
   display: flex;
   flex-direction: column;
 }
 .szl__inspector-host:empty {
   display: none;
 }
-.szl__chat.is-narrow.has-inspector .szl__inspector-host {
+/* Chat hidden or folded: the inspector is the rail's only pane, so it
+   fills it and its footer sits at the bottom edge. */
+.szl__chat.is-inspector-only .szl__inspector-host {
   flex: 1 1 auto;
-  max-height: none;
 }
 
 /* ── Clip inspector ──────────────────────────────────────────────────── */
 .szl__insp {
+  /* grows to fill the host when the host fills the rail; content-sized
+     otherwise, because the host is */
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -1640,6 +1657,19 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* Scroll shadows. macOS overlay scrollbars stay hidden until a scroll
+     starts, so a clipped body otherwise looks complete. The `scroll` shades
+     are pinned to the viewport edges; the `local` covers ride with the
+     content and hide a shade whenever that edge is already at its end.
+     Nothing shows when the body fits. Tinted from the text color so they
+     read on the dark panel as well as the light one. */
+  --szl-insp-shade: color-mix(in srgb, var(--text-primary) 14%, transparent);
+  background:
+    linear-gradient(var(--bg-panel) 40%, transparent) top / 100% 20px no-repeat local,
+    linear-gradient(transparent, var(--bg-panel) 60%) bottom / 100% 20px no-repeat local,
+    linear-gradient(var(--szl-insp-shade), transparent) top / 100% 10px no-repeat scroll,
+    linear-gradient(transparent, var(--szl-insp-shade)) bottom / 100% 10px no-repeat scroll;
+  background-color: var(--bg-panel);
 }
 .szl__insp-cap {
   display: flex;

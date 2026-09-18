@@ -6,24 +6,25 @@
 //
 // `sub` is a screen WITHIN a page — today only the AI Providers page has
 // them (one per provider, reached from the sidebar's child rows). It is
-// validated against the page's own sub-id set; an unknown or misplaced
-// sub drops to the page's hub rather than rendering a blank screen.
+// validated against the page's own sub-id set (`SETTINGS_PAGE_SUBS` in
+// @pwrsnap/shared — the same list main checks `settings:open` against); an
+// unknown or misplaced sub drops to the page's hub rather than rendering a
+// blank screen.
 //
 // Two navigation drivers feed this hook:
 //   1. In-renderer sidebar clicks → `setActivePage` (below) sets the
 //      hash; the browser fires `hashchange`; the hook re-reads.
-//   2. Main → renderer deep-link via `settings:open { page }` against
-//      an already-focused window → main broadcasts the typed
+//   2. Main → renderer deep-link via `settings:open { page, sub? }`
+//      against an already-focused window → main broadcasts the typed
 //      `EVENT_CHANNELS.settingsNavigate` event; this hook calls
 //      `setActivePage` on receipt. (Previously main interpolated the
 //      page id into a `webContents.executeJavaScript` string literal
 //      — replaced for transport-safety; see ipc.ts.)
 
 import { useEffect, useState } from "react";
-import { EVENT_CHANNELS } from "@pwrsnap/shared";
+import { EVENT_CHANNELS, isSettingsSub } from "@pwrsnap/shared";
 import type { SettingsNavigateEvent, SettingsPage } from "@pwrsnap/shared";
 import { subscribe } from "../../lib/pwrsnap";
-import { isAiProviderSub } from "./ai-provider-status";
 import { SETTINGS_PAGE_IDS } from "./settings-categories";
 
 const DEFAULT_PAGE: SettingsPage = "general";
@@ -33,11 +34,6 @@ export type SettingsRoute = {
   /** Screen within `page`, or `null` for the page's hub. */
   sub: string | null;
 };
-
-/** Whether `sub` names a screen that `page` actually has. */
-export function isSettingsSub(page: SettingsPage, sub: string): boolean {
-  return page === "ai" && isAiProviderSub(sub);
-}
 
 /**
  * Pure parser. Extracted so it's trivially testable without a DOM —
@@ -52,7 +48,7 @@ export function routeFromHash(hash: string): SettingsRoute {
       ? (raw as SettingsPage)
       : DEFAULT_PAGE;
   const sub = params.get("sub");
-  return { page, sub: sub !== null && isSettingsSub(page, sub) ? sub : null };
+  return { page, sub: isSettingsSub(page, sub) ? sub : null };
 }
 
 export function pageFromHash(hash: string): SettingsPage {
@@ -76,13 +72,19 @@ export function useActiveRoute(): SettingsRoute {
         // boundary, but be defensive — only honor known ids. The
         // `hashchange` listener picks up the resulting hash flip and
         // re-renders.
+        //
+        // A `sub` main did not validate for this page is dropped here too,
+        // landing on the hub — a navigation is never refused over it.
         const navigate = payload as SettingsNavigateEvent;
         if (
           typeof navigate === "object" &&
           navigate !== null &&
           SETTINGS_PAGE_IDS.has(navigate.page)
         ) {
-          setActivePage(navigate.page);
+          setActivePage(
+            navigate.page,
+            isSettingsSub(navigate.page, navigate.sub) ? navigate.sub : undefined
+          );
         }
       }
     );

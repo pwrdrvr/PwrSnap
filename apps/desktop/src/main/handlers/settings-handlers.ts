@@ -302,7 +302,15 @@ export function registerSettingsWindowHandlers(): void {
   bus.register("settings:open", async (req, ctx) => {
     const validated = validateSettingsOpen(req);
     if (!validated.ok) return err(validated.error);
-    const { page } = validated.value;
+    const { page, sub, droppedSub } = validated.value;
+    if (droppedSub) {
+      // Not an error — the page's hub opens instead — but a caller sending a
+      // sub this build does not know is a stale link worth finding.
+      log.warn("settings:open: ignoring unknown sub; opening the page's hub", {
+        page: page ?? null,
+        sub: typeof req.sub === "string" ? req.sub.slice(0, 64) : typeof req.sub
+      });
+    }
     const existing = findSettingsWindow();
     const placementSource: NonNullable<Parameters<typeof createSettingsWindow>[1]> = {};
     if (ctx.sourceWindowId !== undefined) {
@@ -319,16 +327,23 @@ export function registerSettingsWindowHandlers(): void {
       activateForUserSurface();
       if (page !== undefined) {
         // Typed event broadcast — replaces the prior `executeJavaScript`
-        // template-injection footgun. The renderer's `useActivePage`
-        // hook receives `{ page }` and flips its hash through the
+        // template-injection footgun. The renderer's `useActiveRoute`
+        // hook receives `{ page, sub? }` and flips its hash through the
         // existing `setActivePage`, which re-validates against the
-        // same `SETTINGS_PAGES` allowlist used here.
-        const payload: SettingsNavigateEvent = { page };
+        // same `SETTINGS_PAGES` / `SETTINGS_PAGE_SUBS` allowlists used here.
+        const payload: SettingsNavigateEvent = sub !== undefined ? { page, sub } : { page };
         existing.webContents.send(EVENT_CHANNELS.settingsNavigate, payload);
       }
       return ok(undefined);
     }
-    const extraHash = page !== undefined ? `page=${page}` : undefined;
+    // `sub` is allowlisted above, so it is a bare id; encode anyway so the
+    // hash can never be split by whatever a future allowlist admits.
+    const extraHash =
+      page === undefined
+        ? undefined
+        : sub === undefined
+          ? `page=${page}`
+          : `page=${page}&sub=${encodeURIComponent(sub)}`;
     createSettingsWindow(extraHash, placementSource);
     // Split mode: the spawned library process is never LS-activated;
     // without this the new Settings window opens behind the user's

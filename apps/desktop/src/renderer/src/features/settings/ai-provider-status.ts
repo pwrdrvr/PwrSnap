@@ -14,6 +14,7 @@
 import type {
   AcpAgentDiscovery,
   AcpAgentDiscoveryEntry,
+  AiProvidersSettingsSub,
   AiSurfaceId,
   BuiltInAcpAgentId,
   DesktopCodexDiscoverySnapshot,
@@ -22,8 +23,10 @@ import type {
 } from "@pwrsnap/shared";
 import { BUILT_IN_ACP_AGENT_IDS, builtInAcpAgentDisplayName } from "@pwrsnap/shared";
 
-/** Sub-route ids under the `ai` Settings page. One per provider screen. */
-export type AiProviderSub = "codex" | "openai" | BuiltInAcpAgentId;
+/** Sub-route ids under the `ai` Settings page. One per provider screen. The
+ *  SET is owned by `SETTINGS_PAGE_SUBS` in @pwrsnap/shared — main validates
+ *  `settings:open` deep links against it — and this module only orders it. */
+export type AiProviderSub = AiProvidersSettingsSub;
 
 /**
  * Sidebar + hub order. Gemini CLI sorts last, as it does in PwrAgnt:
@@ -41,10 +44,6 @@ export const AI_PROVIDER_SUBS: readonly AiProviderSub[] = [
   ...ACP_AGENT_DISPLAY_ORDER,
   "openai"
 ];
-
-export function isAiProviderSub(value: unknown): value is AiProviderSub {
-  return typeof value === "string" && (AI_PROVIDER_SUBS as readonly string[]).includes(value);
-}
 
 /**
  * - `ok`: configured and usable.

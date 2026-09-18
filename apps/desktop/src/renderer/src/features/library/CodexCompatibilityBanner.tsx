@@ -55,7 +55,9 @@ export function CodexCompatibilityBanner(): ReactElement | null {
 
   const openSettings = async (): Promise<void> => {
     setOpenError(null);
-    const result = await dispatch("settings:open", { page: "ai" });
+    // The banner is about one binary, so land on the Codex screen (binary
+    // selection + connection test), not the AI Providers hub.
+    const result = await dispatch("settings:open", { page: "ai", sub: "codex" });
     if (!result.ok) setOpenError(result.error.message);
   };
 

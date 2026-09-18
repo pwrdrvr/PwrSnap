@@ -7,13 +7,13 @@ import type {
   DesktopCodexDiscoverySnapshot,
   Settings
 } from "@pwrsnap/shared";
+import { isSettingsSub } from "@pwrsnap/shared";
 import {
   AI_PROVIDER_SUBS,
   describeAcpAgentStatus,
   describeAiProviders,
   describeCodexStatus,
   describeOpenAiStatus,
-  isAiProviderSub,
   routedSurfaces
 } from "../ai-provider-status";
 
@@ -55,13 +55,13 @@ describe("AI provider sub ids", () => {
     expect(AI_PROVIDER_SUBS).toEqual(["codex", "grok", "kimi", "qwen", "gemini", "openai"]);
   });
 
-  test("only known provider ids are subs", () => {
-    expect(isAiProviderSub("codex")).toBe(true);
-    expect(isAiProviderSub("kimi")).toBe(true);
-    expect(isAiProviderSub("openai")).toBe(true);
-    expect(isAiProviderSub("claude")).toBe(false);
-    expect(isAiProviderSub("__proto__")).toBe(false);
-    expect(isAiProviderSub(undefined)).toBe(false);
+  test("only known provider ids are AI Providers subs", () => {
+    for (const sub of AI_PROVIDER_SUBS) expect(isSettingsSub("ai", sub)).toBe(true);
+    expect(isSettingsSub("ai", "claude")).toBe(false);
+    expect(isSettingsSub("ai", "__proto__")).toBe(false);
+    expect(isSettingsSub("ai", undefined)).toBe(false);
+    // A provider id is not a sub of any other page.
+    expect(isSettingsSub("hotkeys", "codex")).toBe(false);
   });
 });
 

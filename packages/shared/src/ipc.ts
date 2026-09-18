@@ -443,9 +443,12 @@ export type SettingsChangedEvent = {
  * window and the caller supplied a `page`. The renderer flips its
  * hash through `setActivePage`, which re-validates the page id
  * against the same allowlist `useActivePage` uses for `hashchange`.
+ * `sub` is present only when main already validated it against
+ * `SETTINGS_PAGE_SUBS` for that page; absent means the page's hub.
  */
 export type SettingsNavigateEvent = {
   page: import("./protocol").SettingsPage;
+  sub?: string;
 };
 
 /**

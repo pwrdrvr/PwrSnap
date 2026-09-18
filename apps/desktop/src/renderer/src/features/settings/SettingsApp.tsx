@@ -9,12 +9,13 @@
 // the old `ComingSoon` runtime placeholder now that there are no
 // unbuilt pages left.
 
-import type { ReactElement } from "react";
+import { useLayoutEffect, useRef, type ReactElement } from "react";
+import { AiProvidersProvider, useAiProvidersContext } from "./AiProvidersContext";
 import { SettingsProvider } from "./SettingsContext";
 import { SETTINGS_PAGES_FLAT } from "./settings-categories";
 import { SettingsTitleBar } from "./SettingsTitleBar";
 import { Sidebar } from "./Sidebar";
-import { useActivePage } from "./useActivePage";
+import { setActivePage, useActiveRoute } from "./useActivePage";
 import { HotkeysPage } from "./pages/HotkeysPage";
 import { AboutPage } from "./pages/AboutPage";
 import { GeneralPage } from "./pages/GeneralPage";
@@ -27,8 +28,33 @@ import { ExperimentalPage } from "./pages/ExperimentalPage";
 import { DeveloperPage } from "./pages/DeveloperPage";
 
 export function SettingsApp(): ReactElement {
-  const active = useActivePage();
+  return (
+    <SettingsProvider>
+      <AiProvidersProvider>
+        <SettingsShell />
+      </AiProvidersProvider>
+    </SettingsProvider>
+  );
+}
+
+function SettingsShell(): ReactElement {
+  const { page: active, sub } = useActiveRoute();
+  const { statuses } = useAiProvidersContext();
   const item = SETTINGS_PAGES_FLAT.find((i) => i.id === active) ?? SETTINGS_PAGES_FLAT[0]!;
+  // Crumb label from the same catalog the sidebar renders, so the two
+  // can't name a screen differently.
+  const subLabel =
+    sub !== null && active === "ai"
+      ? statuses.find((status) => status.sub === sub)?.label
+      : undefined;
+
+  // `<main>` outlives every page switch, so without this a page opened
+  // from a scrolled one lands mid-way down. Layout effect: reset before
+  // paint rather than flash the old offset.
+  const mainRef = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    if (mainRef.current !== null) mainRef.current.scrollTop = 0;
+  }, [active, sub]);
 
   let page: ReactElement;
   switch (active) {
@@ -42,7 +68,7 @@ export function SettingsApp(): ReactElement {
       page = <HotkeysPage />;
       break;
     case "ai":
-      page = <AIProvidersPage />;
+      page = <AIProvidersPage sub={sub} />;
       break;
     case "local-agents":
       page = <LocalAgentsPage />;
@@ -72,12 +98,19 @@ export function SettingsApp(): ReactElement {
   }
 
   return (
-    <SettingsProvider>
-      <div className="pss" data-screen-label="Settings">
+    <div className="pss" data-screen-label="Settings">
+      {subLabel !== undefined ? (
+        <SettingsTitleBar
+          here={subLabel}
+          parent={{ label: item.name, onOpen: () => setActivePage(active) }}
+        />
+      ) : (
         <SettingsTitleBar here={item.name} />
-        <Sidebar active={active} />
-        <main className="pss__main">{page}</main>
-      </div>
-    </SettingsProvider>
+      )}
+      <Sidebar active={active} sub={sub} />
+      <main className="pss__main" ref={mainRef}>
+        {page}
+      </main>
+    </div>
   );
 }

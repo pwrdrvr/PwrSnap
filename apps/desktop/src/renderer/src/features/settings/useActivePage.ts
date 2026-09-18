@@ -1,8 +1,13 @@
-// Tiny hook that reads the current Settings page from the URL hash
-// (`#stage=settings&page=<id>`). Defaults to "general" (the first
-// sidebar item) when the page param is missing or invalid. Re-renders
+// Tiny hook that reads the current Settings route from the URL hash
+// (`#stage=settings&page=<id>[&sub=<id>]`). Defaults to "general" (the
+// first sidebar item) when the page param is missing or invalid. Re-renders
 // on `hashchange` so deep-link navigation updates the visible page
 // without a full reload.
+//
+// `sub` is a screen WITHIN a page — today only the AI Providers page has
+// them (one per provider, reached from the sidebar's child rows). It is
+// validated against the page's own sub-id set; an unknown or misplaced
+// sub drops to the page's hub rather than rendering a blank screen.
 //
 // Two navigation drivers feed this hook:
 //   1. In-renderer sidebar clicks → `setActivePage` (below) sets the
@@ -18,30 +23,50 @@ import { useEffect, useState } from "react";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import type { SettingsNavigateEvent, SettingsPage } from "@pwrsnap/shared";
 import { subscribe } from "../../lib/pwrsnap";
+import { isAiProviderSub } from "./ai-provider-status";
 import { SETTINGS_PAGE_IDS } from "./settings-categories";
 
 const DEFAULT_PAGE: SettingsPage = "general";
+
+export type SettingsRoute = {
+  page: SettingsPage;
+  /** Screen within `page`, or `null` for the page's hub. */
+  sub: string | null;
+};
+
+/** Whether `sub` names a screen that `page` actually has. */
+export function isSettingsSub(page: SettingsPage, sub: string): boolean {
+  return page === "ai" && isAiProviderSub(sub);
+}
 
 /**
  * Pure parser. Extracted so it's trivially testable without a DOM —
  * the hook just wraps this + a `hashchange` listener.
  */
-export function pageFromHash(hash: string): SettingsPage {
+export function routeFromHash(hash: string): SettingsRoute {
   const stripped = hash.replace(/^#/, "");
   const params = new URLSearchParams(stripped);
   const raw = params.get("page");
-  if (raw === null) return DEFAULT_PAGE;
-  if (SETTINGS_PAGE_IDS.has(raw as SettingsPage)) {
-    return raw as SettingsPage;
-  }
-  return DEFAULT_PAGE;
+  const page =
+    raw !== null && SETTINGS_PAGE_IDS.has(raw as SettingsPage)
+      ? (raw as SettingsPage)
+      : DEFAULT_PAGE;
+  const sub = params.get("sub");
+  return { page, sub: sub !== null && isSettingsSub(page, sub) ? sub : null };
 }
 
-export function useActivePage(): SettingsPage {
-  const [page, setPage] = useState<SettingsPage>(() => pageFromHash(window.location.hash));
+export function pageFromHash(hash: string): SettingsPage {
+  return routeFromHash(hash).page;
+}
+
+export function useActiveRoute(): SettingsRoute {
+  const [route, setRoute] = useState<SettingsRoute>(() => routeFromHash(window.location.hash));
   useEffect(() => {
     const onHashChange = (): void => {
-      setPage(pageFromHash(window.location.hash));
+      const next = routeFromHash(window.location.hash);
+      // Keep the same object when nothing moved so consumers keyed on the
+      // route don't re-run for an unrelated hash write.
+      setRoute((prev) => (prev.page === next.page && prev.sub === next.sub ? prev : next));
     };
     window.addEventListener("hashchange", onHashChange);
     const unsubscribe = subscribe(
@@ -66,12 +91,16 @@ export function useActivePage(): SettingsPage {
       unsubscribe();
     };
   }, []);
-  return page;
+  return route;
 }
 
-/** Replace the `page` param on the hash, preserving `stage=settings`.
- *  Sidebar nav buttons call this; `hashchange` then propagates the
- *  change back through `useActivePage`. */
-export function setActivePage(page: SettingsPage): void {
-  window.location.hash = `stage=settings&page=${page}`;
+/** Replace the route on the hash, preserving `stage=settings`. Sidebar nav
+ *  buttons call this; `hashchange` then propagates the change back through
+ *  `useActiveRoute`. Omitting `sub` lands on the page's hub — which is also
+ *  what a main-process `settings:open { page }` deep link does. */
+export function setActivePage(page: SettingsPage, sub?: string): void {
+  window.location.hash =
+    sub === undefined
+      ? `stage=settings&page=${page}`
+      : `stage=settings&page=${page}&sub=${encodeURIComponent(sub)}`;
 }

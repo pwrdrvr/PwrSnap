@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import type { Settings } from "@pwrsnap/shared";
 import { AIProvidersPage } from "../AIProvidersPage";
+import { AiProvidersProvider } from "../../AiProvidersContext";
 import type { UseSettingsValue } from "../../useSettings";
 
 beforeAll(() => {
@@ -84,7 +85,9 @@ async function renderPage(consentAcceptedAt: string | null): Promise<HTMLDivElem
   document.body.appendChild(container);
   root = createRoot(container);
   await act(async () => {
-    root?.render(createElement(AIProvidersPage));
+    root?.render(
+      createElement(AiProvidersProvider, null, createElement(AIProvidersPage, { sub: null }))
+    );
   });
   await flushEffects();
   return container;

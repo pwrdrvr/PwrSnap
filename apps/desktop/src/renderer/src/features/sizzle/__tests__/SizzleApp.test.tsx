@@ -2505,15 +2505,35 @@ describe("clip inspector (right-rail drawer)", () => {
       await selectClip(el, "bt_b");
       expect(el.querySelector('[data-testid="sizzle-chat-folded"]')).not.toBeNull();
       expect(el.querySelector(".szl__chat-pane.is-folded [data-testid=\"sizzle-chat-panel\"]")).not.toBeNull();
+      // Folded, the inspector is the rail's only pane and fills it.
+      expect(el.querySelector('[data-testid="sizzle-rail"]')!.classList.contains("is-inspector-only")).toBe(true);
       await act(async () => {
         el.querySelector<HTMLButtonElement>('[data-testid="sizzle-chat-folded"] button')!.click();
       });
       expect(el.querySelector('[data-testid="sizzle-clip-inspector"]')).toBeNull();
       expect(el.querySelector('[data-testid="sizzle-chat-folded"]')).toBeNull();
       expect(el.querySelector(".szl__chat-pane.is-folded")).toBeNull();
+      expect(el.querySelector('[data-testid="sizzle-rail"]')!.classList.contains("is-inspector-only")).toBe(false);
     } finally {
       resetSizzleChatWidthForTests();
     }
+  });
+
+  test("beside the chat the inspector is a drawer; with the chat hidden it takes the whole rail", async () => {
+    const { el } = await renderApp(project({ scenes: [seq()] }));
+    await selectClip(el, "bt_b");
+    const rail = el.querySelector('[data-testid="sizzle-rail"]')!;
+    expect(rail.querySelector('[data-testid="sizzle-chat-panel"]')).not.toBeNull();
+    expect(rail.classList.contains("is-inspector-only")).toBe(false);
+
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>(".szl__chat-toggle")!.click();
+    });
+    // The selection keeps the rail up with the chat hidden.
+    expect(el.querySelector('[data-testid="sizzle-rail"]')).toBe(rail);
+    expect(rail.querySelector('[data-testid="sizzle-chat-panel"]')).toBeNull();
+    expect(rail.querySelector('[data-testid="sizzle-clip-inspector"]')).not.toBeNull();
+    expect(rail.classList.contains("is-inspector-only")).toBe(true);
   });
 });
 

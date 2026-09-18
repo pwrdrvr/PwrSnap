@@ -97,3 +97,33 @@ describe("video timeline: the ruler shares the strip's coordinate space", () => 
     expect(strip).not.toMatch(/(?:^|[;{]|\s)padding(?:-inline|-left|-right)?\s*:/);
   });
 });
+
+// The drag tooltip sits in `.vtl__strip-wrap` rather than in the strip
+// purely so the strip's `overflow: hidden` cannot clip it — and
+// VideoTimeline.tsx converts the tip's `left` out of the strip's padding
+// box using `clientLeft` alone. Both facts are assumptions about this
+// wrapper, and both fail silently: a clip here puts the tooltip straight
+// back where it was, and a border or padding here offsets it by exactly
+// the amount nothing measures.
+describe("video timeline: the tooltip's wrapper stays transparent", () => {
+  const WRAP = "\\.vtl__strip-wrap";
+
+  test("does not clip — that is the entire reason it exists", () => {
+    const wrap = extractBlock(css, WRAP, { label: LABEL, expectSingle: true });
+    const overflow = wrap.match(/(?:^|[;{]|\s)overflow(?:-x|-y)?\s*:\s*([^;]+)/);
+    // Absent is correct (`visible` is the initial value); an explicit
+    // `visible` is fine too. Anything else re-clips the tip.
+    expect(overflow?.[1]?.trim() ?? "visible").toBe("visible");
+  });
+
+  test("contributes no border or padding of its own", () => {
+    const wrap = extractBlock(css, WRAP, { label: LABEL, expectSingle: true });
+    expect(wrap).not.toMatch(/(?:^|[;{]|\s)border(?:-inline|-left|-right|-width)?\s*:/);
+    expect(wrap).not.toMatch(/(?:^|[;{]|\s)padding(?:-inline|-left|-right)?\s*:/);
+  });
+
+  test("establishes the containing block the tip is positioned against", () => {
+    const wrap = extractBlock(css, WRAP, { label: LABEL, expectSingle: true });
+    expect(wrap).toMatch(/(?:^|[;{]|\s)position\s*:\s*relative\s*;/);
+  });
+});

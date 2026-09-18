@@ -247,6 +247,19 @@
   white-space: nowrap;
 }
 
+/* Holds the strip and the drag tooltip as siblings, so the tip escapes
+   `.vtl__strip`'s `overflow: hidden` — which exists to keep the
+   filmstrip and the handles inside the strip's border-radius, and which
+   was cutting the tip's trailing digits off at either end of a drag.
+   No border, no padding, no overflow of its own: its padding box is
+   exactly the strip's BORDER box, which is the 1px-per-side offset
+   `stripBorderLeft` puts back in VideoTimeline.tsx. */
+.vtl__strip-wrap {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
 .vtl__strip {
   position: relative;
   width: 100%;

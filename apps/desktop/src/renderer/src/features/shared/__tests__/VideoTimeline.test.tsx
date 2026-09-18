@@ -407,6 +407,94 @@ describe("VideoTimeline", () => {
     expect(playhead.style.transform).toBe("translateX(200px)");
   });
 
+  // The drag tooltip used to render inside `.vtl__strip`, which carries
+  // `overflow: hidden` for its border-radius — so a drag that reached
+  // either end had the tip's trailing digits sliced off at the strip
+  // edge ("0:01" where the value was "0:01.4"). Two halves to the fix
+  // and both are load-bearing: the tip has to sit OUTSIDE the clipping
+  // box, and it has to stay inside the strip once it is free of it,
+  // because the Library's `.psl__stage-wrap` clips at the stage edge and
+  // would take over where the strip left off.
+  describe("drag tooltip", () => {
+    // jsdom lays nothing out, so `offsetWidth` is 0 and the clamp is a
+    // no-op unless the tip's width is stubbed. 44px is about what the
+    // real `0:01.4` box measures at 10px mono + 6px padding + border.
+    const TIP_W = 44;
+    let tipSpy: ReturnType<typeof vi.spyOn> | null = null;
+    function stubTipWidth(px = TIP_W): void {
+      tipSpy = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(px);
+    }
+    afterEach(() => {
+      tipSpy?.mockRestore();
+      tipSpy = null;
+    });
+
+    /** Press the out handle at `clientX` and return the live tip. The
+     *  handle, not the strip body: that is the gesture in the report,
+     *  and it needs no `onSeek` to arm. `drag.sec` is the RAW pointer
+     *  time, so the tip reads the edge of the strip even where
+     *  `clampRange` holds the range back. */
+    function tipDuring(clientX: number): HTMLElement {
+      const { el } = render({ range: { start: 0, end: 16 } });
+      pointer(el.querySelector('[data-testid="video-timeline-out"]')!, "pointerdown", clientX);
+      return el.querySelector('[data-testid="video-timeline-tip"]') as HTMLElement;
+    }
+
+    test("renders outside the strip, so `overflow: hidden` cannot clip it", () => {
+      stubTipWidth();
+      const tip = tipDuring(400);
+      expect(tip).not.toBeNull();
+      expect(tip.closest(".vtl__strip")).toBeNull();
+      expect(tip.closest(".vtl__strip-wrap")).not.toBeNull();
+    });
+
+    test("is centred on the pointer away from the edges", () => {
+      stubTipWidth();
+      // 800px over 16s, pressed at 400px → 8s, dead centre. jsdom lays
+      // nothing out so `clientLeft` is 0 here; the border conversion is
+      // covered by the test below.
+      expect(tipDuring(400).style.left).toBe("400px");
+    });
+
+    // The tip's containing block is the WRAPPER, whose padding box is
+    // the strip's BORDER box — one border wider on each side than the
+    // padding box `tooltipX` is measured in. Without adding it back the
+    // tip drifts a border off the pointer, which is the same class of
+    // mistake as the ruler's inline margin.
+    test("converts out of the strip's padding box into the wrapper's", () => {
+      stubTipWidth();
+      const borderSpy = vi
+        .spyOn(Element.prototype, "clientLeft", "get")
+        .mockReturnValue(3);
+      try {
+        expect(tipDuring(400).style.left).toBe("403px");
+      } finally {
+        borderSpy.mockRestore();
+      }
+    });
+
+    test("stops at the right edge instead of hanging off it", () => {
+      stubTipWidth();
+      // Pressed at the far right, `translateX(-50%)` would put half the
+      // box past 800 — the case in the bug report.
+      expect(tipDuring(800).style.left).toBe(`${800 - TIP_W / 2}px`);
+    });
+
+    test("stops at the left edge too", () => {
+      stubTipWidth();
+      expect(tipDuring(0).style.left).toBe(`${TIP_W / 2}px`);
+    });
+
+    test("a strip narrower than the tip still yields a usable position", () => {
+      // Lower bound (half the tip) above upper bound (width - half):
+      // the clamp must not invert and put the tip off the far end.
+      stubTipWidth(900);
+      const left = Number(tipDuring(400).style.left.replace("px", ""));
+      expect(Number.isFinite(left)).toBe(true);
+      expect(left).toBe(450);
+    });
+  });
+
   test("a playhead source moves the head without re-rendering, and keeps aria in step", () => {
     const source = createPlayheadSource(0);
     const { el } = render({ range: { start: 0, end: 16 }, currentTime: 0, playhead: source });

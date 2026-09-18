@@ -32,7 +32,7 @@ import {
   isAiReasoningEffort
 } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "../../../lib/pwrsnap";
-import { Card, Row } from "../components";
+import { Card, Row, Switch } from "../components";
 import { AiConsentDialog } from "../../shared/AiConsentDialog";
 import { useAiProvidersContext, useInUseAcpModelProbes } from "../AiProvidersContext";
 import { AI_SURFACE_LABELS } from "../ai-provider-status";
@@ -280,17 +280,33 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
         <Row
           label="Enrich new captures"
           sub="Writes a caption, tags, a filename, and the text it can read in each new capture, using the agent chosen for captions above."
-          tag={settings?.ai.enabled ? "enabled" : "off"}
+          tag={settings?.ai.enabled ? "on" : "off"}
+        >
+          <Switch
+            on={settings?.ai.enabled ?? false}
+            label="Enrich new captures"
+            onChange={(enabled) => {
+              // First time on: show the disclosure; the switch stays off
+              // unless it is accepted. Turning on also clears a cost-safety
+              // cutoff — the breaker turns enrichment off, so this is how
+              // the operator lifts it.
+              if (enabled && settings?.ai.consentAcceptedAt === null) {
+                setAiConsentDialogOpen(true);
+                return;
+              }
+              void setAiEnrichmentEnabled(enabled);
+            }}
+          />
+        </Row>
+        <Row
+          label="Budget"
+          sub="Enrichment runs draw from a small budget that refills over time, so a burst of captures can't run up a bill. If it keeps running dry, PwrSnap turns enrichment off; switch it back on above."
         >
           <div className="pss__test">
             <span className="pss__test-icon">AI</span>
             <div className="pss__test-l">
               <span className="pss__test-cmd">
-                {safetyDisabled
-                  ? "Disabled for cost safety"
-                  : settings?.ai.enabled
-                    ? "Enrichment enabled"
-                    : "Enrichment disabled"}
+                {safetyDisabled ? "Turned off for cost safety" : "Enrichment budget"}
               </span>
               <span className="pss__test-sub">
                 {budgetStatusSubLine(budgetStatus, settings?.ai.budgetSafetyDisabledAt ?? null)}
@@ -300,20 +316,6 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
               <span className={"pss__badge " + budgetBadgeClass(budgetStatus)}>
                 {budgetBadgeLabel(budgetStatus)}
               </span>
-              <button
-                className="pss__test-btn"
-                type="button"
-                onClick={() => {
-                  const enabled = !(settings?.ai.enabled ?? false);
-                  if (enabled && settings?.ai.consentAcceptedAt === null) {
-                    setAiConsentDialogOpen(true);
-                    return;
-                  }
-                  void setAiEnrichmentEnabled(enabled);
-                }}
-              >
-                {settings?.ai.enabled ? "Disable" : "Enable"}
-              </button>
             </div>
           </div>
         </Row>

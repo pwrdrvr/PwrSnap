@@ -585,4 +585,31 @@ describe("AI Features — jump-to sections", () => {
     expect(intro?.parentElement?.classList.contains("pss__roles")).toBe(true);
     expect(intro?.closest(".pss__card-body")).not.toBeNull();
   });
+
+  test("a section opened from another page lands on its card; a later jump travels there", async () => {
+    const calls: Array<{ id: string; behavior: ScrollBehavior | undefined }> = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element, options?: boolean | ScrollIntoViewOptions) {
+      calls.push({
+        id: this.id,
+        behavior: typeof options === "object" ? options.behavior : undefined
+      });
+    };
+    try {
+      await render(createElement(AIFeaturesPage, { sub: "usage", request: 0 }));
+      expect(calls).toEqual([
+        { id: settingsSectionId("ai-features", "usage"), behavior: "auto" }
+      ]);
+
+      // Already on the page: the next jump animates from where the pane is.
+      await rerender(createElement(AIFeaturesPage, { sub: "default-agents", request: 1 }));
+      expect(calls.at(-1)).toEqual({
+        id: settingsSectionId("ai-features", "default-agents"),
+        behavior: "smooth"
+      });
+      expect(calls).toHaveLength(2);
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
 });

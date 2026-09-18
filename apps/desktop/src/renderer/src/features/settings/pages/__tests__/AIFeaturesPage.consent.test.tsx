@@ -24,8 +24,11 @@ vi.mock("../../SettingsContext", () => ({
   useSettingsContext: (): UseSettingsValue => contextValue
 }));
 
-function settingsWithConsent(consentAcceptedAt: string | null): Settings {
-  return {
+function settingsWithConsent(
+  consentAcceptedAt: string | null,
+  ai: Partial<Settings["ai"]> = {}
+): Settings {
+  const settings = {
     schemaVersion: 1,
     codex: {
       mode: "auto",
@@ -48,6 +51,7 @@ function settingsWithConsent(consentAcceptedAt: string | null): Settings {
       acp: { enabledAgentIds: [] }
     }
   } as unknown as Settings;
+  return { ...settings, ai: { ...settings.ai, ...ai } };
 }
 
 function installFakeApi(): void {
@@ -68,10 +72,13 @@ function installFakeApi(): void {
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
-async function renderPage(consentAcceptedAt: string | null): Promise<HTMLDivElement> {
+async function renderPage(
+  consentAcceptedAt: string | null,
+  ai: Partial<Settings["ai"]> = {}
+): Promise<HTMLDivElement> {
   installFakeApi();
   contextValue = {
-    settings: settingsWithConsent(consentAcceptedAt),
+    settings: settingsWithConsent(consentAcceptedAt, ai),
     secrets: null,
     loading: false,
     error: null,
@@ -103,6 +110,14 @@ async function flushEffects(): Promise<void> {
     await Promise.resolve();
     await Promise.resolve();
   });
+}
+
+function enrichSwitch(): HTMLButtonElement {
+  const found = container?.querySelector<HTMLButtonElement>(
+    '[role="switch"][aria-label="Enrich new captures"]'
+  );
+  if (found === null || found === undefined) throw new Error("enrichment switch not found");
+  return found;
 }
 
 function button(label: string): HTMLButtonElement {
@@ -147,7 +162,7 @@ describe("AIFeaturesPage — enrichment consent", () => {
     const page = await renderPage(null);
 
     await act(async () => {
-      button("Enable").click();
+      enrichSwitch().click();
     });
 
     expect(page.querySelector('[role="dialog"]')).not.toBeNull();
@@ -165,7 +180,7 @@ describe("AIFeaturesPage — enrichment consent", () => {
     await renderPage(null);
 
     await act(async () => {
-      button("Enable").click();
+      enrichSwitch().click();
     });
     await act(async () => {
       button("Enable AI enrichment").click();
@@ -186,7 +201,7 @@ describe("AIFeaturesPage — enrichment consent", () => {
     const page = await renderPage("2026-08-01T12:00:00.000Z");
 
     await act(async () => {
-      button("Enable").click();
+      enrichSwitch().click();
       await Promise.resolve();
     });
 
@@ -196,6 +211,37 @@ describe("AIFeaturesPage — enrichment consent", () => {
         enabled: true,
         budgetSafetyDisabledAt: null
       }
+    });
+  });
+
+  test("enrichment is an on/off switch that reflects the setting", async () => {
+    await renderPage("2026-08-01T12:00:00.000Z", { enabled: true });
+    expect(enrichSwitch().getAttribute("aria-checked")).toBe("true");
+
+    await act(async () => {
+      enrichSwitch().click();
+      await Promise.resolve();
+    });
+    expect(patchMock).toHaveBeenCalledWith({
+      ai: { enabled: false, budgetSafetyDisabledAt: null }
+    });
+  });
+
+  test("a cost-safety cutoff reads as off, and switching on lifts it", async () => {
+    // The budget breaker writes `enabled: false` + a timestamp.
+    const page = await renderPage("2026-08-01T12:00:00.000Z", {
+      enabled: false,
+      budgetSafetyDisabledAt: "2026-09-18T10:00:00.000Z"
+    });
+    expect(enrichSwitch().getAttribute("aria-checked")).toBe("false");
+    expect(page.textContent).toContain("Turned off for cost safety");
+
+    await act(async () => {
+      enrichSwitch().click();
+      await Promise.resolve();
+    });
+    expect(patchMock).toHaveBeenCalledWith({
+      ai: { enabled: true, budgetSafetyDisabledAt: null }
     });
   });
 });

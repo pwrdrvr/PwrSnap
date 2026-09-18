@@ -1,11 +1,12 @@
 import {
-  useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type MouseEvent,
   type ReactElement,
   type ReactNode
 } from "react";
+import { settingsScrollBehavior } from "../settings-nav";
 
 type CardProps = {
   eyebrow: string;
@@ -40,18 +41,22 @@ export function Card({
   const sectionRef = useRef<HTMLElement | null>(null);
   const headerRef = useRef<HTMLButtonElement | null>(null);
 
-  // Passive, not layout: the Settings shell resets `<main>`'s scroll in a
-  // layout effect when the route changes, and this has to land after it.
-  useEffect(() => {
+  // Layout effect, so a section opened from ANOTHER page lands on its card
+  // before the first paint instead of flashing that page's top. The first
+  // run is that arrival and snaps there; every later request (another
+  // section of the same page, or a re-click) travels from wherever the pane
+  // is — never back to the top first.
+  const hasRunRef = useRef<boolean>(false);
+  useLayoutEffect(() => {
+    const arriving = !hasRunRef.current;
+    hasRunRef.current = true;
     if (focusRequest === undefined) return;
     setCollapsed(false);
-    const reduceMotion =
-      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
     // Optional call: jsdom implements no `scrollIntoView`, and expanding
     // and focusing are the parts that have to happen.
     sectionRef.current?.scrollIntoView?.({
       block: "start",
-      behavior: reduceMotion ? "auto" : "smooth"
+      behavior: arriving ? "auto" : settingsScrollBehavior()
     });
     headerRef.current?.focus({ preventScroll: true });
   }, [focusRequest]);

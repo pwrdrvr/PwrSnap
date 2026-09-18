@@ -14,7 +14,12 @@ import type { SettingsPage } from "@pwrsnap/shared";
 import { AiProvidersProvider, useAiProvidersContext } from "./AiProvidersContext";
 import { SettingsProvider } from "./SettingsContext";
 import { SETTINGS_PAGES_FLAT } from "./settings-categories";
-import { settingsNavChildren } from "./settings-nav";
+import {
+  paneScrollForRoute,
+  settingsNavChildren,
+  settingsScrollBehavior,
+  type PaneRoute
+} from "./settings-nav";
 import { SettingsTitleBar } from "./SettingsTitleBar";
 import { Sidebar } from "./Sidebar";
 import { setActivePage, useActiveRoute } from "./useActivePage";
@@ -45,11 +50,31 @@ function SettingsShell(): ReactElement {
 
   // `<main>` outlives every page switch, so without this a page opened
   // from a scrolled one lands mid-way down. Layout effect: reset before
-  // paint rather than flash the old offset.
+  // paint rather than flash the old offset. A section route is left to its
+  // card, which scrolls from wherever the pane is (see paneScrollForRoute).
   const mainRef = useRef<HTMLElement | null>(null);
+  const prevRouteRef = useRef<PaneRoute>({ page: active, sub, request });
   useLayoutEffect(() => {
-    if (mainRef.current !== null) mainRef.current.scrollTop = 0;
-  }, [active, sub]);
+    const prev = prevRouteRef.current;
+    const next: PaneRoute = { page: active, sub, request };
+    prevRouteRef.current = next;
+    const main = mainRef.current;
+    if (main === null) return;
+    switch (paneScrollForRoute(prev, next)) {
+      case "top":
+        main.scrollTop = 0;
+        return;
+      case "travel-top":
+        if (typeof main.scrollTo === "function") {
+          main.scrollTo({ top: 0, behavior: settingsScrollBehavior() });
+        } else {
+          main.scrollTop = 0;
+        }
+        return;
+      case "none":
+        return;
+    }
+  }, [active, sub, request]);
 
   let page: ReactElement;
   switch (active) {

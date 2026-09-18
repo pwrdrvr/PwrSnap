@@ -66,3 +66,47 @@ export function settingsNavChildren(
       return [];
   }
 }
+
+/** Pages whose subs are SECTIONS of one scrolling page, not separate
+ *  screens. A section sub scrolls its card into view (see `Card`'s
+ *  `focusRequest`); a screen sub replaces the page's content. */
+export const SETTINGS_SECTION_PAGES: ReadonlySet<SettingsPage> = new Set<SettingsPage>([
+  "ai-features"
+]);
+
+export type PaneRoute = { page: SettingsPage; sub: string | null; request: number };
+
+/**
+ * What the Settings pane's own scroll does when the route moves from
+ * `prev` to `next`:
+ *
+ * - `"top"`: a different page, or a different provider SCREEN, replaces the
+ *   content, so it starts at the top.
+ * - `"none"`: a SECTION positions the pane itself — its card scrolls into
+ *   view from wherever the pane already is. Resetting to the top first is
+ *   what made every jump link leap to the top and then scroll all the way
+ *   back down.
+ * - `"travel-top"`: back to a section page's top (its sidebar parent row)
+ *   from further down the same page travels up rather than cutting there.
+ */
+export function paneScrollForRoute(
+  prev: PaneRoute,
+  next: PaneRoute
+): "top" | "none" | "travel-top" {
+  const sectionPage = SETTINGS_SECTION_PAGES.has(next.page);
+  if (sectionPage && next.sub !== null) return "none";
+  if (sectionPage && prev.page === next.page) {
+    // Same page, now at its top: from a section, or a re-click of the
+    // parent row while scrolled down (only the request moved).
+    return prev.sub !== null || prev.request !== next.request ? "travel-top" : "none";
+  }
+  if (prev.page === next.page && prev.sub === next.sub) return "none";
+  return "top";
+}
+
+/** Smooth, unless the operator asked the OS for reduced motion. */
+export function settingsScrollBehavior(): ScrollBehavior {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true
+    ? "auto"
+    : "smooth";
+}

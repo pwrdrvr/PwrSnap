@@ -15,7 +15,7 @@
 
 import { app, dialog, type BrowserWindow } from "electron";
 import { RECORDING_MEDIA_DEFAULTS } from "@pwrsnap/shared";
-import type { RecordingSubject, Settings } from "@pwrsnap/shared";
+import type { RecordingState, RecordingSubject, Settings } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { setFloatOverState } from "../float-over";
 import { getMainLogger } from "../log";
@@ -83,6 +83,12 @@ export const FALLBACK_RECORDING_DEFAULTS: RecordingDefaults = RECORDING_MEDIA_DE
  * here and we don't need to filter it out. If a future caller invokes
  * this from a code path where the HUD is live, pass `excludeWindow`
  * to `appWindowsOverlappingGlobalRect` first.
+ *
+ * `scheduleLeadInReraise` DOES run while the HUD is live, and stays
+ * inside this invariant only because it reuses the commit-time array
+ * instead of recomputing the overlap. Keep it that way: a fresh overlap
+ * set would contain the HUD, which `fillRect`s itself to the recorded
+ * rect and so matches by construction.
  */
 function pickFocusTargetForRecording(
   overlapping: BrowserWindow[],
@@ -92,6 +98,149 @@ function pickFocusTargetForRecording(
     return library;
   }
   return overlapping[0]!;
+}
+
+/**
+ * Order the given PwrSnap windows to the front and focus one of them.
+ *
+ * Shared by the commit-time raise and the lead-in re-raise so the two
+ * cannot drift. Skips windows destroyed since the caller collected
+ * them: the commit path awaits a native helper between computing the
+ * overlap and getting here, and the lead-in path runs from a timer.
+ */
+function orderFrontAndFocus(windows: BrowserWindow[]): void {
+  const live = windows.filter((win) => !win.isDestroyed());
+  if (live.length === 0) return;
+  for (const win of live) {
+    if (win.isMinimized()) win.restore();
+    if (!win.isVisible()) win.show();
+    win.moveTop();
+  }
+  pickFocusTargetForRecording(live).focus();
+}
+
+/**
+ * Delays, in ms after the commit-time raise, at which we re-check that
+ * the recorded window still holds focus. Spread across the demotion
+ * window rather than aimed at it — the same shape and the same reason
+ * as `scheduleDockReclaim`'s spread, which this one rides alongside.
+ *
+ * Deliberately ends at 1s of a ~3s countdown. An attempt that acts runs
+ * a native helper with a 1.5s timeout, and the activation happens
+ * INSIDE that helper, where nothing can call it back. Stopping at 1s
+ * keeps even a stalled helper's activation (≤2.5s) ahead of `starting`
+ * (~3.1s) and the take going live after it. The one demotion measured
+ * lands at +125ms. Covering a later one means cutting the helper
+ * timeout in step — appending delays trades the bound away.
+ */
+const LEAD_IN_RERAISE_DELAYS_MS = [120, 300, 600, 1000] as const;
+
+/** Phases during which re-raising our own window is still the user's
+ *  intent. Deliberately excludes `recording` — see the doc below. */
+const LEAD_IN_PHASES: ReadonlySet<RecordingState["phase"]> = new Set([
+  "preflight",
+  "countdown",
+  "starting",
+]);
+
+/**
+ * Bumped on every committed selection. A lead-in re-raise belongs to
+ * the take that scheduled it: without this, a case-one take cancelled
+ * inside the first second, followed by a quick case-two commit, would
+ * let a leftover timer see `countdown` and activate PwrSnap over the
+ * window the user just picked.
+ */
+let selectionGeneration = 0;
+
+/**
+ * Keep the recorded PwrSnap window frontmost for the WHOLE lead-in, not
+ * just the instant the user committed.
+ *
+ * `scheduleDockReclaim` (unconditional, from `tearDown` below) already
+ * catches the AppKit Accessory demotion that follows selector teardown
+ * and re-asserts Regular activation policy. It brings the Dock tile
+ * back and stops there — policy, activation and z-order are three
+ * different things, and the reclaim restores only the first. Measured
+ * on a take that recorded the Library, times relative to the
+ * commit-time raise at t=0:
+ *
+ *   t+94ms    Dock tile already stripped; a PwrSnap window is still key
+ *   t+125ms   the reclaim fires and finds nothing of ours key; it
+ *             re-asserts Regular policy and the tile comes back.
+ *             Activation does not.
+ *   t+1.1s …  every lead-in tick reports the right overlap set and
+ *   t+3.1s    `moveTop()`s it, with no visible effect
+ *
+ * That last line is the trap. macOS orders an INACTIVE app's window
+ * only among that app's OWN windows, so the recording-controller's
+ * per-tick `moveTop()` loop runs, looks healthy in the log, and cannot
+ * lift the Library back above the other app. The user watches their
+ * PwrSnap window dive under during the countdown and get recorded that
+ * way, and the only fix available to them is to click it themselves
+ * before the countdown ends.
+ *
+ * So: re-check across the demotion window, and re-activate only if the
+ * recorded window lost focus. Scoped four ways, each load-bearing and
+ * each pinned by a test:
+ *
+ *   • **macOS only.** The demotion is AppKit's. On Windows and Linux
+ *     `activateApp` is a no-op, so all that would be left is
+ *     repeatedly `focus()`ing the Library over whatever the user
+ *     clicked during the countdown.
+ *   • **Only the raise branch, and only its own take.** Case two — the
+ *     user snapped to ANOTHER app's window — must never pull PwrSnap
+ *     forward, and the recording-controller's tick cannot make that
+ *     distinction: it only knows the rect overlaps one of our windows,
+ *     which is true in BOTH cases (Library sitting partially behind
+ *     the window the user picked). The three-case decision exists
+ *     here, so the recovery does too, and each timer carries the
+ *     `selectionGeneration` of the take that scheduled it.
+ *   • **Lead-in phases only, checked on both sides of the helper.**
+ *     Once the take is live the HUD is the only surface allowed to
+ *     move, and activating PwrSnap mid-take records the user's app
+ *     losing focus — see AGENTS.md "Mid-take UI". The helper can take
+ *     up to its timeout, so a cancel or a take going live while it runs
+ *     is caught by the second check before anything is ordered front.
+ *   • **Only when none of the windows we raised holds key.** NOT
+ *     `getFocusedWindow() !== null`: the focus-sink is a focusable
+ *     non-activating panel and can be key while PwrSnap is INACTIVE —
+ *     exactly the state this recovers from. Asking whether the recorded
+ *     window itself is key answers the question we actually care about,
+ *     and the common case (it still is) spawns no helper at all.
+ */
+function scheduleLeadInReraise(overlapping: BrowserWindow[]): void {
+  if (process.platform !== "darwin") return;
+  const log = getMainLogger("pwrsnap:shortcut");
+  const generation = selectionGeneration;
+  const stillWanted = (): boolean =>
+    generation === selectionGeneration &&
+    LEAD_IN_PHASES.has(getRecordingState().phase);
+  for (const delayMs of LEAD_IN_RERAISE_DELAYS_MS) {
+    setTimeout(() => {
+      if (!stillWanted()) return;
+      // Re-filter rather than trusting the captured array: a window can
+      // be closed or hidden during the countdown. Do NOT recompute the
+      // overlap instead — see pickFocusTargetForRecording's invariant.
+      const live = overlapping.filter((win) => !win.isDestroyed() && win.isVisible());
+      if (live.length === 0) return;
+      if (live.some((win) => win.isFocused())) return;
+      log.debug("video-record re-raising after lead-in demotion", {
+        delayMs,
+        phase: getRecordingState().phase,
+        count: live.length,
+      });
+      // Same order as the commit-time raise. `reclaimDockIconIfLibraryAlive`
+      // starts an async `dock.show()` it does not hand back, so this is
+      // "policy requested first", not "policy landed first" — identical
+      // to the commit path, and by the time these timers fire the Dock
+      // reclaim spread has normally already restored it.
+      reclaimDockIconIfLibraryAlive();
+      void activateApp(process.pid).then(() => {
+        if (!stillWanted()) return;
+        orderFrontAndFocus(live);
+      });
+    }, delayMs);
+  }
 }
 
 /**
@@ -108,6 +257,8 @@ export async function startRecordingFromSelection(
 ): Promise<void> {
   const log = getMainLogger("pwrsnap:shortcut");
   const { screenSnapshotId, previousAppPid } = selection;
+  // Retire any lead-in re-raise still pending from a previous take.
+  selectionGeneration += 1;
   // Teardown is unconditional. With two entry points — one of them
   // fire-and-forget — a throw anywhere below must not be able to strand
   // a screen-saver-level overlay on top of the user's desktop with no
@@ -218,16 +369,17 @@ export async function startRecordingFromSelection(
       //      (focus-sink + HUD) in the window list.
       reclaimDockIconIfLibraryAlive();
       await activateApp(process.pid);
-      for (const win of overlapping) {
-        if (win.isMinimized()) win.restore();
-        if (!win.isVisible()) win.show();
-        win.moveTop();
-      }
-      pickFocusTargetForRecording(overlapping).focus();
+      orderFrontAndFocus(overlapping);
       log.debug("video-record raised our windows", {
         ownPid: process.pid,
         dockVisibleAfter: app.dock?.isVisible() ?? null,
       });
+      // The raise above only holds for ~100ms — AppKit's Accessory
+      // demotion lands after it and takes our activation with it, and
+      // the Dock reclaim that catches the demotion does not give
+      // activation back. Nothing after this point re-raises us, so the
+      // rest of the countdown records whatever ended up on top.
+      scheduleLeadInReraise(overlapping);
     } else if (previousAppPid !== null) {
       // No activateApp(previousAppPid): the non-activating selector never
       // deactivated the previously-frontmost app, so it stays frontmost as

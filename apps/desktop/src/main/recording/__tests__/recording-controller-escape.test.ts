@@ -46,6 +46,7 @@ type WindowSpy = {
   show: ReturnType<typeof vi.fn>;
   focus: ReturnType<typeof vi.fn>;
   moveTop: ReturnType<typeof vi.fn>;
+  getTitle: ReturnType<typeof vi.fn>;
   hide: ReturnType<typeof vi.fn>;
   destroy: ReturnType<typeof vi.fn>;
   on: ReturnType<typeof vi.fn>;
@@ -77,6 +78,7 @@ function makeWindowSpy(): WindowSpy {
     show: vi.fn(),
     focus: vi.fn(),
     moveTop: vi.fn(),
+    getTitle: vi.fn(() => "PwrSnap"),
     hide: vi.fn(),
     destroy: vi.fn(),
     on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
@@ -97,7 +99,12 @@ function makeWindowSpy(): WindowSpy {
 }
 
 vi.mock("electron", () => ({
-  BrowserWindow: {},
+  // `getFocusedWindow` backs the lead-in arm's app-active probe; `app`
+  // backs its Dock read. Both are diagnostic-only, so a bare `{}` here
+  // would fail the whole arm on a TypeError rather than the assertion
+  // under test.
+  BrowserWindow: { getFocusedWindow: () => null },
+  app: { dock: { isVisible: () => true } },
   dialog: {
     showMessageBox: mocks.showMessageBox
   },

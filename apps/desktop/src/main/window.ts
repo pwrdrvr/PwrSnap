@@ -747,7 +747,27 @@ export function reclaimDockIconIfLibraryAlive(options: { force?: boolean } = {})
   // gone — the fingerprint of an AppKit Accessory demotion that orphans
   // the Library. Log it: it's the symptom users report as "the Library
   // disappeared from the Dock."
-  log.info("reclaiming Dock icon — Library alive but Dock tile stripped (AppKit Accessory demotion)");
+  // Which of our windows, if any, holds key as we catch the demotion.
+  // `null` means nothing of ours does. A non-null value is NOT proof
+  // PwrSnap is active: the focus-sink is a non-activating panel and can
+  // be key while another app holds activation — and it may share the
+  // Library's "PwrSnap" title, which is why `focusedIsLibrary` is
+  // logged beside it.
+  //
+  // That distinction is the whole triage for "my PwrSnap window dove
+  // under another app during the recording countdown". The reclaim
+  // below re-asserts Regular activation POLICY and brings the Dock
+  // tile back; it does not re-activate the app and it does not restore
+  // z-order. Three different things, and a `dockVisibleAfter=true`
+  // elsewhere in the log says nothing about the other two.
+  const focused = BrowserWindow.getFocusedWindow();
+  log.info(
+    "reclaiming Dock icon — Library alive but Dock tile stripped (AppKit Accessory demotion)",
+    {
+      focusedWindowTitle: focused?.getTitle() ?? null,
+      focusedIsLibrary: focused !== null && focused === libraryWindow
+    }
+  );
   showDockWithDevelopmentIcon();
 }
 

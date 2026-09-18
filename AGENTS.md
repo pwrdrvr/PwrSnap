@@ -1713,6 +1713,46 @@ the same class of intrusion as painting over it. The 5s auto-disarm and
 the sibling button are the exits from an armed state, and `.rc-root`
 carries no key handler.
 
+## The Dock reclaim is not an activation recovery
+
+**`scheduleDockReclaim` / `reclaimDockIconIfLibraryAlive` restore
+activation POLICY. They do not restore activation, and they do not
+restore z-order. Three different things. Never treat a recovered Dock
+tile as evidence that our window is back on top.**
+
+The AppKit Accessory demotion that follows selector teardown strips the
+Dock tile first and takes our activation a few tens of ms later. The
+reclaim catches the tile; nothing was asking for activation back. The
+cost lands on the one path that needs PwrSnap frontmost for longer than
+an instant — a recording whose subject is one of OUR windows, where the
+~3s countdown outlives the commit-time raise and the window dove under
+another app and got recorded that way.
+
+- **`moveTop()` on an inactive app is not a fix.** macOS orders such a
+  window only among that app's OWN windows, so
+  `applyRecordingStateToController`'s per-tick re-raise loop runs, logs a
+  correct overlap set, and cannot lift the window above the active app.
+  A healthy-looking tick log is not evidence.
+- **`getFocusedWindow() !== null` does NOT mean PwrSnap is active.**
+  The focus-sink is a focusable non-activating panel and can hold key
+  while another app is frontmost — the exact state this bug lives in.
+  Ask the question you mean: is the window you want on top key
+  (`win.isFocused()`)? Both diagnostic lines log which window is key
+  AND whether it is the one that matters (`focusedIsOverlapping` on
+  the debug `recording lead-in z-order tick`, `focusedIsLibrary` on the
+  info-level reclaim line), because the Library and the sink can share
+  a title.
+- **Re-activation is scoped: macOS, the raise branch's own take, and
+  the lead-in phases** (`scheduleLeadInReraise` in
+  `record-from-selection.ts`). Widening any of them is a bug: case two
+  must leave the user's app frontmost, activating mid-take records the
+  recorded app losing focus (see "Mid-take UI" above), and on Windows
+  there is no demotion to recover from. The recording-controller's tick
+  cannot host this — it cannot tell case one from case two.
+
+Measurements, the two hypotheses it replaced, and the log recipe:
+[docs/solutions/2026-09-17-recording-lead-in-activation-loss.md](docs/solutions/2026-09-17-recording-lead-in-activation-loss.md).
+
 ## Settings substrate — every setting + secret goes through one place
 
 **All user-configurable state lives in `DesktopSettingsService` +

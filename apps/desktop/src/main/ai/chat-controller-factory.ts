@@ -334,7 +334,7 @@ async function resolveChatBackend(
   if (!provider.startsWith("acp:")) {
     throw new Error(
       `Configured chat provider "${provider}" is not supported. ` +
-        "Choose Codex or a supported ACP provider in Settings → AI."
+        "Choose Codex or a supported ACP provider in Settings → AI Features."
     );
   }
 
@@ -342,7 +342,7 @@ async function resolveChatBackend(
   if (strategy === undefined) {
     throw new Error(
       `Configured chat provider "${provider}" is not supported. ` +
-        "Choose Codex or a supported ACP provider in Settings → AI."
+        "Choose Codex or a supported ACP provider in Settings → AI Features."
     );
   }
   const strategyId = strategy.id;
@@ -356,7 +356,8 @@ async function resolveChatBackend(
   if (discoveryOptions === null) {
     throw new Error(
       `Configured chat provider "${provider}" is unavailable because ` +
-        `${strategy.displayName} is disabled. Enable it in Settings → AI or choose another provider.`
+        `${strategy.displayName} is disabled. Enable it in Settings → AI Providers, or choose ` +
+        "another provider in Settings → AI Features."
     );
   }
 
@@ -397,14 +398,15 @@ async function resolveChatBackend(
     throw new Error(
       `Configured chat provider "${provider}" is unavailable because ` +
         `${strategy.displayName} discovery failed: ${message}. ` +
-        "Check its configuration in Settings → AI or choose another provider."
+        "Check it in Settings → AI Providers, or choose another provider in Settings → AI Features."
     );
   }
   if (agent === null) {
     throw new Error(
       `Configured chat provider "${provider}" is unavailable because ` +
         `${strategy.displayName} is not installed or could not be found. ` +
-        "Install or configure it in Settings → AI, or choose another provider."
+        "Install or configure it in Settings → AI Providers, or choose another provider in " +
+        "Settings → AI Features."
     );
   }
   const makeAcp = deps.makeAcpClient ?? defaultMakeAcpClient;

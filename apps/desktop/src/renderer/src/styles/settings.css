@@ -80,6 +80,26 @@
   text-transform: uppercase;
 }
 .pss__title-crumb .sep { opacity: 0.5; }
+/* Parent crumb on a child screen (Settings › AI Providers › Codex):
+   returns to that page's hub. Text-styled like the rest of the crumb. */
+.pss__title-crumb-link {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+.pss__title-crumb-link:hover,
+.pss__title-crumb-link:focus-visible {
+  color: var(--text-primary);
+  outline: none;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
 .pss__title-crumb .here {
   color: var(--text-primary);
   text-transform: none;
@@ -174,7 +194,28 @@
   border-color: var(--accent-border);
   color: var(--accent-bright);
 }
-.pss__sb-nav.is-active::before {
+
+/* Section row: caret gutter + label button, ported from PwrAgnt's settings
+   nav. Every row reserves the gutter — caret button or spacer — so labels
+   align down the column whether or not the page expands into children.
+   24px, not the mark's width: the caret is a real click target flush
+   against the label, and WCAG 2.2 target-size (AA) wants 24×24. */
+.pss__sb-row {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+}
+.pss__sb-row .pss__sb-nav {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  padding-left: 6px;
+}
+/* The accent edge bar hangs off the ROW, not the button: the button now
+   starts after the caret gutter, so a bar positioned from it would land
+   between the caret and the label. -10px = the sidebar's own padding. */
+.pss__sb-row.is-active::before {
   content: "";
   position: absolute;
   left: -10px;
@@ -184,6 +225,136 @@
   background: var(--accent);
   border-radius: 0 2px 2px 0;
 }
+.pss__sb-caret,
+.pss__sb-caret-spacer {
+  display: inline-flex;
+  flex: 0 0 24px;
+  width: 24px;
+  align-items: center;
+  justify-content: center;
+}
+.pss__sb-caret {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+}
+.pss__sb-caret:hover,
+.pss__sb-caret:focus-visible {
+  background: var(--bg-panel-hover);
+  outline: none;
+}
+/* Filled disclosure triangle: points right collapsed, down expanded. */
+.pss__sb-caret-mark {
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid var(--text-muted);
+  transition: transform 120ms ease;
+}
+.pss__sb-caret:hover .pss__sb-caret-mark,
+.pss__sb-caret:focus-visible .pss__sb-caret-mark {
+  border-left-color: var(--text-primary);
+}
+.pss__sb-caret-mark.is-open { transform: rotate(90deg); }
+
+/* Collapsible child list — a 0fr→1fr grid-rows collapse so the height
+   animates without measuring. The clip carries the overflow, not the
+   grid, so the rows never paint outside the animating track. */
+.pss__sb-sublist {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 120ms ease, opacity 120ms ease;
+}
+.pss__sb-sublist.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.pss__sb-sublist-clip {
+  min-height: 0;
+  overflow: hidden;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pss__sb-sublist,
+  .pss__sb-caret-mark {
+    transition: none;
+  }
+}
+
+/* Indent = the 24px caret gutter + the label button's 1px border and 6px
+   padding, so the child rule lands under the parent label's first glyph.
+   The explicit width is load-bearing and tracks the margin: a <button>
+   shrink-to-fits even as a flex box, so `width: auto` would collapse the
+   row to its label and strand the chip mid-row. */
+.pss__sb-sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: calc(100% - 31px);
+  height: 26px;
+  margin: 0 0 1px 31px;
+  padding: 0 8px 0 10px;
+  appearance: none;
+  border: 0;
+  border-left: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-secondary);
+  font: 500 12px/1.4 var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+.pss__sb-sub:first-child { margin-top: 2px; }
+.pss__sb-sub:last-child { margin-bottom: 6px; }
+.pss__sb-sub:hover,
+.pss__sb-sub:focus-visible {
+  border-left-color: var(--accent-border);
+  color: var(--text-primary);
+  outline: none;
+}
+.pss__sb-sub.is-active {
+  border-left-color: var(--accent);
+  color: var(--accent-bright);
+}
+.pss__sb-sublabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pss__sb-subchip {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 1px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  color: var(--text-muted);
+  font: 600 9px/1.3 var(--font-sans);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* Provider status dot — shared by the sidebar children and the AI
+   Providers hub index, which render the same status. No tone class =
+   not known yet: the dot keeps its box (labels don't jump when a status
+   lands) but paints nothing. `off` is deliberately not `bad` — "you left
+   this off" and "this is broken" are the two states the dot exists to
+   tell apart. The dot is aria-hidden; every non-ok state also carries a
+   word (sidebar chip / hub badge). */
+.pss__status-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: transparent;
+}
+.pss__status-dot--ok { background: var(--success); }
+.pss__status-dot--off { background: color-mix(in srgb, var(--text-primary) 18%, transparent); }
+.pss__status-dot--warn { background: var(--warn); }
+.pss__status-dot--bad { background: var(--danger); }
 
 /* ============================================================
    MAIN AREA
@@ -302,6 +473,15 @@ a.pss__top-btn[aria-disabled="true"]:hover {
 .pss__card-hdr:hover {
   background: var(--bg-panel-hover);
 }
+/* Keyboard focus, and where a sidebar jump link parks focus. Inset rather
+   than an outline because `.pss__card` clips its overflow — and on-brand
+   rather than the browser's default blue ring. */
+.pss__card-hdr:focus-visible {
+  outline: none;
+  box-shadow:
+    inset 0 0 0 1px var(--accent),
+    inset 0 0 0 4px var(--accent-shadow);
+}
 .pss__card-hdr-action {
   display: inline-flex;
   align-items: center;
@@ -337,6 +517,34 @@ a.pss__top-btn[aria-disabled="true"]:hover {
 }
 .pss__card.is-collapsed .pss__card-body {
   display: none;
+}
+/* A sidebar jump link scrolls its card to the top of the pane; leave a
+   little air above it rather than parking the border on the edge. */
+.pss__card {
+  scroll-margin-top: 20px;
+}
+
+/* Inline link inside running copy (a page's header text pointing at a
+   sibling page). A button, since it routes in-app rather than to a URL. */
+.pss__text-link {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: var(--accent-bright);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent-bright) 40%, transparent);
+  text-underline-offset: 3px;
+}
+.pss__text-link:hover {
+  text-decoration-color: currentColor;
+}
+.pss__text-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 
 /* ============================================================
@@ -701,6 +909,91 @@ a.pss__top-btn[aria-disabled="true"]:hover {
   color: var(--danger-text);
   background: var(--danger-soft);
   border-color: var(--danger-border);
+}
+.pss__badge.is-warn {
+  color: var(--warn-text);
+  background: var(--warn-soft);
+  border-color: var(--warn-border);
+}
+
+/* AI Providers hub — provider index. One row per provider, same order and
+   status as the sidebar children; clicking opens that provider's screen. */
+.pss__prov-index {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pss__prov-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px 10px 14px;
+  appearance: none;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.pss__prov-row:hover,
+.pss__prov-row:focus-visible {
+  border-color: var(--accent-border);
+  outline: none;
+}
+.pss__prov-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pss__prov-name {
+  font: 600 13px/1.3 var(--font-sans);
+  color: var(--text-primary);
+}
+.pss__prov-row.is-off .pss__prov-name { color: var(--text-secondary); }
+.pss__prov-meta {
+  font: 500 11px/1.3 var(--font-mono);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pss__prov-chev {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font: 500 16px/1 var(--font-sans);
+}
+.pss__prov-row:hover .pss__prov-chev { color: var(--accent-bright); }
+
+/* Provider screen — which jobs actually run on this provider, with a link
+   to AI Features → Default agents. Sits between the page header and the
+   card. */
+.pss__prov-strip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+  padding: 10px 12px 10px 16px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+}
+.pss__prov-strip-eyebrow {
+  flex-shrink: 0;
+  font: 600 9px/1 var(--font-sans);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.pss__prov-strip-items {
+  flex: 1;
+  min-width: 0;
+  font: 500 12px/1.4 var(--font-sans);
+  color: var(--text-secondary);
 }
 .pss__opt-use {
   flex-shrink: 0;
@@ -1173,7 +1466,7 @@ a.pss__top-btn[aria-disabled="true"]:hover {
   align-self: center;
 }
 
-/* Codex auth-profile management (Settings → AI → Codex) */
+/* Codex auth-profile management (Settings → AI Providers → Codex) */
 .pss__codex-profiles {
   display: flex;
   flex-direction: column;
@@ -1793,7 +2086,15 @@ a.pss__top-btn[aria-disabled="true"]:hover {
 }
 .pss__role-control b { font: 600 12px/1 var(--font-sans); color: var(--accent-bright); }
 
-/* Short intro line at the top of the consolidated Job-routing card. */
+/* AI Features → Default agents body. `.pss__card-body` has no padding of
+   its own (every other card child is a self-padding Row), so the intro and
+   the job rows carry the same 20px inset a Row does — without it the intro
+   text sat flush against the card's left edge. */
+.pss__roles {
+  padding: 16px 20px 20px;
+}
+
+/* Short intro line at the top of the Default agents card. */
 .pss__role-intro {
   margin: 0 0 12px;
   font: 500 12px/1.5 var(--font-sans);
@@ -1965,7 +2266,7 @@ a.pss__top-btn[aria-disabled="true"]:hover {
    * `pss__main-hdr` rules. Reserved for future per-page tweaks. */
 }
 
-/* ---- Library Chat settings card (Settings → AI → Library Chat) ---- */
+/* ---- Chat guidance card (Settings → AI Features → Guidance) ---- */
 .pss__chat-banner {
   display: flex;
   gap: 12px;

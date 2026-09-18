@@ -30,6 +30,7 @@ import {
   isQuickCaptureAction,
   isRedactionStyle,
   isSettingsPage,
+  isSettingsSub,
   GRID_COPY_PALETTE_ANCHORS,
   GRID_ZOOM_MAX,
   GRID_ZOOM_MIN,
@@ -68,10 +69,26 @@ export type ValidationResult<T> =
 
 // ---- settings:open ----
 
+/**
+ * An unknown `page` is an error (nothing sensible to open). An unknown
+ * `sub` is NOT: it is dropped and the page's hub opens, reported through
+ * `droppedSub` so the handler can log it. A deep link that names a screen
+ * which has since been renamed, or a provider this build does not know,
+ * must still get the operator into Settings — refusing would turn a stale
+ * link into a button that does nothing. A `sub` without a `page` has no
+ * page to belong to, so it is dropped the same way.
+ */
 export function validateSettingsOpen(
-  req: { page?: SettingsPage | undefined }
-): ValidationResult<{ page: SettingsPage | undefined }> {
-  if (req.page === undefined) return { ok: true, value: { page: undefined } };
+  req: { page?: SettingsPage | undefined; sub?: string | undefined }
+): ValidationResult<{
+  page: SettingsPage | undefined;
+  sub: string | undefined;
+  droppedSub: boolean;
+}> {
+  const hasSub = req.sub !== undefined;
+  if (req.page === undefined) {
+    return { ok: true, value: { page: undefined, sub: undefined, droppedSub: hasSub } };
+  }
   if (!isSettingsPage(req.page)) {
     return {
       ok: false,
@@ -81,7 +98,11 @@ export function validateSettingsOpen(
       )
     };
   }
-  return { ok: true, value: { page: req.page } };
+  const sub = isSettingsSub(req.page, req.sub) ? req.sub : undefined;
+  return {
+    ok: true,
+    value: { page: req.page, sub, droppedSub: hasSub && sub === undefined }
+  };
 }
 
 // ---- settings:write ----
@@ -815,7 +836,7 @@ function validateChatPatch(raw: unknown): PwrSnapError | null {
     if (hit !== null) {
       return validationError(
         "secret_shape_in_userGuidance",
-        `settings:write: ai.chat.userGuidance contains what looks like a real ${hit}. Don't paste real secrets here — see Settings → AI → Chat for guidance on the shape-only pattern format.`
+        `settings:write: ai.chat.userGuidance contains what looks like a real ${hit}. Don't paste real secrets here — see Settings → AI Features → Guidance for the shape-only pattern format.`
       );
     }
   }

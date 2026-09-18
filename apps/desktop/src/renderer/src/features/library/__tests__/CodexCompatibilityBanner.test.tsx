@@ -97,9 +97,10 @@ describe("CodexCompatibilityBanner", () => {
       await Promise.resolve();
     });
 
+    // Straight to the Codex screen — the banner is about one binary.
     expect(api.calls).toContainEqual({
       name: "settings:open",
-      req: { page: "ai" }
+      req: { page: "ai", sub: "codex" }
     });
     expect(container?.textContent).toContain("Codex update required");
   });

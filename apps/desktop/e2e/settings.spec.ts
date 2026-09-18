@@ -96,31 +96,31 @@ test("settings:open is idempotent", async () => {
   }
 });
 
-test("settings:open with a page deep-links and re-navigates the existing window", async () => {
+test("settings:open with a page (and sub) deep-links and re-navigates the existing window", async () => {
   const app = await launchPwrSnap();
   try {
-    // First open with a deep link — main appends `page=ai` to the
-    // hash before constructing the window, so the URL carries it
-    // from first paint.
-    const first = await app.dispatch("settings:open", { page: "ai" });
+    // First open with a deep link to a screen WITHIN a page — main appends
+    // `page=ai&sub=codex` to the hash before constructing the window, so
+    // the URL carries it from first paint.
+    const first = await app.dispatch("settings:open", { page: "ai", sub: "codex" });
     expect(first.ok).toBe(true);
     const settingsWindow = await waitForSettingsWindow(app);
-    expect(settingsWindow.url()).toContain("page=ai");
+    expect(settingsWindow.url()).toContain("page=ai&sub=codex");
 
-    // CRITICAL: wait for the renderer's `useActivePage` `useEffect` to
+    // CRITICAL: wait for the renderer's `useActiveRoute` `useEffect` to
     // run before dispatching the second open. `waitForSettingsWindow`
     // returns on `domcontentloaded`, which fires BEFORE React mounts —
     // and the navigate event has no buffering, so an event sent before
-    // `useActivePage` subscribes is dropped on the floor. We wait for
-    // the AI Providers page title to be in the DOM as proof that React
-    // mounted + routed + the `useActivePage` effect ran.
+    // `useActiveRoute` subscribes is dropped on the floor. We wait for
+    // the Codex provider screen's title to be in the DOM as proof that
+    // React mounted + routed the sub + the `useActiveRoute` effect ran.
     await settingsWindow
-      .locator('h1.pss__main-title:has-text("Backends & credentials")')
+      .locator('h1.pss__main-title:text-is("Codex")')
       .waitFor({ timeout: 30_000 });
 
     // Second open with a different page — the window is already
     // there, so main fires `EVENT_CHANNELS.settingsNavigate`. The
-    // renderer's `useActivePage` hook calls `setActivePage(hotkeys)`,
+    // renderer's `useActiveRoute` hook calls `setActivePage(hotkeys)`,
     // which flips `window.location.hash`. We poll the URL because
     // the navigate event is async across processes.
     const second = await app.dispatch("settings:open", { page: "hotkeys" });
@@ -132,6 +132,42 @@ test("settings:open with a page deep-links and re-navigates the existing window"
     await expect.poll(() => settingsWindow.url(), { timeout: 30_000 }).toContain(
       "page=hotkeys"
     );
+
+    // Third open re-navigates to a sub screen: the typed event carries
+    // `sub` too, not just `page`.
+    const third = await app.dispatch("settings:open", { page: "ai", sub: "kimi" });
+    expect(third.ok).toBe(true);
+    await expect.poll(() => settingsWindow.url(), { timeout: 30_000 }).toContain(
+      "page=ai&sub=kimi"
+    );
+    await settingsWindow
+      .locator('h1.pss__main-title:text-is("Kimi Code CLI")')
+      .waitFor({ timeout: 30_000 });
+
+    // A sub this build does not know never blocks opening Settings: main
+    // drops it and the page's hub opens.
+    const fourth = await app.dispatch("settings:open", { page: "ai", sub: "not-a-provider" });
+    expect(fourth.ok).toBe(true);
+    await expect.poll(() => settingsWindow.url(), { timeout: 30_000 }).toMatch(
+      /page=ai$/
+    );
+    await settingsWindow
+      .locator('h1.pss__main-title:text-is("AI Providers")')
+      .waitFor({ timeout: 30_000 });
+
+    // An AI Features section keeps that page rendered and brings the
+    // section's card into view.
+    const fifth = await app.dispatch("settings:open", { page: "ai-features", sub: "usage" });
+    expect(fifth.ok).toBe(true);
+    await expect.poll(() => settingsWindow.url(), { timeout: 30_000 }).toContain(
+      "page=ai-features&sub=usage"
+    );
+    await settingsWindow
+      .locator('h1.pss__main-title:text-is("AI Features")')
+      .waitFor({ timeout: 30_000 });
+    await expect(settingsWindow.locator("#pss-section-ai-features-usage")).toBeInViewport({
+      timeout: 30_000
+    });
 
     // Sanity-check the count: deep-link nav must not spawn a 2nd window.
     expect(countSettingsWindows(app)).toBe(1);

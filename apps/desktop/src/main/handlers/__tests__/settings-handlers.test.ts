@@ -208,6 +208,75 @@ describe("settings:open", () => {
     );
   });
 
+  test("passes a known `sub` into the hash on first create", async () => {
+    mocks.findSettingsWindow.mockReturnValue(null);
+    mocks.createSettingsWindow.mockReturnValue(makeFakeWindow());
+
+    const result = await bus.dispatch(
+      "settings:open",
+      { page: "ai", sub: "codex" },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(mocks.createSettingsWindow).toHaveBeenCalledWith("page=ai&sub=codex", {});
+    expect(mocks.loggerWarn).not.toHaveBeenCalled();
+  });
+
+  test("carries a known `sub` on the typed navigate event", async () => {
+    const fake = makeFakeWindow();
+    mocks.findSettingsWindow.mockReturnValue(fake);
+
+    await bus.dispatch("settings:open", { page: "ai", sub: "kimi" }, { principal: "ipc" });
+
+    expect(fake.webContents.send).toHaveBeenCalledWith("events:settings:navigate", {
+      page: "ai",
+      sub: "kimi"
+    });
+  });
+
+  // An unknown sub never blocks opening Settings: the page's hub opens and
+  // the stale link is logged. Covers a renamed/unknown screen, a sub on a
+  // page that has none, a non-string, and a sub with no page at all.
+  test.each([
+    { req: { page: "ai", sub: "claude" }, hash: "page=ai", event: { page: "ai" } },
+    { req: { page: "hotkeys", sub: "codex" }, hash: "page=hotkeys", event: { page: "hotkeys" } },
+    { req: { page: "ai", sub: 42 }, hash: "page=ai", event: { page: "ai" } },
+    { req: { page: "ai", sub: "codex&page=developer" }, hash: "page=ai", event: { page: "ai" } },
+    { req: { sub: "codex" }, hash: undefined, event: undefined }
+  ])("drops an unknown sub and opens the hub: $req", async ({ req, hash, event }) => {
+    mocks.findSettingsWindow.mockReturnValue(null);
+    mocks.createSettingsWindow.mockReturnValue(makeFakeWindow());
+
+    const created = await bus.dispatch(
+      "settings:open",
+      req as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+
+    expect(created.ok).toBe(true);
+    expect(mocks.createSettingsWindow).toHaveBeenCalledWith(hash, {});
+    expect(mocks.loggerWarn).toHaveBeenCalledWith(
+      "settings:open: ignoring unknown sub; opening the page's hub",
+      expect.objectContaining({ page: (req as { page?: string }).page ?? null })
+    );
+
+    const fake = makeFakeWindow();
+    mocks.findSettingsWindow.mockReturnValue(fake);
+    const navigated = await bus.dispatch(
+      "settings:open",
+      req as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+
+    expect(navigated.ok).toBe(true);
+    if (event === undefined) {
+      expect(fake.webContents.send).not.toHaveBeenCalled();
+    } else {
+      expect(fake.webContents.send).toHaveBeenCalledWith("events:settings:navigate", event);
+    }
+  });
+
   test("rejects unknown `page` with kind=validation, code=invalid_page", async () => {
     const fake = makeFakeWindow();
     mocks.findSettingsWindow.mockReturnValue(fake);

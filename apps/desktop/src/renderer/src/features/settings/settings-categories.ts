@@ -20,6 +20,10 @@
 // is back — it hosts the opt-in soak toggles (two-process mode,
 // DPI-aware export) that previously lived inline on General, mirroring
 // PwrAgnt's Experimental tab.
+// "AI Features" sits right after "AI Providers": the providers page says
+// which AI tools are installed and working, and AI Features holds what
+// PwrSnap does with them (default agents, enrichment, usage, chat
+// guidance) — settings that only take effect once a provider is set up.
 
 import type { SettingsPage } from "@pwrsnap/shared";
 
@@ -42,6 +46,7 @@ export const SETTINGS_CATEGORIES: readonly SettingsCategory[] = [
       { id: "about", name: "About" },
       { id: "hotkeys", name: "Hotkeys" },
       { id: "ai", name: "AI Providers" },
+      { id: "ai-features", name: "AI Features" },
       { id: "local-agents", name: "Local Agents" }
     ]
   },

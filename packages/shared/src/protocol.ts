@@ -1005,6 +1005,7 @@ export type SettingsPage =
   | "updates"
   | "hotkeys"
   | "ai"
+  | "ai-features"
   | "local-agents"
   | "storage"
   | "system-permissions"
@@ -1023,6 +1024,7 @@ export const SETTINGS_PAGES = [
   "updates",
   "hotkeys",
   "ai",
+  "ai-features",
   "local-agents",
   "storage",
   "system-permissions",
@@ -2231,6 +2233,33 @@ export function builtInAcpAgentDisplayName(id: string): string {
   return isBuiltInAcpAgentId(id) ? BUILT_IN_ACP_AGENT_DISPLAY_NAMES[id] : id;
 }
 
+/** Places WITHIN a Settings page, keyed by the page that owns them — the
+ *  `sub` of `settings:open` / `events:settings:navigate` and of the Settings
+ *  window hash (`#stage=settings&page=ai&sub=codex`). AI Providers has one
+ *  screen per provider; AI Features has one section per card, and its subs
+ *  scroll the page to that card rather than replacing it. Lives here, beside
+ *  `SETTINGS_PAGES`, so main can validate a deep link without importing
+ *  renderer code. Declared after `BUILT_IN_ACP_AGENT_IDS` because it spreads
+ *  it at module load. */
+export const SETTINGS_PAGE_SUBS = {
+  ai: ["codex", ...BUILT_IN_ACP_AGENT_IDS, "openai"],
+  "ai-features": ["default-agents", "enrichment", "usage", "guidance"]
+} as const satisfies Partial<Record<SettingsPage, readonly string[]>>;
+
+/** One AI Providers screen id. */
+export type AiProvidersSettingsSub = (typeof SETTINGS_PAGE_SUBS.ai)[number];
+
+/** One AI Features section id. */
+export type AiFeaturesSettingsSub = (typeof SETTINGS_PAGE_SUBS)["ai-features"][number];
+
+/** Whether `sub` names a screen that `page` actually has. A sub on a page
+ *  with none, or one the page does not list, is not a sub. */
+export function isSettingsSub(page: SettingsPage, sub: unknown): sub is string {
+  const subs: readonly string[] | undefined =
+    (SETTINGS_PAGE_SUBS as Partial<Record<SettingsPage, readonly string[]>>)[page];
+  return typeof sub === "string" && subs !== undefined && subs.includes(sub);
+}
+
 /** The ACP agent id a chat thread is bound to, parsed from its id
  *  (`acp:<agent>:<session>`), or `null` for a Codex thread. The provider is
  *  baked into the thread id at creation, so it's stable even if the surface's
@@ -3305,7 +3334,7 @@ export type ChatSettings = {
    *  the per-row `redactionStyle` field as YAGNI; one global default
    *  + agent picks per call is sufficient). */
   defaultRedactionStyle: RedactionStyle;
-  /** True once the user has dismissed the Settings → AI → Chat
+  /** True once the user has dismissed the Settings → AI Features → Guidance
    *  first-launch disclosure banner (which warns about iCloud +
    *  Time Machine + plaintext exposure at ~/Documents/PwrSnap/Chats/).
    *  Persisted so the banner doesn't re-appear after a relaunch. */
@@ -4467,7 +4496,13 @@ export type Commands = {
     res: { resumed: boolean };
   };
   /** Open (or focus, if already open) the Settings BrowserWindow. */
-  "settings:open": { req: { page?: SettingsPage }; res: void };
+  "settings:open": {
+    /** `sub` opens a screen within `page` (see `SETTINGS_PAGE_SUBS`). An
+     *  unknown sub — or one without a `page` — is dropped at the bus
+     *  boundary and the page's hub opens; it never blocks opening Settings. */
+    req: { page?: SettingsPage; sub?: string };
+    res: void;
+  };
   /** Re-run Codex CLI discovery and return the snapshot. `force: false`
    *  is allowed to return a service-cached snapshot. */
   "settings:refreshCodexDiscovery": {

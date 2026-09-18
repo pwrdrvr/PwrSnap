@@ -1009,7 +1009,7 @@ function codexNotFoundMessage(command: string): string {
     (process.platform === "darwin"
       ? `(Codex Desktop / ChatGPT Desktop or \`brew install codex\`), or pin its `
       : `(Codex Desktop / ChatGPT Desktop or another supported CLI install), or pin its `) +
-    `full path in Settings → AI.`
+    `full path in Settings → AI Providers → Codex.`
   );
 }
 

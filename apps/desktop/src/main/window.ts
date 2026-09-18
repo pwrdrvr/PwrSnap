@@ -1382,7 +1382,9 @@ export function createTrayWindow(): BrowserWindow {
   // correctly across multi-monitor setups and avoids the Intel-iGPU
   // black-background regression that plagued transparent+vibrancy
   // combos. backgroundColor stays fully transparent so the popover
-  // material shows through.
+  // material shows through — around the edges only: `.ps-tray` paints
+  // an opaque body (library.css), so the material frames the popover
+  // rather than tinting it.
   //
   // 2026-05-04: `type: 'panel'` — Electron PR #34388 wires NSPanel +
   // NSWindowStyleMaskNonactivatingPanel under this option. This is
@@ -1399,7 +1401,8 @@ export function createTrayWindow(): BrowserWindow {
   // windows, so even calls inside our render path can't accidentally
   // re-activate the app.
   // macOS: NSPanel (non-activating) + the popover vibrancy material draw the
-  // rounded surface. Windows has no NSPanel/vibrancy equivalent, so it gets a
+  // rounded window; the renderer's opaque `.ps-tray` body sits inside it.
+  // Windows has no NSPanel/vibrancy equivalent, so it gets a
   // plain frameless, transparent, always-on-top window and the renderer paints
   // the rounded popover surface itself. (Native window shadow doesn't apply to
   // transparent Windows windows — acceptable for now.)

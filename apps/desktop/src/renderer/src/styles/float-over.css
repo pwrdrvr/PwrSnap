@@ -97,7 +97,8 @@
      a control inside the toast. Real frosted glass needs native
      `vibrancy` on the window, which CSS can't fade with the toast's
      exit animation (it leaves an empty frosted slab on screen), and
-     does not exist on Windows. */
+     does not exist on Windows. Pinned by
+     popover-surface-contract.test.ts. */
   background: var(--bg-app);
   border: 1px solid var(--border-subtle);
   border-radius: 14px;
@@ -677,7 +678,6 @@
   gap: 8px;
   padding: 8px 10px 10px;
   border-top: 1px solid color-mix(in srgb, var(--surface-highlight) 4%, transparent);
-  background: color-mix(in srgb, var(--bg-app) 18%, transparent);
 }
 .fo__dest {
   display: flex; align-items: center; gap: 4px;

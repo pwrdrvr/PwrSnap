@@ -164,8 +164,8 @@
      column at the body's right edge.
 
      overflow: hidden keeps the rounded corners crisp; outside the
-     radius the window shows through (transparent on Windows, the
-     native popover vibrancy on macOS).
+     radius the window shows through (transparent on Windows and
+     Linux, the native popover vibrancy on macOS).
 
      Surface pairing mirrors the library window: body = canvas
      black (--bg-app), header = chrome lift (--bg-sidebar, on
@@ -174,7 +174,8 @@
      the popover into a different color family than the library.
      OPAQUE, no backdrop-filter — see .fo in float-over.css for why
      a translucent fill leaks sharp, unblurred shapes from the
-     windows behind a transparent BrowserWindow (the Windows tray).
+     windows behind a transparent BrowserWindow (the Windows and Linux
+     tray). Pinned by popover-surface-contract.test.ts.
      The float-over (.fo) uses the same pairing; keep them in sync. */
   position: relative;
   width: 100%;
@@ -4437,23 +4438,27 @@
   width: max-content;
   max-width: calc(100% - 24px);
   padding: 6px 8px 8px 4px;
-  /* Same surface recipe as the post-capture toast (`.fo` in
-     float-over.css) — they are the same kind of object (a floating
-     panel over arbitrary content) and were drifting: this used the warm
-     `--bg-panel-hover` hover-state token plus `saturate()`, which
-     float-over's own comment warns against because the blur then pulls
-     color from whatever is behind it. Over a grid of dark screenshots
+  /* Derived from the post-capture toast's surface (`.fo` in
+     float-over.css) — the same kind of object (a floating panel over
+     arbitrary content). This used the warm `--bg-panel-hover`
+     hover-state token plus `saturate()`, and saturate() pulls color
+     from whatever is behind the blur. Over a grid of dark screenshots
      that left the palette nearly invisible.
 
-     Two deliberate departures from `.fo`, both because this panel
-     floats over the LIBRARY CANVAS rather than the desktop:
+     Three deliberate departures from `.fo`, all because this panel
+     floats over the LIBRARY CANVAS, inside our own page, rather than
+     over the desktop:
 
-     1. `--bg-panel-elevated`, not `--bg-app`. In a dark theme elevation
+     1. Translucent + backdrop-filter. `.fo` is opaque because it is its
+        own transparent BrowserWindow, where a backdrop-filter cannot see
+        the windows behind it (see the comment there). This panel's
+        backdrop is this page — the grid — so the blur really blurs.
+     2. `--bg-panel-elevated`, not `--bg-app`. In a dark theme elevation
         reads as a LIGHTER surface; painting a floating panel with the
         canvas token gives it zero contrast against the canvas it sits
         on. The toast can use `--bg-app` because what's behind it is the
         user's desktop, not our own black.
-     2. `--border-strong`. A subtle hairline is enough over a desktop;
+     3. `--border-strong`. A subtle hairline is enough over a desktop;
         over a grid of dark screenshots it disappears.
 
      The 1px contact ring in the shadow stack does the rest — a border

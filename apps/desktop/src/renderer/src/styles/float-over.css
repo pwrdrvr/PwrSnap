@@ -83,11 +83,22 @@
      (--bg-app), header = chrome lift (--bg-sidebar, on .fo__hdr).
      Don't paint this with --bg-panel-hover — it's the warm
      hover-state token and reads as a different color family than
-     the library. No saturate() on the blur; it pulls color from
-     whatever's behind the toast. */
-  background: color-mix(in srgb, var(--bg-app) 94%, transparent);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
+     the library.
+
+     OPAQUE, and no backdrop-filter. The design mockup was 94% +
+     blur(24px), which read as frosted glass there because the toast
+     sat over a fake desktop painted in the same page. In the real
+     app this is its own `transparent: true` BrowserWindow, and a
+     backdrop-filter only samples what this page painted — never the
+     other apps' windows behind it. So the blur did nothing and the
+     6% gap let whatever was behind show through UNBLURRED and sharp-
+     edged: a white window edge became a ~#0f0f0f stripe, the same
+     tone as our own cards (--bg-panel-elevated #101010), and read as
+     a control inside the toast. Real frosted glass needs native
+     `vibrancy` on the window, which CSS can't fade with the toast's
+     exit animation (it leaves an empty frosted slab on screen), and
+     does not exist on Windows. */
+  background: var(--bg-app);
   border: 1px solid var(--border-subtle);
   border-radius: 14px;
   box-shadow:

@@ -373,12 +373,7 @@ export function SizzleApp({
               // (still mounted — its state survives). A selected clip keeps
               // the rail up even with the chat hidden.
               <aside
-                className={
-                  "szl__chat" +
-                  (inspectorOpen ? " has-inspector" : "") +
-                  (inspectorOnly ? " is-inspector-only" : "") +
-                  (chatWidth < RAIL_NARROW_PX ? " is-narrow" : "")
-                }
+                className={"szl__chat" + (inspectorOnly ? " is-inspector-only" : "")}
                 style={{ flexBasis: chatWidth }}
                 data-testid="sizzle-rail"
               >

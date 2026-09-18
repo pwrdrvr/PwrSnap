@@ -1713,6 +1713,40 @@ the same class of intrusion as painting over it. The 5s auto-disarm and
 the sibling button are the exits from an armed state, and `.rc-root`
 carries no key handler.
 
+## The Dock reclaim is not an activation recovery
+
+**`scheduleDockReclaim` / `reclaimDockIconIfLibraryAlive` restore
+activation POLICY. They do not restore activation, and they do not
+restore z-order. Three different things. Never treat a recovered Dock
+tile as evidence that our window is back on top.**
+
+The AppKit Accessory demotion that follows selector teardown strips the
+Dock tile first and takes our activation a few tens of ms later. The
+reclaim catches the tile; nothing was asking for activation back. The
+cost lands on the one path that needs PwrSnap frontmost for longer than
+an instant — a recording whose subject is one of OUR windows, where the
+~3s countdown outlives the commit-time raise and the window dove under
+another app and got recorded that way.
+
+- **`moveTop()` on an inactive app is not a fix.** macOS orders such a
+  window only among that app's OWN windows, so
+  `applyRecordingStateToController`'s per-tick re-raise loop runs, logs a
+  correct overlap set, and cannot lift the window above the active app.
+  A healthy-looking tick log is not evidence.
+- **`BrowserWindow.getFocusedWindow() === null` is the app-active
+  probe** — a key window exists only while the app is active. Both
+  diagnostic log lines (`recording lead-in z-order tick` at debug,
+  the reclaim line at info) carry it for this reason.
+- **Re-activation is scoped to the raise branch and to the lead-in
+  phases** (`scheduleLeadInReraise` in `record-from-selection.ts`).
+  Widening either is a bug: case two must leave the user's app
+  frontmost, and activating mid-take records the recorded app losing
+  focus (see "Mid-take UI" above). The recording-controller's tick
+  cannot host this — it cannot tell case one from case two.
+
+Measurements, the two hypotheses it replaced, and the log recipe:
+[docs/solutions/2026-09-17-recording-lead-in-activation-loss.md](docs/solutions/2026-09-17-recording-lead-in-activation-loss.md).
+
 ## Settings substrate — every setting + secret goes through one place
 
 **All user-configurable state lives in `DesktopSettingsService` +

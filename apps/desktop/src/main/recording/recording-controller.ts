@@ -12,6 +12,7 @@
 // This module is the BrowserWindow-side glue.
 
 import {
+  app,
   BrowserWindow,
   dialog,
   globalShortcut,
@@ -736,6 +737,25 @@ export function applyRecordingStateToController(state: RecordingState): void {
       for (const otherWin of ourOverlapping) {
         otherWin.moveTop();
       }
+      // Debug-only companion to `video-record post-commit focus policy`
+      // in record-from-selection.ts. That line says the commit-time
+      // raise FIRED; this one says whether it SURVIVED the lead-in —
+      // the half no log covered. Between "raised our windows" and the
+      // first recorded frame sit ~3s of countdown, and the only signal
+      // from inside it was a bare Dock-reclaim line.
+      //
+      // `focusedWindowTitle: null` is the tell. macOS hands no key
+      // window to an inactive app, and an inactive app's `moveTop()`
+      // orders the window only among our OWN windows — so the loop
+      // above can run every tick, report a healthy overlap set, and
+      // change nothing the user can see.
+      log.debug("recording lead-in z-order tick", {
+        phase: state.phase,
+        overlappingCount: ourOverlapping.length,
+        overlappingTitles: ourOverlapping.map((other) => other.getTitle()),
+        focusedWindowTitle: BrowserWindow.getFocusedWindow()?.getTitle() ?? null,
+        dockVisible: app.dock?.isVisible() ?? null
+      });
       break;
     }
     case "recording": {

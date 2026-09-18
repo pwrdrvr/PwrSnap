@@ -133,6 +133,23 @@ describe("runPooledAcpOneShot", () => {
     expect(response.model).toBe("gemini-2.5-pro");
   });
 
+  test.each([
+    ["an empty string", ""],
+    ["null", null]
+  ])("treats %s as the agent default and selects no model", async (_label, model) => {
+    const client = makeFakeClient();
+    client.startTurn.mockImplementation(async () => {
+      client.emit({ kind: "turn_completed", threadId: "th-1", status: "completed" });
+      return { turnId: "turn-1" };
+    });
+    acquireAcpAgentClient.mockResolvedValue(client);
+
+    await runPooledAcpOneShot({ agent: AGENT, request: { prompt: "p", model } });
+    // "" is what enrichment sends when no model is pinned. Passing it through
+    // makes the agent reject a model write on every default-config run.
+    expect(client.startThread).toHaveBeenCalledWith({});
+  });
+
   test("ignores events from other sessions on the shared process", async () => {
     const client = makeFakeClient();
     client.startTurn.mockImplementation(async () => {

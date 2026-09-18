@@ -44,7 +44,7 @@ export type PooledAcpOneShotRequest = {
   prompt: string;
   /** Local image file paths attached to the turn. */
   imagePaths?: readonly string[];
-  /** Model id to select for the session. Omit/null for the agent default. */
+  /** Model id to select for the session. Omit, null, or "" for the agent default. */
   model?: string | null;
   /** Reasoning effort token (agent-specific). */
   effort?: string;
@@ -96,8 +96,11 @@ export async function runPooledAcpOneShot(input: {
   // A cancel during the acquire (a cold pool pays the multi-second agent
   // spawn here) arrives before any session exists — bail before opening one.
   throwIfAborted();
+  // "" is the settings sentinel for "the agent's own default"
+  // (`enrichmentSelectedModel`), not a model id — forwarding it sends a model
+  // write the agent can only reject.
   const thread = await client.startThread(
-    request.model !== undefined && request.model !== null ? { model: request.model } : {}
+    typeof request.model === "string" && request.model.length > 0 ? { model: request.model } : {}
   );
   let finalText = "";
   const deltas: string[] = [];

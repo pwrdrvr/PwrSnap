@@ -6,12 +6,28 @@
  * are never hardcoded in component files. Extracting it is what lets
  * the HUD share `SourceChip` with the selector and the float-over.
  *
- * The HUD paints on a near-opaque black scrim rather than a themed
- * panel, because it floats over arbitrary user content that is about to
- * be recorded — a themed translucent panel would be unreadable over a
- * light document and would change appearance between takes. So the few
+ * The HUD paints on an opaque black scrim rather than a themed panel,
+ * because it floats over arbitrary user content that is about to be
+ * recorded — a themed panel would flip to white in light theme, and a
+ * translucent one would change appearance between takes. So the few
  * values that must stay legible against that scrim are literal and
  * marked; everything else is a token.
+ *
+ * OPAQUE, not "near-opaque". This is a `transparent: true` BrowserWindow
+ * sitting over other apps' windows, and nothing in the page can blur
+ * them — a backdrop-filter only samples what this page painted. So any
+ * alpha in a fill lets whatever is behind show through UNBLURRED and
+ * sharp-edged: at 86% a white window edge behind the bar became a
+ * ~#232323 stripe, at 94% a ~#0f0f0f one, and the recorded app's own
+ * text ghosted through under ours. On macOS the HUD is content-protected
+ * and stays out of the file, but on Windows gdigrab records whatever it
+ * overlaps, bleed-through included. Same defect as the float-over and
+ * tray (see `.fo` in float-over.css); pinned by
+ * styles/__tests__/recording-hud-surface-contract.test.ts.
+ *
+ * Translucent STROKES and tints drawn on top of these fills (separators,
+ * button borders, the chips) are fine — they composite onto our own
+ * black, never onto the desktop.
  */
 
 .rc-root {
@@ -62,7 +78,7 @@
   -webkit-app-region: no-drag;
 }
 .rc[data-precapture="false"] {
-  background: rgba(0, 0, 0, 0.86); /* on-scrim */
+  background: #000000; /* on-scrim, opaque — see header */
   border-radius: var(--radius-lg, 12px);
   padding: 10px 14px;
   justify-content: space-between;
@@ -192,6 +208,21 @@
   color: rgba(255, 255, 255, 0.7); /* on-scrim */
 }
 
+/* "Starting recorder…" label, shown over the recorded rect while a cold
+   recorder spins up. The full-rect dim behind it is translucent on
+   purpose — the user keeps seeing the surface they are about to record
+   — but this label is a legibility surface, not a see-through one, so
+   it takes the same opaque scrim as the bar (see header). */
+.rc-starting__label {
+  color: #fff; /* on-scrim */
+  font: 700 13px/1 var(--font-sans);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 6px 12px;
+  background: #000000; /* on-scrim, opaque — see header */
+  border-radius: var(--radius-pill, 999px);
+}
+
 @keyframes ps-rec-pulse {
   0% { opacity: 1; }
   50% { opacity: 0.45; }
@@ -210,7 +241,7 @@
   width: 100%;
   padding: 18px 20px;
   border-radius: var(--radius-lg, 12px);
-  background: rgba(0, 0, 0, 0.94); /* on-scrim */
+  background: #000000; /* on-scrim, opaque — see header */
   color: #fff;
   display: flex;
   flex-direction: column;

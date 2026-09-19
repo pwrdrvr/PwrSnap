@@ -862,10 +862,16 @@
   cursor: not-allowed;
 }
 
+/* `max-height` is the ceiling (PHRASE_POPOVER_MAX_HEIGHT_PX in
+   TranscriptPhrasePicker.tsx); the picker lowers it inline to the room on
+   the side it opens toward. A flex column so a lowered cap shrinks the
+   LIST, which scrolls, instead of spilling the popover past its box. */
 .szl__sequence-phrase-popover {
   position: fixed;
   z-index: 20;
   max-height: 320px;
+  display: flex;
+  flex-direction: column;
   padding: 8px;
   background: var(--bg-panel-elevated);
   border: 1px solid var(--border-strong);
@@ -874,11 +880,14 @@
 }
 
 .szl__sequence-phrase-search {
+  flex: 0 0 auto;
   width: 100%;
   margin-bottom: 6px;
 }
 
 .szl__sequence-phrase-list {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 2px;

@@ -201,15 +201,15 @@ MIT
 - pump@3.0.4 | https://github.com/mafintosh/pump
 - range-parser@1.3.0 | jshttp/range-parser
 - raw-body@3.0.2 | stream-utils/raw-body
-- react@19.2.8 | https://github.com/react/react
-- react-dom@19.2.8 | https://github.com/react/react
+- react@19.3.0 | https://github.com/react/react
+- react-dom@19.3.0 | https://github.com/react/react
 - readable-stream@3.6.2 | https://github.com/nodejs/readable-stream
 - require-from-string@2.0.2 | floatdrop/require-from-string
 - router@2.2.0 | pillarjs/router
 - safe-buffer@5.2.1 | https://github.com/feross/safe-buffer
 - safe-stable-stringify@2.5.0 | https://github.com/BridgeAR/safe-stable-stringify
 - safer-buffer@2.1.2 | https://github.com/ChALkeR/safer-buffer
-- scheduler@0.27.0 | https://github.com/facebook/react
+- scheduler@0.28.0 | https://github.com/react/react
 - send@1.2.1 | pillarjs/send
 - serve-static@2.2.1 | expressjs/serve-static
 - shebang-command@2.0.0 | kevva/shebang-command
@@ -4542,15 +4542,15 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-react@19.2.8 (MIT)
+react@19.3.0 (MIT)
 ------------------
 
 Applies to:
-- react@19.2.8 (MIT)
-- react-dom@19.2.8 (MIT)
-- scheduler@0.27.0 (MIT)
+- react@19.3.0 (MIT)
+- react-dom@19.3.0 (MIT)
+- scheduler@0.28.0 (MIT)
 
-Representative file: react@19.2.8/LICENSE
+Representative file: react@19.3.0/LICENSE
 
 MIT License
 

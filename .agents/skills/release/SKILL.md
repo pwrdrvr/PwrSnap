@@ -59,6 +59,9 @@ Read these files before changing release metadata:
 - Do not create the GitHub Release by hand before the build succeeds. Let
   the CI publish job create it from the signed/notarized build and matching
   changelog notes.
+- Never promote a GitHub Release to Latest as part of this skill. Every release
+  task ends with the release still marked Pre-release; the operator promotes it
+  manually in GitHub only after their own smoke checks.
 - Do not force-push the default branch or rewrite an existing release tag
   without explicit user approval.
 - Keep the MIT license intact: do not swap LICENSE for a different SPDX or
@@ -72,9 +75,9 @@ Make two independent decisions before editing metadata:
    the changelog heading. They must be the same value, except for the tag's
    leading `v`.
 2. **GitHub Release creation state** is always `isPrerelease=true`. The
-   workflow's `--prerelease` is mandatory even for a bare stable SemVer tag;
-   promote a release to Latest only as an explicit later action after assets
-   and smoke checks pass. Never infer this GitHub flag from the SemVer suffix.
+   workflow's `--prerelease` is mandatory even for a bare stable SemVer tag.
+   Never infer this GitHub flag from the SemVer suffix, and never transition it
+   to Latest: that is a manual operator action after smoke checks.
 
 Choose the SemVer form by source branch and intent:
 
@@ -340,7 +343,9 @@ whose legacy path remains universal. Both ZIPs must have blockmaps.
 The workflow automatically replaces electron-builder's generated/empty GitHub
 Release body with the matching `CHANGELOG.md` entry after publishing assets.
 Verify that the body is present and the release is still marked as a GitHub
-Pre-release before calling the release done:
+Pre-release before calling the release done. Report that state to the operator
+for their manual smoke check and later Latest promotion; do not run a GitHub
+CLI or API promotion command.
 
 ```bash
 body_length="$(gh release view v<version> --repo pwrdrvr/PwrSnap --json body --jq '.body | length')"

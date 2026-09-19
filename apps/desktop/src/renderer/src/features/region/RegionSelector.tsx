@@ -43,7 +43,7 @@
 // the selector window covers the whole display). Main converts to
 // global virtual coords + display id before screencapture.
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { acceleratorToDisplayKeys, MAX_SELECTOR_EXTENTS } from "@pwrsnap/shared";
 import type {
   QuickCaptureAction,
@@ -62,9 +62,12 @@ import {
   clampRectToViewport,
   exceedsDragThreshold,
   isPointInsideRect,
+  occludedFrame,
   rectFromTwoPoints,
   rectIsMeaningful,
+  UNOCCLUDED_FRAME,
   type HandleId,
+  type OccludedFrame,
   type Point,
   type Rect
 } from "./region-math";
@@ -162,6 +165,80 @@ function unionOfPicks(entries: readonly WindowSnapEntry[]): Rect | null {
     bottom = Math.max(bottom, e.rawRect.y + e.rawRect.h);
   }
   return { x: left, y: top, w: right - left, h: bottom - top };
+}
+
+/**
+ * Picked windows in front of `entry` (lower `zIndex`), as extents.
+ *
+ * Only PICKED windows clip a frame. Wherever one of them overlaps
+ * `entry`, that area is already in the selection through the front
+ * window, so the back window's edge running across it outlines nothing
+ * — it just cuts through a window the user chose. An UNPICKED window on
+ * top is different: it is inside `entry`'s extent and will be in the
+ * capture, so the edge across it is telling the truth and stays.
+ */
+function picksInFrontOf(
+  entry: WindowSnapEntry,
+  picks: readonly WindowSnapEntry[]
+): Rect[] {
+  return picks
+    .filter((p) => p.windowId !== entry.windowId && p.zIndex < entry.zIndex)
+    .map((p) => p.rawRect);
+}
+
+/**
+ * One window's outline + tint, clipped per `frame` (see
+ * `occludedFrame`). The outline is a child so the clip never takes the
+ * badge with it: a window whose top-left corner is covered moves its
+ * badge to the first corner it still has.
+ */
+function WindowFrame({
+  entry,
+  frame,
+  className,
+  badgeClassName,
+  badge,
+  testId
+}: {
+  entry: WindowSnapEntry;
+  frame: Readonly<OccludedFrame>;
+  className: string;
+  badgeClassName: string;
+  badge: ReactNode;
+  testId?: string;
+}) {
+  const { hidden, clipPath, badge: badgeAt } = frame;
+  return (
+    <div
+      className={className}
+      data-testid={testId}
+      data-window-id={entry.windowId}
+      data-occluded={hidden ? "full" : clipPath !== null ? "partial" : undefined}
+      style={{
+        left: entry.rawRect.x,
+        top: entry.rawRect.y,
+        width: entry.rawRect.w,
+        height: entry.rawRect.h
+      }}
+    >
+      {!hidden && (
+        <div
+          className="region-pick__frame"
+          style={clipPath === null ? undefined : { clipPath }}
+        />
+      )}
+      <span
+        className={badgeClassName}
+        style={
+          badgeAt.x === 0 && badgeAt.y === 0
+            ? undefined
+            : { transform: `translate(${badgeAt.x}px, ${badgeAt.y}px)` }
+        }
+      >
+        {badge}
+      </span>
+    </div>
+  );
 }
 
 export function RegionSelector() {
@@ -2155,6 +2232,26 @@ export function RegionSelector() {
     !picks.some((p) => p.windowId === snapTarget.entry.windowId)
       ? snapTarget.entry
       : null;
+  // Frames are recomputed only when the pick set changes — this
+  // component re-renders on every mousemove in `snap`, and a set can
+  // hold up to MAX_SELECTOR_EXTENTS windows, each subtracted against
+  // every pick in front of it.
+  const pickFrames = useMemo(
+    () =>
+      new Map(
+        picks.map((p) => [p.windowId, occludedFrame(p.rawRect, picksInFrontOf(p, picks))])
+      ),
+    [picks]
+  );
+  // The preview is clipped like a pick — unless nothing of it would be
+  // left. That is exactly the window Tab reaches when it is buried under
+  // a pick, and a "+" floating over another window says nothing about
+  // which window the next click adds; its whole outline does.
+  const hoverFrame = useMemo(() => {
+    if (hoverEntry === null) return UNOCCLUDED_FRAME;
+    const f = occludedFrame(hoverEntry.rawRect, picksInFrontOf(hoverEntry, picks));
+    return f.hidden ? UNOCCLUDED_FRAME : f;
+  }, [hoverEntry, picks]);
 
   // What ↵ actually does, in hint-legend words. Every ↵ legend below
   // reads this rather than hardcoding "capture" / "commit": under the
@@ -2487,37 +2584,31 @@ export function RegionSelector() {
 
       {/* Per-pick outline + ordinal badge. The ordinal is the chip
           order in the HUD, so a user can tell which chip drops which
-          window before clicking it. */}
+          window before clicking it. A pick's frame is clipped where a
+          picked window in front of it covers it — see `picksInFrontOf`. */}
       {picks.map((p, idx) => (
-        <div
+        <WindowFrame
           key={p.windowId}
+          entry={p}
+          frame={pickFrames.get(p.windowId) ?? UNOCCLUDED_FRAME}
           className="region-pick"
-          data-testid="region-pick"
-          data-window-id={p.windowId}
-          style={{
-            left: p.rawRect.x,
-            top: p.rawRect.y,
-            width: p.rawRect.w,
-            height: p.rawRect.h
-          }}
-        >
-          <span className="region-pick__badge">{idx + 1}</span>
-        </div>
+          testId="region-pick"
+          badgeClassName="region-pick__badge"
+          badge={idx + 1}
+        />
       ))}
 
-      {/* Next-click preview while a set is live. */}
+      {/* Next-click preview while a set is live. Clipped the same way
+          (see `hoverFrame`): a dashed edge running across a window
+          already in the set reads as that window being split. */}
       {hoverEntry !== null && (
-        <div
+        <WindowFrame
+          entry={hoverEntry}
+          frame={hoverFrame}
           className="region-pick-hover"
-          style={{
-            left: hoverEntry.rawRect.x,
-            top: hoverEntry.rawRect.y,
-            width: hoverEntry.rawRect.w,
-            height: hoverEntry.rawRect.h
-          }}
-        >
-          <span className="region-pick__badge region-pick__badge--add">+</span>
-        </div>
+          badgeClassName="region-pick__badge region-pick__badge--add"
+          badge="+"
+        />
       )}
 
       {/* The selection frame. Skipped at exactly one pick: the union

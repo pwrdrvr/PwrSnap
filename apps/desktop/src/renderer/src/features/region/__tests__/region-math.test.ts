@@ -11,8 +11,10 @@ import {
   DRAG_ENGAGE_PX,
   exceedsDragThreshold,
   isPointInsideRect,
+  occludedFrame,
   rectFromTwoPoints,
   rectIsMeaningful,
+  subtractRects,
   type HandleId,
   type Rect
 } from "../region-math";
@@ -322,5 +324,116 @@ describe("isPointInsideRect", () => {
     expect(isPointInsideRect(rect, 301, 150)).toBe(false);
     expect(isPointInsideRect(rect, 150, 99)).toBe(false);
     expect(isPointInsideRect(rect, 150, 251)).toBe(false);
+  });
+});
+
+/** Total area of a set of rects — equal to the covered area only when
+ *  they are disjoint, which is what `subtractRects` promises. */
+function area(rects: readonly Rect[]): number {
+  return rects.reduce((sum, r) => sum + r.w * r.h, 0);
+}
+
+function overlaps(a: Rect, b: Rect): boolean {
+  return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+}
+
+describe("subtractRects", () => {
+  const base: Rect = { x: 100, y: 100, w: 400, h: 300 };
+
+  test("a cutter that misses, or only touches an edge, cuts nothing", () => {
+    expect(subtractRects(base, [{ x: 600, y: 100, w: 50, h: 50 }])).toEqual([base]);
+    expect(subtractRects(base, [{ x: 500, y: 100, w: 50, h: 50 }])).toEqual([base]);
+  });
+
+  test("a covering cutter leaves nothing", () => {
+    expect(subtractRects(base, [{ x: 0, y: 0, w: 1000, h: 1000 }])).toEqual([]);
+  });
+
+  test("a hole in the middle leaves four disjoint bands around it", () => {
+    const pieces = subtractRects(base, [{ x: 200, y: 200, w: 100, h: 100 }]);
+    expect(pieces).toHaveLength(4);
+    expect(area(pieces)).toBe(400 * 300 - 100 * 100);
+  });
+
+  test("overlapping cutters are subtracted as a union, not twice", () => {
+    // Two cutters overlapping each other inside `base`. An even-odd or
+    // winding-cancel approach would bring their intersection back.
+    const a: Rect = { x: 150, y: 150, w: 200, h: 100 };
+    const b: Rect = { x: 250, y: 200, w: 200, h: 150 };
+    const pieces = subtractRects(base, [a, b]);
+    const unionArea = 200 * 100 + 200 * 150 - 100 * 50;
+    expect(area(pieces)).toBe(400 * 300 - unionArea);
+    for (const p of pieces) {
+      expect(overlaps(p, a)).toBe(false);
+      expect(overlaps(p, b)).toBe(false);
+    }
+    for (let i = 0; i < pieces.length; i++) {
+      for (let j = i + 1; j < pieces.length; j++) {
+        expect(overlaps(pieces[i]!, pieces[j]!)).toBe(false);
+      }
+    }
+  });
+});
+
+describe("occludedFrame", () => {
+  const base: Rect = { x: 100, y: 100, w: 400, h: 300 };
+
+  test("nothing in front: no clip, badge at the frame's own corner", () => {
+    const whole = { hidden: false, clipPath: null, badge: { x: 0, y: 0 } };
+    expect(occludedFrame(base, [])).toEqual(whole);
+    expect(occludedFrame(base, [{ x: 700, y: 0, w: 10, h: 10 }])).toEqual(whole);
+  });
+
+  test("fully covered: the frame is hidden and carries no clip path", () => {
+    expect(occludedFrame(base, [{ x: 50, y: 50, w: 500, h: 400 }])).toEqual({
+      hidden: true,
+      clipPath: null,
+      badge: { x: 0, y: 0 }
+    });
+  });
+
+  test("windows sharing an edge do not clip each other through float noise", () => {
+    // The renderer scales rects by innerWidth / displayBounds.width. At
+    // 1024/1348, 1*s + 22*s exceeds 23*s by ~3.6e-15 — a window ending
+    // at x=23 "overlaps" its neighbour starting there.
+    const s = 1024 / 1348;
+    const front: Rect = { x: 1 * s, y: 0, w: 22 * s, h: 100 * s };
+    const back: Rect = { x: 23 * s, y: 0, w: 50 * s, h: 100 * s };
+    expect(front.x + front.w).toBeGreaterThan(back.x);
+    expect(occludedFrame(back, [front])).toEqual({
+      hidden: false,
+      clipPath: null,
+      badge: { x: 0, y: 0 }
+    });
+  });
+
+  test("the clip path is in the frame's own coordinates", () => {
+    // Front window covers the bottom-right quarter and past it.
+    const { clipPath, badge } = occludedFrame(base, [{ x: 300, y: 250, w: 400, h: 400 }]);
+    expect(badge).toEqual({ x: 0, y: 0 });
+    // Top band (full width, down to the cut) + left band beside the cut.
+    expect(clipPath).toBe('path("M0 0h400v150h-400ZM0 150h200v150h-200Z")');
+  });
+
+  test("a covered top-left corner moves the badge to the highest visible piece", () => {
+    // Front window covers the top-left corner: the frame keeps an L —
+    // a right band starting at the top edge, and a bottom band.
+    const { badge } = occludedFrame(base, [{ x: 0, y: 0, w: 250, h: 200 }]);
+    expect(badge).toEqual({ x: 150, y: 0 });
+    // Rounded like the path: 50.3 - 0.1 is 50.199999999999996.
+    const { badge: scaled } = occludedFrame(
+      { x: 0.1, y: 0.2, w: 100, h: 100 },
+      [{ x: 0, y: 0, w: 50.3, h: 50 }]
+    );
+    expect(scaled).toEqual({ x: 50.2, y: 0 });
+  });
+
+  test("fractional CSS px (scaled displays) are rounded, not printed raw", () => {
+    const { clipPath } = occludedFrame(
+      { x: 0.1, y: 0.2, w: 100, h: 100 },
+      [{ x: 50.3, y: 0, w: 100, h: 100 }]
+    );
+    // 50.3 - 0.1 is 50.199999999999996 in floating point.
+    expect(clipPath).toBe('path("M0 99.8h100v0.2h-100ZM0 0h50.2v99.8h-50.2Z")');
   });
 });

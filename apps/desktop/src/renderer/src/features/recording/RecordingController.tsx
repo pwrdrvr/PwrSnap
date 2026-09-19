@@ -763,19 +763,7 @@ function StartingIndicator(): ReactElement {
           animation: "ps-leader-sweep 0.9s linear infinite"
         }}
       />
-      <div
-        style={{
-          color: "#fff",
-          font: "700 13px/1 'Geist', system-ui, sans-serif",
-          letterSpacing: "0.12em",
-          textTransform: "uppercase",
-          padding: "6px 12px",
-          background: "rgba(0, 0, 0, 0.7)",
-          borderRadius: 999
-        }}
-      >
-        Starting recorder…
-      </div>
+      <div className="rc-starting__label">Starting recorder…</div>
     </div>
   );
 }

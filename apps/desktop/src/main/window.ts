@@ -1395,6 +1395,48 @@ export function showLogsWindow(options: PlacementSource = {}): BrowserWindow {
   return window;
 }
 
+/**
+ * Height the tray popover is CONSTRUCTED at, before the renderer's
+ * ResizeObserver corrects it.
+ *
+ * 440 on macOS and Windows: a touch shorter than the worst-case content
+ * height, corrected within a frame of the renderer's first layout. Those
+ * platforms pre-warm the popover at boot, so the constructor frame is already
+ * corrected long before a user can see it.
+ *
+ * Taller on Linux, for a reason that is about pre-warm rather than about
+ * Wayland. Linux does NOT pre-warm (the native menu is the primary surface
+ * there), so the first open races the renderer's mount.
+ * `toggleLinuxTrayPopover` waits for one measurement before showing, but that
+ * wait has a deadline — and if the deadline wins, the window is shown at
+ * whatever it was constructed at. At 440 that clips the bottom rows off; at
+ * 880 it does not.
+ *
+ * It is also a hedge on `setContentSize`, which Electron documents as "may
+ * not work" on Wayland because "some window managers restrict programmatic
+ * window resizing". Measured on Electron 41.10.7 against a headless weston 10,
+ * it DOES work: the renderer's own `window.innerHeight` — the real viewport,
+ * not a cached echo — follows every `setContentSize`, identically to X11. But
+ * that is weston, not mutter, and `getContentSize` cannot be used to check at
+ * runtime because it echoes the requested value on every backend (measured;
+ * see linux-window-placement.ts). So the constructor frame stays the last size
+ * the popover is guaranteed to have.
+ *
+ * The trade is deliberate and asymmetric: a refused resize renders the content
+ * at the top of a taller transparent window — some dead area below it that
+ * still hit-tests — which is worth more than a popover with its bottom rows
+ * clipped off.
+ *
+ * 880 is the pre-video ceiling `TRAY_HEIGHT_MAX` was raised from, so it fits
+ * every shape the popover had before the 6-card video grid.
+ */
+export const TRAY_POPOVER_HEIGHT_DEFAULT = 440;
+export const TRAY_POPOVER_HEIGHT_LINUX = 880;
+
+export function trayPopoverConstructedHeight(platform: NodeJS.Platform): number {
+  return platform === "linux" ? TRAY_POPOVER_HEIGHT_LINUX : TRAY_POPOVER_HEIGHT_DEFAULT;
+}
+
 export function createTrayWindow(): BrowserWindow {
   // Phase 1.7 refinement: drop transparent:true, switch vibrancy from
   // 'under-window' to 'popover' (the macOS-native NSPopover material
@@ -1447,10 +1489,10 @@ export function createTrayWindow(): BrowserWindow {
     // the BrowserWindow was constructed with, so a stale value here
     // silently clips the right column of the mode grid.
     width: 440,
-    // Start a touch shorter than the worst-case content height; the
-    // renderer's ResizeObserver will setContentSize the moment its
-    // first layout finishes (see wireTrayResizeChannel in tray.ts).
-    height: 440,
+    // See `trayPopoverConstructedHeight` — 440 everywhere the renderer's
+    // ResizeObserver is trusted to correct it, taller on Linux where it
+    // might not be able to.
+    height: trayPopoverConstructedHeight(process.platform),
     show: false,
     frame: false,
     resizable: false,

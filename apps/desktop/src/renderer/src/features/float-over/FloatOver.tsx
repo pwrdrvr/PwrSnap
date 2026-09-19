@@ -10,7 +10,6 @@ import type {
 } from "@pwrsnap/shared";
 import {
   normalizeTagLabel,
-  desktopFileManagerName,
   capturesFolderDisplayPath,
   resolveExportLadder,
   rungForPreset
@@ -1408,49 +1407,6 @@ export function recordingSourcesLabel(
     return receipt.state === "silent" ? `${name} (${receipt.why ?? "nothing captured"})` : name;
   });
   return parts.length === 1 ? "screen only" : parts.join(" + ");
-}
-
-export function FoDesktopFrame({
-  children,
-  sampleSrc
-}: {
-  children?: React.ReactNode;
-  sampleSrc: string;
-}) {
-  return (
-    <div className="fo-frame">
-      <div className="fo-desktop">
-        <div className="fo-menubar">
-          <div className="fo-menubar__l">
-            <span className="fo-menubar__active">
-              {desktopFileManagerName(window.pwrsnapApi?.platform)}
-            </span>
-            <span>File</span>
-            <span>Edit</span>
-            <span>View</span>
-            <span>Go</span>
-          </div>
-          <div className="fo-menubar__r">
-            <span className="fo-menubar__pwr">
-              <span className="fo-menubar__pwr-dot" />
-              <PwrSnapMark size={11} />
-              <span style={{ color: "var(--accent-bright)", fontSize: 10, fontWeight: 600 }}>
-                PwrSnap
-              </span>
-            </span>
-            <span>WiFi</span>
-            <span>Tue 10:43 PM</span>
-          </div>
-        </div>
-
-        <div className="fo-window" style={{ left: 60, top: 70, right: 200, bottom: 130 }}>
-          <img src={sampleSrc} alt="" />
-        </div>
-
-        {children}
-      </div>
-    </div>
-  );
 }
 
 /**

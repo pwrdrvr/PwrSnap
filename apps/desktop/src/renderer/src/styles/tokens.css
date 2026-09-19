@@ -11,10 +11,18 @@
 :root {
   color-scheme: dark;
 
-  /* ---------- TYPE ---------- */
-  --font-sans: "Geist", "SF Pro Text", "Inter", system-ui, -apple-system, sans-serif;
+  /* ---------- TYPE ----------
+     Each stack leads with the family ./fonts.css REGISTERS, which is not
+     always the typeface's marketing name: @fontsource/geist-sans declares
+     its faces as "Geist Sans". Leading with bare "Geist" matched no bundled
+     face, so the woff2 never loaded and every sans glyph fell through to
+     the system UI font. "Geist" stays second for a system install — and it
+     is the name design/ds/colors_and_type.css uses, because that mirror
+     loads Google Fonts, not @fontsource. Pinned by
+     __tests__/font-family-contract.test.ts. */
+  --font-sans: "Geist Sans", "Geist", "SF Pro Text", "Inter", system-ui, -apple-system, sans-serif;
   --font-mono: "Geist Mono", "SF Mono", "JetBrains Mono", Consolas, monospace;
-  --font-display: "Geist", "SF Pro Display", system-ui, sans-serif;
+  --font-display: "Geist Sans", "Geist", "SF Pro Display", system-ui, sans-serif;
 
   /* ---------- COLOR — surfaces (pure-black suite system) ---------- */
   --bg-app:            #000000;   /* root, pure black per PwrAgent suite */

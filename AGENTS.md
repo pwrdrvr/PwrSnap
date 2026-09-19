@@ -587,6 +587,156 @@ History + the `sample` recipe:
 §"Addendum (2026-08-22)". Pinned by
 [chat-thread-store-documents-access.test.ts](apps/desktop/src/main/ai/__tests__/chat-thread-store-documents-access.test.ts).
 
+## A screen grab must prove it is the display it claims to be
+
+**Nothing may treat `desktopCapturer` pixels as a given display without
+first checking their shape against that display's bounds, and the
+region-selector overlay may not be shown on a Wayland session at all.**
+Owners: [grab-geometry.ts](apps/desktop/src/main/capture/grab-geometry.ts)
+and [linux-session.ts](apps/desktop/src/main/capture/linux-session.ts).
+Pinned by their unit tests plus the two production-wiring tests —
+[screencapture-grab-geometry.test.ts](apps/desktop/src/main/capture/__tests__/screencapture-grab-geometry.test.ts)
+and [capture-handlers-wayland-refusal.test.ts](apps/desktop/src/main/handlers/__tests__/capture-handlers-wayland-refusal.test.ts).
+
+macOS is exempt by construction: `screencapture -R <bounds>` is TOLD the
+rect. Everywhere else the grab comes from `getSources`, which returns a
+LIST, and the only authoritative key — `display_id` — is documented as
+"an empty string if not available".
+
+- **The silent branch is `single_source`, not the warned fallback.** When
+  `display_id` is empty and there is exactly one source,
+  `captureDisplayNativeImage` takes it deliberately and logs nothing. On
+  an xdg-desktop-portal session that lone source is whatever the user
+  picked in the portal's own dialog. Triage that greps for
+  `no source matched display_id` will therefore find **nothing** on the
+  configuration that is actually broken.
+- **A wrong-shaped grab used to be stretched, not reported.** The selector
+  renderer paints the snapshot with `object-fit: fill`, and
+  `cropScreenSnapshot` maps the user's rect through `display.scaleFactor`
+  — which describes the display and knows nothing about the grab. So a
+  mismatch produced a misaligned picker and a file of pixels the user
+  never saw. `checkGrabMatchesDisplay` now refuses it.
+- **The check is aspect ratio, and that is on purpose.** `thumbnailSize`
+  is a MAXIMUM and Chromium preserves aspect scaling into it, so a healthy
+  grab matches the display's shape whatever size it arrives at — a size
+  check would reject good grabs. It is necessary, not sufficient: two 16:9
+  monitors are indistinguishable this way, **and on a single-display
+  machine it cannot separate a right portal answer from a wrong one at
+  all** — the measured Ubuntu grab came back 0% off. Treat it as a
+  backstop for the multi-source cases, never as proof the grab is right.
+  Do not widen `GRAB_ASPECT_TOLERANCE` to make something pass; 1% is
+  already ~14× the worst pixel-rounding drift.
+- **The Ubuntu misalignment was OURS, and the fix is
+  `setFullScreen(true)`.** `enterMenuBarOverlayMode` returned early for
+  every platform that was neither win32 nor darwin, so the Linux selector
+  never entered fullscreen — and GNOME's top bar and the Ubuntu dock are
+  drawn by the compositor ABOVE every client window, which `alwaysOnTop`
+  + `"screen-saver"` cannot beat. The window itself was never wrong:
+  measured at exactly `0,0 2560x1440`, renderer 1:1 with display logical
+  px, over a grab whose four corner fiducials all landed `+0,+0`.
+  Measured on Ubuntu 24 / GNOME with the probe's occlusion table:
+
+  ```
+  bare                     32 rows at the top / 67 columns at the left
+  fullscreen-after-show     0 / 0
+  fullscreen-before-show    0 / 0
+  ```
+
+  32 rows is the top bar, 67 columns is the dock — and under `bare` the
+  opaque test field starts at `72,34`, i.e. exactly after them. So the
+  user was seeing the live bar and dock next to the frozen snapshot's own
+  copy of the same chrome, which reads as a duplicated, offset desktop
+  even though nothing moved. Windows had the identical bug ("two
+  taskbars") and already had the identical fix. **Both orderings cover**,
+  so `enterMenuBarOverlayMode(win)` may stay ahead of `win.show()` — that
+  was checked, because fullscreen on an unmapped X11 window is a
+  different operation (a `_NET_WM_STATE` property before map vs a
+  ClientMessage after it) and could have been dropped by mutter.
+  `fullscreenable` must be true there too, or the call is a silent no-op.
+  Pinned by
+  [selector-overlay-fullscreen.test.ts](apps/desktop/src/main/capture/__tests__/selector-overlay-fullscreen.test.ts).
+- **Geometry-correct is not the same as visible, and a probe that measures
+  only geometry will send you the wrong way.** `getBounds()`,
+  `getContentBounds()` and the renderer's own `screenX/screenY` all agreed
+  the overlay was perfectly placed, and the probe duly reported "the bare
+  window was already correct on this machine — look elsewhere before
+  changing placement." That sentence cost three wrong hypotheses. None of
+  those APIs can see what is painted OVER a window. When an overlay looks
+  wrong, ask whether it is MIS-PLACED or OCCLUDED before measuring.
+  **And do not resolve occlusion by eye** — that failed twice here. The
+  translucent simulation (step 5) is unanswerable that way by
+  construction: at 55% opacity the live desktop shows through BY DESIGN,
+  so "covered by the shell" and "showing through my own translucency"
+  look identical. Step 6 answers it as an integer instead — paint an
+  OPAQUE full-display field of known colours, grab the screen, and count
+  the pixels in the grab that are not ours. Leading foreign rows are the
+  top bar; leading columns are the dock.
+- **Wayland keeps region capture on a single display.** The refusal is now
+  Wayland AND `displayCount > 1`, and nothing else. The only capability
+  fullscreen does not restore is `getCursorScreenPoint()`, which returns
+  0,0 wherever the mouse is — and that is load-bearing for exactly one
+  decision, which display `pickRegion` opens on. With one display there is
+  nothing to get wrong (the opening crosshair starts in the corner and
+  corrects on the first mouse move); with two it reliably picks the wrong
+  one. The portal still charges a permission prompt and a source picker per
+  capture (~3s), which is a cost, not a defect. `capture:interactive`
+  refuses ahead of `guardScreenCapture` so a refused capture never raises
+  that prompt.
+- **⇧-snap-to-window and source-app metadata do not work on Linux at all,
+  X11 included.** `build-native.mjs` builds the `window-list` helper for
+  darwin (Swift) and win32 (C++) only, so `listWindowsSnapshot()` returns
+  an empty list behind one `warn`. That is why no hover highlight follows
+  the pointer over windows there. It is a missing native helper, not a
+  Wayland limitation — though a Wayland-native session has no protocol to
+  enumerate other apps' windows, so any Linux helper would be X11-only.
+- **The refusal must SHOW itself, and the notice hangs off the refusal —
+  not off the trigger.** A refusal only the log can see is a dead button,
+  which is strictly worse than the broken selector it replaced. The
+  first version explained itself from `capture-trigger.ts`, which only the
+  global hotkeys and the native tray menu route through; the Library's
+  Quick Capture button and the tray popover's tiles dispatch straight over
+  IPC from the renderer and `void` the promise, so on Ubuntu the app's
+  headline button did nothing at all. `showWaylandRefusalNotice()`
+  ([wayland-refusal-notice.ts](apps/desktop/src/main/capture/wayland-refusal-notice.ts))
+  is now raised from the handler, for `principal === "ipc"` only — every
+  human entry point is `ipc`, and an agent has nobody to dismiss a modal.
+  It offers **Capture Full Screen** rather than only naming it: the
+  message already says that is the way to capture here, and making the
+  user dismiss an alert and go find a different button is the same dead
+  end wearing a hat.
+- **`WAYLAND_SELECTOR_MESSAGE` is user-visible text, so only measured
+  claims go in it.** Two drafts failed that: one asserted Wayland will not
+  let an app place its own overlay (the claim the probe disproved two
+  paragraphs down), and one told users drag-to-select was unavailable on
+  Wayland when the real cause was our own missing fullscreen call.
+  Correcting a header comment is not enough; grep the strings.
+- **Do NOT repeat the claim that a Wayland client cannot place the
+  overlay.** It is the obvious guess and it was wrong: Electron defaults
+  to the X11 ozone backend, so on a Wayland session it usually runs as an
+  XWayland client, and the probe measured position and size honoured
+  exactly with the renderer 1:1 with display logical px. A Wayland-native
+  client could not; an XWayland one can. Measure before asserting.
+- **`capture:fullScreen` / `capture:allScreens` stay available there** —
+  no overlay, no rect arithmetic, so the portal's picker IS the source
+  selection and the editor's crop tool is the region selection. That is
+  what the refusal notice points users at; keep it pointing somewhere.
+- **Detection fails OPEN.** Only a positively-identified Wayland session
+  is refused; an unrecognised environment keeps region capture, because a
+  miss on X11 deletes a working feature while a miss on Wayland still
+  fails legibly at the geometry check.
+- **Neither CI job can catch any of this.** The Docker/xvfb harness has no
+  portal and no window manager, and macOS never runs the code. Confirm on
+  a real session with
+  `pnpm --filter @pwrsnap/desktop probe:linux-capture`
+  ([linux-capture-probe.mjs](apps/desktop/scripts/linux-capture-probe.mjs)),
+  which reports session type, the source list with `display_id` and
+  measured dimensions, whether a selector-shaped window lands where it was
+  asked to, whether anything is painted over it (the occlusion table
+  above), and whether the cursor point is real. `--no-overlay` keeps the
+  measured steps and drops every watch-and-judge one; the banner prints
+  the checked-out sha and `-dirty`, because a run was once pasted back
+  that predated the commit it was meant to exercise.
+
 ## Never mix a post-transform rect with a layout measure
 
 **`getBoundingClientRect()` is POST-TRANSFORM. `offsetWidth` /

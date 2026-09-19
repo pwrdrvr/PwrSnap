@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.1.3 - 2026-09-19
+
+This release makes AI configuration, recording, editing, and update decisions
+clearer and more reliable.
+
+- AI Settings - Added an AI Providers status view and a separate AI Features
+  page, and now applies the selected ACP model and reasoning level to local
+  agent features.
+- Updates - Added links from offered versions to their GitHub release notes so
+  you can review changes before installing an update.
+- Recording - Fixed recording bounds, countdown focus, and the capture HUD so
+  recordings stay framed on the usable work area and PwrSnap controls remain
+  visible without becoming transparent.
+- Sizzle Reels - Improved phrase-picker placement, long-chat inspector layout,
+  and trim-timeline sizing so editing remains usable in constrained space.
+- Float-Over and Tray - Fixed Float-Over and tray popovers to render as opaque
+  surfaces instead of showing unintended transparent background content.
+- Capture Selector - Fixed selected-window outlines to stay behind windows
+  picked in front, making stacked-window selections easier to inspect.
+
 ## v1.1.2 - 2026-09-17
 
 This security patch keeps every PwrSnap window on trusted app content.

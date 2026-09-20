@@ -8,7 +8,7 @@ overrides:
   '@types/node': 24.12.4
   tar: 7.5.22
 
-pnpmfileChecksum: sha256-uWtiGYxWYNyZ/96XH4H6bLmHSipGbAlNJDAcV3to2Ws=
+pnpmfileChecksum: sha256-DimRjNoDDoeZKSE4St19TeaD7KXRKoLd4rMSKK3VXS4=
 
 importers:
 

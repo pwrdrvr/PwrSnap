@@ -107,3 +107,81 @@ describe("readPackage", () => {
     expect(pkg.dependencies).toEqual(deps);
   });
 });
+
+// `pnpm.overrides` and `resolutions` are not dependency fields, so the
+// DEPENDENCY_FIELDS loop never sees them — yet pnpm resolves their values
+// exactly like a spec. An override repoints a TRANSITIVE package, so it
+// shows up in nobody's dependencies block: the quietest place in the
+// manifest to park a git URL. The fetcher still refuses such an install,
+// but its error names neither the package nor the field, so without this
+// scan the layer that gives an actionable diagnostic is the one that misses.
+describe("readPackage / override fields", () => {
+  test.each(["pnpm.overrides", "resolutions"])(
+    "throws on a git spec in %s and names the field",
+    (label) => {
+      const pkg =
+        label === "pnpm.overrides"
+          ? { name: "pwrsnap-workspace", pnpm: { overrides: { "is-number": "github:a/b" } } }
+          : { name: "pwrsnap-workspace", resolutions: { "is-number": "github:a/b" } };
+      expect(() => readPackage(pkg)).toThrow(/Blocked git dependency/);
+      // The field name is the whole point of catching it here rather than
+      // letting the fetcher refuse it anonymously.
+      expect(() => readPackage(pkg)).toThrow(new RegExp(`\\b${label.replace(".", "\\.")}\\b`));
+      expect(() => readPackage(pkg)).toThrow(/is-number/);
+    }
+  );
+
+  // pnpm only honours overrides declared by the workspace root, so a
+  // registry package's own copy is inert — flagging it would be a false
+  // positive with nothing behind it.
+  test("ignores a transitive package's own overrides", () => {
+    expect(() =>
+      readPackage({ name: "some-registry-package", pnpm: { overrides: { lodash: "github:a/b" } } })
+    ).not.toThrow();
+    expect(() =>
+      readPackage({ name: "some-registry-package", resolutions: { lodash: "github:a/b" } })
+    ).not.toThrow();
+  });
+
+  // Every legitimate override value shape pnpm accepts. `$name` is pnpm's
+  // reference-a-declared-dependency form; the scoped `$@types/node` spelling
+  // is the one that looks most like a `user/repo` shortcut and is worth
+  // pinning explicitly after the character-class change.
+  test.each([
+    "0.5.1",
+    "24.12.4",
+    ">=4.0.0",
+    "^1.2.3",
+    "npm:other@1.0.0",
+    "$some-dep",
+    "$@types/node",
+    "workspace:*",
+  ])("allows the legitimate override value %s", (spec) => {
+    expect(() =>
+      readPackage({ name: "pwrsnap-workspace", pnpm: { overrides: { "is-number": spec } } })
+    ).not.toThrow();
+  });
+
+  test("does not trip on the overrides this repo actually ships", async () => {
+    const { readFileSync } = await import("node:fs");
+    const root = JSON.parse(
+      readFileSync(fileURLToPath(new URL("../../package.json", import.meta.url)), "utf8")
+    );
+    const overrides = root.pnpm?.overrides ?? {};
+    expect(Object.keys(overrides).length).toBeGreaterThan(0);
+    expect(() =>
+      readPackage({ name: root.name, pnpm: { overrides: { ...overrides } } })
+    ).not.toThrow();
+  });
+
+  test("a missing or empty overrides block is not an error", () => {
+    for (const pkg of [
+      { name: "pwrsnap-workspace" },
+      { name: "pwrsnap-workspace", pnpm: {} },
+      { name: "pwrsnap-workspace", pnpm: { overrides: {} } },
+      { name: "pwrsnap-workspace", resolutions: {} },
+    ]) {
+      expect(() => readPackage(pkg)).not.toThrow();
+    }
+  });
+});

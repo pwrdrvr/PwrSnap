@@ -90,15 +90,54 @@ function readPackage(pkg) {
         delete deps[name];
         continue;
       }
-      throw new Error(
-        `[pwrsnap pnpmfile] Blocked git dependency ${name}@${spec}. ` +
-          `Git specs bypass tarball integrity checks and run arbitrary ` +
-          `lifecycle scripts against arbitrary remotes. If you need this ` +
-          `package, publish a registry tarball or vendor the source.`
-      );
+      throw new Error(blockedGitSpecMessage(name, spec, field));
     }
   }
+
+  // `pnpm.overrides` — and the yarn-style `resolutions` pnpm also honours
+  // — are NOT dependency fields, so the loop above never sees them. pnpm
+  // resolves their VALUES exactly like a spec, so a git URL parked in one
+  // reaches the fetcher having appeared in nobody's dependencies block.
+  //
+  // That makes an override the quietest injection point in the manifest:
+  // it silently repoints a TRANSITIVE package, so a reviewer scanning a
+  // diff for a git URL under `dependencies` does not see it. The fetcher
+  // still refuses the install, but its error names neither the package
+  // nor where it was declared — so without this scan the layer that
+  // produces the actionable diagnostic is the one that misses it.
+  //
+  // Gated on `isWorkspaceRootPackage` because pnpm only honours overrides
+  // declared by the workspace root; scanning a registry package's own
+  // copy would be a false positive with nothing behind it. (The predicate
+  // also admits our non-root `@pwrsnap/*` packages, whose overrides pnpm
+  // ignores — flagging a git spec there is over-broad in the safe
+  // direction, and it would be worth deleting anyway.)
+  if (isWorkspaceRootPackage(pkg)) {
+    for (const [label, entries] of [
+      ["pnpm.overrides", pkg.pnpm ? pkg.pnpm.overrides : undefined],
+      ["resolutions", pkg.resolutions]
+    ]) {
+      if (!entries) continue;
+      for (const [name, spec] of Object.entries(entries)) {
+        if (!isGitSpec(spec)) continue;
+        throw new Error(blockedGitSpecMessage(name, spec, label));
+      }
+    }
+  }
+
   return pkg;
+}
+
+// Shared so an override rejection reads the same as a dependency one and
+// names the field it came from — `pnpm.overrides` is worth saying out
+// loud, since that is the field a reader is least likely to have checked.
+function blockedGitSpecMessage(name, spec, field) {
+  return (
+    `[pwrsnap pnpmfile] Blocked git dependency ${name}@${spec} declared in ` +
+    `\`${field}\`. Git specs bypass tarball integrity checks and run ` +
+    `arbitrary lifecycle scripts against arbitrary remotes. If you need ` +
+    `this package, publish a registry tarball or vendor the source.`
+  );
 }
 
 // Workspace packages live under @pwrsnap/* (plus the unscoped root

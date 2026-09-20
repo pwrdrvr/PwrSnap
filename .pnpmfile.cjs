@@ -46,8 +46,21 @@ const DEPENDENCY_FIELDS = [
 // Match the spec shapes pnpm itself recognizes as git fetches. The
 // last alternation (`user/repo#ref?`) is the GitHub shortcut form npm
 // supports — pnpm treats it the same as `github:user/repo`.
+//
+// That last alternation excludes `:` from its first character class
+// (`[^/@\s:]`) and the omission is load-bearing. A shortcut spec never
+// contains a colon before the slash, but a PROTOCOL spec whose path
+// has exactly one segment does: `file:../local` reads as `file:..` +
+// `/` + `local`, `link:../local` and `workspace:../pkg` the same. With
+// `:` allowed, all three parsed as `user/repo` shortcuts and were
+// blocked as git dependencies. Specs with two or more path segments
+// (`file:./packages/x`) escaped only because the trailing class cannot
+// match a second `/` — an accident, not a design.
+//
+// `git@github.com:user/repo.git` still matches, via the `git@` branch
+// above rather than this one, so the exclusion costs no coverage.
 const GIT_SPEC_PATTERN =
-  /^(?:git(?:\+|:)|git@|ssh:\/\/git@|github:|gitlab:|bitbucket:|https?:\/\/(?:www\.)?(?:github|gitlab|bitbucket)\.com\/|[^/@\s]+\/[^/\s]+(?:#.*)?$)/;
+  /^(?:git(?:\+|:)|git@|ssh:\/\/git@|github:|gitlab:|bitbucket:|https?:\/\/(?:www\.)?(?:github|gitlab|bitbucket)\.com\/|[^/@\s:]+\/[^/\s]+(?:#.*)?$)/;
 
 function isGitSpec(spec) {
   return typeof spec === "string" && GIT_SPEC_PATTERN.test(spec);
@@ -118,6 +131,9 @@ function blockGitFetcher(/* { defaultFetchers } */) {
 }
 
 module.exports = {
+  // Exported for `scripts/__tests__/pnpmfile.test.mjs`. pnpm only ever
+  // reads `hooks`, so extra keys here are inert at install time.
+  isGitSpec,
   hooks: {
     readPackage,
     fetchers: {

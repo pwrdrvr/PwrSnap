@@ -175,12 +175,17 @@ coverage.
 
 To update a Linux-focused baseline, use the Docker runner with the same
 architecture as GitHub Actions. `--update-snapshots` requires `--test` and
-safely copies only generated baseline directories back to the source worktree:
+safely copies only generated baseline directories back to the source worktree.
+Call the script directly: `pnpm test:desktop-e2e:docker -- ...` forwards the
+literal `--`, which the script rejects as an unknown argument.
 
 ```bash
-pnpm test:desktop-e2e:docker -- --platform linux/amd64 \
+./scripts/e2e/run-docker.sh --platform linux/amd64 \
   --test 'visual regression' --update-snapshots
 ```
+
+The Linux suite can fail during worker teardown, and a failed run copies
+nothing back, so re-run it until it passes.
 
 For macOS, review the `*-actual.webp` files emitted by the self-hosted VM's
 `desktop-e2e-macos-artifacts` artifact, then deliberately promote approved

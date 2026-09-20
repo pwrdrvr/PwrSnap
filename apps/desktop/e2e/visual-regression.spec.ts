@@ -6,7 +6,7 @@
 // The reference images are lossless WebP and are generated in their matching
 // CI environment. Update the Linux references with:
 //
-//   pnpm test:desktop-e2e:docker -- --platform linux/amd64 \
+//   ./scripts/e2e/run-docker.sh --platform linux/amd64 \
 //     --test 'visual regression' --update-snapshots
 //
 // See CONTRIBUTING.md for the platform-specific baseline workflow and how the

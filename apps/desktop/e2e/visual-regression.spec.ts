@@ -3,11 +3,19 @@
 // BrowserWindow frames and OS chrome are outside the renderer contract and
 // vary by host.
 //
-// The reference images are lossless WebP and are generated in their matching
-// CI environment. Update the Linux references with:
+// The macOS references are promoted from the self-hosted VM lane that compares
+// them. The Linux ones have no such lane — CI sets
+// PWRSNAP_E2E_SKIP_LINUX_VISUAL_REGRESSION, so nothing compares them and they
+// go stale silently; they are generated locally in the Docker harness and are
+// only as honest as the last deliberate regeneration (most recently
+// 2026-09-19, against the UI that shipped through #591/#628). Run it from the
+// repository root:
 //
-//   ./scripts/e2e/run-docker.sh --platform linux/amd64 \
+//   pnpm test:desktop-e2e:docker --platform linux/amd64 \
 //     --test 'visual regression' --update-snapshots
+//
+// Pass those flags straight through — an inserted `--` reaches run-docker.sh
+// as an argument and it exits 2 with `unknown arg: --`.
 //
 // See CONTRIBUTING.md for the platform-specific baseline workflow and how the
 // generated files are stored in Git LFS.
@@ -270,6 +278,24 @@ test.describe("visual regression", () => {
       await expect(app.window.locator(".psl__status-r b")).toHaveText(
         `v${VISUAL_APP_VERSION}`
       );
+      // Grid carries a copy surface with byte figures, and those land as
+      // estimates before settling to measured values — the eyebrow reads
+      // "rendering files" until they do. `toHaveScreenshot` would retry past
+      // an unsettled frame, but `--update-snapshots` writes whatever is
+      // merely stable for two frames, so without this wait a regeneration can
+      // bake the transient state into a golden that then never matches. The
+      // right-rail case waits for exactly this; it is needed here for the
+      // same reason.
+      //
+      // Counted rather than asserted by text because WHICH surface renders it
+      // is platform-dependent: the rail footer where the rail stays pinned
+      // (macOS at this window size) and the floating grid palette where it
+      // auto-collapses (Linux, whose in-toolbar menu bar forces the narrow
+      // tier). Both can be in the DOM at once, which would make a text
+      // assertion a strict-mode violation rather than a wait.
+      const copyEyebrow = app.window.locator(".psl__copy-eyebrow-meta");
+      await expect(copyEyebrow.filter({ hasText: "rendering files" })).toHaveCount(0);
+      await expect(copyEyebrow.filter({ hasText: "actual files" })).not.toHaveCount(0);
 
       await expect(library).toHaveScreenshot("library-grid.webp", {
         animations: "disabled",

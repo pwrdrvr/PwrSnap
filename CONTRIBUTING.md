@@ -176,16 +176,22 @@ coverage.
 To update a Linux-focused baseline, use the Docker runner with the same
 architecture as GitHub Actions. `--update-snapshots` requires `--test` and
 safely copies only generated baseline directories back to the source worktree.
-Call the script directly: `pnpm test:desktop-e2e:docker -- ...` forwards the
-literal `--`, which the script rejects as an unknown argument.
+Run it from the repository root, and pass the flags straight through — an
+inserted `--` reaches `run-docker.sh` as an argument and it exits 2 with
+`unknown arg: --`:
 
 ```bash
-./scripts/e2e/run-docker.sh --platform linux/amd64 \
+pnpm test:desktop-e2e:docker --platform linux/amd64 \
   --test 'visual regression' --update-snapshots
 ```
 
-The Linux suite can fail during worker teardown, and a failed run copies
-nothing back, so re-run it until it passes.
+A failed run copies nothing back, so it has to be repeated — but read the
+reported failure first rather than re-running blind. The Linux suite has a
+known worker-teardown flake that a re-run clears; an Electron launch or
+`evaluate` crash (GLib assertions, `Target page … closed`) is a real failure
+that will not. `--keep-stage` leaves the generated baselines in the stage
+directory either way, so a teardown failure after a good render does not have
+to be re-rendered.
 
 For macOS, review the `*-actual.webp` files emitted by the self-hosted VM's
 `desktop-e2e-macos-artifacts` artifact, then deliberately promote approved

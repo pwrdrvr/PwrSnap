@@ -676,7 +676,7 @@ function CountdownLeader({ value }: { value: number }): ReactElement {
             textAnchor="middle"
             dominantBaseline="central"
             style={{
-              font: "800 96px/1 'Geist', system-ui, sans-serif",
+              font: "800 96px/1 var(--font-display)",
               fill: "#ffffff",
               stroke: "rgba(0, 0, 0, 0.9)",
               strokeWidth: 2,

@@ -36,6 +36,9 @@
 
 "use strict";
 
+const { readFileSync } = require("node:fs");
+const { join } = require("node:path");
+
 const DEPENDENCY_FIELDS = [
   "dependencies",
   "devDependencies",
@@ -123,9 +126,91 @@ function readPackage(pkg) {
         throw new Error(blockedGitSpecMessage(name, spec, label));
       }
     }
+
+    // pnpm 10 ALSO accepts a top-level `overrides:` in pnpm-workspace.yaml,
+    // and that file is not a package manifest — readPackage is never handed
+    // it, so everything above misses it. Measured on 10.33.0: a git spec
+    // there resolves, reaches the fetcher, and is refused by the anonymous
+    // `Blocked pnpm git dependency fetch`, which names neither the package
+    // nor the field. That is the exact diagnostic gap this scan exists to
+    // close, so the root scan reads the file itself.
+    const workspaceHit = workspaceOverrideGitSpecs()[0];
+    if (workspaceHit !== undefined) {
+      throw new Error(
+        blockedGitSpecMessage(workspaceHit[0], workspaceHit[1], "pnpm-workspace.yaml overrides")
+      );
+    }
   }
 
   return pkg;
+}
+
+// Read once. `__dirname` — not `process.cwd()` — because this file sits AT
+// the workspace root next to pnpm-workspace.yaml, while cwd is wherever the
+// user invoked pnpm from.
+let workspaceOverridesCache;
+
+function workspaceOverrideGitSpecs() {
+  if (workspaceOverridesCache === undefined) {
+    try {
+      workspaceOverridesCache = gitSpecsInWorkspaceOverrides(
+        readFileSync(join(__dirname, "pnpm-workspace.yaml"), "utf8")
+      );
+    } catch {
+      workspaceOverridesCache = [];
+    }
+  }
+
+  return workspaceOverridesCache;
+}
+
+// A deliberately small line scanner, NOT a YAML parser. A pnpmfile runs
+// during resolution, so it cannot `require("js-yaml")`: that package is not
+// a declared dependency of this workspace, and node_modules may not exist
+// yet on a cold install. This understands the flat `name: spec` mapping that
+// an overrides block actually is, and ignores any line it cannot read
+// confidently — the fetcher remains the enforcement layer, so failing open
+// costs a better error message, never the protection itself.
+function gitSpecsInWorkspaceOverrides(yamlText) {
+  const hits = [];
+  let inBlock = false;
+
+  for (const line of yamlText.split(/\r?\n/)) {
+    if (!inBlock) {
+      if (/^overrides:[ \t]*(?:#.*)?$/.test(line)) inBlock = true;
+      continue;
+    }
+
+    if (line.trim() === "" || /^[ \t]*#/.test(line)) continue;
+    // Any line back at column 0 is the next top-level key: the block ended.
+    if (!/^[ \t]/.test(line)) break;
+
+    const entry = /^[ \t]+(?:"([^"]*)"|'([^']*)'|([^:#]+?))[ \t]*:[ \t]*(\S.*)$/.exec(line);
+    if (entry === null) continue;
+
+    const spec = unquoteScalar(entry[4]);
+    if (spec !== null && isGitSpec(spec)) {
+      hits.push([(entry[1] ?? entry[2] ?? entry[3]).trim(), spec]);
+    }
+  }
+
+  return hits;
+}
+
+function unquoteScalar(raw) {
+  const text = raw.trim();
+
+  for (const quote of ['"', "'"]) {
+    if (!text.startsWith(quote)) continue;
+    const end = text.indexOf(quote, 1);
+    return end === -1 ? null : text.slice(1, end);
+  }
+
+  // Unquoted: a ` #` starts a trailing comment.
+  const comment = text.indexOf(" #");
+  const value = (comment === -1 ? text : text.slice(0, comment)).trim();
+
+  return value === "" ? null : value;
 }
 
 // Shared so an override rejection reads the same as a dependency one and
@@ -173,6 +258,7 @@ module.exports = {
   // Exported for `scripts/__tests__/pnpmfile.test.mjs`. pnpm only ever
   // reads `hooks`, so extra keys here are inert at install time.
   isGitSpec,
+  gitSpecsInWorkspaceOverrides,
   hooks: {
     readPackage,
     fetchers: {

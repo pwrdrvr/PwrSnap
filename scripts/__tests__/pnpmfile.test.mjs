@@ -20,7 +20,7 @@ import { describe, expect, test } from "vitest";
 // it is loaded the same way pnpm itself loads it.
 const require = createRequire(import.meta.url);
 const pnpmfile = require(fileURLToPath(new URL("../../.pnpmfile.cjs", import.meta.url)));
-const { isGitSpec } = pnpmfile;
+const { isGitSpec, gitSpecsInWorkspaceOverrides } = pnpmfile;
 const { readPackage } = pnpmfile.hooks;
 
 // Every shape pnpm resolves through the `git` or `gitHostedTarball`
@@ -183,5 +183,72 @@ describe("readPackage / override fields", () => {
     ]) {
       expect(() => readPackage(pkg)).not.toThrow();
     }
+  });
+});
+
+// pnpm 10 also accepts a top-level `overrides:` in pnpm-workspace.yaml.
+// That file is not a package manifest, so readPackage is never handed it —
+// before this scan a git spec there reached the fetcher and was refused by
+// `Blocked pnpm git dependency fetch`, naming neither package nor field.
+//
+// It is scanned with a small line reader rather than js-yaml, because a
+// pnpmfile runs during resolution and cannot require a package that may not
+// be installed yet. These pin what that reader does and does not claim to
+// understand: anything it cannot read confidently is skipped, which costs a
+// diagnostic and never the protection, since the fetcher still refuses.
+describe("gitSpecsInWorkspaceOverrides", () => {
+  test("finds a git spec in the overrides block", () => {
+    const yaml = ['packages:', '  - apps/*', 'overrides:', '  is-number: "github:a/b"'].join("\n");
+    expect(gitSpecsInWorkspaceOverrides(yaml)).toEqual([["is-number", "github:a/b"]]);
+  });
+
+  test.each([
+    ["  is-number: github:a/b", "unquoted"],
+    ["  is-number: 'github:a/b'", "single-quoted"],
+    ['  "is-number": "github:a/b"', "quoted key"],
+    ['  is-number: "github:a/b" # pinned', "trailing comment"],
+  ])("reads %s (%s)", (line) => {
+    expect(gitSpecsInWorkspaceOverrides(`overrides:\n${line}`)).toEqual([["is-number", "github:a/b"]]);
+  });
+
+  test.each([
+    ["0.5.1", "plain version"],
+    [">=4.0.0", "range"],
+    ["$some-dep", "reference form"],
+    ["npm:other@1.0.0", "npm alias"],
+    ["file:../local", "local path"],
+  ])("does not flag the legitimate value %s (%s)", (value) => {
+    expect(gitSpecsInWorkspaceOverrides(`overrides:\n  is-number: "${value}"`)).toEqual([]);
+  });
+
+  test("stops at the next top-level key", () => {
+    const yaml = [
+      "overrides:",
+      '  a: "1.0.0"',
+      "packages:",
+      // Not an override — a sibling top-level key's contents must not be read.
+      '  b: "github:a/b"',
+    ].join("\n");
+    expect(gitSpecsInWorkspaceOverrides(yaml)).toEqual([]);
+  });
+
+  test("ignores a file with no overrides block", () => {
+    expect(gitSpecsInWorkspaceOverrides("packages:\n  - apps/*\nminimumReleaseAge: 10080")).toEqual([]);
+  });
+
+  test("ignores comments and blank lines inside the block", () => {
+    const yaml = ["overrides:", "  # a comment", "", '  a: "github:x/y"'].join("\n");
+    expect(gitSpecsInWorkspaceOverrides(yaml)).toEqual([["a", "github:x/y"]]);
+  });
+
+  // The repo's own file must stay clean, and must parse to "nothing to flag"
+  // rather than throwing.
+  test("this repo's pnpm-workspace.yaml declares no git override", async () => {
+    const { readFileSync } = await import("node:fs");
+    const text = readFileSync(
+      fileURLToPath(new URL("../../pnpm-workspace.yaml", import.meta.url)),
+      "utf8"
+    );
+    expect(gitSpecsInWorkspaceOverrides(text)).toEqual([]);
   });
 });

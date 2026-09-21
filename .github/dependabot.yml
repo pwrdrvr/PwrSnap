@@ -36,3 +36,14 @@ updates:
       interval: "weekly"
     cooldown:
       default-days: 7
+    # Same no-automatic-majors policy the npm entry above applies. Without
+    # it this ecosystem would be the one place in the repo where a major
+    # bump opens itself -- the workflows pin several actions by tag
+    # (actions/checkout@v5, setup-node@v6, github-script@v9,
+    # upload-artifact@v7), so v5 -> v6 PRs would start arriving. Majors for
+    # actions are worth taking deliberately (a bumped runtime can deprecate
+    # a runner), so do them by hand, or drop this block to let them flow.
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"

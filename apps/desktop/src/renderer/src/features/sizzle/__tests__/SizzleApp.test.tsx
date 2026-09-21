@@ -1119,6 +1119,48 @@ describe("render button reel length", () => {
     expect(render?.title ?? "").toBe("");
   });
 
+  test("loads narration and timing after rendering without a separate synthesis click", async () => {
+    let current = project({ scenes: [sequenceScene("hello there")] });
+    let rendered = false;
+    const { el, emit, dispatch } = await renderApp(current, {
+      "sizzle:list": () => ({ ok: true, value: { projects: [current] } }),
+      "sizzle:render": () => {
+        rendered = true;
+        current = { ...current, lastRenderedAt: "2026-09-21T17:25:07.000Z", outputPath: "/tmp/reel.mp4" };
+        emit(EVENT_CHANNELS.sizzleRenderProgress, {
+          projectId: current.id, phase: "done", message: "Render complete", ratio: 1
+        });
+        return { ok: true, value: { outputPath: current.outputPath } };
+      },
+      "sizzle:loadSequenceSceneAudio": () => ({
+        ok: true,
+        value: rendered ? {
+          cached: true,
+          audioBase64: "AA==",
+          mimeType: "audio/mpeg",
+          transcriptPhrases: [],
+          words: [{ index: 0, word: "hello", normalized: "hello", startSec: 0, endSec: 1 }],
+          durationSec: 19
+        } : { cached: false }
+      })
+    });
+    expect(el.querySelector('[data-testid="sizzle-reel-silent"]')).not.toBeNull();
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="sizzle-render"]')!.click();
+    });
+    expect(rendered).toBe(true);
+    expect(dispatch.mock.calls.filter(([name]) => name === "sizzle:loadSequenceSceneAudio")).toHaveLength(2);
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="sizzle-reel-play"]')!.click();
+    });
+    expect(el.querySelector('[data-testid="sizzle-reel-silent"]')).toBeNull();
+    expect(el.querySelector<HTMLAudioElement>('audio[src="blob:preview"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="sizzle-render"]')?.textContent).toBe("Render · 0:19");
+    expect(el.querySelector('[data-testid="sizzle-timeline-synthesize-0"]')).toBeNull();
+    expect(el.querySelector('[data-testid="sizzle-timeline-word-0-0"]')?.textContent).toBe("hello");
+    expect(dispatch.mock.calls.some(([name]) => name === "sizzle:previewSequenceScenePlan")).toBe(false);
+  });
+
   test("drops back to estimated when the voice changes under a cached measurement", async () => {
     // The measurement was taken with the reel's previous voice; a
     // different voice speaks at a different rate, so keeping the old

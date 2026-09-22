@@ -10,6 +10,7 @@ import {
   ok,
   resolveSizzleAudioSource,
   resolveVoiceoverSceneDurationSec,
+  SIZZLE_SCENE_MEDIA_MAX_SEC,
   sizzleMediaSpans,
   sizzleMediaSpansDurationSec,
   sizzleMediaSpansHaveCuts,
@@ -317,7 +318,8 @@ async function prepareSceneInput(args: {
     const spans = sizzleMediaSpans({
       trim,
       segments: capture.video?.segments,
-      useCaptureCuts: sizzleUsesCaptureCuts(scene)
+      useCaptureCuts: sizzleUsesCaptureCuts(scene),
+      maxSec: SIZZLE_SCENE_MEDIA_MAX_SEC
     });
     const cut = sizzleMediaSpansHaveCuts(spans);
     const trimDur = sizzleMediaSpansDurationSec(spans);
@@ -751,7 +753,8 @@ export function registerSizzleHandlers(
         const spans = sizzleMediaSpans({
           trim,
           segments: video.segments,
-          useCaptureCuts: sizzleUsesCaptureCuts(scene)
+          useCaptureCuts: sizzleUsesCaptureCuts(scene),
+          maxSec: SIZZLE_SCENE_MEDIA_MAX_SEC
         });
         const audioPath = await extractVideoAudio({
           videoPath: capture.legacy_src_path,

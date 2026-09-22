@@ -17,13 +17,16 @@
 // live object, so a click during the persist debounce can't export a
 // stale edit.
 //
-// With loop on, playback plays the EDIT: it skips every cut and loops
-// the trimmed range. With loop off it plays the recording straight
-// through, cuts included, which is how you check what a cut removed.
+// Playback always plays the EDIT: it starts at the in-point, skips every
+// cut, and ends at the out-point (`videoEditPlaybackStep`, the same rule
+// the sizzle reel preview follows). Loop only decides what happens at the
+// end — wrap to the in-point, or stop. To look at footage the edit
+// removed, scrub into it; a paused head shows whatever frame it is on.
 
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -32,6 +35,7 @@ import {
 import {
   nextPlayableVideoTime,
   splitVideoSegmentsAt,
+  videoEditPlaybackStep,
   toggleVideoPiece,
   videoExportSpans,
   videoPieceAt,
@@ -204,7 +208,10 @@ export function VideoStage({
   rangeRef.current = range;
   const segmentsRef = useRef(segments);
   segmentsRef.current = segments;
-  const hasCuts = videoExportSpans(segments).length > 1;
+  const spans = useMemo(() => videoExportSpans(segments), [segments]);
+  const spansRef = useRef(spans);
+  spansRef.current = spans;
+  const hasCuts = spans.length > 1;
   const activity = useVideoActivity(captureId);
 
   // Edit undo / redo rides the window's edit-menu bridge, the same slot
@@ -321,20 +328,15 @@ export function VideoStage({
     const el = videoRef.current;
     if (el === null) return;
     const r = rangeRef.current;
-    // With loop on, play the edit: from the in-point when the head sits
-    // outside the range or at its end, and from the next kept part when
-    // it sits in a cut. With loop off, only a head parked at the very
-    // end goes back to 0.
-    if (loopRef.current) {
-      const next =
-        el.currentTime >= r.end - 0.01
-          ? null
-          : nextPlayableVideoTime(segmentsRef.current, el.currentTime);
-      const target = next ?? r.start;
-      if (target !== el.currentTime) el.currentTime = target;
-    } else if (el.currentTime >= durationSec - 0.01) {
-      el.currentTime = 0;
-    }
+    // Play the edit: from the in-point when the head sits outside the
+    // range or at its end, and from the next kept part when it sits in a
+    // cut.
+    const next =
+      el.currentTime >= r.end - 0.01
+        ? null
+        : nextPlayableVideoTime(segmentsRef.current, el.currentTime);
+    const target = next ?? r.start;
+    if (target !== el.currentTime) el.currentTime = target;
     el.playbackRate = 1;
     // Publish the snap BEFORE handing off to the element. If `play()`
     // rejects — a decode failure on a damaged capture, an autoplay
@@ -349,7 +351,7 @@ export function VideoStage({
     // swallowed.
     settleTime();
     void el.play().catch(() => undefined);
-  }, [durationSec, settleTime, stopShuttle]);
+  }, [settleTime, stopShuttle]);
 
   // Scrubbing the timeline (body scrub or a trim handle) pauses for the
   // duration of the gesture and restores playback on release. Without
@@ -608,27 +610,29 @@ export function VideoStage({
     };
 
     const tick = (nowMs: number): void => {
-      const r = rangeRef.current;
       const t = el.currentTime;
-      // Where the edit says the head should be: `t` inside a kept part,
-      // the next part's start inside a cut, `null` past the last part.
-      // Only consulted with loop on — loop off plays the raw recording.
-      const playable =
-        !nativeLoopRef.current && loopRef.current && t < r.end - 0.005
-          ? nextPlayableVideoTime(segmentsRef.current, t)
-          : t;
-      if (!nativeLoopRef.current && loopRef.current && (t >= r.end - 0.005 || playable === null)) {
+      // A whole-clip native loop wraps in the media pipeline and has no
+      // cuts to skip; everything else follows the edit.
+      const step = nativeLoopRef.current
+        ? ({ kind: "play" } as const)
+        : videoEditPlaybackStep(spansRef.current, t);
+      if (step.kind === "end") {
+        const r = rangeRef.current;
+        if (!loopRef.current) {
+          // Played once — park on the out-point. The `pause` event
+          // settles React state and ends this loop.
+          el.pause();
+          return;
+        }
         el.currentTime = r.start;
         // The wrap is a discrete jump, not continuous motion — a
         // throttled head would keep drawing the far end for a beat
         // after the picture had already snapped back.
         publish(nowMs, r.start, 0);
-      } else if (playable !== null && playable > t + 0.005) {
-        // Jumping a cut. The same discrete-jump rule as the wrap. The
-        // 5 ms guard keeps a seek that lands a hair short of the part's
-        // start from seeking again every frame.
-        el.currentTime = playable;
-        publish(nowMs, playable, 0);
+      } else if (step.kind === "seek") {
+        // Jumping a cut. The same discrete-jump rule as the wrap.
+        el.currentTime = step.sec;
+        publish(nowMs, step.sec, 0);
       } else {
         publish(nowMs, t, vfcDriving ? PLAYHEAD_MAX_GAP_MS : PLAYHEAD_MIN_PUBLISH_MS);
       }

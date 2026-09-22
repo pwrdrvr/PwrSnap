@@ -62,13 +62,34 @@ export function sizzleUsesCaptureCuts(clip: { useCaptureCuts?: boolean | undefin
 }
 
 /**
+ * Most footage a one-capture ("simple") video scene plays: the first this
+ * many seconds of what it keeps. Its native / muted length IS its footage,
+ * so this is what keeps one scene to a minute. Measured on KEPT footage,
+ * not the trim window — a long recording cut down to seconds fits. A
+ * sequence clip needs no cap: its length comes from the narration, and its
+ * fit decodes only what that length plays.
+ */
+export const SIZZLE_SCENE_MEDIA_MAX_SEC = 60;
+
+/**
  * The source spans a video clip plays: `trim` minus the capture's
  * interior cuts, in order. One span equal to the trim when the clip opts
  * out, the capture has no cuts, or no cut overlaps the window. When the
  * cuts would remove the WHOLE window the window plays uncut — a clip
- * never renders as nothing.
+ * never renders as nothing. `maxSec` keeps only that much of the result
+ * (one-capture scenes pass `SIZZLE_SCENE_MEDIA_MAX_SEC`).
  */
 export function sizzleMediaSpans(args: {
+  trim: SizzleMediaTrim;
+  segments: readonly VideoRange[] | null | undefined;
+  useCaptureCuts: boolean;
+  maxSec?: number | undefined;
+}): VideoRange[] {
+  const spans = uncappedMediaSpans(args);
+  return args.maxSec === undefined ? spans : sizzleMediaSpansPrefix(spans, args.maxSec);
+}
+
+function uncappedMediaSpans(args: {
   trim: SizzleMediaTrim;
   segments: readonly VideoRange[] | null | undefined;
   useCaptureCuts: boolean;

@@ -1075,56 +1075,36 @@ export function useSizzleProject(): SizzleProjectState {
           "";
         scriptLine = scriptLine.trim();
       }
-      // Seed video scenes with a trim range from the capture's
-      // `video.defaultRange` so the editor's trim control opens to
-      // sensible bounds instead of [0, 0].
-      const captureRecord = captures.find((c) => c.id === captureId) ?? null;
-      const captureVideo =
-        captureRecord?.kind === "video" ? captureRecord.video ?? null : null;
-      const mediaTrim =
-        captureVideo !== null
-          ? {
-              startSec: captureVideo.defaultRange.start,
-              endSec: captureVideo.defaultRange.end
-            }
-          : null;
       // A new scene is a sequence scene from the start — one voiceover
       // over N clips (this capture is clip 1; "+ Clip" adds more). The
       // legacy one-capture "simple" scene is no longer created by the UI.
+      //
+      // Its clip carries no trim of its own (`mediaTrim: null`): it
+      // follows the capture's Library edit — in/out AND cuts — live, so
+      // re-trimming the recording in the Library re-trims the reel.
       const scene: SizzleScene = newSizzleSequenceScene([captureId], {
         narration: scriptLine
       });
-      if (mediaTrim !== null && scene.beats !== undefined && scene.beats[0] !== undefined) {
-        scene.beats = [{ ...scene.beats[0], mediaTrim }, ...scene.beats.slice(1)];
-      }
       onUpdate(active.id, { scenes: [...active.scenes, scene] });
     },
-    [active, captures, onUpdate]
+    [active, onUpdate]
   );
 
   const onAddSequenceBeat = useCallback(
     async (sceneId: string, captureId: string) => {
       if (active === null) return;
-      const captureRecord = captures.find((c) => c.id === captureId) ?? null;
-      const captureVideo =
-        captureRecord?.kind === "video" ? captureRecord.video ?? null : null;
-      const mediaTrim =
-        captureVideo !== null
-          ? {
-              startSec: captureVideo.defaultRange.start,
-              endSec: captureVideo.defaultRange.end
-            }
-          : null;
       const nextScenes = active.scenes.map((scene) => {
         if (scene.id !== sceneId || scene.kind !== "sequence") return scene;
         const beats = scene.beats ?? [];
         // New beats default to `auto` — they slot in evenly between the
         // anchored beats and need no manual timing (R4).
+        // No trim of its own: the clip follows the capture's Library
+        // edit live (see onAddScene).
         const beat: SizzleSequenceBeat = {
           id: `bt_${Date.now().toString(36)}`,
           captureId,
           timing: { kind: "auto" },
-          mediaTrim,
+          mediaTrim: null,
           transition: "cut",
           videoFit: "smart-fit"
         };
@@ -1132,7 +1112,7 @@ export function useSizzleProject(): SizzleProjectState {
       });
       onUpdate(active.id, { scenes: nextScenes });
     },
-    [active, captures, onUpdate]
+    [active, onUpdate]
   );
 
   const saveState = activeId === null ? SAVED_STATE : (saveStates[activeId] ?? SAVED_STATE);

@@ -1565,7 +1565,10 @@ function FloatOverVideoExport({
   const trim = useVideoTrimRange({
     captureId: asset.captureId,
     durationSec: asset.durationSec,
-    persistedRange: asset.defaultRange
+    persistedRange: asset.defaultRange,
+    // In/out only: the mini-trim shows no cuts, so it clips them in main
+    // rather than writing an edit that would replace them.
+    persist: "range"
   });
   const assets = useVideoTimelineAssets({
     captureId: asset.captureId,

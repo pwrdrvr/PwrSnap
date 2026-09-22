@@ -25,12 +25,13 @@
 //     replaced goes on the stack — so a cut an agent made is one ⌘Z
 //     away from gone.
 //
-// Two persistence modes, chosen by whether the caller passes
-// `persistedSegments`:
-//   • segments mode (Library): persists with `video:edit { keep }`.
-//   • range mode (float-over): persists with `video:setDefaultRange`,
-//     which clips whatever cuts are stored rather than replacing them,
-//     so a surface that cannot show cuts can never erase them.
+// Two persistence modes, named by the caller's `persist`:
+//   • "edit" (Library): the whole edit, cuts included; persists with
+//     `video:edit { keep }`.
+//   • "range" (float-over): the in/out handles only; persists with
+//     `video:setDefaultRange`, which clips whatever cuts are stored
+//     rather than replacing them, so a surface that cannot show cuts can
+//     never erase them.
 //
 // Shared by the Library video stage and the float-over mini-trim.
 
@@ -93,16 +94,25 @@ function seedSegments(
   return [seedRange(persistedRange, durationSec)];
 }
 
-export function useVideoTrimRange(input: {
+export type UseVideoTrimRangeInput = {
   captureId: string | null;
   durationSec: number;
   persistedRange: VideoRange | null;
-  /** The record's kept spans. Passing it (even `null`) opts into
-   *  segments mode — see the header. */
-  persistedSegments?: readonly VideoRange[] | null | undefined;
-}): UseVideoTrimRange {
-  const { captureId, durationSec, persistedRange, persistedSegments } = input;
-  const segmentsMode = persistedSegments !== undefined;
+} & (
+  | {
+      persist: "edit";
+      /** The record's kept spans (`null` when there is no record). */
+      persistedSegments: readonly VideoRange[] | null;
+    }
+  | { persist: "range" }
+);
+
+export function useVideoTrimRange(input: UseVideoTrimRangeInput): UseVideoTrimRange {
+  const { captureId, durationSec, persistedRange } = input;
+  const segmentsMode = input.persist === "edit";
+  // A range-mode surface never reads the stored cuts: it seeds from the
+  // outer range alone, and its writes clip the cuts in main.
+  const persistedSegments = input.persist === "edit" ? input.persistedSegments : undefined;
   const [segments, setLocal] = useState<VideoRange[]>(() =>
     seedSegments(persistedRange, persistedSegments, durationSec)
   );

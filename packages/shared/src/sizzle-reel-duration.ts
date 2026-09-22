@@ -32,6 +32,7 @@ import {
 } from "./protocol";
 import {
   normalizeVideoMediaTrim,
+  SIZZLE_SCENE_MEDIA_MAX_SEC,
   sizzleMediaSpans,
   sizzleMediaSpansDurationSec,
   sizzleUsesCaptureCuts
@@ -246,7 +247,8 @@ export function estimateSizzleSceneDurationSec(
       sizzleMediaSpans({
         trim,
         segments: video.segments,
-        useCaptureCuts: sizzleUsesCaptureCuts(scene)
+        useCaptureCuts: sizzleUsesCaptureCuts(scene),
+        maxSec: SIZZLE_SCENE_MEDIA_MAX_SEC
       })
     );
     if (effectiveAudio !== "voiceover") {

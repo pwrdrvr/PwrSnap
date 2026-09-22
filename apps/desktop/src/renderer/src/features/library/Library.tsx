@@ -2356,8 +2356,9 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
     captureId: selectedVideo === null ? null : selectedRecord!.id,
     durationSec: selectedVideo?.durationSec ?? 0,
     persistedRange: selectedVideo?.defaultRange ?? null,
-    // Segments mode: the stage edits cuts, and an agent's cut (MCP or
-    // chat) arrives here through `events:captures:changed`.
+    // The stage edits cuts, and an agent's cut (MCP or chat) arrives
+    // here through `events:captures:changed`.
+    persist: "edit",
     persistedSegments: selectedVideo?.segments ?? null
   });
   const videoTrimRangeRef = useRef(videoTrim.range);

@@ -868,7 +868,7 @@ describe("VideoStage cuts", () => {
     ]);
   });
 
-  test("with loop on, playback jumps each cut; with loop off it plays through", () => {
+  test("playback always skips cuts; loop only decides wrap or stop at the out-point", () => {
     const step = rafStepper();
     const { stage } = mountEditStage([
       { start: 0, end: 3 },
@@ -876,6 +876,7 @@ describe("VideoStage cuts", () => {
     ]);
     const el = stage.querySelector("video")!;
     const clock = clockOn(el);
+    const pause = vi.mocked(HTMLMediaElement.prototype.pause);
     // A cut spanning the middle still leaves the outer range whole —
     // the element's own loop would play straight through it.
     expect(el.loop).toBe(false);
@@ -884,11 +885,22 @@ describe("VideoStage cuts", () => {
     clock.t = 3.2;
     step();
     expect(clock.t).toBe(6);
+    clock.t = 10;
+    step();
+    expect(clock.t).toBe(0); // loop on: wrap to the in-point
 
     act(() => (stage.querySelector('[data-testid="video-transport-loop"]') as HTMLButtonElement).click());
+    // Loop off is "play it once", not "play the raw recording": the cut
+    // is still skipped...
     clock.t = 3.2;
     step();
-    expect(clock.t).toBe(3.2);
+    expect(clock.t).toBe(6);
+    // ...and the out-point stops playback instead of wrapping.
+    pause.mockClear();
+    clock.t = 10;
+    step();
+    expect(clock.t).toBe(10);
+    expect(pause).toHaveBeenCalled();
   });
 
   test("play from inside a cut starts at the next kept part", () => {

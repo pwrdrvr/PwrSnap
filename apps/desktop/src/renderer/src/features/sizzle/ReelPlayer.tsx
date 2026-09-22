@@ -18,13 +18,19 @@
 // measured reason, as features/shared/playhead.ts.
 
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
-import { sizzleMediaSpans, sizzleUsesCaptureCuts, type CaptureRecord, type SizzleSequenceBeat } from "@pwrsnap/shared";
+import {
+  sizzleMediaSpans,
+  sizzleUsesCaptureCuts,
+  videoEditPlaybackStep,
+  type CaptureRecord,
+  type SizzleSequenceBeat
+} from "@pwrsnap/shared";
 import type { PlayheadSource } from "../shared/playhead";
 import { formatTimecode } from "../shared/video-range";
 import { StageLayer } from "./StageLayer";
 import { kenBurnsDirection } from "./preview-blend";
 import { flattenReelClips, reelClipProgress, reelFrameAt, type ReelClip, type ReelFrame } from "./reel-frame";
-import { cutFollowSeekSec, sequencePreviewVideoState } from "./sequence-plan";
+import { sequencePreviewVideoState } from "./sequence-plan";
 import type { ReelPlayback } from "./useReelPlayback";
 import type { TimelineModel } from "./timeline/timeline-model";
 
@@ -136,9 +142,11 @@ export function ReelPlayer({
     }
   }, [videoState?.beatId, videoState?.playbackRate, videoState?.sourceTimeSec, shouldPlayVideo]);
   // A clip that skips Library cuts: the element plays straight through the
-  // source, so while it plays, jump it over each cut as the head reaches
-  // it. Off the render path, like the head itself — a seek is a DOM write,
-  // not a state change.
+  // source, so while it plays, move it over each cut as the head reaches
+  // it — the same rule the Library stage plays an edit by
+  // (`videoEditPlaybackStep`), with the reel head as the clock. Off the
+  // render path, like the head itself: a seek is a DOM write, not a state
+  // change.
   const followCuts = shouldPlayVideo && videoState?.hasCuts === true;
   useEffect(() => {
     if (!followCuts) return;
@@ -146,10 +154,10 @@ export function ReelPlayer({
       const el = videoRef.current;
       const state = videoStateAtRef.current(atSec);
       if (el === null || state === null || !state.shouldPlay) return;
-      const target = cutFollowSeekSec(state.spans, state.sourceTimeSec, el.currentTime);
-      if (target === null) return;
+      const step = videoEditPlaybackStep(state.spans, el.currentTime, state.sourceTimeSec);
+      if (step.kind !== "seek") return;
       try {
-        el.currentTime = target;
+        el.currentTime = step.sec;
       } catch {
         // Metadata not ready; the next tick re-seeks.
       }

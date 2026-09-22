@@ -7,7 +7,7 @@
 
 import { describe, expect, test } from "vitest";
 import type { CaptureRecord, SizzleSequenceBeat, SizzleSequencePreviewBeat } from "@pwrsnap/shared";
-import { cutFollowSeekSec, sequencePreviewVideoState } from "../sequence-plan";
+import { sequencePreviewVideoState } from "../sequence-plan";
 
 const previewBeat = (patch: Partial<SizzleSequencePreviewBeat> = {}): SizzleSequencePreviewBeat =>
   ({
@@ -121,6 +121,25 @@ describe("sequencePreviewVideoState", () => {
     });
     expect(state?.sourceTimeSec).toBeCloseTo(1, 3);
   });
+
+  test("a clip with no trim follows the Library's in/out live, not the plan's snapshot", () => {
+    // The plan was resolved when the Library in-point was 0; it has since
+    // moved to 4. The preview must show what the next render will play.
+    const capture = {
+      id: "cap_v",
+      kind: "video",
+      legacy_src_path: "/tmp/v.mp4",
+      video: { defaultRange: { start: 4, end: 9 }, durationSec: 10 }
+    } as unknown as CaptureRecord;
+    const state = sequencePreviewVideoState({
+      beat: previewBeat({ startSec: 0, endSec: 3, mediaTrim: { startSec: 0, endSec: 9 } }),
+      sceneBeat: sceneBeat({ mediaTrim: null, videoFit: "trim" }),
+      capture,
+      timelineTimeSec: 1
+    });
+    expect(state?.sourceTimeSec).toBeCloseTo(5, 3);
+    expect(state?.spans).toEqual([{ start: 4, end: 9 }]);
+  });
 });
 
 describe("sequencePreviewVideoState with Library cuts", () => {
@@ -173,39 +192,5 @@ describe("sequencePreviewVideoState with Library cuts", () => {
       timelineTimeSec: 1
     });
     expect(state?.playbackRate).toBeCloseTo(1, 6);
-  });
-});
-
-describe("cutFollowSeekSec", () => {
-  const SPANS = [
-    { start: 0, end: 2 },
-    { start: 8, end: 11 },
-    { start: 16, end: 20 }
-  ];
-
-  test("leaves an element alone inside the head's span, drift and all", () => {
-    expect(cutFollowSeekSec(SPANS, 9, 9.4)).toBeNull();
-    expect(cutFollowSeekSec(SPANS, 9.4, 8.9)).toBeNull();
-  });
-
-  test("jumps an element that ran into a cut to the next kept span", () => {
-    expect(cutFollowSeekSec(SPANS, 1.95, 2.05)).toBe(8);
-  });
-
-  test("sends a lagging element to where the head crossed to", () => {
-    expect(cutFollowSeekSec(SPANS, 8.05, 1.98)).toBe(8.05);
-  });
-
-  test("does not drag an element that is one cut AHEAD back into the old span", () => {
-    // The element jumped the cut a frame before the head reached it.
-    expect(cutFollowSeekSec(SPANS, 1.95, 8.02)).toBeNull();
-  });
-
-  test("follows the head when a loop wraps back to the first span", () => {
-    expect(cutFollowSeekSec(SPANS, 0.1, 19.9)).toBe(0.1);
-  });
-
-  test("leaves the element parked on the last kept instant", () => {
-    expect(cutFollowSeekSec(SPANS, 20, 20)).toBeNull();
   });
 });

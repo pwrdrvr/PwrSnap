@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import type { SizzleScene, VideoRange } from "../protocol";
 import {
+  SIZZLE_SCENE_MEDIA_MAX_SEC,
   sizzleMediaSourceTimeSec,
   sizzleMediaSpans,
   sizzleMediaSpansDurationSec,
@@ -107,6 +108,32 @@ describe("sizzleMediaSpans", () => {
       useCaptureCuts: true
     });
     expect(spans).toEqual([{ start: 11.3, end: 16.3 }]);
+  });
+});
+
+describe("sizzleMediaSpans maxSec", () => {
+  it("caps the KEPT footage, not the window", () => {
+    // A 90 s window with 60 s cut out keeps 30 s — under the cap, whole.
+    const spans = sizzleMediaSpans({
+      trim: { startSec: 0, endSec: 90 },
+      segments: [
+        { start: 0, end: 10 },
+        { start: 70, end: 90 }
+      ],
+      useCaptureCuts: true,
+      maxSec: SIZZLE_SCENE_MEDIA_MAX_SEC
+    });
+    expect(sizzleMediaSpansDurationSec(spans)).toBeCloseTo(30, 6);
+  });
+
+  it("keeps only the first maxSec of an uncut long window", () => {
+    const spans = sizzleMediaSpans({
+      trim: { startSec: 5, endSec: 95 },
+      segments: null,
+      useCaptureCuts: true,
+      maxSec: SIZZLE_SCENE_MEDIA_MAX_SEC
+    });
+    expect(spans).toEqual([{ start: 5, end: 65 }]);
   });
 });
 

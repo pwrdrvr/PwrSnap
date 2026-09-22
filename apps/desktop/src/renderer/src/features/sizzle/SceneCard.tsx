@@ -7,6 +7,7 @@
 
 import type { ReactElement } from "react";
 import {
+  SIZZLE_SCENE_MEDIA_MAX_SEC,
   SIZZLE_TRANSITIONS,
   sizzleMediaSpans,
   sizzleMediaSpansDurationSec,
@@ -463,7 +464,8 @@ function libraryCutsFor(
   const keptSec = sizzleMediaSpansDurationSec(withCuts);
   return {
     skipping: sizzleUsesCaptureCuts(scene),
-    keptSec,
+    // What the scene plays, capped as the render caps it.
+    keptSec: Math.min(keptSec, SIZZLE_SCENE_MEDIA_MAX_SEC),
     removedSec: trim.endSec - trim.startSec - keptSec
   };
 }

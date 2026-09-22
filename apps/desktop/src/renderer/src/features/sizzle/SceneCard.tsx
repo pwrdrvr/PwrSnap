@@ -8,6 +8,9 @@
 import type { ReactElement } from "react";
 import {
   SIZZLE_TRANSITIONS,
+  sizzleMediaSpans,
+  sizzleMediaSpansDurationSec,
+  sizzleUsesCaptureCuts,
   type CaptureRecord,
   type SizzleAudioSource,
   type SizzleScene,
@@ -198,6 +201,7 @@ export function SimpleSceneCard(props: SimpleSceneCardProps): ReactElement {
     onRemoveScene
   } = props;
   const isVideo = capture?.kind === "video";
+  const cuts = libraryCutsFor(scene, capture);
   const thumb =
     capture?.edits_version !== undefined
       ? cacheUrl(scene.captureId, 320, "webp", capture.edits_version)
@@ -324,6 +328,19 @@ export function SimpleSceneCard(props: SimpleSceneCardProps): ReactElement {
                 <option value="muted">Muted</option>
               </select>
             </label>
+            {cuts !== null ? (
+              <label className="szl__scene-dur">
+                <span>Library cuts</span>
+                <select
+                  value={cuts.skipping ? "skip" : "play"}
+                  onChange={(e) => onEditScene({ useCaptureCuts: e.target.value === "skip" })}
+                  data-testid="sizzle-scene-cuts"
+                >
+                  <option value="skip">Skip (−{cuts.removedSec.toFixed(1)} s)</option>
+                  <option value="play">Play</option>
+                </select>
+              </label>
+            ) : null}
           </div>
         ) : null}
 
@@ -339,12 +356,14 @@ export function SimpleSceneCard(props: SimpleSceneCardProps): ReactElement {
           const audioDur = measuredVoiceoverDurationSec;
           if (audioDur === undefined) return null;
           const trimDur =
-            (scene.mediaTrim?.endSec ??
-              capture?.video?.defaultRange.end ??
-              0) -
-            (scene.mediaTrim?.startSec ??
-              capture?.video?.defaultRange.start ??
-              0);
+            cuts !== null && cuts.skipping
+              ? cuts.keptSec
+              : (scene.mediaTrim?.endSec ??
+                  capture?.video?.defaultRange.end ??
+                  0) -
+                (scene.mediaTrim?.startSec ??
+                  capture?.video?.defaultRange.start ??
+                  0);
           if (audioDur + 0.35 <= trimDur + 0.1) return null;
           const padSec = audioDur + 0.35 - trimDur;
           return (
@@ -428,4 +447,23 @@ export function SimpleSceneCard(props: SimpleSceneCardProps): ReactElement {
       </div>
     </li>
   );
+}
+
+/** The Library cuts inside a video scene's trim, or `null` when there are
+ *  none — a scene with nothing to skip gets no control. */
+function libraryCutsFor(
+  scene: SizzleScene,
+  capture: CaptureRecord | null
+): { skipping: boolean; keptSec: number; removedSec: number } | null {
+  const video = capture?.kind === "video" ? capture.video ?? null : null;
+  if (video === null) return null;
+  const trim = scene.mediaTrim ?? { startSec: video.defaultRange.start, endSec: video.defaultRange.end };
+  const withCuts = sizzleMediaSpans({ trim, segments: video.segments, useCaptureCuts: true });
+  if (withCuts.length < 2) return null;
+  const keptSec = sizzleMediaSpansDurationSec(withCuts);
+  return {
+    skipping: sizzleUsesCaptureCuts(scene),
+    keptSec,
+    removedSec: trim.endSec - trim.startSec - keptSec
+  };
 }

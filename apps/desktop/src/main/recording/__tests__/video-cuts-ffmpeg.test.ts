@@ -30,6 +30,8 @@ vi.mock("../../log", () => ({ getMainLogger: () => ({ info() {}, warn() {}, erro
 import { resolveFfmpegPath } from "../ffmpeg-resolver";
 import { exportVideoRange } from "../recording-exporter";
 import { ensureVideoActivity } from "../video-activity";
+import { compose } from "../../sizzle/composer";
+import { extractVideoAudio } from "../../sizzle/audio-extract";
 
 const ffmpeg = resolveFfmpegPath();
 
@@ -45,6 +47,14 @@ function frameCount(path: string): number {
   // constant-rate output would duplicate into its gaps.
   const bytes = run(["-i", path, "-map", "0:v:0", "-vf", "scale=8:8,format=gray", "-fps_mode", "passthrough", "-f", "rawvideo", "pipe:1"]);
   return bytes.length / 64;
+}
+
+/** Every decoded frame as an 8×8 grayscale thumbnail, in order. */
+function frames(path: string): Buffer[] {
+  const bytes = run(["-i", path, "-map", "0:v:0", "-vf", "scale=8:8,format=gray", "-fps_mode", "passthrough", "-f", "rawvideo", "pipe:1"]);
+  const out: Buffer[] = [];
+  for (let i = 0; i + 64 <= bytes.length; i += 64) out.push(bytes.subarray(i, i + 64));
+  return out;
 }
 
 function audioSeconds(path: string): number {
@@ -140,6 +150,61 @@ describe.skipIf(ffmpeg === null)("cut editing through real FFmpeg", () => {
     expect(frameCount(result.path)).toBeGreaterThanOrEqual(44);
     expect(frameCount(result.path)).toBeLessThanOrEqual(46);
   }, 60_000);
+
+  // The sizzle composer pins VideoToolbox, so this half is macOS-only
+  // (the same bucket as composer.test.ts's ffmpeg-invoking suite).
+  describe.skipIf(process.platform !== "darwin")("a reel clip that skips Library cuts", () => {
+    test("renders the kept picture and sound, including the span inside the still", async () => {
+      const audioPath = await extractVideoAudio({
+        videoPath: source,
+        hasSystemAudio: true,
+        hasMicrophoneAudio: false,
+        requestedSystemAudio: true,
+        requestedMicrophone: false,
+        startSec: SPANS[0]!.start,
+        durationSec: 3,
+        spans: SPANS
+      });
+      expect(audioSeconds(audioPath)).toBeCloseTo(3, 1);
+
+      const outputPath = join(state.root, "reel.mp4");
+      await compose({
+        scenes: [
+          {
+            kind: "video",
+            videoPath: source,
+            startSec: SPANS[0]!.start,
+            trimDurationSec: 3,
+            durationSec: 3,
+            audioPath,
+            transition: "cut",
+            spans: SPANS
+          }
+        ],
+        outputPath,
+        width: 320,
+        height: 180,
+        fps: 20,
+        platform: "darwin"
+      });
+
+      const out = frames(outputPath);
+      // 3 s at 20 fps.
+      expect(out.length).toBeGreaterThanOrEqual(59);
+      expect(out.length).toBeLessThanOrEqual(61);
+      // The middle second is the held frame from the still stretch — one
+      // unchanging picture, not the moving footage from after 6 s that an
+      // input seek would have opened the span on.
+      const still = out.slice(21, 39);
+      const differs = (a: Buffer, b: Buffer): boolean =>
+        a.some((byte, i) => Math.abs(byte - b[i]!) > 6);
+      expect(still.every((frame) => !differs(frame, still[0]!))).toBe(true);
+      // ...and the parts either side of it do move.
+      expect(differs(out[2]!, out[12]!)).toBe(true);
+      expect(differs(out[42]!, out[55]!)).toBe(true);
+      expect(audioSeconds(outputPath)).toBeCloseTo(3, 1);
+    }, 60_000);
+  });
 
   describe.skipIf(process.platform !== "darwin" && process.platform !== "win32")("MP4", () => {
     test("a cut MP4 keeps picture and sound the same length", async () => {

@@ -111,7 +111,10 @@ const sequenceBeatInputSchema = z.object({
     .nullable()
     .optional(),
   transition: transitionInputSchema.optional(),
-  videoFit: z.enum(["trim", "freeze-end", "loop", "ping-pong", "speed-to-fit", "smart-fit"]).optional()
+  videoFit: z.enum(["trim", "freeze-end", "loop", "ping-pong", "speed-to-fit", "smart-fit"]).optional(),
+  useCaptureCuts: z.boolean().optional().describe(
+    "Default true: a video beat skips the cuts made to its capture in the Library (see inspect_video / edit_video). Set false only when the beat needs the removed footage back, e.g. narration longer than the cut clip."
+  )
 });
 
 const sequenceSceneInputSchema = z.object({
@@ -187,7 +190,8 @@ function toSequenceBeat(input: SequenceBeatInput): NonNullable<SizzleScene["beat
         ? { startSec: input.mediaTrim.startSec, endSec: input.mediaTrim.endSec }
         : null,
     transition: input.transition ?? "cut",
-    videoFit: input.videoFit ?? "smart-fit"
+    videoFit: input.videoFit ?? "smart-fit",
+    ...(input.useCaptureCuts === false ? { useCaptureCuts: false } : {})
   };
 }
 
@@ -255,7 +259,8 @@ async function projectView(p: SizzleProject): Promise<unknown> {
         timing: beat.timing,
         transition: beat.transition,
         videoFit: beat.videoFit,
-        mediaTrim: beat.mediaTrim
+        mediaTrim: beat.mediaTrim,
+        useCaptureCuts: beat.useCaptureCuts !== false
       })) ?? null,
     transition: s.transition,
     audioSource: s.audioSource,
@@ -535,7 +540,7 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
       namespace: "pwrsnap_sizzle",
       name: "sequence_beat_update",
       description:
-        "Update one beat inside a sequence scene. Can adjust captureId, timing, transition, videoFit, and mediaTrim without replacing unrelated beats. Timing rule: the first beat starts at offset 0. Non-final beats must have automatic end timing; if you anchor a later beat by offset or phrase, the previous beat continues until that anchor. Phrase anchors should be exact cached transcript phrases from project_get; phrases with the same first transcript word resolve to the same start time, so choose one unique start phrase per beat.",
+        "Update one beat inside a sequence scene. Can adjust captureId, timing, transition, videoFit, mediaTrim, and useCaptureCuts without replacing unrelated beats. Timing rule: the first beat starts at offset 0. Non-final beats must have automatic end timing; if you anchor a later beat by offset or phrase, the previous beat continues until that anchor. Phrase anchors should be exact cached transcript phrases from project_get; phrases with the same first transcript word resolve to the same start time, so choose one unique start phrase per beat.",
       argsSchema: z.object({
         sceneId: z.string().min(1),
         beatId: z.string().min(1),
@@ -543,7 +548,10 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
         timing: beatTimingInputSchema.optional(),
         transition: transitionInputSchema.optional(),
         videoFit: z.enum(["trim", "freeze-end", "loop", "ping-pong", "speed-to-fit", "smart-fit"]).optional(),
-        mediaTrim: z.object({ startSec: z.number().min(0), endSec: z.number().min(0) }).nullable().optional()
+        mediaTrim: z.object({ startSec: z.number().min(0), endSec: z.number().min(0) }).nullable().optional(),
+        useCaptureCuts: z.boolean().optional().describe(
+          "Default true: a video beat skips the cuts made to its capture in the Library (see inspect_video / edit_video). Set false only when the beat needs the removed footage back, e.g. narration longer than the cut clip."
+        )
       }),
       dispatch: async (args, ctx) =>
         mutateScenes(ctx.threadId, (scenes) => {
@@ -562,7 +570,8 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
                 ...(args.timing !== undefined ? { timing: toSequenceBeat({ captureId: beat.captureId, timing: args.timing }).timing } : {}),
                 ...(args.transition !== undefined ? { transition: args.transition as SizzleTransition } : {}),
                 ...(args.videoFit !== undefined ? { videoFit: args.videoFit } : {}),
-                ...(args.mediaTrim !== undefined ? { mediaTrim: args.mediaTrim } : {})
+                ...(args.mediaTrim !== undefined ? { mediaTrim: args.mediaTrim } : {}),
+                ...(args.useCaptureCuts !== undefined ? { useCaptureCuts: args.useCaptureCuts } : {})
               };
             }));
             return { ...s, beats };

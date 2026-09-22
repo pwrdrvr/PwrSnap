@@ -8,13 +8,18 @@ import {
   estimateSequenceTimelineDurationSec,
   normalizeSizzleSequenceBeatContinuity,
   resolveSizzleVideoFit,
+  sizzleMediaSourceTimeSec,
+  sizzleMediaSpans,
+  sizzleMediaSpansDurationSec,
+  sizzleUsesCaptureCuts,
   type CaptureRecord,
   type SizzleProject,
   type SizzleScene,
   type SizzleSequenceBeat,
   type SizzleSequencePreviewBeat,
   type SizzleSequencePreviewPlan,
-  type SizzleSequenceTranscriptPhrase
+  type SizzleSequenceTranscriptPhrase,
+  type VideoRange
 } from "@pwrsnap/shared";
 import { clampTime } from "./sizzle-helpers";
 
@@ -63,7 +68,10 @@ export function sequencePreviewPlanKey(scene: SizzleScene): string {
       timing: beat.timing,
       mediaTrim: beat.mediaTrim,
       transition: beat.transition,
-      videoFit: beat.videoFit
+      videoFit: beat.videoFit,
+      // Only the opt-out changes the plan; leaving the default out keeps
+      // every existing key what it was.
+      ...(sizzleUsesCaptureCuts(beat) ? {} : { useCaptureCuts: false })
     }))
   });
 }
@@ -99,6 +107,11 @@ export type SequencePreviewVideoState = {
   sourceTimeSec: number;
   playbackRate: number;
   shouldPlay: boolean;
+  /** True when the clip skips Library cuts, so a video element playing
+   *  straight through the source has to be re-seeked at each one. */
+  hasCuts: boolean;
+  /** The source spans the clip plays (one span when uncut). */
+  spans: VideoRange[];
 };
 
 export type CachedSequenceTranscriptPhrases = {
@@ -129,13 +142,29 @@ export function sequencePreviewVideoState(args: {
     startSec: capture.video.defaultRange.start,
     endSec: capture.video.defaultRange.end
   };
-  const sourceDurationSec = Math.max(0.05, trim.endSec - trim.startSec);
-  const targetDurationSec = Math.max(0.05, beat.endSec - beat.startSec);
-  const fit = beat.fit ?? resolveSizzleVideoFit({
-    policy: sceneBeat.videoFit,
-    sourceDurationSec,
-    targetDurationSec
+  // The same spans the export plays: the trim minus the capture's Library
+  // cuts, read live from the record so a cut made while the reel is open
+  // shows up on the next frame.
+  const spans = sizzleMediaSpans({
+    trim,
+    segments: capture.video.segments,
+    useCaptureCuts: sizzleUsesCaptureCuts(sceneBeat)
   });
+  const sourceDurationSec = Math.max(0.05, sizzleMediaSpansDurationSec(spans));
+  const targetDurationSec = Math.max(0.05, beat.endSec - beat.startSec);
+  // A resolved plan's fit is only good for the footage it was planned
+  // against; one made before the capture was (re)cut is re-derived here.
+  const planned = beat.fit ?? null;
+  const fit =
+    planned !== null &&
+    (planned.sourceDurationSec === undefined ||
+      Math.abs(planned.sourceDurationSec - sourceDurationSec) < 0.01)
+      ? planned
+      : resolveSizzleVideoFit({
+          policy: sceneBeat.videoFit,
+          sourceDurationSec,
+          targetDurationSec
+        });
   const elapsedSec = Math.max(0, timelineTimeSec - beat.startSec);
   const inputDurationSec = Math.max(0.05, fit.inputDurationSec);
   let sourceOffsetSec: number;
@@ -155,8 +184,52 @@ export function sequencePreviewVideoState(args: {
 
   return {
     beatId: beat.beatId,
-    sourceTimeSec: trim.startSec + sourceOffsetSec,
+    sourceTimeSec: sizzleMediaSourceTimeSec(spans, sourceOffsetSec),
     playbackRate: fit.playbackRate,
-    shouldPlay: !(fit.renderMode === "freeze-end" && elapsedSec >= inputDurationSec)
+    shouldPlay: !(fit.renderMode === "freeze-end" && elapsedSec >= inputDurationSec),
+    hasCuts: spans.length > 1,
+    spans
   };
+}
+
+/** How close to the end of its span the head may be while the element
+ *  has already jumped the cut ahead of it. */
+const CUT_LEAD_SEC = 0.25;
+
+/**
+ * Where a video element playing a cut clip should be sent, or `null` to
+ * leave it playing. Seeks only at span boundaries — within a kept span
+ * the element is left to play on its own clock, exactly as an uncut clip
+ * is, so ordinary drift between it and the head never turns into a
+ * stream of seeks.
+ *
+ *   • The element ran into a cut → jump to the next kept span.
+ *   • The element is in a different span than the head → go where the
+ *     head says (it crossed a cut first, or the reel looped) — unless
+ *     the element is simply one cut AHEAD of a head about to follow it.
+ */
+export function cutFollowSeekSec(
+  spans: readonly VideoRange[],
+  expectedSec: number,
+  elementSec: number
+): number | null {
+  const expected = spanIndexAt(spans, expectedSec);
+  if (expected === -1) return null;
+  const at = spanIndexAt(spans, elementSec);
+  if (at === -1) {
+    const next = spans.findIndex((span) => elementSec < span.start);
+    return next === -1 ? null : spans[next]!.start;
+  }
+  if (at === expected) return null;
+  if (at === expected + 1 && spans[expected]!.end - expectedSec < CUT_LEAD_SEC) return null;
+  return expectedSec;
+}
+
+/** Index of the span holding `sec` (its end counts, for the last span's
+ *  final instant); -1 in a cut or outside the clip. */
+function spanIndexAt(spans: readonly VideoRange[], sec: number): number {
+  const EPS = 0.001;
+  return spans.findIndex((span, i) =>
+    sec >= span.start - EPS && (sec < span.end || (i === spans.length - 1 && sec <= span.end + EPS))
+  );
 }

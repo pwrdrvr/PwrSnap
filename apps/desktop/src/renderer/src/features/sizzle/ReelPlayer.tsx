@@ -18,13 +18,13 @@
 // measured reason, as features/shared/playhead.ts.
 
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
-import type { CaptureRecord, SizzleSequenceBeat } from "@pwrsnap/shared";
+import { sizzleMediaSpans, sizzleUsesCaptureCuts, type CaptureRecord, type SizzleSequenceBeat } from "@pwrsnap/shared";
 import type { PlayheadSource } from "../shared/playhead";
 import { formatTimecode } from "../shared/video-range";
 import { StageLayer } from "./StageLayer";
 import { kenBurnsDirection } from "./preview-blend";
 import { flattenReelClips, reelClipProgress, reelFrameAt, type ReelClip, type ReelFrame } from "./reel-frame";
-import { sequencePreviewVideoState } from "./sequence-plan";
+import { cutFollowSeekSec, sequencePreviewVideoState } from "./sequence-plan";
 import type { ReelPlayback } from "./useReelPlayback";
 import type { TimelineModel } from "./timeline/timeline-model";
 
@@ -88,7 +88,8 @@ export function ReelPlayer({
   // home now, so a video clip would otherwise sit on one frozen frame.
   const activeCapture = active === undefined ? null : captureMap.get(active.clip.captureId) ?? null;
   const activeSceneBeat = active === undefined ? undefined : beatById.get(active.clip.beatId);
-  const videoState =
+  const activeSceneStartSec = active === undefined ? 0 : model.scenes[active.sceneIndex]?.startSec ?? 0;
+  const videoStateAt = (atSec: number) =>
     active !== undefined && activeCapture !== null && activeCapture.kind === "video" && activeSceneBeat !== undefined
       ? sequencePreviewVideoState({
           beat: {
@@ -104,9 +105,12 @@ export function ReelPlayer({
           capture: activeCapture,
           // Scene-local time: `sequencePreviewVideoState` works on the scene
           // axis the beat windows are expressed in.
-          timelineTimeSec: sec - (model.scenes[active.sceneIndex]?.startSec ?? 0)
+          timelineTimeSec: atSec - activeSceneStartSec
         })
       : null;
+  const videoState = videoStateAt(sec);
+  const videoStateAtRef = useRef(videoStateAt);
+  videoStateAtRef.current = videoStateAt;
   const shouldPlayVideo = playing && (videoState?.shouldPlay ?? true);
   const videoBeatId = videoState?.beatId ?? null;
   useEffect(() => {
@@ -131,6 +135,26 @@ export function ReelPlayer({
       // Metadata not ready; the next tick re-seeks.
     }
   }, [videoState?.beatId, videoState?.playbackRate, videoState?.sourceTimeSec, shouldPlayVideo]);
+  // A clip that skips Library cuts: the element plays straight through the
+  // source, so while it plays, jump it over each cut as the head reaches
+  // it. Off the render path, like the head itself — a seek is a DOM write,
+  // not a state change.
+  const followCuts = shouldPlayVideo && videoState?.hasCuts === true;
+  useEffect(() => {
+    if (!followCuts) return;
+    return head.subscribe((atSec) => {
+      const el = videoRef.current;
+      const state = videoStateAtRef.current(atSec);
+      if (el === null || state === null || !state.shouldPlay) return;
+      const target = cutFollowSeekSec(state.spans, state.sourceTimeSec, el.currentTime);
+      if (target === null) return;
+      try {
+        el.currentTime = target;
+      } catch {
+        // Metadata not ready; the next tick re-seeks.
+      }
+    });
+  }, [followCuts, videoBeatId, head]);
 
   return (
     <section className="szl__reel" aria-label="Reel player" data-testid="sizzle-reel-player">
@@ -178,7 +202,7 @@ export function ReelPlayer({
                 }
                 kenBurnsDurationSec={Math.max(0.05, incoming.endSec - incoming.startSec)}
                 kenBurnsElapsedSec={Math.max(0, sec - incoming.startSec)}
-                posterStartSec={posterStartSecFor(incoming, beatById)}
+                posterStartSec={posterStartSecFor(incoming, beatById, captureMap)}
                 blend={{
                   type: frame.blend.type,
                   durationSec: frame.blend.durationSec,
@@ -276,9 +300,25 @@ function PlayheadClock({ head }: { head: PlayheadSource }): ReactElement {
   return <b ref={ref}>{formatTimecode(head.get())}</b>;
 }
 
-/** Where an incoming video's still should sit: the frame the export cuts to. */
-function posterStartSecFor(clip: ReelClip, beatById: Map<string, SizzleSequenceBeat>): number {
-  return beatById.get(clip.clip.beatId)?.mediaTrim?.startSec ?? 0;
+/** Where an incoming video's still should sit: the frame the export cuts
+ *  to — the clip's first KEPT instant, which a Library cut can move past
+ *  the trim's own start. */
+function posterStartSecFor(
+  clip: ReelClip,
+  beatById: Map<string, SizzleSequenceBeat>,
+  captureMap: Map<string, CaptureRecord>
+): number {
+  const beat = beatById.get(clip.clip.beatId);
+  const video = captureMap.get(clip.clip.captureId)?.video ?? null;
+  const trim =
+    beat?.mediaTrim ??
+    (video === null ? null : { startSec: video.defaultRange.start, endSec: video.defaultRange.end });
+  if (beat === undefined || trim === null) return trim?.startSec ?? 0;
+  return sizzleMediaSpans({
+    trim,
+    segments: video?.segments,
+    useCaptureCuts: sizzleUsesCaptureCuts(beat)
+  })[0]!.start;
 }
 
 function sameFrameIdentity(a: ReelFrame, b: ReelFrame): boolean {

@@ -28,6 +28,18 @@ describe("float-over content ceiling", () => {
     expect(floatOverMaxContentHeightDip(Number.NaN)).toBe(FLOAT_OVER_HEIGHT_MAX_DIP);
   });
 
+  test("a zero or negative work area means UNKNOWN, not a 0px display", () => {
+    // jsdom reports `screen.availHeight === 0`, and it is a `number` —
+    // so a bare isFinite guard admits it, the ceiling becomes -48, the
+    // floor takes over, and the toast caps at 160px with its footer
+    // unreachable. Absence of information must not constrain anything.
+    expect(floatOverMaxContentHeightDip(0)).toBe(FLOAT_OVER_HEIGHT_MAX_DIP);
+    expect(floatOverMaxContentHeightDip(-1)).toBe(FLOAT_OVER_HEIGHT_MAX_DIP);
+    expect(floatOverMaxContentHeightCss({ workAreaHeightDip: 0, zoomFactor: 1 })).toBe(
+      FLOAT_OVER_HEIGHT_MAX_DIP
+    );
+  });
+
   test("the floor wins over an absurdly short work area", () => {
     // Handing main a ceiling below its own floor would just be clamped
     // back up, and the renderer would have scrolled content it did not

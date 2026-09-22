@@ -54,11 +54,18 @@ function block(selectorPattern: string): string {
 }
 
 /**
- * Anything that would make a length a function of the viewport — i.e.
- * of the window main is in the middle of sizing from our own
- * measurement.
+ * A CSS length that is a function of the viewport — i.e. of the window
+ * main is in the middle of sizing from our own measurement. Scanned
+ * over WHOLE blocks, not over one already-pinned declaration: applied
+ * to a value the assertion above it has fixed to an exact literal it
+ * could never fire, which would make it look like the guard while
+ * guarding nothing.
+ *
+ * `%` is deliberately absent — a percentage height resolves against
+ * the PARENT box, not the viewport, and `.fo` is legitimately given
+ * `width: 100%` by the float-over stage rule in app.css.
  */
-const VIEWPORT_DERIVED = /\b\d*\.?\d+(vh|dvh|svh|lvh)\b|innerHeight|clientHeight|100%\s*$/;
+const VIEWPORT_DERIVED = /\d*\.?\d+(vh|dvh|svh|lvh)\b/;
 
 describe("float-over scroll cap", () => {
   it("caps .fo at a ceiling published by the host, not at the viewport", () => {
@@ -70,7 +77,20 @@ describe("float-over scroll cap", () => {
     // The host writes --fo-max-h on the wrapper it measures; `none`
     // keeps the design/ reference page (no host) at natural height.
     expect(value).toMatch(/^var\(\s*--fo-max-h\s*,\s*none\s*\)$/);
-    expect(value).not.toMatch(VIEWPORT_DERIVED);
+  });
+
+  it("sizes nothing in the toast off the viewport", () => {
+    // Scanned over the whole blocks rather than the one declaration
+    // above, which is already pinned to an exact literal. A viewport
+    // unit anywhere in this chain reopens the feedback loop — `.fo` is
+    // what the measured wrapper reports, and `.fo__body` is what
+    // absorbs the cap, so a `100vh` on either is a height derived from
+    // the window we are in the middle of sizing.
+    for (const selector of ["\\.fo", "\\.fo__body", "\\.fo__hdr", "\\.fo__foot"]) {
+      expect(block(selector), `${LABEL}: ${selector} must not size off the viewport`).not.toMatch(
+        VIEWPORT_DERIVED
+      );
+    }
   });
 
   it("keeps .fo a flex column so the middle is what absorbs the cap", () => {

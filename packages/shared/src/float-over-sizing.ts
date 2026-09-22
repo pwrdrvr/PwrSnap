@@ -67,12 +67,28 @@ export const FLOAT_OVER_ANCHOR_MARGIN_DIP = 24;
  * anchored to. Pass `null` when it isn't known yet (no display
  * anchored, or a renderer whose `window.screen` is unavailable) and
  * only the constant ceiling applies.
+ *
+ * **Zero and negative mean UNKNOWN, not "a 0px display".** That
+ * distinction is the whole reason the guard below is `> 0` rather than
+ * just `Number.isFinite`. A renderer with no display resolved reports
+ * `screen.availHeight === 0` — jsdom does exactly this — and it is a
+ * `number`, so a bare isFinite check admits it: the ceiling becomes
+ * `0 - 48 = -48`, the floor takes over, and the toast is capped at
+ * 160px showing its header and a sliver with the footer unreachable,
+ * which is the failure this whole module exists to prevent. A
+ * positive-but-tiny value is a real (if odd) display and the floor
+ * below handles it deliberately; 0 is an absence of information and
+ * must not constrain anything.
  */
 export function floatOverMaxContentHeightDip(
   workAreaHeightDip: number | null | undefined
 ): number {
   const ceilings = [FLOAT_OVER_HEIGHT_MAX_DIP];
-  if (typeof workAreaHeightDip === "number" && Number.isFinite(workAreaHeightDip)) {
+  if (
+    typeof workAreaHeightDip === "number" &&
+    Number.isFinite(workAreaHeightDip) &&
+    workAreaHeightDip > 0
+  ) {
     ceilings.push(workAreaHeightDip - FLOAT_OVER_ANCHOR_MARGIN_DIP * 2);
   }
   // The floor wins over a pathologically short work area: a 200px-tall

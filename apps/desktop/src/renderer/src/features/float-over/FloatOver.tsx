@@ -862,403 +862,414 @@ export function FloatOver({
         </div>
       </div>
 
-      {/* Renders nothing unless a downloaded update (or a failed
-          install) is waiting. Under the header rather than beside the
-          footer buttons so it never competes with Edit, this toast's
-          own primary action. Its dismissal is renderer-scoped, so it
-          survives this component's per-capture remount — see
-          AppUpdateRow.tsx. */}
-      {/* The receipt. Prose said "screen + microphone"; it could not say
-          "microphone, and it recorded nothing", which is the outcome the
-          whole pre-flight design exists to prevent. Same chips the
-          selector and the recording HUD show, third density. The prose
-          form survives as the accessible name so a screen reader still
-          gets one sentence instead of three controls. */}
-      {asset?.kind === "video" ? (
-        <div
-          className="fo__sources"
-          data-testid="fo-sources"
-          role="group"
-          aria-label={`Captured: ${recordingSourcesLabel(asset)}`}
-        >
-          {recordingSourceReceipts(asset).map((receipt) => (
-            <SourceChip
-              key={receipt.source}
-              source={receipt.source}
-              state={receipt.state}
-              density="static"
-              meterTone="recorded"
-              {...(receipt.why !== undefined ? { why: receipt.why } : {})}
-              testId={`fo-source-${receipt.source}`}
-            />
-          ))}
-        </div>
-      ) : null}
-
-      <AppUpdateRow variant="float-over" />
-
-      <div className="fo__preview">
+      {/* Everything between the header and the footer scrolls when the
+          toast hits its ceiling (`--fo-max-h`, published by
+          FloatOverHost). The header and footer stay pinned, because
+          the alternative — which is what shipped — is that the window
+          clips whatever ran past the ceiling, and the footer is last:
+          Discard, Dismiss and Edit simply could not be clicked. The
+          ceiling is ~12px above the video toast's natural height as of
+          PR #638, so a third row of tags, an update row, a short-clip
+          warning or a long Codex error each cross it on their own. */}
+      <div className="fo__body">
+        {/* Renders nothing unless a downloaded update (or a failed
+            install) is waiting. Under the header rather than beside the
+            footer buttons so it never competes with Edit, this toast's
+            own primary action. Its dismissal is renderer-scoped, so it
+            survives this component's per-capture remount — see
+            AppUpdateRow.tsx. */}
+        {/* The receipt. Prose said "screen + microphone"; it could not say
+            "microphone, and it recorded nothing", which is the outcome the
+            whole pre-flight design exists to prevent. Same chips the
+            selector and the recording HUD show, third density. The prose
+            form survives as the accessible name so a screen reader still
+            gets one sentence instead of three controls. */}
         {asset?.kind === "video" ? (
-          // Video preview — hover-autoplay on top of native
-          // controls. Same component the tray uses for its
-          // "last recording" preview, so the surfaces behave
-          // consistently.
-          <HoverAutoplayVideo
-            captureId={asset.captureId}
-            // The descriptor's flags are optional on the type; a video
-            // asset always carries all four (FloatOverHost fills them from
-            // the record), and a missing one only costs a round trip that
-            // resolves to the capture URL.
-            video={{
-              hasSystemAudio: asset.hasSystemAudio === true,
-              hasMicrophoneAudio: asset.hasMicrophoneAudio === true,
-              requestedSystemAudio: asset.requestedSystemAudio,
-              requestedMicrophone: asset.requestedMicrophone
-            }}
-            videoRef={previewVideoRef}
-          />
-        ) : (
-          <img
-            src={visibleSrc}
-            alt="capture preview"
-            draggable
-            onDragStart={dragFile}
-            onLoad={() => {
-              if (visibleSrc === src) setSourceLoaded(true);
-            }}
-          />
-        )}
-        <div className="fo__preview-dim">
-          <FoIcon name="ruler" size={10} style={{ color: "var(--accent)" }} />
-          <b>{dimText(srcW, srcH)}</b>
-        </div>
-        <div className="fo__preview-size">
-          {asset?.kind === "video"
-            ? fmtDurationLabel(asset.durationSec)
-            : dprBadgeLabel(srcDpr, window.pwrsnapApi?.platform)}
-        </div>
-
-        {asset?.kind !== "video" && (
-          <div className="fo__preview-actions">
-            <div className="fo__preview-actions-l">
-              <button
-                className="fo__hover-btn"
-                title="Drag PNG file"
-                draggable={onDragFile !== undefined}
-                onDragStart={dragFile}
-                disabled={onDragFile === undefined}
-              >
-                <FoIcon name="hand" size={11} /> Drag
-              </button>
-            </div>
-            <div className="fo__preview-actions-r">
-              <button
-                className="fo__hover-btn"
-                title="Open in editor"
-                onClick={() => onEdit?.()}
-                disabled={onEdit === undefined}
-              >
-                <FoIcon name="pen-line" size={11} /> Edit
-              </button>
-              <button
-                className="fo__hover-btn"
-                type="button"
-                title="Reveal in library"
-                onClick={() => onReveal?.()}
-                disabled={onReveal === undefined}
-              >
-                <FoIcon name="folder-open" size={11} />
-                <span className="sr-only">Reveal in library</span>
-              </button>
-            </div>
+          <div
+            className="fo__sources"
+            data-testid="fo-sources"
+            role="group"
+            aria-label={`Captured: ${recordingSourcesLabel(asset)}`}
+          >
+            {recordingSourceReceipts(asset).map((receipt) => (
+              <SourceChip
+                key={receipt.source}
+                source={receipt.source}
+                state={receipt.state}
+                density="static"
+                meterTone="recorded"
+                {...(receipt.why !== undefined ? { why: receipt.why } : {})}
+                testId={`fo-source-${receipt.source}`}
+              />
+            ))}
           </div>
-        )}
-      </div>
+        ) : null}
 
-      {/* Short-clip warning — clips under 1.5s are usually an
-          accidental Stop right after the countdown ended. Surfaces a
-          gentle "you sure?" with a one-tap Discard so users can blow
-          the take away without hunting through the Library. Only
-          renders for the video asset; image captures don't have a
-          notion of "too short". */}
-      {asset?.kind === "video" && asset.durationSec < 1.5 && asset.onDiscard !== undefined && (
-        <div
-          data-fo-warning="short-clip"
-          style={{
-            margin: "8px 12px 0",
-            padding: "8px 10px",
-            border: "1px solid rgba(255, 138, 31, 0.5)",
-            background: "rgba(255, 138, 31, 0.08)",
-            borderRadius: 6,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 10,
-            font: "500 11px/1.4 var(--font-sans)",
-            color: "var(--text-primary)"
-          }}
-        >
-          <span>
-            Very short ({fmtDurationLabel(asset.durationSec)}). Stop pressed too soon?
-          </span>
-          <button
-            type="button"
-            onClick={() => asset.onDiscard?.()}
+        <AppUpdateRow variant="float-over" />
+
+        <div className="fo__preview">
+          {asset?.kind === "video" ? (
+            // Video preview — hover-autoplay on top of native
+            // controls. Same component the tray uses for its
+            // "last recording" preview, so the surfaces behave
+            // consistently.
+            <HoverAutoplayVideo
+              captureId={asset.captureId}
+              // The descriptor's flags are optional on the type; a video
+              // asset always carries all four (FloatOverHost fills them from
+              // the record), and a missing one only costs a round trip that
+              // resolves to the capture URL.
+              video={{
+                hasSystemAudio: asset.hasSystemAudio === true,
+                hasMicrophoneAudio: asset.hasMicrophoneAudio === true,
+                requestedSystemAudio: asset.requestedSystemAudio,
+                requestedMicrophone: asset.requestedMicrophone
+              }}
+              videoRef={previewVideoRef}
+            />
+          ) : (
+            <img
+              src={visibleSrc}
+              alt="capture preview"
+              draggable
+              onDragStart={dragFile}
+              onLoad={() => {
+                if (visibleSrc === src) setSourceLoaded(true);
+              }}
+            />
+          )}
+          <div className="fo__preview-dim">
+            <FoIcon name="ruler" size={10} style={{ color: "var(--accent)" }} />
+            <b>{dimText(srcW, srcH)}</b>
+          </div>
+          <div className="fo__preview-size">
+            {asset?.kind === "video"
+              ? fmtDurationLabel(asset.durationSec)
+              : dprBadgeLabel(srcDpr, window.pwrsnapApi?.platform)}
+          </div>
+
+          {asset?.kind !== "video" && (
+            <div className="fo__preview-actions">
+              <div className="fo__preview-actions-l">
+                <button
+                  className="fo__hover-btn"
+                  title="Drag PNG file"
+                  draggable={onDragFile !== undefined}
+                  onDragStart={dragFile}
+                  disabled={onDragFile === undefined}
+                >
+                  <FoIcon name="hand" size={11} /> Drag
+                </button>
+              </div>
+              <div className="fo__preview-actions-r">
+                <button
+                  className="fo__hover-btn"
+                  title="Open in editor"
+                  onClick={() => onEdit?.()}
+                  disabled={onEdit === undefined}
+                >
+                  <FoIcon name="pen-line" size={11} /> Edit
+                </button>
+                <button
+                  className="fo__hover-btn"
+                  type="button"
+                  title="Reveal in library"
+                  onClick={() => onReveal?.()}
+                  disabled={onReveal === undefined}
+                >
+                  <FoIcon name="folder-open" size={11} />
+                  <span className="sr-only">Reveal in library</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Short-clip warning — clips under 1.5s are usually an
+            accidental Stop right after the countdown ended. Surfaces a
+            gentle "you sure?" with a one-tap Discard so users can blow
+            the take away without hunting through the Library. Only
+            renders for the video asset; image captures don't have a
+            notion of "too short". */}
+        {asset?.kind === "video" && asset.durationSec < 1.5 && asset.onDiscard !== undefined && (
+          <div
+            data-fo-warning="short-clip"
             style={{
-              padding: "4px 10px",
-              borderRadius: 4,
-              border: "1px solid rgba(239, 68, 68, 0.6)",
-              background: "transparent",
-              color: "#ef4444",
-              font: "600 11px/1 var(--font-sans)",
-              cursor: "pointer",
-              whiteSpace: "nowrap"
+              margin: "8px 12px 0",
+              padding: "8px 10px",
+              border: "1px solid rgba(255, 138, 31, 0.5)",
+              background: "rgba(255, 138, 31, 0.08)",
+              borderRadius: 6,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 10,
+              font: "500 11px/1.4 var(--font-sans)",
+              color: "var(--text-primary)"
             }}
           >
-            Discard
-          </button>
-        </div>
-      )}
+            <span>
+              Very short ({fmtDurationLabel(asset.durationSec)}). Stop pressed too soon?
+            </span>
+            <button
+              type="button"
+              onClick={() => asset.onDiscard?.()}
+              style={{
+                padding: "4px 10px",
+                borderRadius: 4,
+                border: "1px solid rgba(239, 68, 68, 0.6)",
+                background: "transparent",
+                color: "#ef4444",
+                font: "600 11px/1 var(--font-sans)",
+                cursor: "pointer",
+                whiteSpace: "nowrap"
+              }}
+            >
+              Discard
+            </button>
+          </div>
+        )}
 
-      {asset?.kind === "video" ? (
-        // Video export grid — sits in the same slot as the image
-        // Low / Med / High copy buttons. Full 6-card chrome (GIF
-        // L/M/H + MP4 L/M/H) matching the library DetailRail and
-        // the tray popover; each card supports click-to-copy +
-        // FILE-chip copy-path + FILE-chip drag-out via
-        // `clipboard:copyVideoFile` / `copyVideoPath` /
-        // `startVideoDrag`. The panel owns its own hooks (the
-        // toast just hands it a captureId).
-        //
-        // Wrapper is a plain block (NOT `.fo__copy` which imposes
-        // a 3-col grid) — the panel renders two
-        // `.psl__copy-row-group` children that each impose their
-        // own 3-col grid via `.psl__copy-row`. CSS ships from
-        // library.css which app.css loads for every stage. The
-        // 12px padding mirrors `.fo__copy`'s `padding: 10px 12px
-        // 4px` so the grid sits at the same horizontal inset as
-        // the image copy row.
-        <div className="fo__export-grid">
-          <FloatOverVideoExport
-            asset={asset}
-            copyShortcut={videoCopyShortcut}
-            onTrimDraggingChange={setTrimDragging}
-            previewVideoRef={previewVideoRef}
-            shortcutPlatform={shortcutPlatform}
-          />
-        </div>
-      ) : (
-        <div className="fo__copy">
-          {(() => {
-            // Resolve the export ladder once. In legacy mode the cards are
-            // unchanged; with DPI-aware export on, each rung supplies the
-            // Retina/scale tag + a correct pre-render dim estimate.
-            const ladder =
-              exportStrategy === "legacy"
-                ? null
-                : resolveExportLadder(
-                    { widthPx: srcW, heightPx: srcH, devicePixelRatio: srcDpr },
-                    exportStrategy
-                  );
-            return RES_PRESETS.map((p) => {
-              const rung = ladder === null ? undefined : rungForPreset(ladder, p.id);
-              const unavailable = rung !== undefined && !rung.available;
-              const estimate = unavailable
-                ? { dim: "—", bytes: "—", exact: true }
-                : rung === undefined
-                  ? presetMetrics(p.id, srcW, srcH, srcBytes)
-                  : estimateMetricForRung(rung, srcW, srcBytes);
-              const m = unavailable ? estimate : (copyMetrics?.[p.id] ?? estimate);
-              return (
-                <CopyButton
-                  key={p.id}
-                  preset={p.id}
-                  label={rung?.actual === true ? "Actual" : p.label}
-                  dim={m.dim}
-                  bytes={m.bytes}
-                  tag={
-                    rung === undefined || unavailable
-                      ? undefined
-                      : rungTag(rung, window.pwrsnapApi?.platform)
-                  }
-                  disabled={unavailable}
-                  onCopy={(preset) => onCopy?.(preset)}
-                  {...(onCopyPath !== undefined ? { onCopyPath } : {})}
-                  {...(onDragPreset !== undefined ? { onDrag: onDragPreset } : {})}
-                  copyPulse={copyPulses?.[p.id] ?? 0}
-                />
-              );
-            });
-          })()}
-        </div>
-      )}
+        {asset?.kind === "video" ? (
+          // Video export grid — sits in the same slot as the image
+          // Low / Med / High copy buttons. Full 6-card chrome (GIF
+          // L/M/H + MP4 L/M/H) matching the library DetailRail and
+          // the tray popover; each card supports click-to-copy +
+          // FILE-chip copy-path + FILE-chip drag-out via
+          // `clipboard:copyVideoFile` / `copyVideoPath` /
+          // `startVideoDrag`. The panel owns its own hooks (the
+          // toast just hands it a captureId).
+          //
+          // Wrapper is a plain block (NOT `.fo__copy` which imposes
+          // a 3-col grid) — the panel renders two
+          // `.psl__copy-row-group` children that each impose their
+          // own 3-col grid via `.psl__copy-row`. CSS ships from
+          // library.css which app.css loads for every stage. The
+          // 12px padding mirrors `.fo__copy`'s `padding: 10px 12px
+          // 4px` so the grid sits at the same horizontal inset as
+          // the image copy row.
+          <div className="fo__export-grid">
+            <FloatOverVideoExport
+              asset={asset}
+              copyShortcut={videoCopyShortcut}
+              onTrimDraggingChange={setTrimDragging}
+              previewVideoRef={previewVideoRef}
+              shortcutPlatform={shortcutPlatform}
+            />
+          </div>
+        ) : (
+          <div className="fo__copy">
+            {(() => {
+              // Resolve the export ladder once. In legacy mode the cards are
+              // unchanged; with DPI-aware export on, each rung supplies the
+              // Retina/scale tag + a correct pre-render dim estimate.
+              const ladder =
+                exportStrategy === "legacy"
+                  ? null
+                  : resolveExportLadder(
+                      { widthPx: srcW, heightPx: srcH, devicePixelRatio: srcDpr },
+                      exportStrategy
+                    );
+              return RES_PRESETS.map((p) => {
+                const rung = ladder === null ? undefined : rungForPreset(ladder, p.id);
+                const unavailable = rung !== undefined && !rung.available;
+                const estimate = unavailable
+                  ? { dim: "—", bytes: "—", exact: true }
+                  : rung === undefined
+                    ? presetMetrics(p.id, srcW, srcH, srcBytes)
+                    : estimateMetricForRung(rung, srcW, srcBytes);
+                const m = unavailable ? estimate : (copyMetrics?.[p.id] ?? estimate);
+                return (
+                  <CopyButton
+                    key={p.id}
+                    preset={p.id}
+                    label={rung?.actual === true ? "Actual" : p.label}
+                    dim={m.dim}
+                    bytes={m.bytes}
+                    tag={
+                      rung === undefined || unavailable
+                        ? undefined
+                        : rungTag(rung, window.pwrsnapApi?.platform)
+                    }
+                    disabled={unavailable}
+                    onCopy={(preset) => onCopy?.(preset)}
+                    {...(onCopyPath !== undefined ? { onCopyPath } : {})}
+                    {...(onDragPreset !== undefined ? { onDrag: onDragPreset } : {})}
+                    copyPulse={copyPulses?.[p.id] ?? 0}
+                  />
+                );
+              });
+            })()}
+          </div>
+        )}
 
-      {cfg.showAnnotate && (
-        <div className="fo__annotate">
-          <input
-            className={`fo__title${titleOrigin === "suggested" ? " is-suggested" : ""}`}
-            type="text"
-            placeholder="Title — short headline"
-            value={title}
-            maxLength={120}
-            onChange={(e) => setTitle(e.target.value)}
-            onBlur={() => {
-              const trimmed = title.trim();
-              if (
-                trimmed.length > 0 &&
-                trimmed !== acceptedTitle &&
-                titleOrigin === "manual"
-              ) {
-                onAcceptTitle?.(trimmed);
-              }
-            }}
-          />
-          <textarea
-            className={`fo__desc${descriptionOrigin === "suggested" ? " is-suggested" : ""}`}
-            placeholder="Description — a sentence or two of context"
-            value={description}
-            maxLength={2000}
-            onChange={(e) => setDescription(e.target.value)}
-            onBlur={() => {
-              const trimmed = description.trim();
-              if (
-                trimmed.length > 0 &&
-                trimmed !== acceptedDescription &&
-                descriptionOrigin === "manual"
-              ) {
-                onAcceptDescription?.(trimmed);
-              }
-            }}
-            rows={2}
-          />
-          <FoTags
-            tags={tags}
-            onAdd={(t) => {
-              runTagMutation("add", t);
-              // Bumping the user-interaction counter — not just
-              // tags.length — is what keeps the countdown paused on
-              // user-added tags WITHOUT being tricked into a permanent
-              // pause when Codex's auto-accept lands acceptedTags via
-              // the enrichment broadcast. See bug vii.
-              userTagInteractionsRef.current += 1;
-              setUserTagInteractions(userTagInteractionsRef.current);
-            }}
-            onRemove={(t) => {
-              runTagMutation("remove", t);
-              userTagInteractionsRef.current += 1;
-              setUserTagInteractions(userTagInteractionsRef.current);
-            }}
-            suggestions={aiSuggestions}
-            onAcceptSuggest={(suggestion) => {
-              replaceVisibleTags([...tags, suggestion.label]);
-              userTagInteractionsRef.current += 1;
-              setUserTagInteractions(userTagInteractionsRef.current);
-              onAcceptTag?.(suggestion.id);
-            }}
-            onRejectSuggest={(suggestion) => {
-              onRejectTag?.(suggestion.id);
-            }}
-            pendingMutation={pendingTagMutation}
-            failure={tagMutationFailure}
-            onRetry={() => {
-              if (tagMutationFailure !== null) {
-                runTagMutation(tagMutationFailure.action, tagMutationFailure.label);
-              }
-            }}
-          />
-        </div>
-      )}
+        {cfg.showAnnotate && (
+          <div className="fo__annotate">
+            <input
+              className={`fo__title${titleOrigin === "suggested" ? " is-suggested" : ""}`}
+              type="text"
+              placeholder="Title — short headline"
+              value={title}
+              maxLength={120}
+              onChange={(e) => setTitle(e.target.value)}
+              onBlur={() => {
+                const trimmed = title.trim();
+                if (
+                  trimmed.length > 0 &&
+                  trimmed !== acceptedTitle &&
+                  titleOrigin === "manual"
+                ) {
+                  onAcceptTitle?.(trimmed);
+                }
+              }}
+            />
+            <textarea
+              className={`fo__desc${descriptionOrigin === "suggested" ? " is-suggested" : ""}`}
+              placeholder="Description — a sentence or two of context"
+              value={description}
+              maxLength={2000}
+              onChange={(e) => setDescription(e.target.value)}
+              onBlur={() => {
+                const trimmed = description.trim();
+                if (
+                  trimmed.length > 0 &&
+                  trimmed !== acceptedDescription &&
+                  descriptionOrigin === "manual"
+                ) {
+                  onAcceptDescription?.(trimmed);
+                }
+              }}
+              rows={2}
+            />
+            <FoTags
+              tags={tags}
+              onAdd={(t) => {
+                runTagMutation("add", t);
+                // Bumping the user-interaction counter — not just
+                // tags.length — is what keeps the countdown paused on
+                // user-added tags WITHOUT being tricked into a permanent
+                // pause when Codex's auto-accept lands acceptedTags via
+                // the enrichment broadcast. See bug vii.
+                userTagInteractionsRef.current += 1;
+                setUserTagInteractions(userTagInteractionsRef.current);
+              }}
+              onRemove={(t) => {
+                runTagMutation("remove", t);
+                userTagInteractionsRef.current += 1;
+                setUserTagInteractions(userTagInteractionsRef.current);
+              }}
+              suggestions={aiSuggestions}
+              onAcceptSuggest={(suggestion) => {
+                replaceVisibleTags([...tags, suggestion.label]);
+                userTagInteractionsRef.current += 1;
+                setUserTagInteractions(userTagInteractionsRef.current);
+                onAcceptTag?.(suggestion.id);
+              }}
+              onRejectSuggest={(suggestion) => {
+                onRejectTag?.(suggestion.id);
+              }}
+              pendingMutation={pendingTagMutation}
+              failure={tagMutationFailure}
+              onRetry={() => {
+                if (tagMutationFailure !== null) {
+                  runTagMutation(tagMutationFailure.action, tagMutationFailure.label);
+                }
+              }}
+            />
+          </div>
+        )}
 
-      {cfg.showAi && (
-        <div className="fo__ai-row">
-          <CodexStatusPill
-            status={aiStatus}
-            draftAvailable={
-              suggestedTitle.trim().length > 0 || suggestedDescription.trim().length > 0
-            }
-            accepted={allDraftsAccepted}
-            needsConsent={aiNeedsConsent}
-            safetyDisabled={aiSafetyDisabled}
-            error={enrichment?.error}
-            {...(enrichmentProviderLabel !== undefined
-              ? { providerLabel: enrichmentProviderLabel }
-              : {})}
-            {...(enrichmentModelLabel !== undefined
-              ? { modelLabel: enrichmentModelLabel }
-              : {})}
-            action={
-              !thinking && !aiFailed ? (
-                suggestedTitle.length === 0 && suggestedDescription.length === 0 && !providerAvailable ? (
-                  <button className="fo__ai-accept" onClick={() => onConfigureAi?.()}>
-                    Configure AI
-                  </button>
-                ) : suggestedTitle.length === 0 && suggestedDescription.length === 0 && aiNeedsConsent ? (
-                  <button
-                    className="fo__ai-accept"
-                    onClick={() => {
-                      if (aiConsentAccepted) {
-                        onEnableAi?.();
-                        return;
-                      }
-                      setAiConsentDialogOpen(true);
-                    }}
-                  >
-                    {aiSafetyDisabled ? "Re-enable" : "Enable"}
-                  </button>
-                ) : hasUnacceptedDrafts ? (
-                  <button
-                    className="fo__ai-accept"
-                    disabled={pendingTagMutation !== null}
-                    onClick={() => {
-                      if (suggestedTitle.length > 0) {
-                        commitTitle(suggestedTitle, "accepted");
-                        onAcceptTitle?.(suggestedTitle);
-                      }
-                      if (suggestedDescription.length > 0) {
-                        commitDescription(suggestedDescription, "accepted");
-                        onAcceptDescription?.(suggestedDescription);
-                      }
-                      replaceVisibleTags(
-                        Array.from(
-                          new Set([
-                            ...tags,
-                            ...aiSuggestions.slice(0, 2).map((tag) => tag.label)
-                          ])
-                        )
-                      );
-                      for (const suggestion of aiSuggestions.slice(0, 2)) {
-                        onAcceptTag?.(suggestion.id);
-                      }
-                    }}
-                  >
-                    {isSuggestedDescriptionPreview || titleOrigin === "suggested" ? "Save" : "Use"}
-                  </button>
+        {cfg.showAi && (
+          <div className="fo__ai-row">
+            <CodexStatusPill
+              status={aiStatus}
+              draftAvailable={
+                suggestedTitle.trim().length > 0 || suggestedDescription.trim().length > 0
+              }
+              accepted={allDraftsAccepted}
+              needsConsent={aiNeedsConsent}
+              safetyDisabled={aiSafetyDisabled}
+              error={enrichment?.error}
+              {...(enrichmentProviderLabel !== undefined
+                ? { providerLabel: enrichmentProviderLabel }
+                : {})}
+              {...(enrichmentModelLabel !== undefined
+                ? { modelLabel: enrichmentModelLabel }
+                : {})}
+              action={
+                !thinking && !aiFailed ? (
+                  suggestedTitle.length === 0 && suggestedDescription.length === 0 && !providerAvailable ? (
+                    <button className="fo__ai-accept" onClick={() => onConfigureAi?.()}>
+                      Configure AI
+                    </button>
+                  ) : suggestedTitle.length === 0 && suggestedDescription.length === 0 && aiNeedsConsent ? (
+                    <button
+                      className="fo__ai-accept"
+                      onClick={() => {
+                        if (aiConsentAccepted) {
+                          onEnableAi?.();
+                          return;
+                        }
+                        setAiConsentDialogOpen(true);
+                      }}
+                    >
+                      {aiSafetyDisabled ? "Re-enable" : "Enable"}
+                    </button>
+                  ) : hasUnacceptedDrafts ? (
+                    <button
+                      className="fo__ai-accept"
+                      disabled={pendingTagMutation !== null}
+                      onClick={() => {
+                        if (suggestedTitle.length > 0) {
+                          commitTitle(suggestedTitle, "accepted");
+                          onAcceptTitle?.(suggestedTitle);
+                        }
+                        if (suggestedDescription.length > 0) {
+                          commitDescription(suggestedDescription, "accepted");
+                          onAcceptDescription?.(suggestedDescription);
+                        }
+                        replaceVisibleTags(
+                          Array.from(
+                            new Set([
+                              ...tags,
+                              ...aiSuggestions.slice(0, 2).map((tag) => tag.label)
+                            ])
+                          )
+                        );
+                        for (const suggestion of aiSuggestions.slice(0, 2)) {
+                          onAcceptTag?.(suggestion.id);
+                        }
+                      }}
+                    >
+                      {isSuggestedDescriptionPreview || titleOrigin === "suggested" ? "Save" : "Use"}
+                    </button>
+                  ) : null
                 ) : null
-              ) : null
-            }
-          />
-          {!aiNeedsConsent && onSetAutoAccept !== undefined ? (
-            <label className="fo__auto-accept" title="Apply AI enrichment automatically when ready">
-              <input
-                type="checkbox"
-                checked={autoAcceptSuggestions}
-                onChange={(event) => onSetAutoAccept(event.target.checked)}
-              />
-              <span>Auto-apply AI enrichment</span>
-            </label>
-          ) : null}
-        </div>
-      )}
+              }
+            />
+            {!aiNeedsConsent && onSetAutoAccept !== undefined ? (
+              <label className="fo__auto-accept" title="Apply AI enrichment automatically when ready">
+                <input
+                  type="checkbox"
+                  checked={autoAcceptSuggestions}
+                  onChange={(event) => onSetAutoAccept(event.target.checked)}
+                />
+                <span>Auto-apply AI enrichment</span>
+              </label>
+            ) : null}
+          </div>
+        )}
 
-      {aiConsentDialogOpen ? (
-        <AiConsentDialog
-          onCancel={() => setAiConsentDialogOpen(false)}
-          onAccept={() => {
-            setAiConsentDialogOpen(false);
-            onEnableAi?.();
-          }}
-        />
-      ) : null}
+        {aiConsentDialogOpen ? (
+          <AiConsentDialog
+            onCancel={() => setAiConsentDialogOpen(false)}
+            onAccept={() => {
+              setAiConsentDialogOpen(false);
+              onEnableAi?.();
+            }}
+          />
+        ) : null}
+      </div>
 
       {cfg.showFooter && (
         <div className="fo__foot">

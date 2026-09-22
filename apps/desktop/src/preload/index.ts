@@ -419,6 +419,25 @@ const pwrsnapApi = {
   requestFloatOverResize(payload: { width: number; height: number }): void {
     ipcRenderer.send(FLOAT_OVER_RESIZE_CHANNEL, payload);
   },
+  /**
+   * The current page zoom factor, read fresh on every call.
+   *
+   * The self-sizing popovers measure in CSS pixels and main converts to
+   * DIP by multiplying by `webContents.zoomFactor`; a renderer that
+   * needs to express a DIP ceiling (the float-over's scroll cap) as a
+   * CSS `max-height` has to divide by the same number. Nothing
+   * page-visible carries it: `window.devicePixelRatio` is
+   * displayScale × zoom and the display's scale is unknown to the page,
+   * and `window.screen` is reported in DIP and does not move with zoom
+   * at all (measured on Electron 41). `webFrame` has it exactly.
+   *
+   * Not cached: zoom changes out from under this window whenever the
+   * user presses ⌘+ in the Library, because Chromium's HostZoomMap is
+   * per-origin and every PwrSnap window shares one.
+   */
+  getZoomFactor(): number {
+    return webFrame.getZoomFactor();
+  },
   /** Recording HUD renderer → main: fit the BrowserWindow to the measured
    * outer wrapper so status, confirmations, and failure actions cannot be clipped. */
   requestRecordingControllerResize(payload: { width?: number; height: number }): void {

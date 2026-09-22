@@ -21,6 +21,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   EVENT_CHANNELS,
   exportStrategyFromSettings,
+  floatOverMaxContentHeightCss,
   type AcpAgentDiscovery,
   type CaptureEnrichment,
   type CaptureRecord,
@@ -42,6 +43,51 @@ import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/p
 import { copyImagePreset, copyImagePresetPath } from "../../lib/clipboard-copy";
 import { useCapturesLocationDisplayState } from "../../lib/useCapturesLocationDisplayState";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
+
+/**
+ * How tall the toast may render, in CSS pixels, before `.fo__body`
+ * starts scrolling instead of growing.
+ *
+ * **Every input here is independent of the toast window's current
+ * size, and that is the whole point.** Main sizes the window from what
+ * the wrapper below measures, so a cap read off the window — `100vh`,
+ * `window.innerHeight`, the wrapper's own clientHeight — closes a loop:
+ * the wrapper would report `min(natural, current window)`, main would
+ * size the window to that, and the toast could never grow again.
+ * Content that arrived later (a third row of tags, an update row, a
+ * long Codex error) would be permanently unreachable, and unlike the
+ * clipping this replaces it would not heal on the next capture. See
+ * AGENTS.md §"Tray + float-over popover sizing" and
+ * §"Never mix a post-transform rect with a layout measure".
+ *
+ * The two inputs, both measured stable under zoom on Electron 41:
+ *
+ *   - `window.screen.availHeight` — the work area of the display this
+ *     window is on, in DIP. Equals `Display.workArea.height` exactly
+ *     and does NOT change with page zoom (`window.innerHeight` does,
+ *     which is precisely why it can't be used). Covers displays too
+ *     short for the constant ceiling.
+ *   - `getZoomFactor()` — so the DIP ceiling lands as the right number
+ *     of CSS pixels. Main converts back with the same factor.
+ *
+ * Both are read fresh per call rather than captured at mount, because
+ * both can change under a live toast: the session zoom moves whenever
+ * the user presses ⌘+ in the Library (the `matchMedia` DPR listener
+ * below re-posts when it does), and the window is re-anchored per
+ * capture, possibly onto another display. There is no separate trigger
+ * for a display change with no content change; main clamps to the
+ * anchored display's work area as the backstop for that.
+ */
+function maxContentHeightCss(): number {
+  const availHeight =
+    typeof window.screen?.availHeight === "number" ? window.screen.availHeight : null;
+  return floatOverMaxContentHeightCss({
+    workAreaHeightDip: availHeight,
+    // jsdom and any preload build without the accessor fall back to
+    // 1:1, which is the un-zoomed case and the common one.
+    zoomFactor: window.pwrsnapApi?.getZoomFactor?.() ?? 1
+  });
+}
 
 type HostState =
   | { kind: "idle" }
@@ -140,6 +186,13 @@ export function FloatOverHost({
     const el = contentRef.current;
     if (el === null) return;
     const post = (): void => {
+      // Publish the ceiling BEFORE measuring, so the rect we read is
+      // already the capped one. `.fo` wears it as a max-height and
+      // scrolls its own middle (`.fo__body`) past it, which is what
+      // keeps the pinned footer — Discard / Dismiss / Edit — inside
+      // the window main is about to size. Without it, content past
+      // main's clamp is simply cut off the bottom.
+      el.style.setProperty("--fo-max-h", `${maxContentHeightCss()}px`);
       const rect = el.getBoundingClientRect();
       window.pwrsnapApi?.requestFloatOverResize?.({
         width: Math.ceil(rect.width),
@@ -617,6 +670,11 @@ export function FloatOverHost({
   // the natural height of its content (rather than stretching to fill
   // the body's 100% height, which would always report the full window
   // height and defeat the resize-to-fit logic).
+  //
+  // It also carries `--fo-max-h`, written by the layout effect above —
+  // on the wrapper rather than on `.fo` so the one element the
+  // measurer owns is the one element that publishes the ceiling, and
+  // the loading / error / idle bodies inherit it for free.
   return (
     <div ref={contentRef} style={{ display: "inline-block", width: "100%" }}>
       {body}

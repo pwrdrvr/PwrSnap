@@ -352,6 +352,19 @@ export function TrayMenu() {
   // Hard floor + ceiling sit in main (`tray.ts` clamps 200–880), so
   // a renderer-side measurement bug can't shrink the popover to
   // nothing or grow it off-screen.
+  //
+  // ONE deliberate asymmetry with the float-over: the toast also caps
+  // its OWN height (`--fo-max-h`) and scrolls its middle, because when
+  // it measures past main's clamp the window clips the bottom and
+  // takes the footer's Discard / Dismiss / Edit with it. The measurer
+  // itself is unchanged and still identical on both surfaces — the cap
+  // is published by the host, not computed here. The tray has no such
+  // cap because its content is structurally bounded (a fixed mode
+  // grid, one preview, one hotkey list) while the toast's grows with
+  // whatever the model wrote and however many tags came back. If a
+  // tray section ever becomes genuinely unbounded, copy the float-over
+  // pattern rather than raising the ceiling again — and do NOT derive
+  // the cap from the window's own size (see FloatOverHost.tsx).
   const containerRef = useRef<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
     const el = containerRef.current;

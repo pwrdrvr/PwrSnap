@@ -23,6 +23,9 @@
 import { BrowserWindow, globalShortcut, ipcMain, screen } from "electron";
 import {
   EVENT_CHANNELS,
+  FLOAT_OVER_ANCHOR_MARGIN_DIP,
+  FLOAT_OVER_HEIGHT_MIN_DIP,
+  floatOverMaxContentHeightDip,
   IMAGE_PRESET_COPY_VERB,
   type FloatOverEvent,
   type RenderPreset
@@ -35,10 +38,6 @@ import { createFloatOverWindow } from "./window";
 const log = getMainLogger("pwrsnap:float-over");
 
 const FLOAT_OVER_RESIZE_CHANNEL = "float-over:resize";
-/** Hard floor + ceiling so a renderer bug can't shrink the toast to
- *  nothing or grow it taller than any reasonable display. */
-const FLOAT_OVER_HEIGHT_MIN = 160;
-const FLOAT_OVER_HEIGHT_MAX = 800;
 /** Window width is fixed by the design — must match `width` in
  *  `createFloatOverWindow`. The toast's `.fo` element is forced to
  *  `width: 100%` of the body via `body[data-stage="float-over"] .fo`,
@@ -200,6 +199,25 @@ function restoreOnScreen(window: BrowserWindow): void {
 }
 
 /**
+ * Work-area height (DIP) of the display the toast is anchored to, or
+ * `null` before the first anchor / if that display has since gone away.
+ *
+ * Deliberately does NOT fall back to the cursor's display the way
+ * {@link reanchorOnCurrentDisplay} does. This feeds the resize clamp,
+ * which has to agree with the cap the RENDERER applies, and the
+ * renderer reads `window.screen` — the display the WINDOW sits on. A
+ * cursor that wandered to another monitor mid-toast is bug vi; letting
+ * it shrink the ceiling here would clip the footer on the monitor the
+ * toast is actually on. `null` simply means the constant ceiling
+ * applies, which is what the renderer falls back to as well.
+ */
+function anchoredWorkAreaHeightDip(): number | null {
+  if (anchoredDisplayId === null) return null;
+  const display = screen.getAllDisplays().find((d) => d.id === anchoredDisplayId);
+  return display === undefined ? null : display.workArea.height;
+}
+
+/**
  * Listen for float-over-renderer resize requests and `setContentSize`
  * so the toast window hugs its content. Called once on first window
  * creation. Each resize re-anchors to bottom-right because shrinking
@@ -231,7 +249,20 @@ function wireFloatOverResizeChannel(): void {
     // shared-origin zoom story applies to the float-over.
     const zoom = singleton.webContents.zoomFactor;
     const heightDip = Math.ceil(heightCss * zoom);
-    const clamped = Math.max(FLOAT_OVER_HEIGHT_MIN, Math.min(FLOAT_OVER_HEIGHT_MAX, heightDip));
+    // Hard floor + ceiling, so a renderer bug can't shrink the toast to
+    // nothing or grow it taller than the display it is anchored to.
+    //
+    // The ceiling is the SAME number the renderer caps `.fo` at — the
+    // policy lives in `@pwrsnap/shared/float-over-sizing` precisely so
+    // the two cannot disagree, because this clamp is a backstop, not
+    // the mechanism. When it fires, the window is smaller than what the
+    // renderer laid out and Chromium simply doesn't paint the rest;
+    // the footer is last in the box, so Discard / Dismiss / Edit are
+    // what go missing. The renderer scrolls its middle instead, and
+    // reads its own `window.screen.availHeight` — which equals this
+    // display's `workArea.height` — to land on the same ceiling.
+    const maxDip = floatOverMaxContentHeightDip(anchoredWorkAreaHeightDip());
+    const clamped = Math.max(FLOAT_OVER_HEIGHT_MIN_DIP, Math.min(maxDip, heightDip));
     const current = singleton.getContentSize();
     if (current[1] === clamped) return;
     singleton.setContentSize(FLOAT_OVER_WIDTH, clamped, false);
@@ -314,7 +345,7 @@ function anchorBottomRight(window: BrowserWindow): void {
   const display = screen.getDisplayNearestPoint(cursor);
   anchoredDisplayId = display.id;
   const wa = display.workArea;
-  const margin = 24;
+  const margin = FLOAT_OVER_ANCHOR_MARGIN_DIP;
   const [w, h] = window.getSize();
   const x = Math.round(wa.x + wa.width - w - margin);
   const y = Math.round(wa.y + wa.height - h - margin);
@@ -344,7 +375,7 @@ function reanchorOnCurrentDisplay(window: BrowserWindow): void {
     anchoredDisplayId = display.id;
   }
   const wa = display.workArea;
-  const margin = 24;
+  const margin = FLOAT_OVER_ANCHOR_MARGIN_DIP;
   const [w, h] = window.getSize();
   const x = Math.round(wa.x + wa.width - w - margin);
   const y = Math.round(wa.y + wa.height - h - margin);

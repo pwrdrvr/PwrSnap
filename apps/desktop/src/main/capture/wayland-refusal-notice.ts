@@ -49,11 +49,11 @@ export function showWaylandRefusalNotice(): void {
   // other — the user would have to dismiss one per press.
   if (noticeOpen) return;
   noticeOpen = true;
-  const log = getMainLogger("pwrsnap:capture-trigger");
+  const log = getMainLogger("pwrsnap:capture");
   void dialog
     .showMessageBox({
       type: "info",
-      message: "Drag-to-select capture needs an X11 session",
+      message: "Drag-to-select isn't available with more than one display on Wayland",
       detail: WAYLAND_SELECTOR_MESSAGE,
       buttons: ["Capture Full Screen", "Cancel"],
       defaultId: 0,

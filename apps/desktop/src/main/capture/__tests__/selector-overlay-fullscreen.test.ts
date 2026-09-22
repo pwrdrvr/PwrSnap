@@ -68,4 +68,12 @@ describe("region-selector overlay fullscreen wiring", () => {
       'fullscreenable: process.platform !== "darwin"'
     );
   });
+
+  test("the selector module never applies the Wayland refusal itself", () => {
+    // The refusal lives in the `capture:interactive` handler, which shows the
+    // user why. Applied in here — a draft skipped pre-warming — it becomes a
+    // refusal with no voice: the Record path drives `pickRegion` directly,
+    // finds no selector windows, and its button silently does nothing.
+    expect(source).not.toContain("regionSelectorUnsupported");
+  });
 });

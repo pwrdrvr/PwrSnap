@@ -18,11 +18,13 @@
 //      1496x938 requested and granted, renderer CSS px 1:1 with display
 //      logical px). A Wayland-native client could not do this; an XWayland
 //      one can. Do not repeat the claim that it cannot without measuring.
-//   3. Reliable always-on-top — unmeasured. `setAlwaysOnTop(true,
-//      "screen-saver")` maps to nothing a Wayland-native client can ask
-//      for (no layer-shell in Chromium's Wayland backend); under XWayland
-//      it is an ordinary X11 hint, which gnome-shell honours for normal
-//      windows but not above its own panel.
+//   3. Staying above the shell's own chrome — always-on-top does NOT,
+//      fullscreen DOES. `setAlwaysOnTop(true, "screen-saver")` is an
+//      ordinary X11 hint under XWayland; gnome-shell honours it against
+//      normal windows but still draws its top bar and dock over it —
+//      measured as 32 rows and 67 columns of foreign pixels over an opaque
+//      test field. `setFullScreen(true)` measured 0 / 0. That gap was the
+//      whole Ubuntu misalignment; see `enterMenuBarOverlayMode`.
 //
 // And the grab itself changes hands. Chromium routes screen capture on a
 // Wayland session through xdg-desktop-portal / PipeWire — it decides this
@@ -36,10 +38,9 @@
 // so it is a backstop here, not the guarantee.
 //
 // Measured cost of that round trip: ~3 SECONDS per capture, a permission
-// prompt and a picker. Even a portal grab that depicted exactly the right
-// display would not give the selector's model — freeze the screen
-// instantly, drag against the frozen pixels. It gives a prompt, a picker,
-// and then some pixels.
+// prompt and a picker — all before the selector appears, because the
+// snapshot is taken first. That is a cost, not a defect, and on a single
+// display it is paid: the grab measured pixel-exact against the display.
 //
 // `capture:fullScreen` and `capture:allScreens` remain usable on Wayland —
 // they have no overlay and no rect arithmetic, so the portal's own picker
@@ -107,6 +108,14 @@ export function linuxSessionType(
  * `pickRegion` reliably picks the wrong one. With a single display there is
  * nothing to get wrong — the opening crosshair starts in the corner and
  * corrects on the first mouse move, which is cosmetic.
+ *
+ * Do not lift this by fixing only the pointer. With more than one display
+ * the portal hands back whichever monitor the user picked, with no
+ * `display_id`, and two monitors of the same shape pass `grab-geometry.ts`
+ * — so a selector opened on the right display could still paint the other
+ * one's pixels. That half is reasoned from the portal's documented
+ * behavior, not measured: no multi-display Wayland machine has run the
+ * probe yet.
  *
  * So: refuse Wayland + multi-display, and nothing else.
  */

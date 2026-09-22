@@ -59,6 +59,10 @@ describe("Wayland refusal notice", () => {
     expect(options.buttons?.[0]).toBe("Capture Full Screen");
     expect(options.defaultId).toBe(0);
     expect(options.cancelId).toBe(1);
+    // The headline is the part everyone reads. It must name the condition
+    // actually refused — a single-display Wayland session is NOT refused, so
+    // "needs an X11 session" (an earlier draft) would be false for it.
+    expect(options.message).toContain("more than one display");
     // The detail is the only place the user is told WHY, so it must carry
     // the way out rather than only the refusal.
     expect(options.detail).toContain("Full Screen");

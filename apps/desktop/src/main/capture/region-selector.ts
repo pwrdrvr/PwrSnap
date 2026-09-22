@@ -43,7 +43,6 @@ import {
   type ScreenSnapshot
 } from "./screen-snapshot";
 import { isExtentRect, MAX_SELECTOR_EXTENTS } from "./extent-mask";
-import { regionSelectorUnsupported } from "./linux-session";
 import { hideTrayPopoverIfVisible } from "../tray";
 import { setFloatOverState, ensureFloatOverTopmost } from "../float-over";
 import { hotkeyRecorderSuspension } from "../hotkeys/hotkey-recorder-suspension-instance";
@@ -427,13 +426,15 @@ export type SelectorMode = "auto" | "region" | "window";
  */
 export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup"): void {
   // Build one window per display we don't already have.
+  //
+  // Deliberately NOT skipped where `capture:interactive` refuses (Wayland
+  // with more than one display). Returning early here to save the
+  // renderers makes a second, invisible refusal: every OTHER `pickRegion`
+  // caller — the Record path in index.ts drives it directly — finds no
+  // selector windows and resolves `destroyed`, so its button does nothing
+  // and says nothing. The refusal lives in one place, the one that can
+  // explain itself; see wayland-refusal-notice.ts.
   const displays = screen.getAllDisplays();
-  // Nothing to pre-warm where the selector is refused outright:
-  // `capture:interactive` returns WAYLAND_SELECTOR_ERROR_CODE before it
-  // would ever ask for one, so building these costs a renderer process per
-  // display at boot for machinery that can never be shown. Narrow — only
-  // Wayland with multiple displays; see linux-session.ts.
-  if (regionSelectorUnsupported(displays.length)) return;
   const liveIds = new Set<number>();
   for (const display of displays) {
     liveIds.add(display.id);

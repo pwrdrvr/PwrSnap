@@ -595,7 +595,8 @@ History + the `sample` recipe:
 
 **Nothing may treat `desktopCapturer` pixels as a given display without
 first checking their shape against that display's bounds, and the
-region-selector overlay may not be shown on a Wayland session at all.**
+region selector may not be shown on a Wayland session with more than one
+display.**
 Owners: [grab-geometry.ts](apps/desktop/src/main/capture/grab-geometry.ts)
 and [linux-session.ts](apps/desktop/src/main/capture/linux-session.ts).
 Pinned by their unit tests plus the two production-wiring tests —
@@ -685,7 +686,16 @@ LIST, and the only authoritative key — `display_id` — is documented as
   one. The portal still charges a permission prompt and a source picker per
   capture (~3s), which is a cost, not a defect. `capture:interactive`
   refuses ahead of `guardScreenCapture` so a refused capture never raises
-  that prompt.
+  that prompt. Do not lift the refusal by fixing only the pointer: with two
+  displays the portal returns whichever monitor the user picked, with no
+  `display_id`, and two same-shaped monitors pass the geometry check.
+- **The refusal lives in the handler and nowhere else — in particular, not
+  in `preWarmRegionSelector`.** A draft skipped pre-warming where the
+  selector is refused, to save the renderers. That is a second refusal with
+  no voice: `runInteractiveRecord` in index.ts drives `pickRegion` directly,
+  finds no selector windows, resolves `destroyed`, and the Record button
+  does nothing, silently. Pinned by
+  [selector-overlay-fullscreen.test.ts](apps/desktop/src/main/capture/__tests__/selector-overlay-fullscreen.test.ts).
 - **⇧-snap-to-window and source-app metadata do not work on Linux at all,
   X11 included.** `build-native.mjs` builds the `window-list` helper for
   darwin (Swift) and win32 (C++) only, so `listWindowsSnapshot()` returns
@@ -726,8 +736,9 @@ LIST, and the only authoritative key — `display_id` — is documented as
   what the refusal notice points users at; keep it pointing somewhere.
 - **Detection fails OPEN.** Only a positively-identified Wayland session
   is refused; an unrecognised environment keeps region capture, because a
-  miss on X11 deletes a working feature while a miss on Wayland still
-  fails legibly at the geometry check.
+  miss on X11 deletes a working feature while a miss on multi-display
+  Wayland only restores the pre-refusal behavior — which the geometry
+  check catches when the two monitors differ in shape, and not otherwise.
 - **Neither CI job can catch any of this.** The Docker/xvfb harness has no
   portal and no window manager, and macOS never runs the code. Confirm on
   a real session with

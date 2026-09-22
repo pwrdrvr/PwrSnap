@@ -175,7 +175,7 @@ function activityPaths(
     return { levels, idle: "" };
   }
   const samplesPerCol = (durationSec * track.sampleHz) / cols;
-  const bar: Record<1 | 2 | 3, number> = { 1: 3, 2: 6, 3: heightPx };
+  const bar: Record<1 | 2 | 3, number> = { 1: 4, 2: 7, 3: heightPx };
   let runStart = 0;
   let runLevel: VideoActivityLevel = 0;
   const flush = (end: number): void => {
@@ -866,6 +866,22 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
                   viewBox={`0 0 ${width} ${ACTIVITY_H}`}
                   preserveAspectRatio="none"
                 >
+                  {/* The hatch reads as "nothing happening" — the same
+                      diagonal the cut scrim uses for "removed". The id is
+                      document-global, but every timeline defines the same
+                      pattern, so whichever one resolves draws the same. */}
+                  <defs>
+                    <pattern
+                      id="vtl-idle-hatch"
+                      width="5"
+                      height="5"
+                      patternUnits="userSpaceOnUse"
+                      patternTransform="rotate(45)"
+                    >
+                      <rect className="vtl__act-hatch-bg" width="5" height="5" />
+                      <line className="vtl__act-hatch-line" x1="0" y1="0" x2="0" y2="5" />
+                    </pattern>
+                  </defs>
                   {actPaths.idle !== "" && <path className="vtl__act-idle" d={actPaths.idle} />}
                   {actPaths.levels[1] !== "" && <path className="vtl__act-l1" d={actPaths.levels[1]} />}
                   {actPaths.levels[2] !== "" && <path className="vtl__act-l2" d={actPaths.levels[2]} />}

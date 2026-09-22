@@ -346,11 +346,11 @@
 }
 
 .vtl__act-l1 {
-  fill: color-mix(in srgb, var(--accent) 45%, transparent);
+  fill: color-mix(in srgb, var(--accent) 60%, transparent);
 }
 
 .vtl__act-l2 {
-  fill: color-mix(in srgb, var(--accent) 72%, transparent);
+  fill: color-mix(in srgb, var(--accent) 82%, transparent);
 }
 
 .vtl__act-l3 {
@@ -358,7 +358,16 @@
 }
 
 .vtl__act-idle {
-  fill: color-mix(in srgb, var(--text-muted) 16%, transparent);
+  fill: url(#vtl-idle-hatch);
+}
+
+.vtl__act-hatch-bg {
+  fill: color-mix(in srgb, var(--text-muted) 12%, transparent);
+}
+
+.vtl__act-hatch-line {
+  stroke: color-mix(in srgb, var(--text-muted) 55%, transparent);
+  stroke-width: 1;
 }
 
 .vtl__wave {

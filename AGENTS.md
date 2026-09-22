@@ -1443,7 +1443,9 @@ sits OUTSIDE the styled container, then telling main to
 `setContentSize` the BrowserWindow to match. The two surfaces use
 identical machinery on purpose — fixes flow naturally between them.
 Do NOT revert to hardcoded heights, and do NOT measure the styled
-container itself.**
+container itself.** And past the main-side ceiling the float-over
+scrolls rather than letting the window clip it — see
+§"Past the ceiling, the float-over SCROLLS" below.
 
 Implementations:
 
@@ -1578,6 +1580,69 @@ clipping chain and the entire class of bug disappears.
   measuring it directly would also work, but there's no reason to
   switch off the wrapper pattern; it's strictly more robust and
   keeps the tray and float-over symmetrical.
+
+### Past the ceiling, the float-over SCROLLS — it must never clip
+
+**Measuring correctly is only half of it. What main does with a
+measurement past its clamp is clip, and the toast's footer is last in
+the box — so the row carrying Discard / Dismiss / Edit is exactly what
+disappears.** That shipped. PR #638 bought the video toast back under
+`FLOAT_OVER_HEIGHT_MAX` by cutting 100px of chrome (888 → 788), which
+left ~12px of headroom; a third row of tags, an `AppUpdateRow`, the
+short-clip warning or a long Codex error each spends it on its own.
+
+The toast therefore caps its own height and scrolls the middle:
+`.fo` wears `max-height: var(--fo-max-h)`, `.fo__body` (everything
+between `.fo__hdr` and `.fo__foot`) is `flex: 1 1 auto; min-height: 0;
+overflow-y: auto`, and the header and footer are `flex: none`. The
+wrapper then measures `min(natural, cap)` and main's clamp never fires.
+Policy in [float-over-sizing.ts](packages/shared/src/float-over-sizing.ts),
+imported by BOTH main and the renderer — a renderer cap even a pixel
+looser than main's clamp is clipped footer again.
+
+Four things that bite:
+
+- **The cap may NEVER be derived from the window's current size.**
+  `100vh` / `window.innerHeight` / the wrapper's own `clientHeight` all
+  look equivalent and close a feedback loop: the wrapper would report
+  `min(natural, current window)`, main would size the window to that,
+  and the toast could never grow again. That is strictly worse than the
+  clipping — it does not heal on the next capture, and no
+  `ResizeObserver` reports it, for the reason the section above this
+  one gives. Both legal inputs are window-size independent: the
+  `FLOAT_OVER_HEIGHT_MAX_DIP` constant, and the display's work area.
+- **`window.screen.availHeight` is DIP and zoom-independent; measured
+  on Electron 41 it equals `Display.workArea.height` exactly and does
+  not move at zoom 0.5/1/1.5/2 — while `window.innerHeight` does.** So
+  the CSS ceiling is `DIP / zoomFactor`, and the zoom comes from
+  `webFrame.getZoomFactor()` via preload (`getZoomFactor`). Nothing
+  else page-visible carries it: `devicePixelRatio` is
+  displayScale × zoom and the page does not know the display's scale.
+- **`min-height: 0` on `.fo__body` is load-bearing**, and looks like
+  tidying. A flex item's `min-height` is `auto` — its content height —
+  so without it the middle refuses to shrink, `.fo` overflows its own
+  max-height, and `overflow-y: auto` never engages because the box
+  never got smaller than its content. Same class as `flex: none` on the
+  header and footer, without which those squash their padding first.
+- **Do NOT add a `::-webkit-scrollbar` block** for the new scroller;
+  the repo-wide `scrollbar-width: thin` rule governs it and
+  `scrollbar-contract.test.ts` fails on one.
+
+The tray has no cap, deliberately: its content is structurally bounded
+(fixed mode grid, one preview, one hotkey list) while the toast's grows
+with whatever the model wrote. The MEASURER stays identical on both —
+the cap is published by the host onto the wrapper, not computed inside
+the shared code — so fixes still flow between them.
+
+Pinned by
+[float-over-scroll-cap-contract.test.ts](apps/desktop/src/renderer/src/styles/__tests__/float-over-scroll-cap-contract.test.ts)
+(the CSS, plus a grep that `FloatOverHost.tsx` names no viewport
+measure), [float-over-sizing.test.ts](packages/shared/src/__tests__/float-over-sizing.test.ts)
+(the policy) and the "float-over scroll cap" block in
+[FloatOver.test.tsx](apps/desktop/src/renderer/src/features/float-over/__tests__/FloatOver.test.tsx)
+(that swinging `window.innerHeight` moves nothing). jsdom has no
+layout, so none of them can observe the scroll itself — measure that in
+a real browser against the shipped stylesheet.
 
 ## The recording frame may never paint inside the recorded rect
 

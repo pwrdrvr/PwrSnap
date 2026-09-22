@@ -182,8 +182,10 @@ export function isDerivedPlaybackAsset(name: string): boolean {
 
 const VIDEO_ASSET_PATTERN = new RegExp(
   `^(?:${[
-    // Timeline filmstrip.
-    String.raw`frames-n\d{1,3}-w\d{1,4}\.jpg`,
+    // Timeline filmstrip. Version-generic for the same reason as the audio
+    // arm (the live name carries `FRAMES_PIPELINE_VERSION`); the unversioned
+    // v1 spelling stays addressable for a renderer holding an old URL.
+    String.raw`frames(?:-v\d{1,3})?-n\d{1,3}-w\d{1,4}\.jpg`,
     ...DERIVED_AUDIO_ASSET_ALTERNATIVES,
     ...DERIVED_PLAYBACK_ASSET_ALTERNATIVES
   ].join("|")})$`

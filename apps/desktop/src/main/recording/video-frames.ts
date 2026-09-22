@@ -9,14 +9,40 @@
 // Why a contact strip instead of N files: one file, one protocol
 // request, one `<img>`; the renderer slices it with `object-position`
 // / background offsets. Cache key is `(captureId, count, frameWidth)`
-// baked into the filename — no DB migration, and orphaned strips are
-// tolerated the same way `poster.png` is.
+// plus `FRAMES_PIPELINE_VERSION`, baked into the filename — no DB
+// migration, and orphaned strips (including every strip a version bump
+// retires) are tolerated the same way `poster.png` is.
 //
-// Sampling: input-side `-ss` by half an interval, then `fps=N/D`, so
-// frame i lands at `(i + 0.5) * D / N`. Midpoint sampling sidesteps
-// the frequently-black frame 0 of screen recordings (see
-// video-poster.ts) and centers each thumbnail on the span it
-// represents in the strip.
+// Sampling: tile k shows the frame ON SCREEN at the middle of its span,
+// `(k + 0.5) * D / N` — the latest frame at or before that instant,
+// which is what a player shows there. Every filter in the chain is
+// load-bearing:
+//
+//   tpad    Clones the last frame past EOF. `durationSec` is wall-clock,
+//           and the recorder appends only frames whose content changed and
+//           never ends its session explicitly, so a take that closes on a
+//           still screen has a video track that stops seconds before
+//           `durationSec`. Every tile past that point used to be black.
+//   setpts  Shifts the timeline back half an interval so fps tick k lands
+//           on the span's midpoint rather than its start.
+//   fps     `round=up`: tick k takes the latest frame at or before it. The
+//           default rounding takes one up to half an interval LATE, so the
+//           v1 strip actually showed the END of each span, and its last
+//           tile sat on the clip's final instant — where one rounding step
+//           of the EOF timestamp decided between a frame and a black tile
+//           (a 40.000 s clip at 12 tiles emitted 11). `start_time=0` pins
+//           tick 0 when the first frame arrives after it (it is duplicated
+//           backwards); without it the whole strip shifts a slot later and
+//           tile 0 shows tile 1's frame.
+//   tile    N×1. It pads a short strip with black, so everything above
+//           exists to hand it exactly N frames.
+//
+// No input-side `-ss`. An accurate seek DISCARDS every frame before the
+// seek point, and a take that opens on a still screen holds frame 0
+// across it: the v1 strip started on the first change after the seek and
+// ran out of frames before the end. Frame 0 is the recorder's first
+// complete frame, so showing it when nothing moved is correct. Decoding
+// the skipped half-interval costs nothing next to decoding the rest.
 
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -41,6 +67,13 @@ export const FRAMES_WIDTH_MAX = 320;
 export const FRAMES_WIDTH_STEP = 16;
 /** Frame counts are quantized to this step for the same reason. */
 export const FRAMES_COUNT_STEP = 4;
+/**
+ * Part of the cache filename. Bump it whenever `buildFramesArgs` changes
+ * which frame a tile shows, or strips already on disk keep being served.
+ * v1 is the unversioned `frames-n…` name, which sampled span ends and
+ * could end in a black tile.
+ */
+export const FRAMES_PIPELINE_VERSION = 2;
 
 export type FramesSpec = {
   count: number;
@@ -83,13 +116,14 @@ export function normalizeFramesSpec(input: {
 }
 
 export function framesFileName(spec: FramesSpec): string {
-  return `frames-n${spec.count}-w${spec.frameWidth}.jpg`;
+  return `frames-v${FRAMES_PIPELINE_VERSION}-n${spec.count}-w${spec.frameWidth}.jpg`;
 }
 
 /**
  * Build the ffmpeg argv for a contact strip. Pure — the unit test
  * pins the shape so a refactor can't silently drop the midpoint
- * offset or the tile geometry.
+ * offset, the end padding, or the tile geometry. The header explains
+ * each filter.
  */
 export function buildFramesArgs(input: {
   sourcePath: string;
@@ -98,23 +132,30 @@ export function buildFramesArgs(input: {
   outputPath: string;
 }): string[] {
   const { spec } = input;
-  const duration = Math.max(input.durationSec, 0.001);
-  const interval = duration / spec.count;
-  const fps = spec.count / duration;
+  // One rounded duration feeds every filter, so the shift and the rate
+  // cannot disagree about where the ticks fall.
+  const durationArg = Math.max(input.durationSec, 0.001).toFixed(3);
+  const halfInterval = Number(durationArg) / spec.count / 2;
   return [
     "-y",
     "-hide_banner",
     "-loglevel",
     "error",
-    "-ss",
-    (interval / 2).toFixed(3),
     "-i",
     input.sourcePath,
     "-an",
     "-sn",
     "-vf",
     [
-      `fps=${fps.toFixed(6)}`,
+      // Pad by the whole claimed duration: enough for the last tick even
+      // when the media is far shorter, and bounded, so a stream with no
+      // usable frame rate pads nothing rather than forever. `-frames:v 1`
+      // stops ffmpeg as soon as the strip is full, so only media that ends
+      // before the last tick generates clones, and only as many as that
+      // gap needs (10 s of media under a 600 s claim: ~0.2 s wall).
+      `tpad=stop_mode=clone:stop_duration=${durationArg}`,
+      `setpts=PTS-${halfInterval.toFixed(6)}/TB`,
+      `fps=fps=${spec.count}/${durationArg}:start_time=0:round=up`,
       `scale=${spec.frameWidth}:${spec.frameHeight}:flags=bilinear`,
       `tile=${spec.count}x1`
     ].join(","),

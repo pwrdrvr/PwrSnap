@@ -38,6 +38,15 @@ describe("transportIntentForKey", () => {
     expect(transportIntentForKey({ key: "End" })).toEqual({ type: "seekEnd" });
   });
 
+  test("S splits and X cuts at the playhead; ⌘Z / ⌘X stay the app's", () => {
+    expect(transportIntentForKey({ key: "s" })).toEqual({ type: "split" });
+    expect(transportIntentForKey({ key: "x" })).toEqual({ type: "toggleCut" });
+    // Undo goes through the edit-menu bridge, and ⌘X is the menu's Cut.
+    expect(transportIntentForKey({ key: "z", metaKey: true })).toBeNull();
+    expect(transportIntentForKey({ key: "x", metaKey: true })).toBeNull();
+    expect(transportIntentForKey({ key: "S", shiftKey: true })).toBeNull();
+  });
+
   test("⌘ / ⌃ / ⌥ combos are not ours (⌘F search, ⌘[ reel scrub, …)", () => {
     expect(transportIntentForKey({ key: " ", metaKey: true })).toBeNull();
     expect(transportIntentForKey({ key: "ArrowLeft", ctrlKey: true })).toBeNull();

@@ -1,5 +1,6 @@
 // Transport row for the video stage — one 36 px line:
-//   ▶/⏸ · `0:03.4 / 0:16.0` (mono, tabular) · ⟲ loop-in-range · mute · ⛶
+//   ▶/⏸ · `0:03.4 / 0:16.0` (mono, tabular) · ✂ split · ⟲ loop-in-range
+//   · mute · ⛶
 // Buttons carry the keyboard hints in their `title`s. Follows the
 // EditToolbar button language (`.psl__et-btn`-like sizing, mono
 // eyebrow type) but sits in-flow under the video, not floating.
@@ -29,6 +30,8 @@ export type VideoTransportProps = {
   volume: number;
   onTogglePlay: () => void;
   onToggleLoop: () => void;
+  /** Split at the playhead. Omitted → no split button. */
+  onSplit?: (() => void) | undefined;
   onToggleMute: () => void;
   onVolumeChange: (next: number) => void;
   onFullscreen: () => void;
@@ -104,6 +107,37 @@ export function VideoTransport(props: VideoTransportProps): ReactElement {
       </span>
 
       <span className="psl__vt-spacer" />
+
+      {props.onSplit !== undefined && (
+        <button
+          type="button"
+          className="psl__vt-btn"
+          title={keyHints.split}
+          aria-label="Split at playhead"
+          onMouseDown={keepFocus}
+          onClick={props.onSplit}
+          data-testid="video-transport-split"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <circle cx="6" cy="6" r="3" />
+            <circle cx="6" cy="18" r="3" />
+            <path d="M20 4L8.12 15.88" />
+            <path d="M14.47 14.48L20 20" />
+            <path d="M8.12 8.12L12 12" />
+          </svg>
+          <span className="psl__vt-btn-label">split</span>
+        </button>
+      )}
 
       <button
         type="button"

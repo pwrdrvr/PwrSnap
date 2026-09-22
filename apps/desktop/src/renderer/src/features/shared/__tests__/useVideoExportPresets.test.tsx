@@ -170,12 +170,13 @@ type Audio = { includeSystemAudio: boolean; includeMicrophone: boolean };
 type ProbeProps = {
   captureId: string | null;
   range?: { start: number; end: number } | undefined;
+  segments?: Array<{ start: number; end: number }> | undefined;
   audio?: Audio | undefined;
   onSnapshot: (snapshot: Snapshot) => void;
 };
 
-function Probe({ captureId, range, audio, onSnapshot }: ProbeProps): null {
-  const input = captureId === null ? null : { captureId, range, audio };
+function Probe({ captureId, range, segments, audio, onSnapshot }: ProbeProps): null {
+  const input = captureId === null ? null : { captureId, range, segments, audio };
   const result = useVideoExportPresets(input);
   useEffect(() => {
     onSnapshot({
@@ -199,6 +200,7 @@ type Harness = {
 function mount(
   initialCaptureId: string | null = "cap_1",
   initialRange?: { start: number; end: number },
+  segments?: Array<{ start: number; end: number }>,
   initialAudio?: Audio
 ): Harness {
   container = document.createElement("div");
@@ -216,6 +218,9 @@ function mount(
         createElement(Probe, {
           captureId,
           range,
+          // A fresh array every render, as DetailRail builds it — the
+          // hook must key on the values, not the identity.
+          segments: segments?.map((span) => ({ ...span })),
           audio,
           onSnapshot: (snapshot) => {
             last = snapshot;
@@ -368,7 +373,7 @@ describe("useVideoExportPresets", () => {
 
   test("the MP4 audio choice rides on the preflight, the copy, the path copy, and the drag", async () => {
     const audio = { includeSystemAudio: true, includeMicrophone: false };
-    const harness = mount("cap_audio", undefined, audio);
+    const harness = mount("cap_audio", undefined, undefined, audio);
 
     act(() => harness.snapshot().triggerCopy("mp4", "low"));
     expect(pendingNamed("video:export").req).toMatchObject({ audio });
@@ -393,6 +398,43 @@ describe("useVideoExportPresets", () => {
     expect(pendingNamed("video:export").req).not.toHaveProperty("audio", expect.anything());
     await resolvePending(pendingNamed("video:export"), exportOk("/cache/c.mp4"));
     expect(videoDragSink[0]).not.toHaveProperty("audio");
+  });
+
+  test("an edit with cuts rides every export, copy and drag request", async () => {
+    const range = { start: 1, end: 9 };
+    const segments = [
+      { start: 1, end: 3 },
+      { start: 6, end: 9 }
+    ];
+    const harness = mount("cap_cut", range, segments);
+    const triggerBefore = harness.snapshot().triggerCopy;
+    // A re-render with an equal (but new) array changes nothing.
+    harness.setRange(range);
+    expect(harness.snapshot().triggerCopy).toBe(triggerBefore);
+
+    act(() => harness.snapshot().triggerCopy("gif", "med"));
+    expect(pendingNamed("video:export").req).toMatchObject({ range, segments });
+    await resolvePending(pendingNamed("video:export"), exportOk("/cache/cut.gif"));
+    expect(pendingNamed("clipboard:copyVideoFile").req).toEqual({
+      captureId: "cap_cut",
+      format: "gif",
+      preset: "med",
+      range,
+      segments
+    });
+
+    act(() => harness.snapshot().triggerDrag("mp4", "low"));
+    await resolvePending(
+      pendingNamed("video:export", (req) => (req as { format?: string }).format === "mp4"),
+      exportOk("/cache/cut.mp4")
+    );
+    expect(videoDragSink.at(-1)).toEqual({
+      captureId: "cap_cut",
+      format: "mp4",
+      preset: "low",
+      range,
+      segments
+    });
   });
 
   test("matching indeterminate and determinate events update only that active run", () => {
@@ -672,7 +714,7 @@ describe("useVideoExportPresets", () => {
         harness.setAudio({ includeSystemAudio: false, includeMicrophone: false })
     }
   ])("a $label change cancels the active run and ignores its stale resolution", async ({ change }) => {
-    const harness = mount("cap_a", { start: 0, end: 10 }, {
+    const harness = mount("cap_a", { start: 0, end: 10 }, undefined, {
       includeSystemAudio: true,
       includeMicrophone: true
     });

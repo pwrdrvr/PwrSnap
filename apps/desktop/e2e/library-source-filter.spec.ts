@@ -370,6 +370,10 @@ test("active source-app filter refetches after capture stats change", async () =
 });
 
 test("top-level filters do not appear as empty source-app rows after leaving Unknown app focus", async () => {
+  // Windows CI completed every assertion at ~7.6s, then exhausted the
+  // file's 10s budget closing Electron. Allow startup and teardown room
+  // without extending the individual filter assertions' deadlines.
+  if (process.platform === "win32") test.setTimeout(30_000);
   const app = await launchSourceFilterPwrSnap();
   try {
     const window = app.window;

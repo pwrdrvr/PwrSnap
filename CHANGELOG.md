@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.1.4 - 2026-09-21
+
+This patch makes Sizzle playback and PwrSnap's visual presentation more
+reliable across machines.
+
+- Sizzle Reels - Fixed newly rendered narration to load into reel playback
+  immediately, including its transcript timing and measured duration.
+- Typography - Fixed PwrSnap to load its bundled Geist Sans font instead of a
+  system fallback, keeping labels, layout, and recording countdown text
+  consistent across macOS, Windows, and Linux.
+
 ## v1.1.3 - 2026-09-19
 
 This release makes AI configuration, recording, editing, and update decisions

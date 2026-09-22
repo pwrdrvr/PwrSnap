@@ -330,7 +330,11 @@ describe("FloatOver asset mode", () => {
     expect(preview?.querySelector("video")?.getAttribute("src")).toBe("pwrsnap-capture://r/abc");
 
     expect(el.querySelector(".fo__hdr-title")?.textContent).toBe("Recording saved");
-    expect(el.querySelector(".fo__hdr-sub")?.textContent).toContain("12.5s");
+    // No header sub-line on video — dims and duration ride the preview's
+    // corner overlays, and the video toast is the one short of height.
+    expect(el.querySelector(".fo__hdr-sub")).toBeNull();
+    expect(el.querySelector(".fo__preview-size")?.textContent).toContain("12.5s");
+    expect(preview?.classList.contains("fo__preview--video")).toBe(true);
 
     // Mini-trim strip: compact timeline with in/out handles and the
     // Full-clip chip (disabled while the range is the whole clip).
@@ -709,6 +713,52 @@ describe("post-recording source summary", () => {
     expect(row?.getAttribute("aria-label")).toBe(
       "Captured: screen + microphone (no audio captured)"
     );
+  });
+
+  // The silent chip used to draw a flat meter AND "no audio captured",
+  // which made the failure case the widest chip: a live mic beside a silent
+  // system audio came to 456px in a 366px row, wrapped, and pushed the toast
+  // past its window. The reason now takes the meter's slot, one word wide.
+  // The height cuts are video-only. The image toast has no duration overlay
+  // to carry what the sub-line says, and it was never short of room.
+  test("the image toast keeps its header sub-line and 16:10 preview", async () => {
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      srcW: 1920,
+      srcH: 1080,
+      startCountdown: false
+    });
+    expect(el.querySelector(".fo__hdr-sub")?.textContent).toContain("just now");
+    expect(el.querySelector(".fo__preview")?.classList.contains("fo__preview--video")).toBe(
+      false
+    );
+  });
+
+  test("a silent receipt chip prints its reason in the meter's slot", async () => {
+    const el = await renderToast({
+      kind: "video",
+      src: "pwrsnap-capture://r/rec-2",
+      captureId: "rec-2",
+      durationSec: 59.1,
+      widthPx: 1701,
+      heightPx: 1082,
+      defaultRange: { start: 0, end: 59.1 },
+      hasSystemAudio: false,
+      hasMicrophoneAudio: true,
+      requestedSystemAudio: true,
+      requestedMicrophone: true
+    });
+    const silent = el.querySelector('[data-testid="fo-source-systemAudio"]');
+    expect(silent?.getAttribute("data-state")).toBe("silent");
+    expect(silent?.querySelector(".ps-meter")).toBeNull();
+    expect(silent?.querySelector(".ps-chip__why")?.textContent).toBe("none");
+    expect(silent?.getAttribute("title")).toBe("no audio captured");
+    // The live chip beside it keeps its recorded meter.
+    const live = el.querySelector('[data-testid="fo-source-microphone"]');
+    expect(live?.querySelector(".ps-meter")?.getAttribute("data-tone")).toBe("recorded");
+    expect(
+      el.querySelector('[data-testid="fo-sources"]')?.getAttribute("aria-label")
+    ).toBe("Captured: screen + microphone + system audio (no audio captured)");
   });
 });
 
@@ -1634,7 +1684,10 @@ describe("FloatOver AI suggestions", () => {
     expect(checkbox).not.toBeNull();
     expect(checkbox?.checked).toBe(false);
     const autoAccept = el.querySelector<HTMLLabelElement>(".fo__auto-accept");
-    expect(autoAccept?.textContent).toContain("Auto-apply AI enrichment");
+    // Short visible text so it fits beside the Codex pill; the control
+    // keeps the full name, which still begins with the visible words.
+    expect(autoAccept?.textContent).toBe("Auto-apply");
+    expect(checkbox?.getAttribute("aria-label")).toBe("Auto-apply AI enrichment");
     expect(autoAccept?.getAttribute("title")).toBe(
       "Apply AI enrichment automatically when ready"
     );
@@ -1783,6 +1836,144 @@ describe("FloatOver AI suggestions", () => {
     });
 
     expect(fo?.classList.contains("is-paused")).toBe(false);
+  });
+});
+
+// Enrichment lands seconds after the toast appears, and the window is
+// anchored bottom-right, so anything that changed height on arrival moved
+// the preview and export cards up under the cursor. The tag row holds two
+// lines from the start and collapses the rest into "+N"; the Codex pill
+// stays one line with its full sentence as a tooltip.
+describe("FloatOver enrichment does not move the toast", () => {
+  const LONG_TAGS = enrichment({
+    status: "completed",
+    acceptedTags: ["cereal", "crunch-index", "milk-to-flake-ratio"],
+    suggestedTags: [
+      { id: "s1", label: "sogginess-curve-comparison", confidence: 0.8, accepted_at: null, rejected_at: null },
+      { id: "s2", label: "breakfast-analytics", confidence: 0.7, accepted_at: null, rejected_at: null }
+    ]
+  });
+
+  // jsdom lays nothing out. Give the row the toast's 366px and each chip a
+  // width from its text, so the collapse has something to measure.
+  function layOutTagRow(): void {
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (
+      this: HTMLElement
+    ) {
+      if (this.hasAttribute("data-tag-chip")) return 30 + 6 * (this.textContent?.length ?? 0);
+      if (this.classList.contains("fo__tag-more")) return 30;
+      return 0;
+    });
+    vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(function (
+      this: Element
+    ) {
+      return this.classList.contains("fo__tags") ? 366 : 0;
+    });
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test("tags past two lines collapse into +N, and clicking it shows them all", async () => {
+    layOutTagRow();
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      enrichment: LONG_TAGS
+    });
+    const more = el.querySelector<HTMLButtonElement>(".fo__tag-more");
+    expect(more?.classList.contains("is-overflow")).toBe(false);
+    expect(more?.textContent).toBe("+1");
+    expect(more?.getAttribute("aria-label")).toBe("Show 1 more tag");
+    const hidden = el.querySelectorAll(".fo__tags [data-tag-chip].is-overflow");
+    expect(hidden).toHaveLength(1);
+    expect(hidden[0]?.textContent).toContain("breakfast-analytics");
+
+    await act(async () => {
+      more?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(el.querySelectorAll(".fo__tags [data-tag-chip].is-overflow")).toHaveLength(0);
+    expect(el.querySelector(".fo__tag-more")?.classList.contains("is-overflow")).toBe(true);
+  });
+
+  test("focusing the tag input expands a collapsed row", async () => {
+    layOutTagRow();
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      enrichment: LONG_TAGS
+    });
+    expect(el.querySelectorAll(".fo__tags [data-tag-chip].is-overflow")).toHaveLength(1);
+    await act(async () => {
+      el.querySelector<HTMLInputElement>(".fo__tag-input")?.focus();
+    });
+    expect(el.querySelectorAll(".fo__tags [data-tag-chip].is-overflow")).toHaveLength(0);
+  });
+
+  test("an unmeasured row shows every chip and no +N", async () => {
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      enrichment: LONG_TAGS
+    });
+    expect(el.querySelectorAll(".fo__tags [data-tag-chip]")).toHaveLength(5);
+    expect(el.querySelectorAll(".fo__tags [data-tag-chip].is-overflow")).toHaveLength(0);
+    expect(el.querySelector(".fo__tag-more")?.classList.contains("is-overflow")).toBe(true);
+  });
+
+  test("placeholder chips hold the row while the run is in flight, then give way", async () => {
+    const running = enrichment({
+      status: "running",
+      suggestedDescription: null,
+      suggestedTags: []
+    });
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      aiEnabled: true,
+      aiConsentAccepted: true,
+      enrichment: running
+    });
+    const ghosts = el.querySelectorAll(".fo__tag-ghost");
+    expect(ghosts).toHaveLength(3);
+    for (const ghost of Array.from(ghosts)) {
+      expect(ghost.getAttribute("aria-hidden")).toBe("true");
+    }
+
+    await act(async () => {
+      root?.render(
+        createElement(FloatOver, {
+          src: "data:image/png;base64,",
+          startCountdown: false,
+          aiEnabled: true,
+          aiConsentAccepted: true,
+          enrichment: enrichment()
+        })
+      );
+    });
+    expect(el.querySelectorAll(".fo__tag-ghost")).toHaveLength(0);
+    expect(el.querySelectorAll(".fo__tags [data-tag-chip]")).toHaveLength(2);
+  });
+
+  test("a failed run's full message rides the one-line pill's tooltip", async () => {
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      aiEnabled: true,
+      aiConsentAccepted: true,
+      enrichment: enrichment({
+        status: "failed",
+        error: "the model did not answer within 60 seconds",
+        suggestedDescription: null,
+        suggestedTags: []
+      })
+    });
+    const summary = el.querySelector(".fo__ai-row .ps-codex-pill__summary");
+    expect(summary?.textContent).toBe(
+      "Codex could not read this snap: the model did not answer within 60 seconds"
+    );
+    expect(summary?.getAttribute("title")).toBe(summary?.textContent);
   });
 });
 

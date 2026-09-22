@@ -154,6 +154,12 @@
   border: 1px solid var(--border-subtle);
   aspect-ratio: 16 / 10;
 }
+/* The video toast carries a trim strip and a six-card export grid the
+   image toast does not, and with a Codex description and tags it ran past
+   FLOAT_OVER_HEIGHT_MAX (main/float-over.ts) — the window clipped the
+   footer. A 2:1 slot buys back 46px. Still a layout slot, not a crop:
+   HoverAutoplayVideo is `object-fit: contain`, so a 16:10 take pillarboxes. */
+.fo__preview--video { aspect-ratio: 2 / 1; }
 /* `contain` so the user recognizes their capture at its true aspect
    ratio. The 16:10 frame is just a layout slot — a tiny region
    capture should look tiny, not zoomed-to-fill. */
@@ -503,8 +509,44 @@
   background: color-mix(in srgb, var(--accent) 3.5%, transparent);
 }
 
+/* Two lines tall (2 × 22px chip + 4px gap) whether or not anything is in
+   it yet. Enrichment lands tags seconds after the toast appears, and the
+   window is anchored bottom-right, so a row that grew on arrival moved the
+   preview and export cards up under the cursor. Chips past two lines
+   collapse into "+N" (fitTagRow.ts); expanding is a click, so that growth
+   is the user's own. `align-content` keeps a short row at the top rather
+   than centred in the space it holds. Keep the gap in step with
+   TAG_ROW_GAP_PX in FloatOver.tsx. */
 .fo__tags {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+  position: relative;
+  display: flex; flex-wrap: wrap; align-items: center; align-content: flex-start;
+  gap: 4px;
+  min-height: 48px;
+}
+/* Past the fold: out of flow and invisible, but still laid out so its
+   width can be measured when the row changes. */
+.fo__tag.is-overflow {
+  position: absolute; top: 0; left: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.fo__tag-more {
+  appearance: none;
+  justify-content: center;
+  min-width: 30px;
+  padding: 0 7px;
+  background: transparent;
+  border-color: var(--border-subtle);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.fo__tag-more:hover { color: var(--text-primary); border-color: var(--accent-border); }
+.fo__tag-ghost {
+  flex: none;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 22%, transparent);
+  background: color-mix(in srgb, var(--accent) 3.5%, transparent);
 }
 .fo__tag {
   display: inline-flex; align-items: center; gap: 4px;
@@ -555,6 +597,7 @@
   cursor: pointer;
 }
 .fo__tag-input {
+  /* min-width is TAG_INPUT_MIN_WIDTH_PX in FloatOver.tsx. */
   flex: 1; min-width: 60px;
   height: 22px;
   background: transparent;
@@ -603,18 +646,44 @@
 }
 
 /* ----- AI suggestion strip (now via shared CodexStatusPill) ----- */
+/* One row: the auto-apply checkbox sits beside the pill instead of on a
+   19px line of its own under it. The pill takes the slack and wraps its
+   own text if a status runs long. */
 .fo__ai-row {
   margin: 0 12px 8px;
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  align-items: center;
+  gap: 10px;
 }
+.fo__ai-row > .ps-codex-pill {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* One line, one height, in every state. The status copy changes when the
+   run lands, and a status that wrapped (a long error) or an action button
+   taller than the line (Use / Save / Configure AI) changed the toast's
+   height at exactly that moment. The full text rides the summary's
+   `title`; the Library's detail rail keeps the wrapping pill. */
+.fo__ai-row .ps-codex-pill__text {
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+.fo__ai-row .ps-codex-pill__summary {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* A 22px button in a 16px line: let it overhang into the pill's padding
+   instead of growing the pill. It keeps its full hit target. */
+.fo__ai-row .ps-codex-pill__action { margin: -3px 0; }
 .fo__auto-accept {
   display: inline-flex;
+  flex: none;
   align-items: center;
   gap: 6px;
-  align-self: flex-end;
   padding: 0 2px;
+  white-space: nowrap;
   font: 500 10px/1.2 var(--font-sans);
   color: var(--text-secondary);
   cursor: pointer;
@@ -770,9 +839,12 @@
    FloatOver.tsx for which chips appear and why.
 
    Sits between the header and AppUpdateRow so it reads as part of the
-   capture's identity rather than as an action. Wraps, because a take
-   with screen + mic + system audio is three chips and the toast is
-   narrow. */
+   capture's identity rather than as an action. One line by construction:
+   a silent chip prints its reason in the meter's slot (SourceChip's
+   `reasonTakesMeterSlot` + RECEIPT_SILENT_MARK), so three chips are 355px
+   in the 366px row whatever mix of live and silent they are. `wrap` stays
+   only as a failsafe — a wrapped row costs 30px, a clipped one hides a
+   chip. */
 .fo__sources {
   display: flex;
   align-items: center;

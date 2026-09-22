@@ -102,60 +102,58 @@ function resolveKind(
   return "idle";
 }
 
-function failedLabelFor(provider: string, error: string | null | undefined): ReactNode {
+function failedLabelFor(provider: string, error: string | null | undefined): string {
   const message = error?.trim();
   if (message === undefined || message.length === 0) {
-    return <>{provider} could not read this snap.</>;
+    return `${provider} could not read this snap.`;
   }
   if (/(auth|login|logged|credential|ineligibletier|unsupported_client|unsupported client|not supported|no longer supported)/i.test(message)) {
-    return (
-      <>
-        {provider} is not available: {message}
-      </>
-    );
+    return `${provider} is not available: ${message}`;
   }
-  return (
-    <>
-      {provider} could not read this snap: {message}
-    </>
-  );
+  return `${provider} could not read this snap: ${message}`;
 }
 
-function labelFor(
+/** The status sentence as plain text. It is both what the pill prints and
+ *  the summary's `title`, so a surface that clamps the pill to one line
+ *  (the float-over) still offers the whole of it. */
+function labelTextFor(
   kind: StatusKind,
   provider: string,
   model: string | undefined,
   error: string | null | undefined,
   hasMeta: boolean
-): ReactNode {
+): string {
   const withModel = model !== undefined && model.length > 0 ? ` (${model})` : "";
   switch (kind) {
     case "running":
-      return (
-        <>
-          {provider} is reading the snap{withModel}
-          <span className="ps-codex-pill__dots" />
-        </>
-      );
+      return `${provider} is reading the snap${withModel}`;
     case "queued":
-      return (
-        <>
-          {provider} is queued<span className="ps-codex-pill__dots" />
-        </>
-      );
+      return `${provider} is queued`;
     case "ready":
-      return <>{provider} drafted a title + description{hasMeta ? "" : "."}</>;
+      return `${provider} drafted a title + description${hasMeta ? "" : "."}`;
     case "accepted":
-      return <>Description filled from {provider}{hasMeta ? "" : "."}</>;
+      return `Description filled from ${provider}${hasMeta ? "" : "."}`;
     case "failed":
       return failedLabelFor(provider, error);
     case "safety-disabled":
-      return <>AI enrichment was disabled for cost safety.</>;
+      return "AI enrichment was disabled for cost safety.";
     case "needs-consent":
-      return <>Enable AI to read a bounded copy of this snap.</>;
+      return "Enable AI to read a bounded copy of this snap.";
     case "idle":
-      return <>{provider} has no suggestion yet.</>;
+      return `${provider} has no suggestion yet.`;
   }
+}
+
+function labelFor(kind: StatusKind, text: string): ReactNode {
+  if (kind === "running" || kind === "queued") {
+    return (
+      <>
+        {text}
+        <span className="ps-codex-pill__dots" />
+      </>
+    );
+  }
+  return text;
 }
 
 function shortLabelFor(kind: StatusKind): string {
@@ -196,6 +194,7 @@ export function CodexStatusPill({
 }: CodexStatusPillProps): ReactElement {
   const kind = resolveKind(status, draftAvailable, accepted, needsConsent, safetyDisabled);
   const hasMeta = meta !== undefined && meta !== null;
+  const summaryText = labelTextFor(kind, providerLabel, modelLabel, error, hasMeta);
   const classes = [
     "ps-codex-pill",
     `ps-codex-pill--${variant}`,
@@ -223,8 +222,8 @@ export function CodexStatusPill({
         </svg>
       </span>
       <span className="ps-codex-pill__text">
-        <span className="ps-codex-pill__summary">
-          {labelFor(kind, providerLabel, modelLabel, error, hasMeta)}
+        <span className="ps-codex-pill__summary" title={summaryText}>
+          {labelFor(kind, summaryText)}
         </span>
         {hasMeta ? (
           <span className="ps-codex-pill__meta">{meta}</span>

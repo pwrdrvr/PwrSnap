@@ -99,6 +99,21 @@ Keeping the stems in the source file is what leaves that door open:
 mixing at record time would close it permanently, for every recording
 already made.
 
+**A video's edit is data too.** Trimming and cutting never touch the
+recording. The edit is a list of KEPT spans in source time
+(`VideoCaptureMetadata.segments`; the model is
+`packages/shared/src/video-segments.ts`): a gap between spans is a cut,
+touching spans are a split, and `defaultRange` stays the outer range so
+every consumer that understands one range keeps working. Exports render
+the spans; the timeline never ripples. The Library timeline, MCP agents
+(`pwrsnap_video_edit` → `video:edit`) and the in-app chat (`edit_video`)
+all edit that one list, and the Library adopts an agent's edit as an
+ordinary undoable change. Agents decide what to cut without seeing a
+frame: `video:inspect` returns a run-length-encoded on-screen activity
+track with the still stretches already found — one cached ffmpeg pass per
+capture (`recording/video-activity.ts`), a derived-cache lane like the
+filmstrip and waveform.
+
 ## AI runs on the user's machine, through their own agent
 
 PwrSnap makes no direct calls to any model vendor. Every AI feature goes

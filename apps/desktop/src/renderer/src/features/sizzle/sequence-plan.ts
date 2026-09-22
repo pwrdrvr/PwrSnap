@@ -7,6 +7,7 @@ import {
   distributeSequenceBeatStarts,
   estimateSequenceTimelineDurationSec,
   normalizeSizzleSequenceBeatContinuity,
+  normalizeVideoMediaTrim,
   resolveSizzleVideoFit,
   sizzleMediaSourceTimeSec,
   sizzleMediaSpans,
@@ -138,10 +139,15 @@ export function sequencePreviewVideoState(args: {
   if (capture.kind !== "video" || capture.video === undefined || capture.video === null) {
     return null;
   }
-  const trim = beat.mediaTrim ?? sceneBeat.mediaTrim ?? {
-    startSec: capture.video.defaultRange.start,
-    endSec: capture.video.defaultRange.end
-  };
+  // Resolved from the STORED beat and the live record — exactly what the
+  // planner does — not from the plan's copy: a clip with no trim of its
+  // own follows the Library's in/out, and the plan's copy is only as
+  // fresh as the last preview.
+  const trim = normalizeVideoMediaTrim({
+    trim: sceneBeat.mediaTrim,
+    defaultRange: capture.video.defaultRange,
+    sourceDurationSec: capture.video.durationSec
+  });
   // The same spans the export plays: the trim minus the capture's Library
   // cuts, read live from the record so a cut made while the reel is open
   // shows up on the next frame.
@@ -190,46 +196,4 @@ export function sequencePreviewVideoState(args: {
     hasCuts: spans.length > 1,
     spans
   };
-}
-
-/** How close to the end of its span the head may be while the element
- *  has already jumped the cut ahead of it. */
-const CUT_LEAD_SEC = 0.25;
-
-/**
- * Where a video element playing a cut clip should be sent, or `null` to
- * leave it playing. Seeks only at span boundaries — within a kept span
- * the element is left to play on its own clock, exactly as an uncut clip
- * is, so ordinary drift between it and the head never turns into a
- * stream of seeks.
- *
- *   • The element ran into a cut → jump to the next kept span.
- *   • The element is in a different span than the head → go where the
- *     head says (it crossed a cut first, or the reel looped) — unless
- *     the element is simply one cut AHEAD of a head about to follow it.
- */
-export function cutFollowSeekSec(
-  spans: readonly VideoRange[],
-  expectedSec: number,
-  elementSec: number
-): number | null {
-  const expected = spanIndexAt(spans, expectedSec);
-  if (expected === -1) return null;
-  const at = spanIndexAt(spans, elementSec);
-  if (at === -1) {
-    const next = spans.findIndex((span) => elementSec < span.start);
-    return next === -1 ? null : spans[next]!.start;
-  }
-  if (at === expected) return null;
-  if (at === expected + 1 && spans[expected]!.end - expectedSec < CUT_LEAD_SEC) return null;
-  return expectedSec;
-}
-
-/** Index of the span holding `sec` (its end counts, for the last span's
- *  final instant); -1 in a cut or outside the clip. */
-function spanIndexAt(spans: readonly VideoRange[], sec: number): number {
-  const EPS = 0.001;
-  return spans.findIndex((span, i) =>
-    sec >= span.start - EPS && (sec < span.end || (i === spans.length - 1 && sec <= span.end + EPS))
-  );
 }

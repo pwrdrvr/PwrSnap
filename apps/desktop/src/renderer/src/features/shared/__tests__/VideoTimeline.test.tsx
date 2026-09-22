@@ -714,7 +714,7 @@ describe("VideoTimeline — splits and cuts", () => {
     expect(changes.at(-1)).toEqual({ segments: [{ start: 0, end: 16 }], commit: true });
   });
 
-  test("dragging a cut's edge onto the other side closes it back into a split", () => {
+  test("dragging a cut's edge onto the other side undoes the cut on release", () => {
     const { el, changes } = editable([
       { start: 0, end: 4 },
       { start: 9, end: 16 }
@@ -729,8 +729,38 @@ describe("VideoTimeline — splits and cuts", () => {
       segments: [{ start: 0, end: 6 }, { start: 9, end: 16 }],
       commit: false
     });
-    expect(changes.at(-1)).toEqual({
+    // Mid-drag the parts stay separate, so dragging back reopens the cut…
+    expect(changes.at(-2)).toEqual({
       segments: [{ start: 0, end: 9 }, { start: 9, end: 16 }],
+      commit: false
+    });
+    // …and on release they are one part again, not a leftover split.
+    expect(changes.at(-1)).toEqual({ segments: [{ start: 0, end: 16 }], commit: true });
+  });
+
+  test("the cut's far edge undoes it the same way", () => {
+    const { el, changes } = editable([
+      { start: 0, end: 4 },
+      { start: 9, end: 16 }
+    ]);
+    const strip = el.querySelector(".vtl__strip")!;
+    pointer(q(el, "video-timeline-cut-out")!, "pointerdown", 450);
+    pointer(strip, "pointermove", 203);
+    pointer(strip, "pointerup", 203);
+    expect(changes.at(-1)).toEqual({ segments: [{ start: 0, end: 16 }], commit: true });
+  });
+
+  test("an edge released short of its neighbour keeps the cut", () => {
+    const { el, changes } = editable([
+      { start: 0, end: 4 },
+      { start: 9, end: 16 }
+    ]);
+    const strip = el.querySelector(".vtl__strip")!;
+    pointer(q(el, "video-timeline-cut-out")!, "pointerdown", 450);
+    pointer(strip, "pointermove", 300);
+    pointer(strip, "pointerup", 300);
+    expect(changes.at(-1)).toEqual({
+      segments: [{ start: 0, end: 4 }, { start: 6, end: 16 }],
       commit: true
     });
   });

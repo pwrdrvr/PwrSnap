@@ -409,3 +409,75 @@ export function nextPlayableVideoTime(segments: readonly VideoRange[], t: number
   }
   return null;
 }
+
+// ── playback ────────────────────────────────────────────────────────
+
+/** What a player showing an edit should do with its video element now. */
+export type VideoEditPlaybackStep =
+  | { kind: "play" }
+  | { kind: "seek"; sec: number }
+  | { kind: "end" };
+
+/** How close to a boundary counts as on it. A seek that lands a hair
+ *  short of a part's start must not seek again on every frame. */
+const PLAYBACK_EPS_SEC = 0.005;
+
+/** A separate clock this close to the end of its part may trail an
+ *  element that already jumped the cut. */
+const PLAYBACK_LEAD_SEC = 0.25;
+
+/**
+ * One step of playing an edit: the single rule both players follow, the
+ * Library stage and the sizzle reel preview. `spans` are the export spans
+ * (`videoExportSpans`) in source seconds; `elementSec` is where the video
+ * element is.
+ *
+ * With no `headSec`, the element IS the clock (the Library stage):
+ *   • inside a kept part → play;
+ *   • in a cut, or before the first part → seek to the next part;
+ *   • at the last kept instant or past it → end (the caller wraps or stops).
+ *
+ * With `headSec`, a separate clock drives playback and the element follows
+ * it (the reel preview):
+ *   • in a cut → seek to the next part, as above;
+ *   • in a different part than the head → seek to the head (it crossed a
+ *     cut first, or the reel looped) — unless the element is simply one
+ *     cut ahead of a head about to follow it;
+ *   • otherwise play. Within a part the element keeps its own clock, so
+ *     ordinary drift between the two never becomes a stream of seeks.
+ */
+export function videoEditPlaybackStep(
+  spans: readonly VideoRange[],
+  elementSec: number,
+  headSec?: number
+): VideoEditPlaybackStep {
+  const last = spans[spans.length - 1];
+  if (last === undefined) return { kind: "play" };
+  const at = playbackSpanIndex(spans, elementSec);
+  if (headSec === undefined) {
+    if (elementSec >= last.end - PLAYBACK_EPS_SEC) return { kind: "end" };
+    if (at !== -1) return { kind: "play" };
+    const next = spans.find((span) => elementSec < span.start);
+    return next === undefined ? { kind: "end" } : { kind: "seek", sec: next.start };
+  }
+  const expected = playbackSpanIndex(spans, headSec);
+  if (expected === -1) return { kind: "play" };
+  if (at === -1) {
+    const next = spans.find((span) => elementSec < span.start);
+    return next === undefined ? { kind: "play" } : { kind: "seek", sec: next.start };
+  }
+  if (at === expected) return { kind: "play" };
+  if (at === expected + 1 && spans[expected]!.end - headSec < PLAYBACK_LEAD_SEC) return { kind: "play" };
+  return { kind: "seek", sec: headSec };
+}
+
+/** Index of the part holding `sec` — its end belongs to the next cut,
+ *  except the last part's, which is where playback parks — or -1. */
+function playbackSpanIndex(spans: readonly VideoRange[], sec: number): number {
+  const lastIndex = spans.length - 1;
+  return spans.findIndex(
+    (span, i) =>
+      sec >= span.start - PLAYBACK_EPS_SEC &&
+      (sec < span.end || (i === lastIndex && sec <= span.end + PLAYBACK_EPS_SEC))
+  );
+}

@@ -343,13 +343,14 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
   );
 
   /** The boundary a split / edge drag moves, clamped so no span drops
-   *  below the minimum and snapped onto its neighbour within SNAP_PX. */
+   *  below the minimum and snapped onto its neighbour within SNAP_PX.
+   *  `closed` is true when an edge drag has shut the cut it bounds. */
   const segmentDrag = useCallback(
     (
       mode: Extract<DragMode, { kind: "split" | "edge" }>,
       base: readonly VideoRange[],
       sec: number
-    ): { segments: VideoRange[]; at: number } | null => {
+    ): { segments: VideoRange[]; at: number; closed: boolean } | null => {
       const next = base.map((s) => ({ start: s.start, end: s.end }));
       const snap = width > 0 ? (SNAP_PX / width) * durationSec : 0;
       const t = roundTime(sec);
@@ -360,7 +361,7 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
         const at = Math.min(Math.max(t, prev.start + MIN_RANGE_SEC), cur.end - MIN_RANGE_SEC);
         prev.end = at;
         cur.start = at;
-        return { segments: next, at };
+        return { segments: next, at, closed: false };
       }
       const cur = next[mode.index];
       if (cur === undefined) return null;
@@ -370,14 +371,14 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
         let at = Math.min(Math.max(t, cur.start + MIN_RANGE_SEC), after.start);
         if (after.start - at <= snap) at = after.start;
         cur.end = at;
-        return { segments: next, at };
+        return { segments: next, at, closed: at === after.start };
       }
       const before = next[mode.index - 1];
       if (before === undefined) return null;
       let at = Math.max(Math.min(t, cur.end - MIN_RANGE_SEC), before.end);
       if (at - before.end <= snap) at = before.end;
       cur.start = at;
-      return { segments: next, at };
+      return { segments: next, at, closed: at === before.end };
     },
     [durationSec, width]
   );
@@ -393,7 +394,13 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
         if (base === undefined || onSegmentsChange === undefined) return;
         const moved = segmentDrag(mode, base, sec);
         if (moved === null) return;
-        onSegmentsChange(moved.segments, commit);
+        // A cut dragged shut is undone, not turned into a split nobody
+        // asked for: the two sides become one part again on release.
+        // Mid-drag the parts stay separate so the handle can reopen it.
+        onSegmentsChange(
+          commit && moved.closed ? joinVideoSegmentsAt(moved.segments, moved.at) : moved.segments,
+          commit
+        );
         onSeek?.(moved.at);
         return;
       }
@@ -980,7 +987,7 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
                   type="button"
                   className={`vtl__handle is-out is-edge${active("end", i - 1)}`}
                   style={{ left: `${outEdgeX - EDGE_W}px` }}
-                  title="Cut starts here — drag to adjust"
+                  title="Cut starts here — drag to adjust, or onto the other edge to undo the cut"
                   aria-label={`Cut from ${formatTimecode(prev.end)}`}
                   onPointerDown={beginDrag({ kind: "edge", index: i - 1, side: "end" })}
                   data-testid="video-timeline-cut-in"
@@ -990,7 +997,7 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
                   type="button"
                   className={`vtl__handle is-in is-edge${active("start", i)}`}
                   style={{ left: `${inEdgeX}px` }}
-                  title="Cut ends here — drag to adjust"
+                  title="Cut ends here — drag to adjust, or onto the other edge to undo the cut"
                   aria-label={`Cut to ${formatTimecode(seg.start)}`}
                   onPointerDown={beginDrag({ kind: "edge", index: i, side: "start" })}
                   data-testid="video-timeline-cut-out"

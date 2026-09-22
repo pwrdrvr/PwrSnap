@@ -128,7 +128,7 @@ export function videoTransportKeyHints(platform: ShortcutPlatform) {
     step: `← / → step one frame · ${shift}← / ${shift}→ step one second · Home / End`,
     trim: "I set in · O set out at the playhead",
     split: "Split at the playhead (S) · X cuts the part under the playhead",
-    loop: "Play the edit — loop the trimmed range, skipping cuts",
+    loop: "Loop the edit · off plays it once",
     mute: "Mute / unmute",
     fullscreen: "Fullscreen"
   } as const;

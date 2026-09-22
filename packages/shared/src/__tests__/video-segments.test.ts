@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  videoEditPlaybackStep,
   cutVideoSegments,
   isFullClipEdit,
   joinVideoSegmentsAt,
@@ -266,5 +267,61 @@ describe("nextPlayableVideoTime", () => {
     expect(nextPlayableVideoTime(edit, 10)).toBe(20);
     expect(nextPlayableVideoTime(edit, 15)).toBe(20);
     expect(nextPlayableVideoTime(edit, 30)).toBeNull();
+  });
+});
+
+describe("videoEditPlaybackStep", () => {
+  const SPANS = [
+    { start: 0, end: 2 },
+    { start: 8, end: 11 },
+    { start: 16, end: 20 }
+  ];
+
+  describe("the element is the clock (Library stage)", () => {
+    it("plays inside a kept part", () => {
+      expect(videoEditPlaybackStep(SPANS, 9)).toEqual({ kind: "play" });
+    });
+
+    it("jumps a cut to the next part, and the head from before the first part", () => {
+      expect(videoEditPlaybackStep(SPANS, 2)).toEqual({ kind: "seek", sec: 8 });
+      expect(videoEditPlaybackStep(SPANS, 12.5)).toEqual({ kind: "seek", sec: 16 });
+      expect(videoEditPlaybackStep([{ start: 3, end: 5 }], 1)).toEqual({ kind: "seek", sec: 3 });
+    });
+
+    it("does not re-seek a landing a hair short of the part's start", () => {
+      expect(videoEditPlaybackStep(SPANS, 7.997)).toEqual({ kind: "play" });
+    });
+
+    it("ends at the last kept instant", () => {
+      expect(videoEditPlaybackStep(SPANS, 19.996)).toEqual({ kind: "end" });
+      expect(videoEditPlaybackStep(SPANS, 25)).toEqual({ kind: "end" });
+    });
+  });
+
+  describe("a separate head is the clock (reel preview)", () => {
+    it("leaves the element alone inside the head's part, drift and all", () => {
+      expect(videoEditPlaybackStep(SPANS, 9.4, 9)).toEqual({ kind: "play" });
+      expect(videoEditPlaybackStep(SPANS, 8.9, 9.4)).toEqual({ kind: "play" });
+    });
+
+    it("jumps an element that ran into a cut to the next part", () => {
+      expect(videoEditPlaybackStep(SPANS, 2.05, 1.95)).toEqual({ kind: "seek", sec: 8 });
+    });
+
+    it("sends a lagging element to where the head crossed to", () => {
+      expect(videoEditPlaybackStep(SPANS, 1.98, 8.05)).toEqual({ kind: "seek", sec: 8.05 });
+    });
+
+    it("does not drag an element that is one cut AHEAD back into the old part", () => {
+      expect(videoEditPlaybackStep(SPANS, 8.02, 1.95)).toEqual({ kind: "play" });
+    });
+
+    it("follows the head when a loop wraps back to the first part", () => {
+      expect(videoEditPlaybackStep(SPANS, 19.9, 0.1)).toEqual({ kind: "seek", sec: 0.1 });
+    });
+
+    it("leaves the element parked on the last kept instant", () => {
+      expect(videoEditPlaybackStep(SPANS, 20, 20)).toEqual({ kind: "play" });
+    });
   });
 });

@@ -362,7 +362,15 @@ describe("validateSizzleUpdate — Phase 3a mediaTrim validation", () => {
     if (!r.ok) expect(r.error.code).toBe("scene_mediaTrim_end_invalid");
   });
 
-  it("rejects mediaTrim duration over the 60s cap (matches TTS practical-length cap)", () => {
+  it("accepts a trim window longer than a minute — a long take cut down to seconds", () => {
+    const r = validateSizzleUpdate({
+      id: "sz_1",
+      patch: { scenes: [{ ...validSceneBase(), mediaTrim: { startSec: 0, endSec: 90 } }] }
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it("rejects a trim window past the sanity bound", () => {
     const r = validateSizzleUpdate({
       id: "sz_1",
       patch: {

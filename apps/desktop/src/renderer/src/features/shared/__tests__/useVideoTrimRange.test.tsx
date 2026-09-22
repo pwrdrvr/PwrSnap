@@ -26,13 +26,19 @@ let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 let latest: UseVideoTrimRange | null = null;
 
+/** Range mode unless the test passes the record's segments. */
 function Probe(props: {
   captureId: string | null;
   durationSec: number;
   persistedRange: VideoRange | null;
   persistedSegments?: readonly VideoRange[] | null;
 }): null {
-  latest = useVideoTrimRange(props);
+  const { persistedSegments, ...rest } = props;
+  latest = useVideoTrimRange(
+    persistedSegments === undefined
+      ? { ...rest, persist: "range" }
+      : { ...rest, persist: "edit", persistedSegments }
+  );
   return null;
 }
 

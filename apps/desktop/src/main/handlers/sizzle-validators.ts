@@ -67,11 +67,14 @@ export const SIZZLE_LIMITS = {
   scenesPerProjectMax: 200,
   durationOverrideSecMin: 0.5,
   durationOverrideSecMax: 60,
-  /** Hard cap on a video scene's trim range. Matches the OpenAI TTS
-   *  practical-length cap and keeps the rendered reel under a few
-   *  minutes per scene. */
+  /** Sanity bounds on a video clip's trim WINDOW. The window is not
+   *  what renders — Library cuts inside it are skipped, and the window
+   *  is clamped to the recording at plan time — so it is not where a
+   *  scene's length is capped. That is `SIZZLE_SCENE_MEDIA_MAX_SEC`, on
+   *  the footage a one-capture scene actually keeps. Capping the window
+   *  at 60 s refused a 90 s recording cut down to 8 s. */
   mediaTrimSecMin: 0.1,
-  mediaTrimSecMax: 60,
+  mediaTrimSecMax: 24 * 60 * 60,
   beatTimingSecMax: 600,
   transitionDurationSecMax: 3,
   /** Cap on bulk capture lookups via `library:listByIds`. The Library

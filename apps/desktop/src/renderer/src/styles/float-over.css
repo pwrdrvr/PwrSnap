@@ -730,9 +730,12 @@
    FloatOver.tsx for which chips appear and why.
 
    Sits between the header and AppUpdateRow so it reads as part of the
-   capture's identity rather than as an action. Wraps, because a take
-   with screen + mic + system audio is three chips and the toast is
-   narrow. */
+   capture's identity rather than as an action. One line by construction:
+   a silent chip prints its reason in the meter's slot (SourceChip's
+   `reasonTakesMeterSlot` + RECEIPT_SILENT_MARK), so three chips are 355px
+   in the 366px row whatever mix of live and silent they are. `wrap` stays
+   only as a failsafe — a wrapped row costs 30px, a clipped one hides a
+   chip. */
 .fo__sources {
   display: flex;
   align-items: center;

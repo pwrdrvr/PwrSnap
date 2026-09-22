@@ -710,6 +710,37 @@ describe("post-recording source summary", () => {
       "Captured: screen + microphone (no audio captured)"
     );
   });
+
+  // The silent chip used to draw a flat meter AND "no audio captured",
+  // which made the failure case the widest chip: a live mic beside a silent
+  // system audio came to 456px in a 366px row, wrapped, and pushed the toast
+  // past its window. The reason now takes the meter's slot, one word wide.
+  test("a silent receipt chip prints its reason in the meter's slot", async () => {
+    const el = await renderToast({
+      kind: "video",
+      src: "pwrsnap-capture://r/rec-2",
+      captureId: "rec-2",
+      durationSec: 59.1,
+      widthPx: 1701,
+      heightPx: 1082,
+      defaultRange: { start: 0, end: 59.1 },
+      hasSystemAudio: false,
+      hasMicrophoneAudio: true,
+      requestedSystemAudio: true,
+      requestedMicrophone: true
+    });
+    const silent = el.querySelector('[data-testid="fo-source-systemAudio"]');
+    expect(silent?.getAttribute("data-state")).toBe("silent");
+    expect(silent?.querySelector(".ps-meter")).toBeNull();
+    expect(silent?.querySelector(".ps-chip__why")?.textContent).toBe("none");
+    expect(silent?.getAttribute("title")).toBe("no audio captured");
+    // The live chip beside it keeps its recorded meter.
+    const live = el.querySelector('[data-testid="fo-source-microphone"]');
+    expect(live?.querySelector(".ps-meter")?.getAttribute("data-tone")).toBe("recorded");
+    expect(
+      el.querySelector('[data-testid="fo-sources"]')?.getAttribute("aria-label")
+    ).toBe("Captured: screen + microphone + system audio (no audio captured)");
+  });
 });
 
 describe("FloatOverHost", () => {

@@ -61,6 +61,12 @@ export type SourceChipProps = {
   readonly label?: string;
   /** Short reason shown in place of a meter — "needs access", "macOS only". */
   readonly why?: string;
+  /**
+   * The long form of `why`, carried as the receipt chip's tooltip. The
+   * receipt prints a one-word reason where the meter would be (see
+   * `reasonTakesMeterSlot`) and keeps the full sentence here.
+   */
+  readonly detail?: string;
   /** Inline action label — "Allow", "Settings". Implies `onAct`. */
   readonly act?: string;
   readonly onAct?: () => void;
@@ -235,6 +241,7 @@ export function SourceChip({
   level,
   label,
   why,
+  detail,
   act,
   onAct,
   kbd,
@@ -259,7 +266,16 @@ export function SourceChip({
   // cannot be the meter's gate: `ask` / `denied` / `nodevice` are armed but
   // have nothing to measure and must draw no meter at all.
   const measurable = state === "live" || state === "silent";
-  const showMeter = measurable && isAudio && !noMeter;
+  // In a receipt, a stated reason REPLACES the meter rather than joining it.
+  // A silent receipt used to draw its flat meter AND "no audio captured",
+  // saying the same thing twice and making the failure case the widest
+  // chip: screen + a live mic + a silent system audio came to 456px in the
+  // float-over's 366px row, so the row wrapped exactly when it mattered and
+  // the toast grew past its window. The receipt now passes a one-word
+  // reason sized to the meter's slot, so a clean take and a broken one lay
+  // out identically.
+  const reasonTakesMeterSlot = density === "static" && why !== undefined;
+  const showMeter = measurable && isAudio && !noMeter && !reasonTakesMeterSlot;
   // `silent` outranks an explicit tone. Callers pass `meterTone="recorded"`
   // for a whole receipt row, and letting that win painted a full accent
   // meter for a source that captured nothing — pixel-identical to one that
@@ -284,6 +300,7 @@ export function SourceChip({
         className={className}
         data-state={state}
         data-source={source}
+        {...(detail !== undefined ? { title: detail } : {})}
         {...(testId !== undefined ? { "data-testid": testId } : {})}
       >
         <SourceGlyph source={source} />

@@ -888,7 +888,9 @@ export function FloatOver({
               state={receipt.state}
               density="static"
               meterTone="recorded"
-              {...(receipt.why !== undefined ? { why: receipt.why } : {})}
+              {...(receipt.why !== undefined
+                ? { why: RECEIPT_SILENT_MARK, detail: receipt.why }
+                : {})}
               testId={`fo-source-${receipt.source}`}
             />
           ))}
@@ -1380,6 +1382,15 @@ export function recordingSourceReceipts(
   }
   return receipts;
 }
+
+/**
+ * What a silent receipt chip prints where its meter would be. One word,
+ * chosen for its width: "none" at the chip's 11px is the meter plus its gap,
+ * so every combination of live and silent sources is the same 355px and
+ * fits the toast's 366px row on one line. The full reason (`receipt.why`)
+ * still reaches the row's accessible name and the chip's tooltip.
+ */
+const RECEIPT_SILENT_MARK = "none";
 
 const RECEIPT_SOURCE_NAMES: Record<"screen" | "microphone" | "systemAudio", string> = {
   screen: "screen",

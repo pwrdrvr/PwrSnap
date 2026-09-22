@@ -123,6 +123,36 @@ describe("SourceChip", () => {
     expect(meter.getAttribute("data-level")).toBe("0");
   });
 
+  // A receipt that states its reason must not ALSO draw the flat meter —
+  // the two said the same thing, and together they made the silent chip the
+  // widest one, wrapping the float-over's receipt row on exactly the take
+  // that went wrong. The reason takes the meter's slot instead.
+  test("a receipt's stated reason takes the meter's slot", () => {
+    const el = mount(
+      <SourceChip
+        source="systemAudio"
+        state="silent"
+        density="static"
+        meterTone="recorded"
+        why="none"
+        detail="no audio captured"
+        testId="chip"
+      />
+    );
+    const chip = el.querySelector<HTMLElement>("[data-testid='chip']")!;
+    expect(chip.querySelector(".ps-meter")).toBeNull();
+    expect(chip.querySelector(".ps-chip__why")?.textContent).toBe("none");
+    expect(chip.getAttribute("title")).toBe("no audio captured");
+  });
+
+  // Only the receipt trades the meter away. The selector and the HUD draw a
+  // reason (when they have one) beside whatever meter the state allows.
+  test("interactive densities keep the meter beside a reason", () => {
+    const el = mount(<SourceChip source="microphone" state="silent" why="quiet" />);
+    expect(el.querySelector(".ps-meter")?.getAttribute("data-tone")).toBe("flat");
+    expect(el.querySelector(".ps-chip__why")?.textContent).toBe("quiet");
+  });
+
   test("a landed receipt still fills", () => {
     const el = mount(
       <SourceChip source="microphone" state="live" density="static" meterTone="recorded" />

@@ -40,7 +40,6 @@ import {
   ensureVideoFrames,
   FRAMES_COUNT_MAX,
   FRAMES_COUNT_STEP,
-  normalizeFramesSpec,
   type FramesSpec
 } from "../video-frames";
 
@@ -90,7 +89,9 @@ function tileLumas(plane: Buffer, spec: FramesSpec): number[] {
 /** The source instant each tile shows, from a raw run of the production
  *  argv — the same filter graph, with only the output swapped. */
 function sampledTimes(source: string, durationSec: number, count: number): Tile[] {
-  const spec = normalizeFramesSpec({ count, frameWidth: 64, sourceWidthPx: W, sourceHeightPx: H });
+  // Build the spec directly: normalizeFramesSpec would round a 2 up to 4,
+  // and 2 is a size it can produce (for a request of 1).
+  const spec: FramesSpec = { count, frameWidth: 64, frameHeight: 40 };
   const args = buildFramesArgs({ sourcePath: source, durationSec, spec, outputPath: "pipe:1" });
   const raw = run([...args.slice(0, -1), "-pix_fmt", "yuv420p", "-f", "rawvideo", "pipe:1"]);
   return tileLumas(raw, spec).map((y) => (y < BLACK_BELOW ? "black" : (y - 48) / 4));

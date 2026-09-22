@@ -18,17 +18,19 @@
 // have no idea a deletion happened.
 //
 // The gate is deliberately at the cache boundary rather than inside any one
-// writer: four lanes write `<cacheRoot>/video/<id>/` and three paths delete
-// it, and pairing those off one at a time is twelve places to get right.
+// writer: five lanes write `<cacheRoot>/video/<id>/` and three paths delete
+// it, and pairing those off one at a time is fifteen places to get right.
 //
 // ## What it covers, and what it does not
 //
-// GATED — the four per-capture derived-video lanes, each an ffmpeg run whose
-// output is published by `rename` and can be source-sized:
+// GATED — the five per-capture derived-video lanes, each an ffmpeg run whose
+// output is published by `rename`:
 //   • the playback rendition   (`ensureVideoPlaybackAsset`)
 //   • the waveform asset       (`ensureVideoAudioAsset`)
 //   • the contact strip        (`ensureVideoFrames`)
 //   • the poster frame         (`ensureVideoPoster`)
+//   • the activity track       (`ensureVideoActivity`) — tiny output, but a
+//     full decode of the source, so seconds of writer in the window
 //
 // NOT GATED, on purpose:
 //   • MP4/GIF exports (`recording-exporter.ts`), which also write this

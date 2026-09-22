@@ -12,6 +12,12 @@
 //   MED : 720p · 24 fps · "film frame rate"
 //   HIGH: source resolution · 30 fps · max quality
 //
+// CUTS: an edit with more than one kept span (see video-segments.ts)
+// exports through a trim + concat graph instead of an input seek —
+// `buildSegmentedGifEncodeArgs` / `buildSegmentedMp4EncodeArgs`. A
+// single span, however many splits it carries, keeps the original
+// single-range argv and cache key byte for byte.
+//
 // MP4: mixes the selected audio into one AAC track for ordinary players.
 // Tracks remain individually selectable at export time; the source
 // container places system audio on track 1, microphone on track 2
@@ -22,7 +28,7 @@
 //   HIGH: source resolution · 6 Mbps · compressed master
 
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type {
@@ -34,6 +40,7 @@ import type {
   VideoPreset,
   VideoRange
 } from "@pwrsnap/shared";
+import { videoKeptDurationSec, videoSpansKey } from "@pwrsnap/shared";
 import { getMainLogger } from "../log";
 import { getCacheRoot } from "../persistence/paths";
 import {
@@ -161,12 +168,34 @@ function evenDimension(value: number): number {
   return Math.max(2, value - (value % 2));
 }
 
+/** The spans to encode — `null` for the single-range path. */
+function multiSpans(input: ExportInput): readonly VideoRange[] | null {
+  return input.spans !== undefined && input.spans.length > 1 ? input.spans : null;
+}
+
+/** '' for the single-range path; the canonical span list otherwise. */
+function exportSegmentsKey(input: ExportInput): string {
+  const spans = multiSpans(input);
+  return spans === null ? "" : videoSpansKey(spans);
+}
+
+/** Seconds of video the export produces. */
+function exportDurationSec(input: ExportInput): number {
+  const spans = multiSpans(input);
+  return spans === null ? input.range.end - input.range.start : videoKeptDurationSec(spans);
+}
+
 export type ExportInput = {
   record: CaptureRecord;
   video: VideoCaptureMetadata;
   format: VideoExportRequest["format"];
   preset: VideoPreset;
+  /** Outer range of what exports. With no `spans` (or one), the range
+   *  itself is the export. */
   range: VideoRange;
+  /** Kept spans, touching ones already merged (`videoExportSpans`).
+   *  Two or more select the trim + concat path. */
+  spans?: readonly VideoRange[] | undefined;
   audio: VideoExportAudio;
   signal?: AbortSignal | undefined;
   progress?: VideoExportProgressObserver | undefined;
@@ -285,6 +314,7 @@ function encodeKey(input: ExportInput): string {
     input.preset,
     input.range.start.toFixed(3),
     input.range.end.toFixed(3),
+    exportSegmentsKey(input),
     input.audio.includeSystemAudio ? 1 : 0,
     input.audio.includeMicrophone ? 1 : 0
   ].join("|");
@@ -491,6 +521,8 @@ export async function exportVideoRange(input: ExportInput): Promise<VideoExportR
   const cached = lookupExport({
     captureId: input.record.id,
     range: input.range,
+    segmentsKey: exportSegmentsKey(input),
+    durationSec: exportDurationSec(input),
     format: input.format,
     preset: input.preset,
     audio: input.audio
@@ -602,8 +634,14 @@ async function encodeAndRecord(
   // disk grouping makes debugging cache hits / orphans trivial
   // (`ls -lh <captureId>/` shows all six format/preset combinations
   // for a given range).
+  const segmentsKey = exportSegmentsKey(input);
   const outputStem = [
     `r${input.range.start.toFixed(3)}-${input.range.end.toFixed(3)}`,
+    // A cut export shares its outer range with the uncut one; the span
+    // list (hashed — it can be long) keeps the two files apart.
+    ...(segmentsKey === ""
+      ? []
+      : [`c${createHash("sha256").update(segmentsKey).digest("hex").slice(0, 12)}`]),
     input.preset,
     ...(encoderTag === null ? [] : [encoderTag]),
     audioTag
@@ -626,11 +664,25 @@ async function encodeAndRecord(
     );
   }
 
+  const spans = multiSpans(input);
+  const durationSec = exportDurationSec(input);
   try {
     await acquireEncodeSlot(signal);
     const startMs = Date.now();
     try {
-      if (input.format === "gif") {
+      if (spans !== null) {
+        onProgress({ phase: input.format === "gif" ? "palette" : "encoding", ratio: null });
+        await encodeSegmented(
+          ffmpeg,
+          input.record.legacy_src_path,
+          input,
+          spans,
+          { widthPx, heightPx },
+          stagingPath,
+          signal,
+          onProgress
+        );
+      } else if (input.format === "gif") {
         // palettegen must consume the selected range before paletteuse can
         // produce output timestamps. Keep that work honestly indeterminate.
         onProgress({ phase: "palette", ratio: null });
@@ -686,6 +738,7 @@ async function encodeAndRecord(
     recordExport({
       captureId: input.record.id,
       range: input.range,
+      segmentsKey,
       format: input.format,
       preset: input.preset,
       audio: input.audio,
@@ -704,13 +757,14 @@ async function encodeAndRecord(
       widthPx,
       heightPx,
       byteSize: sizeInfo.size,
-      durationSec: input.range.end - input.range.start,
+      durationSec,
+      spans: spans?.length ?? 1,
       encodeMs: Date.now() - startMs
     });
     return {
       path: outputPath,
       byteSize: sizeInfo.size,
-      durationSec: input.range.end - input.range.start,
+      durationSec,
       widthPx,
       heightPx,
       fromCache: false
@@ -871,6 +925,178 @@ async function encodeMp4(
 
   await runFfmpeg(ffmpeg, args, {
     durationSec: range.end - range.start,
+    signal,
+    onProgress: (record) => {
+      onProgress({
+        phase: "encoding",
+        ratio: record.ratio === null ? null : Math.min(0.99, record.ratio * 0.99)
+      });
+    }
+  });
+}
+
+// ── cut (multi-span) exports ────────────────────────────────────────
+//
+// One input, decoded from 0 to the last span's end, normalized to a
+// constant frame rate, then `trim`med per span and `concat`ed.
+//
+// Why not one `-ss`/`-t` input per span: these are VFR screen
+// recordings. A stretch where nothing moved can go seconds between
+// frames, so a span that starts inside one has NO frame at its start —
+// an accurate seek discards the frame still on screen (its pts is
+// before the seek point) and the span would open on the NEXT change,
+// shortened by however long the screen was still. That is exactly the
+// kind of span a cut edit is made of. The `fps` filter repeats the
+// held frame across the gap first, so every `trim` start lands on the
+// frame that was actually showing.
+//
+// 60 fps is the macOS recorder's cap (`minimumFrameInterval`), so an
+// uncut and a cut export of the same recording move equally smoothly;
+// repeated frames cost almost nothing to encode.
+const SEGMENTED_MP4_FPS = 60;
+
+function spanTrim(span: VideoRange): string {
+  return `start=${span.start.toFixed(3)}:end=${span.end.toFixed(3)}`;
+}
+
+function splitLabels(prefix: string, count: number): string {
+  return Array.from({ length: count }, (_, i) => `[${prefix}${i}]`).join("");
+}
+
+/** GIF: the palette pipeline runs once, after the concat, so every
+ *  span shares one palette. */
+export function buildSegmentedGifEncodeArgs(
+  src: string,
+  spans: readonly VideoRange[],
+  spec: GifPresetSpec,
+  outPath: string
+): string[] {
+  const n = spans.length;
+  const last = spans[n - 1]!;
+  const scaleStep = spec.width === null ? "" : `scale=${spec.width}:-2:flags=lanczos,`;
+  const graph = [
+    `[0:v]fps=${spec.fps},split=${n}${splitLabels("s", n)}`,
+    ...spans.map((span, i) => `[s${i}]trim=${spanTrim(span)},setpts=PTS-STARTPTS[v${i}]`),
+    `${splitLabels("v", n)}concat=n=${n}:v=1:a=0,${scaleStep}split[a][b]`,
+    `[a]palettegen=stats_mode=diff[p]`,
+    `[b][p]paletteuse=dither=bayer:bayer_scale=5`
+  ].join(";");
+  return ["-y", "-t", last.end.toFixed(3), "-i", src, "-filter_complex", graph, outPath];
+}
+
+/**
+ * MP4: video and the selected audio are trimmed per span and
+ * concatenated as pairs. The audio is resampled onto the video clock
+ * first (`aresample=async=1:first_pts=0`, the same correction the
+ * single-range mix uses) so a span's audio is cut at the same instant
+ * as its picture; `concat` pads a span whose audio runs short with
+ * silence, so a gap never slides the following spans out of sync.
+ */
+export function buildSegmentedMp4EncodeArgs(input: {
+  src: string;
+  spans: readonly VideoRange[];
+  audioStreams: readonly number[];
+  scale: { widthPx: number; heightPx: number } | null;
+  encoderArgs: readonly string[];
+  outPath: string;
+}): string[] {
+  const { spans, audioStreams } = input;
+  const n = spans.length;
+  const last = spans[n - 1]!;
+  const hasAudio = audioStreams.length > 0;
+  const graph: string[] = [
+    `[0:v]fps=${SEGMENTED_MP4_FPS},split=${n}${splitLabels("vs", n)}`,
+    ...spans.map((span, i) => `[vs${i}]trim=${spanTrim(span)},setpts=PTS-STARTPTS[v${i}]`)
+  ];
+  if (hasAudio) {
+    const resampled = audioStreams.map(
+      (index, i) => `[0:a:${index}]aresample=async=1:first_pts=0[ra${i}]`
+    );
+    graph.push(...resampled);
+    // `normalize=0` for the reason `buildRecordingAudioArgs` gives: the
+    // mix must be as loud as a single-source export.
+    const source =
+      audioStreams.length === 1
+        ? "[ra0]"
+        : `${splitLabels("ra", audioStreams.length)}amix=inputs=${audioStreams.length}:duration=longest:dropout_transition=0:normalize=0,`;
+    graph.push(`${source}asplit=${n}${splitLabels("as", n)}`);
+    graph.push(
+      ...spans.map((span, i) => `[as${i}]atrim=${spanTrim(span)},asetpts=PTS-STARTPTS[a${i}]`)
+    );
+  }
+  const pairs = spans.map((_, i) => (hasAudio ? `[v${i}][a${i}]` : `[v${i}]`)).join("");
+  const scale =
+    input.scale === null ? "" : `;[vcat]scale=${input.scale.widthPx}:${input.scale.heightPx}:flags=lanczos[vout]`;
+  graph.push(
+    `${pairs}concat=n=${n}:v=1:a=${hasAudio ? 1 : 0}[vcat]${hasAudio ? "[acat]" : ""}${scale}`
+  );
+  return [
+    "-y",
+    "-t",
+    last.end.toFixed(3),
+    "-i",
+    input.src,
+    "-filter_complex",
+    graph.join(";"),
+    "-map",
+    input.scale === null ? "[vcat]" : "[vout]",
+    ...(hasAudio ? ["-map", "[acat]", "-c:a", "aac", "-b:a", "192k"] : ["-an"]),
+    ...input.encoderArgs,
+    "-movflags",
+    "+faststart",
+    input.outPath
+  ];
+}
+
+async function encodeSegmented(
+  ffmpeg: string,
+  src: string,
+  input: ExportInput,
+  spans: readonly VideoRange[],
+  outputDims: { widthPx: number; heightPx: number },
+  outPath: string,
+  signal: AbortSignal,
+  onProgress: (update: VideoExportProgressUpdate) => void
+): Promise<void> {
+  const durationSec = videoKeptDurationSec(spans);
+  if (input.format === "gif") {
+    await runFfmpeg(ffmpeg, buildSegmentedGifEncodeArgs(src, spans, GIF_PRESETS[input.preset], outPath), {
+      durationSec,
+      signal,
+      onProgress: (record) => {
+        if (record.outTimeSec === null || record.outTimeSec <= 0) return;
+        const encodeRatio = record.ratio ?? null;
+        onProgress({
+          phase: "encoding",
+          ratio: encodeRatio === null ? null : Math.min(0.99, 0.5 + encodeRatio * 0.49)
+        });
+      }
+    });
+    return;
+  }
+  let streams = selectedRecordingAudioStreams(input.video, input.audio);
+  if (streams.length > 0) {
+    // Same reconciliation as the single-range path: a graph cannot name
+    // an audio stream the file does not have.
+    const available = await probeAudioStreamCount(src, signal);
+    streams = selectedRecordingAudioStreams(input.video, input.audio, available).filter(
+      (index) => index < available
+    );
+  }
+  const scale =
+    outputDims.widthPx !== input.record.width_px || outputDims.heightPx !== input.record.height_px
+      ? outputDims
+      : null;
+  const args = buildSegmentedMp4EncodeArgs({
+    src,
+    spans,
+    audioStreams: streams,
+    scale,
+    encoderArgs: buildMp4VideoEncoderArgs(process.platform, MP4_PRESETS[input.preset]),
+    outPath
+  });
+  await runFfmpeg(ffmpeg, args, {
+    durationSec,
     signal,
     onProgress: (record) => {
       onProgress({

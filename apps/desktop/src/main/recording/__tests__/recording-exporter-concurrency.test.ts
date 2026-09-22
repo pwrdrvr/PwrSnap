@@ -214,6 +214,7 @@ const video: VideoCaptureMetadata = {
   requestedSystemAudio: false,
   requestedMicrophone: false,
   defaultRange: { start: 0, end: 10 },
+  segments: [{ start: 0, end: 10 }],
   previewPath: null,
   previewStatus: "ready"
 };

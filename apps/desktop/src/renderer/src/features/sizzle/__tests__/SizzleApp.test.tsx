@@ -129,6 +129,7 @@ function videoCapture(id: string, defaultRange = { start: 0, end: 5 }): CaptureR
       requestedSystemAudio: false,
       requestedMicrophone: false,
       defaultRange,
+      segments: [defaultRange],
       previewPath: null,
       previewStatus: "ready"
     }

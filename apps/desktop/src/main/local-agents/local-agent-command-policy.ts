@@ -71,7 +71,19 @@ export function localAgentCommandRequirement(
     case "library:removeTag":
     case "library:openInLibrary":
     case "editor:open":
+    // Video edits — cuts, trims, "cut the still parts". Same grant as
+    // drawing on an image: both change what the capture exports, and
+    // both are undoable from the Library.
+    case "video:edit":
+    case "video:setDefaultRange":
       return { all: ["capture.edit"] };
+
+    // Reading a video's edit and its activity track. An agent granted
+    // only `capture.edit` still has to see the timeline to cut it, the
+    // same reasoning that opens `library:byId` to editors.
+    case "video:inspect":
+    case "video:activity":
+      return { any: ["library.read", "capture.edit"] };
 
     case "sizzle:create":
     case "sizzle:delete":

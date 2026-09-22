@@ -12,18 +12,33 @@
 import { copyFile, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { ok, err, recordingFailureSummary,
-  videoPlaybackNeedsPreparation
+  describeVideoEdit,
+  normalizeVideoSegments,
+  subtractVideoSpans,
+  VIDEO_ACTIVITY_LEVEL_LEGEND,
+  videoActivityLevelString,
+  videoActivityRuns,
+  videoKeptDurationSec,
+  videoPlaybackNeedsPreparation,
+  videoSpansKey,
+  videoStillCuts,
+  videoStillSpans
 } from "@pwrsnap/shared";
 import type {
+  CaptureRecord,
   Commands,
   PwrSnapError,
   RecordingCapabilities,
   RecordingFailureCode,
   RecordingPermission,
   Result,
+  VideoCaptureMetadata,
+  VideoEditState,
   VideoExportRequest,
+  VideoInspectResult,
   VideoPreset,
-  VideoPresetMetric
+  VideoPresetMetric,
+  VideoRange
 } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
@@ -33,7 +48,8 @@ import {
   getVideoMetadata,
   lookupExport,
   normalizeRange,
-  setDefaultRange
+  setDefaultRange,
+  setVideoSegments
 } from "../persistence/video-repo";
 import {
   openSystemSettingsFor,
@@ -65,14 +81,17 @@ import {
   MP4_PRESETS
 } from "../recording/recording-exporter";
 import { narrowAudioToRecorded, resolveExportAudio } from "../recording/mp4-export-audio";
+import { resolveVideoExportSpans } from "../recording/video-export-spans";
 import {
   mapVideoResolveError,
   resolveVideoExport
 } from "../recording/video-export-resolver";
 import {
   validateVideoExportRequest,
+  validateVideoSpanList,
   videoExportAudioError
 } from "../recording/video-export-validation";
+import { ensureVideoActivity } from "../recording/video-activity";
 import { createVideoExportProgressObserver } from "../recording/video-export-progress";
 import { ensureVideoPoster } from "../recording/video-poster";
 import { ensureVideoFrames, videoAssetDir } from "../recording/video-frames";
@@ -535,6 +554,25 @@ async function ensureVideoAudioAsset(input: {
   });
 }
 
+/** The live video record for an edit/inspect verb, or the validation
+ *  error the caller returns as-is. */
+function videoRecordFor(
+  captureId: unknown,
+  verb: string
+): Result<{ record: CaptureRecord; video: VideoCaptureMetadata }, PwrSnapError> {
+  if (typeof captureId !== "string" || captureId.length === 0) {
+    return err(validationError("invalid_capture_id", `${verb}: captureId must be a non-empty string`));
+  }
+  const record = getCaptureById(captureId);
+  if (record === null || record.deleted_at !== null) {
+    return err(validationError("not_found", `${verb}: capture not found: ${captureId}`));
+  }
+  if (record.kind !== "video" || record.video === null || record.video === undefined) {
+    return err(validationError("not_a_video", `${verb}: ${captureId} is not a video capture`));
+  }
+  return ok({ record, video: record.video });
+}
+
 /**
  * Validate a video:export request without crossing the bus. Thin
  * wrapper over the shared `validateVideoExportRequest` — the same
@@ -901,6 +939,149 @@ export function registerRecordingHandlers(): void {
     return ok(undefined);
   });
 
+  // ── video:edit / video:inspect / video:activity ──────────────────
+  //
+  // The edit verbs behind the Library timeline AND the agent tools (MCP
+  // and the in-app chat). One normalizer, one validator, one broadcast:
+  // an agent's cut reaches an open Library through the same
+  // `events:captures:changed` revalidation as the user's own drag, and
+  // lands on the Library's undo stack like one.
+  bus.register("video:edit", async (req) => {
+    const verb = "video:edit";
+    const resolved = videoRecordFor(req?.captureId, verb);
+    if (!resolved.ok) return resolved;
+    const { record, video } = resolved.value;
+    const ops = [
+      req.keep !== undefined,
+      req.cut !== undefined,
+      req.cutStill !== undefined,
+      req.reset === true
+    ].filter(Boolean).length;
+    if (ops !== 1) {
+      return err(
+        validationError("invalid_edit", `${verb}: set exactly one of keep, cut, cutStill, reset`)
+      );
+    }
+    const d = video.durationSec;
+    let next: VideoRange[];
+    if (req.reset === true) {
+      next = [{ start: 0, end: d }];
+    } else if (req.keep !== undefined) {
+      const keep = validateVideoSpanList(req.keep, verb, "keep");
+      if (!keep.ok) return keep;
+      next = normalizeVideoSegments(keep.value, d);
+      if (next.length === 0) {
+        return err(
+          validationError(
+            "invalid_segments",
+            `${verb}: nothing to keep — every span is outside the ${d.toFixed(3)} s recording or shorter than 0.1 s`
+          )
+        );
+      }
+    } else if (req.cut !== undefined) {
+      const cut = validateVideoSpanList(req.cut, verb, "cut");
+      if (!cut.ok) return cut;
+      next = subtractVideoSpans(video.segments, cut.value, d);
+      if (next.length === 0) {
+        return err(validationError("invalid_segments", `${verb}: that cut would remove the whole video`));
+      }
+    } else {
+      const options = req.cutStill ?? {};
+      const minStillSec = options.minStillSec ?? 3;
+      const paddingSec = options.paddingSec ?? 0.5;
+      if (!Number.isFinite(minStillSec) || minStillSec < 0.5 || minStillSec > 3600) {
+        return err(validationError("invalid_edit", `${verb}: cutStill.minStillSec must be 0.5–3600`));
+      }
+      if (!Number.isFinite(paddingSec) || paddingSec < 0 || paddingSec > 10) {
+        return err(validationError("invalid_edit", `${verb}: cutStill.paddingSec must be 0–10`));
+      }
+      let analysis;
+      try {
+        analysis = await ensureVideoActivity(record, video);
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        log.error("video:edit activity analysis failed", { captureId: record.id, message });
+        return err({ kind: "render", code: "video_activity_failed", message, cause });
+      }
+      const cuts = videoStillCuts(analysis.track, {
+        minStillSec,
+        paddingSec,
+        maxLevel: options.treatMinorAsStill === true ? 1 : 0,
+        durationSec: d
+      });
+      next = cuts.length === 0 ? video.segments : subtractVideoSpans(video.segments, cuts, d);
+      // Everything was still: leave the edit alone rather than refuse —
+      // "cut the boring parts" of a video with nothing but boring parts
+      // is a no-op, not an error the caller must handle.
+      if (next.length === 0) next = video.segments;
+    }
+    const stored = setVideoSegments(record.id, next);
+    if (stored === null) {
+      return err(validationError("not_a_video", `${verb}: ${record.id} is not a video capture`));
+    }
+    broadcastCapturesChanged([record.id]);
+    return ok(describeVideoEdit(record.id, d, stored) satisfies VideoEditState);
+  });
+
+  bus.register("video:inspect", async (req) => {
+    const verb = "video:inspect";
+    const resolved = videoRecordFor(req?.captureId, verb);
+    if (!resolved.ok) return resolved;
+    const { record, video } = resolved.value;
+    const minStillSec = req.minStillSec ?? 3;
+    if (typeof minStillSec !== "number" || !Number.isFinite(minStillSec) || minStillSec < 0.2 || minStillSec > 3600) {
+      return err(validationError("invalid_request", `${verb}: minStillSec must be 0.2–3600`));
+    }
+    const state = describeVideoEdit(record.id, video.durationSec, video.segments);
+    try {
+      const { track } = await ensureVideoActivity(record, video);
+      const { resolutionSec, runs } = videoActivityRuns(track, { maxRuns: 200 });
+      const stillSpans = videoStillSpans(track, {
+        minStillSec,
+        maxLevel: req.treatMinorAsStill === true ? 1 : 0
+      }).map((span) => ({ ...span, durationSec: Math.round((span.end - span.start) * 1000) / 1000 }));
+      const result: VideoInspectResult = {
+        ...state,
+        activity: {
+          sampleHz: track.sampleHz,
+          levels: { ...VIDEO_ACTIVITY_LEVEL_LEGEND },
+          resolutionSec,
+          runs,
+          stillSpans,
+          stillTotalSec:
+            Math.round(stillSpans.reduce((sum, span) => sum + span.durationSec, 0) * 1000) / 1000,
+          ...(req.includeTrack === true ? { track: videoActivityLevelString(track) } : {})
+        }
+      };
+      return ok(result);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      log.warn("video:inspect activity analysis failed", { captureId: record.id, message });
+      return ok({ ...state, activity: null, activityError: message });
+    }
+  });
+
+  bus.register("video:activity", async (req) => {
+    const verb = "video:activity";
+    const resolved = videoRecordFor(req?.captureId, verb);
+    if (!resolved.ok) return resolved;
+    const { record, video } = resolved.value;
+    try {
+      const analysis = await ensureVideoActivity(record, video);
+      return ok({
+        captureId: record.id,
+        sampleHz: analysis.track.sampleHz,
+        magnitudes: [...analysis.track.magnitudes],
+        analysisWidthPx: analysis.width,
+        analysisHeightPx: analysis.height
+      });
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      log.error("video:activity failed", { captureId: record.id, message });
+      return err({ kind: "render", code: "video_activity_failed", message, cause });
+    }
+  });
+
   // ── video:frames ──────────────────────────────────────────────────
   //
   // Filmstrip contact strip for the timeline. Extraction + on-disk
@@ -1082,7 +1263,7 @@ export function registerRecordingHandlers(): void {
           validationError("not_a_video", `video:export: ${req.captureId} is not a video capture`)
         );
       }
-      const range = req.range ?? record.video.defaultRange;
+      const { range, spans } = resolveVideoExportSpans(record.video, req);
       // Same resolution as resolveVideoExport, so the visible preflight
       // lands on the cache key copy / path / drag then hit instead of
       // encoding twice. An omitted MP4 choice is the user's preference.
@@ -1111,7 +1292,8 @@ export function registerRecordingHandlers(): void {
         video: record.video,
         format: req.format,
         preset: req.preset,
-        range: normalizeRange(range, record.video.durationSec),
+        range,
+        spans,
         audio,
         signal: ctx.signal,
         ...(progress === undefined ? {} : { progress })
@@ -1205,11 +1387,17 @@ export function registerRecordingHandlers(): void {
         );
       }
     }
+    if (req.segments !== undefined) {
+      const segments = validateVideoSpanList(req.segments, "video:presetMetrics", "segments");
+      if (!segments.ok) return segments;
+    }
     const audioError = videoExportAudioError(req.audio, "video:presetMetrics");
     if (audioError !== null) return err(audioError);
-    const range = req.range ?? record.video.defaultRange;
-    const normalized = normalizeRange(range, record.video.durationSec);
-    const durationSec = normalized.end - normalized.start;
+    const { range: normalized, spans } = resolveVideoExportSpans(record.video, req);
+    const durationSec = videoKeptDurationSec(spans);
+    // The cache key the exporter would use for these spans — see
+    // `exportSegmentsKey` in recording-exporter.ts.
+    const segmentsKey = spans.length > 1 ? videoSpansKey(spans) : "";
     // The MP4 audio the grid is showing — or, when omitted, the same
     // preference an export with no `audio` resolves — so a cache lookup
     // lands on the row the next click would populate. Narrowed to the
@@ -1227,6 +1415,8 @@ export function registerRecordingHandlers(): void {
         const cached = lookupExport({
           captureId: record.id,
           range: normalized,
+          segmentsKey,
+          durationSec,
           format,
           preset,
           audio: format === "gif" ? { includeSystemAudio: false, includeMicrophone: false } : mp4Audio

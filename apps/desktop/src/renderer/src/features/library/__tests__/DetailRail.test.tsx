@@ -1622,7 +1622,7 @@ describe("DetailRail video export honors the persisted trim range", () => {
     const videoRecord: CaptureRecord = {
       ...record,
       kind: "video",
-      video: { ...videoMeta, defaultRange: { start: 0, end: 16 } }
+      video: { ...videoMeta, defaultRange: { start: 0, end: 16 }, segments: [{ start: 0, end: 16 }] }
     };
     const { el, dispatch } = await renderDetailRail(enrichment(), undefined, {
       record: videoRecord
@@ -1642,7 +1642,7 @@ describe("DetailRail video export honors the persisted trim range", () => {
     const videoRecord: CaptureRecord = {
       ...record,
       kind: "video",
-      video: { ...videoMeta, defaultRange: { start: 3.4, end: 11.2 } }
+      video: { ...videoMeta, defaultRange: { start: 3.4, end: 11.2 }, segments: [{ start: 3.4, end: 11.2 }] }
     };
     const { el, dispatch } = await renderDetailRail(enrichment(), undefined, {
       record: videoRecord

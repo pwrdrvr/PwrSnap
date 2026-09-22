@@ -1042,9 +1042,10 @@ for rationale, when-to-bump rules, and the adjacent-code map.
 ## Every deleter of `<cacheRoot>` goes through the admission gate
 
 **Nothing may `rm` inside `<cacheRoot>` without first taking
-`withDerivedCacheCleanup`, and the four per-capture derived-video lanes —
-the playback rendition, the waveform asset, the contact strip and the
-poster frame — must publish inside `runGatedCacheWrite`.** Owner:
+`withDerivedCacheCleanup`, and the five per-capture derived-video lanes —
+the playback rendition, the waveform asset, the contact strip, the
+poster frame and the activity track — must publish inside
+`runGatedCacheWrite`.** Owner:
 [derived-cache-gate.ts](apps/desktop/src/main/persistence/derived-cache-gate.ts).
 
 The deleter half is absolute; the writer half is scoped, and the module

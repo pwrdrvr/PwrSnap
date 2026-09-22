@@ -120,7 +120,9 @@ const LIBRARY_TOOL_LABELS: Record<string, string> = {
   reorder_layer: "Reordered a layer",
   reorder_layers: "Reordered layers",
   add_tag: "Added a tag",
-  remove_tag: "Removed a tag"
+  remove_tag: "Removed a tag",
+  inspect_video: "Read the video's timeline",
+  edit_video: "Edited the video's cuts"
 };
 
 /** The per-turn active-capture context (L3), sent as its own leading
@@ -134,9 +136,10 @@ function buildCurrentCaptureContext(captureId: string): string {
     `<runtime_context source="pwrsnap" note="runtime-generated, not user-authored">\n` +
     `<current_capture id="${captureId}">\n` +
     `The user is viewing this capture right now. "this", "this image", ` +
-    `"this capture", "here", "it" all refer to ${captureId}. Pass ` +
-    `capture_id="${captureId}" to your edit / redact / draw / metadata ` +
-    `tools unless the user explicitly names a different capture — do NOT ` +
+    `"this video", "this capture", "here", "it" all refer to ${captureId}. ` +
+    `Pass capture_id="${captureId}" to your edit / redact / draw / ` +
+    `metadata / video tools unless the user explicitly names a different ` +
+    `capture — do NOT ` +
     `pick a capture from library_list when this block is present.\n` +
     `</current_capture>\n` +
     `</runtime_context>`

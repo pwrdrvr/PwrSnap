@@ -181,7 +181,10 @@ function videoCapture(overrides: Partial<NonNullable<CaptureRecord["video"]>> = 
       defaultRange: { start: 0, end: 16 },
       previewPath: null,
       previewStatus: "ready",
-      ...overrides
+      ...overrides,
+      // The repo keeps these in step; a fixture that trims only the
+      // outer range means a single-span edit.
+      segments: overrides.segments ?? [overrides.defaultRange ?? { start: 0, end: 16 }]
     }
   } as CaptureRecord;
 }

@@ -117,6 +117,12 @@
   border: 1px solid var(--border-subtle);
   aspect-ratio: 16 / 10;
 }
+/* The video toast carries a trim strip and a six-card export grid the
+   image toast does not, and with a Codex description and tags it ran past
+   FLOAT_OVER_HEIGHT_MAX (main/float-over.ts) — the window clipped the
+   footer. A 2:1 slot buys back 46px. Still a layout slot, not a crop:
+   HoverAutoplayVideo is `object-fit: contain`, so a 16:10 take pillarboxes. */
+.fo__preview--video { aspect-ratio: 2 / 1; }
 /* `contain` so the user recognizes their capture at its true aspect
    ratio. The 16:10 frame is just a layout slot — a tiny region
    capture should look tiny, not zoomed-to-fill. */
@@ -566,18 +572,26 @@
 }
 
 /* ----- AI suggestion strip (now via shared CodexStatusPill) ----- */
+/* One row: the auto-apply checkbox sits beside the pill instead of on a
+   19px line of its own under it. The pill takes the slack and wraps its
+   own text if a status runs long. */
 .fo__ai-row {
   margin: 0 12px 8px;
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  align-items: center;
+  gap: 10px;
+}
+.fo__ai-row > .ps-codex-pill {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .fo__auto-accept {
   display: inline-flex;
+  flex: none;
   align-items: center;
   gap: 6px;
-  align-self: flex-end;
   padding: 0 2px;
+  white-space: nowrap;
   font: 500 10px/1.2 var(--font-sans);
   color: var(--text-secondary);
   cursor: pointer;

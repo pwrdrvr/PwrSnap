@@ -135,9 +135,11 @@ test.describe("video float-over", () => {
       await expect(floatOver.locator(".fo__preview video")).toBeVisible({ timeout: 5000 });
       await expect(floatOver.locator(".fo__preview img")).toHaveCount(0);
 
-      // Header reads "Recording saved" with duration in the subtitle.
+      // Header reads "Recording saved"; the duration rides the preview's
+      // corner overlay (video drops the header sub-line to save height).
       await expect(floatOver.locator(".fo__hdr-title")).toHaveText("Recording saved");
-      await expect(floatOver.locator(".fo__hdr-sub")).toContainText("12.5s");
+      await expect(floatOver.locator(".fo__hdr-sub")).toHaveCount(0);
+      await expect(floatOver.locator(".fo__preview-size")).toContainText("12.5s");
 
       // 6-card export grid (GIF L/M/H + MP4 L/M/H) rendered by the
       // shared VideoExportPresetsPanel — replaced the old 2-button

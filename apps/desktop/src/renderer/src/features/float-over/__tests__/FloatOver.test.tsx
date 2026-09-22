@@ -330,7 +330,11 @@ describe("FloatOver asset mode", () => {
     expect(preview?.querySelector("video")?.getAttribute("src")).toBe("pwrsnap-capture://r/abc");
 
     expect(el.querySelector(".fo__hdr-title")?.textContent).toBe("Recording saved");
-    expect(el.querySelector(".fo__hdr-sub")?.textContent).toContain("12.5s");
+    // No header sub-line on video — dims and duration ride the preview's
+    // corner overlays, and the video toast is the one short of height.
+    expect(el.querySelector(".fo__hdr-sub")).toBeNull();
+    expect(el.querySelector(".fo__preview-size")?.textContent).toContain("12.5s");
+    expect(preview?.classList.contains("fo__preview--video")).toBe(true);
 
     // Mini-trim strip: compact timeline with in/out handles and the
     // Full-clip chip (disabled while the range is the whole clip).
@@ -715,6 +719,21 @@ describe("post-recording source summary", () => {
   // which made the failure case the widest chip: a live mic beside a silent
   // system audio came to 456px in a 366px row, wrapped, and pushed the toast
   // past its window. The reason now takes the meter's slot, one word wide.
+  // The height cuts are video-only. The image toast has no duration overlay
+  // to carry what the sub-line says, and it was never short of room.
+  test("the image toast keeps its header sub-line and 16:10 preview", async () => {
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      srcW: 1920,
+      srcH: 1080,
+      startCountdown: false
+    });
+    expect(el.querySelector(".fo__hdr-sub")?.textContent).toContain("just now");
+    expect(el.querySelector(".fo__preview")?.classList.contains("fo__preview--video")).toBe(
+      false
+    );
+  });
+
   test("a silent receipt chip prints its reason in the meter's slot", async () => {
     const el = await renderToast({
       kind: "video",
@@ -1665,7 +1684,10 @@ describe("FloatOver AI suggestions", () => {
     expect(checkbox).not.toBeNull();
     expect(checkbox?.checked).toBe(false);
     const autoAccept = el.querySelector<HTMLLabelElement>(".fo__auto-accept");
-    expect(autoAccept?.textContent).toContain("Auto-apply AI enrichment");
+    // Short visible text so it fits beside the Codex pill; the control
+    // keeps the full name, which still begins with the visible words.
+    expect(autoAccept?.textContent).toBe("Auto-apply");
+    expect(checkbox?.getAttribute("aria-label")).toBe("Auto-apply AI enrichment");
     expect(autoAccept?.getAttribute("title")).toBe(
       "Apply AI enrichment automatically when ready"
     );

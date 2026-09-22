@@ -844,12 +844,12 @@ export function FloatOver({
           <div className="fo__hdr-title">
             {asset?.kind === "video" ? "Recording saved" : "Snap captured"}
           </div>
-          <div className="fo__hdr-sub">
-            {dimText(srcW, srcH)}
-            {asset?.kind === "video"
-              ? ` · ${fmtDurationLabel(asset.durationSec)}`
-              : " · just now"}
-          </div>
+          {/* Video drops the sub-line: its dims and duration are both
+              printed on the preview's corner overlays, and the video toast
+              is the one that runs out of height (FLOAT_OVER_HEIGHT_MAX). */}
+          {asset?.kind === "video" ? null : (
+            <div className="fo__hdr-sub">{dimText(srcW, srcH)} · just now</div>
+          )}
         </div>
         <div className="fo__hdr-actions">
           {/* Auto-dismiss pauses on hover / typing — no need for a
@@ -899,7 +899,7 @@ export function FloatOver({
 
       <AppUpdateRow variant="float-over" />
 
-      <div className="fo__preview">
+      <div className={asset?.kind === "video" ? "fo__preview fo__preview--video" : "fo__preview"}>
         {asset?.kind === "video" ? (
           // Video preview — hover-autoplay on top of native
           // controls. Same component the tray uses for its
@@ -1241,12 +1241,15 @@ export function FloatOver({
           />
           {!aiNeedsConsent && onSetAutoAccept !== undefined ? (
             <label className="fo__auto-accept" title="Apply AI enrichment automatically when ready">
+              {/* Visible text is short so the checkbox fits on the Codex
+                  pill's row; the full name stays on the control. */}
               <input
                 type="checkbox"
+                aria-label="Auto-apply AI enrichment"
                 checked={autoAcceptSuggestions}
                 onChange={(event) => onSetAutoAccept(event.target.checked)}
               />
-              <span>Auto-apply AI enrichment</span>
+              <span>Auto-apply</span>
             </label>
           ) : null}
         </div>

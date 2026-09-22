@@ -43,6 +43,18 @@
   display: flex;
   flex-direction: column;
   user-select: none;
+  /* Ceiling published by FloatOverHost.tsx on the measured wrapper —
+     min(the 800 DIP constant, this display's work area less its two
+     anchor margins), converted to CSS px. `.fo__body` absorbs whatever
+     doesn't fit and scrolls it; the header and footer stay pinned.
+     Without this the toast measured past main's clamp and the window
+     CLIPPED the bottom, which put Discard / Dismiss / Edit out of
+     reach. `none` keeps the design-reference page (`design/`, no host
+     to publish the variable) rendering at natural height. The value is
+     never derived from the window's own size — that closes a feedback
+     loop the toast cannot grow back out of; see the long comment in
+     FloatOverHost.tsx. */
+  max-height: var(--fo-max-h, none);
 }
 
 .fo--variant-compact { width: 320px; }
@@ -72,6 +84,31 @@
   padding: 10px 12px 8px;
   background: var(--bg-sidebar);
   border-bottom: 1px solid var(--border-subtle);
+  /* Pinned. A flex item defaults to `flex-shrink: 1`, so once `.fo`
+     hits its max-height the header would give up its own padding and
+     squash its text rather than letting the middle scroll. */
+  flex: none;
+}
+
+/* ----- scrolling middle -----
+   Everything between the header and the footer. Scrolls only when the
+   toast is against `--fo-max-h`; below that it is an ordinary block
+   and the window shrink-wraps it exactly as before. */
+.fo__body {
+  flex: 1 1 auto;
+  /* Load-bearing. A flex item's `min-height` is `auto`, which resolves
+     to its content height and refuses to shrink past it — the middle
+     would keep its full height, `.fo` would overflow its own
+     max-height, and `overflow-y: auto` would never engage because the
+     box never got smaller than its content. */
+  min-height: 0;
+  overflow-y: auto;
+  /* No horizontal scroller: nothing here scrolls sideways, and a
+     stray overflowing child should be clipped like `.fo` clips it. */
+  overflow-x: hidden;
+  /* Wheeling past either end stops here rather than propagating —
+     there is no page behind this to scroll. */
+  overscroll-behavior: contain;
 }
 .fo__hdr-mark {
   width: 22px; height: 22px;
@@ -677,6 +714,9 @@
   gap: 8px;
   padding: 8px 10px 10px;
   border-top: 1px solid color-mix(in srgb, var(--surface-highlight) 4%, transparent);
+  /* Pinned — same reason as `.fo__hdr`. This is the row the whole
+     scroll treatment exists to keep reachable. */
+  flex: none;
 }
 .fo__dest {
   display: flex; align-items: center; gap: 4px;

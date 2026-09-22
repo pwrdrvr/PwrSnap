@@ -152,6 +152,10 @@ declare global {
       ): () => void;
       requestTrayResize(payload: { width: number; height: number }): void;
       requestFloatOverResize(payload: { width: number; height: number }): void;
+      /** Current page zoom factor (`webFrame.getZoomFactor()`), for
+       *  turning a DIP ceiling into a CSS-pixel one. Read fresh per
+       *  call — session zoom changes without a reload. */
+      getZoomFactor(): number;
       requestRecordingControllerResize(payload: { width?: number; height: number }): void;
       getAppMenuModel(): Promise<Array<{ index: number; label: string }>>;
       popupAppMenu(payload: { index: number; x: number; y: number }): void;

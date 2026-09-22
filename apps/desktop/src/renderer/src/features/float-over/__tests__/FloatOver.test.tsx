@@ -1976,3 +1976,138 @@ describe("FloatOver enrichment does not move the toast", () => {
     expect(summary?.getAttribute("title")).toBe(summary?.textContent);
   });
 });
+
+describe("float-over scroll cap", () => {
+  /**
+   * Replace a `window` / `window.screen` number that jsdom defines as a
+   * plain getter. Returns a restore function.
+   */
+  function stub(target: object, key: string, value: number): () => void {
+    const original = Object.getOwnPropertyDescriptor(target, key);
+    Object.defineProperty(target, key, { configurable: true, value });
+    return () => {
+      if (original === undefined) {
+        delete (target as Record<string, unknown>)[key];
+      } else {
+        Object.defineProperty(target, key, original);
+      }
+    };
+  }
+
+  function publishedCapPx(el: HTMLElement): number {
+    // The host writes the ceiling onto the measured wrapper — its own
+    // outermost node, which is `container`'s only child.
+    const wrapper = el.firstElementChild as HTMLElement | null;
+    expect(wrapper).not.toBeNull();
+    const raw = wrapper!.style.getPropertyValue("--fo-max-h");
+    expect(raw).toMatch(/^\d+px$/);
+    return Number.parseInt(raw, 10);
+  }
+
+  test("the header and footer sit OUTSIDE the scrolling middle", async () => {
+    // The whole point: `.fo__body` is what overflows, so the row with
+    // Discard / Dismiss / Edit stays in the window main sizes. If the
+    // footer ever lands inside `.fo__body`, it scrolls away again.
+    window.pwrsnapApi = {
+      dispatch: vi.fn(async () => ({ ok: true, value: undefined })),
+      on: () => () => undefined,
+      requestFloatOverResize: vi.fn(),
+      startCaptureDrag: vi.fn(),
+      startVideoDrag: vi.fn()
+    } as unknown as NonNullable<Window["pwrsnapApi"]>;
+
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      srcW: 2880,
+      srcH: 1800,
+      srcBytes: 2048,
+      startCountdown: false,
+      enrichment: enrichment(),
+      aiEnabled: true,
+      aiConsentAccepted: true
+    });
+
+    const fo = el.querySelector(".fo");
+    const body = el.querySelector(".fo__body");
+    const header = el.querySelector(".fo__hdr");
+    const footer = el.querySelector(".fo__foot");
+    expect(body).not.toBeNull();
+    expect(header).not.toBeNull();
+    expect(footer).not.toBeNull();
+
+    expect(header!.parentElement).toBe(fo);
+    expect(footer!.parentElement).toBe(fo);
+    expect(body!.parentElement).toBe(fo);
+    expect(body!.contains(header)).toBe(false);
+    expect(body!.contains(footer)).toBe(false);
+
+    // …and the content that actually varies in height IS inside it.
+    expect(body!.querySelector(".fo__preview")).not.toBeNull();
+    expect(body!.querySelector(".fo__annotate")).not.toBeNull();
+  });
+
+  test("the cap does not move with the toast window's own height", async () => {
+    // The feedback loop this design exists to avoid: a cap read off the
+    // live window (100vh / innerHeight) makes the measured wrapper
+    // report min(natural, current window), main sizes the window to
+    // that, and the toast can never grow again. Hold the display fixed,
+    // swing the window height wildly, and the published ceiling must
+    // not budge. See AGENTS.md §"Tray + float-over popover sizing".
+    const restore = [
+      stub(window.screen, "availHeight", 1415),
+      stub(window, "innerHeight", 240)
+    ];
+    try {
+      const api = installHostApi();
+      const el = await renderHostRecord(api);
+      const short = publishedCapPx(el);
+
+      restore.push(stub(window, "innerHeight", 4000));
+      await act(async () => {
+        api.pushEvent(EVENT_CHANNELS.floatOverState, {
+          kind: "show-loaded",
+          captureId: imageRecord.id,
+          record: imageRecord
+        });
+        await Promise.resolve();
+      });
+
+      expect(publishedCapPx(el)).toBe(short);
+      // 1415px of work area leaves the constant ceiling binding.
+      expect(short).toBe(800);
+    } finally {
+      for (const undo of restore.reverse()) undo();
+    }
+  });
+
+  test("a short display lowers the cap; page zoom converts it to CSS px", async () => {
+    // Both inputs are DIP and zoom-independent (measured on Electron
+    // 41: screen.availHeight === Display.workArea.height and does not
+    // move with zoom), so the CSS ceiling is DIP / zoom.
+    const restore = [stub(window.screen, "availHeight", 728)];
+    try {
+      const api = installHostApi();
+      window.pwrsnapApi = {
+        ...window.pwrsnapApi,
+        getZoomFactor: () => 2
+      } as unknown as NonNullable<Window["pwrsnapApi"]>;
+      const el = await renderHostRecord(api);
+      // (728 - 24*2) DIP of work area, halved by a 2x page zoom.
+      expect(publishedCapPx(el)).toBe(340);
+    } finally {
+      for (const undo of restore.reverse()) undo();
+    }
+  });
+
+  test("a preload without the zoom accessor falls back to 1:1", async () => {
+    const restore = [stub(window.screen, "availHeight", 1415)];
+    try {
+      const api = installHostApi();
+      expect(window.pwrsnapApi?.getZoomFactor).toBeUndefined();
+      const el = await renderHostRecord(api);
+      expect(publishedCapPx(el)).toBe(800);
+    } finally {
+      for (const undo of restore.reverse()) undo();
+    }
+  });
+});

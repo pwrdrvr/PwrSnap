@@ -1838,3 +1838,141 @@ describe("FloatOver AI suggestions", () => {
     expect(fo?.classList.contains("is-paused")).toBe(false);
   });
 });
+
+// Enrichment lands seconds after the toast appears, and the window is
+// anchored bottom-right, so anything that changed height on arrival moved
+// the preview and export cards up under the cursor. The tag row holds two
+// lines from the start and collapses the rest into "+N"; the Codex pill
+// stays one line with its full sentence as a tooltip.
+describe("FloatOver enrichment does not move the toast", () => {
+  const LONG_TAGS = enrichment({
+    status: "completed",
+    acceptedTags: ["cereal", "crunch-index", "milk-to-flake-ratio"],
+    suggestedTags: [
+      { id: "s1", label: "sogginess-curve-comparison", confidence: 0.8, accepted_at: null, rejected_at: null },
+      { id: "s2", label: "breakfast-analytics", confidence: 0.7, accepted_at: null, rejected_at: null }
+    ]
+  });
+
+  // jsdom lays nothing out. Give the row the toast's 366px and each chip a
+  // width from its text, so the collapse has something to measure.
+  function layOutTagRow(): void {
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (
+      this: HTMLElement
+    ) {
+      if (this.hasAttribute("data-tag-chip")) return 30 + 6 * (this.textContent?.length ?? 0);
+      if (this.classList.contains("fo__tag-more")) return 30;
+      return 0;
+    });
+    vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(function (
+      this: Element
+    ) {
+      return this.classList.contains("fo__tags") ? 366 : 0;
+    });
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test("tags past two lines collapse into +N, and clicking it shows them all", async () => {
+    layOutTagRow();
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      enrichment: LONG_TAGS
+    });
+    const more = el.querySelector<HTMLButtonElement>(".fo__tag-more");
+    expect(more?.classList.contains("is-overflow")).toBe(false);
+    expect(more?.textContent).toBe("+1");
+    expect(more?.getAttribute("aria-label")).toBe("Show 1 more tag");
+    const hidden = el.querySelectorAll(".fo__tags [data-tag-chip].is-overflow");
+    expect(hidden).toHaveLength(1);
+    expect(hidden[0]?.textContent).toContain("breakfast-analytics");
+
+    await act(async () => {
+      more?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(el.querySelectorAll(".fo__tags [data-tag-chip].is-overflow")).toHaveLength(0);
+    expect(el.querySelector(".fo__tag-more")?.classList.contains("is-overflow")).toBe(true);
+  });
+
+  test("focusing the tag input expands a collapsed row", async () => {
+    layOutTagRow();
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      enrichment: LONG_TAGS
+    });
+    expect(el.querySelectorAll(".fo__tags [data-tag-chip].is-overflow")).toHaveLength(1);
+    await act(async () => {
+      el.querySelector<HTMLInputElement>(".fo__tag-input")?.focus();
+    });
+    expect(el.querySelectorAll(".fo__tags [data-tag-chip].is-overflow")).toHaveLength(0);
+  });
+
+  test("an unmeasured row shows every chip and no +N", async () => {
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      enrichment: LONG_TAGS
+    });
+    expect(el.querySelectorAll(".fo__tags [data-tag-chip]")).toHaveLength(5);
+    expect(el.querySelectorAll(".fo__tags [data-tag-chip].is-overflow")).toHaveLength(0);
+    expect(el.querySelector(".fo__tag-more")?.classList.contains("is-overflow")).toBe(true);
+  });
+
+  test("placeholder chips hold the row while the run is in flight, then give way", async () => {
+    const running = enrichment({
+      status: "running",
+      suggestedDescription: null,
+      suggestedTags: []
+    });
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      aiEnabled: true,
+      aiConsentAccepted: true,
+      enrichment: running
+    });
+    const ghosts = el.querySelectorAll(".fo__tag-ghost");
+    expect(ghosts).toHaveLength(3);
+    for (const ghost of Array.from(ghosts)) {
+      expect(ghost.getAttribute("aria-hidden")).toBe("true");
+    }
+
+    await act(async () => {
+      root?.render(
+        createElement(FloatOver, {
+          src: "data:image/png;base64,",
+          startCountdown: false,
+          aiEnabled: true,
+          aiConsentAccepted: true,
+          enrichment: enrichment()
+        })
+      );
+    });
+    expect(el.querySelectorAll(".fo__tag-ghost")).toHaveLength(0);
+    expect(el.querySelectorAll(".fo__tags [data-tag-chip]")).toHaveLength(2);
+  });
+
+  test("a failed run's full message rides the one-line pill's tooltip", async () => {
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      aiEnabled: true,
+      aiConsentAccepted: true,
+      enrichment: enrichment({
+        status: "failed",
+        error: "the model did not answer within 60 seconds",
+        suggestedDescription: null,
+        suggestedTags: []
+      })
+    });
+    const summary = el.querySelector(".fo__ai-row .ps-codex-pill__summary");
+    expect(summary?.textContent).toBe(
+      "Codex could not read this snap: the model did not answer within 60 seconds"
+    );
+    expect(summary?.getAttribute("title")).toBe(summary?.textContent);
+  });
+});

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type {
   CaptureEnrichment,
   CapturesLocation,
@@ -38,6 +38,7 @@ import { useVideoTimelineAssets } from "../shared/useVideoTimelineAssets";
 import { useVideoTrimRange } from "../shared/useVideoTrimRange";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import { FoIcon } from "./FoIcons";
+import { fitTagChips } from "./fitTagRow";
 
 const RES_PRESETS = [
   { id: "low", label: "Low" },
@@ -108,6 +109,14 @@ function tagsWithMutation(tags: readonly string[], mutation: TagMutation | null)
   return [...tags, mutation.label];
 }
 
+/** Placeholder chips while the enrichment run is in flight. Static on
+ *  purpose — they hold the row's shape, and a shimmer would repaint for the
+ *  whole run. */
+const TAG_GHOST_WIDTHS = [58, 76, 48] as const;
+/** Mirrors `.fo__tags { gap }` and `.fo__tag-input { min-width }`. */
+const TAG_ROW_GAP_PX = 4;
+const TAG_INPUT_MIN_WIDTH_PX = 60;
+
 function FoTags({
   tags,
   onAdd,
@@ -117,7 +126,8 @@ function FoTags({
   onRejectSuggest,
   pendingMutation,
   failure,
-  onRetry
+  onRetry,
+  aiPending = false
 }: {
   tags: string[];
   onAdd: (t: string) => void;
@@ -128,20 +138,64 @@ function FoTags({
   pendingMutation: TagMutation | null;
   failure: TagMutationFailure | null;
   onRetry: () => void;
+  /** The enrichment run is queued or running — hold the row with ghosts. */
+  aiPending?: boolean;
 }) {
   const [draft, setDraft] = useState("");
   const busy = pendingMutation !== null;
+  const shownSuggestions = suggestions.filter((s) => !tags.includes(s.label)).slice(0, 2);
+  const chipCount = tags.length + shownSuggestions.length;
+  // The row is TAG_ROW_LINES tall whatever lands in it (see fitTagRow.ts).
+  // Chips past that collapse into "+N"; expanding is the user's click, so
+  // the growth it causes is theirs, not a shift under them.
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [fitCount, setFitCount] = useState(Number.POSITIVE_INFINITY);
+  const chipKey = [...tags, "\0", ...shownSuggestions.map((s) => s.label)].join("\u0001");
+  useLayoutEffect(() => {
+    const row = rowRef.current;
+    if (row === null || expanded) return undefined;
+    const measure = (): void => {
+      const chips = Array.from(row.querySelectorAll<HTMLElement>(":scope > [data-tag-chip]"));
+      const more = row.querySelector<HTMLElement>(":scope > .fo__tag-more");
+      const next = fitTagChips(
+        chips.map((chip) => chip.offsetWidth),
+        {
+          rowWidth: row.clientWidth,
+          gap: TAG_ROW_GAP_PX,
+          moreWidth: more?.offsetWidth ?? 0,
+          inputMinWidth: TAG_INPUT_MIN_WIDTH_PX
+        }
+      );
+      setFitCount((prev) => (prev === next ? prev : next));
+    };
+    measure();
+    // Chip widths move when Geist swaps in; the row's width does not.
+    const observer = new ResizeObserver(measure);
+    observer.observe(row);
+    for (const chip of Array.from(row.querySelectorAll(":scope > [data-tag-chip]"))) {
+      observer.observe(chip);
+    }
+    return () => observer.disconnect();
+  }, [chipKey, expanded]);
+  const visibleCount = expanded ? chipCount : Math.min(fitCount, chipCount);
+  const hiddenCount = chipCount - visibleCount;
+  // Overflowed chips stay mounted — out of flow and invisible — so their
+  // widths can still be measured when the row changes.
+  const overflowClass = (index: number): string => (index >= visibleCount ? " is-overflow" : "");
+  const showGhosts = aiPending && chipCount === 0;
   return (
-    <div className="fo__tags" aria-busy={busy}>
-      {tags.map((t) => (
+    <div className="fo__tags" aria-busy={busy} ref={rowRef}>
+      {tags.map((t, index) => (
         <span
           key={t}
+          data-tag-chip=""
           className={`fo__tag${
             pendingMutation?.action === "add" &&
             normalizeTagLabel(t) === pendingMutation.normalizedLabel
               ? " is-pending"
               : ""
-          }`}
+          }${overflowClass(index)}`}
         >
           {t}
           <button
@@ -155,37 +209,63 @@ function FoTags({
           </button>
         </span>
       ))}
-      {suggestions
-        .filter((s) => !tags.includes(s.label))
-        .slice(0, 2)
-        .map((s) => (
-          <span key={s.id} className="fo__tag is-suggest">
-            <button
-              type="button"
-              className="fo__tag-suggest-label"
-              onClick={() => onAcceptSuggest(s)}
-              title={`Use ${s.label}`}
-              disabled={busy}
-            >
-              + {s.label}
-            </button>
-            <button
-              type="button"
-              className="fo__tag-x"
-              onClick={() => onRejectSuggest(s)}
-              aria-label={`reject ${s.label}`}
-              disabled={busy}
-            >
-              ×
-            </button>
-          </span>
-        ))}
+      {shownSuggestions.map((s, index) => (
+        <span
+          key={s.id}
+          data-tag-chip=""
+          className={`fo__tag is-suggest${overflowClass(tags.length + index)}`}
+        >
+          <button
+            type="button"
+            className="fo__tag-suggest-label"
+            onClick={() => onAcceptSuggest(s)}
+            title={`Use ${s.label}`}
+            disabled={busy}
+          >
+            + {s.label}
+          </button>
+          <button
+            type="button"
+            className="fo__tag-x"
+            onClick={() => onRejectSuggest(s)}
+            aria-label={`reject ${s.label}`}
+            disabled={busy}
+          >
+            ×
+          </button>
+        </span>
+      ))}
+      <button
+        type="button"
+        className={`fo__tag fo__tag-more${hiddenCount > 0 ? "" : " is-overflow"}`}
+        onClick={() => setExpanded(true)}
+        aria-label={`Show ${hiddenCount} more ${hiddenCount === 1 ? "tag" : "tags"}`}
+        aria-hidden={hiddenCount > 0 ? undefined : true}
+        tabIndex={hiddenCount > 0 ? undefined : -1}
+      >
+        +{Math.max(hiddenCount, 1)}
+      </button>
+      {showGhosts
+        ? TAG_GHOST_WIDTHS.map((width) => (
+            <span
+              key={width}
+              className="fo__tag-ghost"
+              style={{ width }}
+              aria-hidden
+            />
+          ))
+        : null}
       <input
         className="fo__tag-input"
         placeholder={tags.length ? "" : "tag…"}
         value={draft}
         maxLength={64}
         onChange={(e) => setDraft(e.target.value)}
+        // Typing a tag into a collapsed row would add it out of sight, and
+        // Backspace would remove one the user cannot see.
+        onFocus={() => {
+          if (hiddenCount > 0) setExpanded(true);
+        }}
         disabled={busy}
         onKeyDown={(e) => {
           if (e.key === "Enter" && draft.trim()) {
@@ -1162,6 +1242,7 @@ export function FloatOver({
             }}
             pendingMutation={pendingTagMutation}
             failure={tagMutationFailure}
+            aiPending={thinking}
             onRetry={() => {
               if (tagMutationFailure !== null) {
                 runTagMutation(tagMutationFailure.action, tagMutationFailure.label);

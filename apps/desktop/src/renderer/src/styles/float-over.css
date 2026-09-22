@@ -472,8 +472,44 @@
   background: color-mix(in srgb, var(--accent) 3.5%, transparent);
 }
 
+/* Two lines tall (2 × 22px chip + 4px gap) whether or not anything is in
+   it yet. Enrichment lands tags seconds after the toast appears, and the
+   window is anchored bottom-right, so a row that grew on arrival moved the
+   preview and export cards up under the cursor. Chips past two lines
+   collapse into "+N" (fitTagRow.ts); expanding is a click, so that growth
+   is the user's own. `align-content` keeps a short row at the top rather
+   than centred in the space it holds. Keep the gap in step with
+   TAG_ROW_GAP_PX in FloatOver.tsx. */
 .fo__tags {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+  position: relative;
+  display: flex; flex-wrap: wrap; align-items: center; align-content: flex-start;
+  gap: 4px;
+  min-height: 48px;
+}
+/* Past the fold: out of flow and invisible, but still laid out so its
+   width can be measured when the row changes. */
+.fo__tag.is-overflow {
+  position: absolute; top: 0; left: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.fo__tag-more {
+  appearance: none;
+  justify-content: center;
+  min-width: 30px;
+  padding: 0 7px;
+  background: transparent;
+  border-color: var(--border-subtle);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.fo__tag-more:hover { color: var(--text-primary); border-color: var(--accent-border); }
+.fo__tag-ghost {
+  flex: none;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 22%, transparent);
+  background: color-mix(in srgb, var(--accent) 3.5%, transparent);
 }
 .fo__tag {
   display: inline-flex; align-items: center; gap: 4px;
@@ -524,6 +560,7 @@
   cursor: pointer;
 }
 .fo__tag-input {
+  /* min-width is TAG_INPUT_MIN_WIDTH_PX in FloatOver.tsx. */
   flex: 1; min-width: 60px;
   height: 22px;
   background: transparent;
@@ -585,6 +622,24 @@
   flex: 1 1 auto;
   min-width: 0;
 }
+/* One line, one height, in every state. The status copy changes when the
+   run lands, and a status that wrapped (a long error) or an action button
+   taller than the line (Use / Save / Configure AI) changed the toast's
+   height at exactly that moment. The full text rides the summary's
+   `title`; the Library's detail rail keeps the wrapping pill. */
+.fo__ai-row .ps-codex-pill__text {
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+.fo__ai-row .ps-codex-pill__summary {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* A 22px button in a 16px line: let it overhang into the pill's padding
+   instead of growing the pill. It keeps its full hit target. */
+.fo__ai-row .ps-codex-pill__action { margin: -3px 0; }
 .fo__auto-accept {
   display: inline-flex;
   flex: none;

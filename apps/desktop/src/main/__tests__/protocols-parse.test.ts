@@ -411,16 +411,22 @@ describe("parseVideoAssetUrl", () => {
 
   test("the filmstrip is never mistaken for a sweepable audio derivative", () => {
     for (const predicate of [isDerivedAudioAsset, isDerivedPlaybackAsset]) {
+      expect(predicate("frames-v2-n24-w96.jpg")).toBe(false);
       expect(predicate("frames-n24-w96.jpg")).toBe(false);
       expect(predicate("poster.png")).toBe(false);
     }
   });
 
   test("parses filmstrip + audio assets and preserves capture-id case", () => {
-    expect(parseVideoAssetUrl("pwrsnap-cache://v/AbC_1-x/frames-n24-w96.jpg")).toEqual({
+    expect(parseVideoAssetUrl("pwrsnap-cache://v/AbC_1-x/frames-v2-n24-w96.jpg")).toEqual({
       captureId: "AbC_1-x",
-      asset: "frames-n24-w96.jpg"
+      asset: "frames-v2-n24-w96.jpg"
     });
+    // The unversioned v1 spelling stays addressable for a renderer holding
+    // an old URL.
+    expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/frames-n24-w96.jpg")?.asset).toBe(
+      "frames-n24-w96.jpg"
+    );
     expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/audio.m4a")).toEqual({
       captureId: "cap",
       asset: "audio.m4a"
@@ -446,6 +452,9 @@ describe("parseVideoAssetUrl", () => {
     expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/poster.png")).toBeNull();
     expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/frames-n24-w96.png")).toBeNull();
     expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/frames-nx-w96.jpg")).toBeNull();
+    expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/frames-v-n24-w96.jpg")).toBeNull();
+    expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/frames-vx-n24-w96.jpg")).toBeNull();
+    expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/frames-v2-v2-n24-w96.jpg")).toBeNull();
     expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/a/audio.m4a")).toBeNull();
     expect(parseVideoAssetUrl("pwrsnap-cache://v/cap")).toBeNull();
     expect(parseVideoAssetUrl("pwrsnap-cache://v//audio.m4a")).toBeNull();
@@ -459,8 +468,8 @@ describe("parseVideoAssetUrl", () => {
   });
 
   test("videoAssetUrl round-trips through the parser", () => {
-    const url = videoAssetUrl("Cap_9", "frames-n24-w96.jpg");
-    expect(url).toBe(`${SCHEMES.cache}://v/Cap_9/frames-n24-w96.jpg`);
-    expect(parseVideoAssetUrl(url)).toEqual({ captureId: "Cap_9", asset: "frames-n24-w96.jpg" });
+    const url = videoAssetUrl("Cap_9", "frames-v2-n24-w96.jpg");
+    expect(url).toBe(`${SCHEMES.cache}://v/Cap_9/frames-v2-n24-w96.jpg`);
+    expect(parseVideoAssetUrl(url)).toEqual({ captureId: "Cap_9", asset: "frames-v2-n24-w96.jpg" });
   });
 });

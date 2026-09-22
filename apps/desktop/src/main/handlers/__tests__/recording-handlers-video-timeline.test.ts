@@ -236,8 +236,8 @@ beforeEach(async () => {
 describe("video:playback rendition sweep", () => {
   const CURRENT = `playback-mixed-audio-v2-${PLAYBACK_KEY}.mp4`;
   // Everything that must survive: the other lane's asset, an older spelling
-  // of it, and the filmstrip.
-  const BYSTANDERS = ["mixed-audio-v2.m4a", "audio.m4a", "frames-n24-w96.jpg"];
+  // of it, and the filmstrip in both of its spellings.
+  const BYSTANDERS = ["mixed-audio-v2.m4a", "audio.m4a", "frames-v2-n24-w96.jpg", "frames-n24-w96.jpg"];
   // Renditions of earlier revisions of the same source, including the
   // unkeyed name #496 shipped.
   const STALE = ["playback-mixed-audio-v2.mp4", "playback-mixed-audio-v2-feedfacefeedfacefeedface.mp4"];
@@ -374,8 +374,8 @@ describe("video:setDefaultRange", () => {
 describe("video:frames", () => {
   test("returns a v/ cache URL plus the strip geometry from the extractor", async () => {
     mocks.ensureVideoFrames.mockResolvedValue({
-      path: joinPath(videoDir(), "frames-n24-w96.jpg"),
-      fileName: "frames-n24-w96.jpg",
+      path: joinPath(videoDir(), "frames-v2-n24-w96.jpg"),
+      fileName: "frames-v2-n24-w96.jpg",
       spec: { count: 24, frameWidth: 96, frameHeight: 54 }
     });
     const result = await bus.dispatch(
@@ -386,7 +386,7 @@ describe("video:frames", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.error.message);
     expect(result.value).toEqual({
-      url: "pwrsnap-cache://v/vid_Timeline1/frames-n24-w96.jpg",
+      url: "pwrsnap-cache://v/vid_Timeline1/frames-v2-n24-w96.jpg",
       frameCount: 24,
       frameWidth: 96,
       frameHeight: 54

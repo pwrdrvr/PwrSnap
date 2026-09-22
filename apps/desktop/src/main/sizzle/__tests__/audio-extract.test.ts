@@ -45,6 +45,20 @@ describe("computeNativeAudioCacheKey", () => {
     expect(computeNativeAudioCacheKey(baseline)).not.toBe(oldKey);
   });
 
+  test("a cut clip's spans are part of the identity; an uncut clip's key is unchanged", () => {
+    const spans = [
+      { start: 1.5, end: 2.5 },
+      { start: 4, end: 6.25 }
+    ];
+    const cut = computeNativeAudioCacheKey({ ...baseline, spans });
+    expect(cut).not.toBe(computeNativeAudioCacheKey(baseline));
+    expect(computeNativeAudioCacheKey({ ...baseline, spans: [spans[0]!, { start: 4, end: 6.5 }] })).not.toBe(cut);
+    // One span is not a cut: it must hit the extraction already on disk.
+    expect(computeNativeAudioCacheKey({ ...baseline, spans: [{ start: 1.5, end: 4.75 }] })).toBe(
+      computeNativeAudioCacheKey(baseline)
+    );
+  });
+
   test("returns the same key for the same inputs (deterministic)", () => {
     expect(computeNativeAudioCacheKey(baseline)).toBe(
       computeNativeAudioCacheKey(baseline)

@@ -158,9 +158,10 @@ export type VideoCaptureMetadata = {
   requestedSystemAudio: boolean;
   requestedMicrophone: boolean;
   /** OUTER range of the edit — first kept start → last kept end. Every
-   *  consumer that understands a single range (sizzle scene seeds,
+   *  consumer that understands a single range (sizzle clip trim seeds,
    *  `video:setDefaultRange` callers) reads this and sees the edit
-   *  without its interior cuts. */
+   *  without its interior cuts. Sizzle applies the interior cuts on top
+   *  of a clip's trim at plan time (`sizzleMediaSpans`). */
   defaultRange: VideoRange;
   /**
    * The edit itself: kept spans in source seconds, ordered, never
@@ -1455,9 +1456,11 @@ export const SIZZLE_VOICES = [
 
 /**
  * Trim range for a video-backed scene. start/end are seconds within
- * the source clip. The composer applies these as `-ss start -t (end-start)`.
- * NULL for image scenes; required for video scenes (seeded from
- * `record.video.defaultRange` when a video is first added).
+ * the source clip. The clip plays this window minus the capture's
+ * interior Library cuts unless it opts out (`useCaptureCuts: false`;
+ * see `sizzleMediaSpans`). NULL for image scenes; required for video
+ * scenes (seeded from `record.video.defaultRange` when a video is
+ * first added).
  */
 export type SizzleMediaTrim = {
   startSec: number;
@@ -1609,6 +1612,9 @@ export type SizzleSequenceBeat = {
   mediaTrim: SizzleMediaTrim | null;
   transition: SizzleTransition;
   videoFit: SizzleVideoFitPolicy;
+  /** Skip the capture's Library cuts inside `mediaTrim`. Absent means
+   *  yes — see `sizzleUsesCaptureCuts`. Only `false` is ever stored. */
+  useCaptureCuts?: boolean;
 };
 
 /**
@@ -1740,6 +1746,9 @@ export type SizzleSequencePreviewVideoFit = {
   renderMode: "trim" | "freeze-end" | "loop" | "ping-pong" | "speed-to-fit";
   inputDurationSec: number;
   playbackRate: number;
+  /** Seconds of footage the fit was planned against — the trim minus any
+   *  Library cuts. Lets the editor notice a plan made before a recut. */
+  sourceDurationSec?: number;
 };
 
 export type SizzleSequencePreviewBeat = {
@@ -1832,6 +1841,9 @@ export type SizzleScene = {
    *  composer ignores it for images). Required at render time for
    *  video scenes; seeded from `record.video.defaultRange` on add. */
   mediaTrim: SizzleMediaTrim | null;
+  /** Skip the capture's Library cuts inside `mediaTrim` (simple video
+   *  scenes). Absent means yes — see `sizzleUsesCaptureCuts`. */
+  useCaptureCuts?: boolean;
   /** See `SizzleAudioSource`. Defaults to "auto" — resolves per-scene
    *  based on capture kind + scriptLine at render time. */
   audioSource: SizzleAudioSource;

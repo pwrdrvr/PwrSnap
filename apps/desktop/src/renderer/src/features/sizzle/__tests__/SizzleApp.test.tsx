@@ -2798,6 +2798,44 @@ describe("clip inspector (right-rail drawer)", () => {
     ]);
   });
 
+  test("Library cuts: shown only when the clip's capture has cuts; Play stores the opt-out, Skip clears it", async () => {
+    // cap_b cut in the Library to 0–2 and 5–8 (3 s removed); cap_c uncut.
+    const cut = videoCapture("cap_b", { start: 0, end: 8 });
+    cut.video!.segments = [
+      { start: 0, end: 2 },
+      { start: 5, end: 8 }
+    ];
+    const { el, dispatch } = await renderApp(project({ scenes: [seq()] }), {
+      "library:list": { ok: true, value: { rows: [cut, videoCapture("cap_c", { start: 0, end: 8 })] } }
+    });
+    await selectClip(el, "bt_c");
+    expect(el.querySelector('[data-testid="sizzle-inspector-cuts-skip"]')).toBeNull();
+
+    await selectClip(el, "bt_b");
+    const skip = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-inspector-cuts-skip"]')!;
+    const play = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-inspector-cuts-play"]')!;
+    expect(skip.getAttribute("aria-pressed")).toBe("true"); // on by default
+    expect(el.querySelector('[data-testid="sizzle-inspector-cuts-hint"]')!.textContent).toBe(
+      "Skips 1 cut made in the Library (−3.0 s)."
+    );
+    await act(async () => {
+      play.click();
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+    expect(lastScenesPatch(dispatch)[0]!.beats![1]!.useCaptureCuts).toBe(false);
+    expect(
+      el.querySelector('[data-testid="sizzle-inspector-cuts-play"]')!.getAttribute("aria-pressed")
+    ).toBe("true");
+    expect(el.querySelector('[data-testid="sizzle-inspector-cuts-hint"]')!.textContent).toBe(
+      "Plays the 3.0 s removed in the Library."
+    );
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="sizzle-inspector-cuts-skip"]')!.click();
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+    expect(lastScenesPatch(dispatch)[0]!.beats![1]!.useCaptureCuts).not.toBe(false);
+  });
+
   test("a narrow rail folds the chat (still mounted) while the inspector is open; closing it unfolds", async () => {
     setSavedChatWidth(330);
     try {

@@ -24,13 +24,18 @@
  * total with `~`) rather than showing a confident wrong number.
  */
 
-import type { SizzleAudioSource, SizzleScene, SizzleTransition } from "./protocol";
+import type { SizzleAudioSource, SizzleScene, SizzleTransition, VideoRange } from "./protocol";
 import {
   resolveSizzleAudioSource,
   sizzleTransitionDurationSec,
   sizzleTransitionType
 } from "./protocol";
-import { normalizeVideoMediaTrim } from "./sizzle-media-trim";
+import {
+  normalizeVideoMediaTrim,
+  sizzleMediaSpans,
+  sizzleMediaSpansDurationSec,
+  sizzleUsesCaptureCuts
+} from "./sizzle-media-trim";
 
 /** Floor for an estimated scene, so an empty script still occupies the
  *  timeline rather than reading as a zero-length scene. */
@@ -137,7 +142,13 @@ export type SizzleSceneDurationContext = {
   capture: {
     kind: "image" | "video";
     video?:
-      | { durationSec: number; defaultRange: { start: number; end: number } }
+      | {
+          durationSec: number;
+          defaultRange: { start: number; end: number };
+          /** The Library edit. The scene skips its interior cuts unless
+           *  it opted out (`useCaptureCuts: false`). */
+          segments?: readonly VideoRange[] | null | undefined;
+        }
       | null
       | undefined;
   } | null;
@@ -229,7 +240,15 @@ export function estimateSizzleSceneDurationSec(
       defaultRange: video.defaultRange,
       sourceDurationSec: video.durationSec
     });
-    const trimDurationSec = trim.endSec - trim.startSec;
+    // The picture the scene actually has: its trim minus any Library
+    // cuts inside it — what `prepareSceneInput` renders.
+    const trimDurationSec = sizzleMediaSpansDurationSec(
+      sizzleMediaSpans({
+        trim,
+        segments: video.segments,
+        useCaptureCuts: sizzleUsesCaptureCuts(scene)
+      })
+    );
     if (effectiveAudio !== "voiceover") {
       // native / muted: the clip's own length wins unless overridden.
       return { durationSec: overrideSec ?? trimDurationSec, exact: true };

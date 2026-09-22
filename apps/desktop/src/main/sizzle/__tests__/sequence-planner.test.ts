@@ -419,6 +419,105 @@ describe("planSequenceScene", () => {
     );
   });
 
+  describe("Library cuts", () => {
+    // A 20 s take cut to three parts in the Library: 0–2, 8–11, 16–20 (9 s kept).
+    const cutCapture = (): CaptureRecord => {
+      const c = capture("cap_cut", "video", 20);
+      c.video!.segments = [
+        { start: 0, end: 2 },
+        { start: 8, end: 11 },
+        { start: 16, end: 20 }
+      ];
+      c.video!.defaultRange = { start: 0, end: 20 };
+      return c;
+    };
+    const cutScene = (beat: Partial<SizzleSequenceBeat> = {}, narrationSec = 9): SizzleScene =>
+      sequenceScene({
+        beats: [
+          {
+            id: "bt_cut",
+            captureId: "cap_cut",
+            timing: { kind: "offset", startSec: 0, endSec: narrationSec },
+            mediaTrim: { startSec: 0, endSec: 20 },
+            transition: "cut",
+            videoFit: "smart-fit",
+            ...beat
+          }
+        ]
+      });
+    const plan = (scene: SizzleScene, narrationSec = 9) =>
+      planSequenceScene({
+        scene,
+        capturesById: new Map([["cap_cut", cutCapture()]]),
+        imagePathByCaptureId: new Map(),
+        narrationAudioPath: "/tmp/narration.mp3",
+        speechTiming: timing("Open the wizard then approve pairing", narrationSec)
+      });
+
+    it("plays the kept spans by default and fits the KEPT length", () => {
+      const input = plan(cutScene()).sceneInputs[0]!;
+      expect(input.kind).toBe("video");
+      if (input.kind !== "video") return;
+      expect(input.spans).toEqual([
+        { start: 0, end: 2 },
+        { start: 8, end: 11 },
+        { start: 16, end: 20 }
+      ]);
+      // 9 s of kept footage under a 9 s window: plays at 1×, no loop,
+      // no speed-up through footage the Library removed.
+      expect(input.trimDurationSec).toBeCloseTo(9, 6);
+      expect(input.videoFit?.mode).toBe("speed-to-fit");
+      expect(input.videoFit?.playbackRate).toBeCloseTo(1, 6);
+    });
+
+    it("decodes only the kept picture a trimming fit plays", () => {
+      // 5 s window, `trim` fit: the first 5 s of kept picture — all of
+      // part one (2 s) and 3 s of part two, which is all of it.
+      const input = plan(cutScene({ videoFit: "trim" }, 5), 5).sceneInputs[0]!;
+      if (input.kind !== "video") throw new Error("expected video");
+      expect(input.trimDurationSec).toBeCloseTo(5, 6);
+      expect(input.spans).toEqual([
+        { start: 0, end: 2 },
+        { start: 8, end: 11 }
+      ]);
+    });
+
+    it("falls back to the plain input when the played prefix has no cut in it", () => {
+      const input = plan(cutScene({ videoFit: "trim" }, 1.5), 1.5).sceneInputs[0]!;
+      if (input.kind !== "video") throw new Error("expected video");
+      expect(input.spans).toBeUndefined();
+      expect(input.startSec).toBe(0);
+      expect(input.trimDurationSec).toBeCloseTo(1.5, 6);
+    });
+
+    it("starts at the first KEPT instant when a cut swallows the trim's start", () => {
+      const input = plan(cutScene({ videoFit: "trim", mediaTrim: { startSec: 5, endSec: 20 } }, 2), 2)
+        .sceneInputs[0]!;
+      if (input.kind !== "video") throw new Error("expected video");
+      expect(input.startSec).toBe(8);
+      expect(input.spans).toBeUndefined();
+    });
+
+    it("plays the whole trim when the beat opts out", () => {
+      const result = plan(cutScene({ useCaptureCuts: false }));
+      const input = result.sceneInputs[0]!;
+      if (input.kind !== "video") throw new Error("expected video");
+      expect(input.spans).toBeUndefined();
+      // 20 s under a 9 s window is outside smart-fit's speed band.
+      expect(result.beatPlans[0]!.fit?.sourceDurationSec).toBeCloseTo(20, 6);
+    });
+
+    it("hands the preview the same kept length the render fits", () => {
+      const scene = cutScene();
+      const preview = planSequencePreviewMedia({
+        scene,
+        capturesById: new Map([["cap_cut", cutCapture()]]),
+        timeline: planSequenceTimeline(scene, timing("Open the wizard then approve pairing", 9))
+      });
+      expect(preview.beatPlans[0]!.fit?.inputDurationSec).toBeCloseTo(9, 6);
+    });
+  });
+
   it("reports unsafe video fit diagnostics during preview planning", () => {
     const scene = sequenceScene({
       scriptLine: "The finished GIF is ready to share privately and publish.",

@@ -601,13 +601,16 @@ function validateSequenceBeats(
         )
       };
     }
+    const cuts = validateUseCaptureCuts(beat.useCaptureCuts, `${field}.useCaptureCuts`);
+    if (!cuts.ok) return cuts;
     out.push({
       id: beat.id,
       captureId: beat.captureId,
       timing: timing.value,
       mediaTrim: trim.value,
       transition: transition.value,
-      videoFit
+      videoFit,
+      ...cuts.value
     });
   }
   return { ok: true, value: normalizeSizzleSequenceBeatContinuity(out) };
@@ -711,6 +714,8 @@ function validateScene(
     type: "crossfade"
   });
   if (!transitionResult.ok) return transitionResult;
+  const cutsResult = validateUseCaptureCuts(v.useCaptureCuts, `scene[${idx}].useCaptureCuts`);
+  if (!cutsResult.ok) return cutsResult;
   const value: ValidatedScene = {
     id: v.id,
     captureId:
@@ -721,7 +726,8 @@ function validateScene(
     durationOverrideSec,
     mediaTrim: trimResult.value,
     audioSource: kind === "sequence" ? "voiceover" : audioSource,
-    transition: transitionResult.value
+    transition: transitionResult.value,
+    ...cutsResult.value
   };
   if (kind === "sequence") {
     value.kind = "sequence";
@@ -731,6 +737,23 @@ function validateScene(
   return {
     ok: true,
     value
+  };
+}
+
+/**
+ * `useCaptureCuts` is a default-on flag, so only the opt-out is stored:
+ * `false` round-trips, `true` / absent / null all mean "skip the cuts"
+ * and leave the field off the record.
+ */
+function validateUseCaptureCuts(
+  v: unknown,
+  field: string
+): { ok: true; value: { useCaptureCuts?: false } } | { ok: false; error: PwrSnapError } {
+  if (v === undefined || v === null || v === true) return { ok: true, value: {} };
+  if (v === false) return { ok: true, value: { useCaptureCuts: false } };
+  return {
+    ok: false,
+    error: validationError("scene_useCaptureCuts_invalid", `${field} must be a boolean`)
   };
 }
 

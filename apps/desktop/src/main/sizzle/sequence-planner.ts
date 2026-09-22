@@ -1,6 +1,7 @@
 import type {
   CaptureRecord,
   SizzleMediaTrim,
+  VideoRange,
   SizzleScene,
   SizzleSequencePreviewBeat,
   SizzleSequenceBeat,
@@ -11,8 +12,13 @@ import {
   mediaTrimWasClamped,
   normalizeSizzleSequenceBeatContinuity,
   normalizeVideoMediaTrim,
+  sizzleMediaSpans,
+  sizzleMediaSpansDurationSec,
+  sizzleMediaSpansHaveCuts,
+  sizzleMediaSpansPrefix,
   sizzleTransitionDurationSec,
-  sizzleTransitionType
+  sizzleTransitionType,
+  sizzleUsesCaptureCuts
 } from "@pwrsnap/shared";
 
 import type { SceneInput } from "./composer";
@@ -97,10 +103,14 @@ export function planSequenceScene(req: SequencePlannerRequest): SequenceRenderPl
       const fit = mediaPlan.fit;
       videoMediaPlan = { trim, fit };
       diagnostics.push(...mediaPlan.diagnostics);
+      // Decode only what the fit plays — for a cut clip, the first
+      // `inputDurationSec` of KEPT picture, which may end mid-span.
+      const played = sizzleMediaSpansPrefix(mediaPlan.spans, fit.inputDurationSec);
       sceneInputs.push({
         kind: "video",
         videoPath: capture.legacy_src_path,
-        startSec: trim.startSec,
+        // The first KEPT instant: a cut can swallow the trim's own start.
+        startSec: played[0]?.start ?? trim.startSec,
         trimDurationSec: fit.inputDurationSec,
         durationSec,
         audioPath: req.narrationAudioPath,
@@ -110,7 +120,8 @@ export function planSequenceScene(req: SequencePlannerRequest): SequenceRenderPl
         videoFit: {
           mode: fit.renderMode,
           playbackRate: fit.playbackRate
-        }
+        },
+        ...(sizzleMediaSpansHaveCuts(played) ? { spans: played } : {})
       });
     } else {
       const imagePath = req.imagePathByCaptureId.get(beat.captureId);
@@ -190,6 +201,9 @@ function planVideoBeatMedia(
   targetDurationSec: number
 ): {
   trim: SizzleMediaTrim;
+  /** Source spans the beat plays: `trim` minus the capture's Library
+   *  cuts, or `[trim]` when there are none or the beat opted out. */
+  spans: VideoRange[];
   fit: VideoFitDecision;
   diagnostics: SequencePlannerDiagnostic[];
 } {
@@ -212,7 +226,15 @@ function planVideoBeatMedia(
       message: `Media trim was clamped to the ${roundSec(capture.video.durationSec)}s source duration`
     });
   }
-  const sourceDurationSec = Math.max(0.05, trim.endSec - trim.startSec);
+  const spans = sizzleMediaSpans({
+    trim,
+    segments: capture.video.segments,
+    useCaptureCuts: sizzleUsesCaptureCuts(beat)
+  });
+  // The fit sees the footage the beat really has: a 60 s take cut down
+  // to 8 s is an 8 s source, so smart-fit loops or freezes it rather
+  // than speeding through cuts it no longer contains.
+  const sourceDurationSec = Math.max(0.05, sizzleMediaSpansDurationSec(spans));
   const fit = resolveVideoFit({
     policy: beat.videoFit,
     sourceDurationSec,
@@ -221,7 +243,7 @@ function planVideoBeatMedia(
   for (const warning of fit.warnings) {
     diagnostics.push({ beatId: beat.id, code: "video_fit", message: warning });
   }
-  return { trim, fit, diagnostics };
+  return { trim, spans, fit, diagnostics };
 }
 
 function transitionOverlapDurationSec(transition: SizzleTransition): number {

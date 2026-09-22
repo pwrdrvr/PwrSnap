@@ -7,7 +7,7 @@
 
 import { describe, expect, test } from "vitest";
 import type { CaptureRecord, SizzleSequenceBeat, SizzleSequencePreviewBeat } from "@pwrsnap/shared";
-import { sequencePreviewVideoState } from "../sequence-plan";
+import { cutFollowSeekSec, sequencePreviewVideoState } from "../sequence-plan";
 
 const previewBeat = (patch: Partial<SizzleSequencePreviewBeat> = {}): SizzleSequencePreviewBeat =>
   ({
@@ -120,5 +120,92 @@ describe("sequencePreviewVideoState", () => {
       timelineTimeSec: 1
     });
     expect(state?.sourceTimeSec).toBeCloseTo(1, 3);
+  });
+});
+
+describe("sequencePreviewVideoState with Library cuts", () => {
+  // A 20 s take cut to 0–2, 8–11, 16–20 in the Library (9 s kept).
+  const cutVideo = (): CaptureRecord =>
+    ({
+      id: "cap_v",
+      kind: "video",
+      legacy_src_path: "/tmp/v.mp4",
+      video: {
+        durationSec: 20,
+        defaultRange: { start: 0, end: 20 },
+        segments: [
+          { start: 0, end: 2 },
+          { start: 8, end: 11 },
+          { start: 16, end: 20 }
+        ]
+      }
+    }) as unknown as CaptureRecord;
+  const at = (timelineTimeSec: number, beat: Partial<SizzleSequenceBeat> = {}) =>
+    sequencePreviewVideoState({
+      beat: previewBeat({ startSec: 0, endSec: 9 }),
+      sceneBeat: sceneBeat({ mediaTrim: { startSec: 0, endSec: 20 }, videoFit: "trim", ...beat }),
+      capture: cutVideo(),
+      timelineTimeSec
+    });
+
+  test("walks the kept spans, skipping what the Library cut", () => {
+    expect(at(1)?.sourceTimeSec).toBeCloseTo(1, 6);
+    expect(at(2.5)?.sourceTimeSec).toBeCloseTo(8.5, 6); // 0.5 s into part two
+    expect(at(6)?.sourceTimeSec).toBeCloseTo(17, 6); // 1 s into part three
+    expect(at(1)?.hasCuts).toBe(true);
+  });
+
+  test("an opted-out clip plays straight through its trim", () => {
+    expect(at(2.5, { useCaptureCuts: false })?.sourceTimeSec).toBeCloseTo(2.5, 6);
+    expect(at(2.5, { useCaptureCuts: false })?.hasCuts).toBe(false);
+  });
+
+  test("a plan made before the recut is re-derived, not trusted", () => {
+    // The plan fit 20 s of footage by speeding it up; the capture now keeps 9 s.
+    const state = sequencePreviewVideoState({
+      beat: previewBeat({
+        startSec: 0,
+        endSec: 9,
+        fit: { renderMode: "speed-to-fit", inputDurationSec: 20, playbackRate: 2.2, sourceDurationSec: 20 }
+      }),
+      sceneBeat: sceneBeat({ mediaTrim: { startSec: 0, endSec: 20 }, videoFit: "smart-fit" }),
+      capture: cutVideo(),
+      timelineTimeSec: 1
+    });
+    expect(state?.playbackRate).toBeCloseTo(1, 6);
+  });
+});
+
+describe("cutFollowSeekSec", () => {
+  const SPANS = [
+    { start: 0, end: 2 },
+    { start: 8, end: 11 },
+    { start: 16, end: 20 }
+  ];
+
+  test("leaves an element alone inside the head's span, drift and all", () => {
+    expect(cutFollowSeekSec(SPANS, 9, 9.4)).toBeNull();
+    expect(cutFollowSeekSec(SPANS, 9.4, 8.9)).toBeNull();
+  });
+
+  test("jumps an element that ran into a cut to the next kept span", () => {
+    expect(cutFollowSeekSec(SPANS, 1.95, 2.05)).toBe(8);
+  });
+
+  test("sends a lagging element to where the head crossed to", () => {
+    expect(cutFollowSeekSec(SPANS, 8.05, 1.98)).toBe(8.05);
+  });
+
+  test("does not drag an element that is one cut AHEAD back into the old span", () => {
+    // The element jumped the cut a frame before the head reached it.
+    expect(cutFollowSeekSec(SPANS, 1.95, 8.02)).toBeNull();
+  });
+
+  test("follows the head when a loop wraps back to the first span", () => {
+    expect(cutFollowSeekSec(SPANS, 0.1, 19.9)).toBe(0.1);
+  });
+
+  test("leaves the element parked on the last kept instant", () => {
+    expect(cutFollowSeekSec(SPANS, 20, 20)).toBeNull();
   });
 });

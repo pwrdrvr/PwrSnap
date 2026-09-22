@@ -5,7 +5,8 @@ import {
   sizzleTransitionDurationSec,
   sizzleTransitionType,
   type SizzleTransition,
-  type SizzleTransitionType
+  type SizzleTransitionType,
+  type VideoRange
 } from "@pwrsnap/shared";
 import { resolveFfmpegPath } from "../recording/ffmpeg-resolver";
 import { getMainLogger } from "../log";
@@ -72,6 +73,13 @@ export type VideoSceneInput = {
   audioDurationSec?: number;
   transition: SizzleTransition;
   videoFit?: VideoFitRenderPlan;
+  /**
+   * Source spans to play, in order, when the clip skips the capture's
+   * Library cuts — absolute source seconds, at least two. Absent for an
+   * uncut clip, which keeps the `-ss`/`-t` input above. When present,
+   * `startSec` is informational and `trimDurationSec` is the spans' total.
+   */
+  spans?: VideoRange[];
 };
 
 export type SceneInput = ImageSceneInput | VideoSceneInput;
@@ -213,6 +221,11 @@ export function buildCompositionArgs(req: ComposeRequest): string[] {
     if (scene.kind === "image") {
       // Single-frame input. zoompan time-stretches in the filter graph.
       args.push("-i", scene.imagePath);
+    } else if (hasCutSpans(scene)) {
+      // A clip that skips Library cuts decodes from the top of the file
+      // to its last kept instant and cuts in the filter graph — see
+      // `cutSpansFilter` for why there is no input-side seek here.
+      args.push("-t", scene.spans[scene.spans.length - 1]!.end.toFixed(3), "-i", scene.videoPath);
     } else {
       // Input-side -ss + -t for fast trim. -ss must come BEFORE -i.
       // -t uses TRIM duration (not the final scene duration) so the
@@ -284,8 +297,11 @@ export function buildCompositionArgs(req: ComposeRequest): string[] {
       // job to keep them in sync, not the composer's to defend.
       const fit = scene.videoFit ?? { mode: "freeze-end", playbackRate: 1 };
       const baseLabel = `vb${i}`;
+      const source = hasCutSpans(scene)
+        ? cutSpansFilter(i, scene.spans, req.fps, filters)
+        : `[${i}:v]`;
       filters.push(
-        `[${i}:v]` +
+        source +
           `scale=${req.width}:${req.height}:force_original_aspect_ratio=decrease,` +
           `pad=${req.width}:${req.height}:(ow-iw)/2:(oh-ih)/2:color=black,` +
           `fps=${req.fps},setsar=1,format=yuv420p` +
@@ -336,6 +352,41 @@ export function buildCompositionArgs(req: ComposeRequest): string[] {
     req.outputPath
   );
   return args;
+}
+
+function hasCutSpans(scene: VideoSceneInput): scene is VideoSceneInput & { spans: VideoRange[] } {
+  return scene.spans !== undefined && scene.spans.length > 1;
+}
+
+/**
+ * The kept spans of a cut clip, joined into one stream: pushes the split
+ * and per-span trims onto `filters` and returns the concat, ready for the
+ * normalization chain to continue from.
+ *
+ * Same shape as the Library's cut export (`buildSegmentedMp4EncodeArgs`),
+ * for the same reason: screen recordings are variable-frame-rate. A
+ * stretch where nothing moved holds ONE frame for seconds, and a Library
+ * cut made by "Cut idle" starts its next span inside such a stretch, half
+ * a second before the action. An input-side seek to that instant finds no
+ * frame of its own and opens on the next change instead — the span loses
+ * its lead-in. `fps` first repeats the held frame across the gap, so each
+ * `trim` start lands on the frame that was actually on screen.
+ */
+function cutSpansFilter(
+  index: number,
+  spans: readonly VideoRange[],
+  fps: number,
+  filters: string[]
+): string {
+  const n = spans.length;
+  const split = spans.map((_, k) => `[vs${index}_${k}]`).join("");
+  filters.push(`[${index}:v]fps=${fps},split=${n}${split}`);
+  spans.forEach((span, k) => {
+    filters.push(
+      `[vs${index}_${k}]trim=start=${span.start.toFixed(3)}:end=${span.end.toFixed(3)},setpts=PTS-STARTPTS[vk${index}_${k}]`
+    );
+  });
+  return `${spans.map((_, k) => `[vk${index}_${k}]`).join("")}concat=n=${n}:v=1:a=0,`;
 }
 
 function videoFitFilters(

@@ -20,8 +20,9 @@
 //
 // `defaultRange` on `VideoCaptureMetadata` stays the OUTER range (first
 // start → last end) so every consumer that only understands one range —
-// the sizzle scene seed, older callers of `video:setDefaultRange` — keeps
-// working, just without the cuts.
+// the sizzle clip's trim seed, older callers of `video:setDefaultRange` —
+// keeps working, just without the cuts. Sizzle reads the interior cuts
+// separately and skips them inside a clip's trim (`sizzleMediaSpans`).
 //
 // Values are never rounded here. A persisted full-clip span keeps the
 // recorder's exact float end, which the export cache key and the

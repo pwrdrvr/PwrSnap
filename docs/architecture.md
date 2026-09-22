@@ -108,11 +108,16 @@ every consumer that understands one range keeps working. Exports render
 the spans; the timeline never ripples. The Library timeline, MCP agents
 (`pwrsnap_video_edit` → `video:edit`) and the in-app chat (`edit_video`)
 all edit that one list, and the Library adopts an agent's edit as an
-ordinary undoable change. Agents decide what to cut without seeing a
-frame: `video:inspect` returns a run-length-encoded on-screen activity
-track with the still stretches already found — one cached ffmpeg pass per
-capture (`recording/video-activity.ts`), a derived-cache lane like the
-filmstrip and waveform.
+ordinary undoable change. Sizzle reels read the cuts live: a video clip
+plays its own trim window minus the capture's interior cuts, so cutting
+idle time in the Library tightens every reel that uses the recording, and
+a clip that needs the removed footage back opts out
+(`useCaptureCuts: false`) without touching the capture. Agents decide
+what to cut without seeing a frame: `video:inspect` returns a
+run-length-encoded on-screen activity track with the still stretches
+already found — one cached ffmpeg pass per capture
+(`recording/video-activity.ts`), a derived-cache lane like the filmstrip
+and waveform.
 
 ## AI runs on the user's machine, through their own agent
 

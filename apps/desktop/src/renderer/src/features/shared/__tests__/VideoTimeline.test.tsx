@@ -606,3 +606,214 @@ describe("VideoTimeline", () => {
     expect(head.style.transform).toBe("translateX(400px)");
   });
 });
+
+describe("VideoTimeline — splits and cuts", () => {
+  // 800 px ↔ 16 s → 50 px per second throughout.
+  type Change = { segments: readonly VideoRange[]; commit: boolean };
+
+  function editable(
+    segments: readonly VideoRange[],
+    extra: Partial<VideoTimelineProps> = {}
+  ): { el: HTMLDivElement; changes: Change[]; seeks: number[] } {
+    const changes: Change[] = [];
+    const seeks: number[] = [];
+    const first = segments[0]!;
+    const last = segments[segments.length - 1]!;
+    const { el } = render({
+      range: { start: first.start, end: last.end },
+      segments,
+      onSegmentsChange: (next, commit) => changes.push({ segments: next, commit }),
+      onSeek: (sec) => seeks.push(sec),
+      ...extra
+    });
+    return { el, changes, seeks };
+  }
+
+  const q = (el: Element, id: string): HTMLElement | null =>
+    el.querySelector(`[data-testid="${id}"]`);
+
+  test("an interior cut is drawn in place and the foot reports the kept length", () => {
+    const { el } = editable([
+      { start: 0, end: 4 },
+      { start: 9, end: 16 }
+    ]);
+    const cut = q(el, "video-timeline-cut")!;
+    expect(cut.style.left).toBe("200px");
+    expect(cut.style.width).toBe("250px");
+    expect(q(el, "video-timeline-trim-label")!.textContent).toBe("2 PARTS · 11 s OF 0:16.0");
+    // Both sides of the cut get an edge handle; the hint is for first-timers.
+    expect(q(el, "video-timeline-cut-in")).not.toBeNull();
+    expect(q(el, "video-timeline-cut-out")).not.toBeNull();
+    expect(q(el, "video-timeline-hint")).toBeNull();
+  });
+
+  test("hovering a kept part offers Cut, hovering a cut offers Keep", () => {
+    const { el, changes } = editable([
+      { start: 0, end: 4 },
+      { start: 9, end: 16 }
+    ]);
+    const strip = el.querySelector(".vtl__strip")!;
+
+    pointer(strip, "pointermove", 100);
+    const cutChip = q(el, "video-timeline-piece-chip")!;
+    expect(cutChip.textContent).toBe("Cut");
+    act(() => cutChip.click());
+    expect(changes).toEqual([{ segments: [{ start: 9, end: 16 }], commit: true }]);
+
+    pointer(strip, "pointermove", 300);
+    const keepChip = q(el, "video-timeline-piece-chip")!;
+    expect(keepChip.textContent).toBe("Keep");
+    act(() => keepChip.click());
+    // Restored as its own part, so both old boundaries survive as splits.
+    expect(changes[1]).toEqual({
+      segments: [
+        { start: 0, end: 4 },
+        { start: 4, end: 9 },
+        { start: 9, end: 16 }
+      ],
+      commit: true
+    });
+  });
+
+  test("no Cut chip when there is only one part to keep, and none over the trimmed ends", () => {
+    const { el } = editable([{ start: 2, end: 14 }]);
+    const strip = el.querySelector(".vtl__strip")!;
+    pointer(strip, "pointermove", 400);
+    expect(q(el, "video-timeline-piece-chip")).toBeNull();
+    pointer(strip, "pointermove", 20);
+    expect(q(el, "video-timeline-piece-chip")).toBeNull();
+    expect(q(el, "video-timeline-hint")!.textContent).toBe("S split · X cut");
+  });
+
+  test("a split moves only when dragged, and double-click removes it", () => {
+    const { el, changes, seeks } = editable([
+      { start: 0, end: 8 },
+      { start: 8, end: 16 }
+    ]);
+    const strip = el.querySelector(".vtl__strip")!;
+    const split = q(el, "video-timeline-split")!;
+    expect(q(el, "video-timeline-trim-label")!.textContent).toBe("FULL CLIP · 0:16.0 · 1 SPLIT");
+
+    // A press without movement — half of a double-click — changes nothing.
+    pointer(split, "pointerdown", 403);
+    pointer(strip, "pointerup", 403);
+    expect(changes).toEqual([]);
+
+    pointer(split, "pointerdown", 400);
+    pointer(strip, "pointermove", 450);
+    pointer(strip, "pointerup", 450);
+    expect(changes).toEqual([
+      { segments: [{ start: 0, end: 9 }, { start: 9, end: 16 }], commit: false },
+      { segments: [{ start: 0, end: 9 }, { start: 9, end: 16 }], commit: true }
+    ]);
+    expect(seeks.at(-1)).toBe(9);
+
+    act(() => {
+      split.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+    });
+    expect(changes.at(-1)).toEqual({ segments: [{ start: 0, end: 16 }], commit: true });
+  });
+
+  test("dragging a cut's edge onto the other side closes it back into a split", () => {
+    const { el, changes } = editable([
+      { start: 0, end: 4 },
+      { start: 9, end: 16 }
+    ]);
+    const strip = el.querySelector(".vtl__strip")!;
+    pointer(q(el, "video-timeline-cut-in")!, "pointerdown", 197);
+    pointer(strip, "pointermove", 300);
+    // 447 px is 8.94 s — inside the snap, so it lands exactly on 9.
+    pointer(strip, "pointermove", 447);
+    pointer(strip, "pointerup", 447);
+    expect(changes[0]).toEqual({
+      segments: [{ start: 0, end: 6 }, { start: 9, end: 16 }],
+      commit: false
+    });
+    expect(changes.at(-1)).toEqual({
+      segments: [{ start: 0, end: 9 }, { start: 9, end: 16 }],
+      commit: true
+    });
+  });
+
+  test("Escape mid-drag puts the parts back", () => {
+    const segments = [
+      { start: 0, end: 8 },
+      { start: 8, end: 16 }
+    ];
+    const { el, changes } = editable(segments);
+    const strip = el.querySelector(".vtl__strip")!;
+    pointer(q(el, "video-timeline-split")!, "pointerdown", 400);
+    pointer(strip, "pointermove", 600);
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", cancelable: true }));
+    });
+    expect(changes.at(-1)).toEqual({ segments, commit: true });
+  });
+
+  test("Full clip resets the parts, not just the outer handles", () => {
+    const ranges: VideoRange[] = [];
+    const { el, changes } = editable(
+      [
+        { start: 0, end: 4 },
+        { start: 9, end: 16 }
+      ],
+      { onRangeChange: (range) => ranges.push(range) }
+    );
+    act(() => q(el, "video-timeline-full-clip")!.click());
+    expect(changes).toEqual([{ segments: [{ start: 0, end: 16 }], commit: true }]);
+    expect(ranges).toEqual([]);
+  });
+
+  test("the activity lane draws the levels, and Cut idle removes the still stretch", () => {
+    // 5 Hz × 16 s: busy for 2 s, still for 8 s, busy for 6 s.
+    const magnitudes = [
+      ...Array.from({ length: 10 }, () => 255),
+      ...Array.from({ length: 40 }, () => 0),
+      ...Array.from({ length: 30 }, () => 255)
+    ];
+    const { el, changes } = editable([{ start: 0, end: 16 }], {
+      activity: { sampleHz: 5, magnitudes }
+    });
+    const lane = q(el, "video-timeline-activity")!;
+    expect(lane.querySelector(".vtl__act-l3")).not.toBeNull();
+    expect(lane.querySelector(".vtl__act-idle")).not.toBeNull();
+
+    const chip = q(el, "video-timeline-cut-idle")!;
+    // Still from 2 s to 10 s, less half a second of padding either side.
+    expect(chip.textContent).toBe("Cut idle −7 s");
+    act(() => {
+      chip.dispatchEvent(new MouseEvent("pointerover", { bubbles: true }));
+    });
+    const preview = q(el, "video-timeline-idle-preview")!;
+    expect(preview.style.left).toBe("125px");
+    expect(preview.style.width).toBe("350px");
+
+    act(() => chip.click());
+    expect(changes).toEqual([
+      { segments: [{ start: 0, end: 2.5 }, { start: 9.5, end: 16 }], commit: true }
+    ]);
+  });
+
+  test("a still-loading track draws an empty lane and offers no Cut idle", () => {
+    const { el } = editable([{ start: 0, end: 16 }], { activity: null });
+    expect(q(el, "video-timeline-activity")!.classList.contains("is-loading")).toBe(true);
+    expect(q(el, "video-timeline-cut-idle")).toBeNull();
+  });
+
+  test("compact: cuts are drawn but not editable", () => {
+    const { el } = render({
+      compact: true,
+      range: { start: 0, end: 16 },
+      segments: [
+        { start: 0, end: 4 },
+        { start: 9, end: 16 }
+      ],
+      onSegmentsChange: () => undefined
+    });
+    expect(q(el, "video-timeline-cut")).not.toBeNull();
+    expect(q(el, "video-timeline-cut-in")).toBeNull();
+    expect(q(el, "video-timeline-hint")).toBeNull();
+    pointer(el.querySelector(".vtl__strip")!, "pointermove", 100);
+    expect(q(el, "video-timeline-piece-chip")).toBeNull();
+  });
+});

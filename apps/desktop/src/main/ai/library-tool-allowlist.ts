@@ -35,6 +35,8 @@ import {
   BundleLayerNode,
   CanvasRect,
   MAX_HIGHLIGHT_OPACITY,
+  VIDEO_ACTIVITY_GUIDANCE,
+  VIDEO_EDIT_MODEL_GUIDANCE,
   type CaptureRecord,
   type CommandName,
   type Req
@@ -374,7 +376,9 @@ const listLayerCapabilities = defineTool({
         yellow: "warning",
         blue: "neutral context"
       },
-      vision: "call render_composite to see the current canvas"
+      vision: "call render_composite to see the current canvas",
+      video_tools:
+        "For VIDEO captures the draw/effect tools do not apply. inspect_video returns the edit and an on-screen activity summary (still stretches included); edit_video keeps, cuts, cuts the still stretches, or resets. Times are source seconds."
     }
   })
 });
@@ -1111,6 +1115,92 @@ const removeTag = defineTool({
     runVerb("library:removeTag", { captureId: args.capture_id, label: args.label })
 });
 
+// ---- video tools -------------------------------------------------------
+//
+// The chat's half of video editing; the MCP surface has the same pair
+// (`pwrsnap_video_inspect` / `pwrsnap_video_edit`). Both sides dispatch
+// the same bus verbs, so a cut made here, over MCP, or on the timeline
+// is normalized, validated and broadcast identically — and the Library
+// puts it on its undo stack whichever way it arrived.
+
+const videoSpan = z.object({
+  start: z.number().min(0).describe("seconds, source timeline"),
+  end: z.number().min(0).describe("seconds, source timeline; > start")
+});
+
+const inspectVideo = defineTool({
+  namespace: "pwrsnap_library",
+  name: "inspect_video",
+  description:
+    "For a VIDEO capture: duration, the current edit (kept spans, cuts, exported length) and an on-screen activity summary " +
+    "(run-length encoded activity levels + the still stretches), so you can decide what to cut without watching it. " +
+    VIDEO_EDIT_MODEL_GUIDANCE +
+    " " +
+    VIDEO_ACTIVITY_GUIDANCE,
+  annotations: { readOnlyHint: true },
+  argsSchema: z.object({
+    capture_id: z.string(),
+    min_still_sec: z.number().min(0.2).max(3600).optional(),
+    treat_minor_as_still: z.boolean().optional(),
+    include_track: z.boolean().optional()
+  }),
+  dispatch: async (args) =>
+    runVerb("video:inspect", {
+      captureId: args.capture_id,
+      ...(args.min_still_sec !== undefined ? { minStillSec: args.min_still_sec } : {}),
+      ...(args.treat_minor_as_still !== undefined
+        ? { treatMinorAsStill: args.treat_minor_as_still }
+        : {}),
+      ...(args.include_track !== undefined ? { includeTrack: args.include_track } : {})
+    })
+});
+
+const editVideo = defineTool({
+  namespace: "pwrsnap_library",
+  name: "edit_video",
+  description:
+    "Change which parts of a VIDEO capture export. Set exactly ONE of: " +
+    "keep — replace the edit with exactly these kept spans; " +
+    "cut — remove spans from the current edit (adds to existing cuts); " +
+    "cut_still — cut every stretch where nothing on screen changes for at least min_still_sec (default 3), keeping padding_sec (default 0.5) beside each change; " +
+    "reset=true — restore the whole clip. Returns the resulting edit (kept spans, cuts, keptDurationSec). " +
+    VIDEO_EDIT_MODEL_GUIDANCE,
+  annotations: { idempotentHint: false },
+  argsSchema: z.object({
+    capture_id: z.string(),
+    keep: z.array(videoSpan).min(1).max(200).optional(),
+    cut: z.array(videoSpan).min(1).max(200).optional(),
+    cut_still: z
+      .object({
+        min_still_sec: z.number().min(0.5).max(3600).optional(),
+        padding_sec: z.number().min(0).max(10).optional(),
+        treat_minor_as_still: z.boolean().optional()
+      })
+      .optional(),
+    reset: z.boolean().optional()
+  }),
+  dispatch: async (args) => {
+    const still = args.cut_still;
+    return runVerb("video:edit", {
+      captureId: args.capture_id,
+      ...(args.keep !== undefined ? { keep: args.keep } : {}),
+      ...(args.cut !== undefined ? { cut: args.cut } : {}),
+      ...(still !== undefined
+        ? {
+            cutStill: {
+              ...(still.min_still_sec !== undefined ? { minStillSec: still.min_still_sec } : {}),
+              ...(still.padding_sec !== undefined ? { paddingSec: still.padding_sec } : {}),
+              ...(still.treat_minor_as_still !== undefined
+                ? { treatMinorAsStill: still.treat_minor_as_still }
+                : {})
+            }
+          }
+        : {}),
+      ...(args.reset !== undefined ? { reset: args.reset } : {})
+    });
+  }
+});
+
 /**
  * The live catalog — 23 tools. Read / introspect / navigate first, then
  * the per-primitive edit tools (one per draw shape + the two effects).
@@ -1145,5 +1235,8 @@ export const LIBRARY_TOOL_ALLOWLIST: ToolSpec<unknown>[] = [
   reorderLayer,
   reorderLayers,
   addTag,
-  removeTag
+  removeTag,
+  // video
+  inspectVideo,
+  editVideo
 ] as ToolSpec<unknown>[];

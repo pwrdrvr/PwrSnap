@@ -17,9 +17,9 @@ import type {
   VideoExportResult
 } from "@pwrsnap/shared";
 import { getCaptureById } from "../persistence/captures-repo";
-import { normalizeRange } from "../persistence/video-repo";
 import { resolveExportAudio } from "./mp4-export-audio";
 import { exportVideoRange } from "./recording-exporter";
+import { resolveVideoExportSpans } from "./video-export-spans";
 
 export type ResolvedVideoExport = {
   /** The full export result — `path` is the on-disk file location;
@@ -59,7 +59,7 @@ export async function resolveVideoExport(
     return { ok: false, error: { kind: "not_a_video" } };
   }
 
-  const range = coords.range ?? record.video.defaultRange;
+  const { range, spans } = resolveVideoExportSpans(record.video, coords);
   // GIF is always silent regardless of caller intent; an MP4 with no
   // explicit choice keeps what the user's MP4 audio preference keeps.
   // `video:export` resolves through the same function, so its preflight
@@ -84,7 +84,8 @@ export async function resolveVideoExport(
     video: record.video,
     format: coords.format,
     preset: coords.preset,
-    range: normalizeRange(range, record.video.durationSec),
+    range,
+    spans,
     audio: effectiveAudio
   });
 

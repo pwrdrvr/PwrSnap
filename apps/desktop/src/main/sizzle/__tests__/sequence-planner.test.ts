@@ -46,6 +46,7 @@ function capture(id: string, kind: "image" | "video", durationSec = 1): CaptureR
             requestedSystemAudio: false,
             requestedMicrophone: false,
             defaultRange: { start: 0, end: durationSec },
+            segments: [{ start: 0, end: durationSec }],
             previewPath: null,
             previewStatus: "ready"
           }

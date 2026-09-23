@@ -40,6 +40,15 @@ describe("validateSettingsOpen", () => {
     }
   });
 
+  test("a Direct API connection screen deep-links by id", () => {
+    const sub = "connection:12345678-1234-4234-8234-123456789003";
+    expect(open({ page: "ai", sub })).toEqual({ ok: true, value: { page: "ai", sub, droppedSub: false } });
+    expect(open({ page: "ai", sub: "new-connection" })).toEqual({
+      ok: true, value: { page: "ai", sub: "new-connection", droppedSub: false } });
+    expect(open({ page: "ai", sub: "connection:../../etc" })).toEqual({
+      ok: true, value: { page: "ai", sub: undefined, droppedSub: true } });
+  });
+
   test("a sub belongs to one page: an AI Features section is not a provider screen", () => {
     expect(open({ page: "ai", sub: "usage" })).toEqual({
       ok: true,

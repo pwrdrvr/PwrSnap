@@ -1,4 +1,4 @@
-import type { CustomModel, CustomModelDiscovery, CustomModelStatus } from "./custom-models";
+import type { CustomConnection, CustomConnectionInput, CustomModel, CustomModelDiscovery, CustomModelInput } from "./custom-models";
 // Typed `Commands` registry. Single source of truth across main /
 // preload / renderer / external transports (HTTP RPC in Phase 7, MCP
 // later). Every command-bus.dispatch(name, req) call typechecks the
@@ -2255,12 +2255,29 @@ export type AiProvidersSettingsSub = (typeof SETTINGS_PAGE_SUBS.ai)[number];
 /** One AI Features section id. */
 export type AiFeaturesSettingsSub = (typeof SETTINGS_PAGE_SUBS)["ai-features"][number];
 
+/** AI Providers screens beyond the fixed list: the page that adds a Direct
+ *  API connection, and one screen per saved connection. Their SHAPE is what
+ *  is allowlisted; a connection id that no longer exists renders as removed. */
+export const NEW_CONNECTION_SETTINGS_SUB = "new-connection";
+const CONNECTION_SETTINGS_SUB = /^connection:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+export function connectionSettingsSub(connectionId: string): string {
+  return `connection:${connectionId}`;
+}
+/** The connection id a sub names, or `null` for any other sub. */
+export function connectionIdOfSettingsSub(sub: string | null | undefined): string | null {
+  return typeof sub === "string" ? CONNECTION_SETTINGS_SUB.exec(sub)?.[1] ?? null : null;
+}
+
 /** Whether `sub` names a screen that `page` actually has. A sub on a page
  *  with none, or one the page does not list, is not a sub. */
 export function isSettingsSub(page: SettingsPage, sub: unknown): sub is string {
+  if (typeof sub !== "string") return false;
+  if (page === "ai" && (sub === NEW_CONNECTION_SETTINGS_SUB || CONNECTION_SETTINGS_SUB.test(sub))) {
+    return true;
+  }
   const subs: readonly string[] | undefined =
     (SETTINGS_PAGE_SUBS as Partial<Record<SettingsPage, readonly string[]>>)[page];
-  return typeof sub === "string" && subs !== undefined && subs.includes(sub);
+  return subs !== undefined && subs.includes(sub);
 }
 
 /** The ACP agent id a chat thread is bound to, parsed from its id
@@ -2630,7 +2647,9 @@ export type Settings = {
      *  is a `settings:write` patch to `ai.acp.enabledAgentIds`. Wiring an
      *  enabled agent as a live chat backend is a separate next phase. */
     acp: AcpSettings;
-    /** User-configured direct HTTP models; absent in older settings files. */
+    /** User-configured direct HTTP endpoints, and the models saved under
+     *  each; absent in older settings files. Main-owned. */
+    customConnections?: CustomConnection[];
     customModels?: CustomModel[];
   };
   /** Global capture hotkeys. Each field is an Electron accelerator
@@ -3556,7 +3575,9 @@ export type SettingsPatch = {
      *  `undefined` / missing `acp` leaves the stored set untouched. The
      *  bus validator rejects unknown agent ids. */
     acp?: Partial<AcpSettings>;
-    /** Main-owned; changed through customModels:save/remove. */
+    /** Main-owned; changed only through the `customModels:*` verbs, which
+     *  also own the credential each connection holds. */
+    customConnections?: CustomConnection[];
     customModels?: CustomModel[];
   };
   hotkeys?: Partial<Settings["hotkeys"]>;
@@ -4543,14 +4564,16 @@ export type Commands = {
     req: Record<string, never>;
     res: Record<DesktopSettingsSecretName, SecretStatus>;
   };
-  "customModels:save": { req: { model: CustomModel }; res: CustomModel };
-  "customModels:remove": { req: { id: string }; res: undefined };
-  "customModels:status": { req: { id: string }; res: CustomModelStatus };
-  "customModels:setKey": { req: { id: string; value: string }; res: undefined };
-  "customModels:login": { req: { id: string }; res: undefined };
-  "customModels:logout": { req: { id: string }; res: undefined };
-  "customModels:test": { req: { id: string }; res: { message: string } };
-  "customModels:discover": { req: { id: string }; res: CustomModelDiscovery };
+  "customModels:saveConnection": { req: { connection: CustomConnectionInput }; res: CustomConnection };
+  "customModels:removeConnection": { req: { connectionId: string }; res: undefined };
+  "customModels:setKey": { req: { connectionId: string; value: string }; res: undefined };
+  "customModels:login": { req: { connectionId: string }; res: undefined };
+  "customModels:logout": { req: { connectionId: string }; res: undefined };
+  "customModels:discover": { req: { connectionId: string }; res: CustomModelDiscovery };
+  /** Replaces the connection's saved models with exactly `models`. */
+  "customModels:setModels": { req: { connectionId: string; models: CustomModelInput[] }; res: CustomModel[] };
+  /** Asks one saved model to reply; a few tokens on the provider's bill. */
+  "customModels:test": { req: { id: string }; res: { message: string; ms: number } };
   "customModels:models": { req: { id: string }; res: { models: { id: string; label: string; isDefault: boolean }[] } };
   "settings:replaceSecret": {
     req: { name: DesktopSettingsSecretName; value: string };

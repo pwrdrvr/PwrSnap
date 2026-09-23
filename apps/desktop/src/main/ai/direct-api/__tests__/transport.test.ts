@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { customModelSchema, type CustomModel } from "@pwrsnap/shared";
+import { customConnectionSchema, customModelSchema, parseCustomAi, type CustomProtocol } from "@pwrsnap/shared";
 import { discoverApi, invokeApi } from "../transport";
-import { body, IMAGE, json, model, server, stream } from "./fixtures";
+import { body, CONNECTION_ID, IMAGE, json, model, server, stream } from "./fixtures";
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { await Promise.all(cleanup.splice(0).map((fn) => fn())); });
 
-describe.each<CustomModel["protocol"]>(["openai-chat", "openai-responses", "anthropic-messages"])("%s", (protocol) => {
+describe.each<CustomProtocol>(["openai-chat", "openai-responses", "anthropic-messages"])("%s", (protocol) => {
   test.each([true, false])("encodes exact model, text/images, authentication, usage and streaming=%s", async (streaming) => {
     let seen: Record<string, unknown> = {}; let path = ""; let authorization: unknown;
     const http = await server(async (req, res) => {
@@ -58,14 +58,43 @@ test.each(["malformed", "truncated", "error"])("rejects %s streams", async (kind
   }); cleanup.push(http.close);
   await expect(invokeApi({ model: model(http.url), headers: {}, system: "", messages: [{ role: "user", text: "test" }] })).rejects.toThrow(/invalid stream|before completion|reported an error/);
 });
-test("discovers vision only from unambiguous metadata for the exact single model", async () => {
+test("discovery reports image input per listed model, only where a row says so", async () => {
   let many = false;
-  const http = await server((req, res) => { if (req.url === "/props") json(res, { modalities: { vision: true } }); else json(res, { data: [{ id: "fixture/exact-model" }, ...(many ? [{ id: "other" }] : [])] }); }); cleanup.push(http.close);
-  expect(await discoverApi(model(`${http.url}/v1`), {})).toEqual({ modelIds: ["fixture/exact-model"], vision: true });
-  many = true; expect((await discoverApi(model(`${http.url}/v1`), {})).vision).toBeNull();
+  const http = await server((req, res) => {
+    if (req.url === "/props") json(res, { modalities: { vision: true } });
+    else json(res, { data: many
+      ? [{ id: "fixture/exact-model" }, { id: "fixture/lists-vision", modalities: { vision: false } }, { id: "fixture/exact-model" }, { id: "bad\u0000id" }]
+      : [{ id: "fixture/exact-model" }] });
+  }); cleanup.push(http.close);
+  // One model listed and /props speaks for it.
+  expect(await discoverApi(model(`${http.url}/v1`), {})).toEqual({ models: [{ id: "fixture/exact-model", vision: true }] });
+  // A catalog: /props is never spread across it; duplicates and control characters drop.
+  many = true;
+  expect(await discoverApi(model(`${http.url}/v1`), {})).toEqual({ models: [
+    { id: "fixture/exact-model", vision: null }, { id: "fixture/lists-vision", vision: false }] });
+});
+test("Anthropic listing sends its version header and asks past the default page", async () => {
+  const urls: string[] = []; let version: unknown;
+  const http = await server((req, res) => { urls.push(req.url ?? ""); version = req.headers["anthropic-version"]; json(res, { data: [{ id: "fixture-a" }] }); }); cleanup.push(http.close);
+  await discoverApi(model(`${http.url}/v1`, "anthropic-messages"), { "x-api-key": "synthetic" });
+  // One listed model, but not a llama.cpp server: no /props probe.
+  expect(urls).toEqual(["/v1/models?limit=1000"]); expect(version).toBe("2023-06-01");
 });
 test("schema rejects plaintext credentials, unsafe URLs and legacy completions", () => {
-  for (const baseUrl of ["http://example.com/v1", "https://user:password@example.com/v1", "https://example.com/v1?api_key=test", "file:///tmp/api"]) expect(customModelSchema.safeParse({ ...model(baseUrl) }).success).toBe(false);
-  expect(customModelSchema.safeParse({ ...model("https://example.com/v1"), apiKey: "synthetic" }).success).toBe(false);
-  expect(customModelSchema.safeParse({ ...model("https://example.com/v1"), protocol: "openai-completions" }).success).toBe(false);
+  const good = { id: CONNECTION_ID, name: "Fixture", baseUrl: "https://example.com/v1", protocol: "openai-chat", auth: { type: "none" } };
+  expect(customConnectionSchema.safeParse(good).success).toBe(true);
+  for (const baseUrl of ["http://example.com/v1", "https://user:password@example.com/v1", "https://example.com/v1?api_key=test", "file:///tmp/api"]) expect(customConnectionSchema.safeParse({ ...good, baseUrl }).success).toBe(false);
+  expect(customConnectionSchema.safeParse({ ...good, apiKey: "synthetic" }).success).toBe(false);
+  expect(customConnectionSchema.safeParse({ ...good, auth: { type: "api-key", key: "synthetic" } }).success).toBe(false);
+  expect(customConnectionSchema.safeParse({ ...good, protocol: "openai-completions" }).success).toBe(false);
+  const { baseUrl: _b, protocol: _p, auth: _a, ...saved } = model("https://example.com/v1");
+  expect(customModelSchema.safeParse(saved).success).toBe(true);
+  expect(customModelSchema.safeParse({ ...saved, baseUrl: "https://example.com/v1" }).success).toBe(false);
+});
+test("settings parse drops a bad entry instead of the file, and orphans with it", () => {
+  const good = { id: CONNECTION_ID, name: "Fixture", baseUrl: "https://example.com/v1", protocol: "openai-chat", auth: { type: "none" } };
+  const { baseUrl: _b, protocol: _p, auth: _a, ...saved } = model("https://example.com/v1");
+  const parsed = parseCustomAi([good, { ...good, id: "not-a-uuid" }], [saved, { ...saved, id: "12345678-1234-4234-8234-12345678900f", connectionId: "12345678-1234-4234-8234-12345678900e" }, "junk"]);
+  expect(parsed.customConnections).toEqual([good]);
+  expect(parsed.customModels).toEqual([saved]);
 });

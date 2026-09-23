@@ -22,7 +22,8 @@
 // `SecretStatus` (the name plus `lastSetAt`) is already broadcast to every
 // BrowserWindow on every settings change, and the `localAgentToken:<clientId>`
 // client ids already sit in cleartext in the settings file as
-// `localAgents.grants[].id`. The VALUES remain encrypted at rest, and a unit
+// `localAgents.grants[].id`, as the `customModelCredential:<connectionId>`
+// ids do as `ai.customConnections[].id`. The VALUES remain encrypted at rest, and a unit
 // test asserts the plaintext never appears in the file.
 //
 // v1 files (a bare `safeStorage` ciphertext buffer of the whole blob) are
@@ -99,11 +100,17 @@ export class DesktopSecretStore {
     return toStatus(index[name]);
   }
 
+  /** Every known name, plus each stored Direct API connection credential —
+   *  the Settings sidebar reads "no key" / "sign in" off those. Local agent
+   *  tokens are left out: nothing in a renderer reads them. Index only. */
   async getAllStatus(): Promise<Record<DesktopSettingsSecretName, SecretStatus>> {
     const index = await this.readIndex();
     const out = {} as Record<DesktopSettingsSecretName, SecretStatus>;
     for (const name of KNOWN_SECRET_NAMES) {
       out[name] = toStatus(index[name]);
+    }
+    for (const name of Object.keys(index) as DesktopSettingsSecretName[]) {
+      if (name.startsWith("customModelCredential:")) out[name] = toStatus(index[name]);
     }
     return out;
   }

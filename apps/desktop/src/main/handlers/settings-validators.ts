@@ -220,7 +220,12 @@ export function validateSettingsWrite(
       };
     }
     const ai = p.ai as Record<string, unknown>;
-    if (ai.customModels !== undefined) return { ok: false, error: validationError("custom_models_main_owned", "Use the custom model editor to change connections.") };
+    // Main-owned: the customModels:* verbs keep a connection and the
+    // credential it holds in step. A raw patch could repoint an endpoint
+    // without clearing the key bound to the old one.
+    if (ai.customModels !== undefined || ai.customConnections !== undefined) {
+      return { ok: false, error: validationError("custom_models_main_owned", "Use Settings → AI Providers to change Direct API connections.") };
+    }
     if (!isUndefined(ai.enabled) && !isBoolean(ai.enabled)) {
       return {
         ok: false,

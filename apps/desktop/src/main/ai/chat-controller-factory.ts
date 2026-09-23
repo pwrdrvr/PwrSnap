@@ -185,6 +185,7 @@ export function chatControllerSignature(
     profile: codex.profile ?? null,
     surface: settings.ai.defaults[surface] ?? null,
     acpAgents: settings.ai.acp.agents ?? null,
+    customConnections: settings.ai.customConnections ?? [],
     customModels: settings.ai.customModels ?? [],
     acpEnabled: settings.ai.acp.enabledAgentIds ?? null
   });

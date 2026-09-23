@@ -1,15 +1,15 @@
 import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import type { CustomModel } from "@pwrsnap/shared";
+import type { ResolvedCustomModel } from "@pwrsnap/shared";
 import type { CaptureEnrichmentRequest, CaptureEnrichmentResponse, EnrichmentBackend } from "../capture-enrichment-client";
 import { CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS, CAPTURE_ENRICHMENT_SCHEMA, buildCaptureEnrichmentPrompt, parseCaptureEnrichmentResponse } from "../enrichment-schema";
 import type { CustomModelService } from "./service";
 import { DirectApiError, invokeApi } from "./transport";
 
 export class DirectEnrichmentBackend implements EnrichmentBackend {
-  constructor(private readonly model: CustomModel, private readonly service: CustomModelService) {}
+  constructor(private readonly model: ResolvedCustomModel, private readonly service: CustomModelService) {}
   async enrichCapture(req: CaptureEnrichmentRequest): Promise<CaptureEnrichmentResponse> {
-    if (!this.model.capabilities.vision) throw new DirectApiError("Enable verified image support for this custom model before using capture enrichment.");
+    if (this.model.capabilities.vision !== true) throw new DirectApiError("Captions need a model marked as accepting images. Set Image input to Yes for this model in Settings → AI Providers.");
     const images: string[] = [];
     for (const path of req.imagePaths) {
       // These paths are app-prepared bounded images, never model-supplied paths.

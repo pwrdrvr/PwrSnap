@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AgentBackend, AgentStartThreadOptions, AgentStartTurnOptions, NormalizedThreadEvent } from "@pwrdrvr/agent-core";
-import type { CustomModel } from "@pwrsnap/shared";
+import type { ResolvedCustomModel } from "@pwrsnap/shared";
 import type { CustomModelService } from "./service";
 import { DirectApiError, invokeApi, record, type ApiMessage } from "./transport";
 
@@ -9,7 +9,7 @@ import { DirectApiError, invokeApi, record, type ApiMessage } from "./transport"
 export class DirectChatBackend implements AgentBackend {
   private listeners = new Set<(e: NormalizedThreadEvent) => void>();
   private active = new Map<string, { abort: AbortController; done: Promise<void> }>();
-  constructor(private readonly model: CustomModel, private readonly service: CustomModelService,
+  constructor(private readonly model: ResolvedCustomModel, private readonly service: CustomModelService,
     private readonly readJournal: (threadId: string) => Promise<unknown[]>) {}
   onEvent(cb: (e: NormalizedThreadEvent) => void): () => void { this.listeners.add(cb); return () => { this.listeners.delete(cb); }; }
   onToolCall(): () => void { return () => undefined; }
@@ -39,7 +39,7 @@ export class DirectChatBackend implements AgentBackend {
     void done.then(() => { this.active.delete(threadId); });
     return { turnId };
   }
-  private async run(options: AgentStartTurnOptions, model: CustomModel, turnId: string, signal: AbortSignal): Promise<void> {
+  private async run(options: AgentStartTurnOptions, model: ResolvedCustomModel, turnId: string, signal: AbortSignal): Promise<void> {
     const { threadId } = options;
     this.emit({ kind: "turn_started", threadId, turnId });
     this.emit({ kind: "thread_settings", settings: { threadId, model: model.modelId, modelProvider: `custom:${model.id}`, serviceTier: null } });

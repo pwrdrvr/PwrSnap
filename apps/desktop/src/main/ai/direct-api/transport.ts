@@ -1,4 +1,4 @@
-import type { AiUsageTokenBreakdown, CustomModel, CustomModelDiscovery } from "@pwrsnap/shared";
+import { customProtocolPath, type AiUsageTokenBreakdown, type CustomConnection, type CustomModelDiscovery, type ResolvedCustomModel } from "@pwrsnap/shared";
 
 export type ApiMessage = { role: "user" | "assistant"; text: string; images?: string[] };
 export type ApiResult = { text: string; tokens: AiUsageTokenBreakdown | null };
@@ -12,8 +12,8 @@ const string = (v: unknown): string => typeof v === "string" ? v : "";
 const number = (v: unknown): number => typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
 const MAX_BYTES = 8 * 1024 * 1024;
 
-export function apiEndpoint(model: CustomModel, path: string): string {
-  return `${model.baseUrl.replace(/\/+$/, "")}/${path}`;
+export function apiEndpoint(endpoint: Pick<CustomConnection, "baseUrl">, path: string): string {
+  return `${endpoint.baseUrl.replace(/\/+$/, "")}/${path}`;
 }
 
 export async function safeFetch(url: string, init: RequestInit): Promise<Response> {
@@ -73,9 +73,9 @@ async function* events(response: Response): AsyncGenerator<Record<string, unknow
   }
   if (buffer.trim()) throw new DirectApiError("Endpoint stream ended mid-event.");
 }
-function imageParts(message: ApiMessage, model: CustomModel): unknown[] {
+function imageParts(message: ApiMessage, model: ResolvedCustomModel): unknown[] {
   const images = message.images ?? [];
-  if (images.length && !model.capabilities.vision) throw new DirectApiError("Image input is not enabled for this model.");
+  if (images.length && model.capabilities.vision !== true) throw new DirectApiError("Image input is not enabled for this model.");
   return images.map((url) => {
     const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/=]+)$/.exec(url);
     if (!match || url.length > 24 * 1024 * 1024) throw new DirectApiError("Unsupported or oversized image input.");
@@ -84,7 +84,7 @@ function imageParts(message: ApiMessage, model: CustomModel): unknown[] {
     return { type: "image_url", image_url: { url } };
   });
 }
-function requestBody(model: CustomModel, system: string, messages: ApiMessage[]): unknown {
+function requestBody(model: ResolvedCustomModel, system: string, messages: ApiMessage[]): unknown {
   const common = { model: model.modelId, stream: model.capabilities.streaming };
   if (model.protocol === "openai-responses") return {
     ...common, store: false, instructions: system, max_output_tokens: model.maxOutputTokens,
@@ -116,12 +116,12 @@ function usage(raw: unknown, prior: AiUsageTokenBreakdown | null): AiUsageTokenB
 
 /** Text/image-only calls. No remote tools, URLs, filesystem instructions, or agent process. */
 export async function invokeApi(input: {
-  model: CustomModel; headers: Record<string, string>; system: string; messages: ApiMessage[];
+  model: ResolvedCustomModel; headers: Record<string, string>; system: string; messages: ApiMessage[];
   signal?: AbortSignal; onDelta?: (text: string) => void;
 }): Promise<ApiResult> {
   const { model } = input;
   const signal = AbortSignal.any([AbortSignal.timeout(180_000), ...(input.signal ? [input.signal] : [])]);
-  const path = model.protocol === "openai-responses" ? "responses" : model.protocol === "openai-chat" ? "chat/completions" : "messages";
+  const path = customProtocolPath(model.protocol);
   try {
     const response = await safeFetch(apiEndpoint(model, path), {
       method: "POST", headers: { "content-type": "application/json", ...input.headers,
@@ -166,21 +166,34 @@ export async function invokeApi(input: {
 }
 
 /** Explicit user request only. Never infers capabilities from model names. */
-export async function discoverApi(model: CustomModel, headers: Record<string, string>): Promise<CustomModelDiscovery> {
-  const init = { headers, signal: AbortSignal.timeout(10_000) };
-  const body = await boundedJson(await safeFetch(apiEndpoint(model, "models"), init));
-  const rows = array(body.data);
-  const modelIds = rows.map((m) => string(record(m).id)).filter((id) => id.length > 0 && id.length <= 200).slice(0, 1000);
-  const exact = record(rows.find((m) => record(m).id === model.modelId));
-  let vision: boolean | null = typeof record(exact.modalities).vision === "boolean" ? record(exact.modalities).vision as boolean : null;
-  // /props describes a single loaded model. Use it only when /models identifies
-  // precisely this one model; never spread one server capability onto a catalog.
-  if (vision === null && modelIds.length === 1 && modelIds[0] === model.modelId) {
-    try {
-      const url = new URL(model.baseUrl); url.pathname = "/props";
-      const props = await boundedJson(await safeFetch(url.href, init));
-      if (typeof record(props.modalities).vision === "boolean") vision = record(props.modalities).vision as boolean;
-    } catch { /* No unambiguous metadata; leave explicit configuration alone. */ }
+export async function discoverApi(endpoint: Pick<CustomConnection, "baseUrl" | "protocol">, headers: Record<string, string>): Promise<CustomModelDiscovery> {
+  const init = { headers: { ...headers, ...(endpoint.protocol === "anthropic-messages" ? { "anthropic-version": "2023-06-01" } : {}) },
+    signal: AbortSignal.timeout(10_000) };
+  // Anthropic pages its list at 20 by default.
+  const listing = endpoint.protocol === "anthropic-messages" ? "models?limit=1000" : "models";
+  const body = await boundedJson(await safeFetch(apiEndpoint(endpoint, listing), init));
+  const seen = new Set<string>();
+  const models: CustomModelDiscovery["models"] = [];
+  for (const row of array(body.data).map(record)) {
+    const id = string(row.id);
+    if (id.length === 0 || id.length > 200 || /[\x00-\x1f\x7f]/.test(id) || seen.has(id)) continue;
+    seen.add(id);
+    // Only a row that SAYS so. Never from the model's name.
+    const vision = record(row.modalities).vision;
+    models.push({ id, vision: typeof vision === "boolean" ? vision : null });
+    if (models.length >= 1000) break;
   }
-  return { modelIds, vision };
+  // llama.cpp's /props describes its single loaded model. Ask only a Chat
+  // Completions server listing exactly one; never spread one server
+  // capability onto a catalog.
+  const only = endpoint.protocol === "openai-chat" && models.length === 1 ? models[0] : undefined;
+  if (only && only.vision === null) {
+    try {
+      const url = new URL(endpoint.baseUrl); url.pathname = "/props";
+      const props = await boundedJson(await safeFetch(url.href, init));
+      const vision = record(props.modalities).vision;
+      if (typeof vision === "boolean") only.vision = vision;
+    } catch { /* No unambiguous metadata; the operator answers. */ }
+  }
+  return { models };
 }

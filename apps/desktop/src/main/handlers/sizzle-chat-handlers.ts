@@ -179,6 +179,7 @@ function getSizzleCache(): KeyedChatControllerCache<ChatThreadController<Setting
         profile: s.codex.profile ?? null,
         acpAgents: s.ai.acp.agents ?? null,
         acpEnabled: s.ai.acp.enabledAgentIds ?? null,
+        customConnections: s.ai.customConnections ?? [],
         customModels: s.ai.customModels ?? [],
         // The chats root moves at runtime when a Documents denial flips the
         // captures-location fallback. Keying on it disposes + rebuilds every

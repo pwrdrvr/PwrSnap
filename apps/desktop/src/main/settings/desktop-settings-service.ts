@@ -1,4 +1,4 @@
-import { customModelsSchema } from "@pwrsnap/shared";
+import { parseCustomAi } from "@pwrsnap/shared";
 // Internal settings persistence adapter. DesktopSettingsStore is the sole
 // production owner. The first read hydrates an immutable snapshot from disk;
 // subsequent reads stay in memory for the process lifetime. Reads
@@ -183,6 +183,7 @@ export function defaultSettings(
       // No ACP agents enabled on a fresh install. The user opts agents
       // into the enabled set from Settings → AI → ACP agents (additive,
       // no schemaVersion bump).
+      customConnections: [],
       customModels: [],
       acp: { enabledAgentIds: [], agents: {} }
     },
@@ -861,7 +862,11 @@ function parseV1(
       // to an empty enabled set; only recognized built-in agent ids
       // survive the parse so a stale/forged file can't enable an unknown
       // agent. No `schemaVersion` bump per the additive convention.
-      customModels: customModelsSchema.parse(ai.customModels ?? []),
+      // Direct API connections + models are additive. Parsed per entry: a
+      // bad one is dropped instead of quarantining the whole file, and the
+      // first cut's flat one-entry-per-model shape is regrouped into
+      // connections (see parseCustomAi).
+      ...parseCustomAi(ai.customConnections, ai.customModels),
       acp: parseAcpSettings(ai.acp)
     },
     // Missing fields use the current platform defaults. The managed-default
@@ -1888,6 +1893,7 @@ function mergeAi(current: Settings["ai"], patch: SettingsPatch["ai"]): Settings[
     // a "leave alone" sentinel — substrate rule `undefined ≠ null ≠ ""`.
     chat: mergeChat(current.chat, patch.chat),
     defaults: mergeAiSurfaceDefaults(current.defaults, patch.defaults),
+    customConnections: patch.customConnections ?? current.customConnections ?? [],
     customModels: patch.customModels ?? current.customModels ?? [],
     acp: mergeAcp(current.acp, patch.acp)
   };

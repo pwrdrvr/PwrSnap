@@ -1,14 +1,20 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import type { CustomModel } from "@pwrsnap/shared";
+import type { CustomConnectionInput, ResolvedCustomModel } from "@pwrsnap/shared";
 export const FIRST_ID = "12345678-1234-4234-8234-123456789001";
 export const SECOND_ID = "12345678-1234-4234-8234-123456789002";
-export const CREDENTIAL_ID = "12345678-1234-4234-8234-123456789003";
-export const OTHER_CREDENTIAL_ID = "12345678-1234-4234-8234-123456789004";
+export const CONNECTION_ID = "12345678-1234-4234-8234-123456789003";
+export const OTHER_CONNECTION_ID = "12345678-1234-4234-8234-123456789004";
 // Contrived 1x1 transparent PNG, never an operator capture.
 export const IMAGE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==";
-export function model(baseUrl: string, protocol: CustomModel["protocol"] = "openai-chat"): CustomModel {
-  return { id: FIRST_ID, displayName: "Fixture model", modelId: "fixture/exact-model", baseUrl,
+/** One saved model already joined with its connection, as a request sees it. */
+export function model(baseUrl: string, protocol: ResolvedCustomModel["protocol"] = "openai-chat"): ResolvedCustomModel {
+  return { id: FIRST_ID, connectionId: CONNECTION_ID, displayName: "Fixture model", modelId: "fixture/exact-model", baseUrl,
     protocol, auth: { type: "none" }, capabilities: { vision: true, streaming: true }, maxOutputTokens: 100 };
+}
+/** A new connection as the editor submits it (main assigns the id). */
+export function connection(baseUrl: string, auth: CustomConnectionInput["auth"] = { type: "api-key" },
+  protocol: CustomConnectionInput["protocol"] = "openai-chat"): CustomConnectionInput {
+  return { name: "Fixture endpoint", baseUrl, protocol, auth };
 }
 export async function server(handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>): Promise<{ url: string; close(): Promise<void> }> {
   const instance = createServer((req, res) => { void Promise.resolve(handler(req, res)).catch(() => { res.writeHead(500).end(); }); });

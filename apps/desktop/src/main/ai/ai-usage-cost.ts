@@ -11,6 +11,7 @@ export function estimateAiUsageCost(input: {
   serviceTier: string | null;
   tokens: AiUsageTokenBreakdown | null;
 }): AiUsageCostEstimate {
+  if (input.provider?.startsWith("custom:")) return { status: "unavailable", reason: "Custom endpoint pricing is not configured" };
   if (input.tokens === null) {
     return { status: "unavailable", reason: "usage unavailable" };
   }

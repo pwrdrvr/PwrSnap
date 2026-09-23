@@ -877,3 +877,20 @@ describe("buildChatSurface — dispose", () => {
     expect(vi.mocked(acpBackend.close)).not.toHaveBeenCalled();
   });
 });
+
+test("custom provider construction resolves the exact saved model without Codex or ACP", async () => {
+  const handlers = await import("../../handlers/custom-model-handlers");
+  const { model } = await import("../direct-api/__tests__/fixtures");
+  const entry = model("http://127.0.0.1:1/v1");
+  const selected = vi.fn(async () => entry);
+  const service = vi.spyOn(handlers, "getCustomModelService").mockReturnValue({ selected } as unknown as ReturnType<typeof handlers.getCustomModelService>);
+  const makeCodexClient = vi.fn(() => stubBackend());
+  const makeAcpClient = vi.fn(() => stubAcpResult());
+  try {
+    const surface = await buildChatSurface(baseConfig({ provider: `custom:${entry.id}` }), { makeCodexClient, makeAcpClient });
+    expect(selected).toHaveBeenNthCalledWith(1, `custom:${entry.id}`, undefined);
+    expect(selected).toHaveBeenNthCalledWith(2, `custom:${entry.id}`, entry.modelId);
+    expect(makeCodexClient).not.toHaveBeenCalled(); expect(makeAcpClient).not.toHaveBeenCalled();
+    await surface.dispose();
+  } finally { service.mockRestore(); }
+});

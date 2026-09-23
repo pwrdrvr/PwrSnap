@@ -1,3 +1,4 @@
+import { registerCustomModelHandlers } from "./custom-model-handlers";
 // Lazy module-level singletons because `app.getPath("userData")` is
 // unavailable at module load (tests mock `electron` without an app
 // instance, production hasn't fired `app.whenReady()` yet). Every
@@ -186,7 +187,7 @@ export function onSettingsChanged(listener: MainSettingsListener): () => void {
   };
 }
 
-async function broadcastSettingsChanged(
+export async function broadcastSettingsChanged(
   service: SettingsHandlerStore,
   secrets: DesktopSecretStore,
   overrides?: { settings?: Settings }
@@ -363,6 +364,7 @@ export function registerSettingsDataHandlers(options: {
   if (options.hotkeyRegistrationManager !== undefined) {
     hotkeyRegistrationManager = options.hotkeyRegistrationManager;
   }
+  registerCustomModelHandlers();
   bus.register("settings:read", async () => {
     // E2E-only fault injection: hold EVERY settings:read dispatched
     // while the env var is set (there is deliberately no first-read

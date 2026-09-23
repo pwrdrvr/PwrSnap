@@ -1,4 +1,4 @@
-import type { AcpAgentDiscovery } from "@pwrsnap/shared";
+import type { AcpAgentDiscovery, CustomModel } from "@pwrsnap/shared";
 
 /**
  * Whether the enrichment backend the user selected in Settings → AI can
@@ -27,10 +27,12 @@ import type { AcpAgentDiscovery } from "@pwrsnap/shared";
  */
 export function isEnrichmentProviderAvailable(params: {
   provider: string | undefined;
+  customModels?: readonly CustomModel[] | undefined;
   codexAvailable: boolean | undefined;
   acpDiscovery: AcpAgentDiscovery | undefined;
 }): boolean | undefined {
   const provider = params.provider ?? "";
+  if (provider.startsWith("custom:")) return params.customModels?.some((m) => `custom:${m.id}` === provider && m.capabilities.vision) ?? false;
   if (!provider.startsWith("acp:")) {
     return params.codexAvailable;
   }

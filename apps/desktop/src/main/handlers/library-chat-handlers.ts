@@ -237,6 +237,7 @@ export function registerLibraryChatHandlers(params?: {
         profile: s.codex.profile ?? null,
         acpAgents: s.ai.acp.agents ?? null,
         acpEnabled: s.ai.acp.enabledAgentIds ?? null,
+        customModels: s.ai.customModels ?? [],
         // The chats root moves at runtime when a Documents denial flips the
         // captures-location fallback. Keying on it disposes + rebuilds every
         // controller against the new root, instead of leaving cached ones
@@ -394,9 +395,20 @@ export function registerLibraryChatHandlers(params?: {
         ...(ctx.sourceWindowId !== undefined ? { sourceWindowId: ctx.sourceWindowId } : {}),
         ...(ctx.sourceBounds !== undefined ? { sourceBounds: ctx.sourceBounds } : {})
       };
+      const directImages: string[] = [];
+      if (authorized.value.provider?.startsWith("custom:")) {
+        const custom = (await settingsReader()).ai.customModels?.find((m) => `custom:${m.id}` === authorized.value.provider);
+        const anchor = req.anchorCaptureId ?? authorized.value.anchorCaptureId;
+        if (custom?.capabilities.vision && anchor) {
+          const rendered = await bus.dispatch("render:composite", { captureId: anchor, maxEdgePx: 1600 }, commandContext);
+          if (!rendered.ok) return rendered;
+          directImages.push(`data:${rendered.value.mimeType};base64,${rendered.value.base64}`);
+        }
+      }
       const result = await c.sendMessage({
         threadId: req.threadId,
         text: req.text,
+        ...(directImages.length ? { imagePaths: directImages } : {}),
         ...(req.anchorCaptureId !== undefined ? { anchorId: req.anchorCaptureId } : {})
       });
       activeToolContexts.commit(req.threadId, result.turnId, commandContext);

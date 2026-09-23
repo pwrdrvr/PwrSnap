@@ -1,3 +1,5 @@
+import { DirectEnrichmentBackend } from "../ai/direct-api/enrichment";
+import { getCustomModelService } from "./custom-model-handlers";
 import {
   AcceptAllDraftsRequestSchema,
   AcceptDescriptionRequestSchema,
@@ -358,6 +360,9 @@ export function withUsageModelLabels(
  *  A disabled ACP selection falls back to PwrSnap's managed Codex default.
  *  Exported for testing. */
 export function enrichmentSelectedModel(settings: Settings, acpAgentId: string | undefined): string {
+  if (settings.ai.defaults.enrichment.provider?.startsWith("custom:")) {
+    return settings.ai.customModels?.find((m) => `custom:${m.id}` === settings.ai.defaults.enrichment.provider)?.modelId ?? "";
+  }
   if (acpAgentId !== undefined) return settings.ai.defaults.enrichment.model ?? "";
   if (settings.ai.defaults.enrichment.provider?.startsWith("acp:") === true) {
     return DEFAULT_CODEX_CAPTION_MODEL;
@@ -652,6 +657,7 @@ export function registerCodexHandlers(params?: {
       // "use the agent's own default" and is resolved to null at send time.
       selectedModel:
         run.selectedModel ?? (enrichmentAgent !== undefined ? "" : DEFAULT_CODEX_CAPTION_MODEL),
+      ...(settings.ai.defaults.enrichment.provider?.startsWith("custom:") ? { selectedProvider: settings.ai.defaults.enrichment.provider } : {}),
       effort: enrichmentEffortForSettings(settings),
       // When enrichment is routed to an ACP agent (Gemini/Qwen), pass its id +
       // the settings snapshot so the run resolves + spawns that agent instead
@@ -1000,7 +1006,7 @@ async function runCaptureEnrichment(params: {
   const captureId = params.capture.id;
   // The backend actually running this enrichment, for the logs (enrichment is
   // no longer always Codex).
-  const provider = params.acpAgentId !== undefined ? `acp:${params.acpAgentId}` : "codex";
+  const provider = params.selectedProvider ?? (params.acpAgentId !== undefined ? `acp:${params.acpAgentId}` : "codex");
   const startedAt = performance.now();
   const abortController = new AbortController();
   const abortFromContext = (): void => abortController.abort();
@@ -1069,7 +1075,10 @@ async function runCaptureEnrichment(params: {
     });
 
     const acpAgentId = params.acpAgentId;
-    if (acpAgentId !== undefined) {
+    if (params.selectedProvider?.startsWith("custom:")) {
+      const service = getCustomModelService();
+      client = new DirectEnrichmentBackend(await service.selected(params.selectedProvider, params.selectedModel), service);
+    } else if (acpAgentId !== undefined) {
       const acpClient = await buildAcpEnrichmentClient(
         acpAgentId,
         params.acpSettings ?? (await params.settingsReader())

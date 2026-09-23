@@ -163,7 +163,15 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
   // shown by its built-in name until discovery arrives.
   const enabledAgentIds = settings?.ai.acp.enabledAgentIds ?? [];
   const enabledAgentIdSet = new Set(enabledAgentIds);
-  const acpChatProviderOptions = [...buildAcpProviderOptions(enabledAgentIds, acpDiscovery), ...(settings?.ai.customModels ?? []).map((m) => ({ value: `custom:${m.id}`, label: m.displayName }))];
+  const acpChatProviderOptions = buildAcpProviderOptions(enabledAgentIds, acpDiscovery);
+  // Direct API models, named with their connection so two endpoints serving
+  // the same model id stay apart. Captions list only a model the operator
+  // marked as accepting images; Unknown is never offered there.
+  const connectionNames = new Map((settings?.ai.customConnections ?? []).map((c) => [c.id, c.name] as const));
+  const customProviderOptions = (surface: AiSurfaceId): AcpChatProviderOption[] =>
+    (settings?.ai.customModels ?? [])
+      .filter((m) => surface !== "enrichment" || m.capabilities.vision === true)
+      .map((m) => ({ value: `custom:${m.id}`, label: `${m.displayName} · ${connectionNames.get(m.connectionId) ?? "Direct API"}` }));
   const acpModelsForProvider = (
     provider: string | undefined
   ): readonly AcpAgentModelOption[] | undefined => {
@@ -206,7 +214,7 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
         value={value}
         models={codexModels?.models ?? []}
         modelsLoading={codexModelsLoading}
-        acpProviderOptions={acpChatProviderOptions}
+        acpProviderOptions={[...acpChatProviderOptions, ...customProviderOptions(surface)]}
         acpModelOptions={acpModelsForProvider(value.provider)}
         acpModelsLoading={acpModelsLoadingForProvider(value.provider)}
         acpModelError={acpModelErrorForProvider(value.provider)}

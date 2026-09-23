@@ -32,7 +32,7 @@ export function isEnrichmentProviderAvailable(params: {
   acpDiscovery: AcpAgentDiscovery | undefined;
 }): boolean | undefined {
   const provider = params.provider ?? "";
-  if (provider.startsWith("custom:")) return params.customModels?.some((m) => `custom:${m.id}` === provider && m.capabilities.vision) ?? false;
+  if (provider.startsWith("custom:")) return params.customModels?.some((m) => `custom:${m.id}` === provider && m.capabilities.vision === true) ?? false;
   if (!provider.startsWith("acp:")) {
     return params.codexAvailable;
   }

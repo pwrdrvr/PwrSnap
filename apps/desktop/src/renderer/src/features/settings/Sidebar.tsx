@@ -28,7 +28,7 @@ type SidebarProps = {
 };
 
 export function Sidebar({ active, sub }: SidebarProps): ReactElement {
-  const { request, statuses } = useAiProvidersContext();
+  const { request, statuses, connections } = useAiProvidersContext();
 
   // Groups open collapsed except the one holding the current route — an
   // active page hidden behind a closed caret would read as a dead nav.
@@ -70,7 +70,7 @@ export function Sidebar({ active, sub }: SidebarProps): ReactElement {
             // must always show where the operator is.
             const marksRoute = holdsRoute && (sub === null || (isGroup && !open));
             const sublistId = `pss-sb-sublist-${it.id}`;
-            const children = settingsNavChildren(it.id, statuses);
+            const children = settingsNavChildren(it.id, statuses, connections);
             return (
               <Fragment key={it.id}>
                 <div className={"pss__sb-row" + (marksRoute ? " is-active" : "")}>
@@ -118,10 +118,17 @@ export function Sidebar({ active, sub }: SidebarProps): ReactElement {
                       {children.map((child) => {
                         const childActive = holdsRoute && sub === child.sub;
                         return (
+                          <Fragment key={child.sub}>
+                          {child.heading !== undefined ? (
+                            <div className="pss__sb-subhead">{child.heading}</div>
+                          ) : null}
                           <button
-                            key={child.sub}
                             type="button"
-                            className={"pss__sb-sub" + (childActive ? " is-active" : "")}
+                            className={
+                              "pss__sb-sub" +
+                              (child.add === true ? " is-add" : "") +
+                              (childActive ? " is-active" : "")
+                            }
                             aria-current={childActive ? "page" : undefined}
                             title={
                               child.status !== undefined
@@ -135,21 +142,36 @@ export function Sidebar({ active, sub }: SidebarProps): ReactElement {
                             {/* Always rendered so labels don't shift when a
                                 status lands, and line up across groups;
                                 toneless = not known yet, or a jump link
-                                with no status at all. */}
-                            <span
-                              aria-hidden="true"
-                              className={
-                                "pss__status-dot" +
-                                (child.status?.tone !== undefined
-                                  ? ` pss__status-dot--${child.status.tone}`
-                                  : "")
-                              }
-                            />
+                                with no status at all. The add row puts its
+                                plus in the same slot. */}
+                            {child.add === true ? (
+                              <span aria-hidden="true" className="pss__sb-subplus">
+                                +
+                              </span>
+                            ) : (
+                              <span
+                                aria-hidden="true"
+                                className={
+                                  "pss__status-dot" +
+                                  (child.status?.tone !== undefined
+                                    ? ` pss__status-dot--${child.status.tone}`
+                                    : "")
+                                }
+                              />
+                            )}
                             <span className="pss__sb-sublabel">{child.label}</span>
                             {child.status?.chip !== undefined ? (
-                              <span className="pss__sb-subchip">{child.status.chip}</span>
+                              <span
+                                className={
+                                  "pss__sb-subchip" +
+                                  (child.status.tone === "warn" ? " is-warn" : "")
+                                }
+                              >
+                                {child.status.chip}
+                              </span>
                             ) : null}
                           </button>
+                          </Fragment>
                         );
                       })}
                     </div>

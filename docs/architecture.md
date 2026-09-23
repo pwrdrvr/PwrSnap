@@ -102,25 +102,34 @@ already made.
 ## AI uses the user's chosen agent or direct API
 
 Built-in Codex and ACP connections remain available. Users can also configure
-multiple direct HTTP model entries: OpenAI Responses, OpenAI-compatible Chat
+direct HTTP **connections**: OpenAI Responses, OpenAI-compatible Chat
 Completions, and Anthropic Messages. Main makes these requests itself; no
 agent, external proxy, or subprocess is required. Legacy text `/completions`
 is a different protocol and is not supported.
 
-Each custom entry has a stable UUID, display name, exact model ID, base URL,
-explicit protocol, capabilities, and public authentication configuration in
-`ai.customModels`. `custom:<uuid>` selects that entry in the existing chat and
-enrichment defaults. Deleting an entry leaves prior thread/default references
-unavailable; it never redirects a prompt to a different provider. Older settings
-normalize to an empty custom list, preserving built-in configuration.
+A connection (`ai.customConnections`) is one endpoint: a stable UUID, a name,
+the base URL, an explicit protocol, and public sign-in configuration (none,
+API key, or OAuth). Models (`ai.customModels`) hang under a connection by
+`connectionId` and carry only what differs per model: display name, exact
+model ID, capabilities, and output limit. `custom:<modelUuid>` selects a model
+in the existing chat and enrichment defaults. Removing a model or connection
+leaves prior thread/default references unavailable; it never redirects a
+prompt to a different provider. Both lists are main-owned — `settings:write`
+refuses them and the `customModels:*` verbs are the only writers — so the
+limits, id minting, and credential clean-up happen in one place. The first
+cut stored one flat entry per model; its files are read, regrouped into
+connections, and keep their stored keys.
 
-Credentials are separately identified, encrypted by `DesktopSecretStore`, and
-bound to the configured API base URL and authentication metadata. Sharing is
-explicit; logout affects all models referencing that credential, while deletion
-only clears an unreferenced credential. No status read decrypts secrets. Linux
-`basic_text`, unavailable storage, and locked credentials never cause plaintext
-fallback. API keys are write-only inputs; access and refresh tokens never enter
-renderer projections, settings, logs, or exports.
+Each connection owns at most one credential, `customModelCredential:<connectionId>`
+in `DesktopSecretStore`, shared by every model under it and bound to the
+connection's base URL and sign-in metadata. Repointing a connection (new URL,
+new sign-in type, new OAuth endpoints) clears its credential rather than
+sending it somewhere the user did not enter it; removing the connection clears
+it too, and any credential no connection references is swept. No status read
+decrypts secrets. Linux `basic_text`, unavailable storage, and locked
+credentials never cause plaintext fallback. API keys are write-only inputs;
+access and refresh tokens never enter renderer projections, settings, logs, or
+exports.
 
 OAuth supports documented public native-client authorization-code flows with
 S256 PKCE, state, a loopback callback, serialized refresh, and local logout with
@@ -129,16 +138,24 @@ and token endpoints plus a registered client ID (and scopes/resource where
 required). A subscription or generic API URL does not establish API access.
 Confidential clients requiring a client secret are not supported.
 
-Custom capabilities are explicit. Discovery accepts only unambiguous metadata;
-`/props` vision applies only when `/models` identifies precisely one matching
-model. Names never imply vision, reasoning, Fast mode, or prices. Usage tokens
-are recorded when returned, with custom pricing unavailable. Redirects are
-refused, remote endpoints require HTTPS, HTTP is loopback-only, response sizes
-and request duration are bounded, and server error bodies are not surfaced.
+Custom capabilities are explicit. Image input is three-state — yes, no, or
+unknown — and only an explicit yes sends an image or makes a model eligible for
+captions. Discovery lists the connection's models and accepts only unambiguous
+per-row metadata; `/props` vision applies only when a Chat Completions `/models`
+identifies precisely one model. Names and URLs never imply vision, reasoning,
+Fast mode, or prices; the operator confirms each model. Usage tokens are
+recorded when returned, with custom pricing unavailable. Redirects are refused,
+remote endpoints require HTTPS, HTTP is loopback-only, response sizes and
+request duration are bounded, and server error bodies are not surfaced. A
+401/403 is reported as a rejected credential so Settings can ask for it again.
+
+Settings → AI Providers shows installed agents and direct connections side by
+side; each connection is its own screen, edited in steps (where it is, how it
+signs in, which models, which jobs use it) that save as they pass.
 
 Direct chat reuses PwrSnap's local journal and streaming/cancellation lifecycle.
-It supports text conversation and the current Library image when vision is
-enabled, but has no editing tools or automatic library/reel access. Enrichment
+It supports text conversation and the current Library image when the model
+accepts images, but has no editing tools or automatic library/reel access. Enrichment
 sends app-prepared image bytes and validates the same structured result as the
 agent paths. The model cannot execute code, read paths, call tools, or select
 additional network destinations: only main's fixed inference request is made.

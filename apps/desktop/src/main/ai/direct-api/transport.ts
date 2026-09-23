@@ -3,7 +3,9 @@ import { customProtocolPath, type AiUsageTokenBreakdown, type CustomConnection, 
 export type ApiMessage = { role: "user" | "assistant"; text: string; images?: string[] };
 export type ApiResult = { text: string; tokens: AiUsageTokenBreakdown | null };
 export class DirectApiError extends Error {
-  constructor(message: string) { super(message); this.name = "DirectApiError"; }
+  /** The endpoint's HTTP status, when it answered with one. 401/403 mean the
+   *  credential was turned down — the one failure the operator fixes in Sign in. */
+  constructor(message: string, readonly status?: number) { super(message); this.name = "DirectApiError"; }
 }
 export const record = (v: unknown): Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -21,7 +23,7 @@ export async function safeFetch(url: string, init: RequestInit): Promise<Respons
     const response = await fetch(url, { ...init, redirect: "error" });
     if (!response.ok) {
       await response.body?.cancel();
-      throw new DirectApiError(`Model endpoint returned HTTP ${response.status}. Check the endpoint, model and authentication.`);
+      throw new DirectApiError(`Model endpoint returned HTTP ${response.status}. Check the endpoint, model and authentication.`, response.status);
     }
     return response;
   } catch (e) {

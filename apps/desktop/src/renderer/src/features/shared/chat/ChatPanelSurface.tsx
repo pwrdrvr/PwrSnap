@@ -926,7 +926,7 @@ export function ChatPanelSurface({
               {surface === "library" ? "PwrSnap chat" : "Reel composer"}
             </div>
             <p className="ps-libchat-empty-body">
-              {draftConfig.provider.startsWith("custom:") ? "Direct API chat can discuss text and the current image when vision is enabled. It cannot edit captures, browse the library, or modify reels." : surface === "library"
+              {draftConfig.provider.startsWith("custom:") ? "Direct API chat can discuss text, and the current image when the model is set to accept images. It cannot edit captures, browse the library, or modify reels." : surface === "library"
                 ? "I can edit the capture you’re viewing, redact sensitive data, browse your library, and answer “how do I…”. Pick a provider + model, then type below to start."
                 : "Describe the video you want. I can search your library, propose scenes, write narrator scripts, set transitions, and render this reel. Pick a provider + model, then type below to start."}
             </p>

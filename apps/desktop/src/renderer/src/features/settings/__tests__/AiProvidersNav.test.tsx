@@ -73,6 +73,7 @@ const DISCOVERY: AcpAgentDiscovery = {
 const SECRETS = {
   openaiApiKey: { configured: false, lastSetAt: null }
 } as unknown as SecretMap;
+let secrets: SecretMap = SECRETS;
 
 const refreshCodexMock = vi.fn(async (): Promise<DesktopCodexDiscoverySnapshot | null> => CODEX);
 const dispatchCalls: Array<{ name: string; req: unknown }> = [];
@@ -80,6 +81,8 @@ let modelsProbeFails = false;
 let discoveryResponse: AcpAgentDiscovery = DISCOVERY;
 /** When set, the next `acp:models` call answers with this instead. */
 let heldModelsProbe: Promise<unknown> | null = null;
+/** Answers for the `customModels:*` verbs, by verb name. */
+let customAnswers: Record<string, unknown> = {};
 
 function installFakeApi(): void {
   Object.defineProperty(window, "pwrsnapApi", {
@@ -89,6 +92,11 @@ function installFakeApi(): void {
       dispatch: async (name: string, req: unknown) => {
         dispatchCalls.push({ name, req });
         if (name === "acp:discover") return { ok: true, value: discoveryResponse };
+        if (name.startsWith("customModels:")) {
+          return name in customAnswers
+            ? customAnswers[name]
+            : { ok: true, value: undefined };
+        }
         if (name === "acp:models") {
           const held = heldModelsProbe;
           heldModelsProbe = null;
@@ -126,7 +134,7 @@ async function render(element: ReactElement, s: Settings = settings()): Promise<
   installFakeApi();
   contextValue = {
     settings: s,
-    secrets: SECRETS,
+    secrets,
     loading: false,
     error: null,
     patch: vi.fn(async () => undefined),
@@ -205,6 +213,8 @@ afterEach(async () => {
   modelsProbeFails = false;
   discoveryResponse = DISCOVERY;
   heldModelsProbe = null;
+  customAnswers = {};
+  secrets = SECRETS;
   refreshCodexMock.mockClear();
   window.location.hash = "";
   Reflect.deleteProperty(window, "pwrsnapApi");
@@ -239,7 +249,7 @@ describe("Settings sidebar — AI Providers children", () => {
     const labels = Array.from(
       container?.querySelectorAll("#pss-sb-sublist-ai .pss__sb-sublabel") ?? []
     ).map((el) => el.textContent);
-    expect(labels).toEqual(["Codex", "Grok", "Kimi Code CLI", "Qwen Code", "Gemini CLI", "OpenAI"]);
+    expect(labels).toEqual(["Codex", "Grok", "Kimi Code CLI", "Qwen Code", "Gemini CLI", "OpenAI voiceover", "Add connection"]);
 
     expect([dotTone(subRow("Codex")), chip(subRow("Codex"))]).toEqual(["ok", null]);
     expect([dotTone(subRow("Kimi Code CLI")), chip(subRow("Kimi Code CLI"))]).toEqual(["ok", null]);
@@ -248,7 +258,7 @@ describe("Settings sidebar — AI Providers children", () => {
     // Installed but not enabled: available, just off.
     expect([dotTone(subRow("Grok")), chip(subRow("Grok"))]).toEqual(["off", "off"]);
     expect([dotTone(subRow("Gemini CLI")), chip(subRow("Gemini CLI"))]).toEqual(["off", "missing"]);
-    expect([dotTone(subRow("OpenAI")), chip(subRow("OpenAI"))]).toEqual(["off", "no key"]);
+    expect([dotTone(subRow("OpenAI voiceover")), chip(subRow("OpenAI voiceover"))]).toEqual(["off", "no key"]);
   });
 
   test("the active child is marked; collapsing hands the marker to the parent", async () => {
@@ -417,7 +427,7 @@ describe("AI Providers page — hub and provider screens", () => {
     expect(page.textContent).not.toContain("Default agents");
     expect(page.textContent).not.toContain("Enrich new captures");
     const names = Array.from(page.querySelectorAll(".pss__prov-name")).map((el) => el.textContent);
-    expect(names).toEqual(["Codex", "Grok", "Kimi Code CLI", "Qwen Code", "Gemini CLI", "OpenAI"]);
+    expect(names).toEqual(["Codex", "Grok", "Kimi Code CLI", "Qwen Code", "Gemini CLI", "OpenAI voiceover"]);
     // The per-provider controls moved to their own screens.
     expect(page.textContent).not.toContain("Codex selection");
     expect(page.textContent).not.toContain("Save & enable");
@@ -467,7 +477,7 @@ describe("AI Providers page — hub and provider screens", () => {
 
   test("the OpenAI screen carries the key and no routing strip", async () => {
     const page = await render(createElement(AIProvidersPage, { sub: "openai" }));
-    expect(page.querySelector("h1")?.textContent).toBe("OpenAI");
+    expect(page.querySelector("h1")?.textContent).toBe("OpenAI voiceover");
     expect(page.textContent).toContain("API Key");
     expect(page.querySelector(".pss__prov-strip")).toBeNull();
   });
@@ -680,5 +690,147 @@ describe("Settings shell — the pane's scroll on a jump", () => {
     } finally {
       Element.prototype.scrollIntoView = original;
     }
+  });
+});
+
+// ---- Direct API connections ------------------------------------------------
+// Invented endpoints and models; nothing here is an operator's configuration.
+
+const CLOUD = "12345678-1234-4234-8234-1234567890c1";
+const BENCH = "12345678-1234-4234-8234-1234567890c2";
+const LARGE = "12345678-1234-4234-8234-1234567890d1";
+const SMALL_LOCAL = "12345678-1234-4234-8234-1234567890d2";
+
+function directSettings(): Settings {
+  return settings({
+    customConnections: [
+      { id: CLOUD, name: "Fixture Cloud", baseUrl: "https://api.fixture-cloud.example/v1", protocol: "anthropic-messages", auth: { type: "api-key" } },
+      { id: BENCH, name: "Bench server", baseUrl: "http://127.0.0.1:8080/v1", protocol: "openai-chat", auth: { type: "none" } }
+    ],
+    customModels: [
+      { id: LARGE, connectionId: CLOUD, displayName: "Granola Large", modelId: "granola-large-2", capabilities: { vision: true, streaming: true }, maxOutputTokens: 4096 },
+      { id: SMALL_LOCAL, connectionId: BENCH, displayName: "muesli-8b", modelId: "muesli-8b-instruct", capabilities: { vision: null, streaming: true }, maxOutputTokens: 4096 }
+    ]
+  });
+}
+function withCloudKey(): void {
+  secrets = { ...SECRETS, [`customModelCredential:${CLOUD}`]: { configured: true, lastSetAt: "2026-09-20T00:00:00.000Z" } } as unknown as SecretMap;
+}
+function step(n: number, title: string): HTMLElement {
+  const el = container?.querySelector<HTMLElement>(`section[aria-label="Step ${n}: ${title}"]`);
+  if (el === null || el === undefined) throw new Error(`step not found: ${title}`);
+  return el;
+}
+function button(scope: ParentNode | null | undefined, text: string): HTMLButtonElement {
+  const found = Array.from(scope?.querySelectorAll<HTMLButtonElement>("button") ?? []).find((b) => b.textContent === text);
+  if (found === undefined) throw new Error(`button not found: ${text}`);
+  return found;
+}
+function callsTo(name: string): unknown[] {
+  return dispatchCalls.filter((c) => c.name === name).map((c) => c.req);
+}
+
+describe("Direct API connections", () => {
+  test("the sidebar groups connections under Direct API, each with a dot and a word, closed by Add connection", async () => {
+    await render(createElement(Sidebar, { active: "ai", sub: null }), directSettings());
+    const labels = Array.from(container?.querySelectorAll("#pss-sb-sublist-ai .pss__sb-sublabel") ?? []).map((el) => el.textContent);
+    expect(labels.slice(-3)).toEqual(["Fixture Cloud", "Bench server", "Add connection"]);
+    expect(container?.querySelector("#pss-sb-sublist-ai .pss__sb-subhead")?.textContent).toBe("Direct API");
+    expect([dotTone(subRow("Fixture Cloud")), chip(subRow("Fixture Cloud"))]).toEqual(["warn", "no key"]);
+    expect([dotTone(subRow("Bench server")), chip(subRow("Bench server"))]).toEqual(["ok", null]);
+
+    await click(subRow("Add connection"));
+    expect(window.location.hash).toBe("#stage=settings&page=ai&sub=new-connection");
+    await click(subRow("Fixture Cloud"));
+    expect(new URLSearchParams(window.location.hash.slice(1)).get("sub")).toBe(`connection:${CLOUD}`);
+  });
+
+  test("with no connections the group still offers Add connection", async () => {
+    await render(createElement(Sidebar, { active: "ai", sub: null }));
+    expect(container?.querySelector("#pss-sb-sublist-ai .pss__sb-subhead")?.textContent).toBe("Direct API");
+    expect(subRow("Add connection").querySelector(".pss__status-dot")).toBeNull();
+  });
+
+  test("the hub's Connections card says where each one points and which models take images", async () => {
+    withCloudKey();
+    const page = await render(createElement(AIProvidersPage, { sub: null }), directSettings());
+    const cards = Array.from(page.querySelectorAll(".pss__card"));
+    expect(cards.map((c) => c.querySelector(".pss__card-title")?.textContent)).toEqual(["Agents", "Connections"]);
+    const rows = Array.from(cards[1]?.querySelectorAll(".pss__prov-row") ?? []);
+    expect(rows.map((r) => r.querySelector(".pss__dapi-cap")?.textContent)).toEqual(["api.fixture-cloud.example", "THIS COMPUTER"]);
+    expect(rows.map((r) => r.querySelector(".pss__prov-meta")?.textContent)).toEqual([
+      "Anthropic Messages · API key · 1 model", "Chat Completions · no auth · 1 model"]);
+    // IMG only where the saved answer is Yes — never for Unknown.
+    expect(rows.map((r) => r.querySelector(".pss__dapi-mchip")?.textContent)).toEqual(["Granola LargeIMG", "muesli-8b"]);
+    expect(rows.map((r) => r.querySelector(".pss__badge")?.textContent)).toEqual(["Ready", "Ready"]);
+    await click(button(cards[1], "+ Add connection"));
+    expect(window.location.hash).toBe("#stage=settings&page=ai&sub=new-connection");
+  });
+
+  test("a new connection saves its first step, then asks for the key", async () => {
+    customAnswers["customModels:saveConnection"] = { ok: true, value: {
+      id: CLOUD, name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", protocol: "openai-chat", auth: { type: "api-key" } } };
+    const page = await render(createElement(AIProvidersPage, { sub: "new-connection" }));
+    expect(page.querySelector("h1")?.textContent).toBe("New connection");
+    expect(step(2, "Sign in").className).toContain("is-locked");
+    await click(button(page, "OpenRouter"));
+    expect(page.querySelector(".pss__dapi-req")?.textContent).toBe("POSThttps://openrouter.ai/api/v1/chat/completionswhat PwrSnap will call");
+    await click(button(step(1, "Where"), "Continue"));
+    expect(callsTo("customModels:saveConnection")).toEqual([{ connection: {
+      name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", protocol: "openai-chat", auth: { type: "api-key" } } }]);
+    expect(step(2, "Sign in").className).toContain("is-current");
+    expect(page.querySelector('input[aria-label="API key"]')).not.toBeNull();
+  });
+
+  test("the key is handed over once and cleared, then the endpoint is listed for free", async () => {
+    customAnswers["customModels:discover"] = { ok: true, value: { models: [{ id: "granola-large-2", vision: null }] } };
+    const page = await render(createElement(AIProvidersPage, { sub: `connection:${CLOUD}` }), directSettings());
+    expect(page.querySelector("h1")?.textContent).toBe("Fixture Cloud");
+    const input = page.querySelector<HTMLInputElement>('input[aria-label="API key"]');
+    if (input === null) throw new Error("key input missing");
+    input.value = "synthetic-fixture-key";
+    await click(button(step(2, "Sign in"), "Save & test"));
+    expect(callsTo("customModels:setKey")).toEqual([{ connectionId: CLOUD, value: "synthetic-fixture-key" }]);
+    expect(callsTo("customModels:discover")).toEqual([{ connectionId: CLOUD }]);
+    expect(input.value).toBe("");
+    // No model turn: the check is the listing.
+    expect(callsTo("customModels:test")).toEqual([]);
+  });
+
+  test("the models step saves only what is ticked, with the image answer the operator gave", async () => {
+    withCloudKey();
+    customAnswers["customModels:discover"] = { ok: true, value: { models: [
+      { id: "granola-large-2", vision: null }, { id: "granola-small", vision: null }] } };
+    customAnswers["customModels:setModels"] = { ok: true, value: [] };
+    await render(createElement(AIProvidersPage, { sub: `connection:${CLOUD}` }), directSettings());
+    await click(button(step(3, "Models"), "Edit"));
+    const models = step(3, "Models");
+    expect(models.textContent).toContain("not advertised");
+    await click(models.querySelector('input[aria-label="Use granola-small"]'));
+    await click(button(models.querySelector('[aria-label="Image input for granola-small"]'), "Yes"));
+    await click(button(models, "Save 2 models"));
+    expect(callsTo("customModels:setModels")).toEqual([{ connectionId: CLOUD, models: [
+      { id: LARGE, modelId: "granola-large-2", displayName: "Granola Large", capabilities: { vision: true, streaming: true }, maxOutputTokens: 4096 },
+      { modelId: "granola-small", displayName: "granola-small", capabilities: { vision: true, streaming: true }, maxOutputTokens: 4096 }
+    ] }]);
+  });
+
+  test("a key the endpoint turns down reopens Sign in instead of moving on", async () => {
+    withCloudKey();
+    customAnswers["customModels:discover"] = { ok: false, error: { kind: "settings", code: "custom_model_unauthorized",
+      message: "Model endpoint returned HTTP 401. Check the endpoint, model and authentication." } };
+    await render(createElement(AIProvidersPage, { sub: `connection:${CLOUD}` }), directSettings());
+    await click(button(step(3, "Models"), "Edit"));
+    const signIn = step(2, "Sign in");
+    expect(signIn.className).toContain("is-current");
+    expect(signIn.querySelector(".pss__dapi-step-s")?.textContent).toBe("key turned down by the endpoint");
+    expect(signIn.querySelector('input[aria-label="API key"]')).not.toBeNull();
+    expect(signIn.textContent).toContain("HTTP 401");
+  });
+
+  test("a removed connection's screen says so instead of an empty editor", async () => {
+    const page = await render(createElement(AIProvidersPage, { sub: "connection:12345678-1234-4234-8234-1234567890ff" }), directSettings());
+    expect(page.textContent).toContain("This connection was removed.");
+    expect(page.querySelector(".pss__dapi-step")).toBeNull();
   });
 });

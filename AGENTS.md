@@ -283,15 +283,19 @@ warns in the job summary that CI will not re-run.
 
 ## AI backends: installed agents and custom direct APIs
 
-Built-in Codex/ACP paths remain agent clients. User-configured direct model
-entries additionally call OpenAI Responses, OpenAI-compatible Chat Completions,
-or Anthropic Messages from main, without an agent or proxy. This is the explicit
-exception to the former agent-only rule. See `docs/architecture.md` for the
-credential, capability, protocol, and OAuth invariants. Direct HTTP code lives
-under `apps/desktop/src/main/ai/direct-api/`; the minimal Settings editor is
-separate from its schema, credential manager and protocol adapters.
+Built-in Codex/ACP paths remain agent clients. User-configured direct API
+connections additionally call OpenAI Responses, OpenAI-compatible Chat
+Completions, or Anthropic Messages from main, without an agent or proxy. This is
+the explicit exception to the former agent-only rule. See `docs/architecture.md`
+for the connection/model split and the credential, capability, protocol, and
+OAuth invariants. Direct HTTP code lives under
+`apps/desktop/src/main/ai/direct-api/`; the Settings screens
+(`ConnectionPage.tsx`, `ConnectionIndex.tsx`, `direct-api-status.ts`) are
+separate from its schema, credential manager and protocol adapters, and reach
+them only through the `customModels:*` verbs — `ai.customConnections` and
+`ai.customModels` are main-owned and `settings:write` refuses both.
 
-Never route a custom entry through Codex/ACP as a fallback. Never infer vision,
+Never route a custom model through Codex/ACP as a fallback. Never infer vision,
 reasoning, Fast mode, pricing, OAuth access or subscription entitlement from a
 model name or base URL. Auth secrets stay in `DesktopSecretStore`, not settings.
 Direct chat has no tools. Direct enrichment sends bounded app-prepared image

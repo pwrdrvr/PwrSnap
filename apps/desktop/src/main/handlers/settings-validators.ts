@@ -220,6 +220,7 @@ export function validateSettingsWrite(
       };
     }
     const ai = p.ai as Record<string, unknown>;
+    if (ai.customModels !== undefined) return { ok: false, error: validationError("custom_models_main_owned", "Use the custom model editor to change connections.") };
     if (!isUndefined(ai.enabled) && !isBoolean(ai.enabled)) {
       return {
         ok: false,
@@ -969,7 +970,7 @@ function validateChatSurfaceProvider(
   surface: string,
   value: string
 ): PwrSnapError | null {
-  if (value === "" || value === "codex") return null;
+  if (value === "" || value === "codex" || /^custom:[0-9a-f-]{36}$/i.test(value)) return null;
   if (value.startsWith("acp:")) {
     const id = value.slice("acp:".length);
     if (isBuiltInAcpAgentId(id)) return null;
@@ -1018,7 +1019,7 @@ function validateAiSurfaceDefault(surface: string, raw: unknown): PwrSnapError |
     // The model id is an opaque, possibly-ACP token (e.g. Qwen's
     // `qwen3.6-plus(openai)`), so use the tolerant model-token shape — NOT the
     // Codex-narrow alphabet, which would reject valid agent model ids.
-    if (v.length > 0 && !isAiModelTokenShape(v)) {
+    if (v.length > 0 && !(typeof raw.provider === "string" && raw.provider.startsWith("custom:") && v.length <= 200 && /^[^\x00-\x1f\x7f]+$/.test(v)) && !isAiModelTokenShape(v)) {
       return validationError(
         `invalid_ai_defaults_${surface}_${key}`,
         `settings:write: ai.defaults.${surface}.${key} must be a non-empty model id under 200 chars with no control characters (got ${JSON.stringify(v)})`

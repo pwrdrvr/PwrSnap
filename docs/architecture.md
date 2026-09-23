@@ -99,25 +99,55 @@ Keeping the stems in the source file is what leaves that door open:
 mixing at record time would close it permanently, for every recording
 already made.
 
-## AI runs on the user's machine, through their own agent
+## AI uses the user's chosen agent or direct API
 
-PwrSnap makes no direct calls to any model vendor. Every AI feature goes
-through an agent the user already has installed — Codex CLI / Codex Desktop
-over stdio JSON-RPC, or an ACP agent (Gemini / Qwen / Grok / Kimi). PwrSnap
-is a *client* of those protocols and never an implementation of one.
+Built-in Codex and ACP connections remain available. Users can also configure
+multiple direct HTTP model entries: OpenAI Responses, OpenAI-compatible Chat
+Completions, and Anthropic Messages. Main makes these requests itself; no
+agent, external proxy, or subprocess is required. Legacy text `/completions`
+is a different protocol and is not supported.
 
-Consequences that are easy to get wrong:
+Each custom entry has a stable UUID, display name, exact model ID, base URL,
+explicit protocol, capabilities, and public authentication configuration in
+`ai.customModels`. `custom:<uuid>` selects that entry in the existing chat and
+enrichment defaults. Deleting an entry leaves prior thread/default references
+unavailable; it never redirects a prompt to a different provider. Older settings
+normalize to an empty custom list, preserving built-in configuration.
 
-- There is no API key to manage for the core AI path, and no per-token cost
-  PwrSnap controls. The user's agent subscription is the billing surface.
-- Feature capability varies by whichever backend the user selected. The two
-  backends are **not** equally sandboxable — see below.
-- Model availability is discovered, not hardcoded.
+Credentials are separately identified, encrypted by `DesktopSecretStore`, and
+bound to the configured API base URL and authentication metadata. Sharing is
+explicit; logout affects all models referencing that credential, while deletion
+only clears an unreferenced credential. No status read decrypts secrets. Linux
+`basic_text`, unavailable storage, and locked credentials never cause plaintext
+fallback. API keys are write-only inputs; access and refresh tokens never enter
+renderer projections, settings, logs, or exports.
+
+OAuth supports documented public native-client authorization-code flows with
+S256 PKCE, state, a loopback callback, serialized refresh, and local logout with
+best-effort provider revocation. Users must supply the provider's authorization
+and token endpoints plus a registered client ID (and scopes/resource where
+required). A subscription or generic API URL does not establish API access.
+Confidential clients requiring a client secret are not supported.
+
+Custom capabilities are explicit. Discovery accepts only unambiguous metadata;
+`/props` vision applies only when `/models` identifies precisely one matching
+model. Names never imply vision, reasoning, Fast mode, or prices. Usage tokens
+are recorded when returned, with custom pricing unavailable. Redirects are
+refused, remote endpoints require HTTPS, HTTP is loopback-only, response sizes
+and request duration are bounded, and server error bodies are not surfaced.
+
+Direct chat reuses PwrSnap's local journal and streaming/cancellation lifecycle.
+It supports text conversation and the current Library image when vision is
+enabled, but has no editing tools or automatic library/reel access. Enrichment
+sends app-prepared image bytes and validates the same structured result as the
+agent paths. The model cannot execute code, read paths, call tools, or select
+additional network destinations: only main's fixed inference request is made.
 
 **Capture enrichment is a jailed, unattended path.** A screenshot is
 untrusted input that can carry text engineered to steer a model. Enrichment
-runs with no tools, no network, no filesystem beyond a scratch jail, and no
-UI to approve anything — enforced in the transport, not the prompt. This is
+runs with no tools, no model-initiated network, no filesystem beyond the
+agent scratch jail (or bounded image bytes for direct APIs), and no UI to
+approve anything — enforced in the transport, not the prompt. This is
 the most security-sensitive surface in the app; AGENTS.md §"Capture
 enrichment runs in a sandbox jail" is the authority, including the measured
 difference between the Codex and ACP postures.

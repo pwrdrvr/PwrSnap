@@ -1,3 +1,4 @@
+import { customModelsSchema } from "@pwrsnap/shared";
 // Internal settings persistence adapter. DesktopSettingsStore is the sole
 // production owner. The first read hydrates an immutable snapshot from disk;
 // subsequent reads stay in memory for the process lifetime. Reads
@@ -182,6 +183,7 @@ export function defaultSettings(
       // No ACP agents enabled on a fresh install. The user opts agents
       // into the enabled set from Settings → AI → ACP agents (additive,
       // no schemaVersion bump).
+      customModels: [],
       acp: { enabledAgentIds: [], agents: {} }
     },
     // Single source of truth shared with the renderer's "Reset to
@@ -859,6 +861,7 @@ function parseV1(
       // to an empty enabled set; only recognized built-in agent ids
       // survive the parse so a stale/forged file can't enable an unknown
       // agent. No `schemaVersion` bump per the additive convention.
+      customModels: customModelsSchema.parse(ai.customModels ?? []),
       acp: parseAcpSettings(ai.acp)
     },
     // Missing fields use the current platform defaults. The managed-default
@@ -1059,6 +1062,7 @@ function parseAiSurfaceDefault(raw: unknown): AiSurfaceDefault {
     // modelProvider token (e.g. "openai" on the old enrichment surface) is
     // dropped → Codex default. "" / "codex" also drop to the implicit default.
     const provider = rec.provider.trim();
+    if (/^custom:[0-9a-f-]{36}$/i.test(provider)) out.provider = provider;
     if (provider.startsWith("acp:") && isBuiltInAcpAgentId(provider.slice("acp:".length))) {
       out.provider = provider;
     }
@@ -1884,6 +1888,7 @@ function mergeAi(current: Settings["ai"], patch: SettingsPatch["ai"]): Settings[
     // a "leave alone" sentinel — substrate rule `undefined ≠ null ≠ ""`.
     chat: mergeChat(current.chat, patch.chat),
     defaults: mergeAiSurfaceDefaults(current.defaults, patch.defaults),
+    customModels: patch.customModels ?? current.customModels ?? [],
     acp: mergeAcp(current.acp, patch.acp)
   };
 }

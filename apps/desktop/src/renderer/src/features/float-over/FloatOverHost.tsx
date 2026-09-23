@@ -496,6 +496,7 @@ export function FloatOverHost({
     const { enrichment, record, settings } = state;
     const enrichmentProviderAvailable = isEnrichmentProviderAvailable({
       provider: settings?.ai.defaults.enrichment.provider,
+      customModels: settings?.ai.customModels,
       codexAvailable,
       acpDiscovery
     });

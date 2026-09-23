@@ -1,3 +1,4 @@
+import type { CustomModel, CustomModelDiscovery, CustomModelStatus } from "./custom-models";
 // Typed `Commands` registry. Single source of truth across main /
 // preload / renderer / external transports (HTTP RPC in Phase 7, MCP
 // later). Every command-bus.dispatch(name, req) call typechecks the
@@ -1321,11 +1322,12 @@ export type LocalAgentAuditEntry = {
   occurredAt: string;
 };
 
-/** Every secret the app persists. Plaintext values never cross the IPC
- *  boundary — the renderer only ever sees the status shape below. */
+/** Every secret the app persists. Plaintext values never return over IPC;
+ *  write-only inputs are immediately persisted by main. Reads return status only. */
 export type DesktopSettingsSecretName =
   | "openaiApiKey"
-  | `localAgentToken:${string}`;
+  | `localAgentToken:${string}`
+  | `customModelCredential:${string}`;
 
 export type SizzleTtsProvider = "openai";
 export type SizzleTtsModel = "tts-1" | "tts-1-hd";
@@ -2628,6 +2630,8 @@ export type Settings = {
      *  is a `settings:write` patch to `ai.acp.enabledAgentIds`. Wiring an
      *  enabled agent as a live chat backend is a separate next phase. */
     acp: AcpSettings;
+    /** User-configured direct HTTP models; absent in older settings files. */
+    customModels?: CustomModel[];
   };
   /** Global capture hotkeys. Each field is an Electron accelerator
    *  string (`CommandOrControl+Shift+C`-style) OR the empty string,
@@ -3552,6 +3556,8 @@ export type SettingsPatch = {
      *  `undefined` / missing `acp` leaves the stored set untouched. The
      *  bus validator rejects unknown agent ids. */
     acp?: Partial<AcpSettings>;
+    /** Main-owned; changed through customModels:save/remove. */
+    customModels?: CustomModel[];
   };
   hotkeys?: Partial<Settings["hotkeys"]>;
   general?: Partial<Settings["general"]>;
@@ -4537,6 +4543,15 @@ export type Commands = {
     req: Record<string, never>;
     res: Record<DesktopSettingsSecretName, SecretStatus>;
   };
+  "customModels:save": { req: { model: CustomModel }; res: CustomModel };
+  "customModels:remove": { req: { id: string }; res: undefined };
+  "customModels:status": { req: { id: string }; res: CustomModelStatus };
+  "customModels:setKey": { req: { id: string; value: string }; res: undefined };
+  "customModels:login": { req: { id: string }; res: undefined };
+  "customModels:logout": { req: { id: string }; res: undefined };
+  "customModels:test": { req: { id: string }; res: { message: string } };
+  "customModels:discover": { req: { id: string }; res: CustomModelDiscovery };
+  "customModels:models": { req: { id: string }; res: { models: { id: string; label: string; isDefault: boolean }[] } };
   "settings:replaceSecret": {
     req: { name: DesktopSettingsSecretName; value: string };
     res: SecretStatus;

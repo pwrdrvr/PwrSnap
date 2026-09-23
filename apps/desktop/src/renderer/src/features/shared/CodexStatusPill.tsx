@@ -38,7 +38,7 @@ export function enrichmentBackendLabel(
 ): { providerLabel: string; modelLabel: string | undefined } {
   const provider = enrichment?.provider ?? "";
   const isAcp = provider.startsWith("acp:");
-  const providerLabel = isAcp
+  const providerLabel = provider.startsWith("custom:") ? "Custom API" : isAcp
     ? (ACP_PROVIDER_LABELS[provider.slice("acp:".length)] ?? provider.slice("acp:".length))
     : "Codex";
   const model = enrichment?.model;

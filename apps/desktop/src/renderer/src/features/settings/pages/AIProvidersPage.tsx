@@ -1,3 +1,4 @@
+import { CustomModelsCard } from "./CustomModelsCard";
 // The "Using" pill follows `snapshot.resolvedPath`, NOT
 // `settings.codex.mode` — same logic stdio-transport uses to spawn
 // Codex, so the renderer doesn't lie about which binary actually runs.
@@ -259,9 +260,8 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
           <div className="pss__main-eyebrow">General</div>
           <h1 className="pss__main-title">AI Providers</h1>
           <p className="pss__main-sub">
-            PwrSnap has no AI of its own. It works through AI tools you already
-            have — Codex, or an agent such as Kimi or Qwen — signed in to your
-            own account. Open one to check that it is installed and working,
+            Connect a custom model API directly, or use an installed agent
+            such as Codex, Kimi or Qwen with your own account. Check a connection,
             then choose which one does each job in{" "}
             <button
               type="button"
@@ -277,6 +277,7 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
         </div>
       </div>
 
+      <CustomModelsCard />
       <Card eyebrow="STATUS" title="Providers">
         <Row
           label="Ready to use?"

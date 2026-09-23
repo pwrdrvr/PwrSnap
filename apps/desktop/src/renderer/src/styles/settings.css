@@ -2697,3 +2697,14 @@ a.pss__top-btn[aria-disabled="true"]:hover {
   justify-content: space-between;
   gap: 12px;
 }
+
+.pss__custom-model-editor {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+.pss__custom-model-editor .pss__input,
+.pss__custom-model-editor .pss__select {
+  width: 100%;
+  max-width: 100%;
+}

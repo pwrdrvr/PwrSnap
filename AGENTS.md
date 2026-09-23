@@ -281,13 +281,24 @@ existing `FFMPEG_BUILDS_*` App **cannot** be reused — it is scoped read-only t
 `pwrsnap-ffmpeg-builds`. Until one of those exists the workflow still runs, and
 warns in the job summary that CI will not re-run.
 
-## Codex App Server is the AI brain
+## AI backends: installed agents and custom direct APIs
 
-**All AI features in PwrSnap go through the user's installed Codex CLI / Codex
-Desktop instance over stdio JSON-RPC.** This is the schtick — annotation,
-description generation, tag suggestion, smart filenames, sensitive-data
-review, voice describe, sizzle-reel composition. No direct OpenAI / Anthropic
-/ xAI calls in `apps/desktop`.
+Built-in Codex/ACP paths remain agent clients. User-configured direct model
+entries additionally call OpenAI Responses, OpenAI-compatible Chat Completions,
+or Anthropic Messages from main, without an agent or proxy. This is the explicit
+exception to the former agent-only rule. See `docs/architecture.md` for the
+credential, capability, protocol, and OAuth invariants. Direct HTTP code lives
+under `apps/desktop/src/main/ai/direct-api/`; the minimal Settings editor is
+separate from its schema, credential manager and protocol adapters.
+
+Never route a custom entry through Codex/ACP as a fallback. Never infer vision,
+reasoning, Fast mode, pricing, OAuth access or subscription entitlement from a
+model name or base URL. Auth secrets stay in `DesktopSecretStore`, not settings.
+Direct chat has no tools. Direct enrichment sends bounded app-prepared image
+bytes to the explicitly configured endpoint; the model has no filesystem,
+execution, or tool interface. The sandbox rules below still govern agent-backed
+enrichment; their no-network rule concerns model-initiated network activity,
+not main's fixed direct inference request.
 
 ### Protocol package
 
@@ -321,7 +332,7 @@ implementation; see plan §"Phase 0.5".
 
 ### One-shot vs multi-turn
 
-Both shapes go through Codex App Server:
+On the Codex backend, both shapes go through Codex App Server:
 
 - **Phase 4 background pipelines** (annotate / describe / tag / filename) use
   a fresh ephemeral thread per capture with structured output. Image input
@@ -338,8 +349,8 @@ PwrSnap is an App Server *client* only — never an App Server *implementation*.
 
 ## Capture enrichment runs in a sandbox jail
 
-**A capture-enrichment turn may not run a command, call a tool, touch a
-file outside its scratch dir, or reach the network. That is enforced in
+**An agent-backed capture-enrichment turn may not run a command, call a tool,
+touch a file outside its scratch dir, or reach the network. That is enforced in
 the transport, not in the prompt. Do not loosen it to make a feature
 work.**
 
@@ -1494,7 +1505,10 @@ Rules the surface keeps, and where each one lives:
 **Every webContents PwrSnap creates is covered by a `setWindowOpenHandler`
 that denies, and a `will-navigate` handler that refuses any target which is
 not PwrSnap's own content. A URL leaves the app only by clearing
-`isAllowedExternalUrl`, and only into the user's browser.** Owner:
+`isAllowedExternalUrl`, and only into the user's browser. The sole configurable
+exception is an OAuth authorization URL generated in main from a saved custom
+model's validated metadata; it goes directly to the system browser, never to a
+PwrSnap webContents. Do not broaden the generic allowlist for OAuth.** Owner:
 [navigation-guard.ts](apps/desktop/src/main/navigation-guard.ts), armed from
 `app.whenReady()` in [index.ts](apps/desktop/src/main/index.ts) beside
 `installMediaPermissionPolicy()`. Pinned by
@@ -2403,8 +2417,8 @@ Rules:
   `undefined` / missing key = leave alone. Explicit value (including
   `false`, `0`, `""`, `null` where the type allows) = write.
   `exactOptionalPropertyTypes` enforces.
-- **All secrets via `safeStorage`.** Plaintext never crosses the IPC
-  boundary. The renderer only ever sees `SecretStatus = { configured,
+- **All secrets via `safeStorage`.** Plaintext credentials are never returned over IPC. A write-only API-key
+  input may cross renderer → main once for secure persistence. The renderer only ever sees `SecretStatus = { configured,
   lastSetAt }`. `DesktopSecretStore.getValue()` is the only plaintext
   accessor and is main-only — **never register it on the bus.** If
   `safeStorage.isEncryptionAvailable() === false`, the store throws

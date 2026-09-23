@@ -28,8 +28,11 @@ export function registerCustomModelHandlers(): void {
       const parsed = schema.safeParse(req);
       if (!parsed.success) return err({ kind: "validation", code: "invalid_custom_model_request", message: "Invalid custom model request." });
       try { return ok(await handler(parsed.data, ctx, getCustomModelService())); }
-      catch (e) { return err({ kind: "settings", code: "custom_model_failed",
-        message: e instanceof DirectApiError ? e.message : "Custom model operation failed. Check secure storage availability and connection configuration." }); }
+      catch (e) {
+        const rejected = e instanceof DirectApiError && (e.status === 401 || e.status === 403);
+        return err({ kind: "settings", code: rejected ? "custom_model_unauthorized" : "custom_model_failed",
+          message: e instanceof DirectApiError ? e.message : "Custom model operation failed. Check secure storage availability and connection configuration." });
+      }
     });
   }
   register("customModels:saveConnection", z.object({ connection: customConnectionInputSchema }).strict(),

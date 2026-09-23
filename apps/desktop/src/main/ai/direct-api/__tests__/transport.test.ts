@@ -51,6 +51,10 @@ test.each([401, 429, 500, 302])("sanitizes HTTP %s including redirects", async (
   const http = await server((_req, res) => { res.writeHead(status, { location: "http://127.0.0.1:1/secret" }).end("sensitive server echo"); }); cleanup.push(http.close);
   await expect(invokeApi({ model: model(http.url), headers: {}, system: "", messages: [{ role: "user", text: "test" }] })).rejects.not.toThrow("sensitive");
 });
+test.each([[401, 401], [403, 403], [500, 500]])("an HTTP %s answer carries its status for the caller to classify", async (status, expected) => {
+  const http = await server((_req, res) => { res.writeHead(status).end(); }); cleanup.push(http.close);
+  await expect(discoverApi(model(`${http.url}/v1`), {})).rejects.toMatchObject({ status: expected });
+});
 test.each(["malformed", "truncated", "error"])("rejects %s streams", async (kind) => {
   const http = await server((_req, res) => {
     if (kind === "malformed") res.end("data: not json\n\n");

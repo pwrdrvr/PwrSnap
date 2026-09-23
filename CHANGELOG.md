@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.1.5 - 2026-09-23
+
+This patch makes video review and post-capture actions more reliable in the
+Float-Over.
+
+- Video Filmstrips - Fixed every timeline preview tile to show a real video
+  frame, including recordings that begin or end on a still screen.
+- Float-Over - Improved video Float-Over sizing so content fits the window,
+  dense details scroll in the middle, and the header and Discard, Dismiss, and
+  Edit actions remain reachable.
+
 ## v1.1.4 - 2026-09-21
 
 This patch makes Sizzle playback and PwrSnap's visual presentation more

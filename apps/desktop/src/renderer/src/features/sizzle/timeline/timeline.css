@@ -29,11 +29,22 @@
   color: var(--text-secondary);
   white-space: nowrap;
 }
+/* The one thing in the bar that yields. With the chat open on the minimum
+   window the timeline is 432px wide and the bar's natural width is ~590px.
+   The zoom group is what fell off the end, under the chat, where "4×" and
+   "8×" could not be clicked. The meta is the least needed thing in the bar
+   (its length and counts repeat the reel player and the editor head), so it
+   truncates instead. `overflow-x: clip` rather than `hidden`: at
+   `line-height: 1` a hidden box also cuts the descenders off "clips" and
+   "px/s". */
 .szt__meta {
   font: 500 11px/1 var(--font-mono);
   color: var(--text-muted);
   letter-spacing: 0.02em;
   white-space: nowrap;
+  min-width: 0;
+  overflow-x: clip;
+  text-overflow: ellipsis;
 }
 .szt__meta .szt__tilde {
   color: var(--warn-text);

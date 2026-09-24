@@ -442,15 +442,33 @@
   outline: 0;
 }
 
-/* Main pane — empty state OR active editor. */
+/* Main pane — empty state OR active editor.
+
+   `overflow: clip`, not `hidden`. A `hidden` box is still a scroll
+   container: nothing can scroll it with a wheel or a scrollbar, but focus
+   and scrollIntoView can. Tabbing into a scene control on a short window
+   used to scroll this pane 77px, lifting the whole workspace — editor head,
+   Duplicate, Delete — out of view, where a mouse user had no way to scroll
+   it back. `clip` paints the same and cannot be scrolled at all. The
+   editor column below is the scroller that should move; this pane never
+   should.
+
+   `min-height: 0` has to come with it. A scroll container's automatic
+   minimum size is zero; a clipped box's is its content height, so without
+   this the grid's `1fr` row would grow to fit a tall editor and push the
+   pane off the bottom of the window.
+
+   No sticky descendant binds to this box: the chat's message list is its
+   own scroller. */
 .szl__main {
   grid-column: 2;
   grid-row: 2;
   position: relative;
-  overflow: hidden;
+  overflow: clip;
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   background: var(--bg-app);
 }
 
@@ -487,12 +505,28 @@
   color: var(--text-muted);
 }
 
+/* On a tall window the scene list is the only thing that scrolls: head,
+   reel player, timeline and footer stay put and the list takes whatever
+   height is left. On a short one there is not enough left. At the minimum
+   window (880×560, chat open) the head, player, timeline and footer alone
+   measure ~540px against a 508px pane, so the list got 28px (or nothing)
+   and no scene control could be seen whole.
+
+   So the scene list keeps a floor (see `.szl__scenes`), and once the column
+   cannot fit that floor, the column scrolls as a whole. Nothing else has to
+   give, and focus moving into a scene scrolls a box the user can scroll back.
+
+   The x axis computes to `auto` with this. Leave it that way: `hidden`
+   would let focus shift the column sideways with no way back, the same
+   trap `.szl__main` had vertically. Nothing overflows at the minimum window
+   with the default chat width, so no scrollbar shows. */
 .szl__editor {
   flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
   min-width: 0;
+  overflow-y: auto;
 }
 
 .szl__editor-head {
@@ -679,17 +713,33 @@
   border-color: var(--accent-border);
 }
 
+/* The floor: one scene card whole, plus the list's padding. At the narrowest
+   editor (880px window, 400px chat) cards measure 154–171px, and
+   171 + 2 × 14 = 199. Below this the column scrolls instead (see
+   `.szl__editor`). A card whose narration has grown taller than that still
+   scrolls inside the list.
+
+   `scroll-padding-block` matches the padding, so a control that focus scrolls
+   into view stops the same 14px from the edge as it does at rest. Without it,
+   the control lands flush against the edge and its focus ring is cut. */
 .szl__scenes {
   list-style: none;
   margin: 0;
   padding: 14px 24px;
+  scroll-padding-block: 14px;
   display: flex;
   flex-direction: column;
   gap: 10px;
   overflow-y: auto;
   flex: 1;
-  min-height: 0;
+  min-height: 200px;
   background: var(--bg-app);
+  /* Container for the narrow simple card below. It is the list's width that
+     matters, not the window's: the chat beside the editor is 320–720px
+     wide, or closed. Nothing inside the list is `position: fixed` (the
+     phrase popover lives in the inspector, portaled to the rail), so the
+     layout containment this brings changes no containing block. */
+  container: szl-scenes / inline-size;
 }
 
 .szl__scene {
@@ -737,6 +787,28 @@
   display: block;
 }
 
+/* With the chat open on the minimum window the list is 432px wide inside
+   its padding, which left a simple card's body 170px beside a 180px
+   thumbnail. The action row (Convert to clips, ▶ ↑ ↓ ✕) needs 241px even on
+   a line of its own, so it ran off the card's right edge, reachable only by
+   scrolling the list sideways. Below the width where a full thumbnail still
+   leaves 241px (82px of card chrome + 180 + 241 = 503), the thumbnail
+   yields. The same capture is on the timeline right above the list.
+
+   The selectors carry an extra class on purpose: a container query adds no
+   specificity, so a bare `.szl__scene-thumb` here loses to the base rule
+   whenever the base rule comes later, and the thumbnail stays 180px wide
+   in a 96px column, painted over the narration. */
+@container szl-scenes (max-width: 503px) {
+  .szl__scene:not(.szl__scene--sequence) {
+    grid-template-columns: 28px 96px 1fr;
+  }
+  .szl__scene .szl__scene-thumb {
+    width: 96px;
+    height: 54px;
+  }
+}
+
 .szl__scene-missing {
   color: var(--text-muted);
   font: 500 11px/1 var(--font-mono);
@@ -779,6 +851,22 @@
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* A simple card's row wraps rather than overflowing a narrow card. Whatever
+   follows the spacer (the scene's actions) is the group that moves to the
+   next line, and the auto margin keeps it right-aligned there, as it is on
+   one line. On one line the spacer's flex-grow takes all the free space
+   first, so the margin resolves to 0.
+
+   Not the sequence card: its rows already fit by wrapping the label's text
+   inside the row, and a wrapping row breaks between its two buttons instead,
+   leaving "+ Clip" alone on a line of its own. */
+.szl__scene:not(.szl__scene--sequence) .szl__scene-row {
+  flex-wrap: wrap;
+}
+.szl__scene:not(.szl__scene--sequence) .szl__scene-row > .szl__spacer + * {
+  margin-left: auto;
 }
 
 .szl__scene-dur {

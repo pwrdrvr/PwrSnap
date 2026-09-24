@@ -11,17 +11,36 @@ import type { FocusEvent } from "react";
  *
  * React's `onBlur` bubbles like `focusout`, so this sees a row losing
  * focus too, and `relatedTarget` says where focus went. A move between
- * two rows stays inside the root and is ignored. A null target (the
- * window lost focus, or a click landed on something unfocusable) is left
- * to the mousedown and blur listeners the menus already have.
+ * two rows stays inside the root and is ignored.
+ *
+ * A null `relatedTarget` does not mean focus stayed. A menu that is the
+ * last focusable thing in the document (the Sizzle project menu is the
+ * app root's last child) loses focus to nothing when Tab passes its last
+ * row, and the next Tab brings focus back in at the top of the page. So
+ * the decision waits for wherever focus lands next: one `focusin`, which
+ * closes the menu only if it landed outside and the menu is still
+ * mounted. Returning to the window, or clicking back onto a row, lands
+ * inside and keeps it open. A detached root means the menu already
+ * closed, so a late `focusin` cannot close its successor.
  */
 export function closeWhenFocusLeaves(
   onClose: () => void
 ): (event: FocusEvent<HTMLElement>) => void {
   return (event) => {
+    const root = event.currentTarget;
     const next = event.relatedTarget;
-    if (!(next instanceof Node)) return;
-    if (event.currentTarget.contains(next)) return;
-    onClose();
+    if (next instanceof Node) {
+      if (!root.contains(next)) onClose();
+      return;
+    }
+    root.ownerDocument.addEventListener(
+      "focusin",
+      (landed) => {
+        if (!root.isConnected) return;
+        if (landed.target instanceof Node && root.contains(landed.target)) return;
+        onClose();
+      },
+      { capture: true, once: true }
+    );
   };
 }

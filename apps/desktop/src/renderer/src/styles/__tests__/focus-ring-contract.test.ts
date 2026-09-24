@@ -113,10 +113,18 @@ describe("every focus outline is drawn in --focus-ring", () => {
         .filter(({ value }) => !/^(none|0|auto)$/.test(value));
       for (const { prop, value } of colored) {
         if (/var\(--focus-ring\)/.test(value)) continue;
-        // `outline: 2px solid` with no color, or a bare width/style, is
-        // fine only if no color is named; anything naming a color must
-        // name the token.
-        if (!/var\(|#|rgb|hsl|color-mix|currentcolor/i.test(value)) continue;
+        // A width and/or style with no color (`outline: 2px solid`) names
+        // nothing to check. Anything left after stripping those is a
+        // color, keyword colors included: matching only var() / # / rgb()
+        // would let `outline: 2px solid orange` through.
+        const colorPart =
+          prop === "outline-color"
+            ? value
+            : value
+                .replace(/\b\d*\.?\d+(?:px|em|rem)?\b/g, "")
+                .replace(/\b(?:thin|medium|thick|none|hidden|auto|solid|dashed|dotted|double|groove|ridge|inset|outset)\b/gi, "")
+                .trim();
+        if (colorPart === "") continue;
         const allowed = focusSelectors.every((sel) =>
           NON_TOKEN_RINGS.some((a) => a.file === label && a.selector === sel)
         );

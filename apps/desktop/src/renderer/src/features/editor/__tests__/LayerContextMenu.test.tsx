@@ -202,6 +202,40 @@ describe("LayerContextMenu — dismissal", () => {
     }
   });
 
+  // A menu that is last in the document loses focus to NOTHING when Tab
+  // passes its last row (no relatedTarget); the next Tab lands at the top
+  // of the page. The close waits for where focus lands.
+  test("focus leaving to nowhere, then landing outside, fires onClose", async () => {
+    const { rootEl, onClose } = await renderMenu(SAMPLE_ITEMS);
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    try {
+      const row = rootEl.querySelector<HTMLButtonElement>("button[role='menuitem']");
+      await act(async () => {
+        row?.focus();
+        row?.blur();
+      });
+      expect(onClose).not.toHaveBeenCalled();
+      await act(async () => {
+        outside.focus();
+      });
+      expect(onClose).toHaveBeenCalledTimes(1);
+    } finally {
+      outside.remove();
+    }
+  });
+
+  test("focus leaving to nowhere, then returning to a row, does NOT fire onClose", async () => {
+    const { rootEl, onClose } = await renderMenu(SAMPLE_ITEMS);
+    const rows = rootEl.querySelectorAll<HTMLButtonElement>("button[role='menuitem']");
+    await act(async () => {
+      rows[0]?.focus();
+      rows[0]?.blur();
+      rows[1]?.focus();
+    });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   test("focus moving BETWEEN rows does NOT fire onClose", async () => {
     const { rootEl, onClose } = await renderMenu(SAMPLE_ITEMS);
     const rows = rootEl.querySelectorAll<HTMLButtonElement>("button[role='menuitem']");

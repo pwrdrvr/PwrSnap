@@ -162,6 +162,9 @@ describe("popped rail stacking", () => {
     );
     expect(rail).toMatch(/position\s*:\s*relative/);
     const railZ = zIndex(rail);
+    // `\}` anchors each to its standalone base rule. The palette also has a
+    // `.psl__main:has(... :focus-visible) > .psl__grid-copy-palette` rule
+    // (the focus-ring pass, #645), which a bare pattern matches too.
     for (const chrome of [
       "\\}\\s*\\.psl__edit-toolbar",
       "\\}\\s*\\.psl__grid-copy-palette",

@@ -104,6 +104,9 @@
   Claude Design provenance rules for `design/**`. It was a bare `CLAUDE.md`
   until the README-chip work put a load-bearing path rule in it that Codex
   could not see.
+- `apps/desktop/src/renderer/src/lib/`: `CLAUDE.md → AGENTS.md` — the focus
+  hooks every dialog, popover and menu uses (Escape, Tab, focus return), and
+  why each rule in them is there.
 
 ## Brand and Identity
 
@@ -586,6 +589,18 @@ History + the `sample` recipe:
 [docs/solutions/2026-06-12-macos-tcc-captures-folder-denials.md](docs/solutions/2026-06-12-macos-tcc-captures-folder-denials.md)
 §"Addendum (2026-08-22)". Pinned by
 [chat-thread-store-documents-access.test.ts](apps/desktop/src/main/ai/__tests__/chat-thread-store-documents-access.test.ts).
+
+## Overlays get Escape, Tab and focus from the renderer's focus hooks
+
+**Every click-opened dialog, popover and menu in the renderer uses
+`useModal` / `useDismissable` / `useFocusTrap` / `useMenuNavigation` /
+`useFocusReturn` from `apps/desktop/src/renderer/src/lib/`. Don't add an
+overlay keydown listener for Escape or Tab.** The Escape listener is the
+first window-capture keydown listener, and it stops the key it claims.
+That is why the app's own Escape handlers (Library view, editor, Sizzle
+inspector) never need a `defaultPrevented` check, and why a second overlay
+listener would break the ordering. Rules, measurements and test recipes:
+[apps/desktop/src/renderer/src/lib/AGENTS.md](apps/desktop/src/renderer/src/lib/AGENTS.md).
 
 ## Never mix a post-transform rect with a layout measure
 

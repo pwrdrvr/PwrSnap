@@ -31,7 +31,7 @@ function Harness(): ReactElement {
   return (
     <div>
       <ZoomMenu
-        shortcutPlatform="mac"
+        shortcutPlatform="darwin"
         zoom={{
           mode,
           displayPct: 62,

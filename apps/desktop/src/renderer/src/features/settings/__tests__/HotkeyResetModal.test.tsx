@@ -40,7 +40,7 @@ function Harness({ onConfirm }: { onConfirm: () => Promise<void> }): ReactElemen
       {open ? (
         <HotkeyResetModal
           changes={CHANGES}
-          platform="mac"
+          platform="darwin"
           onCancel={() => setOpen(false)}
           onConfirm={onConfirm}
         />

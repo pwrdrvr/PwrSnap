@@ -726,7 +726,10 @@
   /* Crosshair suggests redrawing when clicking outside the rect;
      the rect interior overrides via cursor: move. */
   cursor: crosshair;
-  /* Keep above the canvas image but below toolbars/menus. */
+  /* Above the canvas image. CropTool raises it inline to Z_INDEX_CHROME
+     so it also clears every annotation layer; this is only the floor.
+     The canvas is its own stacking context (its pan transform), so
+     neither value competes with toolbars or menus outside it. */
   z-index: 5;
   user-select: none;
 }
@@ -865,7 +868,7 @@
   border-color: var(--accent-strong);
 }
 .pse-crop-action.is-apply:focus-visible {
-  outline: 2px solid var(--accent-bright);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -880,8 +883,20 @@
   background: var(--bg-panel-hover);
 }
 .pse-crop-action.is-cancel:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
+}
+
+/* Both actions float over the capture itself, so their rings land on
+   whatever the screenshot has there: at the 480px window minimum the
+   fixture put a blue box under Cancel's bottom edge and Apply's ring
+   measured 2.85:1 against an olive panel. The halo gives the ring its
+   own background, as on the stage arrows. It also opens a dark gap
+   between Apply's accent fill and its accent ring. */
+.pse-crop-action:focus-visible {
+  box-shadow:
+    0 0 0 4px var(--bg-app),
+    var(--shadow-sm);
 }
 
 /* Shortcut chip inside each action button. Same vocabulary as
@@ -999,7 +1014,7 @@
   background: var(--bg-panel-hover);
 }
 .pse-chrome__act:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 .pse-chrome__act.is-active {
@@ -1276,7 +1291,7 @@
   background: color-mix(in srgb, var(--accent) 20%, transparent);
 }
 .pse-affordance:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -1443,7 +1458,7 @@
 }
 
 .pse-v1v2-banner__retry:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 

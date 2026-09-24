@@ -24,6 +24,7 @@ import {
 } from "@pwrsnap/shared";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import type { ZoomApi } from "./Editor";
+import { closeWhenFocusLeaves } from "../shared/close-when-focus-leaves";
 import "./ZoomMenu.css";
 
 const ZOOM_STEP = 1.2; // 20% relative
@@ -53,7 +54,7 @@ export function ZoomMenu({
       ? ""
       : Math.round(zoom.displayPct).toString();
 
-  // Close on outside click / Escape.
+  // Close on outside click / Escape (and on focus leaving: see onBlur).
   useEffect(() => {
     if (!open) return;
     function onDown(e: MouseEvent | TouchEvent): void {
@@ -106,7 +107,13 @@ export function ZoomMenu({
   const title = "Zoom";
 
   return (
-    <div className="ed-zoom" ref={rootRef}>
+    <div
+      className="ed-zoom"
+      ref={rootRef}
+      // Tab out of the open menu closes it, rather than leaving it over
+      // the edit toolbar buttons focus lands on next.
+      onBlur={open ? closeWhenFocusLeaves(() => setOpen(false)) : undefined}
+    >
       <button
         type="button"
         className={"ed-zoom-btn" + (open ? " is-open" : "")}

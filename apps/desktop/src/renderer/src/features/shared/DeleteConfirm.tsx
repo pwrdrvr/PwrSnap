@@ -147,34 +147,54 @@ export function DeleteConfirm({
     if (open && coords !== null) confirmBtnRef.current?.focus({ preventScroll: true });
   }, [open, coords]);
 
-  // Dismiss on outside pointer-down, Escape, scroll, or window resize. The
-  // opening click already passed (listener attaches after open), so it does
-  // not self-close.
+  // A keyboard dismissal hands focus back to the trash button. The popover
+  // unmounts with focus inside it, which would otherwise drop focus to
+  // <body>: no ring anywhere, and the next Tab starts from the top.
+  const closeAndRefocusAnchor = useCallback(() => {
+    const anchor = anchorRef.current;
+    close();
+    if (anchor?.isConnected === true) anchor.focus();
+  }, [close]);
+
+  // Dismiss on outside pointer-down, Escape, focus moving outside, scroll, or
+  // window resize. The opening click already passed (listener attaches after
+  // open), so it does not self-close.
+  //
+  // Focus is checked where it LANDS (focusin), not where it left (blur). The
+  // popover is portaled to the end of <body>, so Tab past Delete leaves the
+  // document with no relatedTarget at all; when the next Tab brings focus
+  // back in at the top of the page, the popover would otherwise still be
+  // open over the sidebar rows it covers.
   useEffect(() => {
     if (!open) return;
+    const outside = (target: EventTarget | null): boolean =>
+      !(target instanceof Node && popoverRef.current?.contains(target) === true);
     const onPointerDown = (event: PointerEvent): void => {
-      const target = event.target as Node | null;
-      if (target !== null && popoverRef.current?.contains(target) === true) return;
-      close();
+      if (outside(event.target)) close();
+    };
+    const onFocusIn = (event: FocusEvent): void => {
+      if (outside(event.target)) close();
     };
     const onKey = (event: KeyboardEvent): void => {
       if (event.key === "Escape") {
         event.stopPropagation();
-        close();
+        closeAndRefocusAnchor();
       }
     };
     const onScrollOrResize = (): void => close();
     document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("focusin", onFocusIn, true);
     document.addEventListener("keydown", onKey, true);
     window.addEventListener("scroll", onScrollOrResize, true);
     window.addEventListener("resize", onScrollOrResize);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("focusin", onFocusIn, true);
       document.removeEventListener("keydown", onKey, true);
       window.removeEventListener("scroll", onScrollOrResize, true);
       window.removeEventListener("resize", onScrollOrResize);
     };
-  }, [open, close]);
+  }, [open, close, closeAndRefocusAnchor]);
 
   const confirm = useCallback(
     (event: ReactMouseEvent) => {
@@ -191,9 +211,9 @@ export function DeleteConfirm({
     (event: ReactMouseEvent) => {
       event.preventDefault();
       event.stopPropagation();
-      close();
+      closeAndRefocusAnchor();
     },
-    [close]
+    [closeAndRefocusAnchor]
   );
 
   return (

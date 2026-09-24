@@ -6,6 +6,7 @@
 import { useEffect, useRef, type MouseEvent as ReactMouseEvent, type ReactElement, type RefObject } from "react";
 import type { SizzleProject } from "@pwrsnap/shared";
 import { formatProjectDate, isDifferentProjectDate } from "./sizzle-helpers";
+import { closeWhenFocusLeaves } from "../shared/close-when-focus-leaves";
 
 export type ProjectRailModel = {
   recents: SizzleProject[];
@@ -238,6 +239,7 @@ export function SizzleProjectContextMenu({
       tabIndex={-1}
       style={{ left: `${menu.x}px`, top: `${menu.y}px` }}
       onContextMenu={(event) => event.preventDefault()}
+      onBlur={closeWhenFocusLeaves(onClose)}
       aria-label={`${menu.projectName} actions`}
     >
       <button

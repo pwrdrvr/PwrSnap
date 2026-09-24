@@ -18,8 +18,9 @@
 
 .szt__bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 6px 10px;
   min-height: 28px;
 }
 .szt__eyebrow {
@@ -54,7 +55,13 @@
   padding: 2px 4px;
   background: var(--bg-panel);
 }
+/* The zoom group wraps onto its own row, right-aligned, when the editor
+   column is too narrow for the bar (the 880px window minimum with chat
+   open leaves it ~430px). Unwrapped, the group ran past the column and
+   under the chat pane: the buttons were Tab stops nobody could see. */
 .szt__zoom {
+  flex: none;
+  margin-left: auto;
   display: inline-flex;
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
@@ -81,7 +88,7 @@
   color: var(--text-secondary);
 }
 .szt__zoom button:focus-visible {
-  outline: 2px solid var(--accent-border);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 
@@ -201,6 +208,24 @@
 .szt__region.is-est {
   color: var(--text-muted);
 }
+/* Regions fill their lane edge to edge, and `.szt__lanes` clips an
+   outset ring at the lane ends, so the ring is inset. It is an ::after,
+   not an outline: the transition pills (z-index 4) sit across every
+   shared edge and hid both ends of an inset outline. The region is not
+   a stacking context, so the ::after's z-index 5 lands above the pills
+   and the boundaries without lifting the region's own label over them. */
+.szt__region:focus-visible {
+  outline: none;
+}
+.szt__region:focus-visible::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  border: 2px solid var(--focus-ring);
+  border-radius: 3px;
+  pointer-events: none;
+}
 .szt__region .szt__dim {
   color: var(--text-muted);
   font-weight: 500;
@@ -277,8 +302,25 @@
   z-index: 2;
 }
 .szt__clip:focus-visible {
-  outline: 2px solid var(--accent-border);
-  outline-offset: 1px;
+  /* The ring is the ::after below, not an outline. Inset, because clips
+     abut their neighbours, which painted over an outset ring, and
+     `.szt__lanes` clips the first and last at the lane ends. An inset
+     outline did not work either: the poster (`.szt__thumb`) is
+     positioned, so it painted over the clip's own outline, taking the
+     left edge and a third of the top and bottom. A positioned ::after
+     stacks above it. Lifted over a selected neighbour, whose 4px halo
+     spreads onto this clip. */
+  outline: none;
+  z-index: 3;
+}
+.szt__clip:focus-visible::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border: 2px solid var(--focus-ring);
+  border-radius: 4px;
+  pointer-events: none;
 }
 /* bare tick — the clip is too narrow for any picture */
 .szt__clip.is-tick {
@@ -301,6 +343,14 @@
   background: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-soft), 0 0 10px var(--accent);
 }
+/* A 2px tick has no inside to ring, so it rings 1px out. It rests at 0.6
+   or 0.85, and opacity fades an element's outline with it. */
+.szt__clip.is-tick:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+  opacity: 1;
+}
+.szt__clip.is-tick:focus-visible::after { content: none; }
 /* Poster: a fixed slice of the clip so the label keeps room (38 %, 40–96 px);
    a thumb-only clip (24–96 px wide, no label) fills the whole segment. */
 .szt__thumb {
@@ -577,7 +627,7 @@
   text-underline-offset: 3px;
 }
 .szt__word:focus-visible {
-  outline: 2px solid var(--accent-border);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
   border-radius: 3px;
 }
@@ -654,7 +704,7 @@
   background: var(--accent-soft);
 }
 .szt__ribbon-cta:focus-visible {
-  outline: 2px solid var(--accent-border);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 

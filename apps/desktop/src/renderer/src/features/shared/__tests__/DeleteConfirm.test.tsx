@@ -6,8 +6,10 @@
 //     behind it (otherwise the click would also open Focus on the very
 //     capture being trashed).
 //   • Confirm fires onConfirm exactly once and closes.
-//   • Cancel, Escape, and an outside pointer-down all close WITHOUT firing
-//     onConfirm.
+//   • Cancel, Escape, an outside pointer-down, and focus landing outside
+//     all close WITHOUT firing onConfirm.
+//   • A keyboard dismissal (Escape, Cancel) hands focus back to the trigger
+//     instead of dropping it to <body> with the unmounted popover.
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -160,6 +162,66 @@ describe("DeleteConfirm", () => {
     });
     expect(onConfirm).not.toHaveBeenCalled();
     expect(popover()).toBeNull();
+  });
+
+  test("focus landing outside the popover closes it", async () => {
+    // The popover is portaled to the end of <body>, so Tab past its last
+    // button leaves the document with no relatedTarget; focus comes back
+    // in somewhere else entirely. Only a focusin check sees that.
+    const { onConfirm } = await renderConfirm();
+    await clickTrigger();
+    const elsewhere = document.createElement("button");
+    document.body.prepend(elsewhere);
+    await act(async () => {
+      elsewhere.focus();
+      await Promise.resolve();
+    });
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(popover()).toBeNull();
+  });
+
+  test("focus moving between the popover's own controls keeps it open", async () => {
+    await renderConfirm({ withDontAsk: true });
+    await clickTrigger();
+    const checkbox = popover()?.querySelector<HTMLInputElement>("input[type=checkbox]");
+    const cancelBtn = popover()?.querySelector<HTMLButtonElement>(
+      ".ps-confirm__btn:not(.is-danger)"
+    );
+    await act(async () => {
+      checkbox?.focus();
+      cancelBtn?.focus();
+      await Promise.resolve();
+    });
+    expect(popover()).not.toBeNull();
+    expect(document.activeElement).toBe(cancelBtn);
+  });
+
+  test("Escape hands focus back to the trigger", async () => {
+    await renderConfirm();
+    await clickTrigger();
+    expect(popover()?.contains(document.activeElement)).toBe(true);
+    await act(async () => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+      );
+      await Promise.resolve();
+    });
+    expect(popover()).toBeNull();
+    expect(document.activeElement).toBe(trigger());
+  });
+
+  test("Cancel hands focus back to the trigger", async () => {
+    await renderConfirm();
+    await clickTrigger();
+    const cancelBtn = popover()?.querySelector<HTMLButtonElement>(
+      ".ps-confirm__btn:not(.is-danger)"
+    );
+    await act(async () => {
+      cancelBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(popover()).toBeNull();
+    expect(document.activeElement).toBe(trigger());
   });
 
   test("enabled=false skips the popover and confirms immediately (still no bubble)", async () => {

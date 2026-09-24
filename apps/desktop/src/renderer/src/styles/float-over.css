@@ -190,6 +190,20 @@
   opacity: 0; transition: opacity 140ms var(--ease-out);
 }
 .fo__preview:hover .fo__preview-actions { opacity: 1; }
+/* The keyboard reaches these buttons too, and at opacity 0 a focused one
+   drew nothing: opacity fades an element's outline with it. */
+.fo__preview-actions:has(:focus-visible) { opacity: 1; }
+/* Over the capture, so the ring carries its own 1px `--bg-app` halo, as
+   `.psl__stage-nav` does. */
+.fo__hover-btn:focus-visible { box-shadow: 0 0 0 4px var(--bg-app); }
+/* The video's native controls make it a Tab stop, and `.fo__preview`
+   clips at its rounded border, which cut an outset ring away entirely.
+   Inset, with the preview's inner radius (8px less its 1px border) so
+   the clip leaves the ring's corners alone. */
+.fo__preview video:focus-visible {
+  outline-offset: -2px;
+  border-radius: 7px;
+}
 .fo__preview-actions-l, .fo__preview-actions-r { display: flex; gap: 4px; }
 .fo__hover-btn {
   height: 24px; padding: 0 8px;
@@ -501,6 +515,14 @@
 .fo__desc::placeholder { color: var(--text-subtle); }
 .fo__title:focus,
 .fo__desc:focus { border-color: var(--accent-border); background: color-mix(in srgb, var(--accent) 4%, transparent); }
+/* That border tint measures 2.2:1 and the 4% fill is fainter still. Both
+   stay, and the field draws the house ring too. */
+.fo__title:focus-visible,
+.fo__desc:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+  scroll-margin: 4px;
+}
 .fo__title.is-suggested,
 .fo__desc.is-suggested {
   color: var(--text-secondary);
@@ -608,6 +630,14 @@
   padding: 0 4px;
 }
 .fo__tag-input::placeholder { color: var(--text-subtle); }
+/* No border, fill or wrapper box: focused, the field showed only its
+   caret. It rings itself, 1px out. */
+.fo__tag-input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+  border-radius: var(--radius-sm);
+  scroll-margin: 4px;
+}
 .fo__tag-input:disabled {
   cursor: wait;
   opacity: 0.55;

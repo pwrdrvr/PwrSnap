@@ -600,7 +600,7 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
    so focus genuinely traverses this bar, and without a ring the user is
    activating a button they cannot see. */
 .region-hud button:focus-visible {
-  outline: 2px solid var(--accent-border);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 

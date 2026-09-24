@@ -2850,13 +2850,18 @@
      row, but allow horizontal overflow so the hover-pop panel can
      paint INTO the canvas area to the left of the rail. */
   overflow: visible;
-  /* ...and stack above what it paints into. The hover-pop panel's own
-     z-index (3, RightActivityBar.css) lands in `.psl`'s stacking
-     context BELOW the center pane's floating chrome — the Grid copy
-     palette, the edit toolbar and ←/→ (4), Focus's × (5). So a popped
-     rail over a narrow Grid had the palette drawn across its own copy
-     cards, 0% of them topmost. The rail is only popped because the user
-     asked for it; it wins. Still below the left-nav peek (30). */
+}
+/* ...and, while popped, stack above what it paints into. The hover-pop
+   panel's own z-index (3, RightActivityBar.css) lands in `.psl`'s
+   stacking context BELOW the center pane's floating chrome — the Grid
+   copy palette, the edit toolbar and ←/→ (4), Focus's × (5). So a popped
+   rail over a narrow Grid had the palette drawn across its own copy
+   cards, 0% of them topmost. The rail is only popped because the user
+   asked for it; it wins. Still below the left-nav peek (30).
+   Only while popped (`.rab__panel-wrap` exists only then): lifted all
+   the time, the 38px icon bar would also cover the edit toolbar's style
+   popover wherever the viewport clamp pushes it into the rail column. */
+.psl[data-right="collapsed"] .psl__right:has(.rab__panel-wrap) {
   position: relative;
   z-index: 6;
 }

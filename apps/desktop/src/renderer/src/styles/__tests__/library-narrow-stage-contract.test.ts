@@ -155,7 +155,11 @@ describe("collapsed left nav", () => {
 
 describe("popped rail stacking", () => {
   it("stacks above the center pane's floating chrome and below the left-nav peek", () => {
-    const rail = block('\\.psl\\[data-right="collapsed"\\] \\.psl__right');
+    // Only while popped: a lift on the idle 38px icon bar would cover the
+    // edit toolbar's style popover where it clamps into the rail column.
+    const rail = block(
+      '\\.psl\\[data-right="collapsed"\\] \\.psl__right:has\\(\\.rab__panel-wrap\\)'
+    );
     expect(rail).toMatch(/position\s*:\s*relative/);
     const railZ = zIndex(rail);
     for (const chrome of [

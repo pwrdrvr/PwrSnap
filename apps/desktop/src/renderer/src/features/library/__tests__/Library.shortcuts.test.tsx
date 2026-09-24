@@ -793,4 +793,78 @@ describe("Library grid selection does not reflow the inspector column", () => {
       expect(psl()?.getAttribute("data-right")).toBe("collapsed");
     });
   });
+
+  async function openView(label: "Reel" | "Grid"): Promise<void> {
+    const button = [
+      ...(container?.querySelectorAll<HTMLButtonElement>(".psl__view-btn") ?? [])
+    ].find((candidate) => candidate.textContent?.includes(label));
+    await act(async () => {
+      button?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  test("a peek opened while auto-collapsed does not outlive the nav re-pinning", async () => {
+    // 900px: Reel auto-collapses the nav, Grid keeps it pinned — so a view
+    // switch is a re-pin without a resize.
+    await atWidth(900, async () => {
+      await renderLibrary(true);
+      await openReel();
+      await act(async () => {
+        spineButton()?.click();
+        await Promise.resolve();
+      });
+      expect(psl()?.getAttribute("data-left")).toBe("peek");
+      await openView("Grid");
+      expect(psl()?.getAttribute("data-left")).toBe("pinned");
+      await openView("Reel");
+      expect(psl()?.getAttribute("data-left")).toBe("collapsed");
+    });
+  });
+
+  test("a keyboard-opened peek closes when focus leaves the nav", async () => {
+    await atWidth(480, async () => {
+      await renderLibrary(true);
+      const outside = document.createElement("button");
+      container?.append(outside);
+      await act(async () => {
+        spineButton()?.focus();
+        spineButton()?.click();
+        await Promise.resolve();
+      });
+      expect(psl()?.getAttribute("data-left")).toBe("peek");
+      // Into the panel is still inside: the peek stays.
+      await act(async () => {
+        container?.querySelector<HTMLButtonElement>(".psl__left .psl__nav")?.focus();
+        vi.advanceTimersByTime(250);
+      });
+      expect(psl()?.getAttribute("data-left")).toBe("peek");
+      await act(async () => {
+        outside.focus();
+        vi.advanceTimersByTime(250);
+      });
+      expect(psl()?.getAttribute("data-left")).toBe("collapsed");
+    });
+  });
+
+  test("the Windows in-toolbar menu reserve does not move the column breakpoints", async () => {
+    // 1280 − the 300px menu reserve is the toolbar's `narrow` tier, which
+    // would park Reel's nav; the columns below the toolbar never lost it.
+    const api = window.pwrsnapApi;
+    Object.defineProperty(window, "pwrsnapApi", {
+      configurable: true,
+      value: { ...api, platform: "win32" }
+    });
+    try {
+      await atWidth(1280, async () => {
+        await renderLibrary(true);
+        await openReel();
+        expect(psl()?.getAttribute("data-left")).toBe("pinned");
+        expect(psl()?.getAttribute("data-right")).toBe("pinned");
+      });
+    } finally {
+      Object.defineProperty(window, "pwrsnapApi", { configurable: true, value: api });
+    }
+  });
 });

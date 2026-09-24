@@ -1464,6 +1464,14 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   // (220) + a pinned rail (360) would otherwise leave the Stage near-zero
   // width. See `railEffectivePinned`.
   const isWindowVeryNarrow = isToolbarMinimal;
+  // Column-shedding added for the 480px minimum reads the SAME breakpoints
+  // against the content width alone. The Windows/Linux in-toolbar menu
+  // takes no width from the columns, so the toolbar tier would have parked
+  // Reel's nav at any window up to 1324px there.
+  const layoutTierRank = TOOLBAR_TIER_RANK[useToolbarTier({ for: "layout" })];
+  const isLayoutNarrow = layoutTierRank >= TOOLBAR_TIER_RANK.narrow;
+  const isLayoutSmall = layoutTierRank >= TOOLBAR_TIER_RANK.small;
+  const isLayoutVeryNarrow = layoutTierRank >= TOOLBAR_TIER_RANK.minimal;
 
   // Development instances identify their checkout branch in the footer;
   // packaged builds keep showing the app version. Both are stable at runtime,
@@ -2356,7 +2364,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
     rightPinned &&
     !(
       (view.kind === "grid" && isToolbarNarrow) ||
-      (view.kind === "reel" && isToolbarSmall) ||
+      (view.kind === "reel" && isLayoutSmall) ||
       isWindowVeryNarrow
     );
   // The left filter nav yields to its 36px spine (hover still peeks it)
@@ -2373,9 +2381,31 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   //     583px tall in a 394px pane.
   //   • Focus already hides the nav outright (CSS keyed on data-mode).
   const leftAutoCollapsed =
-    (view.kind === "reel" && isToolbarNarrow) ||
-    (view.kind === "grid" && isWindowVeryNarrow);
+    (view.kind === "reel" && isLayoutNarrow) ||
+    (view.kind === "grid" && isLayoutVeryNarrow);
   const leftEffectivePinned = leftPinned && !leftAutoCollapsed;
+  // A peek means nothing once the nav is pinned again, and the aside's
+  // mouseleave only hides an UNpinned nav — so a peek opened while
+  // auto-collapsed survived the widen and re-opened, unhovered, over the
+  // content on the next narrow. Drop it whenever the nav re-pins.
+  useEffect(() => {
+    if (leftEffectivePinned) setLeftRevealed(false);
+  }, [leftEffectivePinned]);
+  // The spine's "Show sidebar" can be pressed from the keyboard, and a
+  // peek otherwise closes only on mouseleave. Close it when focus leaves
+  // the spine + panel for good — unless the pointer is still over them,
+  // where mouseleave remains the authority. (Tracked from the same
+  // enter/leave handlers rather than `:hover`, which jsdom mis-reports.)
+  const leftPointerOverRef = useRef(false);
+  const hideLeftOnFocusExit = useCallback(
+    (event: React.FocusEvent<HTMLElement>): void => {
+      if (leftEffectivePinned || leftPointerOverRef.current) return;
+      const next = event.relatedTarget;
+      if (next instanceof Element && next.closest(".psl__left, .psl__left-spine") !== null) return;
+      hideLeft();
+    },
+    [leftEffectivePinned, hideLeft]
+  );
   // Grid rail occupancy is independent of selection so clicking a tile
   // cannot reflow the virtualized grid under the cursor. Use the user's
   // pin intent (`rightPinned`), not `railEffectivePinned`. The latter is
@@ -4366,8 +4396,15 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
       {!leftEffectivePinned && (
         <div
           className="psl__left-spine"
-          onMouseEnter={revealLeft}
-          onMouseLeave={hideLeft}
+          onMouseEnter={() => {
+            leftPointerOverRef.current = true;
+            revealLeft();
+          }}
+          onMouseLeave={() => {
+            leftPointerOverRef.current = false;
+            hideLeft();
+          }}
+          onBlur={hideLeftOnFocusExit}
         >
           {/* When the window is what collapsed the nav, the user's pin is
               already set — pinning again would do nothing visible — so the
@@ -4389,11 +4426,14 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
       <aside
         className="psl__left"
         onMouseEnter={() => {
+          leftPointerOverRef.current = true;
           if (!leftEffectivePinned) revealLeft();
         }}
         onMouseLeave={() => {
+          leftPointerOverRef.current = false;
           if (!leftEffectivePinned) hideLeft();
         }}
+        onBlur={hideLeftOnFocusExit}
       >
         <div className="psl__left-section psl__left-section--top">
           <span>Library</span>
@@ -4404,7 +4444,9 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
               spine button at `.psl__left-spine` still surfaces when
               the panel is collapsed entirely; both the chip and the
               spine route through `setLeftPinned` so all three entry
-              points stay in sync. */}
+              points stay in sync — except while the window has
+              auto-collapsed the nav, when the pin is already set and
+              the spine only peeks (`revealLeft`). */}
         </div>
         {/* LIBRARY = SCOPE. Radio semantics, exactly one active. */}
         <button
@@ -5525,12 +5567,11 @@ const TOOLBAR_BREAKPOINTS = [1024, 960, 840, 720, 640, 560] as const;
  *  `menuBarIsInToolbar`. */
 const IN_TOOLBAR_MENU_BAR_RESERVE_PX = 300;
 
-function toolbarTierForWidth(width: number, platform: string | undefined): ToolbarTier {
+function toolbarTierForWidth(width: number, reservePx: number): ToolbarTier {
   // Treat that fixed menu as already-spent width; otherwise a 1218px VM
   // viewport selects the wide tier even though the controls have only about
   // 918px available and visibly crowd one another.
-  const availableWidth =
-    width - (menuBarIsInToolbar(platform) ? IN_TOOLBAR_MENU_BAR_RESERVE_PX : 0);
+  const availableWidth = width - reservePx;
   if (availableWidth <= 560) return "tiny";
   if (availableWidth <= 640) return "minimal";
   if (availableWidth <= 720) return "small";
@@ -5540,32 +5581,41 @@ function toolbarTierForWidth(width: number, platform: string | undefined): Toolb
   return "wide";
 }
 
+function inToolbarMenuReservePx(): number {
+  return menuBarIsInToolbar(window.pwrsnapApi?.platform) ? IN_TOOLBAR_MENU_BAR_RESERVE_PX : 0;
+}
+
 /** Atomic responsive-toolbar tier. The renderer viewport is the Library
  *  content width (DevTools-docked included). All breakpoint listeners read
  *  the same live width and commit one tier, so a fast drag can never render
- *  a mixture such as `small` capture buttons with pre-`narrow` search. */
-function useToolbarTier(): ToolbarTier {
+ *  a mixture such as `small` capture buttons with pre-`narrow` search.
+ *
+ *  `for: "layout"` drops the in-toolbar menu reserve: that menu spends
+ *  width in the top bar row only, so charging it to the columns below would
+ *  shift every column breakpoint 300px wider on Windows and Linux. */
+function useToolbarTier(options: { for: "toolbar" | "layout" } = { for: "toolbar" }): ToolbarTier {
+  const chargeMenu = options.for === "toolbar";
   const [tier, setTier] = useState<ToolbarTier>(() =>
     typeof window === "undefined" || typeof window.matchMedia !== "function"
       ? "wide"
-      : toolbarTierForWidth(window.innerWidth, window.pwrsnapApi?.platform)
+      : toolbarTierForWidth(window.innerWidth, chargeMenu ? inToolbarMenuReservePx() : 0)
   );
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
       return;
     }
-    const platform = window.pwrsnapApi?.platform;
-    const responsiveReserve = menuBarIsInToolbar(platform) ? IN_TOOLBAR_MENU_BAR_RESERVE_PX : 0;
+    const responsiveReserve = chargeMenu ? inToolbarMenuReservePx() : 0;
     const queries = TOOLBAR_BREAKPOINTS.map((width) =>
       window.matchMedia(`(max-width: ${width + responsiveReserve}px)`)
     );
-    const onChange = (): void => setTier(toolbarTierForWidth(window.innerWidth, platform));
+    const onChange = (): void =>
+      setTier(toolbarTierForWidth(window.innerWidth, responsiveReserve));
     onChange();
     for (const query of queries) query.addEventListener("change", onChange);
     return () => {
       for (const query of queries) query.removeEventListener("change", onChange);
     };
-  }, []);
+  }, [chargeMenu]);
   return tier;
 }
 

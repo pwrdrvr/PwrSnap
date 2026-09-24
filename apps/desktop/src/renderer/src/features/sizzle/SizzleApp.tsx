@@ -24,7 +24,13 @@ import {
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import { CapturePicker } from "./CapturePicker";
-import { ChatResizer, getSavedChatWidth, setSavedChatWidth } from "./ChatResizer";
+import {
+  ChatResizer,
+  effectiveChatWidth,
+  getSavedChatWidth,
+  setSavedChatWidth,
+  useChatWidthCap
+} from "./ChatResizer";
 import { Editor } from "./Editor";
 import {
   PROJECT_CONTEXT_MENU_HEIGHT,
@@ -56,7 +62,10 @@ export { resetSizzleChatWidthForTests } from "./ChatResizer";
  *  guessed "roughly 480"; the inspector is a bottom DRAWER (stacked, not
  *  beside the chat), so the binding constraint is its widest row (type
  *  select + duration, ~300 px) — 360 keeps the default 400 px rail whole
- *  and folds only a deliberately narrowed one (the resizer floor is 320). */
+ *  and folds only a deliberately narrowed one (the resizer floor is 320).
+ *  The editor's floor never forces a fold on the minimum window: it caps
+ *  the rail at 400 there. Only a workspace under 840 px (a zoomed-in page)
+ *  caps it below 360. */
 export const RAIL_NARROW_PX = 360;
 
 type PickerTarget =
@@ -126,8 +135,13 @@ export function SizzleApp({
   const railRef = useRef<HTMLElement | null>(null);
   const railCrumbRef = useRef<HTMLButtonElement | null>(null);
   // Chat pane width — drag the divider; module-scoped so it survives
-  // remounts within a session (like EditToolbar's position).
+  // remounts within a session (like EditToolbar's position). This is the
+  // user's PREFERENCE; what the rail paints is `railWidth` below, capped so
+  // the editor keeps its floor on a narrow window.
   const [chatWidth, setChatWidth] = useState<number>(() => getSavedChatWidth());
+  const [workspace, setWorkspace] = useState<HTMLDivElement | null>(null);
+  const railMax = useChatWidthCap(workspace);
+  const railWidth = effectiveChatWidth(chatWidth, railMax);
   const [projectContextMenu, setProjectContextMenu] =
     useState<ProjectContextMenuState | null>(null);
 
@@ -227,7 +241,9 @@ export function SizzleApp({
 
   const inspectorOpen = selectedClipId !== null || selectedSceneId !== null;
   // Below RAIL_NARROW_PX an open inspector folds the chat to a one-line bar.
-  const chatFolded = inspectorOpen && chatWidth < RAIL_NARROW_PX;
+  // The painted width decides, not the preference: it is what the chat and
+  // the inspector actually have to share.
+  const chatFolded = inspectorOpen && railWidth < RAIL_NARROW_PX;
   // The inspector is the rail's only pane — it fills it instead of sitting
   // as a content-sized drawer under an empty space.
   const inspectorOnly = inspectorOpen && (!showChat || chatFolded);
@@ -336,7 +352,7 @@ export function SizzleApp({
         {active === null ? (
           <EmptyState />
         ) : (
-          <div className="szl__workspace">
+          <div className="szl__workspace" ref={setWorkspace}>
             <Editor
               project={active}
               captures={captures}
@@ -374,10 +390,10 @@ export function SizzleApp({
               // the rail up even with the chat hidden.
               <aside
                 className={"szl__chat" + (inspectorOnly ? " is-inspector-only" : "")}
-                style={{ flexBasis: chatWidth }}
+                style={{ flexBasis: railWidth }}
                 data-testid="sizzle-rail"
               >
-                <ChatResizer width={chatWidth} onResize={setChatWidth} />
+                <ChatResizer width={railWidth} max={railMax} onResize={setChatWidth} />
                 {showChat ? (
                   <>
                     {chatFolded ? (

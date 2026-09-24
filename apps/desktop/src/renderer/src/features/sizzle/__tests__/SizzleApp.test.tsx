@@ -15,6 +15,15 @@ import {
   formatTranscriptPhraseOptionLabel,
   resetSizzleChatWidthForTests
 } from "../SizzleApp";
+import {
+  CHAT_WIDTH_MAX,
+  CHAT_WIDTH_MIN,
+  EDITOR_MIN_WIDTH,
+  chatWidthCap,
+  effectiveChatWidth,
+  getSavedChatWidth,
+  setSavedChatWidth
+} from "../ChatResizer";
 
 // The sequence preview draws its waveform with wavesurfer.js, which needs
 // a real canvas + Web Audio. jsdom has neither, and we don't unit-test the
@@ -292,6 +301,65 @@ async function selectClip(el: HTMLElement, beatId: string): Promise<void> {
   await act(async () => {
     clip.click();
   });
+}
+
+/**
+ * jsdom has no layout, so `.szl__workspace` measures 0 and the rail is never
+ * capped. This gives the workspace a width, and installs a ResizeObserver
+ * whose workspace callbacks `resize` fires the way a window resize would.
+ * Other observers (the timeline's) are registered but never fired.
+ */
+function fakeWorkspaceWidth(initial: number): {
+  resize: (next: number) => Promise<void>;
+  resizeOutsideAct: (next: number) => void;
+  restore: () => void;
+} {
+  let width = initial;
+  const clientWidth = Object.getOwnPropertyDescriptor(Element.prototype, "clientWidth")!;
+  Object.defineProperty(Element.prototype, "clientWidth", {
+    configurable: true,
+    get(this: Element): number {
+      return this.classList.contains("szl__workspace") ? width : (clientWidth.get!.call(this) as number);
+    }
+  });
+  type Watch = { target: Element; owner: object; fire: () => void };
+  const watches = new Set<Watch>();
+  class FakeResizeObserver {
+    readonly #callback: ResizeObserverCallback;
+    constructor(callback: ResizeObserverCallback) {
+      this.#callback = callback;
+    }
+    observe(target: Element): void {
+      watches.add({ target, owner: this, fire: () => this.#callback([], this as unknown as ResizeObserver) });
+    }
+    unobserve(target: Element): void {
+      for (const w of watches) if (w.owner === this && w.target === target) watches.delete(w);
+    }
+    disconnect(): void {
+      for (const w of watches) if (w.owner === this) watches.delete(w);
+    }
+  }
+  const globals = globalThis as unknown as { ResizeObserver?: unknown };
+  const realResizeObserver = globals.ResizeObserver;
+  globals.ResizeObserver = FakeResizeObserver;
+  const fire = (): void => {
+    for (const w of watches) if (w.target.classList.contains("szl__workspace")) w.fire();
+  };
+  return {
+    resize: async (next) => {
+      width = next;
+      await act(async () => fire());
+    },
+    resizeOutsideAct: (next) => {
+      width = next;
+      fire();
+    },
+    restore: () => {
+      Object.defineProperty(Element.prototype, "clientWidth", clientWidth);
+      if (realResizeObserver === undefined) delete globals.ResizeObserver;
+      else globals.ResizeObserver = realResizeObserver;
+    }
+  };
 }
 
 /** Which timing the inspector shows for the selected clip ("pinned" = clip 0). */
@@ -1388,6 +1456,144 @@ describe("SizzleApp shell layout", () => {
     resetSizzleChatWidthForTests();
   });
 
+  test("the rail cap leaves the editor EDITOR_MIN_WIDTH, inside the resizer's 320–720", () => {
+    // Not measured yet (or no layout): only the resizer's own max applies.
+    expect(chatWidthCap(null)).toBe(CHAT_WIDTH_MAX);
+    // The minimum window: the default rail is exactly what fits.
+    expect(chatWidthCap(880)).toBe(400);
+    expect(chatWidthCap(1100)).toBe(620);
+    expect(chatWidthCap(1600)).toBe(CHAT_WIDTH_MAX);
+    // Too narrow for both floors (a zoomed-in page): the rail keeps its own.
+    expect(chatWidthCap(700)).toBe(CHAT_WIDTH_MIN);
+    expect(effectiveChatWidth(700, chatWidthCap(880))).toBe(400);
+    expect(effectiveChatWidth(350, chatWidthCap(880))).toBe(350);
+    expect(effectiveChatWidth(700, chatWidthCap(null))).toBe(700);
+    expect(effectiveChatWidth(700, chatWidthCap(700))).toBe(CHAT_WIDTH_MIN);
+  });
+
+  test("on the minimum window a drag stops where the editor keeps EDITOR_MIN_WIDTH", async () => {
+    resetSizzleChatWidthForTests();
+    const workspace = fakeWorkspaceWidth(880);
+    try {
+      const { el } = await renderApp(project());
+      const chat = el.querySelector<HTMLElement>(".szl__chat")!;
+      const grip = el.querySelector<HTMLElement>('[data-testid="sizzle-chat-resizer"]')!;
+      grip.setPointerCapture = () => undefined;
+      grip.releasePointerCapture = () => undefined;
+      const pointer = (type: string, clientX: number): void => {
+        grip.dispatchEvent(
+          new MouseEvent(type, { bubbles: true, clientX, buttons: 1, button: 0 }) as unknown as PointerEvent
+        );
+      };
+      expect(chat.style.flexBasis).toBe("400px");
+      expect(grip.getAttribute("aria-valuemax")).toBe("400");
+      await act(async () => {
+        pointer("pointerdown", 1000);
+        pointer("pointermove", 200); // as far left as the pointer goes
+      });
+      expect(chat.style.flexBasis).toBe("400px");
+      expect(880 - Number.parseFloat(chat.style.flexBasis)).toBe(EDITOR_MIN_WIDTH);
+      // Back the other way, the handle follows the pointer from where it is.
+      await act(async () => {
+        pointer("pointermove", 1050);
+        pointer("pointerup", 1050);
+      });
+      expect(chat.style.flexBasis).toBe("350px");
+      expect(grip.getAttribute("aria-valuenow")).toBe("350");
+    } finally {
+      workspace.restore();
+      resetSizzleChatWidthForTests();
+    }
+  });
+
+  test("a narrower window caps the rail without forgetting the saved width; widening grows it back", async () => {
+    setSavedChatWidth(700);
+    const workspace = fakeWorkspaceWidth(1400);
+    try {
+      const { el } = await renderApp(project());
+      const chat = el.querySelector<HTMLElement>(".szl__chat")!;
+      const grip = el.querySelector<HTMLElement>('[data-testid="sizzle-chat-resizer"]')!;
+      expect(chat.style.flexBasis).toBe("700px");
+      expect(grip.getAttribute("aria-valuemax")).toBe(String(CHAT_WIDTH_MAX));
+      await workspace.resize(880);
+      expect(chat.style.flexBasis).toBe("400px");
+      expect(grip.getAttribute("aria-valuenow")).toBe("400");
+      expect(grip.getAttribute("aria-valuemax")).toBe("400");
+      expect(getSavedChatWidth()).toBe(700);
+      await workspace.resize(1100);
+      expect(chat.style.flexBasis).toBe("620px");
+      await workspace.resize(1400);
+      expect(chat.style.flexBasis).toBe("700px");
+      expect(getSavedChatWidth()).toBe(700);
+    } finally {
+      workspace.restore();
+      resetSizzleChatWidthForTests();
+    }
+  });
+
+  test("a window resize re-caps the rail before the frame paints, not a task later", async () => {
+    setSavedChatWidth(700);
+    const workspace = fakeWorkspaceWidth(1400);
+    const env = globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean };
+    try {
+      const { el } = await renderApp(project());
+      const chat = el.querySelector<HTMLElement>(".szl__chat")!;
+      expect(chat.style.flexBasis).toBe("700px");
+      // As in the app: an observer callback, outside act. What the DOM holds
+      // when it returns is what the browser paints. A plain setState would
+      // still hold 700px here and paint one frame of a 180px editor.
+      env.IS_REACT_ACT_ENVIRONMENT = false;
+      workspace.resizeOutsideAct(880);
+      expect(chat.style.flexBasis).toBe("400px");
+    } finally {
+      env.IS_REACT_ACT_ENVIRONMENT = true;
+      workspace.restore();
+      resetSizzleChatWidthForTests();
+    }
+  });
+
+  test("pushing against the cap keeps the wider saved width; a drag inside it replaces it", async () => {
+    setSavedChatWidth(700);
+    const workspace = fakeWorkspaceWidth(880);
+    try {
+      const { el } = await renderApp(project());
+      const chat = el.querySelector<HTMLElement>(".szl__chat")!;
+      const grip = el.querySelector<HTMLElement>('[data-testid="sizzle-chat-resizer"]')!;
+      grip.setPointerCapture = () => undefined;
+      grip.releasePointerCapture = () => undefined;
+      const pointer = (type: string, clientX: number): void => {
+        grip.dispatchEvent(
+          new MouseEvent(type, { bubbles: true, clientX, buttons: 1, button: 0 }) as unknown as PointerEvent
+        );
+      };
+      expect(chat.style.flexBasis).toBe("400px");
+      await act(async () => {
+        pointer("pointerdown", 1000);
+        pointer("pointermove", 800); // left, into the cap: the rail cannot move
+        pointer("pointerup", 800);
+      });
+      expect(chat.style.flexBasis).toBe("400px");
+      expect(getSavedChatWidth()).toBe(700);
+      await workspace.resize(1400);
+      expect(chat.style.flexBasis).toBe("700px");
+
+      // A drag that does move the rail is the user's new width, cap or no cap.
+      await workspace.resize(880);
+      await act(async () => {
+        pointer("pointerdown", 1000);
+        pointer("pointermove", 1040);
+        pointer("pointerup", 1040);
+      });
+      expect(chat.style.flexBasis).toBe("360px");
+      expect(getSavedChatWidth()).toBe(360);
+      await workspace.resize(1400);
+      expect(chat.style.flexBasis).toBe("360px");
+    } finally {
+      workspace.restore();
+      resetSizzleChatWidthForTests();
+    }
+  });
+
   test("reel settings hide behind a summary chip and disclose on click", async () => {
     const { el } = await renderApp(project({ voice: "onyx", resolution: "720p" }));
     const toggle = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-reel-settings-toggle"]')!;
@@ -2375,8 +2581,6 @@ describe("timeline drag — move / retime commits once", () => {
   });
 });
 
-import { setSavedChatWidth } from "../ChatResizer";
-
 describe("clip inspector (right-rail drawer)", () => {
   const autoBeat = (
     id: string,
@@ -2557,6 +2761,28 @@ describe("clip inspector (right-rail drawer)", () => {
       expect(el.querySelector(".szl__chat-pane.is-folded")).toBeNull();
       expect(el.querySelector('[data-testid="sizzle-rail"]')!.classList.contains("is-inspector-only")).toBe(false);
     } finally {
+      resetSizzleChatWidthForTests();
+    }
+  });
+
+  test("the fold follows the painted width: a rail capped below RAIL_NARROW_PX folds, and unfolds when it can widen", async () => {
+    resetSizzleChatWidthForTests();
+    // Too narrow for a 400px rail and the editor's floor (a zoomed-in page):
+    // the rail paints at 320 although the saved width is still 400.
+    const workspace = fakeWorkspaceWidth(800);
+    try {
+      const { el } = await renderApp(project({ scenes: [seq()] }));
+      expect(el.querySelector<HTMLElement>(".szl__chat")!.style.flexBasis).toBe("320px");
+      await selectClip(el, "bt_b");
+      expect(el.querySelector('[data-testid="sizzle-chat-folded"]')).not.toBeNull();
+      expect(el.querySelector('[data-testid="sizzle-rail"]')!.classList.contains("is-inspector-only")).toBe(true);
+      await workspace.resize(1000);
+      expect(el.querySelector<HTMLElement>(".szl__chat")!.style.flexBasis).toBe("400px");
+      expect(el.querySelector('[data-testid="sizzle-chat-folded"]')).toBeNull();
+      expect(el.querySelector('[data-testid="sizzle-rail"]')!.classList.contains("is-inspector-only")).toBe(false);
+      expect(getSavedChatWidth()).toBe(400);
+    } finally {
+      workspace.restore();
       resetSizzleChatWidthForTests();
     }
   });

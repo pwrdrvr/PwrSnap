@@ -1513,7 +1513,8 @@
 }
 
 /* The agent chat as a right rail next to the editor. Width is the
-   inline `flex-basis` (dragged via .szl__chat-resizer, 320–720px). */
+   inline `flex-basis` (dragged via .szl__chat-resizer, 320–720px), capped
+   in SizzleApp so the editor keeps EDITOR_MIN_WIDTH (480px) beside it. */
 .szl__chat {
   position: relative;
   flex: 0 0 400px;

@@ -30,11 +30,20 @@
   color: var(--text-secondary);
   white-space: nowrap;
 }
+/* On a narrow editor the zoom group wraps onto its own row (see
+   `.szt__zoom`). This is the fallback past that: when the meta alone is
+   wider than its line, which a wide chat pane can force, it truncates
+   instead of running out of the column. `overflow-x: clip` rather than
+   `hidden`: at `line-height: 1` a hidden box also cuts the descenders off
+   "clips" and "px/s". */
 .szt__meta {
   font: 500 11px/1 var(--font-mono);
   color: var(--text-muted);
   letter-spacing: 0.02em;
   white-space: nowrap;
+  min-width: 0;
+  overflow-x: clip;
+  text-overflow: ellipsis;
 }
 .szt__meta .szt__tilde {
   color: var(--warn-text);

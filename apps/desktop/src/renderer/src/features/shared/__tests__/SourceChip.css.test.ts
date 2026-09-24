@@ -102,11 +102,12 @@ describe("SourceChip.css", () => {
       `${suppressor!.selector} must outrank ${hudRing.selector}`
     ).toBe(true);
 
-    // And the ring the user actually sees is still drawn, on the group.
+    // And the ring the user actually sees is still drawn, on the group,
+    // in the house focus token (focus-ring-contract.test.ts).
     const groupRing = rules(chipCss).find((rule) =>
       rule.selector.includes(".ps-chip:has(> .ps-chip__body:focus-visible)")
     );
-    expect(groupRing?.body).toMatch(/outline\s*:\s*2px solid var\(--accent\)/);
+    expect(groupRing?.body).toMatch(/outline\s*:\s*2px solid var\(--focus-ring\)/);
     expect(outranks(groupRing!.selector, hudRing.selector)).toBe(true);
   });
 

@@ -146,7 +146,7 @@
 
 .ps-approval__btn:focus-visible,
 .ps-confirm-batch__btn:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 
@@ -238,7 +238,7 @@
 }
 
 .ps-airun-badge:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 

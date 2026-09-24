@@ -9,6 +9,7 @@
 //   • Escape closes (and stops propagating so the underlying
 //     selection isn't cleared by another Escape handler)
 //   • mousedown outside the menu closes
+//   • keyboard focus leaving the menu (Tab past the last row) closes
 //   • clicking an ENABLED item fires onItemClick with its id
 //   • clicking a DISABLED item does NOT fire onItemClick
 //   • separators render but aren't clickable
@@ -178,6 +179,69 @@ describe("LayerContextMenu — dismissal", () => {
     const { rootEl, onClose } = await renderMenu(SAMPLE_ITEMS);
     await act(async () => {
       rootEl.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  // Tab past the last row used to leave the menu open over the edit
+  // toolbar, hiding 50-100% of the rings focus walked onto next.
+  test("focus moving OUTSIDE the menu fires onClose", async () => {
+    const { rootEl, onClose } = await renderMenu(SAMPLE_ITEMS);
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    try {
+      await act(async () => {
+        rootEl.querySelector<HTMLButtonElement>("button[role='menuitem']")?.focus();
+      });
+      await act(async () => {
+        outside.focus();
+      });
+      expect(onClose).toHaveBeenCalledTimes(1);
+    } finally {
+      outside.remove();
+    }
+  });
+
+  // A menu that is last in the document loses focus to NOTHING when Tab
+  // passes its last row (no relatedTarget); the next Tab lands at the top
+  // of the page. The close waits for where focus lands.
+  test("focus leaving to nowhere, then landing outside, fires onClose", async () => {
+    const { rootEl, onClose } = await renderMenu(SAMPLE_ITEMS);
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    try {
+      const row = rootEl.querySelector<HTMLButtonElement>("button[role='menuitem']");
+      await act(async () => {
+        row?.focus();
+        row?.blur();
+      });
+      expect(onClose).not.toHaveBeenCalled();
+      await act(async () => {
+        outside.focus();
+      });
+      expect(onClose).toHaveBeenCalledTimes(1);
+    } finally {
+      outside.remove();
+    }
+  });
+
+  test("focus leaving to nowhere, then returning to a row, does NOT fire onClose", async () => {
+    const { rootEl, onClose } = await renderMenu(SAMPLE_ITEMS);
+    const rows = rootEl.querySelectorAll<HTMLButtonElement>("button[role='menuitem']");
+    await act(async () => {
+      rows[0]?.focus();
+      rows[0]?.blur();
+      rows[1]?.focus();
+    });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  test("focus moving BETWEEN rows does NOT fire onClose", async () => {
+    const { rootEl, onClose } = await renderMenu(SAMPLE_ITEMS);
+    const rows = rootEl.querySelectorAll<HTMLButtonElement>("button[role='menuitem']");
+    await act(async () => {
+      rows[0]?.focus();
+      rows[1]?.focus();
     });
     expect(onClose).not.toHaveBeenCalled();
   });

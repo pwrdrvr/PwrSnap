@@ -100,6 +100,13 @@
   text-decoration: underline;
   text-underline-offset: 3px;
 }
+/* The underline is also the hover paint, so focus draws the house ring
+   too: 2px off the text, as a borderless link does. */
+.pss__title-crumb-link:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
 .pss__title-crumb .here {
   color: var(--text-primary);
   text-transform: none;
@@ -194,6 +201,10 @@
   border-color: var(--accent-border);
   color: var(--accent-bright);
 }
+/* Rows stack flush, and each is positioned, so the row below paints over
+   a focused row's ring. When that row is the active one its opaque fill
+   hid the whole bottom edge. Lift the focused row. */
+.pss__sb-nav:focus-visible { z-index: 1; }
 
 /* Section row: caret gutter + label button, ported from PwrAgnt's settings
    nav. Every row reserves the gutter — caret button or spacer — so labels
@@ -245,6 +256,13 @@
 .pss__sb-caret:focus-visible {
   background: var(--bg-panel-hover);
   outline: none;
+}
+/* The hover tint alone does not say which control has focus. The ring is
+   inset because the label button sits flush against the caret and would
+   paint over an outset one. */
+.pss__sb-caret:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 /* Filled disclosure triangle: points right collapsed, down expanded. */
 .pss__sb-caret-mark {
@@ -314,6 +332,13 @@
   border-left-color: var(--accent-border);
   color: var(--text-primary);
   outline: none;
+}
+/* Focus was the hover paint: a 42% accent tick on the left rule. The ring
+   is inset because `.pss__sb-sublist-clip` clips its overflow. */
+.pss__sb-sub:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+  border-radius: var(--radius-sm);
 }
 .pss__sb-sub.is-active {
   border-left-color: var(--accent);
@@ -473,14 +498,17 @@ a.pss__top-btn[aria-disabled="true"]:hover {
 .pss__card-hdr:hover {
   background: var(--bg-panel-hover);
 }
-/* Keyboard focus, and where a sidebar jump link parks focus. Inset rather
-   than an outline because `.pss__card` clips its overflow — and on-brand
-   rather than the browser's default blue ring. */
+/* Keyboard focus, and where a sidebar jump link parks focus. The house
+   ring, inset because `.pss__card` clips its overflow. The radius follows
+   the card's inner corners (10px less its 1px border) so the clip does
+   not cut the ring's corners. */
 .pss__card-hdr:focus-visible {
-  outline: none;
-  box-shadow:
-    inset 0 0 0 1px var(--accent),
-    inset 0 0 0 4px var(--accent-shadow);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+  border-radius: 9px 9px 0 0;
+}
+.pss__card.is-collapsed .pss__card-hdr:focus-visible {
+  border-radius: 9px;
 }
 .pss__card-hdr-action {
   display: inline-flex;
@@ -542,7 +570,7 @@ a.pss__top-btn[aria-disabled="true"]:hover {
   text-decoration-color: currentColor;
 }
 .pss__text-link:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
   border-radius: 2px;
 }
@@ -638,6 +666,12 @@ a.pss__top-btn[aria-disabled="true"]:hover {
   color: var(--accent-bright);
   z-index: 1;
 }
+/* Segments overlap by 1px and each paints an opaque fill, so a focused
+   segment's ring disappeared under its neighbours (and under the lifted
+   active one). Lift the focused segment above both. */
+.pss__seg-btn:focus-visible {
+  z-index: 2;
+}
 
 .pss__update-channel {
   display: flex;
@@ -719,9 +753,9 @@ a.pss__top-btn[aria-disabled="true"]:hover {
    between tiles WITHOUT selecting. Without a focus ring distinct from
    `.is-selected` there is no way to see which slot Space would commit. */
 .pss__slot:focus-visible {
-  outline: none;
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-shadow);
 }
 .pss__slot.is-selected {
   background: var(--bg-row-active);
@@ -795,7 +829,7 @@ a.pss__top-btn[aria-disabled="true"]:hover {
 }
 .pss__slot-notes:focus-visible,
 .pss__update-notes:focus-visible {
-  outline: 2px solid var(--accent-bright);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
   border-radius: 3px;
   color: var(--accent);
@@ -942,6 +976,11 @@ a.pss__top-btn[aria-disabled="true"]:hover {
 .pss__prov-row:focus-visible {
   border-color: var(--accent-border);
   outline: none;
+}
+/* That tint is also the hover paint, and measures 2.2:1. */
+.pss__prov-row:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
 }
 .pss__prov-text {
   flex: 1;
@@ -1094,6 +1133,10 @@ a.pss__top-btn[aria-disabled="true"]:hover {
   outline: none;
   border-color: var(--accent-border);
 }
+.pss__acp-override-input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
 
 /* Codex discovery candidate cards. The path gets a dedicated full-width line so
    it never competes with the badges for space (that squeeze chopped the binary
@@ -1239,7 +1282,7 @@ a.pss__top-btn[aria-disabled="true"]:hover {
 }
 .pss__hotkey-retry:hover { border-color: var(--danger-text); }
 .pss__hotkey-retry:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 .pss__hotkey-retry:disabled {
@@ -1277,7 +1320,7 @@ a.pss__top-btn[aria-disabled="true"]:hover {
   cursor: pointer;
 }
 .pss__hk-capture-trigger:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 3px;
 }
 .pss__hk-capture-trigger:disabled,
@@ -1308,7 +1351,7 @@ a.pss__top-btn[aria-disabled="true"]:hover {
 }
 .pss__hk-capture-clear:focus-visible,
 .pss__hk-capture-cancel:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 .pss__hk-capture.is-recording {
@@ -1427,6 +1470,13 @@ a.pss__top-btn[aria-disabled="true"]:hover {
   width: 100%;
 }
 .pss__input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-shadow); }
+/* Fields draw the house ring like every other control. The 3px halo
+   would show through the ring's 1px gap, so the ring replaces it. */
+.pss__input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+  box-shadow: none;
+}
 
 /* select-like dropdown */
 .pss__select {
@@ -2300,6 +2350,13 @@ a.pss__top-btn[aria-disabled="true"]:hover {
   outline: none;
 }
 .pss__textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-shadow); }
+/* As `.pss__input:focus-visible`: the house ring replaces the halo. */
+.pss__textarea:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+  box-shadow: none;
+  scroll-margin: 4px;
+}
 .pss__chat-counter {
   display: flex;
   justify-content: space-between;
@@ -2488,6 +2545,10 @@ a.pss__top-btn[aria-disabled="true"]:hover {
   font: 500 10px/1 var(--font-sans);
 }
 .pss__auth-select:focus { border-color: var(--accent); }
+.pss__auth-select:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
 .pss__auth-node.is-permission {
   display: grid;
   grid-template-columns: 26px minmax(0, 1fr);

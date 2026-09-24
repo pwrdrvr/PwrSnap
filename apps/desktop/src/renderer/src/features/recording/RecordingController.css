@@ -165,7 +165,7 @@
   opacity: 0.65;
 }
 .rc__btn:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 .rc__btn--stop {
@@ -281,7 +281,7 @@
   cursor: default;
 }
 .rc-fail__btn:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 .rc-fail__btn--retry {

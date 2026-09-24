@@ -112,3 +112,82 @@ describe("TranscriptPhrasePicker", () => {
     expect(popover!.querySelectorAll('[role="option"]')).toHaveLength(PHRASES.length);
   });
 });
+
+// Before: a document keydown listener closed the picker on Escape and did not
+// stop the event, so from a phrase button the Sizzle editor's window listener
+// ALSO closed the inspector the picker lives in; focus fell to <body>; and
+// Tab past the last phrase left the popover open behind it.
+describe("TranscriptPhrasePicker — keyboard", () => {
+  async function openPicker(onSelect: (p: SizzleSequenceTranscriptPhrase) => void = () => undefined): Promise<HTMLButtonElement> {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        createElement(
+          "div",
+          null,
+          createElement(TranscriptPhrasePicker, { currentPhrase: "", phrases: PHRASES, onSelect }),
+          createElement("button", { id: "next-field", type: "button" }, "next inspector field")
+        )
+      );
+    });
+    const trigger = container.querySelector<HTMLButtonElement>(".szl__sequence-phrase-button")!;
+    trigger.focus();
+    await act(async () => trigger.click());
+    return trigger;
+  }
+
+  function popover(): HTMLElement | null {
+    return container?.querySelector<HTMLElement>(".szl__sequence-phrase-popover") ?? null;
+  }
+
+  async function pressEscape(): Promise<void> {
+    const target = (document.activeElement as HTMLElement | null) ?? document.body;
+    await act(async () => {
+      target.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    });
+  }
+
+  test("Escape from a phrase closes the picker only, and focus goes back to its button", async () => {
+    // The Sizzle editor's inspector-closing Escape: a window listener that
+    // does not check defaultPrevented.
+    const inspector = vi.fn();
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") inspector();
+    };
+    window.addEventListener("keydown", onKey);
+    try {
+      const trigger = await openPicker();
+      expect(trigger.getAttribute("aria-expanded")).toBe("true");
+      popover()!.querySelector<HTMLButtonElement>('[role="option"]')!.focus();
+      await pressEscape();
+      expect(popover()).toBeNull();
+      expect(inspector).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(trigger);
+    } finally {
+      window.removeEventListener("keydown", onKey);
+    }
+  });
+
+  test("picking a phrase returns focus to the button", async () => {
+    const onSelect = vi.fn();
+    const trigger = await openPicker(onSelect);
+    await act(async () => popover()!.querySelector<HTMLButtonElement>('[role="option"]')!.click());
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(popover()).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  test("Tab out past the list closes it", async () => {
+    await openPicker();
+    const options = popover()!.querySelectorAll<HTMLButtonElement>('[role="option"]');
+    options[options.length - 1]!.focus();
+    await act(async () => {
+      document.getElementById("next-field")!.focus();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(popover()).toBeNull();
+    expect(document.activeElement).toBe(document.getElementById("next-field"));
+  });
+});

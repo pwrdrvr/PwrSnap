@@ -1298,6 +1298,21 @@ describe("SizzleApp shell layout", () => {
     expect(shell.classList.contains("is-rail-open")).toBe(false);
   });
 
+  test("⌘⇧L opens the rail with focus on the current reel, so the keyboard user is in it", async () => {
+    const { el } = await renderApp([
+      project({ id: "p1", name: "First reel" }),
+      project({ id: "p2", name: "Second reel" })
+    ]);
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "L", metaKey: true, shiftKey: true, bubbles: true })
+      );
+    });
+    const rail = el.querySelector("#szl-rail")!;
+    expect(rail.contains(document.activeElement)).toBe(true);
+    expect((document.activeElement as HTMLElement).classList.contains("szl__row")).toBe(true);
+  });
+
   test("win32 uses Ctrl+Shift+L and ignores Command+Shift+L", async () => {
     const { el } = await renderApp(project(), {}, "win32");
     const shell = el.querySelector(".szl")!;
@@ -2453,6 +2468,32 @@ describe("clip inspector (right-rail drawer)", () => {
       el.querySelector<HTMLElement>('[data-testid="sizzle-timeline-lanes"]')!.click();
     });
     expect(el.querySelector('[data-testid="sizzle-clip-inspector"]')).toBeNull();
+  });
+
+  test("with the clip inspector also open, Esc from the rail closes the rail only and returns focus to the crumb", async () => {
+    // Before: the rail's window Escape listener did not stop the event, so
+    // the inspector's own window listener closed the inspector too.
+    const { el } = await renderApp(project({ scenes: [seq()] }));
+    const shell = el.querySelector(".szl")!;
+    await selectClip(el, "bt_b");
+    expect(el.querySelector('[data-testid="sizzle-clip-inspector"]')).not.toBeNull();
+    const toggle = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-rail-toggle"]')!;
+    // It opens a panel, not a menu.
+    expect(toggle.getAttribute("aria-haspopup")).toBeNull();
+    toggle.focus();
+    await act(async () => {
+      toggle.click();
+    });
+    expect(shell.classList.contains("is-rail-open")).toBe(true);
+    el.querySelector<HTMLButtonElement>("#szl-rail .szl__row")!.focus();
+    await act(async () => {
+      document.activeElement!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
+      );
+    });
+    expect(shell.classList.contains("is-rail-open")).toBe(false);
+    expect(el.querySelector('[data-testid="sizzle-clip-inspector"]')).not.toBeNull();
+    expect(document.activeElement).toBe(toggle);
   });
 
   test("edits the transition INTO the clip — type AND duration — and changing the type keeps a duration the user set", async () => {

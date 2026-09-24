@@ -61,8 +61,8 @@
    `scroll-margin` is the ring's reach (1 + 2) plus 1px. When Tab moves
    focus to a control past a scroller's edge, Chromium scrolls only until
    the control's border box is in view, which cut the ring's far edge off
-   in the Library and Settings sidebars, the Settings pages and the Sizzle
-   scene list at their windows' minimum heights. Chromium reads the margin
+   in the Library and Settings sidebars and the Settings pages at their
+   windows' minimum heights. Chromium reads the margin
    from this rule at the moment it scrolls. A control whose ring reaches
    further sets its own. See AGENTS.md ("Focus rings"). */
 :where(:focus-visible) {

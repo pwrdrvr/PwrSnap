@@ -2346,9 +2346,36 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   // point — but at a VERY narrow window even they collapse it, otherwise the
   // 360px rail + sidebar squeeze the Stage to near-nothing. The manual layout
   // toggle still wins whenever there's room.
+  //
+  // Reel sheds the rail one tier earlier than Focus. Its filmstrip eats
+  // ~145px of height, so at 641–720 even a nav-less stage beside a pinned
+  // 360px rail (~240px wide × 249px tall at the 480px minimum) cannot hold
+  // the compact edit toolbar without it covering the ←/→ buttons or being
+  // clipped. Reel sheds the nav before the rail — see `leftAutoCollapsed`.
   const railEffectivePinned =
     rightPinned &&
-    !((view.kind === "grid" && isToolbarNarrow) || isWindowVeryNarrow);
+    !(
+      (view.kind === "grid" && isToolbarNarrow) ||
+      (view.kind === "reel" && isToolbarSmall) ||
+      isWindowVeryNarrow
+    );
+  // The left filter nav yields to its 36px spine (hover still peeks it)
+  // when keeping it pinned would starve the mode's content. Layout-only,
+  // like `railEffectivePinned`: `leftPinned` keeps the user's intent and
+  // the nav returns as soon as the window widens.
+  //   • Reel at ≤1024 — the stage + rail are the point. With both pinned
+  //     the stage is `width − 582px`: 220px at an 800px window, where the
+  //     floating edit toolbar wrapped to 196×330 and was clipped out of a
+  //     249px-tall stage.
+  //   • Grid at ≤640 — a 480px window left a 220px pane, and the floating
+  //     copy palette's six video cards need ~330px across. No reflow of
+  //     the palette fits that pane: wrapped to one column it measured
+  //     583px tall in a 394px pane.
+  //   • Focus already hides the nav outright (CSS keyed on data-mode).
+  const leftAutoCollapsed =
+    (view.kind === "reel" && isToolbarNarrow) ||
+    (view.kind === "grid" && isWindowVeryNarrow);
+  const leftEffectivePinned = leftPinned && !leftAutoCollapsed;
   // Grid rail occupancy is independent of selection so clicking a tile
   // cannot reflow the virtualized grid under the cursor. Use the user's
   // pin intent (`rightPinned`), not `railEffectivePinned`. The latter is
@@ -4022,7 +4049,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
     return record?.id ?? null;
   }, [visible, fixtureBacking]);
 
-  const leftState = leftPinned ? "pinned" : leftRevealed ? "peek" : "collapsed";
+  const leftState = leftEffectivePinned ? "pinned" : leftRevealed ? "peek" : "collapsed";
 
   return (
     <div
@@ -4336,18 +4363,21 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
           triggers a peek. The aside.psl__left below carries the same
           mouse handlers, so the panel stays revealed while the cursor
           is anywhere over it. */}
-      {!leftPinned && (
+      {!leftEffectivePinned && (
         <div
           className="psl__left-spine"
           onMouseEnter={revealLeft}
           onMouseLeave={hideLeft}
         >
+          {/* When the window is what collapsed the nav, the user's pin is
+              already set — pinning again would do nothing visible — so the
+              button peeks the panel instead. */}
           <button
             type="button"
             className="psl__left-spine-btn"
-            aria-label="Pin sidebar"
-            title="Pin sidebar"
-            onClick={() => setLeftPinned(true)}
+            aria-label={leftAutoCollapsed ? "Show sidebar" : "Pin sidebar"}
+            title={leftAutoCollapsed ? "Show sidebar" : "Pin sidebar"}
+            onClick={leftAutoCollapsed ? revealLeft : () => setLeftPinned(true)}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M3 6h18M3 12h18M3 18h18" />
@@ -4359,10 +4389,10 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
       <aside
         className="psl__left"
         onMouseEnter={() => {
-          if (!leftPinned) revealLeft();
+          if (!leftEffectivePinned) revealLeft();
         }}
         onMouseLeave={() => {
-          if (!leftPinned) hideLeft();
+          if (!leftEffectivePinned) hideLeft();
         }}
       >
         <div className="psl__left-section psl__left-section--top">
@@ -4817,7 +4847,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
               // showing/hiding or collapsing (it claims/releases its column)
               // is the main one. `railDataRight` already folds in rail
               // visibility + the pinned/collapsed width.
-              layoutSignal={`${view.kind}|${leftPinned ? "lp" : "lc"}|${
+              layoutSignal={`${view.kind}|${leftEffectivePinned ? "lp" : "lc"}|${
                 railShowing ? "rail" : "norail"
               }|${railDataRight ?? "none"}`}
               selectedRecordId={selectedRecordId}

@@ -710,4 +710,87 @@ describe("Library grid selection does not reflow the inspector column", () => {
       Object.defineProperty(window, "innerWidth", { configurable: true, value: 1280 });
     }
   });
+
+  // Narrow windows shed the column that isn't the mode's point — a pinned
+  // 220px nav left Grid a 220px pane at 480px (too narrow for the copy
+  // palette by any reflow) and left Reel's stage `width − 582px` whenever
+  // the rail was pinned. Layout only: the user's pin, which the title-bar
+  // chip reports, is untouched and comes back when the window widens.
+  async function atWidth(width: number, run: () => Promise<void>): Promise<void> {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+    try {
+      await run();
+    } finally {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 1280 });
+    }
+  }
+
+  async function openReel(): Promise<void> {
+    const reel = [...(container?.querySelectorAll<HTMLButtonElement>(".psl__view-btn") ?? [])].find(
+      (button) => button.textContent?.includes("Reel")
+    );
+    expect(reel).toBeDefined();
+    await act(async () => {
+      reel?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(psl()?.getAttribute("data-mode")).toBe("reel");
+  }
+
+  function spineButton(): HTMLButtonElement | null {
+    return container?.querySelector<HTMLButtonElement>(".psl__left-spine-btn") ?? null;
+  }
+
+  test("Grid at the 480px minimum parks the nav on its spine; the spine peeks, not re-pins", async () => {
+    await atWidth(480, async () => {
+      await renderLibrary(true);
+      expect(psl()?.getAttribute("data-left")).toBe("collapsed");
+      expect(
+        container
+          ?.querySelector('[data-testid="psl-layout-toggle-primary"]')
+          ?.getAttribute("aria-pressed")
+      ).toBe("true");
+      // The pin is already set, so "Pin sidebar" would do nothing visible.
+      expect(spineButton()?.getAttribute("aria-label")).toBe("Show sidebar");
+      await act(async () => {
+        spineButton()?.click();
+        await Promise.resolve();
+      });
+      expect(psl()?.getAttribute("data-left")).toBe("peek");
+    });
+  });
+
+  test("Grid keeps the pinned nav above the very-narrow tier", async () => {
+    await atWidth(641, async () => {
+      await renderLibrary(true);
+      expect(psl()?.getAttribute("data-left")).toBe("pinned");
+      expect(spineButton()).toBeNull();
+    });
+  });
+
+  test("Reel sheds the nav at ≤1024 and then the rail at ≤720", async () => {
+    await atWidth(1025, async () => {
+      await renderLibrary(true);
+      await openReel();
+      expect(psl()?.getAttribute("data-left")).toBe("pinned");
+      expect(psl()?.getAttribute("data-right")).toBe("pinned");
+    });
+    act(() => root?.unmount());
+    root = createRoot(container!);
+    await atWidth(1024, async () => {
+      await renderLibrary(true);
+      await openReel();
+      expect(psl()?.getAttribute("data-left")).toBe("collapsed");
+      expect(psl()?.getAttribute("data-right")).toBe("pinned");
+    });
+    act(() => root?.unmount());
+    root = createRoot(container!);
+    await atWidth(720, async () => {
+      await renderLibrary(true);
+      await openReel();
+      expect(psl()?.getAttribute("data-left")).toBe("collapsed");
+      expect(psl()?.getAttribute("data-right")).toBe("collapsed");
+    });
+  });
 });

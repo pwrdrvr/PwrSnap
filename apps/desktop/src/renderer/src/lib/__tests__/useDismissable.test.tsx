@@ -303,14 +303,25 @@ describe("useDismissable — dismissOnFocusLeave", () => {
     });
   }
 
-  test("focus moving to a real element outside closes it — after the move has landed", async () => {
+  test("focus moving to a real element outside closes it — once the move has landed", async () => {
+    // Closing mid-move, while activeElement is <body>, would unmount the
+    // popover and let a focus return pull focus back to the trigger.
+    const seen: Array<Element | null> = [];
+    await render(<Popover onDismiss={() => seen.push(document.activeElement)} />);
+    byId("plus").focus();
+    byId("next").focus();
+    expect(seen).toEqual([byId("next")]);
+  });
+
+  test("a fast run of Tabs out and back does not lose the close", async () => {
+    // Chromium runs queued input ahead of timers, so a deferred re-check
+    // could fire after focus had come back to the trigger and keep the
+    // popover open. The close is decided when focus lands, not later.
     const onDismiss = vi.fn();
     await render(<Popover onDismiss={onDismiss} />);
     byId("plus").focus();
     byId("next").focus();
-    // Not synchronously: closing mid-move would unmount the popover while
-    // focus is on <body>, and a focus return would pull it back.
-    expect(onDismiss).not.toHaveBeenCalled();
+    byId("trigger").focus();
     await settle();
     expect(onDismiss).toHaveBeenCalledTimes(1);
   });

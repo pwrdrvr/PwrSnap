@@ -167,7 +167,7 @@ export function useDismissable({
    * either end closes it, rather than leaving it open over whatever focus
    * moved on to. Moving back onto the trigger keeps it open. Only a move to a
    * real element counts — a click on the popover's own padding, or the
-   * window losing focus, reports no `relatedTarget` and must not close it.
+   * window losing focus, moves focus nowhere and must not close it.
    * A modal traps instead and never needs this.
    */
   dismissOnFocusLeave?: boolean;
@@ -192,32 +192,23 @@ export function useDismissable({
     const surface = surfaceRef.current;
     if (surface === null) return;
     const trigger = triggerRef?.current ?? null;
-    const within = (node: Node): boolean =>
-      surface.contains(node) || trigger?.contains(node) === true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    // The trigger is watched too: Shift+Tab from the popover's first control
-    // lands on it (allowed), and the NEXT Shift+Tab leaves from there.
-    const onFocusOut = (e: FocusEvent): void => {
-      const next = e.relatedTarget;
-      if (!(next instanceof Node) || within(next)) return;
-      // Not now. During focusout the old element has blurred and the new one
-      // is not focused yet, so `activeElement` is <body>; closing here would
-      // unmount the popover mid-move, and a focus return that sees <body>
-      // (useFocusReturn) pulls focus back to the trigger — measured in
-      // Chromium, Tab past the zoom popover's last button landed on the zoom
-      // button instead of the next toolbar control. Close once it has landed.
-      clearTimeout(timer);
-      timer = setTimeout(() => {
-        const active = document.activeElement;
-        if (active === null || !within(active)) onDismissRef.current();
-      }, 0);
+    // `focusin` on the document, not `focusout` on the popover. It fires
+    // once focus has LANDED, so `activeElement` is already the new element
+    // and closing cannot unmount the popover mid-move. (Closing during
+    // focusout, while `activeElement` is <body>, let useFocusReturn pull
+    // focus back to the trigger.) It also needs no timer. A `setTimeout(0)`
+    // that re-checked `activeElement` was tried and lost in Chromium: queued
+    // input runs ahead of timers, so on fast Tabs it fired four keypresses
+    // late, found focus back on the trigger and kept the popover open.
+    // Nothing reaches here when focus goes nowhere (a click on the popover's
+    // own padding, the window blurring), so those never close it.
+    const onFocusIn = (e: FocusEvent): void => {
+      const target = e.target;
+      if (!(target instanceof Node)) return;
+      if (surface.contains(target) || trigger?.contains(target) === true) return;
+      onDismissRef.current();
     };
-    surface.addEventListener("focusout", onFocusOut);
-    trigger?.addEventListener("focusout", onFocusOut);
-    return () => {
-      clearTimeout(timer);
-      surface.removeEventListener("focusout", onFocusOut);
-      trigger?.removeEventListener("focusout", onFocusOut);
-    };
+    document.addEventListener("focusin", onFocusIn, true);
+    return () => document.removeEventListener("focusin", onFocusIn, true);
   }, [open, dismissOnFocusLeave, surfaceRef, triggerRef]);
 }

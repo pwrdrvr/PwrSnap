@@ -314,3 +314,61 @@ describe("LayerContextMenu — dismissal", () => {
   });
 
 });
+
+// role="menu" is a promise the menu used to break: measured in headless
+// Chromium, the arrows did nothing, every enabled row was its own Tab stop,
+// and Tab walked off the last row with the menu still open.
+describe("LayerContextMenu — the role=\"menu\" keyboard contract", () => {
+  const ITEMS: LayerContextMenuItem[] = [
+    { id: "cut", label: "Cut", accel: "⌘X", enabled: true },
+    { id: "copy", label: "Copy", accel: "⌘C", enabled: true },
+    { id: "paste", label: "Paste", accel: "⌘V", enabled: false },
+    { id: "delete", label: "", accel: "", enabled: false, isSeparator: true },
+    { id: "delete", label: "Delete", accel: "⌫", enabled: true }
+  ];
+
+  function row(id: string): HTMLElement {
+    const el = document.querySelector<HTMLElement>(`[data-testid='layer-context-menu-item-${id}']`);
+    if (el === null) throw new Error(`row ${id} not rendered`);
+    return el;
+  }
+
+  async function press(key: string): Promise<KeyboardEvent> {
+    const target = (document.activeElement as HTMLElement | null) ?? document.body;
+    const e = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+    await act(async () => {
+      target.dispatchEvent(e);
+    });
+    return e;
+  }
+
+  test("focus lands on the first enabled row, and the menu is ONE Tab stop", async () => {
+    const { rootEl } = await renderMenu(ITEMS);
+    expect(document.activeElement).toBe(row("cut"));
+    const stops = [...rootEl.querySelectorAll<HTMLElement>("[role='menuitem']")].filter(
+      (el) => el.tabIndex === 0
+    );
+    expect(stops).toEqual([row("cut")]);
+  });
+
+  test("ArrowDown / ArrowUp / Home / End move between ENABLED rows", async () => {
+    await renderMenu(ITEMS);
+    await press("ArrowDown");
+    expect(document.activeElement).toBe(row("copy"));
+    await press("ArrowDown");
+    // Paste is disabled and skipped.
+    expect(document.activeElement).toBe(row("delete"));
+    await press("Home");
+    expect(document.activeElement).toBe(row("cut"));
+    await press("End");
+    expect(document.activeElement).toBe(row("delete"));
+    await press("ArrowUp");
+    expect(document.activeElement).toBe(row("copy"));
+  });
+
+  test("Tab closes the menu", async () => {
+    const { onClose } = await renderMenu(ITEMS);
+    await press("Tab");
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});

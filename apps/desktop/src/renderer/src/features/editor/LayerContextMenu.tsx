@@ -17,7 +17,8 @@
 // owns ONLY the visual + dismissal contract — no business logic.
 //
 // Dismissal triggers (any one closes the menu):
-//   • Escape keypress (window-level)
+//   • Escape keypress (useDismissable)
+//   • Tab / Shift+Tab (useMenuNavigation — APG: Tab leaves a menu)
 //   • mousedown OUTSIDE the menu root
 //   • selecting an enabled item (caller's onItemClick should call
 //     onClose; this component doesn't auto-close on item-click in
@@ -29,8 +30,16 @@
 //     against stale selection state)
 //   • tool change (different tool = different valid menu)
 //   • capture switch (the whole editor unmounts; React handles)
+//
+// Keyboard: the role="menu" contract — arrows, Home/End and typeahead
+// between the ENABLED rows, one Tab stop (roving tabindex), focus into the
+// first row on open and back to wherever it was on close. Before
+// useMenuNavigation the arrows did nothing, every row was its own Tab stop,
+// and Tab walked off the last one with the menu still open.
 
 import { useEffect, useRef, type ReactElement } from "react";
+import { useDismissable } from "../../lib/useDismissable";
+import { useMenuNavigation } from "../../lib/useMenuNavigation";
 import type {
   LayerContextMenuItem,
   LayerContextMenuItemId
@@ -65,12 +74,17 @@ export function LayerContextMenu(props: LayerContextMenuProps): ReactElement {
   const { items, anchorPx, onClose, onItemClick } = props;
   const rootRef = useRef<HTMLDivElement | null>(null);
 
-  // Document-level dismissal: Escape OR mousedown outside the menu.
-  // Listens at the document level so a click on an UNRELATED part of
-  // the editor (the canvas, another popover) closes the menu. Uses
-  // `mousedown` (not `click`) so the menu closes BEFORE any
-  // selection-mutating handler on the underlying element fires —
-  // matches ZoomMenu's dismissal pattern.
+  // Escape closes the menu and nothing else — the useDismissable claim
+  // stops the event before the editor's own window listener would clear the
+  // selection (the PR #150 contract: "Escape closes the menu without
+  // clearing the selection").
+  useDismissable({ open: true, onDismiss: onClose, surfaceRef: rootRef });
+  useMenuNavigation({ open: true, menuRef: rootRef, onClose });
+
+  // Mousedown OUTSIDE the menu closes it. Listens at the document level so
+  // a click on an UNRELATED part of the editor (the canvas, another popover)
+  // closes the menu. Uses `mousedown` (not `click`) so the menu closes
+  // BEFORE any selection-mutating handler on the underlying element fires.
   useEffect(() => {
     function onMouseDown(e: MouseEvent): void {
       const root = rootRef.current;
@@ -78,34 +92,9 @@ export function LayerContextMenu(props: LayerContextMenuProps): ReactElement {
       if (e.target instanceof Node && root.contains(e.target)) return;
       onClose();
     }
-    function onKey(e: KeyboardEvent): void {
-      if (e.key === "Escape") {
-        // preventDefault so Escape doesn't ALSO clear the selection
-        // — closing the menu is the user's intent; the underlying
-        // selection should stay.
-        e.preventDefault();
-        e.stopPropagation();
-        onClose();
-      }
-    }
     document.addEventListener("mousedown", onMouseDown);
-    document.addEventListener("keydown", onKey, { capture: true });
-    return () => {
-      document.removeEventListener("mousedown", onMouseDown);
-      document.removeEventListener("keydown", onKey, { capture: true });
-    };
+    return () => document.removeEventListener("mousedown", onMouseDown);
   }, [onClose]);
-
-  // Focus the menu root on open so keyboard nav (Tab, Enter) lands
-  // in the menu rather than the underlying canvas. requestAnimationFrame
-  // defers the focus call past React's commit phase so the focus
-  // sticks reliably (focus during commit gets stolen by layout passes
-  // on some browsers).
-  useEffect(() => {
-    requestAnimationFrame(() => {
-      rootRef.current?.focus();
-    });
-  }, []);
 
   return (
     <div
@@ -153,7 +142,9 @@ export function LayerContextMenu(props: LayerContextMenuProps): ReactElement {
                   }
                 }
               : {})}
-            tabIndex={item.enabled ? 0 : -1}
+            // -1 for every row: useMenuNavigation owns which ENABLED row
+            // holds the one tab stop, and a JSX value would reset it.
+            tabIndex={-1}
             data-testid={`layer-context-menu-item-${item.id}`}
             data-enabled={item.enabled ? "true" : "false"}
           >

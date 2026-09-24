@@ -104,6 +104,9 @@
   Claude Design provenance rules for `design/**`. It was a bare `CLAUDE.md`
   until the README-chip work put a load-bearing path rule in it that Codex
   could not see.
+- `apps/desktop/src/renderer/src/lib/`: `CLAUDE.md → AGENTS.md` — the focus
+  hooks every dialog, popover and menu uses (Escape, Tab, focus return), and
+  why each rule in them is there.
 
 ## Brand and Identity
 
@@ -587,6 +590,18 @@ History + the `sample` recipe:
 §"Addendum (2026-08-22)". Pinned by
 [chat-thread-store-documents-access.test.ts](apps/desktop/src/main/ai/__tests__/chat-thread-store-documents-access.test.ts).
 
+## Overlays get Escape, Tab and focus from the renderer's focus hooks
+
+**Every click-opened dialog, popover and menu in the renderer uses
+`useModal` / `useDismissable` / `useFocusTrap` / `useMenuNavigation` /
+`useFocusReturn` from `apps/desktop/src/renderer/src/lib/`. Don't add an
+overlay keydown listener for Escape or Tab.** The Escape listener is the
+first window-capture keydown listener, and it stops the key it claims.
+That is why the app's own Escape handlers (Library view, editor, Sizzle
+inspector) never need a `defaultPrevented` check, and why a second overlay
+listener would break the ordering. Rules, measurements and test recipes:
+[apps/desktop/src/renderer/src/lib/AGENTS.md](apps/desktop/src/renderer/src/lib/AGENTS.md).
+
 ## Never mix a post-transform rect with a layout measure
 
 **`getBoundingClientRect()` is POST-TRANSFORM. `offsetWidth` /
@@ -751,18 +766,22 @@ Things that hid rings that were correctly styled. Each of these shipped:
     chrome inside `.editor-canvas` uses `Z_INDEX_CHROME`. The crop overlay
     sat at 5, under every arrow.
 - **A popup left open.**
-  - Menus close when focus leaves them (`closeWhenFocusLeaves`).
-  - A popover portaled to the end of `<body>` has to check `focusin`
-    instead (see `DeleteConfirm`). Tab past the last element leaves the
-    document with no `relatedTarget`, so `blur` never learns where focus
-    went.
+  - Menus close on Tab (`useMenuNavigation`), and when focus leaves them
+    any other way (`closeWhenFocusLeaves`).
+  - A non-modal popover right after its trigger closes when focus lands
+    past either end (`useDismissable`'s `dismissOnFocusLeave`).
+  - A popover portaled to the end of `<body>` traps Tab instead, and
+    closes on a `focusin` outside it (see `DeleteConfirm`). Tab past its
+    last element would leave the document with no `relatedTarget`, so
+    `blur` never learns where focus went.
 - **A floating panel stepping aside.** Use `opacity: 0` plus
   `pointer-events: none`, never `visibility: hidden`. A hidden panel's
   buttons leave the tab order, and Tab from the grid skipped the copy
   palette entirely.
-- **`aria-modal` holds no focus.** A dialog focuses its safe button,
-  contains `focusin`, and restores focus on close. `ChatApprovalModal` and
-  `AiConsentDialog` do this.
+- **`aria-modal` holds no focus.** `useModal` focuses the safe button (its
+  `initialFocusRef`), traps Tab and restores focus on close. A dialog that
+  focus can reach without Tab also contains `focusin`: `ChatApprovalModal`
+  and `AiConsentDialog`.
 
 **How it was measured, and how to re-measure:**
 

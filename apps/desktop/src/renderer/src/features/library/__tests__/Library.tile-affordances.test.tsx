@@ -16,7 +16,7 @@
 import { act, createElement, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import type { CaptureRecord, DraftCart, Settings } from "@pwrsnap/shared";
+import type { CaptureRecord, DraftCart, Settings, StorageSnapshot } from "@pwrsnap/shared";
 
 const dispatchMock = vi.fn();
 const subscribeMock = vi.fn((_channel: string, _handler: (payload: unknown) => void) => {
@@ -489,6 +489,111 @@ describe("capture tile context menu", () => {
     });
 
     expect(container?.querySelector('[role="menu"]')).toBeNull();
+  });
+});
+
+// Keyboard. Before: the menu focused its own root, every row was a Tab stop
+// (Tab walked the rows and then out of the menu, leaving it open), no arrow
+// key did anything, and Escape dropped focus to <body>.
+describe("capture tile context menu — keyboard", () => {
+  async function press(key: string): Promise<KeyboardEvent> {
+    const target = (document.activeElement as HTMLElement | null) ?? document.body;
+    const e = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+    await act(async () => {
+      target.dispatchEvent(e);
+      await Promise.resolve();
+    });
+    return e;
+  }
+
+  function railState(): string | null {
+    return container?.querySelector<HTMLElement>(".psl")?.getAttribute("data-right") ?? null;
+  }
+
+  test("focus lands on the first row, the menu is one Tab stop, and the arrows walk it", async () => {
+    await renderLibrary();
+    const menu = await openMenu();
+    expect(document.activeElement).toBe(rowByLabel(menu, "Edit"));
+    const stops = Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"]')).filter(
+      (el) => el.tabIndex === 0
+    );
+    expect(stops).toHaveLength(1);
+    await press("ArrowDown");
+    expect(document.activeElement).toBe(rowByLabel(menu, "Copy Low"));
+    await press("End");
+    expect(document.activeElement).toBe(rowByLabel(menu, "Move to Trash"));
+    await press("Home");
+    expect(document.activeElement).toBe(rowByLabel(menu, "Edit"));
+    await press("ArrowUp");
+    expect(document.activeElement).toBe(rowByLabel(menu, "Move to Trash"));
+  });
+
+  test("Tab closes the menu", async () => {
+    await renderLibrary();
+    await openMenu();
+    await press("Tab");
+    expect(container?.querySelector('[role="menu"]')).toBeNull();
+  });
+
+  test("Escape from a row closes the menu and does not also collapse the pinned rail", async () => {
+    await renderLibrary();
+    expect(railState()).toBe("pinned");
+    await openMenu();
+    const e = await press("Escape");
+    expect(container?.querySelector('[role="menu"]')).toBeNull();
+    expect(e.defaultPrevented).toBe(true);
+    expect(railState()).toBe("pinned");
+  });
+});
+
+// The storage popover in the status bar. Before: its window Escape listener
+// closed it and let the Library's own Escape run too, so one press closed
+// the popover AND collapsed the pinned inspector rail (in Focus it left
+// Focus). And focus dropped to <body>.
+describe("storage popover — keyboard", () => {
+  function railState(): string | null {
+    return container?.querySelector<HTMLElement>(".psl")?.getAttribute("data-right") ?? null;
+  }
+
+  const bucket = { bytes: 1024, fileCount: 1 };
+  const snapshot: StorageSnapshot = {
+    capturedAt: "2026-05-15T18:24:00.000Z",
+    totalBytes: 8192,
+    sourceCaptures: { ...bucket, captureCount: 1, documentsBytes: 1024, homeBytes: 0, appSupportBytes: 0 },
+    renderCache: bucket,
+    chromiumHttpCache: { ...bucket, reportedBytes: 1024, limitBytes: 4096 },
+    chromiumCodeCache: bucket,
+    chromiumGpuCaches: bucket,
+    database: { bytes: 2048, walBytes: 0, shmBytes: 0, pageCount: 2, pageSize: 1024, freelistCount: 0 },
+    otherAppSupport: bucket
+  };
+
+  test("Escape closes the popover only, and focus goes back to its trigger", async () => {
+    const base = dispatchMock.getMockImplementation()!;
+    dispatchMock.mockImplementation(async (name: string, ...rest: unknown[]) =>
+      name === "storage:snapshot" ? ok(snapshot) : base(name, ...rest)
+    );
+    await renderLibrary();
+    expect(railState()).toBe("pinned");
+    const trigger = container!.querySelector<HTMLButtonElement>(".psl__storage-trigger")!;
+    trigger.focus();
+    await act(async () => {
+      trigger.click();
+      await Promise.resolve();
+    });
+    const popover = container!.querySelector<HTMLElement>(".psl__storage-popover");
+    expect(popover).not.toBeNull();
+    const clear = popover!.querySelector<HTMLButtonElement>("button:not([disabled])");
+    (clear ?? trigger).focus();
+    await act(async () => {
+      document.activeElement!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
+      );
+      await Promise.resolve();
+    });
+    expect(container!.querySelector(".psl__storage-popover")).toBeNull();
+    expect(railState()).toBe("pinned");
+    expect(document.activeElement).toBe(trigger);
   });
 });
 

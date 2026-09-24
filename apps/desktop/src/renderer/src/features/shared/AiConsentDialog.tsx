@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, type ReactElement } from "react";
+import { useModal } from "../../lib/useModal";
 import "./AiConsentDialog.css";
 
 export type AiConsentDialogProps = {
@@ -10,30 +11,29 @@ export function AiConsentDialog({
   onAccept,
   onCancel
 }: AiConsentDialogProps): ReactElement {
-  const dialogRef = useRef<HTMLElement | null>(null);
+  // Escape is Cancel, and focus starts there too: the first control, and the
+  // answer that sends nothing. In the float-over the dialog sits inline in the
+  // toast rather than over a scrim, and still traps — it says aria-modal, so a
+  // screen reader already treats the toast's other controls as unreachable.
   const cancelRef = useRef<HTMLButtonElement | null>(null);
+  const dialogRef = useModal<HTMLElement>({ onClose: onCancel, initialFocusRef: cancelRef });
 
-  // `aria-modal` describes the accessibility tree; it does not move or
-  // hold focus. Without this, focus stayed on the control that opened the
-  // dialog (the AI switch, or the Library's AI toggle), under the
-  // backdrop, and Tab walked on through the page behind it with every
-  // ring hidden. Same shape as ChatApprovalModal: start on the safe
-  // choice, pull focus back if it escapes, and hand it back on close.
+  // What the trap does not do: focus moved outside by something other than
+  // Tab (a click on another control in the float-over toast, a programmatic
+  // focus behind the scrim) is pulled straight back, so Enter or Space never
+  // lands on a control the dialog covers. A modal opened on top keeps its
+  // focus: pulling it back here would fight that modal's own containment.
   useLayoutEffect(() => {
-    const restoreTarget =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    cancelRef.current?.focus();
     const containFocus = (event: FocusEvent): void => {
       const dialog = dialogRef.current;
-      if (dialog === null || dialog.contains(event.target as Node | null)) return;
+      const target = event.target;
+      if (dialog === null || !(target instanceof Element) || dialog.contains(target)) return;
+      if (target.closest('[aria-modal="true"]') !== null) return;
       cancelRef.current?.focus();
     };
     document.addEventListener("focusin", containFocus, true);
-    return () => {
-      document.removeEventListener("focusin", containFocus, true);
-      if (restoreTarget?.isConnected === true) restoreTarget.focus();
-    };
-  }, []);
+    return () => document.removeEventListener("focusin", containFocus, true);
+  }, [dialogRef]);
 
   return (
     <div className="ps-ai-consent__backdrop" role="presentation">
@@ -43,6 +43,7 @@ export function AiConsentDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby="ps-ai-consent-title"
+        tabIndex={-1}
       >
         <div className="ps-ai-consent__eyebrow">AI enrichment</div>
         <h2 id="ps-ai-consent-title" className="ps-ai-consent__title">

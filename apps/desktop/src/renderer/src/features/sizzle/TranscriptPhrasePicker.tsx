@@ -13,6 +13,8 @@ import {
   type ReactElement
 } from "react";
 import type { SizzleSequenceTranscriptPhrase } from "@pwrsnap/shared";
+import { useDismissable } from "../../lib/useDismissable";
+import { useFocusReturn } from "../../lib/useFocusReturn";
 import { formatTranscriptPhraseOptionLabel, transcriptPhraseMatches } from "./sizzle-helpers";
 
 /** The popover's height ceiling. Keep in step with
@@ -72,6 +74,8 @@ export function TranscriptPhrasePicker(props: {
 }): ReactElement {
   const { currentPhrase, phrases, onSelect } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState(currentPhrase);
   const [popoverStyle, setPopoverStyle] = useState<CSSProperties>({});
@@ -80,6 +84,20 @@ export function TranscriptPhrasePicker(props: {
     const filtered = phrases.filter((phrase) => transcriptPhraseMatches(phrase, query));
     return filtered.slice(0, 12);
   }, [phrases, query]);
+  // Escape closes the picker and nothing else: the old document listener
+  // did not stop the event, so from a phrase button (not a typing target)
+  // the Sizzle editor's window listener ALSO closed the whole inspector the
+  // picker lives in. Focus goes back to the trigger — on Escape, on a pick,
+  // and on Tab out past the list, which now closes it too.
+  const close = (): void => setOpen(false);
+  useDismissable({
+    open,
+    onDismiss: close,
+    surfaceRef: popoverRef,
+    triggerRef,
+    dismissOnFocusLeave: true
+  });
+  useFocusReturn({ open, containerRef: popoverRef, returnFocusRef: triggerRef });
   useEffect(() => {
     if (!open) return undefined;
     const onPointerDown = (event: PointerEvent): void => {
@@ -88,14 +106,9 @@ export function TranscriptPhrasePicker(props: {
       if (containerRef.current?.contains(target) === true) return;
       setOpen(false);
     };
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") setOpen(false);
-    };
     document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
     };
   }, [open]);
   useLayoutEffect(() => {
@@ -141,7 +154,9 @@ export function TranscriptPhrasePicker(props: {
   return (
     <div ref={containerRef} className="szl__sequence-phrase-control">
       <button
+        ref={triggerRef}
         className="szl__sequence-phrase-button"
+        aria-expanded={open}
         onClick={() => {
           setQuery(currentPhrase);
           setOpen((value) => !value);
@@ -153,7 +168,7 @@ export function TranscriptPhrasePicker(props: {
         <span aria-hidden="true">▾</span>
       </button>
       {open ? (
-        <div className="szl__sequence-phrase-popover" style={popoverStyle}>
+        <div ref={popoverRef} className="szl__sequence-phrase-popover" style={popoverStyle}>
           <input
             className="szl__sequence-phrase-search"
             autoFocus

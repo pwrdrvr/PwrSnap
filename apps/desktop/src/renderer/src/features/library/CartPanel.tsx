@@ -28,6 +28,8 @@ import { formatBytes } from "../../lib/format-bytes";
 import { useCart } from "./CartContext";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
 import { DeleteConfirm } from "../shared/DeleteConfirm";
+import { useDismissable } from "../../lib/useDismissable";
+import { useFocusReturn } from "../../lib/useFocusReturn";
 import { FoIcon } from "../float-over/FoIcons";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 
@@ -117,6 +119,20 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
   const [rowsById, setRowsById] = useState<Map<string, CartRow>>(new Map());
   const [committing, setCommitting] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const pickerTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const pickerRef = useRef<HTMLUListElement | null>(null);
+  // The picker had no way to close but picking or re-clicking: Escape fell
+  // through to the rail behind it (which unpinned or hid the whole panel),
+  // and Tab walked off the list with it still open. Escape and Tab-out now
+  // close only the picker, and focus goes back to "Add to Existing Sizzle…".
+  useDismissable({
+    open: pickerOpen,
+    onDismiss: () => setPickerOpen(false),
+    surfaceRef: pickerRef,
+    triggerRef: pickerTriggerRef,
+    dismissOnFocusLeave: true
+  });
+  useFocusReturn({ open: pickerOpen, containerRef: pickerRef, returnFocusRef: pickerTriggerRef });
   const [zipping, setZipping] = useState<RenderPreset | null>(null);
   const [zipError, setZipError] = useState<string | null>(null);
   const [zipNote, setZipNote] = useState<string | null>(null);
@@ -473,6 +489,7 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
         </button>
         <div className="psl__cart-add-existing">
           <button
+            ref={pickerTriggerRef}
             type="button"
             className="psl__cart-btn"
             disabled={isEmpty || committing || projects.length === 0}
@@ -483,7 +500,7 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
             Add to Existing Sizzle…
           </button>
           {pickerOpen && projects.length > 0 ? (
-            <ul className="psl__cart-picker" role="listbox">
+            <ul ref={pickerRef} className="psl__cart-picker" role="listbox">
               {projects.map((p) => (
                 <li key={p.id}>
                   <button

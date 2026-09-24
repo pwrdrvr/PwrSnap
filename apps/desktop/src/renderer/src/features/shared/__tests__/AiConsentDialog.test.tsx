@@ -1,15 +1,11 @@
-// Focus contract for the AI-enrichment consent dialog.
-//
-// `aria-modal` describes the accessibility tree; it does not move or
-// hold focus. Before this, focus stayed on the switch that opened the
-// dialog — under the backdrop — and Tab walked on through the page
-// behind it with every ring hidden. Pins the three halves of the fix:
-//
-//   • opening moves focus to Cancel (the safe choice);
-//   • focus that escapes the dialog is pulled back to Cancel;
-//   • closing hands focus back to whatever had it before.
+// AiConsentDialog is aria-modal in all three places it opens (Library,
+// Settings → AI Features, the post-capture float-over). Measured in
+// headless Chromium before it used useModal: focus stayed on the control
+// that opened it, the third Tab walked out behind the scrim, and Escape did
+// nothing at all. `aria-modal` describes the accessibility tree; it neither
+// moves focus nor holds it.
 
-import { act, createElement } from "react";
+import { act, useState, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { AiConsentDialog } from "../AiConsentDialog";
@@ -19,70 +15,138 @@ beforeAll(() => {
     true;
 });
 
-let container: HTMLDivElement | null = null;
+let host: HTMLDivElement | null = null;
 let root: Root | null = null;
 
 afterEach(async () => {
-  await act(async () => {
-    root?.unmount();
-  });
-  container?.remove();
-  container = null;
+  await act(async () => root?.unmount());
+  host?.remove();
+  host = null;
   root = null;
-  document.body.innerHTML = "";
 });
 
-async function openDialog(): Promise<{ opener: HTMLButtonElement; behind: HTMLButtonElement }> {
-  const opener = document.createElement("button");
-  opener.textContent = "AI";
-  const behind = document.createElement("button");
-  behind.textContent = "Behind the backdrop";
-  document.body.append(opener, behind);
+function Harness({ onAccept }: { onAccept: () => void }): ReactElement {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button id="opener" onClick={() => setOpen(true)}>
+        Enable AI
+      </button>
+      {open ? (
+        <AiConsentDialog
+          onCancel={() => setOpen(false)}
+          onAccept={() => {
+            onAccept();
+            setOpen(false);
+          }}
+        />
+      ) : null}
+      <button id="behind">Library control behind the scrim</button>
+    </>
+  );
+}
+
+async function openDialog(onAccept = vi.fn()): Promise<void> {
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  root = createRoot(host);
+  await act(async () => root?.render(<Harness onAccept={onAccept} />));
+  const opener = document.getElementById("opener")!;
   opener.focus();
-  container = document.createElement("div");
-  document.body.appendChild(container);
-  root = createRoot(container);
+  await act(async () => opener.click());
+}
+
+function dialog(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('[role="dialog"]');
+}
+
+function button(name: string): HTMLButtonElement {
+  const found = [...(dialog()?.querySelectorAll("button") ?? [])].find(
+    (b) => b.textContent === name
+  );
+  if (found === undefined) throw new Error(`no "${name}" button`);
+  return found;
+}
+
+async function press(key: string, shiftKey = false): Promise<KeyboardEvent> {
+  const target = (document.activeElement as HTMLElement | null) ?? document.body;
+  const e = new KeyboardEvent("keydown", { key, shiftKey, bubbles: true, cancelable: true });
   await act(async () => {
-    root?.render(createElement(AiConsentDialog, { onAccept: vi.fn(), onCancel: vi.fn() }));
+    target.dispatchEvent(e);
   });
-  return { opener, behind };
+  return e;
 }
 
-function cancelButton(): HTMLButtonElement {
-  const el = document.querySelector<HTMLButtonElement>(".ps-ai-consent__btn:not(.is-primary)");
-  if (el === null) throw new Error("Cancel not rendered");
-  return el;
-}
-
-describe("AiConsentDialog focus", () => {
-  test("opening moves focus to Cancel", async () => {
+describe("AiConsentDialog — keyboard", () => {
+  test("focus moves into the dialog on open, onto Cancel", async () => {
     await openDialog();
-    expect(document.activeElement).toBe(cancelButton());
+    expect(document.activeElement).toBe(button("Cancel"));
+  });
+
+  test("Tab from the last button wraps to the first; Shift+Tab from the first wraps to the last", async () => {
+    await openDialog();
+    button("Enable AI enrichment").focus();
+    expect((await press("Tab")).defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(button("Cancel"));
+    expect((await press("Tab", true)).defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(button("Enable AI enrichment"));
+  });
+
+  test("Escape cancels, and the app's own Escape handler behind it never sees the key", async () => {
+    const behind = vi.fn();
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") behind();
+    };
+    // The Library's view handler: a window listener that does not check
+    // defaultPrevented, and would leave Focus or collapse the rail.
+    window.addEventListener("keydown", onKey);
+    try {
+      const onAccept = vi.fn();
+      await openDialog(onAccept);
+      await press("Escape");
+      expect(dialog()).toBeNull();
+      expect(onAccept).not.toHaveBeenCalled();
+      expect(behind).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener("keydown", onKey);
+    }
   });
 
   test("focus moving between the dialog's own buttons stays put", async () => {
     await openDialog();
-    const enable = document.querySelector<HTMLButtonElement>(".ps-ai-consent__btn.is-primary");
-    await act(async () => {
-      enable?.focus();
-    });
+    const enable = button("Enable AI enrichment");
+    await act(async () => enable.focus());
     expect(document.activeElement).toBe(enable);
   });
 
+  // Tab is the trap's; this is focus moved some other way, e.g. a click on
+  // another control in the float-over toast, where there is no scrim.
   test("focus escaping to the page behind is pulled back to Cancel", async () => {
-    const { behind } = await openDialog();
-    await act(async () => {
-      behind.focus();
-    });
-    expect(document.activeElement).toBe(cancelButton());
+    await openDialog();
+    await act(async () => document.getElementById("behind")!.focus());
+    expect(document.activeElement).toBe(button("Cancel"));
   });
 
-  test("closing hands focus back to the control that opened it", async () => {
-    const { opener } = await openDialog();
-    await act(async () => {
-      root?.unmount();
-    });
-    root = null;
-    expect(document.activeElement).toBe(opener);
+  test("a modal opened on top keeps its focus", async () => {
+    await openDialog();
+    const onTop = document.createElement("div");
+    onTop.setAttribute("role", "dialog");
+    onTop.setAttribute("aria-modal", "true");
+    const deny = document.createElement("button");
+    onTop.appendChild(deny);
+    document.body.appendChild(onTop);
+    try {
+      await act(async () => deny.focus());
+      expect(document.activeElement).toBe(deny);
+    } finally {
+      onTop.remove();
+    }
+  });
+
+  test("closing returns focus to the control that opened it", async () => {
+    await openDialog();
+    await act(async () => button("Cancel").click());
+    expect(dialog()).toBeNull();
+    expect(document.activeElement).toBe(document.getElementById("opener"));
   });
 });

@@ -1311,6 +1311,19 @@ describe("SizzleApp shell layout", () => {
     const rail = el.querySelector("#szl-rail")!;
     expect(rail.contains(document.activeElement)).toBe(true);
     expect((document.activeElement as HTMLElement).classList.contains("szl__row")).toBe(true);
+    // Closing it the same way hands focus back to the crumb; left in the
+    // rail, it would drop to <body> when the rail goes visibility: hidden.
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "L", metaKey: true, shiftKey: true, bubbles: true })
+      );
+    });
+    expect(el.querySelector(".szl")!.classList.contains("is-rail-open")).toBe(false);
+    expect(document.activeElement).toBe(el.querySelector('[data-testid="sizzle-rail-toggle"]'));
+    // A crumb click after a chord-close opens the rail WITHOUT pulling focus in.
+    const toggle = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-rail-toggle"]')!;
+    await act(async () => toggle.click());
+    expect(document.activeElement).toBe(toggle);
   });
 
   test("win32 uses Ctrl+Shift+L and ignores Command+Shift+L", async () => {

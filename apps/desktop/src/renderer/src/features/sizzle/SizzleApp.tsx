@@ -23,6 +23,7 @@ import {
 } from "@pwrsnap/shared";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import { useDismissable } from "../../lib/useDismissable";
+import { useFocusReturn } from "../../lib/useFocusReturn";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import { CapturePicker } from "./CapturePicker";
 import { ChatResizer, getSavedChatWidth, setSavedChatWidth } from "./ChatResizer";
@@ -166,7 +167,13 @@ export function SizzleApp({
   // crumb, which already owns Escape as the trigger.
   const focusRailOnOpenRef = useRef(false);
   useEffect(() => {
-    if (!railIsPopover || !railOpen || !focusRailOnOpenRef.current) return;
+    if (!railIsPopover || !railOpen) {
+      // A chord that CLOSED the rail set the flag too; drop it here so a
+      // later crumb click does not pull focus into the rail.
+      focusRailOnOpenRef.current = false;
+      return;
+    }
+    if (!focusRailOnOpenRef.current) return;
     focusRailOnOpenRef.current = false;
     const rail = railRef.current;
     const target =
@@ -174,6 +181,15 @@ export function SizzleApp({
       rail?.querySelector<HTMLElement>("button:not(:disabled)");
     target?.focus({ preventScroll: true });
   }, [railIsPopover, railOpen]);
+  // However it closes — the chord again, a click outside, picking a reel —
+  // focus inside the rail goes back to the crumb. The rail stays mounted and
+  // goes `visibility: hidden` after its fade, and Chromium drops a focused
+  // hidden element to <body>.
+  useFocusReturn({
+    open: railIsPopover && railOpen,
+    containerRef: railRef,
+    returnFocusRef: railCrumbRef
+  });
   useEffect(() => {
     if (!railIsPopover || !railOpen) return;
     const onPointerDown = (event: PointerEvent): void => {
@@ -206,10 +222,9 @@ export function SizzleApp({
         event.key.toLowerCase() === "l"
       ) {
         event.preventDefault();
-        setRailOpen((v) => {
-          focusRailOnOpenRef.current = !v;
-          return !v;
-        });
+        // Read by the effect above only when this opened the rail.
+        focusRailOnOpenRef.current = true;
+        setRailOpen((v) => !v);
       }
     };
     window.addEventListener("keydown", onKeyDown);

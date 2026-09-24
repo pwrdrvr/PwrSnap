@@ -30,6 +30,114 @@ function items(menu: HTMLElement | null): HTMLElement[] {
   );
 }
 
+type OpenMenu = {
+  menuRef: RefObject<HTMLElement | null>;
+  typed: string;
+  typedAt: number;
+};
+
+/** Every menu currently open. */
+const openMenus: OpenMenu[] = [];
+
+function moveTo(next: HTMLElement, list: HTMLElement[]): void {
+  for (const el of list) el.tabIndex = -1;
+  next.tabIndex = 0;
+  next.focus();
+}
+
+/** Arrows, Home/End and typeahead for `menu`, claiming (preventDefault) what it uses. */
+function steer(e: KeyboardEvent, entry: OpenMenu, menu: HTMLElement, active: HTMLElement): void {
+  const list = items(menu);
+  if (list.length === 0) return;
+  const at = list.indexOf(active);
+  switch (e.key) {
+    case "ArrowDown":
+      e.preventDefault();
+      moveTo(list[(at + 1) % list.length]!, list);
+      return;
+    case "ArrowUp":
+      e.preventDefault();
+      // `at` is -1 when focus is in the menu but not on an item (the menu
+      // root, or an item disabled since it was focused). Without the guard
+      // the modulo lands on the second-to-last entry.
+      moveTo(
+        at === -1 ? list[list.length - 1]! : list[(at - 1 + list.length) % list.length]!,
+        list
+      );
+      return;
+    case "Home":
+      e.preventDefault();
+      moveTo(list[0]!, list);
+      return;
+    case "End":
+      e.preventDefault();
+      moveTo(list[list.length - 1]!, list);
+      return;
+    default:
+      break;
+  }
+  // Typeahead: printable single characters only, so named keys ("Enter",
+  // "F5") fall through. Space is excluded explicitly — it is one character
+  // long, but it activates the focused item.
+  if (e.key.length !== 1 || e.key === " ") return;
+  const now = Date.now();
+  entry.typed = now - entry.typedAt > TYPEAHEAD_IDLE_MS ? e.key : entry.typed + e.key;
+  entry.typedAt = now;
+  const prefix = entry.typed.toLowerCase();
+  // Search from the item after the current one so repeating a letter walks
+  // through every match rather than sticking on the first.
+  const ordered = [...list.slice(at + 1), ...list.slice(0, at + 1)];
+  const hit = ordered.find((el) => (el.textContent ?? "").trim().toLowerCase().startsWith(prefix));
+  if (hit !== undefined) {
+    e.preventDefault();
+    moveTo(hit, list);
+  }
+}
+
+/**
+ * One listener for every open menu, on window CAPTURE, installed when this
+ * module is evaluated — so it runs ahead of the app's own key handlers,
+ * which components register later.
+ *
+ * **While focus is in a menu, the menu owns the plain keys.** Before this
+ * listener, the menu steered from a window bubble listener, and the app's
+ * handlers ran first on the same keys: the editor's capture-phase nudge
+ * moved the right-clicked layer on ArrowUp/Down and stopped the event, so
+ * the menu never moved; its tool letters switched tools under typeahead;
+ * the Library grid moved its selection on the arrows (then scrolled it into
+ * view, which closes the menu) and opened the editor on Enter. So every
+ * unmodified key but Escape and Tab is stopped here once handled. Enter and
+ * Space keep their default — stopping propagation does not cancel a
+ * button's activation.
+ *
+ * Escape is `useDismissable`'s and Tab is the per-menu bubble listener's
+ * (a focus trap needs to see Tab first); both pass through. So do modifier
+ * chords, which the app menu and the Library's shortcuts own.
+ */
+function onGlobalKeyDown(e: KeyboardEvent): void {
+  if (e.key === "Escape" || e.key === "Tab") return;
+  if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
+  const active = document.activeElement as HTMLElement | null;
+  if (active === null) return;
+  let owner: OpenMenu | undefined;
+  let menu: HTMLElement | null = null;
+  for (const entry of openMenus) {
+    const root = entry.menuRef.current;
+    // Deepest wins, should a menu ever open inside another.
+    if (root !== null && root.contains(active) && (menu === null || menu.contains(root))) {
+      owner = entry;
+      menu = root;
+    }
+  }
+  if (owner === undefined || menu === null) return;
+  steer(e, owner, menu, active);
+  e.stopImmediatePropagation();
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("keydown", onGlobalKeyDown, true);
+}
+
 /**
  * Arrow keys, Home/End and typeahead move between the menu's enabled items;
  * Tab closes the menu (APG — it does not walk through it); focus moves into
@@ -105,84 +213,34 @@ export function useMenuNavigation({
     return () => observer.disconnect();
   }, [open, menuRef]);
 
+  // Tab: a window BUBBLE listener, so a focus trap around the menu (whose
+  // capture listener claims Tab first) can take its step after this one has
+  // closed the menu — see useFocusTrap.
   useEffect(() => {
     if (!open) return;
-    let typed = "";
-    let typedAt = 0;
-
-    const moveTo = (next: HTMLElement, list: HTMLElement[]): void => {
-      for (const el of list) el.tabIndex = -1;
-      next.tabIndex = 0;
-      next.focus();
-    };
-
     const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== "Tab") return;
       const menu = menuRef.current;
-      if (menu === null) return;
-      const list = items(menu);
-      // Only steer while focus is actually in the menu; a global listener
-      // must not hijack arrows meant for the grid behind an open menu.
-      const active = document.activeElement as HTMLElement | null;
-      if (active === null || !menu.contains(active)) return;
-      if (e.key === "Tab") {
-        // APG: Tab closes the menu and moves on. Not default-prevented: the
-        // browser's own step, taken from wherever useFocusReturn put focus
-        // back, is the "moves on". (Inside a focus trap the trap claims the
-        // key first and takes that step itself — see useFocusTrap.)
-        onCloseRef.current();
-        return;
-      }
-      if (list.length === 0) return;
-      const at = list.indexOf(active);
-
-      switch (e.key) {
-        case "ArrowDown":
-          e.preventDefault();
-          moveTo(list[(at + 1) % list.length]!, list);
-          return;
-        case "ArrowUp":
-          e.preventDefault();
-          // `at` is -1 when focus is in the menu but not on an item (the menu
-          // root, or an item disabled since it was focused). Without the
-          // guard the modulo lands on the second-to-last entry.
-          moveTo(
-            at === -1 ? list[list.length - 1]! : list[(at - 1 + list.length) % list.length]!,
-            list
-          );
-          return;
-        case "Home":
-          e.preventDefault();
-          moveTo(list[0]!, list);
-          return;
-        case "End":
-          e.preventDefault();
-          moveTo(list[list.length - 1]!, list);
-          return;
-        default:
-          break;
-      }
-
-      // Typeahead: printable single characters only, so modifier chords and
-      // named keys ("Enter", "F5") fall through. Space is excluded explicitly
-      // — it is one character long, but it activates the focused item.
-      if (e.key.length !== 1 || e.key === " " || e.altKey || e.ctrlKey || e.metaKey) return;
-      const now = Date.now();
-      typed = now - typedAt > TYPEAHEAD_IDLE_MS ? e.key : typed + e.key;
-      typedAt = now;
-      const prefix = typed.toLowerCase();
-      // Search from the item after the current one so repeating a letter
-      // walks through every match rather than sticking on the first.
-      const ordered = [...list.slice(at + 1), ...list.slice(0, at + 1)];
-      const hit = ordered.find((el) =>
-        (el.textContent ?? "").trim().toLowerCase().startsWith(prefix)
-      );
-      if (hit !== undefined) {
-        e.preventDefault();
-        moveTo(hit, list);
-      }
+      const active = document.activeElement;
+      if (menu === null || active === null || !menu.contains(active)) return;
+      // APG: Tab closes the menu and moves on. Not default-prevented: the
+      // browser's own step, taken from wherever useFocusReturn put focus
+      // back, is the "moves on". (Inside a focus trap the trap claims the
+      // key first and takes that step itself — see useFocusTrap.)
+      onCloseRef.current();
     };
-
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+  }, [open, menuRef]);
+
+  // Every other key: `onGlobalKeyDown`, the module-level capture listener.
+  useEffect(() => {
+    if (!open) return;
+    const entry: OpenMenu = { menuRef, typed: "", typedAt: 0 };
+    openMenus.push(entry);
+    return () => {
+      const at = openMenus.indexOf(entry);
+      if (at !== -1) openMenus.splice(at, 1);
+    };
   }, [open, menuRef]);
 }

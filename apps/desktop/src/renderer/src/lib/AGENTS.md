@@ -19,8 +19,15 @@ picked. Measured in headless Chromium across nine surfaces, the result was:
 |---|---|---|
 | Modal dialog | `useModal` (= `useDismissable` + `useFocusTrap`) | `role="dialog" aria-modal="true" tabIndex={-1}` |
 | `role="menu"` | `useDismissable` + `useMenuNavigation` | items keep `tabIndex={-1}` in JSX; the hook roves the one `0` |
-| Non-modal popover right after its trigger in the DOM (zoom, storage, the phrase and cart pickers) | `useDismissable({ triggerRef, dismissOnFocusLeave: true })` + `useFocusReturn` | trigger has `aria-expanded` |
+| Non-modal popover right after its trigger in the DOM (zoom, storage, the phrase and cart pickers) | `useDismissable({ triggerRef, dismissOnFocusLeave: true })`, plus `useFocusReturn` when closing can strand focus (a row that closes it, a surface that hides rather than unmounts) — the storage popover has neither, so it goes without | trigger has `aria-expanded` |
 | Portalled, light-dismiss popover (`ToolStylePopover`) | `useFocusTrap` + `useDismissable` | treat it as modal: focus cannot follow the DOM back to its caret |
+
+**While focus is in a menu, the menu owns the plain keys.** Its listener is
+on window capture, installed when the module loads, so it runs ahead of the
+editor's capture-phase nudge and tool letters and the Library grid's arrows
+and Enter, and it stops every unmodified key but Escape and Tab. Before
+that, the arrows in the editor's layer menu nudged the right-clicked layer
+and never moved the menu.
 
 `useMenuNavigation` is not optional on a `role="menu"`. The role promises
 arrow keys, Home/End and typeahead, and a screen-reader user who hears "menu"

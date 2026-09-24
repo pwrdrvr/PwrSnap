@@ -4,7 +4,7 @@
 
 import { act, useRef, useState, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, test } from "vitest";
+import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { useMenuNavigation } from "../useMenuNavigation";
 
 beforeAll(() => {
@@ -194,5 +194,46 @@ describe("useMenuNavigation", () => {
     }
     await render(<EmptyMenu />);
     expect(document.activeElement).toBe(byId("menu"));
+  });
+
+  test("while focus is in the menu, app key handlers never see its keys — Escape and Tab still pass", async () => {
+    // Shaped like the editor's handler: window CAPTURE, registered by a
+    // component after this module loaded. It nudged the right-clicked
+    // layer on ArrowDown and stopped the event, so the menu never moved.
+    const seen: string[] = [];
+    const editorLike = (e: KeyboardEvent): void => {
+      seen.push(e.key);
+      if (e.key === "ArrowDown") e.stopImmediatePropagation();
+    };
+    window.addEventListener("keydown", editorLike, true);
+    try {
+      await openMenu();
+      await press("ArrowDown");
+      expect(document.activeElement).toBe(byId("copy"));
+      await press("d");
+      await press("Enter");
+      await press("Delete");
+      expect(seen).toEqual([]);
+      // Outside the menu the app gets its keys back.
+      byId("opener").focus();
+      await press("ArrowDown");
+      expect(seen).toEqual(["ArrowDown"]);
+    } finally {
+      window.removeEventListener("keydown", editorLike, true);
+    }
+  });
+
+  test("Escape and Tab are not the menu's to stop", async () => {
+    const seen = vi.fn();
+    const appLike = (e: KeyboardEvent): void => seen(e.key);
+    window.addEventListener("keydown", appLike, true);
+    try {
+      await openMenu();
+      await press("Escape");
+      await press("Tab");
+      expect(seen.mock.calls.map(([k]) => k)).toEqual(["Escape", "Tab"]);
+    } finally {
+      window.removeEventListener("keydown", appLike, true);
+    }
   });
 });

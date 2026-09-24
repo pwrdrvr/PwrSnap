@@ -137,7 +137,7 @@ describe("simple scene card on a narrow editor", () => {
 });
 
 describe("timeline bar on a narrow editor", () => {
-  it("the meta text truncates so the zoom group stays on screen", () => {
+  it("the meta text truncates rather than running out of a narrow column", () => {
     const meta = rule(timelineCss, ".szt__meta");
     expect(decl(meta, "min-width")).toBe("0");
     expect(decl(meta, "text-overflow")).toBe("ellipsis");

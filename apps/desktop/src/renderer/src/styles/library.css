@@ -1027,13 +1027,27 @@
   width: 220px;
   z-index: 30;
   transform: translateX(-100%);
+  /* Parked off-canvas is not hidden: without `visibility` every filter
+     button stayed in the Tab order, taking focus nowhere on screen.
+     Narrow windows now collapse the nav by default (Library.tsx
+     `leftAutoCollapsed`), so that was most keyboard users' first dozen
+     Tab presses. `visibility` flips at the END of the slide-out (delayed
+     step) and at the START of the peek (below), so the motion is
+     unchanged. */
+  visibility: hidden;
   transition:
     transform 160ms ease,
-    box-shadow 140ms ease;
+    box-shadow 140ms ease,
+    visibility 0s linear 160ms;
 }
 .psl[data-left="peek"] .psl__left {
   transform: translateX(0);
   box-shadow: 8px 0 24px color-mix(in srgb, var(--shadow-base) 45%, transparent);
+  visibility: visible;
+  transition:
+    transform 160ms ease,
+    box-shadow 140ms ease,
+    visibility 0s linear 0s;
 }
 /* Spine — the 36px sliver that's the only visible part of the left
    column when collapsed. Hover over it (or the panel area) reveals
@@ -2910,6 +2924,20 @@
      paint INTO the canvas area to the left of the rail. */
   overflow: visible;
 }
+/* ...and, while popped, stack above what it paints into. The hover-pop
+   panel's own z-index (3, RightActivityBar.css) lands in `.psl`'s
+   stacking context BELOW the center pane's floating chrome — the Grid
+   copy palette, the edit toolbar and ←/→ (4), Focus's × (5). So a popped
+   rail over a narrow Grid had the palette drawn across its own copy
+   cards, 0% of them topmost. The rail is only popped because the user
+   asked for it; it wins. Still below the left-nav peek (30).
+   Only while popped (`.rab__panel-wrap` exists only then): lifted all
+   the time, the 38px icon bar would also cover the edit toolbar's style
+   popover wherever the viewport clamp pushes it into the rail column. */
+.psl[data-right="collapsed"] .psl__right:has(.rab__panel-wrap) {
+  position: relative;
+  z-index: 6;
+}
 
 /* === Project Assets right-rail tab === */
 .psl__proj-tab {
@@ -4070,6 +4098,14 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  /* Query container for the edit toolbar's compact mode (below). SIZE,
+     not inline-size: a wide-but-short stage (Reel under its filmstrip at
+     the 480px minimum height) needs it as much as a narrow one. Safe
+     because the stage's box is imposed by its flex parent, never by its
+     content, and Chromium's container-type implies no layout containment
+     — the fixed-position "+ Add label" chip and ToolStylePopover inside
+     stay viewport-relative. */
+  container: psl-stage / size;
   background: radial-gradient(
       ellipse at center,
       color-mix(in srgb, var(--accent) 4%, transparent) 0%,
@@ -4469,6 +4505,44 @@
 .psl__et-matching-text > span:first-child {
   font-size: 14px;
   line-height: 1;
+}
+
+/* Compact edit toolbar — icon-only, and kept out of the ←/→ columns.
+
+   With labels + key chips the toolbar is 985px on one row (two rows of
+   ~490px), and it floats bottom-anchored OVER the stage. In a small stage
+   it wrapped taller than the stage itself: 196×330 in Reel's 220×249
+   stage at 480×480, so `.psl__stage-wrap`'s overflow clipped the grip,
+   Pointer and Arrow off the top, and it painted over both ←/→ buttons.
+
+   Icon-only it is 532px on one row. Two thresholds, both derived:
+     • width < 560 — below that the labelled toolbar needs three rows.
+     • height < 300 — two labelled rows (90px) + the 24px bottom inset
+       only clear the nav buttons' lower edge (50% + 18px + ring) when the
+       stage is ≥ 274px tall; Reel's stage is 249px at the 480px minimum
+       window height however wide it is.
+   `max-width` here reserves the ←/→ columns (16px inset + 36px button +
+   ring + gap, each side), so no number of wrapped rows can cover them.
+
+   Labels and key chips are visually hidden, not `display: none`: they are
+   the buttons' accessible names ("Pointer V"), and `title` still carries
+   the tooltip. The armed Reset keeps its "Confirm? · N" label — that text
+   is the second half of a destructive two-click confirm. */
+@container psl-stage (width < 560px) or (height < 300px) {
+  .psl__edit-toolbar {
+    max-width: calc(100% - 112px);
+  }
+  .psl__edit-toolbar .psl__et-btn:not(.is-armed) > span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
 }
 
 /* DetailRail layout — fixed 360px column grid-column 3 in focus +

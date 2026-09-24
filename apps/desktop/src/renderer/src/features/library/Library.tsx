@@ -1481,6 +1481,14 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   // (220) + a pinned rail (360) would otherwise leave the Stage near-zero
   // width. See `railEffectivePinned`.
   const isWindowVeryNarrow = isToolbarMinimal;
+  // Column-shedding added for the 480px minimum reads the SAME breakpoints
+  // against the content width alone. The Windows/Linux in-toolbar menu
+  // takes no width from the columns, so the toolbar tier would have parked
+  // Reel's nav at any window up to 1324px there.
+  const layoutTierRank = TOOLBAR_TIER_RANK[useToolbarTier({ for: "layout" })];
+  const isLayoutNarrow = layoutTierRank >= TOOLBAR_TIER_RANK.narrow;
+  const isLayoutSmall = layoutTierRank >= TOOLBAR_TIER_RANK.small;
+  const isLayoutVeryNarrow = layoutTierRank >= TOOLBAR_TIER_RANK.minimal;
 
   // Development instances identify their checkout branch in the footer;
   // packaged builds keep showing the app version. Both are stable at runtime,
@@ -2358,9 +2366,58 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   // point — but at a VERY narrow window even they collapse it, otherwise the
   // 360px rail + sidebar squeeze the Stage to near-nothing. The manual layout
   // toggle still wins whenever there's room.
+  //
+  // Reel sheds the rail one tier earlier than Focus. Its filmstrip eats
+  // ~145px of height, so at 641–720 even a nav-less stage beside a pinned
+  // 360px rail (~240px wide × 249px tall at the 480px minimum) cannot hold
+  // the compact edit toolbar without it covering the ←/→ buttons or being
+  // clipped. Reel sheds the nav before the rail — see `leftAutoCollapsed`.
   const railEffectivePinned =
     rightPinned &&
-    !((view.kind === "grid" && isToolbarNarrow) || isWindowVeryNarrow);
+    !(
+      (view.kind === "grid" && isToolbarNarrow) ||
+      (view.kind === "reel" && isLayoutSmall) ||
+      isWindowVeryNarrow
+    );
+  // The left filter nav yields to its 36px spine (hover still peeks it)
+  // when keeping it pinned would starve the mode's content. Layout-only,
+  // like `railEffectivePinned`: `leftPinned` keeps the user's intent and
+  // the nav returns as soon as the window widens.
+  //   • Reel at ≤1024 — the stage + rail are the point. With both pinned
+  //     the stage is `width − 582px`: 220px at an 800px window, where the
+  //     floating edit toolbar wrapped to 196×330 and was clipped out of a
+  //     249px-tall stage.
+  //   • Grid at ≤640 — a 480px window left a 220px pane, and the floating
+  //     copy palette's six video cards need ~330px across. No reflow of
+  //     the palette fits that pane: wrapped to one column it measured
+  //     583px tall in a 394px pane.
+  //   • Focus already hides the nav outright (CSS keyed on data-mode).
+  const leftAutoCollapsed =
+    (view.kind === "reel" && isLayoutNarrow) ||
+    (view.kind === "grid" && isLayoutVeryNarrow);
+  const leftEffectivePinned = leftPinned && !leftAutoCollapsed;
+  // A peek means nothing once the nav is pinned again, and the aside's
+  // mouseleave only hides an UNpinned nav — so a peek opened while
+  // auto-collapsed survived the widen and re-opened, unhovered, over the
+  // content on the next narrow. Drop it whenever the nav re-pins.
+  useEffect(() => {
+    if (leftEffectivePinned) setLeftRevealed(false);
+  }, [leftEffectivePinned]);
+  // The spine's "Show sidebar" can be pressed from the keyboard, and a
+  // peek otherwise closes only on mouseleave. Close it when focus leaves
+  // the spine + panel for good — unless the pointer is still over them,
+  // where mouseleave remains the authority. (Tracked from the same
+  // enter/leave handlers rather than `:hover`, which jsdom mis-reports.)
+  const leftPointerOverRef = useRef(false);
+  const hideLeftOnFocusExit = useCallback(
+    (event: React.FocusEvent<HTMLElement>): void => {
+      if (leftEffectivePinned || leftPointerOverRef.current) return;
+      const next = event.relatedTarget;
+      if (next instanceof Element && next.closest(".psl__left, .psl__left-spine") !== null) return;
+      hideLeft();
+    },
+    [leftEffectivePinned, hideLeft]
+  );
   // Grid rail occupancy is independent of selection so clicking a tile
   // cannot reflow the virtualized grid under the cursor. Use the user's
   // pin intent (`rightPinned`), not `railEffectivePinned`. The latter is
@@ -4059,7 +4116,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
     return record?.id ?? null;
   }, [visible, fixtureBacking]);
 
-  const leftState = leftPinned ? "pinned" : leftRevealed ? "peek" : "collapsed";
+  const leftState = leftEffectivePinned ? "pinned" : leftRevealed ? "peek" : "collapsed";
 
   return (
     <div
@@ -4373,18 +4430,28 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
           triggers a peek. The aside.psl__left below carries the same
           mouse handlers, so the panel stays revealed while the cursor
           is anywhere over it. */}
-      {!leftPinned && (
+      {!leftEffectivePinned && (
         <div
           className="psl__left-spine"
-          onMouseEnter={revealLeft}
-          onMouseLeave={hideLeft}
+          onMouseEnter={() => {
+            leftPointerOverRef.current = true;
+            revealLeft();
+          }}
+          onMouseLeave={() => {
+            leftPointerOverRef.current = false;
+            hideLeft();
+          }}
+          onBlur={hideLeftOnFocusExit}
         >
+          {/* When the window is what collapsed the nav, the user's pin is
+              already set — pinning again would do nothing visible — so the
+              button peeks the panel instead. */}
           <button
             type="button"
             className="psl__left-spine-btn"
-            aria-label="Pin sidebar"
-            title="Pin sidebar"
-            onClick={() => setLeftPinned(true)}
+            aria-label={leftAutoCollapsed ? "Show sidebar" : "Pin sidebar"}
+            title={leftAutoCollapsed ? "Show sidebar" : "Pin sidebar"}
+            onClick={leftAutoCollapsed ? revealLeft : () => setLeftPinned(true)}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M3 6h18M3 12h18M3 18h18" />
@@ -4396,11 +4463,14 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
       <aside
         className="psl__left"
         onMouseEnter={() => {
-          if (!leftPinned) revealLeft();
+          leftPointerOverRef.current = true;
+          if (!leftEffectivePinned) revealLeft();
         }}
         onMouseLeave={() => {
-          if (!leftPinned) hideLeft();
+          leftPointerOverRef.current = false;
+          if (!leftEffectivePinned) hideLeft();
         }}
+        onBlur={hideLeftOnFocusExit}
       >
         <div className="psl__left-section psl__left-section--top">
           <span>Library</span>
@@ -4411,7 +4481,9 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
               spine button at `.psl__left-spine` still surfaces when
               the panel is collapsed entirely; both the chip and the
               spine route through `setLeftPinned` so all three entry
-              points stay in sync. */}
+              points stay in sync — except while the window has
+              auto-collapsed the nav, when the pin is already set and
+              the spine only peeks (`revealLeft`). */}
         </div>
         {/* LIBRARY = SCOPE. Radio semantics, exactly one active. */}
         <button
@@ -4854,7 +4926,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
               // showing/hiding or collapsing (it claims/releases its column)
               // is the main one. `railDataRight` already folds in rail
               // visibility + the pinned/collapsed width.
-              layoutSignal={`${view.kind}|${leftPinned ? "lp" : "lc"}|${
+              layoutSignal={`${view.kind}|${leftEffectivePinned ? "lp" : "lc"}|${
                 railShowing ? "rail" : "norail"
               }|${railDataRight ?? "none"}`}
               selectedRecordId={selectedRecordId}
@@ -5539,12 +5611,11 @@ const TOOLBAR_BREAKPOINTS = [1024, 960, 840, 720, 640, 560] as const;
  *  `menuBarIsInToolbar`. */
 const IN_TOOLBAR_MENU_BAR_RESERVE_PX = 300;
 
-function toolbarTierForWidth(width: number, platform: string | undefined): ToolbarTier {
+function toolbarTierForWidth(width: number, reservePx: number): ToolbarTier {
   // Treat that fixed menu as already-spent width; otherwise a 1218px VM
   // viewport selects the wide tier even though the controls have only about
   // 918px available and visibly crowd one another.
-  const availableWidth =
-    width - (menuBarIsInToolbar(platform) ? IN_TOOLBAR_MENU_BAR_RESERVE_PX : 0);
+  const availableWidth = width - reservePx;
   if (availableWidth <= 560) return "tiny";
   if (availableWidth <= 640) return "minimal";
   if (availableWidth <= 720) return "small";
@@ -5554,32 +5625,41 @@ function toolbarTierForWidth(width: number, platform: string | undefined): Toolb
   return "wide";
 }
 
+function inToolbarMenuReservePx(): number {
+  return menuBarIsInToolbar(window.pwrsnapApi?.platform) ? IN_TOOLBAR_MENU_BAR_RESERVE_PX : 0;
+}
+
 /** Atomic responsive-toolbar tier. The renderer viewport is the Library
  *  content width (DevTools-docked included). All breakpoint listeners read
  *  the same live width and commit one tier, so a fast drag can never render
- *  a mixture such as `small` capture buttons with pre-`narrow` search. */
-function useToolbarTier(): ToolbarTier {
+ *  a mixture such as `small` capture buttons with pre-`narrow` search.
+ *
+ *  `for: "layout"` drops the in-toolbar menu reserve: that menu spends
+ *  width in the top bar row only, so charging it to the columns below would
+ *  shift every column breakpoint 300px wider on Windows and Linux. */
+function useToolbarTier(options: { for: "toolbar" | "layout" } = { for: "toolbar" }): ToolbarTier {
+  const chargeMenu = options.for === "toolbar";
   const [tier, setTier] = useState<ToolbarTier>(() =>
     typeof window === "undefined" || typeof window.matchMedia !== "function"
       ? "wide"
-      : toolbarTierForWidth(window.innerWidth, window.pwrsnapApi?.platform)
+      : toolbarTierForWidth(window.innerWidth, chargeMenu ? inToolbarMenuReservePx() : 0)
   );
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
       return;
     }
-    const platform = window.pwrsnapApi?.platform;
-    const responsiveReserve = menuBarIsInToolbar(platform) ? IN_TOOLBAR_MENU_BAR_RESERVE_PX : 0;
+    const responsiveReserve = chargeMenu ? inToolbarMenuReservePx() : 0;
     const queries = TOOLBAR_BREAKPOINTS.map((width) =>
       window.matchMedia(`(max-width: ${width + responsiveReserve}px)`)
     );
-    const onChange = (): void => setTier(toolbarTierForWidth(window.innerWidth, platform));
+    const onChange = (): void =>
+      setTier(toolbarTierForWidth(window.innerWidth, responsiveReserve));
     onChange();
     for (const query of queries) query.addEventListener("change", onChange);
     return () => {
       for (const query of queries) query.removeEventListener("change", onChange);
     };
-  }, []);
+  }, [chargeMenu]);
   return tier;
 }
 

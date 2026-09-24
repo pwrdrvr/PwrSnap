@@ -18,8 +18,9 @@
 
 .szt__bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 6px 10px;
   min-height: 28px;
 }
 .szt__eyebrow {
@@ -54,7 +55,13 @@
   padding: 2px 4px;
   background: var(--bg-panel);
 }
+/* The zoom group wraps onto its own row, right-aligned, when the editor
+   column is too narrow for the bar (the 880px window minimum with chat
+   open leaves it ~430px). Unwrapped, the group ran past the column and
+   under the chat pane: the buttons were Tab stops nobody could see. */
 .szt__zoom {
+  flex: none;
+  margin-left: auto;
   display: inline-flex;
   border: 1px solid var(--border-subtle);
   border-radius: 8px;

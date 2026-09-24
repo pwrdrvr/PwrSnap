@@ -4589,15 +4589,22 @@
     0 0 0 1px color-mix(in srgb, var(--shadow-base) 45%, transparent),
     inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 5%, transparent);
 }
-/* The palette covers the tile under the selected one (or wherever it was
-   dragged), and Tab walks every tile's buttons. The buttons it landed on
-   there were drawn under the palette: 0% of the cart button's ring on
-   screen, 25% of Edit's and Trash's. While keyboard focus is on another
-   tile, the palette steps aside. It comes back when focus returns to the
-   selected tile or leaves the grid. Pointer focus never matches, so
-   clicking a tile leaves it alone. */
-.psl__main:has(.psl__cell:not(.is-selected) :focus-visible) > .psl__grid-copy-palette {
-  visibility: hidden;
+/* The palette covers the tile under the selected one, wherever it was
+   dragged, or (in a window too small to place it beside) the selected
+   tile itself. Tab walks every tile's buttons, and the ones it landed
+   on were drawn under the palette: 0% of the cart button's ring on
+   screen, 25% of Edit's and Trash's. A focused button cannot be lifted
+   above it, because each tile is `contain: paint` inside a transformed
+   virtual row. So while keyboard focus is on a tile, the palette steps
+   aside. Pointer focus never matches, so clicking a tile leaves it alone.
+
+   Faded, not `visibility: hidden`. A hidden palette is not focusable,
+   so the Tab from the last tile skipped straight past it: the palette's
+   buttons were unreachable from the grid. At opacity 0 they stay in the
+   tab order, and the palette comes back as soon as focus enters it. */
+.psl__main:has(.psl__cell :focus-visible) > .psl__grid-copy-palette {
+  opacity: 0;
+  pointer-events: none;
 }
 /* Locator — only rendered while the selected capture is off screen.
    Accent-tinted because it is a call to action, not ambient chrome: it

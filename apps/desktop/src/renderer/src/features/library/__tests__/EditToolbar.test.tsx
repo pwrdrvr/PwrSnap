@@ -662,6 +662,64 @@ describe("EditToolbar (Library Focus, v2 refresh)", () => {
     ).toBeNull();
   });
 
+  test("9. leaving a capture and returning before the other one loads reseeds it; an arrow added meanwhile does NOT pop the affordance", async () => {
+    // Reel: → then ← before cap-2's snapshot resolves. The placement
+    // effect never sees a snapshot of cap-2, so without an explicit
+    // reset the seed still names cap-1, and cap-1's reload is DIFFED
+    // against its old snapshot instead of reseeded. An arrow drawn on
+    // cap-1 in the meantime (say, in the standalone Editor window)
+    // then reads as a fresh placement.
+    let cap1Layers: BundleLayerNode[] = makeBaseLayers();
+    dispatchMock.mockImplementation((name: string, req: unknown) => {
+      if (name === "library:byId") {
+        const { id } = req as { id: string };
+        // cap-2 never resolves — the user is back on cap-1 first.
+        if (id === "cap-2") return new Promise(() => undefined);
+        return Promise.resolve({ ok: true, value: { ...makeStubRecord(), id } });
+      }
+      if (name === "layers:list") {
+        return Promise.resolve({ ok: true, value: cap1Layers });
+      }
+      return Promise.resolve({ ok: true, value: undefined });
+    });
+
+    await render(
+      createElement(Harness, { initialTool: "arrow", captureId: "cap-1" })
+    );
+    const resetBtn = host?.querySelector<HTMLButtonElement>(
+      "button.psl__et-btn--reset"
+    );
+    expect(resetBtn?.disabled, "cap-1 has no annotations").toBe(true);
+
+    await act(async () => {
+      root!.render(
+        createElement(Harness, { initialTool: "arrow", captureId: "cap-2" })
+      );
+    });
+    await act(async () => {
+      for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    });
+    expect(dispatchMock).toHaveBeenCalledWith("library:byId", { id: "cap-2" });
+
+    cap1Layers = [
+      ...makeBaseLayers(),
+      rowToVectorLayer(makeArrowRow("ov-elsewhere", { x: 0.4, y: 0.4 }))
+    ];
+    await act(async () => {
+      root!.render(
+        createElement(Harness, { initialTool: "arrow", captureId: "cap-1" })
+      );
+    });
+    await act(async () => {
+      for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    });
+
+    expect(resetBtn?.disabled, "cap-1's new arrow loaded").toBe(false);
+    expect(
+      host?.querySelector('[data-testid="matching-text-affordance"]')
+    ).toBeNull();
+  });
+
   test("Phase 3.2 lift: when parent passes `toolState`, EditToolbar reads from it instead of its own hook", async () => {
     // The Library lifts `useEditorToolState` to its level so the
     // chromeless Editor and the floating EditToolbar share ONE hook

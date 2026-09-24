@@ -376,8 +376,15 @@ export function EditToolbar({
     // No snapshot of this capture yet (loading, errored, or the stale
     // one above): nothing to seed from and nothing to diff. Leave the
     // seen-set alone so the next real snapshot is compared against the
-    // last real one.
-    if (snapshotCaptureId !== captureId) return;
+    // last real one — unless we have moved off the seeded capture, in
+    // which case forget the seed: leaving A and coming back before B
+    // resolves must reseed A, not diff it against A's old snapshot.
+    if (snapshotCaptureId !== captureId) {
+      if (seededCaptureRef.current !== captureId) {
+        seededCaptureRef.current = null;
+      }
+      return;
+    }
     const nextIds = new Set(overlayRows.map((r) => r.id));
     const isFirstLoadForCapture = seededCaptureRef.current !== captureId;
     if (isFirstLoadForCapture) {

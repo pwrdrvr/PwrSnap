@@ -82,6 +82,19 @@ function oneBitPng(width: number, height: number): Buffer {
   ]);
 }
 
+/**
+ * Re-lay a small valid ZIP with its central directory moved past a gap one
+ * byte wider than the 128 MiB external archive ceiling, so `fstat` reports an
+ * oversize file while every entry offset stays valid.
+ *
+ * Neither reader reads the gap: the external reader rejects on the opened
+ * descriptor's size before reading any content, and yauzl reads only its fixed
+ * ~64 KiB end-of-central-directory tail, the central directory, and the entries
+ * at the front. The cost is the write, and it depends on the platform. APFS
+ * and ext4 leave a hole. NTFS keeps a file dense unless it is marked sparse
+ * (FSCTL_SET_SPARSE, which Node cannot issue), so on Windows this write
+ * zero-fills 128 MiB on disk.
+ */
 async function writeSparseOversizeZip(filePath: string, bytes: Buffer): Promise<void> {
   const eocdSignature = Buffer.from([0x50, 0x4b, 0x05, 0x06]);
   const eocdOffset = bytes.lastIndexOf(eocdSignature);
@@ -745,6 +758,10 @@ describe("readAndValidatePwrsnapBundle", () => {
     });
   });
 
+  // The timeout covers the fixture write, not the readers. On NTFS that write
+  // zero-fills 128 MiB (see writeSparseOversizeZip). On Windows CI this test
+  // usually takes 0.7-1.7s and has run past the 5s default on a slow disk.
+  // macOS and Linux finish in milliseconds.
   test("keeps installed bundle reads outside the external archive-size ceiling", async () => {
     const fixture = await validBundle();
     const source = join(workDir, "installed-large-carrier.pwrsnap");
@@ -758,7 +775,7 @@ describe("readAndValidatePwrsnapBundle", () => {
     expect(installed.document).toEqual(fixture.document);
     expect(installed.sources.get(fixture.sourceASha)).toEqual(fixture.sourceA);
     expect("sourceBytes" in installed).toBe(false);
-  });
+  }, 30_000);
 
   test("keeps locally valid canvases above the external pixel ceiling repackable", async () => {
     const fixture = await validBundle();

@@ -79,6 +79,14 @@ describe("dark theme :root tokens", () => {
     expect(tokenValue(block, name)).toBe(expected);
   });
 
+  // Focus — the house ring color. Full-strength accent, never a derived
+  // overlay: the `--accent-border` rings it replaced measured ~2.2:1.
+  // Contrast is checked below; focus-ring-contract.test.ts checks that
+  // every focus rule uses it.
+  it("--focus-ring = var(--accent)", () => {
+    expect(tokenValue(block, "focus-ring")).toBe("var(--accent)");
+  });
+
   it.each([
     ["text-primary", "#f7f3eb"],
     ["text-secondary", "#b8b0a5"],
@@ -134,6 +142,12 @@ describe("light theme :root[data-theme=\"light\"] overrides", () => {
     expect(block).not.toMatch(/--accent-soft\s*:/);
     expect(block).not.toMatch(/--accent-tint\s*:/);
     expect(block).not.toMatch(/--accent-border\s*:/);
+  });
+
+  it("inherits --focus-ring from :root", () => {
+    // Same mechanism: var(--accent) resolves against the deepened light
+    // accent at the use site, so a second declaration could only drift.
+    expect(block).not.toMatch(/--focus-ring\s*:/);
   });
 
   it.each([
@@ -202,6 +216,15 @@ describe("theme contract: WCAG contrast spot-checks", () => {
     it("button-text-on-accent on accent meets AA", () => {
       expect(contrastRatio(buttonText, accent)).toBeGreaterThanOrEqual(4.5);
     });
+    // --focus-ring IS --accent (pinned above). WCAG 1.4.11 wants a focus
+    // indicator at 3:1 against what it sits on: every surface a control
+    // lives on. Measured 8.6:1 on --bg-app.
+    it.each(["bg-app", "bg-sidebar", "bg-panel", "bg-panel-elevated", "bg-panel-hover", "bg-input"])(
+      "focus ring (accent) on --%s meets 1.4.11 (>= 3)",
+      (surface) => {
+        expect(contrastRatio(accent, tokenValue(block, surface))).toBeGreaterThanOrEqual(3);
+      }
+    );
   });
 
   describe("light theme", () => {
@@ -224,5 +247,28 @@ describe("theme contract: WCAG contrast spot-checks", () => {
     it("button-text-on-accent on accent meets AA", () => {
       expect(contrastRatio(buttonText, accent)).toBeGreaterThanOrEqual(4.5);
     });
+    // The light accent was deepened for text on white; the ring rides on
+    // it (4.6:1 on --bg-app). A lighter light-theme accent would have to
+    // clear this bar too.
+    it.each(["bg-app", "bg-sidebar", "bg-panel", "bg-panel-elevated", "bg-panel-hover", "bg-input"])(
+      "focus ring (accent) on --%s meets 1.4.11 (>= 3)",
+      (surface) => {
+        expect(contrastRatio(accent, tokenValue(block, surface))).toBeGreaterThanOrEqual(3);
+      }
+    );
+  });
+});
+
+describe("--focus-ring is mirrored into the design-system palette", () => {
+  // CLAUDE.md: PwrSnap mirrors its `:root` palette in
+  // design/ds/colors_and_type.css. That file used to carry a box-shadow
+  // under this name that nothing read; it is a color now, as in
+  // PwrAgent's docs/UI-THEME.md.
+  it("declares --focus-ring: var(--accent)", () => {
+    const mirror = stripCssComments(
+      readFileSync(join(__dirname, "..", "..", "..", "..", "..", "..", "..", "design", "ds", "colors_and_type.css"), "utf8")
+    );
+    const root = extractCssBlock(mirror, ":root", { label: LABEL });
+    expect(cssTokenValue(root, "focus-ring", LABEL)).toBe("var(--accent)");
   });
 });

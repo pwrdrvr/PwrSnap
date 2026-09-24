@@ -233,6 +233,47 @@ function rowToVectorLayer(row: OverlayRow): BundleLayerNode {
   };
 }
 
+/** The two structural layers every v2 capture carries — a root group
+ *  and the source raster under it. Neither is a placement candidate,
+ *  but a realistic `layers:list` response includes both. */
+function makeBaseLayers(): BundleLayerNode[] {
+  const common = {
+    visible: true,
+    locked: false,
+    opacity: 1,
+    blend_mode: "normal" as const,
+    z_index: 0,
+    source: "user" as const,
+    ai_run_id: null,
+    applied_at: null,
+    rejected_at: null,
+    superseded_by: null,
+    created_at: "2026-05-23T12:00:00.000Z"
+  };
+  return [
+    {
+      ...common,
+      id: "ly_root",
+      parent_id: null,
+      name: "Root",
+      transform: [1, 0, 0, 1, 0, 0],
+      kind: "group",
+      collapsed: false
+    },
+    {
+      ...common,
+      id: "ly_raster",
+      parent_id: "ly_root",
+      name: "Source",
+      transform: [1, 0, 0, 1, 0, 0],
+      kind: "raster",
+      source_ref: { kind: "embedded", sha256: "a".repeat(64) },
+      natural_width_px: 800,
+      natural_height_px: 600
+    }
+  ];
+}
+
 // ---- Render harness -------------------------------------------------
 
 let root: Root | null = null;
@@ -357,14 +398,17 @@ function makeStubRecord() {
   };
 }
 
-async function fireBroadcast(rows: OverlayRow[]): Promise<void> {
+async function fireBroadcast(
+  rows: OverlayRow[],
+  baseLayers: BundleLayerNode[] = []
+): Promise<void> {
   // Configure the mock so the subscribe handler's awaited library:byId
   // + layers:list refetch returns fresh data. useCaptureModel's
   // events:overlays:changed handler does ONE library:byId + ONE
   // layers:list per broadcast, so both verbs need to resolve. The
   // authored OverlayRows are wrapped as vector layers; EditToolbar
   // projects them back to OverlayRow shape for placement detection.
-  const layers = rows.map(rowToVectorLayer);
+  const layers = [...baseLayers, ...rows.map(rowToVectorLayer)];
   dispatchMock.mockImplementation(async (name: string) => {
     if (name === "library:byId") {
       return { ok: true, value: makeStubRecord() };
@@ -501,6 +545,179 @@ describe("EditToolbar (Library Focus, v2 refresh)", () => {
     // onChange with "text".
     expect(onToolChange).toHaveBeenCalledWith("text");
     expect(findToolButton("text").className).toContain("is-active");
+  });
+
+  test("7. opening a capture that already has a user arrow does NOT pop the affordance; a later placement still does", async () => {
+    // Regression: the placement effect seeded its "already seen" set on
+    // its FIRST run for a captureId. useCaptureModel starts in
+    // `loading` (library:byId + layers:list are async IPC), so that
+    // seed was the empty set, and the moment the model resolved every
+    // existing user row diffed as a fresh placement — the newest arrow
+    // armed "+ Add label" on a capture nobody had touched.
+    const existing: OverlayRow = {
+      ...makeArrowRow("ov-existing", { x: 0.2, y: 0.3 }),
+      created_at: "2026-05-23T12:00:00.000Z"
+    };
+    let resolveLayers: (value: unknown) => void = () => undefined;
+    dispatchMock.mockImplementation((name: string) => {
+      if (name === "library:byId") {
+        return Promise.resolve({ ok: true, value: makeStubRecord() });
+      }
+      if (name === "layers:list") {
+        return new Promise((resolve) => {
+          resolveLayers = resolve;
+        });
+      }
+      return Promise.resolve({ ok: true, value: undefined });
+    });
+
+    await render(createElement(Harness, { initialTool: "arrow" }));
+    // Mid-load: layers:list is in flight and the placement effect has
+    // already run against the empty loading model.
+    expect(dispatchMock).toHaveBeenCalledWith("layers:list", {
+      captureId: "cap-1"
+    });
+    const resetBtn = host?.querySelector<HTMLButtonElement>(
+      "button.psl__et-btn--reset"
+    );
+    expect(resetBtn?.disabled, "nothing loaded yet").toBe(true);
+
+    await act(async () => {
+      resolveLayers({
+        ok: true,
+        value: [...makeBaseLayers(), rowToVectorLayer(existing)]
+      });
+      for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    });
+
+    // The model resolved (Reset counts the existing arrow)…
+    expect(resetBtn?.disabled, "existing arrow loaded").toBe(false);
+    // …and the existing arrow is the baseline, not a placement.
+    expect(
+      host?.querySelector('[data-testid="matching-text-affordance"]')
+    ).toBeNull();
+
+    // A genuinely new arrow after load still arms the affordance.
+    const placed: OverlayRow = {
+      ...makeArrowRow("ov-placed", { x: 0.6, y: 0.7 }),
+      created_at: "2026-05-23T12:05:00.000Z"
+    };
+    await fireBroadcast([existing, placed], makeBaseLayers());
+
+    expect(
+      host?.querySelector('[data-testid="matching-text-affordance"]')
+    ).not.toBeNull();
+  });
+
+  test("8. switching (Reel) to a capture that already has a user arrow does NOT pop the affordance", async () => {
+    // Stage keeps EditToolbar mounted across Reel navigation, so
+    // captureId changes in place. On the render right after the
+    // switch, useCaptureModel still holds the PREVIOUS capture's
+    // snapshot (its reset to `loading` runs in an effect) while
+    // reporting `kind: "loaded"` and the NEW `captureId` — only the
+    // record id tells the stale snapshot apart. Seeding from it left
+    // the next capture's existing arrow looking freshly placed.
+    const existingOnB: OverlayRow = {
+      ...makeArrowRow("ov-b", { x: 0.3, y: 0.3 }),
+      capture_id: "cap-2"
+    };
+    dispatchMock.mockImplementation(async (name: string, req: unknown) => {
+      if (name === "library:byId") {
+        const { id } = req as { id: string };
+        return { ok: true, value: { ...makeStubRecord(), id } };
+      }
+      if (name === "layers:list") {
+        const { captureId } = req as { captureId: string };
+        return {
+          ok: true,
+          value:
+            captureId === "cap-2"
+              ? [...makeBaseLayers(), rowToVectorLayer(existingOnB)]
+              : makeBaseLayers()
+        };
+      }
+      return { ok: true, value: undefined };
+    });
+
+    await render(
+      createElement(Harness, { initialTool: "arrow", captureId: "cap-1" })
+    );
+    const resetBtn = host?.querySelector<HTMLButtonElement>(
+      "button.psl__et-btn--reset"
+    );
+    expect(resetBtn?.disabled, "cap-1 has no annotations").toBe(true);
+
+    await act(async () => {
+      root!.render(
+        createElement(Harness, { initialTool: "arrow", captureId: "cap-2" })
+      );
+    });
+    await act(async () => {
+      for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    });
+
+    expect(resetBtn?.disabled, "cap-2's existing arrow loaded").toBe(false);
+    expect(
+      host?.querySelector('[data-testid="matching-text-affordance"]')
+    ).toBeNull();
+  });
+
+  test("9. leaving a capture and returning before the other one loads reseeds it; an arrow added meanwhile does NOT pop the affordance", async () => {
+    // Reel: → then ← before cap-2's snapshot resolves. The placement
+    // effect never sees a snapshot of cap-2, so without an explicit
+    // reset the seed still names cap-1, and cap-1's reload is DIFFED
+    // against its old snapshot instead of reseeded. An arrow drawn on
+    // cap-1 in the meantime (say, in the standalone Editor window)
+    // then reads as a fresh placement.
+    let cap1Layers: BundleLayerNode[] = makeBaseLayers();
+    dispatchMock.mockImplementation((name: string, req: unknown) => {
+      if (name === "library:byId") {
+        const { id } = req as { id: string };
+        // cap-2 never resolves — the user is back on cap-1 first.
+        if (id === "cap-2") return new Promise(() => undefined);
+        return Promise.resolve({ ok: true, value: { ...makeStubRecord(), id } });
+      }
+      if (name === "layers:list") {
+        return Promise.resolve({ ok: true, value: cap1Layers });
+      }
+      return Promise.resolve({ ok: true, value: undefined });
+    });
+
+    await render(
+      createElement(Harness, { initialTool: "arrow", captureId: "cap-1" })
+    );
+    const resetBtn = host?.querySelector<HTMLButtonElement>(
+      "button.psl__et-btn--reset"
+    );
+    expect(resetBtn?.disabled, "cap-1 has no annotations").toBe(true);
+
+    await act(async () => {
+      root!.render(
+        createElement(Harness, { initialTool: "arrow", captureId: "cap-2" })
+      );
+    });
+    await act(async () => {
+      for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    });
+    expect(dispatchMock).toHaveBeenCalledWith("library:byId", { id: "cap-2" });
+
+    cap1Layers = [
+      ...makeBaseLayers(),
+      rowToVectorLayer(makeArrowRow("ov-elsewhere", { x: 0.4, y: 0.4 }))
+    ];
+    await act(async () => {
+      root!.render(
+        createElement(Harness, { initialTool: "arrow", captureId: "cap-1" })
+      );
+    });
+    await act(async () => {
+      for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    });
+
+    expect(resetBtn?.disabled, "cap-1's new arrow loaded").toBe(false);
+    expect(
+      host?.querySelector('[data-testid="matching-text-affordance"]')
+    ).toBeNull();
   });
 
   test("Phase 3.2 lift: when parent passes `toolState`, EditToolbar reads from it instead of its own hook", async () => {

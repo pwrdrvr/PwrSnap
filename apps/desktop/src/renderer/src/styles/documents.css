@@ -63,6 +63,13 @@
   padding: 28px;
 }
 
+/* Chromium makes an overflowing scroller a Tab stop of its own when it
+   holds nothing focusable, so a long changelog is one. It fills the
+   window, and `body` clipped an outset ring to its top edge. Inset. */
+.ps-doc__main:focus-visible {
+  outline-offset: -2px;
+}
+
 .ps-doc__body {
   max-width: 980px;
   margin: 0 auto;

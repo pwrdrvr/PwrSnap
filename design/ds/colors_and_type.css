@@ -109,8 +109,12 @@
   --scrollbar-track: color-mix(in srgb, var(--text-primary) 5%, transparent);
   --scrollbar-thumb: color-mix(in srgb, var(--text-muted) 46%, transparent);
 
-  /* ---------- FOCUS ---------- */
-  --focus-ring: 0 0 0 3px var(--accent-shadow);
+  /* ---------- FOCUS ----------
+     A COLOR, as in PwrAgent's docs/UI-THEME.md and the app's tokens.css:
+     the ring is `outline: 2px solid var(--focus-ring)`. This file used
+     to carry a box-shadow value under the same name, which nothing
+     read. */
+  --focus-ring: var(--accent);
 
   /* ---------- RADII ---------- */
   --radius-xs:   4px;
@@ -214,6 +218,7 @@
   --accent-tint:   color-mix(in srgb, var(--accent) 6%, transparent);
   --accent-border: color-mix(in srgb, var(--accent) 42%, transparent);
   --accent-shadow: color-mix(in srgb, var(--accent) 28%, transparent);
+  --focus-ring:    var(--accent);
 
   /* ---------- COLOR — semantic (deeper for legibility on white) ---------- */
   --danger:        #b94232;

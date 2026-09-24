@@ -18,7 +18,7 @@ picked. Measured in headless Chromium across nine surfaces, the result was:
 | Surface | Hooks | Markup |
 |---|---|---|
 | Modal dialog | `useModal` (= `useDismissable` + `useFocusTrap`) | `role="dialog" aria-modal="true" tabIndex={-1}` |
-| `role="menu"` | `useDismissable` + `useMenuNavigation` | items keep `tabIndex={-1}` in JSX; the hook roves the one `0` |
+| `role="menu"` | `useDismissable` + `useMenuNavigation`, plus `closeWhenFocusLeaves` on the root's `onBlur` for focus that leaves without Tab | items keep `tabIndex={-1}` in JSX; the hook roves the one `0` |
 | Non-modal popover right after its trigger in the DOM (zoom, storage, the phrase and cart pickers) | `useDismissable({ triggerRef, dismissOnFocusLeave: true })`, plus `useFocusReturn` when closing can strand focus (a row that closes it, a surface that hides rather than unmounts) — the storage popover has neither, so it goes without | trigger has `aria-expanded` |
 | Portalled, light-dismiss popover (`ToolStylePopover`) | `useFocusTrap` + `useDismissable` | treat it as modal: focus cannot follow the DOM back to its caret |
 
@@ -108,6 +108,14 @@ details are load-bearing, and each is pinned in
   effect looked, the dialog's own field held focus and was recorded as the
   opener. `useFocusReturn` owns this, and `useMenuNavigation` and
   `useFocusTrap` both call it.
+
+The trap only handles Tab. Focus moved some other way (a click where there
+is no scrim, a programmatic `focus()`) is the component's to answer:
+`AiConsentDialog` and `ChatApprovalModal` pull it back, and `DeleteConfirm`
+closes. Either of the first and last can be open when an agent approval
+arrives, so both ignore focus landing in an `aria-modal`. Otherwise the
+confirm would close under the approval, and two containments would pull
+focus back and forth.
 
 ## `dismissOnFocusLeave` listens for `focusin`, not a deferred `focusout`
 

@@ -1,4 +1,4 @@
-import type { ReactElement } from "react";
+import { useLayoutEffect, useRef, type ReactElement } from "react";
 import { useModal } from "../../lib/useModal";
 import "./AiConsentDialog.css";
 
@@ -15,7 +15,26 @@ export function AiConsentDialog({
   // answer that sends nothing. In the float-over the dialog sits inline in the
   // toast rather than over a scrim, and still traps — it says aria-modal, so a
   // screen reader already treats the toast's other controls as unreachable.
-  const dialogRef = useModal<HTMLElement>({ onClose: onCancel });
+  const cancelRef = useRef<HTMLButtonElement | null>(null);
+  const dialogRef = useModal<HTMLElement>({ onClose: onCancel, initialFocusRef: cancelRef });
+
+  // What the trap does not do: focus moved outside by something other than
+  // Tab (a click on another control in the float-over toast, a programmatic
+  // focus behind the scrim) is pulled straight back, so Enter or Space never
+  // lands on a control the dialog covers. A modal opened on top keeps its
+  // focus: pulling it back here would fight that modal's own containment.
+  useLayoutEffect(() => {
+    const containFocus = (event: FocusEvent): void => {
+      const dialog = dialogRef.current;
+      const target = event.target;
+      if (dialog === null || !(target instanceof Element) || dialog.contains(target)) return;
+      if (target.closest('[aria-modal="true"]') !== null) return;
+      cancelRef.current?.focus();
+    };
+    document.addEventListener("focusin", containFocus, true);
+    return () => document.removeEventListener("focusin", containFocus, true);
+  }, [dialogRef]);
+
   return (
     <div className="ps-ai-consent__backdrop" role="presentation">
       <section
@@ -41,6 +60,7 @@ export function AiConsentDialog({
         </p>
         <div className="ps-ai-consent__actions">
           <button
+            ref={cancelRef}
             type="button"
             className="ps-ai-consent__btn"
             onClick={onCancel}

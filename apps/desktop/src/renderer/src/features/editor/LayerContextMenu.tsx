@@ -44,6 +44,7 @@ import type {
   LayerContextMenuItem,
   LayerContextMenuItemId
 } from "./buildLayerContextMenuItems";
+import { closeWhenFocusLeaves } from "../shared/close-when-focus-leaves";
 import "./LayerContextMenu.css";
 
 export interface LayerContextMenuProps {
@@ -57,7 +58,7 @@ export interface LayerContextMenuProps {
    *  canvas-wrap's getBoundingClientRect(). */
   readonly anchorPx: { readonly x: number; readonly y: number };
   /** Fired when the menu should close (Escape / outside-click /
-   *  item picked). The caller clears its open state and tears
+   *  focus leaving the menu / item picked). The caller clears its open state and tears
    *  down the menu via the resulting re-render. */
   readonly onClose: () => void;
   /** Fired when the user picks an ENABLED item. Disabled items
@@ -106,6 +107,9 @@ export function LayerContextMenu(props: LayerContextMenuProps): ReactElement {
       // right-clicks INSIDE the menu (the editor canvas's
       // onContextMenu would otherwise fire again).
       onContextMenu={(e) => e.preventDefault()}
+      // Tab past the last row closes the menu, rather than leaving it
+      // over the edit toolbar that focus walks into next.
+      onBlur={closeWhenFocusLeaves(onClose)}
       data-testid="layer-context-menu"
     >
       {items.map((item, idx) => {

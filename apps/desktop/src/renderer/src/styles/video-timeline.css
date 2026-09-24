@@ -29,8 +29,11 @@
   border-radius: 10px;
 }
 
+/* The stage is a Tab stop for the player's keys. Its focus signal was a
+   1px 45% accent halo; it draws the house ring now. */
 .psl__video-stage:focus-visible {
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
 }
 
 /* Shown only on a recording that holds BOTH audio tracks, where the
@@ -154,7 +157,7 @@
 }
 
 .psl__vt-vol-slider:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -395,9 +398,20 @@
   background: var(--accent-bright);
 }
 
+/* Focus turns the bracket hollow. An outset ring cannot draw here:
+   `.vtl__strip` clips on every side. The inset `--accent-bright` ring
+   this replaces sat on an `--accent` fill, 1.33:1, so a focused handle
+   looked like an idle one. Hollow swaps the fill for the on-accent black
+   inside a 2px accent edge, 8.6:1 against the resting fill in dark. The
+   edge keeps the bracket's shape against the strip, and it is the same
+   2px either side of focus, so nothing shifts. */
 .vtl__handle:focus-visible {
-  outline: 2px solid var(--accent-bright);
-  outline-offset: -2px;
+  outline: none;
+  background: var(--button-text-on-accent);
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.vtl__handle:focus-visible::before {
+  background: var(--accent);
 }
 
 .vtl.is-dragging .vtl__handle,

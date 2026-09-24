@@ -23,8 +23,8 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  /* No outline on the focused panel; rows have their own focus
-     ring via :focus-visible. */
+  /* No outline on the focused panel; rows draw the house ring via
+     :focus-visible. */
   outline: 0;
   /* The menu intercepts its own pointer events — clicks INSIDE
      the menu stay inside (outside-click dismissal is handled by
@@ -50,7 +50,13 @@
 .layer-context-menu__row:focus-visible:not(.is-disabled) {
   background: var(--bg-panel);
   color: var(--text-primary);
-  outline: 0;
+}
+/* That paint is also the hover paint, so focus draws the house ring as
+   well, on every row including a disabled one. Inset, because the rows
+   stack 2px apart. */
+.layer-context-menu__row:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 
 .layer-context-menu__row.is-disabled {

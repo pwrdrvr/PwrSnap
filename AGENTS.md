@@ -703,6 +703,103 @@ Full investigation, measurements, and the two wrong hypotheses it
 replaced:
 [docs/solutions/2026-08-28-text-outline-stale-canvas-scale.md](docs/solutions/2026-08-28-text-outline-stale-canvas-scale.md).
 
+## Focus rings
+
+**Every keyboard focus indicator is drawn in `--focus-ring`, reaches 3:1
+against what it sits on, and is on screen when the control has focus.
+Measure the last part in a browser: reading the CSS does not show it.**
+Owners: the `--focus-ring` token in
+[tokens.css](apps/desktop/src/renderer/src/styles/tokens.css) and the
+global `:where(:focus-visible)` rule in
+[app.css](apps/desktop/src/renderer/src/styles/app.css). Pinned by
+[focus-ring-contract.test.ts](apps/desktop/src/renderer/src/styles/__tests__/focus-ring-contract.test.ts)
+(every stylesheet) and
+[theme-contract.test.ts](apps/desktop/src/renderer/src/styles/__tests__/theme-contract.test.ts)
+(the token and its contrast).
+
+- **The token is `--focus-ring: var(--accent)`**, the same name and value
+  as PwrAgent (docs/UI-THEME.md) and PwrGit. It measures 8.6:1 on
+  `--bg-app` in dark and 4.6:1 in light. Never ring in `--accent-border`:
+  eleven rules did, at about 2.2:1. The light block does not redeclare the
+  token, and `design/ds/colors_and_type.css` mirrors it.
+- **The global rule is the default, at zero specificity.** A control with no
+  `:focus-visible` rule gets `outline: 2px solid var(--focus-ring)` 1px
+  out, not Chromium's pale-blue `outline: auto`. Before this rule, most of
+  the app drew the Chromium ring.
+- **Placement.**
+  - A bordered or filled control keeps the default, 1px out.
+  - A row or scroller that runs edge to edge inside an `overflow`
+    ancestor insets its ring with `outline-offset: -2px`.
+  - A borderless text link sits 2px off, with `border-radius: var(--radius-sm)`.
+  - A borderless field rings its wrapper via
+    `:has(<field>:focus-visible)`. Key it on the field, not on
+    `:focus-within`, when sibling buttons ring themselves.
+- **`outline: none` in a focus rule must be followed by a ring for the same
+  selector.** That ring can be later in the file, in the same block (the
+  hollow trim handle), or on a `:has()` wrapper. The contract test enforces
+  this, because a shared `:hover, :focus-visible { outline: 0 }` block
+  reads as harmless in review. Four stylesheets shipped one with nothing
+  after it.
+
+Things that hid rings that were correctly styled. Each of these shipped:
+
+- **Opacity fades the outline with everything else the element paints.**
+  A dimmed control un-dims while focused. One that is unavailable
+  (`aria-disabled`, busy) joins the "Focused while unavailable" block in
+  app.css, which swaps the fade for a muted paint at opacity 1.
+- **Scrolling stops at the border box.** When Tab lands on a control partly
+  past a scroller's edge, Chromium scrolls only until the control's border
+  box is in view, which cuts the ring. The global rule therefore carries
+  `scroll-margin: 4px` (the ring's reach + 1). A sticky header needs
+  `scroll-padding` on its scroller as well: the grid uses 36px.
+  **Horizontally, Chromium does not scroll a partly visible target at
+  all** (measured on Electron 41, and on a bare page). Reel frames call
+  `scrollIntoView` on keyboard focus for that reason.
+- **Something painted on top.**
+  - A positioned later sibling covers the ring: lift the focused control
+    with `z-index`.
+  - Positioned children cover an element's own inset outline (timeline
+    clips and regions): draw the ring on a positioned `::after`.
+  - Over media or a dark shadow, add the halo
+    `box-shadow: 0 0 0 4px var(--bg-app)`.
+  - Canvas layers stack at their own `layer.z_index` (1000+), so editor
+    chrome inside `.editor-canvas` uses `Z_INDEX_CHROME`. The crop overlay
+    sat at 5, under every arrow.
+- **A popup left open.**
+  - Menus close on Tab (`useMenuNavigation`), and when focus leaves them
+    any other way (`closeWhenFocusLeaves`).
+  - A non-modal popover right after its trigger closes when focus lands
+    past either end (`useDismissable`'s `dismissOnFocusLeave`).
+  - A popover portaled to the end of `<body>` traps Tab instead, and
+    closes on a `focusin` outside it (see `DeleteConfirm`). Tab past its
+    last element would leave the document with no `relatedTarget`, so
+    `blur` never learns where focus went.
+- **A floating panel stepping aside.** Use `opacity: 0` plus
+  `pointer-events: none`, never `visibility: hidden`. A hidden panel's
+  buttons leave the tab order, and Tab from the grid skipped the copy
+  palette entirely.
+- **`aria-modal` holds no focus.** `useModal` focuses the safe button (its
+  `initialFocusRef`), traps Tab and restores focus on close. A dialog that
+  focus can reach without Tab also contains `focusin`: `ChatApprovalModal`
+  and `AiConsentDialog`.
+
+**How it was measured, and how to re-measure:**
+
+1. Build the renderer with Vite against a fake preload bridge.
+2. Tab through each surface in Playwright's headless Chromium.
+3. At every stop, record the computed outline, the `overflow` ancestors
+   that clip it, and the fraction of ring pixels actually on screen
+   (classified by hue, saturation and brightness).
+4. Walk both themes, at 1280×800 and at each window's minimum size from
+   `window.ts`.
+
+The harness is not in the tree. Headless only: a headed walk takes over
+the screen, so it belongs in the lab VM (see Workflow above). Two
+residuals are known and accepted:
+
+- Chromium reveals only the caret line of a partly visible `<textarea>`.
+- The trim handle signals focus with a hollow fill, not an outline.
+
 ## Annotation sizing — one basis, one ladder
 
 **Every sized annotation — text glyphs, arrow stems + heads, shape
@@ -2020,6 +2117,11 @@ doesn't.
     ```
 
   - Alt text can also follow the path after `#`, as in `--attach './after.png#composer after'`. Update `gh` to v2.99.0 or later before using `--attach`.
+  - `gh` rewrites a link only when its target equals an `--attach` path byte-for-byte. The `#alt` suffix is not compared. On a mismatch, `gh` appends the upload at the end instead.
+  - The rewrite exists only in the uploaded body. The local body file keeps the local paths.
+  - For every later body edit, run `gh pr view <n> --json body -q .body > <file>` and edit that copy. Never re-send the original draft. It replaces the live `user-attachments` URLs with dead local paths.
+  - To add an image later, pass `--attach` for the new file only. Existing `user-attachments` URLs match no `--attach` path, so `gh` leaves them alone.
+  - `gh` exits 0 in each of these cases. Verify that every body image link is a `user-attachments` URL, and that each asset fetches with HTTP 200 and the local file's byte count.
 
 ## Release / Distribution
 

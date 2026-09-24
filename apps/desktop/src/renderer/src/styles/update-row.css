@@ -146,7 +146,7 @@
    accent border on both the tray strip and the toast card. */
 .psu__go:focus-visible,
 .psu__x:focus-visible {
-  outline: 2px solid var(--accent-bright);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -192,7 +192,7 @@
   cursor: default;
 }
 .psu__notes:focus-visible {
-  outline: 2px solid var(--accent-bright);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 

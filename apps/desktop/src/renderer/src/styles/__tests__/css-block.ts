@@ -1,5 +1,5 @@
 // Shared CSS-as-string helpers for the stylesheet contract suites
-// (theme-contract, scrollbar-contract).
+// (theme-contract, scrollbar-contract, focus-ring-contract).
 //
 // Both suites read a stylesheet as text and ask "is this declaration
 // inside this block" — a string-match question, not a CSSOM one, which
@@ -13,6 +13,9 @@
 // `::-webkit-scrollbar { display: none }` — truncates the block at the
 // comment and silently hides every declaration after it. Stripping first
 // is the only correct behavior, so it lives here once.
+
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join, sep } from "node:path";
 
 /** Remove `/* … *\/` comments. Prose ABOUT a selector or declaration
  *  must never read as a use of it, and a brace inside a comment must
@@ -62,4 +65,46 @@ export function tokenValue(block: string, name: string, label: string): string {
     throw new Error(`${label}: --${name} not declared in this block`);
   }
   return (match[1] ?? "").trim();
+}
+
+export type CssFile = [label: string, stripped: string];
+
+/**
+ * Path under `root`, as a POSIX-separated label.
+ *
+ * `join` uses the platform separator, so on Windows the raw slice
+ * yields `styles\\app.css` and every forward-slash comparison in a
+ * suite silently stops matching — which is exactly how
+ * scrollbar-contract landed red on the Windows lane while passing on
+ * macOS and Linux.
+ *
+ * Split out as a pure function ON PURPOSE: the obvious guard, asserting
+ * that the collected labels contain no backslash, is VACUOUS on macOS
+ * and Linux, so it can only fail on the one lane that already caught
+ * the bug. Testing the function with a Windows-shaped input instead
+ * makes the regression catchable on every platform.
+ *
+ * `separator` is injectable for that test; it defaults to the running
+ * platform's.
+ */
+export function toPosixLabel(fullPath: string, root: string, separator: string = sep): string {
+  return fullPath.slice(root.length + 1).split(separator).join("/");
+}
+
+/** Every `.css` file under `root` (the renderer bundle's source tree),
+ *  comment-stripped once at collection and labelled with its
+ *  `root`-relative path so a failure names the file to open. Shared so
+ *  the suites that sweep every stylesheet cannot disagree about which
+ *  stylesheets exist. */
+export function collectCssFiles(root: string, dir: string = root, out: CssFile[] = []): CssFile[] {
+  for (const entry of readdirSync(dir)) {
+    if (entry === "node_modules") continue;
+    const full = join(dir, entry);
+    if (statSync(full).isDirectory()) {
+      collectCssFiles(root, full, out);
+    } else if (entry.endsWith(".css")) {
+      out.push([toPosixLabel(full, root), stripCssComments(readFileSync(full, "utf8"))]);
+    }
+  }
+  return out;
 }

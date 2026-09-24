@@ -2,7 +2,8 @@
 // Settings → AI Features, the post-capture float-over). Measured in
 // headless Chromium before it used useModal: focus stayed on the control
 // that opened it, the third Tab walked out behind the scrim, and Escape did
-// nothing at all.
+// nothing at all. `aria-modal` describes the accessibility tree; it neither
+// moves focus nor holds it.
 
 import { act, useState, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -108,6 +109,37 @@ describe("AiConsentDialog — keyboard", () => {
       expect(behind).not.toHaveBeenCalled();
     } finally {
       window.removeEventListener("keydown", onKey);
+    }
+  });
+
+  test("focus moving between the dialog's own buttons stays put", async () => {
+    await openDialog();
+    const enable = button("Enable AI enrichment");
+    await act(async () => enable.focus());
+    expect(document.activeElement).toBe(enable);
+  });
+
+  // Tab is the trap's; this is focus moved some other way, e.g. a click on
+  // another control in the float-over toast, where there is no scrim.
+  test("focus escaping to the page behind is pulled back to Cancel", async () => {
+    await openDialog();
+    await act(async () => document.getElementById("behind")!.focus());
+    expect(document.activeElement).toBe(button("Cancel"));
+  });
+
+  test("a modal opened on top keeps its focus", async () => {
+    await openDialog();
+    const onTop = document.createElement("div");
+    onTop.setAttribute("role", "dialog");
+    onTop.setAttribute("aria-modal", "true");
+    const deny = document.createElement("button");
+    onTop.appendChild(deny);
+    document.body.appendChild(onTop);
+    try {
+      await act(async () => deny.focus());
+      expect(document.activeElement).toBe(deny);
+    } finally {
+      onTop.remove();
     }
   });
 

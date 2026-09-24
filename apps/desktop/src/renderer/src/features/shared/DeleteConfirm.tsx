@@ -96,11 +96,12 @@ export function DeleteConfirm({
   const popoverRef = useRef<HTMLDivElement | null>(null);
   const confirmBtnRef = useRef<HTMLButtonElement | null>(null);
 
+  // `anchorRef` is deliberately NOT cleared on close: it is where focus goes
+  // back to, and the trap reads it after the popover has unmounted.
   const close = useCallback(() => {
     setOpen(false);
     setCoords(null);
     setDontAsk(false);
-    anchorRef.current = null;
   }, []);
 
   const handleTriggerClick = useCallback(
@@ -153,31 +154,48 @@ export function DeleteConfirm({
   // on close. Gated on `coords` because the first frame is `visibility:
   // hidden`, and a hidden button cannot take focus. preventScroll so focusing
   // never nudges a scroller — the close-on-scroll listener below would
-  // otherwise dismiss the popover the instant it opens.
+  // otherwise dismiss the popover the instant it opens. The return target is
+  // the trigger the click came from, not whatever held focus at open: a
+  // click does not always focus the button it lands on.
   useFocusTrap({
     open: open && coords !== null,
     containerRef: popoverRef,
     initialFocusRef: confirmBtnRef,
+    returnFocusRef: anchorRef,
     preventScroll: true
   });
   useDismissable({ open, onDismiss: close, surfaceRef: popoverRef });
 
-  // Dismiss on outside pointer-down, scroll, or window resize (Escape is
-  // useDismissable's). The opening click already passed (listener attaches
-  // after open), so it does not self-close.
+  // Dismiss on outside pointer-down, focus landing outside, scroll, or window
+  // resize (Escape is useDismissable's). The opening click already passed
+  // (listener attaches after open), so it does not self-close.
+  //
+  // The trap keeps Tab inside, so focus lands outside only when something
+  // else moves it: the user has moved on, and the popover must not stay open
+  // over whatever it covers. Focus landing in a modal opened ON TOP (an agent
+  // approval) is the exception. The confirm waits underneath, and focus comes
+  // back to it when that modal closes.
   useEffect(() => {
     if (!open) return;
+    const outside = (target: EventTarget | null): boolean =>
+      !(target instanceof Node && popoverRef.current?.contains(target) === true);
     const onPointerDown = (event: PointerEvent): void => {
-      const target = event.target as Node | null;
-      if (target !== null && popoverRef.current?.contains(target) === true) return;
+      if (outside(event.target)) close();
+    };
+    const onFocusIn = (event: FocusEvent): void => {
+      const target = event.target;
+      if (!outside(target)) return;
+      if (target instanceof Element && target.closest('[aria-modal="true"]') !== null) return;
       close();
     };
     const onScrollOrResize = (): void => close();
     document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("focusin", onFocusIn, true);
     window.addEventListener("scroll", onScrollOrResize, true);
     window.addEventListener("resize", onScrollOrResize);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("focusin", onFocusIn, true);
       window.removeEventListener("scroll", onScrollOrResize, true);
       window.removeEventListener("resize", onScrollOrResize);
     };

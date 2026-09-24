@@ -62,6 +62,17 @@
   --accent-border: color-mix(in srgb, var(--accent) 42%, transparent);
   --accent-shadow: color-mix(in srgb, var(--accent) 34%, transparent);
 
+  /* ---------- COLOR — focus ----------
+     The house focus ring is `outline: 2px solid var(--focus-ring)`. Same
+     name and value as PwrAgent's (docs/UI-THEME.md) and PwrGit's. It is
+     full-strength `--accent`, never a derived overlay: `--accent-border`
+     rings measured 2.2:1 against the dark surfaces, and 1.4.11 wants
+     3:1. `--accent` measures 8.6:1 on `--bg-app` dark and 4.6:1 on
+     white. Like the overlays above it resolves against whichever
+     `--accent` the element has, so the light block does not redeclare
+     it. */
+  --focus-ring: var(--accent);
+
   /* ---------- COLOR — brand blue (logo / parent stamp ONLY) ---------- */
   /* Reserved for the PwrDrvr brand mark on its navy plate. Do NOT use
      in product UI — the in-product accent is copper above. */

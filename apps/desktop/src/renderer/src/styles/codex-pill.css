@@ -123,6 +123,12 @@
 .ps-codex-pill.is-idle {
   opacity: 0.85;
 }
+/* The idle dim fades the rings of the buttons inside the pill (Use draft,
+   Regenerate) with everything else: 3.4:1 in light. Undim while one of
+   them has keyboard focus. */
+.ps-codex-pill.is-idle:has(:focus-visible) {
+  opacity: 1;
+}
 
 /* --- inline variant (sidebar header / chip) --- */
 

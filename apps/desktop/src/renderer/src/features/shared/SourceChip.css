@@ -230,7 +230,7 @@
 .ps-chip:has(> .ps-chip__body:focus-visible),
 .ps-chip__act:focus-visible,
 .ps-chip__devices:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 /* …and the toggle draws none of its own, or the chip wears two rings.

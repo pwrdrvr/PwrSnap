@@ -25,6 +25,17 @@
 // that, never shown again. The component reads the flag via
 // useSettings (same hook the parent toolbar uses) so cross-instance
 // state stays consistent.
+//
+// Keyboard: a light-dismiss MODAL popover (any pointerdown outside closes
+// it), so it behaves like one. It renders after the whole toolbar rather
+// than beside its caret, so as a non-modal popover it was unreachable in
+// any sensible order — Tab from the caret walked on through the toolbar and
+// focus never entered it. Now focus moves in once it is positioned, Tab
+// stays inside, and Escape closes it and returns focus to the caret —
+// without the editor ALSO clearing the canvas selection, which the old
+// document-bubble listener could not prevent (the editor listens earlier,
+// on window-capture). The Custom… color dialog inside is its own layer:
+// Escape there closes only it.
 
 import {
   useCallback,
@@ -57,6 +68,9 @@ import type {
 } from "@pwrsnap/shared";
 import { COLOR_TOKENS, MAX_HIGHLIGHT_OPACITY } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
+import { useDismissable } from "../../lib/useDismissable";
+import { useFocusTrap } from "../../lib/useFocusTrap";
+import { useModal } from "../../lib/useModal";
 import { useSettings } from "../settings/useSettings";
 
 // ---- Public types ---------------------------------------------------
@@ -523,8 +537,14 @@ export function ToolStylePopover(props: ToolStylePopoverProps): ReactElement | n
     };
   }, [anchorRef]);
 
-  // Click-outside + Escape → onClose. Pointerdown rather than click so
-  // dismissal feels instant (matches every other popover in the app).
+  // Focus in once positioned (the first frame is `visibility: hidden`, and
+  // a hidden control cannot take focus), Tab stays inside, focus back to
+  // the caret on close; Escape → onClose.
+  useFocusTrap({ open: position.visibility !== "hidden", containerRef: rootRef });
+  useDismissable({ open: true, onDismiss: onClose, surfaceRef: rootRef });
+
+  // Click-outside → onClose. Pointerdown rather than click so dismissal
+  // feels instant (matches every other popover in the app).
   useEffect(() => {
     const onPointerDown = (e: MouseEvent): void => {
       const root = rootRef.current;
@@ -548,17 +568,9 @@ export function ToolStylePopover(props: ToolStylePopoverProps): ReactElement | n
       if (anchor !== null && anchor.parentElement?.contains(target)) return;
       onClose();
     };
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onClose();
-      }
-    };
     document.addEventListener("pointerdown", onPointerDown, true);
-    document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown, true);
-      document.removeEventListener("keydown", onKey);
     };
   }, [anchorRef, onClose]);
 
@@ -608,7 +620,9 @@ export function ToolStylePopover(props: ToolStylePopoverProps): ReactElement | n
       data-tool={tool}
       data-testid="tool-style-popover"
       role="dialog"
+      aria-modal="true"
       aria-label={`${tool} style options`}
+      tabIndex={-1}
     >
       {/* Outer inline-block measurer per AGENTS.md "Tray + float-over
           popover sizing — outer inline-block measurer". The styled
@@ -1432,8 +1446,19 @@ interface ColorRowProps {
 
 function ColorRow({ value, onChange }: ColorRowProps): ReactElement {
   const groupId = useId();
-  const dialogRef = useRef<HTMLDialogElement | null>(null);
   const swatchRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const customBtnRef = useRef<HTMLButtonElement | null>(null);
+  // The native dialog is modal (showModal), so it is its own overlay layer:
+  // it is deeper than the popover, so Escape and Tab inside it are its own.
+  // Claiming Escape suppresses the browser's own close, hence the explicit
+  // close() here. Focus goes back to Custom… — named, because showModal()
+  // has already moved focus inside by the time this renders open.
+  const [customOpen, setCustomOpen] = useState(false);
+  const dialogRef = useModal<HTMLDialogElement>({
+    open: customOpen,
+    onClose: () => dialogRef.current?.close(),
+    returnFocusRef: customBtnRef
+  });
 
   const onKeyDown = useCallback(
     (e: ReactKeyboardEvent<HTMLDivElement>): void => {
@@ -1467,7 +1492,8 @@ function ColorRow({ value, onChange }: ColorRowProps): ReactElement {
     } else {
       dlg.show?.();
     }
-  }, []);
+    setCustomOpen(true);
+  }, [dialogRef]);
 
   return (
     <FieldGroup label="Color" testid="color-row">
@@ -1500,6 +1526,7 @@ function ColorRow({ value, onChange }: ColorRowProps): ReactElement {
           );
         })}
         <button
+          ref={customBtnRef}
           type="button"
           className="pse-custom-btn"
           data-testid="color-custom"
@@ -1507,7 +1534,12 @@ function ColorRow({ value, onChange }: ColorRowProps): ReactElement {
         >
           Custom…
         </button>
-        <dialog ref={dialogRef} className="pse-color-dialog">
+        <dialog
+          ref={dialogRef}
+          className="pse-color-dialog"
+          aria-label="Custom color"
+          onClose={() => setCustomOpen(false)}
+        >
           <form
             method="dialog"
             onSubmit={(e) => {

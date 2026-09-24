@@ -1,4 +1,5 @@
 import type { ReactElement } from "react";
+import { useModal } from "../../lib/useModal";
 import "./AiConsentDialog.css";
 
 export type AiConsentDialogProps = {
@@ -10,13 +11,20 @@ export function AiConsentDialog({
   onAccept,
   onCancel
 }: AiConsentDialogProps): ReactElement {
+  // Escape is Cancel, and focus starts there too: the first control, and the
+  // answer that sends nothing. In the float-over the dialog sits inline in the
+  // toast rather than over a scrim, and still traps — it says aria-modal, so a
+  // screen reader already treats the toast's other controls as unreachable.
+  const dialogRef = useModal<HTMLElement>({ onClose: onCancel });
   return (
     <div className="ps-ai-consent__backdrop" role="presentation">
       <section
+        ref={dialogRef}
         className="ps-ai-consent"
         role="dialog"
         aria-modal="true"
         aria-labelledby="ps-ai-consent-title"
+        tabIndex={-1}
       >
         <div className="ps-ai-consent__eyebrow">AI enrichment</div>
         <h2 id="ps-ai-consent-title" className="ps-ai-consent__title">

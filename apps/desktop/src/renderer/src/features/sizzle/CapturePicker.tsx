@@ -1,8 +1,14 @@
 // Modal grid of Library captures for "+ Add scene" / "+ Clip".
+//
+// A modal in every sense but the markup until now: it had a scrim and no
+// role, no label, no Escape, no focus move and no trap, so Tab walked from
+// the grid into the editor behind the scrim. `useModal` gives it the lot;
+// focus returns to "+ Add scene" (or whichever control opened it).
 
-import { useRef, type ReactElement } from "react";
+import { useId, useRef, type ReactElement } from "react";
 import type { CaptureRecord } from "@pwrsnap/shared";
 import { cacheUrl, captureSrcUrl } from "../../lib/pwrsnap";
+import { useModal } from "../../lib/useModal";
 import { formatDur } from "./sizzle-helpers";
 
 export type CapturePickerProps = {
@@ -19,6 +25,8 @@ export function CapturePicker({
   onClose
 }: CapturePickerProps): ReactElement {
   const overlayRef = useRef<HTMLDivElement | null>(null);
+  const dialogRef = useModal({ onClose });
+  const titleId = useId();
   return (
     <div
       ref={overlayRef}
@@ -27,14 +35,22 @@ export function CapturePicker({
         if (e.target === overlayRef.current) onClose();
       }}
     >
-      <div className="szl__modal">
+      <div
+        ref={dialogRef}
+        className="szl__modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+      >
         <header>
-          <h3>Add scene from Library</h3>
+          <h3 id={titleId}>Add scene from Library</h3>
           <button
             className="szl__scene-mini"
             type="button"
             onClick={onClose}
             title="Close"
+            aria-label="Close"
           >
             ✕
           </button>

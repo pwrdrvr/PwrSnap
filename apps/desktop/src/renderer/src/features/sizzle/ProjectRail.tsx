@@ -5,6 +5,8 @@
 
 import { useEffect, useRef, type MouseEvent as ReactMouseEvent, type ReactElement, type RefObject } from "react";
 import type { SizzleProject } from "@pwrsnap/shared";
+import { useDismissable } from "../../lib/useDismissable";
+import { useMenuNavigation } from "../../lib/useMenuNavigation";
 import { formatProjectDate, isDifferentProjectDate } from "./sizzle-helpers";
 
 export type ProjectRailModel = {
@@ -212,23 +214,14 @@ export function SizzleProjectContextMenu({
       if (event.target instanceof Node && root.contains(event.target)) return;
       onClose();
     }
-    function onKeyDown(event: KeyboardEvent): void {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      onClose();
-    }
     document.addEventListener("mousedown", onMouseDown);
-    document.addEventListener("keydown", onKeyDown, { capture: true });
-    return () => {
-      document.removeEventListener("mousedown", onMouseDown);
-      document.removeEventListener("keydown", onKeyDown, { capture: true });
-    };
+    return () => document.removeEventListener("mousedown", onMouseDown);
   }, [onClose]);
 
-  useEffect(() => {
-    requestAnimationFrame(() => rootRef.current?.focus());
-  }, []);
+  // Escape closes only this menu, not the rail popover it was opened over;
+  // the role="menu" keys and focus in/out are useMenuNavigation's.
+  useDismissable({ open: true, onDismiss: onClose, surfaceRef: rootRef });
+  useMenuNavigation({ open: true, menuRef: rootRef, onClose });
 
   return (
     <div

@@ -22,6 +22,7 @@ import {
   type SizzleProject
 } from "@pwrsnap/shared";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
+import { useDismissable } from "../../lib/useDismissable";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import { CapturePicker } from "./CapturePicker";
 import { ChatResizer, getSavedChatWidth, setSavedChatWidth } from "./ChatResizer";
@@ -149,6 +150,30 @@ export function SizzleApp({
 
   // Rail-as-dropdown: close on outside click / Esc, toggle with primary+Shift+L.
   const railIsPopover = active !== null;
+  // Escape closes the dropdown and nothing else. Its old window-bubble
+  // listener did not stop the event, so the editor's inspector listener
+  // (same target, same phase) closed the open clip inspector with it. A
+  // context menu opened over the rail is its own layer and answers first.
+  useDismissable({
+    open: railIsPopover && railOpen,
+    onDismiss: () => setRailOpen(false),
+    surfaceRef: railRef,
+    triggerRef: railCrumbRef
+  });
+  // Opened from the keyboard (⌘⇧L), the dropdown takes focus — on the open
+  // reel — so its rows are reachable without tabbing across the header
+  // first, and Escape has an owner. A crumb click leaves focus on the
+  // crumb, which already owns Escape as the trigger.
+  const focusRailOnOpenRef = useRef(false);
+  useEffect(() => {
+    if (!railIsPopover || !railOpen || !focusRailOnOpenRef.current) return;
+    focusRailOnOpenRef.current = false;
+    const rail = railRef.current;
+    const target =
+      rail?.querySelector<HTMLElement>(".szl__row.is-active") ??
+      rail?.querySelector<HTMLElement>("button:not(:disabled)");
+    target?.focus({ preventScroll: true });
+  }, [railIsPopover, railOpen]);
   useEffect(() => {
     if (!railIsPopover || !railOpen) return;
     const onPointerDown = (event: PointerEvent): void => {
@@ -158,14 +183,9 @@ export function SizzleApp({
       if (railCrumbRef.current?.contains(target) === true) return;
       setRailOpen(false);
     };
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") setRailOpen(false);
-    };
     window.addEventListener("pointerdown", onPointerDown, true);
-    window.addEventListener("keydown", onKeyDown);
     return () => {
       window.removeEventListener("pointerdown", onPointerDown, true);
-      window.removeEventListener("keydown", onKeyDown);
     };
   }, [railIsPopover, railOpen]);
   useEffect(() => {
@@ -186,7 +206,10 @@ export function SizzleApp({
         event.key.toLowerCase() === "l"
       ) {
         event.preventDefault();
-        setRailOpen((v) => !v);
+        setRailOpen((v) => {
+          focusRailOnOpenRef.current = !v;
+          return !v;
+        });
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -253,7 +276,6 @@ export function SizzleApp({
               ref={railCrumbRef}
               type="button"
               className={"szl__title-crumb-btn" + (railOpen ? " is-open" : "")}
-              aria-haspopup="true"
               aria-expanded={railOpen}
               aria-controls="szl-rail"
               onClick={() => setRailOpen((v) => !v)}

@@ -26,6 +26,8 @@ import {
   type ReactElement
 } from "react";
 import type { ChatApprovalDecision, ChatApprovalRequest } from "@pwrsnap/shared";
+import { useDismissable } from "../../../lib/useDismissable";
+import { useFocusTrap } from "../../../lib/useFocusTrap";
 import "./chat-primitives.css";
 
 export interface ChatApprovalModalProps {
@@ -61,7 +63,6 @@ export function ChatApprovalModal(props: ChatApprovalModalProps): ReactElement {
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const denyButtonRef = useRef<HTMLButtonElement | null>(null);
   const primaryButtonRef = useRef<HTMLButtonElement | null>(null);
-  const restoreFocusRef = useRef<HTMLElement | null>(null);
   const busyRef = useRef<boolean>(busy);
   busyRef.current = busy;
   // Ref guard so the first click wins even if a second click lands in
@@ -79,12 +80,21 @@ export function ChatApprovalModal(props: ChatApprovalModalProps): ReactElement {
   }, []);
 
   // `aria-modal` describes the accessibility tree but does not manage focus.
-  // Capture the element that owned focus before the prompt, then restore it
-  // when the exact approval leaves the UI. Request supersession reuses this
-  // mounted modal, so the original app control remains the restore target.
+  // The shared trap keeps Tab inside and, when the exact approval leaves the
+  // UI, returns focus to the element that owned it before the prompt. Request
+  // supersession reuses this mounted modal, so the original app control
+  // remains the restore target.
+  //
+  // It is the shared trap rather than a listener of its own so that a second
+  // modal open at the same time — a DeleteConfirm the user had up when the
+  // agent asked — resolves Tab by one owner rule instead of fighting it.
+  useFocusTrap({ open: true, containerRef: dialogRef, initialFocusRef: denyButtonRef });
+
+  // What the trap does not do: a PROGRAMMATIC focus move behind the scrim
+  // (the composer re-focusing after a turn event) is recaptured at once, so
+  // Enter or Space can never land on an app control the user cannot see.
+  // The trap would only pull focus back on the next Tab.
   useLayoutEffect(() => {
-    restoreFocusRef.current =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const containFocus = (event: FocusEvent): void => {
       const dialog = dialogRef.current;
       if (dialog === null || dialog.contains(event.target as Node | null)) return;
@@ -92,12 +102,7 @@ export function ChatApprovalModal(props: ChatApprovalModalProps): ReactElement {
       else (denyButtonRef.current ?? primaryButtonRef.current ?? dialog).focus();
     };
     document.addEventListener("focusin", containFocus, true);
-    return () => {
-      document.removeEventListener("focusin", containFocus, true);
-      const restoreTarget = restoreFocusRef.current;
-      restoreFocusRef.current = null;
-      if (restoreTarget?.isConnected === true) restoreTarget.focus();
-    };
+    return () => document.removeEventListener("focusin", containFocus, true);
   }, []);
 
   // Deny is the safe initial/default action. While submission disables every
@@ -149,50 +154,9 @@ export function ChatApprovalModal(props: ChatApprovalModalProps): ReactElement {
     [resolve, retryDecision]
   );
 
-  // Own keyboard focus for the lifetime of the modal. Capture-phase handling
-  // prevents controls behind the scrim from seeing Escape/Tab first if focus
-  // is moved outside programmatically.
-  useEffect(() => {
-    const handler = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        resolve("deny");
-        return;
-      }
-      if (event.key !== "Tab") return;
-
-      const dialog = dialogRef.current;
-      if (dialog === null) return;
-      const actions = [denyButtonRef.current, primaryButtonRef.current].filter(
-        (button): button is HTMLButtonElement => button !== null && !button.disabled
-      );
-      if (actions.length === 0) {
-        event.preventDefault();
-        event.stopPropagation();
-        dialog.focus();
-        return;
-      }
-
-      const first = actions[0];
-      const last = actions[actions.length - 1];
-      const active = document.activeElement;
-      const focusLeftModal = active === null || !dialog.contains(active);
-      if (focusLeftModal || (event.shiftKey && active === first)) {
-        event.preventDefault();
-        event.stopPropagation();
-        (event.shiftKey ? last : first).focus();
-      } else if (!event.shiftKey && active === last) {
-        event.preventDefault();
-        event.stopPropagation();
-        first.focus();
-      }
-    };
-    window.addEventListener("keydown", handler, true);
-    return () => {
-      window.removeEventListener("keydown", handler, true);
-    };
-  }, [busy, resolve]);
+  // Escape is Deny. `resolve` already refuses a second decision while one
+  // is in flight.
+  useDismissable({ open: true, onDismiss: () => resolve("deny"), surfaceRef: dialogRef });
 
   const activeDecision = submitting ? retryDecision : localDecision;
   const titleId = `ps-approval-title-${request.approvalId}`;

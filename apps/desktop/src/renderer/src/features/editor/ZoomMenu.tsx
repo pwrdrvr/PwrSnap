@@ -15,13 +15,31 @@
 //
 // The popover contains: Fit row, 100% row, and a custom-pct row with
 // −20% / text input / +20% buttons. Selected row gets a checkmark.
+//
+// It is a non-modal DIALOG, not a menu. It used to say role="menu", which
+// promises arrow keys between menu items — and a menu cannot hold a text
+// field or step buttons, so the promise could not be kept (measured: every
+// arrow key went to the input, and Tab walked out with the popover still
+// open). As a popover it sits right after its trigger in the DOM, so Tab
+// order is the visual order; Escape closes it and returns focus to the
+// trigger; and focus leaving it closes it rather than leaving it open over
+// the toolbar.
 
-import { useCallback, useEffect, useId, useRef, useState, type ReactElement } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type ReactElement
+} from "react";
 import {
   acceleratorToDisplayKeys,
   acceleratorToDisplayText,
   type ShortcutPlatform
 } from "@pwrsnap/shared";
+import { useDismissable } from "../../lib/useDismissable";
+import { useFocusReturn } from "../../lib/useFocusReturn";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import type { ZoomApi } from "./Editor";
 import "./ZoomMenu.css";
@@ -39,6 +57,8 @@ export function ZoomMenu({
     acceleratorToDisplayKeys("CommandOrControl", shortcutPlatform)[0] ?? "Ctrl";
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const labelId = useId();
 
@@ -53,7 +73,24 @@ export function ZoomMenu({
       ? ""
       : Math.round(zoom.displayPct).toString();
 
-  // Close on outside click / Escape.
+  // Escape discards any typed draft and closes. The claim is made on window
+  // before the editor's own listener, so Escape here never ALSO clears the
+  // canvas selection — which it did from any row other than the input.
+  useDismissable({
+    open,
+    onDismiss: () => {
+      setDraft(null);
+      setOpen(false);
+    },
+    surfaceRef: popoverRef,
+    triggerRef,
+    dismissOnFocusLeave: true
+  });
+  // Closing from a row (Fit, 100%, Enter in the field) unmounts the control
+  // holding focus; put it back on the trigger instead of <body>.
+  useFocusReturn({ open, containerRef: popoverRef, returnFocusRef: triggerRef });
+
+  // Close on outside click.
   useEffect(() => {
     if (!open) return;
     function onDown(e: MouseEvent | TouchEvent): void {
@@ -62,18 +99,11 @@ export function ZoomMenu({
       if (e.target instanceof Node && root.contains(e.target)) return;
       setOpen(false);
     }
-    function onKey(e: KeyboardEvent): void {
-      if (e.key === "Escape") {
-        setOpen(false);
-      }
-    }
     document.addEventListener("mousedown", onDown);
     document.addEventListener("touchstart", onDown);
-    document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("touchstart", onDown);
-      document.removeEventListener("keydown", onKey);
     };
   }, [open]);
 
@@ -108,9 +138,10 @@ export function ZoomMenu({
   return (
     <div className="ed-zoom" ref={rootRef}>
       <button
+        ref={triggerRef}
         type="button"
         className={"ed-zoom-btn" + (open ? " is-open" : "")}
-        aria-haspopup="menu"
+        aria-haspopup="dialog"
         aria-expanded={open}
         aria-labelledby={labelId}
         onClick={() => setOpen((o) => !o)}
@@ -122,11 +153,15 @@ export function ZoomMenu({
         </svg>
       </button>
       {open && (
-        <div className="ed-zoom-menu" role="menu">
+        <div
+          ref={popoverRef}
+          className="ed-zoom-menu"
+          role="dialog"
+          aria-label="Zoom"
+        >
           <button
             type="button"
-            role="menuitemradio"
-            aria-checked={zoom.mode === "fit"}
+            aria-pressed={zoom.mode === "fit"}
             className={"ed-zoom-row" + (zoom.mode === "fit" ? " is-selected" : "")}
             onClick={() => {
               zoom.resetToFit();
@@ -144,8 +179,7 @@ export function ZoomMenu({
           </button>
           <button
             type="button"
-            role="menuitemradio"
-            aria-checked={zoom.mode === "actual"}
+            aria-pressed={zoom.mode === "actual"}
             className={"ed-zoom-row" + (zoom.mode === "actual" ? " is-selected" : "")}
             onClick={() => {
               zoom.actualSize();
@@ -182,13 +216,10 @@ export function ZoomMenu({
                 }}
                 onBlur={commitDraft}
                 onKeyDown={(e) => {
+                  // Escape never reaches here: useDismissable claims it.
                   if (e.key === "Enter") {
                     e.preventDefault();
                     commitDraft();
-                    setOpen(false);
-                  } else if (e.key === "Escape") {
-                    e.preventDefault();
-                    setDraft(null);
                     setOpen(false);
                   }
                 }}

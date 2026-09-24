@@ -121,6 +121,8 @@ import { useGridPinchZoom } from "../../lib/useGridPinchZoom";
 import { registerCaptureUndoFallback } from "../../lib/editMenuBridge";
 import { useStorageSnapshot } from "../../lib/useStorageSnapshot";
 import { useCapturesLocationDisplayState } from "../../lib/useCapturesLocationDisplayState";
+import { useDismissable } from "../../lib/useDismissable";
+import { useMenuNavigation } from "../../lib/useMenuNavigation";
 import { useHotkeys } from "../shared/useHotkeys";
 import { useVideoTrimRange } from "../shared/useVideoTrimRange";
 import { AppMenuBar } from "../shared/AppMenuBar";
@@ -1406,6 +1408,20 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
         : "calculating storage";
   const [storagePanelOpen, setStoragePanelOpen] = useState(false);
   const storagePanelRef = useRef<HTMLDivElement | null>(null);
+  const storageTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const storagePopoverRef = useRef<HTMLDivElement | null>(null);
+  // Escape closes the popover and ONLY the popover. Its old window-bubble
+  // listener did not stop the event, so the Library's own Escape handler
+  // (same target, same phase) ran as well and collapsed the pinned rail —
+  // or, in Focus, closed the editor. Focus goes back to the trigger, and Tab
+  // out past the popover's last button closes it.
+  useDismissable({
+    open: storagePanelOpen,
+    onDismiss: () => setStoragePanelOpen(false),
+    surfaceRef: storagePopoverRef,
+    triggerRef: storageTriggerRef,
+    dismissOnFocusLeave: true
+  });
   const appCacheBytes =
     (storage.snapshot?.chromiumHttpCache.bytes ?? 0) +
     (storage.snapshot?.chromiumCodeCache.bytes ?? 0);
@@ -1506,14 +1522,9 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
       if (root !== null && event.target instanceof Node && root.contains(event.target)) return;
       setStoragePanelOpen(false);
     }
-    function closeOnEscape(event: KeyboardEvent): void {
-      if (event.key === "Escape") setStoragePanelOpen(false);
-    }
     window.addEventListener("pointerdown", closeOnOutsidePointer);
-    window.addEventListener("keydown", closeOnEscape);
     return () => {
       window.removeEventListener("pointerdown", closeOnOutsidePointer);
-      window.removeEventListener("keydown", closeOnEscape);
     };
   }, [refreshStorage, storagePanelOpen]);
 
@@ -5170,6 +5181,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
         <div className="psl__status-l">
           <div className="psl__storage" ref={storagePanelRef}>
             <button
+              ref={storageTriggerRef}
               className="psl__storage-trigger"
               type="button"
               aria-haspopup="dialog"
@@ -5180,7 +5192,12 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
               <span>{storageLabel}</span>
             </button>
             {storagePanelOpen ? (
-              <div className="psl__storage-popover" role="dialog" aria-label="Storage usage">
+              <div
+                ref={storagePopoverRef}
+                className="psl__storage-popover"
+                role="dialog"
+                aria-label="Storage usage"
+              >
                 {storage.error !== null ? (
                   <div className="psl__storage-error">{storage.error}</div>
                 ) : null}
@@ -5606,12 +5623,13 @@ function useCellsPerRow(
 }
 
 /**
- * Shared dismiss + focus mechanism for the grid's context menus:
- * click-outside closes, Esc closes (capture phase, so it beats the
- * window-level Esc handlers that collapse the rail / leave Focus), and
- * the menu takes focus on the next frame so keyboard users land inside
- * it. Both the project menu and the capture menu use this so the two
- * can't drift.
+ * Shared dismiss + keyboard mechanism for the grid's context menus:
+ * click-outside closes; Esc closes (`useDismissable`, whose claim stops
+ * the event before the window-level Esc handlers that collapse the rail /
+ * leave Focus); and the role="menu" keys — arrows, Home/End, typeahead,
+ * Tab closes — with focus into the first row on open and back to the tile
+ * on close (`useMenuNavigation`). Both the project menu and the capture
+ * menu use this so the two can't drift.
  *
  * Scroll / resize / blur also close, for the same reason `DeleteConfirm`
  * closes on them: `.psl__context-menu` is `position: fixed` at the
@@ -5633,35 +5651,26 @@ function useContextMenuDismiss(
       if (event.target instanceof Node && root.contains(event.target)) return;
       onClose();
     }
-    function onKeyDown(event: KeyboardEvent): void {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      onClose();
-    }
     function onDetach(): void {
       onClose();
     }
     document.addEventListener("mousedown", onMouseDown);
-    document.addEventListener("keydown", onKeyDown, { capture: true });
     window.addEventListener("scroll", onDetach, true);
     window.addEventListener("resize", onDetach);
     window.addEventListener("blur", onDetach);
     return () => {
       document.removeEventListener("mousedown", onMouseDown);
-      document.removeEventListener("keydown", onKeyDown, { capture: true });
       window.removeEventListener("scroll", onDetach, true);
       window.removeEventListener("resize", onDetach);
       window.removeEventListener("blur", onDetach);
     };
   }, [onClose, rootRef]);
 
-  useEffect(() => {
-    // preventScroll so taking focus never nudges a scroller — the
-    // close-on-scroll listener above would otherwise dismiss the menu the
-    // instant it opens (same reason DeleteConfirm does this).
-    requestAnimationFrame(() => rootRef.current?.focus({ preventScroll: true }));
-  }, [rootRef]);
+  useDismissable({ open: true, onDismiss: onClose, surfaceRef: rootRef });
+  // Focuses the first row with preventScroll, so taking focus never nudges
+  // a scroller — the close-on-scroll listener above would otherwise dismiss
+  // the menu the instant it opens (same reason DeleteConfirm does this).
+  useMenuNavigation({ open: true, menuRef: rootRef, onClose });
 }
 
 /**

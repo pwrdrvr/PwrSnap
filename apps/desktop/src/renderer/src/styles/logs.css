@@ -36,6 +36,15 @@
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
+/* The input is borderless, so this box is the field. Its tint and soft
+   halo were the only focus signal and both measure under 3:1, so the
+   box draws the house ring while the input has focus. */
+.log-window__search:has(input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+  box-shadow: none;
+}
+
 .log-window__search > span {
   padding: 0 10px;
   color: var(--text-muted);
@@ -127,9 +136,19 @@
 .log-window__level-option:focus-visible,
 .log-window__button:focus-visible,
 .log-window__file-action:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
+
+/* The level options fill `.log-window__level-filter`, which clips at its
+   rounded border: the outset ring above kept 16-32% of itself. Inset. */
+.log-window__level-option:focus-visible {
+  outline-offset: -2px;
+}
+/* The group's inner radius (7px less its 1px border), so its clip leaves
+   the end options' ring corners alone. */
+.log-window__level-option:first-child:focus-visible { border-radius: 6px 0 0 6px; }
+.log-window__level-option:last-child:focus-visible { border-radius: 0 6px 6px 0; }
 
 .log-window__file {
   display: flex;

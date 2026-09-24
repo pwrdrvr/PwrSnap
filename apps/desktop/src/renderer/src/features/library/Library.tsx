@@ -1,4 +1,4 @@
-import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import type { FocusEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import {
   createContext,
   memo,
@@ -65,6 +65,7 @@ import type { Capture } from "./captures";
 import { APP_INFO, PROJECT_APP_KEY, groupByDay } from "./captures";
 import { DetailRail } from "./DetailRail";
 import { GridCopyPalette } from "./GridCopyPalette";
+import { closeWhenFocusLeaves } from "../shared/close-when-focus-leaves";
 import { resolveLibraryAiToggleAction } from "./library-ai-toggle";
 import { nextAfterDelete } from "./delete-nav";
 import { DeleteUndoStack } from "./delete-undo-stack";
@@ -2803,6 +2804,31 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
     frame?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [view.kind, reelSelectedId]);
 
+  // Tab onto a frame does not select it, so the effect above never
+  // runs, and Chromium will not scroll the filmstrip for it either:
+  // it scrolls a horizontal scroller to a focused child only when the
+  // child is entirely out of view (measured on Chromium 151). A frame
+  // already partly in view stays put when focused, even with 2px
+  // showing. So Tab onto the frame cut off at the filmstrip's right
+  // edge left it and its focus ring about two-thirds hidden.
+  // Keyboard focus only: a mouse press focuses the frame too, and
+  // scrolling it out from under the pointer before mouseup would
+  // move the click onto its neighbour.
+  const revealKeyboardFocusedFrame = useCallback(
+    (event: FocusEvent<HTMLButtonElement>): void => {
+      const frame = event.currentTarget;
+      let keyboard = false;
+      try {
+        keyboard = frame.matches(":focus-visible");
+      } catch {
+        // A selector engine without :focus-visible (jsdom). Leave the
+        // scroll position alone rather than guess the modality.
+      }
+      if (keyboard) frame.scrollIntoView({ block: "nearest", inline: "nearest" });
+    },
+    []
+  );
+
   // Stale-selection fallback: when the live list no longer contains
   // the selected record (e.g. a soft-delete races an open Focus),
   // bail to grid via the reducer's FILTER_CHANGED action.
@@ -4989,6 +5015,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                                     (c.hasAlpha ? " psl__frame--alpha" : "")
                                   }
                                   onClick={() => onSelectFrame(c)}
+                                  onFocus={revealKeyboardFocusedFrame}
                                 >
                                   <CellThumb
                                     capture={c}
@@ -5725,6 +5752,7 @@ function LibraryCaptureContextMenu({
       tabIndex={-1}
       style={{ left: `${menu.x}px`, top: `${menu.y}px` }}
       onContextMenu={(event) => event.preventDefault()}
+      onBlur={closeWhenFocusLeaves(onClose)}
       aria-label={`${menu.capture.n} actions`}
     >
       {menu.isTrashed ? (
@@ -5846,6 +5874,7 @@ function LibraryProjectContextMenu({
       tabIndex={-1}
       style={{ left: `${menu.x}px`, top: `${menu.y}px` }}
       onContextMenu={(event) => event.preventDefault()}
+      onBlur={closeWhenFocusLeaves(onClose)}
       aria-label={`${menu.projectName} actions`}
     >
       <button

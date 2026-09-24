@@ -109,7 +109,7 @@
   border-color: var(--border-subtle);
 }
 .szl__title-crumb-btn:focus-visible {
-  outline: 2px solid var(--accent-border);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 .szl__title-caret {
@@ -442,6 +442,13 @@
   outline: 0;
 }
 
+/* As `.psl__context-menu-row`: focus was the hover paint alone. Inset,
+   because the rows stack 2px apart. */
+.szl__context-menu-row:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
 /* Main pane — empty state OR active editor. */
 .szl__main {
   grid-column: 2;
@@ -520,6 +527,14 @@
   border-bottom-color: var(--accent-border);
 }
 
+/* The title field is borderless, and that 42% underline measured 2.2:1.
+   It keeps the underline and rings 2px off the text. */
+.szl__editor-title:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
 .szl__editor-meta {
   font: 500 11px/1 var(--font-mono);
   color: var(--text-muted);
@@ -594,7 +609,7 @@
   border-color: var(--border-default);
 }
 .szl__reel-settings:focus-visible {
-  outline: 2px solid var(--accent-border);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 .szl__reel-settings-label {
@@ -773,6 +788,13 @@
 
 .szl__scene-script:focus {
   border-color: var(--accent-border);
+}
+
+/* The 2.2:1 border tint stays; the field draws the house ring too. */
+.szl__scene-script:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+  scroll-margin: 4px;
 }
 
 .szl__scene-row {
@@ -1458,6 +1480,13 @@
   text-decoration: underline;
   text-underline-offset: 3px;
 }
+/* The select is borderless inside the pill, so the pill is the field's
+   box and rings while the select has focus. The underline alone was too
+   slight to find. */
+.szl__transition-chip:has(select:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
 .szl__transition-chip select option {
   text-transform: none;
   letter-spacing: 0;
@@ -2043,7 +2072,7 @@
   cursor: not-allowed;
 }
 .szl__reel-play:focus-visible {
-  outline: 2px solid var(--accent-border);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 .szl__reel-mute {

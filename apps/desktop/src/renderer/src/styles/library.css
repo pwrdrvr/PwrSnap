@@ -258,6 +258,16 @@
 }
 .ps-tray__quick:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
 .ps-tray__quick:active { transform: translateY(1px); }
+/* The resting ring above is decoration, drawn focused or not, so on its
+   own it says nothing about focus. Focused, it goes full strength and
+   steps out to 3px. Recolouring it in place is not enough: 42% accent to
+   full accent is only 2.5:1 on the light tray. Stepping out puts the ring
+   on pixels the resting ring never covered, where it contrasts with the
+   tray background instead. */
+.ps-tray__quick:focus-visible {
+  outline-color: var(--focus-ring);
+  outline-offset: 3px;
+}
 .ps-tray__quick-l { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .ps-tray__quick-eyebrow {
   font: 700 12px/1 var(--font-display);
@@ -306,12 +316,11 @@
   opacity: 0.45;
   transform: none;
 }
-/* The orange Quick Capture button reads as focused via its always-on
-   accent ring; the video variant drops that ring (outline: none above),
-   so it needs an explicit keyboard-focus indicator of its own. Mouse
-   focus stays clean — :focus-visible only. */
+/* The video variant drops the orange button's resting ring (outline:
+   none above), so its focus ring is the house ring at the usual 1px.
+   Mouse focus stays clean — :focus-visible only. */
 .ps-tray__quick--video:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 .ps-tray__quick--video .ps-tray__quick-l { flex: 1; min-width: 0; }
@@ -362,7 +371,7 @@
    accent ring so a11y tab navigation still has a visible target. */
 .ps-mode:focus { outline: none; }
 .ps-mode:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 .ps-mode__icon {
@@ -485,6 +494,12 @@
 /* `contain` to match the library + float-over thumbnail policy —
    preserve the capture's true aspect ratio. */
 .ps-tray__last-preview img { width: 100%; height: 100%; object-fit: contain; display: block; }
+/* As `.fo__preview video`: the native controls make the video a Tab stop,
+   and this box clips at its rounded border. Inset, at the inner radius. */
+.ps-tray__last-preview video:focus-visible {
+  outline-offset: -2px;
+  border-radius: 5px;
+}
 
 /* Edit overlay — top-right corner of the last-snap preview. Always
    visible (the tray popover is already focused, so an opacity-on-
@@ -707,7 +722,7 @@
   color: var(--danger-text);
 }
 .ps-wincontrols__btn:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
 }
 
@@ -890,6 +905,12 @@
 }
 .psl__search:focus {
   border-color: var(--accent-border);
+}
+/* The border tint alone measured 2.2:1 against the field. It stays, and
+   the field draws the house ring too. */
+.psl__search:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
 }
 .psl__search:disabled {
   opacity: 0.5;
@@ -1463,6 +1484,17 @@
     0 8px 24px var(--accent-shadow);
   z-index: 2;
 }
+/* Tab onto a frame is revealed by `revealKeyboardFocusedFrame` in
+   Library.tsx, which honours this margin: the ring's reach (3px) + 1. */
+.psl__frame:focus-visible { scroll-margin-inline: 4px; }
+/* The selected frame's 1px halo sits exactly where a 1px-offset ring
+   starts, so the ring would only thicken the selection. Step it out to
+   leave a gap. Being lifted (z-index 2), it paints over the 3px gap to
+   its neighbours. */
+.psl__frame.is-selected:focus-visible {
+  outline-offset: 3px;
+  scroll-margin-inline: 6px;
+}
 .psl__frame.is-in-reel {
   border-color: var(--success-border);
   box-shadow: 0 0 0 1px var(--success);
@@ -1633,6 +1665,15 @@
   color: var(--text-primary);
   background: var(--bg-panel-hover);
 }
+/* The row has no bottom padding, so a focused chip's ring reaches into
+   `.psl__grid-wrap`, where the sticky `.psl__day-hdr` (z-index 2) paints
+   over it. Lift the row above it while focus is inside. */
+.psl__chips:has(:focus-visible) {
+  position: relative;
+  z-index: 3;
+}
+/* The × rests at 0.7, and opacity fades an element's outline with it. */
+.psl__chip-x:focus-visible { opacity: 1; }
 
 /* Grid below reel — day-grouped traditional */
 .psl__grid-wrap {
@@ -1655,6 +1696,15 @@
      the saved position. The virtualizer is already authoritative
      for which rows render where — let it own the scroll geometry. */
   overflow-anchor: none;
+  /* Where focus scrolling and `scrollIntoView` may put a cell. The top
+     reserves the pinned `.psl__day-hdr` (32px) plus a focus ring's reach
+     (3px) + 1. Without it, Shift+Tab up the grid scrolled each tile's
+     cart button to the scrollport's top edge, entirely under the header,
+     and the arrow keys' `block: "nearest"` did the same to a selected
+     row. The bottom keeps a ring on the last row from being cut 3px
+     short when Tab scrolls down to it. The virtualizer's `scrollTo`
+     ignores scroll-padding. */
+  scroll-padding-block: 36px 4px;
 }
 .psl__day-hdr {
   display: flex; align-items: center; gap: 10px;
@@ -2100,6 +2150,13 @@
   transform: none;
   pointer-events: auto;
 }
+/* The rail's corner scrim darkens the thumbnail under these, which is
+   what the button needs and what the ring does not: in light the ring
+   measured 1.8-2.9:1 against it. A 1px `--bg-app` halo outside the ring
+   gives it a background of our own. */
+.psl__cell-trash:focus-visible {
+  box-shadow: 0 0 0 4px var(--bg-app);
+}
 @media (prefers-reduced-motion: reduce) {
   .psl__cell-trash { transform: none; }
 }
@@ -2164,6 +2221,13 @@
   background: var(--bg-panel);
   color: var(--text-primary);
   outline: 0;
+}
+/* Focus used to be the hover paint alone, so a focused row and a hovered
+   row looked the same. The ring is inset because the rows stack 2px
+   apart. */
+.psl__context-menu-row:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 
 /* Group separator. The capture menu runs three groups — open/copy,
@@ -2263,6 +2327,8 @@
    by re-rendering the cells: Library re-renders once when the cart goes
    from empty to non-empty, and the class change restyles every tile. */
 .psl[data-selecting="cart"] .psl__cell-cart { opacity: 0.9; }
+/* That 0.9 fades the ring too; a focused box is at full strength. */
+.psl[data-selecting="cart"] .psl__cell-cart:focus-visible { opacity: 1; }
 .psl[data-selecting="cart"] .psl__cell:hover .psl__cell-cart { opacity: 1; }
 /* A subtle accent ring on the whole cell when it's in the cart, so
    collected items read as a set even when the checkbox is small.
@@ -2307,7 +2373,8 @@
 }
 .psl__cart-name:hover { border-color: var(--border-subtle); }
 .psl__cart-name:focus-visible {
-  outline: none;
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
   border-color: var(--accent-border);
   background: var(--bg-panel-elevated);
 }
@@ -2347,8 +2414,8 @@
   background: var(--danger-soft);
 }
 .psl__cart-clear:focus-visible {
-  outline: none;
-  border-color: var(--accent-border);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
 }
 .psl__cart-empty {
   padding: 16px 14px;
@@ -2670,6 +2737,12 @@
   background: var(--bg-panel-hover, var(--bg-row-active));
   color: var(--text-primary);
   outline: none;
+}
+/* That shared paint is also the hover and open state, so on its own it
+   does not say which control has focus. */
+.hover-reveal-panel__menu-button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
 }
 .hover-reveal-panel__menu-glyph {
   display: inline-flex;
@@ -3072,7 +3145,7 @@
 }
 .psl__right-tab:hover:not(.is-active) { color: var(--text-secondary); }
 .psl__right-tab:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 .psl__right-tab.is-active {
@@ -3337,7 +3410,7 @@
 }
 .psl__chip-link:hover { color: var(--accent-bright); text-decoration: underline; }
 .psl__chip-link:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -3384,7 +3457,7 @@
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 .psl__field-use:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 .psl__field-input,
@@ -3407,6 +3480,16 @@
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 32%, transparent);
+}
+/* The 1px border is the field's own edge, not a focus indicator, so the
+   field draws the house ring as every other control does. The 32% halo
+   would fill the ring's 1px gap, so the ring replaces it. */
+.psl__field-input:focus-visible,
+.psl__field-textarea:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+  box-shadow: none;
+  scroll-margin: 4px;
 }
 .psl__field-input.is-suggested,
 .psl__field-textarea.is-suggested {
@@ -3455,7 +3538,7 @@
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 .psl__draft-preview-use:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 .psl__draft-preview-text {
@@ -3496,6 +3579,17 @@
   border-color: var(--accent);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 32%, transparent);
 }
+/* `.psl__tag-input` is borderless, so the row it sits in is the field's
+   box and rings while the input holds focus. Keyed on the input, not
+   `:focus-within`: the chips' remove buttons sit in the same row and
+   ring themselves. */
+.psl__tag-row:has(.psl__tag-input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+  box-shadow: none;
+}
+/* Row padding 6 + border 1 + ring reach 3 + 1. */
+.psl__tag-input:focus-visible { scroll-margin: 11px; }
 /* The shared .ps-tag::before bullet adds visual noise inside the
    tag editor — every chip starts with a small dot that doesn't
    communicate anything. Hide it within the tag-row context; the
@@ -3527,7 +3621,7 @@
   background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .psl__tag-remove:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 .psl__tag-suggest-label {
@@ -3540,7 +3634,7 @@
   border-radius: 3px;
 }
 .psl__tag-suggest-label:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 .psl__tag-suggest-x {
@@ -3559,7 +3653,7 @@
 }
 .psl__tag-suggest-x:hover { opacity: 1; }
 .psl__tag-suggest-x:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
   opacity: 1;
 }
@@ -3724,7 +3818,7 @@
   opacity: 0.62;
 }
 .psl__ai-toggle:focus-visible {
-  outline: 2px solid var(--accent-border);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
   border-radius: 4px;
 }
@@ -4016,6 +4110,14 @@
 .psl__stage-nav:disabled {
   opacity: 0.32;
   cursor: not-allowed;
+}
+/* These float over the capture itself, and over a video frame the ring's
+   outer edge fell to 1.7:1 against the picture. A 1px `--bg-app` halo
+   outside the ring (the spread is the ring's 1px offset + 2px width + 1)
+   gives it a background of our own on both sides, whatever is under it. */
+.psl__stage-nav:focus-visible,
+.psl__focus-close:focus-visible {
+  box-shadow: 0 0 0 4px var(--bg-app);
 }
 .psl__stage-nav.is-prev {
   left: 16px;
@@ -4321,16 +4423,12 @@
 .psl__et-caret.is-open svg {
   transform: rotate(180deg);
 }
-/* Suppress the focus-visible ring on the caret. It's a sub-control of
-   the main button and the parent tool-wrap's active state is the
-   visible signal. Without this, the caret flashes a focus outline
-   whenever the renderer's focus shuffles transiently (notably during
-   the Cmd+Shift+C screenshot global-hotkey route, which briefly
-   reshuffles focus across all top-level windows). */
-.psl__et-caret:focus,
-.psl__et-caret:focus-visible {
-  outline: none;
-}
+/* The caret is its own Tab stop, so it draws the house ring
+   (`:where(:focus-visible)` in app.css). It used to suppress every
+   outline, to hide a flash while the Cmd+Shift+C global-hotkey route
+   briefly moved focus between windows. That left a keyboard stop with
+   no indicator at all. If the flash comes back, fix where focus lands
+   after the shuffle; the fix is not to remove the ring again. */
 .psl__et-caret svg {
   width: 7px;
   height: 5px;
@@ -4359,6 +4457,14 @@
 }
 .psl__et-matching-text:hover {
   background: var(--accent-soft);
+}
+/* The pill's own drop shadow sits under its ring, and in light it pulled
+   the ring down to 1.8:1. A 1px `--bg-app` halo outside the ring comes
+   first, so it paints over the shadow. */
+.psl__et-matching-text:focus-visible {
+  box-shadow:
+    0 0 0 4px var(--bg-app),
+    0 8px 24px color-mix(in srgb, var(--shadow-base) 50%, transparent);
 }
 .psl__et-matching-text > span:first-child {
   font-size: 14px;
@@ -4483,6 +4589,16 @@
     0 0 0 1px color-mix(in srgb, var(--shadow-base) 45%, transparent),
     inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 5%, transparent);
 }
+/* The palette covers the tile under the selected one (or wherever it was
+   dragged), and Tab walks every tile's buttons. The buttons it landed on
+   there were drawn under the palette: 0% of the cart button's ring on
+   screen, 25% of Edit's and Trash's. While keyboard focus is on another
+   tile, the palette steps aside. It comes back when focus returns to the
+   selected tile or leaves the grid. Pointer focus never matches, so
+   clicking a tile leaves it alone. */
+.psl__main:has(.psl__cell:not(.is-selected) :focus-visible) > .psl__grid-copy-palette {
+  visibility: hidden;
+}
 /* Locator — only rendered while the selected capture is off screen.
    Accent-tinted because it is a call to action, not ambient chrome: it
    is the answer to "where is the thing these buttons act on?". */
@@ -4504,7 +4620,7 @@
   color: var(--accent-bright);
 }
 .psl__grid-copy-palette-locate:focus-visible {
-  outline: 2px solid var(--accent-border);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 
@@ -4543,7 +4659,7 @@
   color: var(--text-primary);
 }
 .psl__grid-copy-palette-anchor:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 .psl__grid-copy-palette-anchor[aria-pressed="false"] {

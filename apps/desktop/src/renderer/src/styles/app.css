@@ -44,6 +44,49 @@
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
 
+/* The house focus ring, for every control that does not state its own.
+   Without it, a control with no `:focus-visible` rule draws Chromium's
+   `outline: auto 1px rgb(153, 200, 255)`: a pale blue ring from outside
+   the palette. That was most of the app: the Library top bar, sidebar,
+   grid tiles and editor toolbar, every Settings sidebar row, segmented
+   control and switch, the float-over, the tray header and the Sizzle
+   scene cards. `:where()` keeps this at zero specificity, so any
+   component rule wins, including a base-state `outline: none`. A control
+   that sets one must show focus some other way at 3:1.
+
+   1px out suits a bordered or filled control. A row or scroller that runs
+   edge to edge inside an `overflow` ancestor insets its ring instead
+   (`outline-offset: -2px`).
+
+   `scroll-margin` is the ring's reach (1 + 2) plus 1px. When Tab moves
+   focus to a control past a scroller's edge, Chromium scrolls only until
+   the control's border box is in view, which cut the ring's far edge off
+   in the Library and Settings sidebars, the Settings pages and the Sizzle
+   scene list at their windows' minimum heights. Chromium reads the margin
+   from this rule at the moment it scrolls. A control whose ring reaches
+   further sets its own. See AGENTS.md ("Focus rings"). */
+:where(:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+  scroll-margin: 4px;
+}
+
+/* Focused while unavailable. These controls stay focusable while they
+   cannot act (aria-disabled, or busy encoding) and say so with `opacity`,
+   which fades an element's outline along with everything else it paints.
+   While focused they trade the fade for a muted paint at full opacity,
+   so the control still reads as unavailable and the ring draws at full
+   strength. A new rule that dims a focusable control with opacity joins
+   this block. */
+.pse-chrome__act.is-disabled:focus-visible,
+.layer-context-menu__row.is-disabled:focus-visible,
+.fo__copy-btn.is-running:focus-visible {
+  opacity: 1;
+  color: var(--text-subtle);
+  background: transparent;
+  border-color: var(--border-subtle);
+}
+
 /* Visually hidden but available to assistive tech. */
 .sr-only {
   position: absolute;
@@ -598,7 +641,7 @@ body[data-stage="float-over"] .fo {
   cursor: not-allowed;
 }
 .app-update-banner__notes:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
   border-radius: 4px;
 }

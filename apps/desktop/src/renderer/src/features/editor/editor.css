@@ -865,7 +865,7 @@
   border-color: var(--accent-strong);
 }
 .pse-crop-action.is-apply:focus-visible {
-  outline: 2px solid var(--accent-bright);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -880,7 +880,7 @@
   background: var(--bg-panel-hover);
 }
 .pse-crop-action.is-cancel:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -999,7 +999,7 @@
   background: var(--bg-panel-hover);
 }
 .pse-chrome__act:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 .pse-chrome__act.is-active {
@@ -1276,7 +1276,7 @@
   background: color-mix(in srgb, var(--accent) 20%, transparent);
 }
 .pse-affordance:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -1443,7 +1443,7 @@
 }
 
 .pse-v1v2-banner__retry:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 

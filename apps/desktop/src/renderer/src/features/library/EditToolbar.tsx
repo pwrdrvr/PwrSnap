@@ -341,6 +341,12 @@ export function EditToolbar({
   // seen-set silently. Subsequent updates compare against the seed
   // and any rows that appear after that point are placements.
   //
+  // "Resolution" means a loaded snapshot of THIS capture, not the
+  // effect's first run: the model starts in `loading` (library:byId +
+  // layers:list are async IPC), where overlayRows is []. Seeding from
+  // that made every existing user row look freshly placed once the
+  // model resolved, popping "+ Add label" on open.
+  //
   // Stash a stable reference to onAnnotationPlaced so the effect
   // doesn't re-bind every render (the hook returns a fresh callback
   // when localStyles change).
@@ -355,12 +361,23 @@ export function EditToolbar({
    *    • first load for this capture → seed silently (no placement)
    *    • subsequent loads → diff for placements */
   const seededCaptureRef = useRef<string | null>(null);
+  /** Whose rows `overlayRows` holds, or null while it holds none.
+   *  NOT `model.captureId` — that is the prop, and on the render right
+   *  after a capture switch the model still carries the PREVIOUS
+   *  capture's record and layers (its reset to `loading` runs in an
+   *  effect). Only the record says whose snapshot this is. */
+  const snapshotCaptureId = model.kind === "loaded" ? model.record.id : null;
   useEffect(() => {
     if (captureId === undefined) {
       lastSeenRowIdsRef.current = new Set();
       seededCaptureRef.current = null;
       return;
     }
+    // No snapshot of this capture yet (loading, errored, or the stale
+    // one above): nothing to seed from and nothing to diff. Leave the
+    // seen-set alone so the next real snapshot is compared against the
+    // last real one.
+    if (snapshotCaptureId !== captureId) return;
     const nextIds = new Set(overlayRows.map((r) => r.id));
     const isFirstLoadForCapture = seededCaptureRef.current !== captureId;
     if (isFirstLoadForCapture) {
@@ -389,7 +406,7 @@ export function EditToolbar({
       }
     }
     lastSeenRowIdsRef.current = nextIds;
-  }, [captureId, overlayRows]);
+  }, [captureId, snapshotCaptureId, overlayRows]);
 
   const overlayCount = overlayRows.length;
   // Cropped-state detector for the Reset button. A crop has TWO

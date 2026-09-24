@@ -182,6 +182,39 @@ describe("useDismissable — which overlay answers", () => {
     expect(document.activeElement).toBe(byId("trigger"));
   });
 
+  test("dismiss runs BEFORE focus moves to the trigger, so a blur can see it", async () => {
+    // A field that commits on blur (the zoom field) must learn that Escape
+    // discarded its edit before focus leaves it.
+    const order: string[] = [];
+    await render(
+      <Overlay id="popover" onDismiss={() => order.push("dismiss")} trigger="Zoom">
+        <input id="field" onBlur={() => order.push("blur")} />
+      </Overlay>
+    );
+    byId("field").focus();
+    await press("Escape");
+    expect(order).toEqual(["dismiss", "blur"]);
+    expect(document.activeElement).toBe(byId("trigger"));
+  });
+
+  test("a dismiss that sends focus somewhere on purpose is not overridden", async () => {
+    await render(
+      <>
+        <Overlay
+          id="popover"
+          onDismiss={() => document.getElementById("elsewhere")?.focus()}
+          trigger="Zoom"
+        >
+          <button id="inside">x</button>
+        </Overlay>
+        <button id="elsewhere">elsewhere</button>
+      </>
+    );
+    byId("inside").focus();
+    await press("Escape");
+    expect(document.activeElement).toBe(byId("elsewhere"));
+  });
+
   test("an Escape that ends an IME composition is the field's, not the overlay's", async () => {
     const onDismiss = vi.fn();
     await render(

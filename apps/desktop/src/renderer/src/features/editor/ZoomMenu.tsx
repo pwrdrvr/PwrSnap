@@ -73,12 +73,18 @@ export function ZoomMenu({
       ? ""
       : Math.round(zoom.displayPct).toString();
 
+  // Set by Escape so the blur that follows cannot commit what Escape threw
+  // away. A ref, not the draft state: focus leaves the field synchronously,
+  // before React re-renders, and onBlur still holds the typed draft.
+  const discardRef = useRef(false);
+
   // Escape discards any typed draft and closes. The claim is made on window
   // before the editor's own listener, so Escape here never ALSO clears the
   // canvas selection — which it did from any row other than the input.
   useDismissable({
     open,
     onDismiss: () => {
+      discardRef.current = true;
       setDraft(null);
       setOpen(false);
     },
@@ -111,6 +117,7 @@ export function ZoomMenu({
   // the user can immediately start typing a new pct.
   useEffect(() => {
     if (open) {
+      discardRef.current = false;
       requestAnimationFrame(() => {
         inputRef.current?.select();
       });
@@ -121,7 +128,7 @@ export function ZoomMenu({
   }, [open]);
 
   const commitDraft = useCallback((): void => {
-    if (draft === null) return;
+    if (draft === null || discardRef.current) return;
     const pct = parseFloat(draft);
     if (Number.isFinite(pct) && pct > 0) {
       zoom.setCustomPct(pct);

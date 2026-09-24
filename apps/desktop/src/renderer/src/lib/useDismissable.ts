@@ -121,6 +121,12 @@ function onGlobalKeyDown(e: KeyboardEvent): void {
   if (owner === undefined) return;
   e.preventDefault();
   e.stopImmediatePropagation();
+  // Dismiss FIRST, then move focus. Moving it first blurs whatever held it
+  // while the overlay is still live, and a field that commits on blur then
+  // commits the very edit Escape was meant to throw away — the zoom field
+  // did exactly that. And only park focus on the trigger if it is still in
+  // the overlay: a dismiss handler that sent it somewhere on purpose wins.
+  owner.onDismiss.current();
   const trigger = owner.triggerRef?.current ?? null;
   if (trigger !== null && trigger.isConnected) {
     const active = document.activeElement;
@@ -128,7 +134,6 @@ function onGlobalKeyDown(e: KeyboardEvent): void {
       active === trigger || (active !== null && owner.surfaceRef.current?.contains(active) === true);
     if (inside) trigger.focus();
   }
-  owner.onDismiss.current();
 }
 
 if (typeof window !== "undefined") {

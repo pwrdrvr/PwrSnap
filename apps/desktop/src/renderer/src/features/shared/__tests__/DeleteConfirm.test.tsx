@@ -8,6 +8,9 @@
 //   • Confirm fires onConfirm exactly once and closes.
 //   • Cancel, Escape, and an outside pointer-down all close WITHOUT firing
 //     onConfirm.
+//   • It is a modal confirm for the keyboard: Tab stays inside (the portal
+//     puts it at the END of <body>, so an untrapped Tab fell off the page),
+//     and closing returns focus to the trigger instead of <body>.
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -210,5 +213,69 @@ describe("DeleteConfirm", () => {
     });
     expect(onConfirm).toHaveBeenCalledTimes(1);
     expect(onDontAskAgain).not.toHaveBeenCalled();
+  });
+});
+
+describe("DeleteConfirm — keyboard", () => {
+  async function press(key: string, shiftKey = false): Promise<KeyboardEvent> {
+    const target = (document.activeElement as HTMLElement | null) ?? document.body;
+    const e = new KeyboardEvent("keydown", { key, shiftKey, bubbles: true, cancelable: true });
+    await act(async () => {
+      target.dispatchEvent(e);
+      await Promise.resolve();
+    });
+    return e;
+  }
+
+  function control(selector: string): HTMLElement {
+    const el = popover()?.querySelector<HTMLElement>(selector) ?? null;
+    if (el === null) throw new Error(`${selector} not found`);
+    return el;
+  }
+
+  test("says it is modal, and focus lands on the confirm button", async () => {
+    await renderConfirm();
+    trigger().focus();
+    await clickTrigger();
+    expect(popover()?.getAttribute("aria-modal")).toBe("true");
+    expect(document.activeElement).toBe(control(".ps-confirm__btn.is-danger"));
+  });
+
+  test("Tab from the last button wraps to the first control instead of leaving", async () => {
+    await renderConfirm({ withDontAsk: true });
+    trigger().focus();
+    await clickTrigger();
+    expect((await press("Tab")).defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(control('input[type="checkbox"]'));
+  });
+
+  test("Shift+Tab from the first control wraps to the last", async () => {
+    await renderConfirm();
+    trigger().focus();
+    await clickTrigger();
+    control(".ps-confirm__btn:not(.is-danger)").focus();
+    expect((await press("Tab", true)).defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(control(".ps-confirm__btn.is-danger"));
+  });
+
+  test("Escape returns focus to the trigger, not <body>", async () => {
+    await renderConfirm();
+    trigger().focus();
+    await clickTrigger();
+    await press("Escape");
+    expect(popover()).toBeNull();
+    expect(document.activeElement).toBe(trigger());
+  });
+
+  test("Cancel returns focus to the trigger too", async () => {
+    await renderConfirm();
+    trigger().focus();
+    await clickTrigger();
+    await act(async () => {
+      control(".ps-confirm__btn:not(.is-danger)").click();
+      await Promise.resolve();
+    });
+    expect(popover()).toBeNull();
+    expect(document.activeElement).toBe(trigger());
   });
 });

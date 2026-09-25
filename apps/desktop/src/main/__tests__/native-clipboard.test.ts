@@ -66,7 +66,7 @@ afterEach(async () => {
 describe.skipIf(process.platform !== "darwin")("writeMultiFormatClipboard", () => {
   test("returns false (no spawn) when no helper is resolvable", async () => {
     // Default: helper override cleared + VITEST set → auto-resolution
-    // is gated off, so the caller falls back to clipboard.writeBuffer.
+    // is gated off, so the caller falls back to Electron's clipboard.
     const result = await writeMultiFormatClipboard({
       utiName: "com.pwrdrvr.pwrsnap.layer-fragment",
       utiBytes: Buffer.from("frag"),

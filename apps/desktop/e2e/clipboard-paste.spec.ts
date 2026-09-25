@@ -30,10 +30,14 @@ async function writeClipboardImage(
   png: Buffer
 ): Promise<void> {
   await app.electronApp.evaluate(
-    ({ clipboard, nativeImage }, payload: { bytes: number[] }) => {
+    async ({ clipboard, ClipboardItem, nativeImage }, payload: { bytes: number[] }) => {
       const image = nativeImage.createFromBuffer(Buffer.from(payload.bytes));
       if (image.isEmpty()) throw new Error("fixture image decoded empty");
-      clipboard.write({ image });
+      await clipboard.write([
+        new ClipboardItem({
+          "image/png": new Blob([new Uint8Array(image.toPNG())], { type: "image/png" })
+        })
+      ]);
     },
     { bytes: Array.from(png) }
   );
@@ -48,9 +52,13 @@ async function writeClipboardImageFileUrl(
   await writeFile(pngPath, png);
   const fileUrl = pathToFileURL(pngPath).href;
   await app.electronApp.evaluate(
-    ({ clipboard }, payload: { fileUrl: string }) => {
+    async ({ clipboard, ClipboardItem }, payload: { fileUrl: string }) => {
       clipboard.clear();
-      clipboard.writeBookmark("PwrSnap fixture", payload.fileUrl);
+      await clipboard.write([
+        new ClipboardItem({
+          "electron application/bookmark": { title: "PwrSnap fixture", url: payload.fileUrl }
+        })
+      ]);
     },
     { fileUrl }
   );

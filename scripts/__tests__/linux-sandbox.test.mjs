@@ -74,7 +74,12 @@ describe("Linux sandbox integration", () => {
     const desktop = JSON.parse(read("../../apps/desktop/package.json")).scripts;
     expect(root["fix:linux-sandbox"]).toBe("node ./scripts/linux-sandbox.mjs --fix");
     expect(root["check:linux-sandbox"]).toBe("node ./scripts/linux-sandbox.mjs --warn");
-    expect(desktop.postinstall).toBe("pnpm run rebuild:electron-native && node ../../scripts/linux-sandbox.mjs --warn");
+    // Electron 42+ no longer downloads its binary in its own postinstall, so
+    // `install-electron` runs first: the advisory below checks that binary's
+    // setuid helper, and `pnpm preview` launches it.
+    expect(desktop.postinstall).toBe(
+      "install-electron && pnpm run rebuild:electron-native && node ../../scripts/linux-sandbox.mjs --warn"
+    );
     expect(desktop.preview).toBe("node ../../scripts/linux-sandbox.mjs --warn && electron-vite preview");
     expect(desktop.dev).toBe("node ./scripts/dev.mjs");
   });

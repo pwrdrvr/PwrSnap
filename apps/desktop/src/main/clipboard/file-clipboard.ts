@@ -4,12 +4,11 @@
 // type. Windows does NOT: Explorer and attachment-aware paste targets consume
 // the predefined numeric CF_HDROP format (id 15), whose HGLOBAL contains a
 // DROPFILES header followed by fully-qualified UTF-16 paths. Electron's
-// `clipboard.writeBuffer(format: string, ...)` can register a named custom
-// format, but it cannot address that predefined numeric format. The bundled
-// native helper therefore owns the Windows write and verifies it with
-// DragQueryFileW before acknowledging success.
+// raw-format clipboard write can register a named custom format, but it
+// cannot address that predefined numeric format. The bundled native helper
+// therefore owns the Windows write and verifies it with DragQueryFileW before
+// acknowledging success.
 
-import { clipboard } from "electron";
 import {
   spawn,
   type ChildProcessWithoutNullStreams,
@@ -20,6 +19,7 @@ import { stat } from "node:fs/promises";
 import { win32 } from "node:path";
 import { pathToFileURL } from "node:url";
 import { getMainLogger } from "../log";
+import { readClipboard, writeClipboard } from "./system-clipboard";
 
 const log = getMainLogger("pwrsnap:file-clipboard");
 
@@ -34,10 +34,15 @@ type FileClipboardAck = {
   dropEffect: "copy";
 };
 
-type ClipboardBufferApi = Pick<
-  typeof clipboard,
-  "availableFormats" | "readBuffer" | "writeBuffer"
->;
+type ClipboardBufferApi = {
+  writeRaw(format: string, bytes: Buffer): Promise<void>;
+  readBuffer(format: string): Promise<Buffer>;
+};
+
+const systemClipboardBufferApi: ClipboardBufferApi = {
+  writeRaw: (format, bytes) => writeClipboard({ raw: { [format]: bytes } }),
+  readBuffer: async (format) => (await readClipboard()).readBuffer(format)
+};
 
 type SpawnFileClipboardHelper = (
   command: string,
@@ -115,16 +120,18 @@ async function assertClipboardFile(filePath: string): Promise<void> {
  * call alone is insufficient: returning success after an empty pasteboard is
  * precisely the Windows regression this abstraction is intended to prevent.
  */
-export function writeMacFileToClipboard(
+export async function writeMacFileToClipboard(
   filePath: string,
-  clipboardApi: ClipboardBufferApi = clipboard
-): void {
+  clipboardApi: ClipboardBufferApi = systemClipboardBufferApi
+): Promise<void> {
   const expected = Buffer.from(pathToFileURL(filePath).toString(), "utf8");
-  clipboardApi.writeBuffer("public.file-url", expected);
+  // The raw UTI, which gets the same flavor set a Finder copy does.
+  await clipboardApi.writeRaw("public.file-url", expected);
 
-  // Electron enumerates normalized MIME types (text/uri-list), not necessarily
-  // the native public.file-url UTI. Verify the payload through that UTI directly.
-  const actual = clipboardApi.readBuffer("public.file-url");
+  // Electron 44 lists that UTI only as `text/uri-list` and rejects a read by
+  // the UTI itself (measured on 44.4.5), so verify the payload through the
+  // MIME name.
+  const actual = await clipboardApi.readBuffer("text/uri-list");
   if (actual.length === 0 || !actual.equals(expected)) {
     throw new Error("macOS clipboard did not retain the exported file URL");
   }
@@ -234,7 +241,7 @@ export async function writeFileToClipboard(filePath: string): Promise<void> {
   await assertClipboardFile(filePath);
 
   if (process.platform === "darwin") {
-    writeMacFileToClipboard(filePath);
+    await writeMacFileToClipboard(filePath);
     return;
   }
   if (process.platform === "win32") {

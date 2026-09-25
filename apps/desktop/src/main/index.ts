@@ -12,7 +12,6 @@ import {
   app,
   BaseWindow,
   BrowserWindow,
-  clipboard,
   dialog,
   globalShortcut,
   Menu,
@@ -261,6 +260,7 @@ import { resolveCacheFile } from "./render/coordinator";
 import { destroyTextBakePool } from "./render/text-html-bake";
 import { shutdownCompositeThumbnailWorker } from "./workers/composite-thumbnail-worker-client";
 import { clipboardEvents } from "./clipboard-events";
+import { clearClipboard, readClipboard, writeClipboardText } from "./clipboard/system-clipboard";
 import { CHROMIUM_DISK_CACHE_LIMIT_BYTES } from "./storage/accounting";
 import { installProtocolHandlers, registerSchemesAsPrivileged, type ProtocolResolver } from "./protocols";
 import {
@@ -392,6 +392,7 @@ const shortcutPlatform = shortcutPlatformFromString(process.platform);
  */
 const isE2E = process.env.PWRSNAP_E2E === "1";
 let pasteFromClipboardMenuItem: Electron.MenuItem | null = null;
+let pasteFromClipboardRefreshSeq = 0;
 let localAgentMcpLifecycle: LocalAgentMcpLifecycle | null = null;
 let disposeLocalAgentMcpSettingsListener: (() => void) | null = null;
 let localAgentConsentBroker: LocalAgentConsentBroker | null = null;
@@ -545,20 +546,27 @@ function wireWindowMenuRefresh(): void {
   });
 }
 
-function copyDiagnosticsInfo(): void {
-  clipboard.writeText(
-    formatDiagnosticsInfo({
-      version: resolveAppVersion(),
-      packaged: app.isPackaged,
-      platform: process.platform,
-      platformVersion: process.getSystemVersion(),
-      arch: process.arch,
-      electronVersion: process.versions.electron ?? "",
-      chromeVersion: process.versions.chrome ?? "",
-      nodeVersion: process.versions.node ?? ""
-    })
-  );
-  // The copy has already happened; the toast only confirms it. Only the
+async function copyDiagnosticsInfo(): Promise<void> {
+  try {
+    await writeClipboardText(
+      formatDiagnosticsInfo({
+        version: resolveAppVersion(),
+        packaged: app.isPackaged,
+        platform: process.platform,
+        platformVersion: process.getSystemVersion(),
+        arch: process.arch,
+        electronVersion: process.versions.electron ?? "",
+        chromeVersion: process.versions.chrome ?? "",
+        nodeVersion: process.versions.node ?? ""
+      })
+    );
+  } catch (cause) {
+    getMainLogger("pwrsnap:menu").warn("copy diagnostics info failed", {
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+    return;
+  }
+  // The toast only confirms a copy that has already landed. Only the
   // Library renders the toast stack, so it goes there whichever window the
   // click came from.
   findMainLibraryWindow()?.webContents.send(EVENT_CHANNELS.appNotice, {
@@ -630,7 +638,9 @@ const applicationMenuActions: ApplicationMenuActions = {
     if (!listOpenAppWindows().some((entry) => entry.window === target)) return;
     target.webContents.reload();
   },
-  onCopyDiagnostics: copyDiagnosticsInfo,
+  onCopyDiagnostics: () => {
+    void copyDiagnosticsInfo();
+  },
   onOpenExternal: (url) => {
     // The same allowlist every outbound URL clears (navigation-guard.ts).
     if (!isAllowedExternalUrl(url)) {
@@ -655,9 +665,30 @@ const applicationMenuActions: ApplicationMenuActions = {
   }
 };
 
+/**
+ * Electron 44 made every clipboard read async (clipboard/system-clipboard.ts),
+ * so `menu-will-show` can no longer settle the item before the menu draws:
+ * it starts a read whose answer usually lands after the menu is already up.
+ * What keeps the item right is refreshing on activation — a copy made in
+ * another app only reaches this menu by way of PwrSnap becoming active,
+ * which fires `browser-window-focus`, or `did-become-active` on macOS when
+ * no window takes focus. Both are wired next to the clipboard-changed
+ * listener. A late answer from an older read never overwrites a newer one.
+ */
 function refreshPasteFromClipboardMenu(): void {
-  if (pasteFromClipboardMenuItem === null) return;
-  pasteFromClipboardMenuItem.enabled = clipboardHasPasteableImage();
+  const item = pasteFromClipboardMenuItem;
+  if (item === null) return;
+  const seq = ++pasteFromClipboardRefreshSeq;
+  void clipboardHasPasteableImage().then(
+    (enabled) => {
+      if (seq === pasteFromClipboardRefreshSeq) item.enabled = enabled;
+    },
+    (cause: unknown) => {
+      getMainLogger("pwrsnap:clipboard").warn("paste menu clipboard probe failed", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
+  );
 }
 
 async function runPasteFromClipboard(): Promise<void> {
@@ -1961,6 +1992,11 @@ export function bootstrapApp(): void {
     // time. Listeners outlive the menu (re-set on developerMode change
     // via installApplicationMenu), so this single subscribe survives
     // every menu rebuild.
+    // Writes from other apps: see refreshPasteFromClipboardMenu.
+    app.on("browser-window-focus", refreshPasteFromClipboardMenu);
+    if (process.platform === "darwin") {
+      app.on("did-become-active", refreshPasteFromClipboardMenu);
+    }
     clipboardEvents.on("changed", () => {
       refreshPasteFromClipboardMenu();
       for (const win of BrowserWindow.getAllWindows()) {
@@ -2451,21 +2487,25 @@ export function bootstrapApp(): void {
         // when the clipboard doesn't currently hold an image. Used by
         // clipboard-copy.spec.ts to verify each preset (low/med/high)
         // produces an image of the expected width on the clipboard.
-        readClipboardImage: () => {
-          const img = clipboard.readImage();
+        readClipboardImage: async () => {
+          const img = await (await readClipboard()).readImage();
           if (img.isEmpty()) return null;
           const size = img.getSize();
           return { width: size.width, height: size.height, isEmpty: false };
         },
-        readClipboardBookmark: () => clipboard.readBookmark(),
-        readClipboardText: () => clipboard.readText(),
-        readClipboardFormats: () => clipboard.availableFormats(),
-        readClipboardBufferText: (format: string) => clipboard.readBuffer(format).toString("utf8"),
+        // `{ title: "", url: "" }` when there is no bookmark — the pre-44
+        // `readBookmark()` shape the specs assert against.
+        readClipboardBookmark: async () =>
+          (await (await readClipboard()).readBookmark()) ?? { title: "", url: "" },
+        readClipboardText: async () => (await readClipboard()).readText(),
+        readClipboardFormats: async () => [...(await readClipboard()).formats],
+        readClipboardBufferText: async (format: string) =>
+          (await (await readClipboard()).readBuffer(format)).toString("utf8"),
         // Clear clipboard before the spec runs so we know any image
         // we read back came from THIS test's dispatch, not a stale
         // earlier paste.
         clearClipboard: () => {
-          clipboard.clear();
+          clearClipboard();
         },
         // Tray-sizing test surface. `installTray()` is skipped in E2E
         // mode (no NSStatusItem in tests), so these helpers stand in

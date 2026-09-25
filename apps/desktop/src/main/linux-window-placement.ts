@@ -17,7 +17,10 @@
 // Those getters read Chromium's own cached widget bounds, which are updated
 // whether or not the compositor honoured the request. The two runs were
 // byte-identical across every geometry call — which is exactly why this module
-// asks the environment instead of asking the window.
+// asks the environment instead of asking the window. GNOME's own window manager
+// is no kinder: on mutter 46, with pixels read back through its ScreenCast API,
+// a window mutter had moved into the work area at 67,32 still read 0,0 from
+// `getBounds()`, `getContentBounds()` and the renderer's `screenX/Y` alike.
 //
 // Measured, same runs, and the reason the answer cannot be "check the session
 // type and move on":

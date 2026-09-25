@@ -875,10 +875,13 @@ function waitForFirstTrayMeasurement(): Promise<void> {
  *      surface of ours to anchor to and Electron exposes no `xdg_positioner`
  *      or layer-shell path to reach for.
  *
- * So on Wayland the compositor chooses, and for a frameless always-on-top
- * toplevel on GNOME that is roughly the centre of the screen. A centred
- * popover that opens is worth more than no popover at all — but do not read
- * this function as a placement that could be improved with more arithmetic.
+ * So on Wayland the compositor chooses. Stock mutter (GNOME 46, default
+ * settings) was measured putting the popover near the top-left of the work
+ * area by its automatic placement, not centred — it centres only with
+ * `org.gnome.mutter center-new-windows`, which neither GNOME nor Ubuntu 24.04
+ * enables; sway floats it centred. A popover that opens somewhere is worth
+ * more than no popover at all — but do not read this function as a placement
+ * that could be improved with more arithmetic.
  *
  * X11 is materially better and gets a real anchor: `setPosition` works there,
  * and while `getBounds()` is still zeros, the POINTER is on the indicator at

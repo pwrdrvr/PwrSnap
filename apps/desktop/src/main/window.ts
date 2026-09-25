@@ -1414,13 +1414,16 @@ export function showLogsWindow(options: PlacementSource = {}): BrowserWindow {
  *
  * It is also a hedge on `setContentSize`, which Electron documents as "may
  * not work" on Wayland because "some window managers restrict programmatic
- * window resizing". Measured on Electron 41.10.7 against a headless weston 10,
- * it DOES work: the renderer's own `window.innerHeight` — the real viewport,
- * not a cached echo — follows every `setContentSize`, identically to X11. But
- * that is weston, not mutter, and `getContentSize` cannot be used to check at
- * runtime because it echoes the requested value on every backend (measured;
- * see linux-window-placement.ts). So the constructor frame stays the last size
- * the popover is guaranteed to have.
+ * window resizing". Measured on Electron 41.10.7 it DOES work — against a
+ * headless weston 10, against mutter 46 headless (GNOME's window manager), and
+ * on sway 1.9, where the real popover went from this 880 frame to the 302 its
+ * renderer measured: the renderer's own `window.innerHeight` — the real
+ * viewport, not a cached echo — follows every `setContentSize`, identically to
+ * X11. It stays a hedge because `getContentSize` cannot be used to check at
+ * runtime (it echoes the requested value on every backend; see
+ * linux-window-placement.ts) and because the first-open deadline below can win
+ * the race. So the constructor frame stays the last size the popover is
+ * guaranteed to have.
  *
  * The trade is deliberate and asymmetric: a refused resize renders the content
  * at the top of a taller transparent window — some dead area below it that

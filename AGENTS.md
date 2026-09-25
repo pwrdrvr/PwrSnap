@@ -1837,15 +1837,17 @@ nothing in the process can verify the resize landed.** Owners:
   echoes the requested value on every backend — measured, byte-identical
   between headless weston and xvfb. The honest check is the renderer's own
   `window.innerHeight`, and by that measure `setContentSize` **does** work on
-  Wayland (`440→620→300→812` all followed exactly). But that was weston, not
-  mutter, and Electron still documents the call as "may not work" there, so
-  the design does not depend on it.
+  Wayland (`440→620→300→812` all followed exactly on weston; `620→300` on
+  mutter 46 headless; the real popover shrank from 880 to 302 on sway 1.9).
+  Electron still documents the call as "may not work" there, and the
+  first-open deadline can beat the resize, so the design does not depend on
+  it.
 - **The Linux constructor frame is TALLER (880, not 440)** and that is the
   floor: the constructor frame is the last size the popover is guaranteed to
   have. A refused resize then renders content at the top of a taller
   transparent window — dead area that still hit-tests — which beats clipping
   the bottom rows off. Do not "tidy" Linux back to 440 on the strength of the
-  weston measurement.
+  resize measurements.
 - **The first Linux open waits for one measurement before showing.** Linux
   does not pre-warm the popover, so without the wait the first open paints the
   constructor frame and visibly jumps. The wait has a deadline
@@ -1864,8 +1866,10 @@ nothing in the process can verify the resize landed.** Owners:
 - **Linux E2E green proves nothing here.** xvfb is X11. Reproducing any of
   this needs a nested Wayland compositor — recipe in
   [docs/linux-tray-support.md](docs/linux-tray-support.md) §"Repeating the
-  Wayland half" — and confirming where a window actually LANDS needs a real
-  GNOME session, because weston is not mutter.
+  Wayland half". Where a window actually LANDS is measurable with pixels on
+  mutter 46 headless (same section): stock mutter puts a native Wayland
+  popover or toast near the top-left of the work area, not centred and not in
+  the corner. Whether GNOME Shell focuses it still needs a real session.
 
 ### When to revisit
 

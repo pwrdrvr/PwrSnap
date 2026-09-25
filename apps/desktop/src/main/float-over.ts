@@ -401,9 +401,11 @@ function anchorBottomRight(window: BrowserWindow): void {
  * ⚠️  Under Wayland this cannot place anything and deliberately does not try.
  * `setPosition` is documented "Not supported on Wayland (Linux)" and a Wayland
  * client cannot position its own toplevel by protocol design — the compositor
- * decides, and for a frameless always-on-top window on GNOME that is roughly
- * the centre of the screen. Calling it anyway would read as a placement that
- * works; skipping it is what makes the limitation greppable.
+ * decides. Stock mutter (GNOME 46, default settings, measured with pixels)
+ * puts it by automatic placement near the top-left of the work area, NOT in
+ * the bottom-right corner and not centred; it centres only with
+ * `org.gnome.mutter center-new-windows`. Calling it anyway would read as a
+ * placement that works; skipping it is what makes the limitation greppable.
  *
  * `anchoredDisplayId` is still recorded by the callers, because the toast is
  * still logically ON a display even when we did not choose which.

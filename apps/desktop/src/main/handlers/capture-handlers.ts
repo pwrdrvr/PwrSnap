@@ -45,6 +45,12 @@ import {
   getLastWindowListSnapshot,
   hideSelector
 } from "../capture/region-selector";
+import {
+  regionSelectorUnsupported,
+  WAYLAND_SELECTOR_ERROR_CODE,
+  WAYLAND_SELECTOR_MESSAGE
+} from "../capture/linux-session";
+import { showWaylandRefusalNotice } from "../capture/wayland-refusal-notice";
 import { captureRegion, captureScreen, captureWindow } from "../capture/screencapture";
 import { displayScaleFactorForId } from "../capture/display-density";
 import { planExtentMask } from "../capture/extent-mask";
@@ -277,6 +283,29 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     }
     const trace = new CaptureLatencyTrace(req.invocation, mode);
     trace.mark("dispatch_receive", { principal: ctx.principal });
+    // Refuse the one Linux configuration the selector genuinely cannot
+    // serve — Wayland with more than one display, where the pointer reads
+    // 0,0 wherever the mouse is and we therefore cannot tell which display
+    // to open on. Ahead of guardScreenCapture so a capture we are going to
+    // refuse never raises the portal's permission prompt. See
+    // linux-session.ts for why this is no longer every Wayland session.
+    if (regionSelectorUnsupported(screen.getAllDisplays().length)) {
+      trace.finish("error", { code: WAYLAND_SELECTOR_ERROR_CODE });
+      log.warn("interactive capture refused: Wayland session with multiple displays", {
+        mode,
+        principal: ctx.principal
+      });
+      // Tell the user, and only the user. `ipc` is every human entry point
+      // — the Library button, the tray tiles, the global hotkeys, the
+      // native tray menu. An agent over `mcp`/`rpc` gets the Result and no
+      // dialog: nobody is sitting in front of it to dismiss one.
+      if (ctx.principal === "ipc") showWaylandRefusalNotice();
+      return err({
+        kind: "capture",
+        code: WAYLAND_SELECTOR_ERROR_CODE,
+        message: WAYLAND_SELECTOR_MESSAGE
+      });
+    }
     try {
       const permissionStage = trace.begin("permission_preflight");
     // Gate BEFORE pickRegion: the selector freezes a screen snapshot on
@@ -891,7 +920,11 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     // normally settled by persist time.
     const cursorSamplePromise = startCursorSampleIfEnabled();
     await hidePwrSnapChromeAndSettle();
-    const captureResult = await captureScreen(displayId);
+    // `report`, not `enforce`: a full-screen grab maps no rect through the
+    // display, and on a portal session the portal's picker — which the
+    // Wayland refusal notice sends users to — chose the source. See
+    // `GrabDisplayMatch` in screencapture.ts.
+    const captureResult = await captureScreen(displayId, undefined, { displayMatch: "report" });
     if (!captureResult.ok) {
       return err({
         kind: "capture",

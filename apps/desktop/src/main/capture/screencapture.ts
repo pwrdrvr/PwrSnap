@@ -20,6 +20,7 @@ import { desktopCapturer, nativeImage, screen, type Display, type NativeImage } 
 import sharp from "sharp";
 import { getMainLogger } from "../log";
 import type { CaptureLatencyTrace } from "./capture-latency-trace";
+import { checkGrabMatchesDisplay } from "./grab-geometry";
 import { classifyCaptureError } from "./permissions";
 import type { ElectronBitmapPixelFormat } from "./windows-shared-snapshot";
 
@@ -28,6 +29,22 @@ const log = getMainLogger("pwrsnap:screencapture");
 const execFileAsync = promisify(execFile);
 
 export type Rect = { x: number; y: number; w: number; h: number };
+
+/**
+ * What a grab whose shape does not match its display should do.
+ *
+ * `enforce` — refuse it. The default, and the only safe answer for anything
+ * that maps a rect through the display's geometry afterwards: the selector
+ * snapshot, region crops, the per-display tiles of `capture:allScreens`.
+ *
+ * `report` — log it and keep the pixels. For `capture:fullScreen` only,
+ * where no rect is ever mapped through the display: the grab IS the output.
+ * On an xdg-desktop-portal session the portal's own picker chose the
+ * source, and the Wayland refusal notice sends multi-display users to
+ * exactly this path so they can pick a monitor there — refusing whatever
+ * they picked would turn the recommended escape into an error.
+ */
+export type GrabDisplayMatch = "enforce" | "report";
 
 /**
  * Grab a whole display as a PNG buffer via Electron's `desktopCapturer`
@@ -41,7 +58,8 @@ export type Rect = { x: number; y: number; w: number; h: number };
  */
 async function captureDisplayNativeImage(
   display: Display,
-  latencyTrace?: CaptureLatencyTrace
+  latencyTrace?: CaptureLatencyTrace,
+  displayMatch: GrabDisplayMatch = "enforce"
 ): Promise<NativeImage> {
   // Request the display's physical size so we don't downscale a HiDPI
   // monitor. desktopCapturer treats this as a max and returns the
@@ -124,14 +142,48 @@ async function captureDisplayNativeImage(
   if (source.thumbnail.isEmpty()) {
     throw new Error("desktopCapturer screen thumbnail was empty");
   }
+  // Last gate before these pixels become "this display" to everything
+  // downstream. Neither branch above proves the source IS this display:
+  // `single_source` takes the lone source precisely because it cannot
+  // check, and on an xdg-desktop-portal session that lone source is
+  // whatever the user picked in the portal's own dialog — possibly
+  // another monitor, a single window, or the whole desktop. Downstream
+  // never asks again: the selector paints the grab stretched to the
+  // overlay and the crop scales the user's rect by `display.scaleFactor`,
+  // so a mismatch here is silently wrong pixels rather than an error.
+  // See grab-geometry.ts for why aspect ratio is the checkable part.
+  const geometry = checkGrabMatchesDisplay({
+    grab: source.thumbnail.getSize(),
+    bounds: { width: display.bounds.width, height: display.bounds.height }
+  });
+  if (!geometry.ok) {
+    const fields = {
+      displayId: display.id,
+      strategy,
+      sourceCount: sources.length,
+      sourceId: source.id,
+      sourceName: source.name,
+      sourceDisplayId: source.display_id,
+      message: geometry.message
+    };
+    if (displayMatch === "report") {
+      // See `GrabDisplayMatch`: no rect is mapped through this display, so
+      // the pixels are what the user (or the portal's picker) chose.
+      log.warn("desktopCapturer grab does not match the display it was asked for; keeping it", fields);
+      return source.thumbnail;
+    }
+    log.error("desktopCapturer grab does not match the display it was asked for", fields);
+    throw new Error(`${geometry.message} (selected via ${strategy})`);
+  }
   return source.thumbnail;
 }
 
 async function captureDisplayPng(
   display: Display,
-  latencyTrace?: CaptureLatencyTrace
+  latencyTrace?: CaptureLatencyTrace,
+  displayMatch: GrabDisplayMatch = "enforce"
 ): Promise<Buffer> {
-  const image = await captureDisplayNativeImage(display, latencyTrace);
+  const image = await captureDisplayNativeImage(display, latencyTrace, displayMatch);
   const toPngStage = latencyTrace?.begin("screen_to_png");
   let png: Buffer;
   try {
@@ -411,7 +463,8 @@ export async function captureWindow(
  */
 export async function captureScreen(
   displayId: number,
-  latencyTrace?: CaptureLatencyTrace
+  latencyTrace?: CaptureLatencyTrace,
+  options: { displayMatch?: GrabDisplayMatch } = {}
 ): Promise<CaptureRegionResult> {
   const display = screen.getAllDisplays().find((d) => d.id === displayId);
   if (display === undefined) {
@@ -436,7 +489,7 @@ export async function captureScreen(
     }
     const tempPath = join(dir, `${Date.now()}.png`);
     try {
-      const png = await captureDisplayPng(display, latencyTrace);
+      const png = await captureDisplayPng(display, latencyTrace, options.displayMatch);
       const writeStage = latencyTrace?.begin("screen_file_write");
       try {
         await writeFile(tempPath, png);

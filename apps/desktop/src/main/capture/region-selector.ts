@@ -426,6 +426,14 @@ export type SelectorMode = "auto" | "region" | "window";
  */
 export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup"): void {
   // Build one window per display we don't already have.
+  //
+  // Deliberately NOT skipped where `capture:interactive` refuses (Wayland
+  // with more than one display). Returning early here to save the
+  // renderers makes a second, invisible refusal: every OTHER `pickRegion`
+  // caller — the Record path in index.ts drives it directly — finds no
+  // selector windows and resolves `destroyed`, so its button does nothing
+  // and says nothing. The refusal lives in one place, the one that can
+  // explain itself; see wayland-refusal-notice.ts.
   const displays = screen.getAllDisplays();
   const liveIds = new Set<number>();
   for (const display of displays) {
@@ -1816,13 +1824,38 @@ function hideAllSelectors(): void {
  * window can return to its normal-bounds state for next time.
  */
 function enterMenuBarOverlayMode(win: BrowserWindow): void {
-  if (process.platform === "win32") {
+  if (process.platform === "win32" || process.platform === "linux") {
     // Windows: the taskbar (Shell_TrayWnd) is itself topmost, so a plain
     // always-on-top overlay renders BELOW it — the real taskbar shows through
     // on top of the frozen screenshot (which already includes a taskbar →
     // "two taskbars"). Native fullscreen spans the whole monitor including the
     // taskbar, so the overlay covers it. (Verified working on Windows; the
     // earlier 0xC0000005 crash was an unrelated tray-right-click bug.)
+    //
+    // Linux is the same class of bug, and it was the whole Ubuntu report.
+    // A non-fullscreen window does not own the screen under GNOME: mutter
+    // MOVES a monitor-sized toplevel into the work area, below the top bar
+    // and right of the dock (measured on mutter 46 with a 32px top / 67px
+    // left strut: the window's pixels landed at 67,32 on both backends), and
+    // chrome stacked above a window can cover it outright. Either way the
+    // live top bar and dock sat next to the frozen snapshot's own copy of
+    // them, which the user reported as a duplicated, offset desktop — and on
+    // Ubuntu 24 the probe measured 32 foreign rows / 67 foreign columns over
+    // the bare overlay against 0 / 0 in fullscreen. setFullScreen(true) owns
+    // the whole output, measured pixel-exact on mutter and sway.
+    //
+    // Do not "verify" placement from main: on a native Wayland client (the
+    // Electron 41 default on a Wayland session) getBounds(), getContentBounds()
+    // and the renderer's screenX/Y all echo the request — they read 0,0 on
+    // the window mutter had moved to 67,32. Only pixels tell.
+    //
+    // Under X11 (a GNOME Xorg session, or forced XWayland) mutter IGNORES the
+    // fullscreen request from a non-resizable window, while Electron's
+    // isFullScreen() still reports true. That is why createSelectorWindow
+    // builds the Linux selector resizable.
+    //
+    // This branch used to `return` for every platform that is neither win32
+    // nor darwin, which is why Linux never entered overlay mode at all.
     //
     // Note: setFullScreen(true) grows the window to the full display (taskbar
     // covered) but isFullScreen() stays false on Windows, and the
@@ -1856,7 +1889,7 @@ function enterMenuBarOverlayMode(win: BrowserWindow): void {
 }
 
 function leaveMenuBarOverlayMode(win: BrowserWindow): void {
-  if (process.platform === "win32") {
+  if (process.platform === "win32" || process.platform === "linux") {
     // Unconditional, NOT guarded on isFullScreen(): that getter stays false on
     // Windows even while the window is grown full-screen (see
     // enterMenuBarOverlayMode), so `if (win.isFullScreen())` would never fire
@@ -1900,9 +1933,9 @@ function createSelectorWindow(
     // without activating the app.)
     //
     // macOS-only — Windows/Linux have no NSPanel; the frameless,
-    // transparent, always-on-top window below covers the display directly
-    // (setSimpleFullScreen / enterMenuBarOverlayMode are already
-    // darwin-gated).
+    // transparent, always-on-top window below covers the display, and
+    // enterMenuBarOverlayMode takes it native-fullscreen there
+    // (setSimpleFullScreen is the darwin-only arm).
     ...(process.platform === "darwin" ? { type: "panel" as const } : {}),
     title: SELECTOR_WINDOW_TITLE,
     x: bounds.x,
@@ -1912,15 +1945,31 @@ function createSelectorWindow(
     show: false,
     frame: false,
     transparent: true,
-    resizable: false,
+    // Resizable on Linux ONLY, because mutter refuses to fullscreen an X11
+    // window that is not. A non-resizable window carries min == max size
+    // hints, and mutter drops _NET_WM_STATE_FULLSCREEN for it unless those
+    // equal the monitor — which they stop doing the moment mutter has
+    // squeezed the bare window into the work area. Measured on mutter 46 as
+    // an Xorg WM and under XWayland, with this constructor, 32px top / 67px
+    // left struts, and enterMenuBarOverlayMode before show():
+    //
+    //   resizable: false  -> stays at 67,32 1853x1048 (isFullScreen() true!)
+    //   resizable: true   -> 0,0 1920x1080, pixel-exact
+    //
+    // A native Wayland client goes fullscreen either way, so this only
+    // matters on X11 — which is where the Wayland refusal notice sends
+    // multi-display users. Nothing is lost: the window is frameless and
+    // fullscreen while visible, so there is nothing to grab. Windows keeps
+    // `false`; its fullscreen path is verified as is.
+    resizable: process.platform === "linux",
     movable: false,
     minimizable: false,
     maximizable: false,
-    // Windows needs native fullscreen (enterMenuBarOverlayMode) to draw OVER
-    // the taskbar (a topmost window a plain always-on-top overlay can't cover),
-    // so it must be fullscreenable there. macOS uses setSimpleFullScreen and
-    // keeps this false.
-    fullscreenable: process.platform === "win32",
+    // Windows and Linux both need native fullscreen (enterMenuBarOverlayMode)
+    // to draw OVER shell chrome a plain always-on-top overlay cannot cover —
+    // the Windows taskbar, and GNOME's top bar + dock. Both must therefore be
+    // fullscreenable. macOS uses setSimpleFullScreen and keeps this false.
+    fullscreenable: process.platform !== "darwin",
     skipTaskbar: true,
     alwaysOnTop: true,
     hasShadow: false,

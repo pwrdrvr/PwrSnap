@@ -30,5 +30,8 @@ export function dispatchInteractiveCapture(
       ? createInteractiveCaptureTrigger(triggerOrOrigin)
       : triggerOrOrigin;
   const invocation = finalizeCaptureInvocation(trigger, monotonicNow);
+  // The Wayland refusal explains itself from the handler (see
+  // wayland-refusal-notice.ts) — every entry point reaches it, not just
+  // the two that happen to route through here.
   return bus.dispatch("capture:interactive", { mode, invocation }, options);
 }

@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { ok } from "@pwrsnap/shared";
+import { IPC_VIDEO_DRAG_START, ok } from "@pwrsnap/shared";
 
 const electronMock = vi.hoisted(() => ({
   handler: null as
@@ -63,6 +63,7 @@ describe("IPC dispatcher", () => {
     bus.unregister("codex:enrich");
     bus.unregister("settings:open");
     bus.unregister("video:export");
+    bus.unregister("video:prepareDrag");
     vi.clearAllMocks();
   });
 
@@ -191,3 +192,50 @@ describe("IPC dispatcher", () => {
     expect(sender.listenerCount("destroyed")).toBe(0);
   });
 });
+
+describe("video drag-out bridge", () => {
+  afterEach(() => {
+    disposeIpcDispatcher();
+    bus.unregister("video:prepareDrag");
+    vi.clearAllMocks();
+  });
+
+  async function drag(payload: unknown): Promise<unknown[]> {
+    const seen: unknown[] = [];
+    bus.register("video:prepareDrag", async (req) => {
+      seen.push(req);
+      return { ok: false, error: { kind: "validation", code: "stop", message: "stop" } };
+    });
+    registerIpcDispatcher();
+    const call = electronMock.on.mock.calls.find(([channel]) => channel === IPC_VIDEO_DRAG_START);
+    const listener = call?.[1] as ((event: unknown, req: unknown) => void) | undefined;
+    if (listener === undefined) throw new Error("no video drag listener registered");
+    listener({ sender: { isDestroyed: () => false, startDrag: vi.fn() } }, payload);
+    await new Promise((resolve) => setImmediate(resolve));
+    return seen;
+  }
+
+  const base = { captureId: "cap_1", format: "mp4", preset: "high" };
+
+  test("carries the grid's MP4 audio choice through to video:prepareDrag", async () => {
+    const audio = { includeSystemAudio: true, includeMicrophone: false };
+    expect(await drag({ ...base, audio })).toEqual([{ ...base, audio }]);
+  });
+
+  test("an omitted audio choice stays omitted, so main applies the saved preference", async () => {
+    const [req] = await drag(base);
+    expect(req).toEqual(base);
+    expect(req).not.toHaveProperty("audio");
+  });
+
+  // A malformed range falls back to the default range; a malformed audio
+  // choice is not guessed at when the question is whether to ship a mic.
+  test.each([
+    ["a string", "none"],
+    ["null", null],
+    ["a non-boolean toggle", { includeSystemAudio: true, includeMicrophone: "no" }]
+  ])("refuses the drag when audio is %s", async (_label, audio) => {
+    expect(await drag({ ...base, audio })).toEqual([]);
+  });
+});
+

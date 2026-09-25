@@ -15,6 +15,7 @@ import { HoverAutoplayVideo } from "../shared/HoverAutoplayVideo";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { Kbd } from "../shared/Primitives";
 import { useHotkeys } from "../shared/useHotkeys";
+import { recordedAudioTracks } from "../shared/useMp4ExportAudio";
 import { VideoExportPresetsPanel } from "../shared/VideoExportPresetsPanel";
 import { useSurfaceCopyShortcuts } from "../shared/useSurfaceCopyShortcuts";
 import { AppUpdateRow } from "../update/AppUpdateRow";
@@ -469,6 +470,9 @@ export function TrayMenu() {
         return;
       }
       if (lastSnap.kind !== "video") return;
+      // No `audio`: main fills it from the saved MP4 audio preference —
+      // the same value this popover's MP4 toggles write — so ⌘4–⌘6
+      // cannot ship a track the grid shows as off.
       void dispatch("clipboard:copyVideoFile", {
         captureId: lastSnap.id,
         format: shortcut.format,
@@ -748,6 +752,7 @@ export function TrayMenu() {
               <div className="ps-tray__last-export">
                 <VideoExportPresetsPanel
                   captureId={lastSnap.id}
+                  audioTracks={recordedAudioTracks(lastSnap.video)}
                   shortcutPlatform={shortcutPlatform}
                 />
               </div>

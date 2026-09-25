@@ -1632,7 +1632,9 @@ describe("DetailRail video export honors the persisted trim range", () => {
     const metricsCall = dispatch.mock.calls.find((c) => c[0] === "video:presetMetrics");
     expect(metricsCall?.[1]).toEqual({
       captureId: record.id,
-      range: { start: 0, end: 16 }
+      range: { start: 0, end: 16 },
+      // The fixture take recorded no audio: explicitly silent.
+      audio: { includeMicrophone: false, includeSystemAudio: false }
     });
   });
 
@@ -1652,7 +1654,9 @@ describe("DetailRail video export honors the persisted trim range", () => {
     const metricsCall = dispatch.mock.calls.find((c) => c[0] === "video:presetMetrics");
     expect(metricsCall?.[1]).toEqual({
       captureId: record.id,
-      range: { start: 3.4, end: 11.2 }
+      range: { start: 3.4, end: 11.2 },
+      // The fixture take recorded no audio: explicitly silent.
+      audio: { includeMicrophone: false, includeSystemAudio: false }
     });
 
     // Clicking a card exports the displayed range explicitly.

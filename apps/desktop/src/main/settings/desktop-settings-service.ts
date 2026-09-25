@@ -252,6 +252,12 @@ export function defaultSettings(
       // lives on the constant.
       includeSystemAudio: RECORDING_MEDIA_DEFAULTS.includeSystemAudio,
       includeMicrophone: RECORDING_MEDIA_DEFAULTS.includeMicrophone,
+      // An MP4 keeps every track the take recorded until the user turns
+      // one off on an export grid. Recording audio is already opt-in, so
+      // a track that exists is one they asked for; the export toggle is
+      // the undo for the take where they forgot.
+      mp4IncludeMicrophone: true,
+      mp4IncludeSystemAudio: true,
       videoCaptureCursor: RECORDING_MEDIA_DEFAULTS.videoCaptureCursor,
       // Image cursor capture is settings-only (consumed by the still
       // pipeline, never by a recording), so it stays local.
@@ -946,6 +952,17 @@ function parseV1(
       ),
       includeSystemAudio: pickBoolean(recording.includeSystemAudio, defaults.recording.includeSystemAudio),
       includeMicrophone: pickBoolean(recording.includeMicrophone, defaults.recording.includeMicrophone),
+      // `mp4Include*` landed with the MP4 export audio toggle; older files
+      // won't have them. The ON default keeps what those installs already
+      // exported (every recorded track).
+      mp4IncludeMicrophone: pickBoolean(
+        recording.mp4IncludeMicrophone,
+        defaults.recording.mp4IncludeMicrophone
+      ),
+      mp4IncludeSystemAudio: pickBoolean(
+        recording.mp4IncludeSystemAudio,
+        defaults.recording.mp4IncludeSystemAudio
+      ),
       // `videoCaptureCursor` / `imageCaptureCursor` landed with the
       // cursor-capture-control feature; older files won't have them.
       // pickBoolean fills the ON default so existing installs keep the

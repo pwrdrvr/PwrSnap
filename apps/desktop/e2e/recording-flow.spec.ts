@@ -151,11 +151,18 @@ test.describe("video float-over", () => {
       await expect(floatOver.locator(".fo__copy")).toHaveCount(0);
       const formatGroups = exportGrid.locator(".psl__copy-row-group");
       await expect(formatGroups).toHaveCount(2);
-      // Exclude the decorative eyebrow-line span so the label match
-      // doesn't depend on DOM order within the eyebrow.
-      const eyebrowLabel = ".psl__copy-format-eyebrow span:not(.psl__copy-format-eyebrow-line)";
+      // Target the label by class: the MP4 eyebrow also carries the
+      // audio toggles, whose spans a bare `span` selector would match.
+      const eyebrowLabel = ".psl__copy-format-eyebrow-label";
       await expect(formatGroups.nth(0).locator(eyebrowLabel)).toHaveText("GIF");
       await expect(formatGroups.nth(1).locator(eyebrowLabel)).toHaveText("MP4");
+      // The seeded take has system audio only, so the MP4 row offers
+      // exactly one audio toggle (on by default) and the GIF row none.
+      await expect(formatGroups.nth(0).locator(".psl__copy-audio-toggle")).toHaveCount(0);
+      const audioToggles = formatGroups.nth(1).locator(".psl__copy-audio-toggle");
+      await expect(audioToggles).toHaveCount(1);
+      await expect(audioToggles.nth(0)).toHaveAttribute("data-track", "systemAudio");
+      await expect(audioToggles.nth(0)).toHaveAttribute("aria-pressed", "true");
       for (const format of ["gif", "mp4"] as const) {
         const row = exportGrid.locator(
           `[data-testid="psl-copy-row-video-${format}"]`

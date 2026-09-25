@@ -15,6 +15,7 @@
 
 import { useEffect, useState } from "react";
 import type {
+  VideoExportAudio,
   VideoPreset,
   VideoPresetMetric,
   VideoRange
@@ -44,11 +45,17 @@ export function useVideoPresetMetrics(
    *  re-derive from the range duration as soon as the handles move
    *  (not only after the debounced persist). Omitted → main uses the
    *  persisted `defaultRange`. */
-  range?: VideoRange | undefined
+  range?: VideoRange | undefined,
+  /** MP4 audio choice the row is showing, so a cached encode is found
+   *  under the key the next click hits and the estimate counts the AAC
+   *  track only when one is kept. Omitted → the saved preference. */
+  audio?: VideoExportAudio | undefined
 ): VideoPresetMetricMap {
   const [metrics, setMetrics] = useState<VideoPresetMetricMap>({});
   const rangeStart = range?.start;
   const rangeEnd = range?.end;
+  const includeMicrophone = audio?.includeMicrophone;
+  const includeSystemAudio = audio?.includeSystemAudio;
 
   useEffect(() => {
     if (captureId === null) {
@@ -58,10 +65,15 @@ export function useVideoPresetMetrics(
 
     let cancelled = false;
     setMetrics({});
-    const req =
-      rangeStart === undefined || rangeEnd === undefined
-        ? { captureId }
-        : { captureId, range: { start: rangeStart, end: rangeEnd } };
+    const req = {
+      captureId,
+      ...(rangeStart === undefined || rangeEnd === undefined
+        ? {}
+        : { range: { start: rangeStart, end: rangeEnd } }),
+      ...(includeMicrophone === undefined || includeSystemAudio === undefined
+        ? {}
+        : { audio: { includeMicrophone, includeSystemAudio } })
+    };
     void dispatch("video:presetMetrics", req).then((result) => {
       if (cancelled) return;
       if (!result.ok) return;
@@ -74,7 +86,7 @@ export function useVideoPresetMetrics(
     return () => {
       cancelled = true;
     };
-  }, [captureId, rangeStart, rangeEnd]);
+  }, [captureId, includeMicrophone, includeSystemAudio, rangeStart, rangeEnd]);
 
   return metrics;
 }

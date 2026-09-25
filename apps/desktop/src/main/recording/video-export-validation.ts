@@ -92,17 +92,24 @@ export function validateVideoExportRequest<
       return err(validationError("invalid_range", `${verb}: range end must be > start`));
     }
   }
-  if (req.audio !== undefined) {
-    const a = req.audio;
-    if (typeof a !== "object" || a === null) {
-      return err(validationError("invalid_audio", `${verb}: audio must be an object`));
-    }
-    if (
-      typeof a.includeSystemAudio !== "boolean" ||
-      typeof a.includeMicrophone !== "boolean"
-    ) {
-      return err(validationError("invalid_audio", `${verb}: audio toggles must be booleans`));
-    }
-  }
+  const audioError = videoExportAudioError(req.audio, verb);
+  if (audioError !== null) return err(audioError);
   return ok(req);
+}
+
+/**
+ * The `audio` arm on its own, for verbs that take an audio choice
+ * without the rest of the coordinates (`video:presetMetrics`).
+ * `undefined` is valid: it asks for the user's MP4 audio preference.
+ */
+export function videoExportAudioError(audio: unknown, verb: string): PwrSnapError | null {
+  if (audio === undefined) return null;
+  if (typeof audio !== "object" || audio === null) {
+    return validationError("invalid_audio", `${verb}: audio must be an object`);
+  }
+  const a = audio as Record<string, unknown>;
+  if (typeof a.includeSystemAudio !== "boolean" || typeof a.includeMicrophone !== "boolean") {
+    return validationError("invalid_audio", `${verb}: audio toggles must be booleans`);
+  }
+  return null;
 }

@@ -1520,6 +1520,7 @@ Electron declares macOS/Windows-only. Read the annotations in
 | `Tray` `right-click` / `double-click` | `darwin,win32` | the handler never fires |
 | `Tray.setTitle()` | `darwin` | no `● REC`, no timed countdown |
 | `Tray.setContextMenu()` | **all** | the only menu path that exists on Linux |
+| `Tray` `click` | **all** | fires on Linux for SNI `Activate` AND `SecondaryActivate` (measured); deliberately unwired there — see the doc |
 
 Wayland closes the two remaining escapes: `BrowserWindow.setPosition` is
 "Not supported on Wayland (Linux)" (and `getBounds` returns zeros there),
@@ -1586,11 +1587,14 @@ do not raise it — measured, `createFromPath(...).toBitmap()` is 1024 bytes
 (16×16×4) for the `tray-icon.png` set and 9216 (48×48×4) for this file.
 
 Everything above about Electron's Linux behavior is measured on 41.10.7, and
-the container recipe is in the doc. It is worth re-running on a major
-Electron bump — and note what it cannot tell you: a container has no panel,
-so every call succeeds and nothing draws, which is exactly this bug's
-failure mode. Only a real desktop session with a real SNI host confirms a
-visible indicator.
+both container recipes are in the doc. It is worth re-running on a major
+Electron bump. The xvfb recipe cannot tell you whether anything draws — a
+bare container has no panel, so every call succeeds and nothing appears,
+which is exactly this bug's failure mode. The headless sway + waybar recipe
+can: waybar's tray module is a real SNI host, and against it the real build
+was measured drawing the icon, exporting a 48×48 `IconPixmap`, and
+dispatching menu rows clicked over dbusmenu. It is a wlroots host, so which
+gesture GNOME Shell maps to `Activate` still needs a GNOME session.
 
 ## Tray popover hide — `setOpacity(0)` before `hide()` on macOS
 

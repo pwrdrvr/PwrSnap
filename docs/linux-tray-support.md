@@ -195,9 +195,68 @@ docker run --rm -v "$PWD":/probe -w /probe node:24-bookworm bash -c '
 ```
 
 Note what this recipe canNOT tell you: whether the icon actually **draws**.
-A container has no panel, so every call above succeeds and nothing appears —
-which is precisely the failure mode this whole document is about. Confirming
-a visible indicator needs a real desktop session with a real SNI host.
+A bare xvfb container has no panel, so every call above succeeds and nothing
+appears — which is precisely the failure mode this whole document is about.
+The next recipe closes that gap.
+
+### Against a real StatusNotifierItem host
+
+A headless wlroots compositor with a bar gives a container a real SNI host:
+waybar's `tray` module owns `org.kde.StatusNotifierWatcher`, draws the icon,
+and lets the exported menu be driven over D-Bus exactly as a panel drives
+it. Measured on Electron 41.10.7 with the real PwrSnap build
+(`pnpm --filter @pwrsnap/desktop build`, then `electron .` as a throwaway
+user) under sway 1.9 + waybar 0.9.24:
+
+| What | Result |
+|---|---|
+| host probe log line | `linux tray host probe statusNotifierHost=present desktop=sway sessionType=wayland` |
+| watcher's `RegisteredStatusNotifierItems` | the PwrSnap item, once `installTray` runs |
+| the icon in the bar | **drawn** — a `grim` screenshot shows the tangerine mark in waybar's tray |
+| `IconPixmap` | one `48×48` image — the `tray-icon-linux.png` bitmap, as intended |
+| `Id` | `PwrSnap_status_icon_1` |
+| `ItemIsMenu` | `false` |
+| `Menu` | `/com/canonical/dbusmenu`; `GetLayout` returns Quick Capture…, Record Video…, Open Library, Settings…, Quit PwrSnap (plus separators), Quick Capture carrying the `Control+Shift+C` shortcut once the hotkey registers |
+| dbusmenu `Event(<id>, "clicked")` | dispatches the row: Quick Capture opens the selector (`origin=native_tray_menu.quick_capture`), Settings… opens Settings |
+| `Activate(x, y)` | Electron emits `click` |
+| `SecondaryActivate(x, y)` | Electron emits `click` as well — not a separate event |
+| `ContextMenu(x, y)` | Electron emits nothing; the host draws the menu from `Menu` |
+| `ProvideXdgActivationToken(s)` | `UnknownMethod` — not implemented (see Known limitations) |
+
+Two things trip up a scripted run. Electron renumbers every dbusmenu item on
+the first `GetLayout` after a re-export, so look an item up by label just
+before sending `Event` rather than caching its id; a real host re-fetches on
+`LayoutUpdated` and never notices. And the menu is exported twice at boot by
+design — once from `installTray`, once more when the hotkey registers and
+the Quick Capture accelerator appears. That is the signature gate working,
+not a stray republish.
+
+The recipe, run as the unprivileged user that owns the session. Nothing here
+touches a real desktop:
+
+```bash
+cat > ~/sway.conf <<'EOF'
+output HEADLESS-1 resolution 1920x1080
+bar { swaybar_command waybar }
+EOF
+# ~/.config/waybar/config — just the tray:
+#   { "modules-right": ["tray"], "tray": { "icon-size": 24 } }
+export XDG_RUNTIME_DIR=$(mktemp -d) XDG_SESSION_TYPE=wayland XDG_CURRENT_DESKTOP=sway
+export DBUS_SESSION_BUS_ADDRESS=$(dbus-daemon --session --fork --print-address)
+WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 sway -c ~/sway.conf &
+# launch PwrSnap (or a bare Tray script), then:
+gdbus call --session --dest org.kde.StatusNotifierWatcher \
+  --object-path /StatusNotifierWatcher \
+  --method org.freedesktop.DBus.Properties.Get \
+  org.kde.StatusNotifierWatcher RegisteredStatusNotifierItems
+gdbus call --session --dest <item> --object-path /com/canonical/dbusmenu \
+  --method com.canonical.dbusmenu.GetLayout -- 0 -1 '@as []'
+grim /tmp/bar.png
+```
+
+This is a wlroots host, not GNOME's AppIndicator extension. It answers what
+Electron exports and what a host can do with it — not which gesture GNOME
+Shell maps to `Activate`. That part still needs a GNOME session.
 
 ## Known limitations
 
@@ -219,8 +278,13 @@ a visible indicator needs a real desktop session with a real SNI host.
   correctly absent there. "Record Video…" is still offered, matching the rest
   of the app's surfaces.
 - **A StatusNotifierItem "activate" does nothing.** Electron does emit
-  `click` on Linux when the item is activated, but the SNI spec does not say
-  which gesture causes an activation — Electron's own docs note it is left
+  `click` on Linux when the item is activated — measured on 41.10.7, for
+  `Activate` AND for `SecondaryActivate` (usually the middle button), while
+  `ContextMenu` emits nothing. The item also exports `ItemIsMenu = false`,
+  which tells a host that honours the property to send `Activate` on the
+  primary click instead of opening the menu; on such a host a left-click on
+  PwrSnap's icon currently does nothing. The SNI spec does not say which
+  gesture causes an activation — Electron's own docs note it is left
   click in some environments and double left click in others. PwrSnap wires
   no `click` handler on Linux, because the two candidate responses are both
   wrong somewhere: doing nothing leaves the icon unresponsive on a host that
@@ -239,12 +303,26 @@ a visible indicator needs a real desktop session with a real SNI host.
   an open menu on some SNI hosts. A failed export deliberately does not
   update the signature, so the next refresh retries rather than treating a
   menu the host never received as the live one.
-- **All Electron apps share one indicator id.** Since the
-  `StatusIconLinuxDbus` migration, Electron apps register as
-  `chrome_status_icon_1` rather than under the application name — reported as
-  [electron/electron#40936](https://github.com/electron/electron/issues/40936).
-  Desktop features that sort, hide, or reorder individual tray icons cannot
-  tell PwrSnap apart from any other Electron app. Nothing PwrSnap can fix.
+- **A tray action cannot raise a PwrSnap window that is already open, under
+  Wayland.** A Wayland client may only take focus with an activation token,
+  and the only token a tray click could carry is one the host hands over
+  through the SNI `ProvideXdgActivationToken` extension — which Electron
+  41.10.7's item does not implement (measured: `UnknownMethod`). So a
+  dbusmenu click reaches PwrSnap with no token. Measured on sway: "Open
+  Library" with the Library already open behind Settings left focus on
+  Settings. A window the action CREATES does get focus (Settings… opened
+  focused the first time), because placing a new toplevel is the
+  compositor's call. What GNOME Shell shows instead of raising is not
+  measured. Nothing PwrSnap can fix without Electron support; re-check on a
+  major bump.
+- **The indicator id is per-app at this pin.**
+  [electron/electron#40936](https://github.com/electron/electron/issues/40936)
+  reports Electron apps registering as `chrome_status_icon_1`, which would
+  make PwrSnap indistinguishable from every other Electron app to desktop
+  features that sort, hide, or reorder tray icons. Measured on 41.10.7 the
+  item's `Id` is `PwrSnap_status_icon_1`, so that does not reproduce here.
+  Re-check on an Electron bump; it is one `gdbus` call (see §"Against a real
+  StatusNotifierItem host").
 
 ## Linux is not a distribution target
 

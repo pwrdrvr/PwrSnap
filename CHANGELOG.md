@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.1.6 - 2026-09-25
+
+This patch keeps editing controls usable in smaller windows and improves
+keyboard access throughout PwrSnap.
+
+- Library - Fixed editing tools and copy controls to stay visible at the
+  minimum window size instead of being clipped by sidebars.
+- Sizzle Reels - Improved narrow-window layouts so the editor keeps usable
+  space beside chat and scene controls remain reachable by scrolling.
+- Keyboard Access - Improved dialogs, menus, and popovers with predictable
+  Tab, Escape, and arrow-key behavior, visible focus rings, and focus return.
+- Annotations - Fixed existing arrows from triggering a false "+ Add label"
+  prompt when opening or switching captures.
+
 ## v1.1.5 - 2026-09-23
 
 This patch makes video review and post-capture actions more reliable in the

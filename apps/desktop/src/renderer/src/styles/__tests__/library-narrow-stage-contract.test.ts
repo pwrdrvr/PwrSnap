@@ -164,7 +164,7 @@ describe("popped rail stacking", () => {
     const railZ = zIndex(rail);
     for (const chrome of [
       "\\}\\s*\\.psl__edit-toolbar",
-      "\\.psl__grid-copy-palette",
+      "\\}\\s*\\.psl__grid-copy-palette",
       "\\.psl__stage-nav",
       "\\.psl__focus-close"
     ]) {

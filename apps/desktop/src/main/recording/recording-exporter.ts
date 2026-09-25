@@ -87,6 +87,11 @@ export const MP4_PRESETS: Readonly<Record<VideoPreset, Mp4PresetSpec>> = {
   high: { width: null, bitrate: "6000k", keyframeInterval: 60 }
 };
 
+/** AAC bitrate of the one mixed audio track an MP4 export carries when
+ *  it keeps any audio. `video:presetMetrics` adds it to the byte
+ *  estimate, so the estimate follows the MP4 audio toggle. */
+export const MP4_AUDIO_BITRATE = "192k";
+
 /**
  * Build the platform-owned H.264 encoder portion of an MP4 export.
  * PwrSnap's controlled Windows FFmpeg exposes Media Foundation's
@@ -861,7 +866,7 @@ async function encodeMp4(
     );
   }
   args.push(...buildRecordingAudioArgs(streams));
-  if (streams.length > 0) args.push("-c:a", "aac", "-b:a", "192k");
+  if (streams.length > 0) args.push("-c:a", "aac", "-b:a", MP4_AUDIO_BITRATE);
   args.push("-movflags", "+faststart", outPath);
 
   await runFfmpeg(ffmpeg, args, {

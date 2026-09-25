@@ -763,6 +763,34 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     expect(settings.recording.includeSystemAudio).toBe(true);
   });
 
+  test("v1 recording block missing the MP4 audio flags keeps every recorded track", async () => {
+    // `mp4Include*` are additive. An install that predates the MP4 audio
+    // toggle exported every recorded track; ON keeps that until the user
+    // switches a track off on an export grid.
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({ schemaVersion: 1, recording: { includeMicrophone: true } }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.recording.mp4IncludeMicrophone).toBe(true);
+    expect(settings.recording.mp4IncludeSystemAudio).toBe(true);
+  });
+
+  test("an MP4 audio track switched off stays off across a restart", async () => {
+    const filePath = join(workDir, "settings.json");
+    const svc = new DesktopSettingsService({ filePath });
+    await svc.write({ recording: { mp4IncludeMicrophone: false } });
+
+    const restarted = await new DesktopSettingsService({ filePath }).read();
+    expect(restarted.recording.mp4IncludeMicrophone).toBe(false);
+    expect(restarted.recording.mp4IncludeSystemAudio).toBe(true);
+    // Recording a microphone and exporting one are separate choices.
+    expect(restarted.recording.includeMicrophone).toBe(false);
+  });
+
   test("v1 recording block preserves an explicit cursor:false choice", async () => {
     const filePath = join(workDir, "settings.json");
     writeFileSync(

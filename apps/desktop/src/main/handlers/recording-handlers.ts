@@ -61,13 +61,18 @@ import {
   computeOutputDimensions,
   exportVideoRange,
   GIF_PRESETS,
+  MP4_AUDIO_BITRATE,
   MP4_PRESETS
 } from "../recording/recording-exporter";
+import { narrowAudioToRecorded, resolveExportAudio } from "../recording/mp4-export-audio";
 import {
   mapVideoResolveError,
   resolveVideoExport
 } from "../recording/video-export-resolver";
-import { validateVideoExportRequest } from "../recording/video-export-validation";
+import {
+  validateVideoExportRequest,
+  videoExportAudioError
+} from "../recording/video-export-validation";
 import { createVideoExportProgressObserver } from "../recording/video-export-progress";
 import { ensureVideoPoster } from "../recording/video-poster";
 import { ensureVideoFrames, videoAssetDir } from "../recording/video-frames";
@@ -1078,17 +1083,10 @@ export function registerRecordingHandlers(): void {
         );
       }
       const range = req.range ?? record.video.defaultRange;
-      const audio =
-        req.audio ??
-        (req.format === "gif"
-          ? { includeSystemAudio: false, includeMicrophone: false }
-          : {
-              // Match resolveVideoExport: an omitted MP4 policy preserves
-              // every source track. This keeps the visible preflight on the
-              // same cache key as copy/path/drag instead of encoding twice.
-              includeSystemAudio: record.video.hasSystemAudio,
-              includeMicrophone: record.video.hasMicrophoneAudio
-            });
+      // Same resolution as resolveVideoExport, so the visible preflight
+      // lands on the cache key copy / path / drag then hit instead of
+      // encoding twice. An omitted MP4 choice is the user's preference.
+      const audio = await resolveExportAudio(req.format, req.audio, record.video);
       // Source metadata is the source of truth for whether a track exists.
       if (req.format === "mp4") {
         if (audio.includeSystemAudio && !record.video.hasSystemAudio) {
@@ -1114,9 +1112,7 @@ export function registerRecordingHandlers(): void {
         format: req.format,
         preset: req.preset,
         range: normalizeRange(range, record.video.durationSec),
-        audio: req.format === "gif"
-          ? { includeSystemAudio: false, includeMicrophone: false }
-          : audio,
+        audio,
         signal: ctx.signal,
         ...(progress === undefined ? {} : { progress })
       });
@@ -1209,18 +1205,20 @@ export function registerRecordingHandlers(): void {
         );
       }
     }
+    const audioError = videoExportAudioError(req.audio, "video:presetMetrics");
+    if (audioError !== null) return err(audioError);
     const range = req.range ?? record.video.defaultRange;
     const normalized = normalizeRange(range, record.video.durationSec);
     const durationSec = normalized.end - normalized.start;
-    // Default audio choice mirrors the same fallback the encoder
-    // uses when audio is omitted: GIF silent, MP4 inherits the
-    // recorded tracks. We compute metrics against this default so
-    // cache lookups land on the same row a default-args click would
-    // populate.
-    const mp4Audio = {
-      includeSystemAudio: record.video.hasSystemAudio,
-      includeMicrophone: record.video.hasMicrophoneAudio
-    };
+    // The MP4 audio the grid is showing — or, when omitted, the same
+    // preference an export with no `audio` resolves — so a cache lookup
+    // lands on the row the next click would populate. Narrowed to the
+    // recorded tracks: metrics describe a choice, they do not reject one.
+    const mp4Audio = narrowAudioToRecorded(
+      await resolveExportAudio("mp4", req.audio, record.video),
+      record.video
+    );
+    const mp4HasAudio = mp4Audio.includeSystemAudio || mp4Audio.includeMicrophone;
     const presets: readonly VideoPreset[] = ["low", "med", "high"];
     const metrics: VideoPresetMetric[] = [];
     for (const format of ["gif", "mp4"] as const) {
@@ -1236,7 +1234,14 @@ export function registerRecordingHandlers(): void {
         const byteSize =
           cached !== null
             ? cached.byteSize
-            : estimateVideoByteSize(format, preset, dims.widthPx, dims.heightPx, durationSec);
+            : estimateVideoByteSize(
+                format,
+                preset,
+                dims.widthPx,
+                dims.heightPx,
+                durationSec,
+                format === "mp4" && mp4HasAudio
+              );
         metrics.push({
           format,
           preset,
@@ -1334,7 +1339,8 @@ function estimateVideoByteSize(
   preset: VideoPreset,
   widthPx: number,
   heightPx: number,
-  durationSec: number
+  durationSec: number,
+  withAudio: boolean
 ): number {
   if (format === "gif") {
     const pixels = widthPx * heightPx;
@@ -1347,15 +1353,17 @@ function estimateVideoByteSize(
   // MP4 — model bitrate from the encoder presets. Numbers are deliberate
   // ballpark; the renderer surfaces these as `~N MB` so a 30% miss
   // is acceptable.
-  const bitrateBps = mp4PresetBitrateBps(preset);
+  // The AAC track counts only when the export keeps one, so turning the
+  // grid's audio off visibly shrinks the estimate.
+  const bitrateBps =
+    kbpsToBps(MP4_PRESETS[preset].bitrate) + (withAudio ? kbpsToBps(MP4_AUDIO_BITRATE) : 0);
   return Math.round((bitrateBps / 8) * durationSec);
 }
 
-function mp4PresetBitrateBps(preset: VideoPreset): number {
-  const bitrate = MP4_PRESETS[preset].bitrate;
+function kbpsToBps(bitrate: string): number {
   const match = /^(\d+)k$/.exec(bitrate);
   if (match === null) {
-    throw new Error(`recording-handlers: unsupported MP4 preset bitrate ${bitrate}`);
+    throw new Error(`recording-handlers: unsupported MP4 bitrate ${bitrate}`);
   }
   return Number(match[1]) * 1000;
 }

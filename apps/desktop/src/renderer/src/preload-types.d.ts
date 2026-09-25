@@ -171,6 +171,8 @@ declare global {
         captureId: string;
         format: "gif" | "mp4";
         preset: VideoPreset;
+        range?: { start: number; end: number };
+        audio?: { includeSystemAudio: boolean; includeMicrophone: boolean };
       }): void;
       startCartZipDrag(payload: {
         captureIds: string[];

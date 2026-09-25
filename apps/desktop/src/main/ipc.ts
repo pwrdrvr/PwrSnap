@@ -15,6 +15,7 @@ import { bus } from "./command-bus";
 import { getMainLogger } from "./log";
 import { admitHotkeyRecorderDocument } from "./hotkeys/hotkey-recorder-document";
 import { relayCancellationToPeer } from "./process-split/event-relay";
+import { videoExportAudioError } from "./recording/video-export-validation";
 
 const log = getMainLogger("pwrsnap:ipc");
 
@@ -273,6 +274,7 @@ function parseVideoDragRequest(req: unknown): VideoExportCoordinates | null {
     format?: unknown;
     preset?: unknown;
     range?: unknown;
+    audio?: unknown;
   };
   if (typeof value.captureId !== "string" || value.captureId.length === 0) return null;
   if (value.format !== "gif" && value.format !== "mp4") return null;
@@ -299,10 +301,22 @@ function parseVideoDragRequest(req: unknown): VideoExportCoordinates | null {
       range = { start: r.start, end: r.end };
     }
   }
+  // Optional explicit MP4 audio choice — the toggle the grid is showing.
+  // Unlike a malformed range, a malformed one REFUSES the drag: treating
+  // it as omitted would still honor the saved preference, but a payload
+  // we cannot read is not one to guess at when the question is whether
+  // to ship someone's microphone.
+  let audio: VideoExportCoordinates["audio"];
+  if (value.audio !== undefined) {
+    if (videoExportAudioError(value.audio, IPC_VIDEO_DRAG_START) !== null) return null;
+    const a = value.audio as NonNullable<VideoExportCoordinates["audio"]>;
+    audio = { includeSystemAudio: a.includeSystemAudio, includeMicrophone: a.includeMicrophone };
+  }
   return {
     captureId: value.captureId,
     format: value.format,
     preset: value.preset as VideoPreset,
-    ...(range !== undefined ? { range } : {})
+    ...(range !== undefined ? { range } : {}),
+    ...(audio !== undefined ? { audio } : {})
   };
 }

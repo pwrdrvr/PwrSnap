@@ -57,6 +57,7 @@ import {
   type CopyPreset
 } from "../shared/CopyButton";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
+import { recordedAudioTracks } from "../shared/useMp4ExportAudio";
 import { VideoExportPresetsPanel } from "../shared/VideoExportPresetsPanel";
 import { dispatch, startCaptureDrag, subscribe } from "../../lib/pwrsnap";
 import { copyImagePreset, copyImagePresetPath } from "../../lib/clipboard-copy";
@@ -557,6 +558,7 @@ export function GridCopyPalette({
           <div data-testid="psl-grid-copy-palette-video">
             <VideoExportPresetsPanel
               captureId={record.id}
+              audioTracks={recordedAudioTracks(record.video)}
               shortcutPlatform={shortcutPlatform}
             />
           </div>

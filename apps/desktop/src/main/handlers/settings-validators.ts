@@ -578,6 +578,8 @@ export function validateSettingsWrite(
     for (const key of [
       "includeSystemAudio",
       "includeMicrophone",
+      "mp4IncludeMicrophone",
+      "mp4IncludeSystemAudio",
       "videoCaptureCursor",
       "imageCaptureCursor",
       "showRegionFrame",

@@ -4783,6 +4783,66 @@
   height: 1px;
   background: var(--border-subtle);
 }
+/* MP4 audio toggles at the right end of the MP4 eyebrow — one per track
+   the take recorded. The same 18px mono pill as the trim strip's FULL
+   CLIP chip. Tangerine = in the file; muted + crossed glyph + "off" =
+   left out, so the state never rests on colour alone. Focus uses the
+   global `:focus-visible` ring (a bordered control, 1px out). */
+.psl__copy-audio {
+  display: flex;
+  flex: none;
+  gap: 4px;
+}
+.psl__copy-audio-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 7px 0 5px;
+  border: 1px solid var(--accent-border);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  font: 600 9px/1 var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 120ms var(--ease-out), border-color 120ms var(--ease-out), color 120ms var(--ease-out);
+}
+.psl__copy-audio-toggle > svg {
+  display: block;
+  flex: none;
+  color: var(--accent);
+}
+.psl__copy-audio-toggle:hover {
+  border-color: var(--accent);
+}
+.psl__copy-audio-toggle[aria-pressed="false"] {
+  border-color: var(--border-default);
+  background: transparent;
+  color: var(--text-muted);
+}
+.psl__copy-audio-toggle[aria-pressed="false"] > svg {
+  color: var(--text-muted);
+}
+.psl__copy-audio-toggle[aria-pressed="false"]:hover {
+  border-color: var(--border-strong);
+  color: var(--text-secondary);
+}
+/* A take with no audio: a statement, not a control. */
+.psl__copy-audio-none {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  min-height: 18px;
+  white-space: nowrap;
+}
+.psl__copy-audio-none > svg {
+  display: block;
+  flex: none;
+}
 
 /* Secondary actions row (Share / Editor / trash) */
 .psl__action-row {

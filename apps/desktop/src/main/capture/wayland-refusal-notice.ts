@@ -68,6 +68,19 @@ export function showWaylandRefusalNotice(): void {
           code: result.error.code,
           message: result.error.message
         });
+        // Say so on screen, not only in the log. This is the escape the
+        // refusal itself recommends, so a silent failure here (a denied
+        // portal prompt, a write error) is the same dead button the notice
+        // exists to replace. Picking a differently shaped monitor in the
+        // portal is NOT one of those failures: `capture:fullScreen` grabs
+        // with `displayMatch: "report"`, so the portal's choice is kept
+        // rather than refused by `checkGrabMatchesDisplay`.
+        await dialog.showMessageBox({
+          type: "warning",
+          message: "Full Screen capture failed",
+          detail: result.error.message,
+          buttons: ["OK"]
+        });
       }
     })
     .catch((cause: unknown) => {

@@ -1933,9 +1933,9 @@ function createSelectorWindow(
     // without activating the app.)
     //
     // macOS-only — Windows/Linux have no NSPanel; the frameless,
-    // transparent, always-on-top window below covers the display directly
-    // (setSimpleFullScreen / enterMenuBarOverlayMode are already
-    // darwin-gated).
+    // transparent, always-on-top window below covers the display, and
+    // enterMenuBarOverlayMode takes it native-fullscreen there
+    // (setSimpleFullScreen is the darwin-only arm).
     ...(process.platform === "darwin" ? { type: "panel" as const } : {}),
     title: SELECTOR_WINDOW_TITLE,
     x: bounds.x,

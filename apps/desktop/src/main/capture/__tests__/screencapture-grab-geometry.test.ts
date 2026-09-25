@@ -145,6 +145,29 @@ describe("non-darwin screen grab is checked against the display it claims", () =
     ).rejects.toThrow(/something other than this display/);
   });
 
+  test("capture:fullScreen's `report` mode keeps the portal's pick instead of refusing it", async () => {
+    // The Wayland refusal notice sends multi-display users to Full Screen so
+    // the portal's picker can choose the monitor. The target display comes
+    // from the dead pointer, so a pick of any other shape mismatches — and
+    // with no rect mapped through the display, refusing it would only turn
+    // the recommended escape into an error.
+    mocks.getSources.mockResolvedValue([
+      { id: "screen:0:0", name: "Screen 2", display_id: "", thumbnail: thumbnail(1200, 1920) }
+    ]);
+    const { captureScreen } = await import("../screencapture");
+    const result = await captureScreen(42, undefined, { displayMatch: "report" });
+
+    expect(result).toMatchObject({ ok: true, displayId: 42 });
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+    expect(
+      mocks.logged.some(
+        (entry) =>
+          entry.level === "warn" &&
+          entry.message.includes("does not match the display it was asked for")
+      )
+    ).toBe(true);
+  });
+
   test("a mismatched grab writes no file", async () => {
     mocks.getSources.mockResolvedValue([
       { id: "screen:0:0", name: "Screen 1", display_id: "", thumbnail: thumbnail(1024, 768) }

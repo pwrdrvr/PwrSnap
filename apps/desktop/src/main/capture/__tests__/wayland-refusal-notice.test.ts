@@ -87,6 +87,20 @@ describe("Wayland refusal notice", () => {
     expect(mocks.dispatch.mock.calls[0]?.[0]).toBe("capture:fullScreen");
   });
 
+  test("a failed Full Screen capture is reported on screen, not only in the log", async () => {
+    mocks.showMessageBox.mockResolvedValue({ response: 0 });
+    mocks.dispatch.mockResolvedValue({
+      ok: false,
+      error: { kind: "capture", code: "failed", message: "grab is of something else" }
+    });
+    showWaylandRefusalNotice();
+    await settle();
+
+    expect(mocks.showMessageBox).toHaveBeenCalledTimes(2);
+    const [options] = mocks.showMessageBox.mock.calls[1] as [Electron.MessageBoxOptions];
+    expect(options.detail).toBe("grab is of something else");
+  });
+
   test("a repeated trigger does not stack alerts", async () => {
     // A held-down hotkey would otherwise queue one modal per repeat, and the
     // user would have to dismiss every one of them.

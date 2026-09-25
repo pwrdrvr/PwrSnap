@@ -920,7 +920,11 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     // normally settled by persist time.
     const cursorSamplePromise = startCursorSampleIfEnabled();
     await hidePwrSnapChromeAndSettle();
-    const captureResult = await captureScreen(displayId);
+    // `report`, not `enforce`: a full-screen grab maps no rect through the
+    // display, and on a portal session the portal's picker — which the
+    // Wayland refusal notice sends users to — chose the source. See
+    // `GrabDisplayMatch` in screencapture.ts.
+    const captureResult = await captureScreen(displayId, undefined, { displayMatch: "report" });
     if (!captureResult.ok) {
       return err({
         kind: "capture",

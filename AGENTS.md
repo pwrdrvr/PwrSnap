@@ -2739,8 +2739,24 @@ The script keeps two binaries on purpose:
 
 - `better-sqlite3/build/Release/better_sqlite3.node` stays compiled for system
   Node so unit tests and scripts can `require("better-sqlite3")`.
-- `better-sqlite3/electron-native/better_sqlite3.node` is compiled/downloaded
-  for Electron and is what the app loads at runtime.
+- `better-sqlite3/electron-native/better_sqlite3.node` is downloaded or
+  compiled for Electron and is what the app loads at runtime.
+
+**Expect it to compile.** The script tries `prebuild-install` first and falls
+back to `node-gyp` against the Electron headers when there is no prebuild.
+better-sqlite3 12.x is built on the V8 API, not N-API, so it publishes one
+prebuild per Electron ABI, and nothing covers Electron 44 (ABI 149).
+prebuild-install's `node-abi` also throws `Could not detect abi` for an
+Electron it does not know, whether or not a prebuild exists. So every install
+and every packaging stage compiles. That takes about 12s per architecture and
+needs a C++ toolchain plus Python 3, which every CI image and the Docker E2E
+image already have. The headers are cached in `~/.electron-gyp`. The compile
+runs in a scratch copy of the package because `node-gyp rebuild` deletes
+`build/`, which holds the system-Node binding. It also clears the release
+scripts' `npm_config_arch` / `npm_config_target` for the child process,
+because node-gyp reads those AFTER its argv and `universal` would override
+`--arch`. The V8 deprecation warnings it prints are expected. better-sqlite3
+13 is N-API with bundled prebuilds, and migrating to it removes all of this.
 
 For release/package work, the Electron sidecar must be built for the target
 architecture, not necessarily the host architecture. The script honors

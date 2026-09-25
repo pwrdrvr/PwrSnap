@@ -226,10 +226,15 @@ The script keeps two binaries on purpose:
 - `better-sqlite3/electron-native/better_sqlite3.node` is compiled or
   downloaded for Electron and is what the app loads at runtime.
 
+There is no better-sqlite3 prebuild for the current Electron, so the script
+compiles it from source (about 12s). That needs a C++ toolchain and Python 3:
+Xcode Command Line Tools on macOS, `build-essential` on Linux, or the Visual
+Studio C++ build tools on Windows.
+
 For release/package work, the Electron sidecar must be built for the target
 architecture, not necessarily the host. The script honors `npm_config_arch`
 / `npm_config_target_arch` (including `"universal"`, which lipos arm64 +
-x64 prebuilds into a fat binary), and
+x64 builds into a fat binary), and
 `apps/desktop/src/main/persistence/native-binding.ts` ignores the sidecar
 unless its metadata matches the running Electron version, `better-sqlite3`
 version, and `process.arch`.

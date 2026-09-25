@@ -655,6 +655,28 @@ describe("a persistent menu carries no elapsed clock", () => {
     );
   });
 
+  test("the lead-in countdown carries no per-second count on Linux either", () => {
+    // `countdown` is emitted once a second, so a count in the label would be
+    // a `setContextMenu` republish every second — replacing the menu under
+    // the user's cursor mid-countdown.
+    mocks.recordingState = {
+      phase: "countdown",
+      sessionId: "rec-1",
+      secondsRemaining: 2,
+      rect: { x: 0, y: 0, w: 800, h: 600 },
+      displayId: 1
+    };
+    expect(labelsOf(buildTrayContextMenuTemplate(undefined, "linux"))[0]).toBe(
+      "Cancel recording start"
+    );
+    expect(labelsOf(buildTrayContextMenuTemplate(undefined, "darwin"))[0]).toBe(
+      "Cancel recording start (2)"
+    );
+    expect(labelsOf(buildTrayContextMenuTemplate(undefined, "win32"))[0]).toBe(
+      "Cancel recording start (2)"
+    );
+  });
+
   test("Stop and Save still works from the Linux menu", () => {
     const stop = (
       buildTrayContextMenuTemplate(undefined, "linux") as Array<{

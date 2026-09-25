@@ -739,7 +739,8 @@ function refreshNativeTrayMenu(): void {
  * string. Two templates with the same signature render identically, so
  * re-exporting one over the other is pure cost.
  *
- * Covers `label`, `enabled`, `accelerator`, `type` and recurses into
+ * Covers `label`, `sublabel`, `toolTip`, `role`, `enabled`, `visible`,
+ * `checked`, `accelerator`, `type` and recurses into
  * `submenu` — the dev seeder's items are submenus, so a signature that
  * stopped at the top level would miss a changed profile name. `click`
  * handlers are deliberately NOT part of it: they are fresh closures on every
@@ -757,8 +758,15 @@ function trayMenuSignature(template: readonly MenuItemConstructorOptions[]): str
       return [
         item.type ?? "normal",
         item.label ?? "",
+        item.sublabel ?? "",
+        item.toolTip ?? "",
+        item.role ?? "",
         item.accelerator ?? "",
         item.enabled === false ? "off" : "on",
+        // `visible` defaults to true and `checked` to false — same
+        // normalization as `enabled`.
+        item.visible === false ? "hidden" : "shown",
+        item.checked === true ? "checked" : "unchecked",
         submenu
       ].join("\u0001");
     })
@@ -1298,8 +1306,12 @@ export function buildTrayContextMenuTemplate(
     ) {
       return [
         {
+          // No per-second count on a persistent (Linux) menu, for the same
+          // reason the elapsed clock above is dropped there: `countdown`
+          // emits every second, and each new label is a `setContextMenu`
+          // republish that can close the menu under the user's cursor.
           label:
-            recordingState.phase === "countdown"
+            recordingState.phase === "countdown" && !menuIsPersistent
               ? `Cancel recording start (${recordingState.secondsRemaining})`
               : "Cancel recording start",
           click: () => {

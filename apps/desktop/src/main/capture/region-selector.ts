@@ -26,6 +26,7 @@ import {
 } from "electron";
 import { join } from "node:path";
 import type { QuickCaptureAction, RecordingCapabilities } from "@pwrsnap/shared";
+import { linuxSquareCorners } from "../linux-window-corners";
 import { getMainLogger } from "../log";
 import { getPreloadPath } from "../window";
 import {
@@ -1917,6 +1918,7 @@ function createSelectorWindow(
   // display logical px 1:1.
   const { bounds } = display;
   const window = new BrowserWindow({
+    ...linuxSquareCorners(),
     // `type: 'panel'` — NSPanel + NSWindowStyleMaskNonactivatingPanel.
     // Same primitive used by createFloatOverWindow / createTrayWindow.
     // The selector's show()/focus() must NOT cause macOS to switch

@@ -1472,15 +1472,16 @@ export function createTrayWindow(): BrowserWindow {
   // the rounded popover surface itself. (Native window shadow doesn't apply to
   // transparent Windows windows — acceptable for now.)
   //
-  // ⚠️  ON LINUX THIS FACTORY IS E2E-ONLY. Production never reaches it:
-  // `installTray` builds a native `setContextMenu` menu there instead
-  // (`traySurfaceForPlatform` in tray.ts has the four-part reason). The
-  // popover survives on Linux purely so `showTrayPopoverForE2E` can drive the
-  // tray renderer under xvfb — which is where tray-sizing.spec.ts and the
-  // zoom-remeasure specs run — and that path positions the window at a fixed
-  // point on the primary display rather than anchoring it to anything. Do not
-  // read "the Linux E2E tray popover works" as "the Linux tray popover
-  // works"; xvfb is X11, and there is no indicator driving it.
+  // ⚠️  ON LINUX THIS IS NOT A TRAY-ANCHORED POPOVER. The tray's primary
+  // surface there is a native `setContextMenu` menu (`traySurfaceForPlatform`
+  // in tray.ts has the four-part reason); production reaches this window only
+  // from that menu's "Show Last Capture…" row (`toggleLinuxTrayPopover`),
+  // which places it under the pointer on X11 and leaves placement to the
+  // compositor on Wayland. `showTrayPopoverForE2E` also drives it under xvfb —
+  // where tray-sizing.spec.ts and the zoom-remeasure specs run — at a fixed
+  // point on the primary display. Do not read "the Linux E2E tray popover
+  // works" as "the Linux tray popover works on Wayland"; xvfb is X11, and
+  // there is no indicator driving it.
   const macChrome =
     process.platform === "darwin"
       ? ({ type: "panel", vibrancy: "popover", visualEffectState: "active" } as const)

@@ -134,7 +134,9 @@ export function windowPlacementIsOurs(): boolean {
     ozoneSwitch = null;
   }
   const ours = canPositionOwnWindows(process.platform, process.env, ozoneSwitch);
-  if (process.platform === "linux" && !loggedBackend) {
+  // Only when placement really is the compositor's: on X11 the line below
+  // would claim a limitation the session does not have.
+  if (process.platform === "linux" && !ours && !loggedBackend) {
     loggedBackend = true;
     // Says the thing a user report will otherwise be missing. A popover that
     // opens in the middle of the screen looks like a PwrSnap bug; this line is

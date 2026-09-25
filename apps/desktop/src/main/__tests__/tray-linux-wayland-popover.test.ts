@@ -143,6 +143,7 @@ vi.mock("../command-bus", () => ({ bus: { dispatch: mocks.dispatch } }));
 import {
   buildTrayContextMenuTemplate,
   disposeTray,
+  hideTrayPopoverIfVisible,
   LINUX_TRAY_FIRST_MEASURE_WAIT_MS
 } from "../tray";
 import { resetWindowPlacementLogForTests } from "../linux-window-placement";
@@ -353,5 +354,46 @@ describe("placement — attempted only where it can land", () => {
     // Clamped to the right edge (1920-440-8) and up above the pointer
     // (1080-620-8) — which is what makes this correct for a bottom panel.
     expect(mocks.calls).toContain("setPosition(1472,452)");
+  });
+});
+
+describe("the open-time anchor, and a parked open", () => {
+  test("X11: a re-measure keeps the popover where it opened, not under the pointer", async () => {
+    setSessionEnv(X11);
+    mocks.ozoneSwitch = "x11";
+    await openPopoverFromMenu();
+    expect(mocks.calls).toContain("setPosition(740,20)");
+    mocks.calls.length = 0;
+    // The user is now INSIDE the popover; its content grows.
+    const { screen } = await import("electron");
+    vi.mocked(screen.getCursorScreenPoint).mockReturnValue({ x: 100, y: 500 });
+    try {
+      postRendererMeasurement(700);
+      expect(mocks.calls.filter((c) => c.startsWith("setPosition"))).toEqual([
+        "setPosition(740,20)"
+      ]);
+    } finally {
+      vi.mocked(screen.getCursorScreenPoint).mockReturnValue({ x: 960, y: 12 });
+    }
+  });
+
+  test("a second pick while the first is parked cancels it instead of opening", async () => {
+    vi.useFakeTimers();
+    try {
+      (popoverRow("linux")?.click as () => void)();
+      (popoverRow("linux")?.click as () => void)();
+      await vi.advanceTimersByTimeAsync(LINUX_TRAY_FIRST_MEASURE_WAIT_MS + 1);
+      expect(mocks.windows.at(-1)?.showInactive).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a capture's dismiss cancels a parked open, so it cannot show mid-capture", async () => {
+    (popoverRow("linux")?.click as () => void)();
+    hideTrayPopoverIfVisible();
+    postRendererMeasurement(620);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mocks.windows.at(-1)?.showInactive).not.toHaveBeenCalled();
   });
 });

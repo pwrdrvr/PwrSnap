@@ -179,6 +179,16 @@ function compileElectronBinding(arch, destination) {
     for (const key of Object.keys(env)) {
       if (NODE_GYP_TARGET_ENV.test(key)) delete env[key];
     }
+    // node-gyp's addon.gypi defines V8_DEPRECATION_WARNINGS, which turns
+    // V8_DEPRECATED(...) into `[[deprecated]]`. V8 15 (Electron 44) puts one
+    // in front of V8_EXPORT's `__attribute__((visibility))` in a class head
+    // (`class V8_DEPRECATED(...) V8_EXPORT Value` in v8-primitive.h), and GCC
+    // 12 rejects that ordering outright: Debian bookworm, which the Docker E2E
+    // image is, could not build the binding at all. The define only switches
+    // on deprecation diagnostics. It changes no layout or ABI. The Makefile
+    // puts the env CXXFLAGS after gyp's own -D flags, so this -U wins. An
+    // MSVC build goes through msbuild and does not read CXXFLAGS at all.
+    env.CXXFLAGS = [env.CXXFLAGS, "-UV8_DEPRECATION_WARNINGS"].filter(Boolean).join(" ");
     execFileSync(
       process.execPath,
       [

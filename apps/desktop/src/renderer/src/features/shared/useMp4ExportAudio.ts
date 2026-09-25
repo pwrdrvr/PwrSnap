@@ -11,7 +11,8 @@
 //
 // Until the first `settings:read` lands the preference is `null`: the
 // grid shows no toggles and exports send no `audio`, which main resolves
-// from the same persisted preference.
+// from the same persisted preference. (A take with no audio skips the
+// wait and sends silent.)
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
@@ -60,6 +61,11 @@ export function recordedAudioTracks(
   };
 }
 
+const SILENT_MP4_AUDIO: VideoExportAudio = Object.freeze({
+  includeMicrophone: false,
+  includeSystemAudio: false
+});
+
 function keptFromSettings(settings: Settings | undefined): Mp4AudioTracks | null {
   const recording = settings?.recording;
   if (recording === undefined) return null;
@@ -97,9 +103,12 @@ export function useMp4AudioPreference(): {
 
   useEffect(() => {
     let cancelled = false;
+    // Set by the first broadcast. A broadcast is always at least as new
+    // as the read, which may have been served before that write landed.
+    let broadcastSeen = false;
     const seqAtRead = writeSeq.current;
     void dispatch("settings:read", {}).then((result) => {
-      if (cancelled || !result.ok) return;
+      if (cancelled || !result.ok || broadcastSeen) return;
       // A toggle between dispatch and resolve wins.
       if (writeSeq.current !== seqAtRead) return;
       const next = keptFromSettings(result.value as Settings | undefined);
@@ -109,6 +118,10 @@ export function useMp4AudioPreference(): {
     const off = subscribe(EVENT_CHANNELS.settingsChanged, (payload) => {
       const next = keptFromSettings((payload as SettingsChangedEvent).settings);
       if (next === null) return;
+      broadcastSeen = true;
+      // Persisted either way, so a failed write later rolls back to it
+      // rather than to a value an earlier successful write replaced.
+      confirmedRef.current = next;
       // A broadcast from an unrelated write queued ahead of ours carries
       // the pre-toggle value; hold the optimistic one until our own echo
       // arrives. Writes from another window apply unconditionally.
@@ -117,7 +130,6 @@ export function useMp4AudioPreference(): {
         if (!sameTracks(inFlight.value, next)) return;
         pending.current = null;
       }
-      confirmedRef.current = next;
       show(next);
     });
     return () => {
@@ -171,7 +183,12 @@ export function useMp4ExportAudio(recorded: RecordedAudioTracks): {
   const keptSystem = kept?.systemAudio;
   const audio = useMemo<VideoExportAudio | undefined>(
     () =>
-      keptMic === undefined || keptSystem === undefined
+      // A take with no audio exports silent whatever the preference
+      // says, so it need not wait for the read (nor re-key the grid
+      // when the read lands).
+      !recordedMic && !recordedSystem
+        ? SILENT_MP4_AUDIO
+        : keptMic === undefined || keptSystem === undefined
         ? undefined
         : mp4ExportAudio(
             { microphone: recordedMic, systemAudio: recordedSystem },

@@ -205,7 +205,7 @@ export function VideoExportPresetGrid({
               visually identical (cards labeled just "Low / Med /
               High"). */}
           <div className="psl__copy-format-eyebrow">
-            <span>{FORMAT_LABELS[format]}</span>
+            <span className="psl__copy-format-eyebrow-label">{FORMAT_LABELS[format]}</span>
             <span className="psl__copy-format-eyebrow-line" />
             {format === "mp4" && mp4Audio !== undefined ? (
               <Mp4AudioToggles control={mp4Audio} />

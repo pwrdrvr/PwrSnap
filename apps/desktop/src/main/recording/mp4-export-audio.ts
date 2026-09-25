@@ -32,17 +32,31 @@ export type Mp4AudioPreference = Pick<
 
 type RecordedTracks = Pick<VideoCaptureMetadata, "hasSystemAudio" | "hasMicrophoneAudio">;
 
-/** The tracks the take has, narrowed to the ones the user keeps. A kept
- *  track the take never recorded stays out, so the result always passes
- *  the `audio_track_missing` check. */
+/** An audio choice narrowed to the tracks the take has. The result
+ *  never names a missing track, so it always passes the
+ *  `audio_track_missing` check. */
+export function narrowAudioToRecorded(
+  audio: VideoExportAudio,
+  video: RecordedTracks
+): VideoExportAudio {
+  return {
+    includeSystemAudio: video.hasSystemAudio && audio.includeSystemAudio,
+    includeMicrophone: video.hasMicrophoneAudio && audio.includeMicrophone
+  };
+}
+
+/** The tracks the take has, narrowed to the ones the user keeps. */
 export function mp4AudioFromPreference(
   video: RecordedTracks,
   preference: Mp4AudioPreference
 ): VideoExportAudio {
-  return {
-    includeSystemAudio: video.hasSystemAudio && preference.mp4IncludeSystemAudio,
-    includeMicrophone: video.hasMicrophoneAudio && preference.mp4IncludeMicrophone
-  };
+  return narrowAudioToRecorded(
+    {
+      includeSystemAudio: preference.mp4IncludeSystemAudio,
+      includeMicrophone: preference.mp4IncludeMicrophone
+    },
+    video
+  );
 }
 
 export type ResolveExportAudioDependencies = {

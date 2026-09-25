@@ -15,6 +15,7 @@ import { bus } from "./command-bus";
 import { getMainLogger } from "./log";
 import { admitHotkeyRecorderDocument } from "./hotkeys/hotkey-recorder-document";
 import { relayCancellationToPeer } from "./process-split/event-relay";
+import { videoExportAudioError } from "./recording/video-export-validation";
 
 const log = getMainLogger("pwrsnap:ipc");
 
@@ -307,15 +308,8 @@ function parseVideoDragRequest(req: unknown): VideoExportCoordinates | null {
   // to ship someone's microphone.
   let audio: VideoExportCoordinates["audio"];
   if (value.audio !== undefined) {
-    const a = value.audio as { includeSystemAudio?: unknown; includeMicrophone?: unknown } | null;
-    if (
-      typeof a !== "object" ||
-      a === null ||
-      typeof a.includeSystemAudio !== "boolean" ||
-      typeof a.includeMicrophone !== "boolean"
-    ) {
-      return null;
-    }
+    if (videoExportAudioError(value.audio, IPC_VIDEO_DRAG_START) !== null) return null;
+    const a = value.audio as NonNullable<VideoExportCoordinates["audio"]>;
     audio = { includeSystemAudio: a.includeSystemAudio, includeMicrophone: a.includeMicrophone };
   }
   return {

@@ -672,7 +672,10 @@ describe("useVideoExportPresets", () => {
         harness.setAudio({ includeSystemAudio: false, includeMicrophone: false })
     }
   ])("a $label change cancels the active run and ignores its stale resolution", async ({ change }) => {
-    const harness = mount("cap_a", { start: 0, end: 10 });
+    const harness = mount("cap_a", { start: 0, end: 10 }, {
+      includeSystemAudio: true,
+      includeMicrophone: true
+    });
     act(() => harness.snapshot().triggerDrag("gif", "high"));
     const runId = runIdFromExport("gif", "high");
     const oldExport = pendingNamed("video:export");
@@ -690,6 +693,32 @@ describe("useVideoExportPresets", () => {
     await resolvePending(oldExport, exportOk("/cache/stale.gif"));
     expect(harness.snapshot().states).toEqual({});
     expect(videoDragSink).toHaveLength(0);
+  });
+
+  test("the saved audio preference loading is not a change: a run started before it finishes", async () => {
+    // e.g. ⌘5 pressed as the toast appears, before settings:read lands.
+    const harness = mount("cap_early", { start: 0, end: 10 });
+    act(() => harness.snapshot().triggerCopy("mp4", "med"));
+    const firstExport = pendingNamed("video:export");
+
+    harness.setAudio({ includeSystemAudio: true, includeMicrophone: false });
+
+    expect(harness.snapshot().states["mp4-med"]?.kind).toBe("running");
+    expect(dispatchesNamed("video:cancelExport")).toHaveLength(0);
+    await resolvePending(firstExport, exportOk("/cache/early.mp4"));
+    expect(pendingNamed("clipboard:copyVideoFile").req).not.toHaveProperty(
+      "audio",
+      expect.anything()
+    );
+
+    // A real change after that still cancels.
+    act(() => harness.snapshot().triggerCopy("mp4", "low"));
+    const lowRunId = runIdFromExport("mp4", "low");
+    harness.setAudio({ includeSystemAudio: false, includeMicrophone: false });
+    expect(dispatchesNamed("video:cancelExport").map((p) => p.req)).toContainEqual({
+      runId: lowRunId
+    });
+    expect(harness.snapshot().states).toEqual({});
   });
 
   test("unmount unsubscribes and dispatches cancellation for every active run", () => {

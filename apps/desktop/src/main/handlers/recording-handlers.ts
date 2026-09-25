@@ -64,7 +64,7 @@ import {
   MP4_AUDIO_BITRATE,
   MP4_PRESETS
 } from "../recording/recording-exporter";
-import { resolveExportAudio } from "../recording/mp4-export-audio";
+import { narrowAudioToRecorded, resolveExportAudio } from "../recording/mp4-export-audio";
 import {
   mapVideoResolveError,
   resolveVideoExport
@@ -1214,11 +1214,10 @@ export function registerRecordingHandlers(): void {
     // preference an export with no `audio` resolves — so a cache lookup
     // lands on the row the next click would populate. Narrowed to the
     // recorded tracks: metrics describe a choice, they do not reject one.
-    const requested = await resolveExportAudio("mp4", req.audio, record.video);
-    const mp4Audio = {
-      includeSystemAudio: requested.includeSystemAudio && record.video.hasSystemAudio,
-      includeMicrophone: requested.includeMicrophone && record.video.hasMicrophoneAudio
-    };
+    const mp4Audio = narrowAudioToRecorded(
+      await resolveExportAudio("mp4", req.audio, record.video),
+      record.video
+    );
     const mp4HasAudio = mp4Audio.includeSystemAudio || mp4Audio.includeMicrophone;
     const presets: readonly VideoPreset[] = ["low", "med", "high"];
     const metrics: VideoPresetMetric[] = [];

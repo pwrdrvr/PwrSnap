@@ -2,7 +2,7 @@
 // Tray, Library, and Detail Rail all mount this hook, so progress behavior
 // stays consistent across every video export surface.
 
-import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import type {
   VideoExportAudio,
@@ -152,6 +152,18 @@ export function useVideoExportPresets(
         : { includeMicrophone, includeSystemAudio },
     [includeMicrophone, includeSystemAudio]
   );
+  // Bumps only when the audio CHANGES between two known choices. The
+  // first load (no choice → the saved preference) is not a change: a run
+  // started before it sent no `audio`, and main resolved that from the
+  // same preference, so cancelling it would only drop the user's click.
+  const [audioChoice, setAudioChoice] = useState({ key: audioKey, epoch: 0 });
+  if (audioKey !== null && audioKey !== audioChoice.key) {
+    setAudioChoice({
+      key: audioKey,
+      epoch: audioChoice.key === null ? audioChoice.epoch : audioChoice.epoch + 1
+    });
+  }
+  const audioEpoch = audioChoice.epoch;
 
   const isActive = useCallback((key: VideoPresetKey, run: ActiveRun): boolean => {
     return activeRunsRef.current.get(key)?.runId === run.runId;
@@ -273,7 +285,7 @@ export function useVideoExportPresets(
       for (const run of activeRunsRef.current.values()) cancelRun(run.runId);
       activeRunsRef.current.clear();
     };
-  }, [audioKey, cancelRun, captureId, rangeKey]);
+  }, [audioEpoch, cancelRun, captureId, rangeKey]);
 
   const exportThenCopy = useCallback(
     (

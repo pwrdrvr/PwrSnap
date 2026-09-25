@@ -174,6 +174,45 @@ describe("useMp4ExportAudio", () => {
     expect(snapshot().control.kept).toEqual({ microphone: true, systemAudio: true });
   });
 
+  test("a failed write rolls back to the latest persisted value, not the pre-toggle one", async () => {
+    const snapshot = mount();
+    await settle(take("settings:read"), { ok: true, value: settings(true, true) });
+
+    act(() => snapshot().control.onToggle("microphone", false));
+    const first = take("settings:write");
+    act(() => snapshot().control.onToggle("systemAudio", false));
+    const second = take("settings:write");
+
+    // The first write's echo does not match the second's optimistic
+    // value, so it is held — but it is what is persisted now.
+    broadcast(false, true);
+    await settle(first, { ok: true, value: settings(false, true) });
+    expect(snapshot().control.kept).toEqual({ microphone: false, systemAudio: false });
+
+    await settle(second, {
+      ok: false,
+      error: { kind: "settings", code: "write_failed", message: "disk full" }
+    });
+    expect(snapshot().control.kept).toEqual({ microphone: false, systemAudio: true });
+  });
+
+  test("an initial read that resolves after a broadcast does not overwrite it", async () => {
+    const snapshot = mount();
+    const read = take("settings:read");
+
+    broadcast(false, true);
+    expect(snapshot().control.kept).toEqual({ microphone: false, systemAudio: true });
+
+    await settle(read, { ok: true, value: settings(true, true) });
+    expect(snapshot().control.kept).toEqual({ microphone: false, systemAudio: true });
+  });
+
+  test("a take with no audio exports silent without waiting for the preference", () => {
+    const snapshot = mount({ microphone: false, systemAudio: false });
+
+    expect(snapshot().audio).toEqual({ includeMicrophone: false, includeSystemAudio: false });
+  });
+
   test("a toggle made before the initial read resolves is not overwritten by it", async () => {
     const snapshot = mount();
     const read = take("settings:read");

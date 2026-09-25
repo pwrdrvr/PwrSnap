@@ -360,7 +360,7 @@ describe("FloatOver asset mode", () => {
     expect(buttons.length).toBe(6);
     // Cards label "Low / Med / High" within each group; the format
     // header ("GIF" / "MP4") lives in the format eyebrow.
-    const eyebrows = el.querySelectorAll(".psl__copy-format-eyebrow span:first-child");
+    const eyebrows = el.querySelectorAll(".psl__copy-format-eyebrow-label");
     expect(Array.from(eyebrows).map((n) => n.textContent)).toEqual(["GIF", "MP4"]);
     const labels = Array.from(buttons).map(
       (b) => b.querySelector(".fo__copy-label")?.textContent
@@ -562,11 +562,14 @@ describe("FloatOver asset mode", () => {
         );
         await Promise.resolve();
       });
+      // The fixture take recorded no audio, so the copy is explicitly
+      // silent without waiting for the saved MP4 audio preference.
       expect(window.pwrsnapApi!.dispatch).toHaveBeenCalledWith("clipboard:copyVideoFile", {
         captureId: "abc",
         format: "mp4",
         preset: "med",
-        range: { start: 0, end: 5 }
+        range: { start: 0, end: 5 },
+        audio: { includeMicrophone: false, includeSystemAudio: false }
       });
     } finally {
       rect.mockRestore();

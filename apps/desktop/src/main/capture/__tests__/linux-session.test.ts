@@ -72,10 +72,10 @@ describe("linuxSessionType", () => {
     // The blanket Wayland refusal is GONE, and this is the test that stops it
     // coming back. It was a stopgap for a misalignment we could not explain,
     // and the explanation turned out to be our own missing setFullScreen(true)
-    // on Linux — the overlay was geometrically perfect and simply had GNOME's
-    // top bar and dock painted over it. Measured on Ubuntu 24: placement
-    // honoured exactly, renderer 1:1, and a pixel-exact grab (all four
-    // fiducials +0,+0).
+    // on Linux — a bare window does not own the screen under GNOME (mutter
+    // moves it into the work area; measured on mutter 46), and a fullscreen
+    // one does. Measured on Ubuntu 24: in fullscreen the overlay and the grab
+    // line up pixel-exact (all four fiducials +0,+0).
     expect(regionSelectorUnsupported(1, env({ XDG_SESSION_TYPE: "wayland" }), "linux")).toBe(
       false
     );

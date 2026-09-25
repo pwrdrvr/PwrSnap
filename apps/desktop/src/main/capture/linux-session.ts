@@ -11,20 +11,24 @@
 //      opening crosshair. Wayland has no protocol to query the pointer
 //      outside a client's own surfaces, so this is not a bug anyone can
 //      fix here.
-//   2. Placing its own toplevel at `display.bounds` — NOT the blanket
-//      failure it looks like. Electron defaults to the X11 ozone backend,
-//      so on a Wayland session it usually runs as an XWayland client, and
-//      there position and size came back honoured EXACTLY (0,0
-//      1496x938 requested and granted, renderer CSS px 1:1 with display
-//      logical px). A Wayland-native client could not do this; an XWayland
-//      one can. Do not repeat the claim that it cannot without measuring.
-//   3. Staying above the shell's own chrome — always-on-top does NOT,
-//      fullscreen DOES. `setAlwaysOnTop(true, "screen-saver")` is an
-//      ordinary X11 hint under XWayland; gnome-shell honours it against
-//      normal windows but still draws its top bar and dock over it —
-//      measured as 32 rows and 67 columns of foreign pixels over an opaque
-//      test field. `setFullScreen(true)` measured 0 / 0. That gap was the
-//      whole Ubuntu misalignment; see `enterMenuBarOverlayMode`.
+//   2. Placing its own toplevel at `display.bounds` — NOT available, and
+//      not observable either. On a Wayland session Electron 41 resolves to
+//      a NATIVE Wayland client by default, even with DISPLAY (XWayland)
+//      set — measured on mutter 46 and sway 1.9 via the resolved
+//      `--ozone-platform` switch. A native client cannot place its toplevel,
+//      and `getBounds()`, `getContentBounds()` and the renderer's `screenX/Y`
+//      all echo the request: on mutter 46 with a 32px top / 67px left strut
+//      they read 0,0 for a window whose pixels were at 67,32, because mutter
+//      moves a monitor-sized toplevel into the work area. An earlier version
+//      of this comment read those echoes as "position honoured exactly".
+//   3. Owning the screen at all — a bare always-on-top window does NOT,
+//      fullscreen DOES. The Ubuntu probe measured 32 rows and 67 columns of
+//      foreign pixels over a bare opaque test field, and 0 / 0 under
+//      `setFullScreen(true)` — whether mutter moved the window or chrome
+//      covered it, fullscreen fixes both. That gap was the whole Ubuntu
+//      misalignment; see `enterMenuBarOverlayMode`, and `createSelectorWindow`
+//      for why the Linux selector must also be resizable (X11 mutter drops a
+//      fullscreen request from a window that is not).
 //
 // And the grab itself changes hands. Chromium routes screen capture on a
 // Wayland session through xdg-desktop-portal / PipeWire — it decides this
@@ -97,10 +101,12 @@ export function linuxSessionType(
  *
  * It used to refuse every Wayland session, as a stopgap while the Ubuntu
  * misalignment was unexplained. It is explained: the overlay was never
- * entering fullscreen on Linux, so GNOME's top bar and dock stayed painted
- * over it (see `enterMenuBarOverlayMode`). Everything else the refusal was
- * justified by has been measured working — placement, size, a 1:1 renderer,
- * and a pixel-exact grab.
+ * entering fullscreen on Linux, so it did not own the screen — the shell's
+ * top bar and dock ended up beside the snapshot's copy of them (see
+ * `enterMenuBarOverlayMode`). Fullscreen makes placement moot rather than
+ * fixing it: the output is the window, so there is nothing left to place,
+ * and the fullscreen overlay and the grab were both measured pixel-exact
+ * against the display.
  *
  * What is left is the dead pointer, and it is only load-bearing for ONE
  * decision: which display to open the selector on. `getCursorScreenPoint()`
@@ -131,11 +137,14 @@ export function regionSelectorUnsupported(
 export const WAYLAND_SELECTOR_ERROR_CODE = "wayland_selector_unsupported";
 
 // Only measured facts belong in here. Two earlier drafts did not manage it:
-// one told users that "Wayland does not let an app place its own selection
-// overlay on the screen" (the probe disproved it — Electron runs as an
-// XWayland client and the overlay lands exactly where it is put), and one
-// refused drag-to-select on Wayland outright, which was a symptom of our own
-// missing fullscreen call and not of Wayland at all.
+// one blamed Wayland for not letting an app place its selection overlay —
+// true of a native Wayland client, but not why the selector failed, since
+// fullscreen does not need placing — and one refused drag-to-select on
+// Wayland outright, which was a symptom of our own missing fullscreen call
+// and not of Wayland at all. The Xorg advice at the end holds only because
+// the Linux selector is built resizable: without that, mutter as an X11 WM
+// drops the fullscreen request and the selector is squeezed into the work
+// area there too (see `createSelectorWindow`).
 export const WAYLAND_SELECTOR_MESSAGE =
   "Drag-to-select capture is not available on a Wayland session with more than one " +
   "display. Wayland does not let PwrSnap read the pointer position, so it cannot tell " +

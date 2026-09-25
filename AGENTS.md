@@ -634,12 +634,9 @@ LIST, and the only authoritative key — `display_id` — is documented as
 - **The Ubuntu misalignment was OURS, and the fix is
   `setFullScreen(true)`.** `enterMenuBarOverlayMode` returned early for
   every platform that was neither win32 nor darwin, so the Linux selector
-  never entered fullscreen — and GNOME's top bar and the Ubuntu dock are
-  drawn by the compositor ABOVE every client window, which `alwaysOnTop`
-  + `"screen-saver"` cannot beat. The window itself was never wrong:
-  measured at exactly `0,0 2560x1440`, renderer 1:1 with display logical
-  px, over a grab whose four corner fiducials all landed `+0,+0`.
-  Measured on Ubuntu 24 / GNOME with the probe's occlusion table:
+  never entered fullscreen, and a bare window does not own the screen
+  under GNOME. Measured on Ubuntu 24 / GNOME with the probe's occlusion
+  table:
 
   ```
   bare                     32 rows at the top / 67 columns at the left
@@ -647,35 +644,54 @@ LIST, and the only authoritative key — `display_id` — is documented as
   fullscreen-before-show    0 / 0
   ```
 
-  32 rows is the top bar, 67 columns is the dock — and under `bare` the
-  opaque test field starts at `72,34`, i.e. exactly after them. So the
-  user was seeing the live bar and dock next to the frozen snapshot's own
-  copy of the same chrome, which reads as a duplicated, offset desktop
-  even though nothing moved. Windows had the identical bug ("two
-  taskbars") and already had the identical fix. **Both orderings cover**,
-  so `enterMenuBarOverlayMode(win)` may stay ahead of `win.show()` — that
-  was checked, because fullscreen on an unmapped X11 window is a
-  different operation (a `_NET_WM_STATE` property before map vs a
-  ClientMessage after it) and could have been dropped by mutter.
-  `fullscreenable` must be true there too, or the call is a silent no-op.
-  Pinned by
+  32 rows is the top bar, 67 columns is the dock, and under `bare` the
+  opaque test field starts at `72,34`. That count cannot say whether the
+  chrome was drawn OVER the window or the window was MOVED off it, and the
+  first write-up guessed "covered, nothing moved". Measured since, on
+  mutter 46 with a 32px top / 67px left strut: mutter **moves** a
+  monitor-sized toplevel into the work area. Its 100px top-left marker
+  landed whole at `67,32` and only 33 columns of the top-right one
+  survived at the screen edge, on the native Wayland and the X11 backends
+  alike. So the frozen snapshot was painted offset by the work-area
+  insets, beside the live bar and dock: the duplicated, offset desktop
+  that was reported. Windows had the identical bug ("two taskbars") and
+  already had the identical fix. **Both orderings cover**, so
+  `enterMenuBarOverlayMode(win)` may stay ahead of `win.show()` (measured
+  on the Ubuntu machine and again on mutter 46). `fullscreenable` must be
+  true there too, or the call is a silent no-op. Pinned by
   [selector-overlay-fullscreen.test.ts](apps/desktop/src/main/capture/__tests__/selector-overlay-fullscreen.test.ts).
-- **Geometry-correct is not the same as visible, and a probe that measures
-  only geometry will send you the wrong way.** `getBounds()`,
-  `getContentBounds()` and the renderer's own `screenX/screenY` all agreed
-  the overlay was perfectly placed, and the probe duly reported "the bare
-  window was already correct on this machine — look elsewhere before
-  changing placement." That sentence cost three wrong hypotheses. None of
-  those APIs can see what is painted OVER a window. When an overlay looks
-  wrong, ask whether it is MIS-PLACED or OCCLUDED before measuring.
-  **And do not resolve occlusion by eye** — that failed twice here. The
-  translucent simulation (step 5) is unanswerable that way by
+- **On Linux the selector must be resizable, or X11 mutter ignores the
+  fullscreen.** A non-resizable window carries min == max size hints, and
+  mutter drops `_NET_WM_STATE_FULLSCREEN` for it unless they equal the
+  monitor, which stops being true once mutter has squeezed the window into
+  the work area. Measured with `createSelectorWindow`'s own options, on
+  mutter 46 as an Xorg WM and under XWayland: `resizable: false` stays at
+  `67,32 1853x1048` while **`isFullScreen()` reports `true`**, and
+  `resizable: true` covers `0,0 1920x1080`. A native Wayland client goes
+  fullscreen either way, which is why the Ubuntu run passed without it,
+  but a GNOME Xorg session is exactly where the Wayland refusal notice
+  sends multi-display users. Windows keeps `resizable: false`. Pinned by
+  the same test.
+- **On a native Wayland client, geometry readbacks are echoes, and a probe
+  that trusts them will send you the wrong way.** `getBounds()`,
+  `getContentBounds()` and the renderer's own `screenX/screenY` all
+  agreed the overlay was perfectly placed, and the probe duly reported
+  "the bare window was already correct on this machine — look elsewhere
+  before changing placement." That sentence cost three wrong hypotheses,
+  and "the window sat at exactly 0,0" came from the same echoes: on
+  mutter 46 all three read `0,0` for a window whose pixels were at
+  `67,32`. They report what was REQUESTED; they cannot see where the
+  compositor put the window, and they cannot see what is painted over it.
+  Only pixels tell. **And do not resolve it by eye**, which failed twice
+  here. The translucent simulation (step 5) is unanswerable that way by
   construction: at 55% opacity the live desktop shows through BY DESIGN,
   so "covered by the shell" and "showing through my own translucency"
-  look identical. Step 6 answers it as an integer instead — paint an
-  OPAQUE full-display field of known colours, grab the screen, and count
-  the pixels in the grab that are not ours. Leading foreign rows are the
-  top bar; leading columns are the dock.
+  look identical. Step 6 answers it as an integer: paint an OPAQUE
+  full-display field of known colours, grab the screen, and count the
+  foreign pixels. Its corner fiducials then say which it was. Every corner
+  shifted by the same amount means the window MOVED; only the top and left
+  corners losing rows and columns while bottom-right stays put means it
+  was COVERED.
 - **Wayland keeps region capture on a single display.** The refusal is now
   Wayland AND `displayCount > 1`, and nothing else. The only capability
   fullscreen does not restore is `getCursorScreenPoint()`, which returns
@@ -719,17 +735,24 @@ LIST, and the only authoritative key — `display_id` — is documented as
   user dismiss an alert and go find a different button is the same dead
   end wearing a hat.
 - **`WAYLAND_SELECTOR_MESSAGE` is user-visible text, so only measured
-  claims go in it.** Two drafts failed that: one asserted Wayland will not
-  let an app place its own overlay (the claim the probe disproved two
-  paragraphs down), and one told users drag-to-select was unavailable on
-  Wayland when the real cause was our own missing fullscreen call.
-  Correcting a header comment is not enough; grep the strings.
-- **Do NOT repeat the claim that a Wayland client cannot place the
-  overlay.** It is the obvious guess and it was wrong: Electron defaults
-  to the X11 ozone backend, so on a Wayland session it usually runs as an
-  XWayland client, and the probe measured position and size honoured
-  exactly with the renderer 1:1 with display logical px. A Wayland-native
-  client could not; an XWayland one can. Measure before asserting.
+  claims go in it.** Two drafts failed that: one blamed Wayland's
+  placement rules for the misaligned selector (true of a native client,
+  but not the cause, since fullscreen needs no placing), and one told users
+  drag-to-select was unavailable on Wayland when the real cause was our
+  own missing fullscreen call. Its Xorg advice holds only because of the
+  `resizable` rule above. Correcting a header comment is not enough; grep
+  the strings.
+- **On a Wayland session, assume a native Wayland client, and do not try
+  to place the overlay.** An earlier version of this section said the
+  opposite, that Electron defaults to X11 and runs as an XWayland client
+  whose placement is honoured. It was wrong. Electron 41 resolves to
+  `wayland` on a Wayland session even with `DISPLAY` set. That was
+  measured on mutter 46 and sway 1.9 from the resolved `--ozone-platform`
+  switch, which Electron writes back even when nobody passed it; read it
+  with `app.commandLine.getSwitchValue("ozone-platform")`. A native client
+  cannot place its toplevel, and no readback will tell it where the window
+  went. Fullscreen is why that no longer matters for the selector. XWayland
+  is what you get only by asking for it (`--ozone-platform=x11`).
 - **`capture:fullScreen` / `capture:allScreens` stay available there** —
   no overlay, no rect arithmetic, so the portal's picker IS the source
   selection and the editor's crop tool is the region selection. That is
@@ -744,10 +767,12 @@ LIST, and the only authoritative key — `display_id` — is documented as
   a real session with
   `pnpm --filter @pwrsnap/desktop probe:linux-capture`
   ([linux-capture-probe.mjs](apps/desktop/scripts/linux-capture-probe.mjs)),
-  which reports session type, the source list with `display_id` and
-  measured dimensions, whether a selector-shaped window lands where it was
-  asked to, whether anything is painted over it (the occlusion table
-  above), and whether the cursor point is real. `--no-overlay` keeps the
+  which reports session type and the RESOLVED ozone backend, the source
+  list with `display_id` and measured dimensions, where a selector-shaped
+  window lands (on X11 only; on native Wayland it says the readback is an
+  echo), whether the overlay owns the screen and, if not, whether it was
+  moved or covered (step 6), and whether the cursor point is real.
+  `--no-overlay` keeps the
   measured steps and drops every watch-and-judge one; the banner prints
   the checked-out sha and `-dirty`, because a run was once pasted back
   that predated the commit it was meant to exercise.

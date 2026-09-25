@@ -26,6 +26,7 @@ import {
   getStartupBackgroundColor,
   STARTUP_BG_DARK
 } from "./settings/startup-appearance";
+import { linuxSquareCorners } from "./linux-window-corners";
 import { getMainLogFilePath, getMainLogger } from "./log";
 import { attachRendererStartupProfiling } from "./startup-profiler";
 import { getRuntimeProcessRole } from "./process-role";
@@ -79,9 +80,9 @@ const hotCpuProfilerSyncHandlers = new Map<number, (reason: string) => void>();
  *   (inside-bounds border, 16px corner grabs) — but Electron gives it an
  *   `OpaqueFrameView`: no border, no rounded corners, and no X11 drop shadow.
  *   That is what the `#root::after` hairline in library.css stands in for.
- *   `roundedCorners` is Windows-only and the one way to round a frameless
- *   window is `transparent: true`, which Electron documents as giving up
- *   resizing — so the corners stay square.
+ *   The corners stay square: Electron 43+ rounds a frameless Linux window by
+ *   default, and every window here opts out through `linuxSquareCorners()`
+ *   (see linux-window-corners.ts for why).
  *
  *   Until 2026-09 this branch did not exist: every non-win32 platform was
  *   handed `titleBarStyle: "hiddenInset"`, and Linux kept an ordinary frame
@@ -877,6 +878,7 @@ export function createMainWindow(): BrowserWindow {
   }
   const windowsBounds = process.platform === "win32" ? initialWindowsLibraryBounds() : null;
   const window = new BrowserWindow({
+    ...linuxSquareCorners(),
     ...(windowsBounds ?? { width: 1440, height: 960 }),
     // Keep this well below the responsive toolbar/grid breakpoints
     // (≤1024 narrow through ≤560 tiny, ≤640 very-narrow, plus the grid's
@@ -1104,6 +1106,7 @@ export function createLocalAgentConsentWindow(): BrowserWindow {
     sourceDisplayForWindow({})
   );
   const window = new BrowserWindow({
+    ...linuxSquareCorners(),
     x: position.x,
     y: position.y,
     width: LOCAL_AGENT_CONSENT_WINDOW_WIDTH,
@@ -1166,6 +1169,7 @@ export function createSettingsWindow(
   const height = Math.min(SETTINGS_WINDOW_HEIGHT, display.workArea.height);
   const position = centeredWindowBoundsOnDisplay(width, height, display);
   const window = new BrowserWindow({
+    ...linuxSquareCorners(),
     x: position.x,
     y: position.y,
     width,
@@ -1259,6 +1263,7 @@ export function createSizzleWindow(
     sourceDisplayForWindow(options)
   );
   const window = new BrowserWindow({
+    ...linuxSquareCorners(),
     x: position.x,
     y: position.y,
     width: SIZZLE_WINDOW_WIDTH,
@@ -1306,6 +1311,7 @@ export function showAppDocumentWindow(
     sourceDisplayForWindow(options)
   );
   const window = new BrowserWindow({
+    ...linuxSquareCorners(),
     x: position.x,
     y: position.y,
     width: APP_DOCUMENT_WINDOW_WIDTH,
@@ -1356,6 +1362,7 @@ export function showLogsWindow(options: PlacementSource = {}): BrowserWindow {
   );
   const preferences = themedWebPreferences();
   const window = new BrowserWindow({
+    ...linuxSquareCorners(),
     x: position.x,
     y: position.y,
     width: LOGS_WINDOW_WIDTH,
@@ -1487,6 +1494,7 @@ export function createTrayWindow(): BrowserWindow {
       ? ({ type: "panel", vibrancy: "popover", visualEffectState: "active" } as const)
       : ({ transparent: true } as const);
   const window = new BrowserWindow({
+    ...linuxSquareCorners(),
     ...macChrome,
     // Width must match TRAY_WIDTH in tray.ts. The renderer's
     // ResizeObserver only updates HEIGHT — width stays at whatever
@@ -1620,6 +1628,7 @@ export function createFloatOverWindow(): BrowserWindow {
   // this window. macOS-only; Windows/Linux use transparent + alwaysOnTop
   // + showInactive() (the latter in float-over.ts).
   const window = new BrowserWindow({
+    ...linuxSquareCorners(),
     ...(process.platform === "darwin" ? { type: "panel" as const } : {}),
     width,
     height,
@@ -1722,6 +1731,7 @@ export function createRecordingControllerWindow(): BrowserWindow {
   const width = 280;
   const height = 60;
   const window = new BrowserWindow({
+    ...linuxSquareCorners(),
     type: "panel",
     width,
     height,
@@ -1795,6 +1805,7 @@ export function createRecordingFrameWindow(bounds: {
   height: number;
 }): BrowserWindow {
   const window = new BrowserWindow({
+    ...linuxSquareCorners(),
     // Non-activating panel, same rationale as the float-over: nothing
     // this window does may pull focus away from the app the user is
     // recording.

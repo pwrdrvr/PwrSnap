@@ -728,10 +728,9 @@
 
 /* Every window's own edge, on the one platform that draws us none.
 
-   Electron gives a frameless Linux window an `OpaqueFrameView`: no border, no
-   rounded corners, and no X11 drop shadow. `roundedCorners` is a Windows
-   option, and the only way to round a frameless window's corners is
-   `transparent: true`, which Electron documents as giving up resizing — so the
+   Electron gives a frameless Linux window an `OpaqueFrameView`: no border and
+   no X11 drop shadow. Electron 43+ would round its corners, but main opts
+   every window out (`linuxSquareCorners()` in linux-window-corners.ts), so the
    corners stay square and the edge is a hairline we paint.
 
    Fixed and `pointer-events: none` so it costs no layout and swallows no

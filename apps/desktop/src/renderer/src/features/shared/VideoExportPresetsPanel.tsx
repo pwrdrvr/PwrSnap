@@ -23,12 +23,17 @@ import type {
   ShortcutPlatform,
   VideoRange
 } from "@pwrsnap/shared";
+import { useMp4ExportAudio, type RecordedAudioTracks } from "./useMp4ExportAudio";
 import { useVideoExportPresets } from "./useVideoExportPresets";
 import { useVideoPresetMetrics } from "./useVideoPresetMetrics";
 import { VideoExportPresetGrid } from "./VideoExportPresetGrid";
 
 export type VideoExportPresetsPanelProps = {
   readonly captureId: string | null;
+  /** Audio tracks the take recorded (`recordedAudioTracks(record.video)`).
+   *  Drives the MP4 row's Mic / System toggles; the toggled choice rides
+   *  on every MP4 copy, path copy and drag from this grid. */
+  readonly audioTracks: RecordedAudioTracks;
   /** Trim range to export (rides explicitly on every copy / drag /
    *  export call and re-keys the metrics). Omitted → main falls back
    *  to the record's persisted `defaultRange`. */
@@ -47,14 +52,16 @@ export type VideoCopyShortcutRequest = FloatOverVideoCopyShortcutEvent & {
 
 export function VideoExportPresetsPanel({
   captureId,
+  audioTracks,
   range,
   copyShortcut,
   shortcutPlatform,
   showShortcutHints
 }: VideoExportPresetsPanelProps): ReactElement {
+  const { audio, control } = useMp4ExportAudio(audioTracks);
   const { states, triggerCopy, triggerCopyPath, triggerDrag } =
-    useVideoExportPresets(captureId === null ? null : { captureId, range });
-  const metrics = useVideoPresetMetrics(captureId, range);
+    useVideoExportPresets(captureId === null ? null : { captureId, range, audio });
+  const metrics = useVideoPresetMetrics(captureId, range, audio);
   const handledShortcutSequenceRef = useRef<number | null>(null);
   useEffect(() => {
     if (
@@ -75,6 +82,7 @@ export function VideoExportPresetsPanel({
       onCopy={triggerCopy}
       onCopyPath={triggerCopyPath}
       onDrag={triggerDrag}
+      mp4Audio={control}
       {...(shortcutPlatform === undefined ? {} : { shortcutPlatform })}
       {...(showShortcutHints === undefined ? {} : { showShortcutHints })}
     />

@@ -69,6 +69,8 @@ const baseSettings: Settings = {
     quickCaptureAction: "ask",
     includeSystemAudio: false,
     includeMicrophone: false,
+    mp4IncludeMicrophone: true,
+    mp4IncludeSystemAudio: true,
     videoCaptureCursor: true,
     showRegionFrame: true,
     imageCaptureCursor: true,

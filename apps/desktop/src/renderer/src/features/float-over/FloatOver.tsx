@@ -1593,6 +1593,10 @@ function FloatOverVideoExport({
       </div>
       <VideoExportPresetsPanel
         captureId={asset.captureId}
+        audioTracks={{
+          microphone: asset.hasMicrophoneAudio === true,
+          systemAudio: asset.hasSystemAudio === true
+        }}
         range={trim.range}
         copyShortcut={copyShortcut}
         shortcutPlatform={shortcutPlatform}

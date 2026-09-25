@@ -39,3 +39,20 @@ describe("validateSettingsWrite — recording.quickCaptureAction", () => {
     expect(validateSettingsWrite({ recording: {} }).ok).toBe(true);
   });
 });
+
+describe("validateSettingsWrite — recording.mp4Include*", () => {
+  test.each(["mp4IncludeMicrophone", "mp4IncludeSystemAudio"])("%s accepts booleans", (key) => {
+    expect(validateSettingsWrite({ recording: { [key]: false } }).ok).toBe(true);
+    expect(validateSettingsWrite({ recording: { [key]: true } }).ok).toBe(true);
+  });
+
+  // Main reads these to decide whether an MP4 carries someone's
+  // microphone; a string "false" is truthy and must never be persisted.
+  test.each(["mp4IncludeMicrophone", "mp4IncludeSystemAudio"])("%s rejects non-booleans", (key) => {
+    for (const value of ["false", 0, null, {}]) {
+      const result = validateSettingsWrite({ recording: { [key]: value } });
+      expect(result.ok, `${key}=${JSON.stringify(value)}`).toBe(false);
+      if (!result.ok) expect(result.error.code).toBe(`invalid_recording_${key}`);
+    }
+  });
+});

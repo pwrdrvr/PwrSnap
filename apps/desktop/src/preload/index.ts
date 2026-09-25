@@ -501,6 +501,8 @@ const pwrsnapApi = {
     preset: VideoPreset;
     /** Optional explicit trim range; omitted = record's defaultRange. */
     range?: { start: number; end: number };
+    /** Optional MP4 audio choice; omitted = the saved MP4 audio preference. */
+    audio?: { includeSystemAudio: boolean; includeMicrophone: boolean };
   }): void {
     ipcRenderer.send(IPC_VIDEO_DRAG_START, payload);
   },

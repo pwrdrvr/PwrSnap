@@ -62,6 +62,7 @@ import { useFieldEditor } from "../shared/useFieldEditor";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { useVideoExportPresets } from "../shared/useVideoExportPresets";
 import { useVideoPresetMetrics } from "../shared/useVideoPresetMetrics";
+import { recordedAudioTracks, useMp4ExportAudio } from "../shared/useMp4ExportAudio";
 import { VideoExportPresetGrid } from "../shared/VideoExportPresetGrid";
 import { exportRangeLabel } from "../shared/video-range";
 import { AppTag } from "../shared/AppIcons";
@@ -222,6 +223,9 @@ export function DetailRail({
   // (the hook resets its map on each key change). They catch up on
   // release, same as before.
   const videoMetricsRange = persistedVideoRange;
+  const { audio: videoExportAudio, control: mp4AudioControl } = useMp4ExportAudio(
+    recordedAudioTracks(record?.kind === "video" ? record.video : null)
+  );
   const {
     states: videoExportStates,
     triggerCopy: triggerVideoCopy,
@@ -230,7 +234,7 @@ export function DetailRail({
   } = useVideoExportPresets(
     videoCaptureId === null
       ? null
-      : { captureId: videoCaptureId, range: videoRange ?? undefined }
+      : { captureId: videoCaptureId, range: videoRange ?? undefined, audio: videoExportAudio }
   );
   // Per-(format, preset) dimensions + byte estimates for the grid
   // cards. Estimated until the user clicks a card and the cache
@@ -239,7 +243,8 @@ export function DetailRail({
   // byte estimates re-derive from the range duration.
   const videoPresetMetrics = useVideoPresetMetrics(
     videoCaptureId,
-    videoMetricsRange ?? undefined
+    videoMetricsRange ?? undefined,
+    videoExportAudio
   );
   // Active tab + pin state. The pin pair and the tab pair are
   // controlled INDEPENDENTLY — a caller can control just the pin
@@ -916,6 +921,7 @@ export function DetailRail({
                 onDrag={triggerVideoDrag}
                 shortcutPlatform={shortcutPlatform}
                 showShortcutHints={isGrid}
+                mp4Audio={mp4AudioControl}
               />
             </div>
           ) : (

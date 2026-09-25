@@ -29,6 +29,7 @@ const videoDragSink: Array<{
   format: string;
   preset: string;
   range?: unknown;
+  audio?: unknown;
 }> = [];
 let videoDragError: Error | null = null;
 
@@ -55,6 +56,7 @@ let videoDragError: Error | null = null;
     format: string;
     preset: string;
     range?: unknown;
+    audio?: unknown;
   }) => {
     if (videoDragError !== null) throw videoDragError;
     videoDragSink.push(payload);
@@ -163,14 +165,17 @@ type Snapshot = {
   triggerDrag: (format: "gif" | "mp4", preset: "low" | "med" | "high") => void;
 };
 
+type Audio = { includeSystemAudio: boolean; includeMicrophone: boolean };
+
 type ProbeProps = {
   captureId: string | null;
   range?: { start: number; end: number } | undefined;
+  audio?: Audio | undefined;
   onSnapshot: (snapshot: Snapshot) => void;
 };
 
-function Probe({ captureId, range, onSnapshot }: ProbeProps): null {
-  const input = captureId === null ? null : { captureId, range };
+function Probe({ captureId, range, audio, onSnapshot }: ProbeProps): null {
+  const input = captureId === null ? null : { captureId, range, audio };
   const result = useVideoExportPresets(input);
   useEffect(() => {
     onSnapshot({
@@ -187,12 +192,14 @@ type Harness = {
   snapshot: () => Snapshot;
   setCaptureId: (captureId: string | null) => void;
   setRange: (range: { start: number; end: number } | undefined) => void;
+  setAudio: (audio: Audio | undefined) => void;
   unmount: () => void;
 };
 
 function mount(
   initialCaptureId: string | null = "cap_1",
-  initialRange?: { start: number; end: number }
+  initialRange?: { start: number; end: number },
+  initialAudio?: Audio
 ): Harness {
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -201,6 +208,7 @@ function mount(
   let last: Snapshot | null = null;
   let captureId = initialCaptureId;
   let range = initialRange;
+  let audio = initialAudio;
 
   const render = (): void => {
     act(() => {
@@ -208,6 +216,7 @@ function mount(
         createElement(Probe, {
           captureId,
           range,
+          audio,
           onSnapshot: (snapshot) => {
             last = snapshot;
           }
@@ -229,6 +238,10 @@ function mount(
     },
     setRange: (next) => {
       range = next;
+      render();
+    },
+    setAudio: (next) => {
+      audio = next;
       render();
     },
     unmount: () => {
@@ -351,6 +364,35 @@ describe("useVideoExportPresets", () => {
       kind: "done", action: "drag",
       path: "/cache/drag.mp4"
     });
+  });
+
+  test("the MP4 audio choice rides on the preflight, the copy, the path copy, and the drag", async () => {
+    const audio = { includeSystemAudio: true, includeMicrophone: false };
+    const harness = mount("cap_audio", undefined, audio);
+
+    act(() => harness.snapshot().triggerCopy("mp4", "low"));
+    expect(pendingNamed("video:export").req).toMatchObject({ audio });
+    await resolvePending(pendingNamed("video:export"), exportOk("/cache/a.mp4"));
+    expect(pendingNamed("clipboard:copyVideoFile").req).toMatchObject({ audio });
+
+    act(() => harness.snapshot().triggerCopyPath("mp4", "med"));
+    await resolvePending(pendingNamed("video:export"), exportOk("/cache/b.mp4"));
+    expect(pendingNamed("clipboard:copyVideoPath").req).toMatchObject({ audio });
+
+    act(() => harness.snapshot().triggerDrag("mp4", "high"));
+    await resolvePending(pendingNamed("video:export"), exportOk("/cache/c.mp4"));
+    expect(videoDragSink).toEqual([
+      { captureId: "cap_audio", format: "mp4", preset: "high", audio }
+    ]);
+  });
+
+  test("with no audio choice yet, nothing names one and main applies the saved preference", async () => {
+    const harness = mount("cap_audio");
+
+    act(() => harness.snapshot().triggerDrag("mp4", "high"));
+    expect(pendingNamed("video:export").req).not.toHaveProperty("audio", expect.anything());
+    await resolvePending(pendingNamed("video:export"), exportOk("/cache/c.mp4"));
+    expect(videoDragSink[0]).not.toHaveProperty("audio");
   });
 
   test("matching indeterminate and determinate events update only that active run", () => {
@@ -621,6 +663,13 @@ describe("useVideoExportPresets", () => {
     {
       label: "range",
       change: (harness: Harness) => harness.setRange({ start: 2, end: 9 })
+    },
+    {
+      // An encode started with the mic on must not land on the clipboard
+      // after the user switched the mic off.
+      label: "audio",
+      change: (harness: Harness) =>
+        harness.setAudio({ includeSystemAudio: false, includeMicrophone: false })
     }
   ])("a $label change cancels the active run and ignores its stale resolution", async ({ change }) => {
     const harness = mount("cap_a", { start: 0, end: 10 });

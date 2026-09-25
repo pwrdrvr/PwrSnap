@@ -521,8 +521,9 @@ export type VideoPreset = "low" | "med" | "high";
  * GIF or MP4 export request. `preset` is required — the caller picks
  * a tier (LMH); the backend never guesses. `range` defaults to the
  * source `defaultRange` when omitted. `audio` is ignored for GIF
- * (always silent); MP4 defaults to every recorded source track and
- * validates explicit choices against the source's available tracks.
+ * (always silent); an omitted MP4 `audio` keeps the recorded tracks the
+ * user's `recording.mp4Include*` preference keeps, and explicit choices
+ * are validated against the source's available tracks.
  */
 export type VideoExportRequest = {
   captureId: string;
@@ -665,7 +666,7 @@ export type VideoPrepareDragResult = {
  *  `clipboard:copyVideoFile`, `clipboard:copyVideoPath`) so they
  *  agree on the same source-of-truth tuple. Range + audio are
  *  optional — when omitted, the handler fills them from the source
- *  record's `defaultRange` + recorded audio policy. */
+ *  record's `defaultRange` + the user's MP4 audio preference. */
 export type VideoExportCoordinates = {
   captureId: string;
   format: "gif" | "mp4";
@@ -2790,10 +2791,26 @@ export type Settings = {
      *  cross-mode capture defaults (`imageCaptureCursor` is an image
      *  setting). See `QuickCaptureAction` for the per-value semantics. */
     quickCaptureAction: QuickCaptureAction;
-    /** Default toggle for the system-audio MP4 export option. */
+    /** Whether a new recording captures system audio. The selector's
+     *  source chips start from this; it decides what gets RECORDED, not
+     *  what an export keeps (see `mp4IncludeSystemAudio`). */
     includeSystemAudio: boolean;
-    /** Default toggle for the microphone MP4 export option. */
+    /** Whether a new recording captures the microphone. Same split as
+     *  `includeSystemAudio`: recording, not export. */
     includeMicrophone: boolean;
+    /** Whether an MP4 export keeps the recording's microphone track.
+     *  The MP4 row of every video export grid toggles it, and it sticks:
+     *  a user who left the mic on by accident turns it off once and every
+     *  later MP4 leaves it out until they turn it back on. Main applies
+     *  it to any MP4 export whose caller names no audio (the ⌘4–⌘6
+     *  shortcuts, drag-out), so no path falls back to "every track".
+     *  Defaults ON — recording audio is itself opt-in, so a track that
+     *  exists is one the user asked for. A take with no microphone track
+     *  ignores it. */
+    mp4IncludeMicrophone: boolean;
+    /** Whether an MP4 export keeps the recording's system-audio track.
+     *  Same contract as `mp4IncludeMicrophone`. */
+    mp4IncludeSystemAudio: boolean;
     /** Whether VIDEO recordings include the mouse cursor. Defaults
      *  ON — recordings have always baked in the cursor (the native
      *  recorder hardcoded it before this setting existed), so the
@@ -4891,8 +4908,16 @@ export type Commands = {
     /** `range` is optional: the renderer passes the trim range it is
      *  displaying so byte estimates re-derive from that duration even
      *  before the debounced `video:setDefaultRange` lands. Omitted →
-     *  the record's persisted `defaultRange`. */
-    req: { captureId: string; range?: VideoRange | undefined };
+     *  the record's persisted `defaultRange`. `audio` is the MP4 track
+     *  choice the grid is showing, so a cached encode is looked up under
+     *  the same key the next click would hit and the estimate counts the
+     *  audio track only when one is kept. Omitted → the same default an
+     *  export with no `audio` gets. */
+    req: {
+      captureId: string;
+      range?: VideoRange | undefined;
+      audio?: VideoExportAudio | undefined;
+    };
     res: VideoPresetMetricsResult;
   };
   /**

@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import type {
+  VideoExportAudio,
   VideoExportProgressEvent,
   VideoExportProgressPhase,
   VideoPreset,
@@ -32,6 +33,10 @@ export type VideoExportPresetsState = Partial<Record<VideoPresetKey, ExportButto
 export type VideoExportPresetsInput = {
   readonly captureId: string;
   readonly range?: VideoRange | undefined;
+  /** MP4 audio choice from the row's toggles. Rides on every export,
+   *  copy and drag so all three produce the same file. Omitted → main
+   *  applies the saved MP4 audio preference. */
+  readonly audio?: VideoExportAudio | undefined;
 };
 
 export type UseVideoExportPresetsResult = {
@@ -133,6 +138,19 @@ export function useVideoExportPresets(
         ? undefined
         : { start: rangeStart, end: rangeEnd },
     [rangeStart, rangeEnd]
+  );
+  const includeMicrophone = input?.audio?.includeMicrophone;
+  const includeSystemAudio = input?.audio?.includeSystemAudio;
+  const audioKey =
+    includeMicrophone === undefined || includeSystemAudio === undefined
+      ? null
+      : `m${includeMicrophone ? 1 : 0}s${includeSystemAudio ? 1 : 0}`;
+  const audio = useMemo<VideoExportAudio | undefined>(
+    () =>
+      includeMicrophone === undefined || includeSystemAudio === undefined
+        ? undefined
+        : { includeMicrophone, includeSystemAudio },
+    [includeMicrophone, includeSystemAudio]
   );
 
   const isActive = useCallback((key: VideoPresetKey, run: ActiveRun): boolean => {
@@ -247,13 +265,15 @@ export function useVideoExportPresets(
 
   // A trim/capture change or component teardown invalidates every visible
   // attempt. Cancel each run and clear the map before any late result lands.
+  // So does an audio toggle: an encode started with the mic on must not
+  // finish onto the clipboard after the user switched the mic off.
   useEffect(() => {
     dispatchAction({ kind: "reset" });
     return () => {
       for (const run of activeRunsRef.current.values()) cancelRun(run.runId);
       activeRunsRef.current.clear();
     };
-  }, [cancelRun, captureId, rangeKey]);
+  }, [audioKey, cancelRun, captureId, rangeKey]);
 
   const exportThenCopy = useCallback(
     (
@@ -272,6 +292,7 @@ export function useVideoExportPresets(
             format,
             preset,
             range,
+            audio,
             runId: run.runId
           });
         } catch (cause) {
@@ -290,7 +311,8 @@ export function useVideoExportPresets(
             captureId: run.captureId,
             format,
             preset,
-            range
+            range,
+            audio
           });
         } catch (cause) {
           finishWithError(key, run, rejectedDispatchMessage(cause));
@@ -313,7 +335,7 @@ export function useVideoExportPresets(
         }
       })();
     },
-    [finishWithCommandError, finishWithError, isActive, range, startRun]
+    [audio, finishWithCommandError, finishWithError, isActive, range, startRun]
   );
 
   const triggerCopy = useCallback(
@@ -343,13 +365,14 @@ export function useVideoExportPresets(
         format,
         preset,
         range,
+        audio,
         runId: run.runId
       })
         .then((result) => {
           if (!isActive(key, run)) return;
           if (result.ok) {
             try {
-              startVideoDrag(run.captureId, format, preset, range);
+              startVideoDrag(run.captureId, format, preset, range, audio);
             } catch (cause) {
               finishWithError(key, run, rejectedDispatchMessage(cause));
               return;
@@ -368,7 +391,7 @@ export function useVideoExportPresets(
           finishWithError(key, run, rejectedDispatchMessage(cause));
         });
     },
-    [finishWithCommandError, finishWithError, isActive, range, startRun]
+    [audio, finishWithCommandError, finishWithError, isActive, range, startRun]
   );
 
   return { states, triggerCopy, triggerCopyPath, triggerDrag };

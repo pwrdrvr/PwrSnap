@@ -3080,6 +3080,9 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
         return;
       }
       if (record.kind !== "video") return;
+      // No `audio`: main fills it from the saved MP4 audio preference —
+      // the same value the grid palette's MP4 toggles write — so ⌘4–⌘6
+      // cannot ship a track the grid shows as off.
       void dispatch("clipboard:copyVideoFile", {
         captureId: record.id,
         format: shortcut.format,

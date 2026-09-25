@@ -54,6 +54,11 @@ const mocks = vi.hoisted(() => ({
     microphone: "granted"
   } as Record<string, string>,
   capture: null as unknown,
+  // The saved MP4 audio preference an export with no `audio` resolves.
+  readRecordingSettings: vi.fn(async (): Promise<Record<string, unknown>> => ({
+    mp4IncludeMicrophone: true,
+    mp4IncludeSystemAudio: true
+  })),
   exportVideoRange: vi.fn(async (_input: unknown) => ({
     path: "/cache/export.mp4",
     byteSize: 10,
@@ -98,6 +103,10 @@ vi.mock("../../persistence/video-repo", () => ({
 
 vi.mock("../../recording/recording-exporter", () => ({
   exportVideoRange: mocks.exportVideoRange
+}));
+
+vi.mock("../../settings/desktop-settings-store", () => ({
+  getDesktopSettingsStore: () => ({ readDomain: mocks.readRecordingSettings })
 }));
 
 // Stub the recording service factory before recording-handlers imports
@@ -529,8 +538,8 @@ describe("recording:* command-bus surface", () => {
     expect(JSON.stringify(result)).not.toContain("--token");
   });
 
-  test("video:export defaults MP4 to the source audio tracks", async () => {
-    mocks.capture = {
+  function audioCapture(tracks: { system: boolean; microphone: boolean }): unknown {
+    return {
       id: "cap-audio",
       kind: "video",
       width_px: 1_280,
@@ -539,10 +548,14 @@ describe("recording:* command-bus surface", () => {
       video: {
         durationSec: 8,
         defaultRange: { start: 1, end: 5 },
-        hasSystemAudio: true,
-        hasMicrophoneAudio: true
+        hasSystemAudio: tracks.system,
+        hasMicrophoneAudio: tracks.microphone
       }
     };
+  }
+
+  test("video:export with no audio keeps every recorded track the saved preference keeps", async () => {
+    mocks.capture = audioCapture({ system: true, microphone: true });
 
     const result = await bus.dispatch(
       "video:export",
@@ -554,6 +567,68 @@ describe("recording:* command-bus surface", () => {
     expect(mocks.exportVideoRange).toHaveBeenCalledOnce();
     expect(mocks.exportVideoRange.mock.calls[0]?.[0]).toMatchObject({
       audio: { includeSystemAudio: true, includeMicrophone: true }
+    });
+  });
+
+  // The ⌘4–⌘6 shortcuts and drag-out send no `audio`. Before the MP4 audio
+  // toggle, omitted meant "every track", so a mic switched off on the grid
+  // still shipped from a keystroke.
+  test("video:export with no audio leaves out a track the user switched off", async () => {
+    mocks.capture = audioCapture({ system: true, microphone: true });
+    mocks.readRecordingSettings.mockResolvedValueOnce({
+      mp4IncludeMicrophone: false,
+      mp4IncludeSystemAudio: true
+    });
+
+    const result = await bus.dispatch(
+      "video:export",
+      { captureId: "cap-audio", format: "mp4", preset: "med" },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(mocks.exportVideoRange.mock.calls[0]?.[0]).toMatchObject({
+      audio: { includeSystemAudio: true, includeMicrophone: false }
+    });
+  });
+
+  test("video:export exports silently when the saved preference cannot be read", async () => {
+    mocks.capture = audioCapture({ system: true, microphone: true });
+    mocks.readRecordingSettings.mockRejectedValueOnce(new Error("settings unreadable"));
+
+    const result = await bus.dispatch(
+      "video:export",
+      { captureId: "cap-audio", format: "mp4", preset: "med" },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(mocks.exportVideoRange.mock.calls[0]?.[0]).toMatchObject({
+      audio: { includeSystemAudio: false, includeMicrophone: false }
+    });
+  });
+
+  test("video:export honors an explicit audio choice over the saved preference", async () => {
+    mocks.capture = audioCapture({ system: true, microphone: true });
+    mocks.readRecordingSettings.mockResolvedValueOnce({
+      mp4IncludeMicrophone: false,
+      mp4IncludeSystemAudio: false
+    });
+
+    const result = await bus.dispatch(
+      "video:export",
+      {
+        captureId: "cap-audio",
+        format: "mp4",
+        preset: "med",
+        audio: { includeSystemAudio: false, includeMicrophone: true }
+      },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(mocks.exportVideoRange.mock.calls[0]?.[0]).toMatchObject({
+      audio: { includeSystemAudio: false, includeMicrophone: true }
     });
   });
 

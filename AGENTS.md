@@ -1106,6 +1106,40 @@ Pinned by
 (that the three real deleters actually call it — the regression a fourth
 deleter added later would otherwise ship silently).
 
+## An MP4 with no audio choice gets the user's, never "every track"
+
+**Every MP4 export resolves its audio through `resolveExportAudio`
+([mp4-export-audio.ts](apps/desktop/src/main/recording/mp4-export-audio.ts)).
+An omitted `audio` means the saved `recording.mp4IncludeMicrophone` /
+`mp4IncludeSystemAudio` preference, narrowed to the tracks the take has,
+and an unreadable preference means SILENT.** Pinned by
+[mp4-export-audio.test.ts](apps/desktop/src/main/recording/__tests__/mp4-export-audio.test.ts)
+and the `video:export` cases in
+[recording-handlers-bus.test.ts](apps/desktop/src/main/handlers/__tests__/recording-handlers-bus.test.ts).
+
+The MP4 row of every video export grid has Mic / System toggles, and they
+exist because people forget the mic was on and send the take anyway. The
+grid sends its choice explicitly on export, copy, path copy and drag. But
+the tray's and the Library grid's ⌘4–⌘6 shortcuts dispatch
+`clipboard:copyVideoFile` with no `audio`, and so can an HTTP/MCP caller.
+Before this rule, omitted meant every recorded track, so a mic switched
+off on the grid still shipped from a keystroke.
+
+- **A new export verb, or a new caller of `exportVideoRange`, goes
+  through `resolveExportAudio`.** Do not restate a default inline. Two
+  copies of it had already drifted before this rule existed.
+- **`recording.includeMicrophone` is not the export toggle.** It decides
+  what a new recording CAPTURES. `mp4Include*` decides what an export
+  KEEPS. The toggles default ON because recording audio is already
+  opt-in, so any track that exists is one the user asked for.
+- **An audio change cancels in-flight runs** (`useVideoExportPresets`
+  keys its reset on it, the same way it does on the trim range). An
+  encode started with the mic on must not finish onto the clipboard after
+  the user switched it off.
+- **The drag bridge refuses a malformed `audio`** rather than treating it
+  as omitted (`parseVideoDragRequest` in `ipc.ts`). A malformed range
+  still falls back to the default range.
+
 ## Startup profiling harness — `PWRSNAP_STARTUP_PROFILE=1`
 
 Env-gated, kept wired in production builds. Captures main + renderer

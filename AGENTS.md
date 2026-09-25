@@ -12,8 +12,9 @@
 - Solution learnings (post-incident notes, gotchas) live in `docs/solutions/`.
 - Shipped-behavior references live at the top level of `docs/` — the release
   runbook, the Windows guide and signing doc, the ffmpeg build reference, the
-  third-party license notices doc, and the
-  [third-party agent connection guide](docs/mcp-third-party-agents.md).
+  third-party license notices doc, the
+  [third-party agent connection guide](docs/mcp-third-party-agents.md), and
+  the [Linux tray support statement](docs/linux-tray-support.md).
 - Two documents that began as plans survive as living references, because
   each is the only written statement of something still true: the
   [bundle format spec](docs/architecture-bundle-format.md) and the
@@ -1495,6 +1496,105 @@ clamp is darwin-only and the platform split is pinned by test.
 
 Full measurements, the probe recipe, and the dead ends:
 [docs/solutions/2026-09-17-recording-frame-appkit-window-constraint.md](docs/solutions/2026-09-17-recording-frame-appkit-window-constraint.md).
+
+## The Linux tray is a native menu, not the popover
+
+**On Linux the tray's ONLY surface is a native `Menu` attached with
+`tray.setContextMenu`. Do not try to bring the popover there, and do not
+let a new tray affordance be wired only through the popover-platform
+events.** Owner: `traySurfaceForPlatform` + `refreshNativeTrayMenu` in
+[tray.ts](apps/desktop/src/main/tray.ts). Reference:
+[docs/linux-tray-support.md](docs/linux-tray-support.md). Pinned by
+[tray-linux-native-menu.test.ts](apps/desktop/src/main/__tests__/tray-linux-native-menu.test.ts).
+
+PwrSnap shipped with no working Linux tray, and the failure mode is worth
+remembering because nothing in the code looked wrong: the `Tray` was
+created, and then every affordance hung off it was attached to an API
+Electron declares macOS/Windows-only. Read the annotations in
+`electron.d.ts` before assuming a `Tray` method works everywhere:
+
+| API | Platform | Consequence |
+|---|---|---|
+| `Tray.getBounds()` | `darwin,win32` | measured `{0, 0, 0, 0}` — nothing for `positionTrayWindow` to anchor to |
+| `Tray.popUpContextMenu()` | `darwin,win32` | the menu cannot be raised |
+| `Tray` `right-click` / `double-click` | `darwin,win32` | the handler never fires |
+| `Tray.setTitle()` | `darwin` | no `● REC`, no timed countdown |
+| `Tray.setContextMenu()` | **all** | the only menu path that exists on Linux |
+| `Tray` `click` | **all** | fires on Linux for SNI `Activate` AND `SecondaryActivate` (measured); deliberately unwired there — see the doc |
+
+Wayland closes the two remaining escapes: `BrowserWindow.setPosition` is
+"Not supported on Wayland (Linux)" (and `getBounds` returns zeros there),
+and `setContentSize` "may not work … as some window managers restrict
+programmatic window resizing" — which is the single call the whole
+resize-to-fit design rests on (see "Tray + float-over popover sizing").
+
+Five things that bite:
+
+- **Always hand `new Tray()` the `NativeImage`, never the path.** Both are
+  accepted and behave identically — until the file is missing, where measured
+  on 41.10.7 the path form THROWS (`Failed to load image from path`) and the
+  NativeImage form returns a blank icon. `installTray` runs un-awaited inside
+  `app.whenReady().then(...)`, so that throw aborts the rest of the boot
+  (focus sink, selector pre-warm) instead of degrading to a blank spot in the
+  panel. The `icon.isEmpty()` warning is the intended handling.
+- **Every input that can change a menu label must call
+  `refreshNativeTrayMenu`, and it publishes only on a real difference.** It
+  compares a signature of the template — labels, accelerators, enabled flags,
+  `type`, recursing into submenus — against the last export. `setTrayHotkeys`
+  is wired to `onSettingsChanged`, which fires on EVERY settings and secret
+  write, so without that gate a theme toggle re-exports the tray menu; and
+  because `setContextMenu` REPLACES the exported object, some SNI hosts close
+  an open menu when it happens. A failed export must not update the
+  signature, or the next refresh skips the retry and the tray freezes at the
+  last menu that did publish. The Linux menu is a PERSISTENT D-Bus object,
+  and Electron's docs are explicit that "in order for changes made to
+  individual `MenuItem`s to take effect, you have to call `setContextMenu`
+  again." Today that is recording phase, hotkey ownership, and the dev
+  seeder's extra items. macOS/Windows rebuild the template inside
+  `right-click` and need nothing.
+- **Nothing time-varying may go IN that menu.** `phase: "recording"` is set
+  exactly once, so there is no tick to rebuild off and a `mm:ss` clock would
+  freeze at `00:00` — and a per-second republish would replace the menu
+  under a user who has it open. The persistent row therefore reads
+  `● Recording — Stop and Save`; only the popover platforms carry the clock.
+- **macOS and Windows must NEVER call `setContextMenu`.** On an
+  `NSStatusItem` it hands left-click to the menu and suppresses the `click`
+  event `toggleTrayWindow` is wired to — deleting the popover UI on the two
+  platforms where it works. The test asserts the absence.
+- **Linux does not create the popover `BrowserWindow` at all** (no
+  `prewarmTrayWindow`, no resize channel). `createTrayWindow` still runs on
+  Linux under E2E, where `showTrayPopoverForE2E` pins it at a fixed point —
+  so **a green Linux E2E tray spec proves nothing about the Linux tray.**
+  xvfb is X11 and no indicator is driving it.
+- **There is no `libayatana-appindicator3` dependency to declare.** Electron
+  stopped routing the tray through libappindicator in Electron 22
+  (electron/electron#36333) and speaks StatusNotifierItem over D-Bus itself.
+  What a user needs is an SNI *host*: native on KDE, preinstalled on Ubuntu
+  GNOME, an extension on vanilla GNOME, a bar's tray module on wlroots
+  setups. When none is running, `installTray` still creates the `Tray` (a
+  host that starts later is picked up by Chromium's `NameOwnerChanged`) and
+  [linux-status-notifier-host.ts](apps/desktop/src/main/linux-status-notifier-host.ts)
+  logs a `gdbus NameHasOwner` verdict with the remedy — because a
+  registration with no host raises no error and fires no event. That probe
+  reports `unknown` rather than `absent` whenever it cannot reach a verdict;
+  do not "simplify" it into guessing, or a user with a healthy tray host
+  gets told to install a GNOME extension they already have.
+
+The icon is its own file for its own reason: `tray-icon-linux.png` is 48×48
+with **no `@Nx` siblings**, because `StatusIconLinuxDbus` publishes the
+image's scale-1 bitmap into the SNI `IconPixmap` property and `@Nx` siblings
+do not raise it — measured, `createFromPath(...).toBitmap()` is 1024 bytes
+(16×16×4) for the `tray-icon.png` set and 9216 (48×48×4) for this file.
+
+Everything above about Electron's Linux behavior is measured on 41.10.7, and
+both container recipes are in the doc. It is worth re-running on a major
+Electron bump. The xvfb recipe cannot tell you whether anything draws — a
+bare container has no panel, so every call succeeds and nothing appears,
+which is exactly this bug's failure mode. The headless sway + waybar recipe
+can: waybar's tray module is a real SNI host, and against it the real build
+was measured drawing the icon, exporting a 48×48 `IconPixmap`, and
+dispatching menu rows clicked over dbusmenu. It is a wlroots host, so which
+gesture GNOME Shell maps to `Activate` still needs a GNOME session.
 
 ## Tray popover hide — `setOpacity(0)` before `hide()` on macOS
 

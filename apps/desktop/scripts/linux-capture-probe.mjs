@@ -6,8 +6,11 @@
 // xdg-desktop-portal nor a window manager:
 //
 //   1. Is this an X11 or a Wayland session, and which ozone backend did
-//      Electron actually pick? (A Wayland session commonly runs Electron as
-//      an XWayland *X11* client, which behaves differently again.)
+//      Electron actually pick? Read from the RESOLVED `--ozone-platform`
+//      switch, which Electron writes back even when nobody passed it. On
+//      Electron 41 a Wayland session resolves to a NATIVE Wayland client by
+//      default, even with DISPLAY (XWayland) available — measured on mutter
+//      46 and sway 1.9. XWayland is what you get only by asking for it.
 //   2. Does `desktopCapturer.getSources({types:["screen"]})` return one
 //      source per display with a usable `display_id` (what
 //      `captureDisplayNativeImage` matches on), or a single opaque
@@ -19,10 +22,13 @@
 //      `display.scaleFactor` onto pixels that are not at that scale.
 //   4. Does a selector-shaped window (frameless, transparent, always-on-top,
 //      constructed at `display.bounds`) actually land where it was asked to?
-//      A Wayland-native client cannot place its own toplevel at all, but an
-//      XWayland one usually can — and under fractional scaling can land at
-//      the wrong size. Measured, not assumed: on GNOME/XWayland it has been
-//      seen honoured exactly.
+//      Only answerable from inside on X11/XWayland. A native Wayland client
+//      cannot place its own toplevel AND is never told where it went:
+//      `getBounds()`, `getContentBounds()` and the renderer's `screenX/Y` all
+//      echo the request. Measured on mutter 46 with a 32px top / 67px left
+//      strut: all three read 0,0 while the pixels put the window at 67,32 —
+//      mutter moves a monitor-sized toplevel into the work area. Step 6's
+//      fiducials are the only honest answer there.
 //   5. Does `screen.getCursorScreenPoint()` report the real pointer? It is
 //      how `pickRegion` chooses which display to show the selector on, and
 //      Wayland has no protocol to query the global pointer.
@@ -83,6 +89,29 @@ const OVERLAY_MS = Number(value("overlay-ms", "4000"));
 const GRABS = Math.max(1, Number(value("grabs", "1")));
 const DO_FIDUCIALS = !flag("no-fiducials");
 
+/**
+ * The ozone backend Chromium RESOLVED, or null when it was not recorded.
+ *
+ * Electron writes the switch back into its own command line during startup
+ * whether or not anyone passed it, so this reports what Chromium chose — not
+ * what the session offers. Those differ on a Wayland session with DISPLAY
+ * set, which is Ubuntu GNOME's default and resolves to `wayland`.
+ */
+function resolvedOzoneBackend() {
+  const value = app.commandLine.getSwitchValue("ozone-platform").trim().toLowerCase();
+  return value === "" ? null : value;
+}
+
+/** Mirrors `createSelectorWindow`: resizable on Linux, because mutter drops
+ *  an X11 fullscreen request from a window that is not (measured on mutter
+ *  46 as an Xorg WM and under XWayland), which would make every fullscreen
+ *  pass below read as "does not cover" for a reason the product no longer has. */
+const SELECTOR_RESIZABLE = process.platform === "linux";
+
+/** Set by step 1. True when Electron is a native Wayland client, which is
+ *  when every geometry readback in step 3 is an echo, not a measurement. */
+let NATIVE_WAYLAND = false;
+
 const lines = [];
 function say(text = "") {
   lines.push(text);
@@ -121,16 +150,25 @@ async function reportEnvironment() {
   say(`  ${"electron".padEnd(28)} ${process.versions.electron}`);
   say(`  ${"chrome".padEnd(28)} ${process.versions.chrome}`);
   const ozoneArg = process.argv.find((a) => a.startsWith("--ozone-platform"));
-  say(`  ${"--ozone-platform*".padEnd(28)} ${ozoneArg ?? "(not passed)"}`);
+  say(`  ${"--ozone-platform* passed".padEnd(28)} ${ozoneArg ?? "(not passed)"}`);
+  const backend = resolvedOzoneBackend();
+  say(`  ${"ozone backend (resolved)".padEnd(28)} ${backend ?? "(not recorded)"}`);
 
   const sessionType = (process.env.XDG_SESSION_TYPE ?? "").toLowerCase();
   const waylandSession = sessionType === "wayland" || (process.env.WAYLAND_DISPLAY ?? "") !== "";
+  NATIVE_WAYLAND = backend === "wayland";
   say("");
   say(`  VERDICT: session is ${waylandSession ? "WAYLAND" : sessionType === "x11" ? "X11" : `UNKNOWN (${sessionType || "no XDG_SESSION_TYPE"})`}`);
-  if (waylandSession && (process.env.DISPLAY ?? "") !== "") {
-    say("  NOTE:    DISPLAY is also set — Electron may be running as an XWayland");
-    say("           (X11) client inside a Wayland session. Window positioning can");
-    say("           then work while the screen grab still goes through the portal.");
+  if (NATIVE_WAYLAND) {
+    say("  NOTE:    Electron is a NATIVE Wayland client (the Electron 41 default on");
+    say("           a Wayland session, even with DISPLAY set). It cannot place its");
+    say("           own windows, and it is never told where they went: step 3's");
+    say("           getBounds() / renderer screenX/Y numbers echo the request.");
+    say("           Step 6's fiducials are the measurement that counts here.");
+  } else if (waylandSession && backend === "x11") {
+    say("  NOTE:    Electron is an XWayland (X11) client inside a Wayland session.");
+    say("           Window positioning can work while the screen grab still goes");
+    say("           through the portal.");
   }
   return { waylandSession, sessionType };
 }
@@ -183,7 +221,7 @@ async function reportOverlayGeometry(display, strategy) {
     show: false,
     frame: false,
     transparent: true,
-    resizable: false,
+    resizable: SELECTOR_RESIZABLE,
     movable: false,
     skipTaskbar: true,
     alwaysOnTop: true,
@@ -238,10 +276,11 @@ and the cross should meet at its centre.</div>`;
         `devicePixelRatio:window.devicePixelRatio,` +
         `screenW:window.screen.width,screenH:window.screen.height,` +
         `availW:window.screen.availWidth,availH:window.screen.availHeight,` +
-        // The renderer's own idea of where it is on screen. Chromium derives
-        // this from the window's real position rather than from what main
-        // asked for, so when it disagrees with getBounds() the window manager
-        // has moved us and getBounds() is reporting the request, not reality.
+        // The renderer's own idea of where it is on screen. On X11 Chromium
+        // derives this from the window's real position, so when it disagrees
+        // with getBounds() the window manager has moved us. On native Wayland
+        // it is the same cached request getBounds() reports — measured
+        // reading 0,0 on a window mutter had moved to 67,32.
         `screenX:window.screenX,screenY:window.screenY})`
     );
   } catch (cause) {
@@ -283,10 +322,20 @@ and the cross should meet at its centre.</div>`;
   const trueY = rendererView === null ? actualBounds.y : rendererView.screenY;
   const offsetX = trueX - display.bounds.x;
   const offsetY = trueY - display.bounds.y;
-  const positioned = offsetX === 0 && offsetY === 0;
   const sized =
     actualBounds.width === display.bounds.width && actualBounds.height === display.bounds.height;
   say("");
+  if (NATIVE_WAYLAND) {
+    // Every number above came back from Chromium's cache of what was
+    // requested. Printing "really at 0,0 — position honoured = YES" here is
+    // how the Ubuntu investigation concluded the bare window was never moved.
+    say("     VERDICT: UNKNOWABLE from inside — a native Wayland client is not told");
+    say("              where the compositor put it. The readbacks above echo the");
+    say("              request. (mutter 46, measured: all of them read 0,0 on a");
+    say("              window whose pixels were at 67,32.) See step 6.");
+    return { actualBounds, actualContent, rendererView, positioned: null, sized, offsetX, offsetY };
+  }
+  const positioned = offsetX === 0 && offsetY === 0;
   say(`     VERDICT: really at ${num(trueX)},${num(trueY)} — offset ${num(offsetX)},${num(offsetY)} from the display origin`);
   say(`              position honoured = ${positioned ? "YES" : "NO"}, size honoured = ${sized ? "YES" : "NO"}`);
   if (!positioned && actualBounds.x === display.bounds.x && actualBounds.y === display.bounds.y) {
@@ -478,7 +527,7 @@ async function showSnapshotOverlay(display, grabbed, coverage) {
     show: false,
     frame: false,
     transparent: true,
-    resizable: false,
+    resizable: SELECTOR_RESIZABLE,
     movable: false,
     skipTaskbar: true,
     alwaysOnTop: true,
@@ -577,9 +626,11 @@ Doubled edges = misaligned. Read the shift off the 100px ruler.</div>
 // difference IS the screen-to-grab transform — translation and scale, per
 // axis, in pixels — with nothing inferred and nothing eyeballed.
 //
-// Fullscreen, because a bare overlay leaves gnome-shell's top bar and dock
-// painted OVER it: those would land on top of the fiducials and corrupt the
-// very corners being measured.
+// Fullscreen, because a bare overlay does not own its corners: the shell may
+// paint over it, or (measured on mutter 46) the compositor may move the whole
+// window into the work area, and either one displaces the fiducials. The bare
+// pass still runs, as the A/B control — and its fiducials are what tell those
+// two apart. See the verdict at the end of reportGrabAlignment.
 const FIDUCIAL = 120;
 const FIDUCIALS = [
   { key: "top-left", rgb: [255, 0, 0], name: "red" },
@@ -610,7 +661,7 @@ async function reportGrabAlignment(display, coverage, order) {
   const win = new BrowserWindow({
     x: display.bounds.x, y: display.bounds.y,
     width: display.bounds.width, height: display.bounds.height,
-    show: false, frame: false, resizable: false, movable: false,
+    show: false, frame: false, resizable: SELECTOR_RESIZABLE, movable: false,
     skipTaskbar: true, alwaysOnTop: true, hasShadow: false,
     webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false }
   });
@@ -742,9 +793,11 @@ async function reportGrabAlignment(display, coverage, order) {
     say("    the selector would own the whole screen, and the frozen snapshot's");
     say("    copy of the top bar would sit exactly where the real one is.");
   } else {
-    say("  ^ the shell is painting OVER the overlay. A frozen snapshot underneath");
-    say("    carries its own copy of that chrome, so the user sees the live bar");
-    say("    AND the captured bar — the duplication, with nothing misaligned.");
+    say("  ^ something that is not our overlay owns those rows/columns. Either the");
+    say("    shell painted OVER the overlay (covered) or the compositor put the");
+    say("    window inside the work area (moved) — this count cannot tell which,");
+    say("    and a frozen snapshot shows the live bar AND its captured copy either");
+    say("    way. The fiducial verdict below says which one it was.");
   }
 
   /**
@@ -838,12 +891,38 @@ async function reportGrabAlignment(display, coverage, order) {
     say("  VERDICT: the grab is EXACTLY this screen. Pixel (0,0) of the frame is");
     say("           pixel (0,0) of the display, at 1:1. The misalignment is not");
     say("           in the grab — look at what the selector does with it.");
+  } else if (same && coverage.key === "bare") {
+    // A uniform shift on the BARE pass is the window moving, not the grab:
+    // the fullscreen passes use the same grab path and are the control. The
+    // bottom and right fiducials are clipped by the screen edge, which is why
+    // their found position still shifts by the full amount.
+    say(`  VERDICT: the compositor MOVED the overlay by ${deltas[0].dx},${deltas[0].dy} grab px.`);
+    say("           Every corner shifted by the same amount, including the ones");
+    say("           that are now clipped by the screen edge — the window was");
+    say("           placed inside the work area, not covered. (mutter 46 does this");
+    say("           to a monitor-sized toplevel.) A snapshot painted into it is");
+    say("           offset by exactly this much. Compare the fullscreen passes: if");
+    say("           they read +0,+0, the grab itself is fine.");
   } else if (same) {
     say(`  VERDICT: the grab is TRANSLATED by ${deltas[0].dx},${deltas[0].dy} grab px and not scaled.`);
     say("           Every corner moved by the same amount, so the frame covers a");
     say("           region offset from the display origin. Painting it at the");
     say("           overlay's origin shifts every pixel by exactly this much —");
     say("           which is the reported duplication, measured.");
+  } else if (
+    coverage.key === "bare" &&
+    deltas.some((d) => d.key === "bottom-right" && d.dx === 0 && d.dy === 0)
+  ) {
+    // The far corner is exactly where it was drawn, so the window is where it
+    // was asked to be; the near corners lost their leading rows/columns to
+    // something drawn over them.
+    say("  VERDICT: the overlay is where it was asked to be but COVERED: the");
+    say("           bottom-right fiducial is exactly in place while the top/left");
+    say("           ones lost their leading rows/columns to something painted");
+    say("           over them (on GNOME, the top bar and dock):");
+    for (const d of deltas) {
+      say(`           ${d.key.padEnd(13)} delta ${d.dx},${d.dy}  size ${d.w}x${d.h}`);
+    }
   } else {
     say("  VERDICT: the corners moved by DIFFERENT amounts — the frame is scaled");
     say("           or cropped, not merely offset:");
@@ -947,24 +1026,23 @@ app.whenReady().then(async () => {
     say(`  display ${target.id} bounds ${rect(target.bounds)}. The only difference is`);
     say("  whether anything re-anchors them after show().");
     say("");
-    say("  THE NUMBERS BELOW ARE ONLY HALF THE QUESTION, and the half that");
-    say("  misleads. They measure where the window IS. They cannot see what is");
-    say("  painted OVER it — and on GNOME the top bar and the dock are drawn by");
-    say("  the compositor above every client window, so a window sitting");
-    say("  perfectly at 0,0 can still have ~32px of its top edge and the whole");
-    say("  left dock strip hidden behind shell chrome. The frozen snapshot");
-    say("  carries its own copy of that chrome, so the result reads as a");
-    say("  DUPLICATED, OFFSET desktop even though nothing moved. That is the");
+    say("  THE NUMBERS BELOW MISLEAD, in two ways. On a native Wayland client");
+    say("  they are not measurements at all: getBounds() and the renderer's");
+    say("  screenX/Y echo the request (mutter 46 reports 0,0 for a window it");
+    say("  moved to 67,32). And on any backend they cannot see what is painted");
+    say("  OVER the window. Either way the frozen snapshot ends up beside the");
+    say("  live top bar and dock — a DUPLICATED, OFFSET desktop. That is the");
     say("  Ubuntu bug, and an earlier run of this probe reported the bare window");
     say("  as 'already correct' and sent the investigation elsewhere.");
     say("");
     say("  So LOOK at each of the three, and judge them on one thing: does the");
-    say("  GNOME top bar / dock cover any part of the orange border?");
+    say("  orange border hug the monitor edges, with no top bar or dock over it?");
     const bare = await reportOverlayGeometry(target, "bare");
     const full = await reportOverlayGeometry(target, "fullscreen");
     const anchored = await reportOverlayGeometry(target, "reanchor");
     overlay = { bare, full, anchored };
-    const offsets = (r) => `${num(r.offsetX)},${num(r.offsetY)}`;
+    const offsets = (r) =>
+      r.positioned === null ? "unknown (echo)" : `${num(r.offsetX)},${num(r.offsetY)}`;
     say("");
     say("  A/B/C offsets from the display origin");
     say(`    bare        ${offsets(bare)}${bare.positioned ? "   <- correct" : ""}`);
@@ -975,7 +1053,12 @@ app.whenReady().then(async () => {
       anchored.positioned ? "setBounds() after show()" : null
     ].filter((x) => x !== null);
     say("");
-    if (bare.positioned) {
+    if (NATIVE_WAYLAND) {
+      say("  No verdict: a native Wayland client cannot read back where any of the");
+      say("  three landed. Judge them by what you saw, and let step 6 measure it —");
+      say("  its corner fiducials tell a MOVED window (every corner shifted by the");
+      say("  same amount) from a COVERED one (only the top/left corners cut off).");
+    } else if (bare.positioned) {
       say("  All three are GEOMETRICALLY correct here — the window lands where it");
       say("  was asked to. That does NOT mean the bare one is usable: compare what");
       say("  you just saw. If the shell's top bar and dock covered the bare");
@@ -985,8 +1068,8 @@ app.whenReady().then(async () => {
       say("  question.");
     } else if (winners.length > 0) {
       say(`  FIX CONFIRMED: ${winners.join(" and ")} land${winners.length === 1 ? "s" : ""} the overlay on the`);
-      say("  display origin. Linux makes neither call today; Windows already makes");
-      say("  the first. That is the shipped bug.");
+      say("  display origin. setFullScreen(true) is what enterMenuBarOverlayMode");
+      say("  does on Linux (and Windows); a bare window is what shipped before it.");
     } else {
       say("  Neither candidate lands the overlay correctly. The window manager is");
       say("  refusing both, and the selector needs to compensate for its own real");

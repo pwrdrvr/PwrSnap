@@ -2789,7 +2789,10 @@ runs in a scratch copy of the package because `node-gyp rebuild` deletes
 `build/`, which holds the system-Node binding. It also clears the release
 scripts' `npm_config_arch` / `npm_config_target` for the child process,
 because node-gyp reads those AFTER its argv and `universal` would override
-`--arch`. The V8 deprecation warnings it prints are expected. better-sqlite3
+`--arch`. It also compiles with `-UV8_DEPRECATION_WARNINGS`. node-gyp defines
+that macro, and it puts `[[deprecated]]` ahead of `__attribute__((visibility))`
+in a V8 15 class head, an ordering GCC 12 rejects. Without the `-U`, the
+Debian bookworm Docker E2E image could not build the binding. better-sqlite3
 13 is N-API with bundled prebuilds, and migrating to it removes all of this.
 
 For release/package work, the Electron sidecar must be built for the target

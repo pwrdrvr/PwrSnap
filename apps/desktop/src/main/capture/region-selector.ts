@@ -1832,18 +1832,27 @@ function enterMenuBarOverlayMode(win: BrowserWindow): void {
     // taskbar, so the overlay covers it. (Verified working on Windows; the
     // earlier 0xC0000005 crash was an unrelated tray-right-click bug.)
     //
-    // Linux is the SAME pathology, and it was the whole Ubuntu bug. GNOME's
-    // top bar and the Ubuntu dock are drawn by the compositor above every
-    // client window, so `alwaysOnTop` + "screen-saver" does not get over
-    // them — measured on Ubuntu 24 / GNOME, where the selector window sat at
-    // exactly 0,0 2560x1440 with the renderer 1:1, and the shell still
-    // painted its chrome on top. The frozen snapshot underneath carries its
-    // own copy of that chrome (the grab is the whole screen, verified
-    // pixel-exact by the probe's fiducials), so the user saw the live top bar
-    // and dock next to the snapshot's copy of them — which reads as a
-    // duplicated, offset desktop. Nothing was offset; ~32px of our overlay
-    // was simply behind the shell. setFullScreen(true) covers it, measured
-    // with the same probe.
+    // Linux is the same class of bug, and it was the whole Ubuntu report.
+    // A non-fullscreen window does not own the screen under GNOME: mutter
+    // MOVES a monitor-sized toplevel into the work area, below the top bar
+    // and right of the dock (measured on mutter 46 with a 32px top / 67px
+    // left strut: the window's pixels landed at 67,32 on both backends), and
+    // chrome stacked above a window can cover it outright. Either way the
+    // live top bar and dock sat next to the frozen snapshot's own copy of
+    // them, which the user reported as a duplicated, offset desktop — and on
+    // Ubuntu 24 the probe measured 32 foreign rows / 67 foreign columns over
+    // the bare overlay against 0 / 0 in fullscreen. setFullScreen(true) owns
+    // the whole output, measured pixel-exact on mutter and sway.
+    //
+    // Do not "verify" placement from main: on a native Wayland client (the
+    // Electron 41 default on a Wayland session) getBounds(), getContentBounds()
+    // and the renderer's screenX/Y all echo the request — they read 0,0 on
+    // the window mutter had moved to 67,32. Only pixels tell.
+    //
+    // Under X11 (a GNOME Xorg session, or forced XWayland) mutter IGNORES the
+    // fullscreen request from a non-resizable window, while Electron's
+    // isFullScreen() still reports true. That is why createSelectorWindow
+    // builds the Linux selector resizable.
     //
     // This branch used to `return` for every platform that is neither win32
     // nor darwin, which is why Linux never entered overlay mode at all.
@@ -1936,7 +1945,23 @@ function createSelectorWindow(
     show: false,
     frame: false,
     transparent: true,
-    resizable: false,
+    // Resizable on Linux ONLY, because mutter refuses to fullscreen an X11
+    // window that is not. A non-resizable window carries min == max size
+    // hints, and mutter drops _NET_WM_STATE_FULLSCREEN for it unless those
+    // equal the monitor — which they stop doing the moment mutter has
+    // squeezed the bare window into the work area. Measured on mutter 46 as
+    // an Xorg WM and under XWayland, with this constructor, 32px top / 67px
+    // left struts, and enterMenuBarOverlayMode before show():
+    //
+    //   resizable: false  -> stays at 67,32 1853x1048 (isFullScreen() true!)
+    //   resizable: true   -> 0,0 1920x1080, pixel-exact
+    //
+    // A native Wayland client goes fullscreen either way, so this only
+    // matters on X11 — which is where the Wayland refusal notice sends
+    // multi-display users. Nothing is lost: the window is frameless and
+    // fullscreen while visible, so there is nothing to grab. Windows keeps
+    // `false`; its fullscreen path is verified as is.
+    resizable: process.platform === "linux",
     movable: false,
     minimizable: false,
     maximizable: false,

@@ -11,19 +11,19 @@
 //
 // What shipped broken: the function returned early for every platform that
 // was neither win32 nor darwin, so the Linux selector never went fullscreen.
-// The window itself was fine — measured on Ubuntu 24 / GNOME at exactly
-// 0,0 2560x1440 with the renderer 1:1 and a pixel-exact grab under it — but
-// GNOME's top bar and the Ubuntu dock are drawn by the compositor above every
-// client window, so ~32px of the overlay's top edge and the whole left dock
-// strip sat behind live shell chrome. The frozen snapshot carries its own
-// copy of that chrome, so the user saw the shell's top bar beside the
-// snapshot's copy of it and reported a duplicated, offset desktop. Nothing
-// was offset. Windows had the identical bug ("two taskbars") and already had
-// the identical fix.
+// A non-fullscreen window does not own the screen under GNOME — mutter moves
+// a monitor-sized toplevel into the work area (measured on mutter 46: pixels
+// at 67,32 behind a 32px top / 67px left strut, while getBounds() and the
+// renderer's screenX/Y still read 0,0), and chrome stacked above it can cover
+// it. The user saw the live top bar and dock beside the frozen snapshot's
+// copy of them and reported a duplicated, offset desktop. Windows had the
+// identical bug ("two taskbars") and already had the identical fix.
 //
-// `fullscreenable` is pinned alongside it because the two are one mechanism:
-// `setFullScreen(true)` on a window constructed `fullscreenable: false` does
-// nothing, and the failure mode is silent.
+// `fullscreenable` and, on Linux, `resizable` are pinned alongside it because
+// they are one mechanism, and both failure modes are silent:
+// `setFullScreen(true)` does nothing on a window constructed
+// `fullscreenable: false`, and under X11 mutter ignores it from a window that
+// is not resizable — while `isFullScreen()` reports true.
 
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -67,6 +67,15 @@ describe("region-selector overlay fullscreen wiring", () => {
     expect(body("createSelectorWindow")).toContain(
       'fullscreenable: process.platform !== "darwin"'
     );
+  });
+
+  test("the selector window is constructed resizable on Linux, and only there", () => {
+    // Measured on mutter 46, as an Xorg WM and under XWayland: with
+    // `resizable: false` the fullscreen request is dropped and the selector
+    // stays squeezed into the work area (67,32 1853x1048 behind a 32/67px
+    // strut) while isFullScreen() reports true; with `resizable: true` it
+    // covers 0,0 1920x1080. Windows keeps false — its path is verified as is.
+    expect(body("createSelectorWindow")).toContain('resizable: process.platform === "linux"');
   });
 
   test("the selector module never applies the Wayland refusal itself", () => {

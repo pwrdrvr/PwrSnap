@@ -232,10 +232,11 @@ export function FloatOverHost({
     };
   }, [state.kind]);
 
-  // Subscribe to main → renderer state events. One listener for the
-  // life of the renderer; main re-emits its last event on
-  // `did-finish-load` so the first capture-of-session doesn't miss
-  // the IPC.
+  // Subscribe to main → renderer state events, then ask main for the
+  // current state. The order matters: main replies on this same channel,
+  // and an event that arrives before the listener exists is dropped. The
+  // window is created by the first capture of the session, so its event
+  // always predates this effect, however long the first render takes.
   useEffect(() => {
     const unsubscribe = window.pwrsnapApi?.on(EVENT_CHANNELS.floatOverState, (payload) => {
       const event = payload as FloatOverEvent;
@@ -270,6 +271,7 @@ export function FloatOverHost({
           return;
       }
     });
+    window.pwrsnapApi?.requestFloatOverState?.();
     return () => {
       unsubscribe?.();
     };

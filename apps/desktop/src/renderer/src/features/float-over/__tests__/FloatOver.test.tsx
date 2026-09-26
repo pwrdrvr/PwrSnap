@@ -768,6 +768,35 @@ describe("post-recording source summary", () => {
 });
 
 describe("FloatOverHost", () => {
+  // The first capture of the session creates the float-over window, so
+  // its state event exists before this renderer does. Main answers the
+  // request on the state channel, and an answer that lands before the
+  // listener exists is dropped: the first toast would stay empty.
+  test("asks main for the current state only once it is listening for the answer", async () => {
+    const api = installHostApi();
+    const dispatchMock = window.pwrsnapApi!.dispatch as ReturnType<typeof vi.fn>;
+    dispatchMock.mockImplementation(async (name: string) => defaultHostDispatchResult(name));
+    // Stands in for main, which replies with the latest state.
+    const requestFloatOverState = vi.fn(() => {
+      api.pushEvent(EVENT_CHANNELS.floatOverState, {
+        kind: "show-loaded",
+        captureId: imageRecord.id,
+        record: imageRecord
+      });
+    });
+    window.pwrsnapApi = { ...window.pwrsnapApi!, requestFloatOverState };
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(createElement(FloatOverHost));
+    });
+
+    expect(requestFloatOverState).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(".fo")).not.toBeNull();
+  });
+
   test("focused image toast keeps primary+digits as a local copy owner", async () => {
     const api = installHostApi();
     const dispatchMock = window.pwrsnapApi!.dispatch as ReturnType<typeof vi.fn>;

@@ -39,6 +39,7 @@ import { createFloatOverWindow } from "./window";
 const log = getMainLogger("pwrsnap:float-over");
 
 const FLOAT_OVER_RESIZE_CHANNEL = "float-over:resize";
+const FLOAT_OVER_STATE_REQUEST_CHANNEL = "float-over:request-state";
 /** Window width is fixed by the design — must match `width` in
  *  `createFloatOverWindow`. The toast's `.fo` element is forced to
  *  `width: 100%` of the body via `body[data-stage="float-over"] .fo`,
@@ -67,17 +68,17 @@ let state: FloatOverState = { kind: "hidden" };
  * `screen.getCursorScreenPoint()` from a resize path.
  */
 let anchoredDisplayId: number | null = null;
-/** Last event we sent to the renderer. Re-emitted on `did-finish-load`
- *  so the first capture-of-session doesn't miss the IPC if the renderer
- *  hadn't subscribed yet at send time. */
+/** The latest state event. `floatOverState` is a state broadcast, not a
+ *  one-shot intent: the renderer's whole state is a function of the
+ *  latest event, so this one value is everything a late subscriber
+ *  needs. Main replies with it when the renderer asks (see
+ *  `wireFloatOverStateRequestChannel`). */
 let lastEvent: FloatOverEvent | null = null;
-/** True once the renderer has finished loading at least once. Until
- *  then, IPC events are buffered in `lastEvent` and re-sent on dom-ready. */
-let rendererReady = false;
-/** Delayed ready notification used when the page is already loaded before
- *  listeners are attached. Cleared on disposal so a late callback cannot
- *  revive state after the singleton has been destroyed. */
-let rendererReadyTimer: ReturnType<typeof setTimeout> | null = null;
+/** True once the renderer has subscribed to `floatOverState` and asked for
+ *  the current state. Until then nothing is sent live: the reply to the
+ *  request carries `lastEvent`, so the first event is delivered exactly
+ *  once, whenever the renderer's first render ends. */
+let rendererSubscribed = false;
 /** True after the first `showInactive()` call on the singleton.
  *  GATES ANYTHING ONLY ON macOS: there the window is never `hide()`-n, so
  *  later show transitions skip `showInactive()`. On the `hide` model
@@ -94,12 +95,6 @@ let topmostRetryTimer: ReturnType<typeof setTimeout> | null = null;
 const PARK_X = -20_000;
 const PARK_Y = -20_000;
 
-function clearRendererReadyTimer(): void {
-  if (rendererReadyTimer === null) return;
-  clearTimeout(rendererReadyTimer);
-  rendererReadyTimer = null;
-}
-
 function clearTopmostRetryTimer(): void {
   if (topmostRetryTimer === null) return;
   clearTimeout(topmostRetryTimer);
@@ -107,13 +102,12 @@ function clearTopmostRetryTimer(): void {
 }
 
 function resetFloatOverRuntimeState(): void {
-  clearRendererReadyTimer();
   clearTopmostRetryTimer();
   singleton = null;
   state = { kind: "hidden" };
   anchoredDisplayId = null;
   lastEvent = null;
-  rendererReady = false;
+  rendererSubscribed = false;
   everShown = false;
 }
 
@@ -327,31 +321,47 @@ function wireFloatOverResizeChannel(): void {
   });
 }
 
+/**
+ * The renderer's half of delivering state: FloatOverHost subscribes to
+ * `floatOverState` and then sends this request, and main answers with
+ * `lastEvent` on that same channel. From then on every event is sent
+ * live, in order, behind the reply.
+ *
+ * The window is created lazily by the first `setFloatOverState`, so the
+ * first event always exists before the renderer that has to show it.
+ * Main used to guess when that renderer would be listening: it sent
+ * `lastEvent` 100ms after `did-finish-load`. The listener is attached
+ * in a React passive effect, after the first render, and nothing bounds
+ * how long that render takes. Measured in the Linux E2E harness with
+ * the CPU oversubscribed 6×, FloatOverHost subscribed 43–115ms after
+ * `did-finish-load`, and 2 of 10 first toasts received their event with
+ * no subscriber and stayed empty. Only the renderer knows when it is
+ * listening, so it says so.
+ *
+ * Only the float-over's own webContents may ask. A renderer that
+ * reloads asks again and gets the latest state.
+ */
+let stateRequestChannelWired = false;
+function wireFloatOverStateRequestChannel(): void {
+  if (stateRequestChannelWired) return;
+  stateRequestChannelWired = true;
+  ipcMain.on(FLOAT_OVER_STATE_REQUEST_CHANNEL, (event) => {
+    if (singleton === null || singleton.isDestroyed()) return;
+    if (event.sender !== singleton.webContents) return;
+    rendererSubscribed = true;
+    if (lastEvent !== null) {
+      singleton.webContents.send(EVENT_CHANNELS.floatOverState, lastEvent);
+    }
+  });
+}
+
 function getOrCreate(): BrowserWindow {
   if (singleton !== null && !singleton.isDestroyed()) return singleton;
   wireFloatOverResizeChannel();
+  wireFloatOverStateRequestChannel();
   const window = createFloatOverWindow();
   singleton = window;
-  rendererReady = false;
-  const markRendererReady = (): void => {
-    if (singleton !== window || window.isDestroyed()) return;
-    rendererReady = true;
-    if (lastEvent !== null && !window.isDestroyed()) {
-      window.webContents.send(EVENT_CHANNELS.floatOverState, lastEvent);
-    }
-  };
-  const markRendererReadyAfterReactMount = (): void => {
-    clearRendererReadyTimer();
-    rendererReadyTimer = setTimeout(() => {
-      rendererReadyTimer = null;
-      markRendererReady();
-    }, 100);
-  };
-  if (window.webContents.getURL() !== "" && !window.webContents.isLoadingMainFrame()) {
-    markRendererReadyAfterReactMount();
-  } else {
-    window.webContents.once("did-finish-load", markRendererReadyAfterReactMount);
-  }
+  rendererSubscribed = false;
   // NOTE: deliberately no `zoom-changed` hook — that event is
   // mouse-wheel-only and never fires for programmatic zoom or
   // HostZoomMap propagation. The renderer detects effective-zoom
@@ -651,7 +661,7 @@ export function setFloatOverState(event: FloatOverEvent): void {
   // Stash + send the event AFTER the window state transitions so the
   // renderer never receives a state event before its window is ready.
   lastEvent = event;
-  if (singleton !== null && !singleton.isDestroyed() && rendererReady) {
+  if (singleton !== null && !singleton.isDestroyed() && rendererSubscribed) {
     singleton.webContents.send(EVENT_CHANNELS.floatOverState, event);
   }
 
@@ -763,11 +773,14 @@ export function getFloatOverWindowIdForE2E(): number | null {
  */
 export function disposeFloatOver(): void {
   disarmCopyShortcuts();
-  clearRendererReadyTimer();
   clearTopmostRetryTimer();
   if (resizeChannelWired) {
     ipcMain.removeAllListeners(FLOAT_OVER_RESIZE_CHANNEL);
     resizeChannelWired = false;
+  }
+  if (stateRequestChannelWired) {
+    ipcMain.removeAllListeners(FLOAT_OVER_STATE_REQUEST_CHANNEL);
+    stateRequestChannelWired = false;
   }
   if (singleton !== null && !singleton.isDestroyed()) {
     singleton.destroy();

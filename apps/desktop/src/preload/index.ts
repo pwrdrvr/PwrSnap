@@ -126,6 +126,10 @@ const TRAY_RESIZE_CHANNEL = "tray:resize";
 // "tail" (its box-shadow bleeding into transparent space) and from
 // extending the window's bottom edge into the Dock area.
 const FLOAT_OVER_RESIZE_CHANNEL = "float-over:resize";
+// Float-over renderer → main: "I am subscribed to `floatOverState`; send
+// me the current state." Main answers on that channel. See
+// wireFloatOverStateRequestChannel in main/float-over.ts.
+const FLOAT_OVER_STATE_REQUEST_CHANNEL = "float-over:request-state";
 // Failed recording cards are content-sized as well. This channel is accepted
 // only from the live recording-controller webContents in main.
 const RECORDING_CONTROLLER_RESIZE_CHANNEL = "recording-controller:resize";
@@ -418,6 +422,14 @@ const pwrsnapApi = {
    */
   requestFloatOverResize(payload: { width: number; height: number }): void {
     ipcRenderer.send(FLOAT_OVER_RESIZE_CHANNEL, payload);
+  },
+  /**
+   * Float-over renderer → main: ask for the current toast state. Call it
+   * AFTER subscribing to `floatOverState`, because main replies on that
+   * channel and an event with no subscriber is dropped.
+   */
+  requestFloatOverState(): void {
+    ipcRenderer.send(FLOAT_OVER_STATE_REQUEST_CHANNEL);
   },
   /**
    * The current page zoom factor, read fresh on every call.

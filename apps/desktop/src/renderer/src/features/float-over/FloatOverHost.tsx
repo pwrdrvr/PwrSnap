@@ -131,6 +131,7 @@ export function FloatOverHost({
   const [videoCopyShortcut, setVideoCopyShortcut] =
     useState<VideoCopyShortcutRequest | null>(null);
   const videoCopyShortcutSequenceRef = useRef(0);
+  const stateRequestedRef = useRef(false);
   const [codexAvailable, setCodexAvailable] = useState<boolean | undefined>(undefined);
   // ACP-agent install status, so an ACP enrichment backend (Kimi/Gemini/Grok/
   // Qwen) counts as available even when Codex is absent — see
@@ -271,7 +272,12 @@ export function FloatOverHost({
           return;
       }
     });
-    window.pwrsnapApi?.requestFloatOverState?.();
+    // Once per mount. StrictMode re-runs this effect, and a second reply
+    // would re-apply `show-loaded`, which resets enrichment to null.
+    if (!stateRequestedRef.current) {
+      stateRequestedRef.current = true;
+      window.pwrsnapApi?.requestFloatOverState?.();
+    }
     return () => {
       unsubscribe?.();
     };

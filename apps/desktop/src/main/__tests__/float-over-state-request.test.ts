@@ -1,9 +1,10 @@
 // The float-over renderer is created by the first capture of the session,
 // so the first state event always exists before anything is listening for
 // it. Main used to send it on a timer, 100ms after did-finish-load, and a
-// first render that outlasted the timer dropped it: measured in the Linux
-// E2E harness under CPU load, 2 of 10 first toasts stayed empty. The
-// renderer now asks once it has subscribed, and main answers.
+// send that landed mid-render could beat the subscribing effect: measured
+// in the Linux E2E harness under CPU load, 2 of 30 first toasts stayed
+// empty at 6x and 3 of 10 at 12x. The renderer now asks once it has
+// subscribed, and main answers.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -17,9 +18,14 @@ const mocks = vi.hoisted(() => {
   function createWindow(id: number) {
     let destroyed = false;
     let closedListener: (() => void) | null = null;
+    const webContentsListeners = new Map<string, () => void>();
     const webContents = {
+      emit: (event: string) => webContentsListeners.get(event)?.(),
       invalidate: vi.fn(),
       isDestroyed: vi.fn(() => destroyed),
+      on: vi.fn((event: string, listener: () => void) => {
+        webContentsListeners.set(event, listener);
+      }),
       send: vi.fn(),
       zoomFactor: 1
     };
@@ -175,6 +181,22 @@ describe("float-over state delivery", () => {
     requestStateFrom(window.webContents);
 
     expect(stateSends(window)).toEqual([{ kind: "dismiss" }]);
+  });
+
+  it("holds live sends while a reloading renderer has not asked again", () => {
+    setFloatOverState({ kind: "show-idle" });
+    const window = mocks.windows[0]!;
+    requestStateFrom(window.webContents);
+    window.webContents.send.mockClear();
+
+    window.webContents.emit("did-start-loading");
+    setFloatOverState({ kind: "show-loaded", captureId: "cap_during_reload" });
+    expect(stateSends(window)).toEqual([]);
+
+    requestStateFrom(window.webContents);
+    expect(stateSends(window)).toEqual([
+      { kind: "show-loaded", captureId: "cap_during_reload" }
+    ]);
   });
 
   it("ignores a request from any other webContents", () => {

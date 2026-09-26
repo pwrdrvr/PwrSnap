@@ -1,4 +1,4 @@
-import { act, createElement } from "react";
+import { act, createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { EVENT_CHANNELS, type CaptureEnrichment, type CaptureRecord, type Settings } from "@pwrsnap/shared";
@@ -795,6 +795,25 @@ describe("FloatOverHost", () => {
 
     expect(requestFloatOverState).toHaveBeenCalledTimes(1);
     expect(container.querySelector(".fo")).not.toBeNull();
+  });
+
+  // StrictMode re-runs the subscribe effect. Both replies would land on
+  // the second subscriber, and a repeated `show-loaded` resets enrichment.
+  test("asks main for the current state once per mount, even under StrictMode", async () => {
+    installHostApi();
+    const dispatchMock = window.pwrsnapApi!.dispatch as ReturnType<typeof vi.fn>;
+    dispatchMock.mockImplementation(async (name: string) => defaultHostDispatchResult(name));
+    const requestFloatOverState = vi.fn();
+    window.pwrsnapApi = { ...window.pwrsnapApi!, requestFloatOverState };
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(createElement(StrictMode, null, createElement(FloatOverHost)));
+    });
+
+    expect(requestFloatOverState).toHaveBeenCalledTimes(1);
   });
 
   test("focused image toast keeps primary+digits as a local copy owner", async () => {

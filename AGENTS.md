@@ -2200,7 +2200,10 @@ effect after the first render, and nothing bounds how long that takes.
   subscriber needs only that. A preload latch is for a one-shot intent
   that exists nowhere else.
 - **Only the float-over's own webContents may ask.** A renderer that
-  reloads asks again and gets the latest state.
+  reloads asks again and gets the latest state. Main stops sending live
+  at `did-start-loading` until it does.
+- **Ask once per mount.** StrictMode re-runs the effect, and a repeated
+  `show-loaded` resets the toast's enrichment to null.
 - **Do not probe this with `page.evaluate` before the send.** It queues
   behind the first render and hides the race. Have the preload report
   its receipt times to main over IPC, aligned with

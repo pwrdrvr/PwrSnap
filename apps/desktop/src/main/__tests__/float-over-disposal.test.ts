@@ -34,11 +34,9 @@ const mocks = vi.hoisted(() => {
       setPosition: vi.fn(),
       showInactive: vi.fn(),
       webContents: {
-        getURL: vi.fn(() => "file:///renderer/index.html"),
         invalidate: vi.fn(),
         isDestroyed: vi.fn(() => destroyed),
-        isLoadingMainFrame: vi.fn(() => false),
-        once: vi.fn(),
+        on: vi.fn(),
         send: vi.fn(),
         zoomFactor: 1
       }

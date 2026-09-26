@@ -60,7 +60,7 @@ passive-effect flush runs first, the event is delivered; if the IPC
 task does, it is dropped. Every loss was a send that landed before the
 subscription, and those races were lost 5 times out of 9.
 
-Two of the losses at 6×, times in ms from window creation:
+The two losses at 6×, times in ms from window creation:
 
 | | loss 1 | loss 2 |
 |---|---|---|

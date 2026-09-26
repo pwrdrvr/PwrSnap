@@ -361,6 +361,12 @@ function getOrCreate(): BrowserWindow {
   const window = createFloatOverWindow();
   singleton = window;
   rendererSubscribed = false;
+  // A reloading renderer has dropped its subscription. Hold live sends
+  // until the new document asks, or an event sent between its subscribe
+  // and its request would arrive twice.
+  window.webContents.on("did-start-loading", () => {
+    if (singleton === window) rendererSubscribed = false;
+  });
   // NOTE: deliberately no `zoom-changed` hook — that event is
   // mouse-wheel-only and never fires for programmatic zoom or
   // HostZoomMap propagation. The renderer detects effective-zoom

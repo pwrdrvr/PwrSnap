@@ -164,9 +164,21 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
   const enabledAgentIds = settings?.ai.acp.enabledAgentIds ?? [];
   const enabledAgentIdSet = new Set(enabledAgentIds);
   const acpChatProviderOptions = buildAcpProviderOptions(enabledAgentIds, acpDiscovery);
+  // Direct API models, named with their connection so two endpoints serving
+  // the same model id stay apart. Captions list only a model the operator
+  // marked as accepting images; Unknown is never offered there.
+  const connectionNames = new Map((settings?.ai.customConnections ?? []).map((c) => [c.id, c.name] as const));
+  const customProviderOptions = (surface: AiSurfaceId): AcpChatProviderOption[] =>
+    (settings?.ai.customModels ?? [])
+      .filter((m) => surface !== "enrichment" || m.capabilities.vision === true)
+      .map((m) => ({ value: `custom:${m.id}`, label: `${m.displayName} · ${connectionNames.get(m.connectionId) ?? "Direct API"}` }));
   const acpModelsForProvider = (
     provider: string | undefined
   ): readonly AcpAgentModelOption[] | undefined => {
+    if (provider?.startsWith("custom:")) {
+      const m = settings?.ai.customModels?.find((entry) => `custom:${entry.id}` === provider);
+      return m ? [{ id: m.modelId, label: m.modelId, isDefault: true }] : [];
+    }
     const id = acpAgentIdOfProvider(provider);
     if (id === null) return undefined;
     return enabledAgentIdSet.has(id) ? acpModels[id] : [];
@@ -202,7 +214,7 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
         value={value}
         models={codexModels?.models ?? []}
         modelsLoading={codexModelsLoading}
-        acpProviderOptions={acpChatProviderOptions}
+        acpProviderOptions={[...acpChatProviderOptions, ...customProviderOptions(surface)]}
         acpModelOptions={acpModelsForProvider(value.provider)}
         acpModelsLoading={acpModelsLoadingForProvider(value.provider)}
         acpModelError={acpModelErrorForProvider(value.provider)}
@@ -469,7 +481,8 @@ export function AiSurfaceDefaultControl({
   const chatProviderValue = providerValue === "codex" ? "" : providerValue;
   // Model choices follow the selected BACKEND: Codex models for Codex, the ACP
   // agent's advertised models for an acp:<id> provider.
-  const isAcpProvider = chatProviderValue.startsWith("acp:");
+  const isCustomProvider = chatProviderValue.startsWith("custom:");
+  const isAcpProvider = chatProviderValue.startsWith("acp:") || isCustomProvider;
   const codexModels = surfaceModelOptions(models);
   const managedCodexDefaultModelId =
     surface === "enrichment" ? DEFAULT_CODEX_CAPTION_MODEL : undefined;
@@ -550,7 +563,7 @@ export function AiSurfaceDefaultControl({
   // (toggled off, or discovery still loading) — keep it as a visible option
   // so the select never silently drops the saved value.
   const showsStaleAcp =
-    chatProviderValue.startsWith("acp:") &&
+    (chatProviderValue.startsWith("acp:") || isCustomProvider) &&
     !acpProviderOptions.some((o) => o.value === chatProviderValue);
   // Reasoning options follow the backend and selected model. Codex advertises
   // model-specific effort values from `model/list` (for example, GPT-5.6 model
@@ -651,7 +664,7 @@ export function AiSurfaceDefaultControl({
               // only for the backend that advertised it (a Gemini model can't
               // run on Codex), so fall back to Default rather than carrying a
               // stale value across providers.
-              onChange({ provider: e.target.value, model: "" });
+              onChange({ provider: e.target.value, model: "", ...(isCustomProvider || e.target.value.startsWith("custom:") ? { reasoning: "" } : {}) });
             }}
           >
             <option value="">Codex</option>
@@ -684,7 +697,7 @@ export function AiSurfaceDefaultControl({
             onChange={(e) => {
               const nextModelId = e.target.value;
               if (isAcpProvider) {
-                onChange({ model: nextModelId });
+                onChange({ model: nextModelId, ...(isCustomProvider ? { provider: chatProviderValue, reasoning: "" } : {}) });
                 return;
               }
               const nextModel =
@@ -722,7 +735,7 @@ export function AiSurfaceDefaultControl({
             Fast/Thinking for ACP "thinking" agents. Shown for every backend
             now — for ACP it drives the agent's thinking pass (the kit ignores
             it for agents that have none, so the worst case is a no-op control). */}
-        <label className="pss__ai-surface-field">
+        {!isCustomProvider && <label className="pss__ai-surface-field">
           <span className="pss__ai-surface-field-label">Reasoning</span>
           <select
             className="pss__select pss__ai-surface-select"
@@ -745,7 +758,8 @@ export function AiSurfaceDefaultControl({
               </option>
             ))}
           </select>
-        </label>
+        </label>}
+        {isCustomProvider && <span className="pss__opt-sub">Direct API · no tools, reasoning controls or pricing estimate</span>}
       </div>
     </div>
   );

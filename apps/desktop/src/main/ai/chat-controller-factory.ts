@@ -1,3 +1,5 @@
+import { DirectChatBackend } from "./direct-api/chat-backend";
+import { getCustomModelService } from "../handlers/custom-model-handlers";
 // Builds a kit `ChatThreadController` for one PwrSnap chat surface (Library or
 // Sizzle), wiring it to:
 //   • a pooled Codex backend view (the kit's `AgentBackend` surface),
@@ -183,6 +185,8 @@ export function chatControllerSignature(
     profile: codex.profile ?? null,
     surface: settings.ai.defaults[surface] ?? null,
     acpAgents: settings.ai.acp.agents ?? null,
+    customConnections: settings.ai.customConnections ?? [],
+    customModels: settings.ai.customModels ?? [],
     acpEnabled: settings.ai.acp.enabledAgentIds ?? null
   });
 }
@@ -331,6 +335,12 @@ async function resolveChatBackend(
   if (provider === undefined || provider === "" || provider === "codex") {
     return codex();
   }
+  if (provider.startsWith("custom:")) {
+    const service = getCustomModelService();
+    const model = await service.selected(provider, config.model);
+    const store = new ChatThreadStore({ chatsDir: config.chatsDir });
+    return { client: new DirectChatBackend(model, service, (id) => store.readJournal(id)), shared: false, isAcp: false };
+  }
   if (!provider.startsWith("acp:")) {
     throw new Error(
       `Configured chat provider "${provider}" is not supported. ` +
@@ -434,6 +444,10 @@ export async function buildChatSurface(
   config: ChatSurfaceConfig,
   deps: ChatBackendDeps = {}
 ): Promise<ChatSurface> {
+  if (config.provider?.startsWith("custom:")) {
+    const selected = await getCustomModelService().selected(config.provider, config.model);
+    config = { ...config, model: selected.modelId };
+  }
   const store = new ChatThreadStore({ chatsDir: config.chatsDir });
   const adapter = new ThreadStoreAdapter({
     store,

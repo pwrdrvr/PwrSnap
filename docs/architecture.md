@@ -99,25 +99,72 @@ Keeping the stems in the source file is what leaves that door open:
 mixing at record time would close it permanently, for every recording
 already made.
 
-## AI runs on the user's machine, through their own agent
+## AI uses the user's chosen agent or direct API
 
-PwrSnap makes no direct calls to any model vendor. Every AI feature goes
-through an agent the user already has installed — Codex CLI / Codex Desktop
-over stdio JSON-RPC, or an ACP agent (Gemini / Qwen / Grok / Kimi). PwrSnap
-is a *client* of those protocols and never an implementation of one.
+Built-in Codex and ACP connections remain available. Users can also configure
+direct HTTP **connections**: OpenAI Responses, OpenAI-compatible Chat
+Completions, and Anthropic Messages. Main makes these requests itself; no
+agent, external proxy, or subprocess is required. Legacy text `/completions`
+is a different protocol and is not supported.
 
-Consequences that are easy to get wrong:
+A connection (`ai.customConnections`) is one endpoint: a stable UUID, a name,
+the base URL, an explicit protocol, and public sign-in configuration (none,
+API key, or OAuth). Models (`ai.customModels`) hang under a connection by
+`connectionId` and carry only what differs per model: display name, exact
+model ID, capabilities, and output limit. `custom:<modelUuid>` selects a model
+in the existing chat and enrichment defaults. Removing a model or connection
+leaves prior thread/default references unavailable; it never redirects a
+prompt to a different provider. Both lists are main-owned — `settings:write`
+refuses them and the `customModels:*` verbs are the only writers — so the
+limits, id minting, and credential clean-up happen in one place. The first
+cut stored one flat entry per model; its files are read, regrouped into
+connections, and keep their stored keys.
 
-- There is no API key to manage for the core AI path, and no per-token cost
-  PwrSnap controls. The user's agent subscription is the billing surface.
-- Feature capability varies by whichever backend the user selected. The two
-  backends are **not** equally sandboxable — see below.
-- Model availability is discovered, not hardcoded.
+Each connection owns at most one credential, `customModelCredential:<connectionId>`
+in `DesktopSecretStore`, shared by every model under it and bound to the
+connection's base URL and sign-in metadata. Repointing a connection (new URL,
+new sign-in type, new OAuth endpoints) clears its credential rather than
+sending it somewhere the user did not enter it; removing the connection clears
+it too, and any credential no connection references is swept. No status read
+decrypts secrets. Linux `basic_text`, unavailable storage, and locked
+credentials never cause plaintext fallback. API keys are write-only inputs;
+access and refresh tokens never enter renderer projections, settings, logs, or
+exports.
+
+OAuth supports documented public native-client authorization-code flows with
+S256 PKCE, state, a loopback callback, serialized refresh, and local logout with
+best-effort provider revocation. Users must supply the provider's authorization
+and token endpoints plus a registered client ID (and scopes/resource where
+required). A subscription or generic API URL does not establish API access.
+Confidential clients requiring a client secret are not supported.
+
+Custom capabilities are explicit. Image input is three-state — yes, no, or
+unknown — and only an explicit yes sends an image or makes a model eligible for
+captions. Discovery lists the connection's models and accepts only unambiguous
+per-row metadata; `/props` vision applies only when a Chat Completions `/models`
+identifies precisely one model. Names and URLs never imply vision, reasoning,
+Fast mode, or prices; the operator confirms each model. Usage tokens are
+recorded when returned, with custom pricing unavailable. Redirects are refused,
+remote endpoints require HTTPS, HTTP is loopback-only, response sizes and
+request duration are bounded, and server error bodies are not surfaced. A
+401/403 is reported as a rejected credential so Settings can ask for it again.
+
+Settings → AI Providers shows installed agents and direct connections side by
+side; each connection is its own screen, edited in steps (where it is, how it
+signs in, which models, which jobs use it) that save as they pass.
+
+Direct chat reuses PwrSnap's local journal and streaming/cancellation lifecycle.
+It supports text conversation and the current Library image when the model
+accepts images, but has no editing tools or automatic library/reel access. Enrichment
+sends app-prepared image bytes and validates the same structured result as the
+agent paths. The model cannot execute code, read paths, call tools, or select
+additional network destinations: only main's fixed inference request is made.
 
 **Capture enrichment is a jailed, unattended path.** A screenshot is
 untrusted input that can carry text engineered to steer a model. Enrichment
-runs with no tools, no network, no filesystem beyond a scratch jail, and no
-UI to approve anything — enforced in the transport, not the prompt. This is
+runs with no tools, no model-initiated network, no filesystem beyond the
+agent scratch jail (or bounded image bytes for direct APIs), and no UI to
+approve anything — enforced in the transport, not the prompt. This is
 the most security-sensitive surface in the app; AGENTS.md §"Capture
 enrichment runs in a sandbox jail" is the authority, including the measured
 difference between the Codex and ACP postures.

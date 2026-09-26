@@ -141,14 +141,16 @@ function SettingsRouteTitleBar({
   active: SettingsPage;
   sub: string | null;
 }): ReactElement {
-  const { statuses } = useAiProvidersContext();
+  const { statuses, connections } = useAiProvidersContext();
   const item = SETTINGS_PAGES_FLAT.find((i) => i.id === active) ?? SETTINGS_PAGES_FLAT[0]!;
   // Crumb label from the same catalog the sidebar renders, so the two
-  // can't name a screen differently.
-  const subLabel =
+  // can't name a screen differently. The add row is an action in the
+  // sidebar; the page it opens is the new connection.
+  const child =
     sub !== null
-      ? settingsNavChildren(active, statuses).find((child) => child.sub === sub)?.label
+      ? settingsNavChildren(active, statuses, connections).find((c) => c.sub === sub)
       : undefined;
+  const subLabel = child?.add === true ? "New connection" : child?.label;
   return subLabel !== undefined ? (
     <SettingsTitleBar
       here={subLabel}

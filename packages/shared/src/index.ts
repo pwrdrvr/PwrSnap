@@ -35,3 +35,5 @@ export * from "./capture-invocation";
 export * from "./recording-audio-tracks";
 export * from "./release-notes";
 export * from "./float-over-sizing";
+
+export * from "./custom-models";

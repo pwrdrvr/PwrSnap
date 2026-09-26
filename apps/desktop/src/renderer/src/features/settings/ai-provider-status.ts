@@ -53,6 +53,20 @@ export const AI_PROVIDER_SUBS: readonly AiProviderSub[] = [
  */
 export type AiProviderTone = "ok" | "off" | "warn" | "bad";
 
+/** Badge modifier for a tone; the hub's agent and connection rows share it. */
+export function statusBadgeClass(tone: AiProviderTone | undefined): string {
+  switch (tone) {
+    case "ok":
+      return " is-using";
+    case "warn":
+      return " is-warn";
+    case "bad":
+      return " is-danger";
+    default:
+      return "";
+  }
+}
+
 export type AiProviderStatus = {
   sub: AiProviderSub;
   label: string;
@@ -159,7 +173,7 @@ export function describeAcpAgentStatus(
 }
 
 export function describeOpenAiStatus(key: SecretStatus | null): AiProviderStatus {
-  const base = { sub: "openai" as const, label: "OpenAI" };
+  const base = { sub: "openai" as const, label: "OpenAI voiceover" };
   const meta = "API key for Sizzle Reels voiceover";
   if (key === null) return { ...base, badge: "Checking…", meta };
   return key.configured

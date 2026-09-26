@@ -63,6 +63,15 @@ describe("AI provider sub ids", () => {
     // A provider id is not a sub of any other page.
     expect(isSettingsSub("hotkeys", "codex")).toBe(false);
   });
+
+  test("Direct API screens are subs by shape: the add page and one per connection id", () => {
+    expect(isSettingsSub("ai", "new-connection")).toBe(true);
+    expect(isSettingsSub("ai", "connection:12345678-1234-4234-8234-123456789003")).toBe(true);
+    expect(isSettingsSub("ai", "connection:not-a-uuid")).toBe(false);
+    expect(isSettingsSub("ai", "connection:12345678-1234-4234-8234-123456789003/x")).toBe(false);
+    expect(isSettingsSub("ai-features", "new-connection")).toBe(false);
+    expect(isSettingsSub("hotkeys", "connection:12345678-1234-4234-8234-123456789003")).toBe(false);
+  });
 });
 
 describe("describeCodexStatus", () => {

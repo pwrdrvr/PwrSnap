@@ -42,6 +42,7 @@ import {
   enabledAcpAgentIdsForModelProbes,
   type AiProviderStatus
 } from "./ai-provider-status";
+import { describeConnections, type ConnectionStatus } from "./direct-api-status";
 import { useSettingsContext } from "./SettingsContext";
 
 export type AiProvidersValue = {
@@ -60,6 +61,9 @@ export type AiProvidersValue = {
   fetchAcpModels: (agentId: string, refresh?: boolean) => Promise<void>;
   /** Every provider's status, in sidebar order. */
   statuses: readonly AiProviderStatus[];
+  /** Every Direct API connection's status, in sidebar order. Read from
+   *  settings + stored-secret status alone; nothing is probed. */
+  connections: readonly ConnectionStatus[];
 };
 
 const AiProvidersContext = createContext<AiProvidersValue | null>(null);
@@ -207,6 +211,8 @@ export function AiProvidersProvider({ children }: { children: ReactNode }): Reac
     ]
   );
 
+  const connections = useMemo(() => describeConnections(settings, secrets), [settings, secrets]);
+
   const value = useMemo<AiProvidersValue>(
     () => ({
       request,
@@ -221,7 +227,8 @@ export function AiProvidersProvider({ children }: { children: ReactNode }): Reac
       acpModelErrors,
       acpModelsLoadingIds,
       fetchAcpModels,
-      statuses
+      statuses,
+      connections
     }),
     [
       request,
@@ -236,7 +243,8 @@ export function AiProvidersProvider({ children }: { children: ReactNode }): Reac
       acpModelErrors,
       acpModelsLoadingIds,
       fetchAcpModels,
-      statuses
+      statuses,
+      connections
     ]
   );
 

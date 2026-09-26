@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.1.7 - 2026-09-26
+
+This patch improves MP4 sharing and makes capture controls more dependable on
+Linux desktops.
+
+- MP4 Export - Added microphone and system-audio switches for each recorded
+  track, so you can leave unwanted audio out before copying, dragging, or
+  exporting a video. Your choices carry over to later exports.
+- Linux Tray - Fixed the tray icon and native menu so Quick Capture, recording,
+  Library, and Settings actions are available from the desktop indicator.
+- Linux Popovers - Fixed the last-capture popover and post-capture toast to
+  appear and dismiss reliably on X11 and Wayland desktops.
+- Linux Region Capture - Fixed the selector to align with the desktop instead
+  of showing an offset snapshot. On multi-monitor Wayland sessions where
+  region selection is unavailable, PwrSnap offers full-screen capture.
+
 ## v1.1.6 - 2026-09-25
 
 This patch keeps editing controls usable in smaller windows and improves

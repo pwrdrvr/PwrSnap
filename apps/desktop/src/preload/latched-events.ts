@@ -79,7 +79,19 @@ export function createEventSubscriber(
     latch.handlers.add(handler);
     const pending = latch.pending;
     latch.pending = null;
-    if (pending !== null) handler(pending.payload);
+    if (pending !== null) {
+      // Delivered inside the caller's subscribe (a React effect). A throw
+      // here would escape into that effect and take down the tree, where
+      // the same throw from a live IPC delivery is only an uncaught error.
+      // Keep it that way: report it asynchronously.
+      try {
+        handler(pending.payload);
+      } catch (error) {
+        queueMicrotask(() => {
+          throw error;
+        });
+      }
+    }
     return () => {
       latch.handlers.delete(handler);
     };

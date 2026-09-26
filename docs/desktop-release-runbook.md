@@ -177,6 +177,40 @@ Updates after switching.
 
 ---
 
+## Main executable UUID and symbols
+
+The macOS `afterPack` hook personalizes `Contents/MacOS/PwrSnap` before
+electron-builder signs the app. Stock Electron launchers share a build UUID
+across apps; macOS can use that UUID to associate network restrictions with
+an app ([Apple TN3178](https://developer.apple.com/documentation/technotes/tn3178-checking-for-and-resolving-build-uuid-problems),
+[TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy)).
+
+`scripts/macos-executable-uuid.mjs` derives each slice's UUID from the app ID,
+app version, pinned Electron version, CPU type and CPU subtype. Repeated hooks
+and universal merging produce the same per-architecture UUID as a thin build.
+Missing identity metadata or malformed Mach-O input fails packaging. Only the
+staged launcher changes: bundle IDs, Developer ID identity, entitlements,
+frameworks and helper executables retain their existing behavior.
+
+The UUID is covered by the code signature. Never apply this patch to an
+installed or already signed release; all mutation must precede final signing
+and notarization. The existing signing pass seals the new UUID. This does not
+prove that macOS preserves or repairs existing privacy grants across an upgrade;
+that requires a signed upgrade test with the prior release.
+
+Launcher symbolication now requires a matching personalized UUID in each
+architecture of the launcher's dSYM. Upstream Electron launcher dSYMs will no
+longer match automatically. If archiving or uploading those symbols, keep the
+original-to-personalized UUID mapping and align the dSYM UUIDs before use;
+verify both with `xcrun dwarfdump --uuid`. The executable patcher intentionally
+accepts only `MH_EXECUTE`, so it is not a dSYM patching tool. Electron Framework
+UUIDs are unchanged and its upstream symbols continue to match. This release
+pipeline does not currently transform or upload launcher dSYMs.
+
+After packaging, inspect every slice with
+`xcrun dwarfdump --uuid PwrSnap.app/Contents/MacOS/PwrSnap` and verify the sealed
+bundle with `codesign --verify --deep --strict PwrSnap.app`.
+
 ## Cutting a release (CI path — preferred)
 
 ```bash

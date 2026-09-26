@@ -2340,6 +2340,40 @@ another app and got recorded that way.
 Measurements, the two hypotheses it replaced, and the log recipe:
 [docs/solutions/2026-09-17-recording-lead-in-activation-loss.md](docs/solutions/2026-09-17-recording-lead-in-activation-loss.md).
 
+## A one-shot intent sent to a renderer must not be droppable
+
+**An event that carries a user's intent and exists nowhere else — today
+`libraryOpenCapture`, which `editor:open` and `library:openInLibrary`
+send — is sent ONCE, after `did-stop-loading`, on a channel the preload
+latches. No `setTimeout` grace, no resend.** Owners:
+`sendOpenCaptureWhenReady` in
+[library-handlers.ts](apps/desktop/src/main/handlers/library-handlers.ts)
+and [latched-events.ts](apps/desktop/src/preload/latched-events.ts).
+Pinned by
+[library-handlers-editor-open.test.ts](apps/desktop/src/main/handlers/__tests__/library-handlers-editor-open.test.ts)
+and [latched-events.test.ts](apps/desktop/src/preload/__tests__/latched-events.test.ts).
+
+- **`isLoading()` is still true inside `did-finish-load`** (231 of 231
+  loads measured). It turns false at `did-stop-loading`, 0–7ms later. So
+  "if loading, wait for `did-finish-load`" waits forever when the request
+  lands between the two. Nothing is sent, and nothing times out. That was
+  the `editor-v2-capture-open` flake, about 1 open in 40. Wait on the
+  event that ends the state you checked.
+- **React subscribes in a passive effect, after an IPC task can already
+  have run.** Measured with one send per open: 59 of 120 opens were sent
+  before the Library subscribed. The preload's listener exists before any
+  page script, holds the latest payload while nothing is subscribed, and
+  hands it to the first subscriber.
+- **A latched channel wants exactly one subscriber.** Any subscriber
+  receives events live, so an earlier one (a diagnostic listener, say)
+  takes the intent before the Library mounts.
+- **Add a channel to the latch only if a late subscriber cannot recover
+  it.** A state broadcast is re-fetched on mount, so it has nothing to
+  latch.
+
+Failure timelines, the load-event measurements, and a probe that hides the
+bug: [docs/solutions/2026-09-26-library-open-capture-lost-intent.md](docs/solutions/2026-09-26-library-open-capture-lost-intent.md).
+
 ## Settings substrate — every setting + secret goes through one place
 
 **All user-configurable state lives in `DesktopSettingsService` +

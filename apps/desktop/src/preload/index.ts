@@ -75,6 +75,7 @@ import type {
 import type { PerfMarkPayload } from "@pwrsnap/shared/ipc";
 import { parseAppearanceArg } from "@pwrsnap/shared/appearance-arg";
 import { resolveDroppedFilePath } from "./dropped-file-path";
+import { createEventSubscriber } from "./latched-events";
 
 // Internal (non-command-bus) channel for the region selector to commit
 // its result back to main. Kept narrow: the preload exposes one
@@ -113,6 +114,13 @@ const REGION_SELECTOR_PRESENTED_CHANNEL = "region-selector:presented";
 // Settings recorder lease. This distinguishes delayed IPC from a document
 // that has already navigated away even when Chromium reuses a renderer PID.
 const rendererDocumentId = crypto.randomUUID().replaceAll("-", "");
+
+// Installed now, at preload evaluation, so a latched channel is listened
+// to before the page's own scripts run. See latched-events.ts for why a
+// one-shot intent cannot wait for the renderer's React subscriber.
+const subscribeToEvent = createEventSubscriber(ipcRenderer, [
+  EVENT_CHANNELS.libraryOpenCapture
+]);
 
 // Tray content auto-sizes to fit. The renderer measures itself with a
 // ResizeObserver and asks main to setContentSize so the popover never
@@ -260,13 +268,11 @@ const pwrsnapApi = {
   /**
    * Subscribe to a server → client event. Returns an unsubscribe
    * function. Used by `useLibrary.ts` etc. with `useSyncExternalStore`.
+   * On a latched channel the first subscriber is handed, synchronously,
+   * the latest event that arrived before anyone subscribed.
    */
   on(channel: string, handler: (payload: unknown) => void): () => void {
-    const wrapped = (_event: unknown, payload: unknown) => handler(payload);
-    ipcRenderer.on(channel, wrapped);
-    return () => {
-      ipcRenderer.off(channel, wrapped);
-    };
+    return subscribeToEvent(channel, handler);
   },
   /**
    * Region-selector renderer → main signal. Called on commit (with rect

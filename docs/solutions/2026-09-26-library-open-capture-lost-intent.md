@@ -88,6 +88,11 @@ retries off, 2 opens per iteration.
 | fix + probe (load markers) | 60 | 60/60 — 1 gap hit, 51/120 latched |
 | fix, no probe | 40 | 40/40 |
 
+The same harness running the full suite on origin/main had three other
+specs flake the same way, each on a 15s `.psl__focus` timeout:
+`editor-tool-styles`, `editor-v2-edit-undo-redo` and
+`library-layers-panel`. The fixed branch's full run had none.
+
 ## A probe that hides the bug
 
 The first probe read renderer state (navigation timing, a diagnostic

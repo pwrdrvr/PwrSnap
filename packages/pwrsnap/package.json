@@ -1,7 +1,7 @@
 {
   "name": "pwrsnap",
-  "version": "0.0.0",
-  "description": "PwrSnap placeholder package",
+  "version": "0.0.1",
+  "description": "Find official PwrSnap desktop downloads for macOS and Windows",
   "author": "PwrDrvr LLC <harold@pwrdrvr.com>",
   "license": "MIT",
   "homepage": "https://github.com/pwrdrvr/PwrSnap#readme",

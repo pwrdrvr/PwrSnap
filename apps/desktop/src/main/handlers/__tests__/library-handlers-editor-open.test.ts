@@ -137,4 +137,81 @@ describe("editor:open", () => {
       captureId: "cap-live"
     });
   });
+
+  // The channel is latched in the preload, so one send after load is the
+  // whole contract. The old code resent 100ms later to a loaded window and
+  // added a 100ms grace after load. Both were guesses at when React
+  // subscribes. Pin that neither comes back.
+  test("sends to a loaded Library exactly once, with no timed resend", async () => {
+    vi.useFakeTimers();
+    try {
+      const send = vi.fn();
+      mocks.getCaptureById.mockReturnValueOnce({ id: "cap-once", deleted_at: null });
+      mocks.findMainLibraryWindow.mockReturnValueOnce({
+        isDestroyed: () => false,
+        isMinimized: () => false,
+        isVisible: () => true,
+        focus: vi.fn(),
+        webContents: { isLoading: () => false, send }
+      });
+
+      const result = await bus.dispatch(
+        "editor:open",
+        { captureId: "cap-once" },
+        { principal: "ipc" }
+      );
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(result.ok).toBe(true);
+      expect(send).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // `isLoading()` stays true until `did-stop-loading`, which fires AFTER
+  // `did-finish-load`. A request in that gap that waited on
+  // `did-finish-load` waited for an event that had already happened, and
+  // the capture never opened (the editor-v2-capture-open E2E flake). The
+  // wait must be on the event that ends the state it checked.
+  test("waits for did-stop-loading on a loading Library, then sends once immediately", async () => {
+    vi.useFakeTimers();
+    try {
+      const send = vi.fn();
+      const listeners = new Map<string, Array<() => void>>();
+      mocks.getCaptureById.mockReturnValueOnce({ id: "cap-loading", deleted_at: null });
+      mocks.findMainLibraryWindow.mockReturnValueOnce({
+        isDestroyed: () => false,
+        isMinimized: () => false,
+        isVisible: () => true,
+        focus: vi.fn(),
+        webContents: {
+          isLoading: () => true,
+          send,
+          once: (event: string, listener: () => void) => {
+            listeners.set(event, [...(listeners.get(event) ?? []), listener]);
+          }
+        }
+      });
+
+      const result = await bus.dispatch(
+        "editor:open",
+        { captureId: "cap-loading" },
+        { principal: "ipc" }
+      );
+
+      expect(result.ok).toBe(true);
+      expect(send).not.toHaveBeenCalled();
+      expect([...listeners.keys()]).toEqual(["did-stop-loading"]);
+      for (const listener of listeners.get("did-stop-loading") ?? []) listener();
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledWith("events:library:open-capture", {
+        captureId: "cap-loading"
+      });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(send).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

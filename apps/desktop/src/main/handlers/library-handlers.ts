@@ -118,16 +118,26 @@ function broadcastEnrichmentUpdated(enrichment: unknown): void {
 
 /**
  * Push a `libraryOpenCapture` event to the Library renderer so it can
- * navigate to the capture in Focus mode. Two cases:
+ * navigate to the capture in Focus mode.
  *
- *   • Existing window — renderer is already mounted and listening,
- *     so we send immediately.
- *   • Just-created window — `webContents.send` would race the React
- *     mount (the event would land before any subscriber registers).
- *     We wait for `did-finish-load` and then add a small grace so
- *     the renderer's `useEffect` subscribe has a chance to attach.
- *     100ms is well past the typical mount interval and safely below
- *     human perception.
+ * Send exactly once, as soon as the window is done loading. Two rules
+ * keep that one send from being lost:
+ *
+ *   • Wait on `did-stop-loading`, never `did-finish-load`. The wait is
+ *     entered when `isLoading()` is true, and `isLoading()` only turns
+ *     false AT `did-stop-loading`, which comes after `did-finish-load`.
+ *     A request that lands between the two sees a window still loading
+ *     and would wait for a `did-finish-load` that has already fired: no
+ *     send at all, and the Library sits on the grid. That was the
+ *     `editor-v2-capture-open` E2E flake (~1 in 40 opens in the Linux
+ *     harness, where the spec dispatches right after DOMContentLoaded).
+ *     Pair a state check with the event that ends that state.
+ *   • The channel is LATCHED in the preload (src/preload/latched-events.ts).
+ *     Its listener exists before the page's scripts run and holds the
+ *     intent until the Library's React subscriber attaches, so main does
+ *     not have to guess when React mounts. It used to guess: a 100ms grace
+ *     after load, and a second send 100ms after the first. A resend can
+ *     only deliver the intent twice now, so do not bring one back.
  */
 function sendOpenCaptureWhenReady(
   window: BrowserWindow,
@@ -139,16 +149,9 @@ function sendOpenCaptureWhenReady(
     window.webContents.send(EVENT_CHANNELS.libraryOpenCapture, { captureId });
   };
   if (justCreated || window.webContents.isLoading()) {
-    window.webContents.once("did-finish-load", () => {
-      setTimeout(send, 100);
-    });
+    window.webContents.once("did-stop-loading", send);
   } else {
     send();
-    // Existing Library windows can still be in the narrow post-load /
-    // pre-React-effect interval during cold E2E launches. Repeat once
-    // after the same grace used for newly-created windows so the
-    // renderer subscription has a second chance to observe the intent.
-    setTimeout(send, 100);
   }
 }
 

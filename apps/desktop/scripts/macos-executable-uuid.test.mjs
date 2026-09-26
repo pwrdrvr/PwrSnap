@@ -107,15 +107,19 @@ describe("macOS main executable UUID", () => {
       const main = join(contents, "MacOS", "PwrSnap");
       const framework = join(contents, "Frameworks", "Electron Framework");
       await writeFile(main, thin(), { mode: 0o755 });
+      // Windows does not represent POSIX executable bits. Preserve the mode
+      // the filesystem actually created, across both patching and a no-op.
+      const originalMode = (await stat(main)).mode;
       await writeFile(framework, thin());
       await afterPack({ electronPlatformName: "win32" });
       await afterPack({ electronPlatformName: "darwin", appOutDir: root, packager });
       expect(await readFile(main)).toEqual(personalizeMacExecutableUuid(thin(), identity));
+      expect((await stat(main)).mode).toBe(originalMode);
       expect(await readFile(framework)).toEqual(thin());
       const before = await stat(main);
       await personalizeMacExecutableFile(main, identity);
       expect((await stat(main)).mtimeMs).toBe(before.mtimeMs);
-      expect((await stat(main)).mode & 0o777).toBe(0o755);
+      expect((await stat(main)).mode).toBe(originalMode);
       await writeFile(main, Buffer.alloc(4));
       await expect(afterPack({ electronPlatformName: "darwin", appOutDir: root, packager })).rejects.toThrow();
       expect(await readFile(main)).toEqual(Buffer.alloc(4));

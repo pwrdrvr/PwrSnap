@@ -519,6 +519,8 @@ const pwrsnapApi = {
     preset: VideoPreset;
     /** Optional explicit trim range; omitted = record's defaultRange. */
     range?: { start: number; end: number };
+    /** Export spans for an edit with cuts; wins over `range`. */
+    segments?: Array<{ start: number; end: number }>;
     /** Optional MP4 audio choice; omitted = the saved MP4 audio preference. */
     audio?: { includeSystemAudio: boolean; includeMicrophone: boolean };
   }): void {

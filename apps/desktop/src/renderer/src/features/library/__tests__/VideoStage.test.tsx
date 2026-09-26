@@ -17,6 +17,8 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import type { CaptureRecord, VideoCaptureMetadata } from "@pwrsnap/shared";
+import type { UseVideoTrimRange } from "../../shared/useVideoTrimRange";
+import { __resetEditMenuBridgeForTests, useEditMenuBridge } from "../../../lib/editMenuBridge";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -58,11 +60,24 @@ const record = {
 
 // A `trim` stand-in with the `UseVideoTrimRange` shape. Library owns
 // the real hook now; the stage just consumes it.
-const trim = {
-  range: { start: 0, end: 10 },
-  setRange: () => undefined,
-  pending: false
-};
+function trimStub(
+  range: { start: number; end: number },
+  setRange: (next: { start: number; end: number }) => void = () => undefined
+): UseVideoTrimRange {
+  return {
+    range,
+    segments: [range],
+    exportSegments: undefined,
+    setRange,
+    setSegments: () => undefined,
+    pending: false,
+    canUndo: false,
+    canRedo: false,
+    undo: () => undefined,
+    redo: () => undefined
+  };
+}
+const trim = trimStub({ start: 0, end: 10 });
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -105,7 +120,7 @@ function mountStatefulStage(initialRange = { start: 0, end: 10 }): HTMLElement {
         record,
         video,
         reel: false,
-        trim: { range: current, setRange, pending: false }
+        trim: trimStub(current, setRange)
       })
     );
   };
@@ -740,5 +755,182 @@ describe("VideoStage playhead loop", () => {
     expect(raf.pending()).toBe(false);
     expect(headOf(stage).style.transform).toBe("translateX(320px)");
     expect(timecodeOf(stage)).toBe("0:04.0");
+  });
+});
+
+describe("VideoStage cuts", () => {
+  type Seg = { start: number; end: number };
+
+  /** A stage whose trim holds segments the way the Library-level hook
+   *  does, recording every commit and every undo. Mounted beside the
+   *  window's edit-menu bridge, as `App` mounts it. */
+  function mountEditStage(initial: Seg[]): {
+    stage: HTMLElement;
+    commits: Seg[][];
+    undos: () => number;
+  } {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    let current = initial;
+    const commits: Seg[][] = [];
+    let undoCount = 0;
+    const setSegments = (next: readonly Seg[]): void => {
+      current = next.map((s) => ({ ...s }));
+      commits.push(current);
+      paint();
+    };
+    const Host = ({ trim: t }: { trim: UseVideoTrimRange }) => {
+      useEditMenuBridge();
+      return createElement(VideoStage, { record, video, reel: false, trim: t });
+    };
+    function paint(): void {
+      const base = trimStub({ start: current[0]!.start, end: current[current.length - 1]!.end });
+      root!.render(
+        createElement(Host, {
+          trim: {
+            ...base,
+            segments: current,
+            exportSegments: current.length > 1 ? current : undefined,
+            setSegments,
+            canUndo: true,
+            undo: () => {
+              undoCount += 1;
+            }
+          }
+        })
+      );
+    }
+    act(() => paint());
+    const stage = container.querySelector<HTMLElement>('[data-testid="video-stage"]');
+    if (stage === null) throw new Error("video stage did not render");
+    return { stage, commits, undos: () => undoCount };
+  }
+
+  function clockOn(el: HTMLVideoElement): { t: number } {
+    const clock = { t: 0 };
+    Object.defineProperty(el, "currentTime", {
+      configurable: true,
+      get: () => clock.t,
+      set: (next: number) => {
+        clock.t = next;
+      }
+    });
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => undefined);
+    return clock;
+  }
+
+  function rafStepper(): () => void {
+    let queued: FrameRequestCallback | null = null;
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+      queued = cb;
+      return 1;
+    });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {
+      queued = null;
+    });
+    return () => {
+      const cb = queued;
+      queued = null;
+      if (cb !== null) act(() => cb(0));
+    };
+  }
+
+  function press(target: Element, key: string, init: KeyboardEventInit = {}): void {
+    act(() => {
+      target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init }));
+    });
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    __resetEditMenuBridgeForTests();
+  });
+
+  test("S splits at the playhead and X cuts the part under it", () => {
+    const { stage, commits } = mountEditStage([{ start: 0, end: 10 }]);
+    const clock = clockOn(stage.querySelector("video")!);
+    clock.t = 4;
+    press(stage, "s");
+    expect(commits.at(-1)).toEqual([
+      { start: 0, end: 4 },
+      { start: 4, end: 10 }
+    ]);
+    clock.t = 6;
+    press(stage, "x");
+    expect(commits.at(-1)).toEqual([{ start: 0, end: 4 }]);
+    // X again, now over the removed part, keeps it again.
+    press(stage, "x");
+    expect(commits.at(-1)).toEqual([
+      { start: 0, end: 4 },
+      { start: 4, end: 10 }
+    ]);
+  });
+
+  test("playback always skips cuts; loop only decides wrap or stop at the out-point", () => {
+    const step = rafStepper();
+    const { stage } = mountEditStage([
+      { start: 0, end: 3 },
+      { start: 6, end: 10 }
+    ]);
+    const el = stage.querySelector("video")!;
+    const clock = clockOn(el);
+    const pause = vi.mocked(HTMLMediaElement.prototype.pause);
+    // A cut spanning the middle still leaves the outer range whole —
+    // the element's own loop would play straight through it.
+    expect(el.loop).toBe(false);
+
+    act(() => el.dispatchEvent(new Event("play")));
+    clock.t = 3.2;
+    step();
+    expect(clock.t).toBe(6);
+    clock.t = 10;
+    step();
+    expect(clock.t).toBe(0); // loop on: wrap to the in-point
+
+    act(() => (stage.querySelector('[data-testid="video-transport-loop"]') as HTMLButtonElement).click());
+    // Loop off is "play it once", not "play the raw recording": the cut
+    // is still skipped...
+    clock.t = 3.2;
+    step();
+    expect(clock.t).toBe(6);
+    // ...and the out-point stops playback instead of wrapping.
+    pause.mockClear();
+    clock.t = 10;
+    step();
+    expect(clock.t).toBe(10);
+    expect(pause).toHaveBeenCalled();
+  });
+
+  test("play from inside a cut starts at the next kept part", () => {
+    const { stage } = mountEditStage([
+      { start: 0, end: 3 },
+      { start: 6, end: 10 }
+    ]);
+    const clock = clockOn(stage.querySelector("video")!);
+    clock.t = 4;
+    press(stage, " ");
+    expect(clock.t).toBe(6);
+  });
+
+  test("⌘Z undoes the edit through the window's edit-menu bridge", () => {
+    const { stage, undos } = mountEditStage([
+      { start: 0, end: 3 },
+      { start: 6, end: 10 }
+    ]);
+    press(stage, "z", { metaKey: true });
+    expect(undos()).toBe(1);
+  });
+
+  test("the split button splits at the playhead", () => {
+    const { stage, commits } = mountEditStage([{ start: 0, end: 10 }]);
+    const clock = clockOn(stage.querySelector("video")!);
+    clock.t = 2.5;
+    act(() => (stage.querySelector('[data-testid="video-transport-split"]') as HTMLButtonElement).click());
+    expect(commits.at(-1)).toEqual([
+      { start: 0, end: 2.5 },
+      { start: 2.5, end: 10 }
+    ]);
   });
 });

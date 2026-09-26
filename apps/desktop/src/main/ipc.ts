@@ -15,7 +15,7 @@ import { bus } from "./command-bus";
 import { getMainLogger } from "./log";
 import { admitHotkeyRecorderDocument } from "./hotkeys/hotkey-recorder-document";
 import { relayCancellationToPeer } from "./process-split/event-relay";
-import { videoExportAudioError } from "./recording/video-export-validation";
+import { validateVideoSpanList, videoExportAudioError } from "./recording/video-export-validation";
 
 const log = getMainLogger("pwrsnap:ipc");
 
@@ -274,6 +274,7 @@ function parseVideoDragRequest(req: unknown): VideoExportCoordinates | null {
     format?: unknown;
     preset?: unknown;
     range?: unknown;
+    segments?: unknown;
     audio?: unknown;
   };
   if (typeof value.captureId !== "string" || value.captureId.length === 0) return null;
@@ -301,6 +302,10 @@ function parseVideoDragRequest(req: unknown): VideoExportCoordinates | null {
       range = { start: r.start, end: r.end };
     }
   }
+  // The live edit's kept spans. Same rule as the range: whatever the
+  // verb would reject is dropped here, so the drag falls back to the
+  // persisted edit instead of dying.
+  const segments = validateVideoSpanList(value.segments, "video:drag-start", "segments");
   // Optional explicit MP4 audio choice — the toggle the grid is showing.
   // Unlike a malformed range, a malformed one REFUSES the drag: treating
   // it as omitted would still honor the saved preference, but a payload
@@ -317,6 +322,7 @@ function parseVideoDragRequest(req: unknown): VideoExportCoordinates | null {
     format: value.format,
     preset: value.preset as VideoPreset,
     ...(range !== undefined ? { range } : {}),
+    ...(value.segments !== undefined && segments.ok ? { segments: segments.value } : {}),
     ...(audio !== undefined ? { audio } : {})
   };
 }

@@ -61,7 +61,7 @@ export function VideoExportPresetsPanel({
   const { audio, control } = useMp4ExportAudio(audioTracks);
   const { states, triggerCopy, triggerCopyPath, triggerDrag } =
     useVideoExportPresets(captureId === null ? null : { captureId, range, audio });
-  const metrics = useVideoPresetMetrics(captureId, range, audio);
+  const metrics = useVideoPresetMetrics(captureId, range, undefined, audio);
   const handledShortcutSequenceRef = useRef<number | null>(null);
   useEffect(() => {
     if (

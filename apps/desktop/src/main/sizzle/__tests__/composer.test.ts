@@ -798,6 +798,68 @@ describe("buildCompositionArgs — xfade transition chain", () => {
     expect(args[tIdx + 1]).toBe("3.000");
   });
 
+  it("a clip that skips Library cuts decodes from the top and cuts in the graph", () => {
+    // Why no input seek: see `cutSpansFilter`. A span that opens inside a
+    // held-frame (still) stretch of a VFR recording has no frame of its
+    // own at its start; `fps` repeats the held one before `trim` cuts.
+    const args = buildCompositionArgs({
+      scenes: [
+        {
+          kind: "video",
+          videoPath: "/x/clip.mp4",
+          startSec: 1,
+          trimDurationSec: 4,
+          durationSec: 4,
+          audioPath: "/x/a.mp3",
+          transition: "cut",
+          spans: [
+            { start: 1, end: 2.5 },
+            { start: 6, end: 8.5 }
+          ]
+        }
+      ],
+      outputPath: "/x/out.mp4",
+      width: 1280,
+      height: 720,
+      fps: 30,
+      platform: "darwin"
+    });
+    const iIdx = args.indexOf("-i");
+    expect(args.slice(0, iIdx)).not.toContain("-ss");
+    expect(args[iIdx - 2]).toBe("-t");
+    expect(args[iIdx - 1]).toBe("8.500"); // the last kept instant
+    const graph = filterGraph(args);
+    expect(graph).toContain("[0:v]fps=30,split=2[vs0_0][vs0_1]");
+    expect(graph).toContain("[vs0_0]trim=start=1.000:end=2.500,setpts=PTS-STARTPTS[vk0_0]");
+    expect(graph).toContain("[vs0_1]trim=start=6.000:end=8.500,setpts=PTS-STARTPTS[vk0_1]");
+    // The joined stream feeds the ordinary normalization chain.
+    expect(graph).toContain("[vk0_0][vk0_1]concat=n=2:v=1:a=0,scale=1280:720");
+  });
+
+  it("an uncut clip keeps its input seek even when it carries one span", () => {
+    const args = buildCompositionArgs({
+      scenes: [
+        {
+          kind: "video",
+          videoPath: "/x/clip.mp4",
+          startSec: 1,
+          trimDurationSec: 3,
+          durationSec: 3,
+          audioPath: "/x/a.mp3",
+          transition: "cut",
+          spans: [{ start: 1, end: 4 }]
+        }
+      ],
+      outputPath: "/x/out.mp4",
+      width: 1280,
+      height: 720,
+      fps: 30,
+      platform: "darwin"
+    });
+    expect(args[args.indexOf("-ss") + 1]).toBe("1.000");
+    expect(filterGraph(args)).not.toContain("split=");
+  });
+
   it("video scene with voiceover overrun: tpad freezes the last frame", () => {
     // durationSec > trimDurationSec → composer appends a tpad clone
     // filter holding the last frame for the delta. Without this, the

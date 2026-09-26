@@ -236,7 +236,9 @@ describe("createDefaultLocalAgentMcpTools", () => {
       sizzleSend: noop,
       sizzleStatus: noop,
       sizzleRenderPreview: noop,
-      sizzleRenderFull: noop
+      sizzleRenderFull: noop,
+      videoInspect: noop,
+      videoEdit: noop
     });
     expect(tools.map((tool) => tool.name)).toEqual([
       "pwrsnap_library_search",
@@ -246,6 +248,8 @@ describe("createDefaultLocalAgentMcpTools", () => {
       "pwrsnap_capture_resource",
       "pwrsnap_capture_export",
       "pwrsnap_image_edit_send",
+      "pwrsnap_video_inspect",
+      "pwrsnap_video_edit",
       "pwrsnap_sizzle_create",
       "pwrsnap_sizzle_send",
       "pwrsnap_sizzle_status",
@@ -306,7 +310,9 @@ describe("createDefaultLocalAgentMcpTools", () => {
       sizzleSend: noop,
       sizzleStatus: noop,
       sizzleRenderPreview: noop,
-      sizzleRenderFull: noop
+      sizzleRenderFull: noop,
+      videoInspect: noop,
+      videoEdit: noop
     });
     const annotations = Object.fromEntries(
       tools.map((tool) => [tool.name, tool.annotations])
@@ -357,5 +363,44 @@ describe("createDefaultLocalAgentMcpTools", () => {
       idempotentHint: false,
       openWorldHint: true
     });
+  });
+});
+
+describe("video tools", () => {
+  const noop = async () => ok({});
+  const tools = createDefaultLocalAgentMcpTools({
+    search: noop,
+    deleteToTrash: noop,
+    videoInspect: noop,
+    videoEdit: noop
+  });
+  const inspect = tools.find((tool) => tool.name === "pwrsnap_video_inspect");
+  const edit = tools.find((tool) => tool.name === "pwrsnap_video_edit");
+
+  test("inspect is a library read; edit needs capture.edit and is not destructive", () => {
+    expect(inspect?.requiredCapabilities).toEqual(["library.read"]);
+    expect(inspect?.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+    expect(edit?.requiredCapabilities).toEqual(["capture.edit"]);
+    // The recording is never modified and every edit is undoable, so the
+    // client should not treat a cut like a delete.
+    expect(edit?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false });
+  });
+
+  test("teach the kept-span model and the activity levels", () => {
+    expect(inspect?.description).toContain("source seconds");
+    expect(inspect?.description).toContain("stillSpans");
+    expect(edit?.description).toContain("cutStill");
+  });
+
+  test("edit schema accepts each operation and rejects junk spans", () => {
+    if (edit === undefined) throw new Error("expected edit tool");
+    const schema = z.object(edit.inputSchema);
+    expect(schema.safeParse({ captureId: "c", keep: [{ start: 1, end: 4 }] }).success).toBe(true);
+    expect(schema.safeParse({ captureId: "c", cut: [{ start: 5, end: 12 }] }).success).toBe(true);
+    expect(schema.safeParse({ captureId: "c", cutStill: { minStillSec: 5 } }).success).toBe(true);
+    expect(schema.safeParse({ captureId: "c", reset: true }).success).toBe(true);
+    expect(schema.safeParse({ captureId: "c", keep: [] }).success).toBe(false);
+    expect(schema.safeParse({ captureId: "c", cut: [{ start: -1, end: 2 }] }).success).toBe(false);
+    expect(schema.safeParse({ captureId: "c", cutStill: { minStillSec: 0.1 } }).success).toBe(false);
   });
 });

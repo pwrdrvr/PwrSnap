@@ -14,6 +14,12 @@ import type {
   VideoPreset,
   VideoRange
 } from "@pwrsnap/shared";
+import {
+  normalizeVideoSegments,
+  videoSegmentsOrFull,
+  videoSegmentsOuterRange,
+  withVideoOuterRange
+} from "@pwrsnap/shared";
 import { getDb } from "./db";
 import { prepareCached } from "./prepare-cached";
 
@@ -27,6 +33,9 @@ type VideoRow = {
   has_microphone_audio: number;
   default_range_start_sec: number;
   default_range_end_sec: number;
+  /** JSON `VideoRange[]`, or NULL for one span equal to the default
+   *  range (migration 0034). */
+  segments_json?: string | null;
   preview_path: string | null;
   preview_status: "pending" | "ready" | "failed";
   subject_kind: "region" | "window" | "display";
@@ -38,6 +47,31 @@ type VideoRow = {
   source_rect_h_px: number | null;
   created_at: string;
 };
+
+/** Parse the stored edit. Anything unreadable — a hand-edited row, a
+ *  future shape — degrades to the outer range, which is what the row
+ *  meant before it had cuts. Never throws: this runs on every Library
+ *  list page. */
+function segmentsFromRow(row: VideoRow): VideoRange[] {
+  const outer = { start: row.default_range_start_sec, end: row.default_range_end_sec };
+  const raw = row.segments_json;
+  if (raw === null || raw === undefined || raw.length === 0) return [outer];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [outer];
+    const ranges = parsed.filter(
+      (v): v is VideoRange =>
+        typeof v === "object" &&
+        v !== null &&
+        typeof (v as VideoRange).start === "number" &&
+        typeof (v as VideoRange).end === "number"
+    );
+    const normalized = normalizeVideoSegments(ranges, row.duration_sec);
+    return normalized.length > 0 ? normalized : [outer];
+  } catch {
+    return [outer];
+  }
+}
 
 function rowToMetadata(row: VideoRow): VideoCaptureMetadata {
   return {
@@ -56,6 +90,7 @@ function rowToMetadata(row: VideoRow): VideoCaptureMetadata {
       start: row.default_range_start_sec,
       end: row.default_range_end_sec
     },
+    segments: segmentsFromRow(row),
     previewPath: row.preview_path,
     previewStatus: row.preview_status
   };
@@ -180,24 +215,58 @@ export function listVideoMetadata(
 }
 
 /**
- * Replace the persisted default range for a video. Validated and
- * clamped against the stored duration so a renderer bug can't
- * persist `end > duration` (the next mount would render a broken
- * scrubber). Returns the normalized range that actually got written.
+ * Move the OUTER range of a video's edit (the in/out handles) and clip
+ * any cuts to it — the meaning `video:setDefaultRange` has had since
+ * edits gained cuts. A caller that only knows about one range therefore
+ * trims the edit rather than silently discarding the user's cuts.
+ * Returns the stored edit, or `null` when the capture is not a video.
  */
 export function setDefaultRange(captureId: string, range: VideoRange): VideoRange | null {
+  const current = getVideoMetadata(captureId);
+  if (current === null) return null;
+  const outer = normalizeRange(range, current.durationSec);
+  const stored = setVideoSegments(
+    captureId,
+    withVideoOuterRange(current.segments, outer, current.durationSec)
+  );
+  return stored === null ? null : videoSegmentsOuterRange(stored);
+}
+
+/**
+ * Replace a video's edit. Normalized against the stored duration (a
+ * renderer bug or a tool call cannot persist a span past the end, an
+ * overlap, or a sliver), then written as the outer range plus — when
+ * there is more than one span — the span list. Returns the edit as
+ * stored, or `null` when the capture is not a video.
+ *
+ * An edit that normalizes to nothing stores the whole clip: the bus
+ * rejects empty edits before they get here, so reaching this means the
+ * input was all junk, and the whole clip is the one edit that can
+ * never lose footage.
+ */
+export function setVideoSegments(
+  captureId: string,
+  segments: readonly VideoRange[]
+): VideoRange[] | null {
   const db = getDb();
   const row = db
     .prepare("SELECT duration_sec FROM video_captures WHERE capture_id = ?")
     .get(captureId) as { duration_sec: number } | undefined;
   if (row === undefined) return null;
-  const normalized = normalizeRange(range, row.duration_sec);
+  const normalized = videoSegmentsOrFull(segments, row.duration_sec);
+  const outer = videoSegmentsOuterRange(normalized);
   db.prepare(
     `UPDATE video_captures
        SET default_range_start_sec = @start,
-           default_range_end_sec = @end
+           default_range_end_sec = @end,
+           segments_json = @segments
      WHERE capture_id = @captureId`
-  ).run({ captureId, start: normalized.start, end: normalized.end });
+  ).run({
+    captureId,
+    start: outer.start,
+    end: outer.end,
+    segments: normalized.length > 1 ? JSON.stringify(normalized) : null
+  });
   return normalized;
 }
 
@@ -240,6 +309,7 @@ type ExportCacheRow = {
   capture_id: string;
   range_start_sec: number;
   range_end_sec: number;
+  segments_key: string;
   format: "gif" | "mp4";
   preset: VideoPreset;
   include_system_audio: number;
@@ -251,7 +321,14 @@ type ExportCacheRow = {
 
 export type ExportCacheLookup = {
   captureId: string;
+  /** Outer range of the exported spans. */
   range: VideoRange;
+  /** '' (the default) for one contiguous span; `videoSpansKey(spans)`
+   *  for a cut export. */
+  segmentsKey?: string | undefined;
+  /** Seconds actually exported (the spans' total). Defaults to the
+   *  range's length, which is right for a single span. */
+  durationSec?: number | undefined;
   format: "gif" | "mp4";
   preset: VideoPreset;
   audio: VideoExportAudio;
@@ -278,6 +355,7 @@ export function lookupExport(req: ExportCacheLookup): VideoExportResult | null {
        WHERE capture_id = @captureId
          AND range_start_sec = @start
          AND range_end_sec = @end
+         AND segments_key = @segmentsKey
          AND format = @format
          AND preset = @preset
          AND include_system_audio = @system
@@ -287,6 +365,7 @@ export function lookupExport(req: ExportCacheLookup): VideoExportResult | null {
       captureId: req.captureId,
       start: req.range.start,
       end: req.range.end,
+      segmentsKey: req.segmentsKey ?? "",
       format: req.format,
       preset: req.preset,
       system: req.audio.includeSystemAudio ? 1 : 0,
@@ -296,7 +375,7 @@ export function lookupExport(req: ExportCacheLookup): VideoExportResult | null {
   return {
     path: row.path,
     byteSize: row.byte_size,
-    durationSec: row.range_end_sec - row.range_start_sec,
+    durationSec: req.durationSec ?? row.range_end_sec - row.range_start_sec,
     // Placeholder dims — the exporter overwrites these from the
     // preset spec + source dims before returning to the caller.
     // Storing dims on cache rows is a follow-up if anyone needs
@@ -310,6 +389,8 @@ export function lookupExport(req: ExportCacheLookup): VideoExportResult | null {
 export type RecordExportInsert = {
   captureId: string;
   range: VideoRange;
+  /** See `ExportCacheLookup.segmentsKey`. */
+  segmentsKey?: string | undefined;
   format: "gif" | "mp4";
   preset: VideoPreset;
   audio: VideoExportAudio;
@@ -327,16 +408,16 @@ export function recordExport(input: RecordExportInsert): void {
   const db = getDb();
   db.prepare(
     `INSERT INTO video_export_cache (
-       capture_id, range_start_sec, range_end_sec, format, preset,
+       capture_id, range_start_sec, range_end_sec, segments_key, format, preset,
        include_system_audio, include_microphone,
        path, byte_size, created_at
      ) VALUES (
-       @captureId, @start, @end, @format, @preset,
+       @captureId, @start, @end, @segmentsKey, @format, @preset,
        @system, @mic,
        @path, @size, datetime('now')
      )
      ON CONFLICT (
-       capture_id, range_start_sec, range_end_sec, format, preset,
+       capture_id, range_start_sec, range_end_sec, segments_key, format, preset,
        include_system_audio, include_microphone
      ) DO UPDATE SET
        path = excluded.path,
@@ -346,6 +427,7 @@ export function recordExport(input: RecordExportInsert): void {
     captureId: input.captureId,
     start: input.range.start,
     end: input.range.end,
+    segmentsKey: input.segmentsKey ?? "",
     format: input.format,
     preset: input.preset,
     system: input.audio.includeSystemAudio ? 1 : 0,

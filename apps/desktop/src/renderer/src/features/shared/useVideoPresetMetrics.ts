@@ -13,7 +13,7 @@
 // guess. The renderer renders both states identically — the only
 // visible diff is the "~" prefix on the estimated byte label.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   VideoExportAudio,
   VideoPreset,
@@ -21,6 +21,7 @@ import type {
   VideoRange
 } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
+import { videoSegmentsDepKey } from "./video-range";
 import {
   exactPresetMetrics,
   type CopyButtonMetric
@@ -46,6 +47,9 @@ export function useVideoPresetMetrics(
    *  (not only after the debounced persist). Omitted → main uses the
    *  persisted `defaultRange`. */
   range?: VideoRange | undefined,
+  /** Export spans when the edit has cuts, so the byte estimates follow
+   *  the KEPT length rather than the outer range. */
+  segments?: readonly VideoRange[] | undefined,
   /** MP4 audio choice the row is showing, so a cached encode is found
    *  under the key the next click hits and the estimate counts the AAC
    *  track only when one is kept. Omitted → the saved preference. */
@@ -56,6 +60,9 @@ export function useVideoPresetMetrics(
   const rangeEnd = range?.end;
   const includeMicrophone = audio?.includeMicrophone;
   const includeSystemAudio = audio?.includeSystemAudio;
+  const segmentsKey = videoSegmentsDepKey(segments);
+  const segmentsRef = useRef(segments);
+  segmentsRef.current = segments;
 
   useEffect(() => {
     if (captureId === null) {
@@ -65,6 +72,7 @@ export function useVideoPresetMetrics(
 
     let cancelled = false;
     setMetrics({});
+    const spans = segmentsKey === "" ? undefined : segmentsRef.current;
     const req = {
       captureId,
       ...(rangeStart === undefined || rangeEnd === undefined
@@ -72,7 +80,8 @@ export function useVideoPresetMetrics(
         : { range: { start: rangeStart, end: rangeEnd } }),
       ...(includeMicrophone === undefined || includeSystemAudio === undefined
         ? {}
-        : { audio: { includeMicrophone, includeSystemAudio } })
+        : { audio: { includeMicrophone, includeSystemAudio } }),
+      ...(spans === undefined ? {} : { segments: spans.map((s) => ({ ...s })) })
     };
     void dispatch("video:presetMetrics", req).then((result) => {
       if (cancelled) return;
@@ -86,7 +95,7 @@ export function useVideoPresetMetrics(
     return () => {
       cancelled = true;
     };
-  }, [captureId, includeMicrophone, includeSystemAudio, rangeStart, rangeEnd]);
+  }, [captureId, includeMicrophone, includeSystemAudio, rangeStart, rangeEnd, segmentsKey]);
 
   return metrics;
 }

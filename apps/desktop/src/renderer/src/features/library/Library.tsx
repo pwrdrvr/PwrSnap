@@ -2355,10 +2355,16 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   const videoTrim = useVideoTrimRange({
     captureId: selectedVideo === null ? null : selectedRecord!.id,
     durationSec: selectedVideo?.durationSec ?? 0,
-    persistedRange: selectedVideo?.defaultRange ?? null
+    persistedRange: selectedVideo?.defaultRange ?? null,
+    // The stage edits cuts, and an agent's cut (MCP or chat) arrives
+    // here through `events:captures:changed`.
+    persist: "edit",
+    persistedSegments: selectedVideo?.segments ?? null
   });
   const videoTrimRangeRef = useRef(videoTrim.range);
   videoTrimRangeRef.current = videoTrim.range;
+  const videoTrimSegmentsRef = useRef(videoTrim.exportSegments);
+  videoTrimSegmentsRef.current = videoTrim.exportSegments;
   // Auto-collapse the grid right rail to its hover-pop activity bar when the
   // window is narrow, so the grid keeps its width (the cart/inspector becomes
   // "on mouse over only"). Focus/reel normally keep the rail at the user's
@@ -3087,7 +3093,8 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
         captureId: record.id,
         format: shortcut.format,
         preset: shortcut.preset,
-        range: videoTrimRangeRef.current
+        range: videoTrimRangeRef.current,
+        segments: videoTrimSegmentsRef.current
       });
     }
   });
@@ -5195,6 +5202,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
           // `videoTrim` comment above. Null when the selection isn't a
           // video (the rail's video branch is inert then anyway).
           videoTrimRange={selectedVideo === null ? null : videoTrim.range}
+          videoTrimSegments={selectedVideo === null ? undefined : videoTrim.exportSegments}
           copyPulses={copyPulses}
           // Use the EFFECTIVE pin, not the raw one, so the rail's own render
           // (activity-bar spine + hover-pop when unpinned) matches the

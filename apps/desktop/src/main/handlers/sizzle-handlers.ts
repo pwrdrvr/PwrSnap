@@ -10,7 +10,12 @@ import {
   ok,
   resolveSizzleAudioSource,
   resolveVoiceoverSceneDurationSec,
+  SIZZLE_SCENE_MEDIA_MAX_SEC,
+  sizzleMediaSpans,
+  sizzleMediaSpansDurationSec,
+  sizzleMediaSpansHaveCuts,
   sizzleProjectHasCapture,
+  sizzleUsesCaptureCuts,
   type CaptureRecord,
   type EventPayloads,
   type PwrSnapError,
@@ -308,7 +313,16 @@ async function prepareSceneInput(args: {
         endSec: trim.endSec
       });
     }
-    const trimDur = trim.endSec - trim.startSec;
+    // The scene plays its trim minus any Library cuts inside it (unless
+    // it opted out). Everything below sizes the scene from what is KEPT.
+    const spans = sizzleMediaSpans({
+      trim,
+      segments: capture.video?.segments,
+      useCaptureCuts: sizzleUsesCaptureCuts(scene),
+      maxSec: SIZZLE_SCENE_MEDIA_MAX_SEC
+    });
+    const cut = sizzleMediaSpansHaveCuts(spans);
+    const trimDur = sizzleMediaSpansDurationSec(spans);
 
     // Scene duration policy for video scenes:
     //   • durationOverrideSec wins if explicitly set.
@@ -347,8 +361,9 @@ async function prepareSceneInput(args: {
         hasMicrophoneAudio: capture.video?.hasMicrophoneAudio ?? false,
         requestedSystemAudio: capture.video?.requestedSystemAudio ?? false,
         requestedMicrophone: capture.video?.requestedMicrophone ?? false,
-        startSec: trim.startSec,
-        durationSec: trimDur
+        startSec: spans[0]!.start,
+        durationSec: trimDur,
+        ...(cut ? { spans } : {})
       });
       durationSec =
         scene.durationOverrideSec !== null && scene.durationOverrideSec > 0
@@ -366,11 +381,12 @@ async function prepareSceneInput(args: {
     return {
       kind: "video",
       videoPath: capture.legacy_src_path!,
-      startSec: trim.startSec,
+      startSec: spans[0]!.start,
       trimDurationSec: trimDur,
       durationSec,
       audioPath,
-      transition: scene.transition
+      transition: scene.transition,
+      ...(cut ? { spans } : {})
     };
   }
 
@@ -733,14 +749,22 @@ export function registerSizzleHandlers(
           startSec: video.defaultRange.start,
           endSec: video.defaultRange.end
         };
+        // Same spans the render plays, so the preview hears the cut.
+        const spans = sizzleMediaSpans({
+          trim,
+          segments: video.segments,
+          useCaptureCuts: sizzleUsesCaptureCuts(scene),
+          maxSec: SIZZLE_SCENE_MEDIA_MAX_SEC
+        });
         const audioPath = await extractVideoAudio({
           videoPath: capture.legacy_src_path,
           hasSystemAudio: video.hasSystemAudio,
           hasMicrophoneAudio: video.hasMicrophoneAudio,
           requestedSystemAudio: video.requestedSystemAudio,
           requestedMicrophone: video.requestedMicrophone,
-          startSec: trim.startSec,
-          durationSec: trim.endSec - trim.startSec
+          startSec: spans[0]!.start,
+          durationSec: sizzleMediaSpansDurationSec(spans),
+          ...(sizzleMediaSpansHaveCuts(spans) ? { spans } : {})
         });
         const durationSec = await probeDurationSec(audioPath);
         const bytes = await readFile(audioPath);

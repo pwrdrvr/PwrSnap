@@ -360,6 +360,33 @@ describe("SizzleStore", () => {
     expect(beats[1]!.timing).toEqual({ kind: "auto" });
   });
 
+  it("keeps a Library-cuts opt-out across a write→read round-trip, and only the opt-out", async () => {
+    const store = makeStore();
+    const p = await store.create("Demo");
+    await store.update(p.id, {
+      scenes: [
+        {
+          id: "sc_seq",
+          kind: "sequence",
+          captureId: "cap_a",
+          scriptLine: "narration",
+          narration: "narration",
+          durationOverrideSec: null,
+          mediaTrim: null,
+          audioSource: "voiceover",
+          transition: "crossfade",
+          beats: [
+            { id: "bt_0", captureId: "cap_a", timing: { kind: "auto" }, mediaTrim: null, transition: "cut", videoFit: "smart-fit", useCaptureCuts: false },
+            { id: "bt_1", captureId: "cap_b", timing: { kind: "auto" }, mediaTrim: null, transition: "cut", videoFit: "smart-fit", useCaptureCuts: true }
+          ]
+        }
+      ]
+    });
+    const beats = (await makeStore().get(p.id))!.scenes[0]!.beats!;
+    expect(beats[0]!.useCaptureCuts).toBe(false);
+    expect("useCaptureCuts" in beats[1]!).toBe(false);
+  });
+
   it("delete() removes a project and is idempotent on a missing id", async () => {
     const store = makeStore();
     const p = await store.create("Demo");

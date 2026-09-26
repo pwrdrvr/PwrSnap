@@ -157,7 +157,19 @@ export type VideoCaptureMetadata = {
    */
   requestedSystemAudio: boolean;
   requestedMicrophone: boolean;
+  /** OUTER range of the edit — first kept start → last kept end. Every
+   *  consumer that understands a single range (sizzle clip trim seeds,
+   *  `video:setDefaultRange` callers) reads this and sees the edit
+   *  without its interior cuts. Sizzle applies the interior cuts on top
+   *  of a clip's trim at plan time (`sizzleMediaSpans`). */
   defaultRange: VideoRange;
+  /**
+   * The edit itself: kept spans in source seconds, ordered, never
+   * overlapping, never empty. Touching spans are a split with both sides
+   * kept; a gap between spans is a cut. A single span equal to
+   * `defaultRange` is an ordinary trim. See `video-segments.ts`.
+   */
+  segments: VideoRange[];
   /** Relative path under captures/ for the silent hover-preview proxy.
    *  Null while preview generation is still in flight (or failed). */
   previewPath: string | null;
@@ -176,6 +188,96 @@ export type VideoCaptureMetadata = {
 export type VideoRange = {
   start: number;
   end: number;
+};
+
+/**
+ * One edit operation on a video capture (`video:edit`). Exactly one of
+ * `keep` / `cut` / `cutStill` / `reset` must be set.
+ *
+ * Shared by the Library timeline (which persists with `keep`) and the
+ * agent tools on both surfaces — MCP and the in-app chat — so every
+ * path normalizes and validates the same way.
+ */
+export type VideoEditRequest = {
+  captureId: string;
+  /** Replace the edit with exactly these kept spans (source seconds). */
+  keep?: VideoRange[] | undefined;
+  /** Remove these spans from the current edit. Composes with cuts that
+   *  already exist. */
+  cut?: VideoRange[] | undefined;
+  /** Cut every stretch where nothing on screen changed for at least
+   *  `minStillSec` (default 3), keeping `paddingSec` (default 0.5) of
+   *  stillness next to each change. `treatMinorAsStill` also ignores
+   *  cursor movement and typing. Runs the activity analysis if needed. */
+  cutStill?:
+    | {
+        minStillSec?: number | undefined;
+        paddingSec?: number | undefined;
+        treatMinorAsStill?: boolean | undefined;
+      }
+    | undefined;
+  /** Restore the whole clip — no trim, no cuts. */
+  reset?: boolean | undefined;
+};
+
+/** The edit as a caller should reason about it. */
+export type VideoEditState = {
+  captureId: string;
+  durationSec: number;
+  /** Kept spans as persisted (touching spans = a split). */
+  segments: VideoRange[];
+  /** What exports: `segments` with touching spans merged. */
+  spans: VideoRange[];
+  /** What is removed, head/tail trims included. */
+  cuts: VideoRange[];
+  /** Length of the exported video. */
+  keptDurationSec: number;
+};
+
+/** `video:activity` — the raw per-sample activity track for the
+ *  timeline lane. See `video-activity.ts` for the encoding. */
+export type VideoActivityResult = {
+  captureId: string;
+  sampleHz: number;
+  /** One byte per sample: 0 = nothing changed, 1–255 log-scale changed
+   *  fraction of the frame. */
+  magnitudes: number[];
+  /** Size of the grayscale frames the difference was measured on. */
+  analysisWidthPx: number;
+  analysisHeightPx: number;
+};
+
+export type VideoInspectRequest = {
+  captureId: string;
+  /** Still stretches shorter than this are not listed. Default 3. */
+  minStillSec?: number | undefined;
+  /** Count cursor movement / typing as still. Default false. */
+  treatMinorAsStill?: boolean | undefined;
+  /** Include the dense one-character-per-sample level string. */
+  includeTrack?: boolean | undefined;
+};
+
+/** `video:inspect` — everything an agent needs to plan an edit without
+ *  looking at frames. */
+export type VideoInspectResult = VideoEditState & {
+  activity:
+    | {
+        sampleHz: number;
+        levels: Record<string, string>;
+        /** Run-length encoded levels; `resolutionSec` is the bucket the
+         *  runs were pooled to (the busiest level in a bucket wins). */
+        resolutionSec: number;
+        runs: Array<{ start: number; end: number; level: 0 | 1 | 2 | 3 }>;
+        /** Stretches with nothing happening, per the request options. */
+        stillSpans: Array<{ start: number; end: number; durationSec: number }>;
+        stillTotalSec: number;
+        /** One digit per sample, only when `includeTrack` was set. */
+        track?: string | undefined;
+      }
+    | null;
+  /** Why `activity` is null (analysis failed); the edit fields are still
+   *  valid. */
+  activityError?: string | undefined;
 };
 
 /**
@@ -529,7 +631,11 @@ export type VideoExportRequest = {
   captureId: string;
   format: "gif" | "mp4";
   preset: VideoPreset;
+  /** A single contiguous range, no cuts. Ignored when `segments` is set. */
   range?: VideoRange | undefined;
+  /** The kept spans to export (the live edit the caller is displaying).
+   *  Wins over `range`; both omitted = the record's persisted edit. */
+  segments?: VideoRange[] | undefined;
   audio?: VideoExportAudio | undefined;
   /**
    * Renderer-minted identity for one visible export attempt. Progress
@@ -672,6 +778,8 @@ export type VideoExportCoordinates = {
   format: "gif" | "mp4";
   preset: VideoPreset;
   range?: VideoRange | undefined;
+  /** See `VideoExportRequest.segments`. */
+  segments?: VideoRange[] | undefined;
   audio?: VideoExportAudio | undefined;
 };
 
@@ -1348,9 +1456,11 @@ export const SIZZLE_VOICES = [
 
 /**
  * Trim range for a video-backed scene. start/end are seconds within
- * the source clip. The composer applies these as `-ss start -t (end-start)`.
- * NULL for image scenes; required for video scenes (seeded from
- * `record.video.defaultRange` when a video is first added).
+ * the source clip. The clip plays this window minus the capture's
+ * interior Library cuts unless it opts out (`useCaptureCuts: false`;
+ * see `sizzleMediaSpans`). NULL for image scenes; required for video
+ * scenes (seeded from `record.video.defaultRange` when a video is
+ * first added).
  */
 export type SizzleMediaTrim = {
   startSec: number;
@@ -1502,6 +1612,9 @@ export type SizzleSequenceBeat = {
   mediaTrim: SizzleMediaTrim | null;
   transition: SizzleTransition;
   videoFit: SizzleVideoFitPolicy;
+  /** Skip the capture's Library cuts inside `mediaTrim`. Absent means
+   *  yes — see `sizzleUsesCaptureCuts`. Only `false` is ever stored. */
+  useCaptureCuts?: boolean;
 };
 
 /**
@@ -1633,6 +1746,9 @@ export type SizzleSequencePreviewVideoFit = {
   renderMode: "trim" | "freeze-end" | "loop" | "ping-pong" | "speed-to-fit";
   inputDurationSec: number;
   playbackRate: number;
+  /** Seconds of footage the fit was planned against — the trim minus any
+   *  Library cuts. Lets the editor notice a plan made before a recut. */
+  sourceDurationSec?: number;
 };
 
 export type SizzleSequencePreviewBeat = {
@@ -1725,6 +1841,9 @@ export type SizzleScene = {
    *  composer ignores it for images). Required at render time for
    *  video scenes; seeded from `record.video.defaultRange` on add. */
   mediaTrim: SizzleMediaTrim | null;
+  /** Skip the capture's Library cuts inside `mediaTrim` (simple video
+   *  scenes). Absent means yes — see `sizzleUsesCaptureCuts`. */
+  useCaptureCuts?: boolean;
   /** See `SizzleAudioSource`. Defaults to "auto" — resolves per-scene
    *  based on capture kind + scriptLine at render time. */
   audioSource: SizzleAudioSource;
@@ -4828,6 +4947,35 @@ export type Commands = {
     res: void;
   };
   /**
+   * Change a video's edit — replace the kept spans, cut spans out, cut
+   * the still stretches, or reset to the whole clip. Normalized against
+   * the stored duration, persisted, and broadcast on
+   * `events:captures:changed`, so an open Library adopts an agent's edit
+   * the same way it adopts its own (and can undo it). Returns the edit
+   * as stored.
+   */
+  "video:edit": {
+    req: VideoEditRequest;
+    res: VideoEditState;
+  };
+  /**
+   * The current edit plus a summary of on-screen activity — the read
+   * half of the agent tools. Runs (or reuses) the activity analysis.
+   */
+  "video:inspect": {
+    req: VideoInspectRequest;
+    res: VideoInspectResult;
+  };
+  /**
+   * Per-sample on-screen activity for the timeline's activity lane.
+   * Computed once per capture with ffmpeg and cached under
+   * `<cacheRoot>/video/<id>/`.
+   */
+  "video:activity": {
+    req: { captureId: string };
+    res: VideoActivityResult;
+  };
+  /**
    * Filmstrip contact strip for the Library / float-over timeline.
    * Extracts `count` evenly spaced frames (each `frameWidth` px wide)
    * into a single horizontal JPEG under the per-capture render cache
@@ -4916,6 +5064,9 @@ export type Commands = {
     req: {
       captureId: string;
       range?: VideoRange | undefined;
+      /** The live edit, when it has cuts — estimates use its kept
+       *  duration. Wins over `range`. */
+      segments?: VideoRange[] | undefined;
       audio?: VideoExportAudio | undefined;
     };
     res: VideoPresetMetricsResult;

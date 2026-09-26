@@ -64,7 +64,7 @@ import { useVideoExportPresets } from "../shared/useVideoExportPresets";
 import { useVideoPresetMetrics } from "../shared/useVideoPresetMetrics";
 import { recordedAudioTracks, useMp4ExportAudio } from "../shared/useMp4ExportAudio";
 import { VideoExportPresetGrid } from "../shared/VideoExportPresetGrid";
-import { exportRangeLabel } from "../shared/video-range";
+import { exportRangeLabel, exportSegmentsOf } from "../shared/video-range";
 import { AppTag } from "../shared/AppIcons";
 import { DeleteConfirm } from "../shared/DeleteConfirm";
 import {
@@ -118,6 +118,12 @@ export type DetailRailProps = {
    *  `null` / omitted → fall back to the persisted `defaultRange`, so
    *  the rail still works standalone (tests, future embeddings). */
   readonly videoTrimRange?: VideoRange | null;
+  /** The live edit's export spans when it has cuts (`exportSegments`
+   *  from the same `useVideoTrimRange` instance), `undefined` for an
+   *  uncut edit. Rides every export beside `videoTrimRange`. Only read
+   *  when `videoTrimRange` is present — without it the rail falls back
+   *  to the persisted edit as a whole. */
+  readonly videoTrimSegments?: readonly VideoRange[] | undefined;
   /** Controlled active-tab — same shape as `pinned`. */
   readonly activeTab?: LibrarySidebarTab;
   readonly onActiveTabChange?: (next: LibrarySidebarTab) => void;
@@ -164,6 +170,7 @@ export function DetailRail({
   record,
   copyPulses,
   videoTrimRange = null,
+  videoTrimSegments,
   pinned: pinnedProp,
   onPinChange,
   activeTab: activeTabProp,
@@ -216,6 +223,14 @@ export function DetailRail({
       ? record.video.defaultRange
       : null;
   const videoRange = videoTrimRange ?? persistedVideoRange;
+  // Cuts follow the same rule: live when the Library threads the trim
+  // down, the record's persisted spans otherwise. `undefined` for an
+  // uncut edit, so those requests are unchanged.
+  const persistedVideoSegments =
+    record?.kind === "video" && record.video !== null && record.video !== undefined
+      ? exportSegmentsOf(record.video.segments)
+      : undefined;
+  const videoSegments = videoTrimRange !== null ? videoTrimSegments : persistedVideoSegments;
   // Byte/dimension estimates deliberately stay keyed on the PERSISTED
   // range. They're labels, not payloads — no race to fix — and the
   // live range changes on every pointermove, which would fire
@@ -234,7 +249,12 @@ export function DetailRail({
   } = useVideoExportPresets(
     videoCaptureId === null
       ? null
-      : { captureId: videoCaptureId, range: videoRange ?? undefined, audio: videoExportAudio }
+      : {
+          captureId: videoCaptureId,
+          range: videoRange ?? undefined,
+          segments: videoSegments,
+          audio: videoExportAudio
+        }
   );
   // Per-(format, preset) dimensions + byte estimates for the grid
   // cards. Estimated until the user clicks a card and the cache
@@ -244,6 +264,7 @@ export function DetailRail({
   const videoPresetMetrics = useVideoPresetMetrics(
     videoCaptureId,
     videoMetricsRange ?? undefined,
+    persistedVideoSegments,
     videoExportAudio
   );
   // Active tab + pin state. The pin pair and the tab pair are
@@ -756,7 +777,9 @@ export function DetailRail({
   // `0:03–0:11 (8 s)` when the persisted trim is a strict sub-range,
   // null for the full clip (eyebrow reads plain `EXPORT`).
   const videoExportRangeLabel =
-    videoMeta === null ? null : exportRangeLabel(videoRange, videoMeta.durationSec);
+    videoMeta === null
+      ? null
+      : exportRangeLabel(videoRange, videoMeta.durationSec, videoSegments);
   const codexStatus = enrichment?.status ?? null;
   const draftAvailable =
     (enrichment?.suggestedTitle ?? "").trim().length > 0 ||

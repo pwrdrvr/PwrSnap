@@ -296,7 +296,17 @@ export class LocalAgentMcpServer {
         sizzleRenderPreview: (input, ctx) =>
           toolService.sizzleRender(input, ctx, "preview"),
         sizzleRenderFull: (input, ctx) =>
-          toolService.sizzleRender(input, ctx, "full")
+          toolService.sizzleRender(input, ctx, "full"),
+        videoInspect: (input, ctx) =>
+          bus.dispatch("video:inspect", input, {
+            principal: "mcp",
+            localAgent: ctx.commandContext.localAgent
+          }),
+        videoEdit: (input, ctx) =>
+          bus.dispatch("video:edit", input, {
+            principal: "mcp",
+            localAgent: ctx.commandContext.localAgent
+          })
       });
   }
 
@@ -1135,7 +1145,10 @@ export class LocalAgentMcpServer {
         subjectKind: "capture",
         subjectId: captureId
       });
-    } else if (toolName === "pwrsnap_image_edit_send" && captureId !== null) {
+    } else if (
+      (toolName === "pwrsnap_image_edit_send" || toolName === "pwrsnap_video_edit") &&
+      captureId !== null
+    ) {
       audits.push({
         action: "capture.edit",
         capability: "capture.edit",
@@ -1281,6 +1294,7 @@ function usageActionForTool(toolName: string): LocalAgentUsageAction | null {
     case "pwrsnap_library_search":
       return "search";
     case "pwrsnap_image_edit_send":
+    case "pwrsnap_video_edit":
       return "edit";
     case "pwrsnap_capture_delete_to_trash":
       return "delete";

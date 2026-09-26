@@ -67,11 +67,14 @@ export const SIZZLE_LIMITS = {
   scenesPerProjectMax: 200,
   durationOverrideSecMin: 0.5,
   durationOverrideSecMax: 60,
-  /** Hard cap on a video scene's trim range. Matches the OpenAI TTS
-   *  practical-length cap and keeps the rendered reel under a few
-   *  minutes per scene. */
+  /** Sanity bounds on a video clip's trim WINDOW. The window is not
+   *  what renders — Library cuts inside it are skipped, and the window
+   *  is clamped to the recording at plan time — so it is not where a
+   *  scene's length is capped. That is `SIZZLE_SCENE_MEDIA_MAX_SEC`, on
+   *  the footage a one-capture scene actually keeps. Capping the window
+   *  at 60 s refused a 90 s recording cut down to 8 s. */
   mediaTrimSecMin: 0.1,
-  mediaTrimSecMax: 60,
+  mediaTrimSecMax: 24 * 60 * 60,
   beatTimingSecMax: 600,
   transitionDurationSecMax: 3,
   /** Cap on bulk capture lookups via `library:listByIds`. The Library
@@ -601,13 +604,16 @@ function validateSequenceBeats(
         )
       };
     }
+    const cuts = validateUseCaptureCuts(beat.useCaptureCuts, `${field}.useCaptureCuts`);
+    if (!cuts.ok) return cuts;
     out.push({
       id: beat.id,
       captureId: beat.captureId,
       timing: timing.value,
       mediaTrim: trim.value,
       transition: transition.value,
-      videoFit
+      videoFit,
+      ...cuts.value
     });
   }
   return { ok: true, value: normalizeSizzleSequenceBeatContinuity(out) };
@@ -711,6 +717,8 @@ function validateScene(
     type: "crossfade"
   });
   if (!transitionResult.ok) return transitionResult;
+  const cutsResult = validateUseCaptureCuts(v.useCaptureCuts, `scene[${idx}].useCaptureCuts`);
+  if (!cutsResult.ok) return cutsResult;
   const value: ValidatedScene = {
     id: v.id,
     captureId:
@@ -721,7 +729,8 @@ function validateScene(
     durationOverrideSec,
     mediaTrim: trimResult.value,
     audioSource: kind === "sequence" ? "voiceover" : audioSource,
-    transition: transitionResult.value
+    transition: transitionResult.value,
+    ...cutsResult.value
   };
   if (kind === "sequence") {
     value.kind = "sequence";
@@ -731,6 +740,23 @@ function validateScene(
   return {
     ok: true,
     value
+  };
+}
+
+/**
+ * `useCaptureCuts` is a default-on flag, so only the opt-out is stored:
+ * `false` round-trips, `true` / absent / null all mean "skip the cuts"
+ * and leave the field off the record.
+ */
+function validateUseCaptureCuts(
+  v: unknown,
+  field: string
+): { ok: true; value: { useCaptureCuts?: false } } | { ok: false; error: PwrSnapError } {
+  if (v === undefined || v === null || v === true) return { ok: true, value: {} };
+  if (v === false) return { ok: true, value: { useCaptureCuts: false } };
+  return {
+    ok: false,
+    error: validationError("scene_useCaptureCuts_invalid", `${field} must be a boolean`)
   };
 }
 

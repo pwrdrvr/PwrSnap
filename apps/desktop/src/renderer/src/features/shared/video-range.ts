@@ -11,7 +11,7 @@
 //   • Timecodes render `m:ss.d` (tenths) for the transport and
 //     `m:ss` for the compact export eyebrow.
 
-import type { VideoRange } from "@pwrsnap/shared";
+import { videoExportSpans, videoKeptDurationSec, type VideoRange } from "@pwrsnap/shared";
 
 /** Smallest range the handles allow, in seconds. Below this an export
  *  would be a single frame and the handles overlap visually. */
@@ -118,10 +118,19 @@ export function trimLabel(range: VideoRange): string {
   )}`;
 }
 
-/** Range half of the export eyebrow — `0:03–0:11 (8 s)` — or `null`
- *  for the full clip. Rendered in a non-uppercased mono span next to
- *  the `EXPORT` word so the `s` unit keeps its case. */
-export function exportRangeLabel(range: VideoRange | null, durationSec: number): string | null {
+/** Range half of the export eyebrow — `0:03–0:11 (8 s)`, or
+ *  `3 parts (9 s)` when the edit has cuts — or `null` for the full
+ *  clip. Rendered in a non-uppercased mono span next to the `EXPORT`
+ *  word so the `s` unit keeps its case. */
+export function exportRangeLabel(
+  range: VideoRange | null,
+  durationSec: number,
+  segments?: readonly VideoRange[] | null | undefined
+): string | null {
+  if (segments !== null && segments !== undefined) {
+    const parts = videoExportSpans(segments).length;
+    if (parts > 1) return `${parts} parts (${formatSpan(videoKeptDurationSec(segments), 0)})`;
+  }
   if (range === null || isFullRange(range, durationSec)) return null;
   return `${formatTimecodeShort(range.start)}–${formatTimecodeShort(range.end)} (${formatSpan(
     rangeDuration(range),
@@ -131,8 +140,12 @@ export function exportRangeLabel(range: VideoRange | null, durationSec: number):
 
 /** Full export eyebrow text: `EXPORT` for the full clip, otherwise
  *  `EXPORT · 0:03–0:11 (8 s)`. */
-export function exportEyebrowLabel(range: VideoRange | null, durationSec: number): string {
-  const rangeLabel = exportRangeLabel(range, durationSec);
+export function exportEyebrowLabel(
+  range: VideoRange | null,
+  durationSec: number,
+  segments?: readonly VideoRange[] | null | undefined
+): string {
+  const rangeLabel = exportRangeLabel(range, durationSec, segments);
   return rangeLabel === null ? "EXPORT" : `EXPORT · ${rangeLabel}`;
 }
 
@@ -191,4 +204,22 @@ export function stepTime(
   durationSec: number
 ): number {
   return roundTime(clampTime(currentSec + amountSec, durationSec));
+}
+
+/** The spans an export should carry for a set of kept segments: merged
+ *  touching spans when there is at least one interior cut, otherwise
+ *  `undefined`. */
+export function exportSegmentsOf(
+  segments: readonly VideoRange[] | null | undefined
+): VideoRange[] | undefined {
+  if (segments === null || segments === undefined) return undefined;
+  const spans = videoExportSpans(segments);
+  return spans.length > 1 ? spans : undefined;
+}
+
+/** Exact-float identity for a span list — a stable dependency key for
+ *  callers that rebuild the array every render. */
+export function videoSegmentsDepKey(segments: readonly VideoRange[] | null | undefined): string {
+  if (segments === null || segments === undefined) return "";
+  return segments.map((s) => `${s.start}|${s.end}`).join(",");
 }

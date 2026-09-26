@@ -164,9 +164,9 @@ describe("trimRenderCache", () => {
 });
 
 // The writer half. A behavioural test per lane would need a full ffmpeg mock
-// harness for each of four modules; what actually regresses is someone
+// harness for each of five modules; what actually regresses is someone
 // deleting one `runGatedCacheWrite` call, and a source scan catches exactly
-// that for the price of reading four files. Same reasoning as
+// that for the price of reading five files. Same reasoning as
 // `video-transport-volume.test.ts`: pin the thing that breaks, not a
 // reconstruction of the machinery around it.
 describe("gated writers", () => {
@@ -174,7 +174,8 @@ describe("gated writers", () => {
     ["the playback rendition", "../../handlers/recording-handlers.ts", "ensureVideoPlaybackAsset"],
     ["the waveform asset", "../../handlers/recording-handlers.ts", "ensureVideoAudioAsset"],
     ["the contact strip", "../../recording/video-frames.ts", "ensureVideoFrames"],
-    ["the poster frame", "../../recording/video-poster.ts", "ensureVideoPoster"]
+    ["the poster frame", "../../recording/video-poster.ts", "ensureVideoPoster"],
+    ["the activity track", "../../recording/video-activity.ts", "ensureVideoActivity"]
   ] as const;
 
   test.each(LANES)("%s publishes inside the gate", (_label, file, entry) => {

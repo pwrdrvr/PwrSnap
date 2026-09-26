@@ -332,11 +332,10 @@ function wireFloatOverResizeChannel(): void {
  * Main used to guess when that renderer would be listening: it sent
  * `lastEvent` 100ms after `did-finish-load`. The listener is attached
  * in a React passive effect, after the first render, and nothing bounds
- * how long that render takes. Measured in the Linux E2E harness with
- * the CPU oversubscribed 6×, FloatOverHost subscribed 43–115ms after
- * `did-finish-load`, and 2 of 10 first toasts received their event with
- * no subscriber and stayed empty. Only the renderer knows when it is
- * listening, so it says so.
+ * how long that render takes. Under CPU load the send landed mid-render
+ * and raced the effect flush; when it won, the first toast stayed empty
+ * (docs/solutions/2026-09-26-float-over-first-state-lost.md). Only the
+ * renderer knows when it is listening, so it says so.
  *
  * Only the float-over's own webContents may ask. A renderer that
  * reloads asks again and gets the latest state.

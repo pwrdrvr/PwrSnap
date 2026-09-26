@@ -2185,11 +2185,13 @@ event always exists before the renderer that has to show it. Main used
 to send it 100ms after `did-finish-load`. React subscribes in a passive
 effect after the first render, and nothing bounds how long that takes.
 
-- **Measured in the Linux Docker harness.** FloatOverHost subscribed
-  9–48ms after `did-finish-load` with no load, and 11–115ms with the CPU
-  oversubscribed 6×. Every launch past 100ms lost the event: 2 of 30 at
-  6×. The toast stayed empty. Main had already put the window on
-  screen, taking clicks, with the copy shortcuts armed.
+- **Measured in the Linux Docker harness.** With no load, FloatOverHost
+  subscribed 9–48ms after `did-finish-load` and the send always found
+  it. With the CPU oversubscribed, the send could land mid-render, and
+  its IPC task then raced React's effect flush. It lost 2 of 2 such races
+  at 6× (2 of 30 launches) and 3 of 7 at 12× (3 of 10). A lost event
+  left the toast empty. Main had already put the window on screen,
+  taking clicks, with the copy shortcuts armed.
 - **Subscribe, then ask.** The answer travels on the state channel, and
   an event with no subscriber is dropped. The renderer test fails if the
   two lines are swapped.

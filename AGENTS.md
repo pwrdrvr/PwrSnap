@@ -2165,6 +2165,53 @@ measure), [float-over-sizing.test.ts](packages/shared/src/__tests__/float-over-s
 layout, so none of them can observe the scroll itself — measure that in
 a real browser against the shipped stylesheet.
 
+## The float-over asks for its state; main never sends it on a timer
+
+**FloatOverHost subscribes to `floatOverState` and then calls
+`requestFloatOverState()`. Main answers with `lastEvent` on that
+channel, and sends nothing live before the request arrives. Do not bring
+back a grace period after a load event.** Owners:
+`wireFloatOverStateRequestChannel` in
+[float-over.ts](apps/desktop/src/main/float-over.ts) and the subscribe
+effect in
+[FloatOverHost.tsx](apps/desktop/src/renderer/src/features/float-over/FloatOverHost.tsx).
+Pinned by
+[float-over-state-request.test.ts](apps/desktop/src/main/__tests__/float-over-state-request.test.ts)
+and the "asks main for the current state" case in
+[FloatOver.test.tsx](apps/desktop/src/renderer/src/features/float-over/__tests__/FloatOver.test.tsx).
+
+The first `setFloatOverState` of a session creates the window, so that
+event always exists before the renderer that has to show it. Main used
+to send it 100ms after `did-finish-load`. React subscribes in a passive
+effect after the first render, and nothing bounds how long that takes.
+
+- **Measured in the Linux Docker harness.** With no load, FloatOverHost
+  subscribed 9–48ms after `did-finish-load` and the send always found
+  it. With the CPU oversubscribed, the send could land mid-render, and
+  its IPC task then raced React's effect flush. It lost 2 of 2 such races
+  at 6× (2 of 30 launches) and 3 of 7 at 12× (3 of 10). A lost event
+  left the toast empty. Main had already put the window on screen,
+  taking clicks, with the copy shortcuts armed.
+- **Subscribe, then ask.** The answer travels on the state channel, and
+  an event with no subscriber is dropped. The renderer test fails if the
+  two lines are swapped.
+- **Ask rather than latch, because this is state.** Each event replaces
+  the renderer's whole state, and main keeps the latest one, so a late
+  subscriber needs only that. A preload latch is for a one-shot intent
+  that exists nowhere else.
+- **Only the float-over's own webContents may ask.** A renderer that
+  reloads asks again and gets the latest state. Main stops sending live
+  at `did-start-loading` until it does.
+- **Ask once per mount.** StrictMode re-runs the effect, and a repeated
+  `show-loaded` resets the toast's enrichment to null.
+- **Do not probe this with `page.evaluate` before the send.** It queues
+  behind the first render and hides the race. Have the preload report
+  its receipt times to main over IPC, aligned with
+  `performance.timeOrigin`.
+
+Measurements, the two failure timelines, and the probe:
+[docs/solutions/2026-09-26-float-over-first-state-lost.md](docs/solutions/2026-09-26-float-over-first-state-lost.md).
+
 ## The recording frame may never paint inside the recorded rect
 
 **On any platform that cannot hide one of our windows from the recorder

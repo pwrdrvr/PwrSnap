@@ -131,6 +131,7 @@ export function FloatOverHost({
   const [videoCopyShortcut, setVideoCopyShortcut] =
     useState<VideoCopyShortcutRequest | null>(null);
   const videoCopyShortcutSequenceRef = useRef(0);
+  const stateRequestedRef = useRef(false);
   const [codexAvailable, setCodexAvailable] = useState<boolean | undefined>(undefined);
   // ACP-agent install status, so an ACP enrichment backend (Kimi/Gemini/Grok/
   // Qwen) counts as available even when Codex is absent — see
@@ -232,10 +233,11 @@ export function FloatOverHost({
     };
   }, [state.kind]);
 
-  // Subscribe to main → renderer state events. One listener for the
-  // life of the renderer; main re-emits its last event on
-  // `did-finish-load` so the first capture-of-session doesn't miss
-  // the IPC.
+  // Subscribe to main → renderer state events, then ask main for the
+  // current state. The order matters: main replies on this same channel,
+  // and an event that arrives before the listener exists is dropped. The
+  // window is created by the first capture of the session, so its event
+  // always predates this effect, however long the first render takes.
   useEffect(() => {
     const unsubscribe = window.pwrsnapApi?.on(EVENT_CHANNELS.floatOverState, (payload) => {
       const event = payload as FloatOverEvent;
@@ -270,6 +272,12 @@ export function FloatOverHost({
           return;
       }
     });
+    // Once per mount. StrictMode re-runs this effect, and a second reply
+    // would re-apply `show-loaded`, which resets enrichment to null.
+    if (!stateRequestedRef.current) {
+      stateRequestedRef.current = true;
+      window.pwrsnapApi?.requestFloatOverState?.();
+    }
     return () => {
       unsubscribe?.();
     };

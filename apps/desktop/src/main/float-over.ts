@@ -176,9 +176,11 @@ function parkOffScreen(window: BrowserWindow): void {
     // composites through — a setOpacity(0)→setOpacity(1) round-trip leaves
     // the toast BLANK (visible + opaque per the API, but nothing painted).
     //
-    // Linux, because `setOpacity` is `@platform win32,darwin` and does
-    // NOTHING there. Measured on Electron 41.10.7 under both a headless
-    // weston and xvfb: `getOpacity()` still reports 1 after `setOpacity(0)`.
+    // Linux, because `setOpacity` did NOTHING there through Electron 41.
+    // Measured on 41.10.7 under both a headless weston and xvfb:
+    // `getOpacity()` still reported 1 after `setOpacity(0)`. Electron 44
+    // implements it, but only the readback is measured (see
+    // linux-window-placement.ts), and `hide()` needs no compositor.
     // So on Linux the opacity half of the park never hid anything, and the
     // position half only worked under X11 — leaving the toast permanently on
     // screen under Wayland, where `setPosition` is inert too. Both halves of

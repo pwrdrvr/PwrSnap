@@ -2075,13 +2075,16 @@ nothing in the process can verify the resize landed.** Owners:
   gets a window — which is the *other* reason the constructor frame has to fit
   the content.
 - **The float-over's Linux problem was never sizing — it was `setOpacity`.**
-  That call is `@platform win32,darwin` and measured inert on BOTH Linux
-  backends, so the toast's opacity park hid nothing and the once-only
+  Through Electron 41 that call was `@platform win32,darwin` and measured
+  inert on BOTH Linux backends, so the toast's opacity park hid nothing and the once-only
   `showInactive()` (burned by the selector's `show-idle`) meant the commit
   never showed. Linux now uses the real `hide()` / `showInactive()` cycle
   Windows already proves — `floatOverHideModelForPlatform`, where macOS is the
   exception that has to earn its way out rather than the rule everyone else
-  survives. Pinned by
+  survives. Electron 44 implements `setOpacity` on Linux, and on 44.4.5
+  under xvfb `getOpacity()` reads back what was set. That is not a reason to
+  move Linux back to the park: it is a readback, xvfb draws nothing, and
+  `hide()` needs no compositor. Pinned by
   [float-over-linux-visibility.test.ts](apps/desktop/src/main/__tests__/float-over-linux-visibility.test.ts).
 - **Linux E2E green proves nothing here.** xvfb is X11. Reproducing any of
   this needs a nested Wayland compositor — recipe in

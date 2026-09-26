@@ -7,10 +7,11 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 vi.mock("electron", () => ({
   clipboard: {
-    availableFormats: vi.fn(() => []),
-    readBuffer: vi.fn(() => Buffer.alloc(0)),
-    writeBuffer: vi.fn()
-  }
+    read: vi.fn(async () => []),
+    write: vi.fn(async () => undefined)
+  },
+  ClipboardItem: class {},
+  nativeImage: {}
 }));
 
 vi.mock("../../log", () => ({
@@ -66,43 +67,44 @@ describe("Windows file clipboard helper paths", () => {
 });
 
 describe("native file clipboard contracts", () => {
-  test("macOS verifies native URL bytes when Electron enumerates text/uri-list", () => {
-    const buffers = new Map<string, Buffer>();
+  test("macOS writes the public.file-url UTI and verifies it as text/uri-list", async () => {
+    // Electron 44 lists a raw `public.file-url` write only as `text/uri-list`
+    // and rejects a read by the UTI (measured on 44.4.5); the fake does too.
+    const written: Array<{ format: string; bytes: Buffer }> = [];
+    let fileUrl: Buffer | null = null;
     const api = {
-      writeBuffer: (format: string, value: Buffer): void => {
-        buffers.clear();
-        buffers.set(format, Buffer.from(value));
+      writeRaw: async (format: string, bytes: Buffer): Promise<void> => {
+        written.push({ format, bytes: Buffer.from(bytes) });
+        fileUrl = format === "public.file-url" ? Buffer.from(bytes) : null;
       },
-      availableFormats: (): string[] => buffers.has("public.file-url") ? ["text/uri-list"] : [],
-      readBuffer: (format: string): Buffer => buffers.get(format) ?? Buffer.alloc(0)
+      readBuffer: async (format: string): Promise<Buffer> =>
+        format === "text/uri-list" && fileUrl !== null ? fileUrl : Buffer.alloc(0)
     };
 
-    writeMacFileToClipboard("/tmp/PwrSnap roadmap & notes.gif", api);
+    await writeMacFileToClipboard("/tmp/PwrSnap roadmap & notes.gif", api);
 
-    expect(api.availableFormats()).toEqual(["text/uri-list"]);
-    expect(api.readBuffer("public.file-url").toString("utf8")).toBe(
+    expect(written.map((entry) => entry.format)).toEqual(["public.file-url"]);
+    expect(written[0]!.bytes.toString("utf8")).toBe(
       pathToFileURL("/tmp/PwrSnap roadmap & notes.gif").toString()
     );
   });
 
-  test("macOS rejects an API call that leaves an empty clipboard", () => {
-    expect(() =>
+  test("macOS rejects an API call that leaves an empty clipboard", async () => {
+    await expect(
       writeMacFileToClipboard("/tmp/export.mp4", {
-        writeBuffer: () => undefined,
-        availableFormats: () => [],
-        readBuffer: () => Buffer.alloc(0)
+        writeRaw: async () => undefined,
+        readBuffer: async () => Buffer.alloc(0)
       })
-    ).toThrow("did not retain");
+    ).rejects.toThrow("did not retain");
   });
 
-  test("macOS rejects a different file URL even when text/uri-list is present", () => {
-    expect(() =>
+  test("macOS rejects a different file URL even when text/uri-list is present", async () => {
+    await expect(
       writeMacFileToClipboard("/tmp/export.mp4", {
-        writeBuffer: () => undefined,
-        availableFormats: () => ["text/uri-list"],
-        readBuffer: () => Buffer.from(pathToFileURL("/tmp/other.mp4").toString())
+        writeRaw: async () => undefined,
+        readBuffer: async () => Buffer.from(pathToFileURL("/tmp/other.mp4").toString())
       })
-    ).toThrow("did not retain");
+    ).rejects.toThrow("did not retain");
   });
 
   for (const filePath of [

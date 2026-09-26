@@ -21,7 +21,7 @@ import { mkdtemp, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { clipboard, screen } from "electron";
+import { screen } from "electron";
 import sharp from "sharp";
 import {
   ok,
@@ -118,6 +118,7 @@ import {
 } from "../security/assertSafePastedFile";
 import { validateSafeRgbaRasterDimensions } from "../image/safe-raster-decode";
 import { CaptureLatencyTrace } from "../capture/capture-latency-trace";
+import { readClipboard, type ClipboardSnapshot } from "../clipboard/system-clipboard";
 
 const log = getMainLogger("pwrsnap:capture-handlers");
 
@@ -127,21 +128,28 @@ const CLIPBOARD_SOURCE = {
   bundleId: "com.pwrsnap.clipboard",
   appName: "Clipboard"
 } as const;
+// Electron 44 lists macOS's `public.file-url` as `text/uri-list` and rejects
+// a read by the UTI (see clipboard/system-clipboard.ts), so that is the name
+// Finder's file URL is found under. Only on macOS: on Windows the same type is
+// Chromium's rendering of Explorer's CF_HDROP, which this path deliberately
+// leaves to the native helper.
 const CLIPBOARD_FILE_URL_FORMATS = [
-  "public.file-url",
+  ...(process.platform === "darwin" ? ["text/uri-list"] : []),
   "public.url",
   "NSURLPboardType"
 ] as const;
 type CaptureSource = Pick<WindowInfo, "bundleId" | "appName"> | null;
 
-export function clipboardHasPasteableImage(): boolean {
-  if (!clipboard.readImage().isEmpty()) return true;
-  const formats = clipboard.availableFormats();
+export async function clipboardHasPasteableImage(): Promise<boolean> {
+  const snapshot = await readClipboard();
+  const { formats } = snapshot;
+  // A listed `image/*` flavor is enough for a menu hint; the command decodes.
+  if (formats.some((format) => format.toLowerCase().startsWith("image/"))) return true;
   if (clipboardImageBufferFormats(formats).length > 0) return true;
-  const filePath = clipboardImageFileUrlPath();
+  const filePath = await clipboardImageFileUrlPath(snapshot);
   if (filePath !== null && isSupportedClipboardImagePath(filePath)) return true;
-  // Menu enablement must remain synchronous. This is only a format hint; the
-  // command itself asks the native helper to parse predefined CF_HDROP.
+  // This is only a format hint; the command itself asks the native helper to
+  // parse predefined CF_HDROP.
   return windowsClipboardFormatsMayContainFiles(formats);
 }
 
@@ -1281,6 +1289,7 @@ async function writeClipboardImageToTempPng(): Promise<
     }
 > {
   const decodeFailures: RawClipboardDecodeFailure[] = [];
+  const snapshot = await readClipboard();
 
   // Prefer the raw image flavors on the pasteboard. A PNG flavor is stored
   // verbatim — no re-encode inflation (the source 612 KB PNG stays 612 KB,
@@ -1290,8 +1299,8 @@ async function writeClipboardImageToTempPng(): Promise<
   // DPR. Only when no raw flavor decodes do we fall back to the decoded
   // bitmap (`readImage().toPNG()`), which inflates and drops DPI.
   const decodedBuffer = await writeFirstDecodableClipboardBufferToPng({
-    formats: clipboard.availableFormats(),
-    readBuffer: (format) => clipboard.readBuffer(format),
+    formats: snapshot.formats,
+    readBuffer: (format) => snapshot.readBuffer(format),
     makeTempPath: makeClipboardTempPngPath
   });
   if (decodedBuffer.ok) {
@@ -1303,7 +1312,7 @@ async function writeClipboardImageToTempPng(): Promise<
   // mechanisms only. Both cross the same verified-file boundary, which opens
   // once, bounds the read, and returns a stable byte snapshot. Never reopen a
   // validated pathname here: doing so would restore a TOCTOU window.
-  const fileResult = await clipboardImageFilePath();
+  const fileResult = await clipboardImageFilePath(snapshot);
   let fileReadFailure: Exclude<WindowsClipboardImageReadResult, { ok: true }> | null = null;
   if (!fileResult.ok) {
     if (fileResult.error.terminal) {
@@ -1355,7 +1364,7 @@ async function writeClipboardImageToTempPng(): Promise<
 
   // Last resort: the decoded bitmap. This re-encodes via Chromium and
   // can't recover the source DPI, so the scale defaults to 1×.
-  const image = clipboard.readImage();
+  const image = await snapshot.readImage();
   if (!image.isEmpty()) {
     const size = image.getSize();
     validateSafeRgbaRasterDimensions(size.width, size.height);
@@ -1415,26 +1424,25 @@ async function makeClipboardTempPngPath(): Promise<string> {
   return join(dir, `${Date.now()}.png`);
 }
 
-function clipboardImageFileUrlPath(): string | null {
+async function clipboardImageFileUrlPath(snapshot: ClipboardSnapshot): Promise<string | null> {
   const candidates: string[] = [];
   try {
-    const bookmark = clipboard.readBookmark();
-    if (bookmark.url.length > 0) candidates.push(bookmark.url);
+    const bookmark = await snapshot.readBookmark();
+    if (bookmark !== null && bookmark.url.length > 0) candidates.push(bookmark.url);
   } catch {
-    // readBookmark is unavailable on some platforms; fall through to
-    // plain text / raw pasteboard formats.
+    // Fall through to plain text / raw pasteboard formats.
   }
 
   for (const format of CLIPBOARD_FILE_URL_FORMATS) {
     try {
-      const value = clipboard.readBuffer(format).toString("utf8");
+      const value = (await snapshot.readBuffer(format)).toString("utf8");
       if (value.length > 0) candidates.push(value);
     } catch {
-      // Experimental API, format may be absent.
+      // A flavor that vanished between the listing and the read.
     }
   }
 
-  const text = clipboard.readText();
+  const text = await snapshot.readText();
   if (text.length > 0) candidates.push(text);
 
   for (const candidate of candidates) {
@@ -1449,12 +1457,14 @@ function clipboardImageFileUrlPath(): string | null {
  * interpret CF_HDROP. Native discovery returns a pathname only; verified,
  * bounded reading remains exclusively owned by readSafePastedFile above.
  */
-async function clipboardImageFilePath(): Promise<WindowsClipboardImageReadResult> {
+async function clipboardImageFilePath(
+  snapshot: ClipboardSnapshot
+): Promise<WindowsClipboardImageReadResult> {
   const windowsResult = await readWindowsClipboardImageFile();
   if (windowsResult.ok && windowsResult.path !== null) return windowsResult;
   if (!windowsResult.ok && windowsResult.error.terminal) return windowsResult;
 
-  const fileUrlPath = clipboardImageFileUrlPath();
+  const fileUrlPath = await clipboardImageFileUrlPath(snapshot);
   if (fileUrlPath !== null && isSupportedClipboardImagePath(fileUrlPath)) {
     return { ok: true, path: fileUrlPath };
   }

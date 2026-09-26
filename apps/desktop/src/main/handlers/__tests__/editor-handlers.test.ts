@@ -65,14 +65,20 @@ vi.mock("electron", () => ({
     getAllWindows: () => [],
     fromId: (id: number) => mocks.windows.get(id) ?? null
   },
-  clipboard: {
-    // Per-test, the test overrides this via the helper below.
-    readImage: () => ({
-      isEmpty: () => true,
-      getSize: () => ({ width: 0, height: 0 }),
-      toPNG: () => Buffer.alloc(0)
-    })
+}));
+
+// The clipboard image the handler reads. Per-test, set via
+// `setClipboardImage` below.
+const clipboardState = vi.hoisted(() => ({
+  image: {
+    isEmpty: (): boolean => true,
+    getSize: (): { width: number; height: number } => ({ width: 0, height: 0 }),
+    toPNG: (): Buffer => Buffer.alloc(0)
   }
+}));
+
+vi.mock("../../clipboard/system-clipboard", () => ({
+  readClipboard: async () => ({ readImage: async () => clipboardState.image })
 }));
 
 vi.mock("../../log", () => ({
@@ -150,7 +156,6 @@ const { bus } = await import("../../command-bus");
 const { registerEditorHandlers } = await import("../editor-handlers");
 const { registerLayersHandlers } = await import("../layers-handlers");
 const { insertLayerTreeForCapture } = await import("../../persistence/layers-repo");
-const { clipboard } = await import("electron");
 
 registerEditorHandlers();
 registerLayersHandlers();
@@ -242,11 +247,11 @@ function setClipboardImage(
   pngBytes: Buffer | null,
   size: { width: number; height: number } = { width: 1, height: 1 }
 ): void {
-  (clipboard.readImage as unknown as () => unknown) = () => ({
+  clipboardState.image = {
     isEmpty: () => pngBytes === null || pngBytes.length === 0,
     getSize: () => size,
     toPNG: () => (pngBytes === null ? Buffer.alloc(0) : pngBytes)
-  });
+  };
 }
 
 function installSourceWindow(id: number): EventEmitter {

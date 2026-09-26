@@ -35,17 +35,23 @@ let testDataRoot: string;
 let testDocumentsRoot: string;
 
 // Stateful pasteboard simulation shared with the hoisted electron mock.
-// Models the macOS dev-build behavior the paste fix targets: an UNDECLARED
-// custom UTI is stored under a `dyn.…` alias, so availableFormats() never
-// reports the literal fragment UTI — but readBuffer(literalUTI) still
-// resolves the bytes. (Packaged builds register the UTI via
-// electron-builder.yml's UTExportedTypeDeclarations and keep the literal.)
+// Models the Electron 44 clipboard as measured on 44.4.5: one `write()`
+// replaces the whole clipboard with the flavors of the items it is handed,
+// `read()` lists them back, and a raw flavor round-trips under its
+// `osclipboard` type — for the private fragment UTI, under the literal UTI,
+// even from an unpackaged build that does not declare it.
 const fakeClipboard = vi.hoisted(() => ({
+  // clipboard type → bytes
   pasteboard: new Map<string, Buffer>(),
   // Keep in sync with CLIPBOARD_LAYER_FRAGMENT_UTI (can't import into a
   // hoisted factory).
-  FRAGMENT_UTI: "com.pwrdrvr.pwrsnap.layer-fragment"
+  FRAGMENT_TYPE: 'electron application/osclipboard;format="com.pwrdrvr.pwrsnap.layer-fragment"'
 }));
+
+/** The fragment bytes on the fake pasteboard, as text ("" when absent). */
+function copiedFragmentText(): string {
+  return fakeClipboard.pasteboard.get(fakeClipboard.FRAGMENT_TYPE)?.toString("utf8") ?? "";
+}
 
 // A single fake BrowserWindow that records every webContents.send so we
 // can assert paste broadcasts the layers-changed events that drive the
@@ -79,27 +85,43 @@ vi.mock("electron", () => ({
     on: () => undefined
   },
   clipboard: {
-    write: vi.fn(),
-    writeText: vi.fn(),
-    writeImage: vi.fn(),
-    // Each write clears first (macOS ScopedClipboardWriter calls
-    // clearContents on construction), then stores the bytes.
-    writeBuffer: vi.fn((format: string, value: Buffer) => {
+    write: vi.fn(async (items: Array<{ payload: Record<string, Blob | string> }>) => {
       fakeClipboard.pasteboard.clear();
-      fakeClipboard.pasteboard.set(format, Buffer.from(value));
+      for (const item of items) {
+        for (const [type, value] of Object.entries(item.payload)) {
+          fakeClipboard.pasteboard.set(
+            type,
+            typeof value === "string"
+              ? Buffer.from(value, "utf8")
+              : Buffer.from(await value.arrayBuffer())
+          );
+        }
+      }
     }),
-    readBuffer: vi.fn(
-      (format: string) => fakeClipboard.pasteboard.get(format) ?? Buffer.alloc(0)
-    ),
-    availableFormats: vi.fn(() =>
-      [...fakeClipboard.pasteboard.keys()].map((k) =>
-        k === fakeClipboard.FRAGMENT_UTI ? "dyn.ah62d4rv4ge8085553a" : k
-      )
-    )
+    writeText: vi.fn(async () => undefined),
+    read: vi.fn(async () => [
+      {
+        types: [...fakeClipboard.pasteboard.keys()],
+        getType: async (type: string): Promise<Blob> => {
+          const bytes = fakeClipboard.pasteboard.get(type);
+          if (bytes === undefined) {
+            throw new Error(`The type '${type}' was not found in the ClipboardItem`);
+          }
+          return new Blob([new Uint8Array(bytes)]);
+        }
+      }
+    ])
+  },
+  ClipboardItem: class {
+    payload: Record<string, Blob | string>;
+    constructor(payload: Record<string, Blob | string>) {
+      this.payload = payload;
+    }
   },
   nativeImage: {
     createFromBuffer: (bytes: Buffer) => ({
       isEmpty: () => bytes.length === 0,
+      toPNG: () => bytes,
       __bytes: bytes
     })
   },
@@ -174,8 +196,6 @@ beforeEach(() => {
   fakeWindows.sent.length = 0;
   vi.mocked(clipboard.write).mockClear();
   vi.mocked(clipboard.writeText).mockClear();
-  vi.mocked(clipboard.writeImage).mockClear();
-  vi.mocked(clipboard.writeBuffer).mockClear();
 });
 
 afterEach(() => {
@@ -325,7 +345,7 @@ async function replaceCopiedFragmentSource(
   if (!copyResult.ok) throw new Error("expected fragment copy to succeed");
 
   const fragment = JSON.parse(
-    clipboard.readBuffer(CLIPBOARD_LAYER_FRAGMENT_UTI).toString("utf8")
+    copiedFragmentText()
   ) as {
     source_refs: Array<{ sha256: string; png_base64: string }>;
     layers: BundleLayerNode[];
@@ -344,7 +364,7 @@ async function replaceCopiedFragmentSource(
       : node
   );
   fakeClipboard.pasteboard.set(
-    CLIPBOARD_LAYER_FRAGMENT_UTI,
+    fakeClipboard.FRAGMENT_TYPE,
     Buffer.from(JSON.stringify(fragment), "utf8")
   );
   return hostileSha;
@@ -404,7 +424,7 @@ describe("issue #139 — clipboard:copy fires clipboardEvents 'changed'", () => 
     expect(changedSpy).toHaveBeenCalledTimes(2);
   });
 
-  test("clipboard:copyLayerFragment writes the private fragment without overwriting it with image fallback", async () => {
+  test("clipboard:copyLayerFragment's Electron fallback writes the fragment and the composite as ONE item", async () => {
     const captureId = await seedSimpleV2Capture();
     const result = await bus.dispatch(
       "clipboard:copyLayerFragment",
@@ -416,8 +436,11 @@ describe("issue #139 — clipboard:copy fires clipboardEvents 'changed'", () => 
       changedSpy,
       "expected clipboardEvents 'changed' to fire exactly once per copyLayerFragment dispatch"
     ).toHaveBeenCalledTimes(1);
-    expect(clipboard.writeBuffer).toHaveBeenCalledTimes(1);
-    expect(clipboard.writeImage).not.toHaveBeenCalled();
+    // No native helper under Vitest, so this is the Electron fallback. On
+    // Electron 44 one write carries both flavors; neither clears the other.
+    expect(clipboard.write).toHaveBeenCalledTimes(1);
+    expect(copiedFragmentText()).not.toBe("");
+    expect(fakeClipboard.pasteboard.has("image/png")).toBe(true);
   });
 
   // Injects a `#!/bin/sh` fake helper (Windows can't spawn it) to exercise
@@ -426,7 +449,7 @@ describe("issue #139 — clipboard:copy fires clipboardEvents 'changed'", () => 
     // When the native NSPasteboard helper is available, copyLayerFragment
     // hands it the private fragment AND a flattened composite in ONE write
     // (so Claude / Slack / Mail get an image), and does NOT fall back to
-    // Electron's writeBuffer. Inject a fake helper that just records the
+    // Electron's clipboard. Inject a fake helper that just records the
     // stdin payload and exits 0.
     const captureId = await seedSimpleV2Capture({ edited: true });
     const helperPath = join(workDir, "fake-clip-helper.sh");
@@ -446,9 +469,8 @@ describe("issue #139 — clipboard:copy fires clipboardEvents 'changed'", () => 
       );
       expect(result.ok).toBe(true);
 
-      // Native write succeeded → no writeBuffer fallback, no writeImage.
-      expect(clipboard.writeBuffer).not.toHaveBeenCalled();
-      expect(clipboard.writeImage).not.toHaveBeenCalled();
+      // Native write succeeded → no Electron clipboard fallback.
+      expect(clipboard.write).not.toHaveBeenCalled();
       // Still exactly one clipboard-changed signal.
       expect(changedSpy).toHaveBeenCalledTimes(1);
 
@@ -488,17 +510,15 @@ describe("issue #139 — clipboard:copy fires clipboardEvents 'changed'", () => 
     }
     expect(result.value.layerCount).toBe(1);
     expect(result.value.sourceCount).toBe(1);
-    expect(clipboard.writeBuffer).toHaveBeenCalledTimes(1);
+    expect(clipboard.write).toHaveBeenCalledTimes(1);
   });
 
-  test("paste finds the fragment when availableFormats only reports the dynamic UTI alias (dev build)", async () => {
-    // Regression pin for the macOS dev-build bug: copy succeeds and the
-    // bytes ARE on the pasteboard, but because the custom UTI isn't
-    // system-registered, availableFormats() reports only a `dyn.…` alias.
-    // The old paste gated on `availableFormats().some(=== UTI)`, missed the
-    // alias, and fell through to "clipboard doesn't contain an image".
-    // pasteLayerFragment now readBuffer()s directly, which resolves the
-    // alias on read.
+  test("paste reads back the fragment Electron lists under its literal UTI", async () => {
+    // Before Electron 44 an undeclared UTI was listed under a `dyn.…` alias
+    // in dev builds, and paste had to read the literal UTI directly rather
+    // than match it in the format list. On 44 the `osclipboard` type carries
+    // the literal UTI (measured on 44.4.5 from an unpackaged build), which
+    // is the only name a read can use: getType() rejects unlisted types.
     const captureId = await seedSimpleV2Capture();
     const copyRes = await bus.dispatch(
       "clipboard:copyLayerFragment",
@@ -506,11 +526,7 @@ describe("issue #139 — clipboard:copy fires clipboardEvents 'changed'", () => 
       { principal: "ipc" }
     );
     expect(copyRes.ok).toBe(true);
-
-    // The asymmetry the fix relies on: literal UTI absent from
-    // availableFormats(), yet readBuffer(literal UTI) returns the bytes.
-    expect(clipboard.availableFormats()).not.toContain(CLIPBOARD_LAYER_FRAGMENT_UTI);
-    expect(clipboard.readBuffer(CLIPBOARD_LAYER_FRAGMENT_UTI).byteLength).toBeGreaterThan(0);
+    expect([...fakeClipboard.pasteboard.keys()]).toContain(fakeClipboard.FRAGMENT_TYPE);
 
     const pasteRes = await bus.dispatch(
       "clipboard:pasteLayerFragment",
@@ -520,8 +536,7 @@ describe("issue #139 — clipboard:copy fires clipboardEvents 'changed'", () => 
     if (!pasteRes.ok) {
       throw new Error(`paste failed: ${pasteRes.error.code} — ${pasteRes.error.message}`);
     }
-    // Found via readBuffer (not the alias-missing availableFormats), so a
-    // real layer landed and we did NOT fall back to the flattened PNG.
+    // A real layer landed, and we did NOT fall back to the flattened PNG.
     expect(pasteRes.value.insertedLayerIds.length).toBeGreaterThan(0);
     expect(pasteRes.value.fallbackUsedPng).toBe(false);
   });
@@ -1032,7 +1047,7 @@ describe("cross-capture layer paste — placement (bake on copy, scale-to-fit on
     }
 
     const fragment = JSON.parse(
-      clipboard.readBuffer(CLIPBOARD_LAYER_FRAGMENT_UTI).toString("utf-8")
+      copiedFragmentText()
     ) as {
       source_frame?: { width_px: number; height_px: number };
       layers: BundleLayerNode[];
@@ -1290,7 +1305,7 @@ describe("cross-capture layer paste — placement (bake on copy, scale-to-fit on
     }
 
     const fragment = JSON.parse(
-      clipboard.readBuffer(CLIPBOARD_LAYER_FRAGMENT_UTI).toString("utf-8")
+      copiedFragmentText()
     ) as { source_frame?: { width_px: number; height_px: number }; layers: BundleLayerNode[] };
 
     // source_frame is the FULL image (120x120), not the 60x40 crop.
@@ -1334,7 +1349,7 @@ describe("cross-capture layer paste — placement (bake on copy, scale-to-fit on
     }
 
     const fragment = JSON.parse(
-      clipboard.readBuffer(CLIPBOARD_LAYER_FRAGMENT_UTI).toString("utf-8")
+      copiedFragmentText()
     ) as { source_frame?: { width_px: number; height_px: number }; layers: BundleLayerNode[] };
 
     expect(fragment.source_frame).toEqual({ width_px: 60, height_px: 40 });

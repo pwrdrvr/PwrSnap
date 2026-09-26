@@ -2075,13 +2075,16 @@ nothing in the process can verify the resize landed.** Owners:
   gets a window — which is the *other* reason the constructor frame has to fit
   the content.
 - **The float-over's Linux problem was never sizing — it was `setOpacity`.**
-  That call is `@platform win32,darwin` and measured inert on BOTH Linux
-  backends, so the toast's opacity park hid nothing and the once-only
+  Through Electron 41 that call was `@platform win32,darwin` and measured
+  inert on BOTH Linux backends, so the toast's opacity park hid nothing and the once-only
   `showInactive()` (burned by the selector's `show-idle`) meant the commit
   never showed. Linux now uses the real `hide()` / `showInactive()` cycle
   Windows already proves — `floatOverHideModelForPlatform`, where macOS is the
   exception that has to earn its way out rather than the rule everyone else
-  survives. Pinned by
+  survives. Electron 44 implements `setOpacity` on Linux, and on 44.4.5
+  under xvfb `getOpacity()` reads back what was set. That is not a reason to
+  move Linux back to the park: it is a readback, xvfb draws nothing, and
+  `hide()` needs no compositor. Pinned by
   [float-over-linux-visibility.test.ts](apps/desktop/src/main/__tests__/float-over-linux-visibility.test.ts).
 - **Linux E2E green proves nothing here.** xvfb is X11. Reproducing any of
   this needs a nested Wayland compositor — recipe in
@@ -2807,8 +2810,27 @@ The script keeps two binaries on purpose:
 
 - `better-sqlite3/build/Release/better_sqlite3.node` stays compiled for system
   Node so unit tests and scripts can `require("better-sqlite3")`.
-- `better-sqlite3/electron-native/better_sqlite3.node` is compiled/downloaded
-  for Electron and is what the app loads at runtime.
+- `better-sqlite3/electron-native/better_sqlite3.node` is downloaded or
+  compiled for Electron and is what the app loads at runtime.
+
+**Expect it to compile.** The script tries `prebuild-install` first and falls
+back to `node-gyp` against the Electron headers when there is no prebuild.
+better-sqlite3 12.x is built on the V8 API, not N-API, so it publishes one
+prebuild per Electron ABI, and nothing covers Electron 44 (ABI 149).
+prebuild-install's `node-abi` also throws `Could not detect abi` for an
+Electron it does not know, whether or not a prebuild exists. So every install
+and every packaging stage compiles. That takes about 12s per architecture and
+needs a C++ toolchain plus Python 3, which every CI image and the Docker E2E
+image already have. The headers are cached in `~/.electron-gyp`. The compile
+runs in a scratch copy of the package because `node-gyp rebuild` deletes
+`build/`, which holds the system-Node binding. It also clears the release
+scripts' `npm_config_arch` / `npm_config_target` for the child process,
+because node-gyp reads those AFTER its argv and `universal` would override
+`--arch`. It also compiles with `-UV8_DEPRECATION_WARNINGS`. node-gyp defines
+that macro, and it puts `[[deprecated]]` ahead of `__attribute__((visibility))`
+in a V8 15 class head, an ordering GCC 12 rejects. Without the `-U`, the
+Debian bookworm Docker E2E image could not build the binding. better-sqlite3
+13 is N-API with bundled prebuilds, and migrating to it removes all of this.
 
 For release/package work, the Electron sidecar must be built for the target
 architecture, not necessarily the host architecture. The script honors

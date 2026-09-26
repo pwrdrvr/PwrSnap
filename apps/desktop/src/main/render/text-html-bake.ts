@@ -64,6 +64,8 @@ import {
   serializeStyleAttribute
 } from "@pwrsnap/shared";
 
+import { linuxSquareCorners } from "../linux-window-corners";
+
 /** Auto-resolved color hex when an overlay carries `color: "auto"`.
  *  Matches the editor's `--accent` value so display + bake agree on
  *  the default. Kept in lockstep with `compose.ts AUTO_ACCENT_HEX`. */
@@ -106,6 +108,7 @@ function ensurePoolWindow(): BrowserWindow {
     return poolWindow;
   }
   poolWindow = new BrowserWindow({
+    ...linuxSquareCorners(),
     width: 100, // resized per-bake via setContentSize
     height: 100,
     show: false,

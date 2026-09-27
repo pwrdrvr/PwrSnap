@@ -45,14 +45,21 @@ test("retries transient sharing conflicts without removing the published alias",
   expect(await readdir(dirname(alias))).toEqual(["capture.png"]);
 });
 
-test("bounds persistent permission failures and preserves the published alias", async () => {
+test("bounds persistent permission failures, preserves the alias, and recovers after release", async () => {
   const alias = await prepareRenderedFileAlias(source, "capture.png");
+  const next = join(directory, "next.png");
+  await writeFile(next, "replacement");
+  await actualFs.rename(next, source);
   const denied = Object.assign(new Error("permission denied"), { code: "EPERM" });
   vi.mocked(rename).mockClear();
   vi.mocked(rename).mockRejectedValue(denied);
   await expect(prepareRenderedFileAlias(source, "capture.png")).rejects.toBe(denied);
   expect(rename).toHaveBeenCalledTimes(6);
   expect(await readFile(alias, "utf8")).toBe("original");
+  expect(await readdir(dirname(alias))).toEqual(["capture.png"]);
+  vi.mocked(rename).mockImplementation(actualFs.rename);
+  await prepareRenderedFileAlias(source, "capture.png");
+  expect(await readFile(alias, "utf8")).toBe("replacement");
   expect(await readdir(dirname(alias))).toEqual(["capture.png"]);
 });
 
@@ -76,14 +83,14 @@ test("concurrent readers always see a complete file during alias replacement", a
   const replacement = "replacement".repeat(8192);
   let reading = true;
   let reads = 0;
+  let published = "original";
   const reader = (async () => {
     while (reading) {
       const value = await readFile(alias, "utf8");
       expect(["original", replacement]).toContain(value);
       reads += 1;
-      // Allow a Windows sharing lock to drain between consumer reads. A
-      // permanently open destination is allowed to exhaust bounded retries;
-      // the persistent-conflict regression above verifies that failure path.
+      // This gap reduces contention but cannot guarantee that Windows will
+      // release every sharing lock within the publisher's bounded retry budget.
       await delay(1);
     }
   })();
@@ -92,14 +99,33 @@ test("concurrent readers always see a complete file during alias replacement", a
   try {
     for (let index = 0; index < 40; index += 1) {
       const next = join(directory, "next.png");
-      await writeFile(next, index % 2 === 0 ? replacement : "original");
+      const content = index % 2 === 0 ? replacement : "original";
+      await writeFile(next, content);
       await rename(next, source);
-      await prepareRenderedFileAlias(source, "capture.png");
+      try {
+        await prepareRenderedFileAlias(source, "capture.png");
+        published = content;
+      } catch (cause) {
+        const code = (cause as NodeJS.ErrnoException).code;
+        if (process.platform !== "win32" || (code !== "EPERM" && code !== "EACCES")) {
+          throw cause;
+        }
+        // Continuous readers may exhaust the documented 310ms sharing-lock
+        // budget. That failure must preserve the last published bytes and
+        // clean staging files, not turn the atomicity test into a timing bet.
+        expect(await readFile(alias, "utf8")).toBe(published);
+        expect(await readdir(dirname(alias))).toEqual(["capture.png"]);
+        break;
+      }
     }
   } finally {
     reading = false;
     expect(await observedReader).toBeUndefined();
   }
   expect(reads).toBeGreaterThan(0);
+  // With readers drained, publication MUST succeed. Permanent permission or
+  // replacement bugs cannot hide behind the allowed contention outcome above.
+  await prepareRenderedFileAlias(source, "capture.png");
+  expect(await readFile(alias, "utf8")).toBe(await readFile(source, "utf8"));
   expect(await readdir(dirname(alias))).toEqual(["capture.png"]);
 });

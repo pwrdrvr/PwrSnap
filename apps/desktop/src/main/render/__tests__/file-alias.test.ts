@@ -22,6 +22,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   vi.mocked(rename).mockReset();
   vi.mocked(rename).mockImplementation(actualFs.rename);
   await rm(directory, { recursive: true, force: true });
@@ -71,19 +72,30 @@ test("repeated copies preserve hard links without leaving staging files", async 
   expect(await readdir(dirname(alias))).toEqual(["capture.png"]);
 });
 
-test("concurrent readers always see a complete file during alias replacement", async () => {
+test.each(["native", "windows-conflict"])("concurrent readers always see a complete file during alias replacement (%s)", async (mode) => {
   const alias = await prepareRenderedFileAlias(source, "capture.png");
   const replacement = "replacement".repeat(8192);
+  let published = "original";
   let reading = true;
   let reads = 0;
+  let conflicts = 0;
+  if (mode === "windows-conflict") {
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    vi.mocked(rename).mockImplementation(async (from, to) => {
+      if (to === alias && conflicts < 6) {
+        conflicts += 1;
+        throw Object.assign(new Error("sharing conflict"), { code: "EPERM" });
+      }
+      await actualFs.rename(from, to);
+    });
+  }
   const reader = (async () => {
     while (reading) {
       const value = await readFile(alias, "utf8");
       expect(["original", replacement]).toContain(value);
       reads += 1;
-      // Allow a Windows sharing lock to drain between consumer reads. A
-      // permanently open destination is allowed to exhaust bounded retries;
-      // the persistent-conflict regression above verifies that failure path.
+      // Yield between reads, but do not assume this gives Windows a long
+      // enough gap to replace the destination within its bounded retries.
       await delay(1);
     }
   })();
@@ -92,14 +104,33 @@ test("concurrent readers always see a complete file during alias replacement", a
   try {
     for (let index = 0; index < 40; index += 1) {
       const next = join(directory, "next.png");
-      await writeFile(next, index % 2 === 0 ? replacement : "original");
+      const nextValue = index % 2 === 0 ? replacement : "original";
+      await writeFile(next, nextValue);
       await rename(next, source);
-      await prepareRenderedFileAlias(source, "capture.png");
+      try {
+        await prepareRenderedFileAlias(source, "capture.png");
+        published = nextValue;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (process.platform !== "win32" || (code !== "EPERM" && code !== "EACCES")) {
+          throw error;
+        }
+        // A busy Windows destination may exhaust the 310 ms retry budget.
+        // That is permitted; losing or truncating the old alias is not.
+        expect(await readFile(alias, "utf8")).toBe(published);
+        expect(await readdir(dirname(alias))).toEqual(["capture.png"]);
+      }
     }
   } finally {
     reading = false;
     expect(await observedReader).toBeUndefined();
   }
   expect(reads).toBeGreaterThan(0);
+  if (mode === "windows-conflict") expect(conflicts).toBe(6);
+  // With the consumer stopped, publication must succeed and expose the
+  // requested bytes even if every contended attempt above was rejected.
+  await prepareRenderedFileAlias(source, "capture.png");
+  expect(await readFile(alias, "utf8")).toBe(await readFile(source, "utf8"));
   expect(await readdir(dirname(alias))).toEqual(["capture.png"]);
-});
+  // Forty contended publications may each spend the full 310 ms budget.
+}, 20_000);

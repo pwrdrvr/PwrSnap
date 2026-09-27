@@ -1,6 +1,23 @@
 import { randomUUID } from "node:crypto";
 import { copyFile, link, mkdir, rename, rm } from "node:fs/promises";
 import { dirname, join, parse } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+
+async function publishAlias(stagingPath: string, aliasPath: string): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rename(stagingPath, aliasPath);
+      return;
+    } catch (cause) {
+      const code = (cause as NodeJS.ErrnoException).code;
+      // Windows can reject replacement while a consumer has the old alias
+      // open. Leave that alias intact and retry briefly; permanent permission
+      // failures still propagate after a bounded total wait of 310 ms.
+      if ((code !== "EPERM" && code !== "EACCES") || attempt >= 5) throw cause;
+      await delay(10 * 2 ** attempt);
+    }
+  }
+}
 
 /**
  * Create a stable, human-friendly file path for OS-native consumers
@@ -35,7 +52,7 @@ export async function prepareRenderedFileAlias(
     } catch {
       await copyFile(cachePath, stagingPath);
     }
-    await rename(stagingPath, aliasPath);
+    await publishAlias(stagingPath, aliasPath);
   } finally {
     // POSIX rename can be a no-op when both names already share an inode.
     // Also remove any partial staged copy after a failure, preserving the

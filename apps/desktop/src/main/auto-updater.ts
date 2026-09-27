@@ -130,14 +130,14 @@ function devFakeUpdateStepMs(): number {
   return Number.isFinite(raw) && raw > 0 ? raw : DEV_FAKE_UPDATE_DEFAULT_STEP_MS;
 }
 
-type AppUpdateCheckTrigger = "startup" | "periodic" | "manual" | "menu";
+type AppUpdateCheckTrigger = "startup" | "periodic" | "manual" | "menu" | "selection" | "discovery";
 
 /** A downgrade back to the selected slot is only ever OFFERED when the user
  *  asked — the Settings "Check for Updates" button or the app menu item.
  *  Background checks stay silent about it: someone who deliberately installed
  *  a newer build and left their channel alone should not be nagged to go
- *  back on every hourly poll. Switching channels in Settings does not itself
- *  fire a check, so the button is the deliberate step either way. */
+ *  back on every hourly poll. Selecting a track checks for forward updates;
+ *  the Check button remains the deliberate step for a downgrade. */
 function isUserInitiatedTrigger(trigger: AppUpdateCheckTrigger): boolean {
   return trigger === "manual" || trigger === "menu";
 }
@@ -150,6 +150,7 @@ let resolveSelection: SelectionResolver = () => ({
   train: "stable"
 });
 let initialized = false;
+let observedSelection: UpdateSelectionKey | undefined;
 let updateStatus: AppUpdateStatus = { status: "idle" };
 let periodicUpdateCheckTimer: ReturnType<typeof setInterval> | undefined;
 let updateCheckInFlight: Promise<AppUpdateCheckResult> | undefined;
@@ -661,6 +662,33 @@ export function reconcileAppUpdateSelection(
   }
 }
 
+/** Settings broadcasts include unrelated writes; only a changed track checks the feed. */
+export function handleAppUpdateSelectionChanged(): void {
+  const selection = currentUpdateSelection();
+  const key = updateSelectionKey(selection);
+  const changed = observedSelection !== undefined && observedSelection !== key;
+  observedSelection = key;
+  reconcileAppUpdateSelection(key);
+  if (changed && initialized && productionUpdatesEnabled() && !releaseReadsDisabled()) {
+    void checkForAppUpdatesNow("selection", selection);
+  }
+}
+
+/** Opening Settings may discover an update between hourly checks. Reuse that
+ * feed without retrying a canceled download or disturbing an actionable offer. */
+function downloadDiscoveredRelease(selected: ReturnType<typeof selectAppUpdateReleases>): void {
+  if (!initialized || !productionUpdatesEnabled() || releaseReadsDisabled() ||
+      activeDownload || updateCheckInFlight || updateStatus.status === "canceled" ||
+      updateStatus.status === "downloaded" || updateStatus.status === "install-failed") return;
+  const selection = currentUpdateSelection();
+  const release = releaseForSelection(selected, selection);
+  const version = release?.tag_name?.replace(/^v/i, "");
+  const installed = optionalAutoUpdater()?.currentVersion?.version ?? currentAppVersion();
+  if (version && parseSemver(installed) && compareSemver(version, installed) > 0) {
+    void checkForAppUpdatesNow("discovery", selection);
+  }
+}
+
 function recordPendingDownloadSelection(
   version: string | undefined,
   updateSelection: UpdateSelectionKey | undefined
@@ -813,7 +841,7 @@ function startAppUpdateCheck(
         // A user-initiated check should not answer from a 15-minute-old
         // cache. Revalidation rides the stored etag, so the usual answer is
         // a 304, which GitHub does not charge against the rate limit.
-        isUserInitiatedTrigger(trigger) ? 0 : undefined
+        isUserInitiatedTrigger(trigger) || trigger === "selection" ? 0 : undefined
       );
       const currentVersion = autoUpdater().currentVersion?.version ?? "unknown";
       if (!release?.tag_name) {
@@ -1540,6 +1568,7 @@ export async function readAppUpdateReleaseVersions(): Promise<AppUpdateReleaseVe
   try {
     const releases = await readGitHubReleases();
     const selected = selectAppUpdateReleases(releases);
+    downloadDiscoveredRelease(selected);
     return {
       fetchedAt: releaseCache?.fetchedAt ?? Date.now(),
       stable: {
@@ -1721,6 +1750,7 @@ export function initAppUpdater(selectionResolver: SelectionResolver): void {
   // Bootstrap must provide the live settings reader before any channel
   // configuration or automatic check; asynchronous hotkey wiring is too late.
   setUpdateSelectionResolver(selectionResolver);
+  observedSelection = currentUpdateSelectionKey();
   initialized = true;
 
   // Skip in development. The dev binary isn't signed and Squirrel.Mac
@@ -1843,6 +1873,7 @@ export function disposeAutoUpdater(): void {
     periodicUpdateCheckTimer = undefined;
   }
   initialized = false;
+  observedSelection = undefined;
   warnedAboutUnavailableAutoUpdater = false;
   userCheckDepth = 0;
   activeDownload = undefined;

@@ -519,7 +519,7 @@ export function UpdatesPage(): ReactElement {
               </button>
               {updateAction !== undefined ? (
                 <button
-                  className="pss__top-btn is-active"
+                  className="pss__top-btn is-primary"
                   type="button"
                   aria-label={updateAction.ariaLabel}
                   disabled={updateRestarting}

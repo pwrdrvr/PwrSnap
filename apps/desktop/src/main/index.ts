@@ -166,7 +166,7 @@ import {
 } from "./handlers/hotkey-recorder-handlers";
 import {
   initAppUpdater,
-  reconcileAppUpdateSelection,
+  handleAppUpdateSelectionChanged,
   setAppUpdateInstallHandler
 } from "./auto-updater";
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
@@ -920,7 +920,7 @@ async function wireHotkeyRegistrations(): Promise<void> {
     if (settings.general.developerMode !== lastKnownDeveloperMode) {
       installApplicationMenu(settings.general.developerMode);
     }
-    reconcileAppUpdateSelection();
+    handleAppUpdateSelectionChanged();
     // Theme may have changed — re-color the Windows title-bar overlay so the
     // caption strip tracks the active theme (no-op off win32).
     refreshWindowsTitleBarOverlay();

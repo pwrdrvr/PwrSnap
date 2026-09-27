@@ -167,3 +167,63 @@ test.describe("Help → Check for Updates", () => {
     }
   });
 });
+
+
+test("Settings update buttons align and use the primary CTA in both themes", async () => {
+  const app = await launchWithFakeUpdates(10);
+  try {
+    await app.dispatch("app:update:check", {});
+    await app.dispatch("settings:open", { page: "updates" });
+    await expect.poll(() => app.electronApp.windows().some(
+      (page) => page.url().includes("stage=settings")
+    )).toBe(true);
+    const settings = app.electronApp.windows().find(
+      (page) => page.url().includes("stage=settings")
+    )!;
+    const restart = settings.getByRole("button", { name: `Restart to Update (${FAKE_VERSION})`, exact: true });
+    await expect(restart).toBeVisible();
+    const check = settings.getByRole("button", { name: "Check for Updates", exact: true });
+    await expect(check).toBeVisible();
+    for (const theme of ["dark", "light"]) {
+      await settings.evaluate((value) => {
+        document.documentElement.dataset.theme = value;
+      }, theme);
+      for (const hover of [false, true]) {
+        if (hover) await restart.hover();
+        else await settings.mouse.move(0, 0);
+        const colors = await restart.evaluate((button, hovered) => {
+          const style = getComputedStyle(button);
+          const probe = document.createElement("span");
+          probe.style.background = hovered ? "var(--accent-strong)" : "var(--accent)";
+          probe.style.color = "var(--button-text-on-accent)";
+          document.body.append(probe);
+          const expected = getComputedStyle(probe);
+          const result = {
+            background: style.backgroundColor, color: style.color,
+            expectedBackground: expected.backgroundColor, expectedColor: expected.color
+          };
+          probe.remove();
+          return result;
+        }, hover);
+        expect(colors.background).toBe(colors.expectedBackground);
+        expect(colors.color).toBe(colors.expectedColor);
+        // Release notes live below the action row. They must never stretch
+        // one button or displace it relative to its sibling.
+        const [checkBounds, restartBounds] = await Promise.all([
+          check.boundingBox(), restart.boundingBox()
+        ]);
+        expect(checkBounds).not.toBeNull();
+        expect(restartBounds).not.toBeNull();
+        expect(checkBounds!.height).toBe(28);
+        expect(restartBounds!.height).toBe(checkBounds!.height);
+        expect(restartBounds!.y).toBe(checkBounds!.y);
+      }
+      await settings.mouse.move(0, 0);
+      const screenshot = test.info().outputPath(`restart-${theme}.png`);
+      await settings.screenshot({ path: screenshot });
+      await test.info().attach(`restart-${theme}`, { path: screenshot, contentType: "image/png" });
+    }
+  } finally {
+    await app.close();
+  }
+});

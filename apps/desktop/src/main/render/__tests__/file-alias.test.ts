@@ -46,14 +46,21 @@ test("retries transient sharing conflicts without removing the published alias",
   expect(await readdir(dirname(alias))).toEqual(["capture.png"]);
 });
 
-test("bounds persistent permission failures and preserves the published alias", async () => {
+test("bounds persistent permission failures, preserves the alias, and recovers after release", async () => {
   const alias = await prepareRenderedFileAlias(source, "capture.png");
+  const next = join(directory, "next.png");
+  await writeFile(next, "replacement");
+  await actualFs.rename(next, source);
   const denied = Object.assign(new Error("permission denied"), { code: "EPERM" });
   vi.mocked(rename).mockClear();
   vi.mocked(rename).mockRejectedValue(denied);
   await expect(prepareRenderedFileAlias(source, "capture.png")).rejects.toBe(denied);
   expect(rename).toHaveBeenCalledTimes(6);
   expect(await readFile(alias, "utf8")).toBe("original");
+  expect(await readdir(dirname(alias))).toEqual(["capture.png"]);
+  vi.mocked(rename).mockImplementation(actualFs.rename);
+  await prepareRenderedFileAlias(source, "capture.png");
+  expect(await readFile(alias, "utf8")).toBe("replacement");
   expect(await readdir(dirname(alias))).toEqual(["capture.png"]);
 });
 

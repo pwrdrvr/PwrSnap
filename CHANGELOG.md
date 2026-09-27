@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.1.8 - 2026-09-27
+
+This patch makes opening captures and the first post-capture notification more
+reliable, and improves macOS network-permission isolation.
+
+- Library and Editor - Fixed an Edit or Open in Library action during startup
+  from being lost while the Library was loading, so the requested capture
+  opens on the first attempt.
+- Float-Over - Fixed the first capture of a session from occasionally showing
+  no post-capture toast or leaving an invisible window that intercepted clicks.
+- macOS Network Permissions - Improved separation from other Electron apps by
+  giving PwrSnap's signed launcher its own identity.
+
 ## v1.1.7 - 2026-09-26
 
 This patch improves MP4 sharing and makes capture controls more dependable on

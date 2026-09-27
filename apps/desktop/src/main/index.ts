@@ -164,7 +164,11 @@ import {
   registerHotkeyRecorderInputScopeHandler,
   registerHotkeyRecorderSuspensionHandlers
 } from "./handlers/hotkey-recorder-handlers";
-import { initAppUpdater, handleAppUpdateSelectionChanged } from "./auto-updater";
+import {
+  initAppUpdater,
+  handleAppUpdateSelectionChanged,
+  setAppUpdateInstallHandler
+} from "./auto-updater";
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
 import {
@@ -259,9 +263,14 @@ import {
   reclaimDockIconIfLibraryAlive,
   scheduleDockReclaim,
   refreshWindowsTitleBarOverlay,
+  stopHotCpuProfilers,
   syncHotCpuProfilersFromSettings
 } from "./window";
-import { installContentTraceHook } from "./diagnostics/content-trace-recorder";
+import {
+  installContentTraceHook,
+  shutdownContentTrace
+} from "./diagnostics/content-trace-recorder";
+import { createDiagnosticsShutdown } from "./diagnostics/diagnostics-shutdown";
 import { installLaunchAtLoginSync, wasLaunchedAtLogin } from "./launch-at-login";
 import { wireAppMenuBridge } from "./app-menu-bridge";
 import {
@@ -1378,6 +1387,26 @@ export function bootstrapApp(): void {
   // Install first: a Sizzle save may defer the initial before-quit pass.
   // Transient teardown skips that pass and runs on the resumed app.quit().
   installSizzleQuitBarrier(app);
+  let diagnosticsQuitDeferred = false;
+  const diagnosticsShutdown = createDiagnosticsShutdown({
+    stop: async () => {
+      // Flush every target concurrently; one failure must not cut off another.
+      const results = await Promise.allSettled([
+        stopHotCpuProfilers(),
+        shutdownContentTrace()
+      ]);
+      const failure = results.find((result) => result.status === "rejected");
+      if (failure?.status === "rejected") throw failure.reason;
+    },
+    resumeQuit: () => app.quit(),
+    warn: (message) => getMainLogger("pwrsnap:bootstrap").warn(message)
+  });
+  app.on("before-quit", (event) => {
+    // Sizzle may cancel quit while asking to save. Let that decision finish.
+    if (isSizzleQuitDeferred()) return;
+    diagnosticsQuitDeferred = diagnosticsShutdown.beforeQuit(event);
+  });
+  setAppUpdateInstallHandler((install) => diagnosticsShutdown.quitAndInstall(install));
   // Electron emits before-quit before it begins closing BrowserWindows. Tear
   // down persistent transient/infrastructure windows there so they cannot
   // hold the graceful quit handshake open. The returned idempotent helper is
@@ -1394,7 +1423,7 @@ export function bootstrapApp(): void {
       disposeFocusSink,
       destroyTextBakePool
     },
-    { shouldDisposeOnBeforeQuit: () => !isSizzleQuitDeferred() }
+    { shouldDisposeOnBeforeQuit: () => !isSizzleQuitDeferred() && !diagnosticsQuitDeferred }
   );
 
   // setName BEFORE the first app.getPath("userData") access — Electron
@@ -2610,6 +2639,11 @@ export function bootstrapApp(): void {
               // a TCC-gated path"), so the hang is reachable, not theoretical.
               // Giving up loses at most the finalization of one clip; not
               // giving up loses the ability to quit.
+              // Finalization runs during diagnostics flushing too. Share the
+              // original quit budget rather than adding another 15 seconds.
+              const remainingMs = diagnosticsShutdown.remainingQuitTime(
+                RECORDING_QUIT_BARRIER_TIMEOUT_MS
+              );
               deadline = setTimeout(() => {
                 if (settled) return;
                 getMainLogger("pwrsnap:bootstrap").warn(
@@ -2617,7 +2651,7 @@ export function bootstrapApp(): void {
                   { phase, waitedMs: RECORDING_QUIT_BARRIER_TIMEOUT_MS }
                 );
                 settle();
-              }, RECORDING_QUIT_BARRIER_TIMEOUT_MS);
+              }, remainingMs);
               unsubscribe = subscribeToRecordingState(onState);
               // subscribeToRecordingState emits synchronously. If finalization
               // won the race before registration returned, remove the newly

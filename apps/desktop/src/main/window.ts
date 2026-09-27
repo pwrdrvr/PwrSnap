@@ -51,6 +51,8 @@ import {
 const log = getMainLogger("pwrsnap:window");
 const hotCpuLog = getMainLogger("pwrsnap:hot-cpu");
 const hotCpuProfilerSyncHandlers = new Map<number, (reason: string) => void>();
+const hotCpuProfilerSlots = new Set<HotCpuProfilerSlot>();
+let hotCpuShuttingDown = false;
 
 /**
  * Per-platform window chrome for the main + secondary app windows.
@@ -432,7 +434,14 @@ type EnabledHotCpuConfig = Extract<
 type HotCpuProfilerSlot = {
   sync: (reason: string) => void;
   stop: (reason: string) => Promise<void>;
+  shutdown: () => Promise<void>;
 };
+
+/** Stop main and renderer captures before their debugger targets are destroyed. */
+export async function stopHotCpuProfilers(): Promise<void> {
+  hotCpuShuttingDown = true;
+  await Promise.all([...hotCpuProfilerSlots].map((slot) => slot.shutdown()));
+}
 
 function hotCpuConfigKey(hotCpuConfig: EnabledHotCpuConfig): string {
   return JSON.stringify({
@@ -517,8 +526,9 @@ function createHotCpuProfilerSlot(options: {
   let profilerPromise: Promise<HotCpuProfiler | null> | null = null;
   let generation = 0;
   let syncQueue: Promise<void> = Promise.resolve();
+  const stopping = new Set<Promise<void>>();
 
-  const stop = async (reason: string): Promise<void> => {
+  const stopCurrent = async (reason: string): Promise<void> => {
     generation += 1;
     const pending = profilerPromise;
     configKey = null;
@@ -537,11 +547,19 @@ function createHotCpuProfilerSlot(options: {
     }
   };
 
+  const stop = (reason: string): Promise<void> => {
+    const task = stopCurrent(reason);
+    stopping.add(task);
+    void task.then(() => stopping.delete(task), () => stopping.delete(task));
+    return task;
+  };
+
   const run = async (reason: string): Promise<void> => {
     try {
-      if (!options.isReady()) return;
+      if (hotCpuShuttingDown || !options.isReady()) return;
 
       const settings = await readHotCpuSettings();
+      if (hotCpuShuttingDown) return;
       const captureHeapSnapshot = settings.general.hotCpuProfilingCaptureHeapSnapshot;
       const hotCpuConfig = resolveHotCpuProfileConfig({
         captureHeapSnapshot,
@@ -566,6 +584,8 @@ function createHotCpuProfilerSlot(options: {
         if (configKey === nextConfigKey) return;
         await stop(reason);
       }
+
+      if (hotCpuShuttingDown) return;
 
       const startGeneration = generation;
       configKey = nextConfigKey;
@@ -600,7 +620,15 @@ function createHotCpuProfilerSlot(options: {
     void syncQueue;
   };
 
-  return { sync, stop };
+  const slot = {
+    sync,
+    stop,
+    shutdown: async (): Promise<void> => {
+      await Promise.all([stop("app-quit"), syncQueue, ...stopping]);
+    }
+  };
+  hotCpuProfilerSlots.add(slot);
+  return slot;
 }
 
 /** Sentinel key for the app-global main-process monitor in
@@ -642,9 +670,6 @@ export function installMainProcessHotCpuMonitor(): void {
   });
   mainHotCpuProfilerSlot = slot;
   hotCpuProfilerSyncHandlers.set(MAIN_HOT_CPU_PROFILER_SYNC_KEY, slot.sync);
-  app.on("will-quit", () => {
-    void slot.stop("app-quit");
-  });
   slot.sync("main-profiler-wired");
 }
 
@@ -997,7 +1022,9 @@ export function createMainWindow(): BrowserWindow {
     log.info("main window closed", { id: window.id });
     if (libraryWindow === window) libraryWindow = null;
     hotCpuProfilerSyncHandlers.delete(window.id);
-    void rendererHotCpuSlot.stop("window-closed");
+    void rendererHotCpuSlot.stop("window-closed").finally(() => {
+      hotCpuProfilerSlots.delete(rendererHotCpuSlot);
+    });
     // Combined mode: no library = no dock icon; the tray keeps the
     // app alive and the user re-opens via right-click → "Open
     // Library". The split-mode library PROCESS keeps its Dock icon

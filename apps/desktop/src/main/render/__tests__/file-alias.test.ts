@@ -22,6 +22,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   vi.mocked(rename).mockReset();
   vi.mocked(rename).mockImplementation(actualFs.rename);
   await rm(directory, { recursive: true, force: true });
@@ -78,19 +79,30 @@ test("repeated copies preserve hard links without leaving staging files", async 
   expect(await readdir(dirname(alias))).toEqual(["capture.png"]);
 });
 
-test("concurrent readers always see a complete file during alias replacement", async () => {
+test.each(["native", "windows-conflict"])("concurrent readers always see a complete file during alias replacement (%s)", async (mode) => {
   const alias = await prepareRenderedFileAlias(source, "capture.png");
   const replacement = "replacement".repeat(8192);
+  let published = "original";
   let reading = true;
   let reads = 0;
-  let published = "original";
+  let conflicts = 0;
+  if (mode === "windows-conflict") {
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    vi.mocked(rename).mockImplementation(async (from, to) => {
+      if (to === alias && conflicts < 6) {
+        conflicts += 1;
+        throw Object.assign(new Error("sharing conflict"), { code: "EPERM" });
+      }
+      await actualFs.rename(from, to);
+    });
+  }
   const reader = (async () => {
     while (reading) {
       const value = await readFile(alias, "utf8");
       expect(["original", replacement]).toContain(value);
       reads += 1;
-      // This gap reduces contention but cannot guarantee that Windows will
-      // release every sharing lock within the publisher's bounded retry budget.
+      // Yield between reads, but do not assume this gives Windows a long
+      // enough gap to replace the destination within its bounded retries.
       await delay(1);
     }
   })();
@@ -99,23 +111,21 @@ test("concurrent readers always see a complete file during alias replacement", a
   try {
     for (let index = 0; index < 40; index += 1) {
       const next = join(directory, "next.png");
-      const content = index % 2 === 0 ? replacement : "original";
-      await writeFile(next, content);
+      const nextValue = index % 2 === 0 ? replacement : "original";
+      await writeFile(next, nextValue);
       await rename(next, source);
       try {
         await prepareRenderedFileAlias(source, "capture.png");
-        published = content;
-      } catch (cause) {
-        const code = (cause as NodeJS.ErrnoException).code;
+        published = nextValue;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
         if (process.platform !== "win32" || (code !== "EPERM" && code !== "EACCES")) {
-          throw cause;
+          throw error;
         }
-        // Continuous readers may exhaust the documented 310ms sharing-lock
-        // budget. That failure must preserve the last published bytes and
-        // clean staging files, not turn the atomicity test into a timing bet.
+        // A busy Windows destination may exhaust the 310 ms retry budget.
+        // That is permitted; losing or truncating the old alias is not.
         expect(await readFile(alias, "utf8")).toBe(published);
         expect(await readdir(dirname(alias))).toEqual(["capture.png"]);
-        break;
       }
     }
   } finally {
@@ -123,9 +133,11 @@ test("concurrent readers always see a complete file during alias replacement", a
     expect(await observedReader).toBeUndefined();
   }
   expect(reads).toBeGreaterThan(0);
-  // With readers drained, publication MUST succeed. Permanent permission or
-  // replacement bugs cannot hide behind the allowed contention outcome above.
+  if (mode === "windows-conflict") expect(conflicts).toBe(6);
+  // With the consumer stopped, publication must succeed and expose the
+  // requested bytes even if every contended attempt above was rejected.
   await prepareRenderedFileAlias(source, "capture.png");
   expect(await readFile(alias, "utf8")).toBe(await readFile(source, "utf8"));
   expect(await readdir(dirname(alias))).toEqual(["capture.png"]);
-});
+  // Forty contended publications may each spend the full 310 ms budget.
+}, 20_000);

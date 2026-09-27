@@ -91,3 +91,15 @@ Both regressions failed with the original production source (26 other tests
 passed). The fixed full unit suite passed 7,141 tests; lint and build passed.
 The clipboard E2E addition uses fresh, separately bounded AppKit reader
 processes after normal one-shot writers exit. Its run result belongs in the PR.
+
+## Clipboard alias replacement
+
+A subsequent file-lifetime audit found a separate race: `prepareRenderedFileAlias`
+removed its published hard link before creating the replacement. A concurrent
+file-URL consumer could therefore encounter a missing path. The alias is now
+prepared under a unique adjacent staging name and atomically renamed over the
+published path. Failed preparation preserves the old alias. Cleanup also handles
+POSIX rename's same-inode no-op so repeated copies do not leak staging links.
+Tests reproduce missing-path reads and loss of the old alias on failed preparation
+with the original code. This race is not established as the cause of the original
+pasteboard-service stall; cache cleanup and longer-term alias retention are unchanged.

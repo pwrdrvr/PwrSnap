@@ -304,6 +304,7 @@ describe("UpdatesPage — check and install", () => {
       (el) => el.getAttribute("aria-label") === "Restart to Update (1.1.0-alpha.6)"
     );
     expect(button).toBeDefined();
+    expect(button?.classList.contains("is-primary")).toBe(true);
 
     await act(async () => {
       button?.click();
@@ -332,6 +333,7 @@ describe("UpdatesPage — check and install", () => {
       (el) => el.getAttribute("aria-label") === "Retry Update (1.1.0-alpha.6)"
     );
     expect(button).toBeDefined();
+    expect(button?.classList.contains("is-primary")).toBe(true);
 
     await act(async () => {
       button?.click();

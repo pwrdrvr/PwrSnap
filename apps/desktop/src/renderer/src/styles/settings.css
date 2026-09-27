@@ -440,6 +440,16 @@
 }
 .pss__top-btn:hover { color: var(--text-primary); border-color: var(--accent-border); }
 .pss__top-btn.is-active { color: var(--text-primary); }
+.pss__top-btn.is-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--button-text-on-accent);
+}
+.pss__top-btn.is-primary:hover {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: var(--button-text-on-accent);
+}
 .pss__top-btn.is-muted { color: var(--text-muted); border-color: var(--border-subtle); }
 .pss__top-btn + .pss__top-btn { margin-left: 6px; }
 /* About's "On GitHub" row wears this skin on an `<a href>` — it reaches a

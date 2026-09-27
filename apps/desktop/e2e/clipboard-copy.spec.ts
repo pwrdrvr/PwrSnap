@@ -30,12 +30,15 @@
 // Phase 1; cross-platform clipboard testing lands when Phase 8 does.
 
 import { mkdtemp, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import os from "node:os";
 import path from "node:path";
 import sharp from "sharp";
 import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 
 const isMac = process.platform === "darwin";
+const execFileAsync = promisify(execFile);
 
 /**
  * Generate a real-sized fixture PNG so we can verify resize widths.
@@ -224,6 +227,42 @@ test.describe("clipboard copy preset widths", () => {
   // the test under a few hundred ms.
   const SRC_W = 2400;
   const SRC_H = 1500;
+
+  test("fresh AppKit consumers read PNG after each one-shot writer exits", async () => {
+    // Each read is a new process: no producer-owned NSImage or provider can
+    // hide a lifetime bug. A stuck native read is killed outside Electron.
+    const dir = await mkdtemp(path.join(os.tmpdir(), "pwrsnap-pasteboard-reader-"));
+    const source = path.join(dir, "reader.swift");
+    const reader = path.join(dir, "reader");
+    await writeFile(source, `import AppKit
+import Foundation
+let board = NSPasteboard.general
+guard let png = board.data(forType: .png), !png.isEmpty,
+      let image = NSImage(pasteboard: board),
+      let meta = board.string(forType: NSPasteboard.PasteboardType("com.pwrdrvr.pwrsnap.clip-meta"))
+else { exit(2) }
+let result: [String: Any] = ["pngBytes": png.count, "width": image.size.width,
+  "height": image.size.height, "meta": meta]
+FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: result))
+`);
+    await execFileAsync("swiftc", [source, "-o", reader], { timeout: 30_000, killSignal: "SIGKILL" });
+    const app = await launchPwrSnap();
+    try {
+      const { captureId } = await makeCapture(app, SRC_W, SRC_H);
+      for (const preset of ["low", "med", "high"] as const) {
+        const copied = await app.dispatch("clipboard:copy", { captureId, preset });
+        expect(copied.ok).toBe(true);
+        const { stdout } = await execFileAsync(reader, [], { timeout: 5_000, killSignal: "SIGKILL" });
+        const result = JSON.parse(stdout) as { pngBytes: number; width: number; height: number; meta: string };
+        expect(result.pngBytes).toBeGreaterThan(0);
+        expect(result.width).toBeGreaterThan(0);
+        expect(result.height).toBeGreaterThan(0);
+        expect(JSON.parse(result.meta)).toMatchObject({ captureId, preset });
+      }
+    } finally {
+      await app.close();
+    }
+  });
 
   test("preset='low' → clipboard image ≈800px wide", async () => {
     const app = await launchPwrSnap();

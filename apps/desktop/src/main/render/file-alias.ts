@@ -1,5 +1,23 @@
-import { copyFile, link, mkdir, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { copyFile, link, mkdir, rename, rm } from "node:fs/promises";
 import { dirname, join, parse } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+
+async function publishAlias(stagingPath: string, aliasPath: string): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rename(stagingPath, aliasPath);
+      return;
+    } catch (cause) {
+      const code = (cause as NodeJS.ErrnoException).code;
+      // Windows can reject replacement while a consumer has the old alias
+      // open. Leave that alias intact and retry briefly; permanent permission
+      // failures still propagate after a bounded total wait of 310 ms.
+      if ((code !== "EPERM" && code !== "EACCES") || attempt >= 5) throw cause;
+      await delay(10 * 2 ** attempt);
+    }
+  }
+}
 
 /**
  * Create a stable, human-friendly file path for OS-native consumers
@@ -14,9 +32,9 @@ import { dirname, join, parse } from "node:path";
  * LOW and MP4 HIGH back-to-back ends up with two separate alias
  * directories, never colliding on the displayName).
  *
- * Existing aliases at the target path are removed first — the bytes
- * may have changed even if the path collides (cache eviction +
- * re-encode rotates the underlying file).
+ * Stage beside the destination and rename over it atomically. Existing
+ * clipboard consumers can keep opening the published path while the bytes
+ * are replaced (cache eviction + re-encode can rotate the underlying file).
  */
 export async function prepareRenderedFileAlias(
   cachePath: string,
@@ -26,12 +44,20 @@ export async function prepareRenderedFileAlias(
   const aliasPath = join(aliasDir, displayName);
 
   await mkdir(aliasDir, { recursive: true });
-  await rm(aliasPath, { force: true });
+  const stagingPath = join(aliasDir, `.pwrsnap-alias-${randomUUID()}`);
 
   try {
-    await link(cachePath, aliasPath);
-  } catch {
-    await copyFile(cachePath, aliasPath);
+    try {
+      await link(cachePath, stagingPath);
+    } catch {
+      await copyFile(cachePath, stagingPath);
+    }
+    await publishAlias(stagingPath, aliasPath);
+  } finally {
+    // POSIX rename can be a no-op when both names already share an inode.
+    // Also remove any partial staged copy after a failure, preserving the
+    // previously published alias in either case.
+    await rm(stagingPath, { force: true });
   }
 
   return aliasPath;

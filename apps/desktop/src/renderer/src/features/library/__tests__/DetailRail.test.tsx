@@ -7,8 +7,10 @@ import type {
   AiRunUsageDetail,
   CaptureEnrichment,
   CaptureRecord,
-  SettingsChangedEvent
+  SettingsChangedEvent,
+  Settings
 } from "@pwrsnap/shared";
+import { baseSettings } from "../../settings/__tests__/settings-fixture";
 import { DetailRail, AiRunUsageStrip } from "../DetailRail";
 import type { LibraryView } from "../library-view";
 import type { LayersPanelApi } from "../../editor/Editor";
@@ -150,7 +152,8 @@ function aiUsageDetail(patch: Partial<AiRunUsageDetail> = {}): AiRunUsageDetail 
 function installFakeApi(
   initial: CaptureEnrichment,
   options?: {
-    usageDetail?: () => AiRunUsageDetail;
+    usageDetail?: () => AiRunUsageDetail | null;
+    settings?: Settings;
   }
 ): {
   dispatch: ReturnType<typeof vi.fn>;
@@ -181,6 +184,7 @@ function installFakeApi(
   const defaultUsageDetail = aiUsageDetail();
   const getUsageDetail = options?.usageDetail ?? (() => defaultUsageDetail);
   const dispatch = vi.fn(async (name: string) => {
+    if (name === "settings:read") return { ok: true, value: options?.settings };
     if (name === "codex:enrichment") return { ok: true, value: initial };
     if (name === "codex:usageRunDetail") return { ok: true, value: getUsageDetail() };
     if (name === "codex:acceptDescription") return { ok: true, value: accepted };
@@ -228,7 +232,8 @@ function installFakeApi(
 async function renderDetailRail(
   initial: CaptureEnrichment,
   options?: {
-    usageDetail?: () => AiRunUsageDetail;
+    usageDetail?: () => AiRunUsageDetail | null;
+    settings?: Settings;
   },
   extraProps?: Record<string, unknown>
 ): Promise<{
@@ -272,6 +277,46 @@ afterEach(async () => {
 });
 
 describe("DetailRail", () => {
+  test.each([
+    { provider: "openai", model: "gpt-6-luna", label: "GPT-6-Luna" },
+    { provider: "custom:previous", model: "/fixture/previous.gguf", label: "Previous model" }
+  ])("attributes old $provider runs once and keeps the next model only in Regenerate's tooltip", async ({ provider, model, label }) => {
+    const usage = aiUsageDetail({ model, modelProvider: provider, modelLabel: label, selectedModelLabel: label });
+    usage.run.selectedModel = model;
+    const settings: Settings = { ...baseSettings, ai: { ...baseSettings.ai,
+      defaults: { ...baseSettings.ai.defaults, enrichment: { provider: "custom:next", model: "/fixture/next.gguf" } },
+      customConnections: [{ id: "connection", name: "Next endpoint", baseUrl: "http://127.0.0.1:8080/v1", protocol: "openai-chat", auth: { type: "none" } }],
+      customModels: [{ id: "next", connectionId: "connection", displayName: "Next model", modelId: "/fixture/next.gguf", capabilities: { vision: true, streaming: true }, maxOutputTokens: 4096 }]
+    } };
+    const { el, pushEvent } = await renderDetailRail(enrichment({
+      suggestedTitle: "Fixture", acceptedTitle: "Fixture", suggestedDescription: "Fixture description", acceptedDescription: "Fixture description"
+    }), { usageDetail: () => usage, settings });
+    expect(el.querySelector(".ps-codex-pill__summary")?.textContent).toBe("Description filled");
+    expect(el.querySelector(".psl__ai-usage-model")?.textContent).toBe(label);
+    expect(el.textContent?.split(label)).toHaveLength(2);
+    expect(el.textContent).not.toContain("Next model");
+    expect(el.querySelector(".ps-codex-pill .psl__chip-link")?.getAttribute("title"))
+      .toBe("Regenerate with Next model (Next endpoint)");
+    settings.ai.defaults.enrichment = { provider: "codex", model: "gpt-6-sol" };
+    await act(async () => { pushEvent(EVENT_CHANNELS.settingsChanged, { settings }); });
+    expect(el.textContent?.split(label)).toHaveLength(2);
+    expect(el.textContent).not.toContain("gpt-6-sol");
+    expect(el.querySelector(".ps-codex-pill .psl__chip-link")?.getAttribute("title"))
+      .toBe("Regenerate with Codex (gpt-6-sol)");
+  });
+
+  test("missing run metadata never falls back to the current model for attribution", async () => {
+    const settings: Settings = { ...baseSettings, ai: { ...baseSettings.ai,
+      defaults: { ...baseSettings.ai.defaults, enrichment: { provider: "codex", model: "next-model" } }
+    } };
+    const { el } = await renderDetailRail(enrichment(), { usageDetail: () => null, settings });
+    expect(el.textContent).not.toContain("next-model");
+    expect(el.querySelector(".psl__ai-usage-model")).toBeNull();
+    expect(el.querySelector(".ps-codex-pill__summary")?.textContent).toBe("Title + description drafted");
+    expect(el.querySelector(".ps-codex-pill .psl__chip-link")?.getAttribute("title"))
+      .toBe("Regenerate with Codex (next-model)");
+  });
+
   test("custom enrichment uses the run's saved display name in its status and usage metadata", async () => {
     const path = "/fixture/models/weights.gguf";
     const usage = aiUsageDetail({ model: path, modelProvider: "custom:fixture", modelLabel: "Bench model", selectedModelLabel: "Bench model" });
@@ -279,8 +324,9 @@ describe("DetailRail", () => {
     const { el, pushEvent } = await renderDetailRail(enrichment({
       suggestedTitle: "Fixture", acceptedTitle: "Fixture", suggestedDescription: "A fixture capture", acceptedDescription: "A fixture capture", descriptionAcceptedAt: "2026-05-15T18:25:00.000Z"
     }), { usageDetail: () => usage });
-    expect(el.querySelector(".ps-codex-pill__summary")?.textContent).toContain("Description filled from Bench model");
+    expect(el.querySelector(".ps-codex-pill__summary")?.textContent).toBe("Description filled");
     expect(el.querySelector(".psl__ai-usage-model")?.textContent).toBe("Bench model");
+    expect(el.textContent?.split("Bench model")).toHaveLength(2);
     expect(el.textContent).not.toContain(path);
     usage.modelLabel = "Renamed bench";
     usage.selectedModelLabel = "Renamed bench";

@@ -143,6 +143,9 @@ endpoints without that metadata, new entries suggest the model ID's filename
 without `.gguf`, retaining size/quantization suffixes. This is a label only:
 paths are never read and request IDs remain exact. Saved user names are never
 replaced. Status and usage labels resolve the saved model by its UUID.
+The Library's per-capture attribution comes only from recorded run metadata,
+shown once. Current defaults describe the next Regenerate/Refresh action in
+its tooltip; missing historical metadata never falls back to today's default.
 
 Custom capabilities are explicit. Image input is three-state — yes, no, or
 unknown — and only an explicit yes sends an image or makes a model eligible for

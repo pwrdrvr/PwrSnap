@@ -177,7 +177,7 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
   ): readonly AcpAgentModelOption[] | undefined => {
     if (provider?.startsWith("custom:")) {
       const m = settings?.ai.customModels?.find((entry) => `custom:${entry.id}` === provider);
-      return m ? [{ id: m.modelId, label: m.modelId, isDefault: true }] : [];
+      return m ? [{ id: m.modelId, label: m.displayName, isDefault: true }] : [];
     }
     const id = acpAgentIdOfProvider(provider);
     if (id === null) return undefined;

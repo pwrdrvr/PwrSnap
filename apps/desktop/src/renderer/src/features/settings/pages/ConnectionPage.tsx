@@ -45,6 +45,7 @@ import {
   connectionSecret,
   plural,
   requestUrl,
+  suggestModelDisplayName,
   whereLabel,
   type ConnectionTemplate
 } from "../direct-api-status";
@@ -713,9 +714,9 @@ function ModelsStep({ connection, models, discovery, onDiscover, onSaved }: {
   const savedIds = new Set(models.map((m) => m.modelId));
   const base: Row[] = [
     ...models.map((m) => ({ modelId: m.modelId, id: m.id, checked: true, displayName: m.displayName, vision: m.capabilities.vision, source: "" })),
-    ...manual.filter((m) => !savedIds.has(m)).map((m) => ({ modelId: m, checked: true, displayName: m, vision: null, source: "" })),
+    ...manual.filter((m) => !savedIds.has(m)).map((m) => ({ modelId: m, checked: true, displayName: suggestModelDisplayName(m), vision: null, source: "" })),
     ...listed.filter((l) => !savedIds.has(l.id) && !manual.includes(l.id)).map((l) => ({
-      modelId: l.id, checked: false, displayName: l.id, vision: l.vision,
+      modelId: l.id, checked: false, displayName: suggestModelDisplayName(l.id), vision: l.vision,
       source: l.vision === null ? "not advertised" : "listed by endpoint"
     }))
   ];
@@ -741,7 +742,7 @@ function ModelsStep({ connection, models, discovery, onDiscover, onSaved }: {
     const inputs: CustomModelInput[] = rows.filter((r) => r.checked).map((r) => ({
       ...(r.id !== undefined ? { id: r.id } : {}),
       modelId: r.modelId,
-      displayName: (r.displayName.trim() || r.modelId).slice(0, 120),
+      displayName: (r.displayName.trim() || suggestModelDisplayName(r.modelId)).slice(0, 120),
       capabilities: { vision: r.vision, streaming },
       maxOutputTokens: tokens
     }));

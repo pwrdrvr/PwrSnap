@@ -731,6 +731,49 @@ function callsTo(name: string): unknown[] {
 }
 
 describe("Direct API connections", () => {
+  test("default model pickers show the saved name while retaining the exact API ID", async () => {
+    const s = directSettings();
+    const modelId = "/models/Example-27B-Q4.gguf";
+    const savedModels = s.ai.customModels;
+    if (savedModels === undefined) throw new Error("fixture models missing");
+    savedModels[0] = { ...savedModels[0]!, modelId, displayName: "My local model" };
+    for (const surface of ["enrichment", "libraryChat", "sizzleChat"] as const) {
+      s.ai.defaults[surface] = { provider: `custom:${LARGE}`, model: modelId };
+    }
+    const page = await render(createElement(AIFeaturesPage, { sub: "default-agents", request: 0 }), s);
+    const pickers = Array.from(page.querySelectorAll<HTMLSelectElement>('select[aria-label$=" model"]'));
+    expect(pickers).toHaveLength(3);
+    for (const picker of pickers) {
+      expect(picker.value).toBe(modelId);
+      expect(picker.selectedOptions[0]?.textContent).toBe("My local model (default)");
+    }
+    // A later rename must be reflected without changing the selected API ID.
+    savedModels[0] = { ...savedModels[0]!, displayName: "Renamed local model" };
+    await rerender(createElement(AIFeaturesPage, { sub: "default-agents", request: 0 }));
+    for (const picker of pickers) {
+      expect(picker.value).toBe(modelId);
+      expect(picker.selectedOptions[0]?.textContent).toBe("Renamed local model (default)");
+    }
+  });
+
+  test("path discoveries suggest a filename but save the full API ID and keep saved names", async () => {
+    withCloudKey();
+    const modelId = "/models/Example-27B-Q4.gguf";
+    customAnswers["customModels:discover"] = { ok: true, value: { models: [{ id: modelId, vision: null }] } };
+    customAnswers["customModels:setModels"] = { ok: true, value: [] };
+    await render(createElement(AIProvidersPage, { sub: `connection:${CLOUD}` }), directSettings());
+    await click(button(step(3, "Models"), "Edit"));
+    const models = step(3, "Models");
+    await click(models.querySelector(`input[aria-label="Use ${modelId}"]`));
+    const name = models.querySelector<HTMLInputElement>(`input[aria-label="Name for ${modelId}"]`);
+    expect(name?.value).toBe("Example-27B-Q4");
+    await click(button(models, "Save 2 models"));
+    expect(callsTo("customModels:setModels")).toEqual([{ connectionId: CLOUD, models: [
+      { id: LARGE, modelId: "granola-large-2", displayName: "Granola Large", capabilities: { vision: true, streaming: true }, maxOutputTokens: 4096 },
+      { modelId, displayName: "Example-27B-Q4", capabilities: { vision: null, streaming: true }, maxOutputTokens: 4096 }
+    ] }]);
+  });
+
   test("the sidebar groups connections under Direct API, each with a dot and a word, closed by Add connection", async () => {
     await render(createElement(Sidebar, { active: "ai", sub: null }), directSettings());
     const labels = Array.from(container?.querySelectorAll("#pss-sb-sublist-ai .pss__sb-sublabel") ?? []).map((el) => el.textContent);

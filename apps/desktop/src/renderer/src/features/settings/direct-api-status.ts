@@ -51,6 +51,15 @@ export function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
+/** A suggested label only: keep the exact model ID for requests. Local
+ * servers may list a weights path; namespaced API IDs are not file paths.
+ * Keep size/quantization suffixes so distinct weights stay distinguishable. */
+export function suggestModelDisplayName(modelId: string): string {
+  const isPath = /^(?:\/|[A-Za-z]:[\\/]|\\\\|~[\\/]|\.{1,2}[\\/])/.test(modelId);
+  const name = isPath ? modelId.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "" : modelId;
+  return (name.replace(/\.gguf$/i, "") || "Custom model").slice(0, 120);
+}
+
 /** The first letter of the name, for the row's monogram tile. */
 export function monogram(name: string): string {
   return (/[\p{L}\p{N}]/u.exec(name)?.[0] ?? "?").toUpperCase();

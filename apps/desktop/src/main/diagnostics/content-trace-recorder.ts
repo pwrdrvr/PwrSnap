@@ -54,6 +54,10 @@ type RecorderState = {
 };
 
 let state: RecorderState | null = null;
+let shuttingDown = false;
+let autoStartTimer: NodeJS.Timeout | null = null;
+let starting: Promise<void> | null = null;
+let stopping: Promise<string | null> | null = null;
 
 function log() {
   return getMainLogger("content-trace");
@@ -117,7 +121,14 @@ function stopCpuSampling(current: RecorderState): void {
   }
 }
 
-export async function startContentTrace(reason: string): Promise<void> {
+export function startContentTrace(reason: string): Promise<void> {
+  if (shuttingDown) return Promise.resolve();
+  if (state?.busy) return starting ?? Promise.resolve();
+  starting = startContentTraceInner(reason);
+  return starting;
+}
+
+async function startContentTraceInner(reason: string): Promise<void> {
   const current = state;
   if (current === null) return;
   if (current.busy) {
@@ -170,7 +181,17 @@ export async function startContentTrace(reason: string): Promise<void> {
   });
 }
 
-export async function stopContentTrace(reason: string): Promise<string | null> {
+export function stopContentTrace(reason: string): Promise<string | null> {
+  if (stopping !== null) return stopping;
+  if (!state?.recording) return Promise.resolve(null);
+  stopping = stopContentTraceInner(reason).finally(() => {
+    stopping = null;
+    if (state !== null) state.busy = false;
+  });
+  return stopping;
+}
+
+async function stopContentTraceInner(reason: string): Promise<string | null> {
   const current = state;
   if (current === null || !current.recording) return null;
   const session = current.session;
@@ -191,10 +212,6 @@ export async function stopContentTrace(reason: string): Promise<string | null> {
       `stopRecording failed: ${error instanceof Error ? error.message : String(error)}`
     );
     return null;
-  } finally {
-    // Released whether or not the write succeeded, so a failed stop
-    // leaves the harness re-armed instead of permanently wedged.
-    current.busy = false;
   }
 
   const filename = basename(tracePath);
@@ -206,6 +223,18 @@ export async function stopContentTrace(reason: string): Promise<string | null> {
   });
   log().info(`wrote ${tracePath} (reason=${reason})`);
   return tracePath;
+}
+
+/** Join an in-flight start/stop and persist the trace before Electron exits. */
+export async function shutdownContentTrace(): Promise<void> {
+  shuttingDown = true;
+  if (autoStartTimer !== null) clearTimeout(autoStartTimer);
+  process.off("SIGUSR2", handleToggleSignal);
+  try {
+    await starting;
+  } finally {
+    await stopContentTrace("app-quit");
+  }
 }
 
 /** SIGUSR2 toggles: a second signal during a recording ends it early
@@ -258,10 +287,10 @@ export function installContentTraceHook(options?: {
   );
 
   if (config.autoStartDelayMs > 0) {
-    const timer = setTimeout(() => {
+    autoStartTimer = setTimeout(() => {
       void startContentTrace("autostart").catch(() => undefined);
     }, config.autoStartDelayMs);
-    timer.unref();
+    autoStartTimer.unref();
   }
   return true;
 }

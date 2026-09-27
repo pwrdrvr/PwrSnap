@@ -1655,6 +1655,13 @@ export function cancelAppUpdateDownload(): AppUpdateCancelResult {
   return { canceled: true };
 }
 
+let installWithQuitFlush = async (install: () => void): Promise<void> => install();
+
+/** Bootstrap supplies the same bounded diagnostics flush used by normal quit. */
+export function setAppUpdateInstallHandler(handler: typeof installWithQuitFlush): void {
+  installWithQuitFlush = handler;
+}
+
 export async function installDownloadedAppUpdate(): Promise<AppUpdateInstallResult> {
   const retrySelection = installRetrySelection();
   const currentSelection = currentUpdateSelection();
@@ -1706,7 +1713,7 @@ export async function installDownloadedAppUpdate(): Promise<AppUpdateInstallResu
     }
     log.info("installing downloaded update", { version });
     recordInstallAttempt(version, retrySelection ?? currentSelection);
-    autoUpdater().quitAndInstall();
+    await installWithQuitFlush(() => autoUpdater().quitAndInstall());
     return { status: "restarting" };
   } catch (err) {
     return {

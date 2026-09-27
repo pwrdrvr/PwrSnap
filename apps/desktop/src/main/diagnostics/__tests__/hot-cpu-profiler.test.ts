@@ -11,6 +11,9 @@ import type {
   HotCpuProfileSession
 } from "../hot-cpu-profile-session";
 import { HotCpuProfiler, type HotCpuTarget } from "../hot-cpu-profiler";
+import { createHotCpuProfileSession } from "../hot-cpu-profile-session";
+import { createMainProcessHotCpuTarget } from "../main-process-hot-cpu-target";
+import { createDiagnosticsShutdown } from "../diagnostics-shutdown";
 
 vi.mock("../../log", () => ({
   getMainLogger: () => ({ info: () => {}, warn: () => {}, error: () => {} })
@@ -199,6 +202,89 @@ async function runToProfileWritten(target: HotCpuProfileTarget): Promise<{
 }
 
 describe("HotCpuProfiler", () => {
+  test("quit flush saves a real inspector profile and session manifest before resuming", async () => {
+    vi.useRealTimers();
+    const config = enabledConfig({
+      outputRoot: directoryPath!,
+      triggerMode: "spike",
+      profileDurationMs: 30_000
+    });
+    const created = await createHotCpuProfileSession({
+      config,
+      target: "main",
+      versions: { appVersion: "test", electronVersion: "test", chromeVersion: "test", nodeVersion: process.version }
+    });
+    if (!created.ok) throw new Error(created.message);
+    const session = created.session;
+    const target = createMainProcessHotCpuTarget();
+    let started = false;
+    const appendEvent = session.appendEvent;
+    session.appendEvent = async (event) => {
+      await appendEvent(event);
+      if (event.type === "profile-started") started = true;
+    };
+    const profiler = new HotCpuProfiler({
+      config, session, target, getAppMetrics: hotMetricsFeed(process.pid), logger: silentLogger
+    });
+    const resumeQuit = vi.fn();
+    const warn = vi.fn();
+    const shutdown = createDiagnosticsShutdown({ stop: () => profiler.stop("app-quit"), resumeQuit, warn });
+    try {
+      await profiler.start();
+      await vi.waitFor(() => expect(started).toBe(true));
+      shutdown.beforeQuit({ preventDefault: vi.fn() });
+      await shutdown.flush();
+      expect(resumeQuit).toHaveBeenCalledOnce();
+      expect(warn).not.toHaveBeenCalled();
+      const profile = JSON.parse(await readFile(session.createProfilePath(1), "utf8"));
+      expect(profile.nodes.length).toBeGreaterThan(0);
+      expect(profile.endTime).toBeGreaterThan(profile.startTime);
+      const manifest = JSON.parse(await readFile(join(session.directoryPath, "session.json"), "utf8"));
+      expect(manifest.artifacts).toContain("main-hot-0001.cpuprofile");
+      expect(target.debugger.isAttached()).toBe(false);
+    } finally {
+      await profiler.stop();
+    }
+  });
+
+  test.each(["main", "renderer"] as const)("quit joins an in-flight %s profiler start and writes its artifact", async (target) => {
+    const { session, artifacts, events } = fakeSession(directoryPath!, target);
+    const { target: hotCpuTarget, commands } = fakeTarget(4242);
+    let finishStart!: () => void;
+    const starting = new Promise<void>((resolve) => { finishStart = resolve; });
+    const send = hotCpuTarget.debugger.sendCommand;
+    hotCpuTarget.debugger.sendCommand = async (method) => {
+      const result = await send(method);
+      if (method === "Profiler.start") await starting;
+      return result;
+    };
+    const profiler = new HotCpuProfiler({
+      config: enabledConfig({ profileDurationMs: 30_000 }),
+      getAppMetrics: hotMetricsFeed(4242),
+      logger: silentLogger,
+      session,
+      target: hotCpuTarget
+    });
+    await profiler.start();
+    await vi.advanceTimersByTimeAsync(20);
+    expect(commands).toContain("Profiler.start");
+    const stopped = vi.fn();
+    const stop = profiler.stop("app-quit");
+    expect(profiler.stop("window-closed")).toBe(stop);
+    void stop.then(stopped);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(stopped).not.toHaveBeenCalled();
+    expect(hotCpuTarget.debugger.isAttached()).toBe(true);
+    finishStart();
+    await stop;
+    expect(commands).toEqual(["Profiler.enable", "Profiler.start", "Profiler.stop"]);
+    expect(JSON.parse(await readFile(session.createProfilePath(1), "utf8"))).toEqual(PROFILE_FIXTURE);
+    expect(artifacts).toContain(`${target}-hot-0001.cpuprofile`);
+    expect(events.at(-1)?.type).toBe("monitor-stopped");
+    expect(hotCpuTarget.debugger.isAttached()).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   test("profiles the target after consecutive hot samples and reports its target", async () => {
     const run = await runToProfileWritten("renderer");
 

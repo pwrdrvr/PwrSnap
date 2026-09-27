@@ -143,6 +143,12 @@ async function mountHook(
   return await renderHook(props);
 }
 
+async function drop(hook: HookHandle, event: React.DragEvent<HTMLElement>): Promise<void> {
+  await act(async () => {
+    await hook.onDrop(event);
+  });
+}
+
 function makeFile(name: string, type: string, path: string | null): File {
   const f = new File([new Uint8Array([0x89])], name, { type });
   if (path !== null) {
@@ -245,7 +251,7 @@ describe("useDropImage", () => {
       ["Files"],
       [makeFile("x.png", "image/png", "/tmp/x.png")]
     );
-    await hook.onDrop(event);
+    await drop(hook, event);
     expect(errors).toEqual([{ code: "v1_capture_use_v2" }]);
     expect(dispatchMock).not.toHaveBeenCalled();
   });
@@ -261,7 +267,7 @@ describe("useDropImage", () => {
       ["Files"],
       [makeFile("x.txt", "text/plain", "/tmp/x.txt")]
     );
-    await hook.onDrop(event);
+    await drop(hook, event);
     expect(errors).toEqual([{ code: "drop_not_image" }]);
     expect(dropDispatchCalls()).toHaveLength(0);
   });
@@ -277,7 +283,7 @@ describe("useDropImage", () => {
       [makeFile("phone.HEIC", "", "C:\\Users\\tester\\phone.HEIC")]
     );
 
-    await hook.onDrop(event);
+    await drop(hook, event);
 
     expect(dispatchMock).toHaveBeenCalledWith("editor:dropImageAsLayer", {
       captureId: "cap_v2",
@@ -297,7 +303,7 @@ describe("useDropImage", () => {
       ["Files"],
       [makeFile("x.png", "image/png", null)]
     );
-    await hook.onDrop(event);
+    await drop(hook, event);
     expect(errors).toEqual([{ code: "drop_path_unavailable" }]);
     expect(getPathForFileMock).toHaveBeenCalledWith(event.dataTransfer.files[0]);
   });
@@ -332,7 +338,7 @@ describe("useDropImage", () => {
       300,
       350
     );
-    await hook.onDrop(event);
+    await drop(hook, event);
     expect(dispatchMock).toHaveBeenCalledWith("editor:dropImageAsLayer", {
       captureId: "cap_v2",
       filePath: "/tmp/x.png",
@@ -375,7 +381,7 @@ describe("useDropImage", () => {
       ]
     );
 
-    await hook.onDrop(event);
+    await drop(hook, event);
 
     expect(maxActiveDispatches).toBe(1);
     expect(dropped).toEqual(["a", "b"]);
@@ -426,7 +432,7 @@ describe("useDropImage", () => {
     });
     await act(async () => await Promise.resolve());
     expect(hook.isImporting).toBe(true);
-    await hook.onDrop(blockedGesture);
+    await drop(hook, blockedGesture);
     expect(dropDispatchCalls()).toHaveLength(1);
 
     firstResult.resolve({ ok: true, value: { layerId: "first-from-first" } });
@@ -563,7 +569,8 @@ describe("useDropImage", () => {
     });
     // The replacement record stays blocked until the already-issued command
     // settles; it cannot create a second concurrent loop.
-    await hook.onDrop(
+    await drop(
+      hook,
       makeDragEvent(
         ["Files"],
         [makeFile("new-blocked.png", "image/png", "/tmp/new-blocked.png")]
@@ -579,7 +586,8 @@ describe("useDropImage", () => {
     expect(completed).toEqual([]);
 
     dispatchMock.mockResolvedValue({ ok: true, value: { layerId: "new-result" } });
-    await hook.onDrop(
+    await drop(
+      hook,
       makeDragEvent(
         ["Files"],
         [makeFile("new.png", "image/png", "/tmp/new.png")]
@@ -649,7 +657,7 @@ describe("useDropImage", () => {
       ]
     );
 
-    await hook.onDrop(event);
+    await drop(hook, event);
 
     expect(errors).toEqual([]);
     expect(completed).toEqual([
@@ -690,7 +698,7 @@ describe("useDropImage", () => {
       makeFile(`image-${index}.png`, "image/png", `/tmp/image-${index}.png`)
     );
 
-    await hook.onDrop(makeDragEvent(["Files"], files));
+    await drop(hook, makeDragEvent(["Files"], files));
 
     expect(dropDispatchCalls()).toHaveLength(DROP_IMAGE_MAX_FILES);
     expect(completed[0]).toMatchObject({
@@ -720,7 +728,7 @@ describe("useDropImage", () => {
       ["Files"],
       [makeFile("x.png", "image/png", "/tmp/x.png")]
     );
-    await hook.onDrop(event);
+    await drop(hook, event);
     expect(errors).toEqual([{ code: "unsafe_symlink" }]);
   });
 });

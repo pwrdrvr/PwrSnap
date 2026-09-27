@@ -2043,15 +2043,18 @@ describe("U6 — Snap-vs-Record chooser", () => {
     await drawRect();
     const alt = altButton() as HTMLButtonElement;
     expect(alt.dataset.action).toBe("record");
-    alt.focus();
+    await act(async () => {
+      alt.focus();
+    });
     await keyDownOn(alt, "Enter");
     // The global handler stood down: no snap was committed behind the
     // button's back.
     expect(submitRegion).not.toHaveBeenCalled();
     // jsdom does not synthesize click-from-Enter, so drive the
     // activation the browser would have performed.
-    alt.click();
-    await Promise.resolve();
+    await act(async () => {
+      alt.click();
+    });
     expect(submitRegion.mock.calls[0]?.[0].action).toBe("record");
     // Space is the other activation key, and `adjusting` claimed it for
     // space-to-move. It must not be swallowed here either.

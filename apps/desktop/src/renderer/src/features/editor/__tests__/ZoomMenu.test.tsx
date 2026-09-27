@@ -121,7 +121,9 @@ describe("ZoomMenu", () => {
   test("Escape in the field discards the typed draft", async () => {
     await openPopover();
     const input = popover()!.querySelector("input")!;
-    input.focus();
+    await act(async () => {
+      input.focus();
+    });
     await act(async () => {
       const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
       set.call(input, "250");

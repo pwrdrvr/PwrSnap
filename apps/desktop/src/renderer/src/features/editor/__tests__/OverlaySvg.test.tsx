@@ -150,7 +150,9 @@ describe("OverlaySvg text selection outline — measured glyph box", () => {
   });
 
   test("outline width + height track the published measured box", async () => {
-    reportGlyphSize("t_measured", { widthImagePx: 300, heightImagePx: 80 });
+    await act(async () => {
+      reportGlyphSize("t_measured", { widthImagePx: 300, heightImagePx: 80 });
+    });
     try {
       const container = await renderOverlaySvg(
         [textRow("t_measured", { body: "hello" })],
@@ -169,7 +171,9 @@ describe("OverlaySvg text selection outline — measured glyph box", () => {
       expect(Number(rect!.getAttribute("width"))).toBeCloseTo(expectedW, 1);
       expect(Number(rect!.getAttribute("height"))).toBeCloseTo(expectedH, 1);
     } finally {
-      clearGlyphSize("t_measured");
+      await act(async () => {
+        clearGlyphSize("t_measured");
+      });
     }
   });
 

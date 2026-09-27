@@ -192,6 +192,7 @@ let downgradeCheckInFlight = false;
  */
 type ActiveDownload = {
   version: string;
+  selection?: UpdateSelectionKey;
   downgrade?: true;
   cancel: () => void;
   /** Set by `cancelAppUpdateDownload`, read wherever the download can stop. */
@@ -199,6 +200,10 @@ type ActiveDownload = {
 };
 
 let activeDownload: ActiveDownload | undefined;
+// Completion events precede electron-updater clearing its internal download
+// promise. Keep this barrier even after an event clears the cancel target.
+let downloadSettlement: Promise<void> | undefined;
+let selectionCheckPending = false;
 /** How many user-initiated checks are in flight. See
  *  `isUserUpdateCheckRunning`. A COUNT, not a flag: the menu item has no
  *  disabled state, so two clicks give two `runMenuUpdateCheck` frames, and a
@@ -670,15 +675,24 @@ export function handleAppUpdateSelectionChanged(): void {
   observedSelection = key;
   reconcileAppUpdateSelection(key);
   if (changed && initialized && productionUpdatesEnabled() && !releaseReadsDisabled()) {
-    void checkForAppUpdatesNow("selection", selection);
+    selectionCheckPending = true;
+    flushPendingSelectionCheck();
   }
+}
+
+function flushPendingSelectionCheck(): void {
+  if (!selectionCheckPending || updateCheckInFlight || activeDownload || downloadSettlement) return;
+  selectionCheckPending = false;
+  // Coalesce rapid track changes; a captured intermediate selection must not
+  // start another transfer after the user has already moved on.
+  void checkForAppUpdatesNow("selection", currentUpdateSelection());
 }
 
 /** Opening Settings may discover an update between hourly checks. Reuse that
  * feed without retrying a canceled download or disturbing an actionable offer. */
 function downloadDiscoveredRelease(selected: ReturnType<typeof selectAppUpdateReleases>): void {
   if (!initialized || !productionUpdatesEnabled() || releaseReadsDisabled() ||
-      activeDownload || updateCheckInFlight || updateStatus.status === "canceled" ||
+      activeDownload || downloadSettlement || updateCheckInFlight || updateStatus.status === "canceled" ||
       updateStatus.status === "downloaded" || updateStatus.status === "install-failed") return;
   const selection = currentUpdateSelection();
   const release = releaseForSelection(selected, selection);
@@ -740,7 +754,7 @@ function adoptDownloadCancellation(
   const release = (): void => {
     if (activeDownload === download) activeDownload = undefined;
   };
-  void promise.then(release, (err: unknown) => {
+  const settlement = promise.then(release, (err: unknown) => {
     release();
     // A cancel rejects this promise exactly like a failed request would, and
     // electron-updater deliberately does NOT dispatch its `error` event for
@@ -770,6 +784,12 @@ function adoptDownloadCancellation(
       message: err instanceof Error ? err.message : String(err),
       version: download.version
     });
+  });
+  downloadSettlement = settlement;
+  void settlement.then(() => {
+    if (downloadSettlement !== settlement) return;
+    downloadSettlement = undefined;
+    flushPendingSelectionCheck();
   });
 }
 
@@ -908,6 +928,7 @@ function startAppUpdateCheck(
       // fetching by the time it resolves.
       const download: ActiveDownload = {
         version: selectedVersion,
+        selection: updateSelection,
         cancel: () => {},
         canceled: false,
         ...(isDowngrade ? ({ downgrade: true } as const) : {})
@@ -959,6 +980,7 @@ function startAppUpdateCheck(
       downgradeCheckInFlight = false;
       updateCheckSelectionInFlight = undefined;
       updateCheckInFlight = undefined;
+      flushPendingSelectionCheck();
     }
   });
 
@@ -1675,6 +1697,9 @@ export function cancelAppUpdateDownload(): AppUpdateCancelResult {
   const download = activeDownload;
   if (!download || download.canceled) return { canceled: false };
   download.canceled = true;
+  // Switching away and back must not queue a restart of the very transfer
+  // the user is now canceling. A different selected track remains pending.
+  if (download.selection === currentUpdateSelectionKey()) selectionCheckPending = false;
   log.info("canceling update download", { version: download.version });
   // The flag is set first and unconditionally: `cancel` may still be the empty
   // slot an offered-but-not-yet-started download carries, and it may throw
@@ -1874,6 +1899,8 @@ export function disposeAutoUpdater(): void {
   }
   initialized = false;
   observedSelection = undefined;
+  selectionCheckPending = false;
+  downloadSettlement = undefined;
   warnedAboutUnavailableAutoUpdater = false;
   userCheckDepth = 0;
   activeDownload = undefined;

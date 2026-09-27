@@ -93,6 +93,7 @@ import {
 } from "../render/export-filename";
 import { getCaptureEnrichment } from "../persistence/enrichment-repo";
 import { writeNamedPngToPasteboard } from "../clipboard/named-image-pasteboard";
+import { PasteboardTimeoutError } from "../clipboard/pasteboard-timeout";
 import { writeFileToClipboard } from "../clipboard/file-clipboard";
 
 const log = getMainLogger("pwrsnap:clipboard");
@@ -229,6 +230,7 @@ async function writeNamedImageToPasteboard(args: {
       metaJson
     });
   } catch (cause) {
+    if (cause instanceof PasteboardTimeoutError) throw cause;
     log.warn("named image pasteboard setup failed; falling back to image bytes", {
       displayName: args.displayName,
       message: cause instanceof Error ? cause.message : String(cause)
@@ -302,7 +304,7 @@ export function registerClipboardHandlers(): void {
       });
       return err({
         kind: "clipboard",
-        code: "render_failed",
+        code: cause instanceof PasteboardTimeoutError ? "clipboard_timeout" : "render_failed",
         message: cause instanceof Error ? cause.message : String(cause),
         cause
       });

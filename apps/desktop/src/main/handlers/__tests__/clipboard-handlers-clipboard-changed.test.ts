@@ -24,6 +24,7 @@ import { nanoid } from "nanoid";
 import { afterAll, beforeAll, beforeEach, afterEach, describe, expect, test, vi } from "vitest";
 
 import { CLIPBOARD_LAYER_FRAGMENT_UTI, EVENT_CHANNELS } from "@pwrsnap/shared";
+import { PasteboardTimeoutError } from "../../clipboard/pasteboard-timeout";
 import type {
   BundleDocumentV2,
   BundleLayerNode,
@@ -140,6 +141,7 @@ const { insertLayerTreeForCapture, listLayerTree } = await import(
 const { clipboardEvents } = await import("../../clipboard-events");
 const { __setNativeClipboardHelperForTests } = await import("../../native-clipboard");
 const { clipboard } = await import("electron");
+const { writeNamedPngToPasteboard } = await import("../../clipboard/named-image-pasteboard");
 
 const CANVAS_W = 100;
 const CANVAS_H = 80;
@@ -367,6 +369,31 @@ async function makeAnimatedFragmentGif(): Promise<Buffer> {
 }
 
 describe("issue #139 — clipboard:copy fires clipboardEvents 'changed'", () => {
+  test("a timed-out native writer returns an error without any Electron fallback or changed event", async () => {
+    const captureId = await seedSimpleV2Capture();
+    vi.mocked(writeNamedPngToPasteboard).mockRejectedValueOnce(new PasteboardTimeoutError());
+    const result = await bus.dispatch(
+      "clipboard:copy",
+      { captureId, preset: "med" },
+      { principal: "ipc" }
+    );
+    expect(result).toMatchObject({ ok: false, error: { kind: "clipboard", code: "clipboard_timeout" } });
+    expect(clipboard.write).not.toHaveBeenCalled();
+    expect(clipboard.writeImage).not.toHaveBeenCalled();
+    expect(clipboard.writeBuffer).not.toHaveBeenCalled();
+    expect(changedSpy).not.toHaveBeenCalled();
+
+    // A later user copy can still succeed; timeout is not a permanent latch.
+    const retry = await bus.dispatch(
+      "clipboard:copy",
+      { captureId, preset: "med" },
+      { principal: "ipc" }
+    );
+    expect(retry.ok).toBe(true);
+    expect(clipboard.write).toHaveBeenCalledTimes(1);
+    expect(changedSpy).toHaveBeenCalledTimes(1);
+  });
+
   test("a successful clipboard:copy emits exactly one 'changed' event", async () => {
     const captureId = await seedSimpleV2Capture();
     const result = await bus.dispatch(

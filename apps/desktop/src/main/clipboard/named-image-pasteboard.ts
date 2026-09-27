@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { app } from "electron";
 import { getMainLogger } from "../log";
+import { PasteboardTimeoutError } from "./pasteboard-timeout";
 
 const execFileAsync = promisify(execFile);
 const log = getMainLogger("pwrsnap:named-image-pasteboard");
@@ -62,17 +63,35 @@ export async function writeNamedPngToPasteboard(args: {
   const helperPath = resolvePasteboardWriterPath();
   if (helperPath === null) return false;
 
+  const startedAt = Date.now();
+  let helperPid: number | undefined;
   try {
     const helperArgs = ["--png", args.pngPath, "--file-url", args.fileUrlPath];
     if (args.metaJson !== undefined && args.metaJson.length > 0) {
       helperArgs.push("--meta", args.metaJson);
     }
-    await execFileAsync(helperPath, helperArgs);
+    // NSPasteboard can block inside pboard indefinitely. Kill the one-shot
+    // writer so it cannot complete a stale copy later, and keep that failure
+    // out of the synchronous Electron fallback on the main thread.
+    const execution = execFileAsync(helperPath, helperArgs, { timeout: 10_000, killSignal: "SIGKILL" });
+    helperPid = execution.child.pid;
+    await execution;
     return true;
   } catch (cause) {
-    log.warn("named image pasteboard helper failed; falling back to Electron image clipboard", {
-      message: cause instanceof Error ? cause.message : String(cause)
-    });
+    const failure = cause as { killed?: boolean; signal?: string; code?: string | number | null };
+    const timedOut = failure.killed === true && failure.signal === "SIGKILL" && failure.code === null;
+    const diagnostics = {
+      helperPid,
+      elapsedMs: Date.now() - startedAt,
+      timedOut,
+      exitCode: failure.code ?? null,
+      signal: failure.signal ?? null
+    };
+    if (timedOut) {
+      log.warn("named image pasteboard helper timed out; skipping Electron fallback", diagnostics);
+      throw new PasteboardTimeoutError(cause);
+    }
+    log.warn("named image pasteboard helper failed; falling back to Electron image clipboard", diagnostics);
     return false;
   }
 }

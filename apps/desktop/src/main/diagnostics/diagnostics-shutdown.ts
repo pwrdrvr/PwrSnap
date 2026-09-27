@@ -75,6 +75,9 @@ export function createDiagnosticsShutdown(options: {
       return Math.max(0, timeoutMs - (Date.now() - (startedAt ?? Date.now())));
     },
     beforeQuit(event: { preventDefault(): void }): boolean {
+      // A failed install may leave the app running after diagnostics stopped.
+      // The next quit still needs its own recording-finalization budget.
+      startedAt ??= Date.now();
       if (complete) return false;
       event.preventDefault();
       if (!resumingQuit) {
@@ -88,7 +91,12 @@ export function createDiagnosticsShutdown(options: {
     quitAndInstall(install: () => void): Promise<void> {
       updateOwnsQuit = true;
       // Claim ownership before awaiting, including takeover of a normal quit.
-      installing ??= flush().then(install).finally(() => {
+      installing ??= flush().then(install).catch((error: unknown) => {
+        // Abandon only this quit attempt's clock. Diagnostics are already
+        // stopped (or timed out), so retain their shared completion state.
+        startedAt = undefined;
+        throw error;
+      }).finally(() => {
         updateOwnsQuit = false;
         installing = null;
       });

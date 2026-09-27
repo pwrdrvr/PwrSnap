@@ -180,4 +180,49 @@ describe("diagnostics shutdown", () => {
     expect(f.stopSpy).toHaveBeenCalledOnce();
     expect(f.resumedEvent.preventDefault).not.toHaveBeenCalled();
   });
+
+  it.each([false, true])("gives a later normal quit a fresh budget after install failure (flush timeout: %s)", async (timeout) => {
+    const capture = deferred();
+    const f = fixture(() => capture.promise);
+    // Include takeover: the failed install must not resume the earlier quit.
+    f.shutdown.beforeQuit(f.event);
+    const install = f.shutdown.quitAndInstall(() => { throw new Error("install failed"); });
+    const rejected = expect(install).rejects.toThrow("install failed");
+    if (!timeout) capture.resolve();
+    await vi.advanceTimersByTimeAsync(timeout ? 10_000 : 0);
+    await rejected;
+    expect(f.resumeQuit).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(f.shutdown.beforeQuit(f.resumedEvent)).toBe(false);
+    expect(f.shutdown.remainingQuitTime(15_000)).toBe(15_000);
+    await vi.advanceTimersByTimeAsync(4_000);
+    f.shutdown.beforeQuit(f.resumedEvent);
+    // Repeated quits and a late flush completion cannot restart the budget.
+    capture.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.shutdown.remainingQuitTime(15_000)).toBe(11_000);
+    expect(f.stopSpy).toHaveBeenCalledOnce();
+    expect(f.resumeQuit).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("gives an install retry a fresh budget without flushing stopped diagnostics again", async () => {
+    const f = fixture(() => undefined);
+    await expect(f.shutdown.quitAndInstall(() => {
+      throw new Error("install failed");
+    })).rejects.toThrow("install failed");
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    const retry = vi.fn(() => {
+      expect(f.shutdown.beforeQuit(f.event)).toBe(false);
+      expect(f.shutdown.remainingQuitTime(15_000)).toBe(15_000);
+    });
+    await f.shutdown.quitAndInstall(retry);
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(f.shutdown.remainingQuitTime(15_000)).toBe(11_000);
+    expect(retry).toHaveBeenCalledOnce();
+    expect(f.stopSpy).toHaveBeenCalledOnce();
+    expect(f.resumeQuit).not.toHaveBeenCalled();
+  });
 });

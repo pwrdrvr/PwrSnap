@@ -169,7 +169,7 @@ test.describe("Help → Check for Updates", () => {
 });
 
 
-test("Settings restart action uses the primary CTA in both themes", async () => {
+test("Settings update buttons align and use the primary CTA in both themes", async () => {
   const app = await launchWithFakeUpdates(10);
   try {
     await app.dispatch("app:update:check", {});
@@ -182,6 +182,8 @@ test("Settings restart action uses the primary CTA in both themes", async () => 
     )!;
     const restart = settings.getByRole("button", { name: `Restart to Update (${FAKE_VERSION})`, exact: true });
     await expect(restart).toBeVisible();
+    const check = settings.getByRole("button", { name: "Check for Updates", exact: true });
+    await expect(check).toBeVisible();
     for (const theme of ["dark", "light"]) {
       await settings.evaluate((value) => {
         document.documentElement.dataset.theme = value;
@@ -205,6 +207,16 @@ test("Settings restart action uses the primary CTA in both themes", async () => 
         }, hover);
         expect(colors.background).toBe(colors.expectedBackground);
         expect(colors.color).toBe(colors.expectedColor);
+        // Release notes live below the action row. They must never stretch
+        // one button or displace it relative to its sibling.
+        const [checkBounds, restartBounds] = await Promise.all([
+          check.boundingBox(), restart.boundingBox()
+        ]);
+        expect(checkBounds).not.toBeNull();
+        expect(restartBounds).not.toBeNull();
+        expect(checkBounds!.height).toBe(28);
+        expect(restartBounds!.height).toBe(checkBounds!.height);
+        expect(restartBounds!.y).toBe(checkBounds!.y);
       }
       await settings.mouse.move(0, 0);
       const screenshot = test.info().outputPath(`restart-${theme}.png`);

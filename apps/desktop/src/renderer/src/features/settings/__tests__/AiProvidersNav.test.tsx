@@ -756,18 +756,26 @@ describe("Direct API connections", () => {
     }
   });
 
-  test("path discoveries require a user label and save the full API ID without parsing", async () => {
+  test.each([
+    { baseUrl: "https://api.fixture-cloud.example/v1", modelId: "/models/Example-27B-Q4.gguf", displayName: undefined, expected: "" },
+    { baseUrl: "http://127.0.0.1:8080/v1", modelId: "/models/Example-27B-Q4.gguf", displayName: undefined, expected: "Example-27B-Q4" },
+    { baseUrl: "http://localhost:8080/v1", modelId: "C:\\models\\Example-27B-Q4.gguf", displayName: undefined, expected: "Example-27B-Q4" },
+    { baseUrl: "http://127.0.0.1:8080/v1", modelId: "vendor/model-name", displayName: undefined, expected: "vendor/model-name" },
+    { baseUrl: "http://127.0.0.1:8080/v1", modelId: "/models/Example-27B-Q4.gguf", displayName: "Server supplied name", expected: "Server supplied name" }
+  ])("suggests $expected for $baseUrl and preserves edits and exact IDs", async ({ baseUrl, modelId, displayName, expected }) => {
     withCloudKey();
-    const modelId = "/models/Example-27B-Q4.gguf";
-    customAnswers["customModels:discover"] = { ok: true, value: { models: [{ id: modelId, vision: null }] } };
+    customAnswers["customModels:discover"] = { ok: true, value: { models: [{ id: modelId, displayName, vision: null }] } };
     customAnswers["customModels:setModels"] = { ok: true, value: [] };
-    await render(createElement(AIProvidersPage, { sub: `connection:${CLOUD}` }), directSettings());
+    const saved = directSettings();
+    saved.ai.customConnections![0]!.baseUrl = baseUrl;
+    await render(createElement(AIProvidersPage, { sub: `connection:${CLOUD}` }), saved);
     await click(button(step(3, "Models"), "Edit"));
     const models = step(3, "Models");
-    await click(models.querySelector(`input[aria-label="Use ${modelId}"]`));
-    const name = models.querySelector<HTMLInputElement>(`input[aria-label="Name for ${modelId}"]`);
-    expect(name?.value).toBe("");
-    expect(button(models, "Save 2 models").disabled).toBe(true);
+    const inputFor = (label: string): HTMLInputElement | undefined => Array.from(models.querySelectorAll("input")).find((el) => el.getAttribute("aria-label") === label);
+    await click(inputFor(`Use ${modelId}`));
+    const name = inputFor(`Name for ${modelId}`);
+    expect(name?.value).toBe(expected);
+    expect(button(models, "Save 2 models").disabled).toBe(expected === "");
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(name, "My bench model");
       name!.dispatchEvent(new Event("input", { bubbles: true }));

@@ -51,6 +51,17 @@ export function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
+/** Suggested label for a NEW entry only. Local servers often advertise a
+ * weights path as their ID. Preserve size/quantization, never read the path,
+ * and never change the exact model ID used for requests. */
+export function suggestModelName(baseUrl: string, modelId: string, displayName?: string): string {
+  if (displayName?.trim()) return displayName;
+  if (!isLoopbackApiUrl(baseUrl)) return "";
+  const isPath = /^(?:\/|[A-Za-z]:[\\/]|\\\\|~[\\/]|\.{1,2}[\\/])/.test(modelId) || /\.gguf$/i.test(modelId);
+  const name = isPath ? modelId.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "" : modelId;
+  return (isPath ? name.replace(/\.gguf$/i, "") : name).slice(0, 120);
+}
+
 /** The first letter of the name, for the row's monogram tile. */
 export function monogram(name: string): string {
   return (/[\p{L}\p{N}]/u.exec(name)?.[0] ?? "?").toUpperCase();

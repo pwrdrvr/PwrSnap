@@ -45,6 +45,7 @@ import {
   connectionSecret,
   plural,
   requestUrl,
+  suggestModelName,
   whereLabel,
   type ConnectionTemplate
 } from "../direct-api-status";
@@ -713,9 +714,9 @@ function ModelsStep({ connection, models, discovery, onDiscover, onSaved }: {
   const savedIds = new Set(models.map((m) => m.modelId));
   const base: Row[] = [
     ...models.map((m) => ({ modelId: m.modelId, id: m.id, checked: true, displayName: m.displayName, vision: m.capabilities.vision, source: "" })),
-    ...manual.filter((m) => !savedIds.has(m)).map((m) => ({ modelId: m, checked: true, displayName: "", vision: null, source: "" })),
+    ...manual.filter((m) => !savedIds.has(m)).map((m) => ({ modelId: m, checked: true, displayName: suggestModelName(connection.baseUrl, m), vision: null, source: "" })),
     ...listed.filter((l) => !savedIds.has(l.id) && !manual.includes(l.id)).map((l) => ({
-      modelId: l.id, checked: false, displayName: l.displayName ?? "", vision: l.vision,
+      modelId: l.id, checked: false, displayName: suggestModelName(connection.baseUrl, l.id, l.displayName), vision: l.vision,
       source: l.vision === null ? "not advertised" : "listed by endpoint"
     }))
   ];
@@ -936,4 +937,3 @@ function JobsStep({ models, settings, patch }: {
     </>
   );
 }
-

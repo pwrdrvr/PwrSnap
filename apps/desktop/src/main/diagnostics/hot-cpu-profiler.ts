@@ -105,6 +105,8 @@ export class HotCpuProfiler {
   private samplingPausedForProfile = false;
   private stopProfilePromise: Promise<void> | null = null;
   private stopped = false;
+  private stopPromise: Promise<void> | null = null;
+  private samplePromise: Promise<void> | null = null;
 
   constructor(options: {
     config: Extract<HotCpuProfileConfig, { enabled: true }>;
@@ -156,9 +158,12 @@ export class HotCpuProfiler {
     this.scheduleNextSample(this.config.startDelayMs);
   }
 
-  async stop(reason = "stopped"): Promise<void> {
-    if (this.stopped) return;
+  stop(reason = "stopped"): Promise<void> {
+    this.stopPromise ??= this.stopInner(reason);
+    return this.stopPromise;
+  }
 
+  private async stopInner(reason: string): Promise<void> {
     this.stopped = true;
     if (this.intervalTimer) {
       clearTimeout(this.intervalTimer);
@@ -167,6 +172,9 @@ export class HotCpuProfiler {
     this.clearProfileDurationTimer();
     this.clearHeapSnapshotMidTimer();
 
+    // A sample may already be starting the profiler (or writing a heap).
+    // Join it before deciding whether Profiler.stop is needed.
+    await this.samplePromise;
     if (this.profiling || this.stopProfilePromise) {
       await this.stopProfile(reason);
     }
@@ -182,7 +190,7 @@ export class HotCpuProfiler {
   private scheduleNextSample(delayMs = this.config.intervalMs): void {
     if (this.stopped) return;
     this.intervalTimer = setTimeout(() => {
-      void this.captureSample();
+      this.samplePromise = this.captureSample();
     }, delayMs);
   }
 
@@ -239,7 +247,7 @@ export class HotCpuProfiler {
         processes
       });
 
-      if (this.shouldStartProfile(cpuUsage.cpuPercent, capturedAt)) {
+      if (!this.stopped && this.shouldStartProfile(cpuUsage.cpuPercent, capturedAt)) {
         await this.startProfile({
           capturedAt,
           cpuPercent: cpuUsage.cpuPercent,

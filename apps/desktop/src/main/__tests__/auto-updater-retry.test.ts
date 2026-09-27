@@ -112,8 +112,15 @@ describe("auto-updater failed install retry", () => {
       ]
     }) as unknown as typeof fetch;
 
-    const { initAppUpdater, installDownloadedAppUpdate } =
+    const { initAppUpdater, installDownloadedAppUpdate, setAppUpdateInstallHandler } =
       await import("../auto-updater");
+    let finishFlush!: () => void;
+    const flush = new Promise<void>((resolve) => { finishFlush = resolve; });
+    const beforeInstall = vi.fn(async (install: () => void) => {
+      await flush;
+      install();
+    });
+    setAppUpdateInstallHandler(beforeInstall);
     initAppUpdater(() => ({ channel: "prerelease", train: "stable" }));
 
     const installResult = installDownloadedAppUpdate();
@@ -123,6 +130,10 @@ describe("auto-updater failed install retry", () => {
     expect(mocks.autoUpdater.quitAndInstall).not.toHaveBeenCalled();
 
     mocks.emit("update-downloaded", { version: "1.0.0-beta.23" });
+
+    await vi.waitFor(() => expect(beforeInstall).toHaveBeenCalledOnce());
+    expect(mocks.autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    finishFlush();
 
     await expect(installResult).resolves.toEqual({ status: "restarting" });
     expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledTimes(1);

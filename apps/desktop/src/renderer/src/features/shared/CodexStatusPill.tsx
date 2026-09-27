@@ -1,5 +1,5 @@
 import type { CSSProperties, ReactElement, ReactNode } from "react";
-import type { AiRunStatus } from "@pwrsnap/shared";
+import type { AiRunStatus, CustomModel, CustomConnection } from "@pwrsnap/shared";
 
 // CodexStatusPill — single source of truth for "what is Codex doing"
 // across both the float-over toast and the Library Detail rail.
@@ -25,7 +25,8 @@ const ACP_PROVIDER_LABELS: Record<string, string> = {
 };
 
 /** Derive the status-pill provider + model labels from the enrichment surface
- *  default. `provider` is a backend selector ("" / "codex" / "acp:<id>").
+ *  default. Custom selectors resolve through saved model/connection IDs; the
+ *  display label never changes the model ID sent to the endpoint.
  *
  *  The per-surface `model` is a Codex concept: the enrichment handler passes the
  *  stored model id ONLY for Codex and `null` for ACP (the agent runs on its own
@@ -34,11 +35,18 @@ const ACP_PROVIDER_LABELS: Record<string, string> = {
  *  cross-provider id (e.g. "Kimi … (gpt-5.4-mini)") left over from a Codex
  *  selection made before the backend was switched. */
 export function enrichmentBackendLabel(
-  enrichment: { provider?: string; model?: string } | undefined
+  enrichment: { provider?: string; model?: string } | undefined,
+  custom: { customModels?: readonly CustomModel[] | undefined; customConnections?: readonly CustomConnection[] | undefined } = {}
 ): { providerLabel: string; modelLabel: string | undefined } {
   const provider = enrichment?.provider ?? "";
+  if (provider.startsWith("custom:")) {
+    const model = custom.customModels?.find((m) => `custom:${m.id}` === provider);
+    const connection = custom.customConnections?.find((c) => c.id === model?.connectionId);
+    const name = model?.displayName ?? "Removed model";
+    return { providerLabel: name, modelLabel: connection?.name === name ? undefined : connection?.name };
+  }
   const isAcp = provider.startsWith("acp:");
-  const providerLabel = provider.startsWith("custom:") ? "Custom API" : isAcp
+  const providerLabel = isAcp
     ? (ACP_PROVIDER_LABELS[provider.slice("acp:".length)] ?? provider.slice("acp:".length))
     : "Codex";
   const model = enrichment?.model;
@@ -59,7 +67,7 @@ export type CodexStatusPillProps = {
    *  enrichment provider isn't always Codex anymore, so the copy is
    *  parameterized. Defaults to "Codex". */
   readonly providerLabel?: string | undefined;
-  /** Optional model id shown in parens (e.g. "gemini-3-flash-preview"). */
+  /** Optional context in parens: a built-in model or a custom connection name. */
   readonly modelLabel?: string | undefined;
   /** Failure message from the latest run, when available. */
   readonly error?: string | null | undefined;

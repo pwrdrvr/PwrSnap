@@ -605,8 +605,8 @@ export function FloatOverHost({
         aiEnabled={settings?.ai.enabled ?? false}
         aiConsentAccepted={settings?.ai.consentAcceptedAt !== null && settings !== null}
         aiSafetyDisabled={settings?.ai.budgetSafetyDisabledAt !== null && settings !== null}
-        enrichmentProviderLabel={enrichmentBackendLabel(settings?.ai.defaults.enrichment).providerLabel}
-        enrichmentModelLabel={enrichmentBackendLabel(settings?.ai.defaults.enrichment).modelLabel}
+        enrichmentProviderLabel={enrichmentBackendLabel(settings?.ai.defaults.enrichment, settings?.ai).providerLabel}
+        enrichmentModelLabel={enrichmentBackendLabel(settings?.ai.defaults.enrichment, settings?.ai).modelLabel}
         autoAcceptSuggestions={settings?.ai.autoAcceptSuggestions ?? false}
         onSetAutoAccept={(next) => {
           void dispatch("settings:write", {

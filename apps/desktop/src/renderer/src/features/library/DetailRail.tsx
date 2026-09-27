@@ -379,7 +379,7 @@ export function DetailRail({
       void dispatch("settings:read", {}).then((result) => {
         if (cancelled || !result.ok) return;
         const settings = result.value as Settings | undefined;
-        setEnrichmentLabel(enrichmentBackendLabel(settings?.ai?.defaults?.enrichment));
+        setEnrichmentLabel(enrichmentBackendLabel(settings?.ai?.defaults?.enrichment, settings?.ai));
         setExportStrategy(exportStrategyFromSettings(settings));
       });
     };
@@ -1317,13 +1317,18 @@ function DetailTab({
       return;
     }
     let cancelled = false;
-    void dispatch("codex:usageRunDetail", { runId }).then((result) => {
-      if (!cancelled) {
-        setUsageDetail(result.ok && isAiRunUsageDetail(result.value) ? result.value : null);
-      }
-    });
+    const load = (): void => {
+      void dispatch("codex:usageRunDetail", { runId }).then((result) => {
+        if (!cancelled) {
+          setUsageDetail(result.ok && isAiRunUsageDetail(result.value) ? result.value : null);
+        }
+      });
+    };
+    load();
+    const off = subscribe(EVENT_CHANNELS.settingsChanged, load);
     return () => {
       cancelled = true;
+      off();
     };
   }, [enrichment?.latestRunId, enrichment?.status]);
 
@@ -1565,8 +1570,9 @@ function DetailTab({
         draftAvailable={draftAvailable}
         accepted={allDraftsAccepted}
         safetyDisabled={aiSafetyDisabled}
-        providerLabel={providerLabel}
-        modelLabel={modelLabel}
+        providerLabel={usageDetail?.modelProvider?.startsWith("custom:")
+          ? usageDetail.modelLabel ?? usageDetail.selectedModelLabel ?? providerLabel : providerLabel}
+        modelLabel={usageDetail?.modelProvider?.startsWith("custom:") ? undefined : modelLabel}
         error={enrichment?.error}
         // Model + cost ride on the SAME row as the status sentence
         // (`✦ Description filled from Codex · GPT-5.6 · <$0.001`)

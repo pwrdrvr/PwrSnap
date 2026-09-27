@@ -182,7 +182,11 @@ export async function discoverApi(endpoint: Pick<CustomConnection, "baseUrl" | "
     seen.add(id);
     // Only a row that SAYS so. Never from the model's name.
     const vision = record(row.modalities).vision;
-    models.push({ id, vision: typeof vision === "boolean" ? vision : null });
+    // Only explicit display metadata. IDs/aliases may be server-side paths;
+    // never turn those into invented names or assume a path is locally readable.
+    const displayName = string(row.display_name).trim();
+    const hasName = displayName.length > 0 && displayName.length <= 120 && !/[\x00-\x1f\x7f]/.test(displayName);
+    models.push({ id, ...(hasName ? { displayName } : {}), vision: typeof vision === "boolean" ? vision : null });
     if (models.length >= 1000) break;
   }
   // llama.cpp's /props describes its single loaded model. Ask only a Chat

@@ -1045,11 +1045,10 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   }, []);
 
   // Short label ("Codex", "Kimi", "Gemini", …) derived from the selected
-  // provider. providerLabel depends only on the provider string, so the model
-  // half of `enrichmentBackendLabel`'s input is irrelevant here.
+  // provider. Custom selectors use their saved model name and update on rename.
   const enrichmentProviderLabel = useMemo(
-    () => enrichmentBackendLabel({ provider: enrichmentProvider }).providerLabel,
-    [enrichmentProvider]
+    () => enrichmentBackendLabel({ provider: enrichmentProvider }, { customModels }).providerLabel,
+    [enrichmentProvider, customModels]
   );
 
   const enrichmentProviderAvailable = useMemo(

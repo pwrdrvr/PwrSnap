@@ -84,6 +84,20 @@ test("Anthropic listing sends its version header and asks past the default page"
   // One listed model, but not a llama.cpp server: no /props probe.
   expect(urls).toEqual(["/v1/models?limit=1000"]); expect(version).toBe("2023-06-01");
 });
+test("discovery keeps explicit display names and leaves opaque path IDs unnamed", async () => {
+  const pathId = "/fixture/models/weights.gguf";
+  const http = await server((_req, res) => json(res, { data: [
+    { id: pathId, aliases: [pathId], name: pathId },
+    { id: "opaque-id", display_name: "Friendly server label" },
+    { id: "bad-label", display_name: "bad\u0000label" }
+  ] }));
+  cleanup.push(http.close);
+  expect(await discoverApi(model(`${http.url}/v1`), {})).toEqual({ models: [
+    { id: pathId, vision: null },
+    { id: "opaque-id", displayName: "Friendly server label", vision: null },
+    { id: "bad-label", vision: null }
+  ] });
+});
 test("schema rejects plaintext credentials, unsafe URLs and legacy completions", () => {
   const good = { id: CONNECTION_ID, name: "Fixture", baseUrl: "https://example.com/v1", protocol: "openai-chat", auth: { type: "none" } };
   expect(customConnectionSchema.safeParse(good).success).toBe(true);

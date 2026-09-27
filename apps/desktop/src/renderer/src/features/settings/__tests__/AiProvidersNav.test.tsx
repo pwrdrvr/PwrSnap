@@ -756,7 +756,7 @@ describe("Direct API connections", () => {
     }
   });
 
-  test("path discoveries suggest a filename but save the full API ID and keep saved names", async () => {
+  test("path discoveries require a user label and save the full API ID without parsing", async () => {
     withCloudKey();
     const modelId = "/models/Example-27B-Q4.gguf";
     customAnswers["customModels:discover"] = { ok: true, value: { models: [{ id: modelId, vision: null }] } };
@@ -766,11 +766,16 @@ describe("Direct API connections", () => {
     const models = step(3, "Models");
     await click(models.querySelector(`input[aria-label="Use ${modelId}"]`));
     const name = models.querySelector<HTMLInputElement>(`input[aria-label="Name for ${modelId}"]`);
-    expect(name?.value).toBe("Example-27B-Q4");
+    expect(name?.value).toBe("");
+    expect(button(models, "Save 2 models").disabled).toBe(true);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(name, "My bench model");
+      name!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
     await click(button(models, "Save 2 models"));
     expect(callsTo("customModels:setModels")).toEqual([{ connectionId: CLOUD, models: [
       { id: LARGE, modelId: "granola-large-2", displayName: "Granola Large", capabilities: { vision: true, streaming: true }, maxOutputTokens: 4096 },
-      { modelId, displayName: "Example-27B-Q4", capabilities: { vision: null, streaming: true }, maxOutputTokens: 4096 }
+      { modelId, displayName: "My bench model", capabilities: { vision: null, streaming: true }, maxOutputTokens: 4096 }
     ] }]);
   });
 
@@ -843,7 +848,7 @@ describe("Direct API connections", () => {
   test("the models step saves only what is ticked, with the image answer the operator gave", async () => {
     withCloudKey();
     customAnswers["customModels:discover"] = { ok: true, value: { models: [
-      { id: "granola-large-2", vision: null }, { id: "granola-small", vision: null }] } };
+      { id: "granola-large-2", vision: null }, { id: "granola-small", displayName: "Granola Small", vision: null }] } };
     customAnswers["customModels:setModels"] = { ok: true, value: [] };
     await render(createElement(AIProvidersPage, { sub: `connection:${CLOUD}` }), directSettings());
     await click(button(step(3, "Models"), "Edit"));
@@ -854,7 +859,7 @@ describe("Direct API connections", () => {
     await click(button(models, "Save 2 models"));
     expect(callsTo("customModels:setModels")).toEqual([{ connectionId: CLOUD, models: [
       { id: LARGE, modelId: "granola-large-2", displayName: "Granola Large", capabilities: { vision: true, streaming: true }, maxOutputTokens: 4096 },
-      { modelId: "granola-small", displayName: "granola-small", capabilities: { vision: true, streaming: true }, maxOutputTokens: 4096 }
+      { modelId: "granola-small", displayName: "Granola Small", capabilities: { vision: true, streaming: true }, maxOutputTokens: 4096 }
     ] }]);
   });
 

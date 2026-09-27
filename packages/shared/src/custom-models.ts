@@ -71,7 +71,7 @@ export type CustomOAuth = z.infer<typeof customOAuthSchema>;
 /** A saved model joined with its connection: everything one request needs. */
 export type ResolvedCustomModel = CustomModel & Pick<CustomConnection, "baseUrl" | "protocol" | "auth">;
 /** What an endpoint listed. `vision` is per model and `null` unless that row said. */
-export type CustomModelDiscovery = { models: { id: string; vision: boolean | null }[] };
+export type CustomModelDiscovery = { models: { id: string; displayName?: string; vision: boolean | null }[] };
 
 export function customProviderId(id: string): string { return `custom:${id}`; }
 export function isCustomProvider(provider: string | undefined | null): boolean {

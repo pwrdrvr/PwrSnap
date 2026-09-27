@@ -45,7 +45,6 @@ import {
   connectionSecret,
   plural,
   requestUrl,
-  suggestModelDisplayName,
   whereLabel,
   type ConnectionTemplate
 } from "../direct-api-status";
@@ -714,9 +713,9 @@ function ModelsStep({ connection, models, discovery, onDiscover, onSaved }: {
   const savedIds = new Set(models.map((m) => m.modelId));
   const base: Row[] = [
     ...models.map((m) => ({ modelId: m.modelId, id: m.id, checked: true, displayName: m.displayName, vision: m.capabilities.vision, source: "" })),
-    ...manual.filter((m) => !savedIds.has(m)).map((m) => ({ modelId: m, checked: true, displayName: suggestModelDisplayName(m), vision: null, source: "" })),
+    ...manual.filter((m) => !savedIds.has(m)).map((m) => ({ modelId: m, checked: true, displayName: "", vision: null, source: "" })),
     ...listed.filter((l) => !savedIds.has(l.id) && !manual.includes(l.id)).map((l) => ({
-      modelId: l.id, checked: false, displayName: suggestModelDisplayName(l.id), vision: l.vision,
+      modelId: l.id, checked: false, displayName: l.displayName ?? "", vision: l.vision,
       source: l.vision === null ? "not advertised" : "listed by endpoint"
     }))
   ];
@@ -724,6 +723,7 @@ function ModelsStep({ connection, models, discovery, onDiscover, onSaved }: {
     const e = edits[r.modelId];
     return e === undefined ? r : { ...r, ...e, source: e.vision !== undefined ? "set by you" : r.source };
   });
+  const namesOk = rows.every((r) => !r.checked || r.displayName.trim().length > 0);
   const tokens = Number(maxTokens);
   const tokensOk = Number.isInteger(tokens) && tokens >= 1 && tokens <= 131072;
   const settingsChanged = first !== undefined && (tokens !== first.maxOutputTokens || streaming !== first.capabilities.streaming);
@@ -738,11 +738,12 @@ function ModelsStep({ connection, models, discovery, onDiscover, onSaved }: {
 
   const edit = (modelId: string, e: RowEdit): void => setEdits((prev) => ({ ...prev, [modelId]: { ...prev[modelId], ...e } }));
   const save = async (): Promise<void> => {
+    if (!namesOk) return;
     setBusy(true); setNote(null);
     const inputs: CustomModelInput[] = rows.filter((r) => r.checked).map((r) => ({
       ...(r.id !== undefined ? { id: r.id } : {}),
       modelId: r.modelId,
-      displayName: (r.displayName.trim() || suggestModelDisplayName(r.modelId)).slice(0, 120),
+      displayName: r.displayName.trim(),
       capabilities: { vision: r.vision, streaming },
       maxOutputTokens: tokens
     }));
@@ -798,7 +799,7 @@ function ModelsStep({ connection, models, discovery, onDiscover, onSaved }: {
                   {r.source !== "" ? <span className="pss__dapi-src">{r.source}</span> : null}
                 </span>
                 {r.checked ? (
-                  <input className="pss__input" value={r.displayName} maxLength={120} aria-label={`Name for ${r.modelId}`}
+                  <input className="pss__input" value={r.displayName} maxLength={120} placeholder="Enter a display name" aria-required="true" aria-invalid={r.displayName.trim() === ""} aria-label={`Name for ${r.modelId}`}
                     onChange={(e) => edit(r.modelId, { displayName: e.target.value })} />
                 ) : <span className="pss__dapi-none">—</span>}
                 {savedModel !== undefined ? (
@@ -847,9 +848,10 @@ function ModelsStep({ connection, models, discovery, onDiscover, onSaved }: {
         </div>
         <p className="pss__dapi-hint">Applies to every model saved here. Turn streaming off for a server that can't send server-sent events.</p>
       </details>
+      {!namesOk ? <p className="pss__dapi-hint">Enter a display name for each selected model. If the endpoint does not supply one, choose a name here.</p> : null}
       <NoteView note={note} />
       <div className="pss__dapi-actions">
-        <button className="pss__key-btn is-primary" type="button" disabled={busy || !dirty || !tokensOk} onClick={() => { void save(); }}>
+        <button className="pss__key-btn is-primary" type="button" disabled={busy || !dirty || !tokensOk || !namesOk} onClick={() => { void save(); }}>
           {busy ? "Saving…" : `Save ${plural(rows.filter((r) => r.checked).length, "model")}`}
         </button>
         {dirty ? (

@@ -1030,6 +1030,18 @@ describe("enrichmentSelectedModel", () => {
 });
 
 describe("withUsageModelLabels", () => {
+  test("custom usage labels are scoped to the provider UUID, including in-flight and removed entries", () => {
+    const modelId = "/fixture/models/weights.gguf";
+    const models = ["one", "two"].map((id) => ({ id, connectionId: id, modelId, displayName: `Model ${id}`,
+      capabilities: { vision: true, streaming: true }, maxOutputTokens: 4096 }));
+    const detail = { run: { selectedModel: modelId }, model: modelId, modelProvider: "custom:two" } as unknown as import("@pwrsnap/shared").AiRunUsageDetail;
+    const labeled = withUsageModelLabels(detail, () => "Wrong built-in label", models);
+    expect(labeled.modelLabel).toBe("Model two");
+    expect(labeled.selectedModelLabel).toBe("Model two");
+    expect(labeled.model).toBe(modelId);
+    expect(withUsageModelLabels({ ...detail, model: null }, () => undefined, models).selectedModelLabel).toBe("Model two");
+    expect(withUsageModelLabels(detail, () => "Wrong built-in label", [models[0]!]).modelLabel).toBe("Custom model unavailable");
+  });
   const base = {
     run: { selectedModel: "" },
     model: null

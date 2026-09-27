@@ -272,6 +272,21 @@ afterEach(async () => {
 });
 
 describe("DetailRail", () => {
+  test("custom enrichment uses the run's saved display name in its status and usage metadata", async () => {
+    const path = "/fixture/models/weights.gguf";
+    const usage = aiUsageDetail({ model: path, modelProvider: "custom:fixture", modelLabel: "Bench model", selectedModelLabel: "Bench model" });
+    usage.run.selectedModel = path;
+    const { el, pushEvent } = await renderDetailRail(enrichment({
+      suggestedTitle: "Fixture", acceptedTitle: "Fixture", suggestedDescription: "A fixture capture", acceptedDescription: "A fixture capture", descriptionAcceptedAt: "2026-05-15T18:25:00.000Z"
+    }), { usageDetail: () => usage });
+    expect(el.querySelector(".ps-codex-pill__summary")?.textContent).toContain("Description filled from Bench model");
+    expect(el.querySelector(".psl__ai-usage-model")?.textContent).toBe("Bench model");
+    expect(el.textContent).not.toContain(path);
+    usage.modelLabel = "Renamed bench";
+    usage.selectedModelLabel = "Renamed bench";
+    await act(async () => { pushEvent(EVENT_CHANNELS.settingsChanged, { settings: { ai: { budgetSafetyDisabledAt: null } } }); });
+    expect(el.querySelector(".psl__ai-usage-model")?.textContent).toBe("Renamed bench");
+  });
   test("per-field Use button promotes Codex's initial draft to accepted", async () => {
     const { el, dispatch } = await renderDetailRail(
       enrichment({

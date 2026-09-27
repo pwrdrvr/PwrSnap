@@ -340,17 +340,25 @@ function enrichmentModelForSettings(settings: Settings): string {
  *  dependency-injected for testing. Exported for testing. */
 export function withUsageModelLabels(
   detail: AiRunUsageDetail,
-  lookupLabel: (modelId: string) => string | undefined
+  lookupLabel: (modelId: string) => string | undefined,
+  customModels: Settings["ai"]["customModels"] = []
 ): AiRunUsageDetail {
   const selected = detail.run.selectedModel;
+  // Match the persisted provider UUID, not just the model ID: two connections
+  // can serve the same ID under different user-chosen names.
+  const custom = detail.modelProvider?.startsWith("custom:") === true;
+  const entry = customModels?.find((m) => `custom:${m.id}` === detail.modelProvider);
+  const label = (id: string): string | undefined => custom
+    ? (entry?.modelId === id ? entry.displayName : "Custom model unavailable")
+    : lookupLabel(id);
   return {
     ...detail,
     modelLabel:
       typeof detail.model === "string" && detail.model.length > 0
-        ? lookupLabel(detail.model) ?? null
+        ? label(detail.model) ?? null
         : null,
     selectedModelLabel:
-      typeof selected === "string" && selected.length > 0 ? lookupLabel(selected) ?? selected : null
+      typeof selected === "string" && selected.length > 0 ? label(selected) ?? selected : null
   };
 }
 
@@ -925,10 +933,11 @@ export function registerCodexHandlers(params?: {
     refreshKnownAiUsagePrices();
     const detail = getAiRunUsageDetail(req.runId);
     if (detail === null) return ok(null);
-    // Resolve labels from the ACP caches first, then the Codex cache (ids are
-    // distinct across the two, so order is just preference).
+    // Custom names are scoped to the run's provider UUID; built-in labels
+    // resolve from ACP then Codex caches. Never cross those namespaces.
     return ok(
-      withUsageModelLabels(detail, (id) => findAcpModelLabel(id) ?? findCodexModelLabel(id))
+      withUsageModelLabels(detail, (id) => findAcpModelLabel(id) ?? findCodexModelLabel(id),
+        detail.modelProvider?.startsWith("custom:") ? (await settingsReader()).ai.customModels : [])
     );
   });
 
@@ -1017,6 +1026,11 @@ async function runCaptureEnrichment(params: {
   let client: EnrichmentBackend | null = null;
 
   try {
+    if (params.selectedProvider?.startsWith("custom:")) {
+      saveAiRunUsage({ aiRunId: params.runId, modelProvider: params.selectedProvider,
+        usageStatus: "unavailable", usageUnavailableReason: "Run in progress",
+        cost: { status: "unavailable", reason: "usage unavailable" } });
+    }
     const running = markAiRunRunning(params.runId);
     broadcastAiRunUpdated({
       run: running,
@@ -1206,6 +1220,7 @@ async function runCaptureEnrichment(params: {
     try {
       saveAiRunUsage({
         aiRunId: params.runId,
+        ...(params.selectedProvider?.startsWith("custom:") ? { modelProvider: params.selectedProvider } : {}),
         usageStatus: "unavailable",
         usageUnavailableReason: isAbort
           ? "AI run was cancelled before Codex reported token usage"

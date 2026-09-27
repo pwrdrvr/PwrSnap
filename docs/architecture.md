@@ -138,6 +138,10 @@ and token endpoints plus a registered client ID (and scopes/resource where
 required). A subscription or generic API URL does not establish API access.
 Confidential clients requiring a client secret are not supported.
 
+Display names come from explicit `display_name` discovery metadata or the user;
+opaque model IDs and aliases (which may be server-side paths) are never parsed
+into names. Status and usage labels resolve the saved model by its UUID.
+
 Custom capabilities are explicit. Image input is three-state — yes, no, or
 unknown — and only an explicit yes sends an image or makes a model eligible for
 captions. Discovery lists the connection's models and accepts only unambiguous

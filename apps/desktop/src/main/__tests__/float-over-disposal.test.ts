@@ -172,13 +172,14 @@ describe("disposeFloatOver", () => {
     ]);
     expect(mocks.ipcMain.removeAllListeners).toHaveBeenCalledWith("float-over:resize");
     expect(mocks.ipcMain.removeAllListeners).toHaveBeenCalledWith("float-over:request-state");
+    expect(mocks.ipcMain.removeAllListeners).toHaveBeenCalledWith("float-over:dock-drag");
     expect(getFloatOverState()).toEqual({ kind: "hidden" });
     expect(vi.getTimerCount()).toBe(0);
 
     disposeFloatOver();
     expect(window.destroy).toHaveBeenCalledTimes(1);
     expect(mocks.globalShortcut.unregister).toHaveBeenCalledTimes(3);
-    expect(mocks.ipcMain.removeAllListeners).toHaveBeenCalledTimes(2);
+    expect(mocks.ipcMain.removeAllListeners).toHaveBeenCalledTimes(3);
   });
 
   it("can create and wire a fresh singleton after disposal", () => {
@@ -191,8 +192,9 @@ describe("disposeFloatOver", () => {
 
     expect(first.destroy).toHaveBeenCalledTimes(1);
     expect(mocks.createFloatOverWindow).toHaveBeenCalledTimes(2);
-    // Two channels (resize, state request), wired once per window.
-    expect(mocks.ipcMain.on).toHaveBeenCalledTimes(4);
+    // Three channels (resize, state request, dock drag), wired once per
+    // window.
+    expect(mocks.ipcMain.on).toHaveBeenCalledTimes(6);
     expect(getFloatOverState()).toEqual({ kind: "idle" });
     expect(getFloatOverWindowIdForE2E()).toBe(2);
   });

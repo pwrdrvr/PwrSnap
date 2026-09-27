@@ -138,6 +138,10 @@ const FLOAT_OVER_RESIZE_CHANNEL = "float-over:resize";
 // me the current state." Main answers on that channel. See
 // wireFloatOverStateRequestChannel in main/float-over.ts.
 const FLOAT_OVER_STATE_REQUEST_CHANNEL = "float-over:request-state";
+// Float-over renderer → main: a drag of the screen-edge dock (start /
+// move / end). Main reads the cursor itself and moves the window. See
+// wireFloatOverDockDragChannel in main/float-over.ts.
+const FLOAT_OVER_DOCK_DRAG_CHANNEL = "float-over:dock-drag";
 // Failed recording cards are content-sized as well. This channel is accepted
 // only from the live recording-controller webContents in main.
 const RECORDING_CONTROLLER_RESIZE_CHANNEL = "recording-controller:resize";
@@ -426,8 +430,22 @@ const pwrsnapApi = {
    * window always tracks the visible toast and the Dock-overlap +
    * shadow-tail artifacts both go away.
    */
-  requestFloatOverResize(payload: { width: number; height: number }): void {
+  requestFloatOverResize(payload: {
+    width: number;
+    height: number;
+    /** Which shape the renderer drew: the toast, or the screen-edge
+     *  dock. Main drops a post for the shape it is not in. */
+    mode?: "toast" | "dock";
+  }): void {
     ipcRenderer.send(FLOAT_OVER_RESIZE_CHANNEL, payload);
+  },
+  /**
+   * Float-over renderer → main: the user is dragging the screen-edge
+   * dock. Main follows the cursor and flips the dock to the other edge
+   * past the middle of the display.
+   */
+  requestFloatOverDockDrag(phase: "start" | "move" | "end"): void {
+    ipcRenderer.send(FLOAT_OVER_DOCK_DRAG_CHANNEL, { phase });
   },
   /**
    * Float-over renderer → main: ask for the current toast state. Call it

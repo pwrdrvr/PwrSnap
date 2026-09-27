@@ -185,6 +185,7 @@ vi.mock("../../events", () => ({
 }));
 
 vi.mock("../../float-over", () => ({
+  releaseFloatOverDock: () => undefined,
   setFloatOverState: () => undefined
 }));
 

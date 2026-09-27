@@ -2230,6 +2230,70 @@ effect after the first render, and nothing bounds how long that takes.
 Measurements, the two failure timelines, and the probe:
 [docs/solutions/2026-09-26-float-over-first-state-lost.md](docs/solutions/2026-09-26-float-over-first-state-lost.md).
 
+## The float-over dock is the toast's own window, and it never lands in a capture
+
+**When a snap's enrichment is still running as its toast's countdown ends,
+the toast tucks to tabs on the screen edge. The dock is the SAME
+BrowserWindow as the toast, reshaped. It is placed inside the work area,
+excluded from screen capture, and hidden for every snapshot and every
+recording.** Owners: `enterTucked` / `applyDockLayout` /
+`releaseFloatOverDock` in [float-over.ts](apps/desktop/src/main/float-over.ts)
+(where the dock is and whether it shows), and the queue in
+[FloatOverHost.tsx](apps/desktop/src/renderer/src/features/float-over/FloatOverHost.tsx)
+with its rules in
+[float-over-dock-model.ts](apps/desktop/src/renderer/src/features/float-over/float-over-dock-model.ts)
+(which snaps wait). The renderer owns the list because only it knows each
+snap's enrichment status. Pinned by
+[float-over-dock.test.ts](apps/desktop/src/main/__tests__/float-over-dock.test.ts)
+and
+[FloatOverDock.test.tsx](apps/desktop/src/renderer/src/features/float-over/__tests__/FloatOverDock.test.tsx).
+
+- **A shape change parks the window until the renderer draws the new
+  shape.** Every layout post carries `mode: "toast" | "dock"`, main drops a
+  post for the shape it has already left, and the window is shown only
+  when a post for the new shape arrives. The host bumps a layout epoch on
+  every state event, so it re-posts even when the new shape measures the
+  same. Without that, a dock that happened to match its last size would
+  never be shown.
+- **The window is exactly the size of what it draws.** Transparent pixels
+  still take clicks. The dock rests as an 18px sliver and widens only
+  while the pointer is over it. The rail beside a toast runs the toast's
+  full height, so there is no see-through block above it.
+- **Placed flush inside the work area, never past it.** AppKit moves a
+  window placed outside it (see "macOS MOVES a window placed outside the
+  work area"). The tabs only look like they run off the screen, because
+  the window's own edge clips them.
+- **Never in a capture.** While tucked, the window is content-protected on
+  macOS and Windows. The chrome-hide `cancel` before every snapshot parks
+  it on every platform, which is the only protection on Linux. A
+  recording parks it for the whole take (`subscribeToRecordingState`).
+- **Only a cancel that ENDS a capture session brings the dock back.** That
+  is a cancel from `idle` or `hidden`. The same event from `loaded` or
+  `tucked` is the chrome hide before a snapshot, and must only park.
+  `holdDock: true` is for a session that hands the screen to a
+  recording. A path that hides the chrome and can then end with no toast
+  and no session-ending cancel calls `releaseFloatOverDock()`. Today that
+  is `capture:fullScreen` / `capture:allScreens` (wrapped in
+  capture-handlers.ts) and `startRecordingFromSelection`. Without it, a
+  failed capture strands the waiting snaps until the next one.
+- **A tuck sent because a new capture started is `markOnly`.** It records
+  that snaps are waiting without touching the screen. A plain tuck that
+  lands after the new capture's `show-loaded` would collapse the toast the
+  user is about to look at.
+- **A snap's fate is decided once, at the close the host caused.**
+  `settledRef` stops main's echo of that close from deciding again. By
+  then the model may have answered, and a snap tucked unread would be
+  dropped as "finished". A snap that has been on the dock stays, ✓ and
+  all, until it is opened or cleared.
+- **No dock where placement is not ours** (`windowPlacementIsOurs()`,
+  native Wayland). `float-over:capabilities` says so. The toast then holds
+  the corner while the model reads, as it did before the dock existed.
+- **The dock's position is process-lifetime, not a setting.** It resets on
+  relaunch, deliberately. Persisting it means a new field in Settings.
+- **Headless E2E cannot see any of this.** Placement, content protection
+  and the park are window-server behavior. Check a change on a real
+  display, and on Windows and Linux as well as macOS.
+
 ## The recording frame may never paint inside the recorded rect
 
 **On any platform that cannot hide one of our windows from the recorder

@@ -4753,6 +4753,37 @@ export type Commands = {
 
   // ---- float-over ----
   "float-over:dismiss": { req: Record<string, never>; res: void };
+  /**
+   * Whether this session can dock the toast on a screen edge. False where
+   * PwrSnap cannot place its own windows (a native Wayland client), in
+   * which case the toast keeps holding the corner while enrichment runs.
+   */
+  "float-over:capabilities": { req: Record<string, never>; res: { dock: boolean } };
+  /**
+   * Send the toast to the screen-edge dock. The renderer owns which snaps
+   * are waiting there; main owns where the dock sits. `docked: false`
+   * means placement is not ours on this session and nothing moved.
+   *
+   * `markOnly` records that snaps are waiting without changing what is on
+   * screen: a toast that is showing stays, and the dock comes up when the
+   * capture session ends. The renderer sends it when a snap leaves the
+   * toast because a new capture started, which can race that capture's
+   * own toast — a plain tuck landing after it would collapse the toast
+   * the user is about to look at.
+   */
+  "float-over:tuck": { req: { markOnly?: boolean }; res: { docked: boolean } };
+  /** Open the toast on a snap picked from the dock, its rail, or the
+   *  overflow menu. Arms the copy shortcuts for that snap. */
+  "float-over:open": { req: { captureId: string }; res: void };
+  /**
+   * Pop the dock's overflow list (the snaps past the visible cap) as a
+   * native menu at the pointer. Resolves with the pick, or null when the
+   * menu closed without one.
+   */
+  "float-over:overflowMenu": {
+    req: { items: FloatOverOverflowItem[]; canClearFinished: boolean };
+    res: { choice: FloatOverOverflowChoice };
+  };
 
   // ---- recording (Phase 5 — Fast Video Capture, issue #64) ----
   /**
@@ -5449,3 +5480,18 @@ export type Commands = {
 export type CommandName = keyof Commands;
 export type Req<C extends CommandName> = Commands[C]["req"];
 export type Res<C extends CommandName> = Commands[C]["res"];
+
+/** Which screen edge the float-over's tab dock hugs. */
+export type FloatOverDockSide = "left" | "right";
+
+/** One row of the dock's overflow menu (the snaps past the visible cap). */
+export type FloatOverOverflowItem = {
+  captureId: string;
+  label: string;
+};
+
+/** What the user picked from the dock's overflow menu, if anything. */
+export type FloatOverOverflowChoice =
+  | { kind: "open"; captureId: string }
+  | { kind: "clear-finished" }
+  | null;

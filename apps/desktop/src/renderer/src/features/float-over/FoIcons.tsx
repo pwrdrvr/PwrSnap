@@ -12,7 +12,10 @@ type IconName =
   | "package"
   | "cloud-upload"
   | "check"
-  | "camera";
+  | "camera"
+  | "tuck"
+  | "more"
+  | "play";
 
 const STROKE = {
   fill: "none",
@@ -96,6 +99,22 @@ const PATHS: Record<IconName, ReactElement> = {
     </>
   ),
   check: <path d="M20 6 9 17l-5-5" />,
+  // lucide arrow-right-to-line: "send it to the screen edge".
+  tuck: (
+    <>
+      <path d="M17 12H3" />
+      <path d="m11 18 6-6-6-6" />
+      <path d="M21 5v14" />
+    </>
+  ),
+  more: (
+    <>
+      <circle cx="12" cy="5" r="1" />
+      <circle cx="12" cy="12" r="1" />
+      <circle cx="12" cy="19" r="1" />
+    </>
+  ),
+  play: <path d="M7 4v16l13-8z" />,
   camera: (
     <>
       <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z" />

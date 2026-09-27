@@ -86,7 +86,10 @@ const dispatch = vi.fn(async (..._args: unknown[]) => ({ ok: true as const, valu
 const attachIdentity = vi.fn();
 vi.mock("../recording-service", () => ({ attachTrustedRecordingWindowIdentity: attachIdentity }));
 vi.mock("../../command-bus", () => ({ bus: { dispatch } }));
-vi.mock("../../float-over", () => ({ setFloatOverState: () => undefined }));
+vi.mock("../../float-over", () => ({
+  setFloatOverState: () => undefined,
+  releaseFloatOverDock: () => undefined
+}));
 vi.mock("../../log", () => ({
   getMainLogger: () => ({ debug: () => undefined, info: () => undefined, warn: () => undefined })
 }));

@@ -6,7 +6,12 @@
 // out of the registry. Event channels (server → client broadcasts) use
 // the typed map below.
 
-import type { AppUpdateStatus, CaptureRecord, VideoPreset } from "./protocol";
+import type {
+  AppUpdateStatus,
+  CaptureRecord,
+  FloatOverDockSide,
+  VideoPreset
+} from "./protocol";
 
 export const IPC_CMD = "cmd" as const;
 
@@ -389,15 +394,24 @@ export type EventChannel = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];
  *     can paint without a renderer→main metadata round trip.
  *   - `cancel`      — selector cancelled; hide the toast SYNCHRONOUSLY
  *     with no exit animation. Used so the user never sees the
- *     pre-shown placeholder when they Esc out of the selector.
- *   - `dismiss`     — user explicitly dismissed (X button, Esc on the
- *     toast itself, auto-dismiss countdown). Plays the exit animation.
+ *     pre-shown placeholder when they Esc out of the selector. A cancel
+ *     that ends a selector session (the toast was pre-shown `idle`)
+ *     brings the edge dock back if snaps are waiting on it, unless
+ *     `holdDock` says a recording is about to own the screen.
+ *   - `dismiss`     — the renderer has nothing left to show (toast
+ *     closed and the dock is empty). The window parks.
+ *   - `tucked`      — the toast went to the screen-edge dock: snaps whose
+ *     enrichment was still running when their countdown ended wait
+ *     there as tabs. Also re-sent when a drag moves the dock to the
+ *     other side of the screen.
  */
 export type FloatOverEvent =
   | { kind: "show-idle" }
   | { kind: "show-loaded"; captureId: string; record?: CaptureRecord | undefined }
-  | { kind: "cancel" }
-  | { kind: "dismiss" };
+  | { kind: "cancel"; holdDock?: boolean }
+  | { kind: "dismiss" }
+  | { kind: "tucked"; side: FloatOverDockSide };
+
 
 export type FloatOverVideoCopyShortcutEvent = {
   captureId: string;

@@ -151,7 +151,13 @@ declare global {
         }) => void
       ): () => void;
       requestTrayResize(payload: { width: number; height: number }): void;
-      requestFloatOverResize(payload: { width: number; height: number }): void;
+      requestFloatOverResize(payload: {
+        width: number;
+        height: number;
+        mode?: "toast" | "dock";
+      }): void;
+      /** Drive a drag of the float-over's screen-edge dock. */
+      requestFloatOverDockDrag(phase: "start" | "move" | "end"): void;
       /** Ask main to send the current float-over state on
        *  `floatOverState`. Call only after subscribing to that channel. */
       requestFloatOverState(): void;

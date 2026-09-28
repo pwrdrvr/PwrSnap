@@ -6,13 +6,15 @@ import { access } from "node:fs/promises";
 import { join } from "node:path";
 import {
   app,
+  BaseWindow,
   BrowserWindow,
   clipboard,
   dialog,
   globalShortcut,
   Menu,
   nativeTheme,
-  shell
+  shell,
+  webContents
 } from "electron";
 import {
   EVENT_CHANNELS,
@@ -1381,30 +1383,77 @@ function scheduleDarwinRegionSelectorPreWarm(): void {
 }
 
 /**
- * Log lines that say where a quit stopped. A quit once stalled with every
- * window gone and nothing logged: before-quit's teardown had run, the
- * Library had closed, and will-quit never fired (Electron drops a quit
- * when a window cancels its close, and waits forever on a window that
- * appears after the close pass). Registered after the transient-window
- * teardown, so the window list is what the close pass will have to close.
+ * Log lines that say where a quit stopped. A quit has stalled with every
+ * window gone and nothing logged: the second before-quit pass tore the
+ * helper windows down, the Library closed, and will-quit never fired.
+ * Electron only emits will-quit once its native window list is empty, so
+ * something it still counted had not finished closing.
+ *
+ * Registered after the transient-window teardown, so the list on each
+ * pass is what the close pass will have to close. Windows are named by
+ * their title and `#stage=` hash, never by URL: in `pnpm dev` the URL is
+ * `http://localhost:<port>/…`, and a terminal turns that into a link that
+ * opens the page in the user's browser.
  */
+const QUIT_STALL_REPORT_MS = 5_000;
+
+function pageOf(rawUrl: string): string {
+  try {
+    const url = new URL(rawUrl);
+    if (url.hash !== "") return url.hash;
+    return url.protocol === "http:" || url.protocol === "https:" || url.protocol === "file:"
+      ? "(library)"
+      : url.protocol;
+  } catch {
+    return "(none)";
+  }
+}
+
 function installQuitDiagnostics(): void {
   const log = getMainLogger("pwrsnap:quit");
   let quitting = false;
+  let stallTimer: ReturnType<typeof setTimeout> | null = null;
   const describe = (window: BrowserWindow) => ({
     id: window.id,
     title: window.getTitle(),
-    url: window.webContents.isDestroyed() ? null : window.webContents.getURL().split("?")[0]
+    page: window.webContents.isDestroyed() ? "(destroyed)" : pageOf(window.webContents.getURL())
   });
+  // Everything Electron still holds, including what BrowserWindow's own
+  // list no longer reports.
+  const reportStall = (): void => {
+    stallTimer = null;
+    log.warn("quit stalled: no will-quit since the last before-quit", {
+      waitedMs: QUIT_STALL_REPORT_MS,
+      baseWindows: BaseWindow.getAllWindows().map((window) => ({
+        id: window.id,
+        title: window.getTitle(),
+        destroyed: window.isDestroyed(),
+        visible: window.isVisible(),
+        browser: window instanceof BrowserWindow
+      })),
+      webContents: webContents.getAllWebContents().map((contents) => ({
+        id: contents.id,
+        type: contents.getType(),
+        page: contents.isDestroyed() ? "(destroyed)" : pageOf(contents.getURL())
+      }))
+    });
+  };
   app.on("before-quit", () => {
     quitting = true;
     log.info("quit requested", { windows: BrowserWindow.getAllWindows().map(describe) });
+    if (stallTimer !== null) clearTimeout(stallTimer);
+    stallTimer = setTimeout(reportStall, QUIT_STALL_REPORT_MS);
+    stallTimer.unref();
   });
   app.on("browser-window-created", (_event, window) => {
     if (!quitting) return;
     log.warn("window created during quit", { ...describe(window), stack: new Error().stack });
   });
-  app.on("will-quit", () => log.info("will-quit"));
+  app.on("will-quit", () => {
+    if (stallTimer !== null) clearTimeout(stallTimer);
+    stallTimer = null;
+    log.info("will-quit");
+  });
 }
 
 export function bootstrapApp(): void {

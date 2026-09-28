@@ -1287,7 +1287,7 @@ export function FloatOver({
                 : {})}
               action={
                 thinking && enrichment?.latestRunId && onCancelEnrichment ? (
-                  <button className="fo__ai-accept" title="Cancel enrichment"
+                  <button className="fo__ai-accept is-quiet" title="Cancel enrichment"
                     onClick={() => onCancelEnrichment(enrichment.latestRunId!)}>
                     Cancel
                   </button>

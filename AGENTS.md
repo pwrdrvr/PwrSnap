@@ -2259,8 +2259,15 @@ and
   still take clicks. The dock rests as an 18px sliver and widens only
   while the pointer is over it. The one accepted exception is the rail
   beside a toast: it is only as tall as its thumbnails, as the design
-  draws it, so the strip below it is see-through and still takes clicks.
-  A rail stretched to the toast's height read as a tall empty panel.
+  draws it, so the strip below it is see-through. A rail stretched to the
+  toast's height read as a tall empty panel. On macOS and Windows that
+  strip (and the gaps between dock tabs) passes clicks through: the host
+  reports each time the pointer crosses between a drawn part
+  (`FLOAT_OVER_SOLID`) and the rest, and main answers with
+  `setIgnoreMouseEvents(true, { forward: true })`. Main only honors it
+  while the window is on screen, and every show and park resets it to
+  taking clicks, so a report can never un-park a window. Linux has no
+  move forwarding, so the strip keeps taking clicks there.
 - **No native shadow on the dock.** macOS draws the shadow, with a light
   rim, around the window's whole shape, which outlined the gap between
   the tabs. `setWindowShape` turns it off for the dock and back on for

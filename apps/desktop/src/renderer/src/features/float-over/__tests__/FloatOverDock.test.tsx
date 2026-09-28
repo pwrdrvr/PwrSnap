@@ -114,6 +114,7 @@ type HostApi = {
   push: (channel: string, payload: unknown) => void;
   dispatch: ReturnType<typeof vi.fn>;
   resize: ReturnType<typeof vi.fn>;
+  passThrough: ReturnType<typeof vi.fn>;
   /** Runs of a verb, as `[request]` tuples. */
   calls: (verb: string) => unknown[];
 };
@@ -153,6 +154,7 @@ function installHostApi(options: {
     }
   });
   const resize = vi.fn();
+  const passThrough = vi.fn();
   window.pwrsnapApi = {
     dispatch,
     on: (channel: string, handler: EventHandler) => {
@@ -166,6 +168,7 @@ function installHostApi(options: {
     requestFloatOverResize: resize,
     requestFloatOverDockDrag: vi.fn(),
     requestFloatOverState: vi.fn(),
+    setFloatOverPassThrough: passThrough,
     startCaptureDrag: vi.fn()
   } as unknown as NonNullable<Window["pwrsnapApi"]>;
   return {
@@ -174,6 +177,7 @@ function installHostApi(options: {
     },
     dispatch,
     resize,
+    passThrough,
     calls: (verb) =>
       dispatch.mock.calls.filter(([name]) => name === verb).map(([, req]) => req)
   };
@@ -426,6 +430,29 @@ describe("FloatOverHost dock", () => {
       expect.stringContaining("Toaster snap")
     ]);
     expect(el.querySelectorAll(".fod-tab")).toHaveLength(1);
+  });
+
+  test("the see-through area beside the rail lets clicks through, the rail and toast do not", async () => {
+    const api = installHostApi();
+    const el = await mountHost();
+    await showSnap(api, "cap_1", "running");
+    await push(api, EVENT_CHANNELS.floatOverState, { kind: "show-idle" });
+    await showSnap(api, "cap_2", "running");
+
+    // The toast re-derives its own hover from the pointer on every move;
+    // jsdom has no hit testing.
+    document.elementFromPoint = () => null;
+    const move = (target: Element): void => {
+      target.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+    };
+    move(el.querySelector(".fo-shell")!);
+    move(el.querySelector(".fo-shell")!);
+    move(el.querySelector(".fo-rail__item")!);
+    move(el.querySelector(".fo-rail")!);
+    move(el.querySelector(".fo")!);
+    move(el.querySelector(".fo-host")!);
+    // Only crossings are reported.
+    expect(api.passThrough.mock.calls).toEqual([[true], [false], [true]]);
   });
 
   test("the rail opens another waiting snap", async () => {

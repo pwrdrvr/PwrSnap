@@ -182,6 +182,12 @@ function drag(phase: "start" | "move" | "end"): void {
   handler({ sender: win().webContents }, { phase });
 }
 
+function passThrough(through: boolean, sender: unknown = win().webContents): void {
+  const handler = mocks.ipcHandlers.get("float-over:pass-through");
+  if (handler === undefined) throw new Error("pass-through channel is not wired");
+  handler({ sender }, { through });
+}
+
 /** A toast on screen, whose renderer has drawn it. */
 function showToast(captureId = "cap_1"): MockWindow {
   setFloatOverState({ kind: "show-loaded", captureId });
@@ -291,6 +297,53 @@ describe("float-over dock", () => {
 
     setFloatOverState({ kind: "show-loaded", captureId: "cap_2" });
     expect(window.setContentProtection).toHaveBeenLastCalledWith(false);
+  });
+
+  it("lets clicks fall through the see-through parts of an on-screen window", () => {
+    const window = showToast();
+    window.setIgnoreMouseEvents.mockClear();
+
+    passThrough(true);
+    expect(window.setIgnoreMouseEvents).toHaveBeenLastCalledWith(true, { forward: true });
+    passThrough(true);
+    expect(window.setIgnoreMouseEvents).toHaveBeenCalledTimes(1);
+    passThrough(false);
+    expect(window.setIgnoreMouseEvents).toHaveBeenLastCalledWith(false);
+
+    // Another webContents cannot switch it.
+    passThrough(true, {});
+    expect(window.setIgnoreMouseEvents).toHaveBeenCalledTimes(2);
+  });
+
+  it("never un-parks a parked window's mouse, and a show takes clicks again", () => {
+    const window = showToast();
+    passThrough(true);
+    setFloatOverState({ kind: "dismiss" });
+    window.setIgnoreMouseEvents.mockClear();
+
+    // Parked: the window ignores the mouse outright, and stays so.
+    passThrough(false);
+    passThrough(true);
+    expect(window.setIgnoreMouseEvents).not.toHaveBeenCalled();
+
+    // The next show resets to taking clicks, so the first report after
+    // it is honored even though it matches the last one.
+    showToast("cap_2");
+    expect(window.setIgnoreMouseEvents).toHaveBeenLastCalledWith(false);
+    passThrough(true);
+    expect(window.setIgnoreMouseEvents).toHaveBeenLastCalledWith(true, { forward: true });
+  });
+
+  it("keeps the mouse where Electron cannot forward moves (Linux)", () => {
+    const window = showToast();
+    Object.defineProperty(process, "platform", { value: "linux" });
+    try {
+      window.setIgnoreMouseEvents.mockClear();
+      passThrough(true);
+      expect(window.setIgnoreMouseEvents).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, "platform", { value: "darwin" });
+    }
   });
 
   it("draws no native shadow around the dock, and gives the toast its shadow back", () => {

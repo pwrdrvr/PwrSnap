@@ -158,6 +158,9 @@ declare global {
       }): void;
       /** Drive a drag of the float-over's screen-edge dock. */
       requestFloatOverDockDrag(phase: "start" | "move" | "end"): void;
+      /** Tell main whether the pointer is over a see-through part of the
+       *  float-over window, so clicks there reach the app behind it. */
+      setFloatOverPassThrough(through: boolean): void;
       /** Ask main to send the current float-over state on
        *  `floatOverState`. Call only after subscribing to that channel. */
       requestFloatOverState(): void;

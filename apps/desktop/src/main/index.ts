@@ -1380,6 +1380,33 @@ function scheduleDarwinRegionSelectorPreWarm(): void {
   }, 0);
 }
 
+/**
+ * Log lines that say where a quit stopped. A quit once stalled with every
+ * window gone and nothing logged: before-quit's teardown had run, the
+ * Library had closed, and will-quit never fired (Electron drops a quit
+ * when a window cancels its close, and waits forever on a window that
+ * appears after the close pass). Registered after the transient-window
+ * teardown, so the window list is what the close pass will have to close.
+ */
+function installQuitDiagnostics(): void {
+  const log = getMainLogger("pwrsnap:quit");
+  let quitting = false;
+  const describe = (window: BrowserWindow) => ({
+    id: window.id,
+    title: window.getTitle(),
+    url: window.webContents.isDestroyed() ? null : window.webContents.getURL().split("?")[0]
+  });
+  app.on("before-quit", () => {
+    quitting = true;
+    log.info("quit requested", { windows: BrowserWindow.getAllWindows().map(describe) });
+  });
+  app.on("browser-window-created", (_event, window) => {
+    if (!quitting) return;
+    log.warn("window created during quit", { ...describe(window), stack: new Error().stack });
+  });
+  app.on("will-quit", () => log.info("will-quit"));
+}
+
 export function bootstrapApp(): void {
   markStartup("main: bootstrapApp begin");
   initializeMainLogger();
@@ -1425,6 +1452,7 @@ export function bootstrapApp(): void {
     },
     { shouldDisposeOnBeforeQuit: () => !isSizzleQuitDeferred() && !diagnosticsQuitDeferred }
   );
+  installQuitDiagnostics();
 
   // setName BEFORE the first app.getPath("userData") access — Electron
   // derives userData from the app name, and the role peek below reads

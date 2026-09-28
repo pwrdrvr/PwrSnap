@@ -56,6 +56,7 @@ const log = getMainLogger("pwrsnap:float-over");
 const FLOAT_OVER_RESIZE_CHANNEL = "float-over:resize";
 const FLOAT_OVER_STATE_REQUEST_CHANNEL = "float-over:request-state";
 const FLOAT_OVER_DOCK_DRAG_CHANNEL = "float-over:dock-drag";
+const FLOAT_OVER_PASS_THROUGH_CHANNEL = "float-over:pass-through";
 /** Backstop for a renderer measurement bug. The widest real layout is
  *  the toast plus its rail. */
 const FLOAT_OVER_WIDTH_MAX_DIP = 720;
@@ -110,6 +111,12 @@ let unsubscribeRecordingState: (() => void) | null = null;
 /** Whether the window is currently excluded from screen capture. A new
  *  window starts capturable. */
 let dockContentProtected = false;
+/** On screen and taking the mouse (not parked). The renderer may only
+ *  turn click-through on while this holds. */
+let takingMouse = false;
+/** The pointer is over a see-through part of the window, so clicks go to
+ *  whatever is behind it. See `wireFloatOverPassThroughChannel`. */
+let passThrough = false;
 /**
  * Display the float-over is currently anchored on, captured at
  * show-idle / show-loaded time. Subsequent content-driven resizes
@@ -174,6 +181,8 @@ function resetFloatOverRuntimeState(): void {
   windowShape = "toast";
   dockDrag = null;
   dockContentProtected = false;
+  takingMouse = false;
+  passThrough = false;
 }
 
 /**
@@ -226,6 +235,8 @@ export function floatOverHideModelForPlatform(
  */
 function parkOffScreen(window: BrowserWindow): void {
   window.setIgnoreMouseEvents(true);
+  takingMouse = false;
+  passThrough = false;
   if (floatOverHideModelForPlatform(process.platform) === "hide") {
     // Windows AND Linux: a REAL hide().
     //
@@ -263,6 +274,8 @@ function parkOffScreen(window: BrowserWindow): void {
  */
 function restoreOnScreen(window: BrowserWindow): void {
   window.setIgnoreMouseEvents(false);
+  takingMouse = true;
+  passThrough = false;
   if (floatOverHideModelForPlatform(process.platform) === "hide") {
     // `parkOffScreen` really hid this window, so every restore has to really
     // show it — there is no once-only shortcut here. (That shortcut is what
@@ -448,6 +461,7 @@ function getOrCreate(): BrowserWindow {
   wireFloatOverResizeChannel();
   wireFloatOverStateRequestChannel();
   wireFloatOverDockDragChannel();
+  wireFloatOverPassThroughChannel();
   if (unsubscribeRecordingState === null) {
     recordingOwnsScreen = isRecordingActive();
     unsubscribeRecordingState = subscribeToRecordingState(onRecordingStateChanged);
@@ -667,6 +681,33 @@ function wireFloatOverDockDragChannel(): void {
       broadcastState({ kind: "tucked", side });
     }
     singleton.setBounds(floatOverDockBounds(wa, dock, bounds.width, bounds.height), false);
+  });
+}
+
+/**
+ * The window is a rectangle, and parts of it are see-through: below the
+ * rail beside a toast, and the gaps between dock tabs. Transparent pixels still take clicks, so the renderer reports
+ * whether the pointer is over one of those parts, and main then ignores
+ * the mouse there while still forwarding moves, so the renderer can see
+ * the pointer come back over something drawn.
+ *
+ * macOS and Windows only: Electron cannot forward moves on Linux, and a
+ * window that ignores the mouse without them would never take it back.
+ */
+let passThroughChannelWired = false;
+function wireFloatOverPassThroughChannel(): void {
+  if (passThroughChannelWired) return;
+  passThroughChannelWired = true;
+  ipcMain.on(FLOAT_OVER_PASS_THROUGH_CHANNEL, (event, payload: unknown) => {
+    if (singleton === null || singleton.isDestroyed()) return;
+    if (event.sender !== singleton.webContents) return;
+    if (process.platform !== "darwin" && process.platform !== "win32") return;
+    if (!takingMouse) return;
+    const through = (payload as { through?: unknown } | null)?.through === true;
+    if (through === passThrough) return;
+    passThrough = through;
+    if (through) singleton.setIgnoreMouseEvents(true, { forward: true });
+    else singleton.setIgnoreMouseEvents(false);
   });
 }
 
@@ -1204,6 +1245,10 @@ export function disposeFloatOver(): void {
   if (dockDragChannelWired) {
     ipcMain.removeAllListeners(FLOAT_OVER_DOCK_DRAG_CHANNEL);
     dockDragChannelWired = false;
+  }
+  if (passThroughChannelWired) {
+    ipcMain.removeAllListeners(FLOAT_OVER_PASS_THROUGH_CHANNEL);
+    passThroughChannelWired = false;
   }
   unsubscribeRecordingState?.();
   unsubscribeRecordingState = null;

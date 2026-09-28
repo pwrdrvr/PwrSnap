@@ -149,6 +149,11 @@ type AiRunUpdatedPayload = {
   enrichment?: CaptureEnrichment | null;
 };
 
+/** The parts of the float-over window that are drawn and take clicks.
+ *  Everything else in it is see-through, and a click there goes to the
+ *  app behind the window. */
+const FLOAT_OVER_SOLID = ".fo-shell__toast, .fo-rail, .fod-tab, .fod-more";
+
 /** What the window is showing: the toast (with the rail beside it when
  *  other snaps are waiting), or the tabs on the screen edge. */
 type HostMode = "toast" | "dock";
@@ -428,6 +433,25 @@ export function FloatOverHost({
       dprQuery?.removeEventListener("change", onDprChange);
     };
   }, [state.kind, mode, layoutEpoch, dockEmpty]);
+
+  // Clicks on the see-through parts of the window (below the rail, the
+  // gaps between dock tabs) go to the app behind it: tell main whenever
+  // the pointer crosses between those and something drawn. Main forwards
+  // mouse moves while it ignores clicks, so this keeps hearing the
+  // pointer. Main resets to "taking clicks" on every show and park,
+  // which each follow a state event, so the memo resets with the epoch.
+  useEffect(() => {
+    let sent: boolean | null = null;
+    const onMove = (event: MouseEvent): void => {
+      const target = event.target;
+      const through = !(target instanceof Element) || target.closest(FLOAT_OVER_SOLID) === null;
+      if (through === sent) return;
+      sent = through;
+      window.pwrsnapApi?.setFloatOverPassThrough?.(through);
+    };
+    document.addEventListener("mousemove", onMove);
+    return () => document.removeEventListener("mousemove", onMove);
+  }, [mode, layoutEpoch]);
 
   // Subscribe to main → renderer state events, then ask main for the
   // current state. The order matters: main replies on this same channel,

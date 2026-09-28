@@ -142,6 +142,7 @@ const FLOAT_OVER_STATE_REQUEST_CHANNEL = "float-over:request-state";
 // move / end). Main reads the cursor itself and moves the window. See
 // wireFloatOverDockDragChannel in main/float-over.ts.
 const FLOAT_OVER_DOCK_DRAG_CHANNEL = "float-over:dock-drag";
+const FLOAT_OVER_PASS_THROUGH_CHANNEL = "float-over:pass-through";
 // Failed recording cards are content-sized as well. This channel is accepted
 // only from the live recording-controller webContents in main.
 const RECORDING_CONTROLLER_RESIZE_CHANNEL = "recording-controller:resize";
@@ -446,6 +447,14 @@ const pwrsnapApi = {
    */
   requestFloatOverDockDrag(phase: "start" | "move" | "end"): void {
     ipcRenderer.send(FLOAT_OVER_DOCK_DRAG_CHANNEL, { phase });
+  },
+  /**
+   * Float-over renderer → main: the pointer is over a see-through part of
+   * the window (`through: true`) or back over something drawn. Main lets
+   * clicks fall through to the app behind while it is see-through.
+   */
+  setFloatOverPassThrough(through: boolean): void {
+    ipcRenderer.send(FLOAT_OVER_PASS_THROUGH_CHANNEL, { through });
   },
   /**
    * Float-over renderer → main: ask for the current toast state. Call it

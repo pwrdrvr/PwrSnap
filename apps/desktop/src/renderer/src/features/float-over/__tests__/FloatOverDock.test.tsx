@@ -325,6 +325,17 @@ describe("FloatOver tuck countdown", () => {
     expect(el.querySelector('[aria-label="Tuck to the screen edge"]')).toBeNull();
   });
 
+  test("a Tuck pressed just before the countdown ends closes the toast once", async () => {
+    const onTimeout = vi.fn();
+    const el = await render({ ...baseProps, enrichment: running, dockable: true, onTimeout });
+    await advance(DOCK_TUCK_COUNTDOWN_MS - 100);
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[aria-label="Tuck to the screen edge"]')?.click();
+    });
+    await advance(1_000);
+    expect(onTimeout).toHaveBeenCalledTimes(1);
+  });
+
   test("hovering the rail beside the toast pauses it like hovering the toast", async () => {
     const onTimeout = vi.fn();
     await render({ ...baseProps, enrichment: running, dockable: true, onTimeout, externalHover: true });
@@ -354,6 +365,17 @@ describe("FloatOverHost dock", () => {
 
     await press(tabs[0]!);
     expect(api.calls("float-over:open")).toEqual([{ captureId: "cap_1" }]);
+
+    // Enter / Space on a focused tab: a click with no pointer before it.
+    await act(async () => {
+      tabs[0]!.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 }));
+    });
+    expect(api.calls("float-over:open")).toHaveLength(2);
+    // A pointer click's own click event does not open it a second time.
+    await act(async () => {
+      tabs[0]!.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+    });
+    expect(api.calls("float-over:open")).toHaveLength(2);
   });
 
   test("a waiting tab follows its snap's enrichment, and stays once it is ready", async () => {

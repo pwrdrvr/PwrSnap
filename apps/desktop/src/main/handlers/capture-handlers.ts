@@ -1930,7 +1930,7 @@ function releasingFloatOverDock<C extends "capture:fullScreen" | "capture:allScr
 }
 
 async function hidePwrSnapChromeAndSettle(): Promise<void> {
-  setFloatOverState({ kind: "cancel" });
+  setFloatOverState({ kind: "cancel", chromeHide: true });
   hideTrayPopoverIfVisible();
   await new Promise((resolve) => setTimeout(resolve, 50));
 }

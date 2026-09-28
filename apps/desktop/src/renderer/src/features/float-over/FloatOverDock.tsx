@@ -191,7 +191,15 @@ export function FloatOverDock({
       else onOpen(target);
     },
     onPointerCancel: endDrag,
-    onLostPointerCapture: endDrag
+    onLostPointerCapture: endDrag,
+    // Enter / Space on a focused tab arrive as a click with no pointer
+    // before it (`detail === 0`). A pointer click was already handled
+    // at pointerup, where a drag can still claim it.
+    onClick: (event: React.MouseEvent<HTMLElement>) => {
+      if (event.detail !== 0) return;
+      if (target === "more") onMore();
+      else onOpen(target);
+    }
   });
 
   useEffect(() => {

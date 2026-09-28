@@ -306,23 +306,32 @@ describe("float-over dock", () => {
   it("hides the dock for the chrome hide before a snapshot, without bringing it back", () => {
     const window = showDock();
 
-    setFloatOverState({ kind: "cancel" });
+    setFloatOverState({ kind: "cancel", chromeHide: true });
     expect(getFloatOverState()).toEqual({ kind: "hidden" });
     expect(onScreen(window)).toBe(false);
-    expect(stateSends(window).at(-1)).toEqual({ kind: "cancel" });
+    expect(stateSends(window).at(-1)).toEqual({ kind: "cancel", chromeHide: true });
+  });
+
+  it("a chrome hide never brings the dock back, even from hidden", () => {
+    // A second full-screen capture lands between the first one's hide
+    // and its toast: the float-over is hidden with snaps waiting.
+    showDock();
+    setFloatOverState({ kind: "cancel", chromeHide: true });
+    setFloatOverState({ kind: "cancel", chromeHide: true });
+    expect(getFloatOverState()).toEqual({ kind: "hidden" });
   });
 
   it("brings the dock back after a chrome-hidden capture that opened no toast", () => {
     // capture:fullScreen hid the dock, then the grab failed.
     showDock();
-    setFloatOverState({ kind: "cancel" });
+    setFloatOverState({ kind: "cancel", chromeHide: true });
     releaseFloatOverDock();
     expect(getFloatOverState()).toEqual({ kind: "tucked" });
   });
 
   it("leaves a toast alone when a capture that opened one releases the dock", () => {
     showDock();
-    setFloatOverState({ kind: "cancel" });
+    setFloatOverState({ kind: "cancel", chromeHide: true });
     setFloatOverState({ kind: "show-loaded", captureId: "cap_2" });
     releaseFloatOverDock();
     expect(getFloatOverState()).toEqual({ kind: "loaded", captureId: "cap_2" });
@@ -392,7 +401,7 @@ describe("float-over dock", () => {
     expect(onScreen(window)).toBe(true);
 
     // ...but the session's end now knows snaps are waiting.
-    setFloatOverState({ kind: "cancel" });
+    setFloatOverState({ kind: "cancel", chromeHide: true });
     setFloatOverState({ kind: "show-idle" });
     setFloatOverState({ kind: "cancel" });
     expect(getFloatOverState()).toEqual({ kind: "tucked" });

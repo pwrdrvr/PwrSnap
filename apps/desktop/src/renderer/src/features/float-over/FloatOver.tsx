@@ -829,6 +829,9 @@ export function FloatOver({
   // host the outcome. Reads refs so a re-render mid-exit cannot swap in
   // a stale answer.
   const finishCountdown = (): void => {
+    // Once. The countdown keeps ticking through the exit animation, so a
+    // Tuck or X pressed near the end would otherwise close twice.
+    if (exitTimerRef.current !== null) return;
     setExiting(true);
     exitTimerRef.current = setTimeout(() => {
       const timeout = onTimeoutRef.current;
@@ -943,6 +946,7 @@ export function FloatOver({
   }, []);
 
   const dismissNow = () => {
+    if (exitTimerRef.current !== null) return;
     setExiting(true);
     exitTimerRef.current = setTimeout(() => onDismiss?.(), 220);
   };

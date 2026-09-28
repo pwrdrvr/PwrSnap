@@ -874,11 +874,15 @@ export function setFloatOverState(event: FloatOverEvent): void {
       // selector and they should never have seen it. Park first,
       // selector hides 50ms later, no flash.
       //
-      // The SAME event hides PwrSnap's chrome before a snapshot (the
-      // toast or dock is `loaded` / `tucked` then). Only a cancel that
-      // ENDS a selector session — the toast was pre-shown `idle`, or a
-      // capture failed after the chrome hide — may bring the dock back.
-      const endsCaptureSession = state.kind === "idle" || state.kind === "hidden";
+      // The SAME event hides PwrSnap's chrome before a snapshot
+      // (`chromeHide`). That one only ever parks: a second capture
+      // started while the first is between its hide and its toast finds
+      // the float-over `hidden`, and restoring the dock there would put
+      // it in the picture. Only a cancel that ENDS a selector session —
+      // the toast was pre-shown `idle`, or a capture failed after the
+      // chrome hide — may bring the dock back.
+      const endsCaptureSession =
+        event.chromeHide !== true && (state.kind === "idle" || state.kind === "hidden");
       state = { kind: "hidden" };
       layoutPending = null;
       if (singleton !== null && !singleton.isDestroyed()) {

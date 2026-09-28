@@ -398,6 +398,9 @@ export type EventChannel = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];
  *     that ends a selector session (the toast was pre-shown `idle`)
  *     brings the edge dock back if snaps are waiting on it, unless
  *     `holdDock` says a recording is about to own the screen.
+ *     `chromeHide` marks the hide before a snapshot: it only ever
+ *     parks, whatever state it finds, because the dock coming back
+ *     then would put it in the picture.
  *   - `dismiss`     — the renderer has nothing left to show (toast
  *     closed and the dock is empty). The window parks.
  *   - `tucked`      — the toast went to the screen-edge dock: snaps whose
@@ -408,7 +411,7 @@ export type EventChannel = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];
 export type FloatOverEvent =
   | { kind: "show-idle" }
   | { kind: "show-loaded"; captureId: string; record?: CaptureRecord | undefined }
-  | { kind: "cancel"; holdDock?: boolean }
+  | { kind: "cancel"; holdDock?: boolean; chromeHide?: boolean }
   | { kind: "dismiss" }
   | { kind: "tucked"; side: FloatOverDockSide };
 

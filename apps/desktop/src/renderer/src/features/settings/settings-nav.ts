@@ -13,17 +13,23 @@
 // validates `settings:open` deep links against.
 
 import {
+  NEW_CONNECTION_SETTINGS_SUB,
   SETTINGS_PAGE_SUBS,
   type AiFeaturesSettingsSub,
   type SettingsPage
 } from "@pwrsnap/shared";
 import type { AiProviderStatus } from "./ai-provider-status";
+import type { ConnectionStatus } from "./direct-api-status";
 
 export type SettingsNavChild = {
   sub: string;
   label: string;
-  /** Set on a provider screen; absent on a jump-to section. */
-  status?: AiProviderStatus;
+  /** Set on a provider or connection screen; absent on a jump-to section. */
+  status?: Pick<AiProviderStatus, "tone" | "chip" | "badge">;
+  /** A small group label rendered above this child. */
+  heading?: string;
+  /** The trailing "+ Add connection" row: an action, with no status. */
+  add?: true;
 };
 
 /** Pages whose sidebar row expands into child rows. */
@@ -45,18 +51,35 @@ export function settingsSectionId(page: SettingsPage, sub: string): string {
   return `pss-section-${page}-${sub}`;
 }
 
-/** The child rows for `page`, in the order the page reads. */
+/** The child rows for `page`, in the order the page reads. On AI
+ *  Providers: the installed agents, then a "Direct API" group of one row per
+ *  connection, always closed by "+ Add connection". */
 export function settingsNavChildren(
   page: SettingsPage,
-  providerStatuses: readonly AiProviderStatus[]
+  providerStatuses: readonly AiProviderStatus[],
+  connections: readonly ConnectionStatus[] = []
 ): readonly SettingsNavChild[] {
   switch (page) {
     case "ai":
-      return providerStatuses.map((status) => ({
-        sub: status.sub,
-        label: status.label,
-        status
-      }));
+      return [
+        ...providerStatuses.map((status) => ({
+          sub: status.sub,
+          label: status.label,
+          status
+        })),
+        ...connections.map((status, i) => ({
+          sub: status.sub,
+          label: status.label,
+          status,
+          ...(i === 0 ? { heading: "Direct API" } : {})
+        })),
+        {
+          sub: NEW_CONNECTION_SETTINGS_SUB,
+          label: "Add connection",
+          add: true as const,
+          ...(connections.length === 0 ? { heading: "Direct API" } : {})
+        }
+      ];
     case "ai-features":
       return SETTINGS_PAGE_SUBS["ai-features"].map((sub) => ({
         sub,

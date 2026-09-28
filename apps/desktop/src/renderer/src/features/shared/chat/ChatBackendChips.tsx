@@ -121,12 +121,12 @@ function reasoningForModel(model: ModelOption | undefined, current: string | nul
 
 // ---- Locked (read-only) chips ------------------------------------------
 
-export function LockedBackendChips({ choice }: { choice: ChatBackendChoice }): ReactElement {
+export function LockedBackendChips({ choice, providerLabels = {} }: { choice: ChatBackendChoice; providerLabels?: Record<string, string> }): ReactElement {
   return (
     <div className="ps-bchips ps-bchips--locked" data-testid="chat-backend-chips-locked">
       <span className="ps-bchip">
         <span className="ps-bchip-dot" aria-hidden="true" />
-        {providerLabel(choice.provider)}
+        {providerLabels[choice.provider] ?? providerLabel(choice.provider)}
       </span>
       {choice.model !== null && choice.model !== "" ? (
         <span className="ps-bchip ps-bchip--muted">{choice.model}</span>
@@ -143,11 +143,13 @@ export function LockedBackendChips({ choice }: { choice: ChatBackendChoice }): R
 export function NewChatConfigChips({
   /** Provider options for this surface: "codex" + the user's enabled ACP agents. */
   providers,
+  providerLabels = {},
   value,
   onChange,
   onAvailabilityChange
 }: {
   providers: string[];
+  providerLabels?: Record<string, string>;
   value: ChatBackendChoice;
   onChange: (next: ChatBackendChoice) => void;
   onAvailabilityChange?: (availability: ChatBackendAvailability) => void;
@@ -196,6 +198,7 @@ export function NewChatConfigChips({
         const result =
           provider === "codex"
             ? await dispatch("codex:models", {})
+            : provider.startsWith("custom:") ? await dispatch("customModels:models", { id: provider.slice("custom:".length) })
             : await dispatch("acp:models", { agentId: provider.slice("acp:".length) });
         if (fetchSeq.current !== seq) return;
         if (!result.ok) {
@@ -229,12 +232,12 @@ export function NewChatConfigChips({
           onChange({
             ...value,
             model: defaultModel.id,
-            reasoning: reasoningForModel(defaultModel, value.reasoning)
+            reasoning: providerSupportsReasoning(provider) ? reasoningForModel(defaultModel, value.reasoning) : null
           });
           return;
         }
         const selectedModel = opts.find((option) => option.id === value.model);
-        const nextReasoning = reasoningForModel(selectedModel, value.reasoning);
+        const nextReasoning = providerSupportsReasoning(provider) ? reasoningForModel(selectedModel, value.reasoning) : null;
         if (nextReasoning !== value.reasoning) {
           onChange({ ...value, reasoning: nextReasoning });
         }
@@ -276,7 +279,7 @@ export function NewChatConfigChips({
         >
           {providers.map((p) => (
             <option key={p} value={p}>
-              {providerLabel(p)}
+              {providerLabels[p] ?? providerLabel(p)}
             </option>
           ))}
         </select>

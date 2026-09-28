@@ -277,6 +277,17 @@ async function renderToast(asset: FloatOverAsset): Promise<HTMLDivElement> {
   });
 }
 
+test.each(["queued", "running"] as const)("float-over can cancel a %s enrichment", async (status) => {
+  const onCancelEnrichment = vi.fn();
+  const el = await renderFloatOver({ src: "fixture.png", srcW: 640, srcH: 360, srcBytes: 1024,
+    startCountdown: false, aiEnabled: true, aiConsentAccepted: true,
+    enrichment: enrichment({ status }), onCancelEnrichment });
+  const cancel = el.querySelector<HTMLButtonElement>('button[title="Cancel enrichment"]');
+  expect(cancel?.textContent).toBe("Cancel");
+  await act(async () => { cancel!.click(); });
+  expect(onCancelEnrichment).toHaveBeenCalledWith("run_1");
+});
+
 async function unmount(): Promise<void> {
   if (root !== null) {
     await act(async () => {
@@ -951,7 +962,10 @@ describe("FloatOverHost", () => {
     expect(container.textContent).not.toContain("Enable AI to read");
   });
 
-  test("status pill names the configured enrichment provider (Gemini, not Codex)", async () => {
+  test.each([
+    { provider: "acp:gemini", label: "Gemini" },
+    { provider: "custom:fixture-model", label: "Bench model" }
+  ])("status pill names the configured enrichment provider ($label)", async ({ provider, label }) => {
     const api = installHostApi();
     // The fast show-loaded-with-record path must still fetch settings so the
     // pill can name the provider. Return an acp:gemini enrichment default.
@@ -963,8 +977,10 @@ describe("FloatOverHost", () => {
         consentAcceptedAt: "2026-05-19T12:00:00.000Z",
         defaults: {
           ...baseSettings.ai.defaults,
-          enrichment: { provider: "acp:gemini" }
-        }
+          enrichment: { provider, model: "/fixture/models/weights.gguf" }
+        },
+        customConnections: [{ id: "fixture-connection", name: "Local server", baseUrl: "http://127.0.0.1:8080/v1", protocol: "openai-chat", auth: { type: "none" } }],
+        customModels: [{ id: "fixture-model", connectionId: "fixture-connection", displayName: "Bench model", modelId: "/fixture/models/weights.gguf", capabilities: { vision: true, streaming: true }, maxOutputTokens: 4096 }]
       }
     };
     (window.pwrsnapApi!.dispatch as ReturnType<typeof vi.fn>).mockImplementation(
@@ -1031,7 +1047,8 @@ describe("FloatOverHost", () => {
       });
     });
 
-    expect(container.textContent).toContain("Gemini is reading the snap");
+    expect(container.textContent).toContain(`${label} is reading the snap`);
+    expect(container.textContent).not.toContain("/fixture/models/weights.gguf");
     expect(container.textContent).not.toContain("Codex is reading the snap");
   });
 

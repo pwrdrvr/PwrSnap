@@ -737,6 +737,18 @@
   letter-spacing: 0.02em;
 }
 .fo__ai-accept:hover { background: var(--accent-strong); }
+/* Cancel stops a run in flight; it is not the pill's positive action, so it
+   keeps the slot's size but not its accent. Same weight as the Library
+   rail, where Cancel is a link in the slot Regenerate uses. */
+.fo__ai-accept.is-quiet {
+  background: transparent;
+  color: var(--text-secondary);
+  box-shadow: inset 0 0 0 1px var(--border-default);
+}
+.fo__ai-accept.is-quiet:hover {
+  background: var(--bg-panel-elevated);
+  color: var(--text-primary);
+}
 
 /* ----- footer / destinations ----- */
 .fo__foot {

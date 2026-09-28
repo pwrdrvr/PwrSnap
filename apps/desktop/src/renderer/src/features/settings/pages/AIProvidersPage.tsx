@@ -1,3 +1,5 @@
+import { ConnectionIndex } from "./ConnectionIndex";
+import { ConnectionPage } from "./ConnectionPage";
 // The "Using" pill follows `snapshot.resolvedPath`, NOT
 // `settings.codex.mode` — same logic stdio-transport uses to spawn
 // Codex, so the renderer doesn't lie about which binary actually runs.
@@ -7,7 +9,6 @@ import type {
   AcpAgentDiscovery,
   AcpAgentDiscoveryEntry,
   AcpAgentPreference,
-  AiSurfaceId,
   CodexTestResult,
   DesktopCodexAuthProfile,
   DesktopCodexAuthProfileList,
@@ -16,10 +17,16 @@ import type {
   Settings,
   SettingsPatch
 } from "@pwrsnap/shared";
-import { executablePathExample, normalizeManualExecutablePath } from "@pwrsnap/shared";
+import {
+  connectionIdOfSettingsSub,
+  executablePathExample,
+  NEW_CONNECTION_SETTINGS_SUB,
+  normalizeManualExecutablePath
+} from "@pwrsnap/shared";
 import { dispatch } from "../../../lib/pwrsnap";
 import {
   Card,
+  ProviderDefaultsStrip,
   OptionRow,
   Row,
   SegmentedControl,
@@ -27,11 +34,10 @@ import {
 } from "../components";
 import { useAiProvidersContext, useInUseAcpModelProbes } from "../AiProvidersContext";
 import {
-  AI_SURFACE_LABELS,
   routedSurfaces,
+  statusBadgeClass,
   type AiProviderStatus,
-  type AiProviderSub,
-  type AiProviderTone
+  type AiProviderSub
 } from "../ai-provider-status";
 import { useSettingsContext } from "../SettingsContext";
 import { setActivePage } from "../useActivePage";
@@ -90,7 +96,8 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
     refreshAcpDiscovery,
     acpModelErrors,
     fetchAcpModels,
-    statuses
+    statuses,
+    connections
   } = useAiProvidersContext();
   // The runtime availability / sign-in probe for in-use agents. It runs
   // here as well as on AI Features so a signed-out agent reads
@@ -112,6 +119,18 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
     void refreshAcpDiscovery(true);
     for (const id of acpAgentIdsInUse) void fetchAcpModels(id, true);
   };
+
+  // ---- Direct API connection screens ------------------------------------
+  // Keyed by route so moving between connections (or to a new one) starts
+  // each page fresh instead of carrying one's draft into another.
+
+  if (sub === NEW_CONNECTION_SETTINGS_SUB) {
+    return <ConnectionPage key={sub} connectionId={null} />;
+  }
+  const connectionId = connectionIdOfSettingsSub(sub);
+  if (connectionId !== null) {
+    return <ConnectionPage key={sub} connectionId={connectionId} />;
+  }
 
   // ---- Per-provider screens ---------------------------------------------
   // Each sidebar child opens one of these. They share the page's state, so
@@ -251,7 +270,12 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
   }
 
   // ---- Hub ----------------------------------------------------------------
+  // Two ways to run AI, one card each, in sidebar order: the installed
+  // agents, then the Direct API connections PwrSnap calls itself.
 
+  const addConnection = (): void => {
+    setActivePage("ai", NEW_CONNECTION_SETTINGS_SUB);
+  };
   return (
     <>
       <div className="pss__main-hdr">
@@ -259,10 +283,9 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
           <div className="pss__main-eyebrow">General</div>
           <h1 className="pss__main-title">AI Providers</h1>
           <p className="pss__main-sub">
-            PwrSnap has no AI of its own. It works through AI tools you already
-            have — Codex, or an agent such as Kimi or Qwen — signed in to your
-            own account. Open one to check that it is installed and working,
-            then choose which one does each job in{" "}
+            Two ways to run AI. Installed agents are CLIs you already use, signed in to your
+            own account. Direct API connections are called by PwrSnap itself, with your key,
+            on your provider's bill. Pick which one does each job in{" "}
             <button
               type="button"
               className="pss__text-link"
@@ -277,7 +300,7 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
         </div>
       </div>
 
-      <Card eyebrow="STATUS" title="Providers">
+      <Card eyebrow="INSTALLED AGENTS" title="Agents">
         <Row
           label="Ready to use?"
           sub="Green is ready. Amber needs attention, usually a sign-in. Red is turned on but can't run. Grey is off or not installed. The same list sits under AI Providers in the sidebar."
@@ -288,6 +311,33 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
               setActivePage("ai", next);
             }}
           />
+        </Row>
+      </Card>
+      <Card
+        eyebrow="DIRECT API"
+        title="Connections"
+        headerAction={
+          <button className="pss__key-btn is-primary" type="button" onClick={addConnection}>
+            + Add connection
+          </button>
+        }
+      >
+        <Row
+          label="One endpoint, one credential"
+          sub="Each connection is a base URL, a protocol and a key or sign-in. Add as many of that endpoint's models as you like; they share the credential. Chat through a connection has no editing tools; captions need a model that accepts images."
+        >
+          {connections.length > 0 ? (
+            <ConnectionIndex
+              connections={connections}
+              onOpen={(next) => {
+                setActivePage("ai", next);
+              }}
+            />
+          ) : (
+            <button type="button" className="pss__dapi-empty" onClick={addConnection}>
+              + Add connection
+            </button>
+          )}
         </Row>
       </Card>
     </>
@@ -398,19 +448,6 @@ function CodexCard({
 
 // ---- Provider hub index + per-provider routing strip --------------------
 
-function statusBadgeClass(tone: AiProviderTone | undefined): string {
-  switch (tone) {
-    case "ok":
-      return " is-using";
-    case "warn":
-      return " is-warn";
-    case "bad":
-      return " is-danger";
-    default:
-      return "";
-  }
-}
-
 /** One row per provider, same order and same status as the sidebar
  *  children — both render `statuses` from `AiProvidersContext`. */
 export function ProviderIndex({
@@ -448,31 +485,6 @@ export function ProviderIndex({
           </span>
         </button>
       ))}
-    </div>
-  );
-}
-
-/** Ported from PwrAgnt's `ProviderDefaultsStrip`: a provider screen must not
- *  strand the operator away from the defaults that decide whether it is used
- *  at all, so it leads with that answer and one action to change them. */
-function ProviderDefaultsStrip({
-  routed,
-  onEdit
-}: {
-  routed: readonly AiSurfaceId[];
-  onEdit: () => void;
-}): ReactElement {
-  return (
-    <div className="pss__prov-strip">
-      <span className="pss__prov-strip-eyebrow">Default for</span>
-      <span className="pss__prov-strip-items">
-        {routed.length > 0
-          ? routed.map((surface) => AI_SURFACE_LABELS[surface]).join(" · ")
-          : "No jobs yet"}
-      </span>
-      <button className="pss__top-btn" type="button" onClick={onEdit}>
-        Change defaults
-      </button>
     </div>
   );
 }

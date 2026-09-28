@@ -4,6 +4,8 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import type {
+  Settings,
+  SettingsChangedEvent,
   ChatApprovalDecision,
   ChatApprovalRequest,
   ChatMessage,
@@ -194,6 +196,7 @@ export function ChatPanelSurface({
   const [draftResetVersion, setDraftResetVersion] = useState(0);
   const [loading, setLoading] = useState<boolean>(true);
   // New-chat backend draft (editable chips until the first message locks it).
+  const [providerLabels, setProviderLabels] = useState<Record<string, string>>({});
   const [providers, setProviders] = useState<string[]>(["codex"]);
   const [draftConfig, setDraftConfig] = useState<ChatBackendChoice>({
     provider: "codex",
@@ -315,11 +318,16 @@ export function ChatPanelSurface({
   // Provider options + the new-chat draft defaults come from Settings → AI.
   useEffect(() => {
     let cancelled = false;
+    const updateProviders = (settings: Settings): void => {
+      const enabled = settings.ai?.acp?.enabledAgentIds ?? [];
+      setProviders(["codex", ...enabled.map((id) => `acp:${id}`), ...(settings.ai?.customModels ?? []).map((m) => `custom:${m.id}`)]);
+      setProviderLabels(Object.fromEntries((settings.ai?.customModels ?? []).map((m) => [`custom:${m.id}`, m.displayName])));
+    };
+    const unsubscribe = subscribe(EVENT_CHANNELS.settingsChanged, (event) => updateProviders((event as SettingsChangedEvent).settings));
     void (async () => {
       const r = await dispatch("settings:read", {});
       if (cancelled || !r.ok || r.value === undefined) return;
-      const enabled = r.value.ai?.acp?.enabledAgentIds ?? [];
-      setProviders(["codex", ...enabled.map((id) => `acp:${id}`)]);
+      updateProviders(r.value);
       const d = surface === "library"
         ? r.value.ai?.defaults?.libraryChat
         : r.value.ai?.defaults?.sizzleChat;
@@ -331,6 +339,7 @@ export function ChatPanelSurface({
     })();
     return () => {
       cancelled = true;
+      unsubscribe();
     };
   }, [surface]);
 
@@ -917,12 +926,13 @@ export function ChatPanelSurface({
               {surface === "library" ? "PwrSnap chat" : "Reel composer"}
             </div>
             <p className="ps-libchat-empty-body">
-              {surface === "library"
+              {draftConfig.provider.startsWith("custom:") ? "Direct API chat can discuss text, and the current image when the model is set to accept images. It cannot edit captures, browse the library, or modify reels." : surface === "library"
                 ? "I can edit the capture you’re viewing, redact sensitive data, browse your library, and answer “how do I…”. Pick a provider + model, then type below to start."
                 : "Describe the video you want. I can search your library, propose scenes, write narrator scripts, set transitions, and render this reel. Pick a provider + model, then type below to start."}
             </p>
             <NewChatConfigChips
               providers={providers}
+              providerLabels={providerLabels}
               value={draftConfig}
               onChange={surface === "library"
                 ? (next) => {
@@ -949,7 +959,7 @@ export function ChatPanelSurface({
           </div>
         ) : (
           <>
-            {lockedChoice !== null ? <LockedBackendChips choice={lockedChoice} /> : null}
+            {lockedChoice !== null ? <LockedBackendChips choice={lockedChoice} providerLabels={providerLabels} /> : null}
             <MessageList
               messages={messages}
               streamingMessageId={streamingMessageId}

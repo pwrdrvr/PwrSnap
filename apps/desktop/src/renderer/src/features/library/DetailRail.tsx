@@ -57,7 +57,7 @@ import {
   estimateMetricForRung,
   type CopyPreset
 } from "../shared/CopyButton";
-import { CodexStatusPill, enrichmentBackendLabel } from "../shared/CodexStatusPill";
+import { CodexStatusPill, enrichmentRegenerateLabel } from "../shared/CodexStatusPill";
 import { useFieldEditor } from "../shared/useFieldEditor";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { useVideoExportPresets } from "../shared/useVideoExportPresets";
@@ -280,13 +280,8 @@ export function DetailRail({
     [onGridActiveTabChange]
   );
   const [budgetStatus, setBudgetStatus] = useState<AiEnrichmentBudgetStatus | null>(null);
-  // Which backend runs enrichment — so the status pill + OCR copy say "Grok" /
-  // "Gemini" instead of always "Codex". Derived from the enrichment Settings
-  // default; refreshed on settings changes.
-  const [enrichmentLabel, setEnrichmentLabel] = useState<{
-    providerLabel: string;
-    modelLabel: string | undefined;
-  }>({ providerLabel: "Codex", modelLabel: undefined });
+  // Current defaults describe the NEXT run, never the capture's history.
+  const [regenerateLabel, setRegenerateLabel] = useState("configured model");
   // Experimental DPI-aware export strategy (default legacy = no change).
   const [exportStrategy, setExportStrategy] = useState<ExportStrategy>("legacy");
 
@@ -379,7 +374,7 @@ export function DetailRail({
       void dispatch("settings:read", {}).then((result) => {
         if (cancelled || !result.ok) return;
         const settings = result.value as Settings | undefined;
-        setEnrichmentLabel(enrichmentBackendLabel(settings?.ai?.defaults?.enrichment));
+        if (settings !== undefined) setRegenerateLabel(enrichmentRegenerateLabel(settings.ai?.defaults?.enrichment, settings.ai));
         setExportStrategy(exportStrategyFromSettings(settings));
       });
     };
@@ -795,8 +790,7 @@ export function DetailRail({
             draftAvailable={draftAvailable}
             allDraftsAccepted={allDraftsAccepted}
             aiSafetyDisabled={aiSafetyDisabled}
-            providerLabel={enrichmentLabel.providerLabel}
-            modelLabel={enrichmentLabel.modelLabel}
+            regenerateLabel={regenerateLabel}
             onEnrichmentUpdate={setEnrichment}
           />
         </div>
@@ -809,8 +803,7 @@ export function DetailRail({
             record={record}
             enrichment={enrichment}
             aiSafetyDisabled={aiSafetyDisabled}
-            providerLabel={enrichmentLabel.providerLabel}
-            modelLabel={enrichmentLabel.modelLabel}
+            regenerateLabel={regenerateLabel}
           />
         </div>
       );
@@ -1281,9 +1274,8 @@ type DetailTabProps = {
   readonly draftAvailable: boolean;
   readonly allDraftsAccepted: boolean;
   readonly aiSafetyDisabled: boolean;
-  /** Enrichment backend label (e.g. "Grok") + optional model for the pill. */
-  readonly providerLabel: string;
-  readonly modelLabel: string | undefined;
+  /** Current target for the Regenerate action only. */
+  readonly regenerateLabel: string;
   readonly onEnrichmentUpdate: (next: CaptureEnrichment) => void;
 };
 
@@ -1297,8 +1289,7 @@ function DetailTab({
   draftAvailable,
   allDraftsAccepted,
   aiSafetyDisabled,
-  providerLabel,
-  modelLabel,
+  regenerateLabel,
   onEnrichmentUpdate
 }: DetailTabProps): ReactElement {
   const acceptedTitle = enrichment?.acceptedTitle ?? "";
@@ -1317,13 +1308,18 @@ function DetailTab({
       return;
     }
     let cancelled = false;
-    void dispatch("codex:usageRunDetail", { runId }).then((result) => {
-      if (!cancelled) {
-        setUsageDetail(result.ok && isAiRunUsageDetail(result.value) ? result.value : null);
-      }
-    });
+    const load = (): void => {
+      void dispatch("codex:usageRunDetail", { runId }).then((result) => {
+        if (!cancelled) {
+          setUsageDetail(result.ok && isAiRunUsageDetail(result.value) ? result.value : null);
+        }
+      });
+    };
+    load();
+    const off = subscribe(EVENT_CHANNELS.settingsChanged, load);
     return () => {
       cancelled = true;
+      off();
     };
   }, [enrichment?.latestRunId, enrichment?.status]);
 
@@ -1565,15 +1561,19 @@ function DetailTab({
         draftAvailable={draftAvailable}
         accepted={allDraftsAccepted}
         safetyDisabled={aiSafetyDisabled}
-        providerLabel={providerLabel}
-        modelLabel={modelLabel}
+        providerLabel={null}
         error={enrichment?.error}
-        // Model + cost ride on the SAME row as the status sentence
-        // (`✦ Description filled from Codex · GPT-5.6 · <$0.001`)
-        // instead of in a second bordered card underneath it.
-        {...(usageDetail !== null ? { meta: <AiRunUsageStrip detail={usageDetail} /> } : {})}
+        // Only recorded run metadata supplies attribution, once. Defaults
+        // belong to the Regenerate tooltip, even while this detail is loading.
+        {...(usageDetail !== null && usageDetail.run.id === enrichment?.latestRunId ? { meta: <AiRunUsageStrip detail={usageDetail} /> } : {})}
         action={
           <>
+            {codexBusy && enrichment?.latestRunId ? (
+              <button type="button" className="psl__chip-link" title="Cancel enrichment"
+                onClick={() => void dispatch("codex:cancel", { runId: enrichment.latestRunId! })}>
+                Cancel
+              </button>
+            ) : null}
             {/* Prominent bulk Use — the common case. Covers title +
                 description + filename in one click. Tags stay separate
                 (per-chip +/× controls in the TagEditor) so suggestions
@@ -1595,7 +1595,7 @@ function DetailTab({
                 type="button"
                 className="psl__chip-link"
                 onClick={regenerate}
-                title={`Ask ${providerLabel} for a fresh draft`}
+                title={`Regenerate with ${regenerateLabel}`}
               >
                 Regenerate
               </button>
@@ -1610,12 +1610,12 @@ function DetailTab({
             <span>Title</span>
             {titleOrigin === "suggested" ? (
               <>
-                <span className="psl__field-origin">draft from {providerLabel}</span>
+                <span className="psl__field-origin">AI draft</span>
                 <button
                   type="button"
                   className="psl__field-use"
                   onClick={() => void useTitleDraft()}
-                  title={`Save this ${providerLabel} draft as your title`}
+                  title="Save this draft as your title"
                 >
                   Use
                 </button>
@@ -1633,7 +1633,7 @@ function DetailTab({
           />
           {titleDraftDiverged && titleOrigin !== "suggested" ? (
             <DraftPreview
-              label={`${providerLabel} draft`}
+              label="AI draft"
               text={suggestedTitle}
               onUse={() => void useTitleDraft()}
             />
@@ -1645,12 +1645,12 @@ function DetailTab({
             <span>Description</span>
             {descriptionOrigin === "suggested" ? (
               <>
-                <span className="psl__field-origin">draft from {providerLabel}</span>
+                <span className="psl__field-origin">AI draft</span>
                 <button
                   type="button"
                   className="psl__field-use"
                   onClick={() => void useDescriptionDraft()}
-                  title={`Save this ${providerLabel} draft as your description`}
+                  title="Save this draft as your description"
                 >
                   Use
                 </button>
@@ -1670,7 +1670,7 @@ function DetailTab({
           />
           {descriptionDraftDiverged && descriptionOrigin !== "suggested" ? (
             <DraftPreview
-              label={`${providerLabel} draft`}
+              label="AI draft"
               text={suggestedDescription}
               onUse={() => void useDescriptionDraft()}
             />
@@ -1943,18 +1943,14 @@ type OcrTabProps = {
   readonly record: CaptureRecord;
   readonly enrichment: CaptureEnrichment | null;
   readonly aiSafetyDisabled: boolean;
-  /** The enrichment backend's display name (e.g. "Grok") + optional model, so
-   *  the OCR copy names the actual agent instead of always saying "Codex". */
-  readonly providerLabel: string;
-  readonly modelLabel: string | undefined;
+  readonly regenerateLabel: string;
 };
 
 function OcrTab({
   record,
   enrichment,
   aiSafetyDisabled,
-  providerLabel,
-  modelLabel
+  regenerateLabel
 }: OcrTabProps): ReactElement {
   const ocrText = enrichment?.ocrText ?? "";
   const status = enrichment?.status ?? null;
@@ -1974,11 +1970,16 @@ function OcrTab({
           draftAvailable={ocrText.length > 0}
           accepted={ocrText.length > 0 && status === "completed"}
           safetyDisabled={aiSafetyDisabled}
-          providerLabel={providerLabel}
-          modelLabel={modelLabel}
+          providerLabel={null}
           error={enrichment?.error}
         />
         <div className="psl__ocr-tab-actions">
+          {refreshing && enrichment?.latestRunId ? (
+            <button type="button" className="psl__chip-btn" title="Cancel enrichment"
+              onClick={() => void dispatch("codex:cancel", { runId: enrichment.latestRunId! })}>
+              Cancel
+            </button>
+          ) : null}
           <button
             type="button"
             className="psl__chip-btn"
@@ -1988,6 +1989,7 @@ function OcrTab({
                 triggerSource: "library-regenerate"
               })
             }
+            title={`Refresh OCR with ${regenerateLabel}`}
             disabled={refreshing || aiSafetyDisabled}
           >
             {refreshing ? "Reading…" : "Refresh OCR"}
@@ -2007,10 +2009,10 @@ function OcrTab({
       ) : (
         <div className="psl__ocr-tab-empty">
           {refreshing
-            ? `${providerLabel} is reading the snap…`
+            ? "Reading the snap…"
             : status === "failed"
-            ? `${providerLabel} could not extract text from this snap.`
-            : `No OCR text yet. Hit Refresh to ask ${providerLabel} to read the snap.`}
+            ? "Could not extract text from this snap."
+            : "No OCR text yet. Hit Refresh to read the snap."}
         </div>
       )}
     </div>

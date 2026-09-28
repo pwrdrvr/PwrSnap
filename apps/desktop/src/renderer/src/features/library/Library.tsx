@@ -1027,6 +1027,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   // its "Configure AI" gating reflects the chosen backend's availability — not
   // just Codex's. Mirrors the float-over toast + detail rail, which derive the
   // same label from `enrichmentBackendLabel`.
+  const [customModels, setCustomModels] = useState<Settings["ai"]["customModels"]>([]);
   const [enrichmentProvider, setEnrichmentProvider] = useState<string>("");
   // ACP-agent install status, so an enabled+installed ACP enrichment backend
   // (Kimi/Gemini/Grok/Qwen) counts as "available" even when Codex is absent.
@@ -1040,24 +1041,25 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
     setAiEnabledState(settings.ai.enabled);
     setAiConsentAcceptedAtState(settings.ai.consentAcceptedAt);
     setEnrichmentProvider(settings.ai.defaults.enrichment.provider ?? "");
+    setCustomModels(settings.ai.customModels ?? []);
   }, []);
 
   // Short label ("Codex", "Kimi", "Gemini", …) derived from the selected
-  // provider. providerLabel depends only on the provider string, so the model
-  // half of `enrichmentBackendLabel`'s input is irrelevant here.
+  // provider. Custom selectors use their saved model name and update on rename.
   const enrichmentProviderLabel = useMemo(
-    () => enrichmentBackendLabel({ provider: enrichmentProvider }).providerLabel,
-    [enrichmentProvider]
+    () => enrichmentBackendLabel({ provider: enrichmentProvider }, { customModels }).providerLabel,
+    [enrichmentProvider, customModels]
   );
 
   const enrichmentProviderAvailable = useMemo(
     () =>
       isEnrichmentProviderAvailable({
         provider: enrichmentProvider,
+        customModels,
         codexAvailable,
         acpDiscovery
       }),
-    [enrichmentProvider, codexAvailable, acpDiscovery]
+    [enrichmentProvider, codexAvailable, acpDiscovery, customModels]
   );
 
   useEffect(() => {

@@ -1,7 +1,23 @@
 import { describe, expect, it } from "vitest";
 import { enrichmentBackendLabel } from "../CodexStatusPill";
+import type { CustomModel, CustomConnection } from "@pwrsnap/shared";
 
 describe("enrichmentBackendLabel", () => {
+  const model: CustomModel = { id: "one", connectionId: "connection", displayName: "Bench model",
+    modelId: "/fixture/models/weights.gguf", capabilities: { vision: true, streaming: true }, maxOutputTokens: 4096 };
+  const connection: CustomConnection = { id: "connection", name: "Local server", baseUrl: "http://127.0.0.1:8080/v1",
+    protocol: "openai-chat", auth: { type: "none" } };
+  it("uses the saved model and connection labels, even when the selected model field is empty", () => {
+    expect(enrichmentBackendLabel({ provider: "custom:one" }, { customModels: [model], customConnections: [connection] }))
+      .toEqual({ providerLabel: "Bench model", modelLabel: "Local server" });
+    expect(enrichmentBackendLabel({ provider: "custom:one", model: model.modelId }, {
+      customModels: [{ ...model, displayName: "Renamed" }], customConnections: [{ ...connection, name: "Renamed" }]
+    })).toEqual({ providerLabel: "Renamed", modelLabel: undefined });
+  });
+  it("does not infer a name from a removed model's path or another model with the same API ID", () => {
+    expect(enrichmentBackendLabel({ provider: "custom:removed", model: model.modelId }, { customModels: [model] }))
+      .toEqual({ providerLabel: "Removed model", modelLabel: undefined });
+  });
   it("defaults to Codex with no model when unset", () => {
     expect(enrichmentBackendLabel(undefined)).toEqual({
       providerLabel: "Codex",

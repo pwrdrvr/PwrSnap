@@ -1,5 +1,5 @@
 import type { CSSProperties, ReactElement, ReactNode } from "react";
-import type { AiRunStatus } from "@pwrsnap/shared";
+import { DEFAULT_CODEX_CAPTION_MODEL, type AiRunStatus, type CustomModel, type CustomConnection } from "@pwrsnap/shared";
 
 // CodexStatusPill — single source of truth for "what is Codex doing"
 // across both the float-over toast and the Library Detail rail.
@@ -25,7 +25,8 @@ const ACP_PROVIDER_LABELS: Record<string, string> = {
 };
 
 /** Derive the status-pill provider + model labels from the enrichment surface
- *  default. `provider` is a backend selector ("" / "codex" / "acp:<id>").
+ *  default. Custom selectors resolve through saved model/connection IDs; the
+ *  display label never changes the model ID sent to the endpoint.
  *
  *  The per-surface `model` is a Codex concept: the enrichment handler passes the
  *  stored model id ONLY for Codex and `null` for ACP (the agent runs on its own
@@ -34,9 +35,16 @@ const ACP_PROVIDER_LABELS: Record<string, string> = {
  *  cross-provider id (e.g. "Kimi … (gpt-5.4-mini)") left over from a Codex
  *  selection made before the backend was switched. */
 export function enrichmentBackendLabel(
-  enrichment: { provider?: string; model?: string } | undefined
+  enrichment: { provider?: string; model?: string } | undefined,
+  custom: { customModels?: readonly CustomModel[] | undefined; customConnections?: readonly CustomConnection[] | undefined } = {}
 ): { providerLabel: string; modelLabel: string | undefined } {
   const provider = enrichment?.provider ?? "";
+  if (provider.startsWith("custom:")) {
+    const model = custom.customModels?.find((m) => `custom:${m.id}` === provider);
+    const connection = custom.customConnections?.find((c) => c.id === model?.connectionId);
+    const name = model?.displayName ?? "Removed model";
+    return { providerLabel: name, modelLabel: connection?.name === name ? undefined : connection?.name };
+  }
   const isAcp = provider.startsWith("acp:");
   const providerLabel = isAcp
     ? (ACP_PROVIDER_LABELS[provider.slice("acp:".length)] ?? provider.slice("acp:".length))
@@ -48,6 +56,18 @@ export function enrichmentBackendLabel(
   };
 }
 
+/** The next action's target, never historical run attribution. */
+export function enrichmentRegenerateLabel(
+  enrichment: { provider?: string; model?: string } | undefined,
+  custom: { customModels?: readonly CustomModel[] | undefined; customConnections?: readonly CustomConnection[] | undefined } = {}
+): string {
+  const { providerLabel, modelLabel } = enrichmentBackendLabel(enrichment, custom);
+  const provider = enrichment?.provider ?? "";
+  if (provider.startsWith("custom:")) return modelLabel ? `${providerLabel} (${modelLabel})` : providerLabel;
+  const model = enrichment?.model || (provider.startsWith("acp:") ? "agent default" : DEFAULT_CODEX_CAPTION_MODEL);
+  return `${providerLabel} (${model})`;
+}
+
 export type CodexStatusPillProps = {
   readonly status: AiRunStatus | null;
   readonly variant?: CodexStatusPillVariant;
@@ -57,9 +77,10 @@ export type CodexStatusPillProps = {
   readonly safetyDisabled?: boolean;
   /** Human label for the enrichment backend (e.g. "Codex", "Gemini"). The
    *  enrichment provider isn't always Codex anymore, so the copy is
-   *  parameterized. Defaults to "Codex". */
-  readonly providerLabel?: string | undefined;
-  /** Optional model id shown in parens (e.g. "gemini-3-flash-preview"). */
+   *  parameterized. Defaults to "Codex"; null uses neutral status copy when
+   *  the run metadata owns attribution. */
+  readonly providerLabel?: string | null | undefined;
+  /** Optional context in parens: a built-in model or a custom connection name. */
   readonly modelLabel?: string | undefined;
   /** Failure message from the latest run, when available. */
   readonly error?: string | null | undefined;
@@ -81,6 +102,7 @@ type StatusKind =
   | "ready"
   | "accepted"
   | "failed"
+  | "cancelled"
   | "safety-disabled"
   | "needs-consent";
 
@@ -94,7 +116,7 @@ function resolveKind(
   if (status === "running") return "running";
   if (status === "queued") return "queued";
   if (status === "failed") return "failed";
-  if (status === "cancelled") return "idle";
+  if (status === "cancelled") return "cancelled";
   if (safetyDisabled) return "safety-disabled";
   if (accepted) return "accepted";
   if (draftAvailable && status === "completed") return "ready";
@@ -118,7 +140,7 @@ function failedLabelFor(provider: string, error: string | null | undefined): str
  *  (the float-over) still offers the whole of it. */
 function labelTextFor(
   kind: StatusKind,
-  provider: string,
+  provider: string | null,
   model: string | undefined,
   error: string | null | undefined,
   hasMeta: boolean
@@ -126,21 +148,23 @@ function labelTextFor(
   const withModel = model !== undefined && model.length > 0 ? ` (${model})` : "";
   switch (kind) {
     case "running":
-      return `${provider} is reading the snap${withModel}`;
+      return provider === null ? "Reading the snap" : `${provider} is reading the snap${withModel}`;
     case "queued":
-      return `${provider} is queued`;
+      return provider === null ? "Queued" : `${provider} is queued`;
     case "ready":
-      return `${provider} drafted a title + description${hasMeta ? "" : "."}`;
+      return provider === null ? "Title + description drafted" : `${provider} drafted a title + description${hasMeta ? "" : "."}`;
     case "accepted":
-      return `Description filled from ${provider}${hasMeta ? "" : "."}`;
+      return provider === null ? "Description filled" : `Description filled from ${provider}${hasMeta ? "" : "."}`;
     case "failed":
-      return failedLabelFor(provider, error);
+      return failedLabelFor(provider ?? "AI", error);
+    case "cancelled":
+      return "Enrichment cancelled.";
     case "safety-disabled":
       return "AI enrichment was disabled for cost safety.";
     case "needs-consent":
       return "Enable AI to read a bounded copy of this snap.";
     case "idle":
-      return `${provider} has no suggestion yet.`;
+      return provider === null ? "No suggestion yet." : `${provider} has no suggestion yet.`;
   }
 }
 
@@ -168,6 +192,8 @@ function shortLabelFor(kind: StatusKind): string {
       return "used";
     case "failed":
       return "failed";
+    case "cancelled":
+      return "cancelled";
     case "safety-disabled":
       return "safety off";
     case "needs-consent":

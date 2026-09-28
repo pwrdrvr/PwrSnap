@@ -92,6 +92,18 @@ describe("DesktopSecretStore", () => {
     expect(map.openaiApiKey.lastSetAt).toBeNull();
   });
 
+  test("getAllStatus carries stored Direct API connection credentials, never local agent tokens", async () => {
+    const store = makeStore();
+    const connection = "customModelCredential:12345678-1234-4234-8234-123456789003" as const;
+    await store.replace(connection, "synthetic-connection-key");
+    await store.replace("localAgentToken:fixture-client", "synthetic-agent-token");
+    const map = await store.getAllStatus();
+    expect(map[connection]?.configured).toBe(true);
+    expect(Object.keys(map).some((name) => name.startsWith("localAgentToken:"))).toBe(false);
+    await store.clear(connection);
+    expect(Object.keys(await store.getAllStatus())).not.toContain(connection);
+  });
+
   test("clear removes the entry; getStatus reports unset", async () => {
     const store = makeStore();
     await store.replace("openaiApiKey", "abc-123");

@@ -1,4 +1,4 @@
-// Plaintext NEVER crosses the IPC boundary — the renderer-visible
+// Plaintext NEVER returns over IPC — the renderer-visible
 // API returns only `SecretStatus` (`{ configured, lastSetAt }`).
 //
 // ON-DISK LAYOUT (v2 envelope). The file is JSON with a PLAINTEXT index and
@@ -22,7 +22,8 @@
 // `SecretStatus` (the name plus `lastSetAt`) is already broadcast to every
 // BrowserWindow on every settings change, and the `localAgentToken:<clientId>`
 // client ids already sit in cleartext in the settings file as
-// `localAgents.grants[].id`. The VALUES remain encrypted at rest, and a unit
+// `localAgents.grants[].id`, as the `customModelCredential:<connectionId>`
+// ids do as `ai.customConnections[].id`. The VALUES remain encrypted at rest, and a unit
 // test asserts the plaintext never appears in the file.
 //
 // v1 files (a bare `safeStorage` ciphertext buffer of the whole blob) are
@@ -39,7 +40,7 @@ type Logger = ReturnType<typeof getMainLogger>;
 
 export const KNOWN_SECRET_NAMES = [
   "openaiApiKey"
-] as const satisfies readonly Exclude<DesktopSettingsSecretName, `localAgentToken:${string}`>[];
+] as const satisfies readonly Exclude<DesktopSettingsSecretName, `localAgentToken:${string}` | `customModelCredential:${string}`>[];
 
 // Compile-time check the other direction: adding a new
 // `DesktopSettingsSecretName` without appending it here fails to
@@ -47,7 +48,7 @@ export const KNOWN_SECRET_NAMES = [
 // appears in the tuple.
 type _KnownSecretNamesExhaustive =
   Exclude<
-    Exclude<DesktopSettingsSecretName, `localAgentToken:${string}`>,
+    Exclude<DesktopSettingsSecretName, `localAgentToken:${string}` | `customModelCredential:${string}`>,
     typeof KNOWN_SECRET_NAMES[number]
   > extends never
     ? true
@@ -99,17 +100,23 @@ export class DesktopSecretStore {
     return toStatus(index[name]);
   }
 
+  /** Every known name, plus each stored Direct API connection credential —
+   *  the Settings sidebar reads "no key" / "sign in" off those. Local agent
+   *  tokens are left out: nothing in a renderer reads them. Index only. */
   async getAllStatus(): Promise<Record<DesktopSettingsSecretName, SecretStatus>> {
     const index = await this.readIndex();
     const out = {} as Record<DesktopSettingsSecretName, SecretStatus>;
     for (const name of KNOWN_SECRET_NAMES) {
       out[name] = toStatus(index[name]);
     }
+    for (const name of Object.keys(index) as DesktopSettingsSecretName[]) {
+      if (name.startsWith("customModelCredential:")) out[name] = toStatus(index[name]);
+    }
     return out;
   }
 
   async replace(name: DesktopSettingsSecretName, value: string): Promise<SecretStatus> {
-    if (!safeStorage.isEncryptionAvailable()) {
+    if (!secureStorageAvailable()) {
       throw new SecretUnavailableError(
         "safeStorage is unavailable — system keychain not ready"
       );
@@ -165,6 +172,7 @@ export class DesktopSecretStore {
   // plaintext must never leave the main process. This is the ONLY read that
   // decrypts, and therefore the only one that can reach the keychain.
   async getValue(name: DesktopSettingsSecretName): Promise<string | null> {
+    if (!secureStorageAvailable()) throw new SecretUnavailableError("Secure storage is unavailable or insecure — unlock the system credential store");
     const blob = await this.blobFrom(await this.readFileState());
     return blob[name]?.value ?? null;
   }
@@ -178,11 +186,11 @@ export class DesktopSecretStore {
       raw = await readFile(this.filePath);
     } catch (cause) {
       if (isNodeError(cause) && cause.code === "ENOENT") return { kind: "absent" };
-      this.log.warn("secret-store: read failed, returning empty", {
+      this.log.warn("secret-store: read failed, refusing access", {
         path: this.filePath,
-        message: cause instanceof Error ? cause.message : String(cause)
+        message: "Secure credential operation failed"
       });
-      return { kind: "absent" };
+      throw new SecretUnavailableError("Secure credential file is unreadable — refusing to overwrite it");
     }
     if (raw.length === 0) return { kind: "absent" };
 
@@ -237,7 +245,7 @@ export class DesktopSecretStore {
     let plaintext: string;
     try {
       plaintext = safeStorage.decryptString(Buffer.from(state.ciphertext, "base64"));
-    } catch (cause) {
+    } catch {
       // A read of an undecryptable payload stays lenient: callers of
       // `getValue` treat a missing secret as "not configured" and degrade.
       // WRITES do not -- `assertPayloadRecovered` compares this result
@@ -245,7 +253,7 @@ export class DesktopSecretStore {
       // what we could not read back would destroy it.
       this.log.warn("secret-store: decrypt failed, returning empty", {
         path: this.filePath,
-        message: cause instanceof Error ? cause.message : String(cause)
+        message: "Secure credential operation failed"
       });
       return {};
     }
@@ -266,10 +274,10 @@ export class DesktopSecretStore {
     let plaintext: string;
     try {
       plaintext = safeStorage.decryptString(raw);
-    } catch (cause) {
+    } catch {
       this.log.warn("secret-store: decrypt failed, returning empty", {
         path: this.filePath,
-        message: cause instanceof Error ? cause.message : String(cause)
+        message: "Secure credential operation failed"
       });
       return {};
     }
@@ -318,27 +326,31 @@ export class DesktopSecretStore {
       // Only an actual secret needs encryption. An empty store writes an
       // envelope with a null payload, so clearing the last secret -- and
       // every later status read -- stays off the keychain entirely.
-      if (!safeStorage.isEncryptionAvailable()) {
+      if (!secureStorageAvailable()) {
         throw new SecretUnavailableError(
           "safeStorage is unavailable — refusing to write"
         );
       }
-      ciphertext = safeStorage.encryptString(JSON.stringify(values)).toString("base64");
+      try {
+        ciphertext = safeStorage.encryptString(JSON.stringify(values)).toString("base64");
+      } catch {
+        throw new SecretUnavailableError("Secure credential encryption failed — unlock the system credential store");
+      }
     }
 
     const envelope = { version: SECRETS_FILE_VERSION, index, ciphertext };
     await mkdir(dirname(this.filePath), { recursive: true });
     const tmpPath = `${this.filePath}.tmp`;
     try {
-      await writeFile(tmpPath, JSON.stringify(envelope));
+      await writeFile(tmpPath, JSON.stringify(envelope), { mode: 0o600 });
       await rename(tmpPath, this.filePath);
-    } catch (cause) {
+    } catch {
       try {
         await unlink(tmpPath);
       } catch {
         /* ignore */
       }
-      throw cause;
+      throw new SecretUnavailableError("Secure credential write failed");
     }
   }
 
@@ -363,11 +375,11 @@ export class DesktopSecretStore {
         path: this.filePath,
         names: Object.keys(blob).length
       });
-    }).catch((cause: unknown) => {
+    }).catch(() => {
       this.migrationQueued = false;
       this.log.warn("secret-store: v1 -> v2 migration failed", {
         path: this.filePath,
-        message: cause instanceof Error ? cause.message : String(cause)
+        message: "Secure credential operation failed"
       });
     });
   }
@@ -415,7 +427,7 @@ function indexOf(blob: SecretsBlob): SecretsIndex {
 /** Accept only names this build knows, exactly like the decrypted payload. */
 function isAcceptedName(name: string): name is DesktopSettingsSecretName {
   return (
-    (KNOWN_SECRET_NAMES as readonly string[]).includes(name) || isLocalAgentTokenName(name)
+    (KNOWN_SECRET_NAMES as readonly string[]).includes(name) || isLocalAgentTokenName(name) || /^customModelCredential:[0-9a-f-]{36}$/i.test(name)
   );
 }
 
@@ -437,9 +449,9 @@ function parseBlob(plaintext: string, log: Logger): SecretsBlob {
   let parsed: unknown;
   try {
     parsed = JSON.parse(plaintext);
-  } catch (cause) {
+  } catch {
     log.warn("secret-store: parse failed, returning empty", {
-      message: cause instanceof Error ? cause.message : String(cause)
+      message: "Secure credential operation failed"
     });
     return {};
   }
@@ -478,4 +490,9 @@ function isLocalAgentTokenName(value: string): value is `localAgentToken:${strin
 
 function isNodeError(value: unknown): value is NodeJS.ErrnoException {
   return value instanceof Error && typeof (value as NodeJS.ErrnoException).code === "string";
+}
+
+/** Linux basic_text uses a hard-coded password and is not secure storage. */
+function secureStorageAvailable(): boolean {
+  return safeStorage.isEncryptionAvailable() && safeStorage.getSelectedStorageBackend?.() !== "basic_text";
 }

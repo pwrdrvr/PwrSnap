@@ -7,6 +7,10 @@ import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import type { CodexModelOption, EnrichmentResult, Settings } from "@pwrsnap/shared";
+import { CustomModelService } from "../ai/direct-api/service";
+import type { CustomCredentials } from "../ai/direct-api/credentials";
+import { body, json, model, server } from "../ai/direct-api/__tests__/fixtures";
+import { ENRICHMENT_QUEUE_MAX_AGE_MS } from "../ai/direct-api/enrichment-queue";
 
 let testDb: Database.Database;
 let tempRoot: string;
@@ -42,6 +46,7 @@ vi.mock("../persistence/db", () => ({
 }));
 
 const { bus } = await import("../command-bus");
+const customModelHandlers = await import("../handlers/custom-model-handlers");
 const {
   registerCodexHandlers,
   enrichmentSelectedModel,
@@ -217,8 +222,10 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reje
 
 class HangingCodexClient {
   aborted = false;
+  started = false;
 
   async enrichCapture(request: { abortSignal?: AbortSignal }): Promise<never> {
+    this.started = true;
     if (request.abortSignal?.aborted) {
       this.aborted = true;
       throw new DOMException("aborted", "AbortError");
@@ -385,6 +392,192 @@ describe("Codex handlers", () => {
     expect(
       (completedEvent?.payload as { enrichment?: { status?: string } | null }).enrichment?.status
     ).toBe("completed");
+  });
+
+  test.each(["success", "http-failure", "removed-model"] as const)(
+    "custom enrichment uses direct HTTP and never creates a Codex client: %s",
+    async (scenario) => {
+      const requests: Array<{ url: string | undefined; body: Record<string, unknown> }> = [];
+      const http = await server(async (req, res) => {
+        requests.push({ url: req.url, body: JSON.parse(await body(req)) as Record<string, unknown> });
+        if (scenario === "http-failure") {
+          res.writeHead(503).end();
+          return;
+        }
+        json(res, { choices: [{ message: { content: JSON.stringify({
+          title: "Direct fixture", description: "Synthetic image via direct HTTP", ocrText: "",
+          filenameStem: "fixture", textAnchors: [], tags: []
+        }) } }] });
+      });
+      const entry = model(`${http.url}/v1`);
+      entry.modelId = "/fixture/models/local-model.gguf";
+      entry.capabilities.streaming = false;
+      const settings = testSettings();
+      settings.ai.enabled = true;
+      settings.ai.consentAcceptedAt = "2026-05-12T12:00:00.000Z";
+      settings.ai.defaults.enrichment = { provider: `custom:${entry.id}`, model: entry.modelId };
+      settings.ai.customConnections = [{ id: entry.connectionId, name: "Fixture connection",
+        baseUrl: entry.baseUrl, protocol: entry.protocol, auth: entry.auth }];
+      settings.ai.customModels = scenario === "removed-model" ? [] : [entry];
+      // Only persistence/credential seams are replaced. The production handler,
+      // selection, image preparation, protocol transport and run persistence run.
+      const service = new CustomModelService({ read: async () => settings,
+        write: async () => { throw new Error("Unexpected settings write"); } },
+      { headers: async () => ({}) } as unknown as CustomCredentials, async () => undefined);
+      const serviceSpy = vi.spyOn(customModelHandlers, "getCustomModelService").mockReturnValue(service);
+      const clientFactory = vi.fn(() => { throw new Error("Custom selection reached Codex"); });
+      try {
+        registerCodexHandlers({ clientFactory, settingsReader: async () => settings });
+        const result = await bus.dispatch("codex:enrich", { captureId: "cap_1" }, { principal: "ipc" });
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        await waitFor(() => ["completed", "failed"].includes(getAiRun(result.value.runId)?.status ?? ""));
+        expect(getAiRun(result.value.runId)?.status).toBe(scenario === "success" ? "completed" : "failed");
+        expect(clientFactory).not.toHaveBeenCalled();
+        expect(requests).toHaveLength(scenario === "removed-model" ? 0 : 1);
+        if (scenario !== "removed-model") {
+          expect(requests[0]?.url).toBe("/v1/chat/completions");
+          expect(requests[0]?.body.model).toBe(entry.modelId);
+          expect(JSON.stringify(requests[0]?.body.messages)).toContain("data:image/jpeg;base64,");
+          expect(JSON.stringify(requests[0]?.body.messages)).not.toContain(tempRoot);
+        }
+        if (scenario === "success") {
+          expect(getCaptureEnrichment("cap_1")?.suggestedDescription).toBe("Synthetic image via direct HTTP");
+        }
+        const usage = await bus.dispatch("codex:usageRunDetail", { runId: result.value.runId }, { principal: "ipc" });
+        expect(usage).toMatchObject({ ok: true, value: { modelProvider: `custom:${entry.id}` } });
+        // Reading an existing result is also inert at the main-process boundary.
+        for (let i = 0; i < 3; i++) {
+          await bus.dispatch("codex:enrichment", { captureId: "cap_1" }, { principal: "ipc" });
+        }
+        expect(testDb.prepare("SELECT count(*) AS n FROM ai_runs").get()).toEqual({ n: 1 });
+        expect(clientFactory).not.toHaveBeenCalled();
+      } finally {
+        serviceSpy.mockRestore();
+        await http.close();
+      }
+    }
+  );
+
+  test("eight direct enrichments share the connection queue; queued and active cancellation never dispatch again", async () => {
+    const received: Array<{ model: string; reply: () => void }> = [];
+    let active = 0;
+    let peak = 0;
+    const http = await server(async (req, res) => {
+      const request = JSON.parse(await body(req)) as { model: string };
+      active++;
+      peak = Math.max(peak, active);
+      res.once("close", () => { active--; });
+      // Send headers so cancellation also exercises reading the response body.
+      res.writeHead(200, { "content-type": "application/json" });
+      res.flushHeaders();
+      received.push({ model: request.model, reply: () => { res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+        title: "Fixture", description: "Queued fixture result", ocrText: "", filenameStem: "fixture", tags: [], textAnchors: []
+      }) } }] })); } });
+    });
+    const entry = model(`${http.url}/v1`);
+    entry.capabilities.streaming = false;
+    const second = { ...entry, id: "12345678-1234-4234-8234-123456789002", modelId: "second-model" };
+    const settings = testSettings();
+    settings.ai.enabled = true;
+    settings.ai.consentAcceptedAt = "2026-05-12T12:00:00.000Z";
+    settings.ai.customConnections = [{ id: entry.connectionId, name: "Local fixture", baseUrl: entry.baseUrl, protocol: entry.protocol, auth: entry.auth }];
+    settings.ai.customModels = [entry, second];
+    const service = new CustomModelService({ read: async () => settings,
+      write: async () => { throw new Error("Unexpected write"); } },
+    { headers: async () => ({}) } as unknown as CustomCredentials, async () => undefined);
+    const serviceSpy = vi.spyOn(customModelHandlers, "getCustomModelService").mockReturnValue(service);
+    const clientFactory = vi.fn(() => { throw new Error("Custom selection reached Codex"); });
+    const runs: string[] = [];
+    try {
+      registerCodexHandlers({ clientFactory, settingsReader: async () => settings, budget: new AiEnrichmentBudget() });
+      for (let i = 0; i < 8; i++) {
+        const captureId = `burst_${i}`;
+        await seedCapture(captureId);
+        const chosen = i % 2 === 0 ? entry : second;
+        settings.ai.defaults.enrichment = { provider: `custom:${chosen.id}`, model: chosen.modelId };
+        const result = await bus.dispatch("codex:enrich", { captureId }, { principal: "ipc" });
+        expect(result.ok).toBe(true);
+        if (result.ok) runs.push(result.value.runId);
+      }
+      await waitFor(() => received.length === 1);
+      expect(runs.slice(1).map((id) => getAiRun(id)?.status)).toEqual(Array(7).fill("queued"));
+      expect(runs.slice(1).map((id) => getAiRun(id)?.startedAt)).toEqual(Array(7).fill(null));
+      await bus.dispatch("codex:cancel", { runId: runs[3]! }, { principal: "ipc" });
+      expect(getAiRun(runs[3]!)?.status).toBe("cancelled");
+      expect(received).toHaveLength(1);
+      await bus.dispatch("codex:cancel", { runId: runs[0]! }, { principal: "ipc" });
+      for (let i = 1; i < 7; i++) {
+        await waitFor(() => received.length > i);
+        received[i]!.reply();
+      }
+      await waitFor(() => runs.every((id) => ["completed", "cancelled"].includes(getAiRun(id)?.status ?? "")));
+      expect(runs.map((id) => getAiRun(id)?.status)).toEqual([
+        "cancelled", "completed", "completed", "cancelled", "completed", "completed", "completed", "completed"
+      ]);
+      expect(received.map((r) => r.model)).toEqual([
+        entry.modelId, second.modelId, entry.modelId, entry.modelId, second.modelId, entry.modelId, second.modelId
+      ]);
+      expect(peak).toBe(1);
+      expect(clientFactory).not.toHaveBeenCalled();
+    } finally {
+      for (const runId of runs) await bus.dispatch("codex:cancel", { runId }, { principal: "ipc" });
+      serviceSpy.mockRestore();
+      await http.close();
+    }
+  });
+
+  test.each(["expires", "repointed"] as const)("queued direct enrichment is never dispatched when it %s", async (scenario) => {
+    const replies: Array<() => void> = [];
+    const http = await server((_req, res) => {
+      replies.push(() => json(res, { choices: [{ message: { content: JSON.stringify({
+        title: "Fixture", description: "Fixture description", ocrText: "", filenameStem: "fixture", tags: [], textAnchors: []
+      }) } }] }));
+    });
+    const entry = model(`${http.url}/v1`);
+    entry.capabilities.streaming = false;
+    const settings = testSettings();
+    settings.ai.enabled = true;
+    settings.ai.consentAcceptedAt = "2026-05-12T12:00:00.000Z";
+    settings.ai.defaults.enrichment = { provider: `custom:${entry.id}`, model: entry.modelId };
+    settings.ai.customConnections = [{ id: entry.connectionId, name: "Fixture", baseUrl: entry.baseUrl, protocol: entry.protocol, auth: entry.auth }];
+    settings.ai.customModels = [entry];
+    const headers = vi.fn(async () => ({}));
+    const service = new CustomModelService({ read: async () => settings,
+      write: async () => { throw new Error("Unexpected write"); } },
+    { headers } as unknown as CustomCredentials, async () => undefined);
+    const serviceSpy = vi.spyOn(customModelHandlers, "getCustomModelService").mockReturnValue(service);
+    const realNow = performance.now.bind(performance);
+    let offset = 0;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => realNow() + offset);
+    const runs: string[] = [];
+    try {
+      registerCodexHandlers({ settingsReader: async () => settings, budget: new AiEnrichmentBudget() });
+      await seedCapture("cap_2");
+      for (const captureId of ["cap_1", "cap_2"]) {
+        const result = await bus.dispatch("codex:enrich", { captureId }, { principal: "ipc" });
+        expect(result.ok).toBe(true);
+        if (result.ok) runs.push(result.value.runId);
+      }
+      await waitFor(() => replies.length === 1);
+      expect(getAiRun(runs[1]!)?.status).toBe("queued");
+      if (scenario === "expires") offset = ENRICHMENT_QUEUE_MAX_AGE_MS;
+      else settings.ai.customConnections[0] = { ...settings.ai.customConnections[0]!, baseUrl: `${http.url}/changed` };
+      // Passing 15 minutes alone does not dispatch or fail a waiting item.
+      expect(getAiRun(runs[1]!)?.status).toBe("queued");
+      expect(headers).toHaveBeenCalledTimes(1);
+      replies[0]!();
+      await waitFor(() => getAiRun(runs[1]!)?.status === "failed");
+      expect(getAiRun(runs[0]!)?.status).toBe("completed");
+      expect(getAiRun(runs[1]!)?.error).toContain(scenario === "expires" ? "15 minutes" : "connection changed");
+      expect(replies).toHaveLength(1);
+      expect(headers).toHaveBeenCalledTimes(1);
+    } finally {
+      for (const runId of runs) await bus.dispatch("codex:cancel", { runId }, { principal: "ipc" });
+      clock.mockRestore();
+      serviceSpy.mockRestore();
+      await http.close();
+    }
   });
 
   test("codex:enrich falls back to Codex when the saved ACP enrichment provider is disabled", async () => {
@@ -810,7 +1003,7 @@ describe("Codex handlers", () => {
 
     expect(started.ok).toBe(true);
     if (!started.ok) return;
-    await waitFor(() => getAiRun(started.value.runId)?.status === "running");
+    await waitFor(() => client.started);
 
     const cancelled = await bus.dispatch(
       "codex:cancel",
@@ -1030,6 +1223,18 @@ describe("enrichmentSelectedModel", () => {
 });
 
 describe("withUsageModelLabels", () => {
+  test("custom usage labels are scoped to the provider UUID, including in-flight and removed entries", () => {
+    const modelId = "/fixture/models/weights.gguf";
+    const models = ["one", "two"].map((id) => ({ id, connectionId: id, modelId, displayName: `Model ${id}`,
+      capabilities: { vision: true, streaming: true }, maxOutputTokens: 4096 }));
+    const detail = { run: { selectedModel: modelId }, model: modelId, modelProvider: "custom:two" } as unknown as import("@pwrsnap/shared").AiRunUsageDetail;
+    const labeled = withUsageModelLabels(detail, () => "Wrong built-in label", models);
+    expect(labeled.modelLabel).toBe("Model two");
+    expect(labeled.selectedModelLabel).toBe("Model two");
+    expect(labeled.model).toBe(modelId);
+    expect(withUsageModelLabels({ ...detail, model: null }, () => undefined, models).selectedModelLabel).toBe("Model two");
+    expect(withUsageModelLabels(detail, () => "Wrong built-in label", [models[0]!]).modelLabel).toBe("Custom model unavailable");
+  });
   const base = {
     run: { selectedModel: "" },
     model: null

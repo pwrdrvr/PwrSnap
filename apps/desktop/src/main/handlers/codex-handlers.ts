@@ -1,3 +1,7 @@
+import { DirectEnrichmentBackend } from "../ai/direct-api/enrichment";
+import { DirectApiError } from "../ai/direct-api/transport";
+import { EnrichmentQueue, DIRECT_ENRICHMENT_TIMEOUT_MS } from "../ai/direct-api/enrichment-queue";
+import { getCustomModelService } from "./custom-model-handlers";
 import {
   AcceptAllDraftsRequestSchema,
   AcceptDescriptionRequestSchema,
@@ -8,6 +12,8 @@ import {
   DEFAULT_CODEX_CAPTION_MODEL,
   DEFAULT_ENRICHMENT_REASONING_EFFORT,
   RejectTagRequestSchema,
+  customEnrichmentConcurrency,
+  resolveCustomModel,
   err,
   ok
 } from "@pwrsnap/shared";
@@ -19,6 +25,8 @@ import type {
   CaptureEnrichment,
   CaptureRecord,
   CodexModelOption,
+  CustomConnection,
+  ResolvedCustomModel,
   PwrSnapError,
   Result,
   Settings,
@@ -100,6 +108,7 @@ export type SettingsReader = () => Promise<Settings>;
 export type SettingsWriter = (patch: SettingsPatch) => Promise<Settings>;
 
 const activeRuns = new Map<string, AbortController>();
+const directEnrichmentQueue = new EnrichmentQueue();
 
 /**
  * Default ceiling for a single enrichment turn (the agent call itself,
@@ -338,17 +347,25 @@ function enrichmentModelForSettings(settings: Settings): string {
  *  dependency-injected for testing. Exported for testing. */
 export function withUsageModelLabels(
   detail: AiRunUsageDetail,
-  lookupLabel: (modelId: string) => string | undefined
+  lookupLabel: (modelId: string) => string | undefined,
+  customModels: Settings["ai"]["customModels"] = []
 ): AiRunUsageDetail {
   const selected = detail.run.selectedModel;
+  // Match the persisted provider UUID, not just the model ID: two connections
+  // can serve the same ID under different user-chosen names.
+  const custom = detail.modelProvider?.startsWith("custom:") === true;
+  const entry = customModels?.find((m) => `custom:${m.id}` === detail.modelProvider);
+  const label = (id: string): string | undefined => custom
+    ? (entry?.modelId === id ? entry.displayName : "Custom model unavailable")
+    : lookupLabel(id);
   return {
     ...detail,
     modelLabel:
       typeof detail.model === "string" && detail.model.length > 0
-        ? lookupLabel(detail.model) ?? null
+        ? label(detail.model) ?? null
         : null,
     selectedModelLabel:
-      typeof selected === "string" && selected.length > 0 ? lookupLabel(selected) ?? selected : null
+      typeof selected === "string" && selected.length > 0 ? label(selected) ?? selected : null
   };
 }
 
@@ -358,6 +375,9 @@ export function withUsageModelLabels(
  *  A disabled ACP selection falls back to PwrSnap's managed Codex default.
  *  Exported for testing. */
 export function enrichmentSelectedModel(settings: Settings, acpAgentId: string | undefined): string {
+  if (settings.ai.defaults.enrichment.provider?.startsWith("custom:")) {
+    return settings.ai.customModels?.find((m) => `custom:${m.id}` === settings.ai.defaults.enrichment.provider)?.modelId ?? "";
+  }
   if (acpAgentId !== undefined) return settings.ai.defaults.enrichment.model ?? "";
   if (settings.ai.defaults.enrichment.provider?.startsWith("acp:") === true) {
     return DEFAULT_CODEX_CAPTION_MODEL;
@@ -605,6 +625,10 @@ export function registerCodexHandlers(params?: {
     // time. Re-reading the setting inside `runCaptureEnrichment` would mean a
     // Settings flip mid-run silently swaps providers and skews run metrics.
     const enrichmentAgent = enrichmentAcpAgentId(settings);
+    const customModel = settings.ai.defaults.enrichment.provider?.startsWith("custom:")
+      ? resolveCustomModel(settings.ai.customConnections, settings.ai.customModels,
+        settings.ai.defaults.enrichment.provider.slice("custom:".length)) : null;
+    const customConnection = settings.ai.customConnections?.find((c) => c.id === customModel?.connectionId);
     const run = createAiRun({
       captureId: capture.id,
       codexCommand,
@@ -652,6 +676,8 @@ export function registerCodexHandlers(params?: {
       // "use the agent's own default" and is resolved to null at send time.
       selectedModel:
         run.selectedModel ?? (enrichmentAgent !== undefined ? "" : DEFAULT_CODEX_CAPTION_MODEL),
+      ...(settings.ai.defaults.enrichment.provider?.startsWith("custom:") ? { selectedProvider: settings.ai.defaults.enrichment.provider } : {}),
+      ...(customConnection && customModel ? { customConnection, customModel } : {}),
       effort: enrichmentEffortForSettings(settings),
       // When enrichment is routed to an ACP agent (Gemini/Qwen), pass its id +
       // the settings snapshot so the run resolves + spawns that agent instead
@@ -665,7 +691,7 @@ export function registerCodexHandlers(params?: {
       ctx,
       clientFactory,
       closeClientAfterRun,
-      turnTimeoutMs
+      turnTimeoutMs: params?.turnTimeoutMs ?? (customModel ? DIRECT_ENRICHMENT_TIMEOUT_MS : turnTimeoutMs)
     });
     return ok({ runId: run.id });
   });
@@ -919,10 +945,11 @@ export function registerCodexHandlers(params?: {
     refreshKnownAiUsagePrices();
     const detail = getAiRunUsageDetail(req.runId);
     if (detail === null) return ok(null);
-    // Resolve labels from the ACP caches first, then the Codex cache (ids are
-    // distinct across the two, so order is just preference).
+    // Custom names are scoped to the run's provider UUID; built-in labels
+    // resolve from ACP then Codex caches. Never cross those namespaces.
     return ok(
-      withUsageModelLabels(detail, (id) => findAcpModelLabel(id) ?? findCodexModelLabel(id))
+      withUsageModelLabels(detail, (id) => findAcpModelLabel(id) ?? findCodexModelLabel(id),
+        detail.modelProvider?.startsWith("custom:") ? (await settingsReader()).ai.customModels : [])
     );
   });
 
@@ -978,6 +1005,9 @@ async function runCaptureEnrichment(params: {
   selectedModel: string;
   /** Model provider from `ai.defaults.enrichment.provider`; undefined = Codex default. */
   selectedProvider?: string;
+  /** Snapshot keeps queued work on the endpoint selected when it was requested. */
+  customConnection?: CustomConnection;
+  customModel?: ResolvedCustomModel;
   /** When set, enrichment runs on this ACP agent (Gemini/Qwen) instead of
    *  Codex. `acpSettings` carries the snapshot used to resolve the agent's
    *  active install (override / pick). */
@@ -1000,17 +1030,31 @@ async function runCaptureEnrichment(params: {
   const captureId = params.capture.id;
   // The backend actually running this enrichment, for the logs (enrichment is
   // no longer always Codex).
-  const provider = params.acpAgentId !== undefined ? `acp:${params.acpAgentId}` : "codex";
+  const provider = params.selectedProvider ?? (params.acpAgentId !== undefined ? `acp:${params.acpAgentId}` : "codex");
   const startedAt = performance.now();
   const abortController = new AbortController();
   const abortFromContext = (): void => abortController.abort();
   params.ctx.signal.addEventListener("abort", abortFromContext, { once: true });
+  if (params.ctx.signal.aborted) abortController.abort();
   activeRuns.set(params.runId, abortController);
 
   let prepared: PreparedEnrichmentImage | PreparedEnrichmentVideoFrames | null = null;
   let client: EnrichmentBackend | null = null;
+  let slot: ReturnType<EnrichmentQueue["acquire"]> | undefined;
 
   try {
+    if (params.selectedProvider?.startsWith("custom:")) {
+      saveAiRunUsage({ aiRunId: params.runId, modelProvider: params.selectedProvider,
+        usageStatus: "unavailable", usageUnavailableReason: "Run queued or in progress",
+        cost: { status: "unavailable", reason: "usage unavailable" } });
+    }
+    if (params.customConnection) {
+      slot = directEnrichmentQueue.acquire(params.customConnection.id,
+        customEnrichmentConcurrency(params.customConnection), abortController.signal);
+      await slot.ready;
+    }
+    if (params.ctx.signal.aborted) abortController.abort();
+    abortController.signal.throwIfAborted();
     const running = markAiRunRunning(params.runId);
     broadcastAiRunUpdated({
       run: running,
@@ -1069,7 +1113,17 @@ async function runCaptureEnrichment(params: {
     });
 
     const acpAgentId = params.acpAgentId;
-    if (acpAgentId !== undefined) {
+    abortController.signal.throwIfAborted();
+    if (params.selectedProvider?.startsWith("custom:")) {
+      const service = getCustomModelService();
+      const selected = await service.selected(params.selectedProvider, params.selectedModel);
+      if (params.customModel && (selected.connectionId !== params.customModel.connectionId
+        || selected.baseUrl !== params.customModel.baseUrl || selected.protocol !== params.customModel.protocol
+        || JSON.stringify(selected.auth) !== JSON.stringify(params.customModel.auth))) {
+        throw new DirectApiError("The connection changed while enrichment was queued. Regenerate to use its new configuration.");
+      }
+      client = new DirectEnrichmentBackend(selected, service);
+    } else if (acpAgentId !== undefined) {
       const acpClient = await buildAcpEnrichmentClient(
         acpAgentId,
         params.acpSettings ?? (await params.settingsReader())
@@ -1086,6 +1140,7 @@ async function runCaptureEnrichment(params: {
     // `running` forever. On timeout we abort the controller (best-effort
     // stop) and the race rejects with EnrichmentTimeoutError → the catch
     // fails the run so the UI shows "could not read … Regenerate".
+    abortController.signal.throwIfAborted();
     const response = await withTurnTimeout(
       client.enrichCapture({
         imagePaths,
@@ -1108,6 +1163,7 @@ async function runCaptureEnrichment(params: {
       params.turnTimeoutMs,
       () => abortController.abort()
     );
+    abortController.signal.throwIfAborted();
 
     // A "completed but blank" reply is a failure, not a success. The result
     // schema defaults title/description/ocrText to "", so an agent that returns
@@ -1141,6 +1197,7 @@ async function runCaptureEnrichment(params: {
         message: error instanceof Error ? error.message : String(error)
       });
     }
+    abortController.signal.throwIfAborted();
     storeCompletedEnrichment({
       captureId,
       aiRunId: params.runId,
@@ -1192,15 +1249,16 @@ async function runCaptureEnrichment(params: {
     });
   } catch (error) {
     const latencyMs = Math.round(performance.now() - startedAt);
-    const isAbort = error instanceof DOMException && error.name === "AbortError";
     const isTimeout = error instanceof EnrichmentTimeoutError;
+    const isAbort = !isTimeout && (abortController.signal.aborted || (error instanceof DOMException && error.name === "AbortError"));
     try {
       saveAiRunUsage({
         aiRunId: params.runId,
+        ...(params.selectedProvider?.startsWith("custom:") ? { modelProvider: params.selectedProvider } : {}),
         usageStatus: "unavailable",
         usageUnavailableReason: isAbort
-          ? "AI run was cancelled before Codex reported token usage"
-          : "Codex did not report token usage before the run failed",
+          ? "AI run was cancelled before token usage was reported"
+          : "No token usage was reported before the run failed",
         cost: { status: "unavailable", reason: "usage unavailable" }
       });
     } catch (usageError) {
@@ -1271,5 +1329,6 @@ async function runCaptureEnrichment(params: {
         });
       });
     }
+    slot?.release();
   }
 }

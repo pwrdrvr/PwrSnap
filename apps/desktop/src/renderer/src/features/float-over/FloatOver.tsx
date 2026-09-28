@@ -403,6 +403,7 @@ export function FloatOver({
   enrichmentModelLabel,
   autoAcceptSuggestions = false,
   onEnableAi,
+  onCancelEnrichment,
   onConfigureAi,
   onSetAutoAccept,
   onAcceptTitle,
@@ -484,6 +485,7 @@ export function FloatOver({
    *  moment the enrichment completes. */
   autoAcceptSuggestions?: boolean;
   onEnableAi?: () => void;
+  onCancelEnrichment?: (runId: string) => void;
   onConfigureAi?: () => void;
   /** Persist a flip of the auto-accept toggle. Wired to a
    *  `settings:write` dispatch in the host so the change survives
@@ -1284,7 +1286,12 @@ export function FloatOver({
                 ? { modelLabel: enrichmentModelLabel }
                 : {})}
               action={
-                !thinking && !aiFailed ? (
+                thinking && enrichment?.latestRunId && onCancelEnrichment ? (
+                  <button className="fo__ai-accept is-quiet" title="Cancel enrichment"
+                    onClick={() => onCancelEnrichment(enrichment.latestRunId!)}>
+                    Cancel
+                  </button>
+                ) : !thinking && !aiFailed ? (
                   suggestedTitle.length === 0 && suggestedDescription.length === 0 && !providerAvailable ? (
                     <button className="fo__ai-accept" onClick={() => onConfigureAi?.()}>
                       Configure AI

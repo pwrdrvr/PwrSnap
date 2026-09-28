@@ -504,6 +504,7 @@ export function FloatOverHost({
     const { enrichment, record, settings } = state;
     const enrichmentProviderAvailable = isEnrichmentProviderAvailable({
       provider: settings?.ai.defaults.enrichment.provider,
+      customModels: settings?.ai.customModels,
       codexAvailable,
       acpDiscovery
     });
@@ -604,8 +605,8 @@ export function FloatOverHost({
         aiEnabled={settings?.ai.enabled ?? false}
         aiConsentAccepted={settings?.ai.consentAcceptedAt !== null && settings !== null}
         aiSafetyDisabled={settings?.ai.budgetSafetyDisabledAt !== null && settings !== null}
-        enrichmentProviderLabel={enrichmentBackendLabel(settings?.ai.defaults.enrichment).providerLabel}
-        enrichmentModelLabel={enrichmentBackendLabel(settings?.ai.defaults.enrichment).modelLabel}
+        enrichmentProviderLabel={enrichmentBackendLabel(settings?.ai.defaults.enrichment, settings?.ai).providerLabel}
+        enrichmentModelLabel={enrichmentBackendLabel(settings?.ai.defaults.enrichment, settings?.ai).modelLabel}
         autoAcceptSuggestions={settings?.ai.autoAcceptSuggestions ?? false}
         onSetAutoAccept={(next) => {
           void dispatch("settings:write", {
@@ -643,6 +644,7 @@ export function FloatOverHost({
             });
           });
         }}
+        onCancelEnrichment={(runId) => { void dispatch("codex:cancel", { runId }); }}
         onConfigureAi={() => {
           void dispatch("settings:open", { page: "ai" });
         }}

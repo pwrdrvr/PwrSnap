@@ -200,6 +200,13 @@ export function ConnectionPage({ connectionId }: { connectionId: string | null }
             }}
             onCancel={whereDone ? () => setStepOpen("where", false) : null}
           />
+        ) : connection !== null ? (
+          <ReadOnlyCard fields={[
+            { label: "Name", value: connection.name },
+            { label: "Protocol", value: PROTOCOL_LABELS[connection.protocol] },
+            { label: "Parallel enrichments", value: `${customEnrichmentConcurrency(connection)}${connection.enrichmentConcurrency === undefined ? " (default)" : ""}` },
+            { label: "Base URL", value: connection.baseUrl, wide: true, mono: true }
+          ]} />
         ) : null}
       </Step>
 
@@ -218,7 +225,7 @@ export function ConnectionPage({ connectionId }: { connectionId: string | null }
             onCheck={runDiscover}
             onDone={() => setStepOpen("auth", false)}
           />
-        ) : null}
+        ) : connection !== null && !locked("auth") ? <SignInSummary connection={connection} secret={secret} /> : null}
       </Step>
 
       <Step n={3} title="Models" state={stateOf("models", modelsDone)}
@@ -241,13 +248,26 @@ export function ConnectionPage({ connectionId }: { connectionId: string | null }
             onDiscover={runDiscover}
             onSaved={() => setStepOpen("models", false)}
           />
-        ) : null}
+        ) : modelsDone ? models.map((model) => (
+          <ReadOnlyCard key={model.id} title={model.displayName} fields={[
+            { label: "Model ID", value: model.modelId, wide: true, mono: true },
+            { label: "Image input", value: model.capabilities.vision === null ? "Unknown" : model.capabilities.vision ? "Yes" : "No" },
+            { label: "Streaming", value: model.capabilities.streaming ? "On" : "Off" },
+            { label: "Output token limit", value: model.maxOutputTokens.toLocaleString() }
+          ]} />
+        )) : null}
       </Step>
 
       <Step n={4} title="Use it for" state={stateOf("jobs", routedJobs.length > 0)}
         summary={routedJobs.length > 0 ? `Default for ${routedJobs.map((s) => AI_SURFACE_LABELS[s]).join(" · ")}` : "optional — or later in AI Features"}
         right={modelsDone && next !== "jobs" ? <ToggleButton open={expanded("jobs")} label="Edit" onToggle={(on) => setStepOpen("jobs", on)} /> : null}>
-        {expanded("jobs") && settings !== null ? <JobsStep models={models} settings={settings} patch={patch} /> : null}
+        {expanded("jobs") && settings !== null ? <JobsStep models={models} settings={settings} patch={patch} />
+          : modelsDone && settings !== null ? (
+            <ReadOnlyCard fields={JOB_ORDER.map((surface) => ({
+              label: AI_SURFACE_LABELS[surface],
+              value: models.find((m) => customProviderId(m.id) === settings.ai.defaults[surface].provider)?.displayName ?? "Not assigned here"
+            }))} />
+          ) : null}
       </Step>
 
       <div className="pss__dapi-actions">
@@ -286,6 +306,48 @@ export function ConnectionPage({ connectionId }: { connectionId: string | null }
 }
 
 // ---- Chrome -----------------------------------------------------------------
+
+type ReadOnlyField = { label: string; value: string; wide?: boolean; mono?: boolean };
+
+function ReadOnlyCard({ title, fields }: { title?: string; fields: readonly ReadOnlyField[] }): ReactElement {
+  return (
+    <div className="pss__dapi-readonly">
+      {title !== undefined ? <h3>{title}</h3> : null}
+      <dl>
+        {fields.map(({ label, value, wide, mono }) => (
+          <div key={label} className={wide ? "is-wide" : undefined}>
+            <dt>{label}</dt>
+            <dd className={mono ? "is-mono" : undefined}>{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
+function SignInSummary({ connection, secret }: { connection: CustomConnection; secret: SecretStatus | null }): ReactElement {
+  const { auth } = connection;
+  const fields: ReadOnlyField[] = [
+    { label: "Authentication", value: auth.type === "none" ? "No authentication" : auth.type === "api-key" ? "API key" : "OAuth" },
+    { label: "Status", value: auth.type === "none" ? "Not required" : secret === null ? "Checking…"
+      : secret.configured ? auth.type === "oauth" ? "Signed in" : "Key saved" : "Not configured" }
+  ];
+  if (auth.type !== "none" && secret?.configured) {
+    fields.push({ label: "Last saved", value: formatLastSetAt(secret.lastSetAt) });
+  }
+  if (auth.type === "oauth") {
+    fields.push(
+      { label: "Client ID", value: auth.oauth.clientId, mono: true },
+      { label: "Scopes", value: auth.oauth.scopes || "None", mono: true },
+      { label: "Callback port", value: auth.oauth.callbackPort === 0 ? "Automatic" : String(auth.oauth.callbackPort) },
+      { label: "Authorization URL", value: auth.oauth.authorizationUrl, wide: true, mono: true },
+      { label: "Token URL", value: auth.oauth.tokenUrl, wide: true, mono: true }
+    );
+    if (auth.oauth.revocationUrl) fields.push({ label: "Revocation URL", value: auth.oauth.revocationUrl, wide: true, mono: true });
+    if (auth.oauth.resource) fields.push({ label: "Resource", value: auth.oauth.resource, wide: true, mono: true });
+  }
+  return <ReadOnlyCard fields={fields} />;
+}
 
 function PageHeader({ title, sub }: { title: string; sub: string }): ReactElement {
   return (

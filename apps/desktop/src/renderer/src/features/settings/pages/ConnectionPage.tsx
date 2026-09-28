@@ -1,5 +1,7 @@
-// AI Providers → one Direct API connection, or a new one. Four steps, each
-// saving as it passes (Claude Design board 2a):
+// AI Providers → one Direct API connection, or a new one.
+//
+// A NEW connection is a stepped page, each step saving as it passes (Claude
+// Design board 2a/2b):
 //
 //   1. Where      — name, protocol, base URL, and the exact request URL.
 //   2. Sign in    — no auth, a write-only API key, or OAuth.
@@ -7,10 +9,15 @@
 //                   image input answered per model (Yes / No / Unknown).
 //   4. Use it for — optional job defaults.
 //
+// A SAVED connection is a provider screen like Codex's or an agent's (board
+// 3a): the "Default for" strip, then Endpoint, Credential and Models cards,
+// each read-only until its Edit. The stepper is for getting somewhere; once
+// there, the page answers "what is this and is it working", and a card that
+// still needs something opens on its own.
+//
 // Main owns the configuration (`customModels:*`); this page never holds a
 // key after handing it over, and never infers what a model can do from its
-// name or its endpoint. The step that still needs something is the one
-// that is open; finished steps collapse to a one-line summary with Edit.
+// name or its endpoint.
 
 import { useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import {
@@ -37,8 +44,8 @@ import {
 } from "@pwrsnap/shared";
 import { dispatch } from "../../../lib/pwrsnap";
 import { useAiProvidersContext } from "../AiProvidersContext";
-import { AI_SURFACE_LABELS } from "../ai-provider-status";
-import { SegmentedControl, Switch, type SegmentOption } from "../components";
+import { AI_SURFACE_LABELS, statusBadgeClass } from "../ai-provider-status";
+import { Card, ProviderDefaultsStrip, Row, SegmentedControl, Switch, type SegmentOption } from "../components";
 import {
   CONNECTION_TEMPLATES,
   LOCAL_SERVER_PORTS,
@@ -48,6 +55,7 @@ import {
   requestUrl,
   suggestModelName,
   whereLabel,
+  type ConnectionStatus,
   type ConnectionTemplate
 } from "../direct-api-status";
 import { useSettingsContext } from "../SettingsContext";
@@ -86,45 +94,36 @@ function messageOf(r: { ok: false; error: { message: string } }): string {
   return r.error.message;
 }
 
-export function ConnectionPage({ connectionId }: { connectionId: string | null }): ReactElement {
-  const { settings, secrets, patch } = useSettingsContext();
-  const { connections } = useAiProvidersContext();
-  const isNew = connectionId === null;
-  // A new connection exists from step 1 on; the route stays on "new" so the
-  // flow keeps its place, and this remembers which one it made.
-  const [created, setCreated] = useState<CustomConnection | null>(null);
-  const [template, setTemplate] = useState<ConnectionTemplate | null>(null);
-  const [open, setOpen] = useState<ReadonlySet<StepId>>(new Set());
+/** The endpoint's model list for `connection`, read on request. Both
+ *  layouts use it: the sign-in check IS a listing (no model runs). */
+function useDiscovery(connection: CustomConnection | null): {
+  current: Discovery | null;
+  runDiscover: () => Promise<Discovery | null>;
+} {
   const [discovery, setDiscovery] = useState<Discovery | null>(null);
-  const [confirmRemove, setConfirmRemove] = useState(false);
-  const [removeError, setRemoveError] = useState<string | null>(null);
-  const discoverSeq = useRef(0);
-
-  const id = connectionId ?? created?.id ?? null;
-  const status = id === null ? undefined : connections.find((c) => c.connection.id === id);
-  // Until the settings broadcast lands, the connection step 1 just made.
-  const connection = status?.connection ?? (created !== null && created.id === id ? created : null);
-  const models = status?.models ?? [];
-  const secret = id === null ? null : connectionSecret(secrets, id);
-  const credentialReady = connection === null ? false
-    : connection.auth.type === "none" ? true : secret?.configured === true;
-
+  const seqRef = useRef(0);
   const listFor = connection === null ? null : endpointKey(connection);
   const current = discovery !== null && discovery.key === listFor ? discovery : null;
-
   const runDiscover = async (): Promise<Discovery | null> => {
     if (connection === null) return null;
     const key = endpointKey(connection);
-    const seq = ++discoverSeq.current;
+    const seq = ++seqRef.current;
     setDiscovery({ key, kind: "loading" });
     const r = await dispatch("customModels:discover", { connectionId: connection.id });
     const next: Discovery = r.ok ? { key, kind: "done", result: r.value }
       : { key, kind: "error", message: messageOf(r), rejected: r.error.code === "custom_model_unauthorized" };
-    if (seq === discoverSeq.current) setDiscovery(next);
+    if (seq === seqRef.current) setDiscovery(next);
     return next;
   };
+  return { current, runDiscover };
+}
 
-  if (!isNew && status === undefined) {
+export function ConnectionPage({ connectionId }: { connectionId: string | null }): ReactElement {
+  const { settings } = useSettingsContext();
+  const { connections } = useAiProvidersContext();
+  if (connectionId === null) return <NewConnection />;
+  const status = connections.find((c) => c.connection.id === connectionId);
+  if (status === undefined) {
     return (
       <>
         <PageHeader title="Connection" sub={settings === null ? "Loading…" : "This connection was removed."} />
@@ -136,6 +135,28 @@ export function ConnectionPage({ connectionId }: { connectionId: string | null }
       </>
     );
   }
+  return <SavedConnection status={status} />;
+}
+
+// ---- A new connection: the stepper ------------------------------------------
+
+function NewConnection(): ReactElement {
+  const { settings, secrets, patch } = useSettingsContext();
+  const { connections } = useAiProvidersContext();
+  // A new connection exists from step 1 on; the route stays on "new" so the
+  // flow keeps its place, and this remembers which one it made.
+  const [created, setCreated] = useState<CustomConnection | null>(null);
+  const [template, setTemplate] = useState<ConnectionTemplate | null>(null);
+  const [open, setOpen] = useState<ReadonlySet<StepId>>(new Set());
+
+  const status = created === null ? undefined : connections.find((c) => c.connection.id === created.id);
+  // Until the settings broadcast lands, the connection step 1 just made.
+  const connection = status?.connection ?? created;
+  const models = status?.models ?? [];
+  const secret = connection === null ? null : connectionSecret(secrets, connection.id);
+  const credentialReady = connection === null ? false
+    : connection.auth.type === "none" ? true : secret?.configured === true;
+  const { current, runDiscover } = useDiscovery(connection);
 
   const whereDone = connection !== null;
   const modelsDone = models.length > 0;
@@ -143,7 +164,7 @@ export function ConnectionPage({ connectionId }: { connectionId: string | null }
   // sign-in: the step reopens rather than sending the operator on to models.
   const rejected = current?.kind === "error" && current.rejected;
   const signedIn = credentialReady && !rejected;
-  const next: StepId | null = !whereDone ? "where" : !signedIn ? "auth" : !modelsDone ? "models" : isNew ? "jobs" : null;
+  const next: StepId = !whereDone ? "where" : !signedIn ? "auth" : !modelsDone ? "models" : "jobs";
   const locked = (step: StepId): boolean =>
     step === "auth" ? !whereDone : step === "models" ? !whereDone || !credentialReady : step === "jobs" ? !modelsDone : false;
   const expanded = (step: StepId): boolean => !locked(step) && (step === next || open.has(step));
@@ -170,20 +191,11 @@ export function ConnectionPage({ connectionId }: { connectionId: string | null }
   const routedJobs = JOB_ORDER.filter((surface) =>
     models.some((m) => settings?.ai.defaults[surface].provider === customProviderId(m.id)));
 
-  const sub = isNew
-    ? `${template !== null ? `Started from ${template.name}. ` : ""}Every step saves as it passes — leave at any point and the connection is still here, marked with what it still needs.`
-    : "One endpoint and one credential; the models under it share the key. Every step saves as it passes.";
-
-  const removeConnection = async (): Promise<void> => {
-    if (connection === null) { setActivePage("ai"); return; }
-    const r = await dispatch("customModels:removeConnection", { connectionId: connection.id });
-    if (!r.ok) { setRemoveError(messageOf(r)); return; }
-    setActivePage("ai");
-  };
+  const sub = `${template !== null ? `Started from ${template.name}. ` : ""}Every step saves as it passes — leave at any point and the connection is still here, marked with what it still needs.`;
 
   return (
     <>
-      <PageHeader title={isNew ? "New connection" : connection?.name ?? "Connection"} sub={sub} />
+      <PageHeader title="New connection" sub={sub} />
 
       <Step n={1} title="Where" state={stateOf("where", whereDone)}
         summary={connection === null ? "" : `${PROTOCOL_LABELS[connection.protocol]} · ${where?.local ? "this computer" : where?.text}`}
@@ -195,18 +207,11 @@ export function ConnectionPage({ connectionId }: { connectionId: string | null }
             template={template}
             onTemplate={setTemplate}
             onSaved={(saved) => {
-              if (isNew && created === null) setCreated(saved);
+              if (created === null) setCreated(saved);
               setStepOpen("where", false);
             }}
             onCancel={whereDone ? () => setStepOpen("where", false) : null}
           />
-        ) : connection !== null ? (
-          <ReadOnlyCard fields={[
-            { label: "Name", value: connection.name },
-            { label: "Protocol", value: PROTOCOL_LABELS[connection.protocol] },
-            { label: "Parallel enrichments", value: `${customEnrichmentConcurrency(connection)}${connection.enrichmentConcurrency === undefined ? " (default)" : ""}` },
-            { label: "Base URL", value: connection.baseUrl, wide: true, mono: true }
-          ]} />
         ) : null}
       </Step>
 
@@ -220,23 +225,19 @@ export function ConnectionPage({ connectionId }: { connectionId: string | null }
             key={endpointKey(connection)}
             connection={connection}
             secret={secret}
-            initialKind={isNew && template?.auth === "oauth" && connection.auth.type === "api-key" && !credentialReady ? "oauth" : connection.auth.type}
+            initialKind={template?.auth === "oauth" && connection.auth.type === "api-key" && !credentialReady ? "oauth" : connection.auth.type}
             rejected={rejected ? (current?.kind === "error" ? current.message : null) : null}
             onCheck={runDiscover}
             onDone={() => setStepOpen("auth", false)}
           />
-        ) : connection !== null && !locked("auth") ? <SignInSummary connection={connection} secret={secret} /> : null}
+        ) : null}
       </Step>
 
       <Step n={3} title="Models" state={stateOf("models", modelsDone)}
         summary={locked("models") ? "after sign in" : `${models.length} saved${current?.kind === "done" ? ` of ${current.result.models.length} listed` : ""}`}
         right={!locked("models") ? (
           <>
-            {expanded("models") ? (
-              <button className="pss__top-btn" type="button" disabled={current?.kind === "loading"} onClick={() => { void runDiscover(); }}>
-                {current?.kind === "loading" ? "Listing…" : "List again"}
-              </button>
-            ) : null}
+            {expanded("models") ? <ListAgainButton discovery={current} onDiscover={runDiscover} /> : null}
             {modelsDone ? <ToggleButton open={expanded("models")} label="Edit" onToggle={(on) => setStepOpen("models", on)} /> : null}
           </>
         ) : null}>
@@ -248,108 +249,276 @@ export function ConnectionPage({ connectionId }: { connectionId: string | null }
             onDiscover={runDiscover}
             onSaved={() => setStepOpen("models", false)}
           />
-        ) : modelsDone ? models.map((model) => (
-          <ReadOnlyCard key={model.id} title={model.displayName} fields={[
-            { label: "Model ID", value: model.modelId, wide: true, mono: true },
-            { label: "Image input", value: model.capabilities.vision === null ? "Unknown" : model.capabilities.vision ? "Yes" : "No" },
-            { label: "Streaming", value: model.capabilities.streaming ? "On" : "Off" },
-            { label: "Output token limit", value: model.maxOutputTokens.toLocaleString() }
-          ]} />
-        )) : null}
+        ) : null}
       </Step>
 
       <Step n={4} title="Use it for" state={stateOf("jobs", routedJobs.length > 0)}
-        summary={routedJobs.length > 0 ? `Default for ${routedJobs.map((s) => AI_SURFACE_LABELS[s]).join(" · ")}` : "optional — or later in AI Features"}
-        right={modelsDone && next !== "jobs" ? <ToggleButton open={expanded("jobs")} label="Edit" onToggle={(on) => setStepOpen("jobs", on)} /> : null}>
-        {expanded("jobs") && settings !== null ? <JobsStep models={models} settings={settings} patch={patch} />
-          : modelsDone && settings !== null ? (
-            <ReadOnlyCard fields={JOB_ORDER.map((surface) => ({
-              label: AI_SURFACE_LABELS[surface],
-              value: models.find((m) => customProviderId(m.id) === settings.ai.defaults[surface].provider)?.displayName ?? "Not assigned here"
-            }))} />
-          ) : null}
+        summary={routedJobs.length > 0 ? `Default for ${routedJobs.map((s) => AI_SURFACE_LABELS[s]).join(" · ")}` : "optional — or later in AI Features"}>
+        {expanded("jobs") && settings !== null ? <JobsStep models={models} settings={settings} patch={patch} /> : null}
       </Step>
 
       <div className="pss__dapi-actions">
-        {confirmRemove && connection !== null ? (
-          <>
-            <span className="pss__dapi-hint">
-              Remove {connection.name} and its {plural(models.length, "model")}? Its key is deleted, and jobs set to these models stop until you pick another.
-            </span>
-            <button className="pss__key-btn is-danger" type="button" onClick={() => { void removeConnection(); }}>
-              Remove
-            </button>
-            <button className="pss__key-btn" type="button" onClick={() => setConfirmRemove(false)}>
-              Keep
-            </button>
-          </>
-        ) : isNew && connection === null ? (
+        {connection === null ? (
           <button className="pss__key-btn" type="button" onClick={() => setActivePage("ai")}>
             Cancel
           </button>
         ) : (
-          <button className="pss__key-btn is-danger" type="button" onClick={() => setConfirmRemove(true)}>
-            {isNew ? "Discard connection" : "Remove connection"}
-          </button>
+          <RemoveConnection connection={connection} models={models} label="Discard connection" />
         )}
         <span className="pss__dapi-spacer" />
-        {isNew && next === "jobs" && connection !== null ? (
+        {next === "jobs" && connection !== null ? (
           <button className="pss__key-btn is-primary" type="button"
             onClick={() => setActivePage("ai", connectionSettingsSub(connection.id))}>
             Done
           </button>
         ) : null}
       </div>
-      {removeError !== null ? <p className="pss__dapi-hint pss__opt-sub--error" role="alert">{removeError}</p> : null}
+    </>
+  );
+}
+
+// ---- A saved connection: a provider screen ----------------------------------
+
+type SectionId = "endpoint" | "credential" | "models";
+
+function SavedConnection({ status }: { status: ConnectionStatus }): ReactElement {
+  const { settings, secrets } = useSettingsContext();
+  const { connection, models } = status;
+  const [editing, setEditing] = useState<ReadonlySet<SectionId>>(new Set());
+  const secret = connectionSecret(secrets, connection.id);
+  const credentialReady = connection.auth.type === "none" || secret?.configured === true;
+  const { current, runDiscover } = useDiscovery(connection);
+  const rejected = current?.kind === "error" && current.rejected;
+  const where = whereLabel(connection.baseUrl);
+
+  // The card that still needs something is open without an Edit — and
+  // cannot be closed until it has it.
+  const needs: SectionId | null = !credentialReady || rejected ? "credential" : models.length === 0 ? "models" : null;
+  const isOpen = (s: SectionId): boolean => s === needs || editing.has(s);
+  const setSection = (s: SectionId, on: boolean): void => {
+    setEditing((prev) => {
+      const out = new Set(prev);
+      if (on) out.add(s); else out.delete(s);
+      return out;
+    });
+  };
+  const toggle = (s: SectionId, label: string): ReactNode =>
+    s === needs ? null : <ToggleButton open={isOpen(s)} label={label} onToggle={(on) => setSection(s, on)} />;
+
+  const routed = settings === null ? [] : (["enrichment", "libraryChat", "sizzleChat"] as const).filter((surface) =>
+    models.some((m) => settings.ai.defaults[surface].provider === customProviderId(m.id)));
+  const badge = rejected
+    ? { tone: "bad" as const, text: connection.auth.type === "oauth" ? "Sign-in rejected" : "Key rejected" }
+    : { tone: status.tone, text: status.badge };
+  const auth = connection.auth;
+  const credentialTitle = auth.type === "none" ? "No sign-in" : auth.type === "api-key" ? "API key" : "OAuth sign-in";
+
+  return (
+    <>
+      <PageHeader
+        title={connection.name}
+        sub="Called by PwrSnap directly, with no agent in between. Chat gets the conversation and the image you're viewing, with no editing tools and no reasoning control."
+        right={<span className={"pss__badge" + statusBadgeClass(badge.tone)}>{badge.text}</span>}
+      />
+      <ProviderDefaultsStrip routed={routed} onEdit={() => setActivePage("ai-features", "default-agents")} />
+
+      <Card eyebrow="CONNECTION" title="Endpoint" headerAction={toggle("endpoint", "Edit")}>
+        {isOpen("endpoint") ? (
+          <div className="pss__dapi-edit">
+            <WhereStep
+              connection={connection}
+              credentialConfigured={secret?.configured === true}
+              template={null}
+              onTemplate={() => undefined}
+              onSaved={() => setSection("endpoint", false)}
+              onCancel={() => setSection("endpoint", false)}
+            />
+          </div>
+        ) : (
+          <>
+            <Row label="Where requests go" sub={where.local
+              ? "This computer. Requests never leave it."
+              : auth.type === "none" ? "Over HTTPS to this address." : "Over HTTPS. The credential is bound to this address: point the connection somewhere else and it asks for a new one."}>
+              <span className="pss__dapi-chips">
+                <span className="pss__dapi-cap">{PROTOCOL_LABELS[connection.protocol].toUpperCase()}</span>
+                <span className={"pss__dapi-cap" + (where.local ? " is-local" : "")}>{where.text}</span>
+              </span>
+              <RequestPreview baseUrl={connection.baseUrl} protocol={connection.protocol} />
+            </Row>
+            <Row label="Parallel enrichments" sub="Captures this connection works on at once, shared by all its models. Default: 1 on this computer, 2 elsewhere.">
+              <span className="pss__dapi-value">
+                {customEnrichmentConcurrency(connection)} at a time{connection.enrichmentConcurrency === undefined ? " (default)" : ""}
+              </span>
+            </Row>
+          </>
+        )}
+      </Card>
+
+      <Card eyebrow="CREDENTIAL" title={credentialTitle} headerAction={toggle("credential", "Change")}>
+        {isOpen("credential") ? (
+          <div className="pss__dapi-edit">
+            <AuthStep
+              key={endpointKey(connection)}
+              connection={connection}
+              secret={secret}
+              initialKind={auth.type}
+              rejected={rejected && current?.kind === "error" ? current.message : null}
+              onCheck={runDiscover}
+              onDone={() => setSection("credential", false)}
+            />
+          </div>
+        ) : (
+          <Row label={auth.type === "none" ? "Sign-in" : auth.type === "api-key" ? "Key" : "Sign-in"}
+            sub={auth.type === "none"
+              ? "Nothing is sent but the request itself."
+              : `Encrypted on this computer and never shown again. Shared by ${models.length === 1 ? "the model" : `all ${models.length} models`} on this connection.`}
+            {...(auth.type !== "none" ? { tag: "keychain" } : {})}>
+            <CredentialCheck connection={connection} secret={secret} discovery={current} onCheck={runDiscover} />
+          </Row>
+        )}
+      </Card>
+
+      <Card eyebrow="MODELS" title={`${plural(models.length, "model")} in pickers`}
+        headerAction={
+          <>
+            {isOpen("models") ? <ListAgainButton discovery={current} onDiscover={runDiscover} /> : null}
+            {credentialReady ? toggle("models", "Edit") : null}
+          </>
+        }>
+        <div className="pss__dapi-edit">
+          {!credentialReady ? (
+            <p className="pss__dapi-hint">Models are listed from the endpoint once {auth.type === "oauth" ? "you sign in" : "the key is saved"}.</p>
+          ) : isOpen("models") ? (
+            <ModelsStep
+              connection={connection}
+              models={models}
+              discovery={current}
+              onDiscover={runDiscover}
+              onSaved={() => setSection("models", false)}
+            />
+          ) : settings !== null ? (
+            <SavedModels models={models} settings={settings} />
+          ) : null}
+        </div>
+      </Card>
+
+      <div className="pss__dapi-actions">
+        <RemoveConnection connection={connection} models={models} label="Remove connection" />
+      </div>
+    </>
+  );
+}
+
+function CredentialCheck({ connection, secret, discovery, onCheck }: {
+  connection: CustomConnection;
+  secret: SecretStatus | null;
+  discovery: Discovery | null;
+  onCheck: () => Promise<Discovery | null>;
+}): ReactElement {
+  const { auth } = connection;
+  const cmd = auth.type === "none" ? (isLoopbackApiUrl(connection.baseUrl) ? "Not needed on this computer" : "No authentication")
+    : auth.type === "api-key" ? `•••• saved ${formatLastSetAt(secret?.lastSetAt ?? null)}`
+    : `Signed in ${formatLastSetAt(secret?.lastSetAt ?? null)}`;
+  const result = discovery === null ? { text: "Test asks the endpoint for its model list. No model runs, so it costs nothing.", tone: "" }
+    : discovery.kind === "loading" ? { text: "Asking the endpoint for its model list…", tone: "" }
+    : discovery.kind === "done" ? { text: `Reached it · listed ${plural(discovery.result.models.length, "model")}`, tone: " is-ok" }
+    : { text: discovery.message, tone: " is-bad" };
+  return (
+    <div className="pss__test">
+      <span className="pss__test-icon" aria-hidden="true">{auth.type === "none" ? "—" : auth.type === "api-key" ? "••" : "↗"}</span>
+      <div className="pss__test-l">
+        <span className="pss__test-cmd">{cmd}</span>
+        <span className={"pss__test-sub pss__dapi-check" + result.tone} role="status" title={result.text}>{result.text}</span>
+      </div>
+      <div className="pss__test-r">
+        <button className="pss__test-btn" type="button" disabled={discovery?.kind === "loading"} onClick={() => { void onCheck(); }}>
+          {discovery?.kind === "loading" ? "Testing…" : "Test"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SavedModels({ models, settings }: { models: readonly CustomModel[]; settings: Settings }): ReactElement {
+  const [tests, setTests] = useState<Readonly<Record<string, { ok: boolean | null; text: string }>>>({});
+  const test = async (m: CustomModel): Promise<void> => {
+    setTests((prev) => ({ ...prev, [m.id]: { ok: null, text: "Asking it to reply…" } }));
+    const r = await dispatch("customModels:test", { id: m.id });
+    setTests((prev) => ({ ...prev, [m.id]: r.ok ? { ok: true, text: `Replied · ${r.value.ms} ms` } : { ok: false, text: messageOf(r) } }));
+  };
+  return (
+    <div className="pss__dapi-models" role="table" aria-label="Models">
+      <div className="pss__dapi-mrow is-view is-head" role="row">
+        <span>Model</span><span>Image input</span><span>Default for</span><span />
+      </div>
+      {models.map((m) => {
+        const used = JOB_ORDER.filter((s) => settings.ai.defaults[s].provider === customProviderId(m.id));
+        const result = tests[m.id];
+        return (
+          <div key={m.id} className="pss__dapi-mrow is-view" role="row">
+            <span className="pss__dapi-mname">
+              <span>{m.displayName}</span>
+              <span className="pss__dapi-mid" title={m.modelId}>{m.modelId}</span>
+            </span>
+            <span className="pss__dapi-caps">
+              <span className={"pss__dapi-cap" + (m.capabilities.vision === true ? " is-yes" : "")}>
+                {m.capabilities.vision === null ? "UNKNOWN" : m.capabilities.vision ? "YES" : "NO"}
+              </span>
+              {!m.capabilities.streaming ? <span className="pss__dapi-cap">NO STREAM</span> : null}
+            </span>
+            <span className={"pss__dapi-used" + (used.length === 0 ? " is-none" : "")}>
+              {used.length > 0 ? used.map((s) => AI_SURFACE_LABELS[s]).join(", ") : "Not used"}
+            </span>
+            <button className="pss__dapi-test" type="button" disabled={result?.ok === null}
+              title="Asks the model to reply — a few tokens on your provider's bill" onClick={() => { void test(m); }}>
+              Test
+            </button>
+            {result !== undefined ? (
+              <span className={"pss__dapi-result" + (result.ok === true ? " is-ok" : result.ok === false ? " is-bad" : "")} role="status">
+                {result.text}
+              </span>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function RemoveConnection({ connection, models, label }: {
+  connection: CustomConnection;
+  models: readonly CustomModel[];
+  label: string;
+}): ReactElement {
+  const [confirming, setConfirming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const remove = async (): Promise<void> => {
+    const r = await dispatch("customModels:removeConnection", { connectionId: connection.id });
+    if (!r.ok) { setError(messageOf(r)); return; }
+    setActivePage("ai");
+  };
+  const what = `${plural(models.length, "model")}${connection.auth.type === "none" ? "" : " and its credential"}`;
+  return (
+    <>
+      {confirming ? (
+        <>
+          <span className="pss__dapi-hint">
+            Remove {connection.name}, its {what}? Jobs set to these models stop until you pick another.
+          </span>
+          <button className="pss__key-btn is-danger" type="button" onClick={() => { void remove(); }}>Remove</button>
+          <button className="pss__key-btn" type="button" onClick={() => setConfirming(false)}>Keep</button>
+        </>
+      ) : (
+        <button className="pss__key-btn is-danger" type="button" onClick={() => setConfirming(true)}>{label}</button>
+      )}
+      {error !== null ? <p className="pss__dapi-hint pss__opt-sub--error" role="alert">{error}</p> : null}
     </>
   );
 }
 
 // ---- Chrome -----------------------------------------------------------------
 
-type ReadOnlyField = { label: string; value: string; wide?: boolean; mono?: boolean };
-
-function ReadOnlyCard({ title, fields }: { title?: string; fields: readonly ReadOnlyField[] }): ReactElement {
-  return (
-    <div className="pss__dapi-readonly">
-      {title !== undefined ? <h3>{title}</h3> : null}
-      <dl>
-        {fields.map(({ label, value, wide, mono }) => (
-          <div key={label} className={wide ? "is-wide" : undefined}>
-            <dt>{label}</dt>
-            <dd className={mono ? "is-mono" : undefined}>{value}</dd>
-          </div>
-        ))}
-      </dl>
-    </div>
-  );
-}
-
-function SignInSummary({ connection, secret }: { connection: CustomConnection; secret: SecretStatus | null }): ReactElement {
-  const { auth } = connection;
-  const fields: ReadOnlyField[] = [
-    { label: "Authentication", value: auth.type === "none" ? "No authentication" : auth.type === "api-key" ? "API key" : "OAuth" },
-    { label: "Status", value: auth.type === "none" ? "Not required" : secret === null ? "Checking…"
-      : secret.configured ? auth.type === "oauth" ? "Signed in" : "Key saved" : "Not configured" }
-  ];
-  if (auth.type !== "none" && secret?.configured) {
-    fields.push({ label: "Last saved", value: formatLastSetAt(secret.lastSetAt) });
-  }
-  if (auth.type === "oauth") {
-    fields.push(
-      { label: "Client ID", value: auth.oauth.clientId, mono: true },
-      { label: "Scopes", value: auth.oauth.scopes || "None", mono: true },
-      { label: "Callback port", value: auth.oauth.callbackPort === 0 ? "Automatic" : String(auth.oauth.callbackPort) },
-      { label: "Authorization URL", value: auth.oauth.authorizationUrl, wide: true, mono: true },
-      { label: "Token URL", value: auth.oauth.tokenUrl, wide: true, mono: true }
-    );
-    if (auth.oauth.revocationUrl) fields.push({ label: "Revocation URL", value: auth.oauth.revocationUrl, wide: true, mono: true });
-    if (auth.oauth.resource) fields.push({ label: "Resource", value: auth.oauth.resource, wide: true, mono: true });
-  }
-  return <ReadOnlyCard fields={fields} />;
-}
-
-function PageHeader({ title, sub }: { title: string; sub: string }): ReactElement {
+function PageHeader({ title, sub, right }: { title: string; sub: string; right?: ReactNode }): ReactElement {
   return (
     <div className="pss__main-hdr">
       <div className="pss__main-hdr-l">
@@ -357,6 +526,7 @@ function PageHeader({ title, sub }: { title: string; sub: string }): ReactElemen
         <h1 className="pss__main-title">{title}</h1>
         <p className="pss__main-sub">{sub}</p>
       </div>
+      {right}
     </div>
   );
 }
@@ -390,6 +560,25 @@ function ToggleButton({ open, label, onToggle }: { open: boolean; label: string;
     <button className="pss__top-btn" type="button" aria-expanded={open} onClick={() => onToggle(!open)}>
       {open ? "Close" : label}
     </button>
+  );
+}
+
+function ListAgainButton({ discovery, onDiscover }: { discovery: Discovery | null; onDiscover: () => Promise<Discovery | null> }): ReactElement {
+  return (
+    <button className="pss__top-btn" type="button" disabled={discovery?.kind === "loading"} onClick={() => { void onDiscover(); }}>
+      {discovery?.kind === "loading" ? "Listing…" : "List again"}
+    </button>
+  );
+}
+
+function RequestPreview({ baseUrl, protocol }: { baseUrl: string; protocol: CustomProtocol }): ReactElement {
+  const preview = requestUrl(baseUrl, protocol);
+  return (
+    <div className="pss__dapi-req">
+      <span className="pss__dapi-m">POST</span>
+      <span className="pss__dapi-u">{preview.base}<b>{preview.path}</b></span>
+      <span className="pss__dapi-l">what PwrSnap will call</span>
+    </div>
   );
 }
 
@@ -439,7 +628,6 @@ function WhereStep({ connection, credentialConfigured, template, onTemplate, onS
   const changed = connection === null || name.trim() !== connection.name || protocol !== connection.protocol || url !== connection.baseUrl
     || concurrencyValue !== connection.enrichmentConcurrency;
   const repoints = connection !== null && connection.auth.type !== "none" && credentialConfigured && trimSlash(url) !== trimSlash(connection.baseUrl);
-  const preview = requestUrl(urlOk ? url : "https://…", protocol);
 
   const pick = (t: ConnectionTemplate): void => {
     if (name.trim() === "" || CONNECTION_TEMPLATES.some((x) => x.name === name.trim())) setName(t.name);
@@ -516,11 +704,7 @@ function WhereStep({ connection, credentialConfigured, template, onTemplate, onS
           ))}
         </div>
       ) : null}
-      <div className="pss__dapi-req">
-        <span className="pss__dapi-m">POST</span>
-        <span className="pss__dapi-u">{preview.base}<b>{preview.path}</b></span>
-        <span className="pss__dapi-l">what PwrSnap will call</span>
-      </div>
+      <RequestPreview baseUrl={urlOk ? url : "https://…"} protocol={protocol} />
       {repoints ? (
         <NoteView note={{ tone: "warn", text: <>Changing the address deletes the saved key — it only ever goes to the address it was saved for. You'll enter it again in the next step.</> }} />
       ) : null}

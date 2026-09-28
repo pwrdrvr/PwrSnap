@@ -721,6 +721,13 @@ function step(n: number, title: string): HTMLElement {
   if (el === null || el === undefined) throw new Error(`step not found: ${title}`);
   return el;
 }
+/** A saved connection's card, by (part of) its title. */
+function card(title: string): HTMLElement {
+  const el = Array.from(container?.querySelectorAll<HTMLElement>("section.pss__card") ?? [])
+    .find((c) => c.querySelector(".pss__card-title")?.textContent?.includes(title) === true);
+  if (el === undefined) throw new Error(`card not found: ${title}`);
+  return el;
+}
 function button(scope: ParentNode | null | undefined, text: string): HTMLButtonElement {
   const found = Array.from(scope?.querySelectorAll<HTMLButtonElement>("button") ?? []).find((b) => b.textContent === text);
   if (found === undefined) throw new Error(`button not found: ${text}`);
@@ -736,7 +743,7 @@ describe("Direct API connections", () => {
     const connection = saved.ai.customConnections!.find((c) => c.id === id)!;
     customAnswers["customModels:saveConnection"] = { ok: true, value: { ...connection, enrichmentConcurrency: 4 } };
     const page = await render(createElement(AIProvidersPage, { sub: `connection:${id}` }), saved);
-    await click(button(step(1, "Where"), "Edit"));
+    await click(button(card("Endpoint"), "Edit"));
     const input = page.querySelector<HTMLInputElement>('input[type="number"]')!;
     expect(input.placeholder).toBe(`Default: ${limit}`);
     const change = async (value: string): Promise<void> => {
@@ -746,9 +753,9 @@ describe("Direct API connections", () => {
       });
     };
     await change("0");
-    expect(button(step(1, "Where"), "Save").disabled).toBe(true);
+    expect(button(card("Endpoint"), "Save").disabled).toBe(true);
     await change("4");
-    await click(button(step(1, "Where"), "Save"));
+    await click(button(card("Endpoint"), "Save"));
     expect(callsTo("customModels:saveConnection")).toEqual([{ connection: { ...connection, enrichmentConcurrency: 4 } }]);
   });
 
@@ -790,8 +797,8 @@ describe("Direct API connections", () => {
     const saved = directSettings();
     saved.ai.customConnections![0]!.baseUrl = baseUrl;
     await render(createElement(AIProvidersPage, { sub: `connection:${CLOUD}` }), saved);
-    await click(button(step(3, "Models"), "Edit"));
-    const models = step(3, "Models");
+    await click(button(card("in pickers"), "Edit"));
+    const models = card("in pickers");
     const inputFor = (label: string): HTMLInputElement | undefined => Array.from(models.querySelectorAll("input")).find((el) => el.getAttribute("aria-label") === label);
     await click(inputFor(`Use ${modelId}`));
     const name = inputFor(`Name for ${modelId}`);
@@ -863,10 +870,14 @@ describe("Direct API connections", () => {
     customAnswers["customModels:discover"] = { ok: true, value: { models: [{ id: "granola-large-2", vision: null }] } };
     const page = await render(createElement(AIProvidersPage, { sub: `connection:${CLOUD}` }), directSettings());
     expect(page.querySelector("h1")?.textContent).toBe("Fixture Cloud");
-    const input = page.querySelector<HTMLInputElement>('input[aria-label="API key"]');
+    // A saved connection with no key opens its Credential card by itself,
+    // and nothing can close it until the key is there.
+    const credential = card("API key");
+    expect(credential.querySelector(".pss__card-hdr-action button")).toBeNull();
+    const input = credential.querySelector<HTMLInputElement>('input[aria-label="API key"]');
     if (input === null) throw new Error("key input missing");
     input.value = "synthetic-fixture-key";
-    await click(button(step(2, "Sign in"), "Save & test"));
+    await click(button(credential, "Save & test"));
     expect(callsTo("customModels:setKey")).toEqual([{ connectionId: CLOUD, value: "synthetic-fixture-key" }]);
     expect(callsTo("customModels:discover")).toEqual([{ connectionId: CLOUD }]);
     expect(input.value).toBe("");
@@ -880,8 +891,8 @@ describe("Direct API connections", () => {
       { id: "granola-large-2", vision: null }, { id: "granola-small", displayName: "Granola Small", vision: null }] } };
     customAnswers["customModels:setModels"] = { ok: true, value: [] };
     await render(createElement(AIProvidersPage, { sub: `connection:${CLOUD}` }), directSettings());
-    await click(button(step(3, "Models"), "Edit"));
-    const models = step(3, "Models");
+    await click(button(card("in pickers"), "Edit"));
+    const models = card("in pickers");
     expect(models.textContent).toContain("not advertised");
     await click(models.querySelector('input[aria-label="Use granola-small"]'));
     await click(button(models.querySelector('[aria-label="Image input for granola-small"]'), "Yes"));
@@ -896,18 +907,43 @@ describe("Direct API connections", () => {
     withCloudKey();
     customAnswers["customModels:discover"] = { ok: false, error: { kind: "settings", code: "custom_model_unauthorized",
       message: "Model endpoint returned HTTP 401. Check the endpoint, model and authentication." } };
-    await render(createElement(AIProvidersPage, { sub: `connection:${CLOUD}` }), directSettings());
-    await click(button(step(3, "Models"), "Edit"));
-    const signIn = step(2, "Sign in");
-    expect(signIn.className).toContain("is-current");
-    expect(signIn.querySelector(".pss__dapi-step-s")?.textContent).toBe("key turned down by the endpoint");
+    const page = await render(createElement(AIProvidersPage, { sub: `connection:${CLOUD}` }), directSettings());
+    expect(card("API key").querySelector('input[aria-label="API key"]')).toBeNull();
+    await click(button(card("in pickers"), "Edit"));
+    const signIn = card("API key");
+    expect(page.querySelector(".pss__main-hdr .pss__badge")?.textContent).toBe("Key rejected");
     expect(signIn.querySelector('input[aria-label="API key"]')).not.toBeNull();
     expect(signIn.textContent).toContain("HTTP 401");
+  });
+
+  test("a saved connection reads like a provider screen: defaults strip, then cards — no steps", async () => {
+    withCloudKey();
+    const s = directSettings();
+    s.ai.defaults.enrichment = { provider: `custom:${LARGE}`, model: "granola-large-2" };
+    s.ai.defaults.libraryChat = { provider: "codex", model: "" };
+    s.ai.defaults.sizzleChat = { provider: "codex", model: "" };
+    const page = await render(createElement(AIProvidersPage, { sub: `connection:${CLOUD}` }), s);
+    expect(page.querySelector(".pss__dapi-step")).toBeNull();
+    expect(page.querySelector(".pss__prov-strip-items")?.textContent).toBe("Capture captions, tags & OCR");
+    expect(Array.from(page.querySelectorAll(".pss__card-title")).map((t) => t.textContent)).toEqual([
+      "Endpoint", "API key", "1 model in pickers"]);
+    expect(page.querySelector(".pss__main-hdr .pss__badge")?.textContent).toBe("Ready");
+    const models = card("in pickers");
+    expect(models.querySelector(".pss__dapi-used")?.textContent).toBe("Capture captions, tags & OCR");
+    // Read-only until Edit: no checkboxes, no name inputs.
+    expect(models.querySelector("input")).toBeNull();
+    // The credential test is a free listing, never a model turn.
+    customAnswers["customModels:discover"] = { ok: true, value: { models: [{ id: "granola-large-2", vision: null }] } };
+    await click(button(card("API key"), "Test"));
+    expect(callsTo("customModels:discover")).toEqual([{ connectionId: CLOUD }]);
+    expect(callsTo("customModels:test")).toEqual([]);
+    expect(card("API key").textContent).toContain("listed 1 model");
   });
 
   test("a removed connection's screen says so instead of an empty editor", async () => {
     const page = await render(createElement(AIProvidersPage, { sub: "connection:12345678-1234-4234-8234-1234567890ff" }), directSettings());
     expect(page.textContent).toContain("This connection was removed.");
     expect(page.querySelector(".pss__dapi-step")).toBeNull();
+    expect(page.querySelector(".pss__card")).toBeNull();
   });
 });

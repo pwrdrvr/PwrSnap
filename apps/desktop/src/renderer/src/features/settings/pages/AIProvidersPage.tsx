@@ -9,7 +9,6 @@ import type {
   AcpAgentDiscovery,
   AcpAgentDiscoveryEntry,
   AcpAgentPreference,
-  AiSurfaceId,
   CodexTestResult,
   DesktopCodexAuthProfile,
   DesktopCodexAuthProfileList,
@@ -27,6 +26,7 @@ import {
 import { dispatch } from "../../../lib/pwrsnap";
 import {
   Card,
+  ProviderDefaultsStrip,
   OptionRow,
   Row,
   SegmentedControl,
@@ -34,7 +34,6 @@ import {
 } from "../components";
 import { useAiProvidersContext, useInUseAcpModelProbes } from "../AiProvidersContext";
 import {
-  AI_SURFACE_LABELS,
   routedSurfaces,
   statusBadgeClass,
   type AiProviderStatus,
@@ -486,31 +485,6 @@ export function ProviderIndex({
           </span>
         </button>
       ))}
-    </div>
-  );
-}
-
-/** Ported from PwrAgnt's `ProviderDefaultsStrip`: a provider screen must not
- *  strand the operator away from the defaults that decide whether it is used
- *  at all, so it leads with that answer and one action to change them. */
-function ProviderDefaultsStrip({
-  routed,
-  onEdit
-}: {
-  routed: readonly AiSurfaceId[];
-  onEdit: () => void;
-}): ReactElement {
-  return (
-    <div className="pss__prov-strip">
-      <span className="pss__prov-strip-eyebrow">Default for</span>
-      <span className="pss__prov-strip-items">
-        {routed.length > 0
-          ? routed.map((surface) => AI_SURFACE_LABELS[surface]).join(" · ")
-          : "No jobs yet"}
-      </span>
-      <button className="pss__top-btn" type="button" onClick={onEdit}>
-        Change defaults
-      </button>
     </div>
   );
 }

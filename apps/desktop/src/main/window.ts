@@ -1665,6 +1665,12 @@ export function createFloatOverWindow(): BrowserWindow {
     // outside the BrowserWindow without enlarging the transparent
     // hit-test region around the toast.
     hasShadow: true,
+    // The renderer draws every corner itself. macOS and Windows 11 round
+    // a frameless window's corners by default, which the toast's own
+    // 14px radius hid, but the same window reshaped into the 18px dock
+    // had all four corners cut: the tab at the top and the ⋮ tab at the
+    // bottom read as one canoe-shaped sliver. Construction-only.
+    roundedCorners: false,
     webPreferences: {
       ...themedWebPreferences(),
       // Never throttle — the parked (pseudo-hidden) toast must keep

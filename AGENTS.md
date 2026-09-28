@@ -2272,6 +2272,14 @@ and
   rim, around the window's whole shape, which outlined the gap between
   the tabs. `setWindowShape` turns it off for the dock and back on for
   the toast.
+- **No rounded window corners, ever** (`roundedCorners: false` in
+  `createFloatOverWindow`). macOS and Windows 11 round a frameless
+  window's corners unless told not to. The toast's own 14px radius hid
+  that, but on the 18px-wide dock it cut all four window corners, and the
+  top tab and the bottom ⋮ tab read as one canoe. It is a construction
+  option, so it cannot follow the shape the way the shadow does. The
+  headless render harness cannot show this: there is no window around
+  the page. Only a real display does.
 - **Placed flush inside the work area, never past it.** AppKit moves a
   window placed outside it (see "macOS MOVES a window placed outside the
   work area"). The tabs only look like they run off the screen, because

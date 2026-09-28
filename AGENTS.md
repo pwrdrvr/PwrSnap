@@ -2258,9 +2258,11 @@ and
 - **The window is exactly the size of what it draws.** Transparent pixels
   still take clicks. The dock rests as an 18px sliver and widens only
   while the pointer is over it. The one accepted exception is the rail
-  beside a toast: it is only as tall as its thumbnails, as the design
-  draws it, so the strip below it is see-through. A rail stretched to the
-  toast's height read as a tall empty panel. On macOS and Windows that
+  beside a toast: it is only as tall as its thumbnails, capped at the
+  toast's height (`--fo-rail-max`, a layout measure the host publishes
+  before it measures), so with a short catalog the strip below it is
+  see-through. A rail stretched to the toast's height read as a tall
+  empty panel. On macOS and Windows that
   strip (and the gaps between dock tabs) passes clicks through: the host
   reports each time the pointer crosses between a drawn part
   (`FLOAT_OVER_SOLID`) and the rest, and main answers with
@@ -2301,6 +2303,17 @@ and
   that snaps are waiting without touching the screen. A plain tuck that
   lands after the new capture's `show-loaded` would collapse the toast the
   user is about to look at.
+- **The rail is the recent-snaps catalog, not the dock's list.** It pages
+  `library:list` newest first, keeps itself current from the
+  captures-changed broadcast, and scrolls past the toast's height. Opening
+  a snap from it never removes or reorders anything: the order is capture
+  time. The dock's glyphs sit on the snaps that are waiting; everything
+  else is a plain thumbnail with its age. Ages count from `captured_at`,
+  never from when a snap joined the dock.
+- **"No run yet" means "not yet" only for a snap just taken**
+  (`mayAwaitFirstRun`). An older snap opened from the rail with no
+  enrichment row would otherwise join the dock as "waiting" when left,
+  for a run that never comes.
 - **A snap's fate is decided once, at the close the host caused.**
   `settledRef` stops main's echo of that close from deciding again. By
   then the model may have answered, and a snap tucked unread would be

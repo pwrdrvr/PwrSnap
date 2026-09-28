@@ -40,6 +40,7 @@ import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import { FoIcon } from "./FoIcons";
 import { fitTagChips } from "./fitTagRow";
 import { DOCK_TUCK_COUNTDOWN_MS } from "./float-over-dock-model";
+import { ageTickMs, capturedAtMs, formatCaptureAgo, useNow } from "./float-over-age";
 
 const RES_PRESETS = [
   { id: "low", label: "Low" },
@@ -368,6 +369,15 @@ export type FloatOverAsset =
       onDiscard?: () => void;
     };
 
+/** "3m 23s ago", ticking. Its own component so the clock re-renders
+ *  this span, not the whole toast. */
+function CaptureAge({ capturedAt }: { capturedAt: string | undefined }): React.ReactElement {
+  const at = capturedAt === undefined ? null : capturedAtMs(capturedAt);
+  const initial = Date.now();
+  const now = useNow(at === null ? null : ageTickMs(at, initial));
+  return <span>{at === null ? "just now" : formatCaptureAgo(at, now)}</span>;
+}
+
 export function FloatOver({
   variant = "standard",
   asset,
@@ -378,6 +388,7 @@ export function FloatOver({
   srcH = 1800,
   srcBytes = 2.4 * 1024 * 1024,
   srcDpr = 2,
+  capturedAt,
   exportStrategy = "legacy",
   capturesLocation = "documents",
   capturesRootOverridden = false,
@@ -435,6 +446,9 @@ export function FloatOver({
    *  preview "Retina" badge and the DPI-aware export ladder. Defaults to
    *  2 to match the legacy hardcoded "2× retina" badge. */
   srcDpr?: number;
+  /** The capture's `captured_at`. The header counts its age from this;
+   *  without one it says "just now", as the design mocks do. */
+  capturedAt?: string | undefined;
   /** Active export-preset strategy. `legacy` (default) keeps the cards
    *  visually identical for normal users; the DPI-aware strategies add
    *  the Retina/scale tags + rescale the dim estimates. */
@@ -994,7 +1008,9 @@ export function FloatOver({
               printed on the preview's corner overlays, and the video toast
               is the one that runs out of height (FLOAT_OVER_HEIGHT_MAX). */}
           {asset?.kind === "video" ? null : (
-            <div className="fo__hdr-sub">{dimText(srcW, srcH)} · just now</div>
+            <div className="fo__hdr-sub">
+              {dimText(srcW, srcH)} · <CaptureAge capturedAt={capturedAt} />
+            </div>
           )}
         </div>
         <div className="fo__hdr-actions">

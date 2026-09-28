@@ -7,7 +7,11 @@ import {
   dockStatus,
   hasFinishedDockItems,
   isLeavingSnapInFlight,
-  railDockItems,
+  mayAwaitFirstRun,
+  catalogRailItems,
+  mergeCatalogRecords,
+  railInFlightCount,
+  removeCatalogRecords,
   removeDockItem,
   splitDockItems,
   updateDockEnrichment,
@@ -154,10 +158,68 @@ describe("dock membership", () => {
     ).toEqual(["reading", "showing"]);
   });
 
-  test("the rail lists the waiting snaps plus the one on screen", () => {
-    const rail = railDockItems([item("a", 1)], item("fresh", 9, null));
-    expect(rail.map((entry) => entry.captureId)).toEqual(["fresh", "a"]);
-    expect(railDockItems([item("a", 1)], null).map((entry) => entry.captureId)).toEqual(["a"]);
+});
+
+describe("the rail's catalog", () => {
+  const at = (id: string, capturedAt: string): CaptureRecord =>
+    record(id, { captured_at: capturedAt });
+  const older = at("older", "2026-09-27T09:00:00.000Z");
+  const middle = at("middle", "2026-09-27T09:30:00.000Z");
+  const newest = at("newest", "2026-09-27T10:00:00.000Z");
+
+  test("is newest first by capture time, whatever order records arrive in", () => {
+    const rows = mergeCatalogRecords([older], [newest, middle]);
+    expect(rows.map((row) => row.id)).toEqual(["newest", "middle", "older"]);
+  });
+
+  test("a refreshed record replaces its row; a deleted one leaves", () => {
+    const edited = { ...middle, edits_version: 3 };
+    const rows = mergeCatalogRecords([newest, middle, older], [
+      edited,
+      { ...older, deleted_at: "2026-09-27T11:00:00.000Z" }
+    ]);
+    expect(rows.map((row) => row.id)).toEqual(["newest", "middle"]);
+    expect(rows[1]?.edits_version).toBe(3);
+    expect(removeCatalogRecords(rows, ["newest"]).map((row) => row.id)).toEqual(["middle"]);
+  });
+
+  test("opening a snap removes nothing and reorders nothing", () => {
+    const catalog = [newest, middle, older];
+    const current = { captureId: "older", addedAt: 5, record: older, enrichment: null };
+    const rail = catalogRailItems(catalog, [], current, true);
+    expect(rail.map((row) => row.captureId)).toEqual(["newest", "middle", "older"]);
+  });
+
+  test("the toast's own snap is listed before the catalog has heard of it", () => {
+    const fresh = at("fresh", "2026-09-27T10:05:00.000Z");
+    const current = { captureId: "fresh", addedAt: 9, record: fresh, enrichment: null };
+    const rail = catalogRailItems([newest, older], [], current, true);
+    expect(rail.map((row) => row.captureId)).toEqual(["fresh", "newest", "older"]);
+  });
+
+  test("glyphs only where the model is on a snap, or a waiting snap finished unseen", () => {
+    const queue = [
+      { ...item("newest", 3, "completed"), record: newest },
+      { ...item("middle", 2, "running"), record: middle }
+    ];
+    const current = { captureId: "older", addedAt: 5, record: older, enrichment: enrichment("older", "completed") };
+    const rail = catalogRailItems([newest, middle, older], queue, current, true);
+    expect(rail.map((row) => row.status)).toEqual(["ready", "reading", null]);
+    expect(railInFlightCount(rail)).toBe(1);
+  });
+
+  test("only a snap just taken can still be waiting for its first run", () => {
+    const takenAt = Date.parse(newest.captured_at);
+    expect(mayAwaitFirstRun(newest, takenAt + 5_000)).toBe(true);
+    expect(mayAwaitFirstRun(newest, takenAt + 10 * 60_000)).toBe(false);
+    expect(mayAwaitFirstRun(null, takenAt)).toBe(true);
+  });
+
+  test("the toast's own snap shows the model still reading it", () => {
+    const current = { captureId: "newest", addedAt: 5, record: newest, enrichment: null };
+    expect(catalogRailItems([newest], [], current, true)[0]?.status).toBe("waiting");
+    // With AI off, "no run yet" means never.
+    expect(catalogRailItems([newest], [], current, false)[0]?.status).toBeNull();
   });
 });
 
@@ -168,12 +230,6 @@ describe("visible cap", () => {
     const { visible, overflow } = splitDockItems(five, 3);
     expect(visible.map((entry) => entry.captureId)).toEqual(["s5", "s4", "s3"]);
     expect(overflow.map((entry) => entry.captureId)).toEqual(["s2", "s1"]);
-  });
-
-  test("never folds away the snap the toast is showing", () => {
-    const { visible, overflow } = splitDockItems(five, 3, "s1");
-    expect(visible.map((entry) => entry.captureId)).toEqual(["s5", "s4", "s1"]);
-    expect(overflow.map((entry) => entry.captureId)).toEqual(["s3", "s2"]);
   });
 
   test("three or fewer: nothing folds", () => {

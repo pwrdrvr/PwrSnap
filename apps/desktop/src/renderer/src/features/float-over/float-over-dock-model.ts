@@ -12,7 +12,7 @@
 
 import type { CaptureEnrichment, CaptureRecord } from "@pwrsnap/shared";
 
-/** Tabs (and rail thumbnails) shown before the rest fold into ⋮ +N. */
+/** Tabs shown before the rest fold into ⋮ +N. */
 export const DOCK_VISIBLE_CAP = 3;
 
 /** The countdown a toast gets when it can tuck: long enough to reach it
@@ -23,7 +23,7 @@ export const DOCK_TUCK_COUNTDOWN_MS = 5000;
 export type DockItem = {
   readonly captureId: string;
   /** When the float-over first showed this snap. Orders the stack,
-   *  newest first, and is what the age on a tab counts from. */
+   *  newest first. */
   readonly addedAt: number;
   readonly record: CaptureRecord | null;
   readonly enrichment: CaptureEnrichment | null;
@@ -69,6 +69,22 @@ export function isLeavingSnapInFlight(
 ): boolean {
   if (!isDockStatusInFlight(dockStatus(enrichment))) return false;
   return (enrichment?.status ?? null) !== null || aiWillRun;
+}
+
+/** How long after a capture its first enrichment run may still be on
+ *  the way. The run's row exists from the moment it is queued, so past
+ *  this a snap with no run is one enrichment is not going to reach. */
+export const FIRST_RUN_GRACE_MS = 60_000;
+
+/**
+ * Whether "no run yet" can still mean "not yet" for this snap. True for
+ * a capture just taken; false for an older snap opened from the rail,
+ * which would otherwise wait on the dock for a run that never comes.
+ */
+export function mayAwaitFirstRun(record: CaptureRecord | null, now: number): boolean {
+  if (record === null) return true;
+  const at = Date.parse(record.captured_at);
+  return !Number.isFinite(at) || now - at < FIRST_RUN_GRACE_MS;
 }
 
 function newestFirst(items: readonly DockItem[]): DockItem[] {
@@ -131,43 +147,101 @@ export function clearFinishedDockItems(
 }
 
 /**
- * Everything the rail beside an open toast lists: the waiting snaps plus
- * the one on screen, newest first. The toast's own snap is not
- * necessarily waiting — a fresh capture joins the dock only if it
- * leaves the toast unfinished.
+ * The rail beside an open toast is the recent-snaps catalog: every snap,
+ * newest first, not only the ones waiting on the model. It never drops a
+ * snap because it was opened, and it never reorders under the pointer —
+ * the order is capture time, the same keyset `library:list` pages in.
  */
-export function railDockItems(
-  queue: readonly DockItem[],
-  current: DockItem | null
-): DockItem[] {
-  if (current === null) return newestFirst(queue);
-  return newestFirst(upsertDockItem(queue, current));
+export function compareCatalog(a: CaptureRecord, b: CaptureRecord): number {
+  if (a.captured_at !== b.captured_at) return a.captured_at < b.captured_at ? 1 : -1;
+  if (a.id === b.id) return 0;
+  return a.id < b.id ? 1 : -1;
 }
 
+/** Add or refresh records in the catalog. A deleted record leaves it. */
+export function mergeCatalogRecords(
+  catalog: readonly CaptureRecord[],
+  incoming: readonly CaptureRecord[]
+): CaptureRecord[] {
+  const byId = new Map(catalog.map((record) => [record.id, record]));
+  for (const record of incoming) {
+    if (record.deleted_at !== null) byId.delete(record.id);
+    else byId.set(record.id, record);
+  }
+  return [...byId.values()].sort(compareCatalog);
+}
+
+export function removeCatalogRecords(
+  catalog: readonly CaptureRecord[],
+  ids: readonly string[]
+): CaptureRecord[] {
+  if (ids.length === 0) return [...catalog];
+  const gone = new Set(ids);
+  return catalog.filter((record) => !gone.has(record.id));
+}
+
+export type RailItem = {
+  readonly captureId: string;
+  readonly record: CaptureRecord;
+  /** What the model has said, when the host knows (the snap is on the
+   *  dock, or on the toast). Names the snap; the status comes from it. */
+  readonly enrichment: CaptureEnrichment | null;
+  /** A glyph only where it means something: the model is still on it,
+   *  or it finished (or failed) while the snap waited unseen on the
+   *  dock. An ordinary snap, or the one on the toast now, has none. */
+  readonly status: DockStatus | null;
+};
+
 /**
- * The first `cap` items, newest first, with the rest folded into the
- * overflow menu. A pinned item (the toast's own snap) is never folded
- * away: it takes the last visible slot if it would otherwise overflow.
+ * What the rail shows: the catalog, with the toast's own snap in it even
+ * before the catalog has heard of it, and the dock's glyphs laid over the
+ * snaps that are waiting. `aiWillRun` is whether a run is coming for the
+ * toast's snap if it has none yet (see `mayAwaitFirstRun`).
  */
+export function catalogRailItems(
+  catalog: readonly CaptureRecord[],
+  queue: readonly DockItem[],
+  current: DockItem | null,
+  aiWillRun: boolean,
+  /** What the model said about snaps the host has seen, for names. */
+  enrichments: ReadonlyMap<string, CaptureEnrichment> = new Map()
+): RailItem[] {
+  const records =
+    current?.record != null ? mergeCatalogRecords(catalog, [current.record]) : [...catalog];
+  const waiting = new Map(queue.map((item) => [item.captureId, item]));
+  return records.map((record) => {
+    if (record.id === current?.captureId) {
+      return {
+        captureId: record.id,
+        record,
+        enrichment: current.enrichment,
+        status: isLeavingSnapInFlight(current.enrichment, aiWillRun)
+          ? dockStatus(current.enrichment)
+          : null
+      };
+    }
+    const entry = waiting.get(record.id);
+    return {
+      captureId: record.id,
+      record,
+      enrichment: entry?.enrichment ?? enrichments.get(record.id) ?? null,
+      status: entry === undefined ? null : dockStatus(entry.enrichment)
+    };
+  });
+}
+
+export function railInFlightCount(items: readonly RailItem[]): number {
+  return items.filter((item) => item.status !== null && isDockStatusInFlight(item.status)).length;
+}
+
+/** The first `cap` items, newest first, with the rest folded into the
+ *  overflow menu. */
 export function splitDockItems(
   items: readonly DockItem[],
-  cap: number = DOCK_VISIBLE_CAP,
-  pinnedCaptureId: string | null = null
+  cap: number = DOCK_VISIBLE_CAP
 ): { visible: DockItem[]; overflow: DockItem[] } {
   const ordered = newestFirst(items);
-  if (ordered.length <= cap) return { visible: ordered, overflow: [] };
-  const visible = ordered.slice(0, cap);
-  const pinned =
-    pinnedCaptureId === null
-      ? undefined
-      : ordered.find((entry) => entry.captureId === pinnedCaptureId);
-  if (pinned !== undefined && !visible.includes(pinned)) {
-    visible[visible.length - 1] = pinned;
-  }
-  return {
-    visible,
-    overflow: ordered.filter((entry) => !visible.includes(entry))
-  };
+  return { visible: ordered.slice(0, cap), overflow: ordered.slice(cap) };
 }
 
 const STATUS_WORDS: Record<DockStatus, string> = {

@@ -39,6 +39,7 @@ import {
   type FloatOverDockSide,
   type FloatOverEvent,
   type FloatOverVideoCopyShortcutEvent,
+  type LibraryCursor,
   type RenderPreset,
   type Settings,
   type SettingsChangedEvent,
@@ -52,7 +53,11 @@ import {
   dockItemLabel,
   hasFinishedDockItems,
   isLeavingSnapInFlight,
-  railDockItems,
+  mayAwaitFirstRun,
+  catalogRailItems,
+  mergeCatalogRecords,
+  railInFlightCount,
+  removeCatalogRecords,
   removeDockItem,
   splitDockItems,
   updateDockEnrichment,
@@ -68,6 +73,27 @@ import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/p
 import { copyImagePreset, copyImagePresetPath } from "../../lib/clipboard-copy";
 import { useCapturesLocationDisplayState } from "../../lib/useCapturesLocationDisplayState";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
+
+/** One `library:list` page of the rail's catalog. */
+const CATALOG_PAGE_SIZE = 30;
+
+type Catalog = {
+  readonly rows: readonly CaptureRecord[];
+  /** Where the next page starts; null once the whole library is loaded. */
+  readonly cursor: LibraryCursor | null;
+  /** At least the first page has arrived. */
+  readonly started: boolean;
+};
+
+const EMPTY_CATALOG: Catalog = { rows: [], cursor: null, started: false };
+
+/** Whether a record falls inside the contiguous, newest-first window the
+ *  catalog has loaded. One past it belongs to a page not fetched yet. */
+function inCatalogWindow(record: CaptureRecord, cursor: LibraryCursor | null): boolean {
+  if (cursor === null) return true;
+  if (record.captured_at !== cursor.capturedAt) return record.captured_at > cursor.capturedAt;
+  return record.id >= cursor.id;
+}
 
 /**
  * How tall the toast may render, in CSS pixels, before `.fo__body`
@@ -220,6 +246,18 @@ export function FloatOverHost({
   const [dockSupported, setDockSupported] = useState(false);
   const dockSupportedRef = useRef(false);
   const [railHover, setRailHover] = useState(false);
+  // The rail's catalog: every snap, newest first, a page at a time.
+  const [catalog, setCatalog] = useState<Catalog>(EMPTY_CATALOG);
+  const catalogRef = useRef<Catalog>(EMPTY_CATALOG);
+  const commitCatalog = (next: Catalog): void => {
+    catalogRef.current = next;
+    setCatalog(next);
+  };
+  const catalogLoadingRef = useRef(false);
+  // The last word from the model on every snap this window has heard
+  // about, so a snap opened again from the rail shows its title (and no
+  // stale "waiting" ring) without a round trip first.
+  const enrichmentsRef = useRef(new Map<string, CaptureEnrichment>());
   const [menuOpen, setMenuOpen] = useState(false);
   // Bumped on every state event so the layout effect re-posts even when
   // the new shape measures the same as the old one. Main parks the window
@@ -268,7 +306,10 @@ export function FloatOverHost({
     settledRef.current = leaving.captureId;
     if (
       dockSupportedRef.current &&
-      isLeavingSnapInFlight(leaving.enrichment, aiWillRunRef.current)
+      isLeavingSnapInFlight(
+        leaving.enrichment,
+        aiWillRunRef.current && mayAwaitFirstRun(leaving.record, Date.now())
+      )
     ) {
       commitQueue(upsertDockItem(queueRef.current, leaving));
       void dispatch("float-over:tuck", { markOnly: true });
@@ -302,6 +343,65 @@ export function FloatOverHost({
       // Placement turned out not to be ours: nothing can show the dock.
       commitQueue([]);
       void dispatch("float-over:dismiss", {});
+    });
+  };
+
+  /**
+   * The next page of the catalog (the first, when `restart`). One load
+   * at a time; a page that lands after a restart began is dropped.
+   * Only refs and `dispatch` are read, so the listeners registered once
+   * below can call it.
+   */
+  const catalogEpochRef = useRef(0);
+  const loadCatalogPage = (restart: boolean): void => {
+    if (restart) {
+      catalogEpochRef.current += 1;
+      catalogLoadingRef.current = false;
+    }
+    const current = catalogRef.current;
+    if (catalogLoadingRef.current) return;
+    if (!restart && current.started && current.cursor === null) return;
+    catalogLoadingRef.current = true;
+    const epoch = catalogEpochRef.current;
+    const cursor = restart ? undefined : current.cursor ?? undefined;
+    void dispatch("library:list", {
+      limit: CATALOG_PAGE_SIZE,
+      ...(cursor === undefined ? {} : { cursor })
+    }).then((result) => {
+      if (epoch !== catalogEpochRef.current) return;
+      catalogLoadingRef.current = false;
+      // A bridge that answers with nothing (a test double, a verb this
+      // window may not call) leaves the rail to the toast's own snap.
+      const page = result.ok ? result.value : null;
+      if (page == null) return;
+      const base = restart ? [] : catalogRef.current.rows;
+      commitCatalog({
+        rows: mergeCatalogRecords(base, page.rows),
+        cursor: page.nextCursor,
+        started: true
+      });
+    });
+  };
+
+  /** Snaps changed somewhere (captured, edited, deleted, restored):
+   *  re-read the ones the catalog shows or should. */
+  const refreshCatalogRecords = (ids: readonly string[]): void => {
+    if (ids.length === 0) {
+      // A bulk change that names nothing: start over from the top.
+      loadCatalogPage(true);
+      return;
+    }
+    void dispatch("library:listByIds", { ids: [...ids] }).then((result) => {
+      const rows = result.ok ? result.value?.rows : undefined;
+      if (rows === undefined) return;
+      const current = catalogRef.current;
+      const found = new Set(rows.map((row) => row.id));
+      const gone = ids.filter((id) => !found.has(id));
+      const incoming = rows.filter((row) => inCatalogWindow(row, current.cursor));
+      commitCatalog({
+        ...current,
+        rows: mergeCatalogRecords(removeCatalogRecords(current.rows, gone), incoming)
+      });
     });
   };
 
@@ -394,6 +494,11 @@ export function FloatOverHost({
       // main's clamp is simply cut off the bottom.
       el.style.setProperty("--fo-max-h", `${maxContentHeightCss()}px`);
       el.style.setProperty("--fo-w", `${toastWidthCss()}px`);
+      // The rail is as tall as its thumbnails, and never taller than the
+      // toast beside it (past that it scrolls). A layout measure, so an
+      // entrance transform cannot bake itself in.
+      const toast = el.querySelector<HTMLElement>(".fo-shell__toast");
+      if (toast !== null) el.style.setProperty("--fo-rail-max", `${toast.offsetHeight}px`);
       const rect = el.getBoundingClientRect();
       window.pwrsnapApi?.requestFloatOverResize?.({
         width: Math.ceil(rect.width),
@@ -404,6 +509,11 @@ export function FloatOverHost({
     post();
     const ro = new ResizeObserver(post);
     ro.observe(el);
+    // The toast on its own too: when it shrinks, a rail capped at its
+    // old height holds the wrapper where it was, and only the toast's
+    // own box reports the change.
+    const toastEl = el.querySelector(".fo-shell__toast");
+    if (toastEl !== null) ro.observe(toastEl);
     // Zoom self-detection — identical machinery to TrayMenu.tsx (see
     // the long comment there). Short version: a session zoom change
     // (⌘+ in the library propagates here via Chromium's HostZoomMap)
@@ -479,6 +589,15 @@ export function FloatOverHost({
           setMode("toast");
           setRailHover(false);
           const waiting = queueRef.current.find((item) => item.captureId === event.captureId);
+          // Opened from the rail: the catalog has the record already.
+          const listed = catalogRef.current.rows.find((row) => row.id === event.captureId);
+          const remembered = enrichmentsRef.current.get(event.captureId) ?? null;
+          const known =
+            waiting?.record != null
+              ? { record: waiting.record, enrichment: waiting.enrichment ?? remembered }
+              : listed !== undefined
+                ? { record: listed, enrichment: remembered }
+                : undefined;
           if (shownRef.current?.captureId !== event.captureId) {
             shownRef.current = {
               captureId: event.captureId,
@@ -495,17 +614,17 @@ export function FloatOverHost({
               enrichment: null,
               settings: null
             });
-          } else if (waiting !== undefined && waiting.record !== null) {
-            // Opened from the dock: the host already has the record and
-            // whatever the model has said so far. Going through LOADING
-            // would flash "Loading capture…" in the corner first.
+          } else if (known !== undefined) {
+            // Opened from the dock or the rail: the host already has the
+            // record, and whatever the model has said so far. Going
+            // through LOADING would flash "Loading capture…" first.
             setState({
               kind: "loaded",
-              record: waiting.record,
-              enrichment: waiting.enrichment,
+              record: known.record,
+              enrichment: known.enrichment,
               settings: lastSettingsRef.current
             });
-            if (waiting.enrichment === null) {
+            if (known.enrichment === null) {
               const captureId = event.captureId;
               void dispatch("codex:enrichment", { captureId }).then((result) => {
                 if (!result.ok || result.value === null) return;
@@ -578,6 +697,31 @@ export function FloatOverHost({
     };
   }, []);
 
+  // The catalog loads the first time a toast shows, then keeps itself
+  // current from the captures-changed broadcast.
+  const toastShowing = state.kind === "loaded" && mode === "toast";
+  useEffect(() => {
+    if (toastShowing && !catalogRef.current.started) loadCatalogPage(false);
+  }, [toastShowing]);
+  // A snap that has been on the toast exists, whether or not its
+  // captures-changed broadcast has arrived: keep it in the catalog, so
+  // leaving it for another never takes it off the rail.
+  const shownRecord = state.kind === "loaded" ? state.record : null;
+  const shownEnrichment = state.kind === "loaded" ? state.enrichment : null;
+  useEffect(() => {
+    if (shownEnrichment !== null) {
+      enrichmentsRef.current.set(shownEnrichment.captureId, shownEnrichment);
+    }
+  }, [shownEnrichment]);
+  useEffect(() => {
+    const current = catalogRef.current;
+    if (shownRecord === null || !current.started) return;
+    if (!inCatalogWindow(shownRecord, current.cursor)) return;
+    const listed = current.rows.find((row) => row.id === shownRecord.id);
+    if (listed === shownRecord) return;
+    commitCatalog({ ...current, rows: mergeCatalogRecords(current.rows, [shownRecord]) });
+  }, [shownRecord]);
+
   // The dock emptied under the tabs ("Clear finished", a snap deleted in
   // the Library): nothing is left to show.
   useEffect(() => {
@@ -607,7 +751,9 @@ export function FloatOverHost({
   // dock. Edited: its thumbnail follows the new edits version.
   useEffect(() => {
     const unsubscribe = window.pwrsnapApi?.on(EVENT_CHANNELS.capturesChanged, (payload) => {
-      const ids = capturesChangedIds(payload).filter((id) =>
+      const changed = capturesChangedIds(payload);
+      if (catalogRef.current.started && changed.length > 0) refreshCatalogRecords(changed);
+      const ids = changed.filter((id) =>
         queueRef.current.some((item) => item.captureId === id)
       );
       for (const captureId of ids) {
@@ -736,6 +882,7 @@ export function FloatOverHost({
     const unsubscribe = window.pwrsnapApi?.on(EVENT_CHANNELS.aiRunUpdated, (payload) => {
       const enrichment = (payload as AiRunUpdatedPayload).enrichment;
       if (enrichment === undefined || enrichment === null) return;
+      enrichmentsRef.current.set(enrichment.captureId, enrichment);
       if (queueRef.current.some((item) => item.captureId === enrichment.captureId)) {
         commitQueue(updateDockEnrichment(queueRef.current, enrichment));
       }
@@ -809,10 +956,18 @@ export function FloatOverHost({
     };
   }, [enrichmentProviderSelector]);
 
-  // The rail beside the toast: the waiting snaps plus this one, once
-  // there is more than one to move between. The toast's own snap is
-  // never folded into ⋮.
-  const railItems = state.kind === "loaded" ? railDockItems(queue, toastItem) : [];
+  // The rail beside the toast: the recent-snaps catalog, once there is
+  // another snap to move to.
+  const railItems =
+    state.kind === "loaded"
+      ? catalogRailItems(
+          catalog.rows,
+          queue,
+          toastItem,
+          aiWillRunRef.current && mayAwaitFirstRun(toastItem?.record ?? null, Date.now()),
+          enrichmentsRef.current
+        )
+      : [];
   const showRail = railItems.length >= 2;
   const toastCaptureId = toastItem?.captureId ?? null;
 
@@ -943,6 +1098,7 @@ export function FloatOverHost({
         srcH={record.height_px}
         srcBytes={record.byte_size}
         srcDpr={record.device_pixel_ratio}
+        capturedAt={record.captured_at}
         exportStrategy={exportStrategyFromSettings(settings)}
         capturesLocation={capturesDisplay.location}
         capturesRootOverridden={capturesDisplay.overridden}
@@ -1059,19 +1215,16 @@ export function FloatOverHost({
       />
     );
   } else {
-    const rail = showRail
-      ? splitDockItems(railItems, DOCK_VISIBLE_CAP, toastCaptureId)
-      : null;
     content = (
       <div className="fo-shell">
-        {rail !== null ? (
+        {showRail ? (
           <FloatOverRail
-            items={rail.visible}
+            items={railItems}
             currentId={toastCaptureId}
-            overflowCount={rail.overflow.length}
-            total={railItems.length}
+            inFlightCount={railInFlightCount(railItems)}
+            hasMore={catalog.cursor !== null}
             onOpen={openSnap}
-            onMore={() => popOverflow(rail.overflow, toastCaptureId)}
+            onNearEnd={() => loadCatalogPage(false)}
             onHoverChange={setRailHover}
           />
         ) : null}

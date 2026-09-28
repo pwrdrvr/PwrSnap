@@ -1,8 +1,8 @@
 /* ============================================================
    Float-over DOCK + RAIL
    The screen-edge tabs a snap tucks to while a slow enrichment model
-   is still reading it, and the rail that lists the same snaps beside
-   an open toast. Components: FloatOverDock.tsx; host layout:
+   is still reading it, and the rail beside an open toast: the
+   recent-snaps catalog, with the dock's glyphs on the snaps that wait. Components: FloatOverDock.tsx; host layout:
    FloatOverHost.tsx; membership rules: float-over-dock-model.ts.
 
    The window is exactly as big as what these rules draw — the host
@@ -28,10 +28,11 @@ body[data-stage="float-over"] .fo-host--dock { align-items: flex-start; }
 body[data-stage="float-over"] .fo-host--dock[data-side="left"] { justify-content: flex-start; }
 .fo-host__measure { flex: none; }
 
-/* The rail is only as tall as its thumbnails and lines up with the top
-   of the toast. The window stays rectangular, so the strip below the
-   rail is transparent and still takes clicks: the price of a rail that
-   does not float as a tall empty panel. */
+/* The rail is as tall as its thumbnails and lines up with the top of
+   the toast, and it never grows past the toast (`--fo-rail-max`, the
+   toast's height, published by the host); past that it scrolls. With
+   a short catalog the strip below it is transparent, and the host lets
+   clicks through there. */
 .fo-shell {
   display: flex;
   align-items: flex-start;
@@ -184,39 +185,66 @@ body[data-stage="float-over"] .fo-host--dock[data-side="left"] { justify-content
 .fo-rail {
   flex: none;
   box-sizing: border-box;
-  width: 80px;
-  padding: 8px 7px;
+  width: 88px;
+  max-height: var(--fo-rail-max, none);
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 7px;
+  overflow: hidden;
   border-radius: 12px;
   background: var(--bg-app);
   border: 1px solid var(--border-subtle);
 }
 .fo-rail__eb {
-  align-self: stretch;
+  flex: none;
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  padding: 1px 1px 2px;
+  padding: 9px 9px 6px;
   font: 600 9px/1 var(--font-mono);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-muted);
 }
-.fo-rail__eb > b { color: var(--accent-bright); }
+.fo-rail__eb > b {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent-bright);
+  letter-spacing: 0;
+}
+.fo-rail__eb > b > .fod-st {
+  position: relative;
+  width: 9px; height: 9px;
+  box-shadow: none;
+}
+.fo-rail__eb > b > .fod-st::after { width: 5px; height: 5px; }
+/* The list scrolls; `min-height: 0` is what lets a flex item shrink
+   below its content so `overflow-y` ever engages. */
+.fo-rail__list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 0 9px;
+}
 .fo-rail__item {
   position: relative;
   flex: none;
-  width: 64px;
-  height: 44px;
+  width: 70px;
+  height: 46px;
   padding: 0;
   overflow: hidden;
   border-radius: 7px;
-  border: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  border: 2px solid var(--border-default);
   background: var(--bg-panel-elevated);
   cursor: pointer;
 }
+.fo-rail__item[data-status="reading"],
+.fo-rail__item[data-status="ready"] { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
 .fo-rail__item[data-status="waiting"] { border-color: var(--border-strong); }
 .fo-rail__item[data-status="failed"] { border-color: color-mix(in srgb, var(--danger) 60%, transparent); }
 .fo-rail__item.is-current {
@@ -224,23 +252,24 @@ body[data-stage="float-over"] .fo-host--dock[data-side="left"] { justify-content
   box-shadow: 0 0 0 2px var(--bg-app), 0 0 0 4px color-mix(in srgb, var(--accent) 45%, transparent);
   cursor: default;
 }
+/* The ring sits outside the thumb; the list's first and last rows need
+   room for it, which is what the list's padding is. */
 .fo-rail__item > .fod-st { left: 3px; top: 3px; }
-.fo-rail__more {
-  align-self: stretch;
-  height: 22px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  border-radius: 6px;
-  border: 1px solid var(--border-default);
-  background: transparent;
-  color: var(--text-secondary);
-  font: 700 10px/1 var(--font-mono);
-  cursor: pointer;
+.fo-rail__age {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  z-index: 1;
+  padding: 2px 3px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.78);
+  color: #e4e4e4;
+  font: 600 8.5px/1 var(--font-mono);
+  white-space: nowrap;
+  pointer-events: none;
 }
-.fo-rail__more:hover,
 .fo-rail__item:not(.is-current):hover { border-color: var(--accent); }
+.fo-rail__list:focus-visible { outline-offset: -2px; }
 
 @media (prefers-reduced-motion: reduce) {
   .fod-tab,

@@ -1,7 +1,8 @@
-// The float-over's screen-edge dock (tabs) and the rail that stands in
-// for it beside an open toast. Both render the same list, the same
-// thumbnails and the same status glyphs; see float-over-dock-model.ts
-// for who is in the list and why.
+// The float-over's screen-edge dock (tabs), and the rail beside an open
+// toast. The dock holds the snaps waiting on the model; the rail is the
+// recent-snaps catalog, with the dock's glyphs on the snaps that wait.
+// Same thumbnails, same glyphs; see float-over-dock-model.ts for who is
+// in each list and why.
 
 import { useEffect, useRef, useState } from "react";
 import type { FloatOverDockSide } from "@pwrsnap/shared";
@@ -11,8 +12,10 @@ import {
   dockItemTitle,
   dockStatus,
   type DockItem,
-  type DockStatus
+  type DockStatus,
+  type RailItem
 } from "./float-over-dock-model";
+import { ageTickMs, capturedAtMs, formatThumbAge, useNow } from "./float-over-age";
 
 /** Tab geometry. The window is exactly as wide as what shows: the resting
  *  sliver, or the pulled-out tabs while the pointer is over them —
@@ -46,7 +49,7 @@ export function DockStatusGlyph({ status }: { status: DockStatus }): React.React
   );
 }
 
-function DockThumb({ item }: { item: DockItem }): React.ReactElement {
+function DockThumb({ item }: { item: Pick<DockItem, "captureId" | "record"> }): React.ReactElement {
   const record = item.record;
   if (record?.kind === "video") {
     return (
@@ -245,28 +248,62 @@ export function FloatOverDock({
 }
 
 export type FloatOverRailProps = {
-  readonly items: readonly DockItem[];
+  /** The catalog, newest first (see `catalogRailItems`). */
+  readonly items: readonly RailItem[];
   readonly currentId: string | null;
-  readonly overflowCount: number;
-  readonly total: number;
+  /** Snaps the model is still on, for the eyebrow. */
+  readonly inFlightCount: number;
+  /** More pages of the catalog wait behind the last one loaded. */
+  readonly hasMore: boolean;
   readonly onOpen: (captureId: string) => void;
-  readonly onMore: () => void;
+  /** The list has scrolled near its end: load the next page. */
+  readonly onNearEnd: () => void;
   readonly onHoverChange: (hovering: boolean) => void;
 };
 
+/** Load the next page this far before the end of the loaded list. */
+const RAIL_PREFETCH_PX = 240;
+
 /**
- * The dock, pulled out beside an open toast. Same list, same glyphs;
- * the toast's own snap is ringed and points at the toast.
+ * The recent-snaps catalog, beside an open toast. As tall as its
+ * thumbnails, capped at the toast's height (the host publishes
+ * `--fo-rail-max`); past that it scrolls. Clicking a thumb swaps the
+ * toast to that snap, and nothing leaves the list for having been
+ * opened. The toast's own snap is ringed.
  */
 export function FloatOverRail({
   items,
   currentId,
-  overflowCount,
-  total,
+  inFlightCount,
+  hasMore,
   onOpen,
-  onMore,
+  onNearEnd,
   onHoverChange
 }: FloatOverRailProps): React.ReactElement {
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const newestId = items[0]?.captureId ?? null;
+  // One clock for every thumb: seconds while the newest is under an
+  // hour old, minutes after that.
+  const newestAt = items[0] === undefined ? null : capturedAtMs(items[0].record.captured_at);
+  const now = useNow(newestAt === null ? null : ageTickMs(newestAt, Date.now()));
+
+  // A new capture is the newest row and the one on the toast: bring the
+  // list back to the top for it. Opening an older snap leaves the list
+  // where the user scrolled it.
+  useEffect(() => {
+    const list = listRef.current;
+    if (list !== null && newestId !== null && newestId === currentId) list.scrollTop = 0;
+  }, [newestId, currentId]);
+
+  const checkNearEnd = (): void => {
+    const list = listRef.current;
+    if (list === null || !hasMore) return;
+    if (list.scrollTop + list.clientHeight >= list.scrollHeight - RAIL_PREFETCH_PX) onNearEnd();
+  };
+  // A first page that does not fill the rail never scrolls; ask for the
+  // next one straight away.
+  useEffect(checkNearEnd, [items.length, hasMore]);
+
   return (
     <div
       className="fo-rail"
@@ -275,41 +312,52 @@ export function FloatOverRail({
       onMouseLeave={() => onHoverChange(false)}
     >
       <div className="fo-rail__eb">
-        <span>Snaps</span>
-        <b>{total}</b>
+        <span>Recent</span>
+        {inFlightCount > 0 ? (
+          <b title={`${inFlightCount} still with the model`}>
+            <span className="fod-st" data-status="reading" aria-hidden="true" />
+            {inFlightCount}
+          </b>
+        ) : null}
       </div>
-      {items.map((item) => {
-        const status = dockStatus(item.enrichment);
-        const current = item.captureId === currentId;
-        return (
-          <button
-            key={item.captureId}
-            type="button"
-            className={`fo-rail__item${current ? " is-current" : ""}`}
-            data-status={status}
-            aria-current={current ? "true" : undefined}
-            aria-label={current ? `Showing ${itemAriaLabel(item)}` : `Open ${itemAriaLabel(item)}`}
-            title={dockItemTitle(item)}
-            onClick={() => {
-              if (!current) onOpen(item.captureId);
-            }}
-          >
-            <DockThumb item={item} />
-            <DockStatusGlyph status={status} />
-          </button>
-        );
-      })}
-      {overflowCount > 0 ? (
-        <button
-          type="button"
-          className="fo-rail__more"
-          aria-label={`${overflowCount} more snaps`}
-          onClick={onMore}
-        >
-          <FoIcon name="more" size={12} />
-          <span>+{overflowCount}</span>
-        </button>
-      ) : null}
+      <div
+        ref={listRef}
+        className="fo-rail__list"
+        role="list"
+        aria-label="Recent snaps"
+        onScroll={checkNearEnd}
+      >
+        {items.map((item) => {
+          const current = item.captureId === currentId;
+          const at = capturedAtMs(item.record.captured_at);
+          const label = railItemLabel(item);
+          return (
+            <button
+              key={item.captureId}
+              type="button"
+              role="listitem"
+              className={`fo-rail__item${current ? " is-current" : ""}`}
+              data-capture-id={item.captureId}
+              data-status={item.status ?? "none"}
+              aria-current={current ? "true" : undefined}
+              aria-label={current ? `Showing ${label}` : `Open ${label}`}
+              title={dockItemTitle({ ...item, addedAt: 0 })}
+              onClick={() => {
+                if (!current) onOpen(item.captureId);
+              }}
+            >
+              <DockThumb item={item} />
+              {item.status !== null ? <DockStatusGlyph status={item.status} /> : null}
+              {at !== null ? <span className="fo-rail__age">{formatThumbAge(at, now)}</span> : null}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
+}
+
+function railItemLabel(item: RailItem): string {
+  const title = dockItemTitle({ ...item, addedAt: 0 });
+  return item.status === null ? title : `${title} — ${STATUS_LABEL[item.status]}`;
 }

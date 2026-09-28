@@ -60,11 +60,11 @@ function enrichment(
   };
 }
 
-function record(id: string): CaptureRecord {
+function record(id: string, capturedAt = "2026-09-27T10:00:00.000Z"): CaptureRecord {
   return {
     id,
     kind: "image",
-    captured_at: "2026-09-27T10:00:00.000Z",
+    captured_at: capturedAt,
     legacy_src_path: `/tmp/${id}.png`,
     bundle_path: null,
     flat_png_path: null,
@@ -115,6 +115,8 @@ type HostApi = {
   dispatch: ReturnType<typeof vi.fn>;
   resize: ReturnType<typeof vi.fn>;
   passThrough: ReturnType<typeof vi.fn>;
+  /** What `library:list` serves, newest first. `showSnap` adds to it. */
+  library: CaptureRecord[];
   /** Runs of a verb, as `[request]` tuples. */
   calls: (verb: string) => unknown[];
 };
@@ -123,8 +125,11 @@ function installHostApi(options: {
   dock?: boolean;
   enrichmentFor?: (captureId: string) => CaptureEnrichment | null;
   byId?: (id: string) => CaptureRecord | null;
+  library?: CaptureRecord[];
+  pageSize?: number;
 } = {}): HostApi {
   const subscribers = new Map<string, Set<EventHandler>>();
+  const library: CaptureRecord[] = options.library ?? [];
   const dispatch = vi.fn(async (name: string, req: Record<string, unknown>) => {
     switch (name) {
       case "float-over:capabilities":
@@ -143,6 +148,29 @@ function installHostApi(options: {
         return {
           ok: true,
           value: options.enrichmentFor?.(req.captureId as string) ?? null
+        };
+      case "library:list": {
+        const sorted = [...library].sort((a, b) =>
+          a.captured_at === b.captured_at ? (a.id < b.id ? 1 : -1) : a.captured_at < b.captured_at ? 1 : -1
+        );
+        const cursor = req.cursor as { id: string } | undefined;
+        const start = cursor === undefined ? 0 : sorted.findIndex((row) => row.id === cursor.id) + 1;
+        const size = options.pageSize ?? (req.limit as number);
+        const rows = sorted.slice(start, start + size);
+        const last = rows.at(-1);
+        const more = start + size < sorted.length && last !== undefined;
+        return {
+          ok: true,
+          value: {
+            rows,
+            nextCursor: more ? { capturedAt: last.captured_at, id: last.id } : null
+          }
+        };
+      }
+      case "library:listByIds":
+        return {
+          ok: true,
+          value: { rows: library.filter((row) => (req.ids as string[]).includes(row.id)) }
         };
       case "library:byId":
         return {
@@ -178,6 +206,7 @@ function installHostApi(options: {
     dispatch,
     resize,
     passThrough,
+    library,
     calls: (verb) =>
       dispatch.mock.calls.filter(([name]) => name === verb).map(([, req]) => req)
   };
@@ -208,6 +237,7 @@ async function push(api: HostApi, channel: string, payload: unknown): Promise<vo
 }
 
 async function showSnap(api: HostApi, id: string, status: CaptureEnrichment["status"]): Promise<void> {
+  if (!api.library.some((row) => row.id === id)) api.library.push(record(id));
   await push(api, EVENT_CHANNELS.floatOverState, { kind: "show-loaded", captureId: id, record: record(id) });
   await push(api, EVENT_CHANNELS.aiRunUpdated, { enrichment: enrichment(id, status) });
 }
@@ -533,5 +563,115 @@ describe("FloatOverHost dock", () => {
         canClearFinished: false
       }
     ]);
+  });
+});
+
+describe("FloatOverHost rail: the recent-snaps catalog", () => {
+  const railIds = (el: HTMLElement): string[] =>
+    Array.from(el.querySelectorAll(".fo-rail__item")).map(
+      (item) => item.getAttribute("aria-label") ?? ""
+    );
+
+  test("lists every recent snap, newest first, not only the waiting ones", async () => {
+    const api = installHostApi({
+      library: [record("toast_old", "2026-09-27T09:00:00.000Z"), record("jam_mid", "2026-09-27T09:30:00.000Z")]
+    });
+    const el = await mountHost();
+    await showSnap(api, "cap_new", "completed");
+
+    const items = Array.from(el.querySelectorAll(".fo-rail__item"));
+    expect(items).toHaveLength(3);
+    expect(items.map((item) => item.classList.contains("is-current"))).toEqual([true, false, false]);
+    // Nothing is waiting on the model, so no glyphs and no count.
+    expect(el.querySelectorAll(".fo-rail__item .fod-st")).toHaveLength(0);
+    expect(el.querySelector(".fo-rail__eb b")).toBeNull();
+  });
+
+  test("opening an older snap removes nothing and reorders nothing", async () => {
+    const api = installHostApi({
+      library: [record("toast_old", "2026-09-27T09:00:00.000Z"), record("jam_mid", "2026-09-27T09:30:00.000Z")]
+    });
+    const el = await mountHost();
+    await showSnap(api, "cap_new", "completed");
+    const order = (): string[] =>
+      Array.from(el.querySelectorAll(".fo-rail__item")).map(
+        (item) => item.getAttribute("data-capture-id") ?? ""
+      );
+    expect(order()).toEqual(["cap_new", "jam_mid", "toast_old"]);
+
+    for (const target of ["toast_old", "jam_mid", "cap_new"]) {
+      await push(api, EVENT_CHANNELS.floatOverState, { kind: "show-loaded", captureId: target });
+      // The catalog already has the record: no "Loading capture…" first.
+      expect(el.querySelector('[data-state="loading"]')).toBeNull();
+      expect(order()).toEqual(["cap_new", "jam_mid", "toast_old"]);
+      expect(el.querySelector(".fo-rail__item.is-current")?.getAttribute("data-capture-id")).toBe(target);
+      expect(railIds(el).filter((label) => label.startsWith("Showing"))).toHaveLength(1);
+    }
+    expect(api.calls("library:byId")).toEqual([]);
+  });
+
+  test("the toast header and every thumb count from the capture", async () => {
+    vi.setSystemTime(new Date("2026-09-27T10:03:23.000Z"));
+    const api = installHostApi({ library: [record("toast_old", "2026-09-27T08:59:00.000Z")] });
+    const el = await mountHost();
+    await showSnap(api, "cap_new", "completed");
+
+    expect(el.querySelector(".fo__hdr-sub")?.textContent).toContain("3m 23s ago");
+    expect(
+      Array.from(el.querySelectorAll(".fo-rail__age")).map((age) => age.textContent)
+    ).toEqual(["3m 23s", "1h 4m"]);
+
+    await advance(1_000);
+    expect(el.querySelector(".fo__hdr-sub")?.textContent).toContain("3m 24s ago");
+    expect(el.querySelector(".fo-rail__age")?.textContent).toBe("3m 24s");
+  });
+
+  test("an older snap with no run does not wait on the dock when left", async () => {
+    vi.setSystemTime(new Date("2026-09-27T10:00:05.000Z"));
+    const api = installHostApi({ library: [record("toast_old", "2026-09-26T09:00:00.000Z")] });
+    const el = await mountHost();
+    await showSnap(api, "cap_new", "completed");
+
+    // Opened from the rail: no enrichment row, and none is coming.
+    await push(api, EVENT_CHANNELS.floatOverState, { kind: "show-loaded", captureId: "toast_old" });
+    expect(el.querySelector('.fo-rail__item.is-current .fod-st')).toBeNull();
+    await push(api, EVENT_CHANNELS.floatOverState, { kind: "show-loaded", captureId: "cap_new" });
+    expect(api.calls("float-over:tuck")).toEqual([]);
+    expect(el.querySelectorAll(".fo-rail__item .fod-st")).toHaveLength(0);
+  });
+
+  test("scrolling near the end loads the next page", async () => {
+    const library = ["a", "b", "c", "d", "e"].map((id, index) =>
+      record(`snap_${id}`, `2026-09-27T0${index + 1}:00:00.000Z`)
+    );
+    const api = installHostApi({ library, pageSize: 2 });
+    const el = await mountHost();
+    await showSnap(api, "cap_new", "completed");
+    // jsdom lays nothing out, so every page reads as "near the end" and
+    // the next one follows until the library is exhausted.
+    const list = el.querySelector(".fo-rail__list")!;
+    await act(async () => {
+      list.dispatchEvent(new Event("scroll"));
+    });
+    await flush();
+    expect(el.querySelectorAll(".fo-rail__item")).toHaveLength(6);
+    const cursors = api.calls("library:list").map((req) => (req as { cursor?: unknown }).cursor);
+    expect(cursors[0]).toBeUndefined();
+    expect(cursors.slice(1).every((cursor) => cursor !== undefined)).toBe(true);
+  });
+
+  test("a snap deleted elsewhere leaves the rail, and a new one joins it", async () => {
+    const api = installHostApi({ library: [record("toast_old", "2026-09-27T09:00:00.000Z")] });
+    const el = await mountHost();
+    await showSnap(api, "cap_new", "completed");
+    expect(el.querySelectorAll(".fo-rail__item")).toHaveLength(2);
+
+    api.library.push(record("waffle_newer", "2026-09-27T10:30:00.000Z"));
+    await push(api, EVENT_CHANNELS.capturesChanged, { changedIds: ["waffle_newer"] });
+    expect(el.querySelectorAll(".fo-rail__item")).toHaveLength(3);
+
+    api.library.splice(api.library.findIndex((row) => row.id === "toast_old"), 1);
+    await push(api, EVENT_CHANNELS.capturesChanged, { changedIds: ["toast_old"] });
+    expect(el.querySelectorAll(".fo-rail__item")).toHaveLength(2);
   });
 });

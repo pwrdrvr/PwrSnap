@@ -55,7 +55,10 @@ export default defineConfig({
           // egress `fetch` call site today — but jsdom inherits a live
           // `fetch` from Node, so the guard covers a violation nothing
           // else here would catch.
-          setupFiles: ["apps/desktop/src/test-setup/outbound-fetch-guard.ts"]
+          setupFiles: [
+            "apps/desktop/src/test-setup/outbound-fetch-guard.ts",
+            "apps/desktop/src/test-setup/react-act-environment.ts"
+          ]
         }
       }
     ]

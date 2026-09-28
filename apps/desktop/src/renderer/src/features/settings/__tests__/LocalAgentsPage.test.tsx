@@ -143,8 +143,10 @@ async function renderPage(
   return container;
 }
 
-afterEach(() => {
-  root?.unmount();
+afterEach(async () => {
+  await act(async () => {
+    root?.unmount();
+  });
   container?.remove();
   root = null;
   container = null;

@@ -1481,7 +1481,9 @@ describe("FloatOver AI suggestions", () => {
     expect(textarea?.value).toBe("Dark-mode LINE desktop chat showing PwrAgent command help.");
     expect(textarea?.classList.contains("is-suggested")).toBe(true);
 
-    textarea?.dispatchEvent(new FocusEvent("blur", { bubbles: true }));
+    await act(async () => {
+      textarea?.dispatchEvent(new FocusEvent("blur", { bubbles: true }));
+    });
     expect(onAcceptDescription).not.toHaveBeenCalled();
   });
 

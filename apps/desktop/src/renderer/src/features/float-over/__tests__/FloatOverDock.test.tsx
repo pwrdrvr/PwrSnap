@@ -387,8 +387,11 @@ describe("FloatOverHost dock", () => {
 
     await push(api, EVENT_CHANNELS.aiRunUpdated, { enrichment: enrichment("cap_1", "completed") });
     expect(el.querySelector(".fod-tab")?.getAttribute("data-status")).toBe("ready");
-    // Ready snaps can be cleared from the ⋮ tab.
-    expect(el.querySelector(".fod-more")).not.toBeNull();
+    // No ⋮ tab until there are more snaps than tabs: a finished snap
+    // leaves by being opened, or by "Clear finished" in that list.
+    expect(el.querySelector(".fod-more")).toBeNull();
+    // Nothing on a tab counts time.
+    expect(el.querySelector(".fod-tab")?.textContent).toBe("");
   });
 
   test("a new capture while the model reads shows the rail, and every close keeps the dock", async () => {

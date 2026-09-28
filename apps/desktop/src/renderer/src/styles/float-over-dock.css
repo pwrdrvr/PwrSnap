@@ -7,9 +7,9 @@
 
    The window is exactly as big as what these rules draw — the host
    measures it and main sizes the window to match. Transparent pixels
-   still take clicks, so nothing here may add invisible area: the dock
-   rests as an 18px sliver, and the rail runs the toast's full height
-   rather than leaving a see-through block above it.
+   still take clicks, so nothing here may add invisible area it does not
+   need: the dock rests as an 18px sliver. The rail beside a toast is
+   the one exception (see .fo-shell).
    ============================================================ */
 
 /* ----- host layout -----
@@ -28,9 +28,13 @@ body[data-stage="float-over"] .fo-host--dock { align-items: flex-start; }
 body[data-stage="float-over"] .fo-host--dock[data-side="left"] { justify-content: flex-start; }
 .fo-host__measure { flex: none; }
 
+/* The rail is only as tall as its thumbnails and lines up with the top
+   of the toast. The window stays rectangular, so the strip below the
+   rail is transparent and still takes clicks: the price of a rail that
+   does not float as a tall empty panel. */
 .fo-shell {
   display: flex;
-  align-items: stretch;
+  align-items: flex-start;
   gap: 8px;
 }
 .fo-shell__toast {
@@ -108,7 +112,9 @@ body[data-stage="float-over"] .fo-host--dock[data-side="left"] { justify-content
 
 /* A tab is 84px wide and slides along its own axis: 66px in at rest
    (18px showing), 12px in while the pointer is over the dock, all the
-   way out under the pointer. Left-docked tabs slide the other way. */
+   way out under the pointer. The ⋮ tab stays at 12: it opens a list,
+   not a snap, and a control that changes width as the pointer crosses
+   it reads as broken. Left-docked tabs slide the other way. */
 .fod-tab,
 .fod-more {
   --fod-tx: 66px;
@@ -116,7 +122,7 @@ body[data-stage="float-over"] .fo-host--dock[data-side="left"] { justify-content
   flex: none;
   width: 84px;
   padding: 0;
-  cursor: grab;
+  cursor: pointer;
   transform: translateX(var(--fod-tx));
   transition: transform 180ms var(--ease-out);
 }
@@ -124,8 +130,7 @@ body[data-stage="float-over"] .fo-host--dock[data-side="left"] { justify-content
 .fod--left .fod-more { transform: translateX(calc(var(--fod-tx) * -1)); }
 .fod.is-out .fod-tab,
 .fod.is-out .fod-more { --fod-tx: 12px; }
-.fod.is-out .fod-tab.is-under,
-.fod.is-out .fod-more.is-under { --fod-tx: 0px; }
+.fod.is-out .fod-tab.is-under { --fod-tx: 0px; }
 .fod.is-dragging,
 .fod.is-dragging .fod-tab,
 .fod.is-dragging .fod-more { cursor: grabbing; }
@@ -147,20 +152,6 @@ body[data-stage="float-over"] .fo-host--dock[data-side="left"] { justify-content
 .fod-tab[data-status="failed"] { border-color: var(--danger); }
 .fod-tab > .fod-st { left: 2px; top: 18px; }
 .fod--left .fod-tab > .fod-st { left: auto; right: 2px; }
-.fod-tab__age {
-  position: absolute;
-  right: 16px;
-  bottom: 4px;
-  padding: 2px 4px;
-  border-radius: 3px;
-  background: var(--media-scrim-bg);
-  color: var(--media-scrim-text);
-  font: 600 9px/1 var(--font-mono);
-  opacity: 0;
-  transition: opacity 120ms var(--ease-out);
-}
-.fod--left .fod-tab__age { right: auto; left: 16px; }
-.fod.is-out .fod-tab__age { opacity: 1; }
 
 .fod-more {
   height: 26px;
@@ -234,16 +225,6 @@ body[data-stage="float-over"] .fo-host--dock[data-side="left"] { justify-content
   cursor: default;
 }
 .fo-rail__item > .fod-st { left: 3px; top: 3px; }
-.fo-rail__age {
-  position: absolute;
-  right: 3px;
-  bottom: 3px;
-  padding: 1px 3px;
-  border-radius: 3px;
-  background: var(--media-scrim-bg);
-  color: var(--media-scrim-text);
-  font: 600 8.5px/1 var(--font-mono);
-}
 .fo-rail__more {
   align-self: stretch;
   height: 22px;
@@ -263,7 +244,6 @@ body[data-stage="float-over"] .fo-host--dock[data-side="left"] { justify-content
 
 @media (prefers-reduced-motion: reduce) {
   .fod-tab,
-  .fod-more,
-  .fod-tab__age { transition: none; }
+  .fod-more { transition: none; }
   .fod-st[data-status="reading"] { animation: none; }
 }

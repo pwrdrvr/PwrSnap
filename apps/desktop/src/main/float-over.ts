@@ -97,7 +97,8 @@ const dock: { side: FloatOverDockSide; topFraction: number } = {
  * a toast-sized slab on the screen edge.
  */
 let layoutPending: FloatOverLayoutMode | null = null;
-/** The shape the window was last sized to. */
+/** The shape the window was last sized to. Change it through
+ *  `setWindowShape`, which also owns the native shadow. */
 let windowShape: FloatOverLayoutMode = "toast";
 /** A dock drag in progress: where in the window the pointer grabbed it. */
 let dockDrag: { grabOffsetY: number } | null = null;
@@ -381,7 +382,7 @@ function wireFloatOverResizeChannel(): void {
     const current = singleton.getContentSize();
     if (current[0] === widthDip && current[1] === clamped && layoutPending !== "toast") return;
     singleton.setContentSize(widthDip, clamped, false);
-    windowShape = "toast";
+    setWindowShape(singleton, "toast");
     if (layoutPending === "toast" && state.kind === "loaded") {
       // Opened from the dock: the window was parked while it was still
       // dock-shaped. Now that it holds the toast, place and show it.
@@ -605,11 +606,23 @@ function applyDockLayout(window: BrowserWindow, widthDip: number, heightDip: num
   if (!windowPlacementIsOurs()) return;
   const bounds = floatOverDockBounds(dockDisplay().workArea, dock, widthDip, Math.max(1, heightDip));
   window.setBounds(bounds, false);
-  windowShape = "dock";
+  setWindowShape(window, "dock");
   if (layoutPending === "dock" && !recordingOwnsScreen) {
     layoutPending = null;
     restoreOnScreen(window);
   }
+}
+
+/**
+ * The toast wears the native shadow; the dock does not. macOS draws a
+ * window's shadow, and a light rim with it, around the window's whole
+ * shape, so on the dock it outlined the gap between the tabs and read
+ * as a frame around them.
+ */
+function setWindowShape(window: BrowserWindow, shape: FloatOverLayoutMode): void {
+  if (shape === windowShape) return;
+  windowShape = shape;
+  window.setHasShadow(shape === "toast");
 }
 
 /**

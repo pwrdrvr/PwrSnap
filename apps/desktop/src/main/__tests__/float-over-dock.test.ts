@@ -58,6 +58,7 @@ const mocks = vi.hoisted(() => {
         bounds = { ...next };
       }),
       setContentProtection: vi.fn(),
+      setHasShadow: vi.fn(),
       setContentSize: vi.fn((width: number, height: number) => {
         bounds = { ...bounds, width, height };
       }),
@@ -290,6 +291,15 @@ describe("float-over dock", () => {
 
     setFloatOverState({ kind: "show-loaded", captureId: "cap_2" });
     expect(window.setContentProtection).toHaveBeenLastCalledWith(false);
+  });
+
+  it("draws no native shadow around the dock, and gives the toast its shadow back", () => {
+    const window = showDock();
+    expect(window.setHasShadow).toHaveBeenLastCalledWith(false);
+
+    setFloatOverState({ kind: "show-loaded", captureId: "cap_2" });
+    postLayout({ width: 392, height: 480, mode: "toast" });
+    expect(window.setHasShadow).toHaveBeenLastCalledWith(true);
   });
 
   it("opens a snap from the dock without flashing the dock's shape in the corner", () => {

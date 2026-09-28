@@ -2257,8 +2257,14 @@ and
   never be shown.
 - **The window is exactly the size of what it draws.** Transparent pixels
   still take clicks. The dock rests as an 18px sliver and widens only
-  while the pointer is over it. The rail beside a toast runs the toast's
-  full height, so there is no see-through block above it.
+  while the pointer is over it. The one accepted exception is the rail
+  beside a toast: it is only as tall as its thumbnails, as the design
+  draws it, so the strip below it is see-through and still takes clicks.
+  A rail stretched to the toast's height read as a tall empty panel.
+- **No native shadow on the dock.** macOS draws the shadow, with a light
+  rim, around the window's whole shape, which outlined the gap between
+  the tabs. `setWindowShape` turns it off for the dock and back on for
+  the toast.
 - **Placed flush inside the work area, never past it.** AppKit moves a
   window placed outside it (see "macOS MOVES a window placed outside the
   work area"). The tabs only look like they run off the screen, because

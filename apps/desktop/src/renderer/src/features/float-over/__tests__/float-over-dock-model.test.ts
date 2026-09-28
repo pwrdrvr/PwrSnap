@@ -5,7 +5,6 @@ import {
   dockItemLabel,
   dockItemTitle,
   dockStatus,
-  formatDockAge,
   hasFinishedDockItems,
   isLeavingSnapInFlight,
   railDockItems,
@@ -183,13 +182,6 @@ describe("visible cap", () => {
 });
 
 describe("labels", () => {
-  test("ages read m:ss, and h:mm:ss past an hour", () => {
-    expect(formatDockAge(-5)).toBe("0:00");
-    expect(formatDockAge(31_400)).toBe("0:31");
-    expect(formatDockAge(125_000)).toBe("2:05");
-    expect(formatDockAge(3_725_000)).toBe("1:02:05");
-  });
-
   test("a snap is named by the model once it has, by its source until then", () => {
     const base = item("a", 0);
     expect(dockItemTitle({ ...base, record: record("a", { source_app_name: "Toaster" }) })).toBe(
@@ -207,7 +199,7 @@ describe("labels", () => {
     expect(dockItemTitle({ ...base, record: null, enrichment: null })).toBe("Snap");
   });
 
-  test("an overflow row says what the snap is, where it stands, and how long it has waited", () => {
-    expect(dockItemLabel(item("a", 1_000), 32_000)).toBe("Snap · 1,280 × 800 — reading · 0:31");
+  test("an overflow row says what the snap is and where it stands", () => {
+    expect(dockItemLabel(item("a", 1_000))).toBe("Snap · 1,280 × 800 — reading");
   });
 });

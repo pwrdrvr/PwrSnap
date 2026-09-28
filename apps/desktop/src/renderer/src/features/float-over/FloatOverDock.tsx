@@ -10,7 +10,6 @@ import { FoIcon } from "./FoIcons";
 import {
   dockItemTitle,
   dockStatus,
-  formatDockAge,
   type DockItem,
   type DockStatus
 } from "./float-over-dock-model";
@@ -67,28 +66,14 @@ function DockThumb({ item }: { item: DockItem }): React.ReactElement {
   );
 }
 
-function itemAriaLabel(item: DockItem, now: number): string {
-  return `${dockItemTitle(item)} — ${STATUS_LABEL[dockStatus(item.enrichment)]}, ${formatDockAge(now - item.addedAt)}`;
-}
-
-/** Re-render once a second while ages are on screen. */
-export function useDockClock(active: boolean): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!active) return undefined;
-    setNow(Date.now());
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [active]);
-  return now;
+function itemAriaLabel(item: DockItem): string {
+  return `${dockItemTitle(item)} — ${STATUS_LABEL[dockStatus(item.enrichment)]}`;
 }
 
 export type FloatOverDockProps = {
   readonly items: readonly DockItem[];
+  /** Snaps past the cap. The ⋮ tab shows only when there are some. */
   readonly overflowCount: number;
-  /** Show the ⋮ tab even with nothing folded: it is also where
-   *  "Clear finished" lives. */
-  readonly showMore: boolean;
   readonly side: FloatOverDockSide;
   readonly onOpen: (captureId: string) => void;
   readonly onMore: () => void;
@@ -96,7 +81,7 @@ export type FloatOverDockProps = {
 
 /**
  * The tabs on the screen edge. Rest: an 18px sliver per snap. Hover: the
- * stack slides out and shows each snap's age. Press and drag: moves the
+ * stack slides out, and the tab under the pointer comes all the way. Press and drag: moves the
  * stack along the edge (main follows the cursor and flips sides past the
  * middle of the display).
  *
@@ -107,7 +92,6 @@ export type FloatOverDockProps = {
 export function FloatOverDock({
   items,
   overflowCount,
-  showMore,
   side,
   onOpen,
   onMore
@@ -121,7 +105,6 @@ export function FloatOverDock({
   );
   const draggingRef = useRef(false);
   const collapseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const now = useDockClock(hovered || dragging);
 
   const out = hovered || dragging;
   useEffect(() => {
@@ -142,6 +125,7 @@ export function FloatOverDock({
     };
   }, [out]);
 
+  const showMore = overflowCount > 0;
   const count = items.length + (showMore ? 1 : 0);
   const height =
     items.length * DOCK_TAB_HEIGHT +
@@ -233,29 +217,26 @@ export function FloatOverDock({
               type="button"
               className={`fod-tab${underId === item.captureId ? " is-under" : ""}`}
               data-status={status}
-              aria-label={`Open ${itemAriaLabel(item, now)}`}
+              aria-label={`Open ${itemAriaLabel(item)}`}
               title={dockItemTitle(item)}
               onMouseEnter={() => setUnderId(item.captureId)}
               {...pointerHandlers(item.captureId)}
             >
               <DockThumb item={item} />
               <DockStatusGlyph status={status} />
-              <span className="fod-tab__age">{formatDockAge(now - item.addedAt)}</span>
             </button>
           );
         })}
         {showMore ? (
           <button
             type="button"
-            className={`fod-more${underId === "more" ? " is-under" : ""}`}
-            aria-label={
-              overflowCount > 0 ? `${overflowCount} more snaps` : "More: clear finished snaps"
-            }
-            onMouseEnter={() => setUnderId("more")}
+            className="fod-more"
+            aria-label={`${overflowCount} more snaps`}
+            onMouseEnter={() => setUnderId(null)}
             {...pointerHandlers("more")}
           >
             <FoIcon name="more" size={12} />
-            {overflowCount > 0 ? <span>+{overflowCount}</span> : null}
+            <span>+{overflowCount}</span>
           </button>
         ) : null}
       </div>
@@ -267,7 +248,6 @@ export type FloatOverRailProps = {
   readonly items: readonly DockItem[];
   readonly currentId: string | null;
   readonly overflowCount: number;
-  readonly showMore: boolean;
   readonly total: number;
   readonly onOpen: (captureId: string) => void;
   readonly onMore: () => void;
@@ -282,13 +262,11 @@ export function FloatOverRail({
   items,
   currentId,
   overflowCount,
-  showMore,
   total,
   onOpen,
   onMore,
   onHoverChange
 }: FloatOverRailProps): React.ReactElement {
-  const now = useDockClock(true);
   return (
     <div
       className="fo-rail"
@@ -310,7 +288,7 @@ export function FloatOverRail({
             className={`fo-rail__item${current ? " is-current" : ""}`}
             data-status={status}
             aria-current={current ? "true" : undefined}
-            aria-label={current ? `Showing ${itemAriaLabel(item, now)}` : `Open ${itemAriaLabel(item, now)}`}
+            aria-label={current ? `Showing ${itemAriaLabel(item)}` : `Open ${itemAriaLabel(item)}`}
             title={dockItemTitle(item)}
             onClick={() => {
               if (!current) onOpen(item.captureId);
@@ -318,19 +296,18 @@ export function FloatOverRail({
           >
             <DockThumb item={item} />
             <DockStatusGlyph status={status} />
-            <span className="fo-rail__age">{formatDockAge(now - item.addedAt)}</span>
           </button>
         );
       })}
-      {showMore ? (
+      {overflowCount > 0 ? (
         <button
           type="button"
           className="fo-rail__more"
-          aria-label={overflowCount > 0 ? `${overflowCount} more snaps` : "More: clear finished snaps"}
+          aria-label={`${overflowCount} more snaps`}
           onClick={onMore}
         >
           <FoIcon name="more" size={12} />
-          {overflowCount > 0 ? <span>+{overflowCount}</span> : null}
+          <span>+{overflowCount}</span>
         </button>
       ) : null}
     </div>

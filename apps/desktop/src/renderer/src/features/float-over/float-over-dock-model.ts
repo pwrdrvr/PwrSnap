@@ -170,16 +170,6 @@ export function splitDockItems(
   };
 }
 
-/** `m:ss`, or `h:mm:ss` past an hour. */
-export function formatDockAge(ms: number): string {
-  const total = Math.max(0, Math.floor(ms / 1000));
-  const hours = Math.floor(total / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  const seconds = String(total % 60).padStart(2, "0");
-  if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${seconds}`;
-  return `${minutes}:${seconds}`;
-}
-
 const STATUS_WORDS: Record<DockStatus, string> = {
   waiting: "waiting",
   reading: "reading",
@@ -201,7 +191,7 @@ export function dockItemTitle(item: DockItem): string {
     : `${kind} · ${dims}`;
 }
 
-/** One overflow-menu row: `Title — reading · 0:31`. */
-export function dockItemLabel(item: DockItem, now: number): string {
-  return `${dockItemTitle(item)} — ${STATUS_WORDS[dockStatus(item.enrichment)]} · ${formatDockAge(now - item.addedAt)}`;
+/** One overflow-menu row: `Title — reading`. */
+export function dockItemLabel(item: DockItem): string {
+  return `${dockItemTitle(item)} — ${STATUS_WORDS[dockStatus(item.enrichment)]}`;
 }

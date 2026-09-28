@@ -307,9 +307,8 @@ export function FloatOverHost({
   const popOverflow = (overflow: readonly DockItem[], exceptCaptureId: string | null): void => {
     if (menuOpen) return;
     setMenuOpen(true);
-    const now = Date.now();
     void dispatch("float-over:overflowMenu", {
-      items: overflow.map((item) => ({ captureId: item.captureId, label: dockItemLabel(item, now) })),
+      items: overflow.map((item) => ({ captureId: item.captureId, label: dockItemLabel(item) })),
       canClearFinished: hasFinishedDockItems(queueRef.current, exceptCaptureId)
     }).then((result) => {
       setMenuOpen(false);
@@ -1030,7 +1029,6 @@ export function FloatOverHost({
       <FloatOverDock
         items={visible}
         overflowCount={overflow.length}
-        showMore={overflow.length > 0 || hasFinishedDockItems(queue)}
         side={dockSide}
         onOpen={openSnap}
         onMore={() => popOverflow(overflow, null)}
@@ -1047,7 +1045,6 @@ export function FloatOverHost({
             items={rail.visible}
             currentId={toastCaptureId}
             overflowCount={rail.overflow.length}
-            showMore={rail.overflow.length > 0 || hasFinishedDockItems(queue, toastCaptureId)}
             total={railItems.length}
             onOpen={openSnap}
             onMore={() => popOverflow(rail.overflow, toastCaptureId)}

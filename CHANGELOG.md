@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.1.9 - 2026-09-28
+
+This patch makes update downloads, copying, and diagnostic capture more
+reliable.
+
+- Updates - Fixed newly selected update tracks and the Updates page to start
+  downloading a newer available release instead of only showing it. The restart
+  action is now easier to spot.
+- Clipboard - Fixed macOS image copying from hanging indefinitely when the
+  pasteboard stalls, and kept copied file references usable during replacement.
+- Diagnostics - Fixed quitting or installing an update during a CPU profile or
+  trace from discarding the capture before it can be saved.
+
 ## v1.1.8 - 2026-09-27
 
 This patch makes opening captures and the first post-capture notification more

@@ -7,6 +7,9 @@ import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import type { CodexModelOption, EnrichmentResult, Settings } from "@pwrsnap/shared";
+import { CustomModelService } from "../ai/direct-api/service";
+import type { CustomCredentials } from "../ai/direct-api/credentials";
+import { body, json, model, server } from "../ai/direct-api/__tests__/fixtures";
 
 let testDb: Database.Database;
 let tempRoot: string;
@@ -42,6 +45,7 @@ vi.mock("../persistence/db", () => ({
 }));
 
 const { bus } = await import("../command-bus");
+const customModelHandlers = await import("../handlers/custom-model-handlers");
 const {
   registerCodexHandlers,
   enrichmentSelectedModel,
@@ -386,6 +390,71 @@ describe("Codex handlers", () => {
       (completedEvent?.payload as { enrichment?: { status?: string } | null }).enrichment?.status
     ).toBe("completed");
   });
+
+  test.each(["success", "http-failure", "removed-model"] as const)(
+    "custom enrichment uses direct HTTP and never creates a Codex client: %s",
+    async (scenario) => {
+      const requests: Array<{ url: string | undefined; body: Record<string, unknown> }> = [];
+      const http = await server(async (req, res) => {
+        requests.push({ url: req.url, body: JSON.parse(await body(req)) as Record<string, unknown> });
+        if (scenario === "http-failure") {
+          res.writeHead(503).end();
+          return;
+        }
+        json(res, { choices: [{ message: { content: JSON.stringify({
+          title: "Direct fixture", description: "Synthetic image via direct HTTP", ocrText: "",
+          filenameStem: "fixture", textAnchors: [], tags: []
+        }) } }] });
+      });
+      const entry = model(`${http.url}/v1`);
+      entry.modelId = "/fixture/models/local-model.gguf";
+      entry.capabilities.streaming = false;
+      const settings = testSettings();
+      settings.ai.enabled = true;
+      settings.ai.consentAcceptedAt = "2026-05-12T12:00:00.000Z";
+      settings.ai.defaults.enrichment = { provider: `custom:${entry.id}`, model: entry.modelId };
+      settings.ai.customConnections = [{ id: entry.connectionId, name: "Fixture connection",
+        baseUrl: entry.baseUrl, protocol: entry.protocol, auth: entry.auth }];
+      settings.ai.customModels = scenario === "removed-model" ? [] : [entry];
+      // Only persistence/credential seams are replaced. The production handler,
+      // selection, image preparation, protocol transport and run persistence run.
+      const service = new CustomModelService({ read: async () => settings,
+        write: async () => { throw new Error("Unexpected settings write"); } },
+      { headers: async () => ({}) } as unknown as CustomCredentials, async () => undefined);
+      const serviceSpy = vi.spyOn(customModelHandlers, "getCustomModelService").mockReturnValue(service);
+      const clientFactory = vi.fn(() => { throw new Error("Custom selection reached Codex"); });
+      try {
+        registerCodexHandlers({ clientFactory, settingsReader: async () => settings });
+        const result = await bus.dispatch("codex:enrich", { captureId: "cap_1" }, { principal: "ipc" });
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        await waitFor(() => ["completed", "failed"].includes(getAiRun(result.value.runId)?.status ?? ""));
+        expect(getAiRun(result.value.runId)?.status).toBe(scenario === "success" ? "completed" : "failed");
+        expect(clientFactory).not.toHaveBeenCalled();
+        expect(requests).toHaveLength(scenario === "removed-model" ? 0 : 1);
+        if (scenario !== "removed-model") {
+          expect(requests[0]?.url).toBe("/v1/chat/completions");
+          expect(requests[0]?.body.model).toBe(entry.modelId);
+          expect(JSON.stringify(requests[0]?.body.messages)).toContain("data:image/jpeg;base64,");
+          expect(JSON.stringify(requests[0]?.body.messages)).not.toContain(tempRoot);
+        }
+        if (scenario === "success") {
+          expect(getCaptureEnrichment("cap_1")?.suggestedDescription).toBe("Synthetic image via direct HTTP");
+        }
+        const usage = await bus.dispatch("codex:usageRunDetail", { runId: result.value.runId }, { principal: "ipc" });
+        expect(usage).toMatchObject({ ok: true, value: { modelProvider: `custom:${entry.id}` } });
+        // Reading an existing result is also inert at the main-process boundary.
+        for (let i = 0; i < 3; i++) {
+          await bus.dispatch("codex:enrichment", { captureId: "cap_1" }, { principal: "ipc" });
+        }
+        expect(testDb.prepare("SELECT count(*) AS n FROM ai_runs").get()).toEqual({ n: 1 });
+        expect(clientFactory).not.toHaveBeenCalled();
+      } finally {
+        serviceSpy.mockRestore();
+        await http.close();
+      }
+    }
+  );
 
   test("codex:enrich falls back to Codex when the saved ACP enrichment provider is disabled", async () => {
     const fakeClient = new FakeCodexClient();

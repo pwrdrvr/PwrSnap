@@ -277,6 +277,40 @@ afterEach(async () => {
 });
 
 describe("DetailRail", () => {
+  test("selecting completed, failed, and unenriched captures only reads saved results", async () => {
+    const completed = enrichment();
+    const failed = enrichment({ captureId: "failed", status: "failed", error: "Previously recorded failure" });
+    const saved = new Map<string, CaptureEnrichment | null>([
+      [record.id, completed], ["failed", failed], ["unenriched", null]
+    ]);
+    const { el, dispatch } = await renderDetailRail(completed);
+    const originalDispatch = dispatch.getMockImplementation() as (name: string) => Promise<unknown>;
+    dispatch.mockImplementation(async (name: string, req: { captureId?: string }) => {
+      if (name === "codex:enrichment") return { ok: true, value: saved.get(req.captureId!) };
+      return originalDispatch(name);
+    });
+
+    for (const id of ["failed", "unenriched", record.id, "failed", record.id]) {
+      await act(async () => {
+        root?.render(createElement(DetailRail, {
+          view: { kind: "focus", selectedRecordId: id, returnAnchor: { scrollTop: 0, cellId: id } },
+          record: { ...record, id }
+        }));
+      });
+      expect(dispatch).toHaveBeenCalledWith("codex:enrichment", { captureId: id });
+      if (id === "failed") expect(el.textContent).toContain("Previously recorded failure");
+    }
+    expect(dispatch.mock.calls.filter(([name]) => name === "codex:enrich")).toEqual([]);
+
+    // Starting a new run still requires the explicit button action.
+    const regenerate = el.querySelector<HTMLButtonElement>(".ps-codex-pill .psl__chip-link");
+    expect(regenerate?.textContent).toBe("Regenerate");
+    await act(async () => { regenerate!.click(); });
+    expect(dispatch.mock.calls.filter(([name]) => name === "codex:enrich")).toEqual([
+      ["codex:enrich", { captureId: record.id, triggerSource: "library-regenerate" }]
+    ]);
+  });
+
   test.each([
     { provider: "openai", model: "gpt-6-luna", label: "GPT-6-Luna" },
     { provider: "custom:previous", model: "/fixture/previous.gguf", label: "Previous model" }

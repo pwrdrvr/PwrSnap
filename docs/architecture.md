@@ -146,6 +146,9 @@ replaced. Status and usage labels resolve the saved model by its UUID.
 The Library's per-capture attribution comes only from recorded run metadata,
 shown once. Current defaults describe the next Regenerate/Refresh action in
 its tooltip; missing historical metadata never falls back to today's default.
+Selecting a capture only reads its saved enrichment, including a saved failure.
+It never starts or retries inference. Automatic enrichment is triggered when a
+new capture is persisted; running it again requires an explicit user action.
 
 Custom capabilities are explicit. Image input is three-state — yes, no, or
 unknown — and only an explicit yes sends an image or makes a model eligible for

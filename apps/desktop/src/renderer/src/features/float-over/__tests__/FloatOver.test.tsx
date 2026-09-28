@@ -277,6 +277,17 @@ async function renderToast(asset: FloatOverAsset): Promise<HTMLDivElement> {
   });
 }
 
+test.each(["queued", "running"] as const)("float-over can cancel a %s enrichment", async (status) => {
+  const onCancelEnrichment = vi.fn();
+  const el = await renderFloatOver({ src: "fixture.png", srcW: 640, srcH: 360, srcBytes: 1024,
+    startCountdown: false, aiEnabled: true, aiConsentAccepted: true,
+    enrichment: enrichment({ status }), onCancelEnrichment });
+  const cancel = el.querySelector<HTMLButtonElement>('button[title="Cancel enrichment"]');
+  expect(cancel?.textContent).toBe("Cancel");
+  await act(async () => { cancel!.click(); });
+  expect(onCancelEnrichment).toHaveBeenCalledWith("run_1");
+});
+
 async function unmount(): Promise<void> {
   if (root !== null) {
     await act(async () => {

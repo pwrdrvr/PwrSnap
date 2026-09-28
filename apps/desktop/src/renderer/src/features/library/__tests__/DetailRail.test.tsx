@@ -277,6 +277,21 @@ afterEach(async () => {
 });
 
 describe("DetailRail", () => {
+  test.each(["queued", "running"] as const)("Cancel targets the current %s run without regenerating", async (status) => {
+    const { el, dispatch, pushEvent } = await renderDetailRail(enrichment({ status }));
+    const cancel = el.querySelector<HTMLButtonElement>('button[title="Cancel enrichment"]');
+    expect(cancel?.textContent).toBe("Cancel");
+    await act(async () => { cancel!.click(); });
+    expect(dispatch).toHaveBeenCalledWith("codex:cancel", { runId: "run_1" });
+    expect(dispatch.mock.calls.some(([name]) => name === "codex:enrich")).toBe(false);
+    await act(async () => {
+      pushEvent(EVENT_CHANNELS.aiRunUpdated, { enrichment: enrichment({ status: "cancelled" }) });
+    });
+    expect(el.querySelector('button[title="Cancel enrichment"]')).toBeNull();
+    expect(el.textContent).toContain("Enrichment cancelled.");
+    expect(el.querySelector(".ps-codex-pill .psl__chip-link")?.textContent).toBe("Regenerate");
+  });
+
   test("selecting completed, failed, and unenriched captures only reads saved results", async () => {
     const completed = enrichment();
     const failed = enrichment({ captureId: "failed", status: "failed", error: "Previously recorded failure" });

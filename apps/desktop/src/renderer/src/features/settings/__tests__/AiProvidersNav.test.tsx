@@ -731,6 +731,27 @@ function callsTo(name: string): unknown[] {
 }
 
 describe("Direct API connections", () => {
+  test.each([{ id: BENCH, limit: 1 }, { id: CLOUD, limit: 2 }])("edits the shared concurrency limit for $id", async ({ id, limit }) => {
+    const saved = directSettings();
+    const connection = saved.ai.customConnections!.find((c) => c.id === id)!;
+    customAnswers["customModels:saveConnection"] = { ok: true, value: { ...connection, enrichmentConcurrency: 4 } };
+    const page = await render(createElement(AIProvidersPage, { sub: `connection:${id}` }), saved);
+    await click(button(step(1, "Where"), "Edit"));
+    const input = page.querySelector<HTMLInputElement>('input[type="number"]')!;
+    expect(input.placeholder).toBe(`Default: ${limit}`);
+    const change = async (value: string): Promise<void> => {
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    };
+    await change("0");
+    expect(button(step(1, "Where"), "Save").disabled).toBe(true);
+    await change("4");
+    await click(button(step(1, "Where"), "Save"));
+    expect(callsTo("customModels:saveConnection")).toEqual([{ connection: { ...connection, enrichmentConcurrency: 4 } }]);
+  });
+
   test("default model pickers show the saved name while retaining the exact API ID", async () => {
     const s = directSettings();
     const modelId = "/models/Example-27B-Q4.gguf";

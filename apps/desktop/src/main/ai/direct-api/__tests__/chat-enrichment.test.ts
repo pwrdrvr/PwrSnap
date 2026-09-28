@@ -6,6 +6,7 @@ import type { NormalizedThreadRecord, ThreadStore } from "@pwrdrvr/agent-core";
 import { PwrSnapChatSessionController } from "../../chat-session-controller";
 import { DirectChatBackend } from "../chat-backend";
 import { DirectEnrichmentBackend } from "../enrichment";
+import { DIRECT_ENRICHMENT_TIMEOUT_MS } from "../enrichment-queue";
 import type { CustomModelService } from "../service";
 import { body, IMAGE, json, model, server, stream } from "./fixtures";
 import { estimateAiUsageCost } from "../../ai-usage-cost";
@@ -61,7 +62,13 @@ test("direct enrichment sends only prepared image bytes and validates the existi
   const entry = model(`${http.url}/v1`, "anthropic-messages"); entry.capabilities.streaming = false;
   const service = { credentials: { headers: async () => ({}) } } as unknown as CustomModelService;
   const client = new DirectEnrichmentBackend(entry, service);
-  const result = await client.enrichCapture({ imagePaths: [path], metadata: { captureKind: "image", sourceAppName: null, sourceAppBundleId: null, widthPx: 1, heightPx: 1, capturedAt: "2026-01-01T00:00:00Z" } });
+  const timeout = vi.spyOn(AbortSignal, "timeout");
+  let result;
+  try {
+    result = await client.enrichCapture({ imagePaths: [path], metadata: { captureKind: "image", sourceAppName: null, sourceAppBundleId: null, widthPx: 1, heightPx: 1, capturedAt: "2026-01-01T00:00:00Z" } });
+    expect(timeout).toHaveBeenCalledWith(DIRECT_ENRICHMENT_TIMEOUT_MS);
+    expect(timeout).not.toHaveBeenCalledWith(180_000);
+  } finally { timeout.mockRestore(); }
   expect(result.result.title).toBe("Fixture image"); expect(result.modelProvider).toBe(`custom:${entry.id}`); expect(result.tokens).toBeNull();
   expect(JSON.stringify(request)).toContain(IMAGE.split(",")[1]); expect(JSON.stringify(request)).not.toContain(path);
 });

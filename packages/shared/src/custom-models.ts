@@ -33,7 +33,9 @@ export const customConnectionSchema = z.object({
   name: z.string().trim().min(1).max(120),
   baseUrl: apiUrlSchema,
   protocol: customProtocolSchema,
-  auth: customAuthSchema
+  auth: customAuthSchema,
+  /** Shared by this connection's models. Omitted on older settings files. */
+  enrichmentConcurrency: z.number().int().min(1).max(16).optional()
 }).strict();
 
 const modelIdTextSchema = z.string().trim().min(1).max(200).regex(/^[^\x00-\x1f\x7f]+$/);
@@ -98,6 +100,9 @@ export function customProtocolPath(protocol: CustomProtocol): string {
 /** Loopback endpoints are the only ones allowed plain HTTP, and read "this Mac". */
 export function isLoopbackApiUrl(url: string): boolean {
   return /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::[0-9]+)?(?:[/?#]|$)/i.test(url);
+}
+export function customEnrichmentConcurrency(connection: Pick<CustomConnection, "baseUrl" | "enrichmentConcurrency">): number {
+  return connection.enrichmentConcurrency ?? (isLoopbackApiUrl(connection.baseUrl) ? 1 : 2);
 }
 /** `host[:port]` of an API URL, for labels. */
 export function apiUrlHost(url: string): string {

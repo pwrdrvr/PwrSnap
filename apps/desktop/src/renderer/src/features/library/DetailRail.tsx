@@ -1568,6 +1568,12 @@ function DetailTab({
         {...(usageDetail !== null && usageDetail.run.id === enrichment?.latestRunId ? { meta: <AiRunUsageStrip detail={usageDetail} /> } : {})}
         action={
           <>
+            {codexBusy && enrichment?.latestRunId ? (
+              <button type="button" className="psl__chip-link" title="Cancel enrichment"
+                onClick={() => void dispatch("codex:cancel", { runId: enrichment.latestRunId! })}>
+                Cancel
+              </button>
+            ) : null}
             {/* Prominent bulk Use — the common case. Covers title +
                 description + filename in one click. Tags stay separate
                 (per-chip +/× controls in the TagEditor) so suggestions
@@ -1968,6 +1974,12 @@ function OcrTab({
           error={enrichment?.error}
         />
         <div className="psl__ocr-tab-actions">
+          {refreshing && enrichment?.latestRunId ? (
+            <button type="button" className="psl__chip-btn" title="Cancel enrichment"
+              onClick={() => void dispatch("codex:cancel", { runId: enrichment.latestRunId! })}>
+              Cancel
+            </button>
+          ) : null}
           <button
             type="button"
             className="psl__chip-btn"

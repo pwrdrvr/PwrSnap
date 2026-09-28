@@ -5,10 +5,12 @@ import type { CaptureEnrichmentRequest, CaptureEnrichmentResponse, EnrichmentBac
 import { CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS, CAPTURE_ENRICHMENT_SCHEMA, buildCaptureEnrichmentPrompt, parseCaptureEnrichmentResponse } from "../enrichment-schema";
 import type { CustomModelService } from "./service";
 import { DirectApiError, invokeApi } from "./transport";
+import { DIRECT_ENRICHMENT_TIMEOUT_MS } from "./enrichment-queue";
 
 export class DirectEnrichmentBackend implements EnrichmentBackend {
   constructor(private readonly model: ResolvedCustomModel, private readonly service: CustomModelService) {}
   async enrichCapture(req: CaptureEnrichmentRequest): Promise<CaptureEnrichmentResponse> {
+    req.abortSignal?.throwIfAborted();
     if (this.model.capabilities.vision !== true) throw new DirectApiError("Captions need a model marked as accepting images. Set Image input to Yes for this model in Settings → AI Providers.");
     const images: string[] = [];
     for (const path of req.imagePaths) {
@@ -18,6 +20,7 @@ export class DirectEnrichmentBackend implements EnrichmentBackend {
       images.push(`data:${mime};base64,${bytes.toString("base64")}`);
     }
     const result = await invokeApi({ model: this.model, headers: await this.service.credentials.headers(this.model, req.abortSignal),
+      timeoutMs: DIRECT_ENRICHMENT_TIMEOUT_MS,
       system: `${CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS}\nReturn ONLY a JSON object conforming to this schema:\n${JSON.stringify(CAPTURE_ENRICHMENT_SCHEMA)}`,
       messages: [{ role: "user", text: buildCaptureEnrichmentPrompt(req.metadata), images }],
       ...(req.abortSignal ? { signal: req.abortSignal } : {}) });

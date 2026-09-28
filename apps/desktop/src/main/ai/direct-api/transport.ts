@@ -119,10 +119,10 @@ function usage(raw: unknown, prior: AiUsageTokenBreakdown | null): AiUsageTokenB
 /** Text/image-only calls. No remote tools, URLs, filesystem instructions, or agent process. */
 export async function invokeApi(input: {
   model: ResolvedCustomModel; headers: Record<string, string>; system: string; messages: ApiMessage[];
-  signal?: AbortSignal; onDelta?: (text: string) => void;
+  signal?: AbortSignal; onDelta?: (text: string) => void; timeoutMs?: number;
 }): Promise<ApiResult> {
   const { model } = input;
-  const signal = AbortSignal.any([AbortSignal.timeout(180_000), ...(input.signal ? [input.signal] : [])]);
+  const signal = AbortSignal.any([AbortSignal.timeout(input.timeoutMs ?? 180_000), ...(input.signal ? [input.signal] : [])]);
   const path = customProtocolPath(model.protocol);
   try {
     const response = await safeFetch(apiEndpoint(model, path), {

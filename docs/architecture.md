@@ -150,6 +150,18 @@ Selecting a capture only reads its saved enrichment, including a saved failure.
 It never starts or retries inference. Automatic enrichment is triggered when a
 new capture is persisted; running it again requires an explicit user action.
 
+Direct enrichment uses a FIFO queue per connection, shared by all its models,
+through `@shutterstock/p-map-iterable`. The configurable parallelism defaults
+to one for loopback endpoints and two elsewhere; a changed limit takes effect
+after that connection's current queue drains. Waiting runs remain `queued`
+and do not prepare images, decrypt credentials, or start a request deadline.
+At admission, a run aged 15 minutes is failed without dispatch. Cancellation
+immediately updates the run; queued cancellations leave tombstones that are
+discarded at admission, and active cancellation aborts the HTTP request.
+Each admitted direct enrichment gets a separate 15-minute model-call deadline.
+Queued work retains its selected model and rejects a changed endpoint/protocol/
+auth configuration rather than sending a capture to a new destination.
+
 Custom capabilities are explicit. Image input is three-state — yes, no, or
 unknown — and only an explicit yes sends an image or makes a model eligible for
 captions. Discovery lists the connection's models and accepts only unambiguous

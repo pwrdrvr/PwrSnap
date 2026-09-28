@@ -644,6 +644,7 @@ export function FloatOverHost({
             });
           });
         }}
+        onCancelEnrichment={(runId) => { void dispatch("codex:cancel", { runId }); }}
         onConfigureAi={() => {
           void dispatch("settings:open", { page: "ai" });
         }}

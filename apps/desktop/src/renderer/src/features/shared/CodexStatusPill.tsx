@@ -102,6 +102,7 @@ type StatusKind =
   | "ready"
   | "accepted"
   | "failed"
+  | "cancelled"
   | "safety-disabled"
   | "needs-consent";
 
@@ -115,7 +116,7 @@ function resolveKind(
   if (status === "running") return "running";
   if (status === "queued") return "queued";
   if (status === "failed") return "failed";
-  if (status === "cancelled") return "idle";
+  if (status === "cancelled") return "cancelled";
   if (safetyDisabled) return "safety-disabled";
   if (accepted) return "accepted";
   if (draftAvailable && status === "completed") return "ready";
@@ -156,6 +157,8 @@ function labelTextFor(
       return provider === null ? "Description filled" : `Description filled from ${provider}${hasMeta ? "" : "."}`;
     case "failed":
       return failedLabelFor(provider ?? "AI", error);
+    case "cancelled":
+      return "Enrichment cancelled.";
     case "safety-disabled":
       return "AI enrichment was disabled for cost safety.";
     case "needs-consent":
@@ -189,6 +192,8 @@ function shortLabelFor(kind: StatusKind): string {
       return "used";
     case "failed":
       return "failed";
+    case "cancelled":
+      return "cancelled";
     case "safety-disabled":
       return "safety off";
     case "needs-consent":

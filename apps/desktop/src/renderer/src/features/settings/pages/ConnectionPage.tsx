@@ -19,6 +19,7 @@ import {
   connectionSettingsSub,
   customOAuthSchema,
   customProviderId,
+  customEnrichmentConcurrency,
   DEFAULT_CUSTOM_MAX_OUTPUT_TOKENS,
   isLoopbackApiUrl,
   type AiSurfaceId,
@@ -363,6 +364,7 @@ function WhereStep({ connection, credentialConfigured, template, onTemplate, onS
   const [name, setName] = useState(connection?.name ?? "");
   const [protocol, setProtocol] = useState<CustomProtocol>(connection?.protocol ?? "openai-chat");
   const [baseUrl, setBaseUrl] = useState(connection?.baseUrl ?? "https://");
+  const [concurrency, setConcurrency] = useState<string>(connection?.enrichmentConcurrency?.toString() ?? "");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<Note | null>(null);
 
@@ -370,7 +372,10 @@ function WhereStep({ connection, credentialConfigured, template, onTemplate, onS
   const urlOk = apiUrlSchema.safeParse(url).success;
   const urlTouched = url !== "" && url !== "https://" && url !== "http://";
   const local = isLoopbackApiUrl(url);
-  const changed = connection === null || name.trim() !== connection.name || protocol !== connection.protocol || url !== connection.baseUrl;
+  const concurrencyValue = concurrency === "" ? undefined : Number(concurrency);
+  const concurrencyOk = concurrencyValue === undefined || (Number.isInteger(concurrencyValue) && concurrencyValue >= 1 && concurrencyValue <= 16);
+  const changed = connection === null || name.trim() !== connection.name || protocol !== connection.protocol || url !== connection.baseUrl
+    || concurrencyValue !== connection.enrichmentConcurrency;
   const repoints = connection !== null && connection.auth.type !== "none" && credentialConfigured && trimSlash(url) !== trimSlash(connection.baseUrl);
   const preview = requestUrl(urlOk ? url : "https://…", protocol);
 
@@ -392,7 +397,8 @@ function WhereStep({ connection, credentialConfigured, template, onTemplate, onS
       ?? (template?.auth === "none" || (template === null && local) ? { type: "none" } : { type: "api-key" });
     const input: CustomConnectionInput = {
       ...(connection !== null ? { id: connection.id } : {}),
-      name: name.trim(), baseUrl: url, protocol, auth
+      name: name.trim(), baseUrl: url, protocol, auth,
+      ...(concurrencyValue !== undefined ? { enrichmentConcurrency: concurrencyValue } : {})
     };
     const r = await dispatch("customModels:saveConnection", { connection: input });
     setBusy(false);
@@ -426,6 +432,15 @@ function WhereStep({ connection, credentialConfigured, template, onTemplate, onS
         <input className="pss__input" value={baseUrl} spellCheck={false} autoComplete="off" aria-invalid={urlTouched && !urlOk}
           onChange={(e) => setBaseUrl(e.target.value)} />
       </Field>
+      <Field label="Parallel enrichments">
+        <input className="pss__input" type="number" min={1} max={16} step={1}
+          value={concurrency} placeholder={`Default: ${customEnrichmentConcurrency({ baseUrl: url })}`}
+          aria-invalid={!concurrencyOk} onChange={(e) => setConcurrency(e.target.value)} />
+      </Field>
+      <p className="pss__dapi-hint">
+        Shared by all models on this connection. Default: 1 on this computer, 2 elsewhere.
+        Changes apply after its current queue drains. Waiting items expire after 15 minutes when their turn arrives.
+      </p>
       {urlTouched && !urlOk ? (
         <p className="pss__dapi-hint pss__opt-sub--error">
           Use HTTPS — or plain HTTP only on this computer (127.0.0.1 or localhost) — with no user name, query string or fragment.
@@ -449,7 +464,7 @@ function WhereStep({ connection, credentialConfigured, template, onTemplate, onS
       ) : null}
       <NoteView note={note} />
       <div className="pss__dapi-actions">
-        <button className="pss__key-btn is-primary" type="button" disabled={busy || !changed || !urlOk || name.trim() === ""}
+        <button className="pss__key-btn is-primary" type="button" disabled={busy || !changed || !urlOk || !concurrencyOk || name.trim() === ""}
           onClick={() => { void save(); }}>
           {busy ? "Saving…" : connection === null ? "Continue" : "Save"}
         </button>

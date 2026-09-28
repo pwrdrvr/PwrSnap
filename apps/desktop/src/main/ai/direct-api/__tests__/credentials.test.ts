@@ -40,6 +40,18 @@ async function saved(f: Awaited<ReturnType<typeof fixture>>, c: CustomConnection
 }
 const LOOPBACK = "http://127.0.0.1:18080/v1";
 
+test("connection concurrency survives reload and edits without clearing its key or models", async () => {
+  const f = await fixture();
+  const c = await f.service.saveConnection({ ...connection(LOOPBACK), enrichmentConcurrency: 4 });
+  const m = await saved(f, c);
+  await f.service.setKey(c.id, "synthetic-concurrency-key");
+  await f.service.saveConnection({ ...c, enrichmentConcurrency: 1 });
+  const reloaded = await new DesktopSettingsService({ filePath: join(f.dir, "settings.json"), appVersion: "1.1.4" }).read();
+  expect(reloaded.ai.customConnections?.[0]?.enrichmentConcurrency).toBe(1);
+  expect(reloaded.ai.customModels?.map((model) => model.id)).toEqual([m.id]);
+  expect((await f.secrets.getStatus(credentialName(c.id))).configured).toBe(true);
+});
+
 test("persists connections and models, and isolates each connection's encrypted credential", async () => {
   const f = await fixture();
   await f.settings.write({ codex: { profile: "keep-existing" }, ai: { acp: { enabledAgentIds: ["kimi"] } } });

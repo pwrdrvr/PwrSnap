@@ -462,6 +462,36 @@ describe("FloatOverHost dock", () => {
     expect(el.querySelectorAll(".fod-tab")).toHaveLength(1);
   });
 
+  test("leaving the native window through the rail releases its countdown pause", async () => {
+    const api = installHostApi();
+    const el = await mountHost();
+    await showSnap(api, "cap_1", "completed");
+    await showSnap(api, "cap_2", "completed");
+
+    const rail = el.querySelector('[data-testid="float-over-rail"]');
+    const toast = el.querySelector(".fo");
+    expect(rail).not.toBeNull();
+    expect(toast?.classList.contains("is-paused")).toBe(false);
+
+    await act(async () => {
+      rail?.dispatchEvent(
+        new MouseEvent("mouseover", { bubbles: true, relatedTarget: document.body })
+      );
+    });
+    expect(toast?.classList.contains("is-paused")).toBe(true);
+
+    // Windows can omit the rail's React mouseleave when the pointer crosses
+    // directly out of the transparent BrowserWindow. The native window exit
+    // still arrives as mouseout with no related target.
+    await act(async () => {
+      window.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: null }));
+    });
+    expect(toast?.classList.contains("is-paused")).toBe(false);
+
+    await advance(8_000);
+    expect(api.calls("float-over:dismiss")).toEqual([{}]);
+  });
+
   test("the see-through area beside the rail lets clicks through, the rail and toast do not", async () => {
     const api = installHostApi();
     const el = await mountHost();

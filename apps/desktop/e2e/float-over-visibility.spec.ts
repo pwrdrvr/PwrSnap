@@ -33,6 +33,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
+import { popoverWidthDip } from "@pwrsnap/shared";
 
 const isMac = process.platform === "darwin";
 
@@ -284,7 +285,16 @@ test.describe("float-over visibility", () => {
       expect(info.zoomFactor).not.toBeNull();
       expect(info.wrapperCssHeight).not.toBeNull();
       expect(info.toastCssHeight).not.toBeNull();
-      expect(info.contentSize!.width).toBe(392);
+      const workArea = await app.electronApp.evaluate(({ screen }) =>
+        screen.getPrimaryDisplay().workArea
+      );
+      expect(info.contentSize!.width).toBe(
+        popoverWidthDip({
+          kind: "float-over",
+          workAreaWidthDip: workArea.width,
+          workAreaHeightDip: workArea.height
+        })
+      );
 
       const expectedDip = Math.ceil(info.toastCssHeight! * info.zoomFactor!);
       expect(info.contentSize!.height).toBeGreaterThanOrEqual(expectedDip - 2);

@@ -44,6 +44,7 @@ import {
   DEFAULT_HOTKEYS,
   normalizeAccelerator,
   shortcutPlatformFromString,
+  TRAY_WIDTH_REGULAR_DIP,
   type HotkeyRegistrationStatusSnapshot,
   type HotkeySettingKey,
   type RecordingState,
@@ -149,12 +150,10 @@ const TRAY_RESIZE_CHANNEL = "tray:resize";
  *  push off-screen — Electron clamps to workArea automatically. */
 const TRAY_HEIGHT_MIN = 200;
 const TRAY_HEIGHT_MAX = 1040;
-/** Window width is fixed by the design — must match `.ps-tray { width }`
-    in library.css. Bumped from 380 → 440 because the 2-column mode
-    grid (Region/Window, Full/All, Timed) was clipping the right column
-    at 380, especially with multi-key shortcuts like ⌘⇧F that need 56px
-    just for the kbds. */
-const TRAY_WIDTH = 440;
+/** Largest tray width. The renderer may request the shared compact width
+    on a low-resolution work area, but no renderer message may expand the
+    BrowserWindow past the regular design width. */
+const TRAY_WIDTH = TRAY_WIDTH_REGULAR_DIP;
 
 let tray: Tray | null = null;
 let trayWindow: BrowserWindow | null = null;
@@ -164,10 +163,15 @@ let trayWindow: BrowserWindow | null = null;
  * every platform: under some scaled Windows displays it can keep
  * reporting the 440px constructor frame after the renderer viewport and
  * capturePage surface have correctly shrunk to 302px. Keep the renderer's
- * requested DIP height as the resize/readiness contract; E2E additionally
- * reads `innerHeight` to prove the compositor actually received it.
+ * requested DIP size as the resize/readiness contract; E2E additionally
+ * reads the renderer viewport to prove the compositor actually received it.
  */
-let lastTrayResizeRequest: { cssHeight: number; dipHeight: number } | null = null;
+let lastTrayResizeRequest: {
+  cssWidth: number;
+  cssHeight: number;
+  dipWidth: number;
+  dipHeight: number;
+} | null = null;
 let pendingDismiss: ReturnType<typeof setTimeout> | null = null;
 /**
  * Signature of the menu template currently exported to the Linux SNI host,
@@ -501,9 +505,20 @@ function wireTrayResizeChannel(): void {
     // shorter than the rendered content needs and the popover
     // visibly clips.
     const zoom = trayWindow.webContents.zoomFactor;
+    const rawWidth = (payload as { width?: unknown }).width;
+    const requestedWidthCss =
+      typeof rawWidth === "number" && Number.isFinite(rawWidth) && rawWidth > 0
+        ? rawWidth
+        : TRAY_WIDTH;
+    const widthDip = Math.max(1, Math.min(TRAY_WIDTH, Math.ceil(requestedWidthCss * zoom)));
     const requestedDip = Math.ceil(requestedCss * zoom);
     const clamped = Math.max(TRAY_HEIGHT_MIN, Math.min(TRAY_HEIGHT_MAX, requestedDip));
-    if (lastTrayResizeRequest?.dipHeight === clamped) return;
+    if (
+      lastTrayResizeRequest?.dipWidth === widthDip &&
+      lastTrayResizeRequest.dipHeight === clamped
+    ) {
+      return;
+    }
     // Belt-and-braces: every resize call lifts the implicit minimum
     // size first. The createTrayWindow call already does this once on
     // first construction, but if anything later re-asserts a min size
@@ -511,8 +526,13 @@ function wireTrayResizeChannel(): void {
     // wrapper, etc.) the resize would silently clamp again. Cheap to
     // re-call — Electron coalesces same-value setMinimumSize calls.
     trayWindow.setMinimumSize(0, 0);
-    trayWindow.setContentSize(TRAY_WIDTH, clamped, false);
-    lastTrayResizeRequest = { cssHeight: requestedCss, dipHeight: clamped };
+    trayWindow.setContentSize(widthDip, clamped, false);
+    lastTrayResizeRequest = {
+      cssWidth: requestedWidthCss,
+      cssHeight: requestedCss,
+      dipWidth: widthDip,
+      dipHeight: clamped
+    };
     // Linux re-places itself: `tray.getBounds()` is `@platform darwin,win32`
     // and measured `{0,0,0,0}` there, so feeding it to `positionTrayWindow`
     // would anchor the popover to the top-left corner of the primary display

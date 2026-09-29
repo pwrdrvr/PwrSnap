@@ -2076,6 +2076,14 @@ describe("float-over scroll cap", () => {
     return Number.parseInt(raw, 10);
   }
 
+  function publishedWidthPx(el: HTMLElement): number {
+    const wrapper = el.querySelector<HTMLElement>(".fo-host > .fo-host__measure");
+    expect(wrapper).not.toBeNull();
+    const raw = wrapper!.style.getPropertyValue("--fo-w");
+    expect(raw).toMatch(/^\d+px$/);
+    return Number.parseInt(raw, 10);
+  }
+
   test("the header and footer sit OUTSIDE the scrolling middle", async () => {
     // The whole point: `.fo__body` is what overflows, so the row with
     // Discard / Dismiss / Edit stays in the window main sizes. If the
@@ -2178,6 +2186,36 @@ describe("float-over scroll cap", () => {
       expect(window.pwrsnapApi?.getZoomFactor).toBeUndefined();
       const el = await renderHostRecord(api);
       expect(publishedCapPx(el)).toBe(800);
+    } finally {
+      for (const undo of restore.reverse()) undo();
+    }
+  });
+
+  test("a low-resolution work area publishes the compact width independent of viewport size", async () => {
+    const restore = [
+      stub(window.screen, "availWidth", 526),
+      stub(window.screen, "availHeight", 690),
+      stub(window, "innerWidth", 2000),
+      stub(window, "innerHeight", 2000)
+    ];
+    try {
+      const api = installHostApi();
+      const el = await renderHostRecord(api);
+      const wrapper = el.querySelector<HTMLElement>(".fo-host > .fo-host__measure");
+      expect(publishedWidthPx(el)).toBe(320);
+      expect(wrapper?.dataset.popoverDensity).toBe("compact");
+
+      restore.push(stub(window, "innerWidth", 120));
+      restore.push(stub(window, "innerHeight", 120));
+      await act(async () => {
+        api.pushEvent(EVENT_CHANNELS.floatOverState, {
+          kind: "show-loaded",
+          captureId: imageRecord.id,
+          record: imageRecord
+        });
+        await Promise.resolve();
+      });
+      expect(publishedWidthPx(el)).toBe(320);
     } finally {
       for (const undo of restore.reverse()) undo();
     }

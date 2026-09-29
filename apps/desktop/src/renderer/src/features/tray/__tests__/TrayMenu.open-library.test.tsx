@@ -92,8 +92,10 @@ function installTrayApi(
   status?: HotkeyRegistrationStatusSnapshot
 ): {
   calls: string[];
+  resize: ReturnType<typeof vi.fn>;
 } {
   const calls: string[] = [];
+  const resize = vi.fn();
   const merged: Settings["hotkeys"] = { ...DEFAULT_HOTKEYS, ...hotkeys };
   window.pwrsnapApi = {
     // The tooltip renders through `acceleratorToDisplayKeys`, which is
@@ -113,10 +115,10 @@ function installTrayApi(
       return { ok: true, value: undefined };
     }),
     on: (_channel: string, _handler: EventHandler) => () => undefined,
-    requestTrayResize: vi.fn(),
+    requestTrayResize: resize,
     startCaptureDrag: vi.fn()
   } as unknown as NonNullable<Window["pwrsnapApi"]>;
-  return { calls };
+  return { calls, resize };
 }
 
 async function renderTray(): Promise<HTMLDivElement> {
@@ -151,6 +153,26 @@ afterEach(() => {
 });
 
 describe("TrayMenu — Open Library button", () => {
+  test("publishes the compact width on a low-resolution work area", async () => {
+    const originalWidth = Object.getOwnPropertyDescriptor(window.screen, "availWidth");
+    const originalHeight = Object.getOwnPropertyDescriptor(window.screen, "availHeight");
+    Object.defineProperty(window.screen, "availWidth", { configurable: true, value: 526 });
+    Object.defineProperty(window.screen, "availHeight", { configurable: true, value: 690 });
+    try {
+      const { resize } = installTrayApi({ openLibrary: "" });
+      const el = await renderTray();
+      const wrapper = el.firstElementChild as HTMLElement | null;
+      expect(wrapper?.dataset.popoverDensity).toBe("compact");
+      expect(wrapper?.style.width).toBe("360px");
+      expect(resize).toHaveBeenCalledWith(expect.objectContaining({ width: 360 }));
+    } finally {
+      if (originalWidth === undefined) delete (window.screen as unknown as Record<string, unknown>).availWidth;
+      else Object.defineProperty(window.screen, "availWidth", originalWidth);
+      if (originalHeight === undefined) delete (window.screen as unknown as Record<string, unknown>).availHeight;
+      else Object.defineProperty(window.screen, "availHeight", originalHeight);
+    }
+  });
+
   // Self-pin the invariant the rest of this file assumes. `installTrayApi`
   // spreads DEFAULT_HOTKEYS, so without this a flip of the shipped default
   // to a real chord would leave all three tests green while the tray went

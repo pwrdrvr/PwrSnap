@@ -1938,6 +1938,19 @@ container itself.** And past the main-side ceiling the float-over
 scrolls rather than letting the window clip it — see
 §"Past the ceiling, the float-over SCROLLS" below.
 
+Width is display-responsive, but it is not viewport-responsive. The shared
+policy in [popover-sizing.ts](packages/shared/src/popover-sizing.ts) chooses a
+compact profile when the shortest work-area dimension is at most 800 DIP:
+tray 360 DIP (regular 440), float-over toast 320 DIP (regular 392). It also
+fits either width inside unusually narrow work areas. The recent rail is
+omitted below 700 DIP of work-area width. Renderer inputs are
+`window.screen.availWidth/availHeight`; main receives the measured CSS width,
+converts it through the webContents zoom factor, and calls `setContentSize`.
+Never key this policy to `innerWidth`, `innerHeight`, CSS viewport units, or
+display scale factor: the first three are the BrowserWindow being resized and
+create a feedback loop, while scale factor says nothing about usable logical
+space.
+
 Implementations:
 
 - Tray: [TrayMenu.tsx](apps/desktop/src/renderer/src/features/tray/TrayMenu.tsx)
@@ -1977,7 +1990,10 @@ useLayoutEffect(() => {
 }, []);
 
 return (
-  <div ref={containerRef} style={{ display: "inline-block", width: "100%" }}>
+  <div
+    ref={containerRef}
+    style={{ display: "inline-block", width: `${displayPolicyWidthCss}px` }}
+  >
     <div className="ps-tray">{/* or .fo */}…</div>
   </div>
 );

@@ -160,6 +160,9 @@
    footer. A 2:1 slot buys back 46px. Still a layout slot, not a crop:
    HoverAutoplayVideo is `object-fit: contain`, so a 16:10 take pillarboxes. */
 .fo__preview--video { aspect-ratio: 2 / 1; }
+/* Low-resolution work areas trade preview height for room to reach the
+   metadata and actions. The image remains contained at its true ratio. */
+[data-popover-density="compact"] .fo__preview { aspect-ratio: 2 / 1; }
 /* `contain` so the user recognizes their capture at its true aspect
    ratio. The 16:10 frame is just a layout slot — a tiny region
    capture should look tiny, not zoomed-to-fill. */

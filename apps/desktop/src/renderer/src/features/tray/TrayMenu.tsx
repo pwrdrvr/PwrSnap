@@ -3,6 +3,8 @@ import {
   canStartRecordingAttempt,
   desktopFileManagerName,
   EVENT_CHANNELS,
+  popoverDensityForWorkArea,
+  popoverWidthCss,
   type CaptureInvocationOrigin,
   type CaptureRecord,
   type HotkeyRegistrationStatusSnapshot,
@@ -42,6 +44,22 @@ function fmtTrayDuration(seconds: number): string {
 }
 
 type ModeKind = "auto" | "region" | "window" | "full" | "all" | "timed";
+
+function trayPopoverLayout(): { density: "regular" | "compact"; widthCss: number } {
+  const widthDip =
+    typeof window.screen?.availWidth === "number" ? window.screen.availWidth : null;
+  const heightDip =
+    typeof window.screen?.availHeight === "number" ? window.screen.availHeight : null;
+  return {
+    density: popoverDensityForWorkArea({ widthDip, heightDip }),
+    widthCss: popoverWidthCss({
+      kind: "tray",
+      workAreaWidthDip: widthDip,
+      workAreaHeightDip: heightDip,
+      zoomFactor: window.pwrsnapApi?.getZoomFactor?.() ?? 1
+    })
+  };
+}
 
 /** The explicit-mode grid. `auto` (Quick Capture) and video both live
  *  above the grid as prominent headline buttons; the grid holds the
@@ -367,11 +385,15 @@ export function TrayMenu() {
   // pattern rather than raising the ceiling again — and do NOT derive
   // the cap from the window's own size (see FloatOverHost.tsx).
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const initialLayout = trayPopoverLayout();
   useLayoutEffect(() => {
     const el = containerRef.current;
     if (el === null) return;
     let posted = -1;
     const post = (force = false): void => {
+      const layout = trayPopoverLayout();
+      el.dataset.popoverDensity = layout.density;
+      el.style.width = `${layout.widthCss}px`;
       const rect = el.getBoundingClientRect();
       const target = Math.ceil(rect.height);
       if (!force && target === posted) return;
@@ -388,7 +410,10 @@ export function TrayMenu() {
       // observer didn't re-fire and the popover got stuck at its
       // 440×440 constructor frame. Calling the preload API directly
       // removes the race entirely.
-      window.pwrsnapApi?.requestTrayResize?.({ width: 440, height: target });
+      window.pwrsnapApi?.requestTrayResize?.({
+        width: layout.widthCss,
+        height: target
+      });
     };
     post();
     const ro = new ResizeObserver(() => post());
@@ -482,7 +507,11 @@ export function TrayMenu() {
   });
 
   return (
-    <div ref={containerRef} style={{ display: "inline-block", width: "100%" }}>
+    <div
+      ref={containerRef}
+      data-popover-density={initialLayout.density}
+      style={{ display: "inline-block", width: `${initialLayout.widthCss}px` }}
+    >
     <div className="ps-tray">
       <div className="ps-tray__hdr">
         <div className="ps-tray__brand">

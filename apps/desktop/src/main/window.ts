@@ -8,6 +8,8 @@ import {
 import { join } from "node:path";
 import {
   EVENT_CHANNELS,
+  FLOAT_OVER_WIDTH_REGULAR_DIP,
+  TRAY_WIDTH_REGULAR_DIP,
   type AppDocumentKind,
   type HotCpuProfileTarget,
   type Settings
@@ -1515,11 +1517,9 @@ export function createTrayWindow(): BrowserWindow {
       : ({ transparent: true } as const);
   const window = new BrowserWindow({
     ...macChrome,
-    // Width must match TRAY_WIDTH in tray.ts. The renderer's
-    // ResizeObserver only updates HEIGHT — width stays at whatever
-    // the BrowserWindow was constructed with, so a stale value here
-    // silently clips the right column of the mode grid.
-    width: 440,
+    // Regular-width fallback until the renderer publishes the profile for
+    // this display. The resize channel may shrink it to the compact width.
+    width: TRAY_WIDTH_REGULAR_DIP,
     // See `trayPopoverConstructedHeight` — 440 everywhere the renderer's
     // ResizeObserver is trusted to correct it, taller on Linux where it
     // might not be able to.
@@ -1636,7 +1636,7 @@ export function positionTrayWindow(window: BrowserWindow, trayBounds: Rectangle)
 export function createFloatOverWindow(): BrowserWindow {
   // Sized to fit the standard variant of the toast until the renderer's
   // ResizeObserver posts the exact content height.
-  const width = 392;
+  const width = FLOAT_OVER_WIDTH_REGULAR_DIP;
   const height = 700;
 
   // `type: 'panel'` — same rationale as the tray. The float-over is

@@ -9,12 +9,35 @@ corepack enable
 pnpm install
 '''
 
+[setup.win32]
+script = '''
+$ErrorActionPreference = "Stop"
+$nodeVersion = (Get-Content -LiteralPath .nvmrc -Raw -ErrorAction Stop).Trim().TrimStart('v')
+nvm install $nodeVersion
+if ($LASTEXITCODE -ne 0) { throw "nvm install failed" }
+$nodeDir = Join-Path $env:NVM_HOME "v$nodeVersion"
+if (-not (Test-Path -LiteralPath (Join-Path $nodeDir 'node.exe') -PathType Leaf)) { throw "Node $nodeVersion is missing from nvm" }
+$env:Path = "$nodeDir;$env:Path"
+corepack.cmd enable
+if ($LASTEXITCODE -ne 0) { throw "corepack enable failed" }
+pnpm.cmd install
+if ($LASTEXITCODE -ne 0) { throw "pnpm install failed" }
+'''
+
 [cleanup]
 script = "rm -rf node_modules"
+
+[cleanup.win32]
+script = '''
+if (Test-Path -LiteralPath node_modules) {
+  Remove-Item -LiteralPath node_modules -Recurse -Force -ErrorAction Stop
+}
+'''
 
 [[actions]]
 name = "Dev"
 icon = "run"
+platform = "darwin"
 command = '''
 nvm use --silent
 corepack enable
@@ -22,8 +45,37 @@ pnpm dev
 '''
 
 [[actions]]
+name = "Dev"
+icon = "run"
+platform = "linux"
+command = '''
+nvm use --silent
+corepack enable
+pnpm dev
+'''
+
+[[actions]]
+name = "Dev"
+icon = "run"
+platform = "win32"
+command = '''
+powershell.exe -NoProfile -Command {
+  $ErrorActionPreference = "Stop"
+  $nodeVersion = (Get-Content -LiteralPath .nvmrc -Raw -ErrorAction Stop).Trim().TrimStart('v')
+  $nodeDir = Join-Path $env:NVM_HOME "v$nodeVersion"
+  if (-not (Test-Path -LiteralPath (Join-Path $nodeDir 'node.exe') -PathType Leaf)) { throw "Node $nodeVersion is missing from nvm; run environment setup" }
+  $env:Path = "$nodeDir;$env:Path"
+  corepack.cmd enable
+  if ($LASTEXITCODE -ne 0) { throw "corepack enable failed" }
+  pnpm.cmd dev
+  exit $LASTEXITCODE
+}
+'''
+
+[[actions]]
 name = "Package"
 icon = "run"
+platform = "darwin"
 command = '''
 nvm use --silent
 corepack enable
@@ -31,8 +83,27 @@ pnpm --filter @pwrsnap/desktop package --dryrun
 '''
 
 [[actions]]
+name = "Package"
+icon = "run"
+platform = "win32"
+command = '''
+powershell.exe -NoProfile -Command {
+  $ErrorActionPreference = "Stop"
+  $nodeVersion = (Get-Content -LiteralPath .nvmrc -Raw -ErrorAction Stop).Trim().TrimStart('v')
+  $nodeDir = Join-Path $env:NVM_HOME "v$nodeVersion"
+  if (-not (Test-Path -LiteralPath (Join-Path $nodeDir 'node.exe') -PathType Leaf)) { throw "Node $nodeVersion is missing from nvm; run environment setup" }
+  $env:Path = "$nodeDir;$env:Path"
+  corepack.cmd enable
+  if ($LASTEXITCODE -ne 0) { throw "corepack enable failed" }
+  pnpm.cmd --filter @pwrsnap/desktop package:win
+  exit $LASTEXITCODE
+}
+'''
+
+[[actions]]
 name = "Reset TCC"
 icon = "run"
+platform = "darwin"
 command = '''
 tccutil reset SystemPolicyDocumentsFolder com.pwrdrvr.pwrsnap && tccutil reset ScreenCapture com.pwrdrvr.pwrsnap
 '''
@@ -40,6 +111,7 @@ tccutil reset SystemPolicyDocumentsFolder com.pwrdrvr.pwrsnap && tccutil reset S
 [[actions]]
 name = "Dev - First Time"
 icon = "run"
+platform = "darwin"
 command = '''
 first_run_id="$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p .local
@@ -51,6 +123,7 @@ PWRSNAP_USER_DATA="/tmp/pwrsnap-firstrun-$first_run_id" open -n apps/desktop/rel
 [[actions]]
 name = "Dev - First Time Re-Run"
 icon = "run"
+platform = "darwin"
 command = '''
 if [ ! -f .local/first-run ]; then
   echo "Missing .local/first-run; run Dev - First Time first." >&2

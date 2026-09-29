@@ -13,8 +13,7 @@
 import type { ReactElement } from "react";
 import {
   SIZZLE_TRANSITIONS,
-  sizzleMediaSpans,
-  sizzleMediaSpansDurationSec,
+  sizzleLibraryCutSummary,
   sizzleTransitionDurationSec,
   sizzleTransitionType,
   sizzleUsesCaptureCuts,
@@ -403,11 +402,10 @@ function LibraryCutsField({
   const video = capture?.kind === "video" ? capture.video ?? null : null;
   if (video === null) return null;
   const trim = beat.mediaTrim ?? { startSec: video.defaultRange.start, endSec: video.defaultRange.end };
-  const withCuts = sizzleMediaSpans({ trim, segments: video.segments, useCaptureCuts: true });
-  if (withCuts.length < 2) return null;
+  const summary = sizzleLibraryCutSummary(trim, video.segments);
+  if (summary === null) return null;
+  const { removedSec, cutCount } = summary;
   const skipping = sizzleUsesCaptureCuts(beat);
-  const cutCount = withCuts.length - 1;
-  const removedSec = trim.endSec - trim.startSec - sizzleMediaSpansDurationSec(withCuts);
   const cuts = `${cutCount} cut${cutCount === 1 ? "" : "s"}`;
   return (
     <div className="szl__insp-field">

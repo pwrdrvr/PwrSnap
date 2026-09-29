@@ -16,7 +16,7 @@ import type {
 } from "@pwrsnap/shared";
 import {
   normalizeVideoSegments,
-  videoSegmentsOrFull,
+  VIDEO_SEGMENTS_MAX,
   videoSegmentsOuterRange,
   withVideoOuterRange
 } from "@pwrsnap/shared";
@@ -239,10 +239,8 @@ export function setDefaultRange(captureId: string, range: VideoRange): VideoRang
  * there is more than one span — the span list. Returns the edit as
  * stored, or `null` when the capture is not a video.
  *
- * An edit that normalizes to nothing stores the whole clip: the bus
- * rejects empty edits before they get here, so reaching this means the
- * input was all junk, and the whole clip is the one edit that can
- * never lose footage.
+ * Reject empty or overflowing edits before writing. The bus returns a
+ * validation error first; this guard also protects other internal callers.
  */
 export function setVideoSegments(
   captureId: string,
@@ -253,7 +251,10 @@ export function setVideoSegments(
     .prepare("SELECT duration_sec FROM video_captures WHERE capture_id = ?")
     .get(captureId) as { duration_sec: number } | undefined;
   if (row === undefined) return null;
-  const normalized = videoSegmentsOrFull(segments, row.duration_sec);
+  const normalized = normalizeVideoSegments(segments, row.duration_sec);
+  if (normalized.length === 0 || normalized.length > VIDEO_SEGMENTS_MAX) {
+    throw new Error(`Video edit must keep 1–${VIDEO_SEGMENTS_MAX} spans`);
+  }
   const outer = videoSegmentsOuterRange(normalized);
   db.prepare(
     `UPDATE video_captures

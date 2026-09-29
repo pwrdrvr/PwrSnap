@@ -142,6 +142,12 @@ describe("video:presetMetrics", () => {
     mocks.readRecordingSettings.mockClear();
   });
 
+  test("rejects explicit segments with no surviving footage before cache lookup", async () => {
+    const result = await bus.dispatch("video:presetMetrics", { captureId: "video-metrics", segments: [{ start: 100, end: 101 }] }, { principal: "ipc" });
+    expect(result).toMatchObject({ ok: false, error: { kind: "validation", code: "invalid_segments" } });
+    expect(mocks.lookupExport).not.toHaveBeenCalled();
+  });
+
   // 192 kbps AAC over the 3 s take = 72,000 bytes on top of the video.
   test("the MP4 estimate counts the AAC track only when the choice keeps one", async () => {
     mocks.capture = withAudio(videoCapture());

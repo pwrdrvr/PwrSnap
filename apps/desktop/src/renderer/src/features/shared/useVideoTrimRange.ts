@@ -38,6 +38,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   normalizeVideoSegments,
+  VIDEO_SEGMENTS_MAX,
   videoSegmentsEqual,
   videoSegmentsOrFull,
   videoSegmentsOuterRange,
@@ -54,6 +55,7 @@ export const PERSIST_DEBOUNCE_MS = 150;
 export const TRIM_HISTORY_LIMIT = 100;
 
 export type UseVideoTrimRange = {
+  editError?: string | null;
   /** Outer range — first kept start → last kept end. */
   range: VideoRange;
   /** Kept spans in source seconds. Always at least one. */
@@ -117,6 +119,7 @@ export function useVideoTrimRange(input: UseVideoTrimRangeInput): UseVideoTrimRa
     seedSegments(persistedRange, persistedSegments, durationSec)
   );
   const [pending, setPending] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
   const [history, setHistory] = useState({ canUndo: false, canRedo: false });
 
   const localRef = useRef(segments);
@@ -169,6 +172,7 @@ export function useVideoTrimRange(input: UseVideoTrimRangeInput): UseVideoTrimRa
     pastRef.current = [];
     futureRef.current = [];
     setPending(false);
+    setEditError(null);
     syncHistory();
     const seed = seedSegments(persistedRange, persistedSegments, durationSec);
     // Keep the current array when nothing changed (the mount pass), so
@@ -256,6 +260,13 @@ export function useVideoTrimRange(input: UseVideoTrimRangeInput): UseVideoTrimRa
   const setSegments = useCallback(
     (next: readonly VideoRange[], commitNow: boolean): void => {
       const normalized = normalizeVideoSegments(next, durationSec);
+      if (normalized.length > VIDEO_SEGMENTS_MAX) {
+        setEditError(`This edit would exceed ${VIDEO_SEGMENTS_MAX} kept spans. Join splits or make fewer cuts.`);
+        draggingRef.current = false;
+        setLocalBoth(committedRef.current);
+        return;
+      }
+      setEditError(null);
       if (normalized.length === 0) return;
       if (!commitNow) {
         draggingRef.current = true;
@@ -301,6 +312,7 @@ export function useVideoTrimRange(input: UseVideoTrimRangeInput): UseVideoTrimRa
   const exportSegments = useMemo(() => exportSegmentsOf(segments), [segments]);
 
   return {
+    editError,
     range,
     segments,
     exportSegments,

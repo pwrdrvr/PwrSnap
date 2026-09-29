@@ -12,6 +12,8 @@ const mocks = vi.hoisted(() => ({
   segments: [] as VideoRange[],
   broadcasts: [] as string[][],
   activity: null as null | { sampleHz: number; magnitudes: number[] },
+  activityWait: null as Promise<void> | null,
+  duration: 20,
   activityError: null as Error | null
 }));
 
@@ -49,7 +51,7 @@ function capture(): CaptureRecord {
     has_alpha: false,
     deleted_at: null,
     video: {
-      durationSec: DURATION,
+      durationSec: mocks.duration,
       containerFormat: "mp4",
       hasSystemAudio: false,
       hasMicrophoneAudio: false,
@@ -73,7 +75,7 @@ vi.mock("../../persistence/video-repo", () => ({
   normalizeRange: (range: VideoRange) => range,
   setDefaultRange: () => undefined,
   setVideoSegments: (_id: string, next: VideoRange[]) => {
-    mocks.segments = videoSegmentsOrFull(next, DURATION);
+    mocks.segments = videoSegmentsOrFull(next, mocks.duration);
     return mocks.segments;
   }
 }));
@@ -87,6 +89,7 @@ vi.mock("../../events", async (importOriginal) => ({
 
 vi.mock("../../recording/video-activity", () => ({
   ensureVideoActivity: async () => {
+    if (mocks.activityWait) await mocks.activityWait;
     if (mocks.activityError !== null) throw mocks.activityError;
     return { track: mocks.activity, width: 192, height: 108 };
   }
@@ -121,6 +124,8 @@ beforeEach(() => {
   mocks.broadcasts = [];
   mocks.activity = track();
   mocks.activityError = null;
+  mocks.activityWait = null;
+  mocks.duration = DURATION;
 });
 
 describe("video:edit", () => {
@@ -236,4 +241,36 @@ describe("video:inspect", () => {
     expect(result.value.activityError).toContain("ffmpeg");
     expect(result.value.segments).toEqual([{ start: 0, end: DURATION }]);
   });
+});
+
+test.each([false, true])("cutStill preserves an edit made during analysis (no cuts: %s)", async (noCuts) => {
+  let release!: () => void;
+  mocks.activityWait = new Promise<void>((resolve) => { release = resolve; });
+  if (noCuts) mocks.activity = { sampleHz: 5, magnitudes: Array(100).fill(encodeActivityMagnitude(0.5)) };
+  const pending = bus.dispatch("video:edit", { captureId: "vid", cutStill: {} }, ipc);
+  await bus.dispatch("video:edit", { captureId: "vid", keep: [{ start: 1, end: 12 }] }, ipc);
+  release();
+  const result = await pending;
+  expect(result.ok).toBe(true);
+  expect(mocks.segments).toEqual(noCuts ? [{ start: 1, end: 12 }] : [{ start: 1, end: 2.5 }, { start: 9.5, end: 11.5 }]);
+});
+
+test("cut rejects overflowing edits without dropping the final kept span", async () => {
+  mocks.duration = 1000;
+  const original = Array.from({ length: 200 }, (_, i) => ({ start: i * 4, end: i * 4 + 3 }));
+  mocks.segments = original;
+  const result = await bus.dispatch("video:edit", { captureId: "vid", cut: [{ start: 1, end: 2 }] }, ipc);
+  expect(result).toMatchObject({ ok: false, error: { kind: "validation", code: "invalid_segments" } });
+  expect(mocks.segments).toEqual(original);
+  expect(mocks.broadcasts).toEqual([]);
+});
+
+test("cutStill rejects more than 200 survivors without saving a partial edit", async () => {
+  mocks.duration = 1000;
+  mocks.segments = [{ start: 0, end: 1000 }];
+  mocks.activity = { sampleHz: 1, magnitudes: Array.from({ length: 1000 }, (_, i) => i % 4 === 0 ? encodeActivityMagnitude(0.5) : 0) };
+  const result = await bus.dispatch("video:edit", { captureId: "vid", cutStill: { minStillSec: 1, paddingSec: 0 } }, ipc);
+  expect(result).toMatchObject({ ok: false, error: { code: "invalid_segments" } });
+  expect(mocks.segments).toEqual([{ start: 0, end: 1000 }]);
+  expect(mocks.broadcasts).toEqual([]);
 });

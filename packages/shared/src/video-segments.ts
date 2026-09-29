@@ -58,7 +58,8 @@ function clampSec(sec: number, durationSec: number): number {
 /**
  * Canonical form: finite, clamped to `[0, duration]`, sorted, overlaps
  * merged, near-touching boundaries snapped to exactly equal, spans
- * shorter than the minimum dropped, at most `VIDEO_SEGMENTS_MAX` spans.
+ * shorter than the minimum dropped. Never truncates kept footage; writers
+ * enforce `VIDEO_SEGMENTS_MAX` before accepting an edit.
  *
  * May return `[]` — callers decide whether an empty edit is an error
  * (the bus) or means "the whole clip" (`videoSegmentsOrFull`).
@@ -91,7 +92,7 @@ export function normalizeVideoSegments(
     }
     out.push({ start: seg.start, end: seg.end });
   }
-  return out.filter((s) => s.end - s.start >= min - 1e-9).slice(0, VIDEO_SEGMENTS_MAX);
+  return out.filter((s) => s.end - s.start >= min - 1e-9);
 }
 
 /** The normalized edit, or the whole clip when nothing survives. */

@@ -3,8 +3,8 @@
 // distinct user-facing strings; this file locks the shape so
 // rephrasing the messages stays a deliberate code change.
 
-import { describe, expect, test } from "vitest";
-import { mapVideoResolveError } from "../video-export-resolver";
+import { describe, expect, test, vi } from "vitest";
+import { resolveVideoExport, mapVideoResolveError } from "../video-export-resolver";
 
 describe("mapVideoResolveError", () => {
   test("not_found error includes verb + captureId in message", () => {
@@ -75,4 +75,16 @@ describe("mapVideoResolveError", () => {
       expect(out.kind).toBe("validation");
     }
   });
+});
+
+vi.mock("../../persistence/captures-repo", () => ({
+  getCaptureById: () => ({ id: "vid", kind: "video", deleted_at: null, video: { durationSec: 10, segments: [{ start: 0, end: 10 }] } })
+}));
+const exporter = vi.hoisted(() => vi.fn());
+vi.mock("../recording-exporter", () => ({ exportVideoRange: exporter }));
+test("clipboard/drag resolver refuses empty normalized segments before encoding", async () => {
+  const result = await resolveVideoExport({ captureId: "vid", format: "mp4", preset: "med", segments: [{ start: 100, end: 101 }] });
+  expect(result).toMatchObject({ ok: false, error: { kind: "invalid_segments" } });
+  expect(exporter).not.toHaveBeenCalled();
+  if (!result.ok) expect(mapVideoResolveError(result.error, "clipboard:copyVideoFile", "vid")).toMatchObject({ kind: "validation", code: "invalid_segments" });
 });

@@ -5,6 +5,11 @@
 
 import type { VideoCaptureMetadata, VideoRange } from "@pwrsnap/shared";
 import {
+  ok,
+  err,
+  normalizeVideoSegments,
+  type Result,
+  type PwrSnapError,
   videoExportSpans,
   videoSegmentsOrFull,
   videoSegmentsOuterRange
@@ -19,10 +24,17 @@ import {
 export function resolveVideoExportSpans(
   video: VideoCaptureMetadata,
   request: { range?: VideoRange | undefined; segments?: readonly VideoRange[] | undefined }
-): { range: VideoRange; spans: VideoRange[] } {
+): Result<{ range: VideoRange; spans: VideoRange[] }, PwrSnapError> {
   let spans: VideoRange[];
   if (request.segments !== undefined) {
-    spans = videoExportSpans(videoSegmentsOrFull(request.segments, video.durationSec));
+    spans = videoExportSpans(normalizeVideoSegments(request.segments, video.durationSec));
+    if (spans.length === 0) {
+      return err({
+        kind: "validation",
+        code: "invalid_segments",
+        message: "Nothing to export: every requested span is outside the recording or shorter than 0.1 seconds."
+      });
+    }
   } else if (request.range !== undefined) {
     // Same clamp as `normalizeRange` in video-repo: keeps a valid
     // float verbatim, so the single-range cache key is unchanged.
@@ -32,5 +44,5 @@ export function resolveVideoExportSpans(
   } else {
     spans = videoExportSpans(videoSegmentsOrFull(video.segments, video.durationSec));
   }
-  return { range: videoSegmentsOuterRange(spans), spans };
+  return ok({ range: videoSegmentsOuterRange(spans), spans });
 }

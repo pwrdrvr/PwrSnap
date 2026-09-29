@@ -1,5 +1,5 @@
 import type { SizzleMediaTrim, VideoRange } from "./protocol";
-import { subtractVideoSpans, videoCuts, videoKeptDurationSec } from "./video-segments";
+import { VIDEO_SEGMENT_EPS_SEC, subtractVideoSpans, videoCuts, videoKeptDurationSec } from "./video-segments";
 
 export function normalizeVideoMediaTrim(args: {
   trim: SizzleMediaTrim | null;
@@ -87,6 +87,22 @@ export function sizzleMediaSpans(args: {
 }): VideoRange[] {
   const spans = uncappedMediaSpans(args);
   return args.maxSec === undefined ? spans : sizzleMediaSpansPrefix(spans, args.maxSec);
+}
+
+/** Cuts actually skipped inside this trim, including cuts touching either edge.
+ * Uses the playback fallback when a cut covers the entire window. */
+export function sizzleLibraryCutSummary(
+  trim: SizzleMediaTrim,
+  segments: readonly VideoRange[]
+): { keptSec: number; removedSec: number; cutCount: number } | null {
+  const spans = sizzleMediaSpans({ trim, segments, useCaptureCuts: true });
+  const keptSec = sizzleMediaSpansDurationSec(spans);
+  const removedSec = trim.endSec - trim.startSec - keptSec;
+  if (removedSec <= VIDEO_SEGMENT_EPS_SEC) return null;
+  const cutCount = spans.length - 1
+    + Number(spans[0]!.start > trim.startSec + VIDEO_SEGMENT_EPS_SEC)
+    + Number(spans[spans.length - 1]!.end < trim.endSec - VIDEO_SEGMENT_EPS_SEC);
+  return { keptSec, removedSec, cutCount };
 }
 
 function uncappedMediaSpans(args: {

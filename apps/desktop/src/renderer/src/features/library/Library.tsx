@@ -6463,6 +6463,7 @@ function CellRow({
                 <CartCellCheckbox captureId={record.id} />
               ) : null}
               <span className="psl__cell-time">{c.time}</span>
+              <div className="psl__cell-foot">
               <span className="psl__cell-app-overlay">
                 {isProject ? (
                   // Project cells get the project name as the corner
@@ -6574,6 +6575,7 @@ function CellRow({
                   </span>
                 ) : null}
               </span>
+              </div>
             </div>
           </div>
         );

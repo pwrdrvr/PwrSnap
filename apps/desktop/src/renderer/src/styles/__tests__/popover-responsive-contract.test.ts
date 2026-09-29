@@ -20,9 +20,41 @@ describe("compact popover styling", () => {
     expect(trayCss).toMatch(/\.ps-tray__last-preview img\s*\{[^}]*object-fit\s*:\s*contain/s);
   });
 
-  it("drops shortcut chips that compete with mode labels in the compact tray", () => {
+  it("drops the mode-row chords but keeps the headline chords in the compact tray", () => {
     expect(trayCss).toMatch(
-      /\[data-popover-density="compact"\]\s+\.ps-tray__quick-hk\s*,\s*\[data-popover-density="compact"\]\s+\.ps-mode__hk\s*\{[^}]*display\s*:\s*none/s
+      /\[data-popover-density="compact"\]\s+\.ps-mode__hk\s*\{[^}]*display\s*:\s*none/s
+    );
+    // Quick Capture and Record Video carry the chords a new user has, so the
+    // chip must never be hidden there.
+    expect(trayCss).not.toMatch(
+      /\[data-popover-density="compact"\][^{}]*\.ps-tray__quick-hk[^{}]*\{[^}]*display\s*:\s*none/s
+    );
+    // The chip rides the eyebrow row: a grid area, with the label column
+    // flattened so eyebrow and sub-line are items of the button.
+    expect(trayCss).toMatch(
+      /\[data-popover-density="compact"\]\s+\.ps-tray__quick-l\s*\{[^}]*display\s*:\s*contents/s
+    );
+    expect(trayCss).toMatch(
+      /\[data-popover-density="compact"\]\s+\.ps-tray__quick-hk\s*\{[^}]*grid-area\s*:\s*k/s
+    );
+  });
+
+  it("keeps the video toast's receipt to one line, and its Codex row reachable", () => {
+    expect(floatCss).toMatch(
+      /\[data-popover-density="compact"\]\s+\.fo__sources\s+\.ps-chip__name\s*\{[^}]*clip-path\s*:\s*inset\(50%\)/s
+    );
+    // Visually hidden, not display: none, so the chip keeps its name.
+    expect(floatCss).not.toMatch(
+      /\[data-popover-density="compact"\]\s+\.fo__sources\s+\.ps-chip__name\s*\{[^}]*display\s*:\s*none/s
+    );
+    expect(floatCss).toMatch(
+      /\[data-popover-density="compact"\]\s+\.fo__body\s*>\s*\.fo__ai-row\s*\{[^}]*position\s*:\s*sticky[^}]*bottom\s*:\s*0/s
+    );
+  });
+
+  it("wraps the AI-off call to action instead of truncating it", () => {
+    expect(floatCss).toMatch(
+      /\[data-popover-density="compact"\]\s+\.fo__ai-row\s+\.ps-codex-pill__summary\s*\{[^}]*-webkit-line-clamp\s*:\s*2/s
     );
   });
 });

@@ -492,8 +492,28 @@
   aspect-ratio: 16 / 10;
 }
 [data-popover-density="compact"] .ps-tray__last-preview { aspect-ratio: 2 / 1; }
-[data-popover-density="compact"] .ps-tray__quick-hk,
+/* The mode rows have no room for their chord next to an icon and a label,
+   and none of those chords is bound by default. */
 [data-popover-density="compact"] .ps-mode__hk { display: none; }
+/* Quick Capture and Record Video carry the chords a new user actually has, so
+   they keep them: the chip moves onto the eyebrow row and the sub-line takes
+   the full width beneath it. `display: contents` on the label column lets the
+   eyebrow and sub-line be grid items of the button itself. */
+[data-popover-density="compact"] .ps-tray__quick {
+  display: grid;
+  grid-template: "e k" auto "s s" auto / 1fr auto;
+  align-items: center;
+  column-gap: 10px;
+  row-gap: 3px;
+}
+[data-popover-density="compact"] .ps-tray__quick-l { display: contents; }
+[data-popover-density="compact"] .ps-tray__quick-eyebrow { grid-area: e; }
+[data-popover-density="compact"] .ps-tray__quick-hk { grid-area: k; }
+[data-popover-density="compact"] .ps-tray__quick-sub { grid-area: s; }
+[data-popover-density="compact"] .ps-tray__quick--video {
+  grid-template: "i e k" auto "i s s" auto / auto 1fr auto;
+}
+[data-popover-density="compact"] .ps-tray__quick--video .ps-tray__quick-icon { grid-area: i; }
 /* `contain` to match the library + float-over thumbnail policy —
    preserve the capture's true aspect ratio. */
 .ps-tray__last-preview img { width: 100%; height: 100%; object-fit: contain; display: block; }

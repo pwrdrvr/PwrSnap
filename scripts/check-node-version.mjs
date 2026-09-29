@@ -9,16 +9,24 @@ const nvmrcPath = resolve(repoRoot, ".nvmrc");
 const expected = readFileSync(nvmrcPath, "utf8").trim();
 const actual = process.version;
 const windowsNvmDir = `v${expected.slice(1)}`;
-const usePinnedNode = process.platform === "win32"
-  ? `Run: nvm install ${expected.slice(1)}; $env:Path = (Join-Path $env:NVM_HOME "${windowsNvmDir}") + ";" + $env:Path`
-  : "Run: source ~/.nvm/nvm.sh && nvm use";
+const recoverySteps = process.platform === "win32"
+  ? [
+      "Run from the repo root in PowerShell:",
+      `  nvm install ${expected.slice(1)}`,
+      `  $env:Path = (Join-Path $env:NVM_HOME "${windowsNvmDir}") + ";" + $env:Path`,
+      "  corepack.cmd enable",
+      "  pnpm.cmd install"
+    ]
+  : [
+      "Run: source ~/.nvm/nvm.sh && nvm use",
+      "Then re-run pnpm install from the repo root."
+    ];
 
 if (actual !== expected) {
   console.error(
     [
       `[check-node-version] expected Node ${expected} from .nvmrc, got ${actual}.`,
-      usePinnedNode,
-      "Then re-run pnpm install from the repo root."
+      ...recoverySteps
     ].join("\n")
   );
   process.exit(1);
@@ -37,7 +45,7 @@ if (process.platform !== "win32" && nvmExists && !isCi) {
         `[check-node-version] Node ${actual} is not running from nvm.`,
         `node path: ${nodePath}`,
         `nvm dir: ${normalizedNvmDir}`,
-        usePinnedNode
+        ...recoverySteps
       ].join("\n")
     );
     process.exit(1);

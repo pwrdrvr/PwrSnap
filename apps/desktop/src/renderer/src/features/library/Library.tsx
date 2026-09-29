@@ -369,10 +369,11 @@ const INITIAL_COPY_PULSES: Record<CopyPreset, number> = {
  * Per-cell cart checkbox. Self-subscribes to the cart via context so a
  * cart toggle re-renders ONLY the checkboxes, not the enclosing cells
  * (thumbnail, app tag, etc.) or the whole virtualized grid. Dispatches
- * `cart:toggle` directly. The hover-reveal, the corner scrim that makes
- * the unchecked box legible on light thumbnails, and the collected-cell
- * accent ring are pure CSS (`.psl__cell:hover .psl__cell-cart`,
- * `.psl__cell-cart::before`, `.psl__cell:has(.psl__cell-cart.is-checked)`).
+ * `cart:toggle` directly. The hover-reveal, the dark-fill + hairline ring
+ * (`--psl-ov-*`, shared with every other control drawn over the thumbnail)
+ * that keeps the unchecked box legible on any capture, and the
+ * collected-cell accent ring are pure CSS (`.psl__cell:hover .psl__cell-cart`,
+ * `.psl__cell:has(.psl__cell-cart.is-checked)`).
  * "Selection mode" — every box visible at rest once anything is checked —
  * rides `data-selecting` on `.psl` instead, so it flips on the cart's
  * empty↔non-empty edge rather than on every toggle.

@@ -91,6 +91,11 @@ export type CodexStatusPillProps = {
    *  field. Omitted → the row is exactly what it was before. */
   readonly meta?: ReactNode;
   readonly action?: ReactNode;
+  /** A full-width row under the status text, inside the pill. Use it when a
+   *  surface has more than one control to offer: side-by-side buttons next to
+   *  the text squeeze the sentence into a few words per line (the Library
+   *  rail is ~280px wide). The float-over keeps the one-line `action` slot. */
+  readonly footer?: ReactNode;
   readonly style?: CSSProperties;
   readonly className?: string;
 };
@@ -152,7 +157,7 @@ function labelTextFor(
     case "queued":
       return provider === null ? "Queued" : `${provider} is queued`;
     case "ready":
-      return provider === null ? "Title + description drafted" : `${provider} drafted a title + description${hasMeta ? "" : "."}`;
+      return provider === null ? "Drafted a title + description" : `${provider} drafted a title + description${hasMeta ? "" : "."}`;
     case "accepted":
       return provider === null ? "Description filled" : `Description filled from ${provider}${hasMeta ? "" : "."}`;
     case "failed":
@@ -215,6 +220,7 @@ export function CodexStatusPill({
   error,
   meta,
   action,
+  footer,
   style,
   className
 }: CodexStatusPillProps): ReactElement {
@@ -226,6 +232,7 @@ export function CodexStatusPill({
     `ps-codex-pill--${variant}`,
     `is-${kind}`,
     hasMeta ? "has-meta" : "",
+    footer !== undefined && footer !== null ? "has-footer" : "",
     className ?? ""
   ]
     .join(" ")
@@ -256,6 +263,7 @@ export function CodexStatusPill({
         ) : null}
       </span>
       {action !== undefined ? <span className="ps-codex-pill__action">{action}</span> : null}
+      {footer !== undefined && footer !== null ? <div className="ps-codex-pill__footer">{footer}</div> : null}
     </div>
   );
 }

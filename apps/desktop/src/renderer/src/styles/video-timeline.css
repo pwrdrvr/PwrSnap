@@ -317,6 +317,59 @@
   height: 100%;
 }
 
+/* Activity lane: how much of the frame changed. Bars rise with the
+   level (see VIDEO_ACTIVITY_THRESHOLDS); a hatched band marks a still
+   stretch long enough for `Cut idle`. Drawn as one SVG path per level
+   by VideoTimeline.tsx. */
+.vtl__act {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  border-top: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--bg-app) 70%, var(--bg-panel));
+}
+
+.vtl__act.is-loading {
+  background: repeating-linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--bg-app) 70%, var(--bg-panel)) 0 6px,
+    color-mix(in srgb, var(--text-muted) 10%, transparent) 6px 7px
+  );
+}
+
+.vtl__act-svg {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  display: block;
+  pointer-events: none;
+}
+
+.vtl__act-l1 {
+  fill: color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+.vtl__act-l2 {
+  fill: color-mix(in srgb, var(--accent) 82%, transparent);
+}
+
+.vtl__act-l3 {
+  fill: var(--accent);
+}
+
+.vtl__act-idle {
+  fill: url(#vtl-idle-hatch);
+}
+
+.vtl__act-hatch-bg {
+  fill: color-mix(in srgb, var(--text-muted) 12%, transparent);
+}
+
+.vtl__act-hatch-line {
+  stroke: color-mix(in srgb, var(--text-muted) 55%, transparent);
+  stroke-width: 1;
+}
+
 .vtl__wave {
   position: relative;
   width: 100%;
@@ -358,6 +411,97 @@
   left: 0;
 }
 
+/* An interior cut: the same dim as the trimmed ends, hatched so it
+   reads as "removed" rather than "outside the trim", and without the
+   slide transition (cuts appear and vanish, they don't travel). */
+.vtl__scrim.is-cut {
+  transition: none;
+  background:
+    repeating-linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--text-muted) 30%, transparent) 0 1px,
+      transparent 1px 7px
+    ),
+    color-mix(in srgb, var(--bg-app) 74%, transparent);
+}
+
+/* What `Cut idle` would remove, while its chip is hovered. */
+.vtl__idle-preview {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 2;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+/* A split: both sides kept, one boundary the user placed. A 10px hit
+   area around a 2px line; drag to move, double-click to remove. */
+.vtl__split {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  margin: 0 0 0 -5px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: ew-resize;
+  z-index: 3;
+}
+
+.vtl__split::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-app) 55%, transparent);
+}
+
+.vtl__split:hover::before,
+.vtl__split.is-active::before {
+  background: var(--accent-bright);
+}
+
+/* Inset: `.vtl__strip` clips on every side. */
+.vtl__split:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+/* Cut / Keep for the part under the pointer. */
+.vtl__piece-chip {
+  position: absolute;
+  top: 4px;
+  height: 18px;
+  padding: 0 8px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--bg-panel-elevated) 94%, transparent);
+  color: var(--text-primary);
+  font: 600 9px/1 var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  z-index: 5;
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--shadow-base) 40%, transparent);
+}
+
+.vtl__piece-chip:hover {
+  color: var(--accent-bright);
+  border-color: var(--accent-border);
+}
+
+.vtl__piece-chip.is-restore {
+  color: var(--accent-bright);
+}
+
 /* Handles: 8px accent brackets sitting just inside the range. */
 .vtl__handle {
   position: absolute;
@@ -393,6 +537,25 @@
   border-radius: 0 6px 6px 0;
 }
 
+/* The edges of an interior cut: narrower than the outer handles, and
+   squared on the side facing the cut so the pair reads as a gap. */
+.vtl__handle.is-edge {
+  width: 6px;
+  background: color-mix(in srgb, var(--accent) 80%, transparent);
+}
+
+.vtl__handle.is-edge::before {
+  left: 2px;
+}
+
+.vtl__handle.is-edge.is-in {
+  border-radius: 0 3px 3px 0;
+}
+
+.vtl__handle.is-edge.is-out {
+  border-radius: 3px 0 0 3px;
+}
+
 .vtl__handle:hover,
 .vtl__handle.is-active {
   background: var(--accent-bright);
@@ -417,6 +580,12 @@
 .vtl.is-dragging .vtl__handle,
 .vtl.is-dragging .vtl__scrim {
   transition: none;
+}
+
+/* A handle's `left` transition would make an inner edge lag behind the
+   cut scrim it bounds (which has none) after every split / cut. */
+.vtl__handle.is-edge {
+  transition: background 120ms var(--ease-out, ease-out);
 }
 
 /* Playhead: 1px --text-primary line + small triangle cap on top.
@@ -502,6 +671,14 @@
   background: var(--border-subtle);
 }
 
+.vtl__hint {
+  font: 500 9px/1 var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-subtle);
+  white-space: nowrap;
+}
+
 .vtl__chip {
   height: 18px;
   padding: 0 8px;
@@ -517,6 +694,11 @@
 }
 
 .vtl__chip:hover:not(:disabled) {
+  color: var(--accent-bright);
+  border-color: var(--accent-border);
+}
+
+.vtl__chip.is-accent {
   color: var(--accent-bright);
   border-color: var(--accent-border);
 }

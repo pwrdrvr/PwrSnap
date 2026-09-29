@@ -1,6 +1,12 @@
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import type { LocalAgentCapability, PwrSnapError } from "@pwrsnap/shared";
-import { err, ok, type Result } from "@pwrsnap/shared";
+import {
+  err,
+  ok,
+  VIDEO_ACTIVITY_GUIDANCE,
+  VIDEO_EDIT_MODEL_GUIDANCE,
+  type Result
+} from "@pwrsnap/shared";
 import { z } from "zod";
 import type { CommandContext } from "../command-bus";
 import {
@@ -30,6 +36,29 @@ export type LocalAgentCaptureExportInput = {
   variant?: "composite" | "original" | undefined;
   preset?: "low" | "med" | "high" | undefined;
   format?: "png" | "jpeg" | "pdf" | "heic" | undefined;
+};
+
+export type LocalAgentVideoSpan = { start: number; end: number };
+
+export type LocalAgentVideoInspectInput = {
+  captureId: string;
+  minStillSec?: number | undefined;
+  treatMinorAsStill?: boolean | undefined;
+  includeTrack?: boolean | undefined;
+};
+
+export type LocalAgentVideoEditInput = {
+  captureId: string;
+  keep?: LocalAgentVideoSpan[] | undefined;
+  cut?: LocalAgentVideoSpan[] | undefined;
+  cutStill?:
+    | {
+        minStillSec?: number | undefined;
+        paddingSec?: number | undefined;
+        treatMinorAsStill?: boolean | undefined;
+      }
+    | undefined;
+  reset?: boolean | undefined;
 };
 
 export type LocalAgentMcpTool<Input extends z.ZodRawShape> = {
@@ -242,6 +271,14 @@ export function createDefaultLocalAgentMcpTools(deps: {
     input: { projectId: string },
     ctx: LocalAgentToolContext
   ) => Promise<Result<unknown, PwrSnapError>>;
+  videoInspect?: (
+    input: LocalAgentVideoInspectInput,
+    ctx: LocalAgentToolContext
+  ) => Promise<Result<unknown, PwrSnapError>>;
+  videoEdit?: (
+    input: LocalAgentVideoEditInput,
+    ctx: LocalAgentToolContext
+  ) => Promise<Result<unknown, PwrSnapError>>;
 }): AnyLocalAgentMcpTool[] {
   const searchInputSchema = {
     query: z.string().max(1_000).describe("Text to match against indexed capture metadata, accepted tags, and OCR. Query searches default to relevance order.").optional(),
@@ -441,6 +478,78 @@ export function createDefaultLocalAgentMcpTools(deps: {
         openWorldHint: true
       },
       dispatch: deps.imageEditSend
+    });
+  }
+  const videoSpanSchema = z.object({
+    start: z.number().min(0).describe("Span start, source seconds."),
+    end: z.number().min(0).describe("Span end, source seconds; must be greater than start.")
+  });
+  if (deps.videoInspect !== undefined) {
+    tools.push({
+      name: "pwrsnap_video_inspect",
+      title: "Inspect PwrSnap Video",
+      description:
+        "Read a video capture's duration, current edit (kept spans, cuts, exported length) and an on-screen activity summary: " +
+        "run-length encoded activity levels plus the still stretches, so you can plan cuts without watching the video. " +
+        VIDEO_EDIT_MODEL_GUIDANCE + " " + VIDEO_ACTIVITY_GUIDANCE,
+      inputSchema: {
+        captureId: z.string().min(1),
+        minStillSec: z.number().min(0.2).max(3600)
+          .describe("Only list still stretches at least this long. Defaults to 3.")
+          .optional(),
+        treatMinorAsStill: z.boolean()
+          .describe("Count cursor movement and typing (level 1) as still. Defaults to false.")
+          .optional(),
+        includeTrack: z.boolean()
+          .describe("Also return track: one digit (0–3) per sample at sampleHz. Dense; usually unnecessary.")
+          .optional()
+      },
+      requiredCapabilities: ["library.read"],
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      },
+      dispatch: deps.videoInspect
+    });
+  }
+  if (deps.videoEdit !== undefined) {
+    tools.push({
+      name: "pwrsnap_video_edit",
+      title: "Edit PwrSnap Video Cuts",
+      description:
+        "Change which parts of a video capture export. Set exactly one of: " +
+        "keep (replace the edit with exactly these kept spans), " +
+        "cut (remove spans from the current edit; composes with existing cuts), " +
+        "cutStill (cut every stretch where nothing on screen changes for at least minStillSec, default 3, keeping paddingSec, default 0.5, next to each change), " +
+        "or reset (restore the whole clip). Returns the resulting edit. " +
+        VIDEO_EDIT_MODEL_GUIDANCE,
+      inputSchema: {
+        captureId: z.string().min(1),
+        keep: z.array(videoSpanSchema).min(1).max(200)
+          .describe("Kept spans, source seconds. Order and overlaps are normalized.")
+          .optional(),
+        cut: z.array(videoSpanSchema).min(1).max(200)
+          .describe("Spans to remove, source seconds.")
+          .optional(),
+        cutStill: z.object({
+          minStillSec: z.number().min(0.5).max(3600).optional(),
+          paddingSec: z.number().min(0).max(10).optional(),
+          treatMinorAsStill: z.boolean().optional()
+        }).describe("Cut the still stretches found by pwrsnap_video_inspect.").optional(),
+        reset: z.boolean().describe("true restores the whole clip.").optional()
+      },
+      requiredCapabilities: ["capture.edit"],
+      annotations: {
+        readOnlyHint: false,
+        // Non-destructive: the recording is untouched and every edit is
+        // reversible (reset, or undo in the Library).
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false
+      },
+      dispatch: deps.videoEdit
     });
   }
   if (deps.sizzleCreate !== undefined) {

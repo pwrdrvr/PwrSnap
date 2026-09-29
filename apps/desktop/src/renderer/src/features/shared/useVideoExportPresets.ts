@@ -13,6 +13,7 @@ import type {
 } from "@pwrsnap/shared";
 import { dispatch, startVideoDrag, subscribe } from "../../lib/pwrsnap";
 import { videoPresetKey, type VideoPresetKey } from "./useVideoPresetMetrics";
+import { videoSegmentsDepKey } from "./video-range";
 
 export type VideoExportAction = "copy" | "path" | "drag";
 
@@ -33,11 +34,23 @@ export type VideoExportPresetsState = Partial<Record<VideoPresetKey, ExportButto
 export type VideoExportPresetsInput = {
   readonly captureId: string;
   readonly range?: VideoRange | undefined;
+  /** Export spans when the edit has cuts (see `exportSegmentsOf`).
+   *  Omitted for an uncut edit, which keeps its request — and its cache
+   *  key — exactly what it was before cuts existed. */
+  readonly segments?: readonly VideoRange[] | undefined;
   /** MP4 audio choice from the row's toggles. Rides on every export,
    *  copy and drag so all three produce the same file. Omitted → main
    *  applies the saved MP4 audio preference. */
   readonly audio?: VideoExportAudio | undefined;
 };
+
+function parseSegmentsDepKey(key: string): VideoRange[] | undefined {
+  if (key === "") return undefined;
+  return key.split(",").map((pair) => {
+    const [start, end] = pair.split("|");
+    return { start: Number(start), end: Number(end) };
+  });
+}
 
 export type UseVideoExportPresetsResult = {
   readonly states: VideoExportPresetsState;
@@ -130,8 +143,11 @@ export function useVideoExportPresets(
   const captureId = input?.captureId ?? null;
   const rangeStart = input?.range?.start;
   const rangeEnd = input?.range?.end;
+  const segmentsKey = videoSegmentsDepKey(input?.segments);
   const rangeKey =
-    rangeStart === undefined || rangeEnd === undefined ? null : `${rangeStart}|${rangeEnd}`;
+    rangeStart === undefined || rangeEnd === undefined
+      ? null
+      : `${rangeStart}|${rangeEnd}#${segmentsKey}`;
   const range = useMemo<VideoRange | undefined>(
     () =>
       rangeStart === undefined || rangeEnd === undefined
@@ -164,6 +180,14 @@ export function useVideoExportPresets(
     });
   }
   const audioEpoch = audioChoice.epoch;
+  // Rebuilt from the key, so a caller that hands in a fresh array every
+  // render does not re-create every trigger (and reset every card).
+  const segments = useMemo(() => parseSegmentsDepKey(segmentsKey), [segmentsKey]);
+  /** Spread into every request. Absent entirely for an uncut edit. */
+  const segmentsField = useMemo(
+    () => (segments === undefined ? {} : { segments }),
+    [segments]
+  );
 
   const isActive = useCallback((key: VideoPresetKey, run: ActiveRun): boolean => {
     return activeRunsRef.current.get(key)?.runId === run.runId;
@@ -304,6 +328,7 @@ export function useVideoExportPresets(
             format,
             preset,
             range,
+            ...segmentsField,
             audio,
             runId: run.runId
           });
@@ -324,6 +349,7 @@ export function useVideoExportPresets(
             format,
             preset,
             range,
+            ...segmentsField,
             audio
           });
         } catch (cause) {
@@ -347,7 +373,7 @@ export function useVideoExportPresets(
         }
       })();
     },
-    [audio, finishWithCommandError, finishWithError, isActive, range, startRun]
+    [audio, finishWithCommandError, finishWithError, isActive, range, segmentsField, startRun]
   );
 
   const triggerCopy = useCallback(
@@ -377,6 +403,7 @@ export function useVideoExportPresets(
         format,
         preset,
         range,
+        ...segmentsField,
         audio,
         runId: run.runId
       })
@@ -384,7 +411,7 @@ export function useVideoExportPresets(
           if (!isActive(key, run)) return;
           if (result.ok) {
             try {
-              startVideoDrag(run.captureId, format, preset, range, audio);
+              startVideoDrag(run.captureId, format, preset, range, segments, audio);
             } catch (cause) {
               finishWithError(key, run, rejectedDispatchMessage(cause));
               return;
@@ -403,7 +430,7 @@ export function useVideoExportPresets(
           finishWithError(key, run, rejectedDispatchMessage(cause));
         });
     },
-    [audio, finishWithCommandError, finishWithError, isActive, range, startRun]
+    [audio, finishWithCommandError, finishWithError, isActive, range, segments, segmentsField, startRun]
   );
 
   return { states, triggerCopy, triggerCopyPath, triggerDrag };

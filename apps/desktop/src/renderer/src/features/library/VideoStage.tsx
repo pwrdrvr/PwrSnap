@@ -4,27 +4,48 @@
 //   • a chromeless <video> (our transport, no ⋮ download / PiP menu),
 //   • `VideoTransport` (play/pause · timecode · loop-in-range · mute ·
 //     fullscreen) with key hints in the button titles,
-//   • `VideoTimeline` (filmstrip + waveform + playhead + in/out handles),
-//   • a keyboard model (space, J/K/L, ←/→ frame, ⇧←/⇧→ 1 s, I/O,
-//     Home/End) that is active only while the stage has focus and no
-//     text input does — see `video-transport-keys.ts`.
+//   • `VideoTimeline` (filmstrip + activity + waveform + playhead +
+//     in/out handles + splits and cuts),
+//   • a keyboard model (space, J/K/L, ←/→ frame, ⇧←/⇧→ 1 s, I/O, S
+//     split, X cut, Home/End) that is active only while the stage has
+//     focus and no text input does — see `video-transport-keys.ts`.
+//     ⌘Z / ⇧⌘Z undo edits through the window's edit-menu bridge.
 //
-// The trim range is owned by `useVideoTrimRange` (local + debounced
-// `video:setDefaultRange`), instantiated ONCE at the Library level and
+// The edit (trim + cuts) is owned by `useVideoTrimRange` (local +
+// debounced `video:edit`), instantiated ONCE at the Library level and
 // passed in as `trim` — the DetailRail's export cards read that same
 // live object, so a click during the persist debounce can't export a
-// stale range.
+// stale edit.
+//
+// Playback always plays the EDIT: it starts at the in-point, skips every
+// cut, and ends at the out-point (`videoEditPlaybackStep`, the same rule
+// the sizzle reel preview follows). Loop only decides what happens at the
+// end — wrap to the in-point, or stop. To look at footage the edit
+// removed, scrub into it; a paused head shows whatever frame it is on.
 
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactElement
 } from "react";
-import type { CaptureRecord, VideoCaptureMetadata } from "@pwrsnap/shared";
+import {
+  nextPlayableVideoTime,
+  splitVideoSegmentsAt,
+  videoEditPlaybackStep,
+  toggleVideoPiece,
+  videoExportSpans,
+  videoPieceAt,
+  videoSegmentsEqual,
+  type CaptureRecord,
+  type VideoCaptureMetadata
+} from "@pwrsnap/shared";
+import { registerEditorUndoRedo } from "../../lib/editMenuBridge";
 import { usePlayheadSource } from "../shared/playhead";
+import { useVideoActivity } from "../shared/useVideoActivity";
 import { useVideoPlaybackSrc } from "../shared/useVideoPlaybackSrc";
 import { VideoTimeline } from "../shared/VideoTimeline";
 import { useVideoTimelineAssets } from "../shared/useVideoTimelineAssets";
@@ -182,9 +203,34 @@ export function VideoStage({
     null
   );
 
-  const { range, setRange } = trim;
+  const { range, setRange, segments, setSegments } = trim;
   const rangeRef = useRef(range);
   rangeRef.current = range;
+  const segmentsRef = useRef(segments);
+  segmentsRef.current = segments;
+  const spans = useMemo(() => videoExportSpans(segments), [segments]);
+  const spansRef = useRef(spans);
+  spansRef.current = spans;
+  const hasCuts = spans.length > 1;
+  const activity = useVideoActivity(captureId);
+
+  // Edit undo / redo rides the window's edit-menu bridge, the same slot
+  // the image editor uses — so ⌘Z, the Edit menu and its accelerator
+  // all reach this stack, and an empty stack falls through to the
+  // Library's restore-last-deleted. A ref, so the registration stays
+  // put while the trim object changes identity every render.
+  const trimRef = useRef(trim);
+  trimRef.current = trim;
+  useEffect(
+    () =>
+      registerEditorUndoRedo({
+        undo: () => trimRef.current.undo(),
+        redo: () => trimRef.current.redo(),
+        canUndo: () => trimRef.current.canUndo,
+        canRedo: () => trimRef.current.canRedo
+      }),
+    []
+  );
   const loopRef = useRef(loopInRange);
   loopRef.current = loopInRange;
 
@@ -209,7 +255,9 @@ export function VideoStage({
   // (`fullRange`, the recorder's seed) is exact, so the common case
   // still gets it; anything hand-trimmed falls to the wrap + the
   // `ended` recovery below.
-  const nativeLoop = loopInRange && range.start <= 0 && range.end >= durationSec;
+  //
+  // And never with cuts: the element's loop plays straight through them.
+  const nativeLoop = loopInRange && !hasCuts && range.start <= 0 && range.end >= durationSec;
   const nativeLoopRef = useRef(nativeLoop);
   nativeLoopRef.current = nativeLoop;
 
@@ -280,13 +328,15 @@ export function VideoStage({
     const el = videoRef.current;
     if (el === null) return;
     const r = rangeRef.current;
-    // Play from the in-point when the head sits outside the range with
-    // loop-in-range on, or when parked at the very end.
-    if (loopRef.current && (el.currentTime < r.start - 0.01 || el.currentTime >= r.end - 0.01)) {
-      el.currentTime = r.start;
-    } else if (el.currentTime >= durationSec - 0.01) {
-      el.currentTime = loopRef.current ? r.start : 0;
-    }
+    // Play the edit: from the in-point when the head sits outside the
+    // range or at its end, and from the next kept part when it sits in a
+    // cut.
+    const next =
+      el.currentTime >= r.end - 0.01
+        ? null
+        : nextPlayableVideoTime(segmentsRef.current, el.currentTime);
+    const target = next ?? r.start;
+    if (target !== el.currentTime) el.currentTime = target;
     el.playbackRate = 1;
     // Publish the snap BEFORE handing off to the element. If `play()`
     // rejects — a decode failure on a damaged capture, an autoplay
@@ -301,7 +351,7 @@ export function VideoStage({
     // swallowed.
     settleTime();
     void el.play().catch(() => undefined);
-  }, [durationSec, settleTime, stopShuttle]);
+  }, [settleTime, stopShuttle]);
 
   // Scrubbing the timeline (body scrub or a trim handle) pauses for the
   // duration of the gesture and restores playback on release. Without
@@ -418,6 +468,20 @@ export function VideoStage({
           setRange({ start: Math.min(rangeRef.current.start, end - MIN_RANGE_SEC), end }, true);
           return;
         }
+        case "split": {
+          const current = segmentsRef.current;
+          const next = splitVideoSegmentsAt(current, roundTime(now));
+          if (next.length !== current.length) setSegments(next, true);
+          return;
+        }
+        case "toggleCut": {
+          const current = segmentsRef.current;
+          const piece = videoPieceAt(current, durationSec, now);
+          if (piece === null) return;
+          const next = toggleVideoPiece(current, durationSec, piece);
+          if (!videoSegmentsEqual(next, current)) setSegments(next, true);
+          return;
+        }
         case "seekStart":
           seek(0);
           return;
@@ -429,7 +493,7 @@ export function VideoStage({
           return;
       }
     },
-    [currentTime, durationSec, pause, play, playing, seek, setRange, shuttle]
+    [currentTime, durationSec, pause, play, playing, seek, setRange, setSegments, shuttle]
   );
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
@@ -546,14 +610,29 @@ export function VideoStage({
     };
 
     const tick = (nowMs: number): void => {
-      const r = rangeRef.current;
-      let t = el.currentTime;
-      if (!nativeLoopRef.current && loopRef.current && t >= r.end - 0.005) {
+      const t = el.currentTime;
+      // A whole-clip native loop wraps in the media pipeline and has no
+      // cuts to skip; everything else follows the edit.
+      const step = nativeLoopRef.current
+        ? ({ kind: "play" } as const)
+        : videoEditPlaybackStep(spansRef.current, t);
+      if (step.kind === "end") {
+        const r = rangeRef.current;
+        if (!loopRef.current) {
+          // Played once — park on the out-point. The `pause` event
+          // settles React state and ends this loop.
+          el.pause();
+          return;
+        }
         el.currentTime = r.start;
         // The wrap is a discrete jump, not continuous motion — a
         // throttled head would keep drawing the far end for a beat
         // after the picture had already snapped back.
         publish(nowMs, r.start, 0);
+      } else if (step.kind === "seek") {
+        // Jumping a cut. The same discrete-jump rule as the wrap.
+        el.currentTime = step.sec;
+        publish(nowMs, step.sec, 0);
       } else {
         publish(nowMs, t, vfcDriving ? PLAYHEAD_MAX_GAP_MS : PLAYHEAD_MIN_PUBLISH_MS);
       }
@@ -690,6 +769,7 @@ export function VideoStage({
         onVolumeChange={changeVolume}
         onTogglePlay={() => runIntent({ type: "togglePlay" })}
         onToggleLoop={() => setLoopInRange((v) => !v)}
+        onSplit={() => runIntent({ type: "split" })}
         onToggleMute={toggleMute}
         onFullscreen={toggleFullscreen}
       />
@@ -698,6 +778,9 @@ export function VideoStage({
         currentTime={currentTime}
         playhead={playhead}
         range={range}
+        segments={segments}
+        onSegmentsChange={setSegments}
+        activity={activity}
         frames={assets.frames}
         audioBlob={assets.audioBlob}
         onSeek={(sec) => {

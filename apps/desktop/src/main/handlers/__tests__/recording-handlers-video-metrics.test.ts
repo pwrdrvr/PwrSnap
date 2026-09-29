@@ -104,6 +104,7 @@ function videoCapture(): CaptureRecord {
       requestedSystemAudio: false,
       requestedMicrophone: false,
       defaultRange: { start: 0, end: 3 },
+      segments: [{ start: 0, end: 3 }],
       previewPath: null,
       previewStatus: "ready"
     }

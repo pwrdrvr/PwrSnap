@@ -1,6 +1,7 @@
-// Hook tests for `useVideoTrimRange` — the local trim state that
-// persists to `video:setDefaultRange` on commit (debounced) and adopts
-// upstream `defaultRange` changes when not mid-edit.
+// Hook tests for `useVideoTrimRange` — the local edit state that
+// persists on commit (debounced: `video:setDefaultRange` in range mode,
+// `video:edit` in segments mode), adopts upstream changes when not
+// mid-edit, and keeps an undo history of both.
 
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -25,12 +26,19 @@ let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 let latest: UseVideoTrimRange | null = null;
 
+/** Range mode unless the test passes the record's segments. */
 function Probe(props: {
   captureId: string | null;
   durationSec: number;
   persistedRange: VideoRange | null;
+  persistedSegments?: readonly VideoRange[] | null;
 }): null {
-  latest = useVideoTrimRange(props);
+  const { persistedSegments, ...rest } = props;
+  latest = useVideoTrimRange(
+    persistedSegments === undefined
+      ? { ...rest, persist: "range" }
+      : { ...rest, persist: "edit", persistedSegments }
+  );
   return null;
 }
 
@@ -139,16 +147,136 @@ describe("useVideoTrimRange", () => {
     expect(latest!.range).toEqual({ start: 3, end: 12 });
   });
 
-  test("switching captures resets local state and drops a pending persist", async () => {
+  test("switching captures resets local state and flushes the pending persist to its capture", async () => {
     mount({ captureId: "cap", durationSec: 16, persistedRange: { start: 0, end: 16 } });
     act(() => latest!.setRange({ start: 3, end: 12 }, true));
     rerender({ captureId: "other", durationSec: 8, persistedRange: { start: 1, end: 7 } });
     expect(latest!.range).toEqual({ start: 1, end: 7 });
     expect(latest!.pending).toBe(false);
+    expect(latest!.canUndo).toBe(false);
+    // Written immediately, to the capture it was made on — arrowing to
+    // the next capture inside the debounce used to drop the edit.
+    expect(dispatched).toEqual([
+      { name: "video:setDefaultRange", req: { captureId: "cap", range: { start: 3, end: 12 } } }
+    ]);
     await act(async () => {
       vi.advanceTimersByTime(PERSIST_DEBOUNCE_MS * 2);
       await Promise.resolve();
     });
+    expect(dispatched).toHaveLength(1);
+  });
+});
+
+describe("useVideoTrimRange — segments mode", () => {
+  const whole = [{ start: 0, end: 20 }];
+  const cut = [
+    { start: 0, end: 4 },
+    { start: 9, end: 20 }
+  ];
+
+  async function settle(): Promise<void> {
+    await act(async () => {
+      vi.advanceTimersByTime(PERSIST_DEBOUNCE_MS + 1);
+      await Promise.resolve();
+    });
+  }
+
+  test("seeds from the record's segments and exposes export spans only when there is a cut", () => {
+    mount({ captureId: "cap", durationSec: 20, persistedRange: { start: 0, end: 20 }, persistedSegments: cut });
+    expect(latest!.segments).toEqual(cut);
+    expect(latest!.range).toEqual({ start: 0, end: 20 });
+    expect(latest!.exportSegments).toEqual(cut);
+
+    // A split with both sides kept is not a cut: nothing extra rides the export.
+    rerender({
+      captureId: "cap2",
+      durationSec: 20,
+      persistedRange: { start: 0, end: 20 },
+      persistedSegments: [
+        { start: 0, end: 7 },
+        { start: 7, end: 20 }
+      ]
+    });
+    expect(latest!.exportSegments).toBeUndefined();
+  });
+
+  test("persists the kept spans with video:edit", async () => {
+    mount({ captureId: "cap", durationSec: 20, persistedRange: { start: 0, end: 20 }, persistedSegments: whole });
+    act(() => latest!.setSegments(cut, true));
+    await settle();
+    expect(dispatched).toEqual([{ name: "video:edit", req: { captureId: "cap", keep: cut } }]);
+  });
+
+  test("moving a handle clips the committed edit, so dragging back over a cut restores it", () => {
+    mount({ captureId: "cap", durationSec: 20, persistedRange: { start: 0, end: 20 }, persistedSegments: cut });
+    // Drag the in-point past the cut…
+    act(() => latest!.setRange({ start: 10, end: 20 }, false));
+    expect(latest!.segments).toEqual([{ start: 10, end: 20 }]);
+    // …and back: the cut is still there, because frames clip the snapshot.
+    act(() => latest!.setRange({ start: 1, end: 20 }, false));
+    expect(latest!.segments).toEqual([
+      { start: 1, end: 4 },
+      { start: 9, end: 20 }
+    ]);
+    act(() => latest!.setRange({ start: 1, end: 20 }, true));
+    expect(latest!.range).toEqual({ start: 1, end: 20 });
+  });
+
+  test("undo and redo walk committed edits and persist each step", async () => {
+    mount({ captureId: "cap", durationSec: 20, persistedRange: { start: 0, end: 20 }, persistedSegments: whole });
+    expect(latest!.canUndo).toBe(false);
+    act(() => latest!.setSegments(cut, true));
+    act(() => latest!.setRange({ start: 2, end: 20 }, true));
+    expect(latest!.canUndo).toBe(true);
+
+    act(() => latest!.undo());
+    expect(latest!.segments).toEqual(cut);
+    expect(latest!.canRedo).toBe(true);
+    act(() => latest!.undo());
+    expect(latest!.segments).toEqual(whole);
+    expect(latest!.canUndo).toBe(false);
+
+    act(() => latest!.redo());
+    expect(latest!.segments).toEqual(cut);
+    await settle();
+    // Debounced: only where the walk ended is written.
+    expect(dispatched).toEqual([{ name: "video:edit", req: { captureId: "cap", keep: cut } }]);
+
+    // A new edit clears the redo branch.
+    act(() => latest!.setSegments(whole, true));
+    expect(latest!.canRedo).toBe(false);
+  });
+
+  test("a drag that ends where it began records nothing and writes nothing", async () => {
+    mount({ captureId: "cap", durationSec: 20, persistedRange: { start: 0, end: 20 }, persistedSegments: cut });
+    act(() => latest!.setSegments([{ start: 0, end: 6 }, { start: 9, end: 20 }], false));
+    act(() => latest!.setSegments(cut, true));
+    expect(latest!.segments).toEqual(cut);
+    expect(latest!.canUndo).toBe(false);
+    await settle();
     expect(dispatched).toEqual([]);
+  });
+
+  test("an agent's edit is adopted and is one undo away from gone", async () => {
+    mount({ captureId: "cap", durationSec: 20, persistedRange: { start: 0, end: 20 }, persistedSegments: whole });
+    // `events:captures:changed` after an MCP / chat `video:edit`.
+    rerender({ captureId: "cap", durationSec: 20, persistedRange: { start: 0, end: 20 }, persistedSegments: cut });
+    expect(latest!.segments).toEqual(cut);
+    expect(latest!.canUndo).toBe(true);
+    act(() => latest!.undo());
+    expect(latest!.segments).toEqual(whole);
+    await settle();
+    expect(dispatched).toEqual([{ name: "video:edit", req: { captureId: "cap", keep: whole } }]);
+  });
+
+  test("the echo of our own write is not an upstream edit", async () => {
+    mount({ captureId: "cap", durationSec: 20, persistedRange: { start: 0, end: 20 }, persistedSegments: whole });
+    act(() => latest!.setSegments(cut, true));
+    await settle();
+    rerender({ captureId: "cap", durationSec: 20, persistedRange: { start: 0, end: 20 }, persistedSegments: cut });
+    act(() => latest!.undo());
+    // One undo returns to the whole clip — the echo pushed nothing.
+    expect(latest!.segments).toEqual(whole);
+    expect(latest!.canUndo).toBe(false);
   });
 });

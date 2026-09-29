@@ -372,7 +372,8 @@ describe("buildSizzleToolAllowlist", () => {
         beatId: "bt_b",
         timing: { kind: "phrase", phrase: "Telegram", offsetSec: -0.1, durationSec: 0.5 },
         transition: { type: "dip-black", durationSec: 0.2 },
-        videoFit: "speed-to-fit"
+        videoFit: "speed-to-fit",
+        useCaptureCuts: false
       },
       CTX
     );
@@ -390,6 +391,9 @@ describe("buildSizzleToolAllowlist", () => {
     });
     expect(beats[1]!.transition).toEqual({ type: "dip-black", durationSec: 0.2 });
     expect(beats[1]!.videoFit).toBe("speed-to-fit");
+    // The agent can hand a clip its Library-cut footage back.
+    expect(beats[1]!.useCaptureCuts).toBe(false);
+    expect(beats[0]!.useCaptureCuts).toBeUndefined();
   });
 
   it("sequence_beat_update errors when the beat id is unknown", async () => {

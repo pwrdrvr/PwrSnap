@@ -2,11 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, rename, rm, stat } from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
 import { app } from "electron";
-import { videoPlaybackNeedsPreparation } from "@pwrsnap/shared";
+import { videoPlaybackNeedsPreparation, videoSpansKey, type VideoRange } from "@pwrsnap/shared";
 import {
   AUDIO_PIPELINE_VERSION,
   AudioExtractError,
   buildRecordingAudioArgs,
+  buildRecordingAudioSpanArgs,
   probeAudioStreamCount,
   runAudioFfmpeg,
   selectedRecordingAudioStreams,
@@ -83,7 +84,14 @@ async function publishMedia(
 }
 
 type SourceFingerprint = RecordingAudioSource & { mtimeMs: number; size: number };
-type AudioTrim = { startSec: number; durationSec: number };
+type AudioTrim = {
+  startSec: number;
+  durationSec: number;
+  /** Kept source spans, when the clip skips Library cuts — two or more,
+   *  absolute seconds. `startSec` is then the first span's start and
+   *  `durationSec` their total. */
+  spans?: readonly VideoRange[] | undefined;
+};
 
 function sourceDigest(args: SourceFingerprint): ReturnType<typeof createHash> {
   return createHash("sha256")
@@ -109,8 +117,15 @@ export function computeNativeAudioCacheKey(args: SourceFingerprint & AudioTrim):
     .update(args.startSec.toFixed(3))
     .update("\0")
     .update(args.durationSec.toFixed(3))
+    // Only a cut clip adds this, so every uncut extraction keeps the key
+    // it already had on disk.
+    .update(hasCutSpans(args.spans) ? `\0spans\0${videoSpansKey(args.spans)}` : "")
     .digest("hex")
     .slice(0, 24);
+}
+
+function hasCutSpans(spans: readonly VideoRange[] | undefined): spans is readonly VideoRange[] {
+  return spans !== undefined && spans.length > 1;
 }
 
 /**
@@ -167,7 +182,12 @@ export async function extractVideoAudio(
   signal?: AbortSignal | undefined
 ): Promise<string> {
   const source = await fingerprint(args);
-  const hash = computeNativeAudioCacheKey({ ...source, startSec: args.startSec, durationSec: args.durationSec });
+  const hash = computeNativeAudioCacheKey({
+    ...source,
+    startSec: args.startSec,
+    durationSec: args.durationSec,
+    spans: args.spans
+  });
   const outPath = join(app.getPath("userData"), "sizzle-cache", "native-audio", `${hash}.m4a`);
   return coalesce(outPath, async () => {
     if (await fileExists(outPath)) return outPath;
@@ -189,6 +209,14 @@ export async function extractVideoAudio(
     // A valid old recording can claim audio but contain no samples at all.
     // The composer still needs a duration-matched input for that scene.
     if (resolved.length === 0) return synthesizeSilence(args.durationSec);
+    if (hasCutSpans(args.spans)) {
+      // No input seek: the spans are absolute source times.
+      return publishMedia(outPath, [
+        "-t", args.spans[args.spans.length - 1]!.end.toFixed(3), "-i", args.videoPath,
+        "-vn", ...buildRecordingAudioSpanArgs(resolved, args.spans),
+        "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"
+      ], signal);
+    }
     return publishMedia(outPath, [
       "-ss", args.startSec.toFixed(3), "-t", args.durationSec.toFixed(3), "-i", args.videoPath,
       "-vn", ...buildRecordingAudioArgs(resolved),

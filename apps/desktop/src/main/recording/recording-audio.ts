@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import type { RecordedAudioTrackFacts } from "@pwrsnap/shared";
+import type { RecordedAudioTrackFacts, VideoRange } from "@pwrsnap/shared";
 import { resolveFfmpegPath } from "./ffmpeg-resolver";
 
 // Track selection moved to `@pwrsnap/shared` so renderers can answer the
@@ -157,6 +157,43 @@ export function buildRecordingAudioArgs(streams: readonly number[]): string[] {
   return [
     "-filter_complex",
     [...inputs, `${labels}amix=inputs=${streams.length}:duration=longest:dropout_transition=0:normalize=0[recorded_audio]`].join(";"),
+    "-map", "[recorded_audio]"
+  ];
+}
+
+/**
+ * The same mix as `buildRecordingAudioArgs`, cut to kept spans and joined —
+ * the sound for a reel clip that skips its capture's Library cuts.
+ *
+ * `spans` are absolute source seconds, so the input must NOT be seeked.
+ * Every stream is resampled onto the video clock first (the correction the
+ * multi-stream mix already applies), even when there is only one, so each
+ * span's sound is cut at the same instant as its picture.
+ */
+export function buildRecordingAudioSpanArgs(
+  streams: readonly number[],
+  spans: readonly VideoRange[]
+): string[] {
+  if (streams.length === 0) return ["-an"];
+  const n = spans.length;
+  const inputs = streams.map((index, i) =>
+    `[0:a:${index}]aresample=async=1:first_pts=0[recorded_audio_${i}]`
+  );
+  const labels = streams.map((_, i) => `[recorded_audio_${i}]`).join("");
+  // `normalize=0` for the reason `buildRecordingAudioArgs` gives.
+  const mixed =
+    streams.length === 1
+      ? labels
+      : `${labels}amix=inputs=${streams.length}:duration=longest:dropout_transition=0:normalize=0,`;
+  const split = spans.map((_, k) => `[span_audio_${k}]`).join("");
+  const trims = spans.map(
+    (span, k) =>
+      `[span_audio_${k}]atrim=start=${span.start.toFixed(3)}:end=${span.end.toFixed(3)},asetpts=PTS-STARTPTS[kept_audio_${k}]`
+  );
+  const kept = spans.map((_, k) => `[kept_audio_${k}]`).join("");
+  return [
+    "-filter_complex",
+    [...inputs, `${mixed}asplit=${n}${split}`, ...trims, `${kept}concat=n=${n}:v=0:a=1[recorded_audio]`].join(";"),
     "-map", "[recorded_audio]"
   ];
 }

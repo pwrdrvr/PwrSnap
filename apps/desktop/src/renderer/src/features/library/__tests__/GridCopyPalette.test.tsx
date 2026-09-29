@@ -92,6 +92,7 @@ const videoRecord: CaptureRecord = {
     requestedSystemAudio: false,
     requestedMicrophone: false,
     defaultRange: { start: 0, end: 4 },
+    segments: [{ start: 0, end: 4 }],
     previewPath: null,
     previewStatus: "ready"
   }

@@ -362,7 +362,15 @@ describe("validateSizzleUpdate — Phase 3a mediaTrim validation", () => {
     if (!r.ok) expect(r.error.code).toBe("scene_mediaTrim_end_invalid");
   });
 
-  it("rejects mediaTrim duration over the 60s cap (matches TTS practical-length cap)", () => {
+  it("accepts a trim window longer than a minute — a long take cut down to seconds", () => {
+    const r = validateSizzleUpdate({
+      id: "sz_1",
+      patch: { scenes: [{ ...validSceneBase(), mediaTrim: { startSec: 0, endSec: 90 } }] }
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it("rejects a trim window past the sanity bound", () => {
     const r = validateSizzleUpdate({
       id: "sz_1",
       patch: {
@@ -601,6 +609,56 @@ describe("validateSizzleUpdate — sequence scene validation", () => {
     });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe("scene_beat_videoFit_invalid");
+  });
+
+  it("stores only the Library-cuts opt-out; the default leaves no field", () => {
+    const beat = (useCaptureCuts: unknown) => ({
+      id: "bt_1",
+      captureId: "cap_1",
+      timing: { kind: "offset", startSec: 0, endSec: null },
+      transition: "cut",
+      videoFit: "smart-fit",
+      ...(useCaptureCuts === undefined ? {} : { useCaptureCuts })
+    });
+    const run = (useCaptureCuts: unknown) =>
+      validateSizzleUpdate({
+        id: "sz_1",
+        patch: {
+          scenes: [
+            {
+              id: "sc_sequence",
+              kind: "sequence",
+              scriptLine: "Narration",
+              durationOverrideSec: null,
+              beats: [beat(useCaptureCuts)]
+            },
+            {
+              id: "sc_simple",
+              captureId: "cap_2",
+              scriptLine: "",
+              durationOverrideSec: null,
+              ...(useCaptureCuts === undefined ? {} : { useCaptureCuts })
+            }
+          ]
+        }
+      });
+    const off = run(false);
+    expect(off.ok).toBe(true);
+    if (off.ok) {
+      expect(off.value.patch.scenes![0]!.beats![0]!.useCaptureCuts).toBe(false);
+      expect(off.value.patch.scenes![1]!.useCaptureCuts).toBe(false);
+    }
+    for (const on of [true, undefined, null]) {
+      const r = run(on);
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect("useCaptureCuts" in r.value.patch.scenes![0]!.beats![0]!).toBe(false);
+        expect("useCaptureCuts" in r.value.patch.scenes![1]!).toBe(false);
+      }
+    }
+    const bad = run("yes");
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.error.code).toBe("scene_useCaptureCuts_invalid");
   });
 
   it("accepts a sequence beat with auto timing", () => {

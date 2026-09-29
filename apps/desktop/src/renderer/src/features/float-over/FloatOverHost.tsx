@@ -246,6 +246,24 @@ export function FloatOverHost({
   const [dockSupported, setDockSupported] = useState(false);
   const dockSupportedRef = useRef(false);
   const [railHover, setRailHover] = useState(false);
+  // Chromium does not consistently synthesize React's mouseleave when the
+  // pointer exits a transparent BrowserWindow through its outer edge on
+  // Windows. The rail's enter can therefore be the last event React sees,
+  // leaving the toast's external-hover pause latched forever. Window-level
+  // mouseout is the native boundary signal (`relatedTarget === null`); blur
+  // covers the same stale state when the window loses activation instead.
+  useEffect(() => {
+    const clearRailHoverOnWindowExit = (event: MouseEvent): void => {
+      if (event.relatedTarget === null) setRailHover(false);
+    };
+    const clearRailHover = (): void => setRailHover(false);
+    window.addEventListener("mouseout", clearRailHoverOnWindowExit);
+    window.addEventListener("blur", clearRailHover);
+    return () => {
+      window.removeEventListener("mouseout", clearRailHoverOnWindowExit);
+      window.removeEventListener("blur", clearRailHover);
+    };
+  }, []);
   // The rail's catalog: every snap, newest first, a page at a time.
   const [catalog, setCatalog] = useState<Catalog>(EMPTY_CATALOG);
   const catalogRef = useRef<Catalog>(EMPTY_CATALOG);

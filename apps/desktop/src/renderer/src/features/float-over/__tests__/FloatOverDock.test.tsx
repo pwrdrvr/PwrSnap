@@ -602,6 +602,26 @@ describe("FloatOverHost rail: the recent-snaps catalog", () => {
       (item) => item.getAttribute("aria-label") ?? ""
     );
 
+  test("a narrow work area omits the recent rail", async () => {
+    const original = Object.getOwnPropertyDescriptor(window.screen, "availWidth");
+    Object.defineProperty(window.screen, "availWidth", { configurable: true, value: 526 });
+    try {
+      const api = installHostApi({
+        library: [record("toast_old", "2026-09-27T09:00:00.000Z")]
+      });
+      const el = await mountHost();
+      await showSnap(api, "cap_new", "completed");
+      expect(el.querySelectorAll(".fo-rail__item")).toHaveLength(0);
+      expect(el.querySelector('[data-testid="float-over-rail"]')).toBeNull();
+    } finally {
+      if (original === undefined) {
+        delete (window.screen as unknown as Record<string, unknown>).availWidth;
+      } else {
+        Object.defineProperty(window.screen, "availWidth", original);
+      }
+    }
+  });
+
   test("lists every recent snap, newest first, not only the waiting ones", async () => {
     const api = installHostApi({
       library: [record("toast_old", "2026-09-27T09:00:00.000Z"), record("jam_mid", "2026-09-27T09:30:00.000Z")]

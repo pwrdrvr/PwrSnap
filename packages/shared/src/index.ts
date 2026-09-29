@@ -37,5 +37,6 @@ export * from "./release-notes";
 export * from "./video-segments";
 export * from "./video-activity";
 export * from "./float-over-sizing";
+export * from "./popover-sizing";
 
 export * from "./custom-models";

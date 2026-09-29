@@ -1,3 +1,8 @@
+import {
+  FLOAT_OVER_WIDTH_REGULAR_DIP,
+  popoverWidthCss
+} from "./popover-sizing";
+
 /**
  * Float-over toast sizing policy — the ONE definition of how tall the
  * post-capture toast may get, shared by the two processes that both
@@ -116,21 +121,27 @@ export function floatOverMaxContentHeightCss(options: {
 }
 
 /**
- * The toast's width, in DIP. The window is this wide while it shows the
- * toast alone; the in-flight rail beside it adds its own width, and the
- * screen-edge dock is far narrower. The renderer draws the toast at
- * `floatOverToastWidthCss` and reports what it drew, so main learns the
- * window's width from the same measurement as its height.
+ * The toast's regular width, in DIP. Compact displays use the shared
+ * responsive policy in `popover-sizing.ts`. The in-flight rail beside a
+ * regular toast adds its own width, and the screen-edge dock is far narrower.
  */
-export const FLOAT_OVER_TOAST_WIDTH_DIP = 392;
+export const FLOAT_OVER_TOAST_WIDTH_DIP = FLOAT_OVER_WIDTH_REGULAR_DIP;
 
 /**
- * The toast's width in CSS pixels, so that main's `Math.ceil(css * zoom)`
- * lands back on `FLOAT_OVER_TOAST_WIDTH_DIP`. A zoomed float-over keeps
- * its physical width and lays its content out narrower, as it did when
- * main fixed the width itself. Floored for the same reason as the height.
+ * The toast's responsive width in CSS pixels, so that main's
+ * `Math.ceil(css * zoom)` lands back on the chosen DIP profile. A zoomed
+ * float-over keeps its physical width and lays its content out narrower.
+ * Floored for the same reason as the height.
  */
-export function floatOverToastWidthCss(zoomFactor: number): number {
-  const zoom = Number.isFinite(zoomFactor) && zoomFactor > 0 ? zoomFactor : 1;
-  return Math.floor(FLOAT_OVER_TOAST_WIDTH_DIP / zoom);
+export function floatOverToastWidthCss(
+  zoomFactor: number,
+  workAreaWidthDip?: number | null,
+  workAreaHeightDip?: number | null
+): number {
+  return popoverWidthCss({
+    kind: "float-over",
+    workAreaWidthDip,
+    workAreaHeightDip,
+    zoomFactor
+  });
 }

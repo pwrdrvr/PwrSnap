@@ -30,8 +30,10 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   EVENT_CHANNELS,
   exportStrategyFromSettings,
+  floatOverRailFits,
   floatOverMaxContentHeightCss,
   floatOverToastWidthCss,
+  popoverDensityForWorkArea,
   type AcpAgentDiscovery,
   type CaptureEnrichment,
   type CaptureRecord,
@@ -140,10 +142,22 @@ function maxContentHeightCss(): number {
   });
 }
 
+function rendererWorkAreaDip(): { width: number | null; height: number | null } {
+  return {
+    width: typeof window.screen?.availWidth === "number" ? window.screen.availWidth : null,
+    height: typeof window.screen?.availHeight === "number" ? window.screen.availHeight : null
+  };
+}
+
 /** The toast's width in CSS pixels. Read per post for the same reason
  *  as the height cap: the zoom can change under a live toast. */
 function toastWidthCss(): number {
-  return floatOverToastWidthCss(window.pwrsnapApi?.getZoomFactor?.() ?? 1);
+  const workArea = rendererWorkAreaDip();
+  return floatOverToastWidthCss(
+    window.pwrsnapApi?.getZoomFactor?.() ?? 1,
+    workArea.width,
+    workArea.height
+  );
 }
 
 type HostState =
@@ -510,6 +524,11 @@ export function FloatOverHost({
       // keeps the pinned footer — Discard / Dismiss / Edit — inside
       // the window main is about to size. Without it, content past
       // main's clamp is simply cut off the bottom.
+      const workArea = rendererWorkAreaDip();
+      el.dataset.popoverDensity = popoverDensityForWorkArea({
+        widthDip: workArea.width,
+        heightDip: workArea.height
+      });
       el.style.setProperty("--fo-max-h", `${maxContentHeightCss()}px`);
       el.style.setProperty("--fo-w", `${toastWidthCss()}px`);
       // The rail is as tall as its thumbnails, and never taller than the
@@ -986,7 +1005,7 @@ export function FloatOverHost({
           enrichmentsRef.current
         )
       : [];
-  const showRail = railItems.length >= 2;
+  const showRail = railItems.length >= 2 && floatOverRailFits(rendererWorkAreaDip().width);
   const toastCaptureId = toastItem?.captureId ?? null;
 
   // Single return path so contentRef wraps every state — the
@@ -1253,7 +1272,15 @@ export function FloatOverHost({
 
   return (
     <div className={`fo-host fo-host--${mode}`} data-side={dockSide}>
-      <div ref={contentRef} className="fo-host__measure" style={{ display: "inline-block" }}>
+      <div
+        ref={contentRef}
+        className="fo-host__measure"
+        data-popover-density={popoverDensityForWorkArea({
+          widthDip: rendererWorkAreaDip().width,
+          heightDip: rendererWorkAreaDip().height
+        })}
+        style={{ display: "inline-block" }}
+      >
         {content}
       </div>
     </div>

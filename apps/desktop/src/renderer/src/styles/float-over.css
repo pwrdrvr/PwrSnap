@@ -160,6 +160,47 @@
    footer. A 2:1 slot buys back 46px. Still a layout slot, not a crop:
    HoverAutoplayVideo is `object-fit: contain`, so a 16:10 take pillarboxes. */
 .fo__preview--video { aspect-ratio: 2 / 1; }
+/* Low-resolution work areas trade preview height for room to reach the
+   metadata and actions. The image remains contained at its true ratio. */
+[data-popover-density="compact"] .fo__preview { aspect-ratio: 2 / 1; }
+/* The receipt row is three chips at ~355px in a 294px row, so it wraps onto a
+   second line. Glyph + meter is enough for a live source. A silent one keeps
+   its reason as text, so that failure is still said out loud; every chip keeps
+   its accessible name and its title. */
+[data-popover-density="compact"] .fo__sources .ps-chip__name {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+/* The source chips sat flush under the header with 8px below them; give them
+   the same 8px above. Compact only: the regular video toast has 3px of
+   headroom under its 800 ceiling and cannot spend 8. */
+[data-popover-density="compact"] .fo__body > .fo__sources:first-child { padding-top: var(--space-2, 8px); }
+/* The tag row's 48px minimum leaves ~26px of dead space above the Codex row
+   at compact; let it hug its chips. */
+[data-popover-density="compact"] .fo__tags { min-height: 0; }
+/* The Codex row carries Save and Enable, and is the last thing in the
+   scrolling body, so a scrolled toast lost it first. Pin it above the footer;
+   the description and tags scroll under it. */
+[data-popover-density="compact"] .fo__body > .fo__ai-row {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  background: var(--bg-app);
+  box-shadow: 0 -10px 10px -6px var(--bg-app);
+}
+/* The AI-off call to action is a sentence, and a 185px slot truncates it
+   mid-word. Wrap it onto two lines instead. The full text is also its title. */
+[data-popover-density="compact"] .fo__ai-row .ps-codex-pill__summary {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-height: 1.25;
+}
 /* `contain` so the user recognizes their capture at its true aspect
    ratio. The 16:10 frame is just a layout slot — a tiny region
    capture should look tiny, not zoomed-to-fill. */

@@ -491,6 +491,29 @@
      and behaves consistently. */
   aspect-ratio: 16 / 10;
 }
+[data-popover-density="compact"] .ps-tray__last-preview { aspect-ratio: 2 / 1; }
+/* The mode rows have no room for their chord next to an icon and a label,
+   and none of those chords is bound by default. */
+[data-popover-density="compact"] .ps-mode__hk { display: none; }
+/* Quick Capture and Record Video carry the chords a new user actually has, so
+   they keep them: the chip moves onto the eyebrow row and the sub-line takes
+   the full width beneath it. `display: contents` on the label column lets the
+   eyebrow and sub-line be grid items of the button itself. */
+[data-popover-density="compact"] .ps-tray__quick {
+  display: grid;
+  grid-template: "e k" auto "s s" auto / 1fr auto;
+  align-items: center;
+  column-gap: 10px;
+  row-gap: 3px;
+}
+[data-popover-density="compact"] .ps-tray__quick-l { display: contents; }
+[data-popover-density="compact"] .ps-tray__quick-eyebrow { grid-area: e; }
+[data-popover-density="compact"] .ps-tray__quick-hk { grid-area: k; }
+[data-popover-density="compact"] .ps-tray__quick-sub { grid-area: s; }
+[data-popover-density="compact"] .ps-tray__quick--video {
+  grid-template: "i e k" auto "i s s" auto / auto 1fr auto;
+}
+[data-popover-density="compact"] .ps-tray__quick--video .ps-tray__quick-icon { grid-area: i; }
 /* `contain` to match the library + float-over thumbnail policy —
    preserve the capture's true aspect ratio. */
 .ps-tray__last-preview img { width: 100%; height: 100%; object-fit: contain; display: block; }
@@ -4772,6 +4795,41 @@
   height: 1px;
   background: var(--border-subtle);
 }
+/* GIF | MP4 switch. Rendered by the popovers' VideoExportPresetsPanel and
+   shown only at compact density, where it replaces the eyebrow label and the
+   inactive format's row is hidden (not unmounted, so its cards keep their
+   state). Everywhere else both rows show and the switch is display: none,
+   which also drops it from the tab order. The buttons sit inside an
+   overflow: hidden pill, so their focus ring is inset. */
+.psl__copy-format-switch {
+  display: none;
+  flex: none;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.psl__copy-format-switch-btn {
+  padding: 4px 9px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: 700 10px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.psl__copy-format-switch-btn:hover { color: var(--text-primary); }
+.psl__copy-format-switch-btn:focus-visible { outline-offset: -2px; }
+.psl__copy-format-switch-btn[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--button-text-on-accent);
+}
+[data-popover-density="compact"] .psl__copy-row-group[data-switchable] .psl__copy-format-eyebrow-label { display: none; }
+[data-popover-density="compact"] .psl__copy-row-group[data-switchable] .psl__copy-format-switch { display: inline-flex; }
+[data-popover-density="compact"] .psl__copy-row-group[data-inactive="true"] { display: none; }
+/* The 10px between the two rows belongs to the pair; with the first one
+   hidden it would be dead space above the switch. */
+[data-popover-density="compact"] .psl__copy-row-group[data-inactive="true"] + .psl__copy-row-group { margin-top: 0; }
 /* MP4 audio toggles at the right end of the MP4 eyebrow — one per track
    the take recorded. The same 18px mono pill as the trim strip's FULL
    CLIP chip. Tangerine = in the file; muted + crossed glyph + "off" =

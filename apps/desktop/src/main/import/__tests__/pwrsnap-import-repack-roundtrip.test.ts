@@ -715,7 +715,9 @@ describe("imported v2 ordinary repack", () => {
     const { validatePwrsnapBundleBytes } = await import("../pwrsnap-import-reader");
     const repacked = await validatePwrsnapBundleBytes(await fs.readFile(fixture.bundlePath));
     expect(repacked.document.description).toBe("Edited in the library");
-    expect(repacked.document.tags).toEqual(["Current", "Original"]);
+    // capture_tags.created_at has second resolution. The two inserts can
+    // share a timestamp or cross a second boundary, changing their order.
+    expect([...repacked.document.tags].sort()).toEqual(["Current", "Original"]);
     expect(mocks.accessSuccesses).toContain(fixture.bundlePath);
   });
 

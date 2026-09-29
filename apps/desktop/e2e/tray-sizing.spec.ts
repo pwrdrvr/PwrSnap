@@ -34,6 +34,7 @@
 // the production click handler does — only the icon is bypassed.
 
 import { expect, type LaunchedApp, launchPwrSnap, test } from "./fixtures/electron-app";
+import { popoverWidthDip } from "@pwrsnap/shared";
 // showTray/hideTray are shared with tray-instant-dismiss.spec.ts — the
 // bridge call shapes and the blur-dismiss retry break together.
 import { hideTray, showTray } from "./fixtures/tray";
@@ -195,8 +196,16 @@ test.describe("tray popover sizing", () => {
       // Sanity: contentSize lands inside main's clamp (200..880).
       expect(info.contentSize!.height).toBeGreaterThanOrEqual(200);
       expect(info.contentSize!.height).toBeLessThanOrEqual(880);
-      // Width is fixed at TRAY_WIDTH = 440 in tray.ts.
-      expect(info.contentSize!.width).toBe(440);
+      const workArea = await app.electronApp.evaluate(({ screen }) =>
+        screen.getPrimaryDisplay().workArea
+      );
+      expect(info.contentSize!.width).toBe(
+        popoverWidthDip({
+          kind: "tray",
+          workAreaWidthDip: workArea.width,
+          workAreaHeightDip: workArea.height
+        })
+      );
 
       // Default zoom is 1.0, so wrapper CSS height ≈ contentSize DIP.
       // Allow ±2 px for rounding (Math.ceil in main, sub-pixel layout).

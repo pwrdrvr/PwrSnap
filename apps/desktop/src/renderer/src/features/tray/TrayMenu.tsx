@@ -3,6 +3,8 @@ import {
   canStartRecordingAttempt,
   desktopFileManagerName,
   EVENT_CHANNELS,
+  popoverDensityForWorkArea,
+  popoverWidthCss,
   type CaptureInvocationOrigin,
   type CaptureRecord,
   type HotkeyRegistrationStatusSnapshot,
@@ -42,6 +44,27 @@ function fmtTrayDuration(seconds: number): string {
 }
 
 type ModeKind = "auto" | "region" | "window" | "full" | "all" | "timed";
+
+function trayPopoverLayout(workArea?: { widthDip: number; heightDip: number }): {
+  density: "regular" | "compact";
+  widthCss: number;
+} {
+  const widthDip =
+    workArea?.widthDip ??
+    (typeof window.screen?.availWidth === "number" ? window.screen.availWidth : null);
+  const heightDip =
+    workArea?.heightDip ??
+    (typeof window.screen?.availHeight === "number" ? window.screen.availHeight : null);
+  return {
+    density: popoverDensityForWorkArea({ widthDip, heightDip }),
+    widthCss: popoverWidthCss({
+      kind: "tray",
+      workAreaWidthDip: widthDip,
+      workAreaHeightDip: heightDip,
+      zoomFactor: window.pwrsnapApi?.getZoomFactor?.() ?? 1
+    })
+  };
+}
 
 /** The explicit-mode grid. `auto` (Quick Capture) and video both live
  *  above the grid as prominent headline buttons; the grid holds the
@@ -367,15 +390,20 @@ export function TrayMenu() {
   // pattern rather than raising the ceiling again — and do NOT derive
   // the cap from the window's own size (see FloatOverHost.tsx).
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const initialLayout = trayPopoverLayout();
   useLayoutEffect(() => {
     const el = containerRef.current;
     if (el === null) return;
-    let posted = -1;
+    let posted: { width: number; height: number } | null = null;
+    let positionedWorkArea: { widthDip: number; heightDip: number } | undefined;
     const post = (force = false): void => {
+      const layout = trayPopoverLayout(positionedWorkArea);
+      el.dataset.popoverDensity = layout.density;
+      el.style.width = `${layout.widthCss}px`;
       const rect = el.getBoundingClientRect();
       const target = Math.ceil(rect.height);
-      if (!force && target === posted) return;
-      posted = target;
+      if (!force && posted?.width === layout.widthCss && posted.height === target) return;
+      posted = { width: layout.widthCss, height: target };
       // Direct IPC — same shape as FloatOverHost.tsx. The earlier
       // version of this code dispatched a `pwrsnap:tray:resize`
       // CustomEvent that a sibling `<TrayResizeForwarder/>` (with
@@ -388,9 +416,29 @@ export function TrayMenu() {
       // observer didn't re-fire and the popover got stuck at its
       // 440×440 constructor frame. Calling the preload API directly
       // removes the race entirely.
-      window.pwrsnapApi?.requestTrayResize?.({ width: 440, height: target });
+      window.pwrsnapApi?.requestTrayResize?.({
+        width: layout.widthCss,
+        height: target
+      });
     };
     post();
+    const offWorkArea = window.pwrsnapApi?.on(
+      EVENT_CHANNELS.trayWorkAreaChanged,
+      (payload) => {
+        if (payload === null || typeof payload !== "object") return;
+        const { widthDip, heightDip } = payload as { widthDip?: unknown; heightDip?: unknown };
+        if (
+          typeof widthDip !== "number" ||
+          !Number.isFinite(widthDip) ||
+          widthDip <= 0 ||
+          typeof heightDip !== "number" ||
+          !Number.isFinite(heightDip) ||
+          heightDip <= 0
+        ) return;
+        positionedWorkArea = { widthDip, heightDip };
+        post();
+      }
+    );
     const ro = new ResizeObserver(() => post());
     ro.observe(el);
     // Zoom self-detection. The session zoom factor can change out
@@ -429,6 +477,7 @@ export function TrayMenu() {
     armDprQuery();
     return () => {
       ro.disconnect();
+      offWorkArea?.();
       dprQuery?.removeEventListener("change", onDprChange);
     };
   }, []);
@@ -482,7 +531,11 @@ export function TrayMenu() {
   });
 
   return (
-    <div ref={containerRef} style={{ display: "inline-block", width: "100%" }}>
+    <div
+      ref={containerRef}
+      data-popover-density={initialLayout.density}
+      style={{ display: "inline-block", width: `${initialLayout.widthCss}px` }}
+    >
     <div className="ps-tray">
       <div className="ps-tray__hdr">
         <div className="ps-tray__brand">

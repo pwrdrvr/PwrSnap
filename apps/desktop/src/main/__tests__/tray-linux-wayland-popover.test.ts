@@ -38,6 +38,7 @@ const mocks = vi.hoisted(() => {
       }),
       focus: vi.fn(),
       getSize: vi.fn(() => [440, 620] as [number, number]),
+      getContentSize: vi.fn(() => [440, 620] as [number, number]),
       hide: vi.fn(() => {
         visible = false;
         calls.push("hide");
@@ -184,11 +185,11 @@ function popoverRow(platform: "linux" | "darwin" | "win32"): MenuItemConstructor
 }
 
 /** Stand in for the renderer's ResizeObserver posting its measured height. */
-function postRendererMeasurement(height: number): void {
+function postRendererMeasurement(height: number, width = 440): void {
   const handler = mocks.ipcHandlers.get(TRAY_RESIZE_CHANNEL);
   if (handler === undefined) throw new Error("tray resize channel was never wired");
   const window = mocks.windows.at(-1);
-  handler({ sender: window?.webContents }, { height });
+  handler({ sender: window?.webContents }, { width, height });
 }
 
 /** Click the menu row, let the renderer measure, and settle the open. */
@@ -266,6 +267,13 @@ describe("opening the popover from the menu row", () => {
     await vi.waitFor(() => {
       expect(mocks.windows.at(-1)?.showInactive).toHaveBeenCalled();
     });
+  });
+
+  test("applies a compact renderer width as well as its measured height", async () => {
+    const row = popoverRow("linux");
+    (row?.click as () => void)();
+    postRendererMeasurement(620, 360);
+    expect(mocks.windows.at(-1)?.setContentSize).toHaveBeenLastCalledWith(360, 620, false);
   });
 
   test("shows anyway if the renderer never measures", async () => {

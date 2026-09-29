@@ -13,6 +13,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import {
   DEFAULT_HOTKEYS,
+  EVENT_CHANNELS,
   type HotkeyRegistrationStatusSnapshot,
   type HotkeySettingKey,
   type Settings
@@ -92,8 +93,12 @@ function installTrayApi(
   status?: HotkeyRegistrationStatusSnapshot
 ): {
   calls: string[];
+  resize: ReturnType<typeof vi.fn>;
+  emit: (channel: string, payload: unknown) => void;
 } {
   const calls: string[] = [];
+  const resize = vi.fn();
+  const handlers = new Map<string, EventHandler>();
   const merged: Settings["hotkeys"] = { ...DEFAULT_HOTKEYS, ...hotkeys };
   window.pwrsnapApi = {
     // The tooltip renders through `acceleratorToDisplayKeys`, which is
@@ -112,11 +117,14 @@ function installTrayApi(
       if (name === "capture:presetMetrics") return { ok: true, value: { metrics: [] } };
       return { ok: true, value: undefined };
     }),
-    on: (_channel: string, _handler: EventHandler) => () => undefined,
-    requestTrayResize: vi.fn(),
+    on: (channel: string, handler: EventHandler) => {
+      handlers.set(channel, handler);
+      return () => handlers.delete(channel);
+    },
+    requestTrayResize: resize,
     startCaptureDrag: vi.fn()
   } as unknown as NonNullable<Window["pwrsnapApi"]>;
-  return { calls };
+  return { calls, resize, emit: (channel, payload) => handlers.get(channel)?.(payload) };
 }
 
 async function renderTray(): Promise<HTMLDivElement> {
@@ -151,6 +159,44 @@ afterEach(() => {
 });
 
 describe("TrayMenu — Open Library button", () => {
+  test("publishes the compact width on a low-resolution work area", async () => {
+    const originalWidth = Object.getOwnPropertyDescriptor(window.screen, "availWidth");
+    const originalHeight = Object.getOwnPropertyDescriptor(window.screen, "availHeight");
+    Object.defineProperty(window.screen, "availWidth", { configurable: true, value: 526 });
+    Object.defineProperty(window.screen, "availHeight", { configurable: true, value: 690 });
+    try {
+      const { resize } = installTrayApi({ openLibrary: "" });
+      const el = await renderTray();
+      const wrapper = el.firstElementChild as HTMLElement | null;
+      expect(wrapper?.dataset.popoverDensity).toBe("compact");
+      expect(wrapper?.style.width).toBe("360px");
+      expect(resize).toHaveBeenCalledWith(expect.objectContaining({ width: 360 }));
+    } finally {
+      if (originalWidth === undefined) delete (window.screen as unknown as Record<string, unknown>).availWidth;
+      else Object.defineProperty(window.screen, "availWidth", originalWidth);
+      if (originalHeight === undefined) delete (window.screen as unknown as Record<string, unknown>).availHeight;
+      else Object.defineProperty(window.screen, "availHeight", originalHeight);
+    }
+  });
+
+  test("reposts width when placement moves between displays without changing height", async () => {
+    const { resize, emit } = installTrayApi({ openLibrary: "" });
+    await renderTray();
+    resize.mockClear();
+
+    await act(async () => {
+      emit(EVENT_CHANNELS.trayWorkAreaChanged, { widthDip: 526, heightDip: 690 });
+    });
+    expect(resize).toHaveBeenLastCalledWith(expect.objectContaining({ width: 360 }));
+    const compactHeight = resize.mock.lastCall?.[0]?.height;
+
+    await act(async () => {
+      emit(EVENT_CHANNELS.trayWorkAreaChanged, { widthDip: 1200, heightDip: 900 });
+    });
+    expect(resize).toHaveBeenLastCalledWith({ width: 440, height: compactHeight });
+    expect(resize).toHaveBeenCalledTimes(2);
+  });
+
   // Self-pin the invariant the rest of this file assumes. `installTrayApi`
   // spreads DEFAULT_HOTKEYS, so without this a flip of the shipped default
   // to a real chord would leave all three tests green while the tray went

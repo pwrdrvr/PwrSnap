@@ -59,6 +59,8 @@ export const EVENT_CHANNELS = {
    * then subscribe for subsequent transitions.
    */
   recordingState: "events:recording:state",
+  /** Main → tray renderer: work area of the display chosen for its next placement. */
+  trayWorkAreaChanged: "events:tray:work-area-changed",
   /**
    * Main → the recording-frame window only: where to draw the frame
    * inside that window, and in which platform posture. Payload type:
@@ -585,6 +587,7 @@ export type AiUsageUpdatedEvent = {
 export type EventPayloads = {
   [EVENT_CHANNELS.logEntry]: import("./protocol").AppLogEntry;
   [EVENT_CHANNELS.windowFrameState]: WindowFrameState;
+  [EVENT_CHANNELS.trayWorkAreaChanged]: { widthDip: number; heightDip: number };
   [EVENT_CHANNELS.appUpdateStatus]: AppUpdateStatus;
   [EVENT_CHANNELS.appUpdateCheckResult]: import("./protocol").AppUpdateCheckResult;
   [EVENT_CHANNELS.codexCompatibilityAlertChanged]:

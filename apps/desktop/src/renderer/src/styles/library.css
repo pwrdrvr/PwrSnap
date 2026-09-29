@@ -1891,7 +1891,7 @@
                                    keeps its accent outline)
      bottom-right rail: action buttons + duration chip
 
-   `--psl-chip-bg` / `--psl-chip-radius` below are the shared
+   `--psl-ov-*` / `--psl-chip-radius` below are the shared
    values. Change them here, not per-corner.
    ============================================================ */
 .psl__cell {
@@ -1940,7 +1940,6 @@
      Windows, Linux, or macOS. Explicit interactive children opt back in. */
   pointer-events: none;
   /* Shared corner-chrome values — see the ring-states block above. */
-  --psl-chip-bg: color-mix(in srgb, var(--bg-app) 85%, transparent);
   --psl-chip-radius: 5px;
   /* ONE treatment for every control drawn over a thumbnail (cart box,
      Edit / Trash, time, duration). Theme-stable (derived from
@@ -1985,7 +1984,7 @@
    content honest (a tiny menu-bar region capture should look small,
    not zoomed-and-cropped to fill the cell). */
 .psl__cell-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
-/* Time badge — shares `--psl-chip-bg` / `--psl-chip-radius` / 10px mono
+/* Time badge — shares `--psl-ov-*` / `--psl-chip-radius` / 10px mono
    with the duration chip and the action pills (see the ring-states
    block). z-index 2 keeps it above the cart box and the rail's contents
    are lifted above the app pill (see below). */
@@ -2295,8 +2294,10 @@
 .psl__cell-cart:focus-visible {
   opacity: 1;
 }
+/* Mix the accent INTO the dark fill: a bare translucent accent would drop
+   the fill and leave the box unbacked on a white capture. */
 .psl__cell-cart:hover {
-  background: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 55%, var(--shadow-base));
   border-color: var(--accent-bright, var(--accent));
 }
 /* Checked state: filled accent, always visible (overrides the

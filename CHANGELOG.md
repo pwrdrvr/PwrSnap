@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.1.10 - 2026-09-28
+
+This release adds direct AI model connections, non-destructive video cutting,
+and a dock for captures that are still being processed.
+
+- AI Connections - Added direct API connections for OpenAI, compatible chat
+  endpoints, and Anthropic, so selected models can power Library chat, Sizzle
+  chat, and capture enrichment without an installed agent.
+- Video Editing - Added split, cut, and automatic idle-removal controls to the
+  Library timeline. Playback and GIF/MP4 exports follow the kept footage while
+  the original recording remains untouched.
+- Agent Video Tools - Added video inspection and editing through PwrSnap MCP
+  and in-app chat, including activity-based cuts that remove long still stretches.
+- Sizzle Reels - Improved video clips to follow Library cuts by default, with
+  an option to play the removed footage when a reel needs it.
+- Float-Over - Added a movable screen-edge dock for captures still being read
+  by AI, keeping their progress and completed results reachable without holding
+  the post-capture toast open on macOS, Windows, and X11.
+
 ## v1.1.9 - 2026-09-28
 
 This patch makes update downloads, copying, and diagnostic capture more

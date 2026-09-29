@@ -37,6 +37,7 @@ export type ResolvedVideoExport = {
 };
 
 export type ResolveVideoExportError =
+  | { kind: "invalid_segments"; message: string }
   | { kind: "not_found" }
   | { kind: "not_a_video" }
   | { kind: "audio_track_missing"; track: "system" | "microphone" };
@@ -59,7 +60,9 @@ export async function resolveVideoExport(
     return { ok: false, error: { kind: "not_a_video" } };
   }
 
-  const { range, spans } = resolveVideoExportSpans(record.video, coords);
+  const resolved = resolveVideoExportSpans(record.video, coords);
+  if (!resolved.ok) return { ok: false, error: { kind: "invalid_segments", message: resolved.error.message } };
+  const { range, spans } = resolved.value;
   // GIF is always silent regardless of caller intent; an MP4 with no
   // explicit choice keeps what the user's MP4 audio preference keeps.
   // `video:export` resolves through the same function, so its preflight
@@ -102,6 +105,7 @@ export function mapVideoResolveError(
   verb: string,
   captureId: string
 ): { kind: "validation"; code: string; message: string } {
+  if (error.kind === "invalid_segments") return { kind: "validation", code: "invalid_segments", message: `${verb}: ${error.message}` };
   if (error.kind === "not_found") {
     return {
       kind: "validation",

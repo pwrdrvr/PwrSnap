@@ -9,8 +9,7 @@ import type { ReactElement } from "react";
 import {
   SIZZLE_SCENE_MEDIA_MAX_SEC,
   SIZZLE_TRANSITIONS,
-  sizzleMediaSpans,
-  sizzleMediaSpansDurationSec,
+  sizzleLibraryCutSummary,
   sizzleUsesCaptureCuts,
   type CaptureRecord,
   type SizzleAudioSource,
@@ -459,13 +458,13 @@ function libraryCutsFor(
   const video = capture?.kind === "video" ? capture.video ?? null : null;
   if (video === null) return null;
   const trim = scene.mediaTrim ?? { startSec: video.defaultRange.start, endSec: video.defaultRange.end };
-  const withCuts = sizzleMediaSpans({ trim, segments: video.segments, useCaptureCuts: true });
-  if (withCuts.length < 2) return null;
-  const keptSec = sizzleMediaSpansDurationSec(withCuts);
+  const summary = sizzleLibraryCutSummary(trim, video.segments);
+  if (summary === null) return null;
+  const { keptSec, removedSec } = summary;
   return {
     skipping: sizzleUsesCaptureCuts(scene),
     // What the scene plays, capped as the render caps it.
     keptSec: Math.min(keptSec, SIZZLE_SCENE_MEDIA_MAX_SEC),
-    removedSec: trim.endSec - trim.startSec - keptSec
+    removedSec
   };
 }

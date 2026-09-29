@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { ok, err, recordingFailureSummary,
   describeVideoEdit,
   normalizeVideoSegments,
+  VIDEO_SEGMENTS_MAX,
   subtractVideoSpans,
   VIDEO_ACTIVITY_LEVEL_LEGEND,
   videoActivityLevelString,
@@ -1003,17 +1004,24 @@ export function registerRecordingHandlers(): void {
         log.error("video:edit activity analysis failed", { captureId: record.id, message });
         return err({ kind: "render", code: "video_activity_failed", message, cause });
       }
+      // Analysis yields to other UI/chat/MCP edits. Compose with the live edit.
+      const live = videoRecordFor(record.id, verb);
+      if (!live.ok) return live;
+      const current = live.value.video.segments;
       const cuts = videoStillCuts(analysis.track, {
         minStillSec,
         paddingSec,
         maxLevel: options.treatMinorAsStill === true ? 1 : 0,
         durationSec: d
       });
-      next = cuts.length === 0 ? video.segments : subtractVideoSpans(video.segments, cuts, d);
+      next = cuts.length === 0 ? current : subtractVideoSpans(current, cuts, d);
       // Everything was still: leave the edit alone rather than refuse —
       // "cut the boring parts" of a video with nothing but boring parts
       // is a no-op, not an error the caller must handle.
-      if (next.length === 0) next = video.segments;
+      if (next.length === 0) next = current;
+    }
+    if (next.length > VIDEO_SEGMENTS_MAX) {
+      return err(validationError("invalid_segments", `This edit would exceed ${VIDEO_SEGMENTS_MAX} kept spans. Join splits or make fewer cuts; no changes were saved.`));
     }
     const stored = setVideoSegments(record.id, next);
     if (stored === null) {
@@ -1263,7 +1271,9 @@ export function registerRecordingHandlers(): void {
           validationError("not_a_video", `video:export: ${req.captureId} is not a video capture`)
         );
       }
-      const { range, spans } = resolveVideoExportSpans(record.video, req);
+      const resolvedSpans = resolveVideoExportSpans(record.video, req);
+      if (!resolvedSpans.ok) return failBeforeTerminal(resolvedSpans.error);
+      const { range, spans } = resolvedSpans.value;
       // Same resolution as resolveVideoExport, so the visible preflight
       // lands on the cache key copy / path / drag then hit instead of
       // encoding twice. An omitted MP4 choice is the user's preference.
@@ -1393,7 +1403,9 @@ export function registerRecordingHandlers(): void {
     }
     const audioError = videoExportAudioError(req.audio, "video:presetMetrics");
     if (audioError !== null) return err(audioError);
-    const { range: normalized, spans } = resolveVideoExportSpans(record.video, req);
+    const resolvedSpans = resolveVideoExportSpans(record.video, req);
+    if (!resolvedSpans.ok) return resolvedSpans;
+    const { range: normalized, spans } = resolvedSpans.value;
     const durationSec = videoKeptDurationSec(spans);
     // The cache key the exporter would use for these spans — see
     // `exportSegmentsKey` in recording-exporter.ts.

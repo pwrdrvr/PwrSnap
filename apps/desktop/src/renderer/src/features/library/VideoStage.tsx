@@ -746,6 +746,7 @@ export function VideoStage({
       aria-label={`Video player, ${formatTimecode(durationSec)}`}
       data-testid="video-stage"
     >
+      {trim.editError && <div role="alert">{trim.editError}</div>}
       <div className="psl__video-frame">
         <video
           ref={videoRef}

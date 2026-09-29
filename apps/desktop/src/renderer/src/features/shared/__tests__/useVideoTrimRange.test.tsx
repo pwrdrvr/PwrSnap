@@ -280,3 +280,14 @@ describe("useVideoTrimRange — segments mode", () => {
     expect(latest!.canUndo).toBe(false);
   });
 });
+
+test("an overflowing split is rejected locally with feedback and no persistence or undo entry", () => {
+  const spans = Array.from({ length: 200 }, (_, i) => ({ start: i * 4, end: i * 4 + 3 }));
+  mount({ captureId: "cap", durationSec: 1000, persistedRange: { start: 0, end: 799 }, persistedSegments: spans });
+  act(() => latest!.setSegments([{ start: 0, end: 1 }, { start: 1, end: 3 }, ...spans.slice(1)], true));
+  expect(latest!.segments).toEqual(spans);
+  expect(latest!.editError).toContain("200");
+  expect(latest!.canUndo).toBe(false);
+  act(() => vi.advanceTimersByTime(PERSIST_DEBOUNCE_MS + 1));
+  expect(dispatched).toEqual([]);
+});

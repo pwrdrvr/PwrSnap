@@ -554,6 +554,13 @@ describe("recording:* command-bus surface", () => {
     };
   }
 
+  test("video:export rejects segments outside the recording before encoding", async () => {
+    mocks.capture = audioCapture({ system: false, microphone: false });
+    const result = await bus.dispatch("video:export", { captureId: "cap-audio", format: "mp4", preset: "med", segments: [{ start: 100, end: 101 }] }, { principal: "ipc" });
+    expect(result).toMatchObject({ ok: false, error: { kind: "validation", code: "invalid_segments" } });
+    expect(mocks.exportVideoRange).not.toHaveBeenCalled();
+  });
+
   test("video:export with no audio keeps every recorded track the saved preference keeps", async () => {
     mocks.capture = audioCapture({ system: true, microphone: true });
 

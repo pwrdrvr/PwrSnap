@@ -325,3 +325,13 @@ describe("videoEditPlaybackStep", () => {
     });
   });
 });
+
+it("normalization preserves all kept footage beyond the persistence limit", () => {
+  const spans = Array.from({ length: 200 }, (_, i) => ({ start: i * 4, end: i * 4 + 3 }));
+  const split = normalizeVideoSegments(splitVideoSegmentsAt(spans, 1), 1000);
+  expect(split).toHaveLength(201);
+  expect(split.at(-1)).toEqual(spans.at(-1));
+  const cut = cutVideoSegments(spans, [{ start: 1, end: 2 }], 1000);
+  expect(cut).toHaveLength(201);
+  expect(cut.at(-1)).toEqual(spans.at(-1));
+});

@@ -39,7 +39,7 @@ import type {
   RenderPreset,
   Result
 } from "@pwrsnap/shared";
-import { bus, type CommandContext } from "../command-bus";
+import { bus, type CommandContext, type CommandHandler } from "../command-bus";
 import {
   pickRegion,
   getLastWindowListSnapshot,
@@ -91,7 +91,7 @@ import {
   type WindowsClipboardImageReadResult
 } from "../clipboard/windows-file-clipboard-reader";
 import { broadcastCapturesChanged } from "../events";
-import { setFloatOverState } from "../float-over";
+import { releaseFloatOverDock, setFloatOverState } from "../float-over";
 import { hideTrayPopoverIfVisible, setTrayCountdown } from "../tray";
 import { findMainLibraryWindow, scheduleDockReclaim } from "../window";
 import { maybeEnqueueCaptureEnrichment } from "./codex-handlers";
@@ -901,7 +901,7 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
   // panel — so there's nothing to recover. If a future change makes
   // this path activate PwrSnap (e.g. a confirmation HUD), re-introduce
   // both calls here in lockstep with capture-handlers.ts:254-262.
-  bus.register("capture:fullScreen", async (req) => {
+  bus.register("capture:fullScreen", releasingFloatOverDock<"capture:fullScreen">(async (req) => {
     const blocked = await guardScreenCapture();
     if (blocked) return blocked;
     const storageBlocked = await ensureCapturesDirReady();
@@ -953,9 +953,9 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       });
     }
     return persisted;
-  });
+  }));
 
-  bus.register("capture:allScreens", async (req) => {
+  bus.register("capture:allScreens", releasingFloatOverDock<"capture:allScreens">(async (req) => {
     const blocked = await guardScreenCapture();
     if (blocked) return blocked;
     const storageBlocked = await ensureCapturesDirReady();
@@ -1101,7 +1101,7 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       record: persisted.value
     });
     return ok({ records: [persisted.value] });
-  });
+  }));
 
   bus.register("capture:window", async () => {
     return err({
@@ -1909,8 +1909,28 @@ async function unlinkTempPaths(paths: readonly string[]): Promise<void> {
  * the WindowServer to finish the hide, short enough that the user
  * doesn't perceive lag between click and shutter.
  */
+/**
+ * `capture:fullScreen` / `capture:allScreens` hide PwrSnap's chrome — the
+ * float-over's screen-edge dock included — with no selector session
+ * around them. A capture that lands opens its toast, which ends the
+ * hide; one that fails opens nothing, so the dock is brought back here
+ * or it stays down until the next capture. A no-op whenever anything
+ * else owns the float-over by then.
+ */
+function releasingFloatOverDock<C extends "capture:fullScreen" | "capture:allScreens">(
+  handler: CommandHandler<C>
+): CommandHandler<C> {
+  return async (req, ctx) => {
+    try {
+      return await handler(req, ctx);
+    } finally {
+      releaseFloatOverDock();
+    }
+  };
+}
+
 async function hidePwrSnapChromeAndSettle(): Promise<void> {
-  setFloatOverState({ kind: "cancel" });
+  setFloatOverState({ kind: "cancel", chromeHide: true });
   hideTrayPopoverIfVisible();
   await new Promise((resolve) => setTimeout(resolve, 50));
 }

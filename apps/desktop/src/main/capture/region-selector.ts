@@ -934,7 +934,7 @@ export async function pickRegion(
   const chromeStage = latencyTrace?.begin("pwrsnap_chrome_protection");
   if (!keepPwrSnapChrome) {
     hideTrayPopoverIfVisible();
-    setFloatOverState({ kind: "cancel" });
+    setFloatOverState({ kind: "cancel", chromeHide: true });
   }
   // Content-protect the windows the trigger says shouldn't appear in
   // the snapshot (e.g. the Library when the capture was started from

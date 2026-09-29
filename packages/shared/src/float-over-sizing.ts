@@ -114,3 +114,23 @@ export function floatOverMaxContentHeightCss(options: {
     Number.isFinite(zoomFactor) && zoomFactor > 0 ? zoomFactor : 1;
   return Math.floor(floatOverMaxContentHeightDip(workAreaHeightDip) / zoom);
 }
+
+/**
+ * The toast's width, in DIP. The window is this wide while it shows the
+ * toast alone; the in-flight rail beside it adds its own width, and the
+ * screen-edge dock is far narrower. The renderer draws the toast at
+ * `floatOverToastWidthCss` and reports what it drew, so main learns the
+ * window's width from the same measurement as its height.
+ */
+export const FLOAT_OVER_TOAST_WIDTH_DIP = 392;
+
+/**
+ * The toast's width in CSS pixels, so that main's `Math.ceil(css * zoom)`
+ * lands back on `FLOAT_OVER_TOAST_WIDTH_DIP`. A zoomed float-over keeps
+ * its physical width and lays its content out narrower, as it did when
+ * main fixed the width itself. Floored for the same reason as the height.
+ */
+export function floatOverToastWidthCss(zoomFactor: number): number {
+  const zoom = Number.isFinite(zoomFactor) && zoomFactor > 0 ? zoomFactor : 1;
+  return Math.floor(FLOAT_OVER_TOAST_WIDTH_DIP / zoom);
+}

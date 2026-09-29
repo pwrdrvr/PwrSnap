@@ -2067,9 +2067,9 @@ describe("float-over scroll cap", () => {
   }
 
   function publishedCapPx(el: HTMLElement): number {
-    // The host writes the ceiling onto the measured wrapper — its own
-    // outermost node, which is `container`'s only child.
-    const wrapper = el.firstElementChild as HTMLElement | null;
+    // The host writes the ceiling onto the measured wrapper, the one
+    // node inside `.fo-host` that its layout effect observes.
+    const wrapper = el.querySelector<HTMLElement>(".fo-host > .fo-host__measure");
     expect(wrapper).not.toBeNull();
     const raw = wrapper!.style.getPropertyValue("--fo-max-h");
     expect(raw).toMatch(/^\d+px$/);

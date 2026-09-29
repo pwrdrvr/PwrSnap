@@ -39,6 +39,8 @@ import { useVideoTrimRange } from "../shared/useVideoTrimRange";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import { FoIcon } from "./FoIcons";
 import { fitTagChips } from "./fitTagRow";
+import { DOCK_TUCK_COUNTDOWN_MS } from "./float-over-dock-model";
+import { ageTickMs, capturedAtMs, formatCaptureAgo, useNow } from "./float-over-age";
 
 const RES_PRESETS = [
   { id: "low", label: "Low" },
@@ -367,6 +369,15 @@ export type FloatOverAsset =
       onDiscard?: () => void;
     };
 
+/** "3m 23s ago", ticking. Its own component so the clock re-renders
+ *  this span, not the whole toast. */
+function CaptureAge({ capturedAt }: { capturedAt: string | undefined }): React.ReactElement {
+  const at = capturedAt === undefined ? null : capturedAtMs(capturedAt);
+  const initial = Date.now();
+  const now = useNow(at === null ? null : ageTickMs(at, initial));
+  return <span>{at === null ? "just now" : formatCaptureAgo(at, now)}</span>;
+}
+
 export function FloatOver({
   variant = "standard",
   asset,
@@ -377,6 +388,7 @@ export function FloatOver({
   srcH = 1800,
   srcBytes = 2.4 * 1024 * 1024,
   srcDpr = 2,
+  capturedAt,
   exportStrategy = "legacy",
   capturesLocation = "documents",
   capturesRootOverridden = false,
@@ -384,6 +396,9 @@ export function FloatOver({
   copyPulses,
   videoCopyShortcut,
   onDismiss,
+  onTimeout,
+  dockable = false,
+  externalHover = false,
   onEdit,
   onReveal,
   onCopy,
@@ -431,6 +446,9 @@ export function FloatOver({
    *  preview "Retina" badge and the DPI-aware export ladder. Defaults to
    *  2 to match the legacy hardcoded "2× retina" badge. */
   srcDpr?: number;
+  /** The capture's `captured_at`. The header counts its age from this;
+   *  without one it says "just now", as the design mocks do. */
+  capturedAt?: string | undefined;
   /** Active export-preset strategy. `legacy` (default) keeps the cards
    *  visually identical for normal users; the DPI-aware strategies add
    *  the Retina/scale tags + rescale the dim estimates. */
@@ -442,7 +460,27 @@ export function FloatOver({
   copyMetrics?: PresetMetricMap | undefined;
   copyPulses?: Readonly<Record<CopyPreset, number>> | undefined;
   videoCopyShortcut?: VideoCopyShortcutRequest | null | undefined;
+  /** The user closed the toast: the X, the footer's Dismiss. */
   onDismiss?: () => void;
+  /**
+   * The countdown ran out (or the user pressed Tuck). `inFlight` says the
+   * model had not answered yet, which is the host's cue to tuck the snap
+   * to the screen-edge dock rather than close it. Without it the
+   * countdown closes the toast through `onDismiss`, as it always did.
+   */
+  onTimeout?: (outcome: { inFlight: boolean }) => void;
+  /**
+   * The host can tuck this toast to the screen-edge dock. When it can and
+   * enrichment will run, the countdown no longer waits for the model: it
+   * runs `DOCK_TUCK_COUNTDOWN_MS` and ends in a tuck if the model is still
+   * reading. False where PwrSnap cannot place windows (native Wayland) —
+   * the toast then holds the corner until the model answers.
+   */
+  dockable?: boolean;
+  /** The pointer is over part of the float-over window that is not this
+   *  toast (the rail beside it), or its menu is open. Pauses the
+   *  countdown exactly as hovering the toast does. */
+  externalHover?: boolean;
   onEdit?: () => void;
   /** Fired from the folder button on the image preview's hover row.
    *  Parent dispatches `library:openInLibrary` so the toast's capture
@@ -734,9 +772,20 @@ export function FloatOver({
   // editing — once the pointer leaves the toast the auto-close timer must
   // resume. A prior one-shot `aiAccepted` flag lived here and was never
   // reset, which pinned the toast on screen forever after a single Save.
+  // Enrichment is going to run and the host can tuck: the countdown runs
+  // while the model reads, and a snap still being read when it ends goes
+  // to the dock. Otherwise the toast holds the corner until the model
+  // answers, as it always did.
+  const tuckMode = dockable && !aiNeedsConsent && providerAvailable;
+  const inFlight = thinking || awaitingAi;
+  const inFlightRef = useRef(inFlight);
+  inFlightRef.current = inFlight;
+  const onTimeoutRef = useRef(onTimeout);
+  onTimeoutRef.current = onTimeout;
+  const autoMs = tuckMode ? DOCK_TUCK_COUNTDOWN_MS : cfg.autoMs;
   const isPaused =
-    thinking ||
-    awaitingAi ||
+    (!tuckMode && inFlight) ||
+    externalHover ||
     hovering ||
     nativeDragging ||
     trimDragging ||
@@ -778,8 +827,37 @@ export function FloatOver({
     replaceVisibleTags(tagsWithMutation(acceptedTags, pendingTagMutationRef.current));
   }, [acceptedTags.join("\0"), replaceVisibleTags]);
 
+  // The model answered while the toast is up: give the answer a full
+  // countdown to be read, instead of whatever was left of the tuck one.
+  const wasInFlightRef = useRef(inFlight);
   useEffect(() => {
-    if (!startCountdown || !cfg.autoMs) return;
+    const was = wasInFlightRef.current;
+    wasInFlightRef.current = inFlight;
+    if (!tuckMode || !was || inFlight) return;
+    elapsedAtPause.current = 0;
+    startedAt.current = Date.now();
+    setProgress(1);
+  }, [inFlight, tuckMode]);
+
+  // Countdown over, or the Tuck button: play the exit, then hand the
+  // host the outcome. Reads refs so a re-render mid-exit cannot swap in
+  // a stale answer.
+  const finishCountdown = (): void => {
+    // Once. The countdown keeps ticking through the exit animation, so a
+    // Tuck or X pressed near the end would otherwise close twice.
+    if (exitTimerRef.current !== null) return;
+    setExiting(true);
+    exitTimerRef.current = setTimeout(() => {
+      const timeout = onTimeoutRef.current;
+      if (timeout !== undefined) timeout({ inFlight: inFlightRef.current });
+      else onDismissRef.current?.();
+    }, 220);
+  };
+  const finishCountdownRef = useRef(finishCountdown);
+  finishCountdownRef.current = finishCountdown;
+
+  useEffect(() => {
+    if (!startCountdown || !autoMs) return;
     if (isPaused) {
       elapsedAtPause.current += Date.now() - startedAt.current;
       startedAt.current = Date.now();
@@ -788,15 +866,14 @@ export function FloatOver({
     }
     const tick = () => {
       const elapsed = elapsedAtPause.current + (Date.now() - startedAt.current);
-      const p = Math.max(0, 1 - elapsed / cfg.autoMs);
+      const p = Math.max(0, 1 - elapsed / autoMs);
       setProgress(p);
       if (p <= 0) {
-        setExiting(true);
-        // Use the ref so we always call the latest onDismiss without
-        // requiring the effect to re-subscribe on every parent
-        // re-render (which would reset `startedAt.current` mid-tick
-        // and stall the countdown — bug vii).
-        exitTimerRef.current = setTimeout(() => onDismissRef.current?.(), 220);
+        // Through a ref so we always reach the latest callbacks without
+        // requiring the effect to re-subscribe on every parent re-render
+        // (which would reset `startedAt.current` mid-tick and stall the
+        // countdown — bug vii).
+        finishCountdownRef.current();
         return;
       }
       rafRef.current = requestAnimationFrame(tick);
@@ -811,7 +888,7 @@ export function FloatOver({
     // every parent re-render (e.g., enrichment IPC arrival),
     // resetting startedAt.current and freezing the countdown.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPaused, startCountdown, cfg.autoMs]);
+  }, [isPaused, startCountdown, autoMs]);
 
   useEffect(() => {
     const finishNativeDrag = (event?: MouseEvent | DragEvent): void => {
@@ -883,6 +960,7 @@ export function FloatOver({
   }, []);
 
   const dismissNow = () => {
+    if (exitTimerRef.current !== null) return;
     setExiting(true);
     exitTimerRef.current = setTimeout(() => onDismiss?.(), 220);
   };
@@ -910,7 +988,7 @@ export function FloatOver({
       onMouseEnter={() => setHovering(true)}
       onMouseLeave={() => setHovering(false)}
     >
-      {startCountdown && cfg.autoMs ? (
+      {startCountdown && autoMs ? (
         <div className="fo__progress">
           <div className="fo__progress-fill" style={{ transform: `scaleX(${progress})` }} />
         </div>
@@ -930,7 +1008,9 @@ export function FloatOver({
               printed on the preview's corner overlays, and the video toast
               is the one that runs out of height (FLOAT_OVER_HEIGHT_MAX). */}
           {asset?.kind === "video" ? null : (
-            <div className="fo__hdr-sub">{dimText(srcW, srcH)} · just now</div>
+            <div className="fo__hdr-sub">
+              {dimText(srcW, srcH)} · <CaptureAge capturedAt={capturedAt} />
+            </div>
           )}
         </div>
         <div className="fo__hdr-actions">
@@ -938,6 +1018,17 @@ export function FloatOver({
               separate Pin affordance. The footer Edit button is the
               primary editor entry; an extra pencil here would be
               redundant. */}
+          {tuckMode && inFlight && onTimeout !== undefined ? (
+            <button
+              className="fo__icon-btn"
+              type="button"
+              title="Tuck to the screen edge until the model answers"
+              aria-label="Tuck to the screen edge"
+              onClick={finishCountdown}
+            >
+              <FoIcon name="tuck" size={12} />
+            </button>
+          ) : null}
           <button className="fo__icon-btn" title="Dismiss" onClick={dismissNow}>
             <FoIcon name="x" size={12} />
           </button>

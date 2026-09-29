@@ -17,7 +17,7 @@ import { app, dialog, type BrowserWindow } from "electron";
 import { RECORDING_MEDIA_DEFAULTS } from "@pwrsnap/shared";
 import type { RecordingState, RecordingSubject, Settings } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
-import { setFloatOverState } from "../float-over";
+import { releaseFloatOverDock, setFloatOverState } from "../float-over";
 import { getMainLogger } from "../log";
 import { appWindowsOverlappingGlobalRect } from "../capture/rect-overlap";
 import {
@@ -290,7 +290,13 @@ export async function startRecordingFromSelection(
     // picked region reaches the bottom-right of the display. The snap
     // path has always parked it on cancel; the record path parked it
     // nowhere.
-    setFloatOverState({ kind: "cancel" });
+    //
+    // `holdDock`: this cancel ends the selector session, which would
+    // otherwise bring the screen-edge dock back — into the countdown and
+    // the first frames. The take's own end restores it (float-over.ts
+    // watches the recording state); `finally` covers a take that never
+    // started.
+    setFloatOverState({ kind: "cancel", holdDock: true });
     // Compositor flush — the park must reach the window server before we
     // lower the selector, or there is a one-frame window where the toast
     // is visible. Same 50 ms the cancel paths use.
@@ -497,5 +503,6 @@ export async function startRecordingFromSelection(
     }
   } finally {
     tearDown();
+    releaseFloatOverDock();
   }
 }

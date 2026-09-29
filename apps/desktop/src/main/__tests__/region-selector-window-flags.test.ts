@@ -1165,7 +1165,7 @@ describe("region-selector — PwrSnap chrome leaves the frame before the screen 
     });
 
     expect(chromeMocks.hideTrayPopoverIfVisible).toHaveBeenCalledTimes(1);
-    expect(chromeMocks.setFloatOverState).toHaveBeenCalledWith({ kind: "cancel" });
+    expect(chromeMocks.setFloatOverState).toHaveBeenCalledWith({ kind: "cancel", chromeHide: true });
 
     const hideOrder = chromeMocks.hideTrayPopoverIfVisible.mock.invocationCallOrder[0]!;
     const parkOrder = chromeMocks.setFloatOverState.mock.invocationCallOrder[0]!;

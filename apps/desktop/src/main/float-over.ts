@@ -4,8 +4,18 @@
 //
 //   HIDDEN → IDLE (pre-show under selector)
 //          ↘ LOADED (post-commit, populated)
-//   IDLE   → LOADED (commit) | HIDDEN (cancel)
-//   LOADED → HIDDEN (dismiss / auto-dismiss / cancel-during-loaded)
+//   IDLE   → LOADED (commit) | HIDDEN (cancel) | TUCKED (cancel, snaps docked)
+//   LOADED → HIDDEN (dismiss / cancel-during-loaded) | TUCKED (tuck)
+//   TUCKED → LOADED (open a docked snap / new capture) | HIDDEN (dismiss,
+//            chrome hide before a capture, a recording taking the screen)
+//
+// TUCKED is the screen-edge dock. A slow (local) enrichment model can take
+// 40s+ per snap; rather than hold the corner that long, the toast's
+// countdown runs anyway and, if the model is still reading, the toast
+// tucks to a stack of tabs on the edge. The RENDERER owns which snaps
+// wait there (it is the one that knows their enrichment status); main
+// owns where the dock sits and when it may be seen. The same singleton
+// window plays both parts — it is resized into the stack and back.
 //
 // Why a state machine instead of `loadURL` per capture: every reload
 // re-mounts React, re-establishes IPC subscriptions, AND leaves any
@@ -20,39 +30,93 @@
 // reveals the already-painted toast — no post-hoc show race with
 // previous-app activation.
 
-import { BrowserWindow, globalShortcut, ipcMain, screen } from "electron";
+import { BrowserWindow, globalShortcut, ipcMain, Menu, screen } from "electron";
 import {
   EVENT_CHANNELS,
   FLOAT_OVER_ANCHOR_MARGIN_DIP,
   FLOAT_OVER_HEIGHT_MIN_DIP,
+  FLOAT_OVER_TOAST_WIDTH_DIP,
   floatOverMaxContentHeightDip,
   IMAGE_PRESET_COPY_VERB,
+  type FloatOverDockSide,
   type FloatOverEvent,
+  type FloatOverOverflowChoice,
+  type FloatOverOverflowItem,
   type RenderPreset
 } from "@pwrsnap/shared";
 import { bus } from "./command-bus";
 import { hotkeyRecorderSuspension } from "./hotkeys/hotkey-recorder-suspension-instance";
 import { windowPlacementIsOurs } from "./linux-window-placement";
 import { getMainLogger } from "./log";
+import { isRecordingActive, subscribeToRecordingState } from "./recording/recording-state";
 import { createFloatOverWindow } from "./window";
 
 const log = getMainLogger("pwrsnap:float-over");
 
 const FLOAT_OVER_RESIZE_CHANNEL = "float-over:resize";
 const FLOAT_OVER_STATE_REQUEST_CHANNEL = "float-over:request-state";
-/** Window width is fixed by the design — must match `width` in
- *  `createFloatOverWindow`. The toast's `.fo` element is forced to
- *  `width: 100%` of the body via `body[data-stage="float-over"] .fo`,
- *  so all variants render at exactly this width. */
-const FLOAT_OVER_WIDTH = 392;
+const FLOAT_OVER_DOCK_DRAG_CHANNEL = "float-over:dock-drag";
+const FLOAT_OVER_PASS_THROUGH_CHANNEL = "float-over:pass-through";
+/** Backstop for a renderer measurement bug. The widest real layout is
+ *  the toast plus its rail. */
+const FLOAT_OVER_WIDTH_MAX_DIP = 720;
+/** Where the dock's top sits on a fresh launch, as a fraction of the
+ *  work area's height: above the corner the toast itself occupies. */
+const DOCK_DEFAULT_TOP_FRACTION = 0.3;
 
 type FloatOverState =
   | { kind: "hidden" }
   | { kind: "idle" }
-  | { kind: "loaded"; captureId: string };
+  | { kind: "loaded"; captureId: string }
+  | { kind: "tucked" };
+
+/** Which layout the renderer drew when it posted a size. A post that
+ *  does not match the state main is in is stale and is ignored. */
+type FloatOverLayoutMode = "toast" | "dock";
 
 let singleton: BrowserWindow | null = null;
 let state: FloatOverState = { kind: "hidden" };
+/**
+ * True while the renderer has snaps waiting on the dock. Set by a tuck,
+ * cleared by a dismiss (the renderer dismisses only once its dock is
+ * empty). It is what lets a cancelled selector, or the end of a
+ * recording, bring the dock back instead of leaving it parked.
+ */
+let docked = false;
+/** Where the dock sits: its screen edge, and its top as a fraction of the
+ *  work area's height. Process-lifetime memory — the snaps waiting on the
+ *  dock do not outlive the process either. */
+const dock: { side: FloatOverDockSide; topFraction: number } = {
+  side: "right",
+  topFraction: DOCK_DEFAULT_TOP_FRACTION
+};
+/**
+ * The window is parked until the renderer posts a layout for this mode.
+ * Set when the window has to change SHAPE (toast ↔ dock): showing it
+ * before the renderer has redrawn would put the old shape at the new
+ * position for a frame — a dock-sized sliver of toast in the corner, or
+ * a toast-sized slab on the screen edge.
+ */
+let layoutPending: FloatOverLayoutMode | null = null;
+/** The shape the window was last sized to. Change it through
+ *  `setWindowShape`, which also owns the native shadow. */
+let windowShape: FloatOverLayoutMode = "toast";
+/** A dock drag in progress: where in the window the pointer grabbed it. */
+let dockDrag: { grabOffsetY: number } | null = null;
+/** While a recording owns the screen the dock stays parked — every
+ *  pixel of it would otherwise land in the take (gdigrab on Windows
+ *  records every window; see AGENTS.md §"Mid-take UI"). */
+let recordingOwnsScreen = false;
+let unsubscribeRecordingState: (() => void) | null = null;
+/** Whether the window is currently excluded from screen capture. A new
+ *  window starts capturable. */
+let dockContentProtected = false;
+/** On screen and taking the mouse (not parked). The renderer may only
+ *  turn click-through on while this holds. */
+let takingMouse = false;
+/** The pointer is over a see-through part of the window, so clicks go to
+ *  whatever is behind it. See `wireFloatOverPassThroughChannel`. */
+let passThrough = false;
 /**
  * Display the float-over is currently anchored on, captured at
  * show-idle / show-loaded time. Subsequent content-driven resizes
@@ -109,6 +173,16 @@ function resetFloatOverRuntimeState(): void {
   lastEvent = null;
   rendererSubscribed = false;
   everShown = false;
+  // The snaps waiting on the dock lived in the renderer that just went
+  // away. Where the dock sat is kept: that is the user's choice, not the
+  // renderer's state.
+  docked = false;
+  layoutPending = null;
+  windowShape = "toast";
+  dockDrag = null;
+  dockContentProtected = false;
+  takingMouse = false;
+  passThrough = false;
 }
 
 /**
@@ -161,6 +235,8 @@ export function floatOverHideModelForPlatform(
  */
 function parkOffScreen(window: BrowserWindow): void {
   window.setIgnoreMouseEvents(true);
+  takingMouse = false;
+  passThrough = false;
   if (floatOverHideModelForPlatform(process.platform) === "hide") {
     // Windows AND Linux: a REAL hide().
     //
@@ -198,6 +274,8 @@ function parkOffScreen(window: BrowserWindow): void {
  */
 function restoreOnScreen(window: BrowserWindow): void {
   window.setIgnoreMouseEvents(false);
+  takingMouse = true;
+  passThrough = false;
   if (floatOverHideModelForPlatform(process.platform) === "hide") {
     // `parkOffScreen` really hid this window, so every restore has to really
     // show it — there is no once-only shortcut here. (That shortcut is what
@@ -279,12 +357,27 @@ function wireFloatOverResizeChannel(): void {
     const heightCss = (payload as { height: number }).height;
     if (!Number.isFinite(heightCss)) return;
     if (singleton === null || singleton.isDestroyed()) return;
+    const rawWidth = (payload as { width?: unknown }).width;
+    const widthCss =
+      typeof rawWidth === "number" && Number.isFinite(rawWidth) && rawWidth > 0
+        ? rawWidth
+        : FLOAT_OVER_TOAST_WIDTH_DIP;
+    const mode: FloatOverLayoutMode =
+      (payload as { mode?: unknown }).mode === "dock" ? "dock" : "toast";
+    // A post for the other shape is stale: the renderer drew it before it
+    // processed the state change that main has already made.
+    if (mode !== (state.kind === "tucked" ? "dock" : "toast")) return;
     // Renderer measures CSS pixels (post-zoom). `setContentSize`
     // takes DIP. Convert via zoomFactor — see the matching block in
     // tray.ts/wireTrayResizeChannel for the full rationale; same
     // shared-origin zoom story applies to the float-over.
     const zoom = singleton.webContents.zoomFactor;
+    const widthDip = Math.max(1, Math.min(FLOAT_OVER_WIDTH_MAX_DIP, Math.ceil(widthCss * zoom)));
     const heightDip = Math.ceil(heightCss * zoom);
+    if (mode === "dock") {
+      applyDockLayout(singleton, widthDip, heightDip);
+      return;
+    }
     // Hard floor + ceiling, so a renderer bug can't shrink the toast to
     // nothing or grow it taller than the display it is anchored to.
     //
@@ -300,8 +393,17 @@ function wireFloatOverResizeChannel(): void {
     const maxDip = floatOverMaxContentHeightDip(anchoredWorkAreaHeightDip());
     const clamped = Math.max(FLOAT_OVER_HEIGHT_MIN_DIP, Math.min(maxDip, heightDip));
     const current = singleton.getContentSize();
-    if (current[1] === clamped) return;
-    singleton.setContentSize(FLOAT_OVER_WIDTH, clamped, false);
+    if (current[0] === widthDip && current[1] === clamped && layoutPending !== "toast") return;
+    singleton.setContentSize(widthDip, clamped, false);
+    setWindowShape(singleton, "toast");
+    if (layoutPending === "toast" && state.kind === "loaded") {
+      // Opened from the dock: the window was parked while it was still
+      // dock-shaped. Now that it holds the toast, place and show it.
+      layoutPending = null;
+      reanchorOnCurrentDisplay(singleton);
+      restoreOnScreen(singleton);
+      return;
+    }
     // Re-anchor only when the toast is logically on-screen. We can't
     // use `singleton.isVisible()` here — with the off-screen pseudo-
     // hide model, the window stays "visible" in AppKit's sense forever
@@ -358,6 +460,12 @@ function getOrCreate(): BrowserWindow {
   if (singleton !== null && !singleton.isDestroyed()) return singleton;
   wireFloatOverResizeChannel();
   wireFloatOverStateRequestChannel();
+  wireFloatOverDockDragChannel();
+  wireFloatOverPassThroughChannel();
+  if (unsubscribeRecordingState === null) {
+    recordingOwnsScreen = isRecordingActive();
+    unsubscribeRecordingState = subscribeToRecordingState(onRecordingStateChanged);
+  }
   const window = createFloatOverWindow();
   singleton = window;
   rendererSubscribed = false;
@@ -462,6 +570,168 @@ function reanchorOnCurrentDisplay(window: BrowserWindow): void {
     anchoredDisplayId = display.id;
   }
   placeBottomRightOn(window, display);
+}
+
+/** The display the dock belongs to: the one the toast was last on. */
+function dockDisplay(): Electron.Display {
+  const anchored = anchoredDisplayId === null
+    ? null
+    : screen.getAllDisplays().find((d) => d.id === anchoredDisplayId) ?? null;
+  if (anchored !== null) return anchored;
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  anchoredDisplayId = display.id;
+  return display;
+}
+
+/**
+ * The dock's bounds for a window of `width × height`, on its edge of the
+ * work area.
+ *
+ * Inside the work area, never past it: AppKit MOVES a window placed
+ * outside the visible frame (AGENTS.md §"macOS MOVES a window placed
+ * outside the work area"). The tabs look like they run off the screen
+ * because the renderer draws them clipped by the window's own edge,
+ * and the window is flush with the work area's edge.
+ *
+ * Right-docked, the right edge is what stays put, so a hover that widens
+ * the window grows it leftward and the tabs do not jump.
+ *
+ * Pure and exported so the arithmetic is testable without a window.
+ */
+export function floatOverDockBounds(
+  workArea: Electron.Rectangle,
+  placement: { side: FloatOverDockSide; topFraction: number },
+  width: number,
+  height: number
+): Electron.Rectangle {
+  const w = Math.min(width, workArea.width);
+  const h = Math.min(height, workArea.height);
+  const x = placement.side === "right" ? workArea.x + workArea.width - w : workArea.x;
+  const top = workArea.y + placement.topFraction * workArea.height;
+  const y = Math.min(Math.max(Math.round(top), workArea.y), workArea.y + workArea.height - h);
+  return { x: Math.round(x), y, width: w, height: h };
+}
+
+/**
+ * Size and place the dock from the renderer's layout, and show it if a
+ * tuck parked the window waiting for exactly this.
+ */
+function applyDockLayout(window: BrowserWindow, widthDip: number, heightDip: number): void {
+  if (!windowPlacementIsOurs()) return;
+  const bounds = floatOverDockBounds(dockDisplay().workArea, dock, widthDip, Math.max(1, heightDip));
+  window.setBounds(bounds, false);
+  setWindowShape(window, "dock");
+  if (layoutPending === "dock" && !recordingOwnsScreen) {
+    layoutPending = null;
+    restoreOnScreen(window);
+  }
+}
+
+/**
+ * The toast wears the native shadow; the dock does not. macOS draws a
+ * window's shadow, and a light rim with it, around the window's whole
+ * shape, so on the dock it outlined the gap between the tabs and read
+ * as a frame around them.
+ */
+function setWindowShape(window: BrowserWindow, shape: FloatOverLayoutMode): void {
+  if (shape === windowShape) return;
+  windowShape = shape;
+  window.setHasShadow(shape === "toast");
+}
+
+/**
+ * The renderer drives a dock drag with three messages; main reads the
+ * cursor itself, in DIP, rather than trusting page coordinates that the
+ * zoom factor scales. Dragging past the middle of the display moves the
+ * dock to the other edge, and the renderer is told so it can mirror.
+ */
+let dockDragChannelWired = false;
+function wireFloatOverDockDragChannel(): void {
+  if (dockDragChannelWired) return;
+  dockDragChannelWired = true;
+  ipcMain.on(FLOAT_OVER_DOCK_DRAG_CHANNEL, (event, payload: unknown) => {
+    if (singleton === null || singleton.isDestroyed()) return;
+    if (event.sender !== singleton.webContents) return;
+    if (state.kind !== "tucked" || !windowPlacementIsOurs()) return;
+    const phase = (payload as { phase?: unknown } | null)?.phase;
+    const cursor = screen.getCursorScreenPoint();
+    const bounds = singleton.getBounds();
+    if (phase === "start") {
+      dockDrag = { grabOffsetY: cursor.y - bounds.y };
+      return;
+    }
+    if (dockDrag === null) return;
+    if (phase === "end") {
+      dockDrag = null;
+      log.info("float-over dock moved", { side: dock.side, topFraction: dock.topFraction });
+      return;
+    }
+    if (phase !== "move") return;
+    const display = screen.getDisplayNearestPoint(cursor);
+    anchoredDisplayId = display.id;
+    const wa = display.workArea;
+    const side: FloatOverDockSide = cursor.x < wa.x + wa.width / 2 ? "left" : "right";
+    const top = Math.min(
+      Math.max(cursor.y - dockDrag.grabOffsetY, wa.y),
+      wa.y + wa.height - bounds.height
+    );
+    dock.topFraction = wa.height > 0 ? (top - wa.y) / wa.height : DOCK_DEFAULT_TOP_FRACTION;
+    if (side !== dock.side) {
+      dock.side = side;
+      broadcastState({ kind: "tucked", side });
+    }
+    singleton.setBounds(floatOverDockBounds(wa, dock, bounds.width, bounds.height), false);
+  });
+}
+
+/**
+ * The window is a rectangle, and parts of it are see-through: below the
+ * rail beside a toast, and the gaps between dock tabs. Transparent pixels still take clicks, so the renderer reports
+ * whether the pointer is over one of those parts, and main then ignores
+ * the mouse there while still forwarding moves, so the renderer can see
+ * the pointer come back over something drawn.
+ *
+ * macOS and Windows only: Electron cannot forward moves on Linux, and a
+ * window that ignores the mouse without them would never take it back.
+ */
+let passThroughChannelWired = false;
+function wireFloatOverPassThroughChannel(): void {
+  if (passThroughChannelWired) return;
+  passThroughChannelWired = true;
+  ipcMain.on(FLOAT_OVER_PASS_THROUGH_CHANNEL, (event, payload: unknown) => {
+    if (singleton === null || singleton.isDestroyed()) return;
+    if (event.sender !== singleton.webContents) return;
+    if (process.platform !== "darwin" && process.platform !== "win32") return;
+    if (!takingMouse) return;
+    const through = (payload as { through?: unknown } | null)?.through === true;
+    if (through === passThrough) return;
+    passThrough = through;
+    if (through) singleton.setIgnoreMouseEvents(true, { forward: true });
+    else singleton.setIgnoreMouseEvents(false);
+  });
+}
+
+/**
+ * A recording owns the screen: park the dock for the take, and bring it
+ * back once the recording is over. A saved take opens its own toast
+ * (with the rail) before the phase settles, so there is nothing to
+ * restore then; a cancelled one leaves the dock parked unless this
+ * brings it back.
+ */
+function onRecordingStateChanged(): void {
+  const active = isRecordingActive();
+  if (active === recordingOwnsScreen) return;
+  recordingOwnsScreen = active;
+  if (singleton === null || singleton.isDestroyed()) return;
+  if (active) {
+    if (state.kind === "tucked") {
+      state = { kind: "hidden" };
+      layoutPending = null;
+      parkOffScreen(singleton);
+    }
+    return;
+  }
+  if (docked && state.kind === "hidden") enterTucked(singleton);
 }
 
 /**
@@ -618,6 +888,8 @@ export function setFloatOverState(event: FloatOverEvent): void {
     case "show-idle": {
       const window = getOrCreate();
       state = { kind: "idle" };
+      layoutPending = null;
+      setDockContentProtection(window, false);
       // Anchor BEFORE restoring opacity — the window may currently be
       // parked at (PARK_X, PARK_Y) from a previous dismiss; moving it
       // first while still at opacity 0 avoids a one-frame flash.
@@ -630,10 +902,23 @@ export function setFloatOverState(event: FloatOverEvent): void {
     case "show-loaded": {
       const window = getOrCreate();
       state = { kind: "loaded", captureId: event.captureId };
-      // Re-anchor in case the user dragged-display between idle and
-      // commit. (Cursor moved → bottom-right of the new display.)
-      anchorBottomRight(window);
-      restoreOnScreen(window);
+      setDockContentProtection(window, false);
+      if (windowShape === "dock") {
+        // Opened from the dock, or a take saved while the dock was
+        // parked for it: the window is still dock-shaped. Park it until
+        // the renderer posts the toast's layout, then place and show it
+        // (see the resize handler) — otherwise the dock's shape flashes
+        // in the corner for a frame.
+        layoutPending = "toast";
+        parkOffScreen(window);
+        anchorBottomRight(window);
+      } else {
+        layoutPending = null;
+        // Re-anchor in case the user dragged-display between idle and
+        // commit. (Cursor moved → bottom-right of the new display.)
+        anchorBottomRight(window);
+        restoreOnScreen(window);
+      }
       armCopyShortcuts(event.captureId);
       break;
     }
@@ -642,33 +927,59 @@ export function setFloatOverState(event: FloatOverEvent): void {
       // out of the selector; the float-over was pre-shown UNDER the
       // selector and they should never have seen it. Park first,
       // selector hides 50ms later, no flash.
+      //
+      // The SAME event hides PwrSnap's chrome before a snapshot
+      // (`chromeHide`). That one only ever parks: a second capture
+      // started while the first is between its hide and its toast finds
+      // the float-over `hidden`, and restoring the dock there would put
+      // it in the picture. Only a cancel that ENDS a selector session —
+      // the toast was pre-shown `idle`, or a capture failed after the
+      // chrome hide — may bring the dock back.
+      const endsCaptureSession =
+        event.chromeHide !== true && (state.kind === "idle" || state.kind === "hidden");
       state = { kind: "hidden" };
+      layoutPending = null;
       if (singleton !== null && !singleton.isDestroyed()) {
         parkOffScreen(singleton);
       }
       disarmCopyShortcuts();
+      if (
+        docked &&
+        endsCaptureSession &&
+        event.holdDock !== true &&
+        singleton !== null &&
+        !singleton.isDestroyed()
+      ) {
+        // Sends `tucked`, which supersedes this cancel for the renderer.
+        enterTucked(singleton);
+        log.info("float-over state", { kind: event.kind, logicalState: state.kind, dock: "restored" });
+        return;
+      }
       break;
     }
     case "dismiss": {
-      // User explicitly dismissed via the X / Esc on the toast / auto-
-      // dismiss timer. The renderer played its exit animation and is
-      // telling us to park. No animation here — the renderer faded.
-      // See parkOffScreen() for why we don't call hide().
+      // The renderer has nothing left to show: the toast closed and no
+      // snap waits on the dock. The renderer played its exit animation
+      // and is telling us to park. No animation here — the renderer
+      // faded. See parkOffScreen() for why we don't call hide().
       state = { kind: "hidden" };
+      docked = false;
+      layoutPending = null;
       if (singleton !== null && !singleton.isDestroyed()) {
         parkOffScreen(singleton);
       }
       disarmCopyShortcuts();
       break;
     }
+    case "tucked": {
+      dock.side = event.side;
+      enterTucked(getOrCreate());
+      log.info("float-over state", { kind: event.kind, logicalState: state.kind });
+      return;
+    }
   }
 
-  // Stash + send the event AFTER the window state transitions so the
-  // renderer never receives a state event before its window is ready.
-  lastEvent = event;
-  if (singleton !== null && !singleton.isDestroyed() && rendererSubscribed) {
-    singleton.webContents.send(EVENT_CHANNELS.floatOverState, event);
-  }
+  broadcastState(event);
 
   // `state.kind` is the source of truth for logical visibility — see
   // the comment on parkOffScreen / the resize handler. `isVisible()` is
@@ -676,6 +987,150 @@ export function setFloatOverState(event: FloatOverEvent): void {
   log.info("float-over state", {
     kind: event.kind,
     logicalState: state.kind
+  });
+}
+
+/** Stash + send a state event. Always AFTER the window state has
+ *  transitioned, so the renderer never receives a state event before its
+ *  window is ready. */
+function broadcastState(event: FloatOverEvent): void {
+  lastEvent = event;
+  if (singleton !== null && !singleton.isDestroyed() && rendererSubscribed) {
+    singleton.webContents.send(EVENT_CHANNELS.floatOverState, event);
+  }
+}
+
+/**
+ * Keep the dock out of every screen capture — ours and anyone else's.
+ * The dock lingers for as long as a slow model reads, which is exactly
+ * when the user is taking more snaps, and a tab on the screen edge is
+ * the kind of thing that ends up baked into a full-screen capture.
+ * macOS: `NSWindow.sharingType = .none`; Windows 10 2004+:
+ * `WDA_EXCLUDEFROMCAPTURE`. Linux has no equivalent — the chrome hide
+ * before a snapshot is all there is there. The toast itself stays
+ * capturable, as it always was.
+ */
+function setDockContentProtection(window: BrowserWindow, on: boolean): void {
+  if (on === dockContentProtected) return;
+  dockContentProtected = on;
+  if (process.platform !== "darwin" && process.platform !== "win32") return;
+  window.setContentProtection(on);
+}
+
+/**
+ * Show the dock. The window changes shape, so it is parked until the
+ * renderer has drawn the tabs and posted their size (`applyDockLayout`
+ * places and shows it). While a recording owns the screen the dock stays
+ * parked; the end of the recording calls this again.
+ */
+function enterTucked(window: BrowserWindow): void {
+  const wasTucked = state.kind === "tucked";
+  docked = true;
+  disarmCopyShortcuts();
+  setDockContentProtection(window, true);
+  if (recordingOwnsScreen) {
+    state = { kind: "hidden" };
+    layoutPending = null;
+    parkOffScreen(window);
+  } else {
+    state = { kind: "tucked" };
+    if (!wasTucked) {
+      layoutPending = "dock";
+      parkOffScreen(window);
+    }
+  }
+  broadcastState({ kind: "tucked", side: dock.side });
+}
+
+/**
+ * `float-over:tuck` — the renderer's countdown ran out with enrichment
+ * still running, or the user pressed the tuck button. `docked: false`
+ * where placement is not ours (a native Wayland client): the toast then
+ * holds the corner until the model answers, as it always did.
+ *
+ * A tuck that lands mid capture session (the toast's exit animation was
+ * still running when the user started the next capture) only records
+ * that snaps are waiting; the session's own ending brings the dock up.
+ */
+export function tuckFloatOver(options: { markOnly?: boolean } = {}): { docked: boolean } {
+  if (!windowPlacementIsOurs()) return { docked: false };
+  if (singleton === null || singleton.isDestroyed()) return { docked: false };
+  if (options.markOnly === true || state.kind === "idle" || state.kind === "hidden") {
+    docked = true;
+    return { docked: true };
+  }
+  setFloatOverState({ kind: "tucked", side: dock.side });
+  return { docked: true };
+}
+
+/**
+ * The end of a capture session that cancelled with `holdDock` (a
+ * recording started from the selector). A take that is running owns the
+ * screen and brings the dock back when it ends; one that never started —
+ * refused in preflight, say — has no end to wait for, so its caller
+ * says so here.
+ */
+export function releaseFloatOverDock(): void {
+  if (!docked || state.kind !== "hidden" || recordingOwnsScreen) return;
+  if (singleton === null || singleton.isDestroyed()) return;
+  enterTucked(singleton);
+  log.info("float-over state", { kind: "release", logicalState: state.kind });
+}
+
+/** `float-over:open` — open the toast on a snap picked from the dock. */
+export function openFloatOverCapture(captureId: string): void {
+  setFloatOverState({ kind: "show-loaded", captureId });
+}
+
+/** `float-over:capabilities` — see `tuckFloatOver`. */
+export function floatOverCapabilities(): { dock: boolean } {
+  return { dock: windowPlacementIsOurs() };
+}
+
+/**
+ * `float-over:overflowMenu` — the snaps past the dock's visible cap, as a
+ * native menu at the pointer. Native because it has to extend past the
+ * dock's window (which is as narrow as the tabs, since transparent
+ * pixels still take clicks) and because a native menu brings its own
+ * keyboard handling and dismissal.
+ *
+ * `callback` is not ordered against an item's `click` on every
+ * platform, so a pick resolves at once and a close without one resolves
+ * a beat later — whichever comes first wins.
+ */
+export function popFloatOverOverflowMenu(
+  items: readonly FloatOverOverflowItem[],
+  canClearFinished: boolean
+): Promise<FloatOverOverflowChoice> {
+  return new Promise((resolve) => {
+    if (singleton === null || singleton.isDestroyed()) {
+      resolve(null);
+      return;
+    }
+    let settled = false;
+    const settle = (choice: FloatOverOverflowChoice): void => {
+      if (settled) return;
+      settled = true;
+      resolve(choice);
+    };
+    const template: Electron.MenuItemConstructorOptions[] = items.map((item) => ({
+      label: item.label,
+      click: () => settle({ kind: "open", captureId: item.captureId })
+    }));
+    if (canClearFinished) {
+      if (template.length > 0) template.push({ type: "separator" });
+      template.push({ label: "Clear finished", click: () => settle({ kind: "clear-finished" }) });
+    }
+    if (template.length === 0) {
+      settle(null);
+      return;
+    }
+    Menu.buildFromTemplate(template).popup({
+      window: singleton,
+      callback: () => {
+        setTimeout(() => settle(null), 100);
+      }
+    });
   });
 }
 
@@ -787,6 +1242,17 @@ export function disposeFloatOver(): void {
     ipcMain.removeAllListeners(FLOAT_OVER_STATE_REQUEST_CHANNEL);
     stateRequestChannelWired = false;
   }
+  if (dockDragChannelWired) {
+    ipcMain.removeAllListeners(FLOAT_OVER_DOCK_DRAG_CHANNEL);
+    dockDragChannelWired = false;
+  }
+  if (passThroughChannelWired) {
+    ipcMain.removeAllListeners(FLOAT_OVER_PASS_THROUGH_CHANNEL);
+    passThroughChannelWired = false;
+  }
+  unsubscribeRecordingState?.();
+  unsubscribeRecordingState = null;
+  recordingOwnsScreen = false;
   if (singleton !== null && !singleton.isDestroyed()) {
     singleton.destroy();
   }

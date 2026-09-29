@@ -151,7 +151,10 @@ vi.mock("../../capture/window-list", () => ({
 }));
 
 vi.mock("../../events", () => ({ broadcastCapturesChanged: () => undefined }));
-vi.mock("../../float-over", () => ({ setFloatOverState: () => undefined }));
+vi.mock("../../float-over", () => ({
+  releaseFloatOverDock: () => undefined,
+  setFloatOverState: () => undefined
+}));
 vi.mock("../../tray", () => ({
   hideTrayPopoverIfVisible: () => undefined,
   setTrayCountdown: () => undefined

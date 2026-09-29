@@ -38,6 +38,7 @@ const mocks = vi.hoisted(() => {
       }),
       focus: vi.fn(),
       getSize: vi.fn(() => [440, 620] as [number, number]),
+      getContentSize: vi.fn(() => [440, 620] as [number, number]),
       hide: vi.fn(() => {
         visible = false;
         calls.push("hide");

@@ -42,7 +42,9 @@ import {
 } from "electron";
 import {
   DEFAULT_HOTKEYS,
+  EVENT_CHANNELS,
   normalizeAccelerator,
+  popoverWidthDip,
   shortcutPlatformFromString,
   TRAY_WIDTH_REGULAR_DIP,
   type HotkeyRegistrationStatusSnapshot,
@@ -951,6 +953,26 @@ function placeLinuxTrayPopover(window: BrowserWindow, cursor: Electron.Point): v
   );
 }
 
+/** Size for the destination display before the first visible paint, then
+ * ask the renderer to reflow and measure its natural height there. */
+function syncTrayWorkArea(window: BrowserWindow, workArea: { width: number; height: number }): void {
+  const width = popoverWidthDip({
+    kind: "tray",
+    workAreaWidthDip: workArea.width,
+    workAreaHeightDip: workArea.height
+  });
+  // On some scaled Windows displays getContentSize() reports the constructor
+  // frame even after the renderer surface has shrunk. Preserve the last
+  // measured height and apply the destination width on every open.
+  const height = lastTrayResizeRequest?.dipHeight ?? window.getContentSize()[1];
+  window.setMinimumSize(0, 0);
+  window.setContentSize(width, height, false);
+  window.webContents.send(EVENT_CHANNELS.trayWorkAreaChanged, {
+    widthDip: workArea.width,
+    heightDip: workArea.height
+  });
+}
+
 /**
  * Linux: open (or close) the tray popover from the native menu.
  *
@@ -985,6 +1007,7 @@ function toggleLinuxTrayPopover(): void {
   const anchor = linuxTrayPopoverAnchor;
   const open = (): void => {
     if (window.isDestroyed()) return;
+    syncTrayWorkArea(window, screen.getDisplayNearestPoint(anchor).workArea);
     placeLinuxTrayPopover(window, anchor);
     showTrayWindowNow(window);
   };
@@ -1040,6 +1063,7 @@ function toggleTrayWindow(): void {
     return;
   }
   const bounds = tray!.getBounds();
+  syncTrayWorkArea(window, screen.getDisplayMatching(bounds).workArea);
   positionTrayWindow(window, bounds);
   // Apply vibrancy *after* position so external displays don't render
   // it opaque — known Electron quirk on Sonoma+ multi-monitor setups.

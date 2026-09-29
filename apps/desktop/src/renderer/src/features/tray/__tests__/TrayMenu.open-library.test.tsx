@@ -13,6 +13,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import {
   DEFAULT_HOTKEYS,
+  EVENT_CHANNELS,
   type HotkeyRegistrationStatusSnapshot,
   type HotkeySettingKey,
   type Settings
@@ -93,9 +94,11 @@ function installTrayApi(
 ): {
   calls: string[];
   resize: ReturnType<typeof vi.fn>;
+  emit: (channel: string, payload: unknown) => void;
 } {
   const calls: string[] = [];
   const resize = vi.fn();
+  const handlers = new Map<string, EventHandler>();
   const merged: Settings["hotkeys"] = { ...DEFAULT_HOTKEYS, ...hotkeys };
   window.pwrsnapApi = {
     // The tooltip renders through `acceleratorToDisplayKeys`, which is
@@ -114,11 +117,14 @@ function installTrayApi(
       if (name === "capture:presetMetrics") return { ok: true, value: { metrics: [] } };
       return { ok: true, value: undefined };
     }),
-    on: (_channel: string, _handler: EventHandler) => () => undefined,
+    on: (channel: string, handler: EventHandler) => {
+      handlers.set(channel, handler);
+      return () => handlers.delete(channel);
+    },
     requestTrayResize: resize,
     startCaptureDrag: vi.fn()
   } as unknown as NonNullable<Window["pwrsnapApi"]>;
-  return { calls, resize };
+  return { calls, resize, emit: (channel, payload) => handlers.get(channel)?.(payload) };
 }
 
 async function renderTray(): Promise<HTMLDivElement> {
@@ -171,6 +177,24 @@ describe("TrayMenu — Open Library button", () => {
       if (originalHeight === undefined) delete (window.screen as unknown as Record<string, unknown>).availHeight;
       else Object.defineProperty(window.screen, "availHeight", originalHeight);
     }
+  });
+
+  test("reposts width when placement moves between displays without changing height", async () => {
+    const { resize, emit } = installTrayApi({ openLibrary: "" });
+    await renderTray();
+    resize.mockClear();
+
+    await act(async () => {
+      emit(EVENT_CHANNELS.trayWorkAreaChanged, { widthDip: 526, heightDip: 690 });
+    });
+    expect(resize).toHaveBeenLastCalledWith(expect.objectContaining({ width: 360 }));
+    const compactHeight = resize.mock.lastCall?.[0]?.height;
+
+    await act(async () => {
+      emit(EVENT_CHANNELS.trayWorkAreaChanged, { widthDip: 1200, heightDip: 900 });
+    });
+    expect(resize).toHaveBeenLastCalledWith({ width: 440, height: compactHeight });
+    expect(resize).toHaveBeenCalledTimes(2);
   });
 
   // Self-pin the invariant the rest of this file assumes. `installTrayApi`

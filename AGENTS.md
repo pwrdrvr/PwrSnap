@@ -1943,8 +1943,10 @@ policy in [popover-sizing.ts](packages/shared/src/popover-sizing.ts) chooses a
 compact profile when the shortest work-area dimension is at most 800 DIP:
 tray 360 DIP (regular 440), float-over toast 320 DIP (regular 392). It also
 fits either width inside unusually narrow work areas. The recent rail is
-omitted below 700 DIP of work-area width. Renderer inputs are
-`window.screen.availWidth/availHeight`; main receives the measured CSS width,
+omitted below 700 DIP of work-area width. Renderers initially use
+`window.screen.availWidth/availHeight`. When the tray is positioned beside its
+icon, main sends the destination display's work area so its prewarmed renderer
+can re-measure after a display change. Main receives the measured CSS width,
 converts it through the webContents zoom factor, and calls `setContentSize`.
 Never key this policy to `innerWidth`, `innerHeight`, CSS viewport units, or
 display scale factor: the first three are the BrowserWindow being resized and
@@ -1954,9 +1956,9 @@ space.
 Implementations:
 
 - Tray: [TrayMenu.tsx](apps/desktop/src/renderer/src/features/tray/TrayMenu.tsx)
-  → dispatches `pwrsnap:tray:resize`. Main listens in
+  → calls the preload's `requestTrayResize` (`tray:resize`). Main listens in
   [tray.ts](apps/desktop/src/main/tray.ts) (`wireTrayResizeChannel`),
-  clamped to `[TRAY_HEIGHT_MIN=200, TRAY_HEIGHT_MAX=880]`.
+  clamped to `[TRAY_HEIGHT_MIN=200, TRAY_HEIGHT_MAX=1040]`.
 
 - Float-over: [FloatOverHost.tsx](apps/desktop/src/renderer/src/features/float-over/FloatOverHost.tsx)
   → dispatches `float-over:resize`. Main listens in

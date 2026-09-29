@@ -45,11 +45,16 @@ function fmtTrayDuration(seconds: number): string {
 
 type ModeKind = "auto" | "region" | "window" | "full" | "all" | "timed";
 
-function trayPopoverLayout(): { density: "regular" | "compact"; widthCss: number } {
+function trayPopoverLayout(workArea?: { widthDip: number; heightDip: number }): {
+  density: "regular" | "compact";
+  widthCss: number;
+} {
   const widthDip =
-    typeof window.screen?.availWidth === "number" ? window.screen.availWidth : null;
+    workArea?.widthDip ??
+    (typeof window.screen?.availWidth === "number" ? window.screen.availWidth : null);
   const heightDip =
-    typeof window.screen?.availHeight === "number" ? window.screen.availHeight : null;
+    workArea?.heightDip ??
+    (typeof window.screen?.availHeight === "number" ? window.screen.availHeight : null);
   return {
     density: popoverDensityForWorkArea({ widthDip, heightDip }),
     widthCss: popoverWidthCss({
@@ -389,15 +394,16 @@ export function TrayMenu() {
   useLayoutEffect(() => {
     const el = containerRef.current;
     if (el === null) return;
-    let posted = -1;
+    let posted: { width: number; height: number } | null = null;
+    let positionedWorkArea: { widthDip: number; heightDip: number } | undefined;
     const post = (force = false): void => {
-      const layout = trayPopoverLayout();
+      const layout = trayPopoverLayout(positionedWorkArea);
       el.dataset.popoverDensity = layout.density;
       el.style.width = `${layout.widthCss}px`;
       const rect = el.getBoundingClientRect();
       const target = Math.ceil(rect.height);
-      if (!force && target === posted) return;
-      posted = target;
+      if (!force && posted?.width === layout.widthCss && posted.height === target) return;
+      posted = { width: layout.widthCss, height: target };
       // Direct IPC — same shape as FloatOverHost.tsx. The earlier
       // version of this code dispatched a `pwrsnap:tray:resize`
       // CustomEvent that a sibling `<TrayResizeForwarder/>` (with
@@ -416,6 +422,23 @@ export function TrayMenu() {
       });
     };
     post();
+    const offWorkArea = window.pwrsnapApi?.on(
+      EVENT_CHANNELS.trayWorkAreaChanged,
+      (payload) => {
+        if (payload === null || typeof payload !== "object") return;
+        const { widthDip, heightDip } = payload as { widthDip?: unknown; heightDip?: unknown };
+        if (
+          typeof widthDip !== "number" ||
+          !Number.isFinite(widthDip) ||
+          widthDip <= 0 ||
+          typeof heightDip !== "number" ||
+          !Number.isFinite(heightDip) ||
+          heightDip <= 0
+        ) return;
+        positionedWorkArea = { widthDip, heightDip };
+        post();
+      }
+    );
     const ro = new ResizeObserver(() => post());
     ro.observe(el);
     // Zoom self-detection. The session zoom factor can change out
@@ -454,6 +477,7 @@ export function TrayMenu() {
     armDprQuery();
     return () => {
       ro.disconnect();
+      offWorkArea?.();
       dprQuery?.removeEventListener("change", onDprChange);
     };
   }, []);

@@ -33,7 +33,9 @@
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { screen } from "electron";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { EVENT_CHANNELS } from "@pwrsnap/shared";
 
 type FakeWindow = {
   calls: string[];
@@ -42,6 +44,7 @@ type FakeWindow = {
   destroyed: boolean;
   devToolsOpen: boolean;
   focused: boolean;
+  contentSize: [number, number];
   on: (event: string, cb: (...args: unknown[]) => void) => void;
   once: (event: string, cb: (...args: unknown[]) => void) => void;
   emit: (event: string) => void;
@@ -57,8 +60,13 @@ type FakeWindow = {
   setVibrancy: (value: string) => void;
   setMinimumSize: (w: number, h: number) => void;
   setContentSize: (w: number, h: number, animate?: boolean) => void;
+  getContentSize: () => [number, number];
   getBounds: () => { x: number; y: number; width: number; height: number };
-  webContents: { isDevToolsOpened: () => boolean; zoomFactor: number };
+  webContents: {
+    isDevToolsOpened: () => boolean;
+    zoomFactor: number;
+    send: ReturnType<typeof vi.fn>;
+  };
 };
 
 function createFakeWindow(): FakeWindow {
@@ -71,6 +79,7 @@ function createFakeWindow(): FakeWindow {
     destroyed: false,
     devToolsOpen: false,
     focused: false,
+    contentSize: [440, 440],
     on: (event, cb) => {
       const list = handlers.get(event) ?? [];
       list.push(cb);
@@ -115,11 +124,16 @@ function createFakeWindow(): FakeWindow {
       calls.push("setVibrancy");
     },
     setMinimumSize: () => undefined,
-    setContentSize: () => undefined,
+    setContentSize: (w, h) => {
+      calls.push("setContentSize");
+      win.contentSize = [w, h];
+    },
+    getContentSize: () => win.contentSize,
     getBounds: () => ({ x: 0, y: 0, width: 440, height: 440 }),
     webContents: {
       isDevToolsOpened: () => win.devToolsOpen,
-      zoomFactor: 1
+      zoomFactor: 1,
+      send: vi.fn()
     }
   };
   return win;
@@ -239,6 +253,9 @@ beforeEach(() => {
   mocks.trayHandlers.clear();
   mocks.busDispatch.mockReset();
   mocks.positionTrayWindow.mockReset();
+  vi.mocked(screen.getDisplayMatching).mockReturnValue({
+    workArea: { x: 0, y: 0, width: 1440, height: 900 }
+  } as Electron.Display);
   fake = createFakeWindow();
   mocks.createTrayWindow.mockReset();
   mocks.createTrayWindow.mockImplementation(() => fake);
@@ -365,6 +382,31 @@ describe("tray popover dismissal (Windows)", () => {
 
     expect(fake.calls.filter((c) => c.startsWith("setOpacity"))).toEqual([]);
     expect(visibilityCalls(fake)).toEqual(["showInactive", "hide", "showInactive"]);
+  });
+
+  test("fits the destination display before showing a prewarmed tray", () => {
+    installTray();
+    const click = mocks.trayHandlers.get("click")?.[0];
+    expect(click).toBeDefined();
+    vi.mocked(screen.getDisplayMatching).mockReturnValue({
+      workArea: { x: 1440, y: 0, width: 526, height: 690 }
+    } as Electron.Display);
+
+    click!();
+    expect(fake.contentSize[0]).toBe(360);
+    expect(fake.webContents.send).toHaveBeenLastCalledWith(EVENT_CHANNELS.trayWorkAreaChanged, {
+      widthDip: 526,
+      heightDip: 690
+    });
+    expect(mocks.positionTrayWindow).toHaveBeenCalled();
+    expect(fake.calls.indexOf("setContentSize")).toBeLessThan(fake.calls.indexOf("showInactive"));
+
+    click!();
+    vi.mocked(screen.getDisplayMatching).mockReturnValue({
+      workArea: { x: 0, y: 0, width: 1440, height: 900 }
+    } as Electron.Display);
+    click!();
+    expect(fake.contentSize[0]).toBe(440);
   });
 });
 

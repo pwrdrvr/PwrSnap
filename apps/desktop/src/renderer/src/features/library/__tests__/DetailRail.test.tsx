@@ -361,7 +361,7 @@ describe("DetailRail", () => {
     const { el } = await renderDetailRail(enrichment(), { usageDetail: () => null, settings });
     expect(el.textContent).not.toContain("next-model");
     expect(el.querySelector(".psl__ai-usage-model")).toBeNull();
-    expect(el.querySelector(".ps-codex-pill__summary")?.textContent).toBe("Title + description drafted");
+    expect(el.querySelector(".ps-codex-pill__summary")?.textContent).toBe("Drafted a title + description");
     expect(el.querySelector(".ps-codex-pill .psl__chip-link")?.getAttribute("title"))
       .toBe("Regenerate with Codex (next-model)");
   });
@@ -724,6 +724,29 @@ describe("DetailRail", () => {
     // The textarea must show Codex's draft now, not the user's
     // half-typed string.
     expect(textarea?.value).toBe("Codex draft body");
+  });
+
+  test("AI strip carries the same Auto-apply switch as the popover and persists it", async () => {
+    const settings: Settings = { ...baseSettings, ai: { ...baseSettings.ai,
+      enabled: true, consentAcceptedAt: "2026-05-15T18:25:00.000Z", autoAcceptSuggestions: false
+    } };
+    const { el, dispatch } = await renderDetailRail(
+      enrichment({ suggestedTitle: "Codex headline", suggestedDescription: "Codex body" }),
+      { settings }
+    );
+    const label = el.querySelector<HTMLLabelElement>(".ps-codex-pill__footer .ps-codex-pill__auto");
+    expect(label?.textContent).toBe("Auto-apply");
+    expect(label?.getAttribute("title")).toBe("Apply AI enrichment automatically when ready");
+    const box = label?.querySelector<HTMLInputElement>("input[type='checkbox']");
+    expect(box?.getAttribute("aria-label")).toBe("Auto-apply AI enrichment");
+    expect(box?.checked).toBe(false);
+    await act(async () => { box?.click(); await Promise.resolve(); });
+    expect(dispatch).toHaveBeenCalledWith("settings:write", { ai: { autoAcceptSuggestions: true } });
+  });
+
+  test("AI strip hides Auto-apply until AI is enabled and consented", async () => {
+    const { el } = await renderDetailRail(enrichment(), { settings: baseSettings });
+    expect(el.querySelector(".ps-codex-pill__auto")).toBeNull();
   });
 
   test("AI strip shows a prominent Use draft button and a de-emphasized Regenerate link", async () => {

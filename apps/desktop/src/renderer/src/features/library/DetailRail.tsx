@@ -303,6 +303,10 @@ export function DetailRail({
   const [budgetStatus, setBudgetStatus] = useState<AiEnrichmentBudgetStatus | null>(null);
   // Current defaults describe the NEXT run, never the capture's history.
   const [regenerateLabel, setRegenerateLabel] = useState("configured model");
+  // Mirrors settings.ai.autoAcceptSuggestions, same switch the post-capture
+  // popover shows. `null` hides the control: settings not read yet, or AI is
+  // off / unconsented (the popover hides it then too).
+  const [autoApply, setAutoApply] = useState<boolean | null>(null);
   // Experimental DPI-aware export strategy (default legacy = no change).
   const [exportStrategy, setExportStrategy] = useState<ExportStrategy>("legacy");
 
@@ -396,6 +400,12 @@ export function DetailRail({
         if (cancelled || !result.ok) return;
         const settings = result.value as Settings | undefined;
         if (settings !== undefined) setRegenerateLabel(enrichmentRegenerateLabel(settings.ai?.defaults?.enrichment, settings.ai));
+        const ai = settings?.ai;
+        setAutoApply(
+          ai !== undefined && ai.enabled === true && ai.consentAcceptedAt !== null && ai.consentAcceptedAt !== undefined
+            ? ai.autoAcceptSuggestions === true
+            : null
+        );
         setExportStrategy(exportStrategyFromSettings(settings));
       });
     };
@@ -814,6 +824,14 @@ export function DetailRail({
             allDraftsAccepted={allDraftsAccepted}
             aiSafetyDisabled={aiSafetyDisabled}
             regenerateLabel={regenerateLabel}
+            autoApply={autoApply}
+            onSetAutoApply={(next) => {
+              const previous = autoApply;
+              setAutoApply(next);
+              void dispatch("settings:write", { ai: { autoAcceptSuggestions: next } }).then((result) => {
+                if (!result.ok) setAutoApply(previous);
+              });
+            }}
             onEnrichmentUpdate={setEnrichment}
           />
         </div>
@@ -1299,6 +1317,9 @@ type DetailTabProps = {
   readonly aiSafetyDisabled: boolean;
   /** Current target for the Regenerate action only. */
   readonly regenerateLabel: string;
+  /** Current auto-apply setting, or null when the control should not show. */
+  readonly autoApply: boolean | null;
+  readonly onSetAutoApply: (next: boolean) => void;
   readonly onEnrichmentUpdate: (next: CaptureEnrichment) => void;
 };
 
@@ -1313,6 +1334,8 @@ function DetailTab({
   allDraftsAccepted,
   aiSafetyDisabled,
   regenerateLabel,
+  autoApply,
+  onSetAutoApply,
   onEnrichmentUpdate
 }: DetailTabProps): ReactElement {
   const acceptedTitle = enrichment?.acceptedTitle ?? "";
@@ -1589,41 +1612,56 @@ function DetailTab({
         // Only recorded run metadata supplies attribution, once. Defaults
         // belong to the Regenerate tooltip, even while this detail is loading.
         {...(usageDetail !== null && usageDetail.run.id === enrichment?.latestRunId ? { meta: <AiRunUsageStrip detail={usageDetail} /> } : {})}
-        action={
-          <>
-            {codexBusy && enrichment?.latestRunId ? (
-              <button type="button" className="psl__chip-link" title="Cancel enrichment"
-                onClick={() => void dispatch("codex:cancel", { runId: enrichment.latestRunId! })}>
-                Cancel
-              </button>
-            ) : null}
-            {/* Prominent bulk Use — the common case. Covers title +
-                description + filename in one click. Tags stay separate
-                (per-chip +/× controls in the TagEditor) so suggestions
-                a user ignored don't sneak in. */}
-            {hasAnyDraft && !codexBusy ? (
-              <button
-                type="button"
-                className="psl__chip-btn psl__chip-btn--accent"
-                onClick={() => void useAllTextDrafts()}
-              >
-                Use draft
-              </button>
-            ) : null}
-            {/* Regenerate de-emphasized — text-link weight. Hidden
-                while Codex is mid-run; the per-pill status already
-                communicates "reading…". */}
-            {!codexBusy && !aiSafetyDisabled ? (
-              <button
-                type="button"
-                className="psl__chip-link"
-                onClick={regenerate}
-                title={`Regenerate with ${regenerateLabel}`}
-              >
-                Regenerate
-              </button>
-            ) : null}
-          </>
+        footer={
+          codexBusy || hasAnyDraft || !aiSafetyDisabled || autoApply !== null ? (
+            <>
+              <span className="ps-codex-pill__footer-actions">
+                {codexBusy && enrichment?.latestRunId ? (
+                  <button type="button" className="psl__chip-link" title="Cancel enrichment"
+                    onClick={() => void dispatch("codex:cancel", { runId: enrichment.latestRunId! })}>
+                    Cancel
+                  </button>
+                ) : null}
+                {/* Prominent bulk Use — the common case. Covers title +
+                    description in one click. Tags stay separate (per-chip
+                    +/× controls in the TagEditor) so suggestions a user
+                    ignored don't sneak in. */}
+                {hasAnyDraft && !codexBusy ? (
+                  <button
+                    type="button"
+                    className="psl__chip-btn psl__chip-btn--accent"
+                    onClick={() => void useAllTextDrafts()}
+                  >
+                    Use draft
+                  </button>
+                ) : null}
+                {/* Regenerate de-emphasized — text-link weight. Hidden
+                    while the model is mid-run; the status already says so. */}
+                {!codexBusy && !aiSafetyDisabled ? (
+                  <button
+                    type="button"
+                    className="psl__chip-link"
+                    onClick={regenerate}
+                    title={`Regenerate with ${regenerateLabel}`}
+                  >
+                    Regenerate
+                  </button>
+                ) : null}
+              </span>
+              {/* Same switch, wording and tooltip as the post-capture popover. */}
+              {autoApply !== null ? (
+                <label className="ps-codex-pill__auto" title="Apply AI enrichment automatically when ready">
+                  <input
+                    type="checkbox"
+                    aria-label="Auto-apply AI enrichment"
+                    checked={autoApply}
+                    onChange={(event) => onSetAutoApply(event.target.checked)}
+                  />
+                  <span>Auto-apply</span>
+                </label>
+              ) : null}
+            </>
+          ) : undefined
         }
       />
 

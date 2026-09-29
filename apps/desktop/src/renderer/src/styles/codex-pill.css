@@ -65,6 +65,50 @@
   align-items: flex-start;
 }
 
+/* Footer row: the pill wraps and the footer takes a full line of its own,
+   indented to sit under the text rather than under the sparkle (16px icon +
+   8px gap). Buttons left, the Auto-apply toggle pushed to the right. */
+.ps-codex-pill--strip.has-footer {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+.ps-codex-pill__footer {
+  flex: 1 1 100%;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  padding-left: 24px;
+}
+.ps-codex-pill__footer:empty {
+  display: none;
+}
+.ps-codex-pill__footer-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.ps-codex-pill__auto {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  white-space: nowrap;
+  font: 500 10px/1.2 var(--font-sans);
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+.ps-codex-pill__auto input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.ps-codex-pill__auto:hover {
+  color: var(--text-primary);
+}
+
 .ps-codex-pill__dots::after {
   content: "";
   display: inline-block;

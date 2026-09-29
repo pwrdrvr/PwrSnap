@@ -175,6 +175,13 @@
   clip-path: inset(50%);
   white-space: nowrap;
 }
+/* The source chips sat flush under the header with 8px below them; give them
+   the same 8px above. Compact only: the regular video toast has 3px of
+   headroom under its 800 ceiling and cannot spend 8. */
+[data-popover-density="compact"] .fo__body > .fo__sources:first-child { padding-top: var(--space-2, 8px); }
+/* The tag row's 48px minimum leaves ~26px of dead space above the Codex row
+   at compact; let it hug its chips. */
+[data-popover-density="compact"] .fo__tags { min-height: 0; }
 /* The Codex row carries Save and Enable, and is the last thing in the
    scrolling body, so a scrolled toast lost it first. Pin it above the footer;
    the description and tags scroll under it. */

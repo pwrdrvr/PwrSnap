@@ -57,4 +57,27 @@ describe("compact popover styling", () => {
       /\[data-popover-density="compact"\]\s+\.fo__ai-row\s+\.ps-codex-pill__summary\s*\{[^}]*-webkit-line-clamp\s*:\s*2/s
     );
   });
+
+  it("shows one export format at a time at compact, and only at compact", () => {
+    // Outside compact the switch does not render at all, so the Library rail
+    // and the regular popovers keep both rows.
+    expect(trayCss).toMatch(/\.psl__copy-format-switch\s*\{[^}]*display\s*:\s*none/s);
+    expect(trayCss).toMatch(
+      /\[data-popover-density="compact"\]\s+\.psl__copy-row-group\[data-switchable\]\s+\.psl__copy-format-switch\s*\{[^}]*display\s*:\s*inline-flex/s
+    );
+    expect(trayCss).toMatch(
+      /\[data-popover-density="compact"\]\s+\.psl__copy-row-group\[data-inactive="true"\]\s*\{[^}]*display\s*:\s*none/s
+    );
+    // The hide is never unscoped, or the Library rail would lose a row.
+    expect(trayCss).not.toMatch(/(^|\})\s*\.psl__copy-row-group\[data-inactive[^{]*\{/);
+  });
+
+  it("spends the video toast's compact headroom on spacing only at compact", () => {
+    expect(floatCss).toMatch(
+      /\[data-popover-density="compact"\]\s+\.fo__body\s*>\s*\.fo__sources:first-child\s*\{[^}]*padding-top/s
+    );
+    expect(floatCss).toMatch(
+      /\[data-popover-density="compact"\]\s+\.fo__tags\s*\{[^}]*min-height\s*:\s*0/s
+    );
+  });
 });

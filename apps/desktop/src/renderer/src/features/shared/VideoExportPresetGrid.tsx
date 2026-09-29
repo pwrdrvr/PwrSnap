@@ -5,6 +5,11 @@
 // Top row: GIF LOW / MED / HIGH
 // Bottom row: MP4 LOW / MED / HIGH
 //
+// At compact popover density the two rows collapse to one at a time behind
+// a GIF | MP4 switch in the eyebrow (`formatSwitch`); the inactive row is
+// hidden with CSS, not unmounted, so its cards keep their state. Outside a
+// compact popover the switch is never shown and both rows are.
+//
 // The MP4 eyebrow carries one toggle per audio track the take recorded
 // (Mic / System), so the choice of whether a track ships sits right
 // beside the cards it governs. GIF never carries audio, so its row has
@@ -51,6 +56,16 @@ export type VideoExportPresetGridProps = {
   readonly showShortcutHints?: boolean;
   /** MP4 audio toggles for the MP4 eyebrow. Omitted → no toggles. */
   readonly mp4Audio?: Mp4AudioControl | undefined;
+  /** The GIF | MP4 switch shown at compact popover density. Omitted → the
+   *  grid always shows both rows (the Library rail). */
+  readonly formatSwitch?: FormatSwitch | undefined;
+};
+
+export type VideoExportFormat = "gif" | "mp4";
+
+export type FormatSwitch = {
+  readonly active: VideoExportFormat;
+  readonly onChange: (format: VideoExportFormat) => void;
 };
 
 const PRESETS: readonly VideoPreset[] = ["low", "med", "high"] as const;
@@ -77,6 +92,8 @@ const FORMAT_LABELS: Readonly<Record<"gif" | "mp4", string>> = {
   gif: "GIF",
   mp4: "MP4"
 };
+
+const FORMATS: readonly VideoExportFormat[] = ["gif", "mp4"] as const;
 
 const AUDIO_TRACKS: readonly Mp4AudioTrack[] = ["microphone", "systemAudio"] as const;
 const AUDIO_SHORT: Readonly<Record<Mp4AudioTrack, string>> = {
@@ -181,6 +198,28 @@ function Mp4AudioToggles({ control }: { readonly control: Mp4AudioControl }): Re
   );
 }
 
+/** The GIF | MP4 switch. `aria-pressed` carries the state; the switch is
+ *  `display: none` outside compact popover density (library.css), which also
+ *  takes it out of the tab order and the accessibility tree. */
+function FormatSwitchButtons({ control }: { readonly control: FormatSwitch }): ReactElement {
+  return (
+    <span className="psl__copy-format-switch" role="group" aria-label="Export format">
+      {FORMATS.map((format) => (
+        <button
+          key={format}
+          type="button"
+          className="psl__copy-format-switch-btn"
+          data-format={format}
+          aria-pressed={control.active === format}
+          onClick={() => control.onChange(format)}
+        >
+          {FORMAT_LABELS[format]}
+        </button>
+      ))}
+    </span>
+  );
+}
+
 export function VideoExportPresetGrid({
   metrics,
   states,
@@ -190,15 +229,22 @@ export function VideoExportPresetGrid({
   fallback,
   shortcutPlatform = rendererShortcutPlatform(),
   showShortcutHints = true,
-  mp4Audio
+  mp4Audio,
+  formatSwitch
 }: VideoExportPresetGridProps): ReactElement {
   return (
     <>
-      {(["gif", "mp4"] as const).map((format) => (
+      {FORMATS.map((format) => (
         <div
           key={format}
           className="psl__copy-row-group"
           data-testid={`psl-copy-row-video-${format}-group`}
+          {...(formatSwitch === undefined
+            ? {}
+            : {
+                "data-switchable": "true",
+                "data-inactive": formatSwitch.active === format ? "false" : "true"
+              })}
         >
           {/* Format header — distinguishes the GIF row from the MP4
               row at a glance. Without this the two rows are
@@ -206,6 +252,7 @@ export function VideoExportPresetGrid({
               High"). */}
           <div className="psl__copy-format-eyebrow">
             <span className="psl__copy-format-eyebrow-label">{FORMAT_LABELS[format]}</span>
+            {formatSwitch === undefined ? null : <FormatSwitchButtons control={formatSwitch} />}
             <span className="psl__copy-format-eyebrow-line" />
             {format === "mp4" && mp4Audio !== undefined ? (
               <Mp4AudioToggles control={mp4Audio} />

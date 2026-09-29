@@ -697,7 +697,9 @@ export function AiSurfaceDefaultControl({
             onChange={(e) => {
               const nextModelId = e.target.value;
               if (isAcpProvider) {
-                onChange({ model: nextModelId, ...(isCustomProvider ? { provider: chatProviderValue, reasoning: "" } : {}) });
+                onChange(isCustomProvider
+                  ? { provider: chatProviderValue, model: "", reasoning: "" }
+                  : { model: nextModelId });
                 return;
               }
               const nextModel =

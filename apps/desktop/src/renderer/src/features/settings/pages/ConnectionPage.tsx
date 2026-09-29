@@ -1159,7 +1159,7 @@ function JobsStep({ models, settings, patch }: {
 }): ReactElement {
   const assign = (surface: AiSurfaceId, model: CustomModel): void => {
     const defaults: NonNullable<NonNullable<SettingsPatch["ai"]>["defaults"]> = {};
-    defaults[surface] = { provider: customProviderId(model.id), model: model.modelId, reasoning: "" };
+    defaults[surface] = { provider: customProviderId(model.id), model: "", reasoning: "" };
     void patch({ ai: { defaults } });
   };
   return (

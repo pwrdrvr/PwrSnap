@@ -1075,6 +1075,9 @@ function parseAiSurfaceDefault(raw: unknown): AiSurfaceDefault {
   if (typeof rec.model === "string" && rec.model.trim().length > 0) {
     out.model = rec.model.trim();
   }
+  // A custom provider's UUID is the model selection. Keeping a second model
+  // string lets an older build drop the provider but send that string to Codex.
+  if (out.provider?.startsWith("custom:")) delete out.model;
   if (isAiReasoningEffort(rec.reasoning)) {
     out.reasoning = rec.reasoning;
   }
@@ -1544,6 +1547,9 @@ export class DesktopSettingsService {
    *  processes each hydrate once, while settings writes remain agent-owned
    *  and renderer/main listeners receive the existing change broadcast. */
   private snapshot: Settings | null = null;
+  /** Raw JSON keeps fields this build does not understand when a newer build
+   * wrote the file. They remain on disk through ordinary settings writes. */
+  private rawDocument: Record<string, unknown> | null = null;
 
   /** Coalesces concurrent cold readers so startup consumers (storage,
    *  hotkeys, tray, updater, AI) never race into duplicate disk parses. */
@@ -1643,6 +1649,7 @@ export class DesktopSettingsService {
       raw = await this.readTextFile(this.filePath);
     } catch (cause) {
       if (isNodeError(cause) && cause.code === "ENOENT") {
+        this.rawDocument = null;
         return this.replaceSnapshot(
           this.withInferredUpdates(defaultSettings(this.shortcutPlatform))
         );
@@ -1674,7 +1681,10 @@ export class DesktopSettingsService {
         this.currentAppVersion(),
         this.shortcutPlatform
       );
-      if (normalized !== null) return this.replaceSnapshot(normalized);
+      if (normalized !== null) {
+        this.rawDocument = isRecord(parsed) ? parsed : null;
+        return this.replaceSnapshot(normalized);
+      }
     }
 
     await this.quarantine("no_shape_matched");
@@ -1729,11 +1739,12 @@ export class DesktopSettingsService {
       // migrations must appear in the cached result exactly as they would
       // after a fresh process launch.
       const normalized = this.normalizeForSnapshot(merged);
+      const persisted = preserveUnknownSettingsFields(this.rawDocument, current, normalized, patch);
       const prepared = options.prepare === undefined
         ? undefined
         : await options.prepare(current, merged);
       try {
-        await this.atomicWriteJson(normalized);
+        await this.atomicWriteJson(persisted);
       } catch (cause) {
         if (prepared !== undefined) {
           try {
@@ -1753,6 +1764,7 @@ export class DesktopSettingsService {
       // The rename is the settings commit point. Publish the same canonical
       // shape immediately, then finalize the already-staged external state.
       this.replaceSnapshot(normalized);
+      this.rawDocument = persisted;
       prepared?.commit();
       return deepFreeze(merged);
     };
@@ -1848,6 +1860,45 @@ function deepFreeze<T>(value: T): T {
 
 function isNodeError(value: unknown): value is NodeJS.ErrnoException {
   return value instanceof Error && typeof (value as NodeJS.ErrnoException).code === "string";
+}
+
+/** Retain keys from a newer settings shape that this build cannot parse.
+ * Known keys are governed by the normalized snapshot; explicit patch keys
+ * also count as known so clearing an optional value removes it from disk. */
+function preserveUnknownSettingsFields(
+  raw: Record<string, unknown> | null,
+  current: Settings,
+  next: Settings,
+  patch: SettingsPatch
+): Settings {
+  const merge = (oldValue: unknown, knownValue: unknown, newValue: unknown, changedValue: unknown): unknown => {
+    // An older parser may drop an entire array entry when a newer build adds
+    // a strict-schema field to it. Keep the raw array until this build edits
+    // that array explicitly; otherwise a harmless settings toggle erases it.
+    if (Array.isArray(newValue)) {
+      return changedValue === undefined && Array.isArray(oldValue) ? oldValue : newValue;
+    }
+    if (!isRecord(newValue)) return newValue;
+    const old = isRecord(oldValue) ? oldValue : {};
+    const known = isRecord(knownValue) ? knownValue : {};
+    const changed = isRecord(changedValue) ? changedValue : {};
+    const result: Record<string, unknown> = { ...old };
+    for (const key of new Set([...Object.keys(known), ...Object.keys(changed)])) {
+      if (!Object.hasOwn(newValue, key)) delete result[key];
+    }
+    for (const [key, value] of Object.entries(newValue)) {
+      result[key] = merge(old[key], known[key], value, changed[key]);
+    }
+    return result;
+  };
+  const persisted = merge(raw, current, next, patch) as Settings;
+  // The parser intentionally omits this legacy duplicate even on an
+  // unrelated write. It must not survive through the forward-field layer.
+  for (const surface of ["libraryChat", "sizzleChat", "enrichment"] as const) {
+    const value = persisted.ai.defaults[surface];
+    if (value.provider?.startsWith("custom:")) delete value.model;
+  }
+  return persisted;
 }
 
 export function mergeSettings(current: Settings, patch: SettingsPatch): Settings {
@@ -1998,6 +2049,7 @@ function mergeAiSurfaceDefault(
     if (patch.reasoning === "") delete out.reasoning;
     else out.reasoning = patch.reasoning;
   }
+  if (out.provider?.startsWith("custom:")) delete out.model;
   return out;
 }
 

@@ -2029,6 +2029,26 @@
    either, so clicks pass through to the cell underneath and the rounded
    corners aren't dead zones for selection. */
 .psl__cell-app-overlay > .ps-app-tag { pointer-events: none; }
+/* Narrow tile + Edit / Trash revealed: the pill's name would run under the
+   rail buttons, so it collapses to just the app icon for as long as the
+   buttons are showing. At rest the full name stays (the buttons are
+   invisible then), so nothing shifts until the pointer arrives. The
+   selector mirrors the reveal rule on `.psl__cell-trash` below. 240px is
+   where a ~90px name plus the rail's two 28px buttons and a duration chip
+   stop fitting. `.psl__cell-thumb` is the size container: it takes its
+   width from the grid, so inline-size containment costs it nothing. */
+.psl__cell-thumb { container: psl-thumb / inline-size; }
+@container psl-thumb (width < 240px) {
+  .psl__cell:is(:hover, :has(.psl__cell-trash:focus-visible))
+    .psl__cell-app-overlay > .ps-app-tag.is-sm {
+    padding-right: 0;
+    gap: 0;
+  }
+  .psl__cell:is(:hover, :has(.psl__cell-trash:focus-visible))
+    .psl__cell-app-overlay .ps-app-tag__name { display: none; }
+  .psl__cell:is(:hover, :has(.psl__cell-trash:focus-visible))
+    .psl__cell-app-overlay .ps-app-tag__tile { border-right: 0; border-radius: 4px; }
+}
 /* Center play button — the primary, at-a-glance "this is a video" cue
    (a duration chip alone is too easy to miss). Translucent so it never
    fights the frame; fades out on cell hover (the `.psl__cell:hover`

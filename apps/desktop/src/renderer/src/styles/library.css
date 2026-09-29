@@ -1885,7 +1885,7 @@
 
    CORNER CHROME — the four corners share ONE chrome so they read
    as a matched set rather than four separate widgets:
-     top-left     cart checkbox   (24px, 2px stroke, over a scrim)
+     top-left     cart checkbox   (24px, 2px stroke, dark fill + ring)
      top-right    time badge      (10px mono chip)
      bottom-left  app pill        (the ONE emphasized element —
                                    keeps its accent outline)
@@ -1942,6 +1942,16 @@
   /* Shared corner-chrome values — see the ring-states block above. */
   --psl-chip-bg: color-mix(in srgb, var(--bg-app) 85%, transparent);
   --psl-chip-radius: 5px;
+  /* ONE treatment for every control drawn over a thumbnail (cart box,
+     Edit / Trash, time, duration). Theme-stable (derived from
+     --shadow-base / --media-scrim-text, not --bg-app, which flips to
+     white). Dark fill + light hairline + thin dark halo: on a white
+     capture the fill and halo carry it, on a black capture the hairline
+     does, and it never depends on a smoky scrim behind it. */
+  --psl-ov-bg: color-mix(in srgb, var(--shadow-base) 72%, transparent);
+  --psl-ov-fg: var(--media-scrim-text);
+  --psl-ov-ring: 0 0 0 1px color-mix(in srgb, var(--media-scrim-text) 34%, transparent),
+    0 1px 4px color-mix(in srgb, var(--shadow-base) 55%, transparent);
 }
 /* Transparency checker behind the thumbnail for captures whose source PNG
    has alpha (`Capture.hasAlpha`). Gated, not blanket: a blanket checker
@@ -1977,15 +1987,15 @@
 .psl__cell-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
 /* Time badge — shares `--psl-chip-bg` / `--psl-chip-radius` / 10px mono
    with the duration chip and the action pills (see the ring-states
-   block). z-index 2 keeps it above the corner scrims: the rail's paints
-   at z-index 1 in this cell's stacking context, the cart's at -1 inside
-   the cart's own. */
+   block). z-index 2 keeps it above the cart box and the rail's contents
+   are lifted above the app pill (see below). */
 .psl__cell-time {
   position: absolute; top: 5px; right: 5px;
   z-index: 2;
   font: 600 10px/1 var(--font-mono);
-  background: var(--psl-chip-bg);
-  color: var(--text-secondary);
+  background: var(--psl-ov-bg);
+  box-shadow: var(--psl-ov-ring);
+  color: var(--psl-ov-fg);
   padding: 3px 5px;
   border-radius: var(--psl-chip-radius);
   backdrop-filter: blur(6px);
@@ -1999,9 +2009,8 @@
    time pill in the opposite corner. */
 .psl__cell-app-overlay {
   position: absolute; bottom: 5px; left: 5px;
-  /* Middle of the cell's three overlay tiers: above the bottom-right
-     rail scrim (z-index 1) — on a narrow tile the two overlap, and the
-     pill's opaque fill must not get tinted — but BELOW the rail's own
+  /* Middle of the cell's three overlay tiers: above the cart box
+     (z-index 1) — on a narrow tile the two overlap — but BELOW the rail's own
      28px action buttons (z-index 3), which the pill would otherwise
      bury on a narrow tile with a long app name.
      pointer-events:none on the WRAPPER, not just the inner pill: the
@@ -2084,45 +2093,13 @@
   position: relative;
   z-index: 3;
 }
-/* Bottom-right corner scrim. The action pills are translucent and sit
-   over an arbitrary thumbnail — on a white screenshot they'd be a pale
-   chip on white. The scrim is theme-STABLE (derived from
-   `--shadow-base`, not `--bg-app`, which flips to white in light
-   theme), so the pills read on any capture in either theme. Reveal is
-   gated on the same `.psl__cell:hover` / `:focus-within` conditions as
-   the buttons, so the scrim can never linger without them.
-   NOTE the duration chip stays legible at rest on its own `--psl-chip-bg`
-   fill — it does not depend on this scrim. */
-.psl__cell-rail::before {
-  content: "";
-  position: absolute;
-  right: -5px; bottom: -5px;
-  width: 108px; height: 52px;
-  /* Bottom tier of the cell's overlay stack (see .psl__cell-rail): below
-     the app pill at 2 so it can't tint the pill's opaque fill, and below
-     the rail's own contents at 3 so it can't tint the buttons or the
-     duration chip it exists to back. */
-  z-index: 1;
-  pointer-events: none;
-  opacity: 0;
-  background: radial-gradient(
-    farthest-corner at 100% 100%,
-    color-mix(in srgb, var(--shadow-base) 62%, transparent) 0%,
-    color-mix(in srgb, var(--shadow-base) 34%, transparent) 55%,
-    transparent 100%
-  );
-  transition: opacity 120ms var(--ease-out);
-}
-.psl__cell:hover .psl__cell-rail::before,
-.psl__cell-rail:focus-within::before {
-  opacity: 1;
-}
 /* Duration chip — mirrors the .psl__cell-time pill in the opposite
    corner so the two read as a matched set. */
 .psl__cell-duration {
   font: 600 10px/1 var(--font-mono);
-  background: var(--psl-chip-bg);
-  color: var(--text-secondary);
+  background: var(--psl-ov-bg);
+  box-shadow: var(--psl-ov-ring);
+  color: var(--psl-ov-fg);
   padding: 3px 5px;
   border-radius: var(--psl-chip-radius);
   white-space: nowrap;
@@ -2141,9 +2118,10 @@
   display: flex; align-items: center; justify-content: center;
   width: 28px; height: 28px;
   border-radius: var(--psl-chip-radius);
-  background: var(--psl-chip-bg);
+  background: var(--psl-ov-bg);
+  box-shadow: var(--psl-ov-ring);
   border: 1px solid transparent;
-  color: var(--text-secondary);
+  color: var(--psl-ov-fg);
   cursor: pointer;
   opacity: 0;
   transform: translateX(2px);
@@ -2159,7 +2137,6 @@
 .psl__cell-trash > svg { width: 16px; height: 16px; }
 .psl__cell:hover .psl__cell-trash,
 .psl__cell-trash:focus-visible {
-  border-color: var(--border-subtle);
   opacity: 1;
   transform: none;
   pointer-events: auto;
@@ -2169,23 +2146,23 @@
    measured 1.8-2.9:1 against it. A 1px `--bg-app` halo outside the ring
    gives it a background of our own. */
 .psl__cell-trash:focus-visible {
-  box-shadow: 0 0 0 4px var(--bg-app);
+  box-shadow: var(--psl-ov-ring), 0 0 0 4px var(--bg-app);
 }
 @media (prefers-reduced-motion: reduce) {
   .psl__cell-trash { transform: none; }
 }
 .psl__cell-trash:hover {
-  background: var(--danger-soft);
+  background: color-mix(in srgb, var(--danger) 40%, var(--shadow-base));
   color: var(--danger-text, var(--danger-text));
 }
 /* Restore icon: positive accent on hover (the safe action). */
 .psl__cell-trash--restore:hover {
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent) 40%, var(--shadow-base));
   color: var(--accent-bright, var(--accent));
 }
 
 .psl__cell-duplicate:hover {
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent) 40%, var(--shadow-base));
   color: var(--accent-bright, var(--accent));
 }
 
@@ -2198,7 +2175,7 @@
   color: var(--accent-bright, var(--accent));
 }
 .psl__cell-edit:hover {
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent) 40%, var(--shadow-base));
   color: var(--accent-bright, var(--accent));
   border-color: color-mix(in srgb, var(--accent) 50%, transparent);
 }
@@ -2276,7 +2253,7 @@
    Hover-revealed, but ALSO visible at rest when checked or when the
    grid is in selection mode (`.psl[data-selecting="cart"]`, below). */
 .psl__cell-cart {
-  position: absolute; top: 6px; left: 6px;
+  position: absolute; top: 5px; left: 5px;
   z-index: 1;
   /* `.psl__cell-thumb` is pointer-transparent so the surrounding tile and
      bottom action rail stay clickable; the cart checkbox is the one
@@ -2285,32 +2262,14 @@
   display: flex; align-items: center; justify-content: center;
   width: 24px; height: 24px;
   border-radius: var(--psl-chip-radius);
-  background: color-mix(in srgb, var(--shadow-base) 38%, transparent);
-  border: 2px solid var(--media-scrim-text);
-  color: var(--media-scrim-text);
+  background: var(--psl-ov-bg);
+  box-shadow: var(--psl-ov-ring);
+  border: 2px solid var(--psl-ov-fg);
+  color: var(--psl-ov-fg);
   cursor: pointer;
   opacity: 0;
   transition: opacity 120ms var(--ease-out), background 100ms var(--ease-out),
     border-color 100ms var(--ease-out), color 100ms var(--ease-out);
-}
-/* Top-left corner scrim, painted UNDER the box (z-index -1 inside the
-   box's own stacking context) so it can't be separated from it. This is
-   what buys the unchecked stroke its contrast on a pure-white capture:
-   at the box's inset the scrim is ~72% black, so white-on-scrim clears
-   3:1 even when the underlying thumbnail is #fff. */
-.psl__cell-cart::before {
-  content: "";
-  position: absolute;
-  top: -6px; left: -6px;
-  width: 52px; height: 52px;
-  z-index: -1;
-  pointer-events: none;
-  background: radial-gradient(
-    farthest-corner at 0% 0%,
-    color-mix(in srgb, var(--shadow-base) 72%, transparent) 0%,
-    color-mix(in srgb, var(--shadow-base) 40%, transparent) 55%,
-    transparent 100%
-  );
 }
 .psl__cell:hover .psl__cell-cart,
 .psl__cell-cart:focus-visible {

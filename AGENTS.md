@@ -2906,9 +2906,22 @@ nvm use
 pnpm install
 ```
 
+On Windows, nvm-windows requires an explicit version from `.nvmrc`. Select its
+installed Node directory in the current PowerShell session; `nvm use` changes
+a shared junction and can require elevation. Corepack and pnpm use `.cmd` shims:
+
+```powershell
+$nodeVersion = (Get-Content -LiteralPath .nvmrc -Raw).Trim().TrimStart('v')
+nvm install $nodeVersion
+$nodeDir = Join-Path $env:NVM_HOME "v$nodeVersion"
+$env:Path = "$nodeDir;$env:Path"
+corepack.cmd enable
+pnpm.cmd install
+```
+
 The root `preinstall` script checks that `node` exactly matches `.nvmrc` and,
-on local machines with `~/.nvm`, that the active Node binary is coming from
-nvm. Do not bypass this check. Native modules are sensitive to the Node/Electron
+on local POSIX machines with `~/.nvm`, that the active Node binary is coming
+from nvm. Do not bypass this check. Native modules are sensitive to the Node/Electron
 ABI they were built against; installing with the wrong Node can leave
 `better-sqlite3.node` built for the wrong `NODE_MODULE_VERSION` and Electron
 will fail at runtime with a message like:

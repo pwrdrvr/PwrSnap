@@ -175,6 +175,65 @@ describe("DesktopSettingsService.read", () => {
 });
 
 describe("DesktopSettingsService.write", () => {
+  test("custom selections persist only the provider so an older reader cannot send their model to Codex", async () => {
+    const svc = makeService();
+    const provider = "custom:12345678-1234-4234-8234-123456789001";
+    await svc.write({ ai: { defaults: { enrichment: { provider, model: "vendor/private-model" } } } });
+
+    const saved = JSON.parse(readFileSync(join(workDir, "settings.json"), "utf8"));
+    expect(saved.ai.defaults.enrichment).toEqual({ provider });
+    expect((await new DesktopSettingsService({ filePath: join(workDir, "settings.json") }).read()).ai.defaults.enrichment)
+      .toEqual({ provider });
+  });
+
+  test("clears a legacy custom model string on an unrelated settings write", async () => {
+    const filePath = join(workDir, "settings.json");
+    const raw = defaultSettings();
+    raw.ai.defaults.enrichment = {
+      provider: "custom:12345678-1234-4234-8234-123456789001",
+      model: "vendor/private-model"
+    };
+    writeFileSync(filePath, JSON.stringify(raw), "utf8");
+    await new DesktopSettingsService({ filePath }).write({ general: { developerMode: true } });
+    expect(JSON.parse(readFileSync(filePath, "utf8")).ai.defaults.enrichment)
+      .toEqual({ provider: raw.ai.defaults.enrichment.provider });
+  });
+
+  test("preserves newer settings fields across a write by an older build", async () => {
+    const filePath = join(workDir, "settings.json");
+    const raw = defaultSettings() as Settings & { futureSetting?: { nested: string } };
+    raw.futureSetting = { nested: "keep" };
+    (raw.ai as Settings["ai"] & { futureAi?: { enabled: boolean } }).futureAi = { enabled: true };
+    writeFileSync(filePath, JSON.stringify(raw), "utf8");
+
+    await new DesktopSettingsService({ filePath }).write({ general: { developerMode: true } });
+    const saved = JSON.parse(readFileSync(filePath, "utf8"));
+    expect(saved.futureSetting).toEqual({ nested: "keep" });
+    expect(saved.ai.futureAi).toEqual({ enabled: true });
+  });
+
+  test("preserves newer fields inside custom connections and models on an unrelated write", async () => {
+    const filePath = join(workDir, "settings.json");
+    const raw = defaultSettings();
+    raw.ai.customConnections = [{ id: "12345678-1234-4234-8234-123456789001", name: "Vendor",
+      baseUrl: "https://example.com/v1", protocol: "openai-chat", auth: { type: "none" },
+      futureConnectionOption: true } as unknown as NonNullable<Settings["ai"]["customConnections"]>[number]];
+    raw.ai.customModels = [{ id: "12345678-1234-4234-8234-123456789002",
+      connectionId: "12345678-1234-4234-8234-123456789001", displayName: "Future model",
+      modelId: "vendor/model", capabilities: { vision: true, streaming: true },
+      maxOutputTokens: 4096, futureModelOption: true } as unknown as NonNullable<Settings["ai"]["customModels"]>[number]];
+    writeFileSync(filePath, JSON.stringify(raw), "utf8");
+
+    await new DesktopSettingsService({ filePath }).write({ general: { developerMode: true } });
+    const saved = JSON.parse(readFileSync(filePath, "utf8"));
+    expect(saved.ai.customConnections).toEqual(raw.ai.customConnections);
+    expect(saved.ai.customModels).toEqual(raw.ai.customModels);
+
+    // An explicit model-list replacement still takes effect.
+    await new DesktopSettingsService({ filePath }).write({ ai: { customModels: [] } });
+    expect(JSON.parse(readFileSync(filePath, "utf8")).ai.customModels).toEqual([]);
+  });
+
   test("write + read round-trips", async () => {
     const svc = makeService();
     const merged = await svc.write({

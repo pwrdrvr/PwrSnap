@@ -103,6 +103,42 @@ async function renderSurfaceControl(
 }
 
 describe("AiSurfaceDefaultControl — job routing", () => {
+  test("stores a custom provider without duplicating its model id", async () => {
+    const onChange = vi.fn();
+    const provider = "custom:12345678-1234-4234-8234-123456789001";
+    const el = await renderSurfaceControl({
+      surface: "enrichment", name: "Enrichment", sub: "", value: {},
+      models: [], modelsLoading: false,
+      acpProviderOptions: [{ value: provider, label: "Vendor model" }],
+      acpModelOptions: [{ id: "vendor/private-model", label: "Vendor model", isDefault: true }],
+      acpModelsLoading: false, onChange
+    });
+    const providerSelect = el.querySelector<HTMLSelectElement>('[aria-label="Enrichment provider"]')!;
+    await act(async () => {
+      providerSelect.value = provider;
+      providerSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(onChange).toHaveBeenCalledWith({ provider, model: "", reasoning: "" });
+  });
+
+  test("does not write a custom model id when its model picker is used", async () => {
+    const onChange = vi.fn();
+    const provider = "custom:12345678-1234-4234-8234-123456789001";
+    const el = await renderSurfaceControl({
+      surface: "enrichment", name: "Enrichment", sub: "", value: { provider },
+      models: [], modelsLoading: false,
+      acpProviderOptions: [{ value: provider, label: "Vendor model" }],
+      acpModelOptions: [{ id: "vendor/private-model", label: "Vendor model", isDefault: true }],
+      acpModelsLoading: false, onChange
+    });
+    const modelSelect = el.querySelector<HTMLSelectElement>('[aria-label="Enrichment model"]')!;
+    await act(async () => {
+      modelSelect.value = "vendor/private-model";
+      modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(onChange).toHaveBeenCalledWith({ provider, model: "", reasoning: "" });
+  });
+
   test("resets the model to Default when the provider changes (no stale cross-provider model)", async () => {
     const onChange = vi.fn();
     const el = await renderSurfaceControl({

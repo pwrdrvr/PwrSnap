@@ -14,9 +14,9 @@
 //   - Status transitions broadcast over EVENT_CHANNELS.appUpdateStatus
 //     to every BrowserWindow. The renderer banner subscribes via
 //     preload.
-//   - Periodic check fires every APP_UPDATE_CHECK_INTERVAL_MS. The
-//     initial check fires shortly after boot (after the main window
-//     has had a chance to mount the banner subscription).
+//   - Automatic checks use a persisted hourly attempt budget. A profile
+//     without updater state gets a ten-minute grace period; restarts keep
+//     the deadline, cached release list, ETags, and server backoff.
 
 import { app } from "electron";
 import { waitForUpdateCheckSlot } from "./update-check-wait";
@@ -41,6 +41,16 @@ import {
   type AppUpdateInstallAttempt,
   type AppUpdateInstallAttemptStore
 } from "./update-install-attempt-store";
+
+import {
+  APP_UPDATE_CHECK_INTERVAL_MS,
+  automaticReleaseCheckAt,
+  createUpdateReleaseStateStore,
+  type GitHubRelease,
+  type ReleaseCacheEntry,
+  type UpdateReleaseState
+} from "./update-release-state";
+export { APP_UPDATE_CHECK_INTERVAL_MS, APP_UPDATE_FIRST_CHECK_DELAY_MS } from "./update-release-state";
 
 // Access `autoUpdater` lazily. electron-updater exposes it as a
 // property getter that constructs `MacUpdater` on first access,
@@ -96,13 +106,13 @@ const GITHUB_LATEST_RELEASE_URL = `${GITHUB_RELEASES_URL}/latest`;
 const RELEASE_PAGE_SIZE = 100;
 const RELEASE_MAX_PAGES = 10;
 const RELEASE_FETCH_TIMEOUT_MS = 5_000;
-export const APP_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1_000;
+
 // The GitHub REST API allows 60 anonymous requests per hour per IP, shared by
 // every process on the machine, and one release read here costs at least two
 // of them (`/releases/latest` plus a page). Settings reads the release
-// versions on every mount, so main caches the list and serves those reads
-// from memory instead of spending requests each time.
-export const APP_UPDATE_RELEASE_CACHE_TTL_MS = 15 * 60 * 1_000;
+// versions on every mount, so main persists one cache and attempt budget
+// across windows and restarts. Explicit checks can bypass the hourly budget.
+export const APP_UPDATE_RELEASE_CACHE_TTL_MS = APP_UPDATE_CHECK_INTERVAL_MS;
 const RATE_LIMIT_FALLBACK_BACKOFF_MS = 15 * 60 * 1_000;
 const UPDATE_RETRY_DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1_000;
 const MAC_UPDATE_CHANNEL_FILE = "latest-mac.yml";
@@ -152,7 +162,8 @@ let resolveSelection: SelectionResolver = () => ({
 let initialized = false;
 let observedSelection: UpdateSelectionKey | undefined;
 let updateStatus: AppUpdateStatus = { status: "idle" };
-let periodicUpdateCheckTimer: ReturnType<typeof setInterval> | undefined;
+let periodicUpdateCheckTimer: ReturnType<typeof setTimeout> | undefined;
+let updaterGeneration = 0;
 let updateCheckInFlight: Promise<AppUpdateCheckResult> | undefined;
 let updateCheckSelectionInFlight: UpdateSelectionKey | undefined;
 let heldDownloadedUpdate:
@@ -242,14 +253,8 @@ let installAttemptStore: AppUpdateInstallAttemptStore | undefined;
  *  `/releases/latest` body kept beside the pages so a 304 on that endpoint
  *  still yields the tag the pager terminates on. `etags` is keyed by request
  *  URL. */
-type ReleaseCacheEntry = {
-  etags: Record<string, string>;
-  fetchedAt: number;
-  latest: GitHubRelease | undefined;
-  releases: GitHubRelease[];
-};
 let releaseCache: ReleaseCacheEntry | undefined;
-let releaseFetchInFlight: Promise<GitHubRelease[]> | undefined;
+let releaseFetchInFlight: Promise<{ releases: GitHubRelease[]; revalidated: boolean }> | undefined;
 /** Epoch ms at which GitHub said the anonymous quota refills. While set and
  *  unreached, no further request is issued. */
 let rateLimitResetAt: number | undefined;
@@ -259,20 +264,34 @@ const retryDownloadWaiters = new Set<{
   timer: ReturnType<typeof setTimeout>;
 }>();
 
-type GitHubRelease = {
-  assets?: GitHubReleaseAsset[];
-  draft?: boolean;
-  html_url?: string;
-  name?: string;
-  prerelease?: boolean;
-  published_at?: string;
-  tag_name?: string;
-};
+let releaseState: UpdateReleaseState | undefined;
+let releaseStateStore: ReturnType<typeof createUpdateReleaseStateStore> | undefined;
+let releaseStateLoad: Promise<UpdateReleaseState> | undefined;
 
-type GitHubReleaseAsset = {
-  name?: string;
-  state?: string;
-};
+async function loadReleaseState(): Promise<UpdateReleaseState> {
+  if (!releaseStateLoad) {
+    releaseStateLoad = (async () => {
+      const store = createUpdateReleaseStateStore(app.getPath("userData"));
+      const state = await store.read();
+      // Save firstSeenAt before a short-lived process exits. A write failure
+      // fails closed: no request may run without a durable attempt record.
+      await store.write(state);
+      releaseStateStore = store;
+      releaseState = state;
+      releaseCache = state.cache ?? undefined;
+      rateLimitResetAt = state.rateLimitResetAt ?? undefined;
+      return state;
+    })();
+  }
+  return releaseStateLoad;
+}
+
+async function saveReleaseState(): Promise<void> {
+  if (!releaseState || !releaseStateStore) throw new Error("Update release state not loaded");
+  releaseState.cache = releaseCache ?? null;
+  releaseState.rateLimitResetAt = rateLimitResetAt ?? null;
+  await releaseStateStore.write(releaseState);
+}
 
 /** Inject the function the updater calls to read the current train/track.
  *  Kept as a callback rather than importing the settings store
@@ -815,7 +834,15 @@ export async function checkForAppUpdatesNow(
       updateTrain: selection.train
     }),
     () => startAppUpdateCheck(trigger, selection, requestedSelection)
-  ).catch((err: unknown): AppUpdateCheckResult => {
+  ).then((result) => {
+    // A click can join the startup check while it is loading the persisted
+    // deadline. A deferred automatic result is not an explicit check.
+    if ((isUserInitiatedTrigger(trigger) || trigger === "selection") &&
+        result.status === "skipped" && result.reason === "automatic update check deferred") {
+      return checkForAppUpdatesNow(trigger, selection);
+    }
+    return result;
+  }).catch((err: unknown): AppUpdateCheckResult => {
     const result = {
       status: "error",
       message: err instanceof Error ? err.message : String(err)
@@ -855,12 +882,17 @@ function startAppUpdateCheck(
         updateChannel: selection.channel,
         updateTrain: selection.train
       });
+      if ((trigger === "startup" || trigger === "periodic") && !releaseReadsDisabled()) {
+        const state = await loadReleaseState();
+        if (Date.now() < automaticReleaseCheckAt(state) && (trigger === "startup" || !releaseCache)) {
+          return { status: "skipped", reason: "automatic update check deferred" };
+        }
+      }
       configureAutoUpdaterChannel(selection);
       const release = await readAppUpdateReleaseForSelection(
         selection,
-        // A user-initiated check should not answer from a 15-minute-old
-        // cache. Revalidation rides the stored etag, so the usual answer is
-        // a 304, which GitHub does not charge against the rate limit.
+        // Explicit checks/track changes revalidate immediately. ETags save
+        // transfer bytes; anonymous 304 responses still consume API quota.
         isUserInitiatedTrigger(trigger) || trigger === "selection" ? 0 : undefined
       );
       const currentVersion = autoUpdater().currentVersion?.version ?? "unknown";
@@ -1076,12 +1108,29 @@ async function simulateDevUpdateCheck(
   }
 }
 
-function startPeriodicUpdateChecks(): void {
-  if (periodicUpdateCheckTimer) return;
-  periodicUpdateCheckTimer = setInterval(() => {
-    void checkForAppUpdatesNow("periodic");
-  }, APP_UPDATE_CHECK_INTERVAL_MS);
-  periodicUpdateCheckTimer.unref?.();
+function startPeriodicUpdateChecks(minimumDelay = 1_000): void {
+  const generation = updaterGeneration;
+  void (async () => {
+    let delay = APP_UPDATE_CHECK_INTERVAL_MS;
+    try {
+      const state = await loadReleaseState();
+      delay = Math.max(minimumDelay, automaticReleaseCheckAt(state) - Date.now());
+    } catch (error) {
+      log.warn("unable to schedule persisted update check", { message: String(error) });
+    }
+    if (!initialized || generation !== updaterGeneration || periodicUpdateCheckTimer) return;
+    periodicUpdateCheckTimer = setTimeout(() => {
+      periodicUpdateCheckTimer = undefined;
+      void checkForAppUpdatesNow("periodic").finally(() => {
+        // An already-downloaded update can finish without a release read;
+        // do not turn its unchanged past deadline into a one-second loop.
+        if (initialized && generation === updaterGeneration) {
+          startPeriodicUpdateChecks(APP_UPDATE_CHECK_INTERVAL_MS);
+        }
+      });
+    }, Math.min(delay, 2_147_483_647));
+    periodicUpdateCheckTimer.unref?.();
+  })();
 }
 
 function releaseInfoFromGitHubRelease(
@@ -1327,9 +1376,8 @@ function githubReleaseHeaders(etag?: string): HeadersInit {
     Accept: "application/vnd.github+json",
     "User-Agent": "PwrSnap",
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    // A conditional request that answers 304 is not charged against the
-    // GitHub rate limit, so revalidating a cached list stays free while
-    // nothing new has shipped.
+    // Anonymous conditional requests still cost quota. ETags reduce transfer
+    // bytes; the persisted schedule is what bounds automatic requests.
     ...(etag ? { "If-None-Match": etag } : {})
   };
 }
@@ -1352,16 +1400,28 @@ function rateLimitedError(resetAt: number): Error {
 function releaseRequestError(response: Response): Error {
   const status = response.status;
   const rateLimited =
-    (status === 403 || status === 429) &&
-    readResponseHeader(response, "x-ratelimit-remaining") === "0";
+    status === 403 || status === 429;
   if (!rateLimited) {
     return new Error(`GitHub releases request failed with ${status}`);
   }
   const resetSeconds = Number(readResponseHeader(response, "x-ratelimit-reset"));
-  rateLimitResetAt =
-    Number.isFinite(resetSeconds) && resetSeconds > 0
-      ? resetSeconds * 1_000
-      : Date.now() + RATE_LIMIT_FALLBACK_BACKOFF_MS;
+  const retryAfter = readResponseHeader(response, "retry-after");
+  const retrySeconds = retryAfter === undefined ? NaN : Number(retryAfter);
+  const retryDate = retryAfter === undefined ? NaN : Date.parse(retryAfter);
+  const retryAt = Number.isFinite(retrySeconds)
+    ? Date.now() + Math.max(0, retrySeconds) * 1_000
+    : retryDate;
+  const serverRetryAt = Math.max(
+    Number.isFinite(resetSeconds) && resetSeconds > 0 ? resetSeconds * 1_000 : 0,
+    Number.isFinite(retryAt) ? retryAt : 0
+  );
+  rateLimitResetAt = Math.max(
+    rateLimitResetAt ?? 0,
+    serverRetryAt > Date.now() ? serverRetryAt : Date.now() + Math.min(
+      RATE_LIMIT_FALLBACK_BACKOFF_MS * 2 ** Math.min(5, (releaseState?.failures ?? 1) - 1),
+      6 * APP_UPDATE_CHECK_INTERVAL_MS
+    )
+  );
   log.warn("GitHub release rate limit reached", {
     resetAt: new Date(rateLimitResetAt).toISOString(),
     status
@@ -1449,7 +1509,10 @@ type ReleaseListFetch =
 async function fetchGitHubReleases(signal?: AbortSignal): Promise<ReleaseListFetch> {
   const cachedEtags = releaseCache?.etags ?? {};
   const etags: Record<string, string> = { ...cachedEtags };
-  const latestPromise = fetchLatestGitHubRelease(signal, cachedEtags[GITHUB_LATEST_RELEASE_URL]);
+  const latest = await fetchLatestGitHubRelease(signal, cachedEtags[GITHUB_LATEST_RELEASE_URL]);
+  if (rateLimitResetAt !== undefined && Date.now() < rateLimitResetAt) {
+    throw rateLimitedError(rateLimitResetAt);
+  }
   const collected: GitHubRelease[] = [];
   const seen = new Set<string>();
   const add = (release: GitHubRelease | undefined): void => {
@@ -1467,8 +1530,7 @@ async function fetchGitHubReleases(signal?: AbortSignal): Promise<ReleaseListFet
     const pagePromise = fetchGitHubJson(url, signal, page === 1 ? cachedEtags[url] : undefined);
     let pageResult: GitHubJsonResult;
     if (page === 1) {
-      const [latest, firstPage] = await Promise.all([latestPromise, pagePromise]);
-      pageResult = firstPage;
+      pageResult = await pagePromise;
       if (latest !== undefined && !latest.notModified) {
         latestRelease = latest.release;
         if (latest.etag !== undefined) etags[GITHUB_LATEST_RELEASE_URL] = latest.etag;
@@ -1549,8 +1611,8 @@ function releaseReadsDisabled(): boolean {
 
 /**
  * Single owner of the GitHub release list. Every caller in main goes through
- * this cache, and the renderer only ever reads it over the command bus, so
- * opening Settings costs no network request.
+ * this cache over the command bus. Settings may refresh an expired list,
+ * but consumes the same persisted hourly budget as automatic checks.
  */
 async function readGitHubReleases(
   maxAgeMs = APP_UPDATE_RELEASE_CACHE_TTL_MS
@@ -1558,24 +1620,46 @@ async function readGitHubReleases(
   if (releaseReadsDisabled()) {
     return [];
   }
-  const now = Date.now();
-  if (releaseCache && now - releaseCache.fetchedAt < maxAgeMs) {
-    return releaseCache.releases;
-  }
-  if (rateLimitResetAt !== undefined && now < rateLimitResetAt) {
-    // Spending a request GitHub will only reject deepens the hole. Serve the
-    // last good list when we have one.
-    if (releaseCache) {
-      return releaseCache.releases;
-    }
-    throw rateLimitedError(rateLimitResetAt);
-  }
   if (!releaseFetchInFlight) {
-    releaseFetchInFlight = refreshGitHubReleases().finally(() => {
+    releaseFetchInFlight = (async () => {
+      const state = await loadReleaseState();
+      const now = Date.now();
+      const explicit = maxAgeMs === 0;
+      if (rateLimitResetAt !== undefined && now < rateLimitResetAt) {
+        if (!explicit && releaseCache) return { releases: releaseCache.releases, revalidated: false };
+        throw rateLimitedError(rateLimitResetAt);
+      }
+      if (!explicit && (
+        now < automaticReleaseCheckAt(state) ||
+        (releaseCache && now - releaseCache.fetchedAt < maxAgeMs)
+      )) return { releases: releaseCache?.releases ?? [], revalidated: false };
+
+      // Commit admission BEFORE opening a socket. Even a crash, timeout, or
+      // unsuccessful response consumes this profile's automatic hourly slot.
+      state.lastAttemptAt = now;
+      state.failures += 1;
+      state.retryAt = now + Math.min(
+        RATE_LIMIT_FALLBACK_BACKOFF_MS * 2 ** Math.min(5, state.failures - 1),
+        6 * APP_UPDATE_CHECK_INTERVAL_MS
+      );
+      await saveReleaseState();
+      try {
+        const releases = await refreshGitHubReleases();
+        state.failures = 0;
+        state.retryAt = null;
+        return { releases, revalidated: true };
+      } finally {
+        await saveReleaseState();
+      }
+    })().finally(() => {
       releaseFetchInFlight = undefined;
     });
   }
-  return await releaseFetchInFlight;
+  const result = await releaseFetchInFlight;
+  // A button click racing the initial passive disk read must still perform
+  // its explicit check. Join real requests, not a deferred/cache-only read.
+  if (maxAgeMs === 0 && !result.revalidated) return readGitHubReleases(0);
+  return result.releases;
 }
 
 async function readAppUpdateReleaseForSelection(
@@ -1778,7 +1862,7 @@ export async function installDownloadedAppUpdate(): Promise<AppUpdateInstallResu
 }
 
 export function initAppUpdater(selectionResolver: SelectionResolver): void {
-  if (initialized) return;
+  if (initialized || releaseReadsDisabled()) return;
   // Bootstrap must provide the live settings reader before any channel
   // configuration or automatic check; asynchronous hotkey wiring is too late.
   setUpdateSelectionResolver(selectionResolver);
@@ -1893,15 +1977,17 @@ export function initAppUpdater(selectionResolver: SelectionResolver): void {
     setUpdateStatusUnlessActionable({ status: "error", message: err.message });
   });
 
-  startPeriodicUpdateChecks();
   if (!pendingInstallFailed) {
-    void checkForAppUpdatesNow("startup");
+    void checkForAppUpdatesNow("startup").finally(() => startPeriodicUpdateChecks());
+  } else {
+    startPeriodicUpdateChecks();
   }
 }
 
 export function disposeAutoUpdater(): void {
+  updaterGeneration += 1;
   if (periodicUpdateCheckTimer) {
-    clearInterval(periodicUpdateCheckTimer);
+    clearTimeout(periodicUpdateCheckTimer);
     periodicUpdateCheckTimer = undefined;
   }
   initialized = false;
@@ -1920,6 +2006,9 @@ export function disposeAutoUpdater(): void {
     clearTimeout(waiter.timer);
   }
   retryDownloadWaiters.clear();
+  releaseState = undefined;
+  releaseStateStore = undefined;
+  releaseStateLoad = undefined;
   releaseCache = undefined;
   releaseFetchInFlight = undefined;
   rateLimitResetAt = undefined;

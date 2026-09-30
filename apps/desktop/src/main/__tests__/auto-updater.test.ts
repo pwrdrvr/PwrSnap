@@ -51,6 +51,19 @@ vi.mock("electron", (): Partial<typeof import("electron")> => ({
   } as unknown as typeof import("electron").BrowserWindow
 }));
 
+// These behavior suites use a mature profile. Disk/restart/grace-period
+// behavior is exercised with the real store in auto-updater-restarts.test.ts.
+vi.mock("../update-release-state", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../update-release-state")>(),
+  createUpdateReleaseStateStore: () => ({
+    read: async () => ({
+      schemaVersion: 1, firstSeenAt: 0, lastAttemptAt: null,
+      retryAt: null, rateLimitResetAt: null, failures: 0, cache: null
+    }),
+    write: async () => undefined
+  })
+}));
+
 vi.mock("electron-updater", () => ({
   default: {
     autoUpdater: mocks.autoUpdater
@@ -388,9 +401,9 @@ describe("auto updater selection", () => {
 
   test("Settings discovery downloads from its fresh cache, shares checks and preserves cancellation", async () => {
     const updater = await startWithoutUpdate();
-    // Age the shared feed, just as opening Settings between hourly checks does.
+    // Age the shared feed, as when opening Settings after an hour.
     const now = Date.now();
-    vi.spyOn(Date, "now").mockReturnValue(now + 20 * 60_000);
+    vi.spyOn(Date, "now").mockReturnValue(now + 61 * 60_000);
     mockGitHubReleases([githubRelease("v1.0.1")]);
     let rejectDownload!: (error: Error) => void;
     const downloadPromise = new Promise<void>((_resolve, reject) => { rejectDownload = reject; });
@@ -418,7 +431,7 @@ describe("auto updater selection", () => {
   test("opening Settings on the prerelease track discovers and offers a newer build", async () => {
     mocks.resolveSelection.mockReturnValue({ train: "beta", channel: "prerelease" });
     const updater = await startWithoutUpdate();
-    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 20 * 60_000);
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61 * 60_000);
     mockGitHubReleases([githubRelease("v1.1.0-alpha.2", { prerelease: true })]);
     mocks.autoUpdater.checkForUpdates.mockImplementation(async () => {
       mocks.emit("update-available", { version: "1.1.0-alpha.2" });

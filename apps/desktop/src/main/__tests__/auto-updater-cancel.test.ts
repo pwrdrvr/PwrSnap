@@ -69,6 +69,19 @@ vi.mock("electron", (): Partial<typeof import("electron")> => ({
   } as unknown as typeof import("electron").BrowserWindow
 }));
 
+// These behavior suites use a mature profile. Disk/restart/grace-period
+// behavior is exercised with the real store in auto-updater-restarts.test.ts.
+vi.mock("../update-release-state", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../update-release-state")>(),
+  createUpdateReleaseStateStore: () => ({
+    read: async () => ({
+      schemaVersion: 1, firstSeenAt: 0, lastAttemptAt: null,
+      retryAt: null, rateLimitResetAt: null, failures: 0, cache: null
+    }),
+    write: async () => undefined
+  })
+}));
+
 vi.mock("electron-updater", () => ({
   default: {
     // A getter, like the real package's: it constructs the platform updater on

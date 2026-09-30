@@ -3,10 +3,11 @@
 // PwrSnap brand mark SVG. Output: apps/desktop/build/tray-icon-template{,@2x,@3x}.png
 //
 // Template PNGs on macOS are alpha-only; the system inverts them to
-// match dark / light / accent menubars. We generate from the same
-// layered-rect SVG used in the design system (product-marks.html /
-// BrandMark.tsx) — keeps brand consistency from the menubar all the
-// way to the float-over header.
+// match dark / light / accent menubars. The mark is the same stacked-
+// screenshots idea as the app icon and the in-app `PwrSnapMark`
+// (renderer/src/features/shared/BrandMark.tsx) — three tiers at 1 / 0.55 /
+// 0.3 — drawn to its own proportions for the menubar tile. design/AGENTS.md
+// §1 lists every rendering of the mark and which geometry each one uses.
 //
 // Run via:
 //   pnpm --filter @pwrsnap/desktop tray-icon
@@ -21,11 +22,15 @@ const repoRoot = resolve(here, "..");
 const buildDir = resolve(repoRoot, "build");
 mkdirSync(buildDir, { recursive: true });
 
-// Layered-rect mark from design/preview/product-marks.html (PwrSnap
-// card), scaled up to fill the menubar tile. The original design-system
-// SVG used ~58% of the 128px viewBox; that read tiny next to other
-// menubar icons (Codex, etc.). Bumped rects to span ~88% with a
-// proportionally thicker stroke so the mark stays bold-and-balanced.
+// The tray keeps the in-app mark's ORIGINAL proportions (58×46 rects
+// stepped 8 across and 14 up, in a 128 box), scaled up to fill the
+// menubar tile. That drawing's ink spanned about 65% of its viewBox,
+// which read tiny next to other menubar icons (Codex, etc.), so the rects
+// here span about 90% with a proportionally thicker stroke. The in-app
+// mark has since been redrawn from the app icon's glyph (wider 450×340
+// rects stepped 64 / 80); this template has not, and changing it means
+// regenerating and committing the PNGs (`pnpm --filter @pwrsnap/desktop
+// tray-icon`).
 //
 // The stroke color is per-variant:
 //   - macOS template PNG: full-opacity black → pure alpha; macOS tints it

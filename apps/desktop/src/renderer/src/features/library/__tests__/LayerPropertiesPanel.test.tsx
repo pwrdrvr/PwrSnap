@@ -139,12 +139,14 @@ function loadedModel(layers: BundleLayerNode[]): unknown {
 function makeApi(): LayersPanelApi {
   return {
     selectLayers: vi.fn(),
+    clearSelection: vi.fn(),
     setLayerVisibility: vi.fn(async () => undefined),
     deleteLayer: vi.fn(async () => undefined),
     moveLayerToIndex: vi.fn(async () => undefined),
     uncrop: vi.fn(async () => undefined),
     resetRasterTransform: vi.fn(async () => undefined),
-    updateLayerStyle: vi.fn()
+    updateLayerStyle: vi.fn(),
+    applyLayerStyleFields: vi.fn()
   };
 }
 

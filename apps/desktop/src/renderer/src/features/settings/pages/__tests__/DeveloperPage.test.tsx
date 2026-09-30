@@ -81,7 +81,6 @@ const baseSettings: Settings = {
     },
     toolBag: defaultEditorToolBag(),
     coachmarks: { stoplightSeen: false },
-    matchingText: { enabled: true },
     sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }
   },
   library: {

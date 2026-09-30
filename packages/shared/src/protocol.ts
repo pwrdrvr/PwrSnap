@@ -2995,7 +2995,7 @@ export type Settings = {
     screenCapturePrompted: boolean;
   };
   /** v2 editor user preferences — tool style defaults (sticky-mode
-   *  memory), one-time coachmark flags, matching-text affordance gate,
+   *  memory), one-time coachmark flags, the tool bag,
    *  right-sidebar pin/last-panel state. Lives behind the same Settings
    *  substrate as every other field; renderers patch via SettingsPatch
    *  and re-fetch on `events:settings:changed` (see AGENTS.md "Settings
@@ -3285,15 +3285,6 @@ export type EditorCoachmarks = {
   stoplightSeen: boolean;
 };
 
-/** Matching-text affordance gate. Default ON; the user can disable it
- *  from the EDITOR card on Settings → General if the "+ Add label"
- *  affordance after arrow placement feels intrusive for their
- *  workflow. (There is no Settings → Editor page — this comment used
- *  to point at one, which left the toggle unreachable from the UI.) */
-export type EditorMatchingText = {
-  enabled: boolean;
-};
-
 export type EditorSidebarPanel = "info" | "chat" | "toolConfig" | "help";
 
 export const EDITOR_SIDEBAR_PANELS = [
@@ -3323,7 +3314,6 @@ export type EditorSettings = {
   toolStyles: EditorToolStyles;
   toolBag: EditorToolBag;
   coachmarks: EditorCoachmarks;
-  matchingText: EditorMatchingText;
   sidebar: EditorSidebarSettings;
 };
 
@@ -3749,7 +3739,6 @@ export type SettingsPatch = {
     /** Replaces the whole bag — see {@link EditorToolBag}. */
     toolBag?: EditorToolBag;
     coachmarks?: Partial<EditorCoachmarks>;
-    matchingText?: Partial<EditorMatchingText>;
     sidebar?: Partial<EditorSidebarSettings>;
   };
   /** Library DetailRail preferences — currently just the right-bar

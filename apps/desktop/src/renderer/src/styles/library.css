@@ -4248,14 +4248,42 @@
   transform: rotate(90deg);
 }
 
-/* Floating bottom-center edit toolbar. Uses position:absolute (not
-   fixed) so it stays anchored to its stage container, including
-   when Reel mode's stage-wrap has its own scroll context. */
-.psl__edit-toolbar {
+/* Floating bottom-center edit dock: the property bar stacked on the
+   edit toolbar. The DOCK is what floats and what the grip drags; uses
+   position:absolute (not fixed) so it stays anchored to its stage
+   container, including when Reel mode's stage-wrap has its own scroll
+   context.
+
+   Two bounds keep it off the stage's own chrome at every stage size:
+     • max-width reserves the ←/→ columns (16px inset + 36px button +
+       ring + gap, each side), so no number of wrapped rows can cover
+       them. This used to apply only in the compact query below, where
+       a height threshold kept two toolbar rows below the buttons; the
+       property bar makes the dock too tall for that argument to hold.
+     • max-height keeps the whole dock inside the stage (24px inset below,
+       8px above). `.psl__stage-wrap` is overflow:hidden, so a dock taller
+       than the stage is clipped off the top without a trace. The
+       property bar is the part that gives: it shrinks and scrolls
+       (`min-height: 0` on it is load-bearing — a flex item's min-height
+       is its content height otherwise), and the toolbar never does. */
+.psl__edit-dock {
   position: absolute;
   bottom: 24px;
   left: 50%;
   transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: max-content;
+  max-width: calc(100% - 112px);
+  max-height: calc(100% - 32px);
+  z-index: 4;
+}
+.psl__edit-dock > .psl__edit-toolbar {
+  flex: none;
+}
+.psl__edit-toolbar {
   display: inline-flex;
   align-items: center;
   /* Wrap into a 2nd row when the stage is too narrow to fit every
@@ -4276,7 +4304,7 @@
   flex-wrap: wrap;
   justify-content: center;
   width: max-content;
-  max-width: calc(100% - 24px);
+  max-width: 100%;
   row-gap: 4px;
   column-gap: 2px;
   padding: 6px;
@@ -4287,7 +4315,6 @@
   -webkit-backdrop-filter: blur(20px) saturate(1.2);
   box-shadow: 0 16px 40px color-mix(in srgb, var(--shadow-base) 60%, transparent),
     inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 4%, transparent);
-  z-index: 4;
 }
 .psl__et-btn {
   height: 36px;
@@ -4335,10 +4362,10 @@
   cursor: grabbing;
   color: var(--text-primary);
 }
-/* When a custom position is in effect, the toolbar adds is-positioned.
+/* When a custom position is in effect, the dock adds is-positioned.
    Slight shadow bump signals it's been moved (vs the default chrome
    layer it normally sits on). */
-.psl__edit-toolbar.is-positioned {
+.psl__edit-dock.is-positioned .psl__edit-toolbar {
   box-shadow: 0 20px 56px color-mix(in srgb, var(--shadow-base) 70%, transparent),
     inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 4%, transparent);
 }
@@ -4383,13 +4410,25 @@
   border-color: color-mix(in srgb, var(--button-text-on-accent) 40%, transparent);
   background: color-mix(in srgb, var(--button-text-on-accent) 8%, transparent);
 }
-/* Active styling lives on the WRAPPER (`.psl__et-tool-wrap.is-active`)
-   below, not on the inner button, so the accent-soft box spans both
-   the main button AND the caret as one visually unified control. The
-   button just contributes color when active; background + border come
-   from the wrap. */
+/* Tool family buttons. Icon-only: nine bag slots now sit beside
+   them, and with labels the row ran to ~1300px. The label and key chip
+   stay in the DOM as the accessible name ("Arrow A") and the tooltip
+   carries the same text. */
+.psl__et-btn--tool > span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
 .psl__et-btn.is-active {
   color: var(--accent-bright);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
 }
 .psl__et-btn-key {
   display: inline-flex;
@@ -4409,152 +4448,195 @@
   color: var(--accent-bright);
   border-color: var(--accent-border);
 }
-/* Tool-button + caret pairing. The caret is ALWAYS rendered for
-   styled tools — clicking it activates the tool + opens the style
-   popover in one click. Always-on means no layout shift on activate
-   (the previous "render caret only when active" version made
-   neighboring tools jump as the active tool's caret appeared).
-   When the tool is ALSO active, the wrap + caret get the accent box;
-   when inactive, the caret stays present but subdued. */
-.psl__et-tool-wrap {
+/* ---- Tool bag ------------------------------------------------------
+   Nine slots, each drawing the thing it would draw in its real color
+   (ToolBagGlyph). Hover must NOT flood the slot with accent the way the
+   family buttons do: the glyph's color is the information. */
+.psl__bag {
   display: inline-flex;
-  align-items: stretch;
+  align-items: center;
+  gap: 2px;
+}
+.psl__bag-slot {
   position: relative;
-  border-radius: 6px;
-}
-.psl__et-tool-wrap.is-active {
-  background: var(--accent-soft);
-  box-shadow: inset 0 0 0 1px var(--accent-border);
-}
-/* When the wrap is active, kill the main button's own border-radius
-   on the right so it joins the caret flush. */
-.psl__et-tool-wrap.is-active .psl__et-btn {
-  border-top-right-radius: 0;
-  border-bottom-right-radius: 0;
-}
-.psl__et-caret {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 14px;
+  width: 36px;
   height: 36px;
   padding: 0;
   border: 0;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
   border-radius: 6px;
-  flex: 0 0 auto;
-  transition: background var(--dur-fast) var(--ease-out),
-    color var(--dur-fast) var(--ease-out),
-    transform var(--dur-fast) var(--ease-out);
-}
-/* Caret hover — same solid-accent idiom as the main button so the
-   two halves of the unified box respond to hover identically. */
-.psl__et-caret:hover {
-  background: var(--accent);
-  color: var(--button-text-on-accent);
-}
-/* When the tool is active, the caret sits INSIDE the unified accent
-   box. Subtle accent-border separator on its left makes the two
-   zones (icon vs caret) feel like distinct sub-controls within one
-   control. Right side joins the wrap's border-radius. */
-.psl__et-caret.is-tool-active {
-  color: var(--accent-bright);
-  border-left: 1px solid color-mix(in srgb, var(--accent-border) 60%, transparent);
-  border-top-left-radius: 0;
-  border-bottom-left-radius: 0;
-  border-top-right-radius: 6px;
-  border-bottom-right-radius: 6px;
-}
-.psl__et-caret.is-tool-active:hover {
-  background: var(--accent);
-  color: var(--button-text-on-accent);
-}
-/* Open state — accent-filled "I'm controlling an open popover" look.
-   Chevron rotates 180° so it points UP (matches every native dropdown
-   menu pattern when expanded). Applies whether the tool is active or
-   not (clicking the caret on an inactive tool activates AND opens). */
-.psl__et-caret.is-open {
-  background: var(--accent-soft);
-  color: var(--accent-strong);
-}
-.psl__et-caret.is-open svg {
-  transform: rotate(180deg);
-}
-/* The caret is its own Tab stop, so it draws the house ring
-   (`:where(:focus-visible)` in app.css). It used to suppress every
-   outline, to hide a flash while the Cmd+Shift+C global-hotkey route
-   briefly moved focus between windows. That left a keyboard stop with
-   no indicator at all. If the flash comes back, fix where focus lands
-   after the shuffle; the fix is not to remove the ring again. */
-.psl__et-caret svg {
-  width: 7px;
-  height: 5px;
-  transition: transform var(--dur-fast) var(--ease-out);
-}
-/* "+ Add label" matching-text affordance — chip that pops near a
-   freshly-placed arrow's tail. Positioned via `position: fixed`
-   inline-styled coords from EditToolbar's matchingTextStyle memo.
-   8s auto-dismiss is handled by useEditorToolState's internal timer. */
-.psl__et-matching-text {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 28px;
-  padding: 0 10px;
-  border: 1px solid var(--accent-border);
-  background: color-mix(in srgb, var(--bg-panel-hover) 94%, transparent);
-  color: var(--accent-bright);
-  border-radius: 14px;
+  background: transparent;
+  color: var(--text-secondary);
   cursor: pointer;
-  font: 600 11px/1 var(--font-mono);
-  letter-spacing: 0.03em;
+}
+.psl__bag-slot:hover {
+  background: var(--bg-panel);
+}
+.psl__bag-slot.is-armed {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+}
+/* Armed, then edited: the working style no longer matches the slot.
+   "Update slot N" in the property bar saves it back. */
+.psl__bag-slot.is-modified::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.psl__bag-slot.is-empty {
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+  color: var(--text-muted);
+}
+.psl__bag-slot.is-empty[aria-disabled="true"] {
+  cursor: default;
+}
+.psl__bag-slot.is-empty[aria-disabled="true"]:hover {
+  background: transparent;
+}
+.psl__bag-plus {
+  font: 500 15px/1 var(--font-sans);
+}
+/* A black or dark-gray glyph on the dark toolbar needs an edge to be
+   seen at all; a faint light rim is enough and leaves bright colors
+   alone. */
+.psl__bag-glyph {
+  filter: drop-shadow(0 0 0.75px color-mix(in srgb, var(--text-primary) 60%, transparent));
+}
+.psl__bag-num {
+  position: absolute;
+  right: 3px;
+  bottom: 2px;
+  font: 700 8px/1 var(--font-mono);
+  color: var(--text-muted);
+  pointer-events: none;
+}
+.psl__bag-slot.is-armed .psl__bag-num {
+  color: var(--accent-bright);
+}
+
+/* ---- Property bar -------------------------------------------------
+   Docked above the toolbar; the same frosted panel. Shows the selected
+   layer's style or the armed tool's (EditPropertyBar.tsx), laid out as
+   one row of the popover's field groups that wraps when the stage is
+   narrow. */
+.psl__et-props {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 8px 14px;
+  max-width: 100%;
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--bg-panel-hover) 96%, transparent);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
   backdrop-filter: blur(20px) saturate(1.2);
   -webkit-backdrop-filter: blur(20px) saturate(1.2);
-  box-shadow: 0 8px 24px color-mix(in srgb, var(--shadow-base) 50%, transparent);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--shadow-base) 50%, transparent);
 }
-.psl__et-matching-text:hover {
+.psl__et-props.is-layer {
+  border-color: var(--accent-border);
+}
+.psl__et-props-tag {
+  align-self: center;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--bg-app) 40%, transparent);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font: 700 10px/1 var(--font-mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.psl__et-props-tag.is-selected {
   background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent-bright);
 }
-/* The pill's own drop shadow sits under its ring, and in light it pulled
-   the ring down to 1.8:1. A 1px `--bg-app` halo outside the ring comes
-   first, so it paints over the shadow. */
-.psl__et-matching-text:focus-visible {
-  box-shadow:
-    0 0 0 4px var(--bg-app),
-    0 8px 24px color-mix(in srgb, var(--shadow-base) 50%, transparent);
+.psl__et-props-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 14px;
 }
-.psl__et-matching-text > span:first-child {
-  font-size: 14px;
-  line-height: 1;
+.psl__et-props-body .pse-color-row {
+  flex-wrap: nowrap;
 }
+.psl__et-props-body .pse-icon-btn {
+  width: 30px;
+}
+.psl__et-props-actions {
+  display: inline-flex;
+  gap: 6px;
+  align-self: center;
+}
+.psl__et-props-btn {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: 600 11px/1 var(--font-sans);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.psl__et-props-btn:hover:not([aria-disabled="true"]) {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+.psl__et-props-btn.is-primary {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent-bright);
+}
+.psl__et-props-btn[aria-disabled="true"] {
+  color: var(--text-muted);
+  cursor: default;
+}
+.psl__et-props-hint {
+  align-self: center;
+  color: var(--text-muted);
+  font: 500 11px/1.2 var(--font-sans);
+  white-space: nowrap;
+}
+.psl__et-props-hint kbd {
+  display: inline-block;
+  min-width: 14px;
+  padding: 1px 3px;
+  margin: 0 1px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  font: 700 9px/1.2 var(--font-mono);
+  text-align: center;
+  color: var(--text-secondary);
+}
+/* Compact edit toolbar — every label goes, Reset's too.
 
-/* Compact edit toolbar — icon-only, and kept out of the ←/→ columns.
-
-   With labels + key chips the toolbar is 985px on one row (two rows of
-   ~490px), and it floats bottom-anchored OVER the stage. In a small stage
-   it wrapped taller than the stage itself: 196×330 in Reel's 220×249
-   stage at 480×480, so `.psl__stage-wrap`'s overflow clipped the grip,
-   Pointer and Arrow off the top, and it painted over both ←/→ buttons.
-
-   Icon-only it is 532px on one row. Two thresholds, both derived:
-     • width < 560 — below that the labelled toolbar needs three rows.
-     • height < 300 — two labelled rows (90px) + the 24px bottom inset
-       only clear the nav buttons' lower edge (50% + 18px + ring) when the
-       stage is ≥ 274px tall; Reel's stage is 249px at the 480px minimum
-       window height however wide it is.
-   `max-width` here reserves the ←/→ columns (16px inset + 36px button +
-   ring + gap, each side), so no number of wrapped rows can cover them.
+   History: with labels + key chips the toolbar was 985px on one row, and
+   in Reel's 220×249 stage at 480×480 it wrapped to 196×330, clipped off
+   the top and painted over both ←/→ buttons. The tool family buttons are
+   icon-only everywhere now (the bag sits beside them), and the dock
+   itself carries the nav-column reserve and the stage-height cap (see
+   `.psl__edit-dock`). What is left for a small stage is Reset's label
+   and the zoom readout's width.
 
    Labels and key chips are visually hidden, not `display: none`: they are
    the buttons' accessible names ("Pointer V"), and `title` still carries
    the tooltip. The armed Reset keeps its "Confirm? · N" label — that text
    is the second half of a destructive two-click confirm. */
 @container psl-stage (width < 560px) or (height < 300px) {
-  .psl__edit-toolbar {
-    max-width: calc(100% - 112px);
-  }
   .psl__edit-toolbar .psl__et-btn:not(.is-armed) > span {
     position: absolute;
     width: 1px;

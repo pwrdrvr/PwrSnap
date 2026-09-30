@@ -59,10 +59,7 @@ vi.mock("../../editor/useEditorToolState", () => ({
     activeStyle: { tool: "pointer" },
     setActiveTool: vi.fn(),
     isSingleShot: false,
-    matchingText: { kind: "idle" },
     onAnnotationPlaced: vi.fn(),
-    armMatchingText: vi.fn(),
-    dismissMatchingText: vi.fn(),
     updateActiveStyle: vi.fn()
   })
 }));

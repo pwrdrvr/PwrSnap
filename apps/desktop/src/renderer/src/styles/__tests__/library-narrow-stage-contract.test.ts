@@ -1,5 +1,6 @@
-// Lock the narrow-Library stage contract: the floating edit toolbar goes
-// icon-only and stays out of the ←/→ columns when the stage is small, the
+// Lock the narrow-Library stage contract: the floating edit dock stays out
+// of the ←/→ columns and inside the stage, its labels go when the stage is
+// small, the
 // collapsed nav leaves the Tab order, and a popped rail stacks above the
 // center pane's floating chrome.
 //
@@ -92,33 +93,28 @@ describe("compact edit toolbar", () => {
     expect(rule.prelude).toMatch(/\(\s*width\s*<\s*\d+px\s*\)\s*or\s*\(\s*height\s*<\s*\d+px\s*\)/);
   });
 
-  it("the height threshold keeps two labelled rows clear of the ←/→ buttons", () => {
-    // Above the threshold the toolbar keeps its labels and is at most two
-    // rows (the width threshold sees to that). It is bottom-anchored, and
-    // the nav buttons are centred, so it clears them only when
-    //   H − bottom − toolbarH ≥ H/2 + navSize/2 + ring
-    const toolbar = block("\\}\\s*\\.psl__edit-toolbar");
-    const button = block("\\}\\s*\\.psl__et-btn");
-    const twoRows =
-      2 * px(button, "height") +
-      px(toolbar, "row-gap") +
-      2 * px(toolbar, "padding") +
-      2; /* 1px border, top and bottom */
-    const minHeight = 2 * (px(toolbar, "bottom") + twoRows + NAV_SIZE / 2 + NAV_RING_AND_GAP);
-    const threshold = Number(rule.prelude.match(/height\s*<\s*(\d+)px/)?.[1]);
-    expect(threshold).toBeGreaterThanOrEqual(minHeight);
-  });
-
-  it("reserves both ←/→ columns so no number of wrapped rows can cover them", () => {
-    const compactToolbar = extractBlock(rule.body, "^\\s*\\.psl__edit-toolbar", {
-      label: LABEL,
-      expectSingle: true
-    });
-    const reserve = compactToolbar.match(/max-width\s*:\s*calc\(\s*100%\s*-\s*(\d+)px\s*\)\s*;/);
-    expect(reserve, `${LABEL}: compact toolbar must reserve the nav columns`).not.toBeNull();
+  it("reserves both ←/→ columns at EVERY stage size, so no number of wrapped rows can cover them", () => {
+    // The reserve used to live only in this query, with a height
+    // threshold proving two toolbar rows stayed below the buttons. The
+    // property bar docked above the toolbar makes the dock tall enough to
+    // reach them at any stage size, so the reserve is on the base rule.
+    const dock = block("\\}\\s*\\.psl__edit-dock");
+    const reserve = dock.match(/max-width\s*:\s*calc\(\s*100%\s*-\s*(\d+)px\s*\)\s*;/);
+    expect(reserve, `${LABEL}: the dock must reserve the nav columns`).not.toBeNull();
     expect(Number(reserve?.[1])).toBeGreaterThanOrEqual(
       2 * (NAV_INSET + NAV_SIZE + NAV_RING_AND_GAP)
     );
+  });
+
+  it("the dock never outgrows the stage: the property bar gives, the toolbar does not", () => {
+    const dock = block("\\}\\s*\\.psl__edit-dock");
+    const cap = dock.match(/max-height\s*:\s*calc\(\s*100%\s*-\s*(\d+)px\s*\)\s*;/);
+    expect(cap, `${LABEL}: the dock must cap its height to the stage`).not.toBeNull();
+    expect(Number(cap?.[1])).toBeGreaterThanOrEqual(px(dock, "bottom"));
+    const bar = block("\\}\\s*\\.psl__et-props");
+    expect(bar).toMatch(/min-height\s*:\s*0\s*;/);
+    expect(bar).toMatch(/overflow-y\s*:\s*auto\s*;/);
+    expect(block("\\.psl__edit-dock > \\.psl__edit-toolbar")).toMatch(/flex\s*:\s*none\s*;/);
   });
 
   it("hides labels visually, never from the accessible name, and never the armed Reset", () => {
@@ -166,7 +162,7 @@ describe("popped rail stacking", () => {
     // `.psl__main:has(... :focus-visible) > .psl__grid-copy-palette` rule
     // (the focus-ring pass, #645), which a bare pattern matches too.
     for (const chrome of [
-      "\\}\\s*\\.psl__edit-toolbar",
+      "\\}\\s*\\.psl__edit-dock",
       "\\}\\s*\\.psl__grid-copy-palette",
       "\\.psl__stage-nav",
       "\\.psl__focus-close"

@@ -1429,15 +1429,6 @@ function validateEditorPatch(rawEditor: unknown): PwrSnapError | null {
     }
   }
 
-  if (editor.matchingText !== undefined) {
-    if (!isObject(editor.matchingText)) {
-      return validationError("invalid_editor_matchingText", "settings:write: editor.matchingText must be an object");
-    }
-    if (!isUndefined(editor.matchingText.enabled) && !isBoolean(editor.matchingText.enabled)) {
-      return validationError("invalid_editor_matchingText_enabled", "settings:write: editor.matchingText.enabled must be a boolean");
-    }
-  }
-
   if (editor.sidebar !== undefined) {
     if (!isObject(editor.sidebar)) {
       return validationError("invalid_editor_sidebar", "settings:write: editor.sidebar must be an object");

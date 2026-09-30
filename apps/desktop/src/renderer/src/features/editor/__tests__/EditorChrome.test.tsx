@@ -88,7 +88,6 @@ const baseSettings: Settings = {
     },
     toolBag: defaultEditorToolBag(),
     coachmarks: { stoplightSeen: false },
-    matchingText: { enabled: true },
     sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }
   },
   library: { detailRail: { pinned: true, lastSelectedTab: "info" }, gridCopyPalette: { anchor: "follow" }, confirmBeforeTrash: true, gridZoom: 180 },

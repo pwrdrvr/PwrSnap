@@ -252,7 +252,6 @@
   --pse-panel-grace-ms: 500ms;
   --pse-panel-slide-dur: 180ms;
   --pse-panel-slide-ease: cubic-bezier(0.32, 0.72, 0, 1);
-  --pse-affordance-auto-dismiss-ms: 8000ms;
 }
 
 /* ============================================================

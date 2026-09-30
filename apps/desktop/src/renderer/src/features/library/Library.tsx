@@ -2577,8 +2577,8 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   // picking "red" in the popover never made the arrow red. Lifting
   // here flows the hook into both surfaces via Stage props.
   //
-  // The hook depends on `captureId` for matching-text affordance
-  // resets. Use the selected record id, sentinel-guarded so the hook
+  // The hook depends on `captureId` to disarm the bag slot on capture
+  // switches. Use the selected record id, sentinel-guarded so the hook
   // is stable when nothing is selected (grid mode).
   const liftedToolState = useEditorToolState({
     captureId: selectedRecordId ?? "__library_no_capture__"
@@ -5057,6 +5057,8 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
           onBlurStyleChange={setBlurStyle}
           onSelectionChange={setSelectedLayerIds}
           onLayersApi={setLayersApi}
+          selectedLayerIds={selectedLayerIds}
+          layersApi={layersApi}
           {...(view.kind === "reel"
             ? {
                 aboveStageSlot: (

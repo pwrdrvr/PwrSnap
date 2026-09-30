@@ -24,7 +24,6 @@ import type {
   BlurToolStyle,
   ChatSettings,
   EditorCoachmarks,
-  EditorMatchingText,
   EditorSettings,
   EditorSidebarPanel,
   EditorSidebarSettings,
@@ -338,12 +337,6 @@ function defaultEditorSettings(): EditorSettings {
       // Flips true the first time the user opens any tool style popover
       // and the 3s stoplight micro-coachmark auto-dismisses.
       stoplightSeen: false
-    },
-    matchingText: {
-      // "+ Add label" affordance appears after arrow placement by
-      // default. User can disable it from the EDITOR card on
-      // Settings → General if it feels intrusive for their workflow.
-      enabled: true
     },
     sidebar: {
       // Default to collapsed (hover-pop only) so a first-time user
@@ -673,13 +666,6 @@ function parseEditorCoachmarks(raw: unknown, defaults: EditorCoachmarks): Editor
   };
 }
 
-function parseEditorMatchingText(raw: unknown, defaults: EditorMatchingText): EditorMatchingText {
-  if (!isRecord(raw)) return defaults;
-  return {
-    enabled: pickBoolean(raw.enabled, defaults.enabled)
-  };
-}
-
 function parseEditorSidebar(raw: unknown, defaults: EditorSidebarSettings): EditorSidebarSettings {
   if (!isRecord(raw)) return defaults;
   return {
@@ -694,7 +680,6 @@ function parseEditorSettings(raw: unknown, defaults: EditorSettings): EditorSett
     toolStyles: parseEditorToolStyles(raw.toolStyles, defaults.toolStyles),
     toolBag: parseEditorToolBag(raw.toolBag, defaults.toolBag),
     coachmarks: parseEditorCoachmarks(raw.coachmarks, defaults.coachmarks),
-    matchingText: parseEditorMatchingText(raw.matchingText, defaults.matchingText),
     sidebar: parseEditorSidebar(raw.sidebar, defaults.sidebar)
   };
 }
@@ -2186,7 +2171,6 @@ function mergeEditor(
     toolBag:
       patch.toolBag === undefined ? current.toolBag : parseEditorToolBag(patch.toolBag, current.toolBag),
     coachmarks: mergeSection(current.coachmarks, patch.coachmarks),
-    matchingText: mergeSection(current.matchingText, patch.matchingText),
     sidebar: mergeSection(current.sidebar, patch.sidebar)
   };
 }

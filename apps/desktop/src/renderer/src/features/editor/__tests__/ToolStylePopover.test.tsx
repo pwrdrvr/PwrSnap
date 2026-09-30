@@ -150,7 +150,6 @@ function makeSettings(overrides?: {
       },
       toolBag: defaultEditorToolBag(),
       coachmarks: { stoplightSeen: overrides?.stoplightSeen ?? false },
-      matchingText: { enabled: true },
       sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }
     },
     library: { detailRail: { pinned: true, lastSelectedTab: "info" }, gridCopyPalette: { anchor: "follow" }, confirmBeforeTrash: true, gridZoom: 180 },

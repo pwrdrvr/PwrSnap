@@ -1,0 +1,146 @@
+// The property bar docked above the edit toolbar. It shows ONE style:
+//
+//   • the selected layer's, when exactly one styled layer is selected —
+//     edits restyle that layer (the Properties tab's path, one undo step
+//     per change);
+//   • otherwise the active drawing tool's working style — edits change
+//     what the next drag draws, and "Update slot N" appears once it has
+//     drifted from the armed slot.
+//
+// It replaces the per-tool caret popovers. The controls used to live in
+// a popover you had to know to open, and a selected layer's controls
+// lived in a sidebar tab nobody found; now whatever the next click would
+// affect is on screen above the tools.
+
+import type { ReactElement } from "react";
+import type { ToolBagSlot } from "@pwrsnap/shared";
+import { acceleratorToDisplayKeys, type ShortcutPlatform } from "../../lib/format-hotkey";
+import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
+import {
+  ToolStyleBody,
+  type StyledToolKind,
+  type ToolStylePopoverStyle
+} from "../editor/ToolStylePopover";
+
+export type PropertyBarTarget =
+  | {
+      readonly kind: "layer";
+      readonly layerId: string;
+      readonly tool: StyledToolKind;
+      readonly label: string;
+      readonly style: ToolStylePopoverStyle;
+    }
+  | { readonly kind: "multi"; readonly count: number }
+  | {
+      readonly kind: "tool";
+      readonly tool: StyledToolKind;
+      readonly label: string;
+      readonly style: ToolStylePopoverStyle;
+      /** 0-based armed slot, or null. */
+      readonly armedSlot: number | null;
+      readonly armedSlotModified: boolean;
+    };
+
+export type EditPropertyBarProps = {
+  readonly target: PropertyBarTarget;
+  readonly onFieldChange: (field: string, value: unknown) => void;
+  /** Index of the first empty slot, or null when the bag is full. */
+  readonly firstEmptySlot: number | null;
+  readonly onSaveToSlot: (index: number, slot: ToolBagSlot) => void;
+  readonly shortcutPlatform?: ShortcutPlatform;
+};
+
+function slotFor(tool: StyledToolKind, style: ToolStylePopoverStyle): ToolBagSlot {
+  // The pair came from one discriminated source (a layer projection or
+  // the tool state), so the cast only restates what the caller holds.
+  return { tool, style } as ToolBagSlot;
+}
+
+export function EditPropertyBar({
+  target,
+  onFieldChange,
+  firstEmptySlot,
+  onSaveToSlot,
+  shortcutPlatform = rendererShortcutPlatform()
+}: EditPropertyBarProps): ReactElement {
+  const shift = acceleratorToDisplayKeys("Shift+1", shortcutPlatform)[0] ?? "Shift";
+  if (target.kind === "multi") {
+    return (
+      <div className="psl__et-props is-multi" data-testid="edit-property-bar" role="group" aria-label="Selection">
+        <span className="psl__et-props-tag is-selected">{target.count} selected</span>
+        <span className="psl__et-props-hint">
+          <kbd>{shift}</kbd>
+          <kbd>1</kbd>–<kbd>9</kbd> or {shift}-click a slot to restyle them
+        </span>
+      </div>
+    );
+  }
+
+  const saveTarget = slotFor(target.tool, target.style);
+  const updateIndex =
+    target.kind === "tool" && target.armedSlot !== null && target.armedSlotModified
+      ? target.armedSlot
+      : null;
+
+  return (
+    <div
+      className={"psl__et-props" + (target.kind === "layer" ? " is-layer" : "")}
+      data-testid="edit-property-bar"
+      data-target={target.kind}
+      role="group"
+      aria-label={target.kind === "layer" ? `Selected ${target.label} style` : `${target.label} tool style`}
+    >
+      <span className={"psl__et-props-tag" + (target.kind === "layer" ? " is-selected" : "")}>
+        {target.kind === "layer"
+          ? `Selected · ${target.label}`
+          : target.armedSlot !== null
+            ? `Slot ${target.armedSlot + 1}${target.armedSlotModified ? " · edited" : ""}`
+            : target.label}
+      </span>
+      <div className="psl__et-props-body">
+        <ToolStyleBody
+          tool={target.tool}
+          style={target.style}
+          onStyleFieldChange={onFieldChange}
+          {...(target.kind === "layer" ? { styleTargetKey: target.layerId } : {})}
+        />
+      </div>
+      <div className="psl__et-props-actions">
+        {updateIndex !== null && (
+          <button
+            type="button"
+            className="psl__et-props-btn is-primary"
+            data-testid="property-bar-update-slot"
+            onClick={() => onSaveToSlot(updateIndex, saveTarget)}
+          >
+            Update slot {updateIndex + 1}
+          </button>
+        )}
+        <button
+          type="button"
+          className="psl__et-props-btn"
+          data-testid="property-bar-save-to-bag"
+          // aria-disabled, not disabled: a disabled button leaves the tab
+          // order, and then the reason in its title is unreachable.
+          aria-disabled={firstEmptySlot === null}
+          title={
+            firstEmptySlot === null
+              ? "The bag is full — right-click a slot to replace or clear it"
+              : `Save this style to slot ${firstEmptySlot + 1}`
+          }
+          onClick={() => {
+            if (firstEmptySlot !== null) onSaveToSlot(firstEmptySlot, saveTarget);
+          }}
+        >
+          + Save to bag
+        </button>
+      </div>
+      {target.kind === "layer" && (
+        <span className="psl__et-props-hint">
+          <kbd>{shift}</kbd>
+          <kbd>1</kbd>–<kbd>9</kbd> restyles it
+        </span>
+      )}
+    </div>
+  );
+}

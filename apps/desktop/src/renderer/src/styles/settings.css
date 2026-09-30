@@ -17,7 +17,8 @@
   height: 100%;
   display: grid;
   grid-template-columns: 220px 1fr;
-  grid-template-rows: 52px 1fr;
+  /* 41px title strip: 40px fill + 1px divider below (Pwr-family strip). */
+  grid-template-rows: 41px 1fr;
   background: var(--bg-app);
   border-radius: 12px;
   overflow: hidden;
@@ -61,7 +62,7 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font: 700 14px/1 var(--font-display);
+  font: 700 17px/1 var(--font-display);
   letter-spacing: -0.01em;
 }
 .pss__title-mark {
@@ -80,6 +81,19 @@
   text-transform: uppercase;
 }
 .pss__title-crumb .sep { opacity: 0.5; }
+/* Strip text centres by its cap height (Pwr-family strip): flex centres a
+   text element's line box, and Geist's ascent/descent put the capitals off
+   the middle of it. `text-box` trimming (Chromium 133+) centres the ink that
+   is actually drawn instead, at any size, so the capitals share the y=20
+   line with the stoplights, the mark and the controls — no pixel nudges.    The chevron is drawn on the x-height, not up to the cap line, so it
+   centres by that band instead. */
+.pss__title-brand .pwrsnap-wordmark,
+.pss__title-crumb > :not(.sep) {
+  text-box: trim-both cap alphabetic;
+}
+.pss__title-crumb .sep {
+  text-box: trim-both ex alphabetic;
+}
 /* Parent crumb on a child screen (Settings › AI Providers › Codex):
    returns to that page's hub. Text-styled like the rest of the crumb. */
 .pss__title-crumb-link {

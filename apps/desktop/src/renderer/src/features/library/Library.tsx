@@ -4169,7 +4169,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
         <div className="psl__topbar-l">
           <div className="psl__title">
             <span className="psl__title-mark">
-              <PwrSnapMark size={18} />
+              <PwrSnapMark size={20} decorative />
             </span>
             <PwrSnapWordmark />
           </div>

@@ -21,12 +21,12 @@ export function SettingsTitleBar({ here, parent }: SettingsTitleBarProps): React
     <header className="pss__titlebar">
       <div className="pss__title-brand">
         <span className="pss__title-mark">
-          <PwrSnapMark size={18} />
+          <PwrSnapMark size={20} decorative />
         </span>
         <PwrSnapWordmark />
       </div>
       <span className="pss__title-crumb">
-        Settings <span className="sep">›</span>{" "}
+        <span>Settings</span> <span className="sep">›</span>{" "}
         {parent !== undefined ? (
           <>
             <button type="button" className="pss__title-crumb-link" onClick={parent.onOpen}>

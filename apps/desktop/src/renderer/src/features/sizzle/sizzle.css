@@ -1,6 +1,6 @@
 /* PwrSnap Sizzle Reels — composer window.
  *
- * Shell mirrors settings.css: 52px title bar row + content grid (rail +
+ * Shell mirrors settings.css: 41px title bar row + content grid (rail +
  * main). Title bar is the system drag region with left padding clearing
  * the macOS traffic lights (titleBarStyle: "hiddenInset" in
  * createSizzleWindow). All colors via tokens — never hardcoded.
@@ -12,7 +12,8 @@
   height: 100%;
   display: grid;
   grid-template-columns: 240px 1fr;
-  grid-template-rows: 52px 1fr;
+  /* 41px title strip: 40px fill + 1px divider below (Pwr-family strip). */
+  grid-template-rows: 41px 1fr;
   background: var(--bg-app);
   color: var(--text-primary);
   font-family: var(--font-sans);
@@ -54,19 +55,17 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font: 700 14px/1 var(--font-display);
+  font: 700 17px/1 var(--font-display);
   letter-spacing: -0.01em;
 }
 
+/* Bare, like every other window's strip: the Pwr-family mark is the 20px
+   glyph itself at x=96. A tile around it pushed the glyph 2px right and put
+   a box in the one strip that has none elsewhere. */
 .szl__title-mark {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  background: var(--bg-panel-elevated);
-  border: 1px solid var(--accent-border);
 }
 
 .szl__title-crumb {
@@ -82,6 +81,25 @@
 
 .szl__title-sep {
   opacity: 0.5;
+}
+
+/* Strip text centres by its cap height (Pwr-family strip): flex centres a
+   text element's line box, and Geist's ascent/descent put the capitals off
+   the middle of it. `text-box` trimming (Chromium 133+) centres the ink that
+   is actually drawn instead, at any size, so the capitals share the y=20
+   line with the stoplights, the mark and the controls — no pixel nudges.    The chevron centres by its x-height band instead, and the reel name —
+   which clips its overflow for the ellipsis — gets `padding-block` back so
+   the trim does not cut its descenders off. */
+.szl__title-brand .pwrsnap-wordmark,
+.szl__title-label,
+.szl__title-here {
+  text-box: trim-both cap alphabetic;
+}
+.szl__title-here {
+  padding-block: 4px;
+}
+.szl__title-sep {
+  text-box: trim-both ex alphabetic;
 }
 
 /* With a reel open the crumb is a button that drops the project rail
@@ -131,7 +149,7 @@
 .szl__failure-stack {
   position: absolute;
   z-index: 20;
-  top: 60px;
+  top: 49px; /* 8px under the 41px title strip */
   left: 50%;
   width: min(680px, calc(100% - 32px));
   transform: translateX(-50%);
@@ -201,7 +219,7 @@
 }
 .szl--rail-popover .szl__rail {
   position: absolute;
-  top: 52px;
+  top: 41px;
   left: 0;
   bottom: 0;
   width: 280px;

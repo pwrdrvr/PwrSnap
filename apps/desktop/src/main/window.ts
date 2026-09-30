@@ -61,7 +61,7 @@ let hotCpuShuttingDown = false;
  *   global macOS app menu bar (always present), so nothing to do per-window.
  * - **Windows**: reclaim the native title bar via `titleBarStyle: "hidden"` and
  *   draw the native min/max/close as a themed overlay in the top-right of our
- *   52px top bar (`titleBarOverlay`). Secondary windows (Settings/Sizzle/doc)
+ *   41px top bar (`titleBarOverlay`). Secondary windows (Settings/Sizzle/doc)
  *   hide the native menu bar (`autoHideMenuBar`) — they don't need
  *   File/Edit/View; the main Library window keeps it visible for
  *   discoverability (Alt still toggles it).
@@ -101,31 +101,31 @@ type MenuVisibility = "visible" | "hidden";
  * windows share, not eyeballed. Re-derive them here if that bar changes; don't
  * nudge them to taste.
  *
- * A macOS button is a 14pt frame on a 23pt pitch, so the group is 60pt wide
- * and ends at `x + 60`.
+ * These are Pwr-family values: PwrGit and PwrAgent put their stoplights at
+ * the same point in the same 40px strip, and the strip spec lives in PwrGit's
+ * `renderer/src/features/chrome/AGENTS.md` (pwrdrvr/PwrGit#361). Change them
+ * in all three apps together, never in one.
+ *
+ * A macOS button is a 14pt frame on a 23pt pitch (measured on macOS 26), so
+ * the group is 60pt wide and ends at `x + 60`. Electron's `y` is the top of
+ * the button.
  *
  * **x = 16** is the chrome bar's own content inset — `.psl__topbar`,
- * `.pss__titlebar`, and `.szl__titlebar` all use `padding: 0 16px 0 92px`
- * (`.ps-doc__titlebar` matches on the left and uses 20px on the right). The
- * buttons are the leftmost thing in that bar, so they start on the same rail
- * everything else lines up on. The group then ends at x=76, still inside the
- * 92px all four bars reserve on the left.
+ * `.pss__titlebar`, and `.szl__titlebar` all use `padding: 0 16px`
+ * (`.ps-doc__titlebar` uses 20px). The buttons are the leftmost thing in that
+ * bar, so they start on the same rail everything else lines up on. The group
+ * then ends at x=76, 20px short of the brand, which every bar starts at x=96
+ * on macOS (`--mac-traffic-light-reserve`).
  *
- * **y = 18** centres the 14pt button in the 51pt BAND, not in the 52pt row.
- * Every bar declares `grid-template-rows: 52px ...` (`.psl`, `.pss`, `.szl`,
- * `.ps-doc`) with `box-sizing: border-box` and a 1px `border-bottom`, so the
- * bottom pixel is the divider and the fill the buttons sit on is 51pt. That
- * is the same band `titleBarOverlayForTheme()` already pins at `height: 51`
- * for the Windows caption strip, for the same reason — keep the two in step.
- *
- * (51 - 14) / 2 = 18.5, so no integer centres exactly and the choice is which
- * way to round. 18 rounds high, and high is where the platform sits: of the
- * apps measured on this machine, Terminal and Ghostty sit 2pt high, PwrGit
- * 1pt high, Edge and Claude Desktop exactly centred — none sits low. 18 also
- * happens to be what PwrSnap already shipped, so this is a re-derivation that
- * confirms the value rather than a change. Measured both ways against the
- * band: y=18 leaves 18 above / 19 below, y=19 leaves 19 above / 18 below —
- * symmetric, so nothing but the rounding direction separates them.
+ * **y = 13** centres the 14pt button in the 40pt FILL: (40 - 14) / 2 = 13, so
+ * its centre is y=20 — the line the mark, the wordmark's capitals and the
+ * toolbar controls centre on too. Every bar declares
+ * `grid-template-rows: 41px ...` (`.psl`, `.pss`, `.szl`, `.ps-doc`) with
+ * `box-sizing: border-box` and a 1px `border-bottom`, so the divider sits
+ * BELOW the 40pt fill rather than inside it. The fill has to be an even
+ * height for this to work: Electron takes whole points, and a 14pt button
+ * centres on a whole point only. `titleBarOverlayForTheme()` pins the Windows
+ * caption strip to the same 40pt fill — keep the two in step.
  *
  * Five of the six consumers render one of those bars: Library (`.psl`),
  * Settings (`.pss`), Sizzle (`.szl`), the document windows and the logs
@@ -136,16 +136,19 @@ type MenuVisibility = "visible" | "hidden";
  * that window ever grows a title bar, the inset needs re-deriving against it.
  *
  * History: `x` was 20 from the 2026-05 build-out and never re-derived, which
- * left the buttons 4pt past the rail. Measured against a standalone
- * `hiddenInset` window: first-button left 20 → 16, pitch 23 and top 18
- * unchanged. Pinned by `macos-traffic-light-position.test.ts`, which also
- * fails if a seventh window starts consuming this without being classified.
+ * left the buttons 4pt past the rail. `y` was 18 in the old 52px bar, whose
+ * divider sat INSIDE the row: that left a 51pt fill with no whole-point
+ * centre, so the buttons sat half a point high in Settings, Sizzle and the
+ * document windows — and 1.5pt high in the Library, whose `.psl` also carried
+ * a 1px outer border that pushed its bar down to y=1. Pinned by
+ * `macos-traffic-light-position.test.ts`, which also fails if a seventh
+ * window starts consuming this without being classified.
  *
  * Frozen because it is exported — `as const` is compile-time only, so without
  * this one stray write from any importer would move the buttons on every
  * window opened afterwards. Callers spread it rather than passing it on.
  */
-export const MACOS_TRAFFIC_LIGHT_POSITION = Object.freeze({ x: 16, y: 18 });
+export const MACOS_TRAFFIC_LIGHT_POSITION = Object.freeze({ x: 16, y: 13 });
 
 function platformWindowChrome(menu: MenuVisibility): BrowserWindowConstructorOptions {
   if (process.platform === "win32") {
@@ -189,20 +192,19 @@ const TITLEBAR_BG_LIGHT = "#f7f4ef";
  *  matches the title bar's `--bg-sidebar` so the strip reads as part of our
  *  chrome rather than a system band.
  *
- *  Height is 51 — ONE LESS than the renderer's 52px title bar — on purpose: it
- *  leaves the title bar's bottom 1px border (`border-bottom: var(--border-subtle)`)
- *  uncovered, so the divider line continues UNDER the native min/max/close
- *  buttons on every window (GitHub Desktop does this). At full height the
- *  overlay covers the border, which is why Settings — lacking the main window's
- *  1px outer-border offset — showed no line under its buttons. The 1px of title
- *  bar revealed below the buttons is `--bg-sidebar`, the same as `color`, so the
- *  only thing that shows through is the border itself. */
+ *  Height is 40 — the renderer's title-bar FILL, one less than its 41px row —
+ *  on purpose: the bar's 1px bottom border (`border-bottom: var(--border-subtle)`)
+ *  sits below the fill, so the overlay leaves it uncovered and the divider line
+ *  continues UNDER the native min/max/close buttons on every window (GitHub
+ *  Desktop does this). At full height the overlay would cover the border. It
+ *  is the same 40pt band the macOS stoplights centre in — see
+ *  MACOS_TRAFFIC_LIGHT_POSITION. */
 function titleBarOverlayForTheme(): { color: string; symbolColor: string; height: number } {
   const isDark = getStartupBackgroundColor() === STARTUP_BG_DARK;
   return {
     color: isDark ? TITLEBAR_BG_DARK : TITLEBAR_BG_LIGHT,
     symbolColor: isDark ? "#cdcdcd" : "#333333",
-    height: 51
+    height: 40
   };
 }
 

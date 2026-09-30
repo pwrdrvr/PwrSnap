@@ -564,9 +564,15 @@
      shrink (the grid-wrap inside scrolls/reflows its own cells) so the
      left + right columns always stay on-screen. */
   grid-template-columns: var(--left-col) minmax(0, 1fr) var(--right-col);
-  grid-template-rows: 52px 1fr 32px;
+  /* 41px title strip: the Pwr-family 40px fill with its 1px divider below
+     (see "The Pwr-family title strip" in AGENTS.md). No outer border: the
+     strip has to start at the window's y=0 so its fill centres on y=20, the
+     line the macOS stoplights sit on, and its brand at x=96. A 1px frame here
+     put both one pixel off, and the window already has an edge — the OS draws
+     it on macOS and Windows, `#root::after` on Linux. Settings, Sizzle and the
+     document windows never had one. */
+  grid-template-rows: 41px 1fr 32px;
   background: var(--bg-app);
-  border: 1px solid var(--border-default);
   border-radius: 12px;
   overflow: hidden;
   font-family: var(--font-sans);
@@ -793,7 +799,13 @@
 .psl__topbar .lyt-toggle,
 .psl__topbar .psl__search-wrap { -webkit-app-region: no-drag; }
 .psl__topbar-l { display: flex; align-items: center; gap: 12px; }
-.psl__title { font: 700 14px/1 var(--font-display); letter-spacing: -0.01em; display: flex; align-items: center; gap: 8px; }
+.psl__title { font: 700 17px/1 var(--font-display); letter-spacing: -0.01em; display: flex; align-items: center; gap: 8px; }
+/* Strip text centres by its cap height (Pwr-family strip): flex centres a
+   text element's line box, and Geist's ascent/descent put the capitals off
+   the middle of it. `text-box` trimming (Chromium 133+) centres the ink that
+   is actually drawn instead, at any size, so the capitals share the y=20
+   line with the stoplights, the mark and the controls — no pixel nudges. */
+.psl__title .pwrsnap-wordmark { text-box: trim-both cap alphabetic; }
 
 /* Windows custom title-bar menu bar (File / Edit / View / …). Painted only on
    win32, where titleBarStyle:"hidden" removes the native menu bar. Buttons opt
@@ -1015,13 +1027,13 @@
    inconsistent measurements: top was measured from the cell top,
    bottom from `.psl`'s padding edge. The fix: clear the grid
    placement (`grid-area: auto`) when absolute so the CB falls back
-   cleanly to `.psl`. Then top: 52px (below topbar) and bottom: 32px
+   cleanly to `.psl`. Then top: 41px (below topbar) and bottom: 32px
    (above status bar) work as expected. */
 .psl[data-left="collapsed"] .psl__left,
 .psl[data-left="peek"] .psl__left {
   position: absolute;
   grid-area: auto;
-  top: 52px;
+  top: 41px;
   left: 0;
   bottom: 32px;
   width: 220px;
@@ -2670,7 +2682,7 @@
                      48px spine peeks in. is-open removes the
                      transform, exposing the full panel.
 
-   Magic numbers (top: 52px / bottom: 32px) are calibrated for the
+   Magic numbers (top: 41px / bottom: 32px) are calibrated for the
    Library's topbar + status bar — future consumers may need to
    override via CSS specificity or a wrapper class. */
 .hover-reveal-panel {
@@ -2688,7 +2700,7 @@
 .hover-reveal-panel.is-collapsed,
 .hover-reveal-panel.is-open {
   position: absolute;
-  top: 52px;
+  top: 41px;
   right: 0;
   bottom: 32px;
   width: 360px;

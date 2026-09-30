@@ -4,7 +4,7 @@
 //
 //   • main (`platformWindowChrome` in src/main/window.ts) decides whether the
 //     window has a frame, and on macOS insets the traffic lights INTO our own
-//     52px title bar via `titleBarStyle: "hiddenInset"`.
+//     41px title bar via `titleBarStyle: "hiddenInset"`.
 //   • the renderer pads that bar out of the way — `--mac-traffic-light-reserve`
 //     on macOS, `--win-caption-reserve` on Windows, nothing on Linux.
 //
@@ -28,8 +28,9 @@ import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 
 /** Content inset every chrome bar uses when it has no OS buttons to clear. */
 const RAIL_INSET_PX = 16;
-/** `--mac-traffic-light-reserve` — room for the 60pt button group at x=16. */
-const MAC_RESERVE_PX = 92;
+/** `--mac-traffic-light-reserve` — the Pwr-family brand start, 20px clear of
+ *  the 60pt button group at x=16. */
+const MAC_RESERVE_PX = 96;
 
 /** What the left edge of the bar's first control should clear, here. */
 const EXPECTED_LEFT_PX = process.platform === "darwin" ? MAC_RESERVE_PX : RAIL_INSET_PX;

@@ -2,7 +2,8 @@
   width: 100vw;
   height: 100vh;
   display: grid;
-  grid-template-rows: 52px 1fr;
+  /* 41px title strip: 40px fill + 1px divider below (Pwr-family strip). */
+  grid-template-rows: 41px 1fr;
   background: var(--bg-app);
   color: var(--text-primary);
 }
@@ -39,7 +40,7 @@
   gap: 8px;
   min-width: 0;
   color: var(--text-primary);
-  font: 700 14px/1 var(--font-display);
+  font: 700 17px/1 var(--font-display);
   letter-spacing: -0.01em;
 }
 
@@ -50,6 +51,16 @@
   min-width: 0;
   color: var(--text-muted);
   font: 500 12px/1 var(--font-sans);
+}
+
+/* Strip text centres by its cap height (Pwr-family strip): flex centres a
+   text element's line box, and Geist's ascent/descent put the capitals off
+   the middle of it. `text-box` trimming (Chromium 133+) centres the ink that
+   is actually drawn instead, at any size, so the capitals share the y=20
+   line with the stoplights, the mark and the controls — no pixel nudges. */
+.ps-doc__brand .pwrsnap-wordmark,
+.ps-doc__crumb > * {
+  text-box: trim-both cap alphabetic;
 }
 
 .ps-doc__crumb b {

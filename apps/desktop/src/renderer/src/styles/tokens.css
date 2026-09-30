@@ -175,7 +175,7 @@
 
   /* ---------- PLATFORM CHROME ----------
      Two mirror-image reservations, one per platform that draws OS buttons
-     INSIDE our 52px title bar. Both are opt-in: the base rule for every bar
+     INSIDE our 41px title bar. Both are opt-in: the base rule for every bar
      (.psl__topbar, .pss__titlebar, .szl__titlebar, .ps-doc__titlebar) reserves
      nothing, because Linux gets an ordinary OS frame and has no in-window
      buttons to clear. See platformWindowChrome in
@@ -184,10 +184,12 @@
      Left-side room a `:root[data-platform="darwin"]` title bar reserves for the
      macOS traffic lights, which `titleBarStyle: "hiddenInset"` insets into our
      bar. MACOS_TRAFFIC_LIGHT_POSITION (window.ts) places the 60pt button group
-     at x=16, so it ends at x=76 — inside this. The two are pinned against each
-     other by macos-traffic-light-position.test.ts; change one there and the
-     other in the same commit. */
-  --mac-traffic-light-reserve: 92px;
+     at x=16, so it ends at x=76, and the brand starts here at x=96 — 20px
+     clear of it. Pwr-family value: PwrGit and PwrAgent start their brand at
+     96 too. The two are pinned against each other by
+     macos-traffic-light-position.test.ts; change one there and the other in
+     the same commit. */
+  --mac-traffic-light-reserve: 96px;
   /* Right-side room a `:root[data-platform="win32"]` title bar reserves for
      the native min/max/close caption buttons drawn by `titleBarOverlay`. Every
      win32 title bar pads its right edge by this so right-aligned content clears

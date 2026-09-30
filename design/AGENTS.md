@@ -18,13 +18,15 @@ stroked rounded rectangles on a diagonal, front at full strength, mid at
 |---|---|---|---|
 | **App icon** | `apps/desktop/scripts/generate-app-icon.swift` | 1024 box; `450 × 340` rects, `rx=48`, stroke `56`, offsets `±64 / ±80` | `#e8743a` (the icon orange — see §3) |
 | **In-app SVG** (title strips, tray, float-over) | `apps/desktop/src/renderer/src/features/shared/BrandMark.tsx` → `PwrSnapMark` | the icon's glyph, same 1024-box coordinates with y flipped: rects at `(223,422)` front, `(287,342)` mid, `(351,262)` back; viewBox `195 195 634 634` | `currentColor`, pinned to `var(--accent)` on the `<svg>` itself |
-| **Tray icon** | `apps/desktop/scripts/generate-tray-icon.mjs` | viewBox `0 0 128 128`; `78 × 62` rects, `rx=8`, stroke `13` (scaled up to fill the menubar tile) | template black / `#ff8a1f` |
+| **Tray icon** (menubar / notification area PNGs) | `apps/desktop/scripts/generate-tray-icon.mjs` → `tray-icon-glyph.mjs` | the icon's glyph, READ from `generate-app-icon.swift`; the same viewBox `195 195 634 634` as the in-app SVG | template black / `#ff8a1f` |
 | Design handoff (reference only) | `design/src/AppIcons.jsx` → `APP_ICONS.pwrsnap`, `design/src/FloatOver.jsx` → `FoMark` | viewBox `0 0 24 24`; three `13 × 13` squares, `rx=2.5` | three explicit tints: `--accent-deep`, a copper midpoint, `--accent` |
 
-**What ships is the first three rows.** The in-app mark was a separate,
-squarer drawing (`58 × 46` rects, stroke `9`, in a 128 box) until 2026-09,
-when it was redrawn from the icon for the Pwr-family title strip; the family
-rule is that each app's strip mark is its icon glyph. The design-handoff version is the
+**What ships is the first three rows, and all three are one drawing.** The
+in-app mark was a separate, squarer drawing (`58 × 46` rects, stroke `9`, in a
+128 box) until 2026-09, when it was redrawn from the icon for the Pwr-family
+title strip; the family rule is that each app's strip mark is its icon glyph.
+The tray was a scaled-up copy of that squarer drawing (`78 × 62` rects,
+stroke `13`) and was redrawn from the icon in the same change. The design-handoff version is the
 original Claude Design drawing, kept verbatim under `design/` as a visual
 reference (see the repository AGENTS.md); do not port its squares or its three
 tints into the app. If the mark itself is redrawn, redraw the shipped
@@ -39,7 +41,10 @@ renderings together — and the two JSX copies in `design/src/` together, since
   was protecting. Do not remove that style and let the color inherit.
 - **Same numbers as the icon.** Any change to the icon's mark is a change to
   `BrandMark.tsx` too. `BrandMark.test.tsx` re-derives every rect from the
-  Swift constants and fails if either side moves alone.
+  Swift constants and fails if either side moves alone. The tray PNGs need no
+  edit, only a rerun of `pnpm --filter @pwrsnap/desktop tray-icon`: their
+  generator reads the Swift constants itself, and `tray-icon.test.mjs`
+  re-renders every committed PNG and fails when one is stale.
 - **Fills its box, ink centred.** The viewBox is the glyph's own bounds
   (x 195–829, y 234–790, stroke included) squared about their centre — the
   Pwr-family convention PwrGit's mark uses too. A flex parent that centres
@@ -61,7 +66,7 @@ renderings together — and the two JSX copies in `design/src/` together, since
 
 Wherever the mark is rendered with **per-tier alpha** instead of three opaque
 tints (the native generators: `apps/desktop/scripts/generate-app-icon.swift`,
-`apps/desktop/scripts/generate-tray-icon.mjs`), painting back → mid → front with
+`apps/desktop/scripts/tray-icon-glyph.mjs`), painting back → mid → front with
 plain source-over is *correct alpha compositing and the wrong mark*: the 0.3 back
 stroke shows through the 0.55 mid stroke and each crossing lights up as a
 brighter, more saturated patch — a fourth tone the palette never specified.

@@ -49,6 +49,13 @@ function swiftConstant(name: string): number {
   return Number(match[1]);
 }
 
+/** `static let <name>: CGFloat = <n>` — the tier alphas. */
+function swiftAlpha(name: string): string {
+  const match = new RegExp(`static let ${name}: CGFloat = ([\\d.]+)`).exec(swift);
+  if (match === null) throw new Error(`generate-app-icon.swift declares no \`${name}\``);
+  return String(Number(match[1]));
+}
+
 /** Corners of the three painted tiers, back to front, in the order painted. */
 function paintedTiers(svg: SVGSVGElement) {
   return [...svg.querySelectorAll(":scope > g > rect")].map((r) => ({
@@ -74,7 +81,7 @@ function cutsIn(svg: SVGSVGElement, maskRef: string | null) {
 }
 
 describe("PwrSnapMark", () => {
-  test("is the icon glyph: every tier derived from generate-app-icon.swift", async () => {
+  test("is the icon glyph: every tier and alpha derived from generate-app-icon.swift", async () => {
     const svg = (await render(<PwrSnapMark size={20} />)).querySelector("svg")!;
     const w = swiftConstant("rectWidth");
     const h = swiftConstant("rectHeight");
@@ -87,8 +94,11 @@ describe("PwrSnapMark", () => {
     // top-right) is a SMALLER y here.
     const at = (sx: number, sy: number) => ({ x: 512 - w / 2 + sx * dx, y: 512 - h / 2 - sy * dy });
     const [back, mid, front] = paintedTiers(svg);
-    expect(back).toMatchObject({ ...at(1, 1), width: w, height: h, rx, opacity: "0.3" });
-    expect(mid).toMatchObject({ ...at(0, 0), width: w, height: h, rx, opacity: "0.55" });
+    expect(back).toMatchObject({ ...at(1, 1), width: w, height: h, rx, opacity: swiftAlpha("backAlpha") });
+    expect(mid).toMatchObject({ ...at(0, 0), width: w, height: h, rx, opacity: swiftAlpha("midAlpha") });
+    // The front tier is painted at the icon's full strength, so it carries no
+    // stroke-opacity at all.
+    expect(swiftAlpha("frontAlpha")).toBe("1");
     expect(front).toMatchObject({ ...at(-1, -1), width: w, height: h, rx, opacity: null });
     expect(svg.querySelector(":scope > g")!.getAttribute("stroke-width")).toBe(String(stroke));
   });

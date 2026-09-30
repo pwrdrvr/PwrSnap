@@ -85,8 +85,13 @@
    text element's line box, and Geist's ascent/descent put the capitals off
    the middle of it. `text-box` trimming (Chromium 133+) centres the ink that
    is actually drawn instead, at any size, so the capitals share the y=20
-   line with the stoplights, the mark and the controls — no pixel nudges.    The chevron is drawn on the x-height, not up to the cap line, so it
-   centres by that band instead. */
+   line with the stoplights, the mark and the controls — no pixel nudges.
+
+   The chevron is drawn on the x-height, not up to the cap line, so it
+   centres by that band instead. The parent-crumb button is trimmed too, so
+   it gets `padding-block` back: without it the button's box, its hit area
+   and its focus ring shrink to the cap height, and the ring cuts through
+   the underline it draws on hover and focus. */
 .pss__title-brand .pwrsnap-wordmark,
 .pss__title-crumb > :not(.sep) {
   text-box: trim-both cap alphabetic;
@@ -98,7 +103,8 @@
    returns to that page's hub. Text-styled like the rest of the crumb. */
 .pss__title-crumb-link {
   appearance: none;
-  padding: 0;
+  /* Block padding restores the box the cap-height trim above takes away. */
+  padding: 4px 0;
   border: 0;
   background: transparent;
   color: inherit;

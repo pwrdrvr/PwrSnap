@@ -87,7 +87,9 @@
    text element's line box, and Geist's ascent/descent put the capitals off
    the middle of it. `text-box` trimming (Chromium 133+) centres the ink that
    is actually drawn instead, at any size, so the capitals share the y=20
-   line with the stoplights, the mark and the controls — no pixel nudges.    The chevron centres by its x-height band instead, and the reel name —
+   line with the stoplights, the mark and the controls — no pixel nudges.
+
+   The chevron centres by its x-height band instead, and the reel name —
    which clips its overflow for the ellipsis — gets `padding-block` back so
    the trim does not cut its descenders off. */
 .szl__title-brand .pwrsnap-wordmark,

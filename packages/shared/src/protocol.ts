@@ -3246,6 +3246,30 @@ export type EditorToolStyles = {
   highlight: HighlightToolStyle;
 };
 
+/** One saved, complete tool style in the editor's tool bag: the tool it
+ *  arms plus EVERY style field that tool has. Arming a slot never
+ *  changes another slot, and pasting it onto a selection (⇧ + number)
+ *  maps its fields onto whatever kind is selected. `label` is an
+ *  optional user rename; the toolbar derives a name from the style when
+ *  it is absent. */
+export type ToolBagSlot =
+  | { tool: "arrow"; label?: string; style: ArrowToolStyle }
+  | { tool: "text"; label?: string; style: TextToolStyle }
+  | { tool: "shape"; label?: string; style: ShapeToolStyle }
+  | { tool: "blur"; label?: string; style: BlurToolStyle }
+  | { tool: "highlight"; label?: string; style: HighlightToolStyle };
+
+/** Number of tool-bag slots, bound to keys 1–9. */
+export const TOOL_BAG_SIZE = 9;
+
+/** The editor's tool bag. `slots` always has exactly TOOL_BAG_SIZE
+ *  entries; `null` is an empty slot. Written WHOLE on every change (the
+ *  settings merge replaces the array rather than merging slot by slot),
+ *  so a reorder or a clear can never interleave with a stale write. */
+export type EditorToolBag = {
+  slots: Array<ToolBagSlot | null>;
+};
+
 // Factory defaults for EditorToolStyles live in
 // ./editor-tool-defaults.ts (`defaultEditorToolStyles`), NOT here:
 // protocol.ts is reached at RUNTIME by the sandboxed preload (via
@@ -3297,6 +3321,7 @@ export type EditorSidebarSettings = {
 
 export type EditorSettings = {
   toolStyles: EditorToolStyles;
+  toolBag: EditorToolBag;
   coachmarks: EditorCoachmarks;
   matchingText: EditorMatchingText;
   sidebar: EditorSidebarSettings;
@@ -3721,6 +3746,8 @@ export type SettingsPatch = {
       blur?: Partial<BlurToolStyle>;
       highlight?: Partial<HighlightToolStyle>;
     };
+    /** Replaces the whole bag — see {@link EditorToolBag}. */
+    toolBag?: EditorToolBag;
     coachmarks?: Partial<EditorCoachmarks>;
     matchingText?: Partial<EditorMatchingText>;
     sidebar?: Partial<EditorSidebarSettings>;

@@ -190,7 +190,8 @@ const END_STYLES: ReadonlyArray<{
   { id: "filled-triangle", label: "Filled triangle", Icon: FilledTriangleIcon },
   { id: "open-triangle", label: "Open triangle", Icon: OpenTriangleIcon },
   { id: "line", label: "Line", Icon: LineIcon },
-  { id: "dot", label: "Dot", Icon: DotIcon }
+  { id: "dot", label: "Dot", Icon: DotIcon },
+  { id: "bar", label: "Bar (range end)", Icon: BarIcon }
 ];
 
 const STEM_STYLES: ReadonlyArray<{
@@ -1600,6 +1601,16 @@ function LineIcon(): ReactElement {
   return (
     <svg width="20" height="14" viewBox="0 0 20 14" aria-hidden="true">
       <line x1="1" y1="7" x2="19" y2="7" stroke="currentColor" strokeWidth="2" />
+    </svg>
+  );
+}
+
+/** Crossbar ON the endpoint — with both ends set, a range. */
+function BarIcon(): ReactElement {
+  return (
+    <svg width="20" height="14" viewBox="0 0 20 14" aria-hidden="true">
+      <line x1="1" y1="7" x2="18" y2="7" stroke="currentColor" strokeWidth="2" />
+      <line x1="18" y1="2" x2="18" y2="12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
     </svg>
   );
 }

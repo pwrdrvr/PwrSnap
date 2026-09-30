@@ -28,6 +28,7 @@ import type {
   EditorSettings,
   EditorSidebarPanel,
   EditorSidebarSettings,
+  EditorToolBag,
   EditorToolStyles,
   FilenameTimestampZone,
   CapturesLocation,
@@ -49,6 +50,7 @@ import type {
   ShortcutPlatform,
   TextFontWeight,
   TextToolStyle,
+  ToolBagSlot,
   ToolColor,
   ToolSizePreset,
   QuickCaptureAction,
@@ -72,6 +74,7 @@ import {
   GRID_ZOOM_MAX,
   GRID_ZOOM_MIN,
   MAX_HIGHLIGHT_OPACITY,
+  defaultEditorToolBag,
   defaultEditorToolStyles,
   isAiReasoningEffort,
   isAppearanceTheme,
@@ -99,7 +102,8 @@ import {
   UPDATE_CHANNEL_DEFAULT,
   UPDATE_SELECTION_SOURCE_DEFAULT,
   UPDATE_TRAIN_DEFAULT,
-  shortcutPlatformFromString
+  shortcutPlatformFromString,
+  TOOL_BAG_SIZE
 } from "@pwrsnap/shared";
 import { getMainLogger } from "../log";
 const LEGACY_ENRICHMENT_DEFAULT_MODEL = "gpt-5.4-mini";
@@ -329,6 +333,7 @@ function defaultEditorSettings(): EditorSettings {
     // while `settings:read` is in flight — a fresh install's persisted
     // defaults and the pre-settle in-memory defaults cannot drift.
     toolStyles: defaultEditorToolStyles(),
+    toolBag: defaultEditorToolBag(),
     coachmarks: {
       // Flips true the first time the user opens any tool style popover
       // and the 3s stoplight micro-coachmark auto-dismisses.
@@ -470,7 +475,15 @@ function pickToolSizePreset(value: unknown, fallback: ToolSizePreset | number): 
 }
 
 function pickArrowEndStyle(value: unknown, fallback: ArrowEndStyle): ArrowEndStyle {
-  if (value === "filled-triangle" || value === "open-triangle" || value === "line" || value === "dot") return value;
+  if (
+    value === "filled-triangle" ||
+    value === "open-triangle" ||
+    value === "line" ||
+    value === "dot" ||
+    value === "bar"
+  ) {
+    return value;
+  }
   return fallback;
 }
 
@@ -610,6 +623,49 @@ function parseEditorToolStyles(raw: unknown, defaults: EditorToolStyles): Editor
   };
 }
 
+/** Longest slot label the bag keeps. The toolbar shows it in a tooltip;
+ *  anything longer is a paste accident, not a name. */
+const TOOL_BAG_LABEL_MAX = 40;
+
+function parseToolBagSlot(raw: unknown): ToolBagSlot | null {
+  if (!isRecord(raw)) return null;
+  const factory = defaultEditorToolStyles();
+  const label =
+    typeof raw.label === "string" && raw.label.trim() !== ""
+      ? raw.label.trim().slice(0, TOOL_BAG_LABEL_MAX)
+      : undefined;
+  const withLabel = <T extends ToolBagSlot>(slot: T): T =>
+    label === undefined ? slot : { ...slot, label };
+  // Each slot's style runs through the same per-tool parser as
+  // `toolStyles`, against the FACTORY style for that tool — a slot
+  // missing a field (written by an older build) gets the default for
+  // it, never another slot's value.
+  switch (raw.tool) {
+    case "arrow":
+      return withLabel({ tool: "arrow", style: parseArrowToolStyle(raw.style, factory.arrow) });
+    case "text":
+      return withLabel({ tool: "text", style: parseTextToolStyle(raw.style, factory.text) });
+    case "shape":
+      return withLabel({ tool: "shape", style: parseShapeToolStyle(raw.style, factory.shape) });
+    case "blur":
+      return withLabel({ tool: "blur", style: parseBlurToolStyle(raw.style, factory.blur) });
+    case "highlight":
+      return withLabel({
+        tool: "highlight",
+        style: parseHighlightToolStyle(raw.style, factory.highlight)
+      });
+    default:
+      return null;
+  }
+}
+
+function parseEditorToolBag(raw: unknown, defaults: EditorToolBag): EditorToolBag {
+  if (!isRecord(raw) || !Array.isArray(raw.slots)) return defaults;
+  const slots = raw.slots.slice(0, TOOL_BAG_SIZE).map(parseToolBagSlot);
+  while (slots.length < TOOL_BAG_SIZE) slots.push(null);
+  return { slots };
+}
+
 function parseEditorCoachmarks(raw: unknown, defaults: EditorCoachmarks): EditorCoachmarks {
   if (!isRecord(raw)) return defaults;
   return {
@@ -636,6 +692,7 @@ function parseEditorSettings(raw: unknown, defaults: EditorSettings): EditorSett
   if (!isRecord(raw)) return defaults;
   return {
     toolStyles: parseEditorToolStyles(raw.toolStyles, defaults.toolStyles),
+    toolBag: parseEditorToolBag(raw.toolBag, defaults.toolBag),
     coachmarks: parseEditorCoachmarks(raw.coachmarks, defaults.coachmarks),
     matchingText: parseEditorMatchingText(raw.matchingText, defaults.matchingText),
     sidebar: parseEditorSidebar(raw.sidebar, defaults.sidebar)
@@ -2125,6 +2182,9 @@ function mergeEditor(
   if (patch === undefined) return current;
   return {
     toolStyles: mergeToolStyles(current.toolStyles, patch.toolStyles),
+    // Whole-bag replace: a reorder or clear is one atomic value.
+    toolBag:
+      patch.toolBag === undefined ? current.toolBag : parseEditorToolBag(patch.toolBag, current.toolBag),
     coachmarks: mergeSection(current.coachmarks, patch.coachmarks),
     matchingText: mergeSection(current.matchingText, patch.matchingText),
     sidebar: mergeSection(current.sidebar, patch.sidebar)

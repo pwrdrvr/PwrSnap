@@ -42,7 +42,8 @@ import {
   canonicalAcceleratorForPlatform,
   shortcutPlatformDisplayName,
   shortcutPlatformFromString,
-  REDACTION_STYLES
+  REDACTION_STYLES,
+  TOOL_BAG_SIZE
 } from "@pwrsnap/shared";
 import type {
   DesktopSettingsSecretName,
@@ -1217,8 +1218,8 @@ function validateArrowStyle(raw: Record<string, unknown>): PwrSnapError | null {
   }
   if (!isUndefined(raw.endStyle)) {
     const v = raw.endStyle;
-    if (v !== "filled-triangle" && v !== "open-triangle" && v !== "line" && v !== "dot") {
-      return validationError("invalid_editor_arrow_endStyle", "settings:write: editor.toolStyles.arrow.endStyle must be one of filled-triangle/open-triangle/line/dot");
+    if (v !== "filled-triangle" && v !== "open-triangle" && v !== "line" && v !== "dot" && v !== "bar") {
+      return validationError("invalid_editor_arrow_endStyle", "settings:write: editor.toolStyles.arrow.endStyle must be one of filled-triangle/open-triangle/line/dot/bar");
     }
   }
   if (!isUndefined(raw.stemStyle)) {
@@ -1344,6 +1345,47 @@ function validateHighlightStyle(raw: Record<string, unknown>): PwrSnapError | nu
   return null;
 }
 
+const TOOL_BAG_SLOT_VALIDATORS = {
+  arrow: validateArrowStyle,
+  text: validateTextStyle,
+  shape: validateShapeStyle,
+  blur: validateBlurStyle,
+  highlight: validateHighlightStyle
+} as const;
+
+/** The bag is written whole, so the patch must be the whole bag: exactly
+ *  TOOL_BAG_SIZE slots, each empty (`null`) or a known tool with a style
+ *  block that passes that tool's validator. Main re-parses the accepted
+ *  value against the factory styles, so a slot missing a field is filled
+ *  in rather than stored partial. */
+function validateToolBag(raw: unknown): PwrSnapError | null {
+  if (!isObject(raw) || !Array.isArray(raw.slots)) {
+    return validationError("invalid_editor_toolBag", "settings:write: editor.toolBag must be { slots: [...] }");
+  }
+  if (raw.slots.length !== TOOL_BAG_SIZE) {
+    return validationError("invalid_editor_toolBag_size", `settings:write: editor.toolBag.slots must have exactly ${TOOL_BAG_SIZE} entries`);
+  }
+  for (const slot of raw.slots) {
+    if (slot === null) continue;
+    if (!isObject(slot)) {
+      return validationError("invalid_editor_toolBag_slot", "settings:write: editor.toolBag.slots entries must be null or an object");
+    }
+    const tool = slot.tool;
+    if (typeof tool !== "string" || !Object.hasOwn(TOOL_BAG_SLOT_VALIDATORS, tool)) {
+      return validationError("invalid_editor_toolBag_tool", "settings:write: editor.toolBag slot tool must be arrow/text/shape/blur/highlight");
+    }
+    if (!isUndefined(slot.label) && (typeof slot.label !== "string" || slot.label.length > 40)) {
+      return validationError("invalid_editor_toolBag_label", "settings:write: editor.toolBag slot label must be a string of at most 40 characters");
+    }
+    if (!isObject(slot.style)) {
+      return validationError("invalid_editor_toolBag_style", "settings:write: editor.toolBag slot style must be an object");
+    }
+    const err = TOOL_BAG_SLOT_VALIDATORS[tool as keyof typeof TOOL_BAG_SLOT_VALIDATORS](slot.style);
+    if (err !== null) return err;
+  }
+  return null;
+}
+
 function validateEditorPatch(rawEditor: unknown): PwrSnapError | null {
   if (!isObject(rawEditor)) {
     return validationError("invalid_editor", "settings:write: editor must be an object");
@@ -1371,6 +1413,11 @@ function validateEditorPatch(rawEditor: unknown): PwrSnapError | null {
       const err = validator(block);
       if (err !== null) return err;
     }
+  }
+
+  if (editor.toolBag !== undefined) {
+    const err = validateToolBag(editor.toolBag);
+    if (err !== null) return err;
   }
 
   if (editor.coachmarks !== undefined) {

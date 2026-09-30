@@ -33,6 +33,7 @@ import type {
 import {
   CURRENT_ARROW_STYLE_VERSION,
   annotationBasisPx,
+  arrowBarEndpoints,
   computeArrowGeometry,
   computeStemDashArray,
   DEFAULT_PARALLELOGRAM_SKEW_DEG,
@@ -791,6 +792,7 @@ function stemEndpointFor(
       };
     case "line":
     case "dot":
+    case "bar":
       return { x: geom.to.x * imageWidthPx, y: geom.to.y * imageHeightPx };
   }
 }
@@ -949,7 +951,45 @@ function ArrowHeadHalo({
         </>
       );
     }
+    case "bar": {
+      const bar = barPx(geom, imageWidthPx, imageHeightPx);
+      return (
+        <>
+          <line
+            {...bar}
+            stroke={haloColor}
+            strokeWidth={haloWidthPx}
+            strokeLinecap="round"
+          />
+          {stripeDash !== null && (
+            <line
+              {...bar}
+              stroke="black"
+              strokeWidth={haloWidthPx}
+              strokeLinecap="round"
+              strokeDasharray={stripeDash}
+            />
+          )}
+        </>
+      );
+    }
   }
+}
+
+/** Pixel endpoints of a `bar` end, as `<line>` attributes. Mirrors the
+ *  bake's `bar` branches in compose.ts. */
+function barPx(
+  geom: ReturnType<typeof computeArrowGeometry>,
+  imageWidthPx: number,
+  imageHeightPx: number
+): { x1: number; y1: number; x2: number; y2: number } {
+  const { left, right } = arrowBarEndpoints(geom);
+  return {
+    x1: left.x * imageWidthPx,
+    y1: left.y * imageHeightPx,
+    x2: right.x * imageWidthPx,
+    y2: right.y * imageHeightPx
+  };
 }
 
 /** The colored head glyph — paints on top of `ArrowHeadHalo`. */
@@ -1004,6 +1044,15 @@ function ArrowHead({
       const r = stroke * 1.5;
       return <circle cx={toX} cy={toY} r={r} fill={accent} />;
     }
+    case "bar":
+      return (
+        <line
+          {...barPx(geom, imageWidthPx, imageHeightPx)}
+          stroke={accent}
+          strokeWidth={stroke}
+          strokeLinecap="round"
+        />
+      );
   }
 }
 

@@ -41,6 +41,19 @@ vi.mock("electron", (): Partial<typeof import("electron")> => ({
   } as unknown as typeof import("electron").BrowserWindow
 }));
 
+// These behavior suites use a mature profile. Disk/restart/grace-period
+// behavior is exercised with the real store in auto-updater-restarts.test.ts.
+vi.mock("../update-release-state", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../update-release-state")>(),
+  createUpdateReleaseStateStore: () => ({
+    read: async () => ({
+      schemaVersion: 1, firstSeenAt: 0, lastAttemptAt: null,
+      retryAt: null, rateLimitResetAt: null, failures: 0, cache: null
+    }),
+    write: async () => undefined
+  })
+}));
+
 vi.mock("electron-updater", () => ({
   default: {
     autoUpdater: mocks.autoUpdater
@@ -230,8 +243,8 @@ describe("auto updater release cache", () => {
     const callsBefore = fetchMock.mock.calls.length;
     mockNotModified();
 
-    // A manual check bypasses the TTL, but the stored etag makes the
-    // revalidation a 304, which GitHub does not charge against the quota.
+    // A manual check bypasses the TTL and reuses the stored ETag.
+    // Anonymous 304 responses still count against the quota.
     const check = await updater.checkForAppUpdatesNow("manual");
 
     const revalidated = pageCallIndex(callsBefore);
@@ -284,7 +297,7 @@ describe("auto updater release cache", () => {
     await updater.readAppUpdateReleaseVersions();
     expect(fetchMock).toHaveBeenCalledTimes(callsWhileLimited);
 
-    await vi.advanceTimersByTimeAsync(31 * 60 * 1_000);
+    await vi.advanceTimersByTimeAsync(updater.APP_UPDATE_CHECK_INTERVAL_MS + 1);
     mockGitHubReleases();
     const recovered = await updater.readAppUpdateReleaseVersions();
 

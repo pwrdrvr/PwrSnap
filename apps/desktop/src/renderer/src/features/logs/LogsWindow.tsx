@@ -194,7 +194,7 @@ export function LogsWindow(): ReactElement {
     <div className="ps-doc ps-doc--logs">
       <header className="ps-doc__titlebar">
         <div className="ps-doc__brand">
-          <PwrSnapMark size={18} />
+          <PwrSnapMark size={20} decorative />
           <PwrSnapWordmark />
         </div>
         <div className="ps-doc__crumb">

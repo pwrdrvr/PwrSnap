@@ -6,6 +6,10 @@
 // and never re-derived after the bars settled on a 16px content inset, which
 // left the buttons 4pt past the rail every other element lines up on.
 //
+// The values are Pwr-family ones — PwrGit and PwrAgent share the 40px strip,
+// the { x: 16, y: 13 } stoplights and the brand at x=96; the spec lives in
+// PwrGit's renderer/src/features/chrome/AGENTS.md (pwrdrvr/PwrGit#361).
+//
 // These tests re-do the derivation from the real CSS. Change the bar height,
 // the content inset, or the reserved left pad and the failing assertion asks
 // for MACOS_TRAFFIC_LIGHT_POSITION to be re-derived in the SAME commit,
@@ -57,7 +61,8 @@ vi.mock("../log", () => ({
 
 import { MACOS_TRAFFIC_LIGHT_POSITION } from "../window";
 
-/** A macOS close/minimize/zoom button is a 14pt frame on a 23pt pitch. */
+/** A macOS close/minimize/zoom button is a 14pt frame on a 23pt pitch
+ *  (measured on macOS 26). */
 const BUTTON_SIZE_PT = 14;
 const BUTTON_PITCH_PT = 23;
 const GROUP_WIDTH_PT = BUTTON_SIZE_PT + 2 * BUTTON_PITCH_PT; // 60
@@ -67,6 +72,10 @@ const RAIL_INSET_PX = 16;
 /** The chrome bar's `border-bottom` — the last pixel of the row is the
  *  divider, not part of the band the buttons sit on. */
 const DIVIDER_PX = 1;
+/** Pwr-family strip: the fill every app's stoplights centre in. */
+const FAMILY_FILL_PX = 40;
+/** Pwr-family brand start on macOS: 20px clear of the stoplights' x=76. */
+const FAMILY_BRAND_X_PX = 96;
 
 const windowSource = readFileSync(fileURLToPath(new URL("../window.ts", import.meta.url)), "utf8");
 
@@ -154,7 +163,7 @@ function macReserveTokenPx(): number {
  * renders. `bar: null` means the surface has NO chrome bar — the inset is
  * cosmetic there and the derivation does not claim to describe it.
  *
- * `railInset: false` marks a bar that matches on the left (the 92px
+ * `railInset: false` marks a bar that matches on the left (the 96px
  * reservation) but not on the right; `.ps-doc__titlebar` uses 20px, so it is
  * excluded from the rail assertion rather than pretending 16 is universal.
  */
@@ -214,7 +223,7 @@ const BARRED = SURFACES.filter(
 
 describe("MACOS_TRAFFIC_LIGHT_POSITION", () => {
   test("is the value the derivation below produces", () => {
-    expect(MACOS_TRAFFIC_LIGHT_POSITION).toEqual({ x: 16, y: 18 });
+    expect(MACOS_TRAFFIC_LIGHT_POSITION).toEqual({ x: 16, y: 13 });
   });
 
   test("is frozen — it is handed to every BrowserWindow by reference", () => {
@@ -243,6 +252,8 @@ describe("MACOS_TRAFFIC_LIGHT_POSITION", () => {
       );
     }
     expect(groupEnd).toBeLessThanOrEqual(reserve);
+    // The family brand start, not merely "somewhere clear of the buttons".
+    expect(reserve).toBe(FAMILY_BRAND_X_PX);
   });
 
   test("only macOS pays the reservation — the base rule reserves nothing", () => {
@@ -250,7 +261,7 @@ describe("MACOS_TRAFFIC_LIGHT_POSITION", () => {
     // INSIDE our bar. Linux takes an ordinary OS frame and Windows puts its
     // caption buttons on the right, so neither has anything to clear on the
     // left. This lived on the base rule until 2026-09 with only a win32
-    // opt-out, which spent 92px of every Linux top bar on nothing.
+    // opt-out, which spent 92px (now 96px) of every Linux top bar on nothing.
     //
     // `barRailInset` throws on a four-value padding, so the assertion that the
     // base rule is two-value is the assertion that it reserves nothing; this
@@ -289,18 +300,34 @@ describe("MACOS_TRAFFIC_LIGHT_POSITION", () => {
       );
     }
     const band = rowHeight - DIVIDER_PX;
+    expect(band).toBe(FAMILY_FILL_PX);
 
-    // (51 - 14) / 2 = 18.5 — no integer centres exactly, so the constant takes
-    // the high side. Smaller y is higher, hence floor. Every macOS app measured
-    // for this change sits centred or high; none sits low.
+    // (40 - 14) / 2 = 13 exactly. `trafficLightPosition` takes whole points, so
+    // the fill must be even for any `y` to centre the button; the old 52px row
+    // with its divider inside left a 51pt fill and a button half a point high.
     const centre = (band - BUTTON_SIZE_PT) / 2;
-    expect(MACOS_TRAFFIC_LIGHT_POSITION.y).toBe(Math.floor(centre));
-    expect(Math.abs(MACOS_TRAFFIC_LIGHT_POSITION.y - centre)).toBeLessThanOrEqual(0.5);
+    expect(Number.isInteger(centre)).toBe(true);
+    expect(MACOS_TRAFFIC_LIGHT_POSITION.y).toBe(centre);
+  });
+
+  test("the bars start at the window's y=0 — no container border above them", () => {
+    // The stoplights are placed in WINDOW coordinates, the bar in its
+    // container's. A top border on the container pushes the bar (and its
+    // centreline) down by its width while the stoplights stay put — the
+    // Library's `.psl` did exactly that with a 1px frame until 2026-09.
+    for (const surface of BARRED) {
+      const body = ruleBody(readStyle(surface.file), surface.container).replace(
+        /\/\*[\s\S]*?\*\//g,
+        ""
+      );
+      expect(body, surface.factory).not.toMatch(/(^|[\s;])border(-top)?\s*:/);
+      expect(body, surface.factory).not.toMatch(/padding(-top)?\s*:/);
+    }
   });
 
   test("the Windows caption strip pins the same band the stoplights use", () => {
-    // titleBarOverlayForTheme() sets `height: 51` for exactly the reason the
-    // macOS band is 51 — leave the 1px divider uncovered. They are derived from
+    // titleBarOverlayForTheme() sets `height: 40` for exactly the reason the
+    // macOS band is 40 — leave the 1px divider uncovered. They are derived from
     // the same bar, so a bar-height change has to move both in one commit.
     const rowHeight = firstGridRowPx(readStyle(BARRED[0]!.file), BARRED[0]!.container);
     const overlay = /height:\s*(\d+)\s*$/m.exec(

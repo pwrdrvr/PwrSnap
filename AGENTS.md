@@ -1002,6 +1002,51 @@ residuals are known and accepted:
 - Chromium reveals only the caret line of a partly visible `<textarea>`.
 - The trim handle signals focus with a hollow fill, not an outline.
 
+## The Pwr-family title strip
+
+**Every window's title strip on macOS is the strip PwrGit and PwrAgent draw:
+a 40px fill centred on y=20, stoplights at `{ x: 16, y: 13 }`, the brand at
+x=96. These numbers are shared across the family — change them in all three
+apps together, never in one.** The spec is PwrGit's
+`apps/desktop/src/renderer/src/features/chrome/AGENTS.md`, adopted in
+[pwrdrvr/PwrGit#361](https://github.com/pwrdrvr/PwrGit/pull/361).
+
+| Part | Value | Where in PwrSnap |
+|---|---|---|
+| Band | 40px fill; the 1px divider sits *below* it, so every bar's row is `41px` | `grid-template-rows` on `.psl`, `.pss`, `.szl`, `.ps-doc` |
+| Stoplights | `{ x: 16, y: 13 }` — a 14px button (measured on macOS 26) centred on y=20; the group ends at x=76 | `MACOS_TRAFFIC_LIGHT_POSITION` in [window.ts](apps/desktop/src/main/window.ts) |
+| Windows caption strip | `titleBarOverlay` height 40 — the fill, leaving the divider visible under the buttons | `titleBarOverlayForTheme()` in window.ts |
+| Brand start | x=96, 20px clear of the stoplights | `--mac-traffic-light-reserve` in [tokens.css](apps/desktop/src/renderer/src/styles/tokens.css) |
+| Mark | the app icon's glyph (`generate-app-icon.swift` coordinates) as `PwrSnapMark`, 20px, filling its box; `--accent`, 8px to the wordmark, `decorative` (the wordmark names the app) | [BrandMark.tsx](apps/desktop/src/renderer/src/features/shared/BrandMark.tsx) |
+| Wordmark | `700 17px/1` Geist, `-0.01em`; "Pwr" `--text-primary`, "Snap" `--accent` | `.psl__title`, `.pss__title-brand`, `.szl__title-brand`, `.ps-doc__brand` |
+| Centring | text by cap height (`text-box: trim-both cap alphabetic`), chevrons by x-height (`trim-both ex alphabetic`); an ellipsizing crumb gets `padding-block` back for its descenders | the four bar stylesheets |
+
+Three things that bite:
+
+- **The fill must be an even number of points.** `trafficLightPosition` takes
+  whole points, so a 14pt button centres on a whole point only. The old 52px
+  row had its divider INSIDE it, leaving a 51pt fill whose centre (25.5) no
+  stoplight could sit on.
+- **Nothing may sit above a bar in its container.** The stoplights are placed
+  in window coordinates; the bar is placed in its container's. The Library's
+  `.psl` carried a 1px outer border until 2026-09, which put its strip at
+  y=1 and its brand at x=97 — its stoplights sat 1.5pt high. The window
+  already has an edge: the OS draws it on macOS and Windows, `#root::after`
+  on Linux.
+- **Toolbar controls have to fit the band.** The tallest Library control is
+  28px (search, capture buttons, layout toggles), which leaves 6px either
+  side. A taller one does not belong in the strip.
+
+Pinned by
+[macos-traffic-light-position.test.ts](apps/desktop/src/main/__tests__/macos-traffic-light-position.test.ts)
+(the derivation, from the CSS) and
+[window-chrome-platform.spec.ts](apps/desktop/e2e/window-chrome-platform.spec.ts)
+(the reserve, resolved in a real renderer). Neither can see pixels:
+**verify a change by measuring, not by eye.** Render each strip at 2× with the
+stoplights drawn at their Electron position as 14px circles, and compare each
+element's ink centre with y=20. Text baselines snap to device pixels, so
+capitals land within about ±0.4px of the line; anything further out is real.
+
 ## Annotation sizing — one basis, one ladder
 
 **Every sized annotation — text glyphs, arrow stems + heads, shape

@@ -297,7 +297,7 @@ export function SizzleApp({
       <header className="szl__titlebar">
         <div className="szl__title-brand">
           <span className="szl__title-mark">
-            <PwrSnapMark size={18} />
+            <PwrSnapMark size={20} decorative />
           </span>
           <PwrSnapWordmark />
         </div>
@@ -313,11 +313,11 @@ export function SizzleApp({
               title={`Browse Sizzle Reels (${acceleratorToDisplayText("CommandOrControl+Shift+L", shortcutPlatform)})`}
               data-testid="sizzle-rail-toggle"
             >
-              Sizzle Reels
+              <span className="szl__title-label">Sizzle Reels</span>
               <span className="szl__title-caret" aria-hidden="true">▾</span>
             </button>
           ) : (
-            "Sizzle Reels"
+            <span className="szl__title-label">Sizzle Reels</span>
           )}
           {active !== null ? (
             <>

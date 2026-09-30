@@ -6,69 +6,67 @@ These are persistent instructions for any session working in this project. Read 
 
 ## 1. The PwrSnap brand mark — there is exactly ONE
 
-**There are many marks like it, but this one is mine.** If you find yourself drawing a lightning bolt, a "P" glyph, a camera, a shutter, or anything else inside the PwrSnap tile, **stop**. The mark is a **stack of three offset rounded squares** — the "stacked screenshots" metaphor. Nothing else.
+**There are many marks like it, but this one is mine.** If you find yourself drawing a lightning bolt, a "P" glyph, a camera, a shutter, or anything else inside the PwrSnap tile, **stop**. The mark is a **stack of three offset rounded rectangles** — the "stacked screenshots" metaphor. Nothing else.
 
-### Geometry
+> Direction matters. **Front is bottom-LEFT, back is top-RIGHT.** If you draw front at bottom-right (or top-left), the mark is wrong — that is the "reversed" version the user has flagged twice now.
 
-- viewBox `0 0 24 24`
-- Three `<rect>`s, each `13 × 13`, `rx="2.5"`
-- Stacked diagonally **lower-left front, upper-right back**:
-  - **Back** layer at `(x=8, y=3)` — top-right corner of the stack
-  - **Mid** layer at `(x=5.5, y=5.5)` — centered
-  - **Front** layer at `(x=3, y=8)` — bottom-left corner of the stack
-- Stroke-only (no fill); `strokeLinejoin="round"`, `strokeLinecap="round"`
+One mark, several renderings. Every one of them draws the same idea — three
+stroked rounded rectangles on a diagonal, front at full strength, mid at
+**0.55**, back at **0.3** — and the in-app mark IS the app icon's glyph:
 
-> Direction matters. **Front is bottom-LEFT.** If you draw front at bottom-right (or top-left), the mark is wrong — that is the "reversed" version the user has flagged twice now.
+| Rendering | Where | Geometry | Color |
+|---|---|---|---|
+| **App icon** | `apps/desktop/scripts/generate-app-icon.swift` | 1024 box; `450 × 340` rects, `rx=48`, stroke `56`, offsets `±64 / ±80` | `#e8743a` (the icon orange — see §3) |
+| **In-app SVG** (title strips, tray, float-over) | `apps/desktop/src/renderer/src/features/shared/BrandMark.tsx` → `PwrSnapMark` | the icon's glyph, same 1024-box coordinates with y flipped: rects at `(223,422)` front, `(287,342)` mid, `(351,262)` back; viewBox `195 195 634 634` | `currentColor`, pinned to `var(--accent)` on the `<svg>` itself |
+| **Tray icon** (menubar / notification area PNGs) | `apps/desktop/scripts/generate-tray-icon.mjs` → `tray-icon-glyph.mjs` | the icon's glyph, READ from `generate-app-icon.swift`; the same viewBox `195 195 634 634` as the in-app SVG | template black / `#ff8a1f` |
+| Design handoff (reference only) | `design/src/AppIcons.jsx` → `APP_ICONS.pwrsnap`, `design/src/FloatOver.jsx` → `FoMark` | viewBox `0 0 24 24`; three `13 × 13` squares, `rx=2.5` | three explicit tints: `--accent-deep`, a copper midpoint, `--accent` |
 
-### Colors
+**What ships is the first three rows, and all three are one drawing.** The
+in-app mark was a separate, squarer drawing (`58 × 46` rects, stroke `9`, in a
+128 box) until 2026-09, when it was redrawn from the icon for the Pwr-family
+title strip; the family rule is that each app's strip mark is its icon glyph.
+The tray was a scaled-up copy of that squarer drawing (`78 × 62` rects,
+stroke `13`) and was redrawn from the icon in the same change. The design-handoff version is the
+original Claude Design drawing, kept verbatim under `design/` as a visual
+reference (see the repository AGENTS.md); do not port its squares or its three
+tints into the app. If the mark itself is redrawn, redraw the shipped
+renderings together — and the two JSX copies in `design/src/` together, since
+`PwrSnap Float-Over.html` does not load `AppIcons.jsx`.
 
-Each layer has an **explicit** stroke color — do NOT use `currentColor`. The mark must read as orange/copper regardless of the surrounding text color (it lives in titlebars, menubars, and dark panels where the inherited color varies).
+### The in-app SVG
 
-| Layer | Stroke | Why |
-|---|---|---|
-| Back  | `var(--accent-deep)` (`#b35f15`) | Deepest, recedes into the tile |
-| Mid   | `color-mix(in oklch, var(--accent-deep), var(--accent))` ≈ `#d97419` | Midpoint between deep and accent |
-| Front | `var(--accent)` (`#ff8a1f`) | Bright tangerine, the "live" screenshot on top |
-
-Stroke widths: back `1.5`, mid `1.5`, front `1.6` (front a touch thicker to pop).
-
-### Canonical JSX
-
-```jsx
-function PwrSnapMark({ size = 14 }) {
-  return (
-    <svg viewBox="0 0 24 24" width={size} height={size}
-         fill="none" strokeLinejoin="round" strokeLinecap="round"
-         style={{ display: "block" }} aria-label="PwrSnap">
-      {/* Back — top-right, deepest */}
-      <rect x="8"   y="3"   width="13" height="13" rx="2.5"
-            style={{ stroke: "var(--accent-deep)" }} strokeWidth="1.5"/>
-      {/* Mid — centered, copper midpoint */}
-      <rect x="5.5" y="5.5" width="13" height="13" rx="2.5"
-            style={{ stroke: "color-mix(in oklch, var(--accent-deep), var(--accent))" }}
-            strokeWidth="1.5"/>
-      {/* Front — bottom-left, bright tangerine */}
-      <rect x="3"   y="8"   width="13" height="13" rx="2.5"
-            style={{ stroke: "var(--accent)" }} strokeWidth="1.6"/>
-    </svg>
-  );
-}
-```
-
-### Where it lives
-
-Exactly **two** definitions exist, and they must stay byte-identical to the snippet above:
-
-1. `src/AppIcons.jsx` → `APP_ICONS.pwrsnap` — used by `<PsAppIcon app="pwrsnap" />` in Library, Settings, Tray titlebars and the macOS menubar slot. Surfaces in `PwrSnap Library.html`, `PwrSnap Settings.html`, `PwrSnap Tray.html`.
-2. `src/FloatOver.jsx` → `FoMark` — used in the Float-Over toast header and its faux macOS menubar slot. Surfaces in `PwrSnap Float-Over.html`. (FoMark exists separately because `PwrSnap Float-Over.html` doesn't load `AppIcons.jsx`.)
-
-**Both must move together.** Any edit to one is incomplete until the other matches.
+- **`currentColor`, pinned to the accent.** The `<svg>` sets
+  `color: var(--accent)` on itself, so the strokes are tangerine whatever text
+  color surrounds the mark — the property the old "never `currentColor`" rule
+  was protecting. Do not remove that style and let the color inherit.
+- **Same numbers as the icon.** Any change to the icon's mark is a change to
+  `BrandMark.tsx` too. `BrandMark.test.tsx` re-derives every rect from the
+  Swift constants and fails if either side moves alone. The tray PNGs need no
+  edit, only a rerun of `pnpm --filter @pwrsnap/desktop tray-icon`: their
+  generator reads the Swift constants itself, and `tray-icon.test.mjs`
+  re-renders every committed PNG and fails when one is stale.
+- **Fills its box, ink centred.** The viewBox is the glyph's own bounds
+  (x 195–829, y 234–790, stroke included) squared about their centre — the
+  Pwr-family convention PwrGit's mark uses too. A flex parent that centres
+  the box therefore centres the drawn mark, which is how the title strips put
+  it on their y=20 centreline (see "The Pwr-family title strip" in the
+  repository AGENTS.md).
+- **Sizes.** 20px in every window's title strip (the Pwr-family mark size),
+  16px in the tray header, 12px in the tray menubar facsimile and the
+  float-over header.
+- **`decorative` next to the wordmark.** Where the wordmark sits beside it and
+  already names the app, the mark is `aria-hidden`; alone, it is
+  `role="img"` with `aria-label="PwrSnap"`.
+- **Hard stack, per instance.** Each tier is masked by the stroke bands of
+  the tiers in front (next section). The mask ids come from `useId`, stripped
+  to `[A-Za-z0-9_-]`, because the mark renders several times per page and a
+  shared id would point every instance at the first one's masks.
 
 ### The stack is a HARD STACK, never a blend
 
 Wherever the mark is rendered with **per-tier alpha** instead of three opaque
 tints (the native generators: `apps/desktop/scripts/generate-app-icon.swift`,
-`apps/desktop/scripts/generate-tray-icon.mjs`), painting back → mid → front with
+`apps/desktop/scripts/tray-icon-glyph.mjs`), painting back → mid → front with
 plain source-over is *correct alpha compositing and the wrong mark*: the 0.3 back
 stroke shows through the 0.55 mid stroke and each crossing lights up as a
 brighter, more saturated patch — a fourth tone the palette never specified.
@@ -100,7 +98,7 @@ Icon Composer package `build/icon.icon/`; there is no `.icns` to build) and
 - ❌ Don't draw a lightning bolt. (Crept in during an unknown refactor; permanently retired.)
 - ❌ Don't draw a "P" glyph as the brand mark. (`FoMark` was previously a P-shape; corrected.)
 - ❌ Don't reverse the offset direction.
-- ❌ Don't rely on `currentColor` for any of the three stroke colors.
+- ❌ Don't let the mark's color inherit from its surroundings — `currentColor` is fine only because the `<svg>` pins its own `color` to `--accent`.
 - ❌ Don't invent a fourth layer, a tile background inside the SVG, a frame, a shutter, or any "extra detail." Three rects, that's it.
 - ❌ Don't let the tiers blend into each other. See "hard stack" above.
 
@@ -109,8 +107,9 @@ Icon Composer package `build/icon.icon/`; there is no `.icns` to build) and
 ## 2. The PwrSnap wordmark
 
 - **One word**, two colors: `Pwr<span class="a">Snap</span>` — "Pwr" in `--text-primary` (bone-white), "Snap" in `--accent` (tangerine).
-- Letter-spacing `-0.03em`. Reads as "PwrSnap", not "Pwr Snap" — no visible gap.
-- **Wrap both fragments in a single span** when the parent is a flex container with `gap`. Otherwise the bare "Pwr" text node becomes its own anonymous flex item and the `gap` opens a visible space between "Pwr" and "Snap". See `psl__wordmark` in `src/Library.jsx` for the pattern.
+- Letter-spacing `-0.01em` — the Pwr-family value PwrAgent and PwrGit use. Reads as "PwrSnap", not "Pwr Snap" — no visible gap. (Earlier revisions of this file said `-0.03em`; the app ships `-0.01em`.)
+- In a window's title strip it is `700 17px/1` Geist Sans, cap-height trimmed (`text-box: trim-both cap alphabetic`) so its capitals centre on the strip's y=20 line. The tray and float-over headers keep their own smaller sizes.
+- **Wrap both fragments in a single span** when the parent is a flex container with `gap`. Otherwise the bare "Pwr" text node becomes its own anonymous flex item and the `gap` opens a visible space between "Pwr" and "Snap". In the app that span is `PwrSnapWordmark` (`.pwrsnap-wordmark`) in `BrandMark.tsx`.
 
 ---
 

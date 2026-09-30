@@ -834,8 +834,9 @@ function AiUsagePanel({ summary, runs, loading }: AiUsagePanelProps): ReactEleme
       <div className="pss__usage-metrics">
         <UsageMetric
           label="List-price"
-          value={formatCostMicros(summary.estimatedTotalCostMicros)}
-          sub={`${summary.runCount} runs`}
+          value={summary.runCount > 0 && summary.priceUnavailableCount === summary.runCount
+            ? "—" : formatCostMicros(summary.estimatedTotalCostMicros)}
+          sub={`${summary.runCount} runs · ${formatTokenCount(summary.totalTokens)} tokens`}
         />
         <UsageMetric
           label="Input"
@@ -845,7 +846,7 @@ function AiUsagePanel({ summary, runs, loading }: AiUsagePanelProps): ReactEleme
         <UsageMetric
           label="Output"
           value={formatTokenCount(summary.outputTokens)}
-          sub={`${formatTokenCount(summary.reasoningOutputTokens)} reasoning`}
+          sub={`${formatTokenCount(summary.reasoningOutputTokens)} reported as reasoning`}
         />
       </div>
       {summary.usageUnavailableCount > 0 || summary.priceUnavailableCount > 0 ? (
@@ -854,7 +855,7 @@ function AiUsagePanel({ summary, runs, loading }: AiUsagePanelProps): ReactEleme
             ? `${summary.usageUnavailableCount} run${summary.usageUnavailableCount === 1 ? "" : "s"} missing token usage. `
             : ""}
           {summary.priceUnavailableCount > 0
-            ? `${summary.priceUnavailableCount} run${summary.priceUnavailableCount === 1 ? "" : "s"} missing price data.`
+            ? `${summary.priceUnavailableCount} run${summary.priceUnavailableCount === 1 ? "" : "s"} without a price estimate.`
             : ""}
         </div>
       ) : null}
@@ -876,7 +877,7 @@ function AiUsagePanel({ summary, runs, loading }: AiUsagePanelProps): ReactEleme
                 <span className="pss__usage-run-cost">
                   {item.priceStatus === "available" && item.estimatedTotalCostMicros !== null
                     ? formatCostMicros(item.estimatedTotalCostMicros)
-                    : "Price unavailable"}
+                    : "No price estimate"}
                 </span>
                 <span className="pss__usage-run-tokens">
                   {item.usageStatus === "available" && item.totalTokens !== null

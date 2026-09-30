@@ -1,4 +1,4 @@
-import { customProtocolPath, type AiUsageTokenBreakdown, type CustomConnection, type CustomModelDiscovery, type ResolvedCustomModel } from "@pwrsnap/shared";
+import { customProtocolPath, isLoopbackApiUrl, type AiUsageTokenBreakdown, type CustomConnection, type CustomEnrichmentReasoning, type CustomModelDiscovery, type ResolvedCustomModel } from "@pwrsnap/shared";
 
 export type ApiMessage = { role: "user" | "assistant"; text: string; images?: string[] };
 export type ApiResult = { text: string; tokens: AiUsageTokenBreakdown | null };
@@ -86,7 +86,7 @@ function imageParts(message: ApiMessage, model: ResolvedCustomModel): unknown[] 
     return { type: "image_url", image_url: { url } };
   });
 }
-function requestBody(model: ResolvedCustomModel, system: string, messages: ApiMessage[]): unknown {
+function requestBody(model: ResolvedCustomModel, system: string, messages: ApiMessage[], reasoningMode?: CustomEnrichmentReasoning): unknown {
   const common = { model: model.modelId, stream: model.capabilities.streaming };
   if (model.protocol === "openai-responses") return {
     ...common, store: false, instructions: system, max_output_tokens: model.maxOutputTokens,
@@ -97,6 +97,8 @@ function requestBody(model: ResolvedCustomModel, system: string, messages: ApiMe
   const converted = messages.map((m) => ({ role: m.role, content: [{ type: "text", text: m.text }, ...imageParts(m, model)] }));
   if (model.protocol === "anthropic-messages") return { ...common, system, max_tokens: model.maxOutputTokens, messages: converted };
   return { ...common, max_tokens: model.maxOutputTokens,
+    ...(reasoningMode === "off" ? { chat_template_kwargs: { enable_thinking: false } }
+      : reasoningMode ? { reasoning_effort: reasoningMode } : {}),
     ...(model.capabilities.streaming ? { stream_options: { include_usage: true } } : {}),
     messages: [{ role: "system", content: system }, ...converted] };
 }
@@ -120,6 +122,8 @@ function usage(raw: unknown, prior: AiUsageTokenBreakdown | null): AiUsageTokenB
 export async function invokeApi(input: {
   model: ResolvedCustomModel; headers: Record<string, string>; system: string; messages: ApiMessage[];
   signal?: AbortSignal; onDelta?: (text: string) => void; timeoutMs?: number;
+  /** llama.cpp extension, requested only by opted-in local enrichment models. */
+  reasoningMode?: CustomEnrichmentReasoning;
 }): Promise<ApiResult> {
   const { model } = input;
   const signal = AbortSignal.any([AbortSignal.timeout(input.timeoutMs ?? 180_000), ...(input.signal ? [input.signal] : [])]);
@@ -128,7 +132,8 @@ export async function invokeApi(input: {
     const response = await safeFetch(apiEndpoint(model, path), {
       method: "POST", headers: { "content-type": "application/json", ...input.headers,
         ...(model.protocol === "anthropic-messages" ? { "anthropic-version": "2023-06-01" } : {}) },
-      body: JSON.stringify(requestBody(model, input.system, input.messages)), signal
+      body: JSON.stringify(requestBody(model, input.system, input.messages,
+        model.protocol === "openai-chat" && isLoopbackApiUrl(model.baseUrl) ? input.reasoningMode : undefined)), signal
     });
     let text = "";
     let tokens: AiUsageTokenBreakdown | null = null;
@@ -193,12 +198,19 @@ export async function discoverApi(endpoint: Pick<CustomConnection, "baseUrl" | "
   // Completions server listing exactly one; never spread one server
   // capability onto a catalog.
   const only = endpoint.protocol === "openai-chat" && models.length === 1 ? models[0] : undefined;
-  if (only && only.vision === null) {
+  if (only && (only.vision === null || isLoopbackApiUrl(endpoint.baseUrl))) {
     try {
       const url = new URL(endpoint.baseUrl); url.pathname = "/props";
       const props = await boundedJson(await safeFetch(url.href, init));
       const vision = record(props.modalities).vision;
-      if (typeof vision === "boolean") only.vision = vision;
+      if (only.vision === null && typeof vision === "boolean") only.vision = vision;
+      if (isLoopbackApiUrl(endpoint.baseUrl)) {
+        const reasoning = {
+          disableThinking: /\benable_thinking\b/.test(string(props.chat_template)),
+          effort: record(props.chat_template_caps).supports_reasoning_effort === true
+        };
+        if (reasoning.disableThinking || reasoning.effort) only.reasoning = reasoning;
+      }
     } catch { /* No unambiguous metadata; the operator answers. */ }
   }
   return { models };

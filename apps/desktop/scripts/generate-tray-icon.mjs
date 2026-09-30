@@ -4,9 +4,9 @@
 //
 // Template PNGs on macOS are alpha-only; the system inverts them to
 // match dark / light / accent menubars. We generate from the same
-// layered-rect SVG used in the design system (product-marks.html /
-// BrandMark.tsx) — keeps brand consistency from the menubar all the
-// way to the float-over header.
+// layered-rect SVG as the in-app mark (BrandMark.tsx; see design/AGENTS.md
+// §1) — keeps brand consistency from the menubar all the way to the
+// float-over header.
 //
 // Run via:
 //   pnpm --filter @pwrsnap/desktop tray-icon
@@ -21,9 +21,8 @@ const repoRoot = resolve(here, "..");
 const buildDir = resolve(repoRoot, "build");
 mkdirSync(buildDir, { recursive: true });
 
-// Layered-rect mark from design/preview/product-marks.html (PwrSnap
-// card), scaled up to fill the menubar tile. The original design-system
-// SVG used ~58% of the 128px viewBox; that read tiny next to other
+// Layered-rect mark from BrandMark.tsx (`PwrSnapMark`), scaled up to fill
+// the menubar tile. The in-app SVG uses ~58% of the 128px viewBox; that read tiny next to other
 // menubar icons (Codex, etc.). Bumped rects to span ~88% with a
 // proportionally thicker stroke so the mark stays bold-and-balanced.
 //

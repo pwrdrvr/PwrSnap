@@ -45,16 +45,19 @@ renderings together — and the two JSX copies in `design/src/` together, since
 - **`decorative` next to the wordmark.** Where the wordmark sits beside it and
   already names the app, the mark is `aria-hidden`; alone, it is
   `role="img"` with `aria-label="PwrSnap"`.
-- **Known gap:** it paints the three tiers with plain `strokeOpacity`, so at
-  the two points where the back and mid strokes cross, they blend — the thing
-  the next section forbids. The icon and tray generators knock each tier out;
-  the in-app SVG does not yet.
+- **Knocked-out tiers, unique mask ids.** It paints per-tier `strokeOpacity`,
+  so it follows the next section: back is masked by mid + front, mid by front.
+  The mark renders many times in one document (every title strip, the tray,
+  the float-over), so the mask ids come from React `useId` — a fixed id would
+  make every copy resolve to the first one in the document. Pinned by
+  `features/shared/__tests__/BrandMark.test.tsx`.
 
 ### The stack is a HARD STACK, never a blend
 
 Wherever the mark is rendered with **per-tier alpha** instead of three opaque
 tints (the native generators: `apps/desktop/scripts/generate-app-icon.swift`,
-`apps/desktop/scripts/generate-tray-icon.mjs`), painting back → mid → front with
+`apps/desktop/scripts/generate-tray-icon.mjs`; and the in-app SVG,
+`BrandMark.tsx`), painting back → mid → front with
 plain source-over is *correct alpha compositing and the wrong mark*: the 0.3 back
 stroke shows through the 0.55 mid stroke and each crossing lights up as a
 brighter, more saturated patch — a fourth tone the palette never specified.

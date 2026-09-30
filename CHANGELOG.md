@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.1.11 - 2026-09-30
+
+This patch keeps AI settings and update checks reliable across restarts and
+improves everyday controls on smaller displays.
+
+- Library AI - Improved the suggestion status layout and added an Auto-apply
+  switch beside the draft actions, so the result is readable and easy to use.
+- AI Connections - Improved version switching by preserving Direct API
+  connections and model selections when this build saves your settings.
+- Updates - Fixed automatic checks from repeatedly contacting GitHub after
+  restarts, reducing rate-limit errors while keeping manual checks available.
+- Float-Over and Tray - Fixed the post-capture countdown from remaining paused
+  after leaving recent captures, and improved popover sizing on compact screens.
+- Library Grid - Improved thumbnail controls so selection, edit, and delete
+  actions stay visible over both light and dark captures.
+- Window Chrome - Improved title-bar alignment and the PwrSnap mark across
+  Library, Settings, Sizzle, and other desktop windows.
+
 ## v1.1.10 - 2026-09-28
 
 This release adds direct AI model connections, non-destructive video cutting,

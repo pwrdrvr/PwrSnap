@@ -1017,7 +1017,7 @@ apps together, never in one.** The spec is PwrGit's
 | Stoplights | `{ x: 16, y: 13 }` — a 14px button (measured on macOS 26) centred on y=20; the group ends at x=76 | `MACOS_TRAFFIC_LIGHT_POSITION` in [window.ts](apps/desktop/src/main/window.ts) |
 | Windows caption strip | `titleBarOverlay` height 40 — the fill, leaving the divider visible under the buttons | `titleBarOverlayForTheme()` in window.ts |
 | Brand start | x=96, 20px clear of the stoplights | `--mac-traffic-light-reserve` in [tokens.css](apps/desktop/src/renderer/src/styles/tokens.css) |
-| Mark | `PwrSnapMark` at 20px, `--accent`, 8px to the wordmark, `decorative` (the wordmark names the app) | [BrandMark.tsx](apps/desktop/src/renderer/src/features/shared/BrandMark.tsx) |
+| Mark | the app icon's glyph (`generate-app-icon.swift` coordinates) as `PwrSnapMark`, 20px, filling its box; `--accent`, 8px to the wordmark, `decorative` (the wordmark names the app) | [BrandMark.tsx](apps/desktop/src/renderer/src/features/shared/BrandMark.tsx) |
 | Wordmark | `700 17px/1` Geist, `-0.01em`; "Pwr" `--text-primary`, "Snap" `--accent` | `.psl__title`, `.pss__title-brand`, `.szl__title-brand`, `.ps-doc__brand` |
 | Centring | text by cap height (`text-box: trim-both cap alphabetic`), chevrons by x-height (`trim-both ex alphabetic`); an ellipsizing crumb gets `padding-block` back for its descenders | the four bar stylesheets |
 

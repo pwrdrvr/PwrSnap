@@ -12,16 +12,19 @@ These are persistent instructions for any session working in this project. Read 
 
 One mark, several renderings. Every one of them draws the same idea — three
 stroked rounded rectangles on a diagonal, front at full strength, mid at
-**0.55**, back at **0.3** — and the four that ship agree on those tiers:
+**0.55**, back at **0.3** — and the in-app mark IS the app icon's glyph:
 
 | Rendering | Where | Geometry | Color |
 |---|---|---|---|
-| **In-app SVG** (title strips, tray, float-over) | `apps/desktop/src/renderer/src/features/shared/BrandMark.tsx` → `PwrSnapMark` | viewBox `0 0 128 128`; three `58 × 46` rects, `rx=6`, stroke `9`, at `(27,55)` front, `(35,41)` mid, `(43,27)` back | `currentColor`, pinned to `var(--accent)` on the `<svg>` itself |
 | **App icon** | `apps/desktop/scripts/generate-app-icon.swift` | 1024 box; `450 × 340` rects, `rx=48`, stroke `56`, offsets `±64 / ±80` | `#e8743a` (the icon orange — see §3) |
+| **In-app SVG** (title strips, tray, float-over) | `apps/desktop/src/renderer/src/features/shared/BrandMark.tsx` → `PwrSnapMark` | the icon's glyph, same 1024-box coordinates with y flipped: rects at `(223,422)` front, `(287,342)` mid, `(351,262)` back; viewBox `195 195 634 634` | `currentColor`, pinned to `var(--accent)` on the `<svg>` itself |
 | **Tray icon** | `apps/desktop/scripts/generate-tray-icon.mjs` | viewBox `0 0 128 128`; `78 × 62` rects, `rx=8`, stroke `13` (scaled up to fill the menubar tile) | template black / `#ff8a1f` |
 | Design handoff (reference only) | `design/src/AppIcons.jsx` → `APP_ICONS.pwrsnap`, `design/src/FloatOver.jsx` → `FoMark` | viewBox `0 0 24 24`; three `13 × 13` squares, `rx=2.5` | three explicit tints: `--accent-deep`, a copper midpoint, `--accent` |
 
-**What ships is the first three rows.** The design-handoff version is the
+**What ships is the first three rows.** The in-app mark was a separate,
+squarer drawing (`58 × 46` rects, stroke `9`, in a 128 box) until 2026-09,
+when it was redrawn from the icon for the Pwr-family title strip; the family
+rule is that each app's strip mark is its icon glyph. The design-handoff version is the
 original Claude Design drawing, kept verbatim under `design/` as a visual
 reference (see the repository AGENTS.md); do not port its squares or its three
 tints into the app. If the mark itself is redrawn, redraw the shipped
@@ -34,21 +37,25 @@ renderings together — and the two JSX copies in `design/src/` together, since
   `color: var(--accent)` on itself, so the strokes are tangerine whatever text
   color surrounds the mark — the property the old "never `currentColor`" rule
   was protecting. Do not remove that style and let the color inherit.
-- **Centred ink.** The stack's ink spans x 22.5–105.5 and y 22.5–105.5 of the
-  128 box, so a flex parent that centres the box centres the drawn mark. The
-  title strips rely on that to put it on their y=20 centreline (see "The
-  Pwr-family title strip" in the repository AGENTS.md). Move a rect and you
-  move the mark off that line.
+- **Same numbers as the icon.** Any change to the icon's mark is a change to
+  `BrandMark.tsx` too. `BrandMark.test.tsx` re-derives every rect from the
+  Swift constants and fails if either side moves alone.
+- **Fills its box, ink centred.** The viewBox is the glyph's own bounds
+  (x 195–829, y 234–790, stroke included) squared about their centre — the
+  Pwr-family convention PwrGit's mark uses too. A flex parent that centres
+  the box therefore centres the drawn mark, which is how the title strips put
+  it on their y=20 centreline (see "The Pwr-family title strip" in the
+  repository AGENTS.md).
 - **Sizes.** 20px in every window's title strip (the Pwr-family mark size),
   16px in the tray header, 12px in the tray menubar facsimile and the
   float-over header.
 - **`decorative` next to the wordmark.** Where the wordmark sits beside it and
   already names the app, the mark is `aria-hidden`; alone, it is
   `role="img"` with `aria-label="PwrSnap"`.
-- **Known gap:** it paints the three tiers with plain `strokeOpacity`, so at
-  the two points where the back and mid strokes cross, they blend — the thing
-  the next section forbids. The icon and tray generators knock each tier out;
-  the in-app SVG does not yet.
+- **Hard stack, per instance.** Each tier is masked by the stroke bands of
+  the tiers in front (next section). The mask ids come from `useId`, stripped
+  to `[A-Za-z0-9_-]`, because the mark renders several times per page and a
+  shared id would point every instance at the first one's masks.
 
 ### The stack is a HARD STACK, never a blend
 

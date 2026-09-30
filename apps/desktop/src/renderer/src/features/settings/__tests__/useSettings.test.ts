@@ -26,6 +26,7 @@ import type { Settings } from "@pwrsnap/shared";
 import { EVENT_CHANNELS } from "@pwrsnap/shared/ipc";
 import { useSettings, type UseSettingsValue } from "../useSettings";
 import { createElement } from "react";
+import { defaultEditorToolBag } from "@pwrsnap/shared";
 
 type AnyResult = { ok: true; value: unknown } | { ok: false; error: unknown };
 type DispatchFn = (name: string, req: unknown) => Promise<AnyResult>;
@@ -85,6 +86,7 @@ const baseSettings: Settings = {
       blur: { mode: "gaussian", radius: { mode: "auto" } },
       highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
     },
+    toolBag: defaultEditorToolBag(),
     coachmarks: { stoplightSeen: false },
     matchingText: { enabled: true },
     sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }

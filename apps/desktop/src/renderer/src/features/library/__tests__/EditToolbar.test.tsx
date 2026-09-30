@@ -71,6 +71,7 @@ vi.mock("../../settings/useSettings", () => ({
 import { EditToolbar } from "../EditToolbar";
 import type { Tool } from "../../editor/editor-tools";
 import { useEditorToolState } from "../../editor/useEditorToolState";
+import { defaultEditorToolBag } from "@pwrsnap/shared";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -161,6 +162,7 @@ function makeSettings(matchingTextEnabled = true): Settings {
         blur: { mode: "gaussian", radius: { mode: "auto" } },
         highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
       },
+      toolBag: defaultEditorToolBag(),
       coachmarks: { stoplightSeen: true },
       matchingText: { enabled: matchingTextEnabled },
       sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }

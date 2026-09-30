@@ -47,6 +47,7 @@ import {
   useEditorToolState,
   type UseEditorToolStateReturn
 } from "../useEditorToolState";
+import { defaultEditorToolBag } from "@pwrsnap/shared";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -131,6 +132,7 @@ function makeSettings(overrides?: {
         blur: { mode: "gaussian", radius: { mode: "auto" } },
         highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
       },
+      toolBag: defaultEditorToolBag(),
       coachmarks: { stoplightSeen: false },
       matchingText: { enabled: overrides?.matchingTextEnabled ?? true },
       sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }

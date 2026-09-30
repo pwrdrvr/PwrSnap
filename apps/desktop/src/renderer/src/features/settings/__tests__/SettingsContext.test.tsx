@@ -15,6 +15,7 @@ beforeAll(() => {
 import type { Settings } from "@pwrsnap/shared";
 import { SettingsProvider, useSettingsContext } from "../SettingsContext";
 import type { UseSettingsValue } from "../useSettings";
+import { defaultEditorToolBag } from "@pwrsnap/shared";
 
 type AnyResult = { ok: true; value: unknown } | { ok: false; error: unknown };
 type EventHandler = (payload: unknown) => void;
@@ -68,6 +69,7 @@ const baseSettings: Settings = {
       blur: { mode: "gaussian", radius: { mode: "auto" } },
       highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
     },
+    toolBag: defaultEditorToolBag(),
     coachmarks: { stoplightSeen: false },
     matchingText: { enabled: true },
     sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }

@@ -1435,24 +1435,32 @@ type GitHubJsonResult =
 
 async function fetchGitHubJson(
   url: string,
-  signal?: AbortSignal,
   etag?: string
 ): Promise<GitHubJsonResult> {
-  const response = await fetch(url, {
-    headers: githubReleaseHeaders(etag),
-    ...(signal ? { signal } : {})
-  });
-  if (response.status === 304) {
-    return { notModified: true };
+  // Requests are sequential so rate limiting can stop the next endpoint.
+  // Each gets its own budget, including body consumption: a stalled optional
+  // /latest lookup must not hand the release-list fallback an aborted signal.
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), RELEASE_FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, {
+      headers: githubReleaseHeaders(etag),
+      signal: controller.signal
+    });
+    if (response.status === 304) {
+      return { notModified: true };
+    }
+    if (!response.ok) {
+      throw releaseRequestError(response);
+    }
+    return {
+      etag: readResponseHeader(response, "etag"),
+      notModified: false,
+      payload: await response.json()
+    };
+  } finally {
+    clearTimeout(timeout);
   }
-  if (!response.ok) {
-    throw releaseRequestError(response);
-  }
-  return {
-    etag: readResponseHeader(response, "etag"),
-    notModified: false,
-    payload: await response.json()
-  };
 }
 
 function asGitHubRelease(value: unknown): GitHubRelease | undefined {
@@ -1480,11 +1488,10 @@ type LatestReleaseResult =
 // page. We also page until that Latest tag appears so Stable Prerelease
 // and Beta slots still see everything newer than it.
 async function fetchLatestGitHubRelease(
-  signal?: AbortSignal,
   etag?: string
 ): Promise<LatestReleaseResult | undefined> {
   try {
-    const result = await fetchGitHubJson(GITHUB_LATEST_RELEASE_URL, signal, etag);
+    const result = await fetchGitHubJson(GITHUB_LATEST_RELEASE_URL, etag);
     return result.notModified
       ? result
       : { etag: result.etag, notModified: false, release: asGitHubRelease(result.payload) };
@@ -1506,10 +1513,10 @@ type ReleaseListFetch =
       releases: GitHubRelease[];
     };
 
-async function fetchGitHubReleases(signal?: AbortSignal): Promise<ReleaseListFetch> {
+async function fetchGitHubReleases(): Promise<ReleaseListFetch> {
   const cachedEtags = releaseCache?.etags ?? {};
   const etags: Record<string, string> = { ...cachedEtags };
-  const latest = await fetchLatestGitHubRelease(signal, cachedEtags[GITHUB_LATEST_RELEASE_URL]);
+  const latest = await fetchLatestGitHubRelease(cachedEtags[GITHUB_LATEST_RELEASE_URL]);
   if (rateLimitResetAt !== undefined && Date.now() < rateLimitResetAt) {
     throw rateLimitedError(rateLimitResetAt);
   }
@@ -1527,7 +1534,7 @@ async function fetchGitHubReleases(signal?: AbortSignal): Promise<ReleaseListFet
     // Only page 1 is revalidated conditionally. Pages past it are only ever
     // requested when the newest page moved, so a conditional request there
     // would answer 200 anyway.
-    const pagePromise = fetchGitHubJson(url, signal, page === 1 ? cachedEtags[url] : undefined);
+    const pagePromise = fetchGitHubJson(url, page === 1 ? cachedEtags[url] : undefined);
     let pageResult: GitHubJsonResult;
     if (page === 1) {
       pageResult = await pagePromise;
@@ -1570,30 +1577,24 @@ async function fetchGitHubReleases(signal?: AbortSignal): Promise<ReleaseListFet
 }
 
 async function refreshGitHubReleases(): Promise<GitHubRelease[]> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), RELEASE_FETCH_TIMEOUT_MS);
-  try {
-    const result = await fetchGitHubReleases(controller.signal);
-    if (result.notModified) {
-      const cached = releaseCache;
-      if (cached) {
-        releaseCache = { ...cached, fetchedAt: Date.now() };
-        rateLimitResetAt = undefined;
-        return cached.releases;
-      }
-      return [];
+  const result = await fetchGitHubReleases();
+  if (result.notModified) {
+    const cached = releaseCache;
+    if (cached) {
+      releaseCache = { ...cached, fetchedAt: Date.now() };
+      rateLimitResetAt = undefined;
+      return cached.releases;
     }
-    releaseCache = {
-      etags: result.etags,
-      fetchedAt: Date.now(),
-      latest: result.latest,
-      releases: result.releases
-    };
-    rateLimitResetAt = undefined;
-    return result.releases;
-  } finally {
-    clearTimeout(timeout);
+    return [];
   }
+  releaseCache = {
+    etags: result.etags,
+    fetchedAt: Date.now(),
+    latest: result.latest,
+    releases: result.releases
+  };
+  rateLimitResetAt = undefined;
+  return result.releases;
 }
 
 /** E2E launches set `NODE_ENV=production` so the app boots its production

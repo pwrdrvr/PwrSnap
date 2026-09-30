@@ -83,6 +83,47 @@ afterEach(async () => {
 });
 
 describe("production release requests across process restarts", () => {
+  test.each([
+    { name: "a stalled latest lookup", latestDelay: null, pageDelay: 4_000, status: "no-update" },
+    { name: "two individually slow requests", latestDelay: 4_000, pageDelay: 4_000, status: "no-update" },
+    { name: "a stalled release page", latestDelay: 0, pageDelay: null, status: "error" }
+  ])("gives each sequential request its own timeout for $name", async ({ latestDelay, pageDelay, status }) => {
+    let firstRequestStarted!: () => void;
+    const started = new Promise<void>((resolve) => { firstRequestStarted = resolve; });
+    const signals: AbortSignal[] = [];
+    fetchMock.mockImplementation((input, init) => new Promise<Response>((resolve, reject) => {
+      const signal = init?.signal;
+      if (!signal) throw new Error("Expected a bounded request");
+      signals.push(signal);
+      firstRequestStarted();
+      if (signal.aborted) {
+        reject(signal.reason);
+        return;
+      }
+      const isLatest = String(input) === latestURL;
+      const delay = isLatest ? latestDelay : pageDelay;
+      const timer = delay === null ? undefined : setTimeout(() => {
+        signal.removeEventListener("abort", abort);
+        resolve(Response.json(isLatest ? release : [release]));
+      }, delay);
+      const abort = (): void => {
+        clearTimeout(timer);
+        reject(signal.reason);
+      };
+      signal.addEventListener("abort", abort, { once: true });
+    }));
+
+    const check = updater.checkForAppUpdatesNow("manual");
+    await started;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect((await check).status).toBe(status);
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([latestURL, pageURL]);
+    expect(signals[0]).not.toBe(signals[1]);
+    expect(signals[0]?.aborted).toBe(latestDelay === null);
+    expect(signals[1]?.aborted).toBe(pageDelay === null);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   test("20 cold launches/minute and Settings mounts make zero requests during the new-profile grace period", async () => {
     for (let launch = 0; launch < 200; launch++) {
       await restart();

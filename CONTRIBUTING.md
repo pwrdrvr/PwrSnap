@@ -132,9 +132,83 @@ region selector and global hotkeys. Running it on your own desktop interrupts
 whatever you are doing, and your real windows can end up inside a capture
 under test. Prefer an off-desktop VM.
 
-If you have a PwrSuiteLab checkout, its `macos-tart/run-e2e.sh` controller
-runs the suite in a macOS VM. Run this from your PwrSnap worktree, not from
-the lab checkout — it transports only that worktree's committed `HEAD`:
+Prefer **PwrSuiteLab Control MCP**. Agents must discover its live tool schemas
+and read the served `skill://manage-pwrlab-e2e/SKILL.md`; the product routing
+and safety rules are in
+[`.agents/skills/macos-vm-e2e-lab/SKILL.md`](.agents/skills/macos-vm-e2e-lab/SKILL.md).
+An Operate grant authorizes exposed actions for the requested work without
+per-operation native confirmation. Use the exact dedicated E2E target from
+`lab_status`, never a GitHub Actions runner or the physical desktop.
+
+Submit the exact clean, committed PwrSnap worktree in `job.repository`.
+Untracked files count as dirty; explicitly stage new specs before committing.
+Only committed HEAD and locally available submodule/LFS content are staged;
+fetch required golden LFS objects before submission. No GitHub push is needed.
+Pass the narrowest useful test filter: Playwright filters are regexes against
+the full test path, so `e2e/editor` selects every `editor-*.spec.ts`.
+
+Example `lab_e2e_run` arguments, assuming the guest has nvm and Corepack:
+
+```json
+{
+  "target": "<exact E2E target from lab_status>",
+  "agent_name": "PwrAgent",
+  "project_name": "PwrSnap",
+  "thread_name": "Verify region selector UI",
+  "job": {
+    "repository": "/absolute/path/to/clean/PwrSnap/worktree",
+    "setup": [
+      ["bash", "-c", "source \"${NVM_DIR:-$HOME/.nvm}/nvm.sh\" && nvm install && corepack pnpm install --frozen-lockfile"]
+    ],
+    "command": ["bash", "-c", "source \"${NVM_DIR:-$HOME/.nvm}/nvm.sh\" && nvm use && CI=1 PWRSNAP_E2E_DISABLE_GPU=1 corepack pnpm --filter @pwrsnap/desktop test:e2e e2e/region-selector-ui.spec.ts"],
+    "artifacts": ["apps/desktop/test-results", "apps/desktop/playwright-report"],
+    "timeout_seconds": 3600
+  }
+}
+```
+
+Replace target, path, caller, and task with actual values. Add top-level
+`pr_number` as a decimal string only when applicable and known. Both
+`lab_e2e_run` and `lab_e2e_acquire` require top-level `agent_name`,
+`project_name`, and `thread_name`; putting them inside `job` is invalid.
+`setup` is an array of argv arrays and `command` is an argv array, not a shell
+string. The explicit `bash -c` commands above run only in the guest: nvm reads
+`.nvmrc`, Corepack uses `package.json`'s package-manager pin, installation runs
+PwrSnap's postinstall, and `test:e2e` runs its native rebuild/build pretest.
+If a required runtime manager is missing, follow the served skill's guest-only
+setup contract; never install host tools or copy credentials as a workaround.
+
+`PWRSNAP_E2E_DISABLE_GPU=1` matches macOS CI rendering. `CI=1` enables the
+configured HTML report, failure screenshots/video, and one retry with a trace;
+omit `CI` only deliberately when diagnosing behavior without retries.
+Artifacts must be bounded paths relative to checkout; `e2e.log` is collected
+automatically. The timeout covers staging, setup, and tests.
+
+Save the returned request ID and `run_id`. Poll `lab_request_status` using the
+request ID; a completed launch request is not a completed test run. Collect
+progress and artifacts with `lab_e2e_collect` using the exact target and saved
+`run_id`. Inspect the returned artifact directory, exit code, and completeness.
+On `Invalid tool or arguments`, compare the call with the current schema,
+especially required attribution; do not assume the Operate grant was lost.
+If transport fails after launch, inspect the run before submitting it again.
+
+No initial acquire is needed: run acquires the display or consumes this
+connection's reservation. **Release reservation** releases only the caller's
+reservation, not a workload lock after handoff. Use guarded `lab_e2e_recover`
+for an orphan, never manual lock deletion. `lock_started_at` is UTC and
+`lock_age_seconds` is the full guest-measured age, independent of chart window;
+age alone does not establish that recovery is safe.
+
+#### Managed script fallback
+
+Only when Control MCP is unavailable, discover an existing PwrSuiteLab checkout
+and follow its current instructions and `macos-tart` runbook. Agents need
+explicit approval naming the target and intended test for this script path;
+already-given approval for that run suffices. Do not fall back to scripts to
+bypass an MCP validation or permission refusal. Host, guest, configuration,
+and access details stay in PwrSuiteLab.
+
+Run this from your PwrSnap worktree, not from the lab checkout:
 
 ```bash
 suite_lab_root="$HOME/path/to/PwrSuiteLab"
@@ -145,23 +219,15 @@ suite_lab_root="$HOME/path/to/PwrSuiteLab"
 
 That flag order is required — the controller reads its arguments positionally,
 and everything after `--local <path>` is passed to Playwright untouched.
-Filters are regexes matched against the full test path, so `e2e/editor` picks
-up every `editor-*.spec.ts`. Omitting the filter runs everything, which needs
-`git lfs pull` first (the goldens are LFS objects and the controller aborts
-without them) and holds the serialized guest display for the whole suite —
-so prefer the narrowest useful list.
-
-The worktree must be clean, and the check counts untracked files: a new spec
-needs `git add -A`, since `git commit -am` will not stage it. Note the guest
-does not set `CI`, so you get no HTML report, no trace, and no retry there.
-
-That checkout's runbook is authoritative and wins on conflict; host, guest,
-and access details live only there. Agents should follow
-[`.agents/skills/macos-vm-e2e-lab/SKILL.md`](.agents/skills/macos-vm-e2e-lab/SKILL.md),
-which also requires them to get your approval before starting a run.
+The same clean committed HEAD and local LFS requirements apply. The script
+adapter does not set `CI`, so it does not enable HTML reporting or retries.
+Redirect output with `> run.log 2>&1`, not a pipe through `tail`; use the lab's
+collection helper after a controller interruption instead of starting another
+run. Retain strict host-key checking and the configured identity; never bypass
+the controller with bare Tart, raw SSH, or manual lock removal.
 
 Without a lab you can run the suite headed on your own machine, accepting the
-interruption — but an agent must ask you first rather than take your screen.
+interruption — but an agent must get explicit approval before taking your screen.
 
 ### Visual-regression goldens
 
@@ -195,7 +261,13 @@ to be re-rendered.
 
 For macOS, review the `*-actual.webp` files emitted by the self-hosted VM's
 `desktop-e2e-macos-artifacts` artifact, then deliberately promote approved
-files to their `*-darwin.webp` baselines. Both Linux and macOS Desktop E2E
+files to their `*-darwin.webp` baselines. For an authorized MCP golden-update
+job, explicitly add only the relevant `apps/desktop/e2e/<spec>-snapshots`
+directories to `job.artifacts`, collect them using the saved run ID, then review
+and copy the intended files into the local worktree. A guest rewrite alone does
+not update local goldens. The fallback script collects only test results and
+reports; do not use its `--update-snapshots` because it does not retrieve the
+rewritten baselines. Both Linux and macOS Desktop E2E
 checkouts fetch these LFS objects; regular build, lint, unit-test, and Windows
 E2E jobs do not download them.
 

@@ -81,10 +81,14 @@
   the selector and global hotkeys — and the operator's real windows can leak
   into a capture. For macOS Tart, self-hosted runner, or headed E2E work,
   follow [`.agents/skills/macos-vm-e2e-lab/SKILL.md`](.agents/skills/macos-vm-e2e-lab/SKILL.md).
-  It discovers an existing PwrSuiteLab checkout and routes all lab access
-  through that checkout's current instructions and controllers
-  (`macos-tart/run-e2e.sh`). For Windows probes or Windows headed E2E, read
-  the Windows VM skill in that same checkout. Do not provision a
+  It prefers PwrSuiteLab Control MCP's live schemas and served
+  `manage-pwrlab-e2e` skill. Granted MCP actions need no per-operation native
+  confirmation; keep the requested target/scope and controller safety checks.
+  Use the existing checkout's managed `macos-tart/run-e2e.sh` only when MCP
+  is unavailable, retaining the script runbook's approval and transport gates.
+  Invalid arguments require checking the schema, not assuming a lost grant.
+  For Windows probes or Windows headed E2E, read the Windows VM skill in
+  the existing PwrSuiteLab checkout. Do not provision a
   product-local Tart lab from this repository, improvise direct Tart or SSH
   access, or run headed E2E on the operator's desktop without their explicit
   approval.
@@ -93,7 +97,7 @@
   inventory live only in PwrSuiteLab — including in commit messages, PR
   bodies, issues, and fixtures. What may live here is the product/CI contract,
   the fact that the lab exists and is named PwrSuiteLab, and the controller
-  entry points it exposes (`macos-tart/run-e2e.sh` and its flags) — enough to
+  entry points and public MCP job/ownership contract it exposes — enough to
   invoke it, never enough to map it.
 
 ## Agent Instruction Files

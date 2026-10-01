@@ -33,6 +33,7 @@ import {
   type CustomAuth,
   type CustomConnection,
   type CustomConnectionInput,
+  type CustomEnrichmentReasoning,
   type CustomModel,
   type CustomModelDiscovery,
   type CustomModelInput,
@@ -465,6 +466,7 @@ function SavedModels({ models, settings }: { models: readonly CustomModel[]; set
                 {m.capabilities.vision === null ? "UNKNOWN" : m.capabilities.vision ? "YES" : "NO"}
               </span>
               {!m.capabilities.streaming ? <span className="pss__dapi-cap">NO STREAM</span> : null}
+              {m.enrichmentReasoning ? <span className="pss__dapi-cap">ENRICHMENT {m.enrichmentReasoning.toUpperCase()}</span> : null}
             </span>
             <span className={"pss__dapi-used" + (used.length === 0 ? " is-none" : "")}>
               {used.length > 0 ? used.map((s) => AI_SURFACE_LABELS[s]).join(", ") : "Not used"}
@@ -942,8 +944,10 @@ type Row = {
   vision: boolean | null;
   /** Where the image-input answer came from. */
   source: string;
+  reasoningSupport: { disableThinking: boolean; effort: boolean } | null;
+  enrichmentReasoning: CustomEnrichmentReasoning | null;
 };
-type RowEdit = Partial<Pick<Row, "checked" | "displayName" | "vision">>;
+type RowEdit = Partial<Pick<Row, "checked" | "displayName" | "vision" | "enrichmentReasoning">>;
 
 function ModelsStep({ connection, models, discovery, onDiscover, onSaved }: {
   connection: CustomConnection;
@@ -974,11 +978,14 @@ function ModelsStep({ connection, models, discovery, onDiscover, onSaved }: {
   const listed = discovery?.kind === "done" ? discovery.result.models : [];
   const savedIds = new Set(models.map((m) => m.modelId));
   const base: Row[] = [
-    ...models.map((m) => ({ modelId: m.modelId, id: m.id, checked: true, displayName: m.displayName, vision: m.capabilities.vision, source: "" })),
-    ...manual.filter((m) => !savedIds.has(m)).map((m) => ({ modelId: m, checked: true, displayName: suggestModelName(connection.baseUrl, m), vision: null, source: "" })),
+    ...models.map((m) => ({ modelId: m.modelId, id: m.id, checked: true, displayName: m.displayName, vision: m.capabilities.vision, source: "",
+      reasoningSupport: listed.find((l) => l.id === m.modelId)?.reasoning ?? null, enrichmentReasoning: m.enrichmentReasoning ?? null })),
+    ...manual.filter((m) => !savedIds.has(m)).map((m) => ({ modelId: m, checked: true, displayName: suggestModelName(connection.baseUrl, m), vision: null, source: "",
+      reasoningSupport: null, enrichmentReasoning: null })),
     ...listed.filter((l) => !savedIds.has(l.id) && !manual.includes(l.id)).map((l) => ({
       modelId: l.id, checked: false, displayName: suggestModelName(connection.baseUrl, l.id, l.displayName), vision: l.vision,
-      source: l.vision === null ? "not advertised" : "listed by endpoint"
+      source: l.vision === null ? "not advertised" : "listed by endpoint",
+      reasoningSupport: l.reasoning ?? null, enrichmentReasoning: null
     }))
   ];
   const rows = base.map((r) => {
@@ -992,7 +999,8 @@ function ModelsStep({ connection, models, discovery, onDiscover, onSaved }: {
   const dirty = rows.some((r) => {
     const saved = models.find((m) => m.modelId === r.modelId);
     return saved === undefined ? r.checked
-      : !r.checked || r.displayName.trim() !== saved.displayName || r.vision !== saved.capabilities.vision;
+      : !r.checked || r.displayName.trim() !== saved.displayName || r.vision !== saved.capabilities.vision ||
+        r.enrichmentReasoning !== (saved.enrichmentReasoning ?? null);
   }) || settingsChanged;
   const q = filter.trim().toLowerCase();
   const shown = q === "" ? rows : rows.filter((r) => r.checked || r.modelId.toLowerCase().includes(q) || r.displayName.toLowerCase().includes(q));
@@ -1007,7 +1015,8 @@ function ModelsStep({ connection, models, discovery, onDiscover, onSaved }: {
       modelId: r.modelId,
       displayName: r.displayName.trim(),
       capabilities: { vision: r.vision, streaming },
-      maxOutputTokens: tokens
+      maxOutputTokens: tokens,
+      ...(r.enrichmentReasoning ? { enrichmentReasoning: r.enrichmentReasoning } : {})
     }));
     const r = await dispatch("customModels:setModels", { connectionId: connection.id, models: inputs });
     setBusy(false);
@@ -1034,6 +1043,9 @@ function ModelsStep({ connection, models, discovery, onDiscover, onSaved }: {
         Tick the models you want in PwrSnap's pickers; they all share this connection's credential.
         {unknownOnly ? " This endpoint's model list doesn't say which models accept images, so those start as Unknown until you answer." : ""}
         {" "}Unknown is fine for chat, text only. Captions need Yes — PwrSnap will not guess from a model's name.
+        {connection.protocol === "openai-chat" && isLoopbackApiUrl(connection.baseUrl)
+          ? " Enrichment thinking choices appear when the local model reports support for them."
+          : ""}
       </p>
       {discovery?.kind === "loading" ? <p className="pss__dapi-hint" role="status">Listing models…</p> : null}
       {discovery?.kind === "error" ? (
@@ -1059,6 +1071,23 @@ function ModelsStep({ connection, models, discovery, onDiscover, onSaved }: {
                 <span className="pss__dapi-caps">
                   <VisionTri value={r.vision} label={r.modelId} onChange={(vision) => edit(r.modelId, { vision })} />
                   {r.source !== "" ? <span className="pss__dapi-src">{r.source}</span> : null}
+                  {r.checked && connection.protocol === "openai-chat" && isLoopbackApiUrl(connection.baseUrl) &&
+                    (r.reasoningSupport !== null || r.enrichmentReasoning !== null) ? (
+                    <label className="pss__dapi-reasoning">
+                      <span>Enrichment thinking</span>
+                      <select className="pss__input" value={r.enrichmentReasoning ?? ""} onChange={(e) =>
+                        edit(r.modelId, { enrichmentReasoning: e.target.value === "" ? null : e.target.value as CustomEnrichmentReasoning })}>
+                        <option value="">Server default</option>
+                        {r.reasoningSupport?.effort ? <option value="low">Low</option> : null}
+                        {r.reasoningSupport?.effort ? <option value="medium">Medium</option> : null}
+                        {r.reasoningSupport?.disableThinking ? <option value="off">Off</option> : null}
+                        {r.enrichmentReasoning !== null &&
+                          !(r.enrichmentReasoning === "off" ? r.reasoningSupport?.disableThinking : r.reasoningSupport?.effort) ? (
+                          <option value={r.enrichmentReasoning}>{r.enrichmentReasoning} (support not verified)</option>
+                        ) : null}
+                      </select>
+                    </label>
+                  ) : null}
                 </span>
                 {r.checked ? (
                   <input className="pss__input" value={r.displayName} maxLength={120} placeholder="Enter a display name" aria-required="true" aria-invalid={r.displayName.trim() === ""} aria-label={`Name for ${r.modelId}`}
@@ -1117,7 +1146,11 @@ function ModelsStep({ connection, models, discovery, onDiscover, onSaved }: {
           {busy ? "Saving…" : `Save ${plural(rows.filter((r) => r.checked).length, "model")}`}
         </button>
         {dirty ? (
-          <button className="pss__key-btn" type="button" onClick={() => { setEdits({}); setManual([]); }}>Revert</button>
+          <button className="pss__key-btn" type="button" onClick={() => {
+            setEdits({}); setManual([]);
+            setMaxTokens(String(first?.maxOutputTokens ?? DEFAULT_CUSTOM_MAX_OUTPUT_TOKENS));
+            setStreaming(first?.capabilities.streaming ?? true);
+          }}>Revert</button>
         ) : null}
       </div>
     </>

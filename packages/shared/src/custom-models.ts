@@ -22,6 +22,7 @@ export const customOAuthSchema = z.object({
 }).strict();
 
 export const customProtocolSchema = z.enum(["openai-responses", "openai-chat", "anthropic-messages"]);
+export const customEnrichmentReasoningSchema = z.enum(["off", "low", "medium"]);
 export const customAuthSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("none") }).strict(),
   z.object({ type: z.literal("api-key") }).strict(),
@@ -50,7 +51,9 @@ export const customModelSchema = z.object({
     vision: z.boolean().nullable(),
     streaming: z.boolean()
   }).strict(),
-  maxOutputTokens: z.number().int().min(1).max(131072)
+  maxOutputTokens: z.number().int().min(1).max(131072),
+  /** Explicit llama.cpp request option for local enrichment only. */
+  enrichmentReasoning: customEnrichmentReasoningSchema.optional()
 }).strict();
 
 export const MAX_CUSTOM_CONNECTIONS = 50;
@@ -64,6 +67,7 @@ export const customModelInputSchema = customModelSchema.omit({ connectionId: tru
   .extend({ id: customModelIdSchema.optional() }).strict();
 
 export type CustomProtocol = z.infer<typeof customProtocolSchema>;
+export type CustomEnrichmentReasoning = z.infer<typeof customEnrichmentReasoningSchema>;
 export type CustomAuth = z.infer<typeof customAuthSchema>;
 export type CustomConnection = z.infer<typeof customConnectionSchema>;
 export type CustomConnectionInput = z.infer<typeof customConnectionInputSchema>;
@@ -73,7 +77,8 @@ export type CustomOAuth = z.infer<typeof customOAuthSchema>;
 /** A saved model joined with its connection: everything one request needs. */
 export type ResolvedCustomModel = CustomModel & Pick<CustomConnection, "baseUrl" | "protocol" | "auth">;
 /** What an endpoint listed. `vision` is per model and `null` unless that row said. */
-export type CustomModelDiscovery = { models: { id: string; displayName?: string; vision: boolean | null }[] };
+export type CustomModelDiscovery = { models: { id: string; displayName?: string; vision: boolean | null;
+  reasoning?: { disableThinking: boolean; effort: boolean } }[] };
 
 export function customProviderId(id: string): string { return `custom:${id}`; }
 export function isCustomProvider(provider: string | undefined | null): boolean {

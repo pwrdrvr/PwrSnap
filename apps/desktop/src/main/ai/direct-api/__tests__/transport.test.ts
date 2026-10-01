@@ -47,6 +47,38 @@ test("unknown vision is not inferred; rejects image requests before sending", as
   const entry = model(http.url); entry.capabilities.vision = false;
   await expect(invokeApi({ model: entry, headers: {}, system: "", messages: [{ role: "user", text: "test", images: [IMAGE] }] })).rejects.toThrow("Image input is not enabled"); expect(called).toBe(false);
 });
+test("llama.cpp enrichment reasoning modes require opt-in on Chat Completions", async () => {
+  const requests: Record<string, unknown>[] = [];
+  const http = await server(async (req, res) => {
+    requests.push(JSON.parse(await body(req)) as Record<string, unknown>);
+    json(res, { choices: [{ message: { content: "fixture answer" } }], usage: {
+      prompt_tokens: 2272, completion_tokens: 1682, total_tokens: 3954,
+      prompt_tokens_details: { cached_tokens: 1414 }
+    } });
+  }); cleanup.push(http.close);
+  const entry = model(`${http.url}/v1`); entry.capabilities.streaming = false;
+  const call = async (reasoningMode?: "off" | "low") => invokeApi({ model: entry, headers: {},
+    system: "", messages: [{ role: "user", text: "fixture" }],
+    ...(reasoningMode ? { reasoningMode } : {}) });
+  await call();
+  const off = await call("off");
+  await call("low");
+  expect(requests[0]).not.toHaveProperty("chat_template_kwargs");
+  expect(requests[1]).toMatchObject({ chat_template_kwargs: { enable_thinking: false } });
+  expect(requests[2]).toMatchObject({ reasoning_effort: "low" });
+  expect(requests[2]).not.toHaveProperty("chat_template_kwargs");
+  expect(off.tokens).toMatchObject({ inputTokens: 2272, cachedInputTokens: 1414, outputTokens: 1682, totalTokens: 3954 });
+});
+test("streamed usage keeps cached input inside the reported prompt total", async () => {
+  const http = await server(async (_req, res) => stream(res, [
+    { choices: [{ delta: { content: "fixture answer" } }] },
+    { choices: [], usage: { prompt_tokens: 2272, completion_tokens: 1682, total_tokens: 3954,
+      prompt_tokens_details: { cached_tokens: 1414 } } }, "[DONE]"
+  ])); cleanup.push(http.close);
+  const result = await invokeApi({ model: model(`${http.url}/v1`), headers: {}, system: "",
+    messages: [{ role: "user", text: "fixture" }] });
+  expect(result.tokens).toMatchObject({ inputTokens: 2272, cachedInputTokens: 1414, outputTokens: 1682, totalTokens: 3954 });
+});
 test.each([401, 429, 500, 302])("sanitizes HTTP %s including redirects", async (status) => {
   const http = await server((_req, res) => { res.writeHead(status, { location: "http://127.0.0.1:1/secret" }).end("sensitive server echo"); }); cleanup.push(http.close);
   await expect(invokeApi({ model: model(http.url), headers: {}, system: "", messages: [{ role: "user", text: "test" }] })).rejects.not.toThrow("sensitive");
@@ -76,6 +108,15 @@ test("discovery reports image input per listed model, only where a row says so",
   many = true;
   expect(await discoverApi(model(`${http.url}/v1`), {})).toEqual({ models: [
     { id: "fixture/exact-model", vision: null }, { id: "fixture/lists-vision", vision: false }] });
+});
+test("single local model discovery exposes only advertised reasoning controls", async () => {
+  const http = await server((req, res) => {
+    if (req.url === "/props") json(res, { chat_template: "{% if enable_thinking %}think{% endif %}",
+      chat_template_caps: { supports_reasoning_effort: true }, modalities: { vision: true } });
+    else json(res, { data: [{ id: "fixture/exact-model", modalities: { vision: true } }] });
+  }); cleanup.push(http.close);
+  expect(await discoverApi(model(`${http.url}/v1`), {})).toEqual({ models: [{ id: "fixture/exact-model", vision: true,
+    reasoning: { disableThinking: true, effort: true } }] });
 });
 test("Anthropic listing sends its version header and asks past the default page", async () => {
   const urls: string[] = []; let version: unknown;
@@ -107,12 +148,13 @@ test("schema rejects plaintext credentials, unsafe URLs and legacy completions",
   expect(customConnectionSchema.safeParse({ ...good, protocol: "openai-completions" }).success).toBe(false);
   const { baseUrl: _b, protocol: _p, auth: _a, ...saved } = model("https://example.com/v1");
   expect(customModelSchema.safeParse(saved).success).toBe(true);
+  expect(customModelSchema.safeParse({ ...saved, enrichmentReasoning: "off" }).success).toBe(true);
   expect(customModelSchema.safeParse({ ...saved, baseUrl: "https://example.com/v1" }).success).toBe(false);
 });
 test("settings parse drops a bad entry instead of the file, and orphans with it", () => {
   const good = { id: CONNECTION_ID, name: "Fixture", baseUrl: "https://example.com/v1", protocol: "openai-chat", auth: { type: "none" } };
   const { baseUrl: _b, protocol: _p, auth: _a, ...saved } = model("https://example.com/v1");
-  const parsed = parseCustomAi([good, { ...good, id: "not-a-uuid" }], [saved, { ...saved, id: "12345678-1234-4234-8234-12345678900f", connectionId: "12345678-1234-4234-8234-12345678900e" }, "junk"]);
+  const parsed = parseCustomAi([good, { ...good, id: "not-a-uuid" }], [{ ...saved, enrichmentReasoning: "off" }, { ...saved, id: "12345678-1234-4234-8234-12345678900f", connectionId: "12345678-1234-4234-8234-12345678900e" }, "junk"]);
   expect(parsed.customConnections).toEqual([good]);
-  expect(parsed.customModels).toEqual([saved]);
+  expect(parsed.customModels).toEqual([{ ...saved, enrichmentReasoning: "off" }]);
 });

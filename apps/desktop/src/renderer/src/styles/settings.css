@@ -3145,6 +3145,15 @@ a.pss__top-btn[aria-disabled="true"]:hover {
   color: var(--text-muted);
   font: 400 10.5px/1.2 var(--font-sans);
 }
+.pss__dapi-reasoning {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  color: var(--text-muted);
+  font: 400 10.5px/1.2 var(--font-sans);
+}
+.pss__dapi-reasoning > .pss__input { height: 26px; }
 .pss__dapi-mrow > .pss__input { height: 26px; font-family: var(--font-sans); }
 .pss__dapi-mrow > .pss__dapi-none { color: var(--text-subtle); font: 400 11.5px/1 var(--font-sans); }
 .pss__dapi-tri {

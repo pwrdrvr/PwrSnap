@@ -30,7 +30,7 @@ test("existing chat controller streams and persists direct replies, resumes jour
     if (hang) { res.writeHead(200, { "content-type": "text/event-stream" }); res.write(": waiting\n\n"); return; }
     stream(res, [{ choices: [{ delta: { content: "fixture reply" } }] }, { choices: [], usage: { prompt_tokens: 3, completion_tokens: 2 } }, "[DONE]"]);
   }); cleanup.push(http.close);
-  const entry = model(`${http.url}/v1`); const store = memoryStore();
+  const entry = model(`${http.url}/v1`); entry.enrichmentReasoning = "off"; const store = memoryStore();
   // Main-only service seam; real protocol transport and production controller.
   const service = { selected: async () => entry, credentials: { headers: async () => ({}) } } as unknown as CustomModelService;
   const backend = new DirectChatBackend(entry, service, (id) => store.readJournal(id)); cleanup.push(() => backend.close());
@@ -50,9 +50,26 @@ test("existing chat controller streams and persists direct replies, resumes jour
   await vi.waitFor(async () => { expect(await next.getHistory(thread.threadId)).toHaveLength(4); });
   expect(JSON.stringify(requests[1])).toContain("first fixture prompt"); expect(JSON.stringify(requests[1])).toContain("fixture reply");
   expect(JSON.stringify(requests[1]).match(/second fixture prompt/g)).toHaveLength(1);
+  expect(requests.every((request) => !("chat_template_kwargs" in request))).toBe(true);
   hang = true; await next.sendMessage({ threadId: thread.threadId, text: "cancel fixture" });
   await vi.waitFor(() => expect(requests).toHaveLength(3)); await next.interrupt(thread.threadId);
   await vi.waitFor(async () => { expect(await next.getHistory(thread.threadId)).toHaveLength(6); });
+});
+test("opted-in loopback enrichment disables llama.cpp thinking", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pwrsnap-enrichment-fixture-")); cleanup.push(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, "synthetic.png"); await writeFile(path, Buffer.from(IMAGE.split(",")[1] ?? "", "base64"));
+  let request: Record<string, unknown> = {};
+  const http = await server(async (req, res) => {
+    request = JSON.parse(await body(req)) as Record<string, unknown>;
+    json(res, { choices: [{ message: { content: JSON.stringify({ title: "Fixture image", description: "One synthetic pixel", ocrText: "", filenameStem: "fixture", textAnchors: [], tags: [] }) } }],
+      usage: { prompt_tokens: 9, completion_tokens: 3, total_tokens: 12 } });
+  }); cleanup.push(http.close);
+  const entry = model(`${http.url}/v1`); entry.capabilities.streaming = false; entry.enrichmentReasoning = "off";
+  const service = { credentials: { headers: async () => ({}) } } as unknown as CustomModelService;
+  const result = await new DirectEnrichmentBackend(entry, service).enrichCapture({ imagePaths: [path],
+    metadata: { captureKind: "image", sourceAppName: null, sourceAppBundleId: null, widthPx: 1, heightPx: 1, capturedAt: "2026-01-01T00:00:00Z" } });
+  expect(request).toMatchObject({ chat_template_kwargs: { enable_thinking: false } });
+  expect(result.tokens).toMatchObject({ inputTokens: 9, outputTokens: 3, totalTokens: 12 });
 });
 test("direct enrichment sends only prepared image bytes and validates the existing schema", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pwrsnap-enrichment-fixture-")); cleanup.push(() => rm(dir, { recursive: true, force: true }));

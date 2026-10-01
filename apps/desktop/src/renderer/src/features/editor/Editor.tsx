@@ -123,6 +123,7 @@ import { BlurOverlays } from "./BlurOverlays";
 import { TextDraftInput } from "./TextDraftInput";
 import { TextHtmlOverlays } from "./TextHtmlOverlays";
 import { resolveTextDraftStyle } from "./text-draft-style";
+import { labelLeftAnchorXn, labelStyleForArrow, planArrowLabel } from "./arrow-label";
 import { TEXT_BBOX_CHAR_ADVANCE } from "./text-bbox-constants";
 import { measureTextWidthPx } from "./text-measure";
 import { getGlyphSize } from "./text-measure-registry";
@@ -257,12 +258,22 @@ export type LayersPanelApi = {
    *  `slotFieldsForLayer` — as ONE edit: one dispatch, one undo step per
    *  layer, so ⌘Z takes a slot's color, heads and border back at once. */
   applyBagSlot: (slot: ToolBagSlot, ids: readonly string[]) => void;
+  /** Open a label draft at an arrow's tail (the property bar's "Add
+   *  label"; Return on a selected arrow is the editor's own twin).
+   *  False when `id` is not an arrow or a draft is already open. */
+  addArrowLabel: (id: string) => boolean;
 };
 
 /** Multiplier for one ⌘+ / ⌘- press. Deliberately NOT ZoomMenu's
  *  `ZOOM_STEP` (1.2): the keyboard steps coarser than the +/- buttons.
  *  ⌘- uses the reciprocal so a press pair returns to the original scale. */
 const KEYBOARD_ZOOM_STEP = 1.25;
+
+/** Focus targets whose own Return/Space the editor must leave alone. */
+const INTERACTIVE_KEY_TARGETS =
+  'button, a[href], select, summary, [role="button"], [role="menuitem"], ' +
+  '[role="option"], [role="tab"], [role="slider"], [role="checkbox"], ' +
+  '[role="radio"], [role="switch"], [role="spinbutton"], [role="combobox"]';
 
 const STYLED_TOOLS: ReadonlySet<Tool> = new Set<Tool>([
   "arrow",
@@ -2498,6 +2509,7 @@ export function Editor({
   function onPointerDown(event: React.PointerEvent<HTMLDivElement>): void {
     if (event.button !== 0) return;
     canvasGestureSeqRef.current += 1;
+    releaseOutsideControlFocus();
     // Defensive clear of any stale multi-drag state. The arming path
     // below stores snapshots in `multiDragStartRef.current` and
     // relies on `onPointerUp` / `onPointerCancel` to clear it; if
@@ -2637,6 +2649,24 @@ export function Editor({
       setDraft({ kind: "text", xn: start.xn, yn: start.yn, body: "" });
       return;
     }
+  }
+
+  /** A press on the canvas takes focus off a control outside it. The
+   *  drawing branches `preventDefault` the pointerdown, which suppresses
+   *  the browser's own "a press elsewhere moves focus", so after picking
+   *  a tool or slot with the mouse its button kept focus through the
+   *  drawing — and Return then re-pressed that button (re-arming the
+   *  slot, dropping the selection) instead of labelling the arrow just
+   *  drawn. Text fields are left alone: a draft's own blur commits it,
+   *  and that click-away path already works natively. */
+  function releaseOutsideControlFocus(): void {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement) || active === document.body) return;
+    if (canvasRef.current?.contains(active) === true) return;
+    if (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.isContentEditable) {
+      return;
+    }
+    active.blur();
   }
 
   // -------------------- Hover cursor affordance --------------------
@@ -3337,7 +3367,7 @@ export function Editor({
     return { ok: true, newId };
   }
 
-  async function commitText(): Promise<void> {
+  async function commitText(measure?: { widthFrac: number }): Promise<void> {
     if (draft?.kind !== "text") return;
     const gestureSeq = canvasGestureSeqRef.current;
     const body = draft.body.trim();
@@ -3356,15 +3386,33 @@ export function Editor({
     // persist a duplicate. Clearing here makes any re-entrant call
     // hit the `draft?.kind !== "text"` guard. It also unmounts the
     // input immediately — the pre-await UX.
-    const point = { x: draft.xn, y: draft.yn };
+    const label = draft.editingId === undefined ? draft.label : undefined;
+    // A label drafted end- or center-aligned becomes the left anchor
+    // every text row uses, now that its width is known.
+    const point = {
+      x:
+        label !== undefined
+          ? labelLeftAnchorXn(draft.xn, label.align, measure?.widthFrac ?? 0)
+          : draft.xn,
+      y: draft.yn
+    };
     const editingId = draft.editingId;
     setDraft(null);
     // Phase 3.1 fix #2 + Phase 3.2 lift: thread the active text style
     // (color + fontSize mapped to v1's two-bucket size enum) —
     // awaited so a commit racing `settings:read` stamps the user's
-    // configured weight / Border / color (see the arrow commit).
-    const textStyleSrc = (await effectiveToolState.settledToolStyles()).text;
-    const resolvedSize = resolveTextSize(textStyleSrc.fontSize);
+    // configured weight / Border / color (see the arrow commit). An
+    // arrow label takes its arrow's style instead (arrow-label.ts).
+    let textStyleSrc: Pick<TextToolStyle, "color" | "weight" | "outline">;
+    let resolvedSize: TextSizeBucket;
+    if (label !== undefined) {
+      textStyleSrc = label.style;
+      resolvedSize = label.style.size;
+    } else {
+      const toolText = (await effectiveToolState.settledToolStyles()).text;
+      textStyleSrc = toolText;
+      resolvedSize = resolveTextSize(toolText.fontSize);
+    }
     // pwrdrvr/PwrSnap#110: every new text overlay persists an
     // absolute `sizePx` resolved at PLACEMENT time using the current
     // source raster's shortSide. From this point on the row's
@@ -3375,15 +3423,7 @@ export function Editor({
     //
     // Source dims come from the raster layer's natural_*_px; fall back
     // to record dims (= canvas dims) if no raster layer is found.
-    let placementSourceW = model.record.width_px;
-    let placementSourceH = model.record.height_px;
-    for (const layer of model.layers) {
-      if (layer.kind === "raster" && layer.parent_id !== null) {
-        placementSourceW = layer.natural_width_px;
-        placementSourceH = layer.natural_height_px;
-        break;
-      }
-    }
+    const { w: placementSourceW, h: placementSourceH } = placementSourceDims();
     const sizePxAtPlacement = computeTextGlyphSize({
       size: resolvedSize,
       sourceWidthPx: placementSourceW,
@@ -3463,10 +3503,63 @@ export function Editor({
     }
     const wrote = await persistOverlay(overlay);
     if (wrote.ok) selectPlacedLayer(wrote.newId, gestureSeq);
-    if (wrote.ok && !isControlled) {
+    // A label was not drawn with the text tool, so it must not spend a
+    // single-shot (⌥-click) placement armed on some other tool.
+    if (wrote.ok && !isControlled && label === undefined) {
       effectiveToolState.onAnnotationPlaced({ tool: "text" });
     }
   }
+
+  /** Source raster dims for sizing a new text row: the first raster
+   *  layer's natural size, else the record's (= canvas) dims. */
+  function placementSourceDims(): { w: number; h: number } {
+    if (model.kind !== "loaded") return { w: 1, h: 1 };
+    for (const layer of model.layers) {
+      if (layer.kind === "raster" && layer.parent_id !== null) {
+        return { w: layer.natural_width_px, h: layer.natural_height_px };
+      }
+    }
+    return { w: model.record.width_px, h: model.record.height_px };
+  }
+
+  /** "Add label" on an arrow: open a text draft beyond its tail, in its
+   *  color and matching size, caret ready — the user just types. Enter,
+   *  Escape or a click away ends it (empty = nothing written). The arrow
+   *  stays selected while the label is drafted, so Escape lands back on
+   *  it; a committed label becomes the selection, as a drawing does. */
+  function startArrowLabel(arrowId: string): boolean {
+    if (model.kind !== "loaded") return false;
+    if (draft !== null) return false;
+    const row = overlaysRef.current.find((o) => o.id === arrowId);
+    if (row === undefined || row.data.kind !== "arrow") return false;
+    const arrow = row.data;
+    const style = labelStyleForArrow(arrow);
+    const { w: sourceW, h: sourceH } = placementSourceDims();
+    const fontPx = computeTextGlyphSize({
+      size: style.size,
+      sourceWidthPx: sourceW,
+      sourceHeightPx: sourceH,
+      canvasWidthPx: model.record.width_px,
+      canvasHeightPx: model.record.height_px
+    }).sizePx;
+    const plan = planArrowLabel({
+      from: arrow.from,
+      to: arrow.to,
+      canvasWidthPx: model.record.width_px,
+      canvasHeightPx: model.record.height_px,
+      fontPx
+    });
+    setDraft({
+      kind: "text",
+      xn: plan.xn,
+      yn: plan.yn,
+      body: "",
+      label: { arrowId, align: plan.align, style }
+    });
+    return true;
+  }
+  const startArrowLabelRef = useRef(startArrowLabel);
+  startArrowLabelRef.current = startArrowLabel;
 
   /** A freshly drawn annotation becomes the selection, so the property
    *  bar shows what was just drawn and ⇧1–9 restyles it without a
@@ -4077,6 +4170,26 @@ export function Editor({
         clearSelection();
         return;
       }
+      // Return on a lone selected arrow labels it — the keyboard twin of
+      // the property bar's "Add label". Every drawing is selected on
+      // release, so draw-then-Return is the whole gesture. Not from a
+      // focused control, where Return is that control's own key.
+      if (
+        event.key === "Enter" &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !event.shiftKey &&
+        draft === null &&
+        tool !== "crop" &&
+        selectedLayerIds.length === 1 &&
+        !(target instanceof Element && target.closest(INTERACTIVE_KEY_TARGETS) !== null) &&
+        startArrowLabelRef.current(selectedLayerIds[0]!)
+      ) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
       if (
         (event.key === "Delete" || event.key === "Backspace") &&
         selectedLayerIds.length > 0
@@ -4605,6 +4718,7 @@ export function Editor({
       deleteSelectedRef={deleteSelectedRef}
       nudgeSelectedRef={nudgeSelectedRef}
       applyBagSlotRef={applyBagSlotRef}
+      startArrowLabelRef={startArrowLabelRef}
       settleNudgeBurstRef={settleNudgeBurstRef}
       reorderSelectedRef={reorderSelectedRef}
       commitMultiDragRef={commitMultiDragRef}
@@ -4692,6 +4806,7 @@ function EditorLoaded({
   deleteSelectedRef,
   nudgeSelectedRef,
   applyBagSlotRef,
+  startArrowLabelRef,
   settleNudgeBurstRef,
   reorderSelectedRef,
   commitMultiDragRef,
@@ -4827,7 +4942,7 @@ function EditorLoaded({
   setRasterDrafts: React.Dispatch<
     React.SetStateAction<ReadonlyMap<string, AffineTransform> | null>
   >;
-  commitText: () => Promise<void>;
+  commitText: (measure?: { widthFrac: number }) => Promise<void>;
   onZoomChange: ((api: ZoomApi) => void) | undefined;
   onSelectionChange: ((ids: readonly string[]) => void) | undefined;
   onLayersApi: ((api: LayersPanelApi | null) => void) | undefined;
@@ -4886,6 +5001,9 @@ function EditorLoaded({
   applyBagSlotRef: React.RefObject<
     ((slot: ToolBagSlot, ids: readonly string[]) => void) | null
   >;
+  /** The outer editor's "Add label" (it owns the draft); published to
+   *  LayersPanelApi.addArrowLabel. */
+  startArrowLabelRef: React.RefObject<(arrowId: string) => boolean>;
   /** Commit-and-close for a pending arrow-key nudge burst. Populated by
    *  EditorLoaded's nudge effect; the OUTER pointerdown + clipboard
    *  verbs call it so nothing races an un-committed burst. */
@@ -5065,6 +5183,34 @@ function EditorLoaded({
   // changes), which is the live behavior we want.
   const textDraftAutoOutline = useMemo((): OverlayOutlineAutoColor | null => {
     if (draft?.kind !== "text" || draft.editingId !== undefined) return null;
+    if (draft.label !== undefined) {
+      // Sampled over the box the label actually covers: an end- or
+      // center-aligned draft's anchor is not its left edge, and sampling
+      // as if it were reads the pixels on the far side (often the arrow)
+      // and can pick the opposite border to the one commit stamps.
+      if (draft.label.style.outline !== "auto") return null;
+      const body = draft.body.length > 0 ? draft.body : "Label";
+      const fontPx = computeTextGlyphSize({
+        size: draft.label.style.size,
+        sourceWidthPx,
+        sourceHeightPx,
+        canvasWidthPx: record.width_px,
+        canvasHeightPx: record.height_px
+      }).sizePx;
+      const widthPx =
+        measureTextWidthPx(body, fontPx, readTextWeight({ weight: draft.label.style.weight })) ??
+        body.length * fontPx * TEXT_BBOX_CHAR_ADVANCE;
+      return resolveOutlineAuto({
+        kind: "text",
+        point: {
+          x: labelLeftAnchorXn(draft.xn, draft.label.align, widthPx / Math.max(1, record.width_px)),
+          y: draft.yn
+        },
+        body,
+        size: draft.label.style.size,
+        color: "auto"
+      });
+    }
     const style =
       toolState.activeStyle.tool === "text" ? toolState.activeStyle.style : null;
     if (style === null || style.outline !== "auto") return null;
@@ -5075,7 +5221,15 @@ function EditorLoaded({
       size: resolveTextSize(style.fontSize),
       color: "auto"
     });
-  }, [draft, toolState.activeStyle, resolveOutlineAuto]);
+  }, [
+    draft,
+    toolState.activeStyle,
+    resolveOutlineAuto,
+    sourceWidthPx,
+    sourceHeightPx,
+    record.width_px,
+    record.height_px
+  ]);
   useLayoutEffect(() => {
     const el = canvasRef.current;
     if (el === null) return;
@@ -5352,6 +5506,7 @@ function EditorLoaded({
       applyBagSlot: (slot, ids) => {
         applyBagSlotRef.current?.(slot, ids);
       },
+      addArrowLabel: (id) => startArrowLabelRef.current(id),
       setLayerVisibility: async (id, visible) => {
         // RAW node: this is a FULL-NODE replace, so it must carry stored
         // (cropped-space) coords. `modelLayers` is the virtual source-
@@ -7303,7 +7458,8 @@ function EditorLoaded({
                   editingOverlay,
                   activeToolStyle,
                   sampledAutoOutline:
-                    editingOverlay === null ? textDraftAutoOutline : null
+                    editingOverlay === null ? textDraftAutoOutline : null,
+                  labelStyle: draft.label?.style ?? null
                 });
               return (
                 <TextDraftInput
@@ -7320,8 +7476,15 @@ function EditorLoaded({
                   weight={weight}
                   rotation={rotation}
                   outline={outline}
+                  {...(draft.label !== undefined && editingOverlay === null
+                    ? {
+                        align: draft.label.align,
+                        placeholder: "Label",
+                        ariaLabel: "Arrow label"
+                      }
+                    : {})}
                   onChange={(body) => setDraft({ ...draft, body })}
-                  onCommit={() => void commitText()}
+                  onCommit={(measure) => void commitText(measure)}
                   onCancel={() => setDraft(null)}
                 />
               );

@@ -182,3 +182,34 @@ describe("resolveTextSizeBucket — popover preset → bucket", () => {
     expect(resolveTextSizeBucket(48)).toBe("medium");
   });
 });
+
+describe("resolveTextDraftStyle — arrow label (labelStyle set)", () => {
+  test("the label's style wins over the text tool's, and Border auto takes the sampled pick", () => {
+    const style = resolveTextDraftStyle({
+      editingOverlay: null,
+      activeToolStyle: toolStyle({ color: "#00ff00", fontSize: "small", weight: "regular" }),
+      sampledAutoOutline: "white",
+      labelStyle: { color: "#ff5f57", size: "large", weight: "bold", outline: "auto" }
+    });
+    expect(style.colorHex).toBe("#ff5f57");
+    expect(style.size).toBe("large");
+    expect(style.weight).toBe(700);
+    expect(style.outline).toEqual(
+      resolveTextDraftStyle({
+        editingOverlay: null,
+        activeToolStyle: toolStyle({ outline: "auto" }),
+        sampledAutoOutline: "white"
+      }).outline
+    );
+  });
+
+  test("a re-edit still mirrors its row, label or not", () => {
+    const style = resolveTextDraftStyle({
+      editingOverlay: textOverlay({ color: "#123456", size: "small" }),
+      activeToolStyle: null,
+      labelStyle: { color: "#ff5f57", size: "large", weight: "bold", outline: "auto" }
+    });
+    expect(style.colorHex).toBe("#123456");
+    expect(style.size).toBe("small");
+  });
+});

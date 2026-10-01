@@ -146,7 +146,8 @@ function makeApi(): LayersPanelApi {
     uncrop: vi.fn(async () => undefined),
     resetRasterTransform: vi.fn(async () => undefined),
     updateLayerStyle: vi.fn(),
-    applyBagSlot: vi.fn()
+    applyBagSlot: vi.fn(),
+    addArrowLabel: vi.fn(() => true)
   };
 }
 

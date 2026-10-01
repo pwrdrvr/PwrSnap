@@ -47,6 +47,9 @@ export type EditPropertyBarProps = {
   /** Index of the first empty slot, or null when the bag is full. */
   readonly firstEmptySlot: number | null;
   readonly onSaveToSlot: (index: number, slot: ToolBagSlot) => void;
+  /** Open a label draft at the selected arrow's tail. Present only when
+   *  the editor can do it; the button shows for a selected arrow. */
+  readonly onAddLabel?: (layerId: string) => void;
   readonly shortcutPlatform?: ShortcutPlatform;
 };
 
@@ -61,6 +64,7 @@ export function EditPropertyBar({
   onFieldChange,
   firstEmptySlot,
   onSaveToSlot,
+  onAddLabel,
   shortcutPlatform = rendererShortcutPlatform()
 }: EditPropertyBarProps): ReactElement {
   const shift = acceleratorToDisplayKeys("Shift+1", shortcutPlatform)[0] ?? "Shift";
@@ -101,6 +105,19 @@ export function EditPropertyBar({
           the right end of row one, and a float cannot rise above the line
           it comes after. Row one is also where they sit on a narrow stage. */}
       <div className="psl__et-props-actions">
+        {target.kind === "layer" && target.tool === "arrow" && onAddLabel !== undefined && (
+          <button
+            type="button"
+            className="psl__et-props-btn is-primary"
+            data-testid="property-bar-add-label"
+            data-tip="Add a label at its tail"
+            data-tip-keys={shortcutPlatform === "darwin" ? "↵" : "Enter"}
+            data-tip-detail="Type, then Return. Empty is discarded."
+            onClick={() => onAddLabel(target.layerId)}
+          >
+            Add label
+          </button>
+        )}
         {updateIndex !== null && (
           <button
             type="button"

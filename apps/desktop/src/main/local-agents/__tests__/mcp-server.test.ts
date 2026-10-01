@@ -48,6 +48,7 @@ import type {
   LocalAgentConsentRequest
 } from "../local-agent-consent-broker";
 import {
+  createDefaultLocalAgentMcpTools,
   type LocalAgentMcpTool,
   withMcpResourceLink
 } from "../mcp-tool-registry";
@@ -976,6 +977,167 @@ describe("LocalAgentMcpServer", () => {
       { action: "capture.original.read", outcome: "success", subjectId: "cap_1" },
       { action: "capture.export", outcome: "failure", subjectId: "missing" },
       { action: "capture.original.read", outcome: "failure", subjectId: "missing" }
+    ]);
+  });
+
+  async function startDuplicateServer(capabilities: LocalAgentCapability[]): Promise<{
+    connected: Client;
+    duplicated: unknown[];
+    reserved: string[];
+    released: string[];
+  }> {
+    const duplicated: unknown[] = [];
+    const reserved: string[] = [];
+    const released: string[] = [];
+    await grantService.createGrant({ name: "Duplicating agent", capabilities });
+    server = new LocalAgentMcpServer({
+      settings,
+      secrets,
+      grantService,
+      tools: createDefaultLocalAgentMcpTools({
+        search: async () => ok({ rows: [] }),
+        deleteToTrash: async () => ok({}),
+        captureDuplicate: async (input) => {
+          duplicated.push(input);
+          if (input.captureId === "cap_abandoned") {
+            return err({
+              kind: "validation",
+              code: "aborted",
+              message: "stopped waiting; the copy continues in PwrSnap as cap_copy"
+            });
+          }
+          return input.captureId === "cap_in_trash"
+            ? err({
+                kind: "validation",
+                code: "trashed",
+                message: "Restore the snap from Trash to duplicate it."
+              })
+            : ok({
+                captureId: "cap_copy",
+                familyId: input.captureId,
+                duplicatedFrom: input.captureId,
+                withEdits: input.withEdits,
+                kind: "image",
+                capturedAt: "2026-06-07T12:00:00.000Z",
+                widthPx: 1280,
+                heightPx: 800
+              });
+        },
+        captureEditSummary: async (input) =>
+          ok({ captureId: input.captureId, hasEdits: false, summary: null })
+      }),
+      host: "127.0.0.1",
+      port: 0,
+      usageService: {
+        reserve: (request) => {
+          reserved.push(request.action);
+          return allowUsageService.reserve(request);
+        },
+        release: (reservationId) => {
+          released.push(reservationId);
+        }
+      },
+      captureCapturedAt: () => new Date().toISOString()
+    });
+    const address = await server.start();
+    return {
+      connected: await connect(address.url, "pws_local_mcp-token"),
+      duplicated,
+      reserved,
+      released
+    };
+  }
+
+  test("an abandoned duplicate still spends the edit budget, because the copy still lands", async () => {
+    const { connected, released } = await startDuplicateServer(["capture.edit"]);
+
+    const refused = await connected.callTool({
+      name: "pwrsnap_capture_duplicate",
+      arguments: { captureId: "cap_in_trash", withEdits: true }
+    }) as CallToolResult;
+    expect(refused.isError).toBe(true);
+    // A refusal wrote nothing, so its reservation goes back.
+    expect(released).toHaveLength(1);
+
+    const abandoned = await connected.callTool({
+      name: "pwrsnap_capture_duplicate",
+      arguments: { captureId: "cap_abandoned", withEdits: true }
+    }) as CallToolResult;
+    expect(abandoned.isError).toBe(true);
+    expect(released).toHaveLength(1);
+  });
+
+  test("a read-only grant cannot duplicate, but may read the edit summary", async () => {
+    const { connected, duplicated } = await startDuplicateServer(["library.read"]);
+
+    const denied = await connected.callTool({
+      name: "pwrsnap_capture_duplicate",
+      arguments: { captureId: "cap_1", withEdits: true }
+    }) as CallToolResult;
+    expect(denied.isError).toBe(true);
+    expect(denied.content[0]).toMatchObject({
+      type: "text",
+      text: expect.stringMatching(/^missing_capability: .*capture\.edit/u)
+    });
+    expect(duplicated).toEqual([]);
+
+    const summary = await connected.callTool({
+      name: "pwrsnap_capture_edit_summary",
+      arguments: { captureId: "cap_1" }
+    }) as CallToolResult;
+    expect(summary.isError).not.toBe(true);
+  });
+
+  test("an editor duplicates with an explicit withEdits, spending and auditing an edit", async () => {
+    const { connected, duplicated, reserved } = await startDuplicateServer(["capture.edit"]);
+
+    // No implicit default: a call that omits withEdits never reaches PwrSnap.
+    const missingChoice = await connected.callTool({
+      name: "pwrsnap_capture_duplicate",
+      arguments: { captureId: "cap_1" }
+    }) as CallToolResult;
+    expect(missingChoice.isError).toBe(true);
+    expect(duplicated).toEqual([]);
+
+    const copied = await connected.callTool({
+      name: "pwrsnap_capture_duplicate",
+      arguments: { captureId: "cap_1", withEdits: false }
+    }) as CallToolResult;
+    expect(copied.isError).not.toBe(true);
+    expect(copied.structuredContent).toMatchObject({
+      captureId: "cap_copy",
+      familyId: "cap_1",
+      withEdits: false
+    });
+    // Data twice: structuredContent, and the same JSON as the last block.
+    expect(copied.content.at(-1)).toEqual({
+      type: "text",
+      text: JSON.stringify(copied.structuredContent)
+    });
+
+    const refused = await connected.callTool({
+      name: "pwrsnap_capture_duplicate",
+      arguments: { captureId: "cap_in_trash", withEdits: true }
+    }) as CallToolResult;
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0]).toEqual({
+      type: "text",
+      text: "trashed: Restore the snap from Trash to duplicate it."
+    });
+
+    expect(duplicated).toEqual([
+      { captureId: "cap_1", withEdits: false },
+      { captureId: "cap_in_trash", withEdits: true }
+    ]);
+    // A copy spends the edit budget and is audited as an edit of its source.
+    expect(reserved).toEqual(["edit", "edit"]);
+    expect((await settings.read()).localAgents.audit.map((entry) => ({
+      action: entry.action,
+      outcome: entry.outcome,
+      subjectId: entry.subjectId
+    }))).toEqual([
+      { action: "capture.edit", outcome: "success", subjectId: "cap_1" },
+      { action: "capture.edit", outcome: "failure", subjectId: "cap_in_trash" }
     ]);
   });
 

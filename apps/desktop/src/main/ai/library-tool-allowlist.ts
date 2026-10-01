@@ -50,6 +50,7 @@ import {
   ShapeKind,
   ShapeStrokeStyle
 } from "@pwrsnap/shared/overlay";
+import { duplicateAndAwaitCommit } from "../capture/await-duplicate";
 import { bus } from "../command-bus";
 import { currentChatToolCommandContext } from "./chat-tool-command-context";
 import { defineTool, type ToolDispatchResult, type ToolSpec } from "./define-tool";
@@ -1150,6 +1151,45 @@ const removeTag = defineTool({
     runVerb("library:removeTag", { captureId: args.capture_id, label: args.label })
 });
 
+// The chat's half of `pwrsnap_capture_duplicate`, so "make a blurred copy
+// of this" works from here the way it does over MCP: duplicate, then edit
+// the copy's id with the tools above. `with_edits` is required for the same
+// reason as there — the Library's remembered choice belongs to the user's
+// own menu, not to whatever the model infers from a sentence.
+const duplicateCapture = defineTool({
+  namespace: "pwrsnap_library",
+  name: "duplicate_capture",
+  description:
+    "Make an independent copy of a capture (new capture id, same duplicate family). The original is never changed. " +
+    "with_edits=true carries the current edit (image: crop + annotations; video: trim + cuts); false copies only the unedited capture. " +
+    "Title, description and tags are copied with the title numbered (\"… copy 2\"). Returns the copy's capture_id — pass it to the draw/blur/redact/crop/video tools to edit the copy, and open_in_library to show it.",
+  annotations: { idempotentHint: false },
+  argsSchema: z.object({ capture_id: z.string(), with_edits: z.boolean() }),
+  dispatch: async (args) => {
+    // Waits out a background video copy: the next tool call edits the copy.
+    const result = await duplicateAndAwaitCommit(
+      { captureId: args.capture_id, withEdits: args.with_edits },
+      currentChatToolCommandContext()
+    );
+    if (!result.ok) {
+      return {
+        ok: false,
+        error: `${result.error.kind}/${result.error.code}: ${result.error.message}`
+      };
+    }
+    const { record } = result.value;
+    return {
+      ok: true,
+      data: {
+        ...summarizeCapture(record),
+        family_id: record.family_id ?? null,
+        duplicated_from: record.duplicated_from ?? args.capture_id,
+        with_edits: args.with_edits
+      }
+    };
+  }
+});
+
 // ---- video tools -------------------------------------------------------
 //
 // The chat's half of video editing; the MCP surface has the same pair
@@ -1237,7 +1277,7 @@ const editVideo = defineTool({
 });
 
 /**
- * The live catalog — 23 tools. Read / introspect / navigate first, then
+ * The live catalog — 29 tools. Read / introspect / navigate first, then
  * the per-primitive edit tools (one per draw shape + the two effects).
  * Future phases add cross-capture batch, paste-image, and capture/
  * recording verbs.
@@ -1271,6 +1311,7 @@ export const LIBRARY_TOOL_ALLOWLIST: ToolSpec<unknown>[] = [
   reorderLayers,
   addTag,
   removeTag,
+  duplicateCapture,
   // video
   inspectVideo,
   editVideo

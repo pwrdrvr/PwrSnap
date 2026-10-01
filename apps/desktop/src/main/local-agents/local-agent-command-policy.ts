@@ -18,6 +18,8 @@ export function localAgentCommandRequirement(
     case "library:search":
     case "library:discover":
     case "library:listByIdsWithMetadata":
+    case "library:families":
+    case "library:family":
     case "codex:enrichment":
       return { all: ["library.read"] };
 
@@ -76,13 +78,23 @@ export function localAgentCommandRequirement(
     // both are undoable from the Library.
     case "video:edit":
     case "video:setDefaultRange":
+    // A duplicate adds a capture rather than changing one, but it is the
+    // first half of "make an edited copy": the grant that may draw on a
+    // snap may also fork it. The source is never touched. The job list is
+    // how a duplicating agent waits out a background video copy; it is
+    // not a catalog read.
+    case "capture:duplicate":
+    case "capture:duplicateJobs":
       return { all: ["capture.edit"] };
 
     // Reading a video's edit and its activity track. An agent granted
     // only `capture.edit` still has to see the timeline to cut it, the
-    // same reasoning that opens `library:byId` to editors.
+    // same reasoning that opens `library:byId` to editors. The edit
+    // summary is what a with-edits duplicate would carry, so an editor
+    // deciding `withEdits` may read it too.
     case "video:inspect":
     case "video:activity":
+    case "capture:editSummary":
       return { any: ["library.read", "capture.edit"] };
 
     case "sizzle:create":

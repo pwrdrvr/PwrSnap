@@ -53,6 +53,8 @@ import type {
   LocalAgentConsentRequest
 } from "./local-agent-consent-broker";
 import {
+  captureNotBefore,
+  isCapturedAtOrAfter,
   limitLocalAgentMcpList,
   localAgentMcpResultLimit,
   localAgentSearchOrder,
@@ -306,7 +308,11 @@ export class LocalAgentMcpServer {
           bus.dispatch("video:edit", input, {
             principal: "mcp",
             localAgent: ctx.commandContext.localAgent
-          })
+          }),
+        captureDuplicate: (input, ctx) => toolService.captureDuplicate(input, ctx),
+        captureEditSummary: (input, ctx) => toolService.captureEditSummary(input, ctx),
+        captureFamilies: (input, ctx) => toolService.captureFamilies(input, ctx),
+        captureFamily: (input, ctx) => toolService.captureFamily(input, ctx)
       });
   }
 
@@ -999,12 +1005,9 @@ export class LocalAgentMcpServer {
         message: "the local-agent role has no capture-age policy"
       };
     }
-    if (context.maxCaptureAgeDays === null) return null;
-    const capturedAt = this.captureCapturedAt(captureId);
-    const capturedAtMs = capturedAt === null ? Number.NaN : Date.parse(capturedAt);
-    const notBeforeMs =
-      Date.now() - context.maxCaptureAgeDays * 24 * 60 * 60 * 1_000;
-    if (!Number.isFinite(capturedAtMs) || capturedAtMs < notBeforeMs) {
+    const notBefore = captureNotBefore(context.maxCaptureAgeDays);
+    if (notBefore === undefined) return null;
+    if (!isCapturedAtOrAfter(this.captureCapturedAt(captureId), notBefore)) {
       return {
         kind: "permission",
         code: "capture_outside_role_scope",
@@ -1146,7 +1149,9 @@ export class LocalAgentMcpServer {
         subjectId: captureId
       });
     } else if (
-      (toolName === "pwrsnap_image_edit_send" || toolName === "pwrsnap_video_edit") &&
+      (toolName === "pwrsnap_image_edit_send" ||
+        toolName === "pwrsnap_video_edit" ||
+        toolName === "pwrsnap_capture_duplicate") &&
       captureId !== null
     ) {
       audits.push({
@@ -1280,21 +1285,14 @@ function isLoopbackRemoteAddress(address: string | undefined): boolean {
   );
 }
 
-function captureNotBefore(maxCaptureAgeDays: number | null | undefined): string | undefined {
-  if (maxCaptureAgeDays === undefined || maxCaptureAgeDays === null) {
-    return undefined;
-  }
-  return new Date(
-    Date.now() - maxCaptureAgeDays * 24 * 60 * 60 * 1_000
-  ).toISOString();
-}
-
 function usageActionForTool(toolName: string): LocalAgentUsageAction | null {
   switch (toolName) {
     case "pwrsnap_library_search":
       return "search";
     case "pwrsnap_image_edit_send":
     case "pwrsnap_video_edit":
+    // A copy writes a whole bundle; it spends the same budget as an edit.
+    case "pwrsnap_capture_duplicate":
       return "edit";
     case "pwrsnap_capture_delete_to_trash":
       return "delete";
@@ -1316,7 +1314,12 @@ function shouldKeepUsageReservation(
   toolName: string,
   result: Result<unknown, PwrSnapError>
 ): boolean {
-  if (!result.ok) return false;
+  // An abandoned wait does not stop the copy: it still commits a whole
+  // bundle or recording, so it spends the budget. Releasing it would let an
+  // agent copy without limit by cancelling every request.
+  if (!result.ok) {
+    return toolName === "pwrsnap_capture_duplicate" && result.error.code === "aborted";
+  }
   if (
     toolName === "pwrsnap_capture_delete_to_trash" &&
     typeof result.value === "object" &&

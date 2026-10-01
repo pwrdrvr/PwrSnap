@@ -1058,6 +1058,8 @@ function describePlacement(row: OverlayRow): { tool: Tool } | null {
     case "text":
     case "crop":
       return { tool: o.kind };
+    case "stroke":
+      return { tool: "draw" };
     case "step":
       // Step overlays don't map to a v2 tool — ignore.
       return null;

@@ -25,7 +25,7 @@ import type {
 
 /** Tool families a placed layer can project to (see
  *  `styledLayerStyle`). */
-export type PasteTargetTool = "arrow" | "text" | "shape" | "blur" | "highlight";
+export type PasteTargetTool = "arrow" | "text" | "shape" | "blur" | "highlight" | "draw";
 
 export type SlotStyleField = readonly [field: string, value: unknown];
 
@@ -40,9 +40,10 @@ function outlineForText(mode: OverlayOutlineMode): OverlayOutlineMode {
  * The style fields a slot contributes to a layer of kind `target`.
  *
  * Rules, all "keep what the target can't express":
- *   • color — every colored kind (arrow, shape, text, highlight) takes
- *     the slot's color. Blur has no color and gives none.
- *   • thickness — shared by arrows and shapes (the same stroke ladder).
+ *   • color — every colored kind (arrow, shape, text, highlight, draw)
+ *     takes the slot's color. Blur has no color and gives none.
+ *   • thickness — shared by arrows, shapes and Draw strokes (the same
+ *     stroke ladder).
  *   • outline — shared by arrows, shapes and text.
  *   • dash pattern — shared by arrows and shapes, under two names: an
  *     arrow's `stemStyle` IS a shape's `strokeStyle` (same solid /
@@ -54,6 +55,8 @@ function outlineForText(mode: OverlayOutlineMode): OverlayOutlineMode {
  *     restyles a circle, it never turns it into the slot's rectangle.
  *   • text size + weight — text → text.
  *   • opacity + blend — highlight → highlight.
+ *   • draw mode (pen / marker / spray) — draw → draw. A pen slot pasted
+ *     onto a marker stroke makes it a pen stroke along the same path.
  *   • blur mode + radius — blur → blur, and blur takes nothing else.
  *
  * Returns an empty list when nothing applies (a blur slot pasted onto an
@@ -76,8 +79,8 @@ export function slotFieldsForLayer(
   fields.push(["color", slot.style.color]);
 
   if (
-    (slot.tool === "arrow" || slot.tool === "shape") &&
-    (target === "arrow" || target === "shape")
+    (slot.tool === "arrow" || slot.tool === "shape" || slot.tool === "draw") &&
+    (target === "arrow" || target === "shape" || target === "draw")
   ) {
     fields.push(["thickness", slot.style.thickness]);
     const dash = slot.tool === "arrow" ? slot.style.stemStyle : slot.style.strokeStyle;
@@ -108,6 +111,11 @@ export function slotFieldsForLayer(
   }
   if (slot.tool === "highlight" && target === "highlight") {
     fields.push(["opacity", slot.style.opacity], ["blend", slot.style.blend]);
+  }
+  // A slot never holds the eraser (settings refuse it), but a hand-edited
+  // file could; an eraser is not a stroke style, so it pastes no mode.
+  if (slot.tool === "draw" && target === "draw" && slot.style.mode !== "eraser") {
+    fields.push(["mode", slot.style.mode]);
   }
   return fields;
 }

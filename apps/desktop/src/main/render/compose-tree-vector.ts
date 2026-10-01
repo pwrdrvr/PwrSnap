@@ -38,6 +38,7 @@ import {
   highlightSvgForV2,
   rasterizeSvgForV2,
   shapeSvgForV2,
+  strokeSvgForV2,
   textSvgForV2
 } from "./compose";
 import { rasterizeTextHtmlForV2 } from "./text-html-bake";
@@ -121,6 +122,23 @@ export async function buildCompositeLayersForV2(
       return [
         await rasterizeSvgForV2(
           shapeSvgForV2(data, renderWidthPx, renderHeightPx, annotationBasis),
+          renderWidthPx,
+          renderHeightPx
+        )
+      ];
+    case "stroke":
+      // Freehand Draw stroke. `renderScale` rides along so the shared
+      // geometry is built at canvas scale and only then scaled — see
+      // `strokeSvg` for why spray needs that.
+      return [
+        await rasterizeSvgForV2(
+          strokeSvgForV2(
+            data,
+            renderWidthPx,
+            renderHeightPx,
+            annotationBasis,
+            renderScale
+          ),
           renderWidthPx,
           renderHeightPx
         )

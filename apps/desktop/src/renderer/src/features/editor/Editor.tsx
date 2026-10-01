@@ -281,7 +281,8 @@ const STYLED_TOOLS: ReadonlySet<Tool> = new Set<Tool>([
   "text",
   "shape",
   "blur",
-  "highlight"
+  "highlight",
+  "draw"
 ]);
 
 function isStyledToolKind(tool: Tool): tool is StyledToolKind {
@@ -298,6 +299,8 @@ function pasteTargetFor(kind: Overlay["kind"]): PasteTargetTool | null {
     case "blur":
     case "highlight":
       return kind;
+    case "stroke":
+      return "draw";
     case "crop":
     case "step":
       return null;

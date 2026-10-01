@@ -128,7 +128,8 @@ function makeSettings(overrides?: {
         },
         shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15, strokeStyle: "solid", outline: "auto" },
         blur: { mode: "gaussian", radius: { mode: "auto" } },
-        highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
+        highlight: { color: "yellow", opacity: 0.3, blend: "multiply" },
+        draw: { mode: "pen", color: "accent", thickness: "auto" }
       },
       toolBag: defaultEditorToolBag(),
       coachmarks: { stoplightSeen: false },

@@ -64,6 +64,9 @@ export function applyGeometryLocally(
     case "step":
       if (data.kind !== "step") return null;
       return { ...data, point: geometry.point };
+    case "stroke":
+      if (data.kind !== "stroke") return null;
+      return { ...data, points: [...geometry.points] };
     case "transform":
       // Raster-only geometry — no OverlayRow carries it (rasters live
       // outside the overlay projection; their live override is

@@ -7,12 +7,13 @@
 import type { ReactElement } from "react";
 import type {
   ArrowToolStyle,
+  DrawToolStyle,
   ShapeToolStyle,
   ToolBagSlot,
   ToolColor,
   ToolSizePreset
 } from "@pwrsnap/shared";
-import { isColorToken } from "@pwrsnap/shared";
+import { DEFAULT_MARKER_OPACITY, isColorToken } from "@pwrsnap/shared";
 import { ShapeIcon, type ShapeIconBox, type ShapeIconPatternUnit } from "./ShapeIcon";
 
 const COLOR_NAMES: Record<string, string> = {
@@ -77,6 +78,12 @@ export function describeBagSlot(slot: ToolBagSlot): string {
         : slot.style.mode === "pixelate"
           ? "Pixelate"
           : "Blur";
+    case "draw":
+      // Settings never store an eraser slot; name one anyway rather than
+      // calling it a colored "eraser".
+      return slot.style.mode === "eraser"
+        ? "Eraser"
+        : `${colorName(slot.style.color)} ${slot.style.mode}`;
   }
 }
 
@@ -201,6 +208,61 @@ function ShapeGlyph({ style }: { style: ShapeToolStyle }): ReactElement {
   );
 }
 
+/** A pen loop, a flat marker band, or a spray of dots — the board 4c
+ *  glyphs, in the slot's color. */
+function DrawGlyph({ style }: { style: DrawToolStyle }): ReactElement {
+  const paint = glyphPaint(style.color);
+  switch (style.mode) {
+    case "marker":
+      return (
+        <line
+          x1="3"
+          y1="13"
+          x2="21"
+          y2="13"
+          stroke={paint}
+          strokeWidth="7"
+          strokeLinecap="butt"
+          opacity={DEFAULT_MARKER_OPACITY + 0.2}
+        />
+      );
+    case "spray":
+      return (
+        <g fill={paint}>
+          <circle cx="6" cy="13" r="1.2" opacity="0.6" />
+          <circle cx="9" cy="9" r="1.4" />
+          <circle cx="10" cy="15.5" r="1.1" opacity="0.75" />
+          <circle cx="13" cy="11.5" r="1.6" />
+          <circle cx="15" cy="7" r="1" opacity="0.6" />
+          <circle cx="16.5" cy="15" r="1.3" />
+          <circle cx="19" cy="10.5" r="1.1" opacity="0.8" />
+          <circle cx="13" cy="18" r="0.9" opacity="0.5" />
+        </g>
+      );
+    case "eraser":
+      return (
+        <path
+          d="M9.5 19 4 13.5l8.5-8.5 7.5 7.5-6.5 6.5zM7 10.5l7.5 7.5"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinejoin="round"
+        />
+      );
+    case "pen":
+      return (
+        <path
+          d="M3.5 16c3.5-11 6.5-11 8.5-4s5 7 8.5-5"
+          fill="none"
+          stroke={paint}
+          strokeWidth={strokeFor(style.thickness)}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      );
+  }
+}
+
 export function ToolBagGlyph({ slot }: { slot: ToolBagSlot }): ReactElement {
   let body: ReactElement;
   switch (slot.tool) {
@@ -257,6 +319,9 @@ export function ToolBagGlyph({ slot }: { slot: ToolBagSlot }): ReactElement {
             <circle cx="12" cy="12" r="2.5" opacity="0.9" />
           </g>
         );
+      break;
+    case "draw":
+      body = <DrawGlyph style={slot.style} />;
       break;
   }
   return (

@@ -30,6 +30,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ArrowToolStyle,
   BlurToolStyle,
+  DrawToolStyle,
   EditorToolBag,
   EditorToolStyles,
   HighlightToolStyle,
@@ -54,7 +55,7 @@ import { styleValuesEqual } from "./tool-bag";
 /** Tools that carry a persisted style block in
  *  `settings.editor.toolStyles`. Pointer + crop are control-flow tools
  *  with no style memory. */
-export type StyledTool = "arrow" | "text" | "shape" | "blur" | "highlight";
+export type StyledTool = "arrow" | "text" | "shape" | "blur" | "highlight" | "draw";
 
 /** Per-tool style lookup. Each tool's persisted block in
  *  `EditorToolStyles` is its own discriminated branch here so a single
@@ -70,7 +71,9 @@ export type StyleFor<T extends StyledTool> = T extends "arrow"
         ? BlurToolStyle
         : T extends "highlight"
           ? HighlightToolStyle
-          : never;
+          : T extends "draw"
+            ? DrawToolStyle
+            : never;
 
 /** Discriminated union over the active tool kind. The styled branches
  *  carry the relevant style block; pointer and crop carry no style. */
@@ -81,7 +84,8 @@ export type ActiveStyle =
   | { tool: "text"; style: TextToolStyle }
   | { tool: "shape"; style: ShapeToolStyle }
   | { tool: "blur"; style: BlurToolStyle }
-  | { tool: "highlight"; style: HighlightToolStyle };
+  | { tool: "highlight"; style: HighlightToolStyle }
+  | { tool: "draw"; style: DrawToolStyle };
 
 export interface UseEditorToolStateOptions {
   /** The capture being edited. Switching captures disarms the bag slot
@@ -157,6 +161,7 @@ type LocalStyleOverrides = {
   shape?: Partial<ShapeToolStyle>;
   blur?: Partial<BlurToolStyle>;
   highlight?: Partial<HighlightToolStyle>;
+  draw?: Partial<DrawToolStyle>;
 };
 
 /** Layered style read: prefer the per-tool override from `local`, fall
@@ -178,7 +183,8 @@ function readEffectiveStyles(
     text: { ...base.text, ...(local.text ?? {}) },
     shape: { ...base.shape, ...(local.shape ?? {}) },
     blur: { ...base.blur, ...(local.blur ?? {}) },
-    highlight: { ...base.highlight, ...(local.highlight ?? {}) }
+    highlight: { ...base.highlight, ...(local.highlight ?? {}) },
+    draw: { ...base.draw, ...(local.draw ?? {}) }
   };
 }
 
@@ -188,7 +194,8 @@ function isStyledTool(tool: Tool): tool is StyledTool {
     tool === "text" ||
     tool === "shape" ||
     tool === "blur" ||
-    tool === "highlight"
+    tool === "highlight" ||
+    tool === "draw"
   );
 }
 
@@ -217,6 +224,8 @@ function selectActiveStyle(
       return { tool: "blur", style: styles.blur };
     case "highlight":
       return { tool: "highlight", style: styles.highlight };
+    case "draw":
+      return { tool: "draw", style: styles.draw };
   }
 }
 
@@ -232,6 +241,7 @@ function patchFromLocal(local: LocalStyleOverrides): SettingsPatch {
   if (local.shape !== undefined) toolStyles.shape = local.shape;
   if (local.blur !== undefined) toolStyles.blur = local.blur;
   if (local.highlight !== undefined) toolStyles.highlight = local.highlight;
+  if (local.draw !== undefined) toolStyles.draw = local.draw;
   return { editor: { toolStyles } };
 }
 
@@ -326,7 +336,8 @@ export function useEditorToolState(
       pending.text !== undefined ||
       pending.shape !== undefined ||
       pending.blur !== undefined ||
-      pending.highlight !== undefined;
+      pending.highlight !== undefined ||
+      pending.draw !== undefined;
     if (!hasPending) return;
     // Fire-and-forget; the substrate broadcasts the resolved write via
     // `events:settings:changed`, so `useSettings` will refresh on its

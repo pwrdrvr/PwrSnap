@@ -22,7 +22,7 @@
 // that doesn't round-trip through the v1 Overlay shape.
 
 import { nanoid } from "nanoid";
-import type { BundleLayerNode, Overlay } from "@pwrsnap/shared";
+import type { BundleLayerNode, Overlay, StrokeTool } from "@pwrsnap/shared";
 import {
   readBlurRadiusPx,
   readHighlightColor,
@@ -233,6 +233,19 @@ export function findRootGroupId(layers: readonly BundleLayerNode[]): string | nu
   return null;
 }
 
+/** Layer name for a Draw stroke — the tool that drew it, the way the
+ *  Layers list names a shape by its kind. */
+export function strokeLayerName(tool: StrokeTool): string {
+  switch (tool) {
+    case "pen":
+      return "Pen";
+    case "marker":
+      return "Marker";
+    case "spray":
+      return "Spray";
+  }
+}
+
 /** Human-readable layer name for a vector overlay. Takes the full
  *  overlay (not just `kind`) so shape rows can pick a per-shape label
  *  ("Rectangle" / "Square" / "Circle" / "Oval" / "Parallelogram") off
@@ -257,6 +270,8 @@ function layerNameForVector(
       return "Text";
     case "step":
       return "Step";
+    case "stroke":
+      return strokeLayerName(overlay.tool);
     case "crop":
       // v2 crop is a VectorLayer with shape.kind === "crop" — same
       // tree-shape as arrow/shape/text. The compose pipeline no-ops

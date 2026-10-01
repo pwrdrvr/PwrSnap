@@ -46,6 +46,11 @@ export function forwardGeometry(
       return { ...geometry, point: forwardCropPoint(geometry.point, rect) };
     case "step":
       return { kind: "step", point: forwardCropPoint(geometry.point, rect) };
+    case "stroke":
+      return {
+        kind: "stroke",
+        points: geometry.points.map((p) => forwardCropPoint(p, rect))
+      };
     case "transform":
       // Raster transform tx/ty are in display-canvas px (source space
       // while uncropped); stored space is the cropped canvas whose
@@ -74,8 +79,10 @@ function forwardPatch(patch: OverlayPatch, rect: CropRect): OverlayPatch {
     to?: { x: number; y: number };
     rect?: { x: number; y: number; w: number; h: number };
     point?: { x: number; y: number };
+    points?: ReadonlyArray<{ x: number; y: number }>;
   };
   const out: Record<string, unknown> = { ...patch };
+  if (p.points !== undefined) out.points = p.points.map((pt) => forwardCropPoint(pt, rect));
   if (p.from !== undefined) out.from = forwardCropPoint(p.from, rect);
   if (p.to !== undefined) out.to = forwardCropPoint(p.to, rect);
   if (p.rect !== undefined) out.rect = forwardCropRect(p.rect, rect);

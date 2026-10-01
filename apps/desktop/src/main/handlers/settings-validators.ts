@@ -1363,12 +1363,39 @@ function validateHighlightStyle(raw: Record<string, unknown>): PwrSnapError | nu
   return null;
 }
 
+function validateDrawStyle(raw: Record<string, unknown>): PwrSnapError | null {
+  if (!isUndefined(raw.mode)) {
+    const v = raw.mode;
+    if (v !== "pen" && v !== "marker" && v !== "spray" && v !== "eraser") {
+      return validationError("invalid_editor_draw_mode", "settings:write: editor.toolStyles.draw.mode must be pen/marker/spray/eraser");
+    }
+  }
+  if (!isUndefined(raw.color) && !isToolColor(raw.color)) {
+    return validationError("invalid_editor_draw_color", "settings:write: editor.toolStyles.draw.color must be a color token or string");
+  }
+  if (!isUndefined(raw.thickness) && !isToolSizePreset(raw.thickness)) {
+    return validationError("invalid_editor_draw_thickness", "settings:write: editor.toolStyles.draw.thickness must be auto/small/medium/large/x-large or a finite number");
+  }
+  return null;
+}
+
+/** A Draw slot holds pen / marker / spray. The eraser has no style worth
+ *  saving and the toolbar never offers to save it, so a slot naming it is
+ *  a bad write, not something to store and coerce later. */
+function validateDrawSlotStyle(raw: Record<string, unknown>): PwrSnapError | null {
+  if (raw.mode === "eraser") {
+    return validationError("invalid_editor_toolBag_draw_mode", "settings:write: a Draw slot cannot hold the eraser");
+  }
+  return validateDrawStyle(raw);
+}
+
 const TOOL_BAG_SLOT_VALIDATORS = {
   arrow: validateArrowStyle,
   text: validateTextStyle,
   shape: validateShapeStyle,
   blur: validateBlurStyle,
-  highlight: validateHighlightStyle
+  highlight: validateHighlightStyle,
+  draw: validateDrawSlotStyle
 } as const;
 
 /** The bag is written whole, so the patch must be the whole bag: exactly
@@ -1390,7 +1417,7 @@ function validateToolBag(raw: unknown): PwrSnapError | null {
     }
     const tool = slot.tool;
     if (typeof tool !== "string" || !Object.hasOwn(TOOL_BAG_SLOT_VALIDATORS, tool)) {
-      return validationError("invalid_editor_toolBag_tool", "settings:write: editor.toolBag slot tool must be arrow/text/shape/blur/highlight");
+      return validationError("invalid_editor_toolBag_tool", "settings:write: editor.toolBag slot tool must be arrow/text/shape/blur/highlight/draw");
     }
     if (!isUndefined(slot.label) && (typeof slot.label !== "string" || slot.label.length > 40)) {
       return validationError("invalid_editor_toolBag_label", "settings:write: editor.toolBag slot label must be a string of at most 40 characters");
@@ -1420,7 +1447,8 @@ function validateEditorPatch(rawEditor: unknown): PwrSnapError | null {
       ["text", validateTextStyle],
       ["shape", validateShapeStyle],
       ["blur", validateBlurStyle],
-      ["highlight", validateHighlightStyle]
+      ["highlight", validateHighlightStyle],
+      ["draw", validateDrawStyle]
     ] as const;
     for (const [key, validator] of perKind) {
       const block = ts[key];

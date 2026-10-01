@@ -47,7 +47,9 @@ import {
   readTextOverlayOutline,
   readTextWeight,
   shapeAutoStrokeWidthPx,
-  shapeStripeDash
+  shapeStripeDash,
+  strokeGeometry,
+  strokeSvgElements
 } from "@pwrsnap/shared";
 
 // Main process can't read CSS vars, so the overlay-render default
@@ -617,6 +619,39 @@ function shapeSvg(
 </svg>`;
 }
 
+/* ----------------------------- Stroke --------------------------- */
+
+/** Freehand Draw stroke (pen / marker / spray).
+ *
+ *  The geometry comes from the shared `strokeGeometry`, in CANVAS pixels
+ *  — the same call, on the same numbers, that the editor's StrokeGlyph
+ *  makes. A scaled bake wraps it in `scale(renderScale)` instead of
+ *  re-deriving it at render resolution: spray scatters dots per pixel of
+ *  path, so measuring the path at 2× would scatter twice the dots and the
+ *  export would not be the preview.
+ *
+ *  @param basisPx  `annotationBasisPx(sourceW, sourceH) × renderScale`,
+ *                  the convention every other `*SvgForV2` follows. It is
+ *                  divided back down here because the geometry is built
+ *                  at scale 1. */
+function strokeSvg(
+  data: Extract<OverlayRow["data"], { kind: "stroke" }>,
+  renderWidthPx: number,
+  renderHeightPx: number,
+  basisPx?: number,
+  renderScale = 1
+): string {
+  const scale = renderScale > 0 && Number.isFinite(renderScale) ? renderScale : 1;
+  const canvasW = renderWidthPx / scale;
+  const canvasH = renderHeightPx / scale;
+  const basis = (basisPx ?? annotationBasisPx(canvasW, canvasH) * scale) / scale;
+  const paint = data.color === "auto" ? AUTO_ACCENT_HEX : data.color;
+  const body = strokeSvgElements(strokeGeometry(data, canvasW, canvasH, basis), paint);
+  const open = scale === 1 ? "" : `<g transform="scale(${scale})">`;
+  const close = scale === 1 ? "" : "</g>";
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${renderWidthPx}" height="${renderHeightPx}" viewBox="0 0 ${renderWidthPx} ${renderHeightPx}">${open}${body}${close}</svg>`;
+}
+
 /* --------------------------- Highlight -------------------------- */
 
 function highlightSvg(
@@ -798,6 +833,7 @@ export const rasterizeSvgForV2 = rasterize;
 export const arrowSvgForV2 = arrowSvg;
 export const shapeSvgForV2 = shapeSvg;
 export const highlightSvgForV2 = highlightSvg;
+export const strokeSvgForV2 = strokeSvg;
 /** Maps a highlight overlay row to the sharp composite `blend` option
  *  string. Used by the v2 vector compositor to keep the bake's blend
  *  behavior identical to the retired v1 path's. */

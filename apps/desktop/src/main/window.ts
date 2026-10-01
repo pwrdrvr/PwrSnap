@@ -441,6 +441,11 @@ type HotCpuProfilerSlot = {
   shutdown: () => Promise<void>;
 };
 
+/** True while any hot-CPU monitor exists — only when the env-gated harness is on. */
+export function hasHotCpuProfilers(): boolean {
+  return hotCpuProfilerSlots.size > 0;
+}
+
 /** Stop main and renderer captures before their debugger targets are destroyed. */
 export async function stopHotCpuProfilers(): Promise<void> {
   hotCpuShuttingDown = true;

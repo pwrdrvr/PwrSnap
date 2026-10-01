@@ -234,7 +234,9 @@ describe("HotCpuProfiler", () => {
       await vi.waitFor(() => expect(started).toBe(true));
       shutdown.beforeQuit({ preventDefault: vi.fn() });
       await shutdown.flush();
-      expect(resumeQuit).toHaveBeenCalledOnce();
+      // Resumed one macrotask after the flush settles (quit-retry.ts).
+      expect(resumeQuit).not.toHaveBeenCalled();
+      await vi.waitFor(() => expect(resumeQuit).toHaveBeenCalledOnce());
       expect(warn).not.toHaveBeenCalled();
       const profile = JSON.parse(await readFile(session.createProfilePath(1), "utf8"));
       expect(profile.nodes.length).toBeGreaterThan(0);

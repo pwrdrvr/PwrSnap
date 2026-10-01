@@ -225,6 +225,11 @@ async function stopContentTraceInner(reason: string): Promise<string | null> {
   return tracePath;
 }
 
+/** True once the env-gated trace hook is armed, recording or not. */
+export function isContentTraceArmed(): boolean {
+  return state !== null;
+}
+
 /** Join an in-flight start/stop and persist the trace before Electron exits. */
 export async function shutdownContentTrace(): Promise<void> {
   shuttingDown = true;

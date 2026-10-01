@@ -1043,6 +1043,7 @@ function BlurBody({ style, onStyleFieldChange }: BlurBodyProps): ReactElement {
                 role="radio"
                 aria-checked={active}
                 aria-label={opt.label}
+                title={opt.hint}
                 data-testid={`blur-mode-${opt.id}`}
                 className={"pse-mode-row" + (active ? " is-on" : "")}
                 onClick={() => onStyleFieldChange("mode", opt.id)}

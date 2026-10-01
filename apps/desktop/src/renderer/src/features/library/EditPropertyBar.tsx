@@ -97,26 +97,9 @@ export function EditPropertyBar({
             ? `Slot ${target.armedSlot + 1}${target.armedSlotModified ? " · edited" : ""}`
             : target.label}
       </span>
-      <div
-        className="psl__et-props-body"
-        // On a narrow stage this is a sideways-scrolling strip, and
-        // Chromium does not scroll a partly visible target sideways when
-        // Tab lands on it. A no-op when the control is already in view.
-        onFocus={(event) => {
-          const target = event.target;
-          // jsdom has no scrollIntoView.
-          if (target instanceof HTMLElement && typeof target.scrollIntoView === "function") {
-            target.scrollIntoView({ block: "nearest", inline: "nearest" });
-          }
-        }}
-      >
-        <ToolStyleBody
-          tool={target.tool}
-          style={target.style}
-          onStyleFieldChange={onFieldChange}
-          {...(target.kind === "layer" ? { styleTargetKey: target.layerId } : {})}
-        />
-      </div>
+      {/* Before the fields: the bar is a flow layout and floats these to
+          the right end of row one, and a float cannot rise above the line
+          it comes after. Row one is also where they sit on a narrow stage. */}
       <div className="psl__et-props-actions">
         {updateIndex !== null && (
           <button
@@ -146,6 +129,26 @@ export function EditPropertyBar({
         >
           + Save to bag
         </button>
+      </div>
+      <div
+        className="psl__et-props-body"
+        // On a narrow stage this is a sideways-scrolling strip, and
+        // Chromium does not scroll a partly visible target sideways when
+        // Tab lands on it. A no-op when the control is already in view.
+        onFocus={(event) => {
+          const target = event.target;
+          // jsdom has no scrollIntoView.
+          if (target instanceof HTMLElement && typeof target.scrollIntoView === "function") {
+            target.scrollIntoView({ block: "nearest", inline: "nearest" });
+          }
+        }}
+      >
+        <ToolStyleBody
+          tool={target.tool}
+          style={target.style}
+          onStyleFieldChange={onFieldChange}
+          {...(target.kind === "layer" ? { styleTargetKey: target.layerId } : {})}
+        />
       </div>
       {target.kind === "layer" && (
         <span className="psl__et-props-hint">

@@ -4527,18 +4527,24 @@
    one row of the popover's field groups that wraps when the stage is
    narrow. */
 .psl__et-props {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  /* Start-aligned so a wrapped second row reads as the first row
-     continuing; centered rows left a lone control stranded mid-bar. */
-  justify-content: flex-start;
-  gap: 8px 14px;
+  /* Flow layout, not flex: the buttons float to the right end of the
+     FIRST row and the fields wrap around them, the way text wraps a
+     floated figure. As a flex row the buttons were the last item, so
+     whenever the fields filled two rows "Save to bag" took a third row
+     to itself. Flex and grid have no "end of row one" slot; a float is
+     exactly that, and the narrow-stage grid below ignores it. */
+  display: flow-root;
+  padding: 4px 12px;
+  /* Exactly the toolbar's width. `width: 0` keeps the bar out of the
+     dock's max-content sizing, so the dock is as wide as the toolbar;
+     `min-width: 100%` then fills it. Sized to its own content, the bar
+     ran wider than the toolbar under it and neither edge lined up. */
+  width: 0;
+  min-width: 100%;
   max-width: 100%;
   flex: 0 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 8px 12px;
   background: color-mix(in srgb, var(--bg-panel-hover) 96%, transparent);
   border: 1px solid var(--border-subtle);
   border-radius: 10px;
@@ -4549,8 +4555,18 @@
 .psl__et-props.is-layer {
   border-color: var(--accent-border);
 }
+/* Every field group, the tag and the hint sit on one line box per row,
+   centered on each other: controls come in three heights (24/28/30px).
+   The 14px right margin is the gap between peers; the vertical margins
+   are the gap between rows. */
+.psl__et-props-tag,
+.psl__et-props-body > *,
+.psl__et-props-hint {
+  vertical-align: middle;
+  margin: 4px 14px 4px 0;
+}
 .psl__et-props-tag {
-  align-self: center;
+  display: inline-block;
   padding: 4px 8px;
   border-radius: 4px;
   background: color-mix(in srgb, var(--bg-app) 40%, transparent);
@@ -4566,24 +4582,55 @@
   border-color: var(--accent-border);
   color: var(--accent-bright);
 }
-/* `display: contents` makes each field group a flex item of the bar
-   itself, so the tag, the fields and the buttons wrap as one row of
-   peers. As its own flex box the body was one item wider than the bar,
-   which stranded the tag alone on the first row and the buttons on a
-   third. */
+/* `display: contents` puts each field group on the bar's own lines, so
+   the tag and the fields wrap as one run of peers. As its own box the
+   body was one item wider than the bar, which stranded the tag alone on
+   the first row. */
 .psl__et-props-body {
   display: contents;
 }
 .psl__et-props-body .pse-color-row {
   flex-wrap: nowrap;
 }
+.psl__et-props-body .pse-field-group {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  /* The tallest control, so every row's line box is 38px whatever lands
+     on it — the floated buttons' margin assumes it. Row one of a
+     selected arrow is the 24px color row, and they sat 5px low. */
+  min-height: 30px;
+}
 .psl__et-props-body .pse-icon-btn {
   width: 30px;
 }
-.psl__et-props-actions {
-  display: inline-flex;
+/* Blur's mode picker is the popover's stack of described cards; stacked
+   in the bar it was 170px of panel for three choices. One row of 28px
+   chips instead, the height of the icon rows beside it. The description
+   moves to the chip's tooltip. */
+.psl__et-props-body .pse-mode-rows {
+  flex-direction: row;
+}
+.psl__et-props-body .pse-mode-row {
+  height: 28px;
   gap: 6px;
-  align-self: center;
+  padding: 0 10px;
+}
+.psl__et-props-body .pse-mode-row-icon {
+  width: 16px;
+  height: 16px;
+}
+.psl__et-props-body .pse-mode-row-hint {
+  display: none;
+}
+.psl__et-props-actions {
+  display: flex;
+  gap: 6px;
+  float: right;
+  /* Centered on row one's 38px line box (30px groups + 4px margins each
+     side); the buttons are 26px. */
+  margin: 6px 0 6px 14px;
 }
 .psl__et-props-btn {
   height: 26px;
@@ -4610,7 +4657,7 @@
   cursor: default;
 }
 .psl__et-props-hint {
-  align-self: center;
+  display: inline-block;
   color: var(--text-muted);
   font: 500 11px/1.2 var(--font-sans);
   white-space: nowrap;
@@ -4635,8 +4682,7 @@
    (and people) click. Below 880px it is two rows at any width instead:
 
      row 1  the target tag, the hint, Update / Save
-     row 2  every control on ONE line that scrolls sideways, each label
-            beside its control rather than above it
+     row 2  every control on ONE line that scrolls sideways
 
    Color leads row 2, so the most-used control is never scrolled away.
    The strip pads by the focus ring's reach so a ring on its first and
@@ -4686,6 +4732,14 @@
   .psl__et-props.is-multi {
     grid-template-areas: "tag hint actions";
   }
+  /* The grid's and the strip's gaps space things here, not the flow
+     layout's margins (and a grid item ignores the float). */
+  .psl__et-props-tag,
+  .psl__et-props-body > *,
+  .psl__et-props-hint,
+  .psl__et-props-actions {
+    margin: 0;
+  }
   .psl__et-props-tag {
     grid-area: tag;
     justify-self: start;
@@ -4722,8 +4776,6 @@
   }
   .psl__et-props-body .pse-field-group {
     flex: none;
-    flex-direction: row;
-    align-items: center;
   }
 }
 /* Compact edit toolbar — every label goes, Reset's too.

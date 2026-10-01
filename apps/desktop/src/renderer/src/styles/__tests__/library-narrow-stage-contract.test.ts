@@ -144,6 +144,30 @@ describe("compact edit toolbar", () => {
   });
 });
 
+describe("property bar on a wide stage", () => {
+  // The stylesheet with every container rule cut out: what applies when
+  // no size query does.
+  const baseCss = containerRules().reduce(
+    (rest, rule) => rest.replace(`${rule.prelude}{${rule.body}}`, ""),
+    css
+  );
+  const base = (selectorPattern: string): string =>
+    extractBlock(baseCss, selectorPattern, { label: LABEL, expectSingle: true });
+
+  it("floats its buttons to the end of row one instead of wrapping them onto a row of their own", () => {
+    // A flex row has no "end of row one" slot: the buttons were the last
+    // item, and whenever the fields filled two rows they took a third.
+    expect(base("\\.psl__et-props")).not.toMatch(/display\s*:\s*(inline-)?flex\s*;/);
+    expect(base("\\.psl__et-props-actions")).toMatch(/float\s*:\s*right\s*;/);
+  });
+
+  it("is exactly the toolbar's width", () => {
+    const bar = base("\\.psl__et-props");
+    expect(bar).toMatch(/(?:^|[;\s])width\s*:\s*0\s*;/);
+    expect(bar).toMatch(/min-width\s*:\s*100%\s*;/);
+  });
+});
+
 describe("property bar on a narrow stage", () => {
   const rule = containerRule(/\.psl__et-props-body/);
 

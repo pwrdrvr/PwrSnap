@@ -1112,6 +1112,43 @@ Full history, the measurements, and why short side + absolute px
 clamps failed:
 [docs/solutions/2026-08-28-annotation-scale-recalibration.md](docs/solutions/2026-08-28-annotation-scale-recalibration.md).
 
+## Draw strokes — one geometry, canvas-normalized points
+
+**The Draw tool (key D: pen, marker, spray, eraser) stores a vector
+`stroke` shape, and everything that paints one goes through
+`strokeGeometry` in
+[packages/shared/src/freehand-stroke.ts](packages/shared/src/freehand-stroke.ts).**
+The editor renders that geometry as JSX (`StrokeGlyph` in
+`OverlaySvg.tsx`), and the bake serializes the same geometry as SVG text
+(`strokeSvgForV2` in `compose.ts`). Pinned by
+[freehand-stroke.test.ts](packages/shared/src/__tests__/freehand-stroke.test.ts),
+[OverlaySvg-stroke.test.tsx](apps/desktop/src/renderer/src/features/editor/__tests__/OverlaySvg-stroke.test.tsx)
+and [stroke-bake.test.ts](apps/desktop/src/main/render/__tests__/stroke-bake.test.ts).
+
+- **Points are fractions of the CURRENT canvas, like every other
+  overlay coordinate**, so crop re-normalizes them
+  (`inverseTransformOverlayByCrop`). The width is sized from the SOURCE
+  basis (`strokeWidthPx` → `annotationBasisPx`), so a crop never re-thins
+  a stroke. The pen is the arrow ladder exactly; marker and spray are 3×
+  it (`STROKE_WIDTH_FACTORS`).
+- **Spray is baked as dots, not a filter.** Dots come from a seeded PRNG
+  keyed by `(seed, seedOffset + segment index)` in canvas pixels, and a
+  scaled bake wraps the 1× geometry in `scale()` rather than re-scattering.
+  Re-deriving dots at export size would export a different spray than the
+  one previewed.
+- **The eraser cuts only strokes.** It is a mode of the Draw tool, never a
+  shape and never a bag slot (settings refuse one). Each piece it leaves
+  keeps the original's z_index and, for spray, records `seedOffset` so the
+  surviving dots stay where they were. One eraser drag is ONE undo step
+  (the `replace` op in `useUndoRedo.ts`).
+- **A Draw press does not select what it lands on.** Freehand marks go on
+  top of other annotations, and the eraser is dragged across strokes on
+  purpose. A finished stroke is not auto-selected either, unlike the other
+  tools, so the property bar stays on the pen while the user writes.
+- **Older builds cannot parse a `stroke`.** What that costs is written up
+  in [docs/architecture.md](docs/architecture.md) §"Storage: data, not
+  pixels". Read it before adding the next shape kind.
+
 ## Bake render cache — orphans are tolerated, not swept
 
 Content-addressed cache; `BAKE_PIPELINE_VERSION` is in the hash, so a

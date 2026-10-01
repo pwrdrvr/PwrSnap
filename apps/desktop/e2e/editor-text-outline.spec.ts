@@ -203,7 +203,18 @@ test("editor-text-outline: outline hugs under zoom, multi-line, and rotation", a
       body: string
     ): Promise<void> => {
       await selectTool(win, "text");
-      await canvas.click({ position: pos });
+      // The docked property bar shows while the text tool is on and
+      // floats over the bottom of the canvas. In a small window (the
+      // Windows runner) it covered y=300, and the click landed on the
+      // bar. Keep the text, and the room it grows into, above the dock.
+      const ROOM_BELOW_PX = 120;
+      const cb = await canvas.boundingBox();
+      const dock = await win.locator(".psl__edit-dock").boundingBox();
+      let y = pos.y;
+      if (cb !== null && dock !== null && cb.y + y + ROOM_BELOW_PX > dock.y) {
+        y = Math.max(20, dock.y - cb.y - ROOM_BELOW_PX);
+      }
+      await canvas.click({ position: { x: pos.x, y } });
       const draft = win.locator('textarea[aria-label="Edit text annotation"]');
       await draft.waitFor({ state: "visible", timeout: 5_000 });
       await draft.fill(body);
@@ -248,7 +259,9 @@ test("editor-text-outline: outline hugs under zoom, multi-line, and rotation", a
       .toBeLessThan(base.fontPx * 1.1);
 
     // ---- multi-line: 3 lines incl. a wide-cap line; outline hugs block ----
-    await addText({ x: 220, y: 300 }, "Two lines\nof WWWW text\nyqg gap");
+    // Left of the first text (which starts at x=220), so pulling it up
+    // clear of the property bar can never land it on that one.
+    await addText({ x: 40, y: 300 }, "Two lines\nof WWWW text\nyqg gap");
     await selectGlyph(1);
     const multi = await measure(1);
     expect(multi).not.toBeNull();

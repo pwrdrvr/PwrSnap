@@ -53,6 +53,7 @@ import type {
   LocalAgentConsentRequest
 } from "./local-agent-consent-broker";
 import {
+  captureNotBefore,
   limitLocalAgentMcpList,
   localAgentMcpResultLimit,
   localAgentSearchOrder,
@@ -306,7 +307,11 @@ export class LocalAgentMcpServer {
           bus.dispatch("video:edit", input, {
             principal: "mcp",
             localAgent: ctx.commandContext.localAgent
-          })
+          }),
+        captureDuplicate: (input, ctx) => toolService.captureDuplicate(input, ctx),
+        captureEditSummary: (input, ctx) => toolService.captureEditSummary(input, ctx),
+        captureFamilies: (input, ctx) => toolService.captureFamilies(input, ctx),
+        captureFamily: (input, ctx) => toolService.captureFamily(input, ctx)
       });
   }
 
@@ -1146,7 +1151,9 @@ export class LocalAgentMcpServer {
         subjectId: captureId
       });
     } else if (
-      (toolName === "pwrsnap_image_edit_send" || toolName === "pwrsnap_video_edit") &&
+      (toolName === "pwrsnap_image_edit_send" ||
+        toolName === "pwrsnap_video_edit" ||
+        toolName === "pwrsnap_capture_duplicate") &&
       captureId !== null
     ) {
       audits.push({
@@ -1280,14 +1287,6 @@ function isLoopbackRemoteAddress(address: string | undefined): boolean {
   );
 }
 
-function captureNotBefore(maxCaptureAgeDays: number | null | undefined): string | undefined {
-  if (maxCaptureAgeDays === undefined || maxCaptureAgeDays === null) {
-    return undefined;
-  }
-  return new Date(
-    Date.now() - maxCaptureAgeDays * 24 * 60 * 60 * 1_000
-  ).toISOString();
-}
 
 function usageActionForTool(toolName: string): LocalAgentUsageAction | null {
   switch (toolName) {
@@ -1295,6 +1294,8 @@ function usageActionForTool(toolName: string): LocalAgentUsageAction | null {
       return "search";
     case "pwrsnap_image_edit_send":
     case "pwrsnap_video_edit":
+    // A copy writes a whole bundle; it spends the same budget as an edit.
+    case "pwrsnap_capture_duplicate":
       return "edit";
     case "pwrsnap_capture_delete_to_trash":
       return "delete";

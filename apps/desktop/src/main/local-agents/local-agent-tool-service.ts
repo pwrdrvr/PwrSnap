@@ -1,8 +1,10 @@
 import {
   err,
+  formatCaptureEditSummary,
   ok,
   type CaptureExportRequest,
   type CaptureExportVariant,
+  type CaptureRecord,
   type ChatMessage,
   type LocalAgentCapability,
   type PwrSnapError,
@@ -15,7 +17,13 @@ import {
   type LocalAgentMcpResource,
   type LocalAgentResourceReadContext
 } from "./mcp-resource-registry";
-import { projectLocalAgentCapture } from "./local-agent-search";
+import {
+  captureNotBefore,
+  limitLocalAgentMcpList,
+  localAgentMcpResultLimit,
+  projectLocalAgentCapture,
+  projectLocalAgentSearchRows
+} from "./local-agent-search";
 import { LocalAgentSignedUrlService } from "./signed-url";
 import {
   type LocalAgentCaptureExportInput,
@@ -51,6 +59,173 @@ export class LocalAgentToolService {
       }),
       ocrLength: enrichment.value?.ocrText?.length ?? 0
     });
+  }
+
+  /** A receipt, not the record: the copy's id and family are what the
+   *  agent needs to edit it next. Its title and tags are catalog metadata,
+   *  read with `metadata` under `library.read` like any other capture. */
+  async captureDuplicate(
+    input: { captureId: string; withEdits: boolean },
+    ctx: LocalAgentToolContext
+  ): Promise<Result<unknown, PwrSnapError>> {
+    // The handler maps not_found / trashed / unsupported itself, and
+    // broadcasts the change so an open Library shows the copy.
+    const duplicated = await bus.dispatch(
+      "capture:duplicate",
+      { captureId: input.captureId, withEdits: input.withEdits },
+      ctx.commandContext
+    );
+    if (!duplicated.ok) return duplicated;
+    const { record } = duplicated.value;
+    return ok({
+      captureId: record.id,
+      familyId: record.family_id ?? null,
+      duplicatedFrom: record.duplicated_from ?? input.captureId,
+      withEdits: input.withEdits,
+      kind: record.kind,
+      capturedAt: record.captured_at,
+      widthPx: record.width_px,
+      heightPx: record.height_px
+    });
+  }
+
+  async captureEditSummary(
+    input: { captureId: string },
+    ctx: LocalAgentToolContext
+  ): Promise<Result<unknown, PwrSnapError>> {
+    const capture = await bus.dispatch(
+      "library:byId",
+      { id: input.captureId },
+      ctx.commandContext
+    );
+    if (!capture.ok) return capture;
+    if (capture.value === null) return notFound(input.captureId);
+    // `capture:editSummary` answers for a trashed capture too; over MCP
+    // it is the question "what would a duplicate carry", and a trashed
+    // capture cannot be duplicated — say so with the duplicate's code.
+    if (capture.value.deleted_at !== null) return trashed(input.captureId);
+    const summary = await bus.dispatch(
+      "capture:editSummary",
+      { captureId: input.captureId },
+      ctx.commandContext
+    );
+    if (!summary.ok) return summary;
+    const text = formatCaptureEditSummary(summary.value);
+    return ok({
+      captureId: input.captureId,
+      kind: capture.value.kind,
+      ...summary.value,
+      summary: text.length === 0 ? null : text
+    });
+  }
+
+  async captureFamilies(
+    input: { limit?: number | undefined },
+    ctx: LocalAgentToolContext
+  ): Promise<Result<unknown, PwrSnapError>> {
+    const listed = await bus.dispatch("library:families", {}, ctx.commandContext);
+    if (!listed.ok) return listed;
+    const notBefore = captureNotBefore(ctx.commandContext.localAgent?.maxCaptureAgeDays);
+    const limit = localAgentMcpResultLimit(input);
+    const families: Array<{
+      familyId: string;
+      rootId: string | null;
+      memberIds: string[];
+      memberCount: number;
+      newestCapturedAt: string;
+    }> = [];
+    // `library:families` sorts by each family's newest LIVE member. That
+    // member is also the newest one this role can see, or none of them is
+    // visible, so filtering keeps the order and the walk can stop one past
+    // the page. Families are rare (one per duplicated snap).
+    for (const family of listed.value.families) {
+      if (families.length > limit) break;
+      if (family.liveCount === 0) continue;
+      if (notBefore !== undefined && !isAtOrAfter(family.newestCapturedAt, notBefore)) {
+        continue;
+      }
+      const members = await this.visibleFamilyMembers(family.familyId, ctx, notBefore);
+      if (!members.ok) return members;
+      if (members.value.length === 0) continue;
+      families.push({
+        familyId: family.familyId,
+        rootId: members.value.some((member) => member.id === family.familyId)
+          ? family.familyId
+          : null,
+        memberIds: members.value.map((member) => member.id),
+        memberCount: members.value.length,
+        newestCapturedAt: members.value.reduce(
+          (newest, member) => member.captured_at > newest ? member.captured_at : newest,
+          ""
+        )
+      });
+    }
+    const page = limitLocalAgentMcpList(families, input);
+    return ok({ families: page.items, limit: page.limit, hasMore: page.hasMore });
+  }
+
+  async captureFamily(
+    input: {
+      familyId: string;
+      limit?: number | undefined;
+      detail?: "summary" | "enriched" | undefined;
+    },
+    ctx: LocalAgentToolContext
+  ): Promise<Result<unknown, PwrSnapError>> {
+    const notBefore = captureNotBefore(ctx.commandContext.localAgent?.maxCaptureAgeDays);
+    const members = await this.visibleFamilyMembers(input.familyId, ctx, notBefore);
+    if (!members.ok) return members;
+    // A family whose every member is trashed or outside the role's window
+    // is indistinguishable from one that does not exist, on purpose.
+    if (members.value.length === 0) {
+      return err({
+        kind: "validation",
+        code: "not_found",
+        message: `capture family not found: ${input.familyId}`
+      });
+    }
+    const page = limitLocalAgentMcpList(members.value, input);
+    const detail = input.detail ?? "summary";
+    const withMetadata = await bus.dispatch(
+      "library:listByIdsWithMetadata",
+      { ids: page.items.map((member) => member.id) },
+      ctx.commandContext
+    );
+    if (!withMetadata.ok) return withMetadata;
+    const byId = new Map(withMetadata.value.rows.map((row) => [row.record.id, row]));
+    const rows = page.items.flatMap((member) => {
+      const row = byId.get(member.id);
+      return row === undefined ? [] : [{ ...row, matchSnippet: null }];
+    });
+    const projected = projectLocalAgentSearchRows(rows, detail);
+    return ok({
+      familyId: input.familyId,
+      detail,
+      limit: page.limit,
+      hasMore: page.hasMore,
+      members: projected.map((row, index) => ({
+        ...row,
+        isRoot: row.id === input.familyId,
+        duplicatedFrom: rows[index]?.record.duplicated_from ?? null
+      }))
+    });
+  }
+
+  /** Live members this role may see, oldest first. */
+  private async visibleFamilyMembers(
+    familyId: string,
+    ctx: LocalAgentToolContext,
+    notBefore: string | undefined
+  ): Promise<Result<CaptureRecord[], PwrSnapError>> {
+    const family = await bus.dispatch("library:family", { familyId }, ctx.commandContext);
+    if (!family.ok) return family;
+    return ok(
+      family.value.members.filter(
+        (member) =>
+          member.deleted_at === null &&
+          (notBefore === undefined || isAtOrAfter(member.captured_at, notBefore))
+      )
+    );
   }
 
   async captureResource(
@@ -688,4 +863,19 @@ function notFound(captureId: string): Result<never, PwrSnapError> {
     code: "not_found",
     message: `capture not found: ${captureId}`
   });
+}
+
+function trashed(captureId: string): Result<never, PwrSnapError> {
+  return err({
+    kind: "validation",
+    code: "trashed",
+    message: `capture is in Trash: ${captureId}`
+  });
+}
+
+/** Same rule as the server's per-capture age check: an unparseable
+ *  timestamp is outside the window, never inside it. */
+function isAtOrAfter(capturedAt: string, notBefore: string): boolean {
+  const capturedAtMs = Date.parse(capturedAt);
+  return Number.isFinite(capturedAtMs) && capturedAtMs >= Date.parse(notBefore);
 }

@@ -67,6 +67,9 @@ export type LocalAgentMcpTool<Input extends z.ZodRawShape> = {
   description: string;
   inputSchema: Input;
   requiredCapabilities: readonly LocalAgentCapability[];
+  /** At least one of these, on top of `requiredCapabilities`. For a read an
+   *  editor needs as much as a librarian does. */
+  requiredAnyCapabilities?: readonly LocalAgentCapability[];
   requiredCapabilitiesForInput?: (
     input: z.output<z.ZodObject<Input>>
   ) => readonly LocalAgentCapability[];
@@ -80,6 +83,7 @@ export type AnyLocalAgentMcpTool = {
   description: string;
   inputSchema: z.ZodRawShape;
   requiredCapabilities: readonly LocalAgentCapability[];
+  requiredAnyCapabilities?: readonly LocalAgentCapability[];
   requiredCapabilitiesForInput?: (input: any) => readonly LocalAgentCapability[];
   annotations: ToolAnnotations;
   dispatch: (
@@ -197,12 +201,17 @@ function successSummary(
 
 export function capabilityDenied(
   toolName: string,
-  missing: readonly LocalAgentCapability[]
+  missing: readonly LocalAgentCapability[],
+  missingAnyOf: readonly LocalAgentCapability[] = []
 ): Result<never, PwrSnapError> {
+  const parts = [
+    ...(missing.length > 0 ? [missing.join(", ")] : []),
+    ...(missingAnyOf.length > 0 ? [`one of ${missingAnyOf.join(", ")}`] : [])
+  ];
   return err({
     kind: "validation",
     code: "missing_capability",
-    message: `local agent cannot call ${toolName}; missing ${missing.join(", ")}`
+    message: `local agent cannot call ${toolName}; missing ${parts.join("; ")}`
   });
 }
 
@@ -277,6 +286,26 @@ export function createDefaultLocalAgentMcpTools(deps: {
   ) => Promise<Result<unknown, PwrSnapError>>;
   videoEdit?: (
     input: LocalAgentVideoEditInput,
+    ctx: LocalAgentToolContext
+  ) => Promise<Result<unknown, PwrSnapError>>;
+  captureDuplicate?: (
+    input: { captureId: string; withEdits: boolean },
+    ctx: LocalAgentToolContext
+  ) => Promise<Result<unknown, PwrSnapError>>;
+  captureEditSummary?: (
+    input: { captureId: string },
+    ctx: LocalAgentToolContext
+  ) => Promise<Result<unknown, PwrSnapError>>;
+  captureFamilies?: (
+    input: { limit?: number | undefined },
+    ctx: LocalAgentToolContext
+  ) => Promise<Result<unknown, PwrSnapError>>;
+  captureFamily?: (
+    input: {
+      familyId: string;
+      limit?: number | undefined;
+      detail?: "summary" | "enriched" | undefined;
+    },
     ctx: LocalAgentToolContext
   ) => Promise<Result<unknown, PwrSnapError>>;
 }): AnyLocalAgentMcpTool[] {
@@ -552,6 +581,102 @@ export function createDefaultLocalAgentMcpTools(deps: {
       dispatch: deps.videoEdit
     });
   }
+  if (deps.captureDuplicate !== undefined) {
+    tools.push({
+      name: "pwrsnap_capture_duplicate",
+      title: "Duplicate PwrSnap Capture",
+      description:
+        "Make an independent copy of a live capture: a new captureId with its own bundle, in the same duplicate family as the source. " +
+        "withEdits is required. true carries the current edit (image: crop and annotations; video: trim and cuts); false copies only the original pixels or the full recording. " +
+        "Title, description, tags and OCR are copied, with the title numbered within the family (\"… copy 2\"). The source is never changed. " +
+        "Returns the copy's captureId and familyId; edit the copy with pwrsnap_image_edit_send or pwrsnap_video_edit. " +
+        "pwrsnap_capture_edit_summary says what withEdits=true would carry.",
+      inputSchema: {
+        captureId: z.string().min(1),
+        // No default: the Library remembers the user's last choice, and
+        // that preference must never silently decide for an agent.
+        withEdits: z.boolean()
+          .describe("Required. true copies the current edit with the capture; false copies the unedited capture.")
+      },
+      requiredCapabilities: ["capture.edit"],
+      annotations: {
+        readOnlyHint: false,
+        // Adds a capture; changes nothing that exists.
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false
+      },
+      dispatch: deps.captureDuplicate
+    });
+  }
+  if (deps.captureEditSummary !== undefined) {
+    tools.push({
+      name: "pwrsnap_capture_edit_summary",
+      title: "Summarize PwrSnap Capture Edits",
+      description:
+        "Read what a capture's current edit consists of — crop, trim, cuts, and counts of arrows, shapes, highlights, blurs, texts, steps, pasted images and cursors — " +
+        "which is exactly what pwrsnap_capture_duplicate with withEdits=true would carry. summary is a short readable line such as \"crop · 2 arrows · blur\", or null when hasEdits is false.",
+      inputSchema: { captureId: z.string().min(1) },
+      requiredCapabilities: [],
+      requiredAnyCapabilities: ["library.read", "capture.edit"],
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      },
+      dispatch: deps.captureEditSummary
+    });
+  }
+  if (deps.captureFamilies !== undefined) {
+    tools.push({
+      name: "pwrsnap_capture_families",
+      title: "List PwrSnap Capture Families",
+      description:
+        "List duplicate families — a capture and the copies made from it share a familyId, which is the original's captureId. " +
+        "Only live captures are counted or listed. Ordered by each family's newest member, newest first. rootId is null when the original is no longer live. " +
+        "Use pwrsnap_capture_family for one family's members with metadata.",
+      inputSchema: {
+        limit: z.number().int().min(1).max(LOCAL_AGENT_MCP_MAX_LIMIT)
+          .describe(`Maximum families to return. Defaults to ${LOCAL_AGENT_MCP_DEFAULT_LIMIT}.`)
+          .optional()
+      },
+      requiredCapabilities: ["library.read"],
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      },
+      dispatch: deps.captureFamilies
+    });
+  }
+  if (deps.captureFamily !== undefined) {
+    tools.push({
+      name: "pwrsnap_capture_family",
+      title: "Read PwrSnap Capture Family",
+      description:
+        "List one duplicate family's live members, oldest first, as pwrsnap_library_search rows plus isRoot and duplicatedFrom (the capture each copy was made from). " +
+        "familyId comes from pwrsnap_capture_families or pwrsnap_capture_duplicate.",
+      inputSchema: {
+        familyId: z.string().min(1).max(64),
+        limit: z.number().int().min(1).max(LOCAL_AGENT_MCP_MAX_LIMIT)
+          .describe(`Maximum members to return. Defaults to ${LOCAL_AGENT_MCP_DEFAULT_LIMIT}.`)
+          .optional(),
+        detail: z.enum(["summary", "enriched"])
+          .describe("summary (default) omits generated text; enriched includes title, description and tags.")
+          .optional()
+      },
+      requiredCapabilities: ["library.read"],
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      },
+      dispatch: deps.captureFamily
+    });
+  }
   if (deps.sizzleCreate !== undefined) {
     tools.push({
       name: "pwrsnap_sizzle_create",
@@ -664,6 +789,13 @@ export function validateToolCapability<Input extends z.ZodRawShape>(
   const missing = [...new Set(required)].filter(
     (capability) => !ctx.capabilities.includes(capability)
   );
-  if (missing.length > 0) return capabilityDenied(tool.name, missing);
+  const anyOf = tool.requiredAnyCapabilities ?? [];
+  const missingAnyOf =
+    anyOf.length > 0 && !anyOf.some((capability) => ctx.capabilities.includes(capability))
+      ? anyOf
+      : [];
+  if (missing.length > 0 || missingAnyOf.length > 0) {
+    return capabilityDenied(tool.name, missing, missingAnyOf);
+  }
   return ok(undefined);
 }

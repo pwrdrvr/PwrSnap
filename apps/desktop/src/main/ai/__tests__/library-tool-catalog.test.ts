@@ -85,7 +85,8 @@ describe("library tool allowlist", () => {
         "reorder_layer",
         "reorder_layers",
         "add_tag",
-        "remove_tag"
+        "remove_tag",
+        "duplicate_capture"
       ])
     );
   });

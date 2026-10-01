@@ -145,8 +145,12 @@ and it fills lineage a rebuilt or restored database lost. It only fills empty
 columns: where the row and its manifest disagree, the row wins and the
 disagreement is logged. Videos have no bundle, so their lineage lives only in
 SQLite (`capture/capture-duplicate.ts`,
-`persistence/capture-families-repo.ts`). The duplicate verbs are bus
-commands for the Library only, and none of them is exposed as an MCP tool.
+`persistence/capture-families-repo.ts`). MCP agents reach the same verbs
+(`pwrsnap_capture_duplicate` → `capture:duplicate`, plus the edit summary
+and family reads), and so does the in-app chat (`duplicate_capture`), so
+"make a blurred copy" is duplicate-then-edit on the copy's id. Neither
+surface defaults `withEdits`: the Library's remembered choice is the user's,
+never an agent's.
 
 **A video copy that cannot be cloned runs in the background, and its row
 appears only when the file is whole.** A clone (`/bin/cp -c` on macOS,

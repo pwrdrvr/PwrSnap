@@ -113,6 +113,17 @@ export function projectLocalAgentSearchDiscovery(
   };
 }
 
+/** The oldest `captured_at` a role with a capture-age limit may see, or
+ *  undefined when the role has none. */
+export function captureNotBefore(maxCaptureAgeDays: number | null | undefined): string | undefined {
+  if (maxCaptureAgeDays === undefined || maxCaptureAgeDays === null) {
+    return undefined;
+  }
+  return new Date(
+    Date.now() - maxCaptureAgeDays * 24 * 60 * 60 * 1_000
+  ).toISOString();
+}
+
 export function searchRangeEndsBefore(
   input: LocalAgentSearchInput,
   notBefore: string

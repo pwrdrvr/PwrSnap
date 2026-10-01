@@ -4236,7 +4236,10 @@ export type Commands = {
    * {@link CaptureDuplicateJob}). A second duplicate of a source with a
    * copy already in flight is refused (`code: "in_progress"`).
    *
-   * Not exposed over MCP.
+   * Over MCP as `pwrsnap_capture_duplicate` (needs `capture.edit`), and in
+   * the in-app chat as `duplicate_capture`. Both require `withEdits`
+   * explicitly; neither reads the Library's remembered choice. Both wait
+   * for a background video copy to commit before answering.
    */
   "capture:duplicate": {
     req: { captureId: string; withEdits: boolean };

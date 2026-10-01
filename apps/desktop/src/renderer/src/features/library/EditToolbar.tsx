@@ -73,6 +73,8 @@ import { useCaptureModel } from "../editor/useCaptureModel";
 import { EditPropertyBar, type PropertyBarTarget } from "./EditPropertyBar";
 import { styledLayerStyle } from "./styled-layer-style";
 import { ToolBagSlots } from "./ToolBagSlots";
+import { useHideDanglingSeparators } from "./useHideDanglingSeparators";
+import { useToolbarTooltip } from "./useToolbarTooltip";
 import { dispatch } from "../../lib/pwrsnap";
 import { nanoid } from "nanoid";
 
@@ -549,6 +551,9 @@ export function EditToolbar({
     stageRect: DOMRect | null;
   } | null>(null);
   const toolbarRef = useRef<HTMLDivElement | null>(null);
+  const toolRowRef = useRef<HTMLDivElement | null>(null);
+  const tooltip = useToolbarTooltip(toolbarRef);
+  useHideDanglingSeparators(toolRowRef);
 
   function getStageEl(): HTMLElement | null {
     return toolbarRef.current?.closest<HTMLElement>(".psl__stage-wrap") ?? null;
@@ -772,6 +777,7 @@ export function EditToolbar({
         />
       )}
       <div
+        ref={toolRowRef}
         className="psl__edit-toolbar"
         role="toolbar"
         aria-label="Annotation tools"
@@ -789,7 +795,8 @@ export function EditToolbar({
           type="button"
           className="psl__et-grip"
           aria-label="Drag toolbar (double-click to reset)"
-          title="Drag to move · double-click to reset"
+          data-tip="Drag to move"
+          data-tip-detail="Double-click to put it back"
           onPointerDown={onGripPointerDown}
           onPointerMove={onGripPointerMove}
           onPointerUp={onGripPointerUp}
@@ -940,6 +947,7 @@ export function EditToolbar({
           </>
         )}
       </div>
+      {tooltip}
     </div>
   );
 }
@@ -964,7 +972,8 @@ function ToolButton({
       // of which tool is on; say it to assistive tech too.
       aria-pressed={active}
       onClick={onClick}
-      title={`${tool.label} (${tool.key})`}
+      data-tip={tool.label}
+      data-tip-keys={tool.key}
       data-tool={tool.id}
     >
       {tool.icon}
@@ -1010,7 +1019,7 @@ function ResetButton({
     <button
       type="button"
       className={"psl__et-btn psl__et-btn--reset" + (armed ? " is-armed" : "")}
-      title={
+      data-tip={
         armed
           ? overlayCount === 0 && isV2Cropped
             ? "Click again to confirm — restores original canvas dimensions"

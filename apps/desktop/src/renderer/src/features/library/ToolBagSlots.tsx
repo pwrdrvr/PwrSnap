@@ -49,6 +49,7 @@ export function ToolBagSlots({
   shortcutPlatform = rendererShortcutPlatform()
 }: ToolBagSlotsProps): ReactElement {
   const shift = acceleratorToDisplayKeys("Shift+1", shortcutPlatform)[0] ?? "Shift";
+  const alt = acceleratorToDisplayKeys("Alt+1", shortcutPlatform)[0] ?? "Alt";
   const [menu, setMenu] = useState<MenuState | null>(null);
   const closeMenu = useCallback(() => setMenu(null), []);
 
@@ -58,12 +59,18 @@ export function ToolBagSlots({
         const number = index + 1;
         const armed = armedSlot === index && slot !== null;
         const name = slot === null ? null : describeBagSlot(slot);
-        const title =
+        // Shown by useToolbarTooltip (the dock's), not `title`.
+        const tipDetail =
           slot === null
             ? currentStyle === null
-              ? `Slot ${number} is empty — pick a tool or select a layer, then click to save its style here`
-              : `Slot ${number} is empty — click to save the current style here`
-            : `${name} (${number}) · ${shift}${number} or ${shift}-click restyles the selection`;
+              ? "Pick a tool or select a layer, then click here to save its style"
+              : "Click to save the current style here"
+            : [
+                `Press ${number} or click to draw with it`,
+                `${alt}-click to draw just one`,
+                `${shift}${number} or ${shift}-click restyles the selection`,
+                "Right-click to replace or clear"
+              ].join("\n");
         return (
           <button
             key={index}
@@ -78,7 +85,9 @@ export function ToolBagSlots({
             aria-label={slot === null ? `Empty slot ${number}` : `${name}, slot ${number}`}
             aria-pressed={slot === null ? undefined : armed}
             aria-disabled={slot === null && currentStyle === null ? true : undefined}
-            title={title}
+            data-tip={slot === null ? `Empty slot ${number}` : name ?? undefined}
+            data-tip-keys={slot === null ? undefined : String(number)}
+            data-tip-detail={tipDetail}
             onClick={(event) => {
               if (slot === null) {
                 if (currentStyle !== null) onSaveSlot(index, currentStyle);

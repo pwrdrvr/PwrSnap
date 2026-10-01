@@ -116,9 +116,9 @@ export function EditPropertyBar({
           className="psl__et-props-btn"
           data-testid="property-bar-save-to-bag"
           // aria-disabled, not disabled: a disabled button leaves the tab
-          // order, and then the reason in its title is unreachable.
+          // order, and then the reason in its tooltip is unreachable.
           aria-disabled={firstEmptySlot === null}
-          title={
+          data-tip={
             firstEmptySlot === null
               ? "The bag is full — right-click a slot to replace or clear it"
               : `Save this style to slot ${firstEmptySlot + 1}`

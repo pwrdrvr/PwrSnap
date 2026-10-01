@@ -4389,6 +4389,46 @@
   background: var(--border-subtle);
   margin: 0 4px;
 }
+/* First or last on a wrapped row (EditToolbar's useHideDanglingSeparators). */
+.psl__et-sep.is-dangling {
+  visibility: hidden;
+}
+/* The edit toolbar's tooltip (useToolbarTooltip). Portaled to <body>,
+   fixed, and never a hit target — it must not eat the hover it is
+   describing. */
+.psl-tip {
+  position: fixed;
+  z-index: 1000;
+  max-width: 320px;
+  padding: 6px 9px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--shadow-base) 45%, transparent);
+  color: var(--text-secondary);
+  font: 500 11px/1.4 var(--font-sans);
+  pointer-events: none;
+}
+.psl-tip__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-primary);
+  font-weight: 600;
+  font-size: 12px;
+}
+.psl-tip__title + .psl-tip__line {
+  margin-top: 3px;
+}
+.psl-tip__key {
+  min-width: 16px;
+  padding: 1px 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  font: 700 10px/1.2 var(--font-mono);
+  text-align: center;
+  color: var(--text-secondary);
+}
 /* Tool button hover — solid `--accent` fill regardless of active
    state. Strong unambiguous "this is clickable" signal that reads
    instantly. Text + key chip flip to `--button-text-on-accent`
@@ -4455,6 +4495,11 @@
 .psl__bag {
   display: inline-flex;
   align-items: center;
+  /* On a stage narrower than nine slots the bag wraps inside itself.
+     Unwrapped it was one 340px item in a toolbar clamped narrower than
+     that, and spilled past both of the toolbar's edges. */
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 2px;
 }
 .psl__bag-slot {

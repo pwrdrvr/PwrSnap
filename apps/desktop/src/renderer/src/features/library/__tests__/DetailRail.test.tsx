@@ -1704,12 +1704,14 @@ describe("DetailRail — Layers tab", () => {
   // moveLayerToIndex) can't silently drift the stub out of conformance.
   const stubLayersApi: LayersPanelApi = {
     selectLayers: () => undefined,
+    clearSelection: () => undefined,
     setLayerVisibility: async () => undefined,
     deleteLayer: async () => undefined,
     moveLayerToIndex: async () => undefined,
     uncrop: async () => undefined,
     resetRasterTransform: async () => undefined,
-    updateLayerStyle: () => undefined
+    updateLayerStyle: () => undefined,
+    applyBagSlot: () => undefined
   };
 
   test("shows Properties and Layers tabs for an image capture when layersApi is present", async () => {

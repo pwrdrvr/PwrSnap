@@ -20,7 +20,7 @@
 //
 // Phase 1 v2 wiring (chrome === "full" only):
 //   • useEditorToolState — owns active tool + per-tool style memory +
-//     COLOR-slot fan-out + matching-text affordance lifecycle.
+//     the armed tool-bag slot.
 //   • EditorChrome — VS-Code-style activity bar + collapsible panel
 //     that wraps the editor viewport in standalone-window mode only.
 //   • ToolStylePopover — anchored to the toolbar's active tool button
@@ -29,9 +29,6 @@
 //   • CropTool — rendered as an overlay when activeTool === "crop";
 //     commits a CropOverlay via overlays:upsert and stays in crop
 //     mode (sticky) until the user picks another tool.
-//   • Matching-text affordance — small "+ Add label" button positioned
-//     near the just-placed arrow's tail; click → flips to text tool
-//     for one placement, then returns to arrow.
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
@@ -51,6 +48,7 @@ import type {
   ShapeKind,
   ShapeToolStyle,
   TextToolStyle,
+  ToolBagSlot,
   ToolColor,
   ToolSizePreset
 } from "@pwrsnap/shared";
@@ -93,6 +91,13 @@ import {
 } from "./outline-auto-sampler";
 import { shapeStrokeGeometry } from "./shape-stroke-geometry";
 import { TOOLS, type Tool } from "./editor-tools";
+import {
+  bagSlotIndexForCode,
+  slotFieldsForLayer,
+  styleValuesEqual,
+  type PasteTargetTool,
+  type SlotStyleField
+} from "./tool-bag";
 import { useZoomPan, type ZoomMode } from "./useZoomPan";
 import { useUndoRedo, type InteractionToken, type RecordOptions } from "./useUndoRedo";
 import { decideClickSelection } from "./decideClickSelection";
@@ -214,6 +219,9 @@ export type LayersPanelApi = {
    *  stale-id cleanup drops ids absent from the rendered set) — that's
    *  the accepted "hide deselects" behavior. */
   selectLayers: (id: string, additive: boolean) => void;
+  /** Drop the canvas selection. Arming a tool-bag slot from the toolbar
+   *  does this, the way the 1–9 keys do. */
+  clearSelection: () => void;
   /** Flip a layer's `visible` flag via a full-node `layers:update`. */
   setLayerVisibility: (id: string, visible: boolean) => Promise<void>;
   /** Soft-delete a layer, recording undo when the layer projects to an
@@ -243,6 +251,12 @@ export type LayersPanelApi = {
    *  updateOverlay + undo path. This edits the placed layer instead of
    *  changing the active drawing tool's defaults. */
   updateLayerStyle: (id: string, field: string, value: unknown) => void;
+  /** Paste a tool-bag slot onto layers (⇧-click a slot; ⇧1–9 is the
+   *  editor's own twin and calls the same code). Each layer takes the
+   *  fields the slot says that its kind can carry — see
+   *  `slotFieldsForLayer` — as ONE edit: one dispatch, one undo step per
+   *  layer, so ⌘Z takes a slot's color, heads and border back at once. */
+  applyBagSlot: (slot: ToolBagSlot, ids: readonly string[]) => void;
 };
 
 /** Multiplier for one ⌘+ / ⌘- press. Deliberately NOT ZoomMenu's
@@ -260,6 +274,22 @@ const STYLED_TOOLS: ReadonlySet<Tool> = new Set<Tool>([
 
 function isStyledToolKind(tool: Tool): tool is StyledToolKind {
   return STYLED_TOOLS.has(tool);
+}
+
+/** Which tool family a placed overlay restyles as, for a bag paste.
+ *  Crop and legacy step layers take nothing. */
+function pasteTargetFor(kind: Overlay["kind"]): PasteTargetTool | null {
+  switch (kind) {
+    case "arrow":
+    case "text":
+    case "shape":
+    case "blur":
+    case "highlight":
+      return kind;
+    case "crop":
+    case "step":
+      return null;
+  }
 }
 
 /** Phase 3.3 — derive the OverlaySvg DraftStyle from the live active
@@ -1673,8 +1703,8 @@ export function Editor({
   //     both passed. Library is the single owner; per-tool style memory
   //     lives in the floating EditToolbar's own hook in task #10.
   //   • Full editor chrome (chrome === "full"): we own the hook here.
-  //     Active tool + per-tool style memory + matching-text affordance
-  //     all live in `useEditorToolState`.
+  //     Active tool + per-tool style memory + the armed bag slot all
+  //     live in `useEditorToolState`.
   //
   // The hook is ALWAYS instantiated (hooks rules) but its result is only
   // consumed when not in controlled mode. The controlled branch keeps
@@ -1778,6 +1808,10 @@ export function Editor({
   // the user saw the layer move 1px and the grippers vanish.
   // Subsequent arrow keys fell through to the Library reel.
   const inFlightSelectionIdsRef = useRef<Set<string>>(new Set());
+  // Canvas presses so far. An async draw commit snapshots it and only
+  // selects the layer it wrote if no newer press happened meanwhile
+  // (see `selectPlacedLayer`).
+  const canvasGestureSeqRef = useRef(0);
   /** Replace selection with ids that just came back from a successful
    *  dispatch. The ids exist in the DB but may not be in
    *  `overlaysForRender` yet — the in-flight set keeps the cleanup
@@ -2209,19 +2243,6 @@ export function Editor({
     };
   }
 
-  /** Translate normalized [0,1] coords back to canvas-pixel coords —
-   *  used to anchor the matching-text affordance at the arrow's tail
-   *  in the same coordinate space the canvas overlay renders in. */
-  function normalizedToCanvasPx(
-    xn: number,
-    yn: number
-  ): { x: number; y: number } | null {
-    const canvas = canvasRef.current;
-    if (canvas === null) return null;
-    const rect = canvas.getBoundingClientRect();
-    return { x: xn * rect.width, y: yn * rect.height };
-  }
-
   /** Shared click→selection dispatch for the pointer tool AND every
    *  drawing tool: hit-test overlays and non-source raster layers,
    *  route the result through `decideClickSelection`, apply the
@@ -2476,6 +2497,7 @@ export function Editor({
 
   function onPointerDown(event: React.PointerEvent<HTMLDivElement>): void {
     if (event.button !== 0) return;
+    canvasGestureSeqRef.current += 1;
     // Defensive clear of any stale multi-drag state. The arming path
     // below stores snapshots in `multiDragStartRef.current` and
     // relies on `onPointerUp` / `onPointerCancel` to clear it; if
@@ -2933,6 +2955,7 @@ export function Editor({
   }
 
   async function onPointerUp(event: React.PointerEvent<HTMLDivElement>): Promise<void> {
+    const gestureSeq = canvasGestureSeqRef.current;
     // Re-aim the hover affordance at the release point. A captured
     // gesture suppresses pointerleave, so a drag released outside the
     // canvas (or over a different layer) would otherwise strand a
@@ -3069,11 +3092,9 @@ export function Editor({
       // it BEFORE the first await. The awaits below can park for real
       // time when `settings:read` is slow, and a deferred
       // `setDraft(null)` would wipe a second gesture's in-progress
-      // draft when this commit resumed. The tail lookup also wants the
-      // live canvas rect at release time, so it happens here too.
+      // draft when this commit resumed.
       const from = { x: draft.fromXn, y: draft.fromYn };
       const to = { x: draft.toXn, y: draft.toYn };
-      const tailCanvasPx = normalizedToCanvasPx(to.x, to.y);
       setDraft(null);
       // Phase 3.1 fix #2/#4 + Phase 3.2 lift: thread the active arrow
       // style (color + endStyle + stemStyle + doubleEnded) into the
@@ -3118,15 +3139,9 @@ export function Editor({
       }
       const wrote = await persistOverlay(arrowOverlay);
       closeInteraction();
+      if (wrote.ok) selectPlacedLayer(wrote.newId, gestureSeq);
       if (wrote.ok && !isControlled) {
-        // Standalone Editor: the canvas-side affordance reads
-        // anchorPoint in canvas-px from this same hook instance, so
-        // post directly.
-        effectiveToolState.onAnnotationPlaced(
-          tailCanvasPx !== null
-            ? { tool: "arrow", anchorPoint: tailCanvasPx }
-            : { tool: "arrow" }
-        );
+        effectiveToolState.onAnnotationPlaced({ tool: "arrow" });
       }
       // Library Focus path uses the EditToolbar's broadcast-driven
       // diff to call onAnnotationPlaced (see EditToolbar.tsx,
@@ -3221,6 +3236,7 @@ export function Editor({
       }
       const wrote = await persistOverlay(overlay);
       closeInteraction();
+      if (wrote.ok) selectPlacedLayer(wrote.newId, gestureSeq);
       if (wrote.ok && !isControlled) {
         effectiveToolState.onAnnotationPlaced({ tool: placedKind });
       }
@@ -3323,6 +3339,7 @@ export function Editor({
 
   async function commitText(): Promise<void> {
     if (draft?.kind !== "text") return;
+    const gestureSeq = canvasGestureSeqRef.current;
     const body = draft.body.trim();
     if (body.length === 0) {
       setDraft(null);
@@ -3445,9 +3462,25 @@ export function Editor({
       return;
     }
     const wrote = await persistOverlay(overlay);
+    if (wrote.ok) selectPlacedLayer(wrote.newId, gestureSeq);
     if (wrote.ok && !isControlled) {
       effectiveToolState.onAnnotationPlaced({ tool: "text" });
     }
+  }
+
+  /** A freshly drawn annotation becomes the selection, so the property
+   *  bar shows what was just drawn and ⇧1–9 restyles it without a
+   *  second click. The drawing tool stays armed — the next drag on
+   *  empty canvas clears this selection and draws again (see
+   *  onPointerDown). Skipped if the user pressed on the canvas again
+   *  while the write was in flight (`gestureSeq` is the canvas press
+   *  count when this commit began): that press already decided the
+   *  selection, and selecting now would yank the outline back onto
+   *  the old layer mid-gesture. */
+  function selectPlacedLayer(newId: string, gestureSeq: number): void {
+    if (newId === "") return;
+    if (canvasGestureSeqRef.current !== gestureSeq) return;
+    setSelectionTrustingDispatch([newId]);
   }
 
   /** Phase 3.6 — double-click an existing text overlay to re-open
@@ -4034,6 +4067,13 @@ export function Editor({
       // helper below (set up in EditorLoaded which has the record).
       if (event.key === "Escape" && selectedLayerIds.length > 0) {
         event.preventDefault();
+        // Stop here, the way the arrow-key nudge below does: Library's
+        // Focus-mode Escape (bubble phase, no defaultPrevented check)
+        // would otherwise close the editor on the same press. Every
+        // drawing is selected on release, so "Esc to let go of what I
+        // just drew" is the common case — one Escape deselects, the
+        // next one leaves.
+        event.stopImmediatePropagation();
         clearSelection();
         return;
       }
@@ -4203,6 +4243,25 @@ export function Editor({
       // Modifier presses (⌘/⌃/⌥) belong to other handlers — don't eat
       // ⌘A or similar as the arrow shortcut. (⌘A handled above.)
       if (event.metaKey || event.ctrlKey || event.altKey) return;
+      // Tool bag. 1–9 arms slot N for the next drawing; ⇧1–9 pastes
+      // slot N onto the selection instead (Factorio's paste-settings:
+      // the layer takes whatever the slot says that it can carry). A
+      // plain digit clears the selection, so the property bar shows the
+      // armed slot rather than the layer the user just finished with.
+      // Keyed on `event.code` — see bagSlotIndexForCode.
+      const slotIndex = bagSlotIndexForCode(event.code);
+      if (slotIndex !== null && draft === null) {
+        const slot = effectiveToolState.bag.slots[slotIndex] ?? null;
+        if (slot === null) return;
+        event.preventDefault();
+        if (event.shiftKey && selectedLayerIds.length > 0) {
+          applyBagSlotRef.current?.(slot, selectedLayerIds);
+          return;
+        }
+        if (selectedLayerIds.length > 0) clearSelection();
+        effectiveToolState.armSlot(slotIndex);
+        return;
+      }
       const upper = event.key.toUpperCase();
       const matched = TOOLS.find((t) => t.key === upper);
       if (matched !== undefined) {
@@ -4233,7 +4292,15 @@ export function Editor({
     window.addEventListener("keydown", onKey, { capture: true });
     return () =>
       window.removeEventListener("keydown", onKey, { capture: true });
-  }, [contextMenuState, draft, isControlled, selectedLayerIds, setTool, tool]);
+  }, [
+    contextMenuState,
+    draft,
+    effectiveToolState,
+    isControlled,
+    selectedLayerIds,
+    setTool,
+    tool
+  ]);
 
   // Hook-owned deleter (populated by EditorLoaded once it knows the
   // bundle format). Like recordCreateRef, this lives in the outer
@@ -4265,6 +4332,11 @@ export function Editor({
   // dyn) from the arrow-key + Shift modifier and calls in.
   const nudgeSelectedRef =
     useRef<((dxn: number, dyn: number) => void) | null>(null);
+  // Hook-owned tool-bag paste (same pattern). The ⇧1–9 handler above
+  // and the toolbar's ⇧-click (through LayersPanelApi) both call in;
+  // EditorLoaded owns the overlay list, dispatch and undo.
+  const applyBagSlotRef =
+    useRef<((slot: ToolBagSlot, ids: readonly string[]) => void) | null>(null);
   // Hook-owned reorderer. Same pattern as deleteSelectedRef /
   // nudgeSelectedRef — EditorLoaded populates with a closure that
   // owns the current overlay list + dispatchEdit, so the outer
@@ -4532,6 +4604,7 @@ export function Editor({
       primarySelectedLayerId={primarySelectedLayerId}
       deleteSelectedRef={deleteSelectedRef}
       nudgeSelectedRef={nudgeSelectedRef}
+      applyBagSlotRef={applyBagSlotRef}
       settleNudgeBurstRef={settleNudgeBurstRef}
       reorderSelectedRef={reorderSelectedRef}
       commitMultiDragRef={commitMultiDragRef}
@@ -4618,6 +4691,7 @@ function EditorLoaded({
   primarySelectedLayerId,
   deleteSelectedRef,
   nudgeSelectedRef,
+  applyBagSlotRef,
   settleNudgeBurstRef,
   reorderSelectedRef,
   commitMultiDragRef,
@@ -4806,6 +4880,11 @@ function EditorLoaded({
    *  coords and dispatches one updateGeometry per selected layer. */
   nudgeSelectedRef: React.RefObject<
     ((dxnSteps: number, dynSteps: number) => void) | null
+  >;
+  /** Populated here with the tool-bag paste; the outer ⇧1–9 handler
+   *  and LayersPanelApi.applyBagSlot both call into it. */
+  applyBagSlotRef: React.RefObject<
+    ((slot: ToolBagSlot, ids: readonly string[]) => void) | null
   >;
   /** Commit-and-close for a pending arrow-key nudge burst. Populated by
    *  EditorLoaded's nudge effect; the OUTER pointerdown + clipboard
@@ -5264,8 +5343,14 @@ function EditorLoaded({
             : [id]
         );
       },
+      clearSelection: () => {
+        setSelectedLayerIds([]);
+      },
       updateLayerStyle: (id, field, value) => {
         updateLayerStyleRef.current?.(id, field, value);
+      },
+      applyBagSlot: (slot, ids) => {
+        applyBagSlotRef.current?.(slot, ids);
       },
       setLayerVisibility: async (id, visible) => {
         // RAW node: this is a FULL-NODE replace, so it must carry stored
@@ -6307,10 +6392,102 @@ function EditorLoaded({
     ]
   );
 
+  // Several fields as ONE edit — the tool bag's paste. Each field goes
+  // through `layerStyleUpdate` exactly as a Properties control would,
+  // folded against the row as the earlier fields left it (so a shape
+  // arm that reads `rect` sees the right one), then the patches merge
+  // into one updateOverlay and one undo entry. A patch that would change
+  // nothing is dropped whole: pasting slot 2 onto something that is
+  // already slot 2 must not leave a no-op on the undo stack.
+  const applyOverlayStyleFields = useCallback(
+    (current: OverlayRow, fields: readonly SlotStyleField[]): void => {
+      void (async (): Promise<void> => {
+        if (fields.some(([field, value]) => field === "outline" && value === "auto")) {
+          await ensureOutlineSampler(captureSrcUrl(record.id));
+        }
+        const dims = {
+          sourceWidthPx,
+          sourceHeightPx,
+          canvasWidthPx: record.width_px,
+          canvasHeightPx: record.height_px,
+          resolveOutlineAuto
+        };
+        let working: OverlayRow = current;
+        const patch: Record<string, unknown> = { kind: current.data.kind };
+        const previousPatch: Record<string, unknown> = { kind: current.data.kind };
+        for (const [field, value] of fields) {
+          const update = layerStyleUpdate(working, field, value, dims);
+          if (update === null) continue;
+          Object.assign(patch, update.patch);
+          // First write of a key wins: it is the value BEFORE any of
+          // this paste's fields touched it.
+          for (const [key, prev] of Object.entries(update.fallbackPreviousPatch)) {
+            if (!(key in previousPatch)) previousPatch[key] = prev;
+          }
+          working = {
+            ...working,
+            data: { ...working.data, ...update.patch } as Overlay
+          };
+        }
+        const changed = Object.keys(patch).some(
+          (key) => key !== "kind" && !styleValuesEqual(patch[key], previousPatch[key])
+        );
+        if (!changed) return;
+        const nextPatch = patch as Partial<Overlay>;
+        const result = await dispatchEdit({
+          kind: "updateOverlay",
+          layerId: current.id,
+          patch: nextPatch
+        });
+        if (!result.ok) {
+          // eslint-disable-next-line no-console
+          console.error("updateOverlay (bag paste) failed", result.error);
+          return;
+        }
+        if (result.value.kind !== "update") return;
+        const newId = result.value.artifact.node.id;
+        // Keep the selection on the restyled layer — the id can change
+        // on update, and a multi-selection paste keeps every member.
+        setSelectedLayerIds((prev) => prev.map((id) => (id === current.id ? newId : id)));
+        if (!undoApplyingRef.current) {
+          undo.recordStyle({
+            currentIdRef: { current: newId },
+            previousPatch: previousPatch as Partial<Overlay>,
+            nextPatch
+          });
+        }
+      })();
+    },
+    [
+      dispatchEdit,
+      record.height_px,
+      record.id,
+      record.width_px,
+      resolveOutlineAuto,
+      setSelectedLayerIds,
+      sourceHeightPx,
+      sourceWidthPx,
+      undo,
+      undoApplyingRef
+    ]
+  );
+
   // Feed the sibling DetailRail through the exact same mutation path.
   // It resolves by id rather than by the currently selected row so the
   // inspector never edits a different layer during a selection change.
   useEffect(() => {
+    applyBagSlotRef.current = (slot, ids): void => {
+      for (const id of ids) {
+        const current = overlays.find((row) => row.id === id);
+        if (current === undefined) continue;
+        const target = pasteTargetFor(current.data.kind);
+        if (target === null) continue;
+        const fields = slotFieldsForLayer(slot, target);
+        if (fields.length > 0) {
+          applyOverlayStyleFields(adoptDraftGeometry(current, draftGeometry), fields);
+        }
+      }
+    };
     updateLayerStyleRef.current = (id, field, value): void => {
       const current = overlays.find((row) => row.id === id);
       // Adopt the live override, exactly as the editor's own popover
@@ -6330,6 +6507,7 @@ function EditorLoaded({
       }
     };
     return () => {
+      applyBagSlotRef.current = null;
       updateLayerStyleRef.current = null;
     };
     // `draftGeometry` is a dep because the closure above reads it —
@@ -6337,7 +6515,14 @@ function EditorLoaded({
     // would be back to editing the pre-drag geometry. Re-running is a
     // bare ref assignment, so the per-frame churn during a drag costs
     // nothing.
-  }, [overlays, draftGeometry, updateLayerStyleRef, updateOverlayStyleField]);
+  }, [
+    overlays,
+    draftGeometry,
+    applyBagSlotRef,
+    applyOverlayStyleFields,
+    updateLayerStyleRef,
+    updateOverlayStyleField
+  ]);
 
   // Selected-overlay style edit handler for the standalone popover.
   const onSelectedStyleFieldChange = useCallback(
@@ -7151,28 +7336,6 @@ function EditorLoaded({
               onCommit={onCropCommit}
               onCancel={onCropCancel}
             />
-          )}
-          {/* Matching-text affordance — only in standalone mode (the
-              hook is dormant when controlled). Positioned relative to
-              the canvas so the anchor coords (canvas-px) line up
-              directly. */}
-          {!isControlled && toolState.matchingText.kind === "available" && (
-            <button
-              type="button"
-              className="pse-affordance"
-              data-testid="matching-text-affordance"
-              style={{
-                position: "absolute",
-                left: toolState.matchingText.anchorPoint.x,
-                top: toolState.matchingText.anchorPoint.y + 8,
-                transform: "translate(-50%, 0)"
-              }}
-              onClick={() => {
-                toolState.clickMatchingTextAffordance();
-              }}
-            >
-              + Add label
-            </button>
           )}
         </div>
         {/* Phase 5 paste/drop notice. Surfaces user-friendly errors

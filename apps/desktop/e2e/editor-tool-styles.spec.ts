@@ -1,9 +1,10 @@
 // E2E coverage for the v2 editor Phase 1 tool-style surface (task #11).
 //
-// Exercises cross-tool COLOR slot sharing, per-tool field independence,
+// Exercises per-tool style independence (color included — the shared
+// COLOR slot is gone, the tool bag replaced it), the tool bag's keys,
 // and Settings substrate round-trip via two consecutive editor opens
 // against the same capture. The state being exercised lives in
-// `useEditorToolState` + `ToolStylePopover` + the Settings substrate's
+// `useEditorToolState` + the docked property bar + the Settings substrate's
 // `editor.toolStyles` block — see
 // `apps/desktop/src/renderer/src/features/editor/useEditorToolState.ts`
 // and `ToolStylePopover.tsx`.
@@ -17,13 +18,13 @@
 
 import { type Page } from "@playwright/test";
 import { expect, type LaunchedApp, launchPwrSnap, test } from "./fixtures/electron-app";
-import { openEditor, seedImageCapture, selectTool } from "./fixtures/editor";
+import { openEditor, openToolStyleBar, seedImageCapture, selectTool } from "./fixtures/editor";
 
 // First spec in the file cold-starts Electron; later specs benefit from
 // the warm pnpm-store cache. Same 60s bump as settings.spec.ts.
 test.setTimeout(90_000);
 
-test("editor-tool-styles: shared COLOR slot fans out across tools", async () => {
+test("editor-tool-styles: a color picked for arrows does not recolor text", async () => {
   const app = await launchPwrSnap();
   try {
     const captureId = await seedImageCapture(app, {
@@ -32,29 +33,70 @@ test("editor-tool-styles: shared COLOR slot fans out across tools", async () => 
     });
     const editorWindow = await openEditor(app, captureId);
 
-    // Select arrow → its caret should appear → click caret to open popover.
     await selectTool(editorWindow, "arrow");
-    await openPopoverForActiveTool(editorWindow, "arrow");
-
-    // Click the red swatch. Note: the popover is per-tool; clicking
-    // red here writes through to every styled tool's color via the
-    // shared-COLOR-slot fan-out in `useEditorToolState.setStyleField`.
+    await openToolStyleBar(editorWindow);
     await clickSwatch(editorWindow, "red");
 
-    // Close popover (Escape).
-    await editorWindow.keyboard.press("Escape");
-    await expect(
-      editorWindow.locator('[data-testid="tool-style-popover"]')
-    ).toHaveCount(0);
-
-    // Switch to text tool → open its popover via the caret → assert
-    // its color swatch is the same "red" that was just chosen in arrow.
+    // Text keeps its own color. (A shared COLOR slot used to fan every
+    // pick out to every tool.)
     await selectTool(editorWindow, "text");
-    await openPopoverForActiveTool(editorWindow, "text");
-
+    await openToolStyleBar(editorWindow);
     await expect(
       editorWindow.locator('[data-testid="swatch-red"][aria-checked="true"]')
-    ).toHaveCount(1);
+    ).toHaveCount(0);
+  } finally {
+    await app.close();
+  }
+});
+
+test("editor-tool-styles: 1 arms a bag slot, a drawing is selected on release, shift+3 restyles it, undo takes it back", async () => {
+  const app = await launchPwrSnap();
+  try {
+    const captureId = await seedImageCapture(app, {
+      idPrefix: "tool-bag",
+      sourceAppName: "Tool Bag Spec"
+    });
+    const editorWindow = await openEditor(app, captureId);
+    const arrows = async (): Promise<Array<{ color: string; endStyle: string | undefined }>> => {
+      const list = await app.dispatch("layers:list", { captureId });
+      if (!list.ok) return [];
+      return list.value.flatMap((layer) =>
+        layer.kind === "vector" && layer.shape.kind === "arrow"
+          ? [{ color: layer.shape.color, endStyle: layer.shape.endStyle }]
+          : []
+      );
+    };
+
+    await editorWindow.keyboard.press("Digit1");
+    await expect(editorWindow.getByTestId("bag-slot-1")).toHaveAttribute("aria-pressed", "true");
+
+    const canvas = editorWindow.locator(".editor-canvas");
+    const box = await canvas.boundingBox();
+    if (box === null) throw new Error("canvas has no bbox");
+    await editorWindow.mouse.move(box.x + box.width * 0.2, box.y + box.height * 0.3);
+    await editorWindow.mouse.down();
+    await editorWindow.mouse.move(box.x + box.width * 0.6, box.y + box.height * 0.6, { steps: 10 });
+    await editorWindow.mouse.up();
+
+    // Factory slot 1 is a red arrow; the new arrow is now the selection.
+    await expect.poll(arrows, { timeout: 15_000 }).toEqual([
+      { color: "#ff5f57", endStyle: "filled-triangle" }
+    ]);
+    await expect(
+      editorWindow.locator('[data-testid="edit-property-bar"][data-target="layer"]')
+    ).toBeVisible();
+
+    // Shift+3 pastes factory slot 3 (yellow arrow) onto it.
+    await editorWindow.keyboard.press("Shift+Digit3");
+    await expect.poll(arrows, { timeout: 15_000 }).toEqual([
+      { color: "#facc15", endStyle: "filled-triangle" }
+    ]);
+
+    // One undo step for the whole paste.
+    await editorWindow.keyboard.press(`${process.platform === "darwin" ? "Meta" : "Control"}+z`);
+    await expect.poll(arrows, { timeout: 15_000 }).toEqual([
+      { color: "#ff5f57", endStyle: "filled-triangle" }
+    ]);
   } finally {
     await app.close();
   }
@@ -69,9 +111,9 @@ test("editor-tool-styles: per-tool thickness does NOT share across tools", async
     });
     const editorWindow = await openEditor(app, captureId);
 
-    // Set arrow thickness to "small" via the popover.
+    // Set arrow thickness to "small" via the property bar.
     await selectTool(editorWindow, "arrow");
-    await openPopoverForActiveTool(editorWindow, "arrow");
+    await openToolStyleBar(editorWindow);
     // The Segmented control renders <button role="radio" aria-label="S">
     // for the "small" preset. Use it directly.
     await editorWindow
@@ -90,9 +132,8 @@ test("editor-tool-styles: per-tool thickness does NOT share across tools", async
     // and the default value is "auto" — the per-tool independence
     // guarantee says picking arrow.thickness=small must NOT bleed into
     // text.fontSize.
-    await editorWindow.keyboard.press("Escape");
     await selectTool(editorWindow, "text");
-    await openPopoverForActiveTool(editorWindow, "text");
+    await openToolStyleBar(editorWindow);
     await expect(
       editorWindow.locator(
         '[data-testid="text-font-size"] button[aria-label="Auto"][aria-checked="true"]'
@@ -115,7 +156,7 @@ test("editor-tool-styles: COLOR persists across editor reopen", async () => {
     {
       const editorWindow = await openEditor(app, captureId);
       await selectTool(editorWindow, "arrow");
-      await openPopoverForActiveTool(editorWindow, "arrow");
+      await openToolStyleBar(editorWindow);
       await clickSwatch(editorWindow, "blue");
       // Confirm the swatch is selected before close.
       await expect(
@@ -130,8 +171,7 @@ test("editor-tool-styles: COLOR persists across editor reopen", async () => {
       await closeEditorWindow(app, editorWindow);
     }
 
-    // Sanity check via the settings:read bus — the blue color should
-    // have been fanned out to every color-bearing tool's block.
+    // Sanity check via the settings:read bus.
     const readBack = await app.dispatch("settings:read", {});
     expect(readBack.ok).toBe(true);
     if (readBack.ok) {
@@ -142,7 +182,7 @@ test("editor-tool-styles: COLOR persists across editor reopen", async () => {
     {
       const editorWindow = await openEditor(app, captureId);
       await selectTool(editorWindow, "arrow");
-      await openPopoverForActiveTool(editorWindow, "arrow");
+      await openToolStyleBar(editorWindow);
       await expect(
         editorWindow.locator(
           '[data-testid="swatch-blue"][aria-checked="true"]'
@@ -162,18 +202,8 @@ async function closeEditorWindow(app: LaunchedApp, win: Page): Promise<void> {
   await expect(win.locator(".psl__focus")).toHaveCount(0);
 }
 
-async function openPopoverForActiveTool(win: Page, tool: string): Promise<void> {
-  // The caret only renders when the tool is active. Click it.
-  const caret = win.locator(`[data-testid="tool-caret-${tool}"]`);
-  await caret.waitFor({ state: "visible", timeout: 5_000 });
-  await caret.click();
-  await win
-    .locator('[data-testid="tool-style-popover"]')
-    .waitFor({ state: "visible", timeout: 5_000 });
-}
-
 async function clickSwatch(win: Page, color: string): Promise<void> {
   await win
-    .locator(`[data-testid="tool-style-popover"] [data-testid="swatch-${color}"]`)
+    .locator(`[data-testid="edit-property-bar"] [data-testid="swatch-${color}"]`)
     .click();
 }

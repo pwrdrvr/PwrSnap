@@ -1,5 +1,6 @@
-// Lock the narrow-Library stage contract: the floating edit toolbar goes
-// icon-only and stays out of the ←/→ columns when the stage is small, the
+// Lock the narrow-Library stage contract: the floating edit dock stays out
+// of the ←/→ columns and inside the stage, its labels go when the stage is
+// small, the
 // collapsed nav leaves the Tab order, and a popped rail stacks above the
 // center pane's floating chrome.
 //
@@ -46,21 +47,34 @@ function zIndex(body: string): number {
   return Number(match[1]);
 }
 
-/** The body of the one `@container psl-stage …` rule, nested blocks and
- *  all — `extractBlock` stops at the first `}`. */
-function containerRule(): { prelude: string; body: string } {
-  const start = css.indexOf("@container psl-stage");
-  expect(start, `${LABEL}: no @container psl-stage rule`).toBeGreaterThanOrEqual(0);
-  expect(css.indexOf("@container psl-stage", start + 1), `${LABEL}: expected one rule`).toBe(-1);
-  const open = css.indexOf("{", start);
-  let depth = 0;
-  for (let i = open; i < css.length; i++) {
-    if (css[i] === "{") depth++;
-    else if (css[i] === "}" && --depth === 0) {
-      return { prelude: css.slice(start, open), body: css.slice(open + 1, i) };
+/** Every `@container psl-stage …` rule, nested blocks and all —
+ *  `extractBlock` stops at the first `}`. */
+function containerRules(): Array<{ prelude: string; body: string }> {
+  const rules: Array<{ prelude: string; body: string }> = [];
+  let start = css.indexOf("@container psl-stage");
+  while (start >= 0) {
+    const open = css.indexOf("{", start);
+    let depth = 0;
+    let close = -1;
+    for (let i = open; i < css.length; i++) {
+      if (css[i] === "{") depth++;
+      else if (css[i] === "}" && --depth === 0) {
+        close = i;
+        break;
+      }
     }
+    if (close < 0) throw new Error(`${LABEL}: unbalanced @container rule`);
+    rules.push({ prelude: css.slice(start, open), body: css.slice(open + 1, close) });
+    start = css.indexOf("@container psl-stage", close);
   }
-  throw new Error(`${LABEL}: unbalanced @container rule`);
+  return rules;
+}
+
+/** The one container rule whose body holds `marker`. */
+function containerRule(marker: RegExp): { prelude: string; body: string } {
+  const matches = containerRules().filter((rule) => marker.test(rule.body));
+  expect(matches, `${LABEL}: expected one @container psl-stage rule matching ${marker}`).toHaveLength(1);
+  return matches[0]!;
 }
 
 // The nav buttons' geometry, read from the stylesheet itself.
@@ -86,39 +100,34 @@ describe("the stage is the edit toolbar's query container", () => {
 });
 
 describe("compact edit toolbar", () => {
-  const rule = containerRule();
+  const rule = containerRule(/\.psl__et-btn:not\(\.is-armed\)/);
 
   it("switches on a narrow OR short stage", () => {
     expect(rule.prelude).toMatch(/\(\s*width\s*<\s*\d+px\s*\)\s*or\s*\(\s*height\s*<\s*\d+px\s*\)/);
   });
 
-  it("the height threshold keeps two labelled rows clear of the ←/→ buttons", () => {
-    // Above the threshold the toolbar keeps its labels and is at most two
-    // rows (the width threshold sees to that). It is bottom-anchored, and
-    // the nav buttons are centred, so it clears them only when
-    //   H − bottom − toolbarH ≥ H/2 + navSize/2 + ring
-    const toolbar = block("\\}\\s*\\.psl__edit-toolbar");
-    const button = block("\\}\\s*\\.psl__et-btn");
-    const twoRows =
-      2 * px(button, "height") +
-      px(toolbar, "row-gap") +
-      2 * px(toolbar, "padding") +
-      2; /* 1px border, top and bottom */
-    const minHeight = 2 * (px(toolbar, "bottom") + twoRows + NAV_SIZE / 2 + NAV_RING_AND_GAP);
-    const threshold = Number(rule.prelude.match(/height\s*<\s*(\d+)px/)?.[1]);
-    expect(threshold).toBeGreaterThanOrEqual(minHeight);
-  });
-
-  it("reserves both ←/→ columns so no number of wrapped rows can cover them", () => {
-    const compactToolbar = extractBlock(rule.body, "^\\s*\\.psl__edit-toolbar", {
-      label: LABEL,
-      expectSingle: true
-    });
-    const reserve = compactToolbar.match(/max-width\s*:\s*calc\(\s*100%\s*-\s*(\d+)px\s*\)\s*;/);
-    expect(reserve, `${LABEL}: compact toolbar must reserve the nav columns`).not.toBeNull();
+  it("reserves both ←/→ columns at EVERY stage size, so no number of wrapped rows can cover them", () => {
+    // The reserve used to live only in this query, with a height
+    // threshold proving two toolbar rows stayed below the buttons. The
+    // property bar docked above the toolbar makes the dock tall enough to
+    // reach them at any stage size, so the reserve is on the base rule.
+    const dock = block("\\}\\s*\\.psl__edit-dock");
+    const reserve = dock.match(/max-width\s*:\s*calc\(\s*100%\s*-\s*(\d+)px\s*\)\s*;/);
+    expect(reserve, `${LABEL}: the dock must reserve the nav columns`).not.toBeNull();
     expect(Number(reserve?.[1])).toBeGreaterThanOrEqual(
       2 * (NAV_INSET + NAV_SIZE + NAV_RING_AND_GAP)
     );
+  });
+
+  it("the dock never outgrows the stage: the property bar gives, the toolbar does not", () => {
+    const dock = block("\\}\\s*\\.psl__edit-dock");
+    const cap = dock.match(/max-height\s*:\s*calc\(\s*100%\s*-\s*(\d+)px\s*\)\s*;/);
+    expect(cap, `${LABEL}: the dock must cap its height to the stage`).not.toBeNull();
+    expect(Number(cap?.[1])).toBeGreaterThanOrEqual(px(dock, "bottom"));
+    const bar = block("\\}\\s*\\.psl__et-props");
+    expect(bar).toMatch(/min-height\s*:\s*0\s*;/);
+    expect(bar).toMatch(/overflow-y\s*:\s*auto\s*;/);
+    expect(block("\\.psl__edit-dock > \\.psl__edit-toolbar")).toMatch(/flex\s*:\s*none\s*;/);
   });
 
   it("hides labels visually, never from the accessible name, and never the armed Reset", () => {
@@ -132,6 +141,58 @@ describe("compact edit toolbar", () => {
     expect(hide).not.toMatch(/display\s*:\s*none/);
     expect(hide).not.toMatch(/visibility\s*:\s*hidden/);
     expect(hide).toMatch(/clip-path\s*:\s*inset\(50%\)/);
+  });
+});
+
+describe("property bar on a wide stage", () => {
+  // The stylesheet with every container rule cut out: what applies when
+  // no size query does.
+  const baseCss = containerRules().reduce(
+    (rest, rule) => rest.replace(`${rule.prelude}{${rule.body}}`, ""),
+    css
+  );
+  const base = (selectorPattern: string): string =>
+    extractBlock(baseCss, selectorPattern, { label: LABEL, expectSingle: true });
+
+  it("floats its buttons to the end of row one instead of wrapping them onto a row of their own", () => {
+    // A flex row has no "end of row one" slot: the buttons were the last
+    // item, and whenever the fields filled two rows they took a third.
+    expect(base("\\.psl__et-props")).not.toMatch(/display\s*:\s*(inline-)?flex\s*;/);
+    expect(base("\\.psl__et-props-actions")).toMatch(/float\s*:\s*right\s*;/);
+  });
+
+  it("is exactly the toolbar's width", () => {
+    const bar = base("\\.psl__et-props");
+    expect(bar).toMatch(/(?:^|[;\s])width\s*:\s*0\s*;/);
+    expect(bar).toMatch(/min-width\s*:\s*100%\s*;/);
+  });
+});
+
+describe("property bar on a narrow stage", () => {
+  const rule = containerRule(/\.psl__et-props-body/);
+
+  it("switches on stage width", () => {
+    expect(rule.prelude).toMatch(/\(\s*width\s*<\s*\d+px\s*\)/);
+  });
+
+  it("is two rows at any width: the header row, then one control strip", () => {
+    const bar = extractBlock(rule.body, "\\.psl__et-props", { label: LABEL, expectSingle: true });
+    expect(bar).toMatch(/display\s*:\s*grid\s*;/);
+    const areas = bar.match(/grid-template-areas\s*:([^;]*);/);
+    expect(areas, `${LABEL}: the narrow bar must name its grid areas`).not.toBeNull();
+    expect(areas?.[1].match(/"[^"]*"/g)).toHaveLength(2);
+  });
+
+  it("the control strip never wraps: it scrolls sideways, inside the bar", () => {
+    const strip = extractBlock(rule.body, "\\.psl__et-props-body", {
+      label: LABEL,
+      expectSingle: true
+    });
+    expect(strip).toMatch(/flex-wrap\s*:\s*nowrap\s*;/);
+    expect(strip).toMatch(/overflow-x\s*:\s*auto\s*;/);
+    // A grid item's min-width is its content's by default; without 0 the
+    // strip widens the bar to fit every control instead of scrolling.
+    expect(strip).toMatch(/min-width\s*:\s*0\s*;/);
   });
 });
 
@@ -166,7 +227,7 @@ describe("popped rail stacking", () => {
     // `.psl__main:has(... :focus-visible) > .psl__grid-copy-palette` rule
     // (the focus-ring pass, #645), which a bare pattern matches too.
     for (const chrome of [
-      "\\}\\s*\\.psl__edit-toolbar",
+      "\\}\\s*\\.psl__edit-dock",
       "\\}\\s*\\.psl__grid-copy-palette",
       "\\.psl__stage-nav",
       "\\.psl__focus-close"

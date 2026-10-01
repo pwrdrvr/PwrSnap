@@ -14,15 +14,15 @@
 //
 // Mirrors `editor-tool-styles.spec.ts` for the harness shape; shares
 // the same seedCapture + openEditor + closeEditorWindow + selectTool
-// + openPopoverForActiveTool patterns.
+// + openToolStyleBar patterns.
 
 import { type Page } from "@playwright/test";
 import { expect, type LaunchedApp, launchPwrSnap, test } from "./fixtures/electron-app";
-import { openEditor, seedImageCapture, selectTool } from "./fixtures/editor";
+import { openEditor, openToolStyleBar, seedImageCapture, selectTool } from "./fixtures/editor";
 
 test.setTimeout(90_000);
 
-test("editor-shape-tool: picking a shape kind in the popover persists across reopen", async () => {
+test("editor-shape-tool: picking a shape kind in the property bar persists across reopen", async () => {
   const app = await launchPwrSnap();
   try {
     const captureId = await seedImageCapture(app, { idPrefix: "shape", sourceAppName: "Shape Tool Spec" });
@@ -31,7 +31,7 @@ test("editor-shape-tool: picking a shape kind in the popover persists across reo
     {
       const editorWindow = await openEditor(app, captureId);
       await selectTool(editorWindow, "shape");
-      await openPopoverForActiveTool(editorWindow, "shape");
+      await openToolStyleBar(editorWindow);
 
       // The shape-kind picker is a `role="radiogroup"` of 5 buttons;
       // each carries `data-testid="shape-kind-${id}"`. Default is
@@ -63,7 +63,7 @@ test("editor-shape-tool: picking a shape kind in the popover persists across reo
     {
       const editorWindow = await openEditor(app, captureId);
       await selectTool(editorWindow, "shape");
-      await openPopoverForActiveTool(editorWindow, "shape");
+      await openToolStyleBar(editorWindow);
       await expect(
         editorWindow.locator(
           '[data-testid="shape-kind-circle"][aria-checked="true"]'
@@ -82,7 +82,7 @@ test("editor-shape-tool: parallelogram skew slider gates on shape kind + persist
     const editorWindow = await openEditor(app, captureId);
 
     await selectTool(editorWindow, "shape");
-    await openPopoverForActiveTool(editorWindow, "shape");
+    await openToolStyleBar(editorWindow);
 
     // Default shape is Rectangle — skew slider should NOT be visible.
     await expect(
@@ -147,13 +147,12 @@ test("editor-shape-tool: drawing a circle paints an <ellipse> in the persisted g
     const captureId = await seedImageCapture(app, { idPrefix: "shape", sourceAppName: "Shape Tool Spec" });
     const editorWindow = await openEditor(app, captureId);
 
-    // Pick Circle in the popover.
+    // Pick Circle in the property bar.
     await selectTool(editorWindow, "shape");
-    await openPopoverForActiveTool(editorWindow, "shape");
+    await openToolStyleBar(editorWindow);
     await editorWindow
       .locator('[data-testid="shape-kind-circle"]')
       .click();
-    await editorWindow.keyboard.press("Escape");
 
     // Drag on the actual drawable canvas to commit the shape. The
     // wrapper can be larger than the fitted canvas under Linux/xvfb
@@ -230,11 +229,3 @@ async function closeEditorWindow(app: LaunchedApp, win: Page): Promise<void> {
   await expect(win.locator(".psl__focus")).toHaveCount(0);
 }
 
-async function openPopoverForActiveTool(win: Page, tool: string): Promise<void> {
-  const caret = win.locator(`[data-testid="tool-caret-${tool}"]`);
-  await caret.waitFor({ state: "visible", timeout: 5_000 });
-  await caret.click();
-  await win
-    .locator('[data-testid="tool-style-popover"]')
-    .waitFor({ state: "visible", timeout: 5_000 });
-}

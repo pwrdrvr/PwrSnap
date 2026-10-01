@@ -18,7 +18,7 @@
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
-import { openEditor, seedImageCapture, selectTool } from "./fixtures/editor";
+import { openEditor, openToolStyleBar, seedImageCapture, selectTool } from "./fixtures/editor";
 
 test.setTimeout(90_000);
 
@@ -111,19 +111,19 @@ test("editor-border-outline: Auto samples a WHITE background into a black border
       .toEqual([["black", "#ff8a1f"]]);
 
     // Flip the tool default to an explicit White border and draw a
-    // second arrow — the control must override the sampled pick.
-    const caret = win.locator('[data-testid="tool-caret-arrow"]');
-    await caret.waitFor({ state: "visible", timeout: 5_000 });
-    await caret.click();
-    const popover = win.locator('[data-testid="tool-style-popover"]');
-    await popover.waitFor({ state: "visible", timeout: 5_000 });
-    await popover.locator('[data-testid="outline-white"]').click();
+    // second arrow — the control must override the sampled pick. The
+    // first arrow is still selected, so let go of it first: with it
+    // selected the bar would restyle THAT arrow, not the next one.
+    const bar = await openToolStyleBar(win);
+    await bar.locator('[data-testid="outline-white"]').click();
     await expect(
-      popover.locator('[data-testid="outline-white"][aria-checked="true"]')
+      bar.locator('[data-testid="outline-white"][aria-checked="true"]')
     ).toHaveCount(1);
-    await win.keyboard.press("Escape");
 
-    await drawArrow(win, { x: 0.25, y: 0.75 }, { x: 0.75, y: 0.8 });
+    // Near the top: the docked property bar can cover the bottom of the
+    // canvas in a small window (it did on the Windows runner), and a
+    // drag that starts on the bar draws nothing.
+    await drawArrow(win, { x: 0.3, y: 0.1 }, { x: 0.8, y: 0.18 });
     await expect
       .poll(
         async () =>
@@ -241,16 +241,11 @@ test("editor-border-outline: Border Off draws no halo at all", async () => {
     await waitForEditorImage(win);
 
     await selectTool(win, "arrow");
-    const caret = win.locator('[data-testid="tool-caret-arrow"]');
-    await caret.waitFor({ state: "visible", timeout: 5_000 });
-    await caret.click();
-    const popover = win.locator('[data-testid="tool-style-popover"]');
-    await popover.waitFor({ state: "visible", timeout: 5_000 });
-    await popover.locator('[data-testid="outline-none"]').click();
+    const bar = await openToolStyleBar(win);
+    await bar.locator('[data-testid="outline-none"]').click();
     await expect(
-      popover.locator('[data-testid="outline-none"][aria-checked="true"]')
+      bar.locator('[data-testid="outline-none"][aria-checked="true"]')
     ).toHaveCount(1);
-    await win.keyboard.press("Escape");
 
     await drawArrow(win, { x: 0.2, y: 0.3 }, { x: 0.7, y: 0.6 });
     // One line only: the colored stem. No halo under-stroke.

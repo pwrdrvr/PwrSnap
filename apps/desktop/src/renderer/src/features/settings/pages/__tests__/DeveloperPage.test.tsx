@@ -4,6 +4,7 @@ import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import type { Settings } from "@pwrsnap/shared";
 import { DeveloperPage } from "../DeveloperPage";
 import type { UseSettingsValue } from "../../useSettings";
+import { defaultEditorToolBag } from "@pwrsnap/shared";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -78,8 +79,8 @@ const baseSettings: Settings = {
       blur: { mode: "gaussian", radius: { mode: "auto" } },
       highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
     },
+    toolBag: defaultEditorToolBag(),
     coachmarks: { stoplightSeen: false },
-    matchingText: { enabled: true },
     sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }
   },
   library: {

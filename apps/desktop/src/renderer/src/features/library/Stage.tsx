@@ -114,6 +114,10 @@ export type StageProps = {
    *  Stage is a pass-through, same as `onZoomChange`. */
   readonly onSelectionChange: (ids: readonly string[]) => void;
   readonly onLayersApi: (api: LayersPanelApi | null) => void;
+  /** Library's mirror of the canvas selection + the editor's layers
+   *  API, forwarded to the EditToolbar's property bar and tool bag. */
+  readonly selectedLayerIds: readonly string[];
+  readonly layersApi: LayersPanelApi | null;
   /** Optional content to render above the stage — used by Reel mode
    *  to host the filmstrip. Focus passes nothing (no filmstrip). */
   readonly aboveStageSlot?: ReactElement;
@@ -171,7 +175,9 @@ function StageBody({
   blurStyle,
   onBlurStyleChange,
   onSelectionChange,
-  onLayersApi
+  onLayersApi,
+  selectedLayerIds,
+  layersApi
 }: StageProps): ReactElement {
   const captureId = record.id;
   void view; // currently unused; kept in props for future variant logic
@@ -336,6 +342,8 @@ function StageBody({
           zoom={zoom}
           blurStyle={blurStyle}
           onBlurStyleChange={onBlurStyleChange}
+          selectedLayerIds={selectedLayerIds}
+          layersApi={layersApi}
         />
       )}
     </>

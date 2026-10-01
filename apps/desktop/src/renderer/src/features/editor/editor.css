@@ -1267,34 +1267,6 @@
   color: var(--text-secondary);
 }
 
-/* Matching-text affordance — "+ Add label" button popped near the
-   tail of a just-placed arrow. The button auto-hides via the hook's
-   8s timer + cancel sites; layout-wise it sits absolutely inside the
-   canvas overlay layer so the anchorPoint coordinate space matches
-   the canvas's display pixels. */
-.pse-affordance {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 28px;
-  padding: 0 12px;
-  background: var(--accent-soft);
-  border: 1px solid var(--accent);
-  border-radius: 14px;
-  color: var(--accent-bright);
-  font: 600 12px/1 var(--font-sans);
-  cursor: pointer;
-  z-index: 6;
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--shadow-base) 35%, transparent);
-}
-.pse-affordance:hover {
-  background: color-mix(in srgb, var(--accent) 20%, transparent);
-}
-.pse-affordance:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
-}
-
 /* Right-sidebar panel stubs — Help. Renders inside
    .pse-chrome__panel-body which supplies scroll + padding;
    the stub is just a lightweight typographic body. */

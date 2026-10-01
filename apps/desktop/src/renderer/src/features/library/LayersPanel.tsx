@@ -240,6 +240,9 @@ function ArrowPreview({
             <path d="M1 1 9 5 1 9" fill="none" stroke={color} strokeWidth="1.5" />
           ) : endStyle === "dot" ? (
             <circle cx="5" cy="5" r="3" fill={color} />
+          ) : endStyle === "bar" ? (
+            // ON the endpoint (refX), where `line` sits back from it.
+            <path d="M8 1v8" fill="none" stroke={color} strokeWidth="1.5" />
           ) : (
             <path d="M6 1v8" fill="none" stroke={color} strokeWidth="1.5" />
           )}

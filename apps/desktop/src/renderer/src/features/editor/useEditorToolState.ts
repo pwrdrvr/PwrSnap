@@ -1,54 +1,53 @@
 // `useEditorToolState` — the v2 editor's single state machine for the
-// tool-UX layer. Owns four things, all window-scoped:
+// tool-UX layer. Owns three things, all window-scoped:
 //
-//   1. The currently-active tool (sticky after placement; legacy ⌥-
-//      click single-shot mode flips back to pointer after one
-//      annotation).
+//   1. The currently-active tool (sticky after placement; ⌥-click
+//      single-shot mode flips back to pointer after one annotation).
 //   2. Per-tool style memory, layered ON TOP of `settings.editor.
 //      toolStyles` defaults. Local edits override the Settings read;
-//      writes coalesce per (tool, field) over a 500ms window before
-//      dispatching `settings:write` once.
-//   3. The shared COLOR slot — picking a color for ANY tool propagates
-//      to all other tools' color fields (so the stoplight pattern
-//      "red = bad" reads naturally across arrow/text/rect/highlight).
-//      Other style fields stay per-tool.
-//   4. The matching-text affordance lifecycle: after an arrow placement
-//      (when `settings.editor.matchingText.enabled`), pop a small
-//      "+ Add label" affordance anchored at the arrow's tail; clicking
-//      it arms a one-shot text placement that returns to arrow mode
-//      with the same style preserved.
+//      writes coalesce over a 500ms window before dispatching
+//      `settings:write` once. Each tool's style is its own — picking a
+//      color for arrows does not recolor text. (It used to: a shared
+//      COLOR slot fanned every color pick out to every tool, which is
+//      exactly what made "a red arrow and a green arrow" a chore. The
+//      tool bag replaced it.)
+//   3. The tool bag (`settings.editor.toolBag`): nine saved complete
+//      styles. Arming a slot makes its tool active and loads its whole
+//      style as that tool's working style; `armedSlot` remembers which
+//      slot is armed so the toolbar can show it, and whether the working
+//      style has since drifted from it. Pasting a slot onto a SELECTION
+//      is the editor's job (it owns the layers) — see tool-bag.ts.
 //
 // State changes are LOCAL to this hook instance — cross-window
 // broadcasts are explicitly avoided. Each editor window owns its own
 // active tool + per-session style overrides; opening a second editor
 // reads the (possibly-updated) settings defaults but does NOT stomp
-// the first window's in-progress work.
-//
-// Why a hook, not a context:
-//   - Each editor instance is its own window; there is no parent shell
-//     to host a provider across multiple editors.
-//   - The hook depends on `captureId` so it can reset matching-text
-//     state on capture switches without an effect chain through a
-//     context — that's one of the five required cancel sites for the
-//     8s matching-text auto-dismiss timer (the others: tool change,
-//     editor unmount, explicit dismiss, 8s timeout).
+// the first window's in-progress work. The bag is the exception by
+// nature: it is a saved setting, so a slot saved in one window shows
+// up in the others through the settings broadcast.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ArrowToolStyle,
   BlurToolStyle,
+  EditorToolBag,
   EditorToolStyles,
   HighlightToolStyle,
   ShapeToolStyle,
   Settings,
   SettingsPatch,
   TextToolStyle,
-  ToolColor
+  ToolBagSlot
 } from "@pwrsnap/shared";
-import { defaultEditorToolStyles } from "@pwrsnap/shared";
+import {
+  defaultEditorToolBag,
+  defaultEditorToolStyles,
+  TOOL_BAG_SIZE
+} from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
 import { useSettings } from "../settings/useSettings";
 import type { Tool } from "./editor-tools";
+import { styleValuesEqual } from "./tool-bag";
 
 // ---- Public types ---------------------------------------------------
 
@@ -84,31 +83,9 @@ export type ActiveStyle =
   | { tool: "blur"; style: BlurToolStyle }
   | { tool: "highlight"; style: HighlightToolStyle };
 
-/** Matching-text affordance state machine.
- *
- *   idle      — no affordance; default.
- *   available — popped after an arrow placement; visible at
- *               `anchorPoint`; `expiresAt` is the deadline at which the
- *               8s auto-dismiss timer fires. `baseStyle` is the arrow
- *               style at placement time so the text we synthesize on
- *               click matches color + (later: weight derived from
- *               arrow thickness).
- *   armed     — user clicked the affordance; tool has flipped to text;
- *               next text placement will return us to arrow.
- */
-export type MatchingTextState =
-  | { kind: "idle" }
-  | {
-      kind: "available";
-      anchorPoint: { x: number; y: number };
-      baseStyle: ArrowToolStyle;
-      expiresAt: number;
-    }
-  | { kind: "armed"; baseStyle: ArrowToolStyle };
-
 export interface UseEditorToolStateOptions {
-  /** Resetting this resets the in-flight matching-text state — opening
-   *  a different capture is one of the five cancel sites. */
+  /** The capture being edited. Switching captures disarms the bag slot
+   *  (the tool and its working style carry over). */
   captureId: string;
   /** Optional override; the toolbar may want to ship "pointer" as the
    *  baseline regardless of last-used. Defaults to "pointer". */
@@ -124,13 +101,23 @@ export interface UseEditorToolStateReturn {
     field: K,
     value: StyleFor<T>[K]
   ): void;
-  onAnnotationPlaced(placement: {
-    tool: Tool;
-    anchorPoint?: { x: number; y: number };
-  }): void;
-  matchingText: MatchingTextState;
-  clickMatchingTextAffordance(): void;
-  dismissMatchingTextAffordance(): void;
+  /** Called once per committed annotation. Only single-shot (⌥-click)
+   *  mode reacts: it returns to pointer. */
+  onAnnotationPlaced(placement: { tool: Tool }): void;
+  /** The saved bag — settings, overlaid with any slot write still in
+   *  flight. Always exactly `TOOL_BAG_SIZE` entries. */
+  bag: EditorToolBag;
+  /** Index of the armed slot, or null. Cleared by picking a tool
+   *  family directly, by switching captures, and by clearing the slot. */
+  armedSlot: number | null;
+  /** True when the armed slot's tool is active but its working style no
+   *  longer matches the slot — the user tweaked it after arming. */
+  armedSlotModified: boolean;
+  /** Arm slot `index`: activate its tool and load its full style. An
+   *  empty slot is a no-op that returns false. */
+  armSlot(index: number, options?: { singleShot?: boolean }): boolean;
+  /** Save (or with null, clear) slot `index`. Writes the whole bag. */
+  setBagSlot(index: number, slot: ToolBagSlot | null): void;
   /** The merged tool styles for a PERSISTING commit, awaited so a
    *  draw racing `settings:read` stamps the user's configured styles
    *  rather than the pre-settle defaults (the toolbar is interactive
@@ -144,14 +131,6 @@ export interface UseEditorToolStateReturn {
 }
 
 // ---- Tunables -------------------------------------------------------
-
-/** 8s matching-text affordance auto-dismiss. Lifted into a named
- *  constant so the test + any future tuning surface can read the same
- *  number. (The affordance's on/off switch lives on the EDITOR card on
- *  Settings → General; the DURATION is still hardcoded here.) Plan
- *  §"Hover timings": this matches the
- *  `--pse-affordance-auto-dismiss-ms` CSS var. */
-const MATCHING_TEXT_AUTO_DISMISS_MS = 8000;
 
 /** Per-(tool, field) coalescing window for `settings:write`. The
  *  Settings substrate already serializes writes — this debounce is a
@@ -267,8 +246,8 @@ export function useEditorToolState(
   const settings: Settings | null = settingsValue.settings;
   const settingsToolStyles: EditorToolStyles | null =
     settings === null ? null : settings.editor.toolStyles;
-  const matchingTextEnabled =
-    settings === null ? true : settings.editor.matchingText.enabled;
+  const settingsBag: EditorToolBag | null =
+    settings === null ? null : settings.editor.toolBag;
 
   // Active tool — window-scoped React state. No broadcast.
   const [activeTool, setActiveToolState] = useState<Tool>(initialTool);
@@ -281,10 +260,18 @@ export function useEditorToolState(
   // same window session.
   const [localStyles, setLocalStyles] = useState<LocalStyleOverrides>({});
 
-  // Matching-text affordance state machine.
-  const [matchingText, setMatchingText] = useState<MatchingTextState>({
-    kind: "idle"
-  });
+  // Armed bag slot. Only the INDEX is state; the slot's content is read
+  // from the bag each render, so saving over the armed slot re-bases
+  // "modified" against what was saved.
+  const [armedSlot, setArmedSlot] = useState<number | null>(null);
+
+  // A bag write that has been dispatched but whose settings broadcast
+  // has not landed yet. Rendered in place of the settings bag so a save
+  // shows immediately; dropped when its own write resolves (the
+  // substrate broadcasts before it replies), and only if no newer write
+  // has replaced it since.
+  const [pendingBag, setPendingBag] = useState<EditorToolBag | null>(null);
+  const bagWriteSeqRef = useRef(0);
 
   // Single-shot flag. Set by `setActiveTool(tool, { singleShot: true })`
   // (the ⌥-click affordance); consumed by `onAnnotationPlaced`, which
@@ -294,14 +281,14 @@ export function useEditorToolState(
   // batching reordering it.
   const singleShotRef = useRef<boolean>(false);
 
-  // Live mirrors for callbacks that outlive their render closure —
-  // an async commit invokes `onAnnotationPlaced` (and reads styles)
-  // AFTER awaiting `settledToolStyles`, by which point the closure's
-  // `settingsToolStyles` / `matchingTextEnabled` may be a settings
+  // Live mirrors for callbacks that outlive their render closure — an
+  // async commit reads styles AFTER awaiting `settledToolStyles`, by
+  // which point the closure's `settingsToolStyles` may be a settings
   // round-trip stale. Written during render (see the Selectors
   // section); read at call time.
   const effectiveStylesRef = useRef<EditorToolStyles | null>(null);
-  const matchingTextEnabledRef = useRef<boolean>(true);
+  const bagRef = useRef<EditorToolBag>(defaultEditorToolBag());
+  const bagLoadedRef = useRef<boolean>(false);
   // Settle bookkeeping for `settledToolStyles` — one shared deferred
   // + one bounded-wait timer per unsettled window, and a latch that
   // stops repeat 3s parks once a timeout has fired.
@@ -313,64 +300,17 @@ export function useEditorToolState(
     timer: ReturnType<typeof setTimeout>;
   } | null>(null);
 
-  // ---- Matching-text auto-dismiss timer (5 cancel sites) ---------
-  //
-  // Cancel sites:
-  //   1. setActiveTool (any user-initiated tool change)
-  //   2. captureId change (useEffect dependency)
-  //   3. editor unmount (useEffect cleanup)
-  //   4. dismissMatchingTextAffordance (explicit)
-  //   5. 8s auto-fire (this timer)
-  //
-  // The timer ID is held in a ref so clearTimeout can run from any of
-  // those sites synchronously without going through state.
-  const autoDismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null
-  );
-  const clearAutoDismissTimer = useCallback((): void => {
-    if (autoDismissTimerRef.current !== null) {
-      clearTimeout(autoDismissTimerRef.current);
-      autoDismissTimerRef.current = null;
-    }
-  }, []);
-
-  // Cancel site #2 + #3: capture switch + unmount both go through this
-  // effect's cleanup. Resetting via setMatchingText is React-safe
-  // because the effect fires after a render commit.
+  // A different capture is a different job: keep the tool and its
+  // working style, but stop claiming a slot is armed.
   useEffect(() => {
-    return () => {
-      clearAutoDismissTimer();
-      setMatchingText({ kind: "idle" });
-    };
-  }, [captureId, clearAutoDismissTimer]);
-
-  // Cancel site #6: the user turned the affordance OFF in Settings while
-  // it was live. `matchingTextEnabled` is otherwise consulted only when
-  // an annotation is placed, so without this the chip stays on screen
-  // for the rest of its 8s and — worse — an already-clicked "armed"
-  // state survives indefinitely, leaving the tool swapped to text and
-  // giving the NEXT text placement matching-text treatment from a
-  // feature the user just disabled.
-  //
-  // This became reachable when the toggle got a UI: previously the flag
-  // could only change by hand-editing pwrsnap-settings.json, which does
-  // not broadcast, so a live transition never happened.
-  useEffect(() => {
-    if (matchingTextEnabled) return;
-    clearAutoDismissTimer();
-    setMatchingText((current) => (current.kind === "idle" ? current : { kind: "idle" }));
-  }, [matchingTextEnabled, clearAutoDismissTimer]);
+    setArmedSlot(null);
+  }, [captureId]);
 
   // ---- Settings-write coalescer ----------------------------------
   //
-  // Per-(tool, field) timers. Each setStyleField call resets ITS OWN
-  // (tool, field) timer to the 500ms horizon. When the timer fires, we
-  // collect every pending field in the queue for that tool and dispatch
-  // ONE `settings:write` covering all of them.
-  //
-  // The queue is shaped as `Map<tool, Partial<style>>` so concurrent
-  // edits to different fields in the same tool collapse into a single
-  // patch on flush.
+  // Each setStyleField call resets the 500ms horizon. When the timer
+  // fires, every pending field (across tools) goes out in ONE
+  // `settings:write`.
   const pendingRef = useRef<LocalStyleOverrides>({});
   const writeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -406,9 +346,7 @@ export function useEditorToolState(
   }, [flushPendingWrites]);
 
   // Flush on unmount AND on window beforeunload — both are catch-all
-  // cancel sites for in-flight style edits. Pulled into its own effect
-  // so the captureId effect above stays focused on matching-text
-  // teardown.
+  // cancel sites for in-flight style edits.
   useEffect(() => {
     const onBeforeUnload = (): void => {
       flushPendingWrites();
@@ -424,20 +362,16 @@ export function useEditorToolState(
 
   const setActiveTool = useCallback(
     (tool: Tool, opts?: { singleShot?: boolean }): void => {
-      // Cancel site #1: any user-initiated tool change dismisses the
-      // matching-text affordance. clickMatchingTextAffordance below
-      // uses a separate internal setter that does NOT clear matching-
-      // text (it transitions to "armed" instead).
-      clearAutoDismissTimer();
-      setMatchingText({ kind: "idle" });
-      // Also flush any pending writes for the PREVIOUS tool — the
-      // user has moved on; we don't want a stale debounce holding a
-      // patch that a subsequent settings read would clobber.
+      // Flush any pending writes for the PREVIOUS tool — the user has
+      // moved on; we don't want a stale debounce holding a patch that a
+      // subsequent settings read would clobber.
       flushPendingWrites();
       singleShotRef.current = opts?.singleShot === true;
+      // Picking a family directly is not "using slot N" any more.
+      setArmedSlot(null);
       setActiveToolState(tool);
     },
-    [clearAutoDismissTimer, flushPendingWrites]
+    [flushPendingWrites]
   );
 
   const setStyleField = useCallback(
@@ -452,35 +386,16 @@ export function useEditorToolState(
       //   2. pending coalescing queue (debounced 500ms before
       //      `settings:write`).
       //
-      // For `field === "color"`, the local map AND the queue both fan
-      // out to every other styled tool so the shared COLOR slot
-      // propagates without an extra dispatch round-trip.
-
-      // Internal helper: write `field=value` into the per-tool block
-      // of an override map. The double-cast through `unknown` is
-      // required because TS can't prove that a `Partial<StyleFor<T>>`
-      // is assignable to the index-signature-free union member at the
-      // specific T; the runtime invariant (field is a known key of
-      // T's style) is enforced by the public generic.
+      // The double-cast through `unknown` is required because TS can't
+      // prove that a `Partial<StyleFor<T>>` is assignable to the
+      // index-signature-free union member at the specific T; the
+      // runtime invariant (field is a known key of T's style) is
+      // enforced by the public generic.
       const applyFieldUpdate = (target: LocalStyleOverrides): void => {
-        if (field === "color") {
-          // Shared COLOR slot: write to every styled tool that has a
-          // color field (i.e. everything except blur).
-          const color = value as ToolColor;
-          target.arrow = { ...(target.arrow ?? {}), color };
-          target.text = { ...(target.text ?? {}), color };
-          target.shape = { ...(target.shape ?? {}), color };
-          target.highlight = { ...(target.highlight ?? {}), color };
-          // Blur has no color field — skip.
-          return;
-        }
         const existing = (target[tool] ?? {}) as Partial<StyleFor<T>>;
         const updated = { ...existing, [field]: value } as Partial<
           StyleFor<T>
         >;
-        // The unknown-cast satisfies TS that we're writing a partial
-        // of the correct tool variant; runtime is sound because
-        // `tool` is the discriminant.
         (target as Record<StyledTool, unknown>)[tool] = updated;
       };
 
@@ -490,107 +405,72 @@ export function useEditorToolState(
         return next;
       });
 
-      // Queue the wire write — same fan-out for color.
       applyFieldUpdate(pendingRef.current);
       scheduleWriteFlush();
     },
     [scheduleWriteFlush]
   );
 
-  const dismissMatchingTextAffordance = useCallback((): void => {
-    // Cancel site #4: explicit dismiss.
-    clearAutoDismissTimer();
-    setMatchingText({ kind: "idle" });
-  }, [clearAutoDismissTimer]);
-
-  const clickMatchingTextAffordance = useCallback((): void => {
-    setMatchingText((prev) => {
-      if (prev.kind !== "available") return prev;
-      // Transition to armed; the next text placement will return us to
-      // arrow tool with the baseStyle preserved.
-      clearAutoDismissTimer();
-      // Flip the active tool to text (without going through the public
-      // setActiveTool — that would clear matching-text back to idle).
-      setActiveToolState("text");
-      // Note: the shared COLOR slot already covers the "text inherits
-      // arrow color" semantics — when the user picked the arrow's
-      // color, we propagated it to text. The affordance click does not
-      // need to re-poke the text style. We assert the invariant in the
-      // test.
-      return { kind: "armed", baseStyle: prev.baseStyle };
-    });
-  }, [clearAutoDismissTimer]);
-
-  const onAnnotationPlaced = useCallback(
-    (placement: {
-      tool: Tool;
-      anchorPoint?: { x: number; y: number };
-    }): void => {
-      // First: armed-text branch. If the placement is a text
-      // placement AND we're armed, return to arrow and clear armed.
-      if (placement.tool === "text" && matchingText.kind === "armed") {
-        setActiveToolState("arrow");
-        setMatchingText({ kind: "idle" });
-        return;
-      }
-
-      // Single-shot: a one-shot tool returns to pointer. Trumps the
-      // matching-text spawn — if you ⌥-clicked arrow, you don't want a
-      // sticky-arrow affordance to pop.
-      if (singleShotRef.current) {
-        singleShotRef.current = false;
-        setActiveToolState("pointer");
-        // Make sure no stale matching-text state lingers.
-        clearAutoDismissTimer();
-        setMatchingText({ kind: "idle" });
-        return;
-      }
-
-      // Arrow placement with matching-text enabled → spawn the
-      // affordance. Otherwise: clear any in-flight matching-text from
-      // a prior arrow (defense-in-depth; setActiveTool already does
-      // this on tool change). The enabled flag and the style are read
-      // through refs, not the closure — a commit that awaited
-      // `settledToolStyles` invokes a callback instance minted a
-      // settings round-trip ago, and its closure would still say
-      // "settings not loaded".
-      if (
-        placement.tool === "arrow" &&
-        matchingTextEnabledRef.current &&
-        placement.anchorPoint !== undefined
-      ) {
-        // Live effective arrow style (settings + local overrides) so
-        // the affordance captures what the user is currently working
-        // with; factory defaults during the brief pre-settle window.
-        const baseStyle = (
-          effectiveStylesRef.current ?? defaultEditorToolStyles()
-        ).arrow;
-        const expiresAt = Date.now() + MATCHING_TEXT_AUTO_DISMISS_MS;
-        clearAutoDismissTimer();
-        autoDismissTimerRef.current = setTimeout(() => {
-          // Cancel site #5: 8s auto-fire.
-          autoDismissTimerRef.current = null;
-          setMatchingText({ kind: "idle" });
-        }, MATCHING_TEXT_AUTO_DISMISS_MS);
-        setMatchingText({
-          kind: "available",
-          anchorPoint: placement.anchorPoint,
-          baseStyle,
-          expiresAt
-        });
-        return;
-      }
-
-      // Non-arrow placement (or matching-text disabled): just clear
-      // any prior in-flight state so we don't carry it across a tool
-      // mix.
-      if (matchingText.kind !== "idle") {
-        clearAutoDismissTimer();
-        setMatchingText({ kind: "idle" });
-      }
+  const armSlot = useCallback(
+    (index: number, opts?: { singleShot?: boolean }): boolean => {
+      const slot = bagRef.current.slots[index] ?? null;
+      if (slot === null) return false;
+      flushPendingWrites();
+      // The slot's style becomes the tool's working style whole — every
+      // field, so nothing from the previous working style leaks in —
+      // and is remembered as that tool's default like any other pick.
+      const loadInto = (target: LocalStyleOverrides): void => {
+        (target as Record<StyledTool, unknown>)[slot.tool] = { ...slot.style };
+      };
+      setLocalStyles((prev) => {
+        const next: LocalStyleOverrides = { ...prev };
+        loadInto(next);
+        return next;
+      });
+      loadInto(pendingRef.current);
+      scheduleWriteFlush();
+      singleShotRef.current = opts?.singleShot === true;
+      setArmedSlot(index);
+      setActiveToolState(slot.tool);
+      return true;
     },
-    [clearAutoDismissTimer, matchingText.kind]
+    [flushPendingWrites, scheduleWriteFlush]
   );
+
+  const setBagSlot = useCallback(
+    (index: number, slot: ToolBagSlot | null): void => {
+      if (!Number.isInteger(index) || index < 0 || index >= TOOL_BAG_SIZE) return;
+      // The bag is written WHOLE. Until settings land, `bagRef` holds
+      // the factory bag, and a save then would write the factory slots
+      // over the user's saved ones. Settings arrive in one local IPC
+      // round-trip, so dropping a save that early costs one click.
+      if (!bagLoadedRef.current) return;
+      const slots = [...bagRef.current.slots];
+      slots[index] = slot;
+      const next: EditorToolBag = { slots };
+      // Keep the mirror current so a second save in the same tick
+      // builds on this one instead of on the pre-save bag.
+      bagRef.current = next;
+      const seq = ++bagWriteSeqRef.current;
+      setPendingBag(next);
+      if (slot === null) {
+        setArmedSlot((armed) => (armed === index ? null : armed));
+      }
+      void dispatch("settings:write", { editor: { toolBag: next } }).finally(() => {
+        if (bagWriteSeqRef.current === seq) setPendingBag(null);
+      });
+    },
+    []
+  );
+
+  const onAnnotationPlaced = useCallback((_placement: { tool: Tool }): void => {
+    // Single-shot: a one-shot tool returns to pointer.
+    if (singleShotRef.current) {
+      singleShotRef.current = false;
+      setArmedSlot(null);
+      setActiveToolState("pointer");
+    }
+  }, []);
 
   // ---- Selectors --------------------------------------------------
 
@@ -604,17 +484,25 @@ export function useEditorToolState(
     [activeTool, effectiveStyles]
   );
 
+  const bag: EditorToolBag = pendingBag ?? settingsBag ?? bagRef.current;
+
+  const armedSlotContent = armedSlot === null ? null : (bag.slots[armedSlot] ?? null);
+  const armedSlotModified =
+    armedSlotContent !== null &&
+    armedSlotContent.tool === activeTool &&
+    !styleValuesEqual(effectiveStyles[armedSlotContent.tool], armedSlotContent.style);
+
   // ---- Commit-time style access (see the interface docs) ----------
   //
-  // Ref-mirrored so an async commit handler (and onAnnotationPlaced
-  // above) reads the LIVE merged styles — a render closure captured
-  // before an await still holds the pre-settle value. Written during
-  // render on purpose: an event handler firing between a commit and
-  // its passive effects must see this render's values, not the
-  // previous one's.
+  // Ref-mirrored so an async commit handler reads the LIVE merged
+  // styles — a render closure captured before an await still holds the
+  // pre-settle value. Written during render on purpose: an event
+  // handler firing between a commit and its passive effects must see
+  // this render's values, not the previous one's.
   effectiveStylesRef.current = effectiveStyles;
   settingsLoadedRef.current = settingsToolStyles !== null;
-  matchingTextEnabledRef.current = matchingTextEnabled;
+  bagRef.current = bag;
+  bagLoadedRef.current = settingsBag !== null;
 
   // One shared deferred for every settled-styles waiter, with one
   // bounded-wait timer, both torn down when settings land. Sequential
@@ -669,9 +557,11 @@ export function useEditorToolState(
     setActiveTool,
     setStyleField,
     onAnnotationPlaced,
-    matchingText,
-    clickMatchingTextAffordance,
-    dismissMatchingTextAffordance,
+    bag,
+    armedSlot,
+    armedSlotModified,
+    armSlot,
+    setBagSlot,
     settledToolStyles
   };
 }

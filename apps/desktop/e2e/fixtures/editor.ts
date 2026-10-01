@@ -13,7 +13,7 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { expect, type Page } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
 import type { LaunchedApp } from "./electron-app";
 
 /** 1×1 transparent PNG — enough for captures whose pixels the spec
@@ -119,10 +119,37 @@ export async function openEditor(app: LaunchedApp, captureId: string): Promise<P
   return page;
 }
 
+/** The docked property bar, showing the ACTIVE TOOL's working style
+ *  (not a selected layer's). Every drawing is selected on release, so a
+ *  spec that drew something and now wants to change the next drawing's
+ *  style has to let go of that selection first — Escape does, and only
+ *  that (a second Escape would leave Focus). */
+export async function openToolStyleBar(win: Page): Promise<Locator> {
+  const bar = win.locator('[data-testid="edit-property-bar"]');
+  await bar.waitFor({ state: "visible", timeout: 5_000 });
+  if ((await bar.getAttribute("data-target")) !== "tool") {
+    await win.keyboard.press("Escape");
+  }
+  const toolBar = win.locator('[data-testid="edit-property-bar"][data-target="tool"]');
+  await toolBar.waitFor({ state: "visible", timeout: 5_000 });
+  return toolBar;
+}
+
 /** Click a toolbar tool and wait for it to become active. */
 export async function selectTool(win: Page, tool: string): Promise<void> {
   await win.locator(`.psl__edit-toolbar button[data-tool="${tool}"]`).click();
   await expect(
     win.locator(`.psl__edit-toolbar button[data-tool="${tool}"].is-active`)
   ).toHaveCount(1);
+}
+
+/** A finished drawing is selected on release. Let go of it so the next
+ *  click behaves like a first click: a click on an already-selected text
+ *  layer opens it for editing instead of selecting it. Waits for the
+ *  selection first, because Escape with nothing selected leaves Focus. */
+export async function deselectAfterDraw(win: Page): Promise<void> {
+  const outline = win.locator('[data-testid="selection-outline"]');
+  await outline.first().waitFor({ state: "visible", timeout: 5_000 });
+  await win.keyboard.press("Escape");
+  await outline.first().waitFor({ state: "detached", timeout: 5_000 });
 }

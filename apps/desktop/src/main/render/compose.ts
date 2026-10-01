@@ -20,6 +20,7 @@ import sharp, { type OverlayOptions } from "sharp";
 import type { ArrowEndStyle, OverlayRow } from "@pwrsnap/shared";
 import {
   annotationBasisPx,
+  arrowBarEndpoints,
   computeArrowGeometry,
   computeStemDashArray,
   computeTextGlyphSize,
@@ -295,6 +296,7 @@ function stemEndpointPx(
       return pxOf(geom.baseCenter, imageWidthPx, imageHeightPx);
     case "line":
     case "dot":
+    case "bar":
       return pxOf(geom.to, imageWidthPx, imageHeightPx);
   }
 }
@@ -364,6 +366,15 @@ function arrowHeadHaloSvg(
       return `${base}
     <circle cx="${toPx.x}" cy="${toPx.y}" r="${r + outlineWidth}" fill="none" stroke="black" stroke-width="${outlineWidth * 2}" stroke-dasharray="${stripeDash}" />`;
     }
+    case "bar": {
+      const bar = arrowBarEndpoints(geom);
+      const l = pxOf(bar.left, imageWidthPx, imageHeightPx);
+      const r = pxOf(bar.right, imageWidthPx, imageHeightPx);
+      const base = `<line x1="${l.x}" y1="${l.y}" x2="${r.x}" y2="${r.y}" stroke="${haloColor}" stroke-width="${haloWidthPx}" stroke-linecap="round" />`;
+      if (stripeDash === null) return base;
+      return `${base}
+    <line x1="${l.x}" y1="${l.y}" x2="${r.x}" y2="${r.y}" stroke="black" stroke-width="${haloWidthPx}" stroke-linecap="round" stroke-dasharray="${stripeDash}" />`;
+    }
   }
 }
 
@@ -392,6 +403,12 @@ function arrowHeadSvg(
     case "dot": {
       const r = strokeWidthPx * 1.5;
       return `<circle cx="${toPx.x}" cy="${toPx.y}" r="${r}" fill="${fillColor}" />`;
+    }
+    case "bar": {
+      const bar = arrowBarEndpoints(geom);
+      const l = pxOf(bar.left, imageWidthPx, imageHeightPx);
+      const r = pxOf(bar.right, imageWidthPx, imageHeightPx);
+      return `<line x1="${l.x}" y1="${l.y}" x2="${r.x}" y2="${r.y}" stroke="${fillColor}" stroke-width="${strokeWidthPx}" stroke-linecap="round" />`;
     }
   }
 }

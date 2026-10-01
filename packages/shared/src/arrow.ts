@@ -250,6 +250,20 @@ function resolveArrowStyleParams(version: number | undefined): ArrowStyleParams 
   return ARROW_STYLE_VERSIONS[resolved] ?? ARROW_STYLE_VERSIONS[ARROW_STYLE_VERSION_LEGACY]!;
 }
 
+/** Endpoints of the `bar` end style: a crossbar square to the stem,
+ *  the head's width long, centred ON `to`. (The `line` end draws the
+ *  same crossbar at the head's BASE instead, pulled back from the tip.)
+ *  For the tail of a double-ended arrow pass the tail geometry — the one
+ *  computed with `from` and `to` swapped. Normalized, like the geometry. */
+export function arrowBarEndpoints(geom: ArrowGeometry): { left: Point; right: Point } {
+  const dx = geom.baseLeft.x - geom.baseCenter.x;
+  const dy = geom.baseLeft.y - geom.baseCenter.y;
+  return {
+    left: { x: geom.to.x + dx, y: geom.to.y + dy },
+    right: { x: geom.to.x - dx, y: geom.to.y - dy }
+  };
+}
+
 /**
  * Compute the smart-arrow geometry for the given inputs. Pure
  * function — no globals, no allocation beyond the returned object.

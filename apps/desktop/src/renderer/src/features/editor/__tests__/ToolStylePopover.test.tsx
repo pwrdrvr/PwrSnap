@@ -32,7 +32,7 @@ import type {
   Settings,
   TextToolStyle
 } from "@pwrsnap/shared";
-import { MAX_HIGHLIGHT_OPACITY } from "@pwrsnap/shared";
+import { MAX_HIGHLIGHT_OPACITY, defaultEditorToolBag } from "@pwrsnap/shared";
 
 // ---- Mocks ----------------------------------------------------------
 
@@ -148,8 +148,8 @@ function makeSettings(overrides?: {
         blur: { mode: "gaussian", radius: { mode: "auto" } },
         highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
       },
+      toolBag: defaultEditorToolBag(),
       coachmarks: { stoplightSeen: overrides?.stoplightSeen ?? false },
-      matchingText: { enabled: true },
       sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }
     },
     library: { detailRail: { pinned: true, lastSelectedTab: "info" }, gridCopyPalette: { anchor: "follow" }, confirmBeforeTrash: true, gridZoom: 180 },

@@ -26,6 +26,7 @@ beforeAll(() => {
 });
 
 import { EditorChrome, type EditorPanel } from "../EditorChrome";
+import { defaultEditorToolBag } from "@pwrsnap/shared";
 
 // ---------------------------------------------------------------- fixtures
 
@@ -85,8 +86,8 @@ const baseSettings: Settings = {
       blur: { mode: "gaussian", radius: { mode: "auto" } },
       highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
     },
+    toolBag: defaultEditorToolBag(),
     coachmarks: { stoplightSeen: false },
-    matchingText: { enabled: true },
     sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }
   },
   library: { detailRail: { pinned: true, lastSelectedTab: "info" }, gridCopyPalette: { anchor: "follow" }, confirmBeforeTrash: true, gridZoom: 180 },

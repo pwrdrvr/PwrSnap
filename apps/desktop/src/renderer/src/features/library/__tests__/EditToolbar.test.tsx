@@ -8,11 +8,11 @@
 //   • Click a tool → hook activates that tool, parent's `onChange`
 //     fires with the same id (controlled-prop contract preserved).
 //   • Place an arrow → broadcast handler calls
-//     `useEditorToolState.onAnnotationPlaced`, matching-text affordance
-//     pops near the arrow's tail.
-//   • Click "+ Add label" → tool flips to text (matching-text armed).
-//   • ⌥-click a tool → single-shot mode; one placement returns to
-//     pointer.
+//     `useEditorToolState.onAnnotationPlaced`, which ends ⌥-click
+//     single-shot mode (and only that).
+//   • The tool bag: nine slots, click arms, ⇧-click pastes onto the
+//     selection, and the docked property bar follows the selection or
+//     the armed tool.
 //
 // Test harness mirrors `useEditorToolState.test.ts` + `DetailRail.test.tsx`:
 // plain React `createRoot` + `act` so we don't pull
@@ -40,6 +40,7 @@ import type {
   OverlayRow,
   Settings
 } from "@pwrsnap/shared";
+import type { LayersPanelApi } from "../../editor/Editor";
 
 // ---- Mocks (module boundary) ---------------------------------------
 
@@ -71,6 +72,7 @@ vi.mock("../../settings/useSettings", () => ({
 import { EditToolbar } from "../EditToolbar";
 import type { Tool } from "../../editor/editor-tools";
 import { useEditorToolState } from "../../editor/useEditorToolState";
+import { defaultEditorToolBag } from "@pwrsnap/shared";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -104,7 +106,7 @@ beforeAll(() => {
 
 // ---- Fixtures ------------------------------------------------------
 
-function makeSettings(matchingTextEnabled = true): Settings {
+function makeSettings(): Settings {
   return {
     schemaVersion: 1,
     codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.4-mini" },
@@ -161,8 +163,8 @@ function makeSettings(matchingTextEnabled = true): Settings {
         blur: { mode: "gaussian", radius: { mode: "auto" } },
         highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
       },
+      toolBag: defaultEditorToolBag(),
       coachmarks: { stoplightSeen: true },
-      matchingText: { enabled: matchingTextEnabled },
       sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }
     },
     library: { detailRail: { pinned: true, lastSelectedTab: "info" }, gridCopyPalette: { anchor: "follow" }, confirmBeforeTrash: true, gridZoom: 180 },
@@ -287,6 +289,8 @@ interface HarnessProps {
   /** Hook back into the parent's setTool so a test can observe
    *  controlled-prop transitions. */
   onToolChange?: (next: Tool) => void;
+  selectedLayerIds?: readonly string[];
+  layersApi?: LayersPanelApi | null;
 }
 
 function Harness(props: HarnessProps): ReactElement {
@@ -301,22 +305,57 @@ function Harness(props: HarnessProps): ReactElement {
     sourceWidth: 800,
     sourceHeight: 600,
     blurStyle: "gaussian",
-    onBlurStyleChange: () => undefined
+    onBlurStyleChange: () => undefined,
+    ...(props.selectedLayerIds !== undefined ? { selectedLayerIds: props.selectedLayerIds } : {}),
+    ...(props.layersApi !== undefined ? { layersApi: props.layersApi } : {})
   });
+}
+
+function makeLayersApi(): LayersPanelApi {
+  return {
+    selectLayers: vi.fn(),
+    clearSelection: vi.fn(),
+    setLayerVisibility: vi.fn(async () => undefined),
+    deleteLayer: vi.fn(async () => undefined),
+    moveLayerToIndex: vi.fn(async () => undefined),
+    uncrop: vi.fn(async () => undefined),
+    resetRasterTransform: vi.fn(async () => undefined),
+    updateLayerStyle: vi.fn(),
+    applyBagSlot: vi.fn()
+  };
+}
+
+/** A hollow red rectangle, stored the way the editor writes one. */
+function makeShapeRow(id: string): OverlayRow {
+  return {
+    ...makeArrowRow(id, { x: 0.1, y: 0.1 }),
+    data: {
+      kind: "shape",
+      shape: "rect",
+      rect: { x: 0.1, y: 0.1, w: 0.3, h: 0.2 },
+      color: "#ff5f57",
+      filled: false,
+      thickness: "small",
+      outline: "white"
+    }
+  };
+}
+
+function propertyBar(): HTMLElement | null {
+  return host?.querySelector<HTMLElement>('[data-testid="edit-property-bar"]') ?? null;
 }
 
 async function render(node: ReactElement): Promise<void> {
   host = document.createElement("div");
   document.body.appendChild(host);
-  // Inject a stub `.editor-canvas` element so EditToolbar's
-  // matching-text positioning + CropTool's canvas-rect resolution
-  // find a target. The chromeless Editor renders this in production;
-  // the test harness omits the Editor entirely so we stub it.
+  // Inject a stub `.editor-canvas` element so CropTool's canvas-rect
+  // resolution finds a target. The chromeless Editor renders this in
+  // production; the test harness omits the Editor entirely so we stub
+  // it.
   const stubCanvas = document.createElement("div");
   stubCanvas.className = "editor-canvas";
   // jsdom's gBCR returns all zeros by default — replace with a
-  // realistic non-zero rect so the matching-text affordance's
-  // viewport translation produces sane coords.
+  // realistic non-zero rect.
   stubCanvas.getBoundingClientRect = () =>
     ({
       x: 40,
@@ -451,7 +490,7 @@ beforeEach(() => {
   subscribeMock.mockClear();
   subscribeHandlers = [];
   useSettingsMock.mockReset();
-  installSettingsMock(makeSettings(true));
+  installSettingsMock(makeSettings());
 });
 
 afterEach(async () => {
@@ -505,57 +544,122 @@ describe("EditToolbar (Library Focus, v2 refresh)", () => {
     expect(onToolChange).toHaveBeenCalledWith("arrow");
   });
 
-  test("3. place an arrow (overlay broadcast) → onAnnotationPlaced fires; matching-text affordance appears", async () => {
-    await render(createElement(Harness, { initialTool: "arrow" }));
-
-    // Sanity: arrow button is active after the prop sync settles.
-    expect(findToolButton("arrow").className).toContain("is-active");
-
-    // Simulate the chromeless Editor persisting a new user-source
-    // arrow overlay. The broadcast triggers EditToolbar's
-    // overlays:list refetch; the listener picks up the new row
-    // (not seen before in the seeded empty set) and feeds it to
-    // onAnnotationPlaced. matchingText then transitions to
-    // "available".
-    const arrow = makeArrowRow("ov-1", { x: 0.25, y: 0.4 });
-    await fireBroadcast([arrow]);
-
-    const affordance = host?.querySelector(
-      '[data-testid="matching-text-affordance"]'
-    );
-    expect(affordance).not.toBeNull();
-  });
-
-  test("4. click '+ Add label' → tool flips to text", async () => {
+  test("3. renders the nine bag slots; clicking slot 2 arms its tool and the property bar names it", async () => {
     const onToolChange = vi.fn<(t: Tool) => void>();
-    await render(
-      createElement(Harness, { initialTool: "arrow", onToolChange })
-    );
+    await render(createElement(Harness, { onToolChange }));
 
-    const arrow = makeArrowRow("ov-1", { x: 0.5, y: 0.5 });
-    await fireBroadcast([arrow]);
+    const slots = host?.querySelectorAll('[data-testid^="bag-slot-"]');
+    expect(slots?.length).toBe(9);
+    // Pointer + nothing selected: no property bar.
+    expect(propertyBar()).toBeNull();
 
-    const affordance = host?.querySelector<HTMLButtonElement>(
-      '[data-testid="matching-text-affordance"]'
-    );
-    expect(affordance).not.toBeNull();
-    onToolChange.mockClear();
-    await fireClick(affordance as HTMLButtonElement);
+    const slot2 = host?.querySelector<HTMLButtonElement>('[data-testid="bag-slot-2"]');
+    expect(slot2?.getAttribute("aria-label")).toBe("Green arrow, slot 2");
+    await fireClick(slot2 as HTMLButtonElement);
 
-    // Hook transitions activeTool from arrow → text on
-    // clickMatchingTextAffordance; the prop-sync effect then fires
-    // onChange with "text".
-    expect(onToolChange).toHaveBeenCalledWith("text");
-    expect(findToolButton("text").className).toContain("is-active");
+    expect(onToolChange).toHaveBeenCalledWith("arrow");
+    expect(slot2?.getAttribute("aria-pressed")).toBe("true");
+    // The family button steps back while a slot is the thing armed.
+    expect(findToolButton("arrow").className).not.toContain("is-active");
+    expect(propertyBar()?.getAttribute("data-target")).toBe("tool");
+    expect(propertyBar()?.textContent).toContain("Slot 2");
+    // The green swatch is the one checked.
+    const green = propertyBar()?.querySelector('[role="radio"][aria-label="Green"]');
+    expect(green?.getAttribute("aria-checked")).toBe("true");
   });
 
-  test("7. opening a capture that already has a user arrow does NOT pop the affordance; a later placement still does", async () => {
+  test("4. editing an armed slot's style offers 'Update slot N', which writes the whole bag", async () => {
+    await render(createElement(Harness));
+    await fireClick(host?.querySelector('[data-testid="bag-slot-1"]') as HTMLButtonElement);
+    expect(host?.querySelector('[data-testid="property-bar-update-slot"]')).toBeNull();
+
+    await fireClick(
+      propertyBar()?.querySelector('[role="radio"][aria-label="Blue"]') as HTMLButtonElement
+    );
+    expect(propertyBar()?.textContent).toContain("Slot 1 · edited");
+    const update = host?.querySelector<HTMLButtonElement>(
+      '[data-testid="property-bar-update-slot"]'
+    );
+    expect(update?.textContent).toBe("Update slot 1");
+
+    dispatchMock.mockClear();
+    await fireClick(update as HTMLButtonElement);
+    const bagWrite = dispatchMock.mock.calls.find(
+      ([name, req]) =>
+        name === "settings:write" &&
+        (req as { editor?: { toolBag?: unknown } }).editor?.toolBag !== undefined
+    );
+    const slots = (bagWrite?.[1] as { editor: { toolBag: { slots: unknown[] } } }).editor
+      .toolBag.slots;
+    expect(slots).toHaveLength(9);
+    expect(slots[0]).toMatchObject({ tool: "arrow", style: { color: "blue" } });
+    // The rest of the bag rides along untouched.
+    expect(slots[1]).toMatchObject({ tool: "arrow", style: { color: "green" } });
+  });
+
+  test("4b. one selected layer: the property bar edits THAT layer, and ⇧-click pastes a slot onto it", async () => {
+    const shape = makeShapeRow("ov-box");
+    dispatchMock.mockImplementation(async (name: string) => {
+      if (name === "library:byId") return { ok: true, value: makeStubRecord() };
+      if (name === "layers:list") {
+        return { ok: true, value: [...makeBaseLayers(), rowToVectorLayer(shape)] };
+      }
+      return { ok: true, value: undefined };
+    });
+    const api = makeLayersApi();
+    await render(
+      createElement(Harness, {
+        initialTool: "shape",
+        selectedLayerIds: ["ov-box"],
+        layersApi: api
+      })
+    );
+
+    expect(propertyBar()?.getAttribute("data-target")).toBe("layer");
+    expect(propertyBar()?.textContent).toContain("Selected · Rectangle");
+    await fireClick(
+      propertyBar()?.querySelector('[role="radio"][aria-label="Green"]') as HTMLButtonElement
+    );
+    expect(api.updateLayerStyle).toHaveBeenCalledWith("ov-box", "color", "green");
+
+    // ⇧-click slot 4 (the yellow range) hands the slot and the
+    // selection to the editor's paste — the same one ⇧4 runs. Which
+    // fields a box takes from it is slotFieldsForLayer's job (pinned in
+    // tool-bag.test.ts).
+    await act(async () => {
+      host
+        ?.querySelector('[data-testid="bag-slot-4"]')
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey: true }));
+    });
+    expect(api.applyBagSlot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tool: "arrow",
+        style: expect.objectContaining({ color: "yellow", endStyle: "bar", doubleEnded: true })
+      }),
+      ["ov-box"]
+    );
+    // A paste is not an arm.
+    expect(api.clearSelection).not.toHaveBeenCalled();
+  });
+
+  test("4c. clicking (not ⇧-clicking) a slot with a selection arms it and lets go of the selection", async () => {
+    const api = makeLayersApi();
+    await render(
+      createElement(Harness, { selectedLayerIds: ["ov-gone"], layersApi: api })
+    );
+    await fireClick(host?.querySelector('[data-testid="bag-slot-3"]') as HTMLButtonElement);
+    expect(api.clearSelection).toHaveBeenCalledTimes(1);
+    expect(api.applyBagSlot).not.toHaveBeenCalled();
+  });
+
+  test("7. opening a capture that already has a user arrow does NOT end ⌥ single-shot; a later placement still does", async () => {
     // Regression: the placement effect seeded its "already seen" set on
     // its FIRST run for a captureId. useCaptureModel starts in
     // `loading` (library:byId + layers:list are async IPC), so that
     // seed was the empty set, and the moment the model resolved every
-    // existing user row diffed as a fresh placement — the newest arrow
-    // armed "+ Add label" on a capture nobody had touched.
+    // existing user row diffed as a fresh placement — which used to pop
+    // "+ Add label" on a capture nobody had touched, and would now end a
+    // single-shot the user had not used yet.
     const existing: OverlayRow = {
       ...makeArrowRow("ov-existing", { x: 0.2, y: 0.3 }),
       created_at: "2026-05-23T12:00:00.000Z"
@@ -573,7 +677,8 @@ describe("EditToolbar (Library Focus, v2 refresh)", () => {
       return Promise.resolve({ ok: true, value: undefined });
     });
 
-    await render(createElement(Harness, { initialTool: "arrow" }));
+    await render(createElement(Harness));
+    await fireClick(findToolButton("arrow"), { altKey: true });
     // Mid-load: layers:list is in flight and the placement effect has
     // already run against the empty loading model.
     expect(dispatchMock).toHaveBeenCalledWith("layers:list", {
@@ -595,23 +700,19 @@ describe("EditToolbar (Library Focus, v2 refresh)", () => {
     // The model resolved (Reset counts the existing arrow)…
     expect(resetBtn?.disabled, "existing arrow loaded").toBe(false);
     // …and the existing arrow is the baseline, not a placement.
-    expect(
-      host?.querySelector('[data-testid="matching-text-affordance"]')
-    ).toBeNull();
+    expect(findToolButton("arrow").className).toContain("is-active");
 
-    // A genuinely new arrow after load still arms the affordance.
+    // A genuinely new arrow after load still ends the single-shot.
     const placed: OverlayRow = {
       ...makeArrowRow("ov-placed", { x: 0.6, y: 0.7 }),
       created_at: "2026-05-23T12:05:00.000Z"
     };
     await fireBroadcast([existing, placed], makeBaseLayers());
 
-    expect(
-      host?.querySelector('[data-testid="matching-text-affordance"]')
-    ).not.toBeNull();
+    expect(findToolButton("pointer").className).toContain("is-active");
   });
 
-  test("8. switching (Reel) to a capture that already has a user arrow does NOT pop the affordance", async () => {
+  test("8. switching (Reel) to a capture that already has a user arrow does NOT end ⌥ single-shot", async () => {
     // Stage keeps EditToolbar mounted across Reel navigation, so
     // captureId changes in place. On the render right after the
     // switch, useCaptureModel still holds the PREVIOUS capture's
@@ -648,6 +749,7 @@ describe("EditToolbar (Library Focus, v2 refresh)", () => {
       "button.psl__et-btn--reset"
     );
     expect(resetBtn?.disabled, "cap-1 has no annotations").toBe(true);
+    await fireClick(findToolButton("arrow"), { altKey: true });
 
     await act(async () => {
       root!.render(
@@ -659,12 +761,10 @@ describe("EditToolbar (Library Focus, v2 refresh)", () => {
     });
 
     expect(resetBtn?.disabled, "cap-2's existing arrow loaded").toBe(false);
-    expect(
-      host?.querySelector('[data-testid="matching-text-affordance"]')
-    ).toBeNull();
+    expect(findToolButton("arrow").className).toContain("is-active");
   });
 
-  test("9. leaving a capture and returning before the other one loads reseeds it; an arrow added meanwhile does NOT pop the affordance", async () => {
+  test("9. leaving a capture and returning before the other one loads reseeds it; an arrow added meanwhile does NOT end ⌥ single-shot", async () => {
     // Reel: → then ← before cap-2's snapshot resolves. The placement
     // effect never sees a snapshot of cap-2, so without an explicit
     // reset the seed still names cap-1, and cap-1's reload is DIFFED
@@ -692,6 +792,7 @@ describe("EditToolbar (Library Focus, v2 refresh)", () => {
       "button.psl__et-btn--reset"
     );
     expect(resetBtn?.disabled, "cap-1 has no annotations").toBe(true);
+    await fireClick(findToolButton("arrow"), { altKey: true });
 
     await act(async () => {
       root!.render(
@@ -717,9 +818,7 @@ describe("EditToolbar (Library Focus, v2 refresh)", () => {
     });
 
     expect(resetBtn?.disabled, "cap-1's new arrow loaded").toBe(false);
-    expect(
-      host?.querySelector('[data-testid="matching-text-affordance"]')
-    ).toBeNull();
+    expect(findToolButton("arrow").className).toContain("is-active");
   });
 
   test("Phase 3.2 lift: when parent passes `toolState`, EditToolbar reads from it instead of its own hook", async () => {
@@ -943,10 +1042,5 @@ describe("EditToolbar (Library Focus, v2 refresh)", () => {
     // Tool returned to pointer; parent saw the transition.
     expect(onToolChange).toHaveBeenCalledWith("pointer");
     expect(findToolButton("pointer").className).toContain("is-active");
-    // No matching-text affordance in single-shot mode — the hook
-    // suppresses it.
-    expect(
-      host?.querySelector('[data-testid="matching-text-affordance"]')
-    ).toBeNull();
   });
 });

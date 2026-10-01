@@ -154,8 +154,13 @@ const NormalizedRect = z.object({
 
 /** Arrow head/end glyph. New in Phase 1 of the v2 editor refresh —
  *  existing arrows without this field render as `"filled-triangle"`
- *  (the legacy behavior). Renderer reads via `readArrowEndStyle`. */
-export const ArrowEndStyle = z.enum(["filled-triangle", "open-triangle", "line", "dot"]);
+ *  (the legacy behavior). Renderer reads via `readArrowEndStyle`.
+ *
+ *  `bar` is a crossbar square to the stem, centred ON the endpoint; a
+ *  double-ended bar arrow is a range ("these rows", "this gap"). It is a
+ *  new enum value, so a build that predates it rejects a bundle that
+ *  uses it — the same forward-compat cost as any enum addition here. */
+export const ArrowEndStyle = z.enum(["filled-triangle", "open-triangle", "line", "dot", "bar"]);
 export type ArrowEndStyle = z.infer<typeof ArrowEndStyle>;
 export const DEFAULT_ARROW_END_STYLE: ArrowEndStyle = "filled-triangle";
 

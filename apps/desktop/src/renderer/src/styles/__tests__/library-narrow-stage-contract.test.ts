@@ -47,21 +47,34 @@ function zIndex(body: string): number {
   return Number(match[1]);
 }
 
-/** The body of the one `@container psl-stage …` rule, nested blocks and
- *  all — `extractBlock` stops at the first `}`. */
-function containerRule(): { prelude: string; body: string } {
-  const start = css.indexOf("@container psl-stage");
-  expect(start, `${LABEL}: no @container psl-stage rule`).toBeGreaterThanOrEqual(0);
-  expect(css.indexOf("@container psl-stage", start + 1), `${LABEL}: expected one rule`).toBe(-1);
-  const open = css.indexOf("{", start);
-  let depth = 0;
-  for (let i = open; i < css.length; i++) {
-    if (css[i] === "{") depth++;
-    else if (css[i] === "}" && --depth === 0) {
-      return { prelude: css.slice(start, open), body: css.slice(open + 1, i) };
+/** Every `@container psl-stage …` rule, nested blocks and all —
+ *  `extractBlock` stops at the first `}`. */
+function containerRules(): Array<{ prelude: string; body: string }> {
+  const rules: Array<{ prelude: string; body: string }> = [];
+  let start = css.indexOf("@container psl-stage");
+  while (start >= 0) {
+    const open = css.indexOf("{", start);
+    let depth = 0;
+    let close = -1;
+    for (let i = open; i < css.length; i++) {
+      if (css[i] === "{") depth++;
+      else if (css[i] === "}" && --depth === 0) {
+        close = i;
+        break;
+      }
     }
+    if (close < 0) throw new Error(`${LABEL}: unbalanced @container rule`);
+    rules.push({ prelude: css.slice(start, open), body: css.slice(open + 1, close) });
+    start = css.indexOf("@container psl-stage", close);
   }
-  throw new Error(`${LABEL}: unbalanced @container rule`);
+  return rules;
+}
+
+/** The one container rule whose body holds `marker`. */
+function containerRule(marker: RegExp): { prelude: string; body: string } {
+  const matches = containerRules().filter((rule) => marker.test(rule.body));
+  expect(matches, `${LABEL}: expected one @container psl-stage rule matching ${marker}`).toHaveLength(1);
+  return matches[0]!;
 }
 
 // The nav buttons' geometry, read from the stylesheet itself.
@@ -87,7 +100,7 @@ describe("the stage is the edit toolbar's query container", () => {
 });
 
 describe("compact edit toolbar", () => {
-  const rule = containerRule();
+  const rule = containerRule(/\.psl__et-btn:not\(\.is-armed\)/);
 
   it("switches on a narrow OR short stage", () => {
     expect(rule.prelude).toMatch(/\(\s*width\s*<\s*\d+px\s*\)\s*or\s*\(\s*height\s*<\s*\d+px\s*\)/);
@@ -128,6 +141,34 @@ describe("compact edit toolbar", () => {
     expect(hide).not.toMatch(/display\s*:\s*none/);
     expect(hide).not.toMatch(/visibility\s*:\s*hidden/);
     expect(hide).toMatch(/clip-path\s*:\s*inset\(50%\)/);
+  });
+});
+
+describe("property bar on a narrow stage", () => {
+  const rule = containerRule(/\.psl__et-props-body/);
+
+  it("switches on stage width", () => {
+    expect(rule.prelude).toMatch(/\(\s*width\s*<\s*\d+px\s*\)/);
+  });
+
+  it("is two rows at any width: the header row, then one control strip", () => {
+    const bar = extractBlock(rule.body, "\\.psl__et-props", { label: LABEL, expectSingle: true });
+    expect(bar).toMatch(/display\s*:\s*grid\s*;/);
+    const areas = bar.match(/grid-template-areas\s*:([^;]*);/);
+    expect(areas, `${LABEL}: the narrow bar must name its grid areas`).not.toBeNull();
+    expect(areas?.[1].match(/"[^"]*"/g)).toHaveLength(2);
+  });
+
+  it("the control strip never wraps: it scrolls sideways, inside the bar", () => {
+    const strip = extractBlock(rule.body, "\\.psl__et-props-body", {
+      label: LABEL,
+      expectSingle: true
+    });
+    expect(strip).toMatch(/flex-wrap\s*:\s*nowrap\s*;/);
+    expect(strip).toMatch(/overflow-x\s*:\s*auto\s*;/);
+    // A grid item's min-width is its content's by default; without 0 the
+    // strip widens the bar to fit every control instead of scrolling.
+    expect(strip).toMatch(/min-width\s*:\s*0\s*;/);
   });
 });
 

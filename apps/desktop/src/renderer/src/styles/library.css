@@ -4626,6 +4626,106 @@
   text-align: center;
   color: var(--text-secondary);
 }
+/* Two-row property bar on a narrow stage.
+
+   Wrapped one field group at a time, the bar grew a row per group as the
+   stage narrowed: 2 rows (118px) in a 920px stage, 3 (166px) at 664px,
+   6 (280px) at 440px. Floating over the canvas, that covered the bottom
+   of the image, and in the Windows runner's window it sat where tests
+   (and people) click. Below 880px it is two rows at any width instead:
+
+     row 1  the target tag, the hint, Update / Save
+     row 2  every control on ONE line that scrolls sideways, each label
+            beside its control rather than above it
+
+   Color leads row 2, so the most-used control is never scrolled away.
+   The strip pads by the focus ring's reach so a ring on its first and
+   last control is not clipped by the scroller, and EditPropertyBar
+   scrolls a Tab-focused control into view — Chromium will not scroll a
+   partly visible target sideways on its own (AGENTS.md, "Focus rings"). */
+/* The strip's edge fades say "more this way". Driven by the strip's own
+   scroll position, so each fade is there only while there is something
+   past that edge; with nothing to scroll the timeline is inactive and
+   both stay at 0px — no fade. A mask only reads alpha, hence `black`. */
+@property --psl-strip-fade-start {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --psl-strip-fade-end {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@keyframes psl-strip-fade {
+  0% {
+    --psl-strip-fade-start: 0px;
+    --psl-strip-fade-end: 28px;
+  }
+  4% {
+    --psl-strip-fade-start: 28px;
+  }
+  96% {
+    --psl-strip-fade-end: 28px;
+  }
+  100% {
+    --psl-strip-fade-start: 28px;
+    --psl-strip-fade-end: 0px;
+  }
+}
+@container psl-stage (width < 880px) {
+  .psl__et-props {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "tag hint actions"
+      "body body body";
+    align-items: center;
+    gap: 6px 10px;
+  }
+  .psl__et-props.is-multi {
+    grid-template-areas: "tag hint actions";
+  }
+  .psl__et-props-tag {
+    grid-area: tag;
+    justify-self: start;
+  }
+  .psl__et-props-hint {
+    grid-area: hint;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .psl__et-props-actions {
+    grid-area: actions;
+  }
+  .psl__et-props-body {
+    grid-area: body;
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 14px;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 3px;
+    margin: -3px;
+    mask-image: linear-gradient(
+      to right,
+      transparent,
+      black var(--psl-strip-fade-start),
+      black calc(100% - var(--psl-strip-fade-end)),
+      transparent
+    );
+    animation: psl-strip-fade linear both;
+    animation-timeline: scroll(self inline);
+  }
+  .psl__et-props-body .pse-field-group {
+    flex: none;
+    flex-direction: row;
+    align-items: center;
+  }
+}
 /* Compact edit toolbar — every label goes, Reset's too.
 
    History: with labels + key chips the toolbar was 985px on one row, and

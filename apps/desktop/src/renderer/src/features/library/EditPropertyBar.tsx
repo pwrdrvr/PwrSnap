@@ -97,7 +97,19 @@ export function EditPropertyBar({
             ? `Slot ${target.armedSlot + 1}${target.armedSlotModified ? " · edited" : ""}`
             : target.label}
       </span>
-      <div className="psl__et-props-body">
+      <div
+        className="psl__et-props-body"
+        // On a narrow stage this is a sideways-scrolling strip, and
+        // Chromium does not scroll a partly visible target sideways when
+        // Tab lands on it. A no-op when the control is already in view.
+        onFocus={(event) => {
+          const target = event.target;
+          // jsdom has no scrollIntoView.
+          if (target instanceof HTMLElement && typeof target.scrollIntoView === "function") {
+            target.scrollIntoView({ block: "nearest", inline: "nearest" });
+          }
+        }}
+      >
         <ToolStyleBody
           tool={target.tool}
           style={target.style}

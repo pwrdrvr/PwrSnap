@@ -627,6 +627,8 @@ export function ToolStylePopover(props: ToolStylePopoverProps): ReactElement | n
       onStyleFieldChange={onStyleFieldChange}
       {...(styleTargetKey !== undefined ? { styleTargetKey } : {})}
       {...(customTextSizeLabel !== undefined ? { customTextSizeLabel } : {})}
+      // A selected stroke cannot become an eraser.
+      allowEraser={!isSelectedMode}
     />
   );
 

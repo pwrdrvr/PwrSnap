@@ -713,8 +713,12 @@ export function EditToolbar({
     toolState.armedSlotModified
   ]);
 
+  // Null for the eraser too: a slot holds something the next drag draws.
   const currentStyleForBag: ToolBagSlot | null =
-    propertyTarget === null || propertyTarget.kind === "multi"
+    propertyTarget === null ||
+    propertyTarget.kind === "multi" ||
+    (propertyTarget.tool === "draw" &&
+      (propertyTarget.style as { mode?: unknown }).mode === "eraser")
       ? null
       : ({ tool: propertyTarget.tool, style: propertyTarget.style } as ToolBagSlot);
   const firstEmptySlot = (() => {

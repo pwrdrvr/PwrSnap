@@ -2,7 +2,7 @@
 // Editor.tsx so OverlaySvg and TextDraftInput (separate files) can
 // reference the same shapes without circular imports.
 
-import type { ShapeKind } from "@pwrsnap/shared";
+import type { DrawToolMode, ShapeKind } from "@pwrsnap/shared";
 import type { ArrowLabelStyle, LabelAlign } from "./arrow-label";
 
 export type DraftArrow = {
@@ -59,7 +59,20 @@ export type DraftText = {
   };
 };
 
-export type Draft = DraftArrow | DraftShape | DraftText;
+/** A Draw-tool drag in progress: pen / marker / spray lay a stroke, the
+ *  eraser lays the path it will cut along. */
+export type DraftStroke = {
+  kind: "stroke";
+  mode: DrawToolMode;
+  /** Pointer samples as fractions of the canvas, NOT clamped — a stroke
+   *  may run off the edge, and the renderer clips it there. */
+  points: { x: number; y: number }[];
+  /** Spray's dot seed, chosen at pointerdown so the preview and the
+   *  commit scatter the same dots. */
+  seed: number;
+};
+
+export type Draft = DraftArrow | DraftShape | DraftText | DraftStroke;
 
 /** Minimum normalized drag length below which we treat a pointer
  *  gesture as a click (no-op for drawing tools, just clears the

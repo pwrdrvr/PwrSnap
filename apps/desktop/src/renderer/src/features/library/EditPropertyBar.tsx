@@ -81,9 +81,19 @@ export function EditPropertyBar({
   }
 
   const saveTarget = slotFor(target.tool, target.style);
+  // The eraser is a way of using the Draw tool, not a style to keep: a
+  // slot holds what the next drag DRAWS. Settings refuse an eraser slot
+  // too; this keeps the button from offering one.
+  const erasing =
+    target.tool === "draw" && (target.style as { mode?: unknown }).mode === "eraser";
   const updateIndex =
-    target.kind === "tool" && target.armedSlot !== null && target.armedSlotModified
+    !erasing && target.kind === "tool" && target.armedSlot !== null && target.armedSlotModified
       ? target.armedSlot
+      : null;
+  const saveBlockedTip = erasing
+    ? "The eraser can't be saved — pick Pen, Marker or Spray"
+    : firstEmptySlot === null
+      ? "The bag is full — right-click a slot to replace or clear it"
       : null;
 
   return (
@@ -134,14 +144,12 @@ export function EditPropertyBar({
           data-testid="property-bar-save-to-bag"
           // aria-disabled, not disabled: a disabled button leaves the tab
           // order, and then the reason in its tooltip is unreachable.
-          aria-disabled={firstEmptySlot === null}
-          data-tip={
-            firstEmptySlot === null
-              ? "The bag is full — right-click a slot to replace or clear it"
-              : `Save this style to slot ${firstEmptySlot + 1}`
-          }
+          aria-disabled={saveBlockedTip !== null}
+          data-tip={saveBlockedTip ?? `Save this style to slot ${(firstEmptySlot ?? 0) + 1}`}
           onClick={() => {
-            if (firstEmptySlot !== null) onSaveToSlot(firstEmptySlot, saveTarget);
+            if (saveBlockedTip === null && firstEmptySlot !== null) {
+              onSaveToSlot(firstEmptySlot, saveTarget);
+            }
           }}
         >
           + Save to bag
@@ -166,6 +174,7 @@ export function EditPropertyBar({
           onStyleFieldChange={onFieldChange}
           hintsInTooltips
           {...(target.kind === "layer" ? { styleTargetKey: target.layerId } : {})}
+          allowEraser={target.kind === "tool"}
         />
       </div>
       {target.kind === "layer" && (

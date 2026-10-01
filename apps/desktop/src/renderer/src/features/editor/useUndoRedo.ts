@@ -137,7 +137,8 @@ export type EditOp =
       nextPatch: OverlayPatch;
     }
   /** One eraser pass: the strokes it cut (`removed`, restored on undo)
-   *  and the pieces that replaced them (`added`, deleted on undo). One
+   *  and the rows that replaced them — each the same stroke with its
+   *  surviving pieces as segments (`added`, deleted on undo). One
    *  entry, so ⌘Z puts back everything a single drag of the eraser took,
    *  however many strokes it crossed. */
   | { kind: "replace"; removed: CreateDeleteItem[]; added: CreateDeleteItem[] };

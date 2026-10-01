@@ -62,7 +62,7 @@ import {
   eraserRadiusPx,
   smoothStrokeSpanD,
   strokeBoundsN,
-  strokeGeometry,
+  strokeGeometries,
   strokePaintStyle,
   strokeReachPx,
   type StrokeGeometry,
@@ -392,16 +392,20 @@ export function OverlaySvg({
               />
             )}
             {data.kind === "stroke" &&
-              (erasePreview?.get(row.id) ?? [data]).map((piece, i) => (
-                <StrokeGlyph
-                  key={i}
-                  data={piece}
-                  color={piece.color}
-                  imageWidthPx={imageWidthPx}
-                  imageHeightPx={imageHeightPx}
-                  basisPx={annotationBasis}
-                />
-              ))}
+              (() => {
+                // Mid-erase, a cut stroke paints as what the release
+                // will leave: the same row with fewer points, or nothing.
+                const shown = erasePreview?.has(row.id) === true ? erasePreview.get(row.id)! : data;
+                return shown === null ? null : (
+                  <StrokeGlyph
+                    data={shown}
+                    color={shown.color}
+                    imageWidthPx={imageWidthPx}
+                    imageHeightPx={imageHeightPx}
+                    basisPx={annotationBasis}
+                  />
+                );
+              })()}
           </svg>
         );
       })}
@@ -532,7 +536,7 @@ export function OverlaySvg({
   );
 }
 
-/** A Draw stroke, painted from the SAME `strokeGeometry` the bake turns
+/** A Draw stroke, painted from the SAME `strokeGeometries` the bake turns
  *  into SVG text (compose.ts `strokeSvgForV2`) — one geometry, two
  *  serializations, so the preview is what exports. `color` "auto" or
  *  absent paints the theme accent, as every other glyph does. */
@@ -543,7 +547,7 @@ function StrokeGlyph({
   imageHeightPx,
   basisPx
 }: {
-  data: Pick<StrokeOverlay, "tool" | "points" | "opacity"> & {
+  data: Pick<StrokeOverlay, "tool" | "points" | "breaks" | "opacity"> & {
     thickness?: OverlayThickness | undefined;
   };
   color?: string | undefined;
@@ -551,17 +555,37 @@ function StrokeGlyph({
   imageHeightPx: number;
   basisPx: number;
 }): ReactElement {
-  const geometry: StrokeGeometry = useMemo(
-    () => strokeGeometry(data, imageWidthPx, imageHeightPx, basisPx),
+  // One geometry per segment: a row the eraser cut, or a burst of
+  // strokes, paints each segment as the separate stroke it was.
+  const geometries: StrokeGeometry[] = useMemo(
+    () => strokeGeometries(data, imageWidthPx, imageHeightPx, basisPx),
     [data, imageWidthPx, imageHeightPx, basisPx]
   );
   const paint = strokePaint(color);
+  return (
+    <>
+      {geometries.map((geometry, i) => (
+        <StrokeSegmentGlyph key={i} geometry={geometry} tool={data.tool} paint={paint} />
+      ))}
+    </>
+  );
+}
+
+function StrokeSegmentGlyph({
+  geometry,
+  tool,
+  paint
+}: {
+  geometry: StrokeGeometry;
+  tool: StrokeTool;
+  paint: string;
+}): ReactElement {
   switch (geometry.kind) {
     case "path":
       return (
         <path
           data-testid="stroke-glyph"
-          data-tool={data.tool}
+          data-tool={tool}
           d={geometry.d}
           fill="none"
           stroke={paint}
@@ -576,7 +600,7 @@ function StrokeGlyph({
       return geometry.square ? (
         <rect
           data-testid="stroke-glyph"
-          data-tool={data.tool}
+          data-tool={tool}
           x={geometry.cx - half}
           y={geometry.cy - half}
           width={geometry.widthPx}
@@ -587,7 +611,7 @@ function StrokeGlyph({
       ) : (
         <circle
           data-testid="stroke-glyph"
-          data-tool={data.tool}
+          data-tool={tool}
           cx={geometry.cx}
           cy={geometry.cy}
           r={half}
@@ -600,7 +624,7 @@ function StrokeGlyph({
       return (
         <g
           data-testid="stroke-glyph"
-          data-tool={data.tool}
+          data-tool={tool}
           fill="none"
           stroke={paint}
           strokeLinecap="round"

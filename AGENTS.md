@@ -1142,17 +1142,23 @@ and [stroke-bake.test.ts](apps/desktop/src/main/render/__tests__/stroke-bake.tes
   spray; it was replaced because a few hundred dots per stroke cost far
   more to store, paint and erase than a soft line, and a cut re-scattered
   the dots beside it.
-- **The eraser cuts only strokes.** It is a mode of the Draw tool, never a
-  shape and never a bag slot (settings refuse one). Each piece it leaves
-  is the original row with fewer points, at the original's z_index, so a
-  cut never changes how the rest of the stroke looks. One eraser
-  drag is ONE undo step
-  (the `replace` op in `useUndoRedo.ts`). The original is deleted only
-  after EVERY piece is written. The first build deleted it regardless,
-  and every piece was being refused (a 21-char `nanoid()` id; the bundle
-  schema takes 16), so one swipe erased the whole stroke. The jsdom test
-  missed that because its dispatch stub accepted anything; it now
-  validates upserts against `BundleLayerNode`.
+- **The eraser cuts only strokes, and a cut stroke stays ONE layer.** The
+  eraser is a mode of the Draw tool, never a shape and never a bag slot
+  (settings refuse one). What it leaves of a stroke are SEGMENTS of that
+  one row (`breaks` indexes the flat `points`; read them through
+  `strokeSegments`), at the original's z_index. A stroke erased whole is
+  deleted. The first build wrote every piece as its own row, and one
+  scrub across a page of strokes filled the Layers panel with dozens of
+  them. Each segment still paints on its own (`strokeGeometries`), so a
+  cut never changes how the rest of the stroke looks. One eraser drag is
+  ONE undo step (the `replace` op in `useUndoRedo.ts`). The original is
+  deleted only after its replacement is written. An earlier build
+  deleted it regardless while every write was being refused (a 21-char
+  `nanoid()` id; the bundle schema takes 16), so one swipe erased the
+  whole stroke. The jsdom test missed that because its dispatch stub
+  accepted anything; it now validates upserts against `BundleLayerNode`.
+  Masking was considered and rejected: a mask layer leaves its holes
+  behind when a stroke moves, and no ink or markup app erases that way.
 - **Nothing a drag does per pointer event may scale with what was drawn
   before it.** A page of handwriting is hundreds of strokes and a long
   stroke is thousands of samples, so per-event work that touches the

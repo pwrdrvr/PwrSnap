@@ -17,7 +17,10 @@ import {
   smoothStrokeSpanD,
   strokeBoundsN,
   StrokeEraseSession,
+  strokeGeometries,
   strokeGeometry,
+  strokePointsFromSegments,
+  strokeSegments,
   strokePointsToNormalized,
   strokePointsToPx,
   strokeReachPx,
@@ -25,7 +28,7 @@ import {
   strokeWidthPx,
   type StrokePointPx
 } from "../freehand-stroke";
-import { MAX_STROKE_POINTS, Overlay } from "../overlay-schemas";
+import { MAX_STROKE_POINTS, Overlay, type StrokeOverlay } from "../overlay-schemas";
 import { inverseTransformOverlayByCrop } from "../crop-viewport";
 
 const line = (x0: number, x1: number, y: number, step: number): StrokePointPx[] => {
@@ -391,6 +394,14 @@ describe("StrokeEraseSession — the cut the editor previews and commits", () =>
   const basis = annotationBasisPx(W, H);
   const radius = eraserRadiusPx("small", basis);
   const px = (x: number, y: number): { x: number; y: number } => ({ x: x * W, y: y * H });
+  /** A replacement row's segments, each as a one-segment row. */
+  const piecesOf = (row: StrokeOverlay | null | undefined): StrokeOverlay[] =>
+    row === null || row === undefined
+      ? []
+      : strokeSegments(row).map((points) => {
+          const { breaks: _b, ...rest } = row;
+          return { ...rest, points };
+        });
 
   const across = {
     kind: "stroke" as const,
@@ -408,7 +419,9 @@ describe("StrokeEraseSession — the cut the editor previews and commits", () =>
     expect(session.extend([px(0.5, 0.2), px(0.5, 0.8)], [{ id: "a", data: across }])).toBe(true);
     const [change] = session.changes();
     expect(change!.id).toBe("a");
-    const pieces = change!.pieces;
+    // ONE row — the same stroke — holding both pieces as segments.
+    expect(change!.replacement!.breaks).toHaveLength(1);
+    const pieces = piecesOf(change!.replacement);
     expect(pieces.length).toBe(2);
     expect(pieces[0]!.points[0]).toEqual({ x: 0.1, y: 0.5 });
     expect(Math.max(...pieces[0]!.points.map((p) => p.x))).toBeLessThan(0.5);
@@ -426,7 +439,7 @@ describe("StrokeEraseSession — the cut the editor previews and commits", () =>
     const session = new StrokeEraseSession(radius, W, H, basis);
     expect(session.extend([px(0.8, 0.8), px(0.9, 0.9)], [{ id: "a", data: far }])).toBe(false);
     expect(session.changes()).toEqual([]);
-    expect(session.pieces().size).toBe(0);
+    expect(session.cuts().size).toBe(0);
   });
 
   it("a drag fed one sample at a time cuts what the whole drag would", () => {
@@ -447,17 +460,17 @@ describe("StrokeEraseSession — the cut the editor previews and commits", () =>
     whole.extend(scrub, [{ id: "a", data: wave }]);
 
     const reach = radius + strokeReachPx(wave, basis);
-    const piecesOf = (session: StrokeEraseSession) => session.changes()[0]!.pieces;
+    const cutOf = (session: StrokeEraseSession) => piecesOf(session.changes()[0]!.replacement);
     // Every surviving vertex is outside the swept area…
-    for (const piece of piecesOf(stepwise)) {
+    for (const piece of cutOf(stepwise)) {
       for (const p of piece.points) {
         expect(distanceToPolylinePx(px(p.x, p.y), scrub)).toBeGreaterThan(reach - 1e-6);
       }
     }
     // …and the two agree on what survives: same runs, ends within one
     // sampling step of each other.
-    const a = piecesOf(stepwise);
-    const b = piecesOf(whole);
+    const a = cutOf(stepwise);
+    const b = cutOf(whole);
     expect(a.length).toBe(b.length);
     const step = Math.max(0.25, reach / 4);
     for (let i = 0; i < a.length; i += 1) {
@@ -477,16 +490,16 @@ describe("StrokeEraseSession — the cut the editor previews and commits", () =>
     ];
     const session = new StrokeEraseSession(radius, W, H, basis);
     session.extend([px(0.5, 0.3), px(0.5, 0.6)], targets);
-    const first = session.pieces();
-    const aRows = first.get("a");
+    const first = session.cuts();
+    const aRow = first.get("a");
     // Moving where nothing is left to cut changes nothing at all.
     expect(session.extend([px(0.5, 0.7)], targets)).toBe(false);
-    expect(session.pieces()).toBe(first);
+    expect(session.cuts()).toBe(first);
     // Cutting stroke b replaces the map but not a's rows.
     expect(session.extend([px(0.5, 0.95)], targets)).toBe(true);
-    expect(session.pieces()).not.toBe(first);
-    expect(session.pieces().get("a")).toBe(aRows);
-    expect(session.pieces().get("b")).toBeDefined();
+    expect(session.cuts()).not.toBe(first);
+    expect(session.cuts().get("a")).toBe(aRow);
+    expect(session.cuts().get("b")).toBeDefined();
   });
 
   it("re-cuts a row edited mid-drag against the whole drag so far", () => {
@@ -496,8 +509,8 @@ describe("StrokeEraseSession — the cut the editor previews and commits", () =>
     const edited = { ...across, color: "#ff0000" };
     session.extend([px(0.95, 0.95)], [{ id: "a", data: edited }]);
     const [change] = session.changes();
-    expect(change!.pieces).toHaveLength(2);
-    expect(change!.pieces[0]!.color).toBe("#ff0000");
+    expect(piecesOf(change!.replacement)).toHaveLength(2);
+    expect(change!.replacement!.color).toBe("#ff0000");
   });
 
   it("a release with no new samples re-cuts a row added or edited since the last move", () => {
@@ -511,9 +524,31 @@ describe("StrokeEraseSession — the cut the editor previews and commits", () =>
       { id: "a", data: edited },
       { id: "late", data: late }
     ]);
-    const changes = new Map(session.changes().map((c) => [c.id, c.pieces]));
+    const changes = new Map(session.changes().map((c) => [c.id, piecesOf(c.replacement)]));
     expect(changes.get("a")!.every((piece) => piece.color === "#00ff00")).toBe(true);
     expect(changes.get("late")).toHaveLength(2);
+  });
+
+  it("erasing a stroke whole replaces it with nothing", () => {
+    const session = new StrokeEraseSession(radius, W, H, basis);
+    session.extend([px(0.05, 0.5), px(0.95, 0.5)], [{ id: "a", data: across }]);
+    expect(session.changes()).toEqual([{ id: "a", replacement: null }]);
+  });
+
+  it("cuts a stroke that already has segments, and keeps it one row", () => {
+    // Two parallel segments in one row; a swipe cuts both.
+    const twoLines = {
+      ...across,
+      ...strokePointsFromSegments([
+        [{ x: 0.1, y: 0.4 }, { x: 0.9, y: 0.4 }],
+        [{ x: 0.1, y: 0.6 }, { x: 0.9, y: 0.6 }]
+      ])
+    };
+    const session = new StrokeEraseSession(radius, W, H, basis);
+    session.extend([px(0.5, 0.2), px(0.5, 0.8)], [{ id: "a", data: twoLines }]);
+    const [change] = session.changes();
+    expect(change!.replacement!.breaks).toHaveLength(3);
+    expect(Overlay.safeParse(change!.replacement).success).toBe(true);
   });
 
   it("drops a row that left the canvas mid-drag", () => {
@@ -523,3 +558,44 @@ describe("StrokeEraseSession — the cut the editor previews and commits", () =>
     expect(session.changes()).toEqual([]);
   });
 });
+
+describe("stroke segments — one row, several disjoint pieces", () => {
+  const base = {
+    kind: "stroke" as const,
+    tool: "marker" as const,
+    color: "#ff0000",
+    points: [
+      { x: 0.1, y: 0.1 },
+      { x: 0.2, y: 0.1 },
+      { x: 0.1, y: 0.5 },
+      { x: 0.2, y: 0.5 },
+      { x: 0.3, y: 0.5 }
+    ]
+  };
+
+  it("splits points at breaks, and round-trips through strokePointsFromSegments", () => {
+    const segments = strokeSegments({ ...base, breaks: [2] });
+    expect(segments.map((seg) => seg.length)).toEqual([2, 3]);
+    expect(strokePointsFromSegments(segments)).toEqual({ points: base.points, breaks: [2] });
+    // One segment carries no breaks at all.
+    expect(strokePointsFromSegments([base.points])).toEqual({ points: base.points });
+  });
+
+  it("the schema refuses breaks that are out of order or out of range", () => {
+    expect(Overlay.safeParse({ ...base, breaks: [2] }).success).toBe(true);
+    expect(Overlay.safeParse({ ...base, breaks: [3, 2] }).success).toBe(false);
+    expect(Overlay.safeParse({ ...base, breaks: [2, 2] }).success).toBe(false);
+    expect(Overlay.safeParse({ ...base, breaks: [5] }).success).toBe(false);
+    expect(Overlay.safeParse({ ...base, breaks: [0] }).success).toBe(false);
+  });
+
+  it("paints each segment on its own, never joining one segment's end to the next one's start", () => {
+    const geometries = strokeGeometries({ ...base, breaks: [2] }, 1000, 1000, 900);
+    expect(geometries).toHaveLength(2);
+    expect(geometries.map((g) => (g.kind === "path" ? g.d : ""))).toEqual([
+      smoothStrokePathD([{ x: 100, y: 100 }, { x: 200, y: 100 }]),
+      smoothStrokePathD([{ x: 100, y: 500 }, { x: 200, y: 500 }, { x: 300, y: 500 }])
+    ]);
+  });
+});
+

@@ -7,7 +7,12 @@
 
 import { describe, expect, test } from "vitest";
 import type { OverlayRow } from "@pwrsnap/shared";
-import { annotationBasisPx, strokeGeometry, strokeSvgElements } from "@pwrsnap/shared";
+import {
+  annotationBasisPx,
+  strokeGeometries,
+  strokeGeometry,
+  strokeSvgElements
+} from "@pwrsnap/shared";
 import { strokeSvgForV2 } from "../compose";
 
 type Stroke = Extract<OverlayRow["data"], { kind: "stroke" }>;
@@ -55,6 +60,22 @@ describe("strokeSvgForV2 (bake)", () => {
     const svg = strokeSvgForV2({ ...pen, color: "auto" }, W, H, BASIS);
     expect(svg).not.toContain('"auto"');
     expect(svg).toMatch(/stroke="#[0-9a-f]{6}"/i);
+  });
+
+  test("a stroke with segments bakes each one as its own element", () => {
+    const twoPieces: Stroke = {
+      ...pen,
+      tool: "marker",
+      points: [...pen.points, { x: 0.1, y: 0.8 }, { x: 0.6, y: 0.8 }],
+      breaks: [3]
+    };
+    const svg = strokeSvgForV2(twoPieces, W, H, BASIS);
+    for (const geometry of strokeGeometries(twoPieces, W, H, BASIS)) {
+      expect(svg).toContain(strokeSvgElements(geometry, "#ff5a5a"));
+    }
+    // Two translucent paths, each with its own opacity — the look of two
+    // separate strokes.
+    expect(svg.match(/<path /g)).toHaveLength(2);
   });
 
   test("the marker bakes translucent with a flat cap", () => {

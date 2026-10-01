@@ -164,7 +164,7 @@ describe("OverlaySvg — Draw drafts", () => {
     expect(path!.getAttribute("stroke")).toBe("#28c840");
   });
 
-  test("an eraser draft shows its trail and paints the session's cut: the crossed stroke as two pieces", async () => {
+  test("an eraser draft shows its trail and paints the session's cut: the crossed stroke as two segments of one layer", async () => {
     // A vertical swipe through the middle of the underline, cut the way
     // the editor cuts it while dragging.
     const swipe = [
@@ -177,14 +177,14 @@ describe("OverlaySvg — Draw drafts", () => {
       [{ id: "m", data: underline }]
     );
     const host = await renderSvg([row("m", underline)], {
-      draft: { kind: "stroke", mode: "eraser", points: swipe, erased: session.pieces() },
+      draft: { kind: "stroke", mode: "eraser", points: swipe, erased: session.cuts() },
       draftStyle: { thickness: "small" }
     });
     expect(host.querySelector("[data-testid='eraser-trail']")).not.toBeNull();
-    const persisted = host.querySelectorAll(
-      "[data-testid='persisted-glyph-svg'] [data-testid='stroke-glyph']"
-    );
-    expect(persisted.length).toBe(2);
+    // Still ONE layer: one persisted mini-SVG, painting two segments.
+    const layers = host.querySelectorAll("[data-testid='persisted-glyph-svg']");
+    expect(layers.length).toBe(1);
+    expect(layers[0]!.querySelectorAll("[data-testid='stroke-glyph']").length).toBe(2);
   });
 
   test("an eraser that misses a stroke leaves it whole", async () => {

@@ -20,7 +20,7 @@ import {
   test,
   vi
 } from "vitest";
-import { BundleLayerNode } from "@pwrsnap/shared";
+import { BundleLayerNode, strokeSegments } from "@pwrsnap/shared";
 import type { CaptureRecord, Settings } from "@pwrsnap/shared";
 import type { LayerEditOp } from "../useCaptureModel";
 import { baseSettings } from "../../settings/__tests__/settings-fixture";
@@ -326,7 +326,7 @@ describe("Editor — Draw tool", () => {
     expect(container!.querySelector("[data-testid='transform-handles']")).toBeNull();
   });
 
-  test("the eraser cuts the pen stroke it crosses into two pieces at its z_index — and never touches the arrow", async () => {
+  test("the eraser cuts the pen stroke it crosses in two — ONE layer with two segments, at its z_index — and never touches the arrow", async () => {
     hoisted.settings = {
       ...baseSettings,
       editor: {
@@ -351,24 +351,24 @@ describe("Editor — Draw tool", () => {
       (op): op is Extract<LayerEditOp, { kind: "delete" }> => op.kind === "delete"
     );
     expect(deletes.map((op) => op.id)).toEqual(["stroke_1"]);
-    expect(upserts).toHaveLength(2);
-    for (const op of upserts) {
-      expect(op.node.z_index).toBe(1000);
-      expect(op.bumpZIndexToMax).toBeUndefined();
-      if (op.node.kind !== "vector" || op.node.shape.kind !== "stroke") {
-        throw new Error("expected stroke pieces");
-      }
-      expect(op.node.shape.color).toBe("#2489ff");
+    // One replacement row, not one per piece.
+    expect(upserts).toHaveLength(1);
+    const [op] = upserts;
+    expect(op!.node.z_index).toBe(1000);
+    expect(op!.bumpZIndexToMax).toBeUndefined();
+    if (op!.node.kind !== "vector" || op!.node.shape.kind !== "stroke") {
+      throw new Error("expected a stroke");
     }
-    const [left, right] = upserts.map((op) =>
-      op.node.kind === "vector" && op.node.shape.kind === "stroke" ? op.node.shape.points : []
-    );
-    // One piece ends left of the cut, the other starts right of it.
+    const shape = op!.node.shape;
+    expect(shape.color).toBe("#2489ff");
+    const [left, right] = strokeSegments(shape);
+    expect(strokeSegments(shape)).toHaveLength(2);
+    // One segment ends left of the cut, the other starts right of it.
     expect(Math.max(...left!.map((p) => p.x))).toBeLessThan(0.5);
     expect(Math.min(...right!.map((p) => p.x))).toBeGreaterThan(0.5);
   });
 
-  test("a piece that fails to write keeps the original stroke: no delete, and the written piece is taken back", async () => {
+  test("a replacement that fails to write keeps the original stroke: nothing is deleted", async () => {
     hoisted.settings = {
       ...baseSettings,
       editor: {
@@ -379,9 +379,8 @@ describe("Editor — Draw tool", () => {
         }
       }
     };
-    let upserts = 0;
     hoisted.dispatchEdit = async (op) => {
-      if (op.kind === "upsert" && ++upserts === 2) {
+      if (op.kind === "upsert") {
         ops.push(op);
         return { ok: false, error: { kind: "validation", code: "schema_mismatch", message: "stub" } };
       }
@@ -398,13 +397,7 @@ describe("Editor — Draw tool", () => {
     } finally {
       errors.mockRestore();
     }
-    const firstPiece = ops.find(
-      (op): op is Extract<LayerEditOp, { kind: "upsert" }> => op.kind === "upsert"
-    );
-    const deletes = ops
-      .filter((op): op is Extract<LayerEditOp, { kind: "delete" }> => op.kind === "delete")
-      .map((op) => op.id);
-    expect(deletes).not.toContain("stroke_1");
-    expect(deletes).toEqual([firstPiece!.node.id]);
+    expect(ops.some((op) => op.kind === "upsert")).toBe(true);
+    expect(ops.filter((op) => op.kind === "delete")).toEqual([]);
   });
 });

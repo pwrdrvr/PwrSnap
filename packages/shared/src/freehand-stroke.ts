@@ -174,6 +174,43 @@ function distanceToSegmentPx(p: StrokePointPx, a: StrokePointPx, b: StrokePointP
   return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
 }
 
+// ---- Segments -------------------------------------------------------
+
+/** A row's segments: `points` split at `breaks`. A row with no breaks
+ *  is one segment. Every consumer that draws, hit-tests or cuts a
+ *  stroke goes through this — never through `points` directly, or it
+ *  would join the end of one segment to the start of the next. */
+export function strokeSegments<P extends { x: number; y: number }>(data: {
+  points: readonly P[];
+  breaks?: readonly number[] | undefined;
+}): P[][] {
+  const breaks = data.breaks ?? [];
+  if (breaks.length === 0) return [[...data.points]];
+  const out: P[][] = [];
+  let start = 0;
+  for (const at of [...breaks, data.points.length]) {
+    out.push(data.points.slice(start, at));
+    start = at;
+  }
+  return out;
+}
+
+/** `points` + `breaks` for a list of segments (empty segments dropped).
+ *  One segment carries no `breaks` at all, so an uncut stroke's row is
+ *  the same shape it always was. */
+export function strokePointsFromSegments<P extends { x: number; y: number }>(
+  segments: readonly (readonly P[])[]
+): { points: P[]; breaks?: number[] } {
+  const points: P[] = [];
+  const breaks: number[] = [];
+  for (const segment of segments) {
+    if (segment.length === 0) continue;
+    if (points.length > 0) breaks.push(points.length);
+    points.push(...segment);
+  }
+  return breaks.length > 0 ? { points, breaks } : { points };
+}
+
 // ---- Smoothing ------------------------------------------------------
 
 /**
@@ -388,9 +425,29 @@ export function strokePaintStyle(
 }
 
 /**
- * Everything needed to paint `data` on a canvas of
+ * Everything needed to paint a stroke row on a canvas of
+ * `canvasWidthPx × canvasHeightPx`, in canvas pixels: one geometry per
+ * segment, in order. Each segment paints on its own, exactly as a
+ * separate stroke would — two crossing marker segments darken where
+ * they cross — so merging strokes into one row never changes the look.
+ */
+export function strokeGeometries(
+  data: Pick<StrokeOverlay, "tool" | "points" | "breaks" | "thickness" | "opacity">,
+  canvasWidthPx: number,
+  canvasHeightPx: number,
+  basisPx: number
+): StrokeGeometry[] {
+  return strokeSegments(data).map((points) =>
+    strokeGeometry({ ...data, points }, canvasWidthPx, canvasHeightPx, basisPx)
+  );
+}
+
+/**
+ * Everything needed to paint ONE segment — `data.points` as a single
+ * path, ignoring any `breaks` — on a canvas of
  * `canvasWidthPx × canvasHeightPx`, in canvas pixels. `basisPx` is the
- * capture's SOURCE-derived `annotationBasisPx`.
+ * capture's SOURCE-derived `annotationBasisPx`. A row may hold several
+ * segments: paint rows with `strokeGeometries`.
  */
 export function strokeGeometry(
   data: Pick<StrokeOverlay, "tool" | "points" | "thickness" | "opacity">,
@@ -577,6 +634,18 @@ interface PxBounds {
   maxY: number;
 }
 
+function unionBounds(pieces: readonly { bounds: PxBounds }[]): PxBounds {
+  return pieces.reduce<PxBounds>(
+    (all, piece) => ({
+      minX: Math.min(all.minX, piece.bounds.minX),
+      minY: Math.min(all.minY, piece.bounds.minY),
+      maxX: Math.max(all.maxX, piece.bounds.maxX),
+      maxY: Math.max(all.maxY, piece.bounds.maxY)
+    }),
+    { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
+  );
+}
+
 function boundsWithin(a: PxBounds, b: PxBounds, reach: number): boolean {
   return !(
     a.maxX < b.minX - reach ||
@@ -602,9 +671,10 @@ interface ErasedStroke {
   pieces: { points: StrokePointPx[]; bounds: PxBounds }[];
   bounds: PxBounds;
   touched: boolean;
-  /** `pieces` as rows, built when asked for and kept until the next cut
-   *  — the same array, so a renderer memoized on it does nothing. */
-  rows: StrokeOverlay[] | null;
+  /** `pieces` as the row that replaces this stroke (`null` once nothing
+   *  is left), built when asked for and kept until the next cut — the
+   *  same object, so a renderer memoized on it does nothing. */
+  row: StrokeOverlay | null | undefined;
 }
 
 /**
@@ -623,7 +693,7 @@ export class StrokeEraseSession {
   private readonly path: StrokePointPx[] = [];
   private readonly strokes = new Map<string, ErasedStroke>();
   private live: ReadonlySet<string> = new Set();
-  private preview: ReadonlyMap<string, readonly StrokeOverlay[]> = new Map();
+  private preview: ReadonlyMap<string, StrokeOverlay | null> = new Map();
 
   constructor(
     private readonly radiusPx: number,
@@ -673,38 +743,41 @@ export class StrokeEraseSession {
     }
     this.live = live;
     if (changed) {
-      const next = new Map<string, readonly StrokeOverlay[]>();
+      const next = new Map<string, StrokeOverlay | null>();
       for (const [id, state] of this.strokes) {
-        if (state.touched && live.has(id)) next.set(id, this.rowsOf(state));
+        if (state.touched && live.has(id)) next.set(id, this.rowOf(state));
       }
       this.preview = next;
     }
     return changed;
   }
 
-  /** What each cut stroke currently is, by row id: an empty list for a
-   *  stroke erased whole. The map is replaced only when a cut changes
-   *  it, and an untouched entry keeps its array. */
-  pieces(): ReadonlyMap<string, readonly StrokeOverlay[]> {
+  /** What each cut stroke currently is, by row id: the same row with
+   *  its surviving pieces as segments, or `null` for a stroke erased
+   *  whole. Strokes the drag has not cut are absent. The map is replaced
+   *  only when a cut changes it, and an untouched entry keeps its row. */
+  cuts(): ReadonlyMap<string, StrokeOverlay | null> {
     return this.preview;
   }
 
   /** The edits a release commits: every stroke the drag cut, with the
-   *  rows that replace it. */
-  changes(): { id: string; pieces: StrokeOverlay[] }[] {
-    return [...this.preview].map(([id, rows]) => ({ id, pieces: [...rows] }));
+   *  row that replaces it (`null` when it was erased whole). */
+  changes(): { id: string; replacement: StrokeOverlay | null }[] {
+    return [...this.preview].map(([id, replacement]) => ({ id, replacement }));
   }
 
   private track(data: StrokeOverlay): ErasedStroke {
-    const points = strokePointsToPx(data.points, this.canvasWidthPx, this.canvasHeightPx);
-    const bounds = boundsPx(points);
+    const pieces = strokeSegments(data).map((segment) => {
+      const points = strokePointsToPx(segment, this.canvasWidthPx, this.canvasHeightPx);
+      return { points, bounds: boundsPx(points) };
+    });
     return {
       data,
       reachPx: this.radiusPx + strokeReachPx(data, this.basisPx),
-      pieces: [{ points, bounds }],
-      bounds,
+      pieces,
+      bounds: unionBounds(pieces),
       touched: false,
-      rows: null
+      row: undefined
     };
   }
 
@@ -726,27 +799,27 @@ export class StrokeEraseSession {
     }
     if (!changed) return false;
     state.pieces = next;
-    state.bounds = next.reduce<PxBounds>(
-      (all, piece) => ({
-        minX: Math.min(all.minX, piece.bounds.minX),
-        minY: Math.min(all.minY, piece.bounds.minY),
-        maxX: Math.max(all.maxX, piece.bounds.maxX),
-        maxY: Math.max(all.maxY, piece.bounds.maxY)
-      }),
-      { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
-    );
+    state.bounds = unionBounds(next);
     state.touched = true;
-    state.rows = null;
+    state.row = undefined;
     return true;
   }
 
-  private rowsOf(state: ErasedStroke): StrokeOverlay[] {
-    state.rows ??= state.pieces.map((piece) => ({
-      ...state.data,
-      points: strokePointsToNormalized(piece.points, this.canvasWidthPx, this.canvasHeightPx)
-    }));
-    return state.rows;
+  /** The row a cut stroke becomes: the same row, its surviving pieces
+   *  as segments — or `null`, when the eraser took all of it. */
+  private rowOf(state: ErasedStroke): StrokeOverlay | null {
+    if (state.row === undefined) {
+      const segments = state.pieces.map((piece) =>
+        strokePointsToNormalized(piece.points, this.canvasWidthPx, this.canvasHeightPx)
+      );
+      // Drop the old breaks first: the pieces define the new ones.
+      const { breaks: _old, ...rest } = state.data;
+      state.row = segments.length === 0 ? null : { ...rest, ...strokePointsFromSegments(segments) };
+    }
+    return state.row;
   }
+
+
 }
 
 function boundsPx(points: readonly StrokePointPx[]): PxBounds {

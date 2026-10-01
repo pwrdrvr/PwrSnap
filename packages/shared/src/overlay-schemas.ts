@@ -826,6 +826,13 @@ export const MAX_STROKE_POINTS = 4096;
  *  path drawn as nested bands (`freehand-stroke.ts`), so a row carries
  *  no per-tool extras and an eraser cut works the same for all three.
  *
+ *  One row can hold several disjoint SEGMENTS: `breaks` lists the
+ *  indices into `points` where a new segment starts. An eraser cut
+ *  leaves its pieces as segments of the one row it cut — one layer, not
+ *  one per piece — and a burst of strokes drawn in the same style lands
+ *  in one row the same way. `points` stays one flat list so a move, a
+ *  resize or a crop maps every point and leaves `breaks` alone.
+ *
  *  NEW KIND — a build that predates it rejects any row carrying it.
  *  `Overlay` is a discriminated union, so an older build fails to parse
  *  a `.pwrsnap` bundle (and a layer-tree row) that contains a stroke.
@@ -835,6 +842,10 @@ export const StrokeOverlay = z.object({
   kind: z.literal("stroke"),
   tool: StrokeTool,
   points: z.array(NormalizedPoint).min(1).max(MAX_STROKE_POINTS),
+  /** Where each segment after the first starts, as indices into
+   *  `points`: strictly increasing, each in (0, points.length). Absent
+   *  (or empty) means one segment. */
+  breaks: z.array(z.number().int().positive()).max(MAX_STROKE_POINTS).optional(),
   color: z.union([z.literal("auto"), z.string().regex(/^#[0-9a-f]{6}$/i)]).default("auto"),
   /** Stroke-weight preset (see ArrowOverlay.thickness). Missing / "auto"
    *  is the Medium rung. The tool multiplies it: a marker is wider than
@@ -847,6 +858,19 @@ export const StrokeOverlay = z.object({
    *  ladder retune causes (AGENTS.md "Annotation sizing"). A mode change
    *  clears it so the stroke takes the new tool's default. */
   opacity: z.number().min(0).max(1).optional()
+}).superRefine((stroke, ctx) => {
+  const breaks = stroke.breaks ?? [];
+  for (let i = 0; i < breaks.length; i += 1) {
+    const at = breaks[i]!;
+    if (at >= stroke.points.length || (i > 0 && at <= breaks[i - 1]!)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["breaks", i],
+        message: "breaks must increase strictly and stay inside points"
+      });
+      return;
+    }
+  }
 });
 export type StrokeOverlay = z.infer<typeof StrokeOverlay>;
 

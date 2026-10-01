@@ -73,9 +73,10 @@ export type DraftStroke = {
   /** How many of `points` this draft shows. Absent means all of them. */
   count?: number;
   /** Eraser only: what each stroke the drag has cut now is, by row id —
-   *  an empty list for one erased whole. Rows absent from the map are
-   *  untouched. See `StrokeEraseSession`. */
-  erased?: ReadonlyMap<string, readonly StrokeOverlay[]>;
+   *  the row with its surviving pieces as segments, or `null` for one
+   *  erased whole. Rows absent from the map are untouched. See
+   *  `StrokeEraseSession`. */
+  erased?: ReadonlyMap<string, StrokeOverlay | null>;
 };
 
 export type Draft = DraftArrow | DraftShape | DraftText | DraftStroke;

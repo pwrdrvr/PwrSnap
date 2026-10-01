@@ -48,7 +48,7 @@ import {
   readTextWeight,
   shapeAutoStrokeWidthPx,
   shapeStripeDash,
-  strokeGeometry,
+  strokeGeometries,
   strokeSvgElements
 } from "@pwrsnap/shared";
 
@@ -623,7 +623,7 @@ function shapeSvg(
 
 /** Freehand Draw stroke (pen / marker / airbrush).
  *
- *  The geometry comes from the shared `strokeGeometry`, in CANVAS pixels
+ *  The geometry comes from the shared `strokeGeometries`, in CANVAS pixels
  *  — the same call, on the same numbers, that the editor's StrokeGlyph
  *  makes. A scaled bake wraps it in `scale(renderScale)` instead of
  *  re-deriving it at render resolution, so the export is the preview's
@@ -645,7 +645,11 @@ function strokeSvg(
   const canvasH = renderHeightPx / scale;
   const basis = (basisPx ?? annotationBasisPx(canvasW, canvasH) * scale) / scale;
   const paint = data.color === "auto" ? AUTO_ACCENT_HEX : data.color;
-  const body = strokeSvgElements(strokeGeometry(data, canvasW, canvasH, basis), paint);
+  // One geometry per segment, each painted on its own (see
+  // `strokeGeometries`) — the same list the editor's StrokeGlyph paints.
+  const body = strokeGeometries(data, canvasW, canvasH, basis)
+    .map((geometry) => strokeSvgElements(geometry, paint))
+    .join("");
   const open = scale === 1 ? "" : `<g transform="scale(${scale})">`;
   const close = scale === 1 ? "" : "</g>";
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${renderWidthPx}" height="${renderHeightPx}" viewBox="0 0 ${renderWidthPx} ${renderHeightPx}">${open}${body}${close}</svg>`;

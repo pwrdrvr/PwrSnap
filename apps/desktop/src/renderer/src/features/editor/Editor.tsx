@@ -81,6 +81,7 @@ import {
   strokePointsToPx,
   strokeBoundsN,
   strokeReachPx,
+  strokeSegments,
   StrokeEraseSession,
   type EraseTarget
 } from "@pwrsnap/shared";
@@ -295,7 +296,10 @@ const INTERACTIVE_KEY_TARGETS =
 
 /** One stroke the eraser cut: its layer id and the display-space shapes
  *  that replace it — empty when the eraser took all of it. */
-type EraseChange = { readonly id: string; readonly pieces: readonly StrokeOverlay[] };
+/** One stroke an eraser drag cut: the row that replaces it (the same
+ *  stroke, its surviving pieces as segments), or `null` when the drag
+ *  erased all of it. */
+type EraseChange = { readonly id: string; readonly replacement: StrokeOverlay | null };
 
 /** A stroke row's centerline box. Rows are immutable — an edit writes
  *  a new object — so the box is cached by row for the hover hit-test. */
@@ -324,7 +328,7 @@ function liveStrokeDraft(stroke: DraftStroke, erase: StrokeEraseSession | null):
   return {
     ...stroke,
     count: stroke.points.length,
-    ...(erase !== null ? { erased: erase.pieces() } : {})
+    ...(erase !== null ? { erased: erase.cuts() } : {})
   };
 }
 
@@ -1518,11 +1522,12 @@ export function hitTestOverlays(
       ) {
         continue;
       }
-      const distPx = distanceToPolylinePx(
-        { x: xn * w, y: yn * h },
-        strokePointsToPx(o.points, w, h)
+      // Per segment: the gap the eraser left between two is empty.
+      const at = { x: xn * w, y: yn * h };
+      const hit = strokeSegments(o).some(
+        (segment) => distanceToPolylinePx(at, strokePointsToPx(segment, w, h)) <= limitPx
       );
-      if (distPx <= limitPx) return row.id;
+      if (hit) return row.id;
       continue;
     }
     if (o.kind === "arrow") {
@@ -5736,17 +5741,19 @@ function EditorLoaded({
     undo.endInteraction
   ]);
 
-  // Eraser commit. The new pieces are built from the DISPLAY node (the
-  // wrapped dispatcher maps them into stored space, as for any draw);
-  // the removed originals are recorded from the STORED tree, because
-  // undo replays through the raw dispatcher. Pieces keep the original's
-  // z_index, so a stroke cut in two stays where it was in the stack.
+  // Eraser commit. A cut stroke stays ONE layer: it is replaced by one
+  // row holding its surviving pieces as segments, at the original's
+  // z_index, so it stays where it was in the stack. A stroke erased whole
+  // is deleted. The replacement is built from the DISPLAY node (the
+  // wrapped dispatcher maps it into stored space, as for any draw); the
+  // removed original is recorded from the STORED tree, because undo
+  // replays through the raw dispatcher.
   //
-  // A stroke is replaced all-or-nothing: the original is deleted only
-  // once EVERY piece has been written. A piece that fails takes back the
-  // pieces already written and leaves the original alone — an eraser
-  // that deleted a stroke it could not re-create would turn one rejected
-  // write into the loss of the whole stroke.
+  // The original is deleted only once its replacement is written. A
+  // replacement that fails leaves the original alone — an eraser that
+  // deleted a stroke it could not re-create would turn one rejected
+  // write into the loss of the whole stroke — and one whose original
+  // will not delete is taken back.
   useEffect(() => {
     eraseStrokesRef.current = async (changes): Promise<void> => {
       const removed: CreateDeleteItem[] = [];
@@ -5755,46 +5762,37 @@ function EditorLoaded({
         const display = modelLayers.find((l) => l.id === change.id);
         const stored = storedLayers.find((l) => l.id === change.id) ?? null;
         if (display === undefined || display.kind !== "vector") continue;
-        const written: CreateDeleteItem[] = [];
-        let failed = false;
-        for (const shape of change.pieces) {
+        let written: CreateDeleteItem | null = null;
+        if (change.replacement !== null) {
           // eslint-disable-next-line no-await-in-loop
           const result = await dispatchEdit({
             kind: "upsert",
             // Layer ids are 16-char nanoids — the bundle schema rejects
             // any other length.
-            node: { ...display, id: nanoid(16), shape }
+            node: { ...display, id: nanoid(16), shape: change.replacement }
           });
           if (!result.ok) {
             // eslint-disable-next-line no-console
-            console.error("eraser: piece upsert failed", result.error);
-            failed = true;
-            break;
+            console.error("eraser: replacement upsert failed", result.error);
+            continue;
           }
           if (result.value.kind === "upsert") {
             const node = result.value.artifact.node;
-            written.push({ row: { id: node.id }, node });
+            written = { row: { id: node.id }, node };
           }
-        }
-        if (failed) {
-          for (const piece of written) {
-            // eslint-disable-next-line no-await-in-loop
-            await dispatchEdit({ kind: "delete", id: piece.row.id });
-          }
-          continue;
         }
         // eslint-disable-next-line no-await-in-loop
         const deleted = await dispatchEdit({ kind: "delete", id: change.id });
         if (!deleted.ok) {
           // eslint-disable-next-line no-console
           console.error("eraser: delete failed", deleted.error);
-          for (const piece of written) {
+          if (written !== null) {
             // eslint-disable-next-line no-await-in-loop
-            await dispatchEdit({ kind: "delete", id: piece.row.id });
+            await dispatchEdit({ kind: "delete", id: written.row.id });
           }
           continue;
         }
-        added.push(...written);
+        if (written !== null) added.push(written);
         removed.push({ row: { id: change.id }, node: stored });
       }
       if (!undoApplyingRef.current && (removed.length > 0 || added.length > 0)) {

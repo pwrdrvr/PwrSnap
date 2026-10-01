@@ -331,6 +331,28 @@ function sendEditCommand(
   });
 }
 
+/**
+ * File ▸ Duplicate Snap / Edit a Copy → the focused window. Only the
+ * Library subscribes; it acts on its selected snap. Same window resolution
+ * and accelerator flag as `sendEditCommand`, for the same reasons.
+ */
+function sendLibraryDuplicate(
+  window: Electron.BaseWindow | undefined,
+  mode: "duplicate" | "edit-copy",
+  event?: Electron.KeyboardEvent
+): void {
+  const candidate =
+    window !== undefined && !window.isDestroyed()
+      ? BrowserWindow.fromId(window.id)
+      : null;
+  const target = candidate ?? BrowserWindow.getFocusedWindow();
+  if (target === null || target.isDestroyed()) return;
+  target.webContents.send(EVENT_CHANNELS.libraryDuplicate, {
+    mode,
+    viaAccelerator: event?.triggeredByAccelerator === true
+  });
+}
+
 const isMac = process.platform === "darwin";
 const shortcutPlatform = shortcutPlatformFromString(process.platform);
 
@@ -502,6 +524,20 @@ function installApplicationMenu(developerMode: boolean = lastKnownDeveloperMode)
               }
             }
           ]
+        },
+        { type: "separator" },
+        {
+          label: "Duplicate Snap",
+          accelerator: "CmdOrCtrl+Shift+D",
+          click: (_item, window, event) => {
+            sendLibraryDuplicate(window, "duplicate", event);
+          }
+        },
+        {
+          label: "Edit a Copy",
+          click: (_item, window, event) => {
+            sendLibraryDuplicate(window, "edit-copy", event);
+          }
         },
         { type: "separator" },
         isMac ? { role: "close" as const } : { role: "quit" as const }

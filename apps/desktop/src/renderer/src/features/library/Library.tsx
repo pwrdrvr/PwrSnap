@@ -34,8 +34,10 @@ import {
   GRID_ZOOM_DEFAULT,
   GRID_ZOOM_MAX,
   GRID_ZOOM_MIN,
+  formatCaptureEditSummary,
   revealInFileManagerLabel,
   resolveSizzleProjectCoverCaptureId,
+  type CaptureEditSummary,
   type SettingsChangedEvent,
   type SizzleProject
 } from "@pwrsnap/shared";
@@ -64,6 +66,15 @@ import {
 import type { Capture } from "./captures";
 import { APP_INFO, PROJECT_APP_KEY, groupByDay } from "./captures";
 import { DetailRail } from "./DetailRail";
+import { ContextMenuChoiceRow, ContextSubmenuRow } from "./ContextSubmenu";
+import {
+  captureEditSummaryFor,
+  duplicateChoiceLabels,
+  useCaptureDuplicate,
+  useCaptureFamilies,
+  useFamilyMembers,
+  type DuplicateMode
+} from "./useCaptureDuplicate";
 import { GridCopyPalette } from "./GridCopyPalette";
 import { closeWhenFocusLeaves } from "../shared/close-when-focus-leaves";
 import { resolveLibraryAiToggleAction } from "./library-ai-toggle";
@@ -320,9 +331,24 @@ type CaptureContextMenuState = {
   recordId: string;
   isVideo: boolean;
   isTrashed: boolean;
+  /** What a with-edits copy would carry. `null` = unknown, so the
+   *  duplicate rows offer the choice rather than guess. */
+  editSummary: CaptureEditSummary | null;
   x: number;
   y: number;
 };
+
+/** An accelerator IPC this soon after the ⇧⌘D keydown is the same keypress
+ *  (same window as the edit-menu bridge's KEYBOARD_DEDUP_MS). */
+const DUPLICATE_KEY_DEDUP_MS = 250;
+
+/** Room the duplicate submenu needs beside the menu before it flips left. */
+const CAPTURE_CONTEXT_SUBMENU_WIDTH = 236;
+
+/** How long the pointer may sit on another row before an open submenu
+ *  closes. A path from the row to the submenu that clips a neighbouring
+ *  row is still on its way over; one that rests there has left. */
+const CAPTURE_CONTEXT_SUBMENU_CLOSE_DELAY_MS = 300;
 
 const PROJECT_CONTEXT_MENU_WIDTH = 188;
 const PROJECT_CONTEXT_MENU_HEIGHT = 70;
@@ -839,6 +865,9 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
     useState<ProjectContextMenuState | null>(null);
   const [captureContextMenu, setCaptureContextMenu] =
     useState<CaptureContextMenuState | null>(null);
+  // Bumped on every open and close, so an edit-summary read that lands
+  // after the menu was dismissed (or reopened elsewhere) is dropped.
+  const captureContextMenuSeqRef = useRef(0);
   const openedRecordsRef = useRef(openedRecords);
   // `captures:changed` listeners read this ref synchronously. Update it
   // before Focus navigation too: an event can arrive before React commits
@@ -906,6 +935,67 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
     const timer = setTimeout(() => setActionError(null), ACTION_ERROR_MS);
     return () => clearTimeout(timer);
   }, [actionError]);
+  const { prefs: duplicatePrefs, duplicate: duplicateRecord } = useCaptureDuplicate({
+    onError: (message) => setActionError({ message })
+  });
+  const { families: captureFamilies, liveCountByFamily } = useCaptureFamilies();
+  // Grid filtered to one duplicate family (Family tab ▸ a family, or "Show
+  // in grid"). Not part of LibraryFilterState: it swaps the record source
+  // the way search does, and it clears itself when the sidebar filter or
+  // the search changes — it is a lens on one family, not a facet.
+  const [familyFilterId, setFamilyFilterId] = useState<string | null>(null);
+  const familyFilterMembers = useFamilyMembers(familyFilterId);
+  const familyFilterIdRef = useRef(familyFilterId);
+  familyFilterIdRef.current = familyFilterId;
+  // A sidebar filter change or a typed search is the user asking for a
+  // different slice; the family lens steps aside rather than compose.
+  useEffect(() => {
+    setFamilyFilterId(null);
+  }, [activeFilter]);
+  useEffect(() => {
+    if (searchQuery.trim().length > 0) setFamilyFilterId(null);
+  }, [searchQuery]);
+  /**
+   * ⇧⌘D and File ▸ Duplicate Snap / Edit a Copy act on the selected snap
+   * with the choice remembered from the last time the user was asked
+   * (`library.duplicateWithEdits`); the menus and the inspector's chooser
+   * are where it is asked. Held in a ref so the window keydown effect
+   * does not resubscribe as the preference changes.
+   */
+  const duplicateSelectedRef = useRef<(mode: DuplicateMode) => Promise<void>>(async () => {});
+  duplicateSelectedRef.current = async (mode) => {
+    if (activeFilterRef.current.scope === "trash") return;
+    const recordId = viewRef.current.selectedRecordId;
+    if (recordId === null) return;
+    const record =
+      recordsRef.current.find((candidate) => candidate.id === recordId) ??
+      openedRecordsRef.current.find((candidate) => candidate.id === recordId) ??
+      null;
+    if (record === null || record.deleted_at !== null) return;
+    const summary = await captureEditSummaryFor(record);
+    const offerChoice = summary === null || summary.hasEdits;
+    const withEdits = offerChoice
+      ? duplicatePrefs[record.kind === "video" ? "video" : "image"]
+      : true;
+    await duplicateRecord(record, { mode, withEdits });
+  };
+  const lastDuplicateKeyAtRef = useRef(Number.NEGATIVE_INFINITY);
+  useEffect(
+    () =>
+      subscribe(EVENT_CHANNELS.libraryDuplicate, (payload) => {
+        const evt = payload as { mode?: unknown; viaAccelerator?: unknown } | null;
+        const mode: DuplicateMode = evt?.mode === "edit-copy" ? "edit-copy" : "duplicate";
+        // The accelerator for the keypress the keydown above already handled.
+        if (
+          evt?.viaAccelerator === true &&
+          performance.now() - lastDuplicateKeyAtRef.current < DUPLICATE_KEY_DEDUP_MS
+        ) {
+          return;
+        }
+        void duplicateSelectedRef.current(mode);
+      }),
+    []
+  );
   // A captures-changed broadcast can beat the matching invoke Result back to
   // the renderer. Retain the selected record while its delete is pending so
   // that early broadcast cannot close/advance Focus and report success before
@@ -1898,8 +1988,24 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   // so search ∩ trash is empty by construction; the input is disabled in
   // trash to make that clear.
   const sourceAppState = includeFetchActive ? sourceAppRows[sourceAppFacetKey] : undefined;
+  const familyFilterActive = familyFilterId !== null && !isTrashView;
+  // The member list is re-read only when the family itself changes, so an
+  // edit to a member leaves its row stale. Prefer the copy the Library
+  // already keeps live (the paged window, or a retained opened record).
+  const familyFilterRows = useMemo(() => {
+    if (familyFilterMembers === null) return null;
+    const live = new Map<string, CaptureRecord>();
+    for (const record of records) live.set(record.id, record);
+    for (const record of openedRecords) live.set(record.id, record);
+    return familyFilterMembers
+      .map((member) => live.get(member.id) ?? member)
+      .filter((record) => record.deleted_at === null)
+      .sort((a, b) => b.captured_at.localeCompare(a.captured_at));
+  }, [familyFilterMembers, records, openedRecords]);
   const universeRecordsRaw = isTrashView
     ? trashRecords
+    : familyFilterActive && familyFilterRows !== null
+    ? familyFilterRows
     : isSearchActive
     ? searchState.rows
     : sourceAppState?.bundleKey === sourceAppBundleKey
@@ -1926,12 +2032,14 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   // The include-mode source-app fetch drains its own cursor to
   // completion, so there is nothing left to page. Exclude mode rides
   // the normal live keyset window and keeps paginating.
-  const gridHasMore = isSearchActive ? false : includeFetchActive ? false : hasMore;
+  const gridHasMore =
+    familyFilterActive || isSearchActive ? false : includeFetchActive ? false : hasMore;
   // Search never paginates (gridHasMore is false), so it must not drive
   // the grid's bottom "Loading more…" footer — that label would be a
   // lie (we're re-running a query, not fetching the next page). The
   // topbar count badge already shows "searching…" for search progress.
-  const gridIsLoadingMore = isSearchActive
+  const gridIsLoadingMore =
+    familyFilterActive || isSearchActive
     ? false
     : includeFetchActive
       ? sourceAppState?.loading ?? false
@@ -1954,7 +2062,9 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   const includeFacetActive = sourceAppFacet.mode === "include" && appFacetActive;
   const gridProjects = useMemo(
     () => {
-      if (!visibleTypes.projects || isTrashView || includeFacetActive) return [];
+      if (!visibleTypes.projects || isTrashView || includeFacetActive || familyFilterActive) {
+        return [];
+      }
       if (!isSearchActive) return sizzleProjects;
       return sizzleProjects.filter((project) =>
         sizzleProjectMatchesQuery(project, searchQuery)
@@ -1966,7 +2076,8 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
       includeFacetActive,
       isSearchActive,
       sizzleProjects,
-      searchQuery
+      searchQuery,
+      familyFilterActive
     ]
   );
   const fixtureBacking = useMemo(
@@ -2694,6 +2805,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   function clearChipRow(): void {
     applyFilterAction({ type: "CLEAR_ALL" });
     setSearchQuery("");
+    setFamilyFilterId(null);
   }
 
   /** Map a click event's modifier keys onto the facet gesture model.
@@ -3154,6 +3266,49 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
     cartJumpTargetRef.current = captureId;
   }, [viewDispatch]);
 
+  // Family tab ▸ a member. Fetched by id because the member may be far
+  // outside the loaded keyset window (an original from last month); the
+  // record is retained so the universe holds it, then selected in place —
+  // the grid scrolls to it, Focus/Reel switch to it.
+  const selectFamilyMember = useCallback(
+    (captureId: string): void => {
+      void (async () => {
+        const result = await dispatch("library:byId", { id: captureId });
+        if (!result.ok || result.value === null || result.value.deleted_at !== null) return;
+        retainOpenedRecord(result.value);
+        if (!dayIdGroupsRef.current.flat().includes(captureId) && familyFilterIdRef.current === null) {
+          activeFilterRef.current = initialLibraryFilter;
+          setActiveFilter(initialLibraryFilter);
+          setSearchQuery("");
+        }
+        if (viewRef.current.kind === "grid") {
+          setGridActiveTab("family");
+          viewDispatch({ type: "SELECT_IN_GRID", recordId: captureId }, { history: "replace" });
+          cartJumpTargetRef.current = captureId;
+        } else {
+          viewDispatch({ type: "NAVIGATE", recordId: captureId });
+        }
+      })();
+    },
+    [retainOpenedRecord, viewDispatch]
+  );
+
+  // Family tab ▸ a family: show it in the grid.
+  const filterToFamily = useCallback(
+    (familyId: string): void => {
+      const cur = viewRef.current;
+      if (cur.kind === "focus") {
+        viewDispatch({ type: "CLOSE_FOCUS" });
+      } else if (cur.kind === "reel") {
+        viewDispatch({ type: "TOGGLE_VIEW", to: "grid", fallbackId: null });
+      }
+      setSearchQuery("");
+      setGridActiveTab("family");
+      setFamilyFilterId(familyId);
+    },
+    [viewDispatch]
+  );
+
   useEffect(() => {
     const target = cartJumpTargetRef.current;
     if (target === null || view.kind !== "grid") return;
@@ -3199,6 +3354,16 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
 
       const kind = viewRef.current.kind;
       const usingPrimary = isPrimaryAccel(event, shortcutPlatform);
+
+      // Primary+Shift+D — duplicate the selected snap (the editor's own
+      // Primary+D duplicates a LAYER, and requires no Shift). Stamped so
+      // the File menu's accelerator IPC for this same keypress is dropped.
+      if (usingPrimary && event.shiftKey && !event.altKey && event.key.toLowerCase() === "d") {
+        event.preventDefault();
+        lastDuplicateKeyAtRef.current = performance.now();
+        void duplicateSelectedRef.current("duplicate");
+        return;
+      }
 
       // Primary+[ / +] — Reel-mode scrub aliases for ←/→. Same dispatch,
       // just a second binding so the on-screen scrub hint is honest.
@@ -3428,6 +3593,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   }
 
   function closeCaptureContextMenu(): void {
+    captureContextMenuSeqRef.current += 1;
     setCaptureContextMenu(null);
   }
 
@@ -3448,19 +3614,32 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
     const isVideo = record.kind === "video";
     // Row count drives only the off-screen clamp; see
     // captureContextMenuHeight.
-    const rows = isTrashView ? 3 : isVideo ? 4 : 8;
+    const rows = isTrashView ? 3 : isVideo ? 6 : 10;
     const position = clampContextMenuPosition(
       event.clientX,
       event.clientY,
       CAPTURE_CONTEXT_MENU_WIDTH,
       captureContextMenuHeight(rows)
     );
-    setCaptureContextMenu({
+    const menu = {
       capture: c,
       recordId: record.id,
       isVideo,
       isTrashed: isTrashView,
       ...position
+    };
+    const seq = ++captureContextMenuSeqRef.current;
+    if (isTrashView) {
+      setCaptureContextMenu({ ...menu, editSummary: null });
+      return;
+    }
+    // The duplicate rows ask "With Edits or Base Image Only?" only when the
+    // snap has edits, so learn that before the menu draws — one local DB
+    // read, never long enough to see — rather than redraw it under the
+    // pointer when the answer lands.
+    void captureEditSummaryFor(record).then((editSummary) => {
+      if (seq !== captureContextMenuSeqRef.current) return;
+      setCaptureContextMenu({ ...menu, editSummary });
     });
   }
 
@@ -4814,8 +4993,29 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
             what you're looking at, so scrolling them away defeats the
             purpose. Hidden entirely for the neutral filter so the
             default Library gains no chrome. */}
-        {filterChips.length > 0 && (
+        {(filterChips.length > 0 || familyFilterActive) && (
           <div className="psl__chips" role="status" aria-label="Active search and filters">
+            {familyFilterActive ? (
+              <span className="psl__chip" data-chip-kind="family">
+                <span className="psl__chip-glyph psl__chip-glyph--family" aria-hidden="true">
+                  ⧉
+                </span>
+                <span className="psl__chip-label">
+                  Family · {familyFilterRows?.length ?? "…"}
+                </span>
+                <button
+                  type="button"
+                  className="psl__chip-x"
+                  title="Show every snap"
+                  aria-label="Remove filter Family"
+                  onClick={() => setFamilyFilterId(null)}
+                >
+                  <svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round">
+                    <path d="M6 6l12 12M18 6 6 18" />
+                  </svg>
+                </button>
+              </span>
+            ) : null}
             {filterChips.map((chip) => {
               const isSearch = chip.kind === "search";
               const described = chip.negated ? `not ${chip.label}` : chip.label;
@@ -4960,6 +5160,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
               onDontAskAgainTrash={suppressTrashConfirm}
               restoreCaptureAction={restoreCaptureAction}
               purgeCaptureAction={purgeCaptureAction}
+              familySizes={liveCountByFamily}
             />
           </SurfaceVisibleContext.Provider>
         </div>
@@ -4985,6 +5186,16 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
             // and in particular no second copy path (see
             // clipboard-copy.ts).
             onEdit={() => onSelectCell(captureContextMenu.capture, "edit-cta")}
+            onDuplicate={(mode, withEdits) => {
+              const record = fixtureBacking.recordFor(captureContextMenu.capture.id);
+              if (record === null) return;
+              void duplicateRecord(record, {
+                mode,
+                // No edits: the two copies are the same, so take the whole bundle.
+                withEdits: withEdits ?? true,
+                remember: withEdits !== null
+              });
+            }}
             onCopyPreset={(preset) => {
               copyImagePreset(captureContextMenu.recordId, preset);
               setCopyPulses((current) => ({ ...current, [preset]: current[preset] + 1 }));
@@ -5122,7 +5333,10 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                                     projectCoverRecord={coverRecord}
                                     width={140}
                                   />
-                                  <span className="psl__frame-num">{c.time}</span>
+                                  <span className="psl__frame-num">
+                                    <FamilyGlyph record={record} familySizes={liveCountByFamily} />
+                                    {c.time}
+                                  </span>
                                   <span className="psl__frame-app">
                                     <AppIcon app={c.app} size={8} name={appLabels[c.app]} bundleId={c.bundleId ?? undefined} />
                                   </span>
@@ -5230,6 +5444,13 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
           selectedLayerIds={selectedLayerIds}
           layersApi={layersApi}
           shortcutPlatform={shortcutPlatform}
+          families={captureFamilies}
+          onSelectFamilyMember={selectFamilyMember}
+          onFilterFamily={filterToFamily}
+          duplicatePrefs={duplicatePrefs}
+          onDuplicate={(record, request) => {
+            void duplicateRecord(record, request);
+          }}
         />
       ) : null}
 
@@ -5600,6 +5821,8 @@ type VirtualizedGridProps = {
   onDontAskAgainTrash: () => void;
   restoreCaptureAction: CellAction;
   purgeCaptureAction: CellAction;
+  /** familyId → live member count, for the ⧉ N glyph. */
+  familySizes: ReadonlyMap<string, number>;
 };
 
 type ToolbarTier =
@@ -5815,6 +6038,7 @@ function LibraryCaptureContextMenu({
   menu,
   onClose,
   onEdit,
+  onDuplicate,
   onCopyPreset,
   onSaveFile,
   onReveal,
@@ -5826,6 +6050,8 @@ function LibraryCaptureContextMenu({
   menu: CaptureContextMenuState;
   onClose: () => void;
   onEdit: () => void;
+  /** `withEdits: null` — the snap has no edits, so there was no choice. */
+  onDuplicate: (mode: DuplicateMode, withEdits: boolean | null) => void;
   onCopyPreset: (preset: CopyPreset) => void;
   onSaveFile: () => void;
   onReveal: () => void;
@@ -5849,6 +6075,56 @@ function LibraryCaptureContextMenu({
     };
   }
 
+  // Which duplicate submenu is open. Asked only when there is a choice:
+  // a snap with no edits copies the same either way.
+  const [openSub, setOpenSub] = useState<DuplicateMode | null>(null);
+  const closeSubTimerRef = useRef<number | null>(null);
+  const cancelSubClose = useCallback((): void => {
+    if (closeSubTimerRef.current === null) return;
+    window.clearTimeout(closeSubTimerRef.current);
+    closeSubTimerRef.current = null;
+  }, []);
+  useEffect(() => cancelSubClose, [cancelSubClose]);
+  const offerChoice = menu.editSummary === null || menu.editSummary.hasEdits;
+  const choices = duplicateChoiceLabels(menu.isVideo ? "video" : "image");
+  const editsHint =
+    menu.editSummary === null ? undefined : formatCaptureEditSummary(menu.editSummary);
+  const flipSub =
+    menu.x + CAPTURE_CONTEXT_MENU_WIDTH + CAPTURE_CONTEXT_SUBMENU_WIDTH > window.innerWidth;
+  function duplicateRow(mode: DuplicateMode, label: string) {
+    if (!offerChoice) {
+      return (
+        <button
+          type="button"
+          role="menuitem"
+          className="psl__context-menu-row"
+          onClick={run(() => onDuplicate(mode, null))}
+        >
+          {label}
+        </button>
+      );
+    }
+    return (
+      <ContextSubmenuRow
+        label={label}
+        open={openSub === mode}
+        onOpen={() => setOpenSub(mode)}
+        onClose={() => setOpenSub((current) => (current === mode ? null : current))}
+        flip={flipSub}
+      >
+        <ContextMenuChoiceRow
+          label={choices.withEdits}
+          hint={editsHint}
+          onSelect={run(() => onDuplicate(mode, true))}
+        />
+        <ContextMenuChoiceRow
+          label={choices.baseOnly}
+          onSelect={run(() => onDuplicate(mode, false))}
+        />
+      </ContextSubmenuRow>
+    );
+  }
+
   return (
     <div
       ref={rootRef}
@@ -5858,6 +6134,26 @@ function LibraryCaptureContextMenu({
       style={{ left: `${menu.x}px`, top: `${menu.y}px` }}
       onContextMenu={(event) => event.preventDefault()}
       onBlur={closeWhenFocusLeaves(onClose)}
+      onMouseOver={(event) => {
+        if (openSub === null) return;
+        const target = event.target as Element;
+        // Still on the open submenu, or its row: stay.
+        const sub = target.closest(".psl__context-menu-sub");
+        if (sub?.querySelector('[aria-expanded="true"]') != null) {
+          cancelSubClose();
+          return;
+        }
+        // Only another ROW counts as leaving. The menu's own padding is the
+        // strip the pointer crosses from the row to the submenu; closing on
+        // it shut the submenu before the pointer could reach it.
+        if (target.closest('[role="menuitem"]') === null) return;
+        if (closeSubTimerRef.current !== null) return;
+        const leaving = openSub;
+        closeSubTimerRef.current = window.setTimeout(() => {
+          closeSubTimerRef.current = null;
+          setOpenSub((current) => (current === leaving ? null : current));
+        }, CAPTURE_CONTEXT_SUBMENU_CLOSE_DELAY_MS);
+      }}
       aria-label={`${menu.capture.n} actions`}
     >
       {menu.isTrashed ? (
@@ -5898,6 +6194,8 @@ function LibraryCaptureContextMenu({
           >
             Edit
           </button>
+          {duplicateRow("edit-copy", "Edit a Copy")}
+          {duplicateRow("duplicate", "Duplicate")}
           {/* Video has no Low/Med/High preset model (see
               `capture:presetMetrics`) and no `capture:saveAs` — its
               export lives in the inspector's six-card panel. */}
@@ -6027,7 +6325,8 @@ function VirtualizedGrid({
   confirmBeforeTrash,
   onDontAskAgainTrash,
   restoreCaptureAction,
-  purgeCaptureAction
+  purgeCaptureAction,
+  familySizes
 }: VirtualizedGridProps) {
   const cellsPerRow = useCellsPerRow(scrollElement, cellMinWidth, layoutSignal);
   // Mirror the measured value up to Library for keyboard grid-nav + the
@@ -6308,6 +6607,7 @@ function VirtualizedGrid({
                 onDontAskAgainTrash={onDontAskAgainTrash}
                 restoreCaptureAction={restoreCaptureAction}
                 purgeCaptureAction={purgeCaptureAction}
+                familySizes={familySizes}
               />
             )}
           </div>
@@ -6332,6 +6632,32 @@ function VirtualizedGrid({
   );
 }
 
+/**
+ * ⧉ N — this snap shares a family with N − 1 live copies (or originals).
+ * Always shown once a family has more than one live member; a family of
+ * one (every other member trashed) is just a snap again.
+ */
+function FamilyGlyph({
+  record,
+  familySizes
+}: {
+  record: CaptureRecord | null | undefined;
+  familySizes: ReadonlyMap<string, number>;
+}) {
+  const familyId = record?.family_id ?? null;
+  const size = familyId === null ? 0 : familySizes.get(familyId) ?? 0;
+  if (size < 2) return null;
+  return (
+    <span
+      className="psl__family-glyph"
+      title={`${size} snaps in this family`}
+      aria-label={`${size} snaps in this family`}
+    >
+      <span aria-hidden="true">⧉ {size}</span>
+    </span>
+  );
+}
+
 function CellRow({
   cells,
   gridTemplate,
@@ -6351,7 +6677,8 @@ function CellRow({
   confirmBeforeTrash,
   onDontAskAgainTrash,
   restoreCaptureAction,
-  purgeCaptureAction
+  purgeCaptureAction,
+  familySizes
 }: {
   cells: DayGroup["items"];
   gridTemplate: string;
@@ -6376,6 +6703,8 @@ function CellRow({
   onDontAskAgainTrash: () => void;
   restoreCaptureAction: CellAction;
   purgeCaptureAction: CellAction;
+  /** familyId → live member count, for the ⧉ N glyph. */
+  familySizes: ReadonlyMap<string, number>;
 }) {
   // Inline grid styling — `.psl__grid` from the CSS uses auto-fill;
   // we override with explicit columns matching the computed
@@ -6464,7 +6793,10 @@ function CellRow({
               {cartEligible && record !== null ? (
                 <CartCellCheckbox captureId={record.id} />
               ) : null}
-              <span className="psl__cell-time">{c.time}</span>
+              <span className="psl__cell-time">
+                <FamilyGlyph record={record} familySizes={familySizes} />
+                {c.time}
+              </span>
               <div className="psl__cell-foot">
               <span className="psl__cell-app-overlay">
                 {isProject ? (

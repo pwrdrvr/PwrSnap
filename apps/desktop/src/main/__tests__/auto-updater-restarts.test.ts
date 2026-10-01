@@ -124,7 +124,11 @@ describe("production release requests across process restarts", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  test("20 cold launches/minute and Settings mounts make zero requests during the new-profile grace period", async () => {
+  // 221 module-graph re-imports (`vi.resetModules` + `import`). That costs
+  // ~0.8s on a Mac and sits at the 5s default on the Windows runner, where it
+  // has timed out — and a timed-out loop keeps restarting the updater under
+  // the next test, so its 14 neighbours failed with it.
+  test("20 cold launches/minute and Settings mounts make zero requests during the new-profile grace period", { timeout: 30_000 }, async () => {
     for (let launch = 0; launch < 200; launch++) {
       await restart();
       await updater.checkForAppUpdatesNow("startup");

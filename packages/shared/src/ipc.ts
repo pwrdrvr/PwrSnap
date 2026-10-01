@@ -40,6 +40,14 @@ export const EVENT_CHANNELS = {
   /** Main → local renderers: one formatted current-session log line. */
   logEntry: "events:logs:entry",
   capturesChanged: "events:captures:changed",
+  /**
+   * Main → every BrowserWindow: a duplicate family's membership or
+   * live/trashed counts changed — a copy was made, or a member was
+   * trashed, restored or purged. Payload: `{ familyIds: string[] }`.
+   * Separate from `capturesChanged` on purpose: that fires on every
+   * annotation edit, and edits never change a family.
+   */
+  familiesChanged: "events:families:changed",
   overlaysChanged: "events:overlays:changed",
   uploadProgress: "events:upload:progress",
   aiRunUpdated: "events:ai-run:updated",
@@ -312,6 +320,14 @@ export const EVENT_CHANNELS = {
    */
   editUndo: "events:edit:undo",
   editRedo: "events:edit:redo",
+  /**
+   * Main → focused Library window: File ▸ Duplicate Snap (⇧⌘D) or File ▸
+   * Edit a Copy was chosen. The Library acts on its selected snap.
+   * Payload: `{ mode: "duplicate" | "edit-copy"; viaAccelerator: boolean }`
+   * — `viaAccelerator` lets the renderer drop an accelerator activation
+   * that raced its own ⇧⌘D keydown, exactly as the edit-menu bridge does.
+   */
+  libraryDuplicate: "events:library:duplicate",
   /**
    * Main → every BrowserWindow: a Library chat thread's metadata
    * changed (created, renamed, archived, anchor moved, status flipped

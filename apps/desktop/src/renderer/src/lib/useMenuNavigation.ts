@@ -23,10 +23,17 @@ const ITEM_SELECTOR = '[role="menuitem"],[role="menuitemradio"],[role="menuitemc
 /** Typeahead resets once the user stops typing — same idle window as a native menu. */
 const TYPEAHEAD_IDLE_MS = 500;
 
+/** The menu's own enabled items. A submenu renders INSIDE its parent (so the
+ *  parent's outside-click and focus-leave checks treat it as part of the
+ *  menu), which puts its rows under the parent's root too; they belong to the
+ *  submenu, so the parent must not walk into them. */
 function items(menu: HTMLElement | null): HTMLElement[] {
   if (menu === null) return [];
   return [...menu.querySelectorAll<HTMLElement>(ITEM_SELECTOR)].filter(
-    (el) => el.getAttribute("aria-disabled") !== "true" && !el.hasAttribute("disabled")
+    (el) =>
+      el.getAttribute("aria-disabled") !== "true" &&
+      !el.hasAttribute("disabled") &&
+      el.parentElement?.closest('[role="menu"]') === menu
   );
 }
 
@@ -34,10 +41,29 @@ type OpenMenu = {
   menuRef: RefObject<HTMLElement | null>;
   typed: string;
   typedAt: number;
+  /** Set for a submenu: ArrowLeft closes it. */
+  onBackRef: RefObject<(() => void) | undefined>;
 };
 
 /** Every menu currently open. */
 const openMenus: OpenMenu[] = [];
+
+/**
+ * What last drove the UI: a key, or the mouse. A native menu opened by a
+ * right-click highlights nothing until the pointer or an arrow key picks a
+ * row; one opened from the keyboard starts on its first row. Focusing the
+ * first row on a right-click put a focus ring on "Edit" while the pointer was
+ * nowhere near it — and whether that ring showed at all depended on
+ * Chromium's guess about the last input, so a click elsewhere in the menu
+ * made it vanish. Defaults to keyboard, the case that needs focus moved.
+ */
+let lastInput: "keyboard" | "pointer" = "keyboard";
+
+/** See `lastInput`. A submenu reads it to tell a keyboard move off its row
+ *  (close) from the pointer crossing another row (the parent's hover intent). */
+export function lastMenuInput(): "keyboard" | "pointer" {
+  return lastInput;
+}
 
 function moveTo(next: HTMLElement, list: HTMLElement[]): void {
   for (const el of list) el.tabIndex = -1;
@@ -73,6 +99,31 @@ function steer(e: KeyboardEvent, entry: OpenMenu, menu: HTMLElement, active: HTM
       e.preventDefault();
       moveTo(list[list.length - 1]!, list);
       return;
+    case "ArrowRight":
+      // APG: an item that owns a submenu opens it. The item's own click
+      // handler does the opening, so pointer and keyboard share one path;
+      // the submenu's hook then moves focus onto its first row.
+      // A submenu the pointer already opened is entered, not toggled shut:
+      // the click handler is a toggle.
+      if (at !== -1 && active.getAttribute("aria-haspopup") === "menu") {
+        e.preventDefault();
+        if (active.getAttribute("aria-expanded") === "true") {
+          const sub = active.parentElement?.querySelector<HTMLElement>('[role="menu"]') ?? null;
+          const subItems = items(sub);
+          if (subItems.length > 0) moveTo(subItems[0]!, subItems);
+        } else {
+          active.click();
+        }
+      }
+      return;
+    case "ArrowLeft": {
+      const back = entry.onBackRef.current;
+      if (back !== undefined) {
+        e.preventDefault();
+        back();
+      }
+      return;
+    }
     default:
       break;
   }
@@ -115,6 +166,7 @@ function steer(e: KeyboardEvent, entry: OpenMenu, menu: HTMLElement, active: HTM
  * chords, which the app menu and the Library's shortcuts own.
  */
 function onGlobalKeyDown(e: KeyboardEvent): void {
+  lastInput = "keyboard";
   if (e.key === "Escape" || e.key === "Tab") return;
   if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
   const active = document.activeElement as HTMLElement | null;
@@ -134,14 +186,38 @@ function onGlobalKeyDown(e: KeyboardEvent): void {
   e.stopImmediatePropagation();
 }
 
+/**
+ * The pointer selects what it is over, as in a native menu: moving onto a row
+ * focuses it, so the arrow keys carry on from the row under the pointer rather
+ * than from wherever focus was left. `focusVisible: false` keeps the ring off
+ * a row the mouse picked — Chromium would otherwise carry a ring over from the
+ * last key press. An arrow key after that rings the next row as usual.
+ */
+function onGlobalMouseMove(e: MouseEvent): void {
+  if (openMenus.length === 0) return;
+  lastInput = "pointer";
+  const item = e.target instanceof Element ? e.target.closest<HTMLElement>(ITEM_SELECTOR) : null;
+  if (item === null || item === document.activeElement) return;
+  const menu = item.parentElement?.closest<HTMLElement>('[role="menu"]') ?? null;
+  if (menu === null || !openMenus.some((entry) => entry.menuRef.current === menu)) return;
+  const list = items(menu);
+  if (!list.includes(item)) return;
+  for (const el of list) el.tabIndex = -1;
+  item.tabIndex = 0;
+  item.focus({ preventScroll: true, focusVisible: false });
+}
+
 if (typeof window !== "undefined") {
   window.addEventListener("keydown", onGlobalKeyDown, true);
+  window.addEventListener("mousedown", () => (lastInput = "pointer"), true);
+  window.addEventListener("mousemove", onGlobalMouseMove, true);
 }
 
 /**
  * Arrow keys, Home/End and typeahead move between the menu's enabled items;
  * Tab closes the menu (APG — it does not walk through it); focus moves into
- * the menu on open and back out on close.
+ * the menu on open — onto the first item from the keyboard, onto the menu
+ * itself from the pointer (see `lastInput`) — and back out on close.
  *
  * Roving tabindex keeps the menu ONE Tab stop, which is the other half of the
  * promise. Items must not set `tabIndex` in JSX to anything but -1: the hook
@@ -154,19 +230,42 @@ if (typeof window !== "undefined") {
 export function useMenuNavigation({
   open,
   menuRef,
-  onClose
+  onClose,
+  onBack,
+  keepFocusOnPointerOpen = false,
+  returnFocusRef
 }: {
   open: boolean;
   menuRef: RefObject<HTMLElement | null>;
   /** Called for Tab, which per APG closes the menu and lets focus move on. */
   onClose: () => void;
+  /** A submenu passes its own close here: ArrowLeft backs out of it, and
+   *  focus returns to the parent item that opened it. Rendering it inside
+   *  the parent's root is what lets the parent's dismiss logic treat it as
+   *  part of the menu. */
+  onBack?: () => void;
+  /** Opened by the pointer, leave focus where it is instead of taking it
+   *  onto the menu root. A submenu the pointer opened by hovering its row
+   *  wants focus to stay on that row, as a native submenu does. */
+  keepFocusOnPointerOpen?: boolean;
+  /** Where focus goes on close, when the render-time opener is not it — a
+   *  submenu returns to its row. */
+  returnFocusRef?: RefObject<HTMLElement | null>;
 }): void {
-  useFocusReturn({ open, containerRef: menuRef });
+  useFocusReturn(
+    returnFocusRef === undefined
+      ? { open, containerRef: menuRef }
+      : { open, containerRef: menuRef, returnFocusRef }
+  );
+  const keepFocusRef = useRef(keepFocusOnPointerOpen);
+  keepFocusRef.current = keepFocusOnPointerOpen;
 
   // Callers routinely pass an inline arrow. Holding it in a ref keeps the
   // keydown subscription from being torn down and rebuilt every render.
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  const onBackRef = useRef(onBack);
+  onBackRef.current = onBack;
 
   // Roving tabindex + initial focus. Runs on every open so a menu whose items
   // changed while closed starts from a valid one — and again whenever the
@@ -196,7 +295,16 @@ export function useMenuNavigation({
       if (moveFocus) target.focus({ preventScroll: true });
     };
 
-    seed(null, true);
+    // From the keyboard, start on the first row. From the pointer, take
+    // focus onto the menu itself (outline-free, so Escape, Tab and the arrows
+    // still have an owner) and light nothing; ArrowDown then lands on the
+    // first row, ArrowUp on the last.
+    if (lastInput === "keyboard") {
+      seed(null, true);
+    } else {
+      seed(null, false);
+      if (!keepFocusRef.current) menu.focus({ preventScroll: true, focusVisible: false });
+    }
 
     // Re-seed only once the menu has actually lost its tab stop. If the user
     // is still standing on an item the stop follows them rather than snapping
@@ -223,7 +331,8 @@ export function useMenuNavigation({
       const menu = menuRef.current;
       const active = document.activeElement;
       if (menu === null || active === null || !menu.contains(active)) return;
-      // APG: Tab closes the menu and moves on. Not default-prevented: the
+      // APG: Tab closes the menu and moves on. The parent's listener sees a
+      // Tab from inside its submenu too, and closes the whole menu with it. Not default-prevented: the
       // browser's own step, taken from wherever useFocusReturn put focus
       // back, is the "moves on". (Inside a focus trap the trap claims the
       // key first and takes that step itself — see useFocusTrap.)
@@ -236,7 +345,7 @@ export function useMenuNavigation({
   // Every other key: `onGlobalKeyDown`, the module-level capture listener.
   useEffect(() => {
     if (!open) return;
-    const entry: OpenMenu = { menuRef, typed: "", typedAt: 0 };
+    const entry: OpenMenu = { menuRef, typed: "", typedAt: 0, onBackRef };
     openMenus.push(entry);
     return () => {
       const at = openMenus.indexOf(entry);

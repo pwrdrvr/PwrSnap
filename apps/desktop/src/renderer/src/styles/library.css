@@ -1829,6 +1829,10 @@
 }
 .psl__action-error {
   margin: 0;
+  /* It floats over the grid, so it needs a surface of its own: the banner's
+     --danger-soft is a 12-16% tint, and alone it let the tiles and sidebar
+     show through the text. Same tint, laid over an opaque panel. */
+  background: linear-gradient(var(--danger-soft), var(--danger-soft)), var(--bg-panel);
   max-width: min(420px, calc(100vw - 32px));
   display: flex;
   flex-direction: column;
@@ -2036,6 +2040,20 @@
   padding: 3px 5px;
   border-radius: var(--psl-chip-radius);
 }
+/* ⧉ N family glyph — rides INSIDE the time pill (grid) and the frame
+   number (reel) as a prefix, so it never needs its own corner or moves the
+   pill. Accent so it reads as a status, not part of the timestamp. */
+.psl__family-glyph {
+  color: var(--accent);
+  margin-right: 5px;
+  padding-right: 5px;
+  border-right: 1px solid color-mix(in srgb, currentColor 45%, transparent);
+}
+.psl__frame-num .psl__family-glyph {
+  margin-right: 3px;
+  padding-right: 3px;
+}
+
 /* Bottom row: app pill on the left, action rail on the right, in ONE flex
    row so the two can never overlap. The pill takes what the rail leaves
    and ellipsizes its name; below 240px (hovered) it collapses to its icon
@@ -2281,6 +2299,57 @@
 .psl__context-menu-row:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
+}
+
+/* Submenu ("Duplicate ▸"). The submenu renders INSIDE the parent menu's
+   root (so outside-click and focus-leave treat it as part of the menu) and
+   is positioned against its row. */
+.psl__context-menu-sub {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+.psl__context-menu-row--sub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.psl__context-menu-row--sub[aria-expanded="true"] {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+.psl__context-menu-chevron {
+  color: var(--text-muted);
+  font-size: 14px;
+}
+.psl__context-menu--sub {
+  position: absolute;
+  left: calc(100% + 4px);
+  top: -6px;
+  max-width: 280px;
+}
+.psl__context-menu--sub.is-flipped {
+  left: auto;
+  right: calc(100% + 4px);
+}
+/* A choice with a second line naming what it carries. */
+.psl__context-menu-row--hint {
+  height: auto;
+  min-height: 28px;
+  padding-block: 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+.psl__context-menu-hint {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 500 11px/1.2 var(--font-sans);
+  color: var(--text-muted);
 }
 
 /* Group separator. The capture menu runs three groups — open/copy,
@@ -5256,4 +5325,179 @@
   to {
     transform: rotate(360deg);
   }
+}
+
+/* === Inspector ▸ Family tab (features/library/FamilyTab.tsx) === */
+/* Rows mirror the cart list: a 48×32 thumb, a title, one meta line. A
+   copy is indented under the snap it was copied from. */
+.psl__family {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 10px 8px 12px;
+  min-width: 0;
+}
+.psl__family-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 6px;
+}
+.psl__family-head .psl__copy-eyebrow {
+  margin-bottom: 0;
+}
+.psl__family-link {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: 600 11px/1 var(--font-sans);
+  cursor: pointer;
+  padding: 2px 0;
+  border-radius: var(--radius-sm);
+}
+.psl__family-link:hover {
+  text-decoration: underline;
+}
+.psl__family-link:focus-visible {
+  outline-offset: 2px;
+}
+.psl__family-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.psl__family-row {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+/* Rows run edge to edge inside the rail's scroller: inset the ring. */
+.psl__family-row:focus-visible {
+  outline-offset: -2px;
+}
+.psl__family-row:hover:not(:disabled) {
+  background: var(--bg-panel-hover);
+}
+.psl__family-row.is-current {
+  border-color: var(--accent-border);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.psl__family-row.is-trashed {
+  cursor: default;
+  color: var(--text-muted);
+}
+.psl__family-row.is-trashed .psl__family-thumb {
+  opacity: 0.45;
+}
+.psl__family-thumb {
+  flex-shrink: 0;
+  width: 48px;
+  height: 32px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--border-subtle);
+}
+.psl__family-thumb img,
+.psl__family-thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.psl__family-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.psl__family-title {
+  font: 500 12px/1.3 var(--font-sans);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.psl__family-meta {
+  font: 500 10px/1.2 var(--font-sans);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.psl__family-count {
+  flex-shrink: 0;
+  font: 600 10px/1 var(--font-mono);
+  color: var(--accent);
+}
+.psl__family-empty {
+  margin: 0;
+  padding: 4px 6px;
+  color: var(--text-muted);
+  font: 400 12px/1.5 var(--font-sans);
+}
+.psl__chip-glyph--family {
+  color: var(--accent);
+  font: 600 11px/1 var(--font-mono);
+}
+
+/* === Duplicate chooser (features/library/DuplicateChooser.tsx) ===
+   Rides DeleteConfirm's `.ps-confirm` shell; only the choices are new. */
+.ps-duplicate {
+  max-width: 280px;
+}
+.ps-duplicate__choices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 9px;
+}
+.ps-duplicate__choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  color: var(--text-secondary);
+  font: 500 12px/1.3 var(--font-sans);
+  cursor: pointer;
+}
+.ps-duplicate__choice input {
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.ps-duplicate__choice > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ps-duplicate__label {
+  color: var(--text-primary);
+}
+.ps-duplicate__hint {
+  color: var(--text-muted);
+  font: 500 11px/1.25 var(--font-sans);
+}
+.ps-confirm__btn.is-primary {
+  border-color: var(--accent-border);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--text-primary);
+}
+.ps-confirm__btn.is-primary:hover {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  border-color: var(--accent);
 }

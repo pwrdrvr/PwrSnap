@@ -121,6 +121,21 @@ already found — one cached ffmpeg pass per capture
 (`recording/video-activity.ts`), a derived-cache lane like the filmstrip
 and waveform.
 
+**A duplicate is an independent capture; the family is only a label.**
+Duplicate (and Edit a Copy) makes a new capture with its own id, bundle and
+rows. Choosing "with edits" carries the layer tree (re-keyed, because layer
+ids are global) or the video's kept spans. Choosing base-only carries the
+source pixels or recording alone. Enrichment is copied, not re-run. No copy
+shares storage with or depends on its source, so trashing, purging or editing
+one never reaches another. Lineage is two plain columns, `family_id` (the
+root's id) and `duplicated_from`. They are deliberately NOT foreign keys: a
+purged original must leave its copies' family intact. Both are mirrored in
+the bundle manifest, following the rule that SQLite is an index and the bundle
+holds the user's work. No import or reindex path reads them back yet
+(`capture/capture-duplicate.ts`,
+`persistence/capture-families-repo.ts`). The duplicate verbs are bus
+commands for the Library only, and none of them is exposed as an MCP tool.
+
 ## AI uses the user's chosen agent or direct API
 
 Built-in Codex and ACP connections remain available. Users can also configure

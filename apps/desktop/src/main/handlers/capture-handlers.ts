@@ -90,6 +90,11 @@ import {
   type WindowsClipboardImageErrorCode,
   type WindowsClipboardImageReadResult
 } from "../clipboard/windows-file-clipboard-reader";
+import {
+  CaptureDuplicateError,
+  captureEditSummary,
+  duplicateCapture
+} from "../capture/capture-duplicate";
 import { broadcastCapturesChanged } from "../events";
 import { releaseFloatOverDock, setFloatOverState } from "../float-over";
 import { hideTrayPopoverIfVisible, setTrayCountdown } from "../tray";
@@ -1109,6 +1114,50 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       code: "not_implemented",
       message: "capture:window lands in Phase 1.5+"
     });
+  });
+
+  bus.register("capture:duplicate", async (req) => {
+    if (typeof req?.captureId !== "string" || typeof req.withEdits !== "boolean") {
+      return err({
+        kind: "validation",
+        code: "invalid_duplicate_request",
+        message: "capture:duplicate requires { captureId: string, withEdits: boolean }"
+      });
+    }
+    try {
+      const record = await duplicateCapture(req.captureId, { withEdits: req.withEdits });
+      broadcastCapturesChanged(
+        record.duplicated_from === null || record.duplicated_from === undefined
+          ? [record.id]
+          : [record.id, record.duplicated_from]
+      );
+      return ok({ record });
+    } catch (cause) {
+      if (cause instanceof CaptureDuplicateError) {
+        return err({ kind: "validation", code: cause.code, message: cause.message });
+      }
+      const fallbackError =
+        cause instanceof CapturesLocationFallbackError ? cause.pwrSnapError : null;
+      if (fallbackError !== null) return err(fallbackError);
+      log.error("capture duplicate failed", {
+        captureId: req.captureId,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return err({
+        kind: "persistence",
+        code: "duplicate_failed",
+        message: "PwrSnap could not duplicate that snap.",
+        cause
+      });
+    }
+  });
+
+  bus.register("capture:editSummary", async (req) => {
+    const record = typeof req?.captureId === "string" ? getCaptureById(req.captureId) : null;
+    if (record === null) {
+      return err({ kind: "validation", code: "not_found", message: "capture not found" });
+    }
+    return ok(captureEditSummary(record));
   });
 
   bus.register("capture:reveal", async (req) => {

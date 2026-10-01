@@ -87,7 +87,7 @@ const baseSettings: Settings = {
     detailRail: { pinned: true, lastSelectedTab: "info" },
     gridCopyPalette: { anchor: "follow" },
     confirmBeforeTrash: true,
-    gridZoom: 180
+    gridZoom: 180, duplicateWithEdits: { image: true, video: true }
   },
   localAgents: { enabled: false, grants: [], roles: [], audit: [] }
 };

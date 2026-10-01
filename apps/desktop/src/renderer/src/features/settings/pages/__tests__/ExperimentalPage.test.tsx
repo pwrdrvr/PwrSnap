@@ -93,7 +93,7 @@ const baseSettings: Settings = {
     coachmarks: { stoplightSeen: false },
     sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }
   },
-  library: { detailRail: { pinned: true, lastSelectedTab: "info" }, gridCopyPalette: { anchor: "follow" }, confirmBeforeTrash: true, gridZoom: 180 },
+  library: { detailRail: { pinned: true, lastSelectedTab: "info" }, gridCopyPalette: { anchor: "follow" }, confirmBeforeTrash: true, gridZoom: 180, duplicateWithEdits: { image: true, video: true } },
   localAgents: { enabled: false, grants: [], roles: [], audit: [] }
 };
 

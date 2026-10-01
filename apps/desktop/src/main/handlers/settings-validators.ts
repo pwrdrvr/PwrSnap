@@ -772,6 +772,23 @@ function validateLibraryPatch(raw: unknown): PwrSnapError | null {
       );
     }
   }
+  if (raw.duplicateWithEdits !== undefined) {
+    if (!isObject(raw.duplicateWithEdits)) {
+      return validationError(
+        "invalid_library_duplicateWithEdits",
+        "settings:write: library.duplicateWithEdits must be an object"
+      );
+    }
+    for (const kind of ["image", "video"] as const) {
+      const value = raw.duplicateWithEdits[kind];
+      if (!isUndefined(value) && !isBoolean(value)) {
+        return validationError(
+          `invalid_library_duplicateWithEdits_${kind}`,
+          `settings:write: library.duplicateWithEdits.${kind} must be a boolean`
+        );
+      }
+    }
+  }
   return null;
 }
 

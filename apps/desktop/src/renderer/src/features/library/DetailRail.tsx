@@ -41,8 +41,10 @@ import type {
   AiEnrichmentBudgetStatus,
   AiRunUsageDetail,
   CaptureEnrichment,
+  CaptureFamilySummary,
   CaptureRecord,
   ExportStrategy,
+  LibraryDuplicateWithEditsSettings,
   LibrarySidebarTab,
   ShortcutPlatform,
   SettingsChangedEvent,
@@ -81,6 +83,8 @@ import { copyImagePreset, copyImagePresetPath } from "../../lib/clipboard-copy";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
 import { useCart } from "./CartContext";
 import { CartPanel } from "./CartPanel";
+import { DuplicateChooser, type DuplicateRequest } from "./DuplicateChooser";
+import { FamilyTab } from "./FamilyTab";
 import { mapBundleIdToAppId } from "./adapter";
 import type { LibraryView } from "./library-view";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
@@ -163,6 +167,17 @@ export type DetailRailProps = {
    *  mounted). Omitted/null in isolation (e.g. tests) → no Layers tab. */
   readonly layersApi?: LayersPanelApi | null;
   readonly shortcutPlatform?: ShortcutPlatform;
+  /** Every duplicate family (Library's `useCaptureFamilies`). The Family
+   *  tab appears once there is at least one. */
+  readonly families?: readonly CaptureFamilySummary[];
+  /** Family tab: select a member (it may not be loaded in the grid yet). */
+  readonly onSelectFamilyMember?: (captureId: string) => void;
+  /** Family tab: filter the grid to one family. */
+  readonly onFilterFamily?: (familyId: string) => void;
+  /** Footer Duplicate button. Omitted → no button. */
+  readonly onDuplicate?: (record: CaptureRecord, request: DuplicateRequest) => void;
+  /** The remembered With Edits / Base Only choice, per kind. */
+  readonly duplicatePrefs?: LibraryDuplicateWithEditsSettings;
 };
 
 export function DetailRail({
@@ -186,7 +201,12 @@ export function DetailRail({
   onGridActiveTabChange,
   selectedLayerIds = [],
   layersApi = null,
-  shortcutPlatform = rendererShortcutPlatform()
+  shortcutPlatform = rendererShortcutPlatform(),
+  families = NO_FAMILIES,
+  onSelectFamilyMember,
+  onFilterFamily,
+  onDuplicate,
+  duplicatePrefs = DEFAULT_DUPLICATE_PREFS
 }: DetailRailProps): ReactElement | null {
   // Skip the image render-metrics IPC for video captures — the
   // sharp-based preset pipeline is image-only and the video branch
@@ -561,6 +581,11 @@ export function DetailRail({
   // changes whenever the editor's selection does).
   const isImageCapture = record?.kind === "image";
   const hasLayersApi = layersApi !== null;
+  const ownFamilyId = record?.family_id ?? null;
+  const ownFamilySize =
+    ownFamilyId === null
+      ? 0
+      : families.find((family) => family.familyId === ownFamilyId)?.liveCount ?? 0;
   const tabs: ReadonlyArray<RightActivityTab<SidebarTab>> = useMemo(
     () => [
       // Every tab carries a `title` (tooltip) and, whenever it can show
@@ -623,6 +648,25 @@ export function DetailRail({
             }
           ]
         : []),
+      // Family tab appears once any duplicate family exists. Like Cart it
+      // is a workspace-level list (every family), and it also leads with
+      // the selected snap's own family; the dot says the selected snap
+      // has copies.
+      ...(families.length > 0
+        ? [
+            {
+              id: "family" as const,
+              label: "Family",
+              title:
+                ownFamilySize > 1
+                  ? `${ownFamilySize} snaps in this family`
+                  : `${families.length} duplicate famil${families.length === 1 ? "y" : "ies"}`,
+              badge: ownFamilySize > 1,
+              badgeLabel: "this snap has copies",
+              icon: FAMILY_ICON
+            }
+          ]
+        : []),
       // Properties + Layers tabs — only for image captures with an
       // editor mounted (the editor publishes `layersApi`; videos mount
       // no editor, so both tabs are absent). Gated on `hasLayersApi`
@@ -650,6 +694,8 @@ export function DetailRail({
       sizzleProjects.length,
       containingProjects.length,
       cartCount,
+      families.length,
+      ownFamilySize,
       isImageCapture,
       hasLayersApi
     ]
@@ -661,7 +707,10 @@ export function DetailRail({
   // already gates the Cart entry on cartCount > 0, so this picks it up
   // only when there's actually a cart.
   const gridTabs = useMemo(
-    () => tabs.filter((t) => t.id === "info" || t.id === "ocr" || t.id === "cart"),
+    () =>
+      tabs.filter(
+        (t) => t.id === "info" || t.id === "ocr" || t.id === "cart" || t.id === "family"
+      ),
     [tabs]
   );
 
@@ -868,6 +917,18 @@ export function DetailRail({
       return (
         <div className="psl__right-body psl__right-body--cart">
           <CartPanel onJumpTo={onCartJumpTo} onTrashAll={onCartTrashAll} />
+        </div>
+      );
+    }
+    if (id === "family") {
+      return (
+        <div className="psl__right-body">
+          <FamilyTab
+            record={record}
+            families={families}
+            onSelectMember={(captureId) => onSelectFamilyMember?.(captureId)}
+            onFilterFamily={(familyId) => onFilterFamily?.(familyId)}
+          />
         </div>
       );
     }
@@ -1107,6 +1168,13 @@ export function DetailRail({
                 </svg>
                 File
               </button>
+              {onDuplicate !== undefined && (
+                <DuplicateChooser
+                  record={record}
+                  prefs={duplicatePrefs}
+                  onDuplicate={onDuplicate}
+                />
+              )}
               {view.kind !== "focus" && view.kind !== "reel" && (
                 <button
                   type="button"
@@ -1253,6 +1321,25 @@ const PROJECT_ICON: ReactElement = (
   >
     <rect x="3" y="6" width="14" height="12" rx="2" />
     <path d="m17 10 4-2v8l-4-2z" fill="currentColor" />
+  </svg>
+);
+
+const NO_FAMILIES: readonly CaptureFamilySummary[] = [];
+const DEFAULT_DUPLICATE_PREFS: LibraryDuplicateWithEditsSettings = { image: true, video: true };
+
+/** Two overlapping frames — the same mark as the ⧉ tile glyph. */
+const FAMILY_ICON: ReactElement = (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <rect x="8" y="8" width="12" height="12" rx="2" />
+    <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
   </svg>
 );
 

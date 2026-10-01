@@ -25,10 +25,13 @@
 // Measured, same runs, and the reason the answer cannot be "check the session
 // type and move on":
 //
-//   • `setOpacity` is a no-op on ALL Linux (`@platform win32,darwin`) —
-//     `getOpacity()` still reports 1 after `setOpacity(0)`, under X11 as well
-//     as Wayland. Anything built on an opacity park is broken on Linux
-//     regardless of what this module reports. See float-over.ts.
+//   • `setOpacity` was a no-op on ALL Linux through Electron 41
+//     (`@platform win32,darwin`) — `getOpacity()` still reported 1 after
+//     `setOpacity(0)`, under X11 as well as Wayland. Electron 44 implements
+//     it (electron/electron#51455), and on 44.4.5 under xvfb `getOpacity()`
+//     now reads back what was set. That is a readback, the same kind as the
+//     geometry echoes above, and xvfb has no compositor to draw it, so nothing
+//     should build an opacity park on it without pixels. See float-over.ts.
 //   • `hide()` / `showInactive()` work on both backends.
 //   • `tray.getBounds()` is `{0, 0, 0, 0}` on both backends.
 //

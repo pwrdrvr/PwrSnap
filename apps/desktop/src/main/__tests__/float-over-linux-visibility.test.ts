@@ -8,12 +8,14 @@
 // the focus sink and yanks the caret out of whatever app the user is typing
 // in).
 //
-// On Linux none of it works:
+// On Linux none of it worked:
 //
-//   • `setOpacity` is `@platform win32,darwin`. Measured on Electron 41.10.7
-//     under a headless weston AND under xvfb, `getOpacity()` still reports 1
-//     after `setOpacity(0)`. It is inert on BOTH Linux backends — so this was
-//     never a Wayland-only bug.
+//   • `setOpacity` was `@platform win32,darwin` through Electron 41. Measured
+//     on 41.10.7 under a headless weston AND under xvfb, `getOpacity()` still
+//     reported 1 after `setOpacity(0)`. It was inert on BOTH Linux backends —
+//     so this was never a Wayland-only bug. Electron 44 implements it, but
+//     only its readback is measured (see linux-window-placement.ts), so the
+//     real hide() stays.
 //   • `setPosition` is documented "Not supported on Wayland (Linux)", so the
 //     other half of the park is inert there too. (It does work on X11, which
 //     is why the toast half-worked on an X11 session and not at all on

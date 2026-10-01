@@ -30,6 +30,10 @@ minimumReleaseAgeExclude:
   # Security backport: GHSA-qw65-cvwx-89v3 and GHSA-58mr-gqgx-xq4g.
   # Exempt only this release; future fast-uri versions retain the age gate.
   - "fast-uri@3.1.7"
+  # Security backport: 44.4.5 is "Backported fixes from upstream ANGLE,
+  # Chromium, Dawn, PDFium and V8" and nothing else. Exempt only this release;
+  # later Electron versions retain the age gate.
+  - "electron@44.4.5"
   - "@pwrdrvr/codex-app-server-protocol"
   - "@pwrdrvr/agent-core"
   - "@pwrdrvr/agent-transport"

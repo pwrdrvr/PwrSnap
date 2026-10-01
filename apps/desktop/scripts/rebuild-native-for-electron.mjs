@@ -3,15 +3,32 @@
  *
  * The default build/Release/better_sqlite3.node remains compiled for the
  * developer's Node runtime, so unit tests and scripts keep working. This script
- * downloads the Electron-compatible prebuild into electron-native/ and the app
- * opts into that binding when running inside Electron.
+ * puts an Electron-ABI binding into electron-native/ and the app opts into that
+ * binding when running inside Electron.
+ *
+ * The Electron binding is the published prebuild when one exists, and a source
+ * build when none does. better-sqlite3 12.x is the last line written against
+ * V8's own API (13.x moved to N-API), and its last prebuilds stop at Electron 43
+ * (ABI 148) — so on Electron 44 and later every platform compiles. The compile
+ * runs in a scratch copy of the package, never in the installed one: node-gyp's
+ * `rebuild` starts by deleting build/, which is where the Node binding lives.
  */
 
 import { execFileSync, execSync, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import {
+  copyFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join, relative, resolve, sep } from "node:path";
 
 const require = createRequire(import.meta.url);
 
@@ -32,6 +49,21 @@ const expectedMetadata = {
   electronVersion
 };
 
+const ELECTRON_HEADERS_URL = "https://electronjs.org/headers";
+// Electron's own recipe keeps its headers out of node-gyp's default cache,
+// which is keyed by version number alone and shared with Node's headers.
+const ELECTRON_GYP_DIR = join(homedir(), ".electron-gyp");
+// Top-level entries of the installed package that the scratch build must not
+// inherit: build/ holds the Node binding, electron-native/ is this script's
+// output, and node_modules/ is pnpm's link farm for the package's own deps.
+const SCRATCH_EXCLUDES = new Set(["build", "electron-native", "node_modules"]);
+// node-gyp reads every `npm_config_<key>` variable as an option and applies it
+// AFTER the command line, so these would silently win over the flags below.
+// The release scripts export `npm_config_arch=universal` for this script's
+// benefit, which is not an arch node-gyp can build.
+const NODE_GYP_TARGET_ENV =
+  /^npm_config_(arch|target_arch|target|runtime|disturl|dist_url|nodedir|devdir)$/i;
+
 ensureDefaultNodeBinding();
 
 if (isCurrentElectronBinary()) {
@@ -39,7 +71,7 @@ if (isCurrentElectronBinary()) {
   process.exit(0);
 }
 
-console.log(`Downloading better-sqlite3 prebuild for Electron ${electronVersion} (${electronArch})...`);
+console.log(`Preparing better-sqlite3 binding for Electron ${electronVersion} (${electronArch})...`);
 rmSync(electronNativeDir, { force: true, recursive: true });
 
 if (existsSync(defaultBinary)) {
@@ -47,26 +79,23 @@ if (existsSync(defaultBinary)) {
 }
 
 try {
+  mkdirSync(electronNativeDir, { recursive: true });
   if (electronArch === "universal") {
-    // Universal build: download both arm64 and x64 prebuilds into temp
-    // paths, then `lipo` them into a fat binary at the sidecar
-    // location. Required by the `electron-builder --universal` target,
-    // which itself merges two single-arch .app bundles via
-    // @electron/universal — but the better-sqlite3 native binding has
-    // to already be universal in the staged tree before that runs,
-    // because each per-arch build pulls from the same node_modules.
-    downloadUniversalPrebuild();
+    // Universal build: prepare arm64 and x64 bindings into temp paths,
+    // then `lipo` them into a fat binary at the sidecar location.
+    // Required by the `electron-builder --universal` target, which itself
+    // merges two single-arch .app bundles via @electron/universal — but the
+    // better-sqlite3 native binding has to already be universal in the
+    // staged tree before that runs, because each per-arch build pulls from
+    // the same node_modules.
+    prepareUniversalBinding();
   } else {
-    execSync(
-      `${resolvePrebuildInstallCommand()} --runtime=electron --target=${electronVersion} --arch=${electronArch} --tag-prefix=v --strip`,
-      { cwd: betterSqlite3Dir, stdio: "inherit" }
-    );
-    mkdirSync(electronNativeDir, { recursive: true });
-    copyFileSync(defaultBinary, targetBinary);
+    prepareElectronBinding(electronArch, targetBinary);
   }
 } catch (error) {
+  rmSync(electronNativeDir, { force: true, recursive: true });
   restoreDefaultBinary();
-  console.error("Failed to download Electron better-sqlite3 prebuild:", error.message);
+  console.error("Failed to prepare the Electron better-sqlite3 binding:", error.message);
   process.exit(1);
 }
 
@@ -75,38 +104,132 @@ restoreDefaultBinary();
 
 console.log(`Electron better-sqlite3 binary placed at ${targetBinary}`);
 
-function downloadUniversalPrebuild() {
+function prepareUniversalBinding() {
   if (process.platform !== "darwin") {
     throw new Error("universal arch is only supported on darwin (requires lipo)");
   }
-  const archs = ["arm64", "x64"];
   const slicePaths = [];
-  for (const arch of archs) {
-    console.log(`  downloading ${arch} prebuild...`);
-    execSync(
-      `${resolvePrebuildInstallCommand()} --runtime=electron --target=${electronVersion} --arch=${arch} --tag-prefix=v --strip`,
-      { cwd: betterSqlite3Dir, stdio: "inherit" }
-    );
-    if (!existsSync(defaultBinary)) {
-      throw new Error(`prebuild-install left no binary at ${defaultBinary} for arch=${arch}`);
+  try {
+    for (const arch of ["arm64", "x64"]) {
+      console.log(`  preparing ${arch} slice...`);
+      const slicePath = join(tmpdir(), `better_sqlite3.${arch}.${process.pid}.node`);
+      prepareElectronBinding(arch, slicePath);
+      slicePaths.push(slicePath);
     }
-    const slicePath = join(tmpdir(), `better_sqlite3.${arch}.${process.pid}.node`);
-    copyFileSync(defaultBinary, slicePath);
-    slicePaths.push(slicePath);
-  }
-  mkdirSync(electronNativeDir, { recursive: true });
-  const lipoResult = spawnSync(
-    "lipo",
-    ["-create", ...slicePaths, "-output", targetBinary],
-    { stdio: "inherit" }
-  );
-  for (const slice of slicePaths) {
-    try { unlinkSync(slice); } catch { /* best effort */ }
-  }
-  if (lipoResult.status !== 0) {
-    throw new Error(`lipo -create failed with status ${lipoResult.status}`);
+    const lipoResult = spawnSync(
+      "lipo",
+      ["-create", ...slicePaths, "-output", targetBinary],
+      { stdio: "inherit" }
+    );
+    if (lipoResult.status !== 0) {
+      throw new Error(`lipo -create failed with status ${lipoResult.status}`);
+    }
+  } finally {
+    for (const slice of slicePaths) {
+      try { unlinkSync(slice); } catch { /* best effort */ }
+    }
   }
   console.log(`  universal binary at ${targetBinary}`);
+}
+
+function prepareElectronBinding(arch, destination) {
+  try {
+    execSync(
+      `${resolvePrebuildInstallCommand()} --runtime=electron --target=${electronVersion} --arch=${arch} --tag-prefix=v --strip`,
+      { cwd: betterSqlite3Dir, stdio: ["ignore", "inherit", "pipe"] }
+    );
+  } catch (error) {
+    // Both ways this misses fail loudly rather than fetching a wrong ABI:
+    // prebuild-install's node-abi THROWS for an Electron it does not know
+    // (it never guesses the nearest ABI), and a known ABI with no published
+    // asset is a 404. Either way the answer is the same: compile.
+    console.log(
+      `  no ${arch} prebuild for Electron ${electronVersion} (${prebuildFailureReason(error)}); compiling from source...`
+    );
+    compileElectronBinding(arch, destination);
+    return;
+  }
+  if (!existsSync(defaultBinary)) {
+    throw new Error(`prebuild-install left no binary at ${defaultBinary} for arch=${arch}`);
+  }
+  copyFileSync(defaultBinary, destination);
+}
+
+function prebuildFailureReason(error) {
+  const lines = String(error.stderr ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+  return (
+    lines.find((line) => line.startsWith("Error:") || line.includes("No prebuilt binaries")) ??
+    lines.at(-1) ??
+    error.message
+  );
+}
+
+function compileElectronBinding(arch, destination) {
+  const workDir = mkdtempSync(join(tmpdir(), "pwrsnap-better-sqlite3-"));
+  try {
+    cpSync(betterSqlite3Dir, workDir, {
+      recursive: true,
+      dereference: true,
+      filter: (source) => !SCRATCH_EXCLUDES.has(relative(betterSqlite3Dir, source).split(sep)[0])
+    });
+    const env = { ...process.env };
+    for (const key of Object.keys(env)) {
+      if (NODE_GYP_TARGET_ENV.test(key)) delete env[key];
+    }
+    // node-gyp's addon.gypi defines V8_DEPRECATION_WARNINGS, which turns
+    // V8_DEPRECATED(...) into `[[deprecated]]`. V8 15 (Electron 44) puts one
+    // in front of V8_EXPORT's `__attribute__((visibility))` in a class head
+    // (`class V8_DEPRECATED(...) V8_EXPORT Value` in v8-primitive.h), and GCC
+    // 12 rejects that ordering outright: Debian bookworm, which the Docker E2E
+    // image is, could not build the binding at all. The define only switches
+    // on deprecation diagnostics. It changes no layout or ABI. The Makefile
+    // puts the env CXXFLAGS after gyp's own -D flags, so this -U wins. An
+    // MSVC build goes through msbuild and does not read CXXFLAGS at all.
+    env.CXXFLAGS = [env.CXXFLAGS, "-UV8_DEPRECATION_WARNINGS"].filter(Boolean).join(" ");
+    execFileSync(
+      process.execPath,
+      [
+        resolveNodeGyp(),
+        "rebuild",
+        "--release",
+        `--target=${electronVersion}`,
+        `--arch=${arch}`,
+        `--dist-url=${ELECTRON_HEADERS_URL}`,
+        `--devdir=${ELECTRON_GYP_DIR}`,
+        "--jobs=max"
+      ],
+      { cwd: workDir, env, stdio: "inherit" }
+    );
+    const built = join(workDir, "build", "Release", "better_sqlite3.node");
+    if (!existsSync(built)) {
+      throw new Error(`node-gyp left no binary at ${built} for arch=${arch}`);
+    }
+    copyFileSync(built, destination);
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+  }
+}
+
+function resolveNodeGyp() {
+  // `pnpm run` and `npm run` both export the node-gyp they bundle. dev.mjs and
+  // the release scripts launch this file with plain `node`, and the macOS
+  // release stage is `pnpm deploy --prod` (no dev dependencies), so the
+  // fallback is the npm that ships alongside whichever Node is running this.
+  const bundledWithNode =
+    process.platform === "win32"
+      ? join(dirname(process.execPath), "node_modules", "npm", "node_modules", "node-gyp", "bin", "node-gyp.js")
+      : join(dirname(dirname(process.execPath)), "lib", "node_modules", "npm", "node_modules", "node-gyp", "bin", "node-gyp.js");
+  const candidates = [process.env.npm_config_node_gyp, bundledWithNode].filter(
+    (candidate) => typeof candidate === "string" && candidate.endsWith(".js")
+  );
+  const found = candidates.find((candidate) => existsSync(candidate));
+  if (found === undefined) {
+    throw new Error(`node-gyp not found to compile better-sqlite3; tried ${candidates.join(", ")}`);
+  }
+  return found;
 }
 
 function isCurrentElectronBinary() {

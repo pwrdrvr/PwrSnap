@@ -2,25 +2,29 @@
 // a SINGLE NSPasteboard write that declares BOTH the private layer-
 // fragment UTI and a flattened PNG image (`public.png`).
 //
-// Why this exists: Electron cannot co-write a custom UTI and a standard
-// image atomically. Every `clipboard.write*` call wraps a
-// ScopedClipboardWriter that calls `[pasteboard clearContents]` on
-// construction, so a `writeImage` after a `writeBuffer` wipes the
-// buffer (and vice-versa), and `clipboard.write({...})` only accepts
-// text/html/image/rtf/bookmark — no arbitrary UTIs. So an editor layer
-// copy could previously carry EITHER the private fragment (PwrSnap→
-// PwrSnap fidelity) OR a PNG (paste into Slack / Mail / Claude /
-// Messages), never both. This module shells the bundled native helper
-// with `--write-clipboard`, handing the bodies as base64 JSON on stdin;
-// the helper performs one `declareTypes` + `setData` pass so the
+// Why this exists: before Electron 44, Electron could not co-write a
+// custom UTI and a standard image atomically. Every `clipboard.write*`
+// call wrapped a ScopedClipboardWriter that called
+// `[pasteboard clearContents]` on construction, so a `writeImage` after a
+// `writeBuffer` wiped the buffer (and vice-versa), and
+// `clipboard.write({...})` only accepted text/html/image/rtf/bookmark — no
+// arbitrary UTIs. So an editor layer copy could carry EITHER the private
+// fragment (PwrSnap→PwrSnap fidelity) OR a PNG (paste into Slack / Mail /
+// Claude / Messages), never both. This module shells the bundled native
+// helper with `--write-clipboard`, handing the bodies as base64 JSON on
+// stdin; the helper performs one `declareTypes` + `setData` pass so the
 // private UTI and the image coexist on the pasteboard. See
 // `native/window-list/main.swift`'s `--write-clipboard` block.
 //
+// Electron 44's clipboard lands every flavor of one ClipboardItem
+// together, so the fallback below now carries both too. The helper stays
+// the macOS path because it writes the PNG verbatim; Electron re-encodes
+// an `image/png` it is handed (measured on 44.4.5).
+//
 // macOS-only (NSPasteboard). On every other platform — and when the
 // helper binary hasn't been built yet — `writeMultiFormatClipboard`
-// returns `false` and the caller falls back to Electron's
-// `writeBuffer` (private UTI only), preserving PwrSnap→PwrSnap
-// fidelity at the cost of the cross-app image co-write.
+// returns `false` and the caller falls back to one Electron clipboard
+// item (clipboard/system-clipboard.ts `writeClipboard`).
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -106,8 +110,8 @@ export type MultiFormatClipboardPayload = {
  *
  * Resolves `true` when the helper performed the write, `false` when it
  * is unavailable (non-macOS, helper not built, Vitest) or failed — in
- * which case the caller should fall back to `clipboard.writeBuffer` so
- * at least the private UTI lands. Never throws and never rejects.
+ * which case the caller should fall back to Electron's clipboard so at
+ * least the private UTI lands. Never throws and never rejects.
  */
 export async function writeMultiFormatClipboard(
   payload: MultiFormatClipboardPayload
@@ -192,7 +196,7 @@ export async function writeMultiFormatClipboard(
     // write()/end() can ALSO throw synchronously (e.g. ERR_STREAM_DESTROYED
     // if the child exited between spawn and this line). Guard it so the
     // executor never throws — a rejected promise here would bypass the
-    // caller's writeBuffer fallback and fail the copy outright.
+    // caller's Electron fallback and fail the copy outright.
     try {
       child.stdin.write(request);
       child.stdin.end();

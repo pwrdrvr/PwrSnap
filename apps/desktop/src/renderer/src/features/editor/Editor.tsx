@@ -3423,15 +3423,7 @@ export function Editor({
     //
     // Source dims come from the raster layer's natural_*_px; fall back
     // to record dims (= canvas dims) if no raster layer is found.
-    let placementSourceW = model.record.width_px;
-    let placementSourceH = model.record.height_px;
-    for (const layer of model.layers) {
-      if (layer.kind === "raster" && layer.parent_id !== null) {
-        placementSourceW = layer.natural_width_px;
-        placementSourceH = layer.natural_height_px;
-        break;
-      }
-    }
+    const { w: placementSourceW, h: placementSourceH } = placementSourceDims();
     const sizePxAtPlacement = computeTextGlyphSize({
       size: resolvedSize,
       sourceWidthPx: placementSourceW,
@@ -3518,6 +3510,18 @@ export function Editor({
     }
   }
 
+  /** Source raster dims for sizing a new text row: the first raster
+   *  layer's natural size, else the record's (= canvas) dims. */
+  function placementSourceDims(): { w: number; h: number } {
+    if (model.kind !== "loaded") return { w: 1, h: 1 };
+    for (const layer of model.layers) {
+      if (layer.kind === "raster" && layer.parent_id !== null) {
+        return { w: layer.natural_width_px, h: layer.natural_height_px };
+      }
+    }
+    return { w: model.record.width_px, h: model.record.height_px };
+  }
+
   /** "Add label" on an arrow: open a text draft beyond its tail, in its
    *  color and matching size, caret ready — the user just types. Enter,
    *  Escape or a click away ends it (empty = nothing written). The arrow
@@ -3530,15 +3534,7 @@ export function Editor({
     if (row === undefined || row.data.kind !== "arrow") return false;
     const arrow = row.data;
     const style = labelStyleForArrow(arrow);
-    let sourceW = model.record.width_px;
-    let sourceH = model.record.height_px;
-    for (const layer of model.layers) {
-      if (layer.kind === "raster" && layer.parent_id !== null) {
-        sourceW = layer.natural_width_px;
-        sourceH = layer.natural_height_px;
-        break;
-      }
-    }
+    const { w: sourceW, h: sourceH } = placementSourceDims();
     const fontPx = computeTextGlyphSize({
       size: style.size,
       sourceWidthPx: sourceW,
@@ -5188,13 +5184,29 @@ function EditorLoaded({
   const textDraftAutoOutline = useMemo((): OverlayOutlineAutoColor | null => {
     if (draft?.kind !== "text" || draft.editingId !== undefined) return null;
     if (draft.label !== undefined) {
-      // Sampled at the drafted anchor: close to where the label lands,
-      // and commitText re-samples at the final left anchor anyway.
+      // Sampled over the box the label actually covers: an end- or
+      // center-aligned draft's anchor is not its left edge, and sampling
+      // as if it were reads the pixels on the far side (often the arrow)
+      // and can pick the opposite border to the one commit stamps.
       if (draft.label.style.outline !== "auto") return null;
+      const body = draft.body.length > 0 ? draft.body : "Label";
+      const fontPx = computeTextGlyphSize({
+        size: draft.label.style.size,
+        sourceWidthPx,
+        sourceHeightPx,
+        canvasWidthPx: record.width_px,
+        canvasHeightPx: record.height_px
+      }).sizePx;
+      const widthPx =
+        measureTextWidthPx(body, fontPx, readTextWeight({ weight: draft.label.style.weight })) ??
+        body.length * fontPx * TEXT_BBOX_CHAR_ADVANCE;
       return resolveOutlineAuto({
         kind: "text",
-        point: { x: draft.xn, y: draft.yn },
-        body: draft.body.length > 0 ? draft.body : "Label",
+        point: {
+          x: labelLeftAnchorXn(draft.xn, draft.label.align, widthPx / Math.max(1, record.width_px)),
+          y: draft.yn
+        },
+        body,
         size: draft.label.style.size,
         color: "auto"
       });
@@ -5209,7 +5221,15 @@ function EditorLoaded({
       size: resolveTextSize(style.fontSize),
       color: "auto"
     });
-  }, [draft, toolState.activeStyle, resolveOutlineAuto]);
+  }, [
+    draft,
+    toolState.activeStyle,
+    resolveOutlineAuto,
+    sourceWidthPx,
+    sourceHeightPx,
+    record.width_px,
+    record.height_px
+  ]);
   useLayoutEffect(() => {
     const el = canvasRef.current;
     if (el === null) return;

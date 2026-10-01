@@ -314,7 +314,9 @@ function defaultLibrarySettings(): Settings["library"] {
     confirmBeforeTrash: true,
     // Matches the historical CSS `minmax(180px, 1fr)`. Pinch-to-zoom on
     // the grid steps this through GRID_ZOOM_LEVELS.
-    gridZoom: GRID_ZOOM_DEFAULT
+    gridZoom: GRID_ZOOM_DEFAULT,
+    // A copy keeps its source's edits unless the user says otherwise.
+    duplicateWithEdits: { image: true, video: true }
   };
 }
 
@@ -1163,13 +1165,21 @@ function parseLibrarySettings(
     raw.gridCopyPalette,
     defaults.gridCopyPalette
   );
+  // duplicateWithEdits is additive and parsed per leaf, so one bad
+  // value keeps the other kind's choice.
+  const dupRaw = isRecord(raw.duplicateWithEdits) ? raw.duplicateWithEdits : {};
+  const duplicateWithEdits = {
+    image: pickBoolean(dupRaw.image, defaults.duplicateWithEdits.image),
+    video: pickBoolean(dupRaw.video, defaults.duplicateWithEdits.video)
+  };
   const detailRaw = raw.detailRail;
   if (!isRecord(detailRaw)) {
     return {
       detailRail: defaults.detailRail,
       gridCopyPalette,
       confirmBeforeTrash,
-      gridZoom
+      gridZoom,
+      duplicateWithEdits
     };
   }
   // Route the on-disk tab value through the shared type guard so the
@@ -1188,7 +1198,8 @@ function parseLibrarySettings(
     },
     gridCopyPalette,
     confirmBeforeTrash,
-    gridZoom
+    gridZoom,
+    duplicateWithEdits
   };
 }
 
@@ -2095,7 +2106,11 @@ function mergeLibrary(
     gridZoom:
       patch.gridZoom !== undefined
         ? clampGridZoom(patch.gridZoom)
-        : current.gridZoom
+        : current.gridZoom,
+    duplicateWithEdits: mergeSection(
+      current.duplicateWithEdits,
+      patch.duplicateWithEdits
+    )
   };
 }
 

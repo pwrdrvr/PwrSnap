@@ -1,6 +1,7 @@
 // Command-bus handlers for the `library:*` namespace. Phase 1 wires
 // list / byId / delete; Phase 1.9 adds export.
 
+import { listCaptureFamilies, listFamilyMembers } from "../persistence/capture-families-repo";
 import { BrowserWindow, clipboard } from "electron";
 import {
   ok,
@@ -204,6 +205,19 @@ export function registerLibraryDataHandlers(): void {
     const v = validateLibraryCounts(req);
     if (!v.ok) return err(v.error);
     return ok({ total: countCaptures(v.value) });
+  });
+
+  bus.register("library:families", async () => ok({ families: listCaptureFamilies() }));
+
+  bus.register("library:family", async (req) => {
+    if (typeof req?.familyId !== "string" || req.familyId.length === 0 || req.familyId.length > 64) {
+      return err({
+        kind: "validation",
+        code: "invalid_family_id",
+        message: "library:family requires a familyId"
+      });
+    }
+    return ok({ members: listFamilyMembers(req.familyId) });
   });
 
   bus.register("library:byId", async (req) => {

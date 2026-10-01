@@ -133,6 +133,20 @@ export async function assertSafeBundleFile(filePath: string): Promise<void> {
  * The three steps are ordered for iCloud/Files-on-Demand safety — a
  * bundle must never be observable half-written by the sync daemon.
  */
+/**
+ * The manifest's copy of a capture's duplicate lineage. Keys are omitted,
+ * not written as null, when the capture has no family, so every bundle
+ * outside a family keeps the manifest it always had.
+ */
+export function manifestLineage(
+  record: Pick<CaptureRecord, "family_id" | "duplicated_from">
+): Pick<BundleManifestV2, "family_id" | "duplicated_from"> {
+  return {
+    ...(record.family_id != null ? { family_id: record.family_id } : {}),
+    ...(record.duplicated_from != null ? { duplicated_from: record.duplicated_from } : {})
+  };
+}
+
 export async function atomicWriteBundle(destPath: string, contents: Buffer): Promise<void> {
   const dir = dirname(destPath);
   await mkdir(dir, { recursive: true });
@@ -688,6 +702,12 @@ export type PersistCaptureFromTempArgs = {
    * cursor layer (setting off, sampling failed, cursor outside region).
    */
   cursorLayer?: CursorLayerPlacement | undefined;
+  /**
+   * Duplicate lineage for a base-image copy (`capture:duplicate` with
+   * `withEdits: false`). Written to the row AND the manifest up front so
+   * the new bundle never needs a repack just to learn its family.
+   */
+  lineage?: { familyId: string; duplicatedFrom: string } | undefined;
 };
 
 export type PersistCaptureFromTempResult = {
@@ -965,7 +985,13 @@ export async function persistCaptureFromTempV2(
     canvas_dimensions: { width_px: widthPx, height_px: heightPx },
     paired_png_filename: pairedPngFilename,
     created_at: now,
-    bundle_modified_at: now
+    bundle_modified_at: now,
+    ...(args.lineage === undefined
+      ? {}
+      : manifestLineage({
+          family_id: args.lineage.familyId,
+          duplicated_from: args.lineage.duplicatedFrom
+        }))
   };
 
   const initialLayers = [
@@ -1159,7 +1185,9 @@ export async function persistCaptureFromTempV2(
     device_pixel_ratio: args.devicePixelRatio ?? 1,
     byte_size: buf.length,
     sha256,
-    has_alpha: hasAlpha
+    has_alpha: hasAlpha,
+    family_id: args.lineage?.familyId ?? null,
+    duplicated_from: args.lineage?.duplicatedFrom ?? null
   });
 
   // Seed the layers table so listLayerTree returns the initial tree
@@ -1293,7 +1321,8 @@ async function runRepackV2(captureId: string): Promise<void> {
         },
         paired_png_filename: `${filenameStem}.png`,
         created_at: snapshot.record.captured_at,
-        bundle_modified_at: now
+        bundle_modified_at: now,
+        ...manifestLineage(snapshot.record)
       };
       const acceptedDescription = snapshot.enrichment?.acceptedDescription ?? null;
       const acceptedTags = snapshot.enrichment?.acceptedTags ?? [];

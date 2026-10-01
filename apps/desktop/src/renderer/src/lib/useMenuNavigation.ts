@@ -23,10 +23,17 @@ const ITEM_SELECTOR = '[role="menuitem"],[role="menuitemradio"],[role="menuitemc
 /** Typeahead resets once the user stops typing — same idle window as a native menu. */
 const TYPEAHEAD_IDLE_MS = 500;
 
+/** The menu's own enabled items. A submenu renders INSIDE its parent (so the
+ *  parent's outside-click and focus-leave checks treat it as part of the
+ *  menu), which puts its rows under the parent's root too; they belong to the
+ *  submenu, so the parent must not walk into them. */
 function items(menu: HTMLElement | null): HTMLElement[] {
   if (menu === null) return [];
   return [...menu.querySelectorAll<HTMLElement>(ITEM_SELECTOR)].filter(
-    (el) => el.getAttribute("aria-disabled") !== "true" && !el.hasAttribute("disabled")
+    (el) =>
+      el.getAttribute("aria-disabled") !== "true" &&
+      !el.hasAttribute("disabled") &&
+      el.parentElement?.closest('[role="menu"]') === menu
   );
 }
 
@@ -34,6 +41,8 @@ type OpenMenu = {
   menuRef: RefObject<HTMLElement | null>;
   typed: string;
   typedAt: number;
+  /** Set for a submenu: ArrowLeft closes it. */
+  onBackRef: RefObject<(() => void) | undefined>;
 };
 
 /** Every menu currently open. */
@@ -73,6 +82,23 @@ function steer(e: KeyboardEvent, entry: OpenMenu, menu: HTMLElement, active: HTM
       e.preventDefault();
       moveTo(list[list.length - 1]!, list);
       return;
+    case "ArrowRight":
+      // APG: an item that owns a submenu opens it. The item's own click
+      // handler does the opening, so pointer and keyboard share one path;
+      // the submenu's hook then moves focus onto its first row.
+      if (at !== -1 && active.getAttribute("aria-haspopup") === "menu") {
+        e.preventDefault();
+        active.click();
+      }
+      return;
+    case "ArrowLeft": {
+      const back = entry.onBackRef.current;
+      if (back !== undefined) {
+        e.preventDefault();
+        back();
+      }
+      return;
+    }
     default:
       break;
   }
@@ -154,12 +180,18 @@ if (typeof window !== "undefined") {
 export function useMenuNavigation({
   open,
   menuRef,
-  onClose
+  onClose,
+  onBack
 }: {
   open: boolean;
   menuRef: RefObject<HTMLElement | null>;
   /** Called for Tab, which per APG closes the menu and lets focus move on. */
   onClose: () => void;
+  /** A submenu passes its own close here: ArrowLeft backs out of it, and
+   *  focus returns to the parent item that opened it. Rendering it inside
+   *  the parent's root is what lets the parent's dismiss logic treat it as
+   *  part of the menu. */
+  onBack?: () => void;
 }): void {
   useFocusReturn({ open, containerRef: menuRef });
 
@@ -167,6 +199,8 @@ export function useMenuNavigation({
   // keydown subscription from being torn down and rebuilt every render.
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  const onBackRef = useRef(onBack);
+  onBackRef.current = onBack;
 
   // Roving tabindex + initial focus. Runs on every open so a menu whose items
   // changed while closed starts from a valid one — and again whenever the
@@ -223,7 +257,8 @@ export function useMenuNavigation({
       const menu = menuRef.current;
       const active = document.activeElement;
       if (menu === null || active === null || !menu.contains(active)) return;
-      // APG: Tab closes the menu and moves on. Not default-prevented: the
+      // APG: Tab closes the menu and moves on. The parent's listener sees a
+      // Tab from inside its submenu too, and closes the whole menu with it. Not default-prevented: the
       // browser's own step, taken from wherever useFocusReturn put focus
       // back, is the "moves on". (Inside a focus trap the trap claims the
       // key first and takes that step itself — see useFocusTrap.)
@@ -236,7 +271,7 @@ export function useMenuNavigation({
   // Every other key: `onGlobalKeyDown`, the module-level capture listener.
   useEffect(() => {
     if (!open) return;
-    const entry: OpenMenu = { menuRef, typed: "", typedAt: 0 };
+    const entry: OpenMenu = { menuRef, typed: "", typedAt: 0, onBackRef };
     openMenus.push(entry);
     return () => {
       const at = openMenus.indexOf(entry);

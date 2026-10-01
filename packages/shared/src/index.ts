@@ -35,6 +35,7 @@ export * from "./capture-invocation";
 export * from "./recording-audio-tracks";
 export * from "./release-notes";
 export * from "./video-segments";
+export * from "./capture-duplicate";
 export * from "./video-activity";
 export * from "./float-over-sizing";
 export * from "./popover-sizing";

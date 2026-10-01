@@ -9,6 +9,7 @@ import type { CustomConnection, CustomConnectionInput, CustomModel, CustomModelD
 // up the new command for free.
 
 import type { BundleLayerNode } from "./bundle-manifest-schema-v2";
+import type { CaptureEditSummary } from "./capture-duplicate";
 import type { CaptureEnrichment, AiRunStatus } from "./ai-enrichment-schemas";
 
 export type CaptureInvocationOrigin =
@@ -118,12 +119,43 @@ export type CaptureRecord = {
    */
   has_alpha: boolean;
   /**
+   * Duplicate lineage (migration 0035). `family_id` is the id of the
+   * capture a family of duplicates started from — set on that root too,
+   * once it has been duplicated — and `duplicated_from` is this capture's
+   * direct parent. Both null for a capture that was never duplicated.
+   * Neither is a foreign key: a purged original leaves its id behind.
+   * Optional so hand-built records (fixtures, the seeder) may omit them;
+   * every repo read fills both.
+   */
+  family_id?: string | null;
+  duplicated_from?: string | null;
+  /**
    * Set for `kind === "video"` rows. Carries duration, audio-track
    * availability, default range, and preview asset path so the
    * float-over and Library can render without a second round-trip.
    * Null for images.
    */
   video?: VideoCaptureMetadata | null;
+};
+
+/**
+ * One duplicate family (captures sharing a `family_id`), as the Family
+ * tab and the tile glyph see it. Counts exclude nothing but each other:
+ * `liveCount` is what the glyph shows, `trashedCount` what the tab
+ * greys out.
+ */
+export type CaptureFamilySummary = {
+  familyId: string;
+  /** The capture the family started from — equal to `familyId`. Null
+   *  once that capture has been purged; the family keeps its id. */
+  rootId: string | null;
+  /** The member to draw for the family: the root while it is live,
+   *  else the newest live member. Null when every member is trashed. */
+  coverId: string | null;
+  liveCount: number;
+  trashedCount: number;
+  /** Newest live member's `captured_at` (ISO). Families sort by it. */
+  newestCapturedAt: string;
 };
 
 /**
@@ -3311,13 +3343,15 @@ export type EditorSettings = {
  *  / Help). `project` is gated at render time to only appear when at
  *  least one sizzle project exists and the active capture is one of
  *  its scenes; `properties` and `layers` are gated to image captures
- *  that have an editor mounted (Reel/Focus); both are absent otherwise. */
+ *  that have an editor mounted (Reel/Focus); both are absent otherwise.
+ *  `family` lists duplicate families and appears once any exist. */
 export type LibrarySidebarTab =
   | "info"
   | "ocr"
   | "chat"
   | "project"
   | "cart"
+  | "family"
   | "properties"
   | "layers";
 
@@ -3327,6 +3361,7 @@ export const LIBRARY_SIDEBAR_TABS = [
   "chat",
   "project",
   "cart",
+  "family",
   "properties",
   "layers"
 ] as const satisfies readonly LibrarySidebarTab[];
@@ -3403,6 +3438,17 @@ export type LibrarySettings = {
    *  survives changes to the level ladder (readers snap to the nearest
    *  level). Clamped to [{@link GRID_ZOOM_MIN}, {@link GRID_ZOOM_MAX}]. */
   gridZoom: number;
+  /** Which way Duplicate goes when a snap has edits to carry and the
+   *  user picks from the chooser rather than a menu row: `true` keeps
+   *  the edits (layers + crop for an image, trim + cuts for a video),
+   *  `false` starts the copy from the capture as taken. Remembered per
+   *  media kind so the chooser opens on the last choice. */
+  duplicateWithEdits: LibraryDuplicateWithEditsSettings;
+};
+
+export type LibraryDuplicateWithEditsSettings = {
+  image: boolean;
+  video: boolean;
 };
 
 /** Discrete Library-grid zoom levels — target thumbnail min-widths in px,
@@ -3738,6 +3784,7 @@ export type SettingsPatch = {
     /** Sticky grid thumbnail size (target min-width px). See
      *  {@link LibrarySettings.gridZoom}. */
     gridZoom?: number;
+    duplicateWithEdits?: Partial<LibraryDuplicateWithEditsSettings>;
   };
   localAgents?: {
     enabled?: boolean;
@@ -4150,6 +4197,28 @@ export type Commands = {
     req: { captureId: string };
     res: { metrics: CapturePresetMetric[] };
   };
+  /**
+   * Duplicate a capture into a new, independent capture that sorts at
+   * the top (`captured_at` = now) and joins the source's family.
+   *
+   * `withEdits: true` carries the layer tree (image: crop + annotations;
+   * video: trim + cuts). `false` copies the base image / the full
+   * recording only. Enrichment (title, description, tags, OCR) is copied
+   * and the title/filename get a " copy" / "-copy" suffix numbered within
+   * the family; enrichment is NOT re-run.
+   *
+   * Not exposed over MCP.
+   */
+  "capture:duplicate": {
+    req: { captureId: string; withEdits: boolean };
+    res: { record: CaptureRecord };
+  };
+  /** What a "with edits" duplicate would carry that a base copy would
+   *  not. The duplicate menus ask the question only when `hasEdits`. */
+  "capture:editSummary": {
+    req: { captureId: string };
+    res: CaptureEditSummary;
+  };
 
   // ---- diagnostics ----
   /** Reveal the app-owned hot CPU diagnostics root in the OS file browser. */
@@ -4316,6 +4385,17 @@ export type Commands = {
    * just-captured image into the Library editor.
    */
   "library:openInLibrary": { req: { captureId: string }; res: void };
+  /** Every duplicate family — captures sharing a `family_id` — newest
+   *  activity first. Drives the tile ⧉ glyph and the Family tab. */
+  "library:families": {
+    req: Record<string, never>;
+    res: { families: CaptureFamilySummary[] };
+  };
+  /** One family's members, trashed ones included, oldest first. */
+  "library:family": {
+    req: { familyId: string };
+    res: { members: CaptureRecord[] };
+  };
   /** Add a user-typed tag to a capture. Normalizes the label, creates
    *  the `tags` row if it doesn't already exist (kind = 'content'),
    *  and writes a `capture_tags` row with `source = 'user'`.

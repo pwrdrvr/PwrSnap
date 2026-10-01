@@ -107,7 +107,13 @@ export const BundleManifestV2 = z.object({
   }),
   paired_png_filename: PairedFilename,
   created_at: z.iso.datetime(),
-  bundle_modified_at: z.iso.datetime()
+  bundle_modified_at: z.iso.datetime(),
+  // Duplicate lineage, mirrored from `captures.family_id` /
+  // `captures.duplicated_from` (migration 0035) so a bundle knows its
+  // family without the index. Absent on every bundle that was never part
+  // of a duplicate family; readers that predate them drop them.
+  family_id: z.string().min(8).max(32).optional(),
+  duplicated_from: z.string().min(8).max(32).optional()
 });
 export type BundleManifestV2 = z.infer<typeof BundleManifestV2>;
 

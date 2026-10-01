@@ -97,6 +97,12 @@ export function slotFieldsForLayer(
     (target === "arrow" || target === "shape" || target === "draw")
   ) {
     fields.push(["thickness", slot.style.thickness]);
+  }
+
+  if (
+    (slot.tool === "arrow" || slot.tool === "shape") &&
+    (target === "arrow" || target === "shape")
+  ) {
     const dash = slot.tool === "arrow" ? slot.style.stemStyle : slot.style.strokeStyle;
     fields.push([target === "arrow" ? "stemStyle" : "strokeStyle", dash]);
   }

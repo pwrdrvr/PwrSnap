@@ -49,7 +49,7 @@ export function CapturePicker({
             className="szl__scene-mini"
             type="button"
             onClick={onClose}
-            title="Close"
+            data-tip="Close"
             aria-label="Close"
           >
             ✕

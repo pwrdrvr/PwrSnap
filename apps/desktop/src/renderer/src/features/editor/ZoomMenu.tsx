@@ -137,10 +137,6 @@ export function ZoomMenu({
   }, [draft, zoom]);
 
   const label = formatLabel(zoom);
-  // Short title — the open menu surfaces every shortcut inline (see
-  // .ed-zoom-step-key + .ed-zoom-hint). A long native title is unreadable
-  // anyway because the OS renderer wraps it into a multi-line tooltip.
-  const title = "Zoom";
 
   return (
     <div className="ed-zoom" ref={rootRef}>
@@ -152,7 +148,11 @@ export function ZoomMenu({
         aria-expanded={open}
         aria-labelledby={labelId}
         onClick={() => setOpen((o) => !o)}
-        title={title}
+        // The button reads "100%"; the tooltip says what the number is.
+        // Short on purpose: the open menu shows every shortcut inline (see
+        // .ed-zoom-step-key + .ed-zoom-hint). The fast tooltip, like the
+        // rest of the edit dock this sits in.
+        data-tip="Zoom"
       >
         <span id={labelId}>{label}</span>
         <svg width="9" height="6" viewBox="0 0 9 6" fill="currentColor" aria-hidden="true">

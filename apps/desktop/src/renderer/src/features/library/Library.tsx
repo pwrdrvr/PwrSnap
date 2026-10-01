@@ -388,7 +388,7 @@ function CartCellCheckbox({ captureId }: { captureId: string }): React.ReactElem
       role="checkbox"
       aria-checked={inCart}
       aria-label={inCart ? "Remove from project draft" : "Add to project draft"}
-      title={inCart ? "Remove from project draft" : "Add to project draft"}
+      data-tip={inCart ? "Remove from project draft" : "Add to project draft"}
       onClick={(e) => {
         // Stop propagation so checking doesn't also fire the cell's
         // onSelectCell (which would open the capture in Focus mode).
@@ -4184,7 +4184,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
               type="button"
               className="psl__history-btn"
               aria-label="Back"
-              title="Back"
+              data-tip="Back"
               disabled={navHistory.back.length === 0}
               onClick={goBack}
             >
@@ -4196,7 +4196,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
               type="button"
               className="psl__history-btn"
               aria-label="Forward"
-              title="Forward"
+              data-tip="Forward"
               disabled={navHistory.forward.length === 0}
               onClick={goForward}
             >
@@ -4335,7 +4335,8 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                 type="button"
                 className="psl__search-clear"
                 aria-label="Clear search"
-                title="Clear (Esc)"
+                data-tip="Clear search"
+                data-tip-keys="Esc"
                 onClick={() => {
                   setSearchQuery("");
                   searchInputRef.current?.focus();
@@ -4371,7 +4372,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
           <button
             className="psl__icon-btn"
             type="button"
-            title="Settings"
+            data-tip="Settings"
             aria-label="Open Settings"
             onClick={() => { void dispatch("settings:open", {}); }}
           >
@@ -4389,7 +4390,11 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
           <button
             className="psl__chip-btn psl__capture-btn psl__capture-btn--video"
             type="button"
-            title="Pick a region or window to capture as a video clip"
+            // The fast tooltip, because a tight top bar drops the label and
+            // leaves only the icon.
+            data-tip="Record Video"
+            data-tip-keys={videoCaptureChord.length > 0 ? videoCaptureChord : undefined}
+            data-tip-detail="Pick a region or window to capture as a video clip"
             aria-label="Record Video"
             onClick={() => {
               void dispatch("capture:videoInteractive", {});
@@ -4414,7 +4419,9 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
               libraryIsEmpty ? " psl__chip-btn--breathe" : ""
             }`}
             type="button"
-            title="Smart auto-mode · picks region, window, or full screen"
+            data-tip="Quick Capture"
+            data-tip-keys={quickCaptureChord.length > 0 ? quickCaptureChord : undefined}
+            data-tip-detail="Smart auto-mode · picks region, window, or full screen"
             aria-label="Quick Capture"
             onClick={() => {
               void dispatchInteractiveCapture("library.quick_capture", "auto");
@@ -4463,7 +4470,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
             type="button"
             className="psl__left-spine-btn"
             aria-label={leftAutoCollapsed ? "Show sidebar" : "Pin sidebar"}
-            title={leftAutoCollapsed ? "Show sidebar" : "Pin sidebar"}
+            data-tip={leftAutoCollapsed ? "Show sidebar" : "Pin sidebar"}
             onClick={leftAutoCollapsed ? revealLeft : () => setLeftPinned(true)}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -4621,9 +4628,9 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                   modifier: facetModifier(e)
                 });
               }}
-              title={
+              data-tip={
                 excluded
-                  ? `${label} is excluded · ${altModifierLabel}-click to clear the exclusion`
+                  ? `${label} is excluded`
                   : selected
                     ? isSoleType
                       ? `Click to clear the ${label.toLowerCase()} filter`
@@ -4631,6 +4638,9 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                     : typeFacetActive
                       ? `Add ${label.toLowerCase()} to the filter`
                       : `Show only ${label.toLowerCase()}`
+              }
+              data-tip-detail={
+                excluded ? `${altModifierLabel}-click to clear the exclusion` : undefined
               }
             >
               <span className="psl__nav-icon">{icon}</span>
@@ -4646,7 +4656,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                   role="button"
                   tabIndex={-1}
                   className="psl__facet-only"
-                  title={`Show only ${label.toLowerCase()}`}
+                  data-tip={`Show only ${label.toLowerCase()}`}
                   aria-label={`Show only ${label.toLowerCase()}`}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -4749,17 +4759,24 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                   modifier: facetModifier(e)
                 });
               }}
-              title={
+              data-tip={
                 rowState === "excluded"
-                  ? `${name} is excluded · ${altModifierLabel}-click to stop excluding it`
+                  ? `${name} is excluded`
                   : isSoleInclude
-                    ? `Click to clear the ${name} filter · ${primaryModifierLabel}-click to add another app`
+                    ? `Click to clear the ${name} filter`
+                    : `Show only ${name}`
+              }
+              data-tip-detail={
+                rowState === "excluded"
+                  ? `${altModifierLabel}-click to stop excluding it`
+                  : isSoleInclude
+                    ? `${primaryModifierLabel}-click to add another app`
                     : excludeModeActive
                       ? // ⌘-click keeps the facet's polarity, so while the
                         // facet is excluding it ADDS to the exclusion —
                         // promising "⌘-click to add" here would be a lie.
-                        `Show only ${name} · ${altModifierLabel}-click to also exclude it`
-                      : `Show only ${name} · ${primaryModifierLabel}-click to add · ${altModifierLabel}-click to exclude`
+                        `${altModifierLabel}-click to also exclude it`
+                      : `${primaryModifierLabel}-click to add\n${altModifierLabel}-click to exclude`
               }
             >
               <span className="psl__nav-icon">
@@ -4779,7 +4796,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                   role="button"
                   tabIndex={-1}
                   className="psl__facet-only"
-                  title={`Show only ${name}`}
+                  data-tip={`Show only ${name}`}
                   aria-label={`Show only ${name}`}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -4853,7 +4870,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                   <button
                     type="button"
                     className="psl__chip-x"
-                    title={isSearch ? `Clear search ${described}` : `Remove ${described}`}
+                    data-tip={isSearch ? `Clear search ${described}` : `Remove ${described}`}
                     aria-label={
                       isSearch ? `Clear search ${described}` : `Remove filter ${described}`
                     }
@@ -5133,7 +5150,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                                           role="button"
                                           tabIndex={-1}
                                           className="psl__frame-trash psl__frame-trash--restore"
-                                          title="Restore"
+                                          data-tip="Restore from Trash"
                                           aria-label="Restore from Trash"
                                           onClick={(e) => restoreCaptureAction(c.id, e)}
                                         >
@@ -5146,7 +5163,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                                           role="button"
                                           tabIndex={-1}
                                           className="psl__frame-trash psl__frame-trash--purge"
-                                          title="Delete permanently"
+                                          data-tip="Delete permanently"
                                           aria-label="Delete permanently"
                                           onClick={(e) => purgeCaptureAction(c.id, e)}
                                         >
@@ -5169,7 +5186,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                                             role="button"
                                             tabIndex={-1}
                                             className="psl__frame-trash"
-                                            title="Move to Trash"
+                                            data-tip="Move to Trash"
                                             aria-label="Move to Trash"
                                             {...trigger}
                                           >
@@ -5423,7 +5440,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
               <button
                 type="button"
                 className="psl__colnudge-btn"
-                title="Fewer, larger thumbnails"
+                data-tip="Fewer, larger thumbnails"
                 aria-label="Fewer columns"
                 disabled={gridZoom >= GRID_ZOOM_MAX}
                 onClick={() => stepGridZoomBy(1)}
@@ -5438,7 +5455,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
               <button
                 type="button"
                 className="psl__colnudge-btn"
-                title="More, smaller thumbnails"
+                data-tip="More, smaller thumbnails"
                 aria-label="More columns"
                 disabled={gridZoom <= GRID_ZOOM_MIN}
                 onClick={() => stepGridZoomBy(-1)}
@@ -6485,7 +6502,7 @@ function CellRow({
                   <button
                     type="button"
                     className="psl__cell-trash psl__cell-duplicate"
-                    title="Duplicate Sizzle Reel"
+                    data-tip="Duplicate Sizzle Reel"
                     aria-label={`Duplicate ${c.n}`}
                     onClick={(event) => duplicateSizzleProject(projectId, event)}
                   >
@@ -6499,7 +6516,7 @@ function CellRow({
                   <button
                     type="button"
                     className="psl__cell-trash psl__cell-edit"
-                    title="Edit"
+                    data-tip="Edit"
                     aria-label={`Edit ${c.n}`}
                     onClick={(e) => {
                       // Stop propagation so the CTA doesn't also fire the
@@ -6523,7 +6540,7 @@ function CellRow({
                       <button
                         type="button"
                         className="psl__cell-trash psl__cell-trash--restore"
-                        title="Restore"
+                        data-tip="Restore from Trash"
                         aria-label="Restore from Trash"
                         onClick={(e) => restoreCaptureAction(c.id, e)}
                       >
@@ -6535,7 +6552,7 @@ function CellRow({
                       <button
                         type="button"
                         className="psl__cell-trash psl__cell-trash--purge"
-                        title="Delete permanently"
+                        data-tip="Delete permanently"
                         aria-label="Delete permanently"
                         onClick={(e) => purgeCaptureAction(c.id, e)}
                       >
@@ -6557,7 +6574,7 @@ function CellRow({
                         <button
                           type="button"
                           className="psl__cell-trash"
-                          title="Move to Trash"
+                          data-tip="Move to Trash"
                           aria-label="Move to Trash"
                           {...trigger}
                         >

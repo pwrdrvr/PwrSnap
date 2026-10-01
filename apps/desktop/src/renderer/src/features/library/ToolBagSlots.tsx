@@ -59,7 +59,7 @@ export function ToolBagSlots({
         const number = index + 1;
         const armed = armedSlot === index && slot !== null;
         const name = slot === null ? null : describeBagSlot(slot);
-        // Shown by useToolbarTooltip (the dock's), not `title`.
+        // Shown by the app's fast tooltip (lib/useFastTooltip), not `title`.
         const tipDetail =
           slot === null
             ? currentStyle === null

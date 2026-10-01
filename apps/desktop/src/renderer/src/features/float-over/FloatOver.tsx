@@ -1022,14 +1022,21 @@ export function FloatOver({
             <button
               className="fo__icon-btn"
               type="button"
-              title="Tuck to the screen edge until the model answers"
+              data-tip="Tuck to the screen edge"
+              data-tip-detail="Until the model answers"
               aria-label="Tuck to the screen edge"
               onClick={finishCountdown}
             >
               <FoIcon name="tuck" size={12} />
             </button>
           ) : null}
-          <button className="fo__icon-btn" title="Dismiss" onClick={dismissNow}>
+          <button
+            className="fo__icon-btn"
+            type="button"
+            aria-label="Dismiss"
+            data-tip="Dismiss"
+            onClick={dismissNow}
+          >
             <FoIcon name="x" size={12} />
           </button>
         </div>
@@ -1152,7 +1159,7 @@ export function FloatOver({
                 <button
                   className="fo__hover-btn"
                   type="button"
-                  title="Reveal in library"
+                  data-tip="Reveal in library"
                   onClick={() => onReveal?.()}
                   disabled={onReveal === undefined}
                 >
@@ -1433,7 +1440,7 @@ export function FloatOver({
               }
             />
             {!aiNeedsConsent && onSetAutoAccept !== undefined ? (
-              <label className="fo__auto-accept" title="Apply AI enrichment automatically when ready">
+              <label className="fo__auto-accept" data-tip="Apply AI enrichment automatically when ready">
                 {/* Visible text is short so the checkbox fits on the Codex
                     pill's row; the full name stays on the control. */}
                 <input

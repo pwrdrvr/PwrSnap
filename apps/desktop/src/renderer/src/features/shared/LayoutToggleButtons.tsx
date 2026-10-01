@@ -144,7 +144,7 @@ function LayoutChip({
       : open
         ? "Hide secondary side bar"
         : "Show secondary side bar";
-  // VS Code uses the modifier in tooltips; we match.
+  // VS Code shows the chord in tooltips; we match (the key chip).
   const chord = acceleratorToDisplayText(
     kind === "primary" ? "CommandOrControl+B" : "CommandOrControl+Alt+B",
     shortcutPlatform
@@ -159,7 +159,9 @@ function LayoutChip({
       }
       aria-label={label}
       aria-pressed={open}
-      title={disabled ? "Not available here" : `${label}  (${chord})`}
+      data-tip={label}
+      data-tip-keys={disabled ? undefined : chord}
+      data-tip-detail={disabled ? "Not available here" : undefined}
       data-testid={testId}
       data-open={open ? "true" : "false"}
       disabled={disabled}

@@ -142,7 +142,22 @@ describe("SourceChip", () => {
     const chip = el.querySelector<HTMLElement>("[data-testid='chip']")!;
     expect(chip.querySelector(".ps-meter")).toBeNull();
     expect(chip.querySelector(".ps-chip__why")?.textContent).toBe("none");
-    expect(chip.getAttribute("title")).toBe("no audio captured");
+    // The receipt lives in the float-over toast: the app's fast tooltip,
+    // never the native one as well.
+    expect(chip.getAttribute("data-tip")).toBe("no audio captured");
+    expect(chip.hasAttribute("title")).toBe(false);
+  });
+
+  // Dense is the recording HUD, a window sized to its own pill: an
+  // in-page tooltip could not leave it. The native one can, and it has to
+  // carry the name the dense chip no longer draws.
+  test("a dense chip names itself in a native title, since the HUD is too small for ours", () => {
+    const el = mount(
+      <SourceChip source="microphone" state="ask" density="dense" why="needs access" testId="chip" />
+    );
+    const chip = el.querySelector<HTMLElement>("[data-testid='chip']")!;
+    expect(chip.getAttribute("title")).toBe("Microphone — needs access");
+    expect(chip.hasAttribute("data-tip")).toBe(false);
   });
 
   // Only the receipt trades the meter away. The selector and the HUD draw a

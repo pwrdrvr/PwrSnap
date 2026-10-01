@@ -341,10 +341,7 @@ export function TrayMenu() {
   // when it's unbound and when registration failed, so the tooltip only
   // ever promises a chord the OS actually handed us.
   const openLibraryHk = activeHk("openLibrary");
-  const openLibraryTitle =
-    openLibraryHk.length > 0
-      ? `Open Library  (${openLibraryHk.join("")})`
-      : "Open Library";
+  const openLibraryKeys = openLibraryHk.length > 0 ? openLibraryHk.join("") : undefined;
 
   // Measure the popover's natural content height and tell main to
   // setContentSize the BrowserWindow to match. Mirrors the float-
@@ -548,7 +545,9 @@ export function TrayMenu() {
           <button
             className="ps-tray__hdr-btn"
             type="button"
-            title={openLibraryTitle}
+            // Icon-only: the app's fast tooltip names it, with the chord.
+            data-tip="Open Library"
+            data-tip-keys={openLibraryKeys}
             onClick={() => { void dispatch("library:focus", {}); }}
           >
             <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -560,7 +559,7 @@ export function TrayMenu() {
           <button
             className="ps-tray__hdr-btn"
             type="button"
-            title="Settings"
+            data-tip="Settings"
             onClick={() => { void dispatch("settings:open", {}); }}
           >
             <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -658,7 +657,7 @@ export function TrayMenu() {
               }
               type="button"
               disabled={!m.available}
-              title={m.available ? undefined : "Coming in a later phase"}
+              data-tip={m.available ? undefined : "Coming in a later phase"}
               onClick={tileClick}
             >
               <span className="ps-mode__icon">
@@ -686,7 +685,7 @@ export function TrayMenu() {
                       "ps-mode__seg-opt" +
                       (allScreensMode === "split" ? " is-on" : "")
                     }
-                    title={
+                    data-tip={
                       displayCount > 1
                         ? `One capture per display (${displayCount} images)`
                         : "One capture per display"
@@ -706,7 +705,7 @@ export function TrayMenu() {
                       "ps-mode__seg-opt" +
                       (allScreensMode === "stitched" ? " is-on" : "")
                     }
-                    title="Single stitched image spanning all displays"
+                    data-tip="Single stitched image spanning all displays"
                     onClick={(e) => {
                       e.stopPropagation();
                       setAllScreensMode("stitched");

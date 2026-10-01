@@ -584,7 +584,7 @@ function ActivityButton({
       aria-label={def.label}
       aria-pressed={active}
       aria-disabled={def.disabled}
-      title={def.title}
+      data-tip={def.title}
       data-panel={def.id}
       // data-testid is for E2E spec selectors only — added per the
       // v2 editor refresh task #11 (editor-activity-bar spec). The

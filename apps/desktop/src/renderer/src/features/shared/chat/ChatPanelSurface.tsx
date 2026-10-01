@@ -909,7 +909,7 @@ export function ChatPanelSurface({
                   event.stopPropagation();
                   void onCloseThread(t.threadId);
                 }}
-                title="Close chat"
+                data-tip="Close chat"
                 aria-label={`Close ${t.name}`}
               >
                 x

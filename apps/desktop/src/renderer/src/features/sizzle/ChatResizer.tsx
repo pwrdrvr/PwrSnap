@@ -115,7 +115,8 @@ export function ChatResizer({
       aria-valuenow={width}
       aria-valuemin={CHAT_WIDTH_MIN}
       aria-valuemax={max}
-      title="Drag to resize · double-click to reset"
+      data-tip="Drag to resize"
+      data-tip-detail="Double-click to reset"
       data-testid="sizzle-chat-resizer"
       onPointerDown={(event) => {
         if (event.button !== 0) return;

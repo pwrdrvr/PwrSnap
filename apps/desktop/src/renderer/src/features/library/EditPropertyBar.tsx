@@ -147,6 +147,7 @@ export function EditPropertyBar({
           tool={target.tool}
           style={target.style}
           onStyleFieldChange={onFieldChange}
+          hintsInTooltips
           {...(target.kind === "layer" ? { styleTargetKey: target.layerId } : {})}
         />
       </div>

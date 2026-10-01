@@ -59,7 +59,7 @@ export function WindowControls(): ReactElement {
         type="button"
         className="ps-wincontrols__btn"
         aria-label="Minimize"
-        title="Minimize"
+        data-tip="Minimize"
         onClick={() => run("minimize")}
       >
         <svg {...glyph} aria-hidden="true">
@@ -70,7 +70,7 @@ export function WindowControls(): ReactElement {
         type="button"
         className="ps-wincontrols__btn"
         aria-label={maximized ? "Restore" : "Maximize"}
-        title={maximized ? "Restore" : "Maximize"}
+        data-tip={maximized ? "Restore" : "Maximize"}
         onClick={() => run("toggle-maximize")}
       >
         <svg {...glyph} aria-hidden="true">
@@ -88,7 +88,7 @@ export function WindowControls(): ReactElement {
         type="button"
         className="ps-wincontrols__btn ps-wincontrols__btn--close"
         aria-label="Close"
-        title="Close"
+        data-tip="Close"
         onClick={() => run("close")}
       >
         <svg {...glyph} aria-hidden="true">

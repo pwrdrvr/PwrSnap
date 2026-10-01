@@ -287,9 +287,11 @@ describe("LayoutToggleButtons", () => {
       '[data-testid="layout-toggle-secondary"]'
     );
     // VS Code uses "Hide" when open / "Show" when closed; we match.
-    expect(primary?.getAttribute("title")).toContain("Hide primary");
+    expect(primary?.dataset.tip).toContain("Hide primary");
     expect(primary?.getAttribute("aria-label")).toBe("Hide primary side bar");
-    expect(secondary?.getAttribute("title")).toContain("Show secondary");
+    expect(secondary?.dataset.tip).toContain("Show secondary");
+    // The fast tooltip, never the slow native one as well.
+    expect(primary?.hasAttribute("title")).toBe(false);
     expect(secondary?.getAttribute("aria-label")).toBe(
       "Show secondary side bar"
     );
@@ -298,9 +300,9 @@ describe("LayoutToggleButtons", () => {
   test("win32 tooltips use Ctrl/Alt and contain no Cmd or Command glyph", async () => {
     const { el } = await renderToggles({ shortcutPlatform: "win32" });
     const primaryTitle =
-      el.querySelector<HTMLButtonElement>('[data-testid="layout-toggle-primary"]')?.title ?? "";
+      el.querySelector<HTMLButtonElement>('[data-testid="layout-toggle-primary"]')?.dataset.tipKeys ?? "";
     const secondaryTitle =
-      el.querySelector<HTMLButtonElement>('[data-testid="layout-toggle-secondary"]')?.title ?? "";
+      el.querySelector<HTMLButtonElement>('[data-testid="layout-toggle-secondary"]')?.dataset.tipKeys ?? "";
     expect(primaryTitle).toContain("Ctrl+B");
     expect(secondaryTitle).toContain("Ctrl+Alt+B");
     expect(`${primaryTitle} ${secondaryTitle}`).not.toMatch(/Cmd|⌘/);

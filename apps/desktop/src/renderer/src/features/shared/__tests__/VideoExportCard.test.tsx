@@ -161,7 +161,7 @@ describe("VideoExportCard truthful action feedback", () => {
     expect(harness.file().classList.contains("is-error")).toBe(true);
     expect(harness.file().classList.contains("is-copied")).toBe(false);
     expect(harness.file().textContent).toBe("Failed");
-    expect(harness.file().title).toBe("Copy path failed: agent bridge disconnected");
+    expect(harness.file().dataset.tip).toBe("Copy path failed: agent bridge disconnected");
     expect(harness.button().classList.contains("is-error")).toBe(false);
   });
 
@@ -176,7 +176,7 @@ describe("VideoExportCard truthful action feedback", () => {
 
     expect(harness.button().classList.contains("is-error")).toBe(true);
     expect(harness.button().classList.contains("is-copied")).toBe(false);
-    expect(harness.button().title).toBe("Failed: Windows clipboard rejected the file");
+    expect(harness.button().dataset.tip).toBe("Failed: Windows clipboard rejected the file");
     expect(harness.file().textContent).toBe("File");
   });
 });

@@ -196,7 +196,8 @@ export function VideoExportCard({
         }
         onClick={handleCardClick}
         disabled={isRunning}
-        title={cardTitle}
+        // The fast tooltip: an encode error's message is only here.
+        data-tip={cardTitle}
         aria-label={
           isRunning
             ? `${label} ${formatTitle}: ${progressLabel}${
@@ -289,7 +290,7 @@ export function VideoExportCard({
         draggable={!isRunning}
         aria-disabled={isRunning}
         href="#"
-        title={fileTitle}
+        data-tip={fileTitle}
         aria-label={fileAriaLabel}
         role="button"
         onClick={handleFileClick}

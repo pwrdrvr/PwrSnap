@@ -4393,38 +4393,6 @@
 .psl__et-sep.is-dangling {
   visibility: hidden;
 }
-/* The edit toolbar's tooltip (useToolbarTooltip). Portaled to <body>,
-   fixed, and never a hit target — it must not eat the hover it is
-   describing. */
-.psl-tip {
-  position: fixed;
-  z-index: 1000;
-  /* Its own content's width, never the room left beside wherever it sat
-     last: fixed and shrink-to-fit, a tooltip still at the previous
-     anchor's right-edge spot measured narrow and tall, and was placed by
-     that height. */
-  width: max-content;
-  max-width: 320px;
-  padding: 6px 9px;
-  border: 1px solid var(--border-default);
-  border-radius: 6px;
-  background: var(--bg-panel);
-  box-shadow: 0 8px 24px color-mix(in srgb, var(--shadow-base) 45%, transparent);
-  color: var(--text-secondary);
-  font: 500 11px/1.4 var(--font-sans);
-  pointer-events: none;
-}
-.psl-tip__title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--text-primary);
-  font-weight: 600;
-  font-size: 12px;
-}
-.psl-tip__title + .psl-tip__line {
-  margin-top: 3px;
-}
 /* Tool button hover — solid `--accent` fill regardless of active
    state. Strong unambiguous "this is clickable" signal that reads
    instantly. Text + key chip flip to `--button-text-on-accent`
@@ -4706,8 +4674,7 @@
   font: 500 11px/1.2 var(--font-sans);
   white-space: nowrap;
 }
-.psl__et-props-hint kbd,
-.psl-tip__key {
+.psl__et-props-hint kbd {
   display: inline-block;
   min-width: 14px;
   padding: 1px 3px;
@@ -4717,10 +4684,6 @@
   font: 700 9px/1.2 var(--font-mono);
   text-align: center;
   color: var(--text-secondary);
-}
-.psl-tip__key {
-  margin: 0;
-  font-size: 10px;
 }
 /* Two-row property bar on a narrow stage.
 

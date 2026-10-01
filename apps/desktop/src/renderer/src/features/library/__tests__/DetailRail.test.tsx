@@ -736,7 +736,7 @@ describe("DetailRail", () => {
     );
     const label = el.querySelector<HTMLLabelElement>(".ps-codex-pill__footer .ps-codex-pill__auto");
     expect(label?.textContent).toBe("Auto-apply");
-    expect(label?.getAttribute("title")).toBe("Apply AI enrichment automatically when ready");
+    expect(label?.dataset.tip).toBe("Apply AI enrichment automatically when ready");
     const box = label?.querySelector<HTMLInputElement>("input[type='checkbox']");
     expect(box?.getAttribute("aria-label")).toBe("Auto-apply AI enrichment");
     expect(box?.checked).toBe(false);
@@ -1058,7 +1058,7 @@ describe("DetailRail", () => {
     expect(infoTab).not.toBeNull();
     expect(ocrTab).not.toBeNull();
     expect(chatTab).not.toBeNull();
-    expect(chatTab?.title).toBe("Chat with AI");
+    expect(chatTab?.dataset.tip).toBe("Chat with AI");
     expect(infoTab?.getAttribute("role")).toBe("tab");
     expect(ocrTab?.getAttribute("role")).toBe("tab");
     expect(chatTab?.getAttribute("role")).toBe("tab");
@@ -1111,13 +1111,11 @@ describe("DetailRail", () => {
     const ocrTab = el.querySelector<HTMLButtonElement>(
       '[data-testid="psl-right-tab-ocr"]'
     );
-    expect(ocrTab?.querySelector(".rab__act-badge")?.getAttribute("title")).toBe(
-      "extracted text available"
-    );
+    expect(ocrTab?.querySelector(".rab__act-badge")).not.toBeNull();
     expect(ocrTab?.getAttribute("aria-label")).toBe(
       "OCR — extracted text available"
     );
-    expect(ocrTab?.title).toBe("OCR — extracted text ready");
+    expect(ocrTab?.dataset.tip).toBe("OCR — extracted text ready");
   });
 
   test("Grid mode renders the restricted Info/OCR inspector (no Chat tab)", async () => {

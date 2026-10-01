@@ -137,6 +137,73 @@ Three versions were tried, and only the third works:
 Use `dismissOnFocusLeave` only for a popover that sits right after its
 trigger in the DOM. A modal traps focus instead.
 
+## Hover tooltips: `data-tip`, not `title`
+
+An icon-only control's tooltip is the only label a sighted user gets, and
+the native `title` tooltip is too slow to be that. In Electron on macOS it
+waits out the system delay and restarts it on every pointer move, so it
+often took ~3s of holding still. `useFastTooltip` shows after 350ms, and
+once one is up, the next control's shows at once (a 400ms warm window).
+
+**One instance per window, mounted by `App`.** Its listeners are on
+`document`, so every surface in that renderer is covered: the Library,
+Settings, Sizzle, the tray popover, the float-over toast, the region
+selector, and anything portaled to `<body>`. A control opts in with
+`data-tip` (first line), `data-tip-keys` (key chip) and `data-tip-detail`
+(further lines, `\n`-separated). Don't mount a second instance or give a
+surface a root of its own. Two instances would answer every hover with a
+tooltip of the same id, so a second one logs an error and stays inert.
+
+Rules, each pinned by a test:
+
+- **Never `data-tip` and `title` together, nor one inside the other.** The
+  browser shows an ancestor's `title` too, so a fast tip inside a
+  `title`-bearing row still gets the slow one ~3s later.
+  `__tests__/fast-tooltip-contract.test.ts` reads the JSX for both. It
+  cannot see a `title` passed through a prop or a spread, so a reviewer has
+  to: `ClipLane`'s poster `<img title>` was one, inside a tipped button.
+- **The tooltip is a description, never the name.** Every opted-in button,
+  link or `role` element still needs `aria-label` or text; the same test
+  checks. Several icon buttons had only `title` for a name, and got an
+  `aria-label` when they moved. While a tip is up it is appended to the
+  anchor's `aria-describedby`, and the original is restored after. It is
+  skipped when the tip would only repeat the name.
+- **It never takes a key.** Any keydown hides it and carries on. The
+  listener is on `document` capture, because `useDismissable`'s Escape
+  listener must stay the first window-capture listener (above).
+- **It shows on keyboard focus only when `:focus-visible`**, so a click
+  does not pop one up under the pointer. A tipped `<label>` shows when the
+  checkbox inside it is focused.
+- **It never covers the focused control's ring.** It sits `GAP_PX` (8)
+  away, past the ring's 4px reach (root AGENTS.md, "Focus rings"). It is
+  never clamped vertically: with no room on either side it takes the
+  roomier side and runs off the edge, rather than sliding back over the
+  ring.
+- **It follows its anchor on scroll rather than hiding.** A control that
+  takes keyboard focus inside a scroller is scrolled into view just after,
+  so hiding on scroll would hide every such tooltip as soon as it showed.
+  It does disappear when its anchor leaves the DOM.
+
+### Where `title` stays
+
+The in-page tooltip cannot leave its window, and the native one can,
+because the OS draws it in a window of its own. So the native one stays
+where the window is barely bigger than the control:
+
+- **the recording HUD** (`RecordingController`, and `SourceChip` at
+  `dense` density). It is a window sized to its own pill, and an in-page
+  tooltip would cover its own buttons mid-take. The dense chip's `title` now carries the
+  source name the chip no longer draws.
+- **the float-over dock and recent rail** (`FloatOverDock`). The dock rests
+  as an 18px sliver, sized exactly to what it draws.
+
+`title` also stays wherever the visible text already says what the control
+does and the tooltip only adds to it. That covers truncated text whose full
+value is the title (paths, model ids, thread and layer names), status lines,
+and labelled buttons with a longer explanation ("Test", "Regenerate",
+"Split into scenes"). Switch to `data-tip` when a sighted user cannot tell
+what the control does without the tooltip.
+
 ## Testing
 
 jsdom has no sequential focus navigation, so a dispatched Tab moves nothing

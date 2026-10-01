@@ -153,15 +153,16 @@ export function SequenceSceneCard(props: SequenceSceneCardProps): ReactElement {
             className="szl__scene-mini szl__scene-mini--play"
             onClick={onPlayFrom}
             type="button"
-            title="Play the reel from this scene"
+            aria-label="Play the reel from this scene"
+            data-tip="Play the reel from this scene"
             data-testid={`sizzle-play-from-${scene.id}`}
           >
             ▶
           </button>
           <span className="szl__spacer" />
-          <button className="szl__scene-mini" onClick={() => onMoveScene(-1)} disabled={idx === 0} type="button" title="Move up">↑</button>
-          <button className="szl__scene-mini" onClick={() => onMoveScene(1)} disabled={idx === sceneCount - 1} type="button" title="Move down">↓</button>
-          <button className="szl__scene-mini szl__scene-mini--danger" onClick={onRemoveScene} type="button" title="Remove scene">✕</button>
+          <button className="szl__scene-mini" onClick={() => onMoveScene(-1)} disabled={idx === 0} type="button" aria-label="Move scene up" data-tip="Move up">↑</button>
+          <button className="szl__scene-mini" onClick={() => onMoveScene(1)} disabled={idx === sceneCount - 1} type="button" aria-label="Move scene down" data-tip="Move down">↓</button>
+          <button className="szl__scene-mini szl__scene-mini--danger" onClick={onRemoveScene} type="button" aria-label="Remove scene" data-tip="Remove scene">✕</button>
         </div>
       </div>
     </li>
@@ -412,7 +413,8 @@ export function SimpleSceneCard(props: SimpleSceneCardProps): ReactElement {
             className="szl__scene-mini szl__scene-mini--play"
             onClick={onPlayFrom}
             type="button"
-            title="Play the reel from this scene"
+            aria-label="Play the reel from this scene"
+            data-tip="Play the reel from this scene"
             data-testid={`sizzle-play-from-${scene.id}`}
           >
             ▶
@@ -422,7 +424,8 @@ export function SimpleSceneCard(props: SimpleSceneCardProps): ReactElement {
             onClick={() => onMoveScene(-1)}
             disabled={idx === 0}
             type="button"
-            title="Move up"
+            aria-label="Move scene up"
+            data-tip="Move up"
           >
             ↑
           </button>
@@ -431,7 +434,8 @@ export function SimpleSceneCard(props: SimpleSceneCardProps): ReactElement {
             onClick={() => onMoveScene(1)}
             disabled={idx === sceneCount - 1}
             type="button"
-            title="Move down"
+            aria-label="Move scene down"
+            data-tip="Move down"
           >
             ↓
           </button>
@@ -439,7 +443,8 @@ export function SimpleSceneCard(props: SimpleSceneCardProps): ReactElement {
             className="szl__scene-mini szl__scene-mini--danger"
             onClick={onRemoveScene}
             type="button"
-            title="Remove scene"
+            aria-label="Remove scene"
+            data-tip="Remove scene"
           >
             ✕
           </button>

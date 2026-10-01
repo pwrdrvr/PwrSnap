@@ -112,7 +112,8 @@ export function ClipLane({
                   (isSel ? " is-sel" : "")
                 }
                 style={{ left: `${left}px` }}
-                title={`${name} · ${clip.exact ? "" : "~"}${formatSpan(durationSec)}`}
+                data-tip={name}
+                data-tip-detail={`${clip.exact ? "" : "~"}${formatSpan(durationSec)}`}
                 aria-label={`Clip ${clip.index + 1}, ${name}`}
                 onClick={select}
                 onPointerDown={(event) => event.stopPropagation()}
@@ -133,9 +134,11 @@ export function ClipLane({
                   (isDragging ? " is-dragging" : "")
                 }
                 style={{ left: `${left}px`, width: `${width - 1}px` }}
-                title={
-                  `${name} · ${clip.exact ? "" : "~"}${formatSpan(durationSec)}` +
-                  (draggable ? " — drag to retime" : "")
+                // A clip is a thumbnail: the fast tooltip names it.
+                data-tip={name}
+                data-tip-detail={
+                  `${clip.exact ? "" : "~"}${formatSpan(durationSec)}` +
+                  (draggable ? "\nDrag to retime" : "")
                 }
                 aria-label={`Clip ${clip.index + 1}, ${name}`}
                 aria-pressed={isSel}
@@ -150,9 +153,13 @@ export function ClipLane({
                 {clip.anchored || isDragging ? (
                   <span className="szt__pin" />
                 ) : clip.pendingAnchor ? (
-                  <span className="szt__pin is-pending" title="Phrase anchor — resolves once the narration is synthesized" />
+                  <span
+                    className="szt__pin is-pending"
+                    data-tip="Phrase anchor"
+                    data-tip-detail="Resolves once the narration is synthesized"
+                  />
                 ) : null}
-                <ClipPoster clip={clip} capture={capture} name={name} />
+                <ClipPoster clip={clip} capture={capture} />
                 {detail === "full" ? (
                   <span className="szt__clip-label">
                     <span className="szt__clip-name">{name}</span>
@@ -175,7 +182,7 @@ export function ClipLane({
                 <span
                   className={"szt__pip" + (isFade ? " is-fade" : "")}
                   style={{ left: `${left}px` }}
-                  title={`Transition: ${type.replace(/-/g, " ")}`}
+                  data-tip={`Transition: ${type.replace(/-/g, " ")}`}
                 >
                   {isFade ? "⟋" : "|"}
                 </span>
@@ -187,7 +194,8 @@ export function ClipLane({
                     (isDragging && live?.kind === "start" ? " is-active" : "")
                   }
                   style={{ left: `${left}px` }}
-                  title="Drag to retime — the previous clip runs to here"
+                  data-tip="Drag to retime"
+                  data-tip-detail="The previous clip runs to here"
                   onPointerDown={(event) => onBeginDrag(clip, "start", event, false)}
                   data-testid={`sizzle-timeline-grip-${clip.beatId}`}
                 />
@@ -198,7 +206,7 @@ export function ClipLane({
                     "szt__grip szt__grip--end" + (isDragging && live?.kind === "end" ? " is-active" : "")
                   }
                   style={{ left: `${left + width}px` }}
-                  title="Drag to set where the final clip ends"
+                  data-tip="Drag to set where the final clip ends"
                   onPointerDown={(event) => onBeginDrag(clip, "end", event, false)}
                   data-testid={`sizzle-timeline-grip-end-${clip.beatId}`}
                 />
@@ -213,12 +221,10 @@ export function ClipLane({
 
 function ClipPoster({
   clip,
-  capture,
-  name
+  capture
 }: {
   clip: TimelineClip;
   capture: CaptureRecord | null;
-  name: string;
 }): ReactElement {
   if (capture !== null && capture.kind === "video") {
     return (
@@ -233,7 +239,9 @@ function ClipPoster({
       : cacheUrl(clip.captureId, 320, "webp");
   return (
     <span className="szt__thumb" aria-hidden="true">
-      <img src={src} alt="" draggable={false} loading="lazy" decoding="async" title={name} />
+      {/* No `title`: the clip button around it carries the fast tooltip,
+          and a native one here would show as well. */}
+      <img src={src} alt="" draggable={false} loading="lazy" decoding="async" />
     </span>
   );
 }

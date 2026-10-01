@@ -32,7 +32,7 @@ export function AiRunBadge(props: AiRunBadgeProps): ReactElement {
       className="ps-airun-badge"
       onClick={handleClick}
       aria-label={label}
-      title={label}
+      data-tip={label}
       data-ai-run-id={aiRunId}
       data-testid="ps-airun-badge"
     >

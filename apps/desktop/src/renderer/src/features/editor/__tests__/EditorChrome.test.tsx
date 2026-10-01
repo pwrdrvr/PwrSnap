@@ -272,7 +272,8 @@ describe("EditorChrome", () => {
     // Activity bar buttons render.
     expect(findButton("info")).toBeTruthy();
     expect(findButton("chat")).toBeTruthy();
-    expect(findButton("chat").title).toBe("Chat with AI");
+    expect(findButton("chat").dataset.tip).toBe("Chat with AI");
+    expect(findButton("chat").hasAttribute("title")).toBe(false);
     expect(findButton("toolConfig")).toBeTruthy();
     expect(findButton("help")).toBeTruthy();
 

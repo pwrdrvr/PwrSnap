@@ -20,6 +20,7 @@ import { RendererErrorBoundary } from "./RendererErrorBoundary";
 import { useAppearanceSync } from "./lib/useAppearance";
 import { useEditMenuBridge } from "./lib/editMenuBridge";
 import { usePreventBrowserZoom } from "./lib/usePreventBrowserZoom";
+import { FastTooltipHost } from "./lib/useFastTooltip";
 import { isWindowChromeStage } from "@pwrsnap/shared";
 
 type Stage =
@@ -205,5 +206,12 @@ export function App() {
     );
   })();
 
-  return <RendererErrorBoundary stage={STAGE}>{app}</RendererErrorBoundary>;
+  // One hover tooltip per window, for every surface it renders: a control
+  // opts in with `data-tip` (see ./lib/useFastTooltip.tsx).
+  return (
+    <RendererErrorBoundary stage={STAGE}>
+      {app}
+      <FastTooltipHost />
+    </RendererErrorBoundary>
+  );
 }

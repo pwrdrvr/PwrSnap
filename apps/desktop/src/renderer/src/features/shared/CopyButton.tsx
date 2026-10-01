@@ -319,11 +319,12 @@ export function CopyButton({
           className={"fo__copy-file" + (pathCopied ? " is-copied" : "")}
           draggable={onDrag !== undefined}
           href="#"
-          title={
-            onCopyPath !== undefined
-              ? `Click to copy ${label} PNG file path · drag for the file itself`
-              : `Drag ${label} PNG file`
+          // "File" alone does not say a click copies the path; the fast
+          // tooltip does.
+          data-tip={
+            onCopyPath !== undefined ? `Copy ${label} PNG file path` : `Drag ${label} PNG file`
           }
+          data-tip-detail={onCopyPath !== undefined ? "Drag for the file itself" : undefined}
           aria-label={
             onCopyPath !== undefined
               ? `Copy ${label} PNG file path to clipboard, or drag for the file`

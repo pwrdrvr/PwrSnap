@@ -209,7 +209,8 @@ describe("TrayMenu — Open Library button", () => {
     installTrayApi({ openLibrary: "" });
     const el = await renderTray();
 
-    expect(openLibraryButton(el).title).toBe("Open Library");
+    expect(openLibraryButton(el).dataset.tip).toBe("Open Library");
+    expect(openLibraryButton(el).dataset.tipKeys).toBeUndefined();
     // The specific lie we regressed on.
     expect(el.innerHTML).not.toContain("⌘⇧L");
   });
@@ -218,7 +219,8 @@ describe("TrayMenu — Open Library button", () => {
     installTrayApi({ openLibrary: "CommandOrControl+Alt+Shift+L" });
     const el = await renderTray();
 
-    expect(openLibraryButton(el).title).toBe("Open Library  (⌘⌥⇧L)");
+    expect(openLibraryButton(el).dataset.tip).toBe("Open Library");
+    expect(openLibraryButton(el).dataset.tipKeys).toBe("⌘⌥⇧L");
   });
 
   test("stays silent about a bound chord main could not register", async () => {
@@ -244,7 +246,8 @@ describe("TrayMenu — Open Library button", () => {
     );
     const el = await renderTray();
 
-    expect(openLibraryButton(el).title).toBe("Open Library");
+    expect(openLibraryButton(el).dataset.tip).toBe("Open Library");
+    expect(openLibraryButton(el).dataset.tipKeys).toBeUndefined();
   });
 
   test("clicking it dispatches library:focus", async () => {

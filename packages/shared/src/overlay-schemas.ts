@@ -170,6 +170,15 @@ export const ArrowStemStyle = z.enum(["solid", "dashed", "dotted"]);
 export type ArrowStemStyle = z.infer<typeof ArrowStemStyle>;
 export const DEFAULT_ARROW_STEM_STYLE: ArrowStemStyle = "solid";
 
+/** Shape outline stroke. The SAME value space as `ArrowStemStyle` on
+ *  purpose: the tool bag's cross-kind paste maps an arrow's stem style
+ *  onto a shape's stroke style (and back) value-for-value, so a dashed
+ *  arrow slot pasted onto a box makes the box dashed. Solid is the
+ *  legacy default — rows without the field render as they always did. */
+export const ShapeStrokeStyle = ArrowStemStyle;
+export type ShapeStrokeStyle = ArrowStemStyle;
+export const DEFAULT_SHAPE_STROKE_STYLE: ShapeStrokeStyle = "solid";
+
 /** Contrast-border ("outline") mode carried by arrow / shape / text
  *  overlays. The border is the halo painted UNDER the colored glyph so
  *  it stays legible on busy or same-colored backgrounds.
@@ -506,6 +515,11 @@ export const ShapeOverlay = z.object({
    *  DEFAULT_PARALLELOGRAM_SKEW_DEG (15°) for legacy parallelogram rows
    *  without the field. */
   skewDeg: z.number().finite().optional(),
+  /** Outline stroke pattern. Optional for back-compat: legacy rows
+   *  render solid via `readShapeStrokeStyle`. A FILLED shape has no
+   *  outline stroke to pattern, so the field is carried but inert
+   *  there (kept so un-filling restores the user's pick). */
+  strokeStyle: ShapeStrokeStyle.optional(),
   /** Contrast-border mode (see `OverlayOutlineMode` / ArrowOverlay.outline).
    *  Legacy stroked shapes render the historical white halo; legacy
    *  FILLED shapes render no rim (both via the `legacy` branch). */
@@ -521,6 +535,12 @@ export function readShapeKind(data: {
   shape?: ShapeKind | undefined;
 }): ShapeKind {
   return data.shape ?? DEFAULT_SHAPE_KIND;
+}
+
+export function readShapeStrokeStyle(data: {
+  strokeStyle?: ShapeStrokeStyle | undefined;
+}): ShapeStrokeStyle {
+  return data.strokeStyle ?? DEFAULT_SHAPE_STROKE_STYLE;
 }
 
 export function readShapeFilled(data: { filled?: boolean | undefined }): boolean {

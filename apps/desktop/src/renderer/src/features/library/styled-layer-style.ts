@@ -25,7 +25,8 @@ import {
   readHighlightOpacity,
   readShapeFilled,
   readShapeKind,
-  readShapeSkewDeg
+  readShapeSkewDeg,
+  readShapeStrokeStyle
 } from "@pwrsnap/shared";
 import { storedColorToToolColor } from "../editor/resolveToolColor";
 
@@ -56,6 +57,7 @@ const DEFAULT_LAYER_SHAPE_STYLE: ShapeToolStyle = {
   filled: false,
   shape: "rect",
   skewDeg: DEFAULT_PARALLELOGRAM_SKEW_DEG,
+  strokeStyle: "solid",
   outline: "white"
 };
 
@@ -202,6 +204,7 @@ export function styledLayerStyle(
             kind === "parallelogram"
               ? readShapeSkewDeg(shape)
               : DEFAULT_LAYER_SHAPE_STYLE.skewDeg,
+          strokeStyle: readShapeStrokeStyle(shape),
           // Legacy stroked shapes paint the white halo; legacy FILLED
           // shapes paint no rim, so Off is the honest projection there.
           outline:

@@ -12,6 +12,7 @@ export * from "./ai-enrichment-schemas";
 export * from "./result";
 export * from "./ipc";
 export * from "./arrow";
+export * from "./shape-stroke-dash";
 export * from "./appearance-arg";
 export * from "./bundle-manifest-schema-v2";
 export * from "./crop-viewport";

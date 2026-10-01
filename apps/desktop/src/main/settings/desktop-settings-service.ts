@@ -573,6 +573,10 @@ function parseShapeToolStyle(raw: unknown, defaults: ShapeToolStyle): ShapeToolS
     filled: pickBoolean(raw.filled, defaults.filled),
     shape: pickShapeKind(raw.shape, defaults.shape),
     skewDeg: pickFiniteNumber(raw.skewDeg, defaults.skewDeg),
+    // Added after the tool bag shipped: older files carry no
+    // strokeStyle, and pickArrowStemStyle (same value space) fills
+    // the default.
+    strokeStyle: pickArrowStemStyle(raw.strokeStyle, defaults.strokeStyle),
     outline: pickOverlayOutlineMode(raw.outline, defaults.outline)
   };
 }

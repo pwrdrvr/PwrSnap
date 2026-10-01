@@ -580,6 +580,59 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     expect(low.library.gridZoom).toBe(GRID_ZOOM_MIN);
   });
 
+  test("v1 shape missing the shape tool's `strokeStyle` gets solid filled in — tool style AND bag slots", async () => {
+    // strokeStyle landed after the tool bag shipped, so older files carry
+    // shape styles (and shape bag slots) without it. Additive: no
+    // schemaVersion bump, and sibling fields survive.
+    const legacyShape = {
+      color: "green",
+      thickness: "large",
+      filled: false,
+      shape: "oval",
+      skewDeg: 15,
+      outline: "black"
+    };
+    const path = join(workDir, "settings-no-stroke-style.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        schemaVersion: 1,
+        editor: {
+          toolStyles: { shape: legacyShape },
+          toolBag: { slots: [{ tool: "shape", style: legacyShape }] }
+        }
+      }),
+      "utf8"
+    );
+    const read = await new DesktopSettingsService({ filePath: path }).read();
+    expect(read.editor.toolStyles.shape).toEqual({ ...legacyShape, strokeStyle: "solid" });
+    expect(read.editor.toolBag.slots[0]).toEqual({
+      tool: "shape",
+      style: { ...legacyShape, strokeStyle: "solid" }
+    });
+
+    const junkPath = join(workDir, "settings-junk-stroke-style.json");
+    writeFileSync(
+      junkPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        editor: { toolStyles: { shape: { ...legacyShape, strokeStyle: "wavy" } } }
+      }),
+      "utf8"
+    );
+    const junk = await new DesktopSettingsService({ filePath: junkPath }).read();
+    expect(junk.editor.toolStyles.shape.strokeStyle).toBe("solid");
+  });
+
+  test("shape `strokeStyle` write + read round-trips", async () => {
+    const svc = makeService();
+    await svc.write({ editor: { toolStyles: { shape: { strokeStyle: "dotted" } } } });
+    const fresh = await makeService().read();
+    expect(fresh.editor.toolStyles.shape.strokeStyle).toBe("dotted");
+    // The rest of the shape style is untouched.
+    expect(fresh.editor.toolStyles.shape.shape).toBe(defaultSettings().editor.toolStyles.shape.shape);
+  });
+
   test("v1 shape missing `library.gridCopyPalette` gets the follow/collapsed defaults; junk falls back", async () => {
     // gridCopyPalette landed well after v1 shipped, so older files won't
     // carry it. It parses independently of detailRail (same rule as

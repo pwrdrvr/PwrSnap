@@ -47,7 +47,8 @@ import {
   BlurStyle,
   HighlightBlendModeSchema,
   OverlayThickness,
-  ShapeKind
+  ShapeKind,
+  ShapeStrokeStyle
 } from "@pwrsnap/shared/overlay";
 import { bus } from "../command-bus";
 import { currentChatToolCommandContext } from "./chat-tool-command-context";
@@ -407,6 +408,7 @@ const overlayThickness = OverlayThickness;
 const arrowEndStyle = ArrowEndStyle;
 const arrowStemStyle = ArrowStemStyle;
 const shapeKind = ShapeKind;
+const shapeStrokeStyle = ShapeStrokeStyle;
 const blurStyle = BlurStyle;
 const highlightBlendMode = HighlightBlendModeSchema;
 const normPoint = z.object({ x: z.number().finite(), y: z.number().finite() });
@@ -593,7 +595,8 @@ const drawHighlight = defineTool({
 
 // Shapes (rect / square / circle / oval / parallelogram) are all the v2
 // `ShapeOverlay`: a normalized bounding `rect` + a `shape` discriminator,
-// plus color / filled / rotation (and skewDeg for parallelogram). One
+// plus color / filled / rotation / stroke style (and skewDeg for
+// parallelogram). One
 // tool per shape — the agent picks a named tool and only sees that
 // shape's flat settings — but they all funnel through `upsertShape`.
 
@@ -610,6 +613,7 @@ async function upsertShape(
     filled?: boolean | undefined;
     rotation?: number | undefined;
     skewDeg?: number | undefined;
+    strokeStyle?: z.infer<typeof shapeStrokeStyle> | undefined;
   },
   name: string
 ): Promise<ToolDispatchResult> {
@@ -622,6 +626,7 @@ async function upsertShape(
       color: args.color ?? "auto",
       ...(args.thickness !== undefined ? { thickness: args.thickness } : {}),
       ...(args.filled !== undefined ? { filled: args.filled } : {}),
+      ...(args.strokeStyle !== undefined ? { strokeStyle: args.strokeStyle } : {}),
       ...(args.rotation !== undefined ? { rotation: args.rotation } : {}),
       ...(shape === "parallelogram" && args.skewDeg !== undefined
         ? { skewDeg: args.skewDeg }
@@ -638,54 +643,76 @@ const shapeArgsSchema = z.object({
   color: hexColor.optional(),
   thickness: overlayThickness.optional(),
   filled: z.boolean().optional(),
+  stroke_style: shapeStrokeStyle.optional(),
   rotation: z.number().finite().optional()
 });
+
+/** Snake-case tool args → `upsertShape`'s camel-case fields. */
+function shapeToolArgs(args: z.infer<typeof shapeArgsSchema>): Parameters<typeof upsertShape>[2] {
+  return {
+    rect: args.rect,
+    color: args.color,
+    thickness: args.thickness,
+    filled: args.filled,
+    rotation: args.rotation,
+    strokeStyle: args.stroke_style
+  };
+}
+
+/** Appended to every shape tool's description — same wording as the
+ *  arrow's `stem_style`, since the two share a value space. */
+const STROKE_STYLE_HINT =
+  " `stroke_style` solid|dashed|dotted outline (omit = solid; ignored when filled).";
 
 const drawRect = defineTool({
   namespace: "pwrsnap_library",
   name: "draw_rect",
   description:
-    "Draw a rectangle. `rect` is NORMALIZED [0,1] {x,y,w,h} (x,y = top-left, w,h = size). `color` #rrggbb (omit = auto). `thickness` auto|small|medium|large|x-large or numeric. `filled` true = solid fill, false/omit = outline only. `rotation` radians clockwise around the rect center (omit = 0).",
+    "Draw a rectangle. `rect` is NORMALIZED [0,1] {x,y,w,h} (x,y = top-left, w,h = size). `color` #rrggbb (omit = auto). `thickness` auto|small|medium|large|x-large or numeric. `filled` true = solid fill, false/omit = outline only. `rotation` radians clockwise around the rect center (omit = 0)." + STROKE_STYLE_HINT,
   annotations: { destructiveHint: false },
   argsSchema: shapeArgsSchema,
-  dispatch: async (args) => upsertShape(args.capture_id, "rect", args, "AI rectangle")
+  dispatch: async (args) =>
+    upsertShape(args.capture_id, "rect", shapeToolArgs(args), "AI rectangle")
 });
 
 const drawSquare = defineTool({
   namespace: "pwrsnap_library",
   name: "draw_square",
   description:
-    "Draw a square. Give a NORMALIZED bounding `rect` {x,y,w,h}; keep w and h equal for a true square. `color` #rrggbb (omit = auto). `thickness` auto|small|medium|large|x-large or numeric. `filled` true = solid, false/omit = outline. `rotation` radians (omit = 0).",
+    "Draw a square. Give a NORMALIZED bounding `rect` {x,y,w,h}; keep w and h equal for a true square. `color` #rrggbb (omit = auto). `thickness` auto|small|medium|large|x-large or numeric. `filled` true = solid, false/omit = outline. `rotation` radians (omit = 0)." + STROKE_STYLE_HINT,
   annotations: { destructiveHint: false },
   argsSchema: shapeArgsSchema,
-  dispatch: async (args) => upsertShape(args.capture_id, "square", args, "AI square")
+  dispatch: async (args) =>
+    upsertShape(args.capture_id, "square", shapeToolArgs(args), "AI square")
 });
 
 const drawCircle = defineTool({
   namespace: "pwrsnap_library",
   name: "draw_circle",
   description:
-    "Draw a circle inscribed in a NORMALIZED bounding `rect` {x,y,w,h}; keep w and h equal so it's round (use draw_oval for a stretched ellipse). `color` #rrggbb (omit = auto). `thickness` auto|small|medium|large|x-large or numeric. `filled` true = solid, false/omit = outline.",
+    "Draw a circle inscribed in a NORMALIZED bounding `rect` {x,y,w,h}; keep w and h equal so it's round (use draw_oval for a stretched ellipse). `color` #rrggbb (omit = auto). `thickness` auto|small|medium|large|x-large or numeric. `filled` true = solid, false/omit = outline." + STROKE_STYLE_HINT,
   annotations: { destructiveHint: false },
   argsSchema: shapeArgsSchema,
-  dispatch: async (args) => upsertShape(args.capture_id, "circle", args, "AI circle")
+  dispatch: async (args) =>
+    upsertShape(args.capture_id, "circle", shapeToolArgs(args), "AI circle")
 });
 
 const drawOval = defineTool({
   namespace: "pwrsnap_library",
   name: "draw_oval",
   description:
-    "Draw an oval / ellipse inscribed in a NORMALIZED bounding `rect` {x,y,w,h} (free aspect). `color` #rrggbb (omit = auto). `thickness` auto|small|medium|large|x-large or numeric. `filled` true = solid, false/omit = outline. `rotation` radians (omit = 0).",
+    "Draw an oval / ellipse inscribed in a NORMALIZED bounding `rect` {x,y,w,h} (free aspect). `color` #rrggbb (omit = auto). `thickness` auto|small|medium|large|x-large or numeric. `filled` true = solid, false/omit = outline. `rotation` radians (omit = 0)." + STROKE_STYLE_HINT,
   annotations: { destructiveHint: false },
   argsSchema: shapeArgsSchema,
-  dispatch: async (args) => upsertShape(args.capture_id, "oval", args, "AI oval")
+  dispatch: async (args) =>
+    upsertShape(args.capture_id, "oval", shapeToolArgs(args), "AI oval")
 });
 
 const drawParallelogram = defineTool({
   namespace: "pwrsnap_library",
   name: "draw_parallelogram",
   description:
-    "Draw a parallelogram in a NORMALIZED bounding `rect` {x,y,w,h}. `skew_deg` = horizontal skew in degrees, positive shifts the top edge right (omit = 15). `color` #rrggbb (omit = auto). `thickness` auto|small|medium|large|x-large or numeric. `filled` true = solid, false/omit = outline. `rotation` radians (omit = 0).",
+    "Draw a parallelogram in a NORMALIZED bounding `rect` {x,y,w,h}. `skew_deg` = horizontal skew in degrees, positive shifts the top edge right (omit = 15). `color` #rrggbb (omit = auto). `thickness` auto|small|medium|large|x-large or numeric. `filled` true = solid, false/omit = outline. `rotation` radians (omit = 0)." + STROKE_STYLE_HINT,
   annotations: { destructiveHint: false },
   argsSchema: z.object({
     capture_id: z.string(),
@@ -693,6 +720,7 @@ const drawParallelogram = defineTool({
     color: hexColor.optional(),
     thickness: overlayThickness.optional(),
     filled: z.boolean().optional(),
+    stroke_style: shapeStrokeStyle.optional(),
     rotation: z.number().finite().optional(),
     skew_deg: z.number().finite().optional()
   }),
@@ -706,7 +734,8 @@ const drawParallelogram = defineTool({
         thickness: args.thickness,
         filled: args.filled,
         rotation: args.rotation,
-        skewDeg: args.skew_deg
+        skewDeg: args.skew_deg,
+        strokeStyle: args.stroke_style
       },
       "AI parallelogram"
     )
@@ -833,6 +862,7 @@ const updateLayerArgsSchema = z.object({
   double_ended: z.boolean().optional(),
   shape: shapeKind.optional(),
   filled: z.boolean().optional(),
+  stroke_style: shapeStrokeStyle.optional(),
   rotation: z.number().finite().optional(),
   skew_deg: z.number().finite().optional(),
   blend: highlightBlendMode.optional(),
@@ -876,6 +906,7 @@ async function applyAgentLayerPatch(
     "body",
     "shape",
     "filled",
+    "stroke_style",
     "blend",
     "opacity",
     "size",
@@ -896,6 +927,7 @@ async function applyAgentLayerPatch(
     "double_ended",
     "shape",
     "filled",
+    "stroke_style",
     "blend",
     "opacity",
     "skew_deg",
@@ -932,6 +964,7 @@ async function applyAgentLayerPatch(
     "double_ended",
     "shape",
     "filled",
+    "stroke_style",
     "size",
     "weight",
     "skew_deg",
@@ -973,6 +1006,7 @@ async function applyAgentLayerPatch(
         if (args.thickness !== undefined) shape.thickness = args.thickness;
         if (args.shape !== undefined) shape.shape = args.shape;
         if (args.filled !== undefined) shape.filled = args.filled;
+        if (args.stroke_style !== undefined) shape.strokeStyle = args.stroke_style;
         if (args.rotation !== undefined) shape.rotation = args.rotation;
         if (args.skew_deg !== undefined) shape.skewDeg = args.skew_deg;
         break;
@@ -1010,6 +1044,7 @@ async function applyAgentLayerPatch(
       "double_ended",
       "shape",
       "filled",
+      "stroke_style",
       "opacity",
       "size",
       "weight",
@@ -1057,7 +1092,7 @@ const updateLayerTool = defineTool({
   namespace: "pwrsnap_library",
   name: "update_layer",
   description:
-    "Edit one existing layer in place by id. Use list_layers first, then change only the requested fields. This preserves the layer id/z-order and is the right tool for 'make that arrow heavier/thicker' (`thickness`: auto|small|medium|large|x-large), color/blend/rotation changes, moving endpoints/rects, text edits, and blur mode/radius. `mode` is gaussian|pixelate|redact; changing an existing redaction to gaussian/pixelate is refused. Do NOT delete and redraw just to change style.",
+    "Edit one existing layer in place by id. Use list_layers first, then change only the requested fields. This preserves the layer id/z-order and is the right tool for 'make that arrow heavier/thicker' (`thickness`: auto|small|medium|large|x-large), 'make that box dashed' (`stroke_style` on a shape, `stem_style` on an arrow: solid|dashed|dotted), color/blend/rotation changes, moving endpoints/rects, text edits, and blur mode/radius. `mode` is gaussian|pixelate|redact; changing an existing redaction to gaussian/pixelate is refused. Do NOT delete and redraw just to change style.",
   annotations: { idempotentHint: true },
   argsSchema: updateLayerArgsSchema,
   dispatch: async (args) => {

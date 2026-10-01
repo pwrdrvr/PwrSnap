@@ -1289,6 +1289,12 @@ function validateShapeStyle(raw: Record<string, unknown>): PwrSnapError | null {
   if (!isUndefined(raw.skewDeg) && !isFiniteNumber(raw.skewDeg)) {
     return validationError("invalid_editor_shape_skewDeg", "settings:write: editor.toolStyles.shape.skewDeg must be a finite number");
   }
+  if (!isUndefined(raw.strokeStyle)) {
+    const v = raw.strokeStyle;
+    if (v !== "solid" && v !== "dashed" && v !== "dotted") {
+      return validationError("invalid_editor_shape_strokeStyle", "settings:write: editor.toolStyles.shape.strokeStyle must be solid/dashed/dotted");
+    }
+  }
   if (!isUndefined(raw.outline) && !isOverlayOutlineMode(raw.outline)) {
     return validationError("invalid_editor_shape_outline", "settings:write: editor.toolStyles.shape.outline must be auto/white/black/stripe/none");
   }

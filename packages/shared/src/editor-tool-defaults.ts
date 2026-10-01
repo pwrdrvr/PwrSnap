@@ -70,6 +70,7 @@ export function defaultEditorToolBag(): EditorToolBag {
         filled: false,
         shape: DEFAULT_SHAPE_KIND,
         skewDeg: DEFAULT_PARALLELOGRAM_SKEW_DEG,
+        strokeStyle: "solid",
         outline: "auto"
       }
     },
@@ -111,6 +112,7 @@ export function defaultEditorToolStyles(): EditorToolStyles {
       filled: false,
       shape: DEFAULT_SHAPE_KIND,
       skewDeg: DEFAULT_PARALLELOGRAM_SKEW_DEG,
+      strokeStyle: "solid",
       outline: "auto"
     },
     blur: {

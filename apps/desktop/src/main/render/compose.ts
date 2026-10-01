@@ -22,6 +22,7 @@ import {
   annotationBasisPx,
   arrowBarEndpoints,
   computeArrowGeometry,
+  computeShapeStrokeDashArray,
   computeStemDashArray,
   computeTextGlyphSize,
   outlineHaloColor,
@@ -42,9 +43,11 @@ import {
   readShapeFilled,
   readShapeKind,
   readShapeSkewDeg,
+  readShapeStrokeStyle,
   readTextOverlayOutline,
   readTextWeight,
-  shapeAutoStrokeWidthPx
+  shapeAutoStrokeWidthPx,
+  shapeOutlinePerimeterPx
 } from "@pwrsnap/shared";
 
 // Main process can't read CSS vars, so the overlay-render default
@@ -477,10 +480,13 @@ function shapeSvg(
   function strokedPrimitive(
     stroke: string,
     strokeWidth: number,
-    dasharray: string | null = null
+    dasharray: string | null = null,
+    dashoffset = 0
   ): string {
     // Empty for solid strokes so legacy rows emit byte-identical SVG.
-    const dashAttr = dasharray === null ? "" : ` stroke-dasharray="${dasharray}"`;
+    const dashAttr =
+      (dasharray === null ? "" : ` stroke-dasharray="${dasharray}"`) +
+      (dashoffset === 0 ? "" : ` stroke-dashoffset="${dashoffset}"`);
     switch (shape) {
       case "circle":
       case "oval":
@@ -560,27 +566,48 @@ function shapeSvg(
 </svg>`;
   }
 
+  // Outline stroke pattern (dashed / dotted) — the same helper pair
+  // ShapeGlyph reads, fitted to the primitive's closed perimeter. The
+  // halo carries the SAME pattern (a solid halo under a dashed stroke
+  // would show white ghost dashes through the gaps), and a patterned
+  // outline strokes with round caps — a dotted dash is only a dot
+  // through its cap. Solid (every legacy row) emits neither attribute.
+  const strokeDash = computeShapeStrokeDashArray(
+    readShapeStrokeStyle(data),
+    shapeOutlinePerimeterPx(shape, wPx, hPx, readShapeSkewDeg(data)),
+    strokeWidthPx
+  );
+  const strokeGroupAttrs =
+    strokeDash === null
+      ? ` stroke-linejoin="round"`
+      : ` stroke-linejoin="round" stroke-linecap="round"`;
+
   if (resolvedOutline.kind === "none") {
     return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
-  <g stroke-linejoin="round"${groupTransform}>
-    ${strokedPrimitive(fillColor, strokeWidthPx)}
+  <g${strokeGroupAttrs}${groupTransform}>
+    ${strokedPrimitive(fillColor, strokeWidthPx, strokeDash)}
   </g>
 </svg>`;
   }
 
-  const stripeDash =
-    resolvedOutline.kind === "stripe"
-      ? outlineStripeDashArray(haloStrokeWidthPx)
-      : null;
+  // Stripe: on a solid outline, the plain halo-width cadence; on a
+  // patterned one, the arrow stem's rule — stripe WITHIN the painted
+  // dashes so no black lands in a gap.
+  const stripe =
+    resolvedOutline.kind !== "stripe"
+      ? null
+      : strokeDash !== null
+        ? outlineStripeDashArrayForStemDash(strokeDash)
+        : { dasharray: outlineStripeDashArray(haloStrokeWidthPx), dashoffset: 0 };
   const stripeHalo =
-    stripeDash === null
+    stripe === null
       ? ""
-      : `${strokedPrimitive("black", haloStrokeWidthPx, stripeDash)}
+      : `${strokedPrimitive("black", haloStrokeWidthPx, stripe.dasharray, stripe.dashoffset)}
     `;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
-  <g stroke-linejoin="round"${groupTransform}>
-    ${strokedPrimitive(haloColor, haloStrokeWidthPx)}
-    ${stripeHalo}${strokedPrimitive(fillColor, strokeWidthPx)}
+  <g${strokeGroupAttrs}${groupTransform}>
+    ${strokedPrimitive(haloColor, haloStrokeWidthPx, strokeDash)}
+    ${stripeHalo}${strokedPrimitive(fillColor, strokeWidthPx, strokeDash)}
   </g>
 </svg>`;
 }

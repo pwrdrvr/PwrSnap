@@ -35,8 +35,14 @@ function colorName(color: ToolColor): string {
   return COLOR_NAMES[color] ?? "Custom";
 }
 
+/** " dashed" / " dotted" / "" — the arrow stem and the shape outline
+ *  share one value space, so they share one word. */
+function patternWord(pattern: ArrowToolStyle["stemStyle"]): string {
+  return pattern === "solid" ? "" : ` ${pattern}`;
+}
+
 /** Short human name for a slot: "Red arrow", "Yellow range",
- *  "Red box", "Blur". A saved label wins. */
+ *  "Red dashed box", "Blur". A saved label wins. */
 export function describeBagSlot(slot: ToolBagSlot): string {
   const label = slot.label?.trim();
   if (label !== undefined && label.length > 0) return label;
@@ -45,8 +51,7 @@ export function describeBagSlot(slot: ToolBagSlot): string {
       const s = slot.style;
       const noun =
         s.endStyle === "bar" ? "range" : s.doubleEnded ? "double arrow" : "arrow";
-      const dashed = s.stemStyle === "solid" ? "" : " dashed";
-      return `${colorName(s.color)}${dashed} ${noun}`;
+      return `${colorName(s.color)}${patternWord(s.stemStyle)} ${noun}`;
     }
     case "shape": {
       const s = slot.style;
@@ -56,7 +61,10 @@ export function describeBagSlot(slot: ToolBagSlot): string {
           : s.shape === "parallelogram"
             ? "parallelogram"
             : s.shape;
-      return `${colorName(s.color)}${s.filled ? " filled" : ""} ${noun}`;
+      // A filled shape has no outline, so its stroke pattern is inert
+      // and goes unnamed.
+      const look = s.filled ? " filled" : patternWord(s.strokeStyle);
+      return `${colorName(s.color)}${look} ${noun}`;
     }
     case "text":
       return `${colorName(slot.style.color)} text`;
@@ -163,9 +171,16 @@ function ArrowGlyph({ style }: { style: ArrowToolStyle }): ReactElement {
 function ShapeGlyph({ style }: { style: ShapeToolStyle }): ReactElement {
   const paint = glyphPaint(style.color);
   const w = strokeFor(style.thickness);
+  const dash = style.filled ? undefined : dashFor(style.strokeStyle);
   const fillProps = style.filled
     ? { fill: paint }
-    : { fill: "none", stroke: paint, strokeWidth: w };
+    : {
+        fill: "none",
+        stroke: paint,
+        strokeWidth: w,
+        // Round caps: a dotted dash is only a dot through its cap.
+        ...(dash !== undefined ? { strokeDasharray: dash, strokeLinecap: "round" as const } : {})
+      };
   switch (style.shape) {
     case "circle":
       return <circle cx="12" cy="12" r="7.5" {...fillProps} />;

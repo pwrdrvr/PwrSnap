@@ -15,6 +15,7 @@ vi.mock("../../../lib/pwrsnap", () => ({
 
 const { DuplicateChooser } = await import("../DuplicateChooser");
 const { DuplicateJobsContext } = await import("../DuplicateProgress");
+const { createDuplicateJobStore } = await import("../duplicate-job-store");
 
 const record = {
   id: "cap_waffles",
@@ -50,12 +51,14 @@ afterEach(() => {
   dispatchMock.mockReset();
 });
 
-function render(jobs: ReadonlyMap<string, CaptureDuplicateJob>): void {
+const store = createDuplicateJobStore();
+
+function render(): void {
   act(() => {
     root.render(
       createElement(
         DuplicateJobsContext.Provider,
-        { value: jobs },
+        { value: store },
         createElement(DuplicateChooser, {
           record,
           prefs: { image: true, video: true },
@@ -70,17 +73,27 @@ function button(): HTMLButtonElement {
   return container.querySelector("button") as HTMLButtonElement;
 }
 
-test("disabled while this recording is being copied, enabled again when the copy ends", () => {
-  render(new Map([["cap_waffles", job]]));
-  expect(button().disabled).toBe(true);
-  expect(button().title).toBe("Copying this recording…");
-
-  render(new Map());
+test("unavailable while this recording is being copied, and back when the copy ends", () => {
+  render();
+  act(() => store.upsert(job));
+  // aria-disabled, not disabled: the chooser hands focus back to this
+  // button as the copy starts, and a disabled button would drop it.
   expect(button().disabled).toBe(false);
+  expect(button().getAttribute("aria-disabled")).toBe("true");
+  expect(button().title).toBe("Copying this recording…");
+  button().focus();
+  act(() => button().click());
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  expect(document.activeElement).toBe(button());
+
+  act(() => store.remove(job));
+  expect(button().getAttribute("aria-disabled")).toBeNull();
   expect(button().title).toMatch(/^Duplicate/);
 });
 
 test("a copy of a different recording leaves this one's button alone", () => {
-  render(new Map([["cap_pancakes", { ...job, sourceId: "cap_pancakes" }]]));
-  expect(button().disabled).toBe(false);
+  render();
+  act(() => store.upsert({ ...job, jobId: "job_pancakes", sourceId: "cap_pancakes" }));
+  expect(button().getAttribute("aria-disabled")).toBeNull();
+  act(() => store.remove({ jobId: "job_pancakes", sourceId: "cap_pancakes" }));
 });

@@ -84,6 +84,7 @@ export function DuplicateChooser({
   }, [copying, close]);
 
   const onTrigger = useCallback(async () => {
+    if (copying) return;
     if (open) {
       close();
       return;
@@ -99,7 +100,7 @@ export function DuplicateChooser({
     setWithEdits(prefs[kind]);
     setOpenCopy(false);
     setOpen(true);
-  }, [open, close, record, onDuplicate, prefs, kind]);
+  }, [copying, open, close, record, onDuplicate, prefs, kind]);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -164,7 +165,10 @@ export function DuplicateChooser({
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-busy={busy || copying}
-        disabled={copying}
+        // Not `disabled`: confirming the chooser returns focus to this
+        // button just as its copy starts, and a disabled button would
+        // drop that focus to <body>.
+        aria-disabled={copying || undefined}
         onClick={() => void onTrigger()}
       >
         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

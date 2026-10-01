@@ -1,7 +1,7 @@
 // Progress for background video duplicates (`capture:duplicate` answered
 // with a job — the recording could not be cloned and is being byte-copied).
 //
-// Two surfaces, both fed by `useCaptureDuplicate().jobsBySource`:
+// Two surfaces, both reading `useCaptureDuplicate().jobStore`:
 //
 //   DuplicateProgressToast   one row per copy in the lower-left toast stack:
 //                            how far, how big, and Cancel. Always findable,
@@ -10,24 +10,48 @@
 //                            The copy has no tile until it is whole, so the
 //                            original is where the work shows.
 //
-// The tile bar reads a context rather than a prop so a progress tick
-// re-renders the bars, not the virtualized grid around them.
+// Both subscribe to the store themselves (the context carries the stable
+// store, never the jobs), so a progress tick re-renders the bars and the
+// toasts — not Library, and not the virtualized grid around them.
 
-import { createContext, useContext, type ReactElement } from "react";
+import { createContext, useCallback, useContext, useSyncExternalStore, type ReactElement } from "react";
+import { createPortal } from "react-dom";
 import { duplicateJobFraction, type CaptureDuplicateJob } from "@pwrsnap/shared";
 
 import { formatBytes } from "../../lib/format-bytes";
+import { EMPTY_DUPLICATE_JOB_STORE, type DuplicateJobStore } from "./duplicate-job-store";
 import "./DuplicateProgress.css";
 
-const NO_JOBS: ReadonlyMap<string, CaptureDuplicateJob> = new Map();
+export const DuplicateJobsContext = createContext<DuplicateJobStore>(EMPTY_DUPLICATE_JOB_STORE);
 
-/** Background copies still running, by SOURCE capture id. */
-export const DuplicateJobsContext = createContext<ReadonlyMap<string, CaptureDuplicateJob>>(NO_JOBS);
-
+/** The running copy of `sourceId`, re-rendering only when THAT job changes. */
 export function useDuplicateJobForSource(sourceId: string | null | undefined): CaptureDuplicateJob | null {
-  const jobs = useContext(DuplicateJobsContext);
-  if (sourceId === null || sourceId === undefined) return null;
-  return jobs.get(sourceId) ?? null;
+  const store = useContext(DuplicateJobsContext);
+  const select = useCallback(
+    () => (sourceId === null || sourceId === undefined ? null : store.getSnapshot().get(sourceId) ?? null),
+    [store, sourceId]
+  );
+  return useSyncExternalStore(store.subscribe, select);
+}
+
+/** One progress toast per running copy, portaled into the lower-left
+ *  toast stack. */
+export function DuplicateProgressToasts({
+  onCancel
+}: {
+  onCancel: (jobId: string) => void;
+}): ReactElement | null {
+  const store = useContext(DuplicateJobsContext);
+  const jobs = useSyncExternalStore(store.subscribe, store.getSnapshot);
+  if (jobs.size === 0) return null;
+  return createPortal(
+    <>
+      {[...jobs.values()].map((job) => (
+        <DuplicateProgressToast key={job.jobId} job={job} onCancel={onCancel} />
+      ))}
+    </>,
+    document.querySelector(".app-toast-stack") ?? document.body
+  );
 }
 
 function percent(job: CaptureDuplicateJob): number {

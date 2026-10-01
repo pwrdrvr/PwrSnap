@@ -52,21 +52,36 @@ export function setDuplicateProgressIntervalForTests(ms: number): void {
   progressIntervalMs = ms;
 }
 
+export type DuplicateSourceClaim = {
+  /** Mark a copy id as running here, so startup recovery skips its
+   *  intent. A copy may try more than one id (a captures-root fallback
+   *  retries under a fresh one). */
+  trackCopy: (copyId: string) => void;
+  /** Free the source and its copy ids. Safe to call more than once. */
+  release: () => void;
+};
+
 /**
- * Reserve `sourceId` for one duplicate. Returns a release function (safe
- * to call more than once), or `null` when a copy of this source is
- * already in flight.
+ * Reserve `sourceId` for one duplicate, or `null` when a copy of this
+ * source is already in flight.
  */
-export function claimDuplicateSource(sourceId: string, copyId: string): (() => void) | null {
+export function claimDuplicateSource(sourceId: string): DuplicateSourceClaim | null {
   if (busySources.has(sourceId)) return null;
   busySources.add(sourceId);
-  liveCopyIds.add(copyId);
+  const copyIds: string[] = [];
   let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    busySources.delete(sourceId);
-    liveCopyIds.delete(copyId);
+  return {
+    trackCopy: (copyId) => {
+      if (released) return;
+      copyIds.push(copyId);
+      liveCopyIds.add(copyId);
+    },
+    release: () => {
+      if (released) return;
+      released = true;
+      busySources.delete(sourceId);
+      for (const copyId of copyIds) liveCopyIds.delete(copyId);
+    }
   };
 }
 

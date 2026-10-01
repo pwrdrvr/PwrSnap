@@ -29,12 +29,16 @@
 // source's family (see capture-families-repo.ts). Enrichment is copied, not
 // re-run.
 
-import { lstat, mkdtemp, rename, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, open, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 
 import type { CaptureDuplicateJob, CaptureEditSummary, CaptureRecord } from "@pwrsnap/shared";
-import { summarizeImageEdits, summarizeVideoEdits } from "@pwrsnap/shared";
+import {
+  DUPLICATE_IN_PROGRESS_MESSAGE,
+  summarizeImageEdits,
+  summarizeVideoEdits
+} from "@pwrsnap/shared";
 import { nanoid } from "nanoid";
 
 import { getMainLogger } from "../log";
@@ -416,16 +420,13 @@ async function startVideoDuplicate(
   if (sourcePath === null) {
     throw new CaptureDuplicateError("unsupported", "This recording has no file to copy.");
   }
-  const newId = nanoid(16);
-  const release = claimDuplicateSource(source.id, newId);
-  if (release === null) {
-    throw new CaptureDuplicateError(
-      "in_progress",
-      "PwrSnap is already copying this recording. Wait for it to finish, or cancel it."
-    );
+  const claim = claimDuplicateSource(source.id);
+  if (claim === null) {
+    throw new CaptureDuplicateError("in_progress", DUPLICATE_IN_PROGRESS_MESSAGE);
   }
   const ext = extname(sourcePath).toLowerCase() || ".mp4";
   const commit = (paths: VideoCopyPaths): void => {
+    const newId = paths.captureId;
     const db = getDb();
     db.transaction(() => {
       rootSource();
@@ -454,6 +455,10 @@ async function startVideoDuplicate(
   let handedOff = false;
   try {
     const started = await runWithCapturesDirFallback(async (capturesRoot) => {
+      // A fresh id per attempt: a fallback retry must not collide with
+      // the intent a denied root could not clean up.
+      const newId = nanoid(16);
+      claim.trackCopy(newId);
       const destPath = join(capturesRoot, `${newId}${ext}`);
       const attempt: VideoCopyPaths = {
         captureId: newId,
@@ -468,12 +473,18 @@ async function startVideoDuplicate(
           return { cloned: true as const, paths: attempt, totalBytes: 0 };
         }
         const totalBytes = (await stat(sourcePath)).size;
+        // Prove the root takes a write while still inside the fallback
+        // wrapper: a Documents denial must switch roots here, not fail
+        // the background copy later with nobody left to retry it.
+        await (await open(attempt.stagingPath, "wx")).close();
+        await rm(attempt.stagingPath);
         return { cloned: false as const, paths: attempt, totalBytes };
       } catch (cause) {
         await discardVideoCopy(attempt);
         throw cause;
       }
     });
+    const newId = started.paths.captureId;
     if (started.cloned) return { record: await finish(newId), job: null };
 
     const job = startDuplicateJob({
@@ -491,10 +502,10 @@ async function startVideoDuplicate(
         });
         finishDuplicateJob(job.jobId, "failed", "PwrSnap could not copy the recording.");
       })
-      .finally(release);
+      .finally(claim.release);
     return { record: null, job: job.snapshot };
   } finally {
-    if (!handedOff) release();
+    if (!handedOff) claim.release();
   }
 }
 

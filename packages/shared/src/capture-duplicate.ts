@@ -258,6 +258,11 @@ export type CaptureDuplicateJob = {
 
 export type CaptureDuplicateJobState = "copying" | "done" | "failed" | "cancelled";
 
+/** Why a second duplicate of a recording still being copied is refused —
+ *  by main (`code: "in_progress"`) and, before asking, by the Library. */
+export const DUPLICATE_IN_PROGRESS_MESSAGE =
+  "PwrSnap is already copying this recording. Wait for it to finish, or cancel it.";
+
 export function isTerminalDuplicateJob(job: Pick<CaptureDuplicateJob, "state">): boolean {
   return job.state !== "copying";
 }

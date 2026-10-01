@@ -12,7 +12,7 @@
 //   - a video copy is its own file, keeping or dropping the trim + cuts.
 
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
@@ -47,9 +47,22 @@ vi.mock("../../log", () => ({
   })
 }));
 
+// `deniedRoot`, when set, plays a Documents root macOS refuses: the first
+// attempt runs there and a permission error retries in `capturesRoot`,
+// the way the real wrapper falls back to ~/PwrSnap.
+let deniedRoot: string | null = null;
+
 vi.mock("../capture-storage-gate", () => ({
-  runWithCapturesDirFallback: async <T>(operation: (root: string) => Promise<T>): Promise<T> =>
-    operation(capturesRoot),
+  runWithCapturesDirFallback: async <T>(operation: (root: string) => Promise<T>): Promise<T> => {
+    if (deniedRoot === null) return operation(capturesRoot);
+    try {
+      return await operation(deniedRoot);
+    } catch (cause) {
+      const code = (cause as NodeJS.ErrnoException).code;
+      if (code !== "EACCES" && code !== "EPERM") throw cause;
+      return operation(capturesRoot);
+    }
+  },
   runExclusiveCapturesRootOperation: async <T>(operation: () => Promise<T>): Promise<T> =>
     operation()
 }));
@@ -576,6 +589,38 @@ describe("video copies that cannot be cloned", () => {
     hold.open();
     expect((await Promise.all(ends)).map((end) => end?.state)).toEqual(["done", "done"]);
   });
+});
+
+describe("video copies when the captures root refuses writes", () => {
+  // A denial has to surface while the fallback wrapper can still switch
+  // roots — i.e. before the copy goes to the background — and the retry
+  // must not trip over the intent the denied attempt could not clean up.
+  test.skipIf(process.getuid?.() === 0)(
+    "falls back to the other root instead of failing the background copy",
+    async () => {
+      const denied = join(workDir, "denied-documents");
+      await mkdir(denied, { recursive: true });
+      await chmod(denied, 0o000);
+      deniedRoot = denied;
+      copyControl.cloneMode = "no-clone";
+      try {
+        const sourceId = await recordVideo(2048);
+        const { job } = await startCaptureDuplicate(sourceId, { withEdits: true });
+        expect(job).not.toBeNull();
+        const end = await waitForDuplicateJob(job!.jobId);
+        expect(end?.state).toBe("done");
+        const copy = getCaptureById(job!.captureId)!;
+        expect(copy.legacy_src_path!.startsWith(capturesRoot)).toBe(true);
+      } finally {
+        deniedRoot = null;
+        copyControl.cloneMode = "clone";
+        await chmod(denied, 0o755);
+        // The denied attempt's intent waits for the next start; play it.
+        await recoverInterruptedVideoDuplicates();
+      }
+      expect(listCaptureDuplicateIntents()).toEqual([]);
+    }
+  );
 });
 
 describe("interrupted video duplicates", () => {

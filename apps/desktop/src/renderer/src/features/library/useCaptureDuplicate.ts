@@ -30,6 +30,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  DUPLICATE_IN_PROGRESS_MESSAGE,
   EVENT_CHANNELS,
   acceleratorToDisplayText,
   isTerminalDuplicateJob,
@@ -45,6 +46,7 @@ import {
 
 import { dispatch, subscribe } from "../../lib/pwrsnap";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
+import { createDuplicateJobStore, type DuplicateJobStore } from "./duplicate-job-store";
 
 export type DuplicateMode = "duplicate" | "edit-copy";
 
@@ -86,9 +88,6 @@ export function duplicateChoiceLabels(kind: CaptureRecord["kind"]): {
  *  `capture:duplicateJobs` read cannot bring an ended job back. */
 const ENDED_JOBS_KEPT = 64;
 
-export const DUPLICATE_IN_PROGRESS_MESSAGE =
-  "PwrSnap is already copying this recording. Wait for it to finish, or cancel it.";
-
 export function useCaptureDuplicate({
   onError
 }: {
@@ -99,8 +98,10 @@ export function useCaptureDuplicate({
     record: CaptureRecord,
     options: { withEdits: boolean; mode: DuplicateMode; remember?: boolean }
   ) => Promise<CaptureRecord | null>;
-  /** Background video copies still running, by SOURCE capture id. */
-  jobsBySource: ReadonlyMap<string, CaptureDuplicateJob>;
+  /** Background video copies still running, by SOURCE capture id.
+   *  Stable identity; read it with `useSyncExternalStore`, never into
+   *  Library state (see duplicate-job-store.ts). */
+  jobStore: DuplicateJobStore;
   cancelJob: (jobId: string) => void;
 } {
   const [prefs, setPrefs] = useState<LibraryDuplicateWithEditsSettings>(DEFAULT_PREFS);
@@ -124,35 +125,35 @@ export function useCaptureDuplicate({
   onErrorRef.current = onError;
 
   // ---- background jobs ----
-  const [jobs, setJobs] = useState<ReadonlyMap<string, CaptureDuplicateJob>>(new Map());
-  const jobsRef = useRef(jobs);
-  jobsRef.current = jobs;
+  const [jobStore] = useState(createDuplicateJobStore);
   const endedRef = useRef(new Map<string, CaptureDuplicateJob>());
   /** Jobs started here as Edit a Copy: open the copy when they finish. */
   const openOnDoneRef = useRef(new Set<string>());
 
-  const settle = useCallback((job: CaptureDuplicateJob): void => {
-    const ended = endedRef.current;
-    if (ended.has(job.jobId)) return;
-    ended.set(job.jobId, job);
-    if (ended.size > ENDED_JOBS_KEPT) ended.delete(ended.keys().next().value as string);
-    setJobs((current) => {
-      if (!current.has(job.jobId)) return current;
-      const next = new Map(current);
-      next.delete(job.jobId);
-      return next;
-    });
-    const openCopy = openOnDoneRef.current.delete(job.jobId);
-    if (job.state === "failed") {
-      onErrorRef.current(`Couldn’t duplicate the recording — ${job.error ?? "the copy failed."}`);
-    } else if (job.state === "done" && openCopy) {
-      void dispatch("editor:open", { captureId: job.captureId }).then((opened) => {
-        if (!opened.ok) {
-          onErrorRef.current(`Made a copy, but couldn’t open it — ${opened.error.message}`);
-        }
-      });
+  /** Edit a Copy's second half, wherever the copy finished. */
+  const openCopy = useCallback(async (captureId: string): Promise<void> => {
+    const opened = await dispatch("editor:open", { captureId });
+    if (!opened.ok) {
+      onErrorRef.current(`Made a copy, but couldn’t open it — ${opened.error.message}`);
     }
   }, []);
+
+  const settle = useCallback(
+    (job: CaptureDuplicateJob): void => {
+      const ended = endedRef.current;
+      if (ended.has(job.jobId)) return;
+      ended.set(job.jobId, job);
+      if (ended.size > ENDED_JOBS_KEPT) ended.delete(ended.keys().next().value as string);
+      jobStore.remove(job);
+      const wantsOpen = openOnDoneRef.current.delete(job.jobId);
+      if (job.state === "failed") {
+        onErrorRef.current(`Couldn’t duplicate the recording — ${job.error ?? "the copy failed."}`);
+      } else if (job.state === "done" && wantsOpen) {
+        void openCopy(job.captureId);
+      }
+    },
+    [jobStore, openCopy]
+  );
 
   /** Apply one job report, from the event, the command, or the list read. */
   const track = useCallback(
@@ -162,17 +163,9 @@ export function useCaptureDuplicate({
         return;
       }
       if (endedRef.current.has(job.jobId)) return;
-      setJobs((current) => {
-        const known = current.get(job.jobId);
-        // Reports can arrive out of order across the two channels; bytes
-        // only move forward.
-        if (known !== undefined && known.bytesCopied > job.bytesCopied) return current;
-        const next = new Map(current);
-        next.set(job.jobId, job);
-        return next;
-      });
+      jobStore.upsert(job);
     },
-    [settle]
+    [jobStore, settle]
   );
 
   useEffect(() => {
@@ -191,11 +184,6 @@ export function useCaptureDuplicate({
     };
   }, [track]);
 
-  const jobsBySource = useMemo(
-    () => new Map([...jobs.values()].map((job) => [job.sourceId, job])),
-    [jobs]
-  );
-
   const cancelJob = useCallback((jobId: string): void => {
     void dispatch("capture:cancelDuplicate", { jobId }).then((result) => {
       if (!result.ok) onErrorRef.current(`Couldn’t cancel the copy — ${result.error.message}`);
@@ -209,7 +197,7 @@ export function useCaptureDuplicate({
     ): Promise<CaptureRecord | null> => {
       // Main refuses this too; asking first spares the round trip and
       // says it the same way.
-      if ([...jobsRef.current.values()].some((job) => job.sourceId === record.id)) {
+      if (jobStore.getSnapshot().has(record.id)) {
         onErrorRef.current(DUPLICATE_IN_PROGRESS_MESSAGE);
         return null;
       }
@@ -234,23 +222,18 @@ export function useCaptureDuplicate({
         if (options.mode === "edit-copy") {
           const ended = endedRef.current.get(job.jobId);
           if (ended === undefined) openOnDoneRef.current.add(job.jobId);
-          else if (ended.state === "done") void dispatch("editor:open", { captureId: ended.captureId });
+          else if (ended.state === "done") void openCopy(ended.captureId);
         }
         track(job);
         return null;
       }
-      if (options.mode === "edit-copy") {
-        const opened = await dispatch("editor:open", { captureId: copy.id });
-        if (!opened.ok) {
-          onErrorRef.current(`Made a copy, but couldn’t open it — ${opened.error.message}`);
-        }
-      }
+      if (options.mode === "edit-copy") await openCopy(copy.id);
       return copy;
     },
-    [track]
+    [jobStore, openCopy, track]
   );
 
-  return { prefs, duplicate, jobsBySource, cancelJob };
+  return { prefs, duplicate, jobStore, cancelJob };
 }
 
 export function useCaptureFamilies(): {

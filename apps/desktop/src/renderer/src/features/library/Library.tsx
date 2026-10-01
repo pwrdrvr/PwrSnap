@@ -77,7 +77,7 @@ import {
 } from "./useCaptureDuplicate";
 import {
   DuplicateJobsContext,
-  DuplicateProgressToast,
+  DuplicateProgressToasts,
   DuplicateTileProgress
 } from "./DuplicateProgress";
 import { GridCopyPalette } from "./GridCopyPalette";
@@ -943,7 +943,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   const {
     prefs: duplicatePrefs,
     duplicate: duplicateRecord,
-    jobsBySource: duplicateJobsBySource,
+    jobStore: duplicateJobStore,
     cancelJob: cancelDuplicateJob
   } = useCaptureDuplicate({
     onError: (message) => setActionError({ message })
@@ -4321,7 +4321,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   const leftState = leftEffectivePinned ? "pinned" : leftRevealed ? "peek" : "collapsed";
 
   return (
-    <DuplicateJobsContext.Provider value={duplicateJobsBySource}>
+    <DuplicateJobsContext.Provider value={duplicateJobStore}>
     <div
       className="psl"
       data-mode={view.kind}
@@ -5489,15 +5489,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
 
       {/* Background video duplicates: one progress row per copy, with
           Cancel, in the same lower-left stack. */}
-      {duplicateJobsBySource.size > 0 &&
-        createPortal(
-          <>
-            {[...duplicateJobsBySource.values()].map((job) => (
-              <DuplicateProgressToast key={job.jobId} job={job} onCancel={cancelDuplicateJob} />
-            ))}
-          </>,
-          document.querySelector(".app-toast-stack") ?? document.body
-        )}
+      <DuplicateProgressToasts onCancel={cancelDuplicateJob} />
 
       {/* Result-aware action failures stay visible over Grid, Focus, and
           Reel. Mutation failures carry a direct retry that targets only the

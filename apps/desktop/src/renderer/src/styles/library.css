@@ -5284,10 +5284,11 @@
   background: var(--bg-panel);
   color: var(--text-primary);
 }
-.psl__action-row button:hover:not(:disabled) {
+.psl__action-row button:hover:not(:disabled, [aria-disabled="true"]) {
   border-color: var(--accent-border);
 }
-.psl__action-row button:disabled {
+.psl__action-row button:disabled,
+.psl__action-row button[aria-disabled="true"] {
   opacity: 0.5;
   cursor: not-allowed;
 }

@@ -103,6 +103,12 @@ export function describeCodexStatus(
     return { ...base, badge: loading ? "Checking…" : "Unknown", meta: "Discovery has not reported yet" };
   }
   if (snapshot.resolvedPath === null) {
+    if (snapshot.versionAdvisory) {
+      return {
+        ...base, tone: "warn", chip: "update", badge: "Update required",
+        meta: `v${snapshot.versionAdvisory.version} · ${snapshot.versionAdvisory.command}`
+      };
+    }
     return {
       ...base,
       tone: "bad",
@@ -115,6 +121,9 @@ export function describeCodexStatus(
   const meta = version !== null && version !== undefined
     ? `v${version} · ${snapshot.resolvedPath}`
     : snapshot.resolvedPath;
+  if (snapshot.versionAdvisory) {
+    return { ...base, tone: "warn", chip: "update", badge: "Update available", meta };
+  }
   if (snapshot.auth?.status === "unauthenticated") {
     return { ...base, tone: "warn", chip: "sign in", badge: "Sign in", meta };
   }

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EVENT_CHANNELS, type CodexCliCompatibilityAlert } from "@pwrsnap/shared";
+import { publishCodexVersionAdvisory } from "../codex-version-advisory";
 
 const mocks = vi.hoisted(() => ({
   broadcast: vi.fn(),
@@ -71,5 +72,16 @@ describe("Codex compatibility event bridge", () => {
     expect(getCodexCliCompatibilityAlert()).toEqual(remote);
     expect(mocks.broadcast).toHaveBeenCalledTimes(1);
     expect(mocks.relay).toHaveBeenCalledTimes(1);
+  });
+  test("relays a catalog upgrade advisory and its resolution to the Library process", () => {
+    const advisory = {
+      command: "/fixture/codex", version: "0.159.1", minimumVersion: "0.159.2", installer: "unknown" as const
+    };
+    publishCodexVersionAdvisory(advisory);
+    expect(mocks.broadcast).toHaveBeenCalledWith(EVENT_CHANNELS.codexVersionAdvisoryChanged, advisory);
+    expect(mocks.relay).toHaveBeenCalledWith(EVENT_CHANNELS.codexVersionAdvisoryChanged, advisory);
+    publishCodexVersionAdvisory(null);
+    expect(mocks.broadcast).toHaveBeenLastCalledWith(EVENT_CHANNELS.codexVersionAdvisoryChanged, null);
+    expect(mocks.relay).toHaveBeenLastCalledWith(EVENT_CHANNELS.codexVersionAdvisoryChanged, null);
   });
 });

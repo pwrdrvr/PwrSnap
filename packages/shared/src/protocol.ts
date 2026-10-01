@@ -2112,8 +2112,20 @@ export type DesktopCodexDiscoverySnapshot = {
   /** Auth readiness for `resolvedPath`, from `codex login status`.
    *  `null` means no usable Codex binary resolved. */
   auth: DesktopCodexAuthProbe | null;
+  /** Upgrade advice for the binary PwrSnap will launch, from cached discovery. */
+  versionAdvisory?: DesktopCodexVersionAdvisory;
   /** ISO-8601 timestamp of when this snapshot was produced. */
   refreshedAt: string;
+};
+
+export type DesktopCodexInstaller = "homebrew" | "npm" | "pnpm" | "bun" | "application" | "unknown";
+
+export type DesktopCodexVersionAdvisory = {
+  command: string;
+  version: string;
+  minimumVersion: string;
+  installer: DesktopCodexInstaller;
+  upgradeCommand?: string;
 };
 
 /**

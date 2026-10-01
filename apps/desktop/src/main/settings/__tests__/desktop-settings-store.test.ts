@@ -71,6 +71,51 @@ function rejectedAcpGroup(
 }
 
 describe("DesktopSettingsStore provider publications", () => {
+  test("auto discovery still offers upgrade help when every verified CLI is below the launch floor", async () => {
+    const store = new DesktopSettingsStore({
+      filePath: join(workDir, "settings.json"),
+      readTextFile: async () => JSON.stringify(defaultSettings()),
+      env: {},
+      discoverCodex: async () => ({ candidates: [
+        { command: "codex", source: "path", executable: false, selected: false },
+        { command: "/Applications/Codex.app/Contents/Resources/codex", source: "application", executable: false, selected: false,
+          version: "0.143.0", failureReason: "codex_too_old" },
+        { command: "/opt/old/codex", source: "path", executable: false, selected: false,
+          version: "0.142.0", failureReason: "codex_too_old" }
+      ] })
+    });
+    const snapshot = await store.getCodexDiscoverySnapshot();
+    expect(snapshot.resolvedPath).toBeNull();
+    expect(snapshot.versionAdvisory).toMatchObject({ version: "0.143.0", installer: "application" });
+  });
+  test("advises on the selected binary, ignores an old unused install, and clears after Refresh", async () => {
+    let selectedVersion = "0.159.1";
+    const discoverCodex = vi.fn(async () => ({
+      selectedCommand: "/opt/custom/codex",
+      selectedSource: "config" as const,
+      candidates: [
+        { command: "/Applications/Codex.app/Contents/Resources/codex", source: "application" as const,
+          executable: true, selected: false, version: "0.150.0" },
+        { command: "/opt/custom/codex", source: "config" as const,
+          executable: true, selected: true, version: selectedVersion }
+      ]
+    }));
+    const store = new DesktopSettingsStore({
+      filePath: join(workDir, "settings.json"),
+      readTextFile: async () => JSON.stringify(defaultSettings()),
+      discoverCodex,
+      probeCodexAuthentication: async () => ({ status: "authenticated", testedAt: "2026-10-01T00:00:00Z", durationMs: 1 })
+    });
+    const first = await store.getCodexDiscoverySnapshot();
+    expect(first.versionAdvisory).toMatchObject({ command: "/opt/custom/codex", version: "0.159.1", minimumVersion: "0.159.2" });
+    await store.getCodexDiscoverySnapshot();
+    expect(discoverCodex).toHaveBeenCalledTimes(1);
+    selectedVersion = "0.159.2";
+    const current = await store.refreshCodexDiscoveryForUserRequest();
+    expect(current.versionAdvisory).toBeUndefined();
+    expect(current.resolvedPath).toBe("/opt/custom/codex");
+    expect(discoverCodex).toHaveBeenCalledTimes(2);
+  });
   test("Codex UI, runtime, and concurrent readers share one discovery pass", async () => {
     const release = deferredSignal();
     const discoverCodex = vi.fn(async ({ configuredCommand } = {}) => {

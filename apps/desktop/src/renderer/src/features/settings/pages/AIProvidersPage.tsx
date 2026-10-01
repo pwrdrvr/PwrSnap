@@ -1,5 +1,6 @@
 import { ConnectionIndex } from "./ConnectionIndex";
 import { ConnectionPage } from "./ConnectionPage";
+import { CodexUpgradeHelp } from "../CodexUpgradeHelp";
 // The "Using" pill follows `snapshot.resolvedPath`, NOT
 // `settings.codex.mode` — same logic stdio-transport uses to spawn
 // Codex, so the renderer doesn't lie about which binary actually runs.
@@ -432,6 +433,15 @@ function CodexCard({
         ) : null}
       </Row>
 
+      {snapshot?.versionAdvisory ? (
+        <Row
+          label="Update Codex for GPT-6.1-Sol"
+          sub={`This copy is Codex ${snapshot.versionAdvisory.version}. Use Codex ${snapshot.versionAdvisory.minimumVersion}+ for GPT-6.1-Sol and the current model catalog.`}
+          tag="update"
+        >
+          <CodexUpgradeHelp key={JSON.stringify(snapshot.versionAdvisory)} advisory={snapshot.versionAdvisory} />
+        </Row>
+      ) : null}
       <Row
         label="Auth profile"
         sub="Each profile is a separate Codex home (auth, config, sessions, state). Switch accounts, add a profile, or re-login. The selected profile is used for AI features."
@@ -574,13 +584,13 @@ export function CodexCandidates({
             <span className="pss__opt-sub">
               {platform === "darwin" ? (
                 <>
-                  Install Codex Desktop or run <code>brew install codex</code>, then
+                  Install Codex Desktop or run <code>brew install --cask codex</code>, then
                   Refresh — or pin the binary&apos;s full path below.
                 </>
               ) : (
                 <>
-                  Install Codex Desktop or the Codex CLI, then Refresh — or pin
-                  the binary&apos;s full path below.
+                  Install the Codex CLI with <code>npm install -g @openai/codex@latest</code>,
+                  then Refresh — or pin the binary&apos;s full path below.
                 </>
               )}
             </span>

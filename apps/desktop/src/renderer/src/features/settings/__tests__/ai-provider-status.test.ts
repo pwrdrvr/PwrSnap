@@ -51,6 +51,14 @@ const KIMI_NOT_INSTALLED: AcpAgentDiscoveryEntry = {
 };
 
 describe("AI provider sub ids", () => {
+  test("warns about an old selected Codex in both the provider card and sidebar", () => {
+    const snapshot = codexSnapshot({ versionAdvisory: {
+      command: "/opt/homebrew/bin/codex", version: "0.148.0", minimumVersion: "0.159.2", installer: "unknown"
+    } });
+    expect(describeCodexStatus(snapshot, false)).toMatchObject({ tone: "warn", chip: "update", badge: "Update available" });
+    expect(describeCodexStatus({ ...snapshot, resolvedPath: null }, false)).toMatchObject({ tone: "warn", chip: "update", badge: "Update required" });
+    expect(describeCodexStatus(codexSnapshot(), false)).toMatchObject({ tone: "ok", badge: "Ready" });
+  });
   test("Codex leads, OpenAI trails, Gemini sorts last among the ACP agents", () => {
     expect(AI_PROVIDER_SUBS).toEqual(["codex", "grok", "kimi", "qwen", "gemini", "openai"]);
   });

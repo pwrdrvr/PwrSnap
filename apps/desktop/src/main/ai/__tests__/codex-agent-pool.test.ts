@@ -315,13 +315,13 @@ describe("Codex agent pool", () => {
     );
   });
 
-  test("preserves each model's advertised reasoning efforts and default", async () => {
+  test.each(["gpt-5.6-terra", "gpt-6-sol", "gpt-6.1-sol"])("preserves %s from the live catalog with its advertised reasoning efforts and default", async (id) => {
     mockConnectionRequest.mockResolvedValueOnce({
       data: [
         {
-          id: "gpt-5.6-terra",
-          model: "gpt-5.6-terra",
-          displayName: "GPT-5.6-Terra",
+          id,
+          model: id,
+          displayName: id === "gpt-6.1-sol" ? "GPT-6.1-Sol" : id,
           description: "Frontier model",
           hidden: false,
           supportedReasoningEfforts: [
@@ -349,7 +349,7 @@ describe("Codex agent pool", () => {
 
     expect(models).toEqual([
       expect.objectContaining({
-        id: "gpt-5.6-terra",
+        id,
         supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
         defaultReasoningEffort: "medium"
       })

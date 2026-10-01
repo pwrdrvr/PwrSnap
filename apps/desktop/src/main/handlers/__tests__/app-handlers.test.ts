@@ -173,7 +173,8 @@ describe("app:* handlers", () => {
       "https://pwrsnap.com",
       "https://docs.pwrsnap.com",
       "https://github.com/pwrdrvr",
-      "https://github.com/pwrdrvr/PwrSnap"
+      "https://github.com/pwrdrvr/PwrSnap",
+      "https://github.com/openai/codex/releases"
     ]) {
       const result = await bus.dispatch("app:openExternal", { url }, { principal: "ipc" });
       expect(result.ok).toBe(true);
@@ -190,6 +191,10 @@ describe("app:* handlers", () => {
       "https://pwrsnap.com.evil.com", // suffix-spoof
       "https://github.com/someone-else/repo", // github, wrong org
       "https://github.com/pwrdrvrx/evil", // /pwrdrvr prefix-spoof
+      "https://github.com/openai/codex",
+      "https://github.com/openai/codex/releases/download/anything",
+      "https://github.com/openai/codex/releases?redirect=elsewhere",
+      "https://github.com/openai/codex/releases-evil",
       "javascript:alert(1)",
       "not a url"
     ]) {

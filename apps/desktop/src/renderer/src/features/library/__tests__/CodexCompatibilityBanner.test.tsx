@@ -3,9 +3,12 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import {
   EVENT_CHANNELS,
-  type CodexCliCompatibilityAlert
+  type CodexCliCompatibilityAlert,
+  type DesktopCodexVersionAdvisory,
+  type Settings
 } from "@pwrsnap/shared";
 import { CodexCompatibilityBanner } from "../CodexCompatibilityBanner";
+import { baseSettings } from "../../settings/__tests__/settings-fixture";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -22,7 +25,20 @@ const FIRST_ALERT: CodexCliCompatibilityAlert = {
   detectedAt: "2026-08-03T12:00:00.000Z"
 };
 
-function installFakeApi(initialAlert: CodexCliCompatibilityAlert | null): {
+const ADVISORY: DesktopCodexVersionAdvisory = {
+  command: "/opt/homebrew/bin/codex",
+  version: "0.159.1",
+  minimumVersion: "0.159.2",
+  installer: "homebrew",
+  upgradeCommand: "brew upgrade --cask codex"
+};
+const AI_ON: Settings = { ...baseSettings, ai: { ...baseSettings.ai, enabled: true } };
+
+function installFakeApi(initialAlert: CodexCliCompatibilityAlert | null, options: {
+  settings?: Settings;
+  advisory?: DesktopCodexVersionAdvisory;
+  deferredDiscovery?: Promise<AnyResult>;
+} = {}): {
   calls: Array<{ name: string; req: unknown }>;
   pushEvent: (channel: string, payload: unknown) => void;
 } {
@@ -36,6 +52,10 @@ function installFakeApi(initialAlert: CodexCliCompatibilityAlert | null): {
         if (name === "codex:compatibilityAlert") {
           return { ok: true, value: initialAlert };
         }
+        if (name === "settings:read") return { ok: true, value: options.settings ?? baseSettings };
+        if (name === "settings:refreshCodexDiscovery") return options.deferredDiscovery ?? {
+          ok: true, value: { versionAdvisory: options.advisory }
+        };
         return { ok: true, value: undefined };
       },
       on: (channel: string, handler: (payload: unknown) => void): (() => void) => {
@@ -57,10 +77,10 @@ function installFakeApi(initialAlert: CodexCliCompatibilityAlert | null): {
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
-async function renderBanner(initialAlert: CodexCliCompatibilityAlert | null): Promise<
+async function renderBanner(initialAlert: CodexCliCompatibilityAlert | null, options: Parameters<typeof installFakeApi>[1] = {}): Promise<
   ReturnType<typeof installFakeApi>
 > {
-  const api = installFakeApi(initialAlert);
+  const api = installFakeApi(initialAlert, options);
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -82,6 +102,52 @@ afterEach(async () => {
 });
 
 describe("CodexCompatibilityBanner", () => {
+  test("warns at startup only with AI enabled, copies the installer command, and keeps dismissal through unrelated saves", async () => {
+    const api = await renderBanner(null, { settings: AI_ON, advisory: ADVISORY });
+    expect(container?.textContent).toContain("is out of date");
+    expect(container?.textContent).toContain("GPT-6.1-Sol");
+    expect(container?.textContent).toContain("0.159.2+");
+    const copy = Array.from(container!.querySelectorAll("button")).find((b) => b.textContent === "Copy command");
+    await act(async () => copy?.click());
+    expect(api.calls).toContainEqual({ name: "clipboard:copyText", req: { text: "brew upgrade --cask codex" } });
+    const dismiss = container!.querySelector<HTMLButtonElement>(".app-update-banner__dismiss");
+    await act(async () => dismiss?.click());
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.settingsChanged, { settings: { ...AI_ON } });
+      api.pushEvent(EVENT_CHANNELS.codexVersionAdvisoryChanged, { ...ADVISORY });
+    });
+    expect(container?.querySelector("aside")).toBeNull();
+    expect(api.calls.filter((c) => c.name === "settings:refreshCodexDiscovery")).toHaveLength(1);
+    await act(async () => api.pushEvent(EVENT_CHANNELS.codexVersionAdvisoryChanged, { ...ADVISORY, version: "0.158.0" }));
+    expect(container?.textContent).toContain("0.158.0");
+    await act(async () => api.pushEvent(EVENT_CHANNELS.codexVersionAdvisoryChanged, null));
+    expect(container?.querySelector("aside")).toBeNull();
+  });
+
+  test("does not request discovery while AI is disabled and hides immediately when it is disabled", async () => {
+    const api = await renderBanner(null, { advisory: ADVISORY });
+    expect(api.calls.some((c) => c.name === "settings:refreshCodexDiscovery")).toBe(false);
+    expect(container?.querySelector("aside")).toBeNull();
+    await act(async () => api.pushEvent(EVENT_CHANNELS.settingsChanged, { settings: AI_ON }));
+    expect(container?.textContent).toContain("GPT-6.1-Sol");
+    await act(async () => api.pushEvent(EVENT_CHANNELS.settingsChanged, { settings: baseSettings }));
+    expect(container?.querySelector("aside")).toBeNull();
+  });
+
+  test("an upgrade event wins over a late old discovery response", async () => {
+    let resolveDiscovery!: (result: AnyResult) => void;
+    const deferredDiscovery = new Promise<AnyResult>((resolve) => { resolveDiscovery = resolve; });
+    const api = await renderBanner(null, { settings: AI_ON, deferredDiscovery });
+    await act(async () => api.pushEvent(EVENT_CHANNELS.codexVersionAdvisoryChanged, null));
+    await act(async () => resolveDiscovery({ ok: true, value: { versionAdvisory: ADVISORY } }));
+    expect(container?.querySelector("aside")).toBeNull();
+  });
+
+  test("does not duplicate the launch failure and model advisory", async () => {
+    await renderBanner(FIRST_ALERT, { settings: AI_ON, advisory: ADVISORY });
+    expect(container?.querySelectorAll("aside")).toHaveLength(1);
+    expect(container?.textContent).toContain("Codex update required");
+  });
   test("snapshot-reads a pre-existing guard failure and opens AI Providers", async () => {
     const api = await renderBanner(FIRST_ALERT);
 

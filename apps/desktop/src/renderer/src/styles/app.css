@@ -662,6 +662,22 @@ body[data-stage="float-over"] .fo {
   );
 }
 
+.codex-upgrade-help {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.codex-upgrade-help p { margin: 0; }
+.codex-upgrade-help code {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
 .captures-access-banner .app-update-banner__eyebrow,
 .codex-compatibility-banner .app-update-banner__eyebrow {
   color: var(--danger-text);
@@ -676,4 +692,17 @@ body[data-stage="float-over"] .fo {
 .captures-access-banner .app-update-banner__restart:hover:not(:disabled),
 .codex-compatibility-banner .app-update-banner__restart:hover:not(:disabled) {
   background: color-mix(in oklab, var(--danger) 88%, white);
+}
+
+.codex-version-banner {
+  border-color: var(--warn-border);
+  background: color-mix(in srgb, var(--warn) 10%, var(--bg-panel-elevated));
+}
+.codex-version-banner .app-update-banner__eyebrow { color: var(--warn-text); }
+.codex-version-banner .app-update-banner__restart {
+  background: var(--warn);
+  border-color: var(--warn-border);
+}
+.codex-version-banner .app-update-banner__restart:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--warn) 88%, white);
 }

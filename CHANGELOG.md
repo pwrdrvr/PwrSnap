@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.1.12 - 2026-10-01
+
+This release adds capture copies and families, expands annotation tools, and
+makes editing and everyday desktop actions more dependable.
+
+- Capture Copies - Added Duplicate and Edit a Copy for images and videos,
+  with a choice to keep edits or start from the original. Large video copies
+  run in the background with progress while you continue using the Library.
+- Capture Families - Added a Family view that keeps originals and copies
+  together, and restores their relationships when importing capture bundles.
+  MCP agents can also duplicate captures and browse their families.
+- Annotation Tools - Added nine saved tool-and-style slots and a docked
+  property bar, making favorite styles quick to select and apply to existing
+  annotations. Shapes now support dashed and dotted outlines.
+- Arrow Labels - Improved Add label to open a ready-to-type draft at the
+  arrow's tail, matching its color and size without another canvas click.
+- Tooltips - Improved icon controls with faster, consistent tooltips that
+  show their names and keyboard shortcuts throughout the app.
+- Local AI - Added detected reasoning choices for supported local models
+  during capture enrichment, with a saved choice for each model.
+- Desktop Reliability - Fixed intermittent hangs when quitting on macOS
+  and Linux crashes during image processing and editing.
+
 ## v1.1.11 - 2026-09-30
 
 This patch keeps AI settings and update checks reliable across restarts and

@@ -21,6 +21,7 @@ import {
   type StyledToolKind,
   type ToolStylePopoverStyle
 } from "../editor/ToolStylePopover";
+import { bagSlotForStyle } from "../editor/tool-bag";
 
 export type PropertyBarTarget =
   | {
@@ -53,12 +54,6 @@ export type EditPropertyBarProps = {
   readonly shortcutPlatform?: ShortcutPlatform;
 };
 
-function slotFor(tool: StyledToolKind, style: ToolStylePopoverStyle): ToolBagSlot {
-  // The pair came from one discriminated source (a layer projection or
-  // the tool state), so the cast only restates what the caller holds.
-  return { tool, style } as ToolBagSlot;
-}
-
 export function EditPropertyBar({
   target,
   onFieldChange,
@@ -80,17 +75,17 @@ export function EditPropertyBar({
     );
   }
 
-  const saveTarget = slotFor(target.tool, target.style);
-  // The eraser is a way of using the Draw tool, not a style to keep: a
-  // slot holds what the next drag DRAWS. Settings refuse an eraser slot
-  // too; this keeps the button from offering one.
-  const erasing =
-    target.tool === "draw" && (target.style as { mode?: unknown }).mode === "eraser";
+  // Null for the Draw tool's eraser: a slot holds what the next drag
+  // DRAWS (see `bagSlotForStyle`).
+  const saveTarget = bagSlotForStyle(target.tool, target.style);
   const updateIndex =
-    !erasing && target.kind === "tool" && target.armedSlot !== null && target.armedSlotModified
+    saveTarget !== null &&
+    target.kind === "tool" &&
+    target.armedSlot !== null &&
+    target.armedSlotModified
       ? target.armedSlot
       : null;
-  const saveBlockedTip = erasing
+  const saveBlockedTip = saveTarget === null
     ? "The eraser can't be saved — pick Pen, Marker or Spray"
     : firstEmptySlot === null
       ? "The bag is full — right-click a slot to replace or clear it"
@@ -133,7 +128,9 @@ export function EditPropertyBar({
             type="button"
             className="psl__et-props-btn is-primary"
             data-testid="property-bar-update-slot"
-            onClick={() => onSaveToSlot(updateIndex, saveTarget)}
+            onClick={() => {
+              if (saveTarget !== null) onSaveToSlot(updateIndex, saveTarget);
+            }}
           >
             Update slot {updateIndex + 1}
           </button>
@@ -147,7 +144,7 @@ export function EditPropertyBar({
           aria-disabled={saveBlockedTip !== null}
           data-tip={saveBlockedTip ?? `Save this style to slot ${(firstEmptySlot ?? 0) + 1}`}
           onClick={() => {
-            if (saveBlockedTip === null && firstEmptySlot !== null) {
+            if (saveTarget !== null && firstEmptySlot !== null) {
               onSaveToSlot(firstEmptySlot, saveTarget);
             }
           }}

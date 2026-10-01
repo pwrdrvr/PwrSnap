@@ -70,6 +70,7 @@ import {
 } from "../editor/useEditorToolState";
 import type { StyledToolKind } from "../editor/ToolStylePopover";
 import { useCaptureModel } from "../editor/useCaptureModel";
+import { bagSlotForStyle } from "../editor/tool-bag";
 import { EditPropertyBar, type PropertyBarTarget } from "./EditPropertyBar";
 import { styledLayerStyle } from "./styled-layer-style";
 import { ToolBagSlots } from "./ToolBagSlots";
@@ -715,12 +716,9 @@ export function EditToolbar({
 
   // Null for the eraser too: a slot holds something the next drag draws.
   const currentStyleForBag: ToolBagSlot | null =
-    propertyTarget === null ||
-    propertyTarget.kind === "multi" ||
-    (propertyTarget.tool === "draw" &&
-      (propertyTarget.style as { mode?: unknown }).mode === "eraser")
+    propertyTarget === null || propertyTarget.kind === "multi"
       ? null
-      : ({ tool: propertyTarget.tool, style: propertyTarget.style } as ToolBagSlot);
+      : bagSlotForStyle(propertyTarget.tool, propertyTarget.style);
   const firstEmptySlot = (() => {
     const i = toolState.bag.slots.findIndex((slot) => slot === null);
     return i === -1 ? null : i;

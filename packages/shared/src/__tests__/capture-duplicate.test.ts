@@ -1,5 +1,7 @@
 import { describe, expect, test } from "vitest";
 
+import type { BundleLayerNode } from "../bundle-manifest-schema-v2";
+
 import {
   copyStem,
   copyTitle,
@@ -8,6 +10,7 @@ import {
   nextCopyNumber,
   stripStemCopySuffix,
   stripTitleCopySuffix,
+  summarizeImageEdits,
   summarizeVideoEdits
 } from "../capture-duplicate";
 
@@ -37,6 +40,37 @@ describe("formatCaptureEditSummary", () => {
         })
       )
     ).toBe("trim · 2 cuts");
+  });
+
+  test("Draw strokes are edits: a snap with only strokes asks before copying, and names them", () => {
+    const sha = "a".repeat(64);
+    const layers = [
+      { kind: "group", id: "g_root", parent_id: null },
+      {
+        kind: "raster",
+        id: "raster_base",
+        parent_id: "g_root",
+        source_ref: { kind: "embedded", sha256: sha },
+        natural_width_px: 800,
+        natural_height_px: 600
+      },
+      {
+        kind: "vector",
+        id: "stroke_1",
+        parent_id: "g_root",
+        shape: { kind: "stroke", tool: "pen", points: [{ x: 0.1, y: 0.1 }], color: "auto" }
+      },
+      {
+        kind: "vector",
+        id: "stroke_2",
+        parent_id: "g_root",
+        shape: { kind: "stroke", tool: "marker", points: [{ x: 0.2, y: 0.2 }], color: "auto" }
+      }
+    ] as unknown as BundleLayerNode[];
+    const summary = summarizeImageEdits(layers, { sha256: sha, width_px: 800, height_px: 600 });
+    expect(summary.hasEdits).toBe(true);
+    expect(summary.strokes).toBe(2);
+    expect(formatCaptureEditSummary(summary)).toBe("2 drawings");
   });
 
   test("an untouched video has no edits", () => {

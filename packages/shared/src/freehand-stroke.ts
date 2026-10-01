@@ -511,8 +511,10 @@ export interface StrokePiece {
  *
  * The runs keep the stroke's own vertices — only the two points at each
  * cut are new — and each run records which original segment it starts
- * on. Together those keep a spray's surviving dots where they were: its
- * dots are keyed by original segment index (see `sprayDots`).
+ * on. Together those keep the dots of a spray's WHOLE surviving segments
+ * where they were: its dots are keyed by original segment index (see
+ * `sprayDots`). The segment a cut lands in is shorter afterwards, so its
+ * remainder is re-scattered — dots next to a cut move.
  *
  * Returns `null` when the eraser never touched the stroke (nothing to
  * change), and `[]` when it removed all of it. Runs shorter than
@@ -594,6 +596,59 @@ export function eraseStroke(
   return pieces.filter(
     (piece) => piece.points.length > 1 && polylineLengthPx(piece.points) >= minPieceLengthPx
   );
+}
+
+/** How far the simplified eraser path may stray from the pointer path,
+ *  in canvas pixels — a fraction of any eraser's radius, so the cut is
+ *  unchanged to the eye. */
+const ERASER_SIMPLIFY_TOLERANCE_PX = 0.5;
+
+/** The eraser drag as the polyline `eraseStroke` sweeps, in canvas
+ *  pixels. A drag is a raw pointer stream — hundreds of samples a second
+ *  — and every sample of every stroke is measured against every segment
+ *  of it, so it is simplified first. */
+export function eraserPathPx(
+  points: readonly { x: number; y: number }[],
+  canvasWidthPx: number,
+  canvasHeightPx: number
+): StrokePointPx[] {
+  return simplifyStrokePoints(
+    strokePointsToPx(points, canvasWidthPx, canvasHeightPx),
+    ERASER_SIMPLIFY_TOLERANCE_PX
+  );
+}
+
+/**
+ * Cut a stroke ROW where an eraser passed: the strokes that replace it,
+ * in the same normalized canvas space, or `null` when the eraser never
+ * touched it (`[]` when it took all of it). The editor's live preview
+ * and its commit both call this, so what the drag shows is what the
+ * release writes.
+ *
+ * `eraserRadiusPx` is the eraser's own radius; the stroke's painted
+ * reach is added here, so grazing the edge of a wide marker cuts it.
+ * Each spray piece records where it starts in the original stroke
+ * (`seedOffset`), so its whole surviving segments keep their dots.
+ */
+export function eraseStrokeOverlay(
+  data: StrokeOverlay,
+  eraserPx: readonly StrokePointPx[],
+  eraserRadiusPx: number,
+  canvasWidthPx: number,
+  canvasHeightPx: number,
+  basisPx: number
+): StrokeOverlay[] | null {
+  const pieces = eraseStroke(
+    strokePointsToPx(data.points, canvasWidthPx, canvasHeightPx),
+    eraserPx,
+    eraserRadiusPx + strokeReachPx(data, basisPx)
+  );
+  if (pieces === null) return null;
+  return pieces.map((piece) => ({
+    ...data,
+    points: strokePointsToNormalized(piece.points, canvasWidthPx, canvasHeightPx),
+    ...(data.tool === "spray" ? { seedOffset: (data.seedOffset ?? 0) + piece.seedOffset } : {})
+  }));
 }
 
 function boundsPx(points: readonly StrokePointPx[]): {

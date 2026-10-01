@@ -1313,9 +1313,11 @@ describe("TransformHandles — Draw strokes", () => {
     expect(geom.kind).toBe("stroke");
     if (geom.kind !== "stroke") return;
     expect(geom.points.map((p) => p.y)).toEqual([0.4, 0.4, 0.6]);
-    expect(geom.points[0]!.x).toBeCloseTo(0.2, 2);
-    expect(geom.points[1]!.x).toBeCloseTo(0.8, 2);
-    expect(geom.points[2]!.x).toBeCloseTo(0.8, 2);
+    // The painted edge follows the cursor exactly: the centerline's right
+    // end moves by the drag (0.2), and the line's reach is not scaled.
+    expect(geom.points[0]!.x).toBeCloseTo(0.2, 6);
+    expect(geom.points[1]!.x).toBeCloseTo(0.8, 6);
+    expect(geom.points[2]!.x).toBeCloseTo(0.8, 6);
   });
 
   test("dragging an edge past the opposite one stops short instead of mirroring the stroke", async () => {

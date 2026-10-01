@@ -8,6 +8,8 @@ import {
   DEFAULT_MARKER_OPACITY,
   distanceToPolylinePx,
   eraseStroke,
+  eraseStrokeOverlay,
+  eraserPathPx,
   eraserRadiusPx,
   MAX_SPRAY_DOTS,
   polylineLengthPx,
@@ -365,5 +367,90 @@ describe("the eraser cuts strokes", () => {
   it("erases a single-point stroke only when it covers it", () => {
     expect(eraseStroke([{ x: 5, y: 5 }], [{ x: 6, y: 5 }], 2)).toEqual([]);
     expect(eraseStroke([{ x: 5, y: 5 }], [{ x: 60, y: 5 }], 2)).toBeNull();
+  });
+});
+
+describe("eraseStrokeOverlay — the row-level cut the editor previews and commits", () => {
+  const W = 1000;
+  const H = 500;
+  const basis = annotationBasisPx(W, H);
+
+  it("cuts a row into normalized pieces on either side of the swipe", () => {
+    const row = {
+      kind: "stroke" as const,
+      tool: "pen" as const,
+      points: [
+        { x: 0.1, y: 0.5 },
+        { x: 0.9, y: 0.5 }
+      ],
+      color: "auto" as const,
+      thickness: "small" as const
+    };
+    const eraser = eraserPathPx(
+      [
+        { x: 0.5, y: 0.2 },
+        { x: 0.5, y: 0.8 }
+      ],
+      W,
+      H
+    );
+    const pieces = eraseStrokeOverlay(row, eraser, eraserRadiusPx("small", basis), W, H, basis);
+    expect(pieces).not.toBeNull();
+    expect(pieces!.length).toBe(2);
+    expect(pieces![0]!.points[0]).toEqual({ x: 0.1, y: 0.5 });
+    expect(Math.max(...pieces![0]!.points.map((p) => p.x))).toBeLessThan(0.5);
+    expect(Math.min(...pieces![1]!.points.map((p) => p.x))).toBeGreaterThan(0.5);
+    expect(pieces![1]!.points.at(-1)).toEqual({ x: 0.9, y: 0.5 });
+    for (const piece of pieces!) {
+      expect(piece.tool).toBe("pen");
+      expect(piece.seedOffset).toBeUndefined();
+    }
+  });
+
+  it("offsets a spray piece's seed by where it starts in the original stroke", () => {
+    const row = {
+      kind: "stroke" as const,
+      tool: "spray" as const,
+      points: [
+        { x: 0.1, y: 0.5 },
+        { x: 0.3, y: 0.5 },
+        { x: 0.5, y: 0.5 },
+        { x: 0.7, y: 0.5 },
+        { x: 0.9, y: 0.5 }
+      ],
+      color: "auto" as const,
+      seed: 99,
+      seedOffset: 4
+    };
+    // Cut inside the second segment (0.3 → 0.5).
+    const eraser = eraserPathPx([{ x: 0.4, y: 0.3 }, { x: 0.4, y: 0.7 }], W, H);
+    const pieces = eraseStrokeOverlay(row, eraser, eraserRadiusPx("small", basis), W, H, basis)!;
+    expect(pieces.map((p) => p.seedOffset)).toEqual([4, 5]);
+    expect(pieces.every((p) => p.seed === 99)).toBe(true);
+  });
+
+  it("returns null for a row the eraser never reached", () => {
+    const row = {
+      kind: "stroke" as const,
+      tool: "marker" as const,
+      points: [
+        { x: 0.1, y: 0.1 },
+        { x: 0.2, y: 0.1 }
+      ],
+      color: "auto" as const
+    };
+    const eraser = eraserPathPx([{ x: 0.8, y: 0.8 }, { x: 0.9, y: 0.9 }], W, H);
+    expect(eraseStrokeOverlay(row, eraser, eraserRadiusPx("small", basis), W, H, basis)).toBeNull();
+  });
+});
+
+describe("eraserPathPx", () => {
+  it("drops the samples a straight drag adds, keeping both ends", () => {
+    const samples = Array.from({ length: 200 }, (_, i) => ({ x: 0.1 + i * 0.004, y: 0.5 }));
+    const path = eraserPathPx(samples, 1000, 500);
+    expect(path).toEqual([
+      { x: samples[0]!.x * 1000, y: 250 },
+      { x: samples[199]!.x * 1000, y: 250 }
+    ]);
   });
 });

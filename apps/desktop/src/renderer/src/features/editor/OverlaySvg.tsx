@@ -59,12 +59,12 @@ import {
   readShapeStrokeStyle,
   readTextWeight,
   shapeStripeDash,
-  eraseStroke,
+  eraseStrokeOverlay,
+  eraserPathPx,
   eraserRadiusPx,
   smoothStrokePathD,
   strokeBoundsN,
   strokeGeometry,
-  strokePointsToNormalized,
   strokePointsToPx,
   strokeReachPx,
   type StrokeGeometry
@@ -264,35 +264,46 @@ export function OverlaySvg({
 
   // Eraser preview: while the eraser is dragged, every stroke it crosses
   // is painted as the pieces it will leave, so the cut is visible before
-  // the release commits it. Same `eraseStroke` call, same radius rule as
-  // the commit in Editor.tsx.
+  // the release commits it. `eraseStrokeOverlay` is the same call the
+  // commit in Editor.tsx makes.
   const erasePreview = useMemo((): ReadonlyMap<string, StrokeOverlay[]> | null => {
     if (draft === null || draft.kind !== "stroke" || draft.mode !== "eraser") return null;
-    const eraser = strokePointsToPx(draft.points, imageWidthPx, imageHeightPx);
+    const eraser = eraserPathPx(draft.points, imageWidthPx, imageHeightPx);
     const radius = eraserRadiusPx(draftStyle?.thickness, annotationBasis);
     const out = new Map<string, StrokeOverlay[]>();
     for (const row of effectiveOverlays) {
       const data = row.data;
       if (data.kind !== "stroke") continue;
-      const pieces = eraseStroke(
-        strokePointsToPx(data.points, imageWidthPx, imageHeightPx),
+      const pieces = eraseStrokeOverlay(
+        data,
         eraser,
-        radius + strokeReachPx(data, annotationBasis)
+        radius,
+        imageWidthPx,
+        imageHeightPx,
+        annotationBasis
       );
-      if (pieces === null) continue;
-      out.set(
-        row.id,
-        pieces.map((piece) => ({
-          ...data,
-          points: strokePointsToNormalized(piece.points, imageWidthPx, imageHeightPx),
-          ...(data.tool === "spray"
-            ? { seedOffset: (data.seedOffset ?? 0) + piece.seedOffset }
-            : {})
-        }))
-      );
+      if (pieces !== null) out.set(row.id, pieces);
     }
     return out;
   }, [draft, draftStyle?.thickness, effectiveOverlays, imageWidthPx, imageHeightPx, annotationBasis]);
+
+  // The live stroke's row shape, built once per draft change. StrokeGlyph
+  // memoizes its geometry on `data` identity, and a spray re-scatters
+  // every dot of the stroke when that changes — an inline object literal
+  // would redo that on every render, not just on every pointer sample.
+  const draftThickness = draftStyle?.thickness;
+  const draftStrokeData = useMemo(
+    () =>
+      draft !== null && draft.kind === "stroke" && draft.mode !== "eraser"
+        ? {
+            tool: draft.mode,
+            points: draft.points,
+            thickness: draftThickness,
+            seed: draft.seed
+          }
+        : null,
+    [draft, draftThickness]
+  );
 
   // `overflow="visible"` on the svg element AND `overflow: visible`
   // in the CSS — belt-and-suspenders. SVG 1.1 spec says the
@@ -494,14 +505,9 @@ export function OverlaySvg({
             isDraft
           />
         )}
-        {draft?.kind === "stroke" && draft.mode !== "eraser" && (
+        {draftStrokeData !== null && (
           <StrokeGlyph
-            data={{
-              tool: draft.mode,
-              points: draft.points,
-              thickness: draftStyle?.thickness,
-              seed: draft.seed
-            }}
+            data={draftStrokeData}
             color={draftStyle?.color}
             imageWidthPx={imageWidthPx}
             imageHeightPx={imageHeightPx}
@@ -2606,11 +2612,17 @@ function geometryFromDrag(
 }
 
 /** Resize a stroke by moving one edge (or two, at a corner) of its
- *  painted box and scaling every point by the same factor about the
- *  fixed edge. The painted width does not scale — it is a weight on the
+ *  painted box. The painted width does not scale — it is a weight on the
  *  ladder, not geometry — so a squashed scribble keeps its line weight.
- *  The box never inverts: an edge dragged past the fixed one stops a
- *  few pixels short of it. */
+ *  That is also why the points are mapped between CENTERLINE boxes: the
+ *  painted box is the centerline box plus a fixed reach on each side, and
+ *  scaling that reach along with the points would leave the edge short
+ *  of (or past) the cursor by reach × (1 − scale).
+ *
+ *  The box never inverts: an edge dragged past the fixed one stops
+ *  short of it, with the centerline no narrower than it was or 4px,
+ *  whichever is smaller. A zero-extent axis (a dead-level underline's
+ *  height) has nothing to scale and is left alone. */
 function strokeResizeGeometry(
   data: StrokeOverlay,
   handle: HandleKind,
@@ -2620,33 +2632,40 @@ function strokeResizeGeometry(
   imageWidthPx: number,
   imageHeightPx: number
 ): GeometryUpdate | null {
-  let left = box.x;
-  let top = box.y;
-  let right = box.x + box.w;
-  let bottom = box.y + box.h;
   const movesLeft = handle === "nw" || handle === "sw" || handle === "w";
   const movesRight = handle === "ne" || handle === "se" || handle === "e";
   const movesTop = handle === "nw" || handle === "ne" || handle === "n";
   const movesBottom = handle === "sw" || handle === "se" || handle === "s";
   if (!movesLeft && !movesRight && !movesTop && !movesBottom) return null;
-  const minW = imageWidthPx > 0 ? 4 / imageWidthPx : 0.004;
-  const minH = imageHeightPx > 0 ? 4 / imageHeightPx : 0.004;
-  if (movesLeft) left = Math.min(cx, right - minW);
-  if (movesRight) right = Math.max(cx, left + minW);
-  if (movesTop) top = Math.min(cy, bottom - minH);
-  if (movesBottom) bottom = Math.max(cy, top + minH);
-  const sx = box.w > 0 ? (right - left) / box.w : 1;
-  const sy = box.h > 0 ? (bottom - top) / box.h : 1;
-  // An axis no handle moved is copied, not re-derived: `top + (y - top)`
-  // is not always `y` in floating point, and an edge drag must not
-  // nudge the other axis.
-  const scalesX = movesLeft || movesRight;
-  const scalesY = movesTop || movesBottom;
+  // `box` is the centerline bounds grown by the reach on every side
+  // (strokeBoxN), so the reach is whatever the box adds.
+  const center = strokeBoundsN(data.points);
+  const padX = Math.max(0, (box.w - center.w) / 2);
+  const padY = Math.max(0, (box.h - center.h) / 2);
+  const minCenterW = Math.min(center.w, imageWidthPx > 0 ? 4 / imageWidthPx : 0.004);
+  const minCenterH = Math.min(center.h, imageHeightPx > 0 ? 4 / imageHeightPx : 0.004);
+  // Work in centerline coordinates: the cursor names a painted edge, so
+  // the centerline edge sits one reach inside it.
+  let left = center.x;
+  let right = center.x + center.w;
+  let top = center.y;
+  let bottom = center.y + center.h;
+  if (movesLeft) left = Math.min(cx + padX, right - minCenterW);
+  if (movesRight) right = Math.max(cx - padX, left + minCenterW);
+  if (movesTop) top = Math.min(cy + padY, bottom - minCenterH);
+  if (movesBottom) bottom = Math.max(cy - padY, top + minCenterH);
+  // An axis no handle moved — or one with no extent to scale — is
+  // copied, not re-derived: `top + (y - top)` is not always `y` in
+  // floating point, and an edge drag must not nudge the other axis.
+  const scalesX = (movesLeft || movesRight) && center.w > 0;
+  const scalesY = (movesTop || movesBottom) && center.h > 0;
+  const sx = scalesX ? (right - left) / center.w : 1;
+  const sy = scalesY ? (bottom - top) / center.h : 1;
   return {
     kind: "stroke",
     points: data.points.map((p) => ({
-      x: scalesX ? left + (p.x - box.x) * sx : p.x,
-      y: scalesY ? top + (p.y - box.y) * sy : p.y
+      x: scalesX ? left + (p.x - center.x) * sx : p.x,
+      y: scalesY ? top + (p.y - center.y) * sy : p.y
     }))
   };
 }

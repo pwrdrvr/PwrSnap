@@ -824,8 +824,9 @@ export const MAX_STROKE_POINTS = 4096;
  *
  *  Spray is baked as dots, and the dots are a pure function of the row:
  *  `seed` picks the pattern, `seedOffset` is the index of this stroke's
- *  first segment in the stroke it was erased out of (so the surviving
- *  half of an erased spray keeps the dots it had). See
+ *  first segment in the stroke it was erased out of (so the whole
+ *  segments that survive an eraser keep the dots they had; the segment a
+ *  cut lands in is re-scattered over what is left of it). See
  *  `freehand-stroke.ts`.
  *
  *  NEW KIND — a build that predates it rejects any row carrying it.
@@ -842,9 +843,12 @@ export const StrokeOverlay = z.object({
    *  is the Medium rung. The tool multiplies it: a marker is wider than
    *  a pen at the same preset. */
   thickness: OverlayThickness.optional(),
-  /** Paint opacity, 0..1. Stamped at commit so retuning a tool's default
-   *  never repaints old strokes; read via `readStrokeOpacity`, which
-   *  falls back to the tool's default when absent. */
+  /** Paint opacity override, 0..1. The editor does NOT stamp one: a
+   *  committed stroke leaves it absent and paints at its tool's default
+   *  (`readStrokeOpacity`), so retuning `DEFAULT_MARKER_OPACITY` repaints
+   *  every marker that has no override — the same deliberate re-bake a
+   *  ladder retune causes (AGENTS.md "Annotation sizing"). A mode change
+   *  clears it so the stroke takes the new tool's default. */
   opacity: z.number().min(0).max(1).optional(),
   /** Spray pattern seed. Required in practice for spray (the editor
    *  always stamps one); a row without it uses seed 0. Ignored by pen

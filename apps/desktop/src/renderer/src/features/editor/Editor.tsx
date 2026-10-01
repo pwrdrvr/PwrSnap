@@ -75,7 +75,8 @@ import {
   resolveCropViewport,
   revealInFileManagerLabel,
   distanceToPolylinePx,
-  eraseStroke,
+  eraseStrokeOverlay,
+  eraserPathPx,
   eraserRadiusPx,
   simplifyStrokePoints,
   strokePointsToNormalized,
@@ -3474,7 +3475,7 @@ export function Editor({
     const style = (await effectiveToolState.settledToolStyles()).draw;
 
     if (stroke.mode === "eraser") {
-      const eraser = strokePointsToPx(stroke.points, cw, ch);
+      const eraser = eraserPathPx(stroke.points, cw, ch);
       const radius = eraserRadiusPx(style.thickness, basis);
       const changes: EraseChange[] = [];
       // Strokes only. Arrows, boxes and text are never cut — the eraser
@@ -3482,26 +3483,8 @@ export function Editor({
       for (const row of overlaysRef.current) {
         const data = row.data;
         if (data.kind !== "stroke") continue;
-        const pieces = eraseStroke(
-          strokePointsToPx(data.points, cw, ch),
-          eraser,
-          // Grazing the painted edge of a wide marker cuts it.
-          radius + strokeReachPx(data, basis)
-        );
-        if (pieces === null) continue;
-        changes.push({
-          id: row.id,
-          pieces: pieces.map((piece) => ({
-            ...data,
-            points: strokePointsToNormalized(piece.points, cw, ch),
-            // Spray dots are keyed by segment index in the stroke they
-            // were sprayed as; a piece remembers where it started so its
-            // surviving dots stay put.
-            ...(data.tool === "spray"
-              ? { seedOffset: (data.seedOffset ?? 0) + piece.seedOffset }
-              : {})
-          }))
-        });
+        const pieces = eraseStrokeOverlay(data, eraser, radius, cw, ch, basis);
+        if (pieces !== null) changes.push({ id: row.id, pieces });
       }
       if (changes.length > 0) await eraseStrokesRef.current?.(changes);
       return;

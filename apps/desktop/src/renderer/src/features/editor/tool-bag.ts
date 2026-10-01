@@ -29,6 +29,20 @@ export type PasteTargetTool = "arrow" | "text" | "shape" | "blur" | "highlight" 
 
 export type SlotStyleField = readonly [field: string, value: unknown];
 
+/**
+ * The bag slot a (tool, style) pair saves as, or `null` when it cannot be
+ * saved: the Draw tool in eraser mode. The eraser is a way of using the
+ * tool, not a style the next drag draws with, so settings refuse an
+ * eraser slot and nothing offers to save one.
+ *
+ * The pair must come from one discriminated source (a layer projection
+ * or the tool state); the cast only restates what the caller holds.
+ */
+export function bagSlotForStyle(tool: ToolBagSlot["tool"], style: unknown): ToolBagSlot | null {
+  if (tool === "draw" && (style as { mode?: unknown } | null)?.mode === "eraser") return null;
+  return { tool, style } as ToolBagSlot;
+}
+
 /** Text renders no stripe (illegible at glyph stroke widths). Pasting a
  *  striped arrow onto a label gives it the contrast mode instead of a
  *  value the text renderer would silently coerce. */

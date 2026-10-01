@@ -1138,8 +1138,11 @@ and [stroke-bake.test.ts](apps/desktop/src/main/render/__tests__/stroke-bake.tes
   one previewed.
 - **The eraser cuts only strokes.** It is a mode of the Draw tool, never a
   shape and never a bag slot (settings refuse one). Each piece it leaves
-  keeps the original's z_index and, for spray, records `seedOffset` so the
-  surviving dots stay where they were. One eraser drag is ONE undo step
+  keeps the original's z_index and, for spray, records `seedOffset` so its
+  WHOLE surviving segments keep their dots. The segment a cut lands in
+  is re-scattered over the part that is left (dots are per segment, and
+  the segment got shorter), so dots next to a cut do move. One eraser
+  drag is ONE undo step
   (the `replace` op in `useUndoRedo.ts`). The original is deleted only
   after EVERY piece is written. The first build deleted it regardless,
   and every piece was being refused (a 21-char `nanoid()` id; the bundle

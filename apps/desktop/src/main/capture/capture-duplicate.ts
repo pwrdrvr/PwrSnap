@@ -51,7 +51,7 @@ import {
 } from "../persistence/bundle-store";
 import {
   copyCaptureEnrichment,
-  ensureCaptureFamily
+  rootCaptureFamily
 } from "../persistence/capture-families-repo";
 import { getCaptureById, insertCapture } from "../persistence/captures-repo";
 import { getDb } from "../persistence/db";
@@ -98,29 +98,28 @@ export async function duplicateCapture(
     throw new CaptureDuplicateError("trashed", "Restore the snap from Trash to duplicate it.");
   }
 
-  const { familyId, sourceChanged } = ensureCaptureFamily(sourceId);
-  const lineage = { familyId, duplicatedFrom: sourceId };
+  // A snap outside any family roots a new one at itself. The row is only
+  // written when the copy commits (`rootSource`, called in its transaction).
+  const lineage = { familyId: source.family_id ?? sourceId, duplicatedFrom: sourceId };
   const capturedAt = new Date().toISOString();
+  let sourceRooted = false;
+  const rootSource = (): void => {
+    if (rootCaptureFamily(sourceId)) sourceRooted = true;
+  };
 
   let newId: string;
-  try {
-    if (source.kind === "video") {
-      newId = await duplicateVideo(source, lineage, capturedAt, options.withEdits);
-    } else if (source.bundle_format_version === 2 && source.bundle_path !== null) {
-      newId = options.withEdits
-        ? await duplicateImageWithEdits(source, lineage, capturedAt)
-        : await duplicateImageBaseOnly(source, lineage, capturedAt);
-    } else {
-      throw new CaptureDuplicateError("unsupported", "This snap has no bundle to copy.");
-    }
-  } catch (cause) {
-    // A family of one is no family — undo the rooting if nothing joined it.
-    if (sourceChanged) unrootIfAlone(sourceId);
-    throw cause;
+  if (source.kind === "video") {
+    newId = await duplicateVideo(source, lineage, capturedAt, options.withEdits, rootSource);
+  } else if (source.bundle_format_version === 2 && source.bundle_path !== null) {
+    newId = options.withEdits
+      ? await duplicateImageWithEdits(source, lineage, capturedAt, rootSource)
+      : await duplicateImageBaseOnly(source, lineage, capturedAt, rootSource);
+  } else {
+    throw new CaptureDuplicateError("unsupported", "This snap has no bundle to copy.");
   }
 
   // The source's bundle manifest mirrors its lineage; it just changed.
-  if (sourceChanged) scheduleRepack(sourceId);
+  if (sourceRooted) scheduleRepack(sourceId);
 
   await renameCopyToEffectiveFilename(newId, source.kind);
 
@@ -142,7 +141,8 @@ export async function duplicateCapture(
 async function duplicateImageWithEdits(
   source: CaptureRecord,
   lineage: { familyId: string; duplicatedFrom: string },
-  capturedAt: string
+  capturedAt: string,
+  rootSource: () => void
 ): Promise<string> {
   // The bundle is the portable truth, but the DB can be ahead of it for the
   // repack debounce window. Bring it current, then read it under the same
@@ -216,6 +216,7 @@ async function duplicateImageWithEdits(
     try {
       const db = getDb();
       db.transaction(() => {
+        rootSource();
         insertCapture({
           id: newId,
           kind: "image",
@@ -259,7 +260,8 @@ async function duplicateImageWithEdits(
 async function duplicateImageBaseOnly(
   source: CaptureRecord,
   lineage: { familyId: string; duplicatedFrom: string },
-  capturedAt: string
+  capturedAt: string,
+  rootSource: () => void
 ): Promise<string> {
   const bundlePath = source.bundle_path;
   if (bundlePath === null) {
@@ -284,7 +286,11 @@ async function duplicateImageBaseOnly(
         lineage
       })
     );
+    // The persist path inserted the copy in its own transaction; the root
+    // follows it here, before the copy's enrichment is numbered against
+    // the family.
     getDb().transaction(() => {
+      rootSource();
       copyCaptureEnrichment({ fromId: source.id, toId: record.id, familyId: lineage.familyId });
     })();
     return record.id;
@@ -301,7 +307,8 @@ async function duplicateVideo(
   source: CaptureRecord,
   lineage: { familyId: string; duplicatedFrom: string },
   capturedAt: string,
-  withEdits: boolean
+  withEdits: boolean,
+  rootSource: () => void
 ): Promise<string> {
   const sourcePath = source.legacy_src_path;
   if (sourcePath === null) {
@@ -316,6 +323,7 @@ async function duplicateVideo(
     try {
       const db = getDb();
       db.transaction(() => {
+        rootSource();
         insertCapture({
           id: newId,
           kind: "video",
@@ -429,22 +437,6 @@ async function renameCopyToEffectiveFilename(
       captureId,
       message: cause instanceof Error ? cause.message : String(cause)
     });
-  }
-}
-
-function unrootIfAlone(sourceId: string): void {
-  try {
-    const db = getDb();
-    const others = db
-      .prepare("SELECT COUNT(*) AS n FROM captures WHERE family_id = ? AND id != ?")
-      .get(sourceId, sourceId) as { n: number };
-    if (others.n === 0) {
-      db.prepare("UPDATE captures SET family_id = NULL WHERE id = ? AND family_id = id").run(
-        sourceId
-      );
-    }
-  } catch {
-    // Best-effort; a family of one is only cosmetic.
   }
 }
 

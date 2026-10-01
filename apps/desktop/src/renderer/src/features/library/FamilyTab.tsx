@@ -102,7 +102,10 @@ export function FamilyTab({
   onFilterFamily: (familyId: string) => void;
 }): ReactElement {
   const familyId = record.family_id ?? null;
-  const members = useFamilyMembers(familyId) ?? NO_MEMBERS;
+  const loadedMembers = useFamilyMembers(familyId);
+  const members = loadedMembers ?? NO_MEMBERS;
+  // Still reading this snap's family: say nothing rather than "no copies".
+  const ownLoading = familyId !== null && loadedMembers === null;
   const depths = useMemo(() => depthsOf(members), [members]);
   const coverIds = useMemo(
     () =>
@@ -120,7 +123,7 @@ export function FamilyTab({
 
   return (
     <div className="psl__family">
-      {familyId !== null && members.length > 0 ? (
+      {ownLoading ? null : familyId !== null && members.length > 1 ? (
         <section aria-labelledby="psl-family-own">
           <div className="psl__family-head">
             <span id="psl-family-own" className="psl__copy-eyebrow">

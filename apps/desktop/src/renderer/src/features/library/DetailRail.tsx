@@ -1324,7 +1324,6 @@ const PROJECT_ICON: ReactElement = (
   </svg>
 );
 
-/** Checklist / collected-items icon for the Cart tab. */
 const NO_FAMILIES: readonly CaptureFamilySummary[] = [];
 const DEFAULT_DUPLICATE_PREFS: LibraryDuplicateWithEditsSettings = { image: true, video: true };
 
@@ -1344,6 +1343,7 @@ const FAMILY_ICON: ReactElement = (
   </svg>
 );
 
+/** Checklist / collected-items icon for the Cart tab. */
 const CART_ICON: ReactElement = (
   <svg
     viewBox="0 0 24 24"

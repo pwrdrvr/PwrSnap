@@ -27,7 +27,8 @@ type FamilyRow = {
 };
 
 /**
- * Every family with at least one member, newest live activity first.
+ * Every family with at least two members (trashed ones count), newest live
+ * activity first. A root whose copies were all purged is just a snap again.
  * Families are rare (one per duplicated snap), so this is one grouped
  * scan over the partial `idx_captures_family` index.
  */
@@ -45,7 +46,8 @@ export function listCaptureFamilies(): CaptureFamilySummary[] {
                 ORDER BY n.captured_at DESC, n.id DESC LIMIT 1) AS newest_live_id
          FROM captures c
         WHERE c.family_id IS NOT NULL
-        GROUP BY c.family_id`
+        GROUP BY c.family_id
+       HAVING COUNT(*) > 1`
     )
     .all() as FamilyRow[];
   const families = rows.map((row): CaptureFamilySummary => ({
@@ -77,24 +79,20 @@ export function listFamilyMembers(familyId: string): CaptureRecord[] {
 }
 
 /**
- * Make `sourceId` a family member, rooting a new family at it when it has
- * none. Returns the family id and whether the source row changed (its
- * bundle manifest then owes a repack to carry the lineage).
+ * Root a new family at `sourceId` if it has none. Returns whether the row
+ * changed; its bundle manifest then owes a repack to carry the lineage.
+ *
+ * Call it inside the transaction that inserts the copy, so the root and
+ * its first copy commit together. Rooting ahead of the copy and undoing it
+ * on failure raced: a second duplicate of the same snap, still copying
+ * when the first one failed, saw its root un-rooted under it.
  */
-export function ensureCaptureFamily(sourceId: string): {
-  familyId: string;
-  sourceChanged: boolean;
-} {
-  const db = getDb();
-  const row = db
-    .prepare("SELECT family_id FROM captures WHERE id = ?")
-    .get(sourceId) as { family_id: string | null } | undefined;
-  if (row === undefined) throw new Error("capture-families: source capture not found");
-  if (row.family_id !== null) return { familyId: row.family_id, sourceChanged: false };
-  db.prepare("UPDATE captures SET family_id = id WHERE id = ? AND family_id IS NULL").run(
-    sourceId
+export function rootCaptureFamily(sourceId: string): boolean {
+  return (
+    getDb()
+      .prepare("UPDATE captures SET family_id = id WHERE id = ? AND family_id IS NULL")
+      .run(sourceId).changes === 1
   );
-  return { familyId: sourceId, sourceChanged: true };
 }
 
 type EnrichmentCopyRow = {

@@ -145,7 +145,9 @@ export function useCaptureFamilies(): {
       const mine = ++seq;
       void dispatch("library:families", {}).then((result) => {
         if (mine !== seq || !result.ok) return;
-        setFamilies(result.value.families);
+        // An ok Result with no body reads as "no families". This runs from a
+        // broadcast handler, where a throw is an unhandled rejection.
+        setFamilies(result.value?.families ?? []);
       });
     };
     refresh();
@@ -177,7 +179,7 @@ export function useFamilyMembers(familyId: string | null): CaptureRecord[] | nul
       const mine = ++seq;
       void dispatch("library:family", { familyId }).then((result) => {
         if (mine !== seq || !result.ok) return;
-        setMembers({ familyId, rows: result.value.members });
+        setMembers({ familyId, rows: result.value?.members ?? [] });
       });
     };
     refresh();

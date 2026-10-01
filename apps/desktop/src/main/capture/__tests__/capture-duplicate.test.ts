@@ -311,4 +311,18 @@ describe("duplicateCapture — videos", () => {
     expect(video?.segments).toEqual([{ start: 0, end: 30 }]);
     expect(captureEditSummary(copy).hasEdits).toBe(false);
   });
+
+  test("a copy that fails roots nothing; the source joins a family only with its first copy", async () => {
+    const sourceId = await recordVideo();
+    const sourcePath = getCaptureById(sourceId)!.legacy_src_path!;
+    const bytes = await readFile(sourcePath);
+    await rm(sourcePath);
+    await expect(duplicateCapture(sourceId, { withEdits: true })).rejects.toBeDefined();
+    expect(getCaptureById(sourceId)!.family_id).toBeNull();
+
+    await writeFile(sourcePath, bytes);
+    const copy = await duplicateCapture(sourceId, { withEdits: true });
+    expect(getCaptureById(sourceId)!.family_id).toBe(sourceId);
+    expect(copy.family_id).toBe(sourceId);
+  });
 });

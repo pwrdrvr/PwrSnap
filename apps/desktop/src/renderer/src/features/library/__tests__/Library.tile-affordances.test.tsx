@@ -619,6 +619,28 @@ describe("capture tile context menu — duplicate", () => {
     expect(document.activeElement).toBe(trigger);
     expect(container?.querySelector('[role="menu"]')).not.toBeNull();
   });
+
+  test("ArrowRight on a row whose submenu the pointer opened enters it rather than closing it", async () => {
+    editSummaryResult = withEdits;
+    await renderLibrary();
+    const menu = await openMenu();
+    const trigger = Array.from(menu.querySelectorAll<HTMLElement>('[aria-haspopup="menu"]'))[0]!;
+    await act(async () => {
+      trigger.click();
+      await Promise.resolve();
+    });
+    const sub = submenuOf(menu);
+    expect(sub).not.toBeNull();
+    trigger.focus();
+    await act(async () => {
+      trigger.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })
+      );
+      await Promise.resolve();
+    });
+    expect(submenuOf(menu)).toBe(sub);
+    expect(document.activeElement?.closest(".psl__context-menu--sub")).toBe(sub);
+  });
 });
 
 describe("capture tile context menu — keyboard", () => {

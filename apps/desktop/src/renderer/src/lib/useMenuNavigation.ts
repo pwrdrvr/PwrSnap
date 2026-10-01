@@ -86,9 +86,17 @@ function steer(e: KeyboardEvent, entry: OpenMenu, menu: HTMLElement, active: HTM
       // APG: an item that owns a submenu opens it. The item's own click
       // handler does the opening, so pointer and keyboard share one path;
       // the submenu's hook then moves focus onto its first row.
+      // A submenu the pointer already opened is entered, not toggled shut:
+      // the click handler is a toggle.
       if (at !== -1 && active.getAttribute("aria-haspopup") === "menu") {
         e.preventDefault();
-        active.click();
+        if (active.getAttribute("aria-expanded") === "true") {
+          const sub = active.parentElement?.querySelector<HTMLElement>('[role="menu"]') ?? null;
+          const subItems = items(sub);
+          if (subItems.length > 0) moveTo(subItems[0]!, subItems);
+        } else {
+          active.click();
+        }
       }
       return;
     case "ArrowLeft": {

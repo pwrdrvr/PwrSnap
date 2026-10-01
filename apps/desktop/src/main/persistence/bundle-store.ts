@@ -109,6 +109,20 @@ export async function assertSafeBundleFile(filePath: string): Promise<void> {
 }
 
 /**
+ * The manifest's copy of a capture's duplicate lineage. Keys are omitted,
+ * not written as null, when the capture has no family, so every bundle
+ * outside a family keeps the manifest it always had.
+ */
+export function manifestLineage(
+  record: Pick<CaptureRecord, "family_id" | "duplicated_from">
+): Pick<BundleManifestV2, "family_id" | "duplicated_from"> {
+  return {
+    ...(record.family_id != null ? { family_id: record.family_id } : {}),
+    ...(record.duplicated_from != null ? { duplicated_from: record.duplicated_from } : {})
+  };
+}
+
+/**
  * Atomically write a bundle (or any byte buffer) to `destPath`. The
  * temp file lives in the SAME directory as the destination — never
  * `os.tmpdir()` — so APFS rename is single-volume and atomic. fsync
@@ -133,20 +147,6 @@ export async function assertSafeBundleFile(filePath: string): Promise<void> {
  * The three steps are ordered for iCloud/Files-on-Demand safety — a
  * bundle must never be observable half-written by the sync daemon.
  */
-/**
- * The manifest's copy of a capture's duplicate lineage. Keys are omitted,
- * not written as null, when the capture has no family, so every bundle
- * outside a family keeps the manifest it always had.
- */
-export function manifestLineage(
-  record: Pick<CaptureRecord, "family_id" | "duplicated_from">
-): Pick<BundleManifestV2, "family_id" | "duplicated_from"> {
-  return {
-    ...(record.family_id != null ? { family_id: record.family_id } : {}),
-    ...(record.duplicated_from != null ? { duplicated_from: record.duplicated_from } : {})
-  };
-}
-
 export async function atomicWriteBundle(destPath: string, contents: Buffer): Promise<void> {
   const dir = dirname(destPath);
   await mkdir(dir, { recursive: true });

@@ -595,7 +595,10 @@ describe("video copies when the captures root refuses writes", () => {
   // A denial has to surface while the fallback wrapper can still switch
   // roots — i.e. before the copy goes to the background — and the retry
   // must not trip over the intent the denied attempt could not clean up.
-  test.skipIf(process.getuid?.() === 0)(
+  // A mode-000 directory is the denial stand-in, which needs POSIX
+  // permissions: root ignores them, and on Windows chmod only toggles the
+  // read-only attribute, so the "denied" root would accept the copy.
+  test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     "falls back to the other root instead of failing the background copy",
     async () => {
       const denied = join(workDir, "denied-documents");

@@ -1153,6 +1153,29 @@ and [stroke-bake.test.ts](apps/desktop/src/main/render/__tests__/stroke-bake.tes
   schema takes 16), so one swipe erased the whole stroke. The jsdom test
   missed that because its dispatch stub accepted anything; it now
   validates upserts against `BundleLayerNode`.
+- **Nothing a drag does per pointer event may scale with what was drawn
+  before it.** A page of handwriting is hundreds of strokes and a long
+  stroke is thousands of samples, so per-event work that touches the
+  whole stroke, or every stroke, goes quadratic and lags. Three rules:
+  - **The live stroke is appended in place.** `DraftStroke.points` is one
+    array for the whole drag, and `count` says how much of it to draw;
+    never `slice()` it per event. A long draft paints frozen spans plus a
+    live tail (`useLiveStrokeSpans` in `OverlaySvg.tsx`, built on
+    `smoothStrokeSpanD`). A span's sections are final once the next point
+    exists, so its `d` is built once. The spans overlap by one section
+    inside a group that carries the opacity, so the joints show no seam.
+    Opacity on a span instead of the group would double it at every
+    joint.
+  - **The eraser cuts with each move's new samples only**
+    (`StrokeEraseSession`), against the pieces earlier moves left, and
+    only for strokes whose box the new segments reach. The preview shows
+    the session's pieces and the release commits them. No second pass
+    over the whole drag runs anywhere, so the two cannot disagree.
+  - **The bake paints adjacent arrows, shapes and strokes as one SVG
+    run** (`compositeSvgRunOntoAccumulator` in `compose-tree.ts`). Every
+    sharp composite rewrites the whole accumulator, so one pass per
+    stroke made a 150-stroke page at 4K take ~2.9 s; as one run it takes
+    ~0.1 s. Text, highlights, rasters and effects end a run.
 - **A Draw press does not select what it lands on.** Freehand marks go on
   top of other annotations, and the eraser is dragged across strokes on
   purpose. A finished stroke is not auto-selected either, unlike the other

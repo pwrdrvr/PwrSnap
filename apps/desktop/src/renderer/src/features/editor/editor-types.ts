@@ -2,7 +2,7 @@
 // Editor.tsx so OverlaySvg and TextDraftInput (separate files) can
 // reference the same shapes without circular imports.
 
-import type { DrawToolMode, ShapeKind } from "@pwrsnap/shared";
+import type { DrawToolMode, ShapeKind, StrokeOverlay } from "@pwrsnap/shared";
 import type { ArrowLabelStyle, LabelAlign } from "./arrow-label";
 
 export type DraftArrow = {
@@ -65,8 +65,17 @@ export type DraftStroke = {
   kind: "stroke";
   mode: DrawToolMode;
   /** Pointer samples as fractions of the canvas, NOT clamped — a stroke
-   *  may run off the edge, and the renderer clips it there. */
+   *  may run off the edge, and the renderer clips it there. The editor
+   *  APPENDS to this array in place for the whole drag, so a pointer
+   *  event costs its own samples rather than a copy of the stroke. Read
+   *  only the first `count` entries. */
   points: { x: number; y: number }[];
+  /** How many of `points` this draft shows. Absent means all of them. */
+  count?: number;
+  /** Eraser only: what each stroke the drag has cut now is, by row id —
+   *  an empty list for one erased whole. Rows absent from the map are
+   *  untouched. See `StrokeEraseSession`. */
+  erased?: ReadonlyMap<string, readonly StrokeOverlay[]>;
 };
 
 export type Draft = DraftArrow | DraftShape | DraftText | DraftStroke;

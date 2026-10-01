@@ -8,7 +8,14 @@ import { act, createElement, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import type { OverlayRow, StrokeOverlay } from "@pwrsnap/shared";
-import { annotationBasisPx, DEFAULT_MARKER_OPACITY, strokeGeometry } from "@pwrsnap/shared";
+import {
+  annotationBasisPx,
+  DEFAULT_MARKER_OPACITY,
+  eraserRadiusPx,
+  smoothStrokePathD,
+  StrokeEraseSession,
+  strokeGeometry
+} from "@pwrsnap/shared";
 
 import { OverlaySvg } from "../OverlaySvg";
 
@@ -157,17 +164,20 @@ describe("OverlaySvg — Draw drafts", () => {
     expect(path!.getAttribute("stroke")).toBe("#28c840");
   });
 
-  test("an eraser draft shows its trail and previews the cut: the crossed stroke paints as two pieces", async () => {
+  test("an eraser draft shows its trail and paints the session's cut: the crossed stroke as two pieces", async () => {
+    // A vertical swipe through the middle of the underline, cut the way
+    // the editor cuts it while dragging.
+    const swipe = [
+      { x: 0.5, y: 0.3 },
+      { x: 0.5, y: 0.7 }
+    ];
+    const session = new StrokeEraseSession(eraserRadiusPx("small", BASIS), W, H, BASIS);
+    session.extend(
+      swipe.map((p) => ({ x: p.x * W, y: p.y * H })),
+      [{ id: "m", data: underline }]
+    );
     const host = await renderSvg([row("m", underline)], {
-      draft: {
-        kind: "stroke",
-        mode: "eraser",
-        // A vertical swipe through the middle of the underline.
-        points: [
-          { x: 0.5, y: 0.3 },
-          { x: 0.5, y: 0.7 }
-        ]
-      },
+      draft: { kind: "stroke", mode: "eraser", points: swipe, erased: session.pieces() },
       draftStyle: { thickness: "small" }
     });
     expect(host.querySelector("[data-testid='eraser-trail']")).not.toBeNull();
@@ -192,5 +202,105 @@ describe("OverlaySvg — Draw drafts", () => {
     expect(
       host.querySelectorAll("[data-testid='persisted-glyph-svg'] [data-testid='stroke-glyph']").length
     ).toBe(1);
+  });
+});
+
+describe("OverlaySvg — long live strokes paint frozen spans plus a tail", () => {
+  /** A long wavy pen stroke, as the editor holds it: one array the drag
+   *  appends to, and how much of it is drawn. */
+  const wave = Array.from({ length: 400 }, (_, i) => ({
+    x: 0.05 + (i / 399) * 0.9,
+    y: 0.5 + Math.sin(i / 9) * 0.2
+  }));
+
+  async function renderLive(
+    count: number,
+    mode: "pen" | "marker" | "airbrush" | "eraser" = "pen"
+  ): Promise<void> {
+    const props = {
+      overlays: [],
+      draft: { kind: "stroke" as const, mode, points: wave, count },
+      draftStyle: { color: "#28c840", thickness: "large" as const },
+      imageWidthPx: W,
+      imageHeightPx: H,
+      sourceWidthPx: W,
+      sourceHeightPx: H
+    };
+    if (root === null) {
+      container = document.createElement("div");
+      document.body.appendChild(container);
+      root = createRoot(container);
+    }
+    await act(async () => {
+      root?.render(createElement(OverlaySvg, props));
+    });
+  }
+
+  const livePaths = (): SVGPathElement[] =>
+    Array.from(
+      container!.querySelectorAll<SVGPathElement>("[data-testid='chrome-svg'] [data-testid='stroke-glyph'] path")
+    );
+
+  test("the spans draw the same curve the whole path draws", async () => {
+    await renderLive(300);
+    const glyph = container!.querySelector("[data-testid='chrome-svg'] [data-testid='stroke-glyph']")!;
+    // 298 sections in spans of 64: four frozen, one live tail.
+    expect(glyph.getAttribute("data-live-spans")).toBe("5");
+    const ds = livePaths().map((p) => p.getAttribute("d")!);
+    // Drop each later span's moveto and its one overlapping section; what
+    // is left is the whole path's string.
+    const joined =
+      ds[0] + ds.slice(1).map((d) => d.replace(/^M[^Q]*Q[^Q]*?(?=Q|L)/, "")).join("");
+    expect(joined).toBe(smoothStrokePathD(wave.slice(0, 300).map((p) => ({ x: p.x * W, y: p.y * H }))));
+  });
+
+  test("a frozen span's element is not touched again as the stroke grows", async () => {
+    await renderLive(200);
+    const before = livePaths();
+    const frozen = before.slice(0, -1).map((p) => [p, p.getAttribute("d")] as const);
+    await renderLive(330);
+    const after = livePaths();
+    expect(after.length).toBeGreaterThan(before.length);
+    for (const [i, [element, d]] of frozen.entries()) {
+      expect(after[i]).toBe(element);
+      expect(after[i]!.getAttribute("d")).toBe(d);
+    }
+  });
+
+  test("a long marker keeps its flat cap and translucency on the group", async () => {
+    await renderLive(300, "marker");
+    const glyph = container!.querySelector("[data-testid='chrome-svg'] [data-testid='stroke-glyph']")!;
+    expect(glyph.getAttribute("stroke-linecap")).toBe("butt");
+    expect(Number(glyph.getAttribute("opacity"))).toBeCloseTo(DEFAULT_MARKER_OPACITY, 6);
+    // Opacity lives on the group only, so overlapping spans cannot double up.
+    expect(livePaths().every((p) => p.getAttribute("opacity") === null)).toBe(true);
+  });
+
+  test("a long airbrush draws every span in each of its bands", async () => {
+    await renderLive(300, "airbrush");
+    const glyph = container!.querySelector("[data-testid='chrome-svg'] [data-testid='stroke-glyph']")!;
+    const bands = Array.from(glyph.children);
+    const geometry = strokeGeometry(
+      { tool: "airbrush", points: wave.slice(0, 3), thickness: "large" },
+      W,
+      H,
+      BASIS
+    );
+    if (geometry.kind !== "airbrush") throw new Error("expected an airbrush geometry");
+    expect(bands.map((b) => Number(b.getAttribute("stroke-width")))).toEqual(
+      geometry.bands.map((b) => b.widthPx)
+    );
+    expect(bands.map((b) => Number(b.getAttribute("opacity")))).toEqual(
+      geometry.bands.map((b) => b.opacity)
+    );
+    for (const band of bands) expect(band.querySelectorAll("path").length).toBe(5);
+  });
+
+  test("the eraser trail is drawn as spans too", async () => {
+    await renderLive(300, "eraser");
+    const trail = container!.querySelector("[data-testid='eraser-trail']")!;
+    for (const layer of Array.from(trail.children)) {
+      expect(layer.querySelectorAll("path").length).toBe(5);
+    }
   });
 });

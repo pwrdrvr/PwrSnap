@@ -59,15 +59,16 @@ import {
   readShapeStrokeStyle,
   readTextWeight,
   shapeStripeDash,
-  eraseStrokeOverlay,
-  eraserPathPx,
+  AIRBRUSH_BANDS,
   eraserRadiusPx,
-  smoothStrokePathD,
+  readStrokeOpacity,
+  smoothStrokeSpanD,
   strokeBoundsN,
   strokeGeometry,
-  strokePointsToPx,
   strokeReachPx,
-  type StrokeGeometry
+  strokeWidthPx,
+  type StrokeGeometry,
+  type StrokeTool
 } from "@pwrsnap/shared";
 import { rectFromDrag, type Draft } from "./editor-types";
 import type { GeometryUpdate, NormalizedPoint, NormalizedRect } from "./useCaptureModel";
@@ -262,47 +263,17 @@ export function OverlaySvg({
       ? rectFromDrag(draft, canvasAspect)
       : null;
 
-  // Eraser preview: while the eraser is dragged, every stroke it crosses
+  // Eraser preview: while the eraser is dragged, every stroke it has cut
   // is painted as the pieces it will leave, so the cut is visible before
-  // the release commits it. `eraseStrokeOverlay` is the same call the
-  // commit in Editor.tsx makes.
-  const erasePreview = useMemo((): ReadonlyMap<string, StrokeOverlay[]> | null => {
-    if (draft === null || draft.kind !== "stroke" || draft.mode !== "eraser") return null;
-    const eraser = eraserPathPx(draft.points, imageWidthPx, imageHeightPx);
-    const radius = eraserRadiusPx(draftStyle?.thickness, annotationBasis);
-    const out = new Map<string, StrokeOverlay[]>();
-    for (const row of effectiveOverlays) {
-      const data = row.data;
-      if (data.kind !== "stroke") continue;
-      const pieces = eraseStrokeOverlay(
-        data,
-        eraser,
-        radius,
-        imageWidthPx,
-        imageHeightPx,
-        annotationBasis
-      );
-      if (pieces !== null) out.set(row.id, pieces);
-    }
-    return out;
-  }, [draft, draftStyle?.thickness, effectiveOverlays, imageWidthPx, imageHeightPx, annotationBasis]);
-
-  // The live stroke's row shape, built once per draft change. StrokeGlyph
-  // memoizes its geometry on `data` identity, and rebuilding it smooths
-  // the whole stroke again — an inline object literal would redo that on
-  // every render, not just on every pointer sample.
-  const draftThickness = draftStyle?.thickness;
-  const draftStrokeData = useMemo(
-    () =>
-      draft !== null && draft.kind === "stroke" && draft.mode !== "eraser"
-        ? {
-            tool: draft.mode,
-            points: draft.points,
-            thickness: draftThickness
-          }
-        : null,
-    [draft, draftThickness]
-  );
+  // the release commits it. The editor's `StrokeEraseSession` owns the
+  // cut and keeps an untouched stroke's pieces the same array, so only
+  // the strokes a pointer event actually cut repaint.
+  const erasePreview =
+    draft !== null && draft.kind === "stroke" && draft.mode === "eraser"
+      ? (draft.erased ?? null)
+      : null;
+  const liveStroke =
+    draft !== null && draft.kind === "stroke" && draft.mode !== "eraser" ? draft : null;
 
   // `overflow="visible"` on the svg element AND `overflow: visible`
   // in the CSS — belt-and-suspenders. SVG 1.1 spec says the
@@ -504,9 +475,12 @@ export function OverlaySvg({
             isDraft
           />
         )}
-        {draftStrokeData !== null && (
-          <StrokeGlyph
-            data={draftStrokeData}
+        {liveStroke !== null && liveStroke.mode !== "eraser" && (
+          <LiveStrokeGlyph
+            tool={liveStroke.mode}
+            points={liveStroke.points}
+            count={liveStroke.count ?? liveStroke.points.length}
+            thickness={draftStyle?.thickness}
             color={draftStyle?.color}
             imageWidthPx={imageWidthPx}
             imageHeightPx={imageHeightPx}
@@ -516,6 +490,7 @@ export function OverlaySvg({
         {draft?.kind === "stroke" && draft.mode === "eraser" && (
           <EraserTrail
             points={draft.points}
+            count={draft.count ?? draft.points.length}
             radiusPx={eraserRadiusPx(draftStyle?.thickness, annotationBasis)}
             imageWidthPx={imageWidthPx}
             imageHeightPx={imageHeightPx}
@@ -642,28 +617,184 @@ function StrokeGlyph({
   }
 }
 
+/** Curve sections per frozen span of a live stroke. */
+const LIVE_STROKE_SPAN = 64;
+
+/**
+ * Path data for a live stroke — the first `count` of `points`
+ * (normalized, appended in place by the editor) — as a list of spans.
+ * Every span but the last is FROZEN: its curve sections are final once
+ * the next point exists, so its string is built once and returned
+ * as-is on every later call, and React leaves its `<path>` alone. Only
+ * the last span is rebuilt per pointer event. Without this, each event
+ * re-smoothed, re-serialized and re-rasterized the whole stroke, which
+ * made a long stroke quadratic and a long drag visibly lag.
+ *
+ * Each span after the first starts one section early, overlapping the
+ * span before it, so joints never show a seam. Callers paint the spans
+ * inside a group that carries the opacity: the overlap is opaque over
+ * opaque inside the group, and the group composites once.
+ */
+function useLiveStrokeSpans(
+  points: readonly { x: number; y: number }[],
+  count: number,
+  imageWidthPx: number,
+  imageHeightPx: number
+): readonly string[] {
+  const cache = useRef<{
+    points: readonly { x: number; y: number }[];
+    w: number;
+    h: number;
+    frozen: string[];
+  } | null>(null);
+  if (count < 3) {
+    // No curve yet: a tap stub or a straight line.
+    const x0 = (points[0]?.x ?? 0) * imageWidthPx;
+    const y0 = (points[0]?.y ?? 0) * imageHeightPx;
+    if (count < 2) return count === 1 ? [`M${x0} ${y0}l0.01 0`] : [];
+    return [`M${x0} ${y0}L${points[1]!.x * imageWidthPx} ${points[1]!.y * imageHeightPx}`];
+  }
+  let c = cache.current;
+  // Sections 1..count-2 exist; span k covers k*SPAN+1 .. (k+1)*SPAN.
+  const frozenCount = Math.floor((count - 2) / LIVE_STROKE_SPAN);
+  if (
+    c === null ||
+    c.points !== points ||
+    c.w !== imageWidthPx ||
+    c.h !== imageHeightPx ||
+    c.frozen.length > frozenCount
+  ) {
+    c = { points, w: imageWidthPx, h: imageHeightPx, frozen: [] };
+    cache.current = c;
+  }
+  while (c.frozen.length < frozenCount) {
+    const k = c.frozen.length;
+    c.frozen.push(
+      smoothStrokeSpanD(
+        points,
+        count,
+        Math.max(1, k * LIVE_STROKE_SPAN),
+        (k + 1) * LIVE_STROKE_SPAN,
+        false,
+        imageWidthPx,
+        imageHeightPx
+      )
+    );
+  }
+  const tail =
+    frozenCount * LIVE_STROKE_SPAN < count - 2
+      ? smoothStrokeSpanD(
+          points,
+          count,
+          Math.max(1, frozenCount * LIVE_STROKE_SPAN),
+          count - 2,
+          true,
+          imageWidthPx,
+          imageHeightPx
+        )
+      : // Every section is frozen; the tail is just the closing run.
+        smoothStrokeSpanD(points, count, count - 2, count - 2, true, imageWidthPx, imageHeightPx);
+  return [...c.frozen, tail];
+}
+
+/** A Draw stroke while it is being drawn. Short strokes paint exactly
+ *  as they will commit (`StrokeGlyph`); a long one paints its frozen
+ *  spans plus a live tail (`useLiveStrokeSpans`), in the same widths,
+ *  caps, opacities and airbrush bands. */
+function LiveStrokeGlyph({
+  tool,
+  points,
+  count,
+  thickness,
+  color,
+  imageWidthPx,
+  imageHeightPx,
+  basisPx
+}: {
+  tool: StrokeTool;
+  points: readonly { x: number; y: number }[];
+  count: number;
+  thickness: OverlayThickness | undefined;
+  color: string | undefined;
+  imageWidthPx: number;
+  imageHeightPx: number;
+  basisPx: number;
+}): ReactElement {
+  const spans = useLiveStrokeSpans(points, count, imageWidthPx, imageHeightPx);
+  const short = count <= LIVE_STROKE_SPAN + 2;
+  // Short strokes: the committed glyph, over a copy of at most a span.
+  const shortData = useMemo(
+    () => (short ? { tool, points: points.slice(0, count), thickness } : null),
+    // `points` is appended in place, so `count` is what changes.
+    [short, tool, points, count, thickness]
+  );
+  if (shortData !== null) {
+    return (
+      <StrokeGlyph
+        data={shortData}
+        color={color}
+        imageWidthPx={imageWidthPx}
+        imageHeightPx={imageHeightPx}
+        basisPx={basisPx}
+      />
+    );
+  }
+  const paint = color !== undefined && color !== "auto" ? color : "var(--accent, #ff8a1f)";
+  const widthPx = strokeWidthPx(tool, thickness, basisPx);
+  const opacity = readStrokeOpacity({ tool });
+  const paths = spans.map((d, i) => <path key={i} d={d} />);
+  return (
+    <g
+      data-testid="stroke-glyph"
+      data-tool={tool}
+      data-live-spans={spans.length}
+      fill="none"
+      stroke={paint}
+      strokeLinecap={tool === "marker" ? "butt" : "round"}
+      strokeLinejoin="round"
+      opacity={opacity}
+      {...(tool === "airbrush" ? {} : { strokeWidth: widthPx })}
+    >
+      {tool === "airbrush"
+        ? AIRBRUSH_BANDS.map((band, i) => (
+            <g key={i} strokeWidth={widthPx * band.widthFactor} opacity={band.alpha}>
+              {paths}
+            </g>
+          ))
+        : paths}
+    </g>
+  );
+}
+
 /** The eraser's footprint while it is dragged: a faint band as wide as
  *  what it cuts, outlined so it reads on light and dark captures. It is
- *  chrome — it never reaches the bake. */
+ *  chrome — it never reaches the bake. Drawn as live spans, like a long
+ *  stroke, so a long scrub does not repaint its whole trail per move. */
 function EraserTrail({
   points,
+  count,
   radiusPx,
   imageWidthPx,
   imageHeightPx
 }: {
   points: readonly { x: number; y: number }[];
+  count: number;
   radiusPx: number;
   imageWidthPx: number;
   imageHeightPx: number;
 }): ReactElement {
-  const px = strokePointsToPx(points, imageWidthPx, imageHeightPx);
-  const d = px.length === 1 ? `M${px[0]!.x} ${px[0]!.y}l0.01 0` : smoothStrokePathD(px);
+  const spans = useLiveStrokeSpans(points, count, imageWidthPx, imageHeightPx);
   const shortSide = Math.min(imageWidthPx, imageHeightPx);
   const edge = Math.max(1, shortSide * 0.002);
+  const paths = spans.map((d, i) => <path key={i} d={d} />);
   return (
     <g data-testid="eraser-trail" fill="none" strokeLinecap="round" strokeLinejoin="round">
-      <path d={d} stroke="black" strokeOpacity={0.35} strokeWidth={radiusPx * 2 + edge * 2} />
-      <path d={d} stroke="white" strokeOpacity={0.55} strokeWidth={radiusPx * 2} />
+      <g stroke="black" opacity={0.35} strokeWidth={radiusPx * 2 + edge * 2}>
+        {paths}
+      </g>
+      <g stroke="white" opacity={0.55} strokeWidth={radiusPx * 2}>
+        {paths}
+      </g>
     </g>
   );
 }

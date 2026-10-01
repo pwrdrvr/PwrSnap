@@ -44,7 +44,7 @@ function vectorNode(shape: Overlay): BundleLayerNode {
     locked: false,
     opacity: 1,
     blend_mode: "normal",
-    transform: { a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0 },
+    transform: [1, 0, 0, 1, 0, 0],
     z_index: seq,
     source: "user",
     ai_run_id: null,

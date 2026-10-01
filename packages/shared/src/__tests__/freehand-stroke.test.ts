@@ -9,17 +9,18 @@ import {
   DEFAULT_MARKER_OPACITY,
   distanceToPolylinePx,
   eraseStroke,
-  eraseStrokeOverlay,
-  eraserPathPx,
   eraserRadiusPx,
   polylineLengthPx,
   readStrokeOpacity,
   simplifyStrokePoints,
   smoothStrokePathD,
+  smoothStrokeSpanD,
   strokeBoundsN,
+  StrokeEraseSession,
   strokeGeometry,
   strokePointsToNormalized,
   strokePointsToPx,
+  strokeReachPx,
   strokeSvgElements,
   strokeWidthPx,
   type StrokePointPx
@@ -195,6 +196,34 @@ describe("smoothing", () => {
     expect(d.endsWith("L30 10")).toBe(true);
     expect(smoothStrokePathD([{ x: 1, y: 2 }, { x: 3, y: 4 }])).toBe("M1 2L3 4");
   });
+
+  it("spans drawn one after another are the whole path, joint for joint", () => {
+    const pts = Array.from({ length: 23 }, (_, i) => ({ x: i * 7.3, y: Math.sin(i) * 40 + 50 }));
+    const whole = smoothStrokePathD(pts);
+    // Each later span starts with a moveto onto the joint the span
+    // before it ended on; without those, the spans ARE the path.
+    const spans = [
+      smoothStrokeSpanD(pts, pts.length, 1, 8, false),
+      smoothStrokeSpanD(pts, pts.length, 9, 16, false),
+      smoothStrokeSpanD(pts, pts.length, 17, 21, true)
+    ];
+    const joined = spans[0] + spans.slice(1).map((d) => d.replace(/^M[^Q]*/, "")).join("");
+    expect(joined).toBe(whole);
+    // The moveto IS that joint: the previous span's last endpoint.
+    const lastEnd = spans[0]!.split(" ").slice(-2).join(" ");
+    expect(spans[1]!.startsWith(`M${lastEnd}Q`)).toBe(true);
+  });
+
+  it("a span maps normalized points into pixels on the way", () => {
+    const n = [
+      { x: 0.1, y: 0.2 },
+      { x: 0.5, y: 0.4 },
+      { x: 0.9, y: 0.2 }
+    ];
+    expect(smoothStrokeSpanD(n, 3, 1, 1, true, 100, 50)).toBe(
+      smoothStrokePathD(n.map((p) => ({ x: p.x * 100, y: p.y * 50 })))
+    );
+  });
 });
 
 describe("the airbrush is bands of one line", () => {
@@ -356,66 +385,125 @@ describe("the eraser cuts strokes", () => {
   });
 });
 
-describe("eraseStrokeOverlay — the row-level cut the editor previews and commits", () => {
+describe("StrokeEraseSession — the cut the editor previews and commits", () => {
   const W = 1000;
   const H = 500;
   const basis = annotationBasisPx(W, H);
+  const radius = eraserRadiusPx("small", basis);
+  const px = (x: number, y: number): { x: number; y: number } => ({ x: x * W, y: y * H });
+
+  const across = {
+    kind: "stroke" as const,
+    tool: "pen" as const,
+    points: [
+      { x: 0.1, y: 0.5 },
+      { x: 0.9, y: 0.5 }
+    ],
+    color: "auto" as const,
+    thickness: "small" as const
+  };
 
   it("cuts a row into normalized pieces on either side of the swipe", () => {
-    const row = {
-      kind: "stroke" as const,
-      tool: "pen" as const,
-      points: [
-        { x: 0.1, y: 0.5 },
-        { x: 0.9, y: 0.5 }
-      ],
-      color: "auto" as const,
-      thickness: "small" as const
-    };
-    const eraser = eraserPathPx(
-      [
-        { x: 0.5, y: 0.2 },
-        { x: 0.5, y: 0.8 }
-      ],
-      W,
-      H
-    );
-    const pieces = eraseStrokeOverlay(row, eraser, eraserRadiusPx("small", basis), W, H, basis);
-    expect(pieces).not.toBeNull();
-    expect(pieces!.length).toBe(2);
-    expect(pieces![0]!.points[0]).toEqual({ x: 0.1, y: 0.5 });
-    expect(Math.max(...pieces![0]!.points.map((p) => p.x))).toBeLessThan(0.5);
-    expect(Math.min(...pieces![1]!.points.map((p) => p.x))).toBeGreaterThan(0.5);
-    expect(pieces![1]!.points.at(-1)).toEqual({ x: 0.9, y: 0.5 });
-    for (const piece of pieces!) {
+    const session = new StrokeEraseSession(radius, W, H, basis);
+    expect(session.extend([px(0.5, 0.2), px(0.5, 0.8)], [{ id: "a", data: across }])).toBe(true);
+    const [change] = session.changes();
+    expect(change!.id).toBe("a");
+    const pieces = change!.pieces;
+    expect(pieces.length).toBe(2);
+    expect(pieces[0]!.points[0]).toEqual({ x: 0.1, y: 0.5 });
+    expect(Math.max(...pieces[0]!.points.map((p) => p.x))).toBeLessThan(0.5);
+    expect(Math.min(...pieces[1]!.points.map((p) => p.x))).toBeGreaterThan(0.5);
+    expect(pieces[1]!.points.at(-1)).toEqual({ x: 0.9, y: 0.5 });
+    for (const piece of pieces) {
       expect(piece.tool).toBe("pen");
       expect(piece.color).toBe("auto");
       expect(piece.thickness).toBe("small");
     }
   });
 
-  it("returns null for a row the eraser never reached", () => {
-    const row = {
-      kind: "stroke" as const,
-      tool: "marker" as const,
-      points: [
-        { x: 0.1, y: 0.1 },
-        { x: 0.2, y: 0.1 }
-      ],
-      color: "auto" as const
-    };
-    const eraser = eraserPathPx([{ x: 0.8, y: 0.8 }, { x: 0.9, y: 0.9 }], W, H);
-    expect(eraseStrokeOverlay(row, eraser, eraserRadiusPx("small", basis), W, H, basis)).toBeNull();
+  it("changes nothing for a row the eraser never reached", () => {
+    const far = { ...across, tool: "marker" as const, points: [{ x: 0.1, y: 0.1 }, { x: 0.2, y: 0.1 }] };
+    const session = new StrokeEraseSession(radius, W, H, basis);
+    expect(session.extend([px(0.8, 0.8), px(0.9, 0.9)], [{ id: "a", data: far }])).toBe(false);
+    expect(session.changes()).toEqual([]);
+    expect(session.pieces().size).toBe(0);
   });
-});
 
-describe("eraserPathPx", () => {
-  it("drops the samples a straight drag adds, keeping both ends", () => {
-    const samples = Array.from({ length: 200 }, (_, i) => ({ x: 0.1 + i * 0.004, y: 0.5 }));
-    const path = eraserPathPx(samples, 1000, 500);
-    expect(path).toEqual([
-      { x: samples[0]!.x * 1000, y: 250 },
-      { x: samples[199]!.x * 1000, y: 250 }
-    ]);
+  it("a drag fed one sample at a time cuts what the whole drag would", () => {
+    // A long wavy stroke and a zig-zag scrub across it.
+    const wave = {
+      ...across,
+      points: Array.from({ length: 120 }, (_, i) => ({
+        x: 0.05 + (i / 119) * 0.9,
+        y: 0.5 + Math.sin(i / 6) * 0.2
+      }))
+    };
+    const scrub = Array.from({ length: 300 }, (_, i) =>
+      px(0.2 + (i / 299) * 0.3, i % 40 < 20 ? 0.2 + ((i % 20) / 20) * 0.6 : 0.8 - ((i % 20) / 20) * 0.6)
+    );
+    const stepwise = new StrokeEraseSession(radius, W, H, basis);
+    for (const sample of scrub) stepwise.extend([sample], [{ id: "a", data: wave }]);
+    const whole = new StrokeEraseSession(radius, W, H, basis);
+    whole.extend(scrub, [{ id: "a", data: wave }]);
+
+    const reach = radius + strokeReachPx(wave, basis);
+    const piecesOf = (session: StrokeEraseSession) => session.changes()[0]!.pieces;
+    // Every surviving vertex is outside the swept area…
+    for (const piece of piecesOf(stepwise)) {
+      for (const p of piece.points) {
+        expect(distanceToPolylinePx(px(p.x, p.y), scrub)).toBeGreaterThan(reach - 1e-6);
+      }
+    }
+    // …and the two agree on what survives: same runs, ends within one
+    // sampling step of each other.
+    const a = piecesOf(stepwise);
+    const b = piecesOf(whole);
+    expect(a.length).toBe(b.length);
+    const step = Math.max(0.25, reach / 4);
+    for (let i = 0; i < a.length; i += 1) {
+      for (const end of [0, -1] as const) {
+        const pa = px(a[i]!.points.at(end)!.x, a[i]!.points.at(end)!.y);
+        const pb = px(b[i]!.points.at(end)!.x, b[i]!.points.at(end)!.y);
+        expect(Math.hypot(pa.x - pb.x, pa.y - pb.y)).toBeLessThanOrEqual(step + 1e-3);
+      }
+    }
+  });
+
+  it("keeps a cut stroke's rows, and the map, until a later sample cuts again", () => {
+    const other = { ...across, points: [{ x: 0.1, y: 0.9 }, { x: 0.9, y: 0.9 }] };
+    const targets = [
+      { id: "a", data: across },
+      { id: "b", data: other }
+    ];
+    const session = new StrokeEraseSession(radius, W, H, basis);
+    session.extend([px(0.5, 0.3), px(0.5, 0.6)], targets);
+    const first = session.pieces();
+    const aRows = first.get("a");
+    // Moving where nothing is left to cut changes nothing at all.
+    expect(session.extend([px(0.5, 0.7)], targets)).toBe(false);
+    expect(session.pieces()).toBe(first);
+    // Cutting stroke b replaces the map but not a's rows.
+    expect(session.extend([px(0.5, 0.95)], targets)).toBe(true);
+    expect(session.pieces()).not.toBe(first);
+    expect(session.pieces().get("a")).toBe(aRows);
+    expect(session.pieces().get("b")).toBeDefined();
+  });
+
+  it("re-cuts a row edited mid-drag against the whole drag so far", () => {
+    const session = new StrokeEraseSession(radius, W, H, basis);
+    session.extend([px(0.5, 0.2), px(0.5, 0.8)], [{ id: "a", data: across }]);
+    // The same row, a new object (an undo or a remote edit landed).
+    const edited = { ...across, color: "#ff0000" };
+    session.extend([px(0.95, 0.95)], [{ id: "a", data: edited }]);
+    const [change] = session.changes();
+    expect(change!.pieces).toHaveLength(2);
+    expect(change!.pieces[0]!.color).toBe("#ff0000");
+  });
+
+  it("drops a row that left the canvas mid-drag", () => {
+    const session = new StrokeEraseSession(radius, W, H, basis);
+    session.extend([px(0.5, 0.2), px(0.5, 0.8)], [{ id: "a", data: across }]);
+    expect(session.extend([px(0.95, 0.95)], [])).toBe(true);
+    expect(session.changes()).toEqual([]);
   });
 });

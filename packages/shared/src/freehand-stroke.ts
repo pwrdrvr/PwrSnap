@@ -264,14 +264,40 @@ export function smoothStrokePathD(points: readonly StrokePointPx[]): string {
     const last = points[1]!;
     return `M${f(first.x)} ${f(first.y)}L${f(last.x)} ${f(last.y)}`;
   }
-  let d = `M${f(first.x)} ${f(first.y)}`;
-  for (let i = 1; i < n - 1; i += 1) {
-    const c = points[i]!;
-    const next = points[i + 1]!;
-    d += `Q${f(c.x)} ${f(c.y)} ${f((c.x + next.x) / 2)} ${f((c.y + next.y) / 2)}`;
+  return smoothStrokeSpanD(points, n, 1, n - 2, true);
+}
+
+/**
+ * Part of `smoothStrokePathD` over the first `count` of `points`: its
+ * curve sections `from` through `to` (1 ≤ from ≤ to ≤ count − 2), plus
+ * the closing straight run to the last point when `withEnd` is set.
+ * Section i is the Bézier with point i as its control, and it is fixed
+ * once point i + 1 exists, so a live stroke can keep the spans it has
+ * already drawn and rebuild only its tail. `scaleX` / `scaleY` map the
+ * points into pixels on the way (1 when they already are).
+ *
+ * Spans [1, k] and [k + 1, count − 2] + end, concatenated, draw exactly
+ * the curve the whole path draws.
+ */
+export function smoothStrokeSpanD(
+  points: readonly { x: number; y: number }[],
+  count: number,
+  from: number,
+  to: number,
+  withEnd: boolean,
+  scaleX = 1,
+  scaleY = 1
+): string {
+  const x = (i: number): number => points[i]!.x * scaleX;
+  const y = (i: number): number => points[i]!.y * scaleY;
+  let d =
+    from === 1
+      ? `M${f(x(0))} ${f(y(0))}`
+      : `M${f((x(from - 1) + x(from)) / 2)} ${f((y(from - 1) + y(from)) / 2)}`;
+  for (let i = from; i <= to; i += 1) {
+    d += `Q${f(x(i))} ${f(y(i))} ${f((x(i) + x(i + 1)) / 2)} ${f((y(i) + y(i + 1)) / 2)}`;
   }
-  const last = points[n - 1]!;
-  d += `L${f(last.x)} ${f(last.y)}`;
+  if (withEnd) d += `L${f(x(count - 1))} ${f(y(count - 1))}`;
   return d;
 }
 
@@ -480,6 +506,22 @@ export function eraseStroke(
   for (let i = 0; i < stroke.length - 1; i += 1) {
     const a = stroke[i]!;
     const b = stroke[i + 1]!;
+    // A segment whose box never comes within `r` of the eraser's has no
+    // covered sample, so skip the sampling and keep its far vertex. This
+    // is what keeps a cut proportional to the stroke's vertex count, not
+    // its length in pixels. (`a` is uncovered too: it is in the box. At
+    // i > 0 that means a run is already open; at i === 0 it opens one.)
+    if (
+      Math.max(a.x, b.x) < eb.minX - r ||
+      Math.min(a.x, b.x) > eb.maxX + r ||
+      Math.max(a.y, b.y) < eb.minY - r ||
+      Math.min(a.y, b.y) > eb.maxY + r
+    ) {
+      if (current === null) current = [a];
+      pushUnique(current, b);
+      lastUncovered = b;
+      continue;
+    }
     const length = Math.hypot(b.x - a.x, b.y - a.y);
     const steps = Math.max(1, Math.ceil(length / step));
     for (let j = i === 0 ? 0 : 1; j <= steps; j += 1) {
@@ -514,62 +556,177 @@ export function eraseStroke(
   );
 }
 
-/** How far the simplified eraser path may stray from the pointer path,
- *  in canvas pixels — a fraction of any eraser's radius, so the cut is
- *  unchanged to the eye. */
-const ERASER_SIMPLIFY_TOLERANCE_PX = 0.5;
-
-/** The eraser drag as the polyline `eraseStroke` sweeps, in canvas
- *  pixels. A drag is a raw pointer stream — hundreds of samples a second
- *  — and every sample of every stroke is measured against every segment
- *  of it, so it is simplified first. */
-export function eraserPathPx(
-  points: readonly { x: number; y: number }[],
-  canvasWidthPx: number,
-  canvasHeightPx: number
-): StrokePointPx[] {
-  return simplifyStrokePoints(
-    strokePointsToPx(points, canvasWidthPx, canvasHeightPx),
-    ERASER_SIMPLIFY_TOLERANCE_PX
-  );
-}
-
-/**
- * Cut a stroke ROW where an eraser passed: the strokes that replace it,
- * in the same normalized canvas space, or `null` when the eraser never
- * touched it (`[]` when it took all of it). The editor's live preview
- * and its commit both call this, so what the drag shows is what the
- * release writes.
- *
- * `eraserRadiusPx` is the eraser's own radius; the stroke's painted
- * reach is added here, so grazing the edge of a wide marker cuts it.
- */
-export function eraseStrokeOverlay(
-  data: StrokeOverlay,
-  eraserPx: readonly StrokePointPx[],
-  eraserRadiusPx: number,
-  canvasWidthPx: number,
-  canvasHeightPx: number,
-  basisPx: number
-): StrokeOverlay[] | null {
-  const pieces = eraseStroke(
-    strokePointsToPx(data.points, canvasWidthPx, canvasHeightPx),
-    eraserPx,
-    eraserRadiusPx + strokeReachPx(data, basisPx)
-  );
-  if (pieces === null) return null;
-  return pieces.map((piece) => ({
-    ...data,
-    points: strokePointsToNormalized(piece, canvasWidthPx, canvasHeightPx)
-  }));
-}
-
-function boundsPx(points: readonly StrokePointPx[]): {
+interface PxBounds {
   minX: number;
   minY: number;
   maxX: number;
   maxY: number;
-} {
+}
+
+function boundsWithin(a: PxBounds, b: PxBounds, reach: number): boolean {
+  return !(
+    a.maxX < b.minX - reach ||
+    a.minX > b.maxX + reach ||
+    a.maxY < b.minY - reach ||
+    a.minY > b.maxY + reach
+  );
+}
+
+/** A stroke the eraser may cut, as the editor lists it. */
+export interface EraseTarget {
+  readonly id: string;
+  readonly data: StrokeOverlay;
+}
+
+interface ErasedStroke {
+  /** The row this state was cut from. A different object (the row was
+   *  edited mid-drag) starts over against the whole eraser path. */
+  readonly data: StrokeOverlay;
+  /** The cut radius for this stroke: the eraser's plus the stroke's own
+   *  painted reach, so grazing the edge of a wide marker cuts it. */
+  readonly reachPx: number;
+  pieces: { points: StrokePointPx[]; bounds: PxBounds }[];
+  bounds: PxBounds;
+  touched: boolean;
+  /** `pieces` as rows, built when asked for and kept until the next cut
+   *  — the same array, so a renderer memoized on it does nothing. */
+  rows: StrokeOverlay[] | null;
+}
+
+/**
+ * One eraser drag. Each pointer event extends the eraser with just its
+ * new samples, and only those new segments are tested — against the
+ * pieces the earlier segments left, and only for strokes whose box they
+ * reach. An eraser's cut is a union of discs, so cutting segment by
+ * segment removes what one pass over the whole path would, and the
+ * work per event stays proportional to what the new segments touch,
+ * not to the length of the drag times every stroke on the canvas.
+ *
+ * The editor's live preview and its commit both read this session, so
+ * what the drag shows is exactly what the release writes.
+ */
+export class StrokeEraseSession {
+  private readonly path: StrokePointPx[] = [];
+  private readonly strokes = new Map<string, ErasedStroke>();
+  private live: ReadonlySet<string> = new Set();
+  private preview: ReadonlyMap<string, readonly StrokeOverlay[]> = new Map();
+
+  constructor(
+    private readonly radiusPx: number,
+    private readonly canvasWidthPx: number,
+    private readonly canvasHeightPx: number,
+    private readonly basisPx: number
+  ) {}
+
+  /**
+   * Extend the eraser by `points` (canvas pixels, continuing the drag)
+   * and cut every stroke in `targets` it reaches. `targets` is the
+   * canvas's current stroke rows; a row seen for the first time, or
+   * edited since the last call, is cut against the whole path so far.
+   * Returns whether any stroke's pieces changed.
+   */
+  extend(points: readonly StrokePointPx[], targets: Iterable<EraseTarget>): boolean {
+    if (points.length === 0) return false;
+    const segment =
+      this.path.length === 0 ? [...points] : [this.path[this.path.length - 1]!, ...points];
+    for (const p of points) this.path.push(p);
+    let changed = false;
+    const live = new Set<string>();
+    for (const { id, data } of targets) {
+      live.add(id);
+      let state = this.strokes.get(id);
+      let eraser = segment;
+      if (state === undefined || state.data !== data) {
+        if (state?.touched === true) changed = true;
+        state = this.track(data);
+        this.strokes.set(id, state);
+        eraser = this.path;
+      }
+      if (this.cut(state, eraser)) changed = true;
+    }
+    for (const id of this.live) {
+      if (!live.has(id) && this.strokes.get(id)?.touched === true) changed = true;
+    }
+    this.live = live;
+    if (changed) {
+      const next = new Map<string, readonly StrokeOverlay[]>();
+      for (const [id, state] of this.strokes) {
+        if (state.touched && live.has(id)) next.set(id, this.rowsOf(state));
+      }
+      this.preview = next;
+    }
+    return changed;
+  }
+
+  /** What each cut stroke currently is, by row id: an empty list for a
+   *  stroke erased whole. The map is replaced only when a cut changes
+   *  it, and an untouched entry keeps its array. */
+  pieces(): ReadonlyMap<string, readonly StrokeOverlay[]> {
+    return this.preview;
+  }
+
+  /** The edits a release commits: every stroke the drag cut, with the
+   *  rows that replace it. */
+  changes(): { id: string; pieces: StrokeOverlay[] }[] {
+    return [...this.preview].map(([id, rows]) => ({ id, pieces: [...rows] }));
+  }
+
+  private track(data: StrokeOverlay): ErasedStroke {
+    const points = strokePointsToPx(data.points, this.canvasWidthPx, this.canvasHeightPx);
+    const bounds = boundsPx(points);
+    return {
+      data,
+      reachPx: this.radiusPx + strokeReachPx(data, this.basisPx),
+      pieces: [{ points, bounds }],
+      bounds,
+      touched: false,
+      rows: null
+    };
+  }
+
+  private cut(state: ErasedStroke, eraser: readonly StrokePointPx[]): boolean {
+    if (state.pieces.length === 0) return false;
+    const eb = boundsPx(eraser);
+    if (!boundsWithin(state.bounds, eb, state.reachPx)) return false;
+    let changed = false;
+    const next: ErasedStroke["pieces"] = [];
+    for (const piece of state.pieces) {
+      const cut = boundsWithin(piece.bounds, eb, state.reachPx)
+        ? eraseStroke(piece.points, eraser, state.reachPx)
+        : null;
+      if (cut === null) {
+        next.push(piece);
+        continue;
+      }
+      changed = true;
+      for (const points of cut) next.push({ points, bounds: boundsPx(points) });
+    }
+    if (!changed) return false;
+    state.pieces = next;
+    state.bounds = next.reduce<PxBounds>(
+      (all, piece) => ({
+        minX: Math.min(all.minX, piece.bounds.minX),
+        minY: Math.min(all.minY, piece.bounds.minY),
+        maxX: Math.max(all.maxX, piece.bounds.maxX),
+        maxY: Math.max(all.maxY, piece.bounds.maxY)
+      }),
+      { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
+    );
+    state.touched = true;
+    state.rows = null;
+    return true;
+  }
+
+  private rowsOf(state: ErasedStroke): StrokeOverlay[] {
+    state.rows ??= state.pieces.map((piece) => ({
+      ...state.data,
+      points: strokePointsToNormalized(piece.points, this.canvasWidthPx, this.canvasHeightPx)
+    }));
+    return state.rows;
+  }
+}
+
+function boundsPx(points: readonly StrokePointPx[]): PxBounds {
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;

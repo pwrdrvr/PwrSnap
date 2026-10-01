@@ -75,13 +75,14 @@ import {
   resolveCropViewport,
   revealInFileManagerLabel,
   distanceToPolylinePx,
-  eraseStrokeOverlay,
-  eraserPathPx,
   eraserRadiusPx,
   simplifyStrokePoints,
   strokePointsToNormalized,
   strokePointsToPx,
-  strokeReachPx
+  strokeBoundsN,
+  strokeReachPx,
+  StrokeEraseSession,
+  type EraseTarget
 } from "@pwrsnap/shared";
 import { nanoid } from "nanoid";
 import { dispatch, captureSrcUrl } from "../../lib/pwrsnap";
@@ -295,6 +296,37 @@ const INTERACTIVE_KEY_TARGETS =
 /** One stroke the eraser cut: its layer id and the display-space shapes
  *  that replace it — empty when the eraser took all of it. */
 type EraseChange = { readonly id: string; readonly pieces: readonly StrokeOverlay[] };
+
+/** A stroke row's centerline box. Rows are immutable — an edit writes
+ *  a new object — so the box is cached by row for the hover hit-test. */
+const strokeBoundsCache = new WeakMap<StrokeOverlay, ReturnType<typeof strokeBoundsN>>();
+function cachedStrokeBoundsN(data: StrokeOverlay): ReturnType<typeof strokeBoundsN> {
+  let box = strokeBoundsCache.get(data);
+  if (box === undefined) {
+    box = strokeBoundsN(data.points);
+    strokeBoundsCache.set(data, box);
+  }
+  return box;
+}
+
+/** The stroke rows an eraser may cut. */
+function* strokeTargets(rows: readonly OverlayRow[]): Generator<EraseTarget> {
+  for (const row of rows) {
+    if (row.data.kind === "stroke") yield { id: row.id, data: row.data };
+  }
+}
+
+/** The render copy of a live Draw stroke. It shares the stroke's point
+ *  array — appended in place for the whole drag — and says how much of
+ *  it to show, so a pointer event costs its own samples, not a copy of
+ *  everything drawn so far. */
+function liveStrokeDraft(stroke: DraftStroke, erase: StrokeEraseSession | null): DraftStroke {
+  return {
+    ...stroke,
+    count: stroke.points.length,
+    ...(erase !== null ? { erased: erase.pieces() } : {})
+  };
+}
 
 /** How far a simplified stroke may stray from the pointer path, in
  *  canvas pixels. Under a pixel, so the smoothing is invisible; enough
@@ -1474,11 +1506,23 @@ export function hitTestOverlays(
       const w = imageDims?.widthPx ?? canvasPxShortSide;
       const h = imageDims?.heightPx ?? canvasPxShortSide;
       const reachPx = textDims !== undefined ? strokeReachPx(o, annotationBasis) : 0;
+      const limitPx = reachPx + hitRadiusN * Math.min(w, h);
+      // Hover runs this for every stroke on every move: reject on the
+      // (cached) box before walking the stroke.
+      const box = cachedStrokeBoundsN(o);
+      if (
+        (xn - box.x) * w < -limitPx ||
+        (xn - box.x - box.w) * w > limitPx ||
+        (yn - box.y) * h < -limitPx ||
+        (yn - box.y - box.h) * h > limitPx
+      ) {
+        continue;
+      }
       const distPx = distanceToPolylinePx(
         { x: xn * w, y: yn * h },
         strokePointsToPx(o.points, w, h)
       );
-      if (distPx <= reachPx + hitRadiusN * Math.min(w, h)) return row.id;
+      if (distPx <= limitPx) return row.id;
       continue;
     }
     if (o.kind === "arrow") {
@@ -1894,6 +1938,10 @@ export function Editor({
   // release can arrive before React has rendered the last move, and a
   // commit that read `draft` would drop the stroke's final points.
   const strokeDraftRef = useRef<DraftStroke | null>(null);
+  // An eraser drag's cuts so far. Each move tests only its own new
+  // samples (see `StrokeEraseSession`); the draft shows the session's
+  // pieces and the release commits them, so the two cannot disagree.
+  const eraseSessionRef = useRef<StrokeEraseSession | null>(null);
   // Multi-select model. Tracks the ids of all currently-selected
   // overlays/layers; empty array means nothing selected.
   //
@@ -2699,7 +2747,19 @@ export function Editor({
         points: [{ x: start.xn, y: start.yn }]
       };
       strokeDraftRef.current = stroke;
-      setDraft({ ...stroke, points: stroke.points.slice() });
+      eraseSessionRef.current = null;
+      const dims = textHitDimsRef.current;
+      if (stroke.mode === "eraser" && dims !== null) {
+        const { canvasWidthPx: cw, canvasHeightPx: ch } = dims;
+        // SOURCE dims, as for every annotation (AGENTS.md "Annotation
+        // sizing"), and the thickness the trail is drawn at.
+        const basis = annotationBasisPx(dims.sourceWidthPx, dims.sourceHeightPx);
+        const thickness = active.tool === "draw" ? active.style.thickness : undefined;
+        const session = new StrokeEraseSession(eraserRadiusPx(thickness, basis), cw, ch, basis);
+        session.extend([{ x: start.xn * cw, y: start.yn * ch }], strokeTargets(overlaysRef.current));
+        eraseSessionRef.current = session;
+      }
+      setDraft(liveStrokeDraft(stroke, eraseSessionRef.current));
       return;
     }
 
@@ -2997,11 +3057,21 @@ export function Editor({
       const native = event.nativeEvent;
       const coalesced =
         typeof native.getCoalescedEvents === "function" ? native.getCoalescedEvents() : [];
+      const from = stroke.points.length;
       for (const sample of coalesced.length > 0 ? coalesced : [native]) {
         const p = clientToNormalizedUnclamped(sample.clientX, sample.clientY);
         if (p !== null) stroke.points.push({ x: p.xn, y: p.yn });
       }
-      setDraft({ ...stroke, points: stroke.points.slice() });
+      if (stroke.points.length === from) return;
+      const session = eraseSessionRef.current;
+      const dims = textHitDimsRef.current;
+      if (session !== null && dims !== null) {
+        session.extend(
+          strokePointsToPx(stroke.points.slice(from), dims.canvasWidthPx, dims.canvasHeightPx),
+          strokeTargets(overlaysRef.current)
+        );
+      }
+      setDraft(liveStrokeDraft(stroke, session));
       return;
     }
     // No gesture in progress (or only an idle text draft): this move
@@ -3463,31 +3533,23 @@ export function Editor({
    *  not wiped when it resumes. */
   async function commitStroke(stroke: DraftStroke): Promise<void> {
     setDraft(null);
-    const dims = textHitDimsRef.current;
-    if (dims === null) return;
-    const { canvasWidthPx: cw, canvasHeightPx: ch } = dims;
-    // SOURCE dims, as for every annotation: a crop must not re-thin a
-    // stroke (AGENTS.md "Annotation sizing").
-    const basis = annotationBasisPx(dims.sourceWidthPx, dims.sourceHeightPx);
-    // The mode is the one the drag started in; color and weight are the
-    // settled styles (see the arrow commit for why they are awaited).
-    const style = (await effectiveToolState.settledToolStyles()).draw;
-
+    const session = eraseSessionRef.current;
+    eraseSessionRef.current = null;
     if (stroke.mode === "eraser") {
-      const eraser = eraserPathPx(stroke.points, cw, ch);
-      const radius = eraserRadiusPx(style.thickness, basis);
-      const changes: EraseChange[] = [];
-      // Strokes only. Arrows, boxes and text are never cut — the eraser
-      // is part of the Draw family and edits what Draw made.
-      for (const row of overlaysRef.current) {
-        const data = row.data;
-        if (data.kind !== "stroke") continue;
-        const pieces = eraseStrokeOverlay(data, eraser, radius, cw, ch, basis);
-        if (pieces !== null) changes.push({ id: row.id, pieces });
-      }
+      // The session the drag built IS the commit: the pieces the preview
+      // showed, not a second pass over the whole drag. Strokes only —
+      // arrows, boxes and text are never cut; the eraser is part of the
+      // Draw family and edits what Draw made.
+      const changes: EraseChange[] = session?.changes() ?? [];
       if (changes.length > 0) await eraseStrokesRef.current?.(changes);
       return;
     }
+    const dims = textHitDimsRef.current;
+    if (dims === null) return;
+    const { canvasWidthPx: cw, canvasHeightPx: ch } = dims;
+    // The mode is the one the drag started in; color and weight are the
+    // settled styles (see the arrow commit for why they are awaited).
+    const style = (await effectiveToolState.settledToolStyles()).draw;
 
     const simplified = simplifyStrokePoints(
       strokePointsToPx(stroke.points, cw, ch),

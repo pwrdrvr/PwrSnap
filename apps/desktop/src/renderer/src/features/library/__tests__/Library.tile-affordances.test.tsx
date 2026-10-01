@@ -649,6 +649,47 @@ describe("capture tile context menu — duplicate", () => {
     expect(container?.querySelector('[role="menu"]')).not.toBeNull();
   });
 
+  test("the pointer can cross the menu's padding to the submenu; resting on another row closes it", async () => {
+    editSummaryResult = withEdits;
+    await renderLibrary();
+    const menu = await openMenu();
+    const duplicate = Array.from(
+      menu.querySelectorAll<HTMLElement>('[aria-haspopup="menu"]')
+    ).find((el) => el.textContent?.includes("Duplicate") && !el.textContent.includes("Copy"))!;
+    const over = async (target: Element): Promise<void> => {
+      await act(async () => {
+        target.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+        await Promise.resolve();
+      });
+    };
+    // Hover and click share one open path (see ContextSubmenuRow).
+    await act(async () => {
+      duplicate.click();
+      await Promise.resolve();
+    });
+    const sub = submenuOf(menu);
+    expect(sub).not.toBeNull();
+
+    // The strip between the row and the submenu is the menu root's padding.
+    await over(menu);
+    await over(sub!.querySelector('[role="menuitem"]')!);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(submenuOf(menu)).toBe(sub);
+
+    // A path that clips the next row on its way over keeps it open...
+    await over(rowByLabel(menu, "Copy Low"));
+    await over(sub!.querySelector('[role="menuitem"]')!);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(submenuOf(menu)).toBe(sub);
+
+    // ...but resting on another row closes it.
+    await over(rowByLabel(menu, "Copy Low"));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+    expect(submenuOf(menu)).toBeNull();
+  });
+
   test("ArrowRight on a row whose submenu the pointer opened enters it rather than closing it", async () => {
     editSummaryResult = withEdits;
     await renderLibrary();

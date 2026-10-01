@@ -155,7 +155,7 @@ async function duplicateImageWithEdits(
   // Lazy: the import modules are only needed when a copy is actually made,
   // so they stay out of capture-handlers' load graph.
   const { remapCollidingLayerIds } = await import("../import/pwrsnap-import-service");
-  const { readAndValidateInstalledPwrsnapBundle } = await import(
+  const { PwrsnapImportError, readAndValidateInstalledPwrsnapBundle } = await import(
     "../import/pwrsnap-import-reader"
   );
   const bundle = await runExclusiveBundleFileOperation(source.id, async () => {
@@ -163,7 +163,21 @@ async function duplicateImageWithEdits(
     if (current === null || current.bundle_path === null) {
       throw new CaptureDuplicateError("not_found", "That snap no longer exists.");
     }
-    return readAndValidateInstalledPwrsnapBundle(current.bundle_path);
+    try {
+      return await readAndValidateInstalledPwrsnapBundle(current.bundle_path);
+    } catch (cause) {
+      // The live view skips a layer it can't parse (one drawn by a newer
+      // build); the bundle reader validates strictly and rejects the
+      // whole document. Copying around that layer would silently drop an
+      // annotation, so refuse, and say which copy still works.
+      if (cause instanceof PwrsnapImportError && cause.code === "document_schema_invalid") {
+        throw new CaptureDuplicateError(
+          "unsupported",
+          "This snap has an annotation this version of PwrSnap can't read, so it can't be copied with its edits. Base Image Only still works."
+        );
+      }
+      throw cause;
+    }
   });
 
   const newId = nanoid(16);

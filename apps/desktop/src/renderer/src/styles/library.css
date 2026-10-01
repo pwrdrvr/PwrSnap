@@ -1829,6 +1829,10 @@
 }
 .psl__action-error {
   margin: 0;
+  /* It floats over the grid, so it needs a surface of its own: the banner's
+     --danger-soft is a 12-16% tint, and alone it let the tiles and sidebar
+     show through the text. Same tint, laid over an opaque panel. */
+  background: linear-gradient(var(--danger-soft), var(--danger-soft)), var(--bg-panel);
   max-width: min(420px, calc(100vw - 32px));
   display: flex;
   flex-direction: column;

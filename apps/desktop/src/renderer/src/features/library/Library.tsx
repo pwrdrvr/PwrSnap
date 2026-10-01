@@ -345,6 +345,11 @@ const DUPLICATE_KEY_DEDUP_MS = 250;
 /** Room the duplicate submenu needs beside the menu before it flips left. */
 const CAPTURE_CONTEXT_SUBMENU_WIDTH = 236;
 
+/** How long the pointer may sit on another row before an open submenu
+ *  closes. A path from the row to the submenu that clips a neighbouring
+ *  row is still on its way over; one that rests there has left. */
+const CAPTURE_CONTEXT_SUBMENU_CLOSE_DELAY_MS = 300;
+
 const PROJECT_CONTEXT_MENU_WIDTH = 188;
 const PROJECT_CONTEXT_MENU_HEIGHT = 70;
 
@@ -6071,6 +6076,13 @@ function LibraryCaptureContextMenu({
   // Which duplicate submenu is open. Asked only when there is a choice:
   // a snap with no edits copies the same either way.
   const [openSub, setOpenSub] = useState<DuplicateMode | null>(null);
+  const closeSubTimerRef = useRef<number | null>(null);
+  const cancelSubClose = useCallback((): void => {
+    if (closeSubTimerRef.current === null) return;
+    window.clearTimeout(closeSubTimerRef.current);
+    closeSubTimerRef.current = null;
+  }, []);
+  useEffect(() => cancelSubClose, [cancelSubClose]);
   const offerChoice = menu.editSummary === null || menu.editSummary.hasEdits;
   const choices = duplicateChoiceLabels(menu.isVideo ? "video" : "image");
   const editsHint =
@@ -6121,10 +6133,24 @@ function LibraryCaptureContextMenu({
       onContextMenu={(event) => event.preventDefault()}
       onBlur={closeWhenFocusLeaves(onClose)}
       onMouseOver={(event) => {
-        // The pointer left the submenu row for another row of this menu.
         if (openSub === null) return;
         const target = event.target as Element;
-        if (target.closest(".psl__context-menu-sub") === null) setOpenSub(null);
+        // Still on the open submenu, or its row: stay.
+        const sub = target.closest(".psl__context-menu-sub");
+        if (sub?.querySelector('[aria-expanded="true"]') != null) {
+          cancelSubClose();
+          return;
+        }
+        // Only another ROW counts as leaving. The menu's own padding is the
+        // strip the pointer crosses from the row to the submenu; closing on
+        // it shut the submenu before the pointer could reach it.
+        if (target.closest('[role="menuitem"]') === null) return;
+        if (closeSubTimerRef.current !== null) return;
+        const leaving = openSub;
+        closeSubTimerRef.current = window.setTimeout(() => {
+          closeSubTimerRef.current = null;
+          setOpenSub((current) => (current === leaving ? null : current));
+        }, CAPTURE_CONTEXT_SUBMENU_CLOSE_DELAY_MS);
       }}
       aria-label={`${menu.capture.n} actions`}
     >

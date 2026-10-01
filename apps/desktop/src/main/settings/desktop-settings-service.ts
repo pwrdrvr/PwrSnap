@@ -59,6 +59,7 @@ import type {
 } from "@pwrsnap/shared";
 import {
   isOverlayOutlineMode,
+  isStrokePatternStyle,
   DEFAULT_AI_SURFACE_DEFAULTS,
   DEFAULT_CHAT_SETTINGS,
   DEFAULT_CODEX_CAPTION_MODEL,
@@ -482,9 +483,9 @@ function pickArrowEndStyle(value: unknown, fallback: ArrowEndStyle): ArrowEndSty
   return fallback;
 }
 
-function pickArrowStemStyle(value: unknown, fallback: ArrowStemStyle): ArrowStemStyle {
-  if (value === "solid" || value === "dashed" || value === "dotted") return value;
-  return fallback;
+/** Arrow stem and shape outline share one pattern value space. */
+function pickStrokePatternStyle(value: unknown, fallback: ArrowStemStyle): ArrowStemStyle {
+  return isStrokePatternStyle(value) ? value : fallback;
 }
 
 function pickTextFontWeight(value: unknown, fallback: TextFontWeight): TextFontWeight {
@@ -528,7 +529,7 @@ function parseArrowToolStyle(raw: unknown, defaults: ArrowToolStyle): ArrowToolS
     color: pickToolColor(raw.color, defaults.color),
     thickness: pickToolSizePreset(raw.thickness, defaults.thickness),
     endStyle: pickArrowEndStyle(raw.endStyle, defaults.endStyle),
-    stemStyle: pickArrowStemStyle(raw.stemStyle, defaults.stemStyle),
+    stemStyle: pickStrokePatternStyle(raw.stemStyle, defaults.stemStyle),
     doubleEnded: pickBoolean(raw.doubleEnded, defaults.doubleEnded),
     outline: pickOverlayOutlineMode(raw.outline, defaults.outline)
   };
@@ -575,6 +576,9 @@ function parseShapeToolStyle(raw: unknown, defaults: ShapeToolStyle): ShapeToolS
     filled: pickBoolean(raw.filled, defaults.filled),
     shape: pickShapeKind(raw.shape, defaults.shape),
     skewDeg: pickFiniteNumber(raw.skewDeg, defaults.skewDeg),
+    // Added after the tool bag shipped: older files carry no
+    // strokeStyle, so the default fills in.
+    strokeStyle: pickStrokePatternStyle(raw.strokeStyle, defaults.strokeStyle),
     outline: pickOverlayOutlineMode(raw.outline, defaults.outline)
   };
 }

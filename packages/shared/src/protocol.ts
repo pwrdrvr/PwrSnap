@@ -3192,13 +3192,15 @@ export type {
   ArrowEndStyle,
   ArrowStemStyle,
   OverlayOutlineMode,
-  ShapeKind
+  ShapeKind,
+  ShapeStrokeStyle
 } from "./overlay-schemas";
 import type {
   ArrowEndStyle,
   ArrowStemStyle,
   OverlayOutlineMode,
-  ShapeKind
+  ShapeKind,
+  ShapeStrokeStyle
 } from "./overlay-schemas";
 export type TextFontWeight = "regular" | "bold";
 export type BlurEffectMode = "gaussian" | "pixelate" | "redact";
@@ -3246,6 +3248,10 @@ export type ShapeToolStyle = {
    *  Ignored for every other shape kind, but persisted so that picking
    *  Parallelogram later restores the user's last-used skew. */
   skewDeg: number;
+  /** Outline stroke pattern, written verbatim into the overlay row's
+   *  `strokeStyle`. Same value space as `ArrowToolStyle.stemStyle`, so
+   *  the tool bag pastes one onto the other. Inert while `filled`. */
+  strokeStyle: ShapeStrokeStyle;
   /** See ArrowToolStyle.outline. */
   outline: OverlayOutlineMode;
 };

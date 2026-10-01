@@ -12,7 +12,7 @@ import { act, createElement, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import type { OverlayRow } from "@pwrsnap/shared";
-import { annotationBasisPx } from "@pwrsnap/shared";
+import { annotationBasisPx, computeShapeStrokeDash } from "@pwrsnap/shared";
 
 import { OverlaySvg, TransformHandles } from "../OverlaySvg";
 import { clearGlyphSize, reportGlyphSize } from "../text-measure-registry";
@@ -452,6 +452,67 @@ describe("OverlaySvg ShapeGlyph — filled", () => {
     expect(rects.length).toBe(1);
     expect(rects[0]!.getAttribute("fill")).toBe("#00ff00");
     expect(rects[0]!.getAttribute("stroke")).toBe("none");
+  });
+});
+
+describe("OverlaySvg ShapeGlyph — strokeStyle", () => {
+  const dashes = (root: Element): (string | null)[] =>
+    Array.from(root.querySelectorAll("rect")).map((r) => r.getAttribute("stroke-dasharray"));
+
+  test("a legacy row (no field) and solid draw no pattern", async () => {
+    for (const row of [rectRow(), rectRow({ strokeStyle: "solid" })]) {
+      const svg = await renderOverlaySvg([row]);
+      expect(dashes(svg)).toEqual([null, null]);
+      await act(async () => {
+        root?.unmount();
+      });
+      container?.remove();
+    }
+  });
+
+  test("dashed patterns the halo and the colored stroke with the shared helper's dash", async () => {
+    const svg = await renderOverlaySvg([rectRow({ strokeStyle: "dashed" })]);
+    const colored = Array.from(svg.querySelectorAll("rect")).find(
+      (r) => r.getAttribute("stroke") !== "white"
+    )!;
+    const expected = computeShapeStrokeDash(
+      "dashed",
+      "rect",
+      0.5 * 800,
+      0.5 * 600,
+      0,
+      Number(colored.getAttribute("stroke-width"))
+    )!;
+    expect(dashes(svg)).toEqual([expected.dasharray, expected.dasharray]);
+    // The corner-alignment offset rides on both strokes.
+    for (const r of Array.from(svg.querySelectorAll("rect"))) {
+      expect(Number(r.getAttribute("stroke-dashoffset"))).toBe(expected.dashoffset);
+    }
+    // Round caps live on the wrapping group, so both strokes get them.
+    expect(colored.parentElement?.getAttribute("stroke-linecap")).toBe("round");
+  });
+
+  test("the live-drag draft follows the active tool's stroke style", async () => {
+    const svg = await renderOverlaySvg([], undefined, {
+      draft: {
+        kind: "shape-drag",
+        tool: "shape",
+        startXn: 0.1,
+        startYn: 0.1,
+        curXn: 0.5,
+        curYn: 0.4
+      },
+      draftStyle: { strokeStyle: "dotted" }
+    });
+    const chrome = svg.querySelector("[data-testid='chrome-svg']")!;
+    const patterned = dashes(chrome);
+    expect(patterned.length).toBeGreaterThan(0);
+    expect(patterned.every((d) => d !== null)).toBe(true);
+  });
+
+  test("a filled shape ignores it", async () => {
+    const svg = await renderOverlaySvg([rectRow({ filled: true, strokeStyle: "dashed" })]);
+    expect(dashes(svg)).toEqual([null]);
   });
 });
 

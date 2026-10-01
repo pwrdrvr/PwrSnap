@@ -390,6 +390,22 @@ export function computeArrowGeometry(input: ArrowInput): ArrowGeometry {
   };
 }
 
+/** Natural (unscaled) dash + gap lengths for a patterned stroke, in
+ *  the stroke's own pixel space. Every patterned annotation stroke —
+ *  an arrow stem (`computeStemDashArray`) and a shape outline
+ *  (`computeShapeStrokeDashArray`) — starts from these, so a dashed
+ *  arrow and a dashed box share one rhythm. Both are multiples of the
+ *  stroke width, and the stroke width comes off `annotationBasisPx`,
+ *  so the pattern scales with the annotation ladder. */
+export function naturalStrokeDash(
+  style: "dashed" | "dotted",
+  strokeWidthPx: number
+): { dash: number; gap: number } {
+  return style === "dotted"
+    ? { dash: strokeWidthPx * 0.01, gap: strokeWidthPx * 1.8 }
+    : { dash: strokeWidthPx * 4, gap: strokeWidthPx * 2 };
+}
+
 /**
  * Dash pattern for an arrow stem of a given pixel length, scaled so
  * the line starts and ends on a complete dash on both ends. Returns
@@ -439,8 +455,7 @@ export function computeStemDashArray(
 ): string | null {
   if (style === "solid") return null;
   // Natural dash/gap proportions — preserved through the scale.
-  const naturalDash = style === "dotted" ? strokeWidthPx * 0.01 : strokeWidthPx * 4;
-  const naturalGap = style === "dotted" ? strokeWidthPx * 1.8 : strokeWidthPx * 2;
+  const { dash: naturalDash, gap: naturalGap } = naturalStrokeDash(style, strokeWidthPx);
   const naturalCycle = naturalDash + naturalGap;
   // Degenerate: zero / sub-cycle stem. One dash spans the whole line
   // (effectively solid). Caller still gets a finite dasharray so the

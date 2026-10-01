@@ -132,7 +132,7 @@ function makeSettings(): Settings {
           outline: "auto"
         },
         text: { color: "accent", fontSize: "auto", weight: "regular", outline: "auto" },
-        shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15, outline: "auto" },
+        shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15, strokeStyle: "solid", outline: "auto" },
         blur: { mode: "gaussian", radius: { mode: "auto" } },
         highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
       },
@@ -168,7 +168,7 @@ const ARROW: ArrowToolStyle = {
   outline: "auto"
 };
 const TEXT: TextToolStyle = { color: "accent", fontSize: "auto", weight: "regular", outline: "auto" };
-const RECT: ShapeToolStyle = { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15, outline: "auto" };
+const RECT: ShapeToolStyle = { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15, strokeStyle: "solid", outline: "auto" };
 const BLUR: BlurToolStyle = { mode: "gaussian", radius: { mode: "auto" } };
 const HIGHLIGHT: HighlightToolStyle = {
   color: "yellow",

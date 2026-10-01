@@ -769,6 +769,56 @@ export function ToolStyleBody({
 
 // ---- Body components ------------------------------------------------
 
+/** Solid / dashed / dotted icon row. The arrow's stem and the shape's
+ *  outline share one value space (`ArrowStemStyle` = `ShapeStrokeStyle`)
+ *  and one control, so the two read as the same setting — which is what
+ *  the tool bag's paste treats them as. */
+function StrokeStyleRow({
+  label,
+  testid,
+  value,
+  onChange
+}: {
+  label: string;
+  testid: string;
+  value: ArrowStemStyle;
+  onChange: (value: ArrowStemStyle) => void;
+}): ReactElement {
+  return (
+    <FieldGroup label={label} testid={testid}>
+      <div className="pse-icon-row" role="radiogroup" aria-label={label}>
+        {STEM_STYLES.map((opt) => {
+          const active = value === opt.id;
+          return (
+            <button
+              key={opt.id}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              aria-label={opt.label}
+              className={"pse-icon-btn pse-stem-btn" + (active ? " is-on" : "")}
+              onClick={() => onChange(opt.id)}
+            >
+              <svg width="36" height="10" viewBox="0 0 36 10" aria-hidden="true">
+                <line
+                  x1="2"
+                  y1="5"
+                  x2="34"
+                  y2="5"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeDasharray={opt.dash}
+                  strokeLinecap="round"
+                />
+              </svg>
+            </button>
+          );
+        })}
+      </div>
+    </FieldGroup>
+  );
+}
+
 interface ArrowBodyProps {
   style: ArrowToolStyle;
   onStyleFieldChange: ToolStylePopoverProps["onStyleFieldChange"];
@@ -809,37 +859,12 @@ function ArrowBody({ style, onStyleFieldChange }: ArrowBodyProps): ReactElement 
           })}
         </div>
       </FieldGroup>
-      <FieldGroup label="Stem style" testid="arrow-stem-style">
-        <div className="pse-icon-row" role="radiogroup" aria-label="Stem style">
-          {STEM_STYLES.map((opt) => {
-            const active = style.stemStyle === opt.id;
-            return (
-              <button
-                key={opt.id}
-                type="button"
-                role="radio"
-                aria-checked={active}
-                aria-label={opt.label}
-                className={"pse-icon-btn pse-stem-btn" + (active ? " is-on" : "")}
-                onClick={() => onStyleFieldChange("stemStyle", opt.id)}
-              >
-                <svg width="36" height="10" viewBox="0 0 36 10" aria-hidden="true">
-                  <line
-                    x1="2"
-                    y1="5"
-                    x2="34"
-                    y2="5"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeDasharray={opt.dash}
-                    strokeLinecap="round"
-                  />
-                </svg>
-              </button>
-            );
-          })}
-        </div>
-      </FieldGroup>
+      <StrokeStyleRow
+        label="Stem style"
+        testid="arrow-stem-style"
+        value={style.stemStyle}
+        onChange={(v) => onStyleFieldChange("stemStyle", v)}
+      />
       <FieldGroup label="" testid="arrow-double-ended">
         <label className="pse-checkbox">
           <input
@@ -981,6 +1006,17 @@ function ShapeBody({ style, onStyleFieldChange }: ShapeBodyProps): ReactElement 
         value={style.thickness}
         onChange={(v) => onStyleFieldChange("thickness", v)}
       />
+      {/* A filled shape has no outline stroke to pattern, so the row
+          steps aside while Filled is on — the value is kept, the same
+          way skew is kept for non-parallelograms. */}
+      {style.filled ? null : (
+        <StrokeStyleRow
+          label="Stroke style"
+          testid="shape-stroke-style"
+          value={style.strokeStyle}
+          onChange={(v) => onStyleFieldChange("strokeStyle", v)}
+        />
+      )}
       <FieldGroup label="" testid="shape-filled">
         <label className="pse-checkbox">
           <input

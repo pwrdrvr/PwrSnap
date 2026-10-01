@@ -15,6 +15,7 @@
 
 import {
   isOverlayOutlineMode,
+  isStrokePatternStyle,
   AI_REASONING_EFFORTS,
   AI_SURFACE_IDS,
   BUILT_IN_ACP_AGENT_IDS,
@@ -1239,11 +1240,8 @@ function validateArrowStyle(raw: Record<string, unknown>): PwrSnapError | null {
       return validationError("invalid_editor_arrow_endStyle", "settings:write: editor.toolStyles.arrow.endStyle must be one of filled-triangle/open-triangle/line/dot/bar");
     }
   }
-  if (!isUndefined(raw.stemStyle)) {
-    const v = raw.stemStyle;
-    if (v !== "solid" && v !== "dashed" && v !== "dotted") {
-      return validationError("invalid_editor_arrow_stemStyle", "settings:write: editor.toolStyles.arrow.stemStyle must be solid/dashed/dotted");
-    }
+  if (!isUndefined(raw.stemStyle) && !isStrokePatternStyle(raw.stemStyle)) {
+    return validationError("invalid_editor_arrow_stemStyle", "settings:write: editor.toolStyles.arrow.stemStyle must be solid/dashed/dotted");
   }
   if (!isUndefined(raw.doubleEnded) && !isBoolean(raw.doubleEnded)) {
     return validationError("invalid_editor_arrow_doubleEnded", "settings:write: editor.toolStyles.arrow.doubleEnded must be a boolean");
@@ -1305,6 +1303,9 @@ function validateShapeStyle(raw: Record<string, unknown>): PwrSnapError | null {
   }
   if (!isUndefined(raw.skewDeg) && !isFiniteNumber(raw.skewDeg)) {
     return validationError("invalid_editor_shape_skewDeg", "settings:write: editor.toolStyles.shape.skewDeg must be a finite number");
+  }
+  if (!isUndefined(raw.strokeStyle) && !isStrokePatternStyle(raw.strokeStyle)) {
+    return validationError("invalid_editor_shape_strokeStyle", "settings:write: editor.toolStyles.shape.strokeStyle must be solid/dashed/dotted");
   }
   if (!isUndefined(raw.outline) && !isOverlayOutlineMode(raw.outline)) {
     return validationError("invalid_editor_shape_outline", "settings:write: editor.toolStyles.shape.outline must be auto/white/black/stripe/none");

@@ -28,13 +28,15 @@ import type {
   OverlayOutlineMode,
   OverlayRow,
   OverlayThickness,
-  ShapeKind
+  ShapeKind,
+  ShapeStrokeStyle
 } from "@pwrsnap/shared";
 import {
   CURRENT_ARROW_STYLE_VERSION,
   annotationBasisPx,
   arrowBarEndpoints,
   computeArrowGeometry,
+  computeShapeStrokeDash,
   computeStemDashArray,
   DEFAULT_PARALLELOGRAM_SKEW_DEG,
   outlineHaloColor,
@@ -53,7 +55,9 @@ import {
   readShapeFilled,
   readShapeKind,
   readShapeSkewDeg,
-  readTextWeight
+  readShapeStrokeStyle,
+  readTextWeight,
+  shapeStripeDash
 } from "@pwrsnap/shared";
 import { rectFromDrag, type Draft } from "./editor-types";
 import type { GeometryUpdate, NormalizedPoint, NormalizedRect } from "./useCaptureModel";
@@ -103,6 +107,9 @@ export interface DraftStyle {
   /** Shape-tool only — horizontal skew (degrees) for parallelogram.
    *  Ignored for every other shape kind. */
   skewDeg?: number;
+  /** Shape-tool only — outline stroke pattern for the live-drag
+   *  preview. Mirrors the persisted overlay's `strokeStyle`. */
+  strokeStyle?: ShapeStrokeStyle;
   /** Highlight-tool only — CSS mix-blend-mode for the live-drag
    *  preview. Mirrors the persisted overlay's `blend` field. */
   highlightBlend?: "multiply" | "screen" | "overlay";
@@ -335,6 +342,7 @@ export function OverlaySvg({
                 color={data.color}
                 thickness={data.thickness}
                 filled={readShapeFilled(data)}
+                strokeStyle={readShapeStrokeStyle(data)}
                 outline={data.outline}
                 outlineAuto={data.outlineAuto}
                 imageWidthPx={imageWidthPx}
@@ -454,6 +462,7 @@ export function OverlaySvg({
                 color={draftStyle?.color}
                 thickness={draftStyle?.thickness}
                 filled={draftStyle?.filled ?? false}
+                strokeStyle={draftStyle?.strokeStyle}
                 outline={draftStyle?.outline}
                 outlineAuto={draftStyle?.outlineAuto}
                 imageWidthPx={imageWidthPx}
@@ -1067,6 +1076,7 @@ function ShapeGlyph({
   color,
   thickness,
   filled = false,
+  strokeStyle = "solid",
   outline,
   outlineAuto,
   isDraft = false
@@ -1104,6 +1114,9 @@ function ShapeGlyph({
    *  than a stroke-only outline. Legacy filled shapes skip the halo;
    *  an explicit Border setting draws a contrast RIM under the fill. */
   filled?: boolean | undefined;
+  /** Outline stroke pattern. Inert while `filled` (there is no outline
+   *  stroke to pattern). Missing → solid, the legacy look. */
+  strokeStyle?: ShapeStrokeStyle | undefined;
   /** Contrast-border mode from the row (or the draft style). Missing
    *  → legacy behavior via `readOverlayOutline` (stroked: white halo;
    *  filled: no rim). */
@@ -1131,6 +1144,19 @@ function ShapeGlyph({
   const ry = rect.y * imageHeightPx;
   const rw = rect.w * imageWidthPx;
   const rh = rect.h * imageHeightPx;
+  // Outline stroke pattern — mirrors compose.ts shapeSvg (keep in
+  // sync): every corner mid-dash, carried by the halo too, and
+  // round-capped so a dotted dash renders as a dot. Memoized: the list
+  // has one pair per dash, and every glyph re-renders on each pointer
+  // move of any drag, though only the dragged one changes shape. Filled
+  // shapes have no outline to pattern.
+  const strokeDash = useMemo(
+    () =>
+      filled
+        ? null
+        : computeShapeStrokeDash(strokeStyle, shape, rw, rh, skewDeg, strokeWidthPx),
+    [filled, strokeStyle, shape, rw, rh, skewDeg, strokeWidthPx]
+  );
   const accent =
     color !== undefined && color !== "auto"
       ? color
@@ -1156,7 +1182,8 @@ function ShapeGlyph({
   function strokedPrimitive(
     stroke: string,
     strokeWidth: number,
-    dasharray?: string
+    dasharray?: string,
+    dashoffset?: number
   ): ReactElement {
     switch (shape) {
       case "circle":
@@ -1175,6 +1202,7 @@ function ShapeGlyph({
             strokeWidth={strokeWidth}
             strokeLinejoin="round"
             strokeDasharray={dasharray}
+            strokeDashoffset={dashoffset}
           />
         );
       case "parallelogram": {
@@ -1203,6 +1231,7 @@ function ShapeGlyph({
             strokeWidth={strokeWidth}
             strokeLinejoin="round"
             strokeDasharray={dasharray}
+            strokeDashoffset={dashoffset}
           />
         );
       }
@@ -1220,6 +1249,7 @@ function ShapeGlyph({
             strokeWidth={strokeWidth}
             strokeLinejoin="round"
             strokeDasharray={dasharray}
+            strokeDashoffset={dashoffset}
           />
         );
     }
@@ -1291,19 +1321,38 @@ function ShapeGlyph({
       </g>
     );
   }
+  const dashArray = strokeDash?.dasharray;
+  const dashOffset =
+    strokeDash === null || strokeDash.dashoffset === 0 ? undefined : strokeDash.dashoffset;
+  const strokeGroupProps =
+    strokeDash === null
+      ? wrapperProps
+      : { ...wrapperProps, strokeLinecap: "round" as const };
   if (resolvedOutline.kind === "none") {
-    return <g {...wrapperProps}>{strokedPrimitive(accent, strokeWidthPx)}</g>;
+    return (
+      <g {...strokeGroupProps}>
+        {strokedPrimitive(accent, strokeWidthPx, dashArray, dashOffset)}
+      </g>
+    );
   }
-  const stripeDash =
-    resolvedOutline.kind === "stripe"
-      ? outlineStripeDashArray(strokeWidthPx + outlineWidthPx * 2)
-      : null;
+  const haloWidthPx = strokeWidthPx + outlineWidthPx * 2;
+  const stripe =
+    resolvedOutline.kind !== "stripe"
+      ? null
+      : strokeDash !== null && strokeStyle !== "solid"
+        ? shapeStripeDash(strokeDash, strokeStyle)
+        : { dasharray: outlineStripeDashArray(haloWidthPx), dashoffset: 0 };
   return (
-    <g {...wrapperProps}>
-      {strokedPrimitive(haloColor, strokeWidthPx + outlineWidthPx * 2)}
-      {stripeDash !== null &&
-        strokedPrimitive("black", strokeWidthPx + outlineWidthPx * 2, stripeDash)}
-      {strokedPrimitive(accent, strokeWidthPx)}
+    <g {...strokeGroupProps}>
+      {strokedPrimitive(haloColor, haloWidthPx, dashArray, dashOffset)}
+      {stripe !== null &&
+        strokedPrimitive(
+          "black",
+          haloWidthPx,
+          stripe.dasharray,
+          stripe.dashoffset === 0 ? undefined : stripe.dashoffset
+        )}
+      {strokedPrimitive(accent, strokeWidthPx, dashArray, dashOffset)}
     </g>
   );
 }

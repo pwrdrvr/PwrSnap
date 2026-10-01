@@ -221,6 +221,54 @@ test("editor-shape-tool: drawing a circle paints an <ellipse> in the persisted g
   }
 });
 
+test("editor-shape-tool: a dashed Stroke style is stamped on the committed shape and painted", async () => {
+  // The draft previews from the active style, so only the COMMITTED row
+  // proves the commit carries the pick: a commit that dropped
+  // strokeStyle would preview dashed and then snap solid on pointerup.
+  const app = await launchPwrSnap();
+  try {
+    const captureId = await seedImageCapture(app, { idPrefix: "shape", sourceAppName: "Shape Tool Spec" });
+    const editorWindow = await openEditor(app, captureId);
+
+    await selectTool(editorWindow, "shape");
+    await openToolStyleBar(editorWindow);
+    const strokeRow = editorWindow.locator('[data-testid="shape-stroke-style"]');
+    await strokeRow.locator('[aria-label="Dashed"]').click();
+    await expect(strokeRow.locator('[aria-label="Dashed"][aria-checked="true"]')).toHaveCount(1);
+
+    const canvas = editorWindow.locator(".editor-canvas");
+    await canvas.waitFor({ state: "visible", timeout: 5_000 });
+    const box = await canvas.boundingBox();
+    if (box === null) throw new Error("canvas has no bbox");
+    await editorWindow.mouse.move(box.x + box.width * 0.25, box.y + box.height * 0.25);
+    await editorWindow.mouse.down();
+    await editorWindow.mouse.move(box.x + box.width * 0.6, box.y + box.height * 0.55, {
+      steps: 10
+    });
+    await editorWindow.mouse.up();
+
+    await expect
+      .poll(async () => {
+        const list = await app.dispatch("layers:list", { captureId });
+        if (!list.ok) return null;
+        const layer = list.value.find(
+          (candidate) => candidate.kind === "vector" && candidate.shape.kind === "shape"
+        );
+        return layer?.kind === "vector" && layer.shape.kind === "shape"
+          ? (layer.shape.strokeStyle ?? "absent")
+          : null;
+      })
+      .toBe("dashed");
+
+    // Halo + colored stroke both carry the pattern on the persisted glyph.
+    await expect(
+      editorWindow.locator('[data-testid="persisted-glyph-svg"] rect[stroke-dasharray]')
+    ).toHaveCount(2, { timeout: 15_000 });
+  } finally {
+    await app.close();
+  }
+});
+
 // ---- Shared helpers (mirror editor-tool-styles.spec.ts) --------------
 
 async function closeEditorWindow(app: LaunchedApp, win: Page): Promise<void> {

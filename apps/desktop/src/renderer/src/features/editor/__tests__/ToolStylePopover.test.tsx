@@ -144,7 +144,7 @@ function makeSettings(overrides?: {
           outline: "auto"
         },
         text: { color: "accent", fontSize: "auto", weight: "regular", outline: "auto" },
-        shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15, outline: "auto" },
+        shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15, strokeStyle: "solid", outline: "auto" },
         blur: { mode: "gaussian", radius: { mode: "auto" } },
         highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
       },
@@ -189,6 +189,7 @@ const DEFAULT_RECT_STYLE: ShapeToolStyle = {
   color: "accent",
   thickness: "auto",
   filled: false, shape: "rect", skewDeg: 15,
+  strokeStyle: "solid",
   outline: "auto"
 };
 const DEFAULT_BLUR_STYLE: BlurToolStyle = {
@@ -602,6 +603,36 @@ describe("ToolStylePopover", () => {
     expect(openTriangleBtn).not.toBeNull();
     fireClick(openTriangleBtn!);
     expect(onChange).toHaveBeenCalledWith("endStyle", "open-triangle");
+  });
+
+  test("8a. shape stroke style row reuses the arrow's icons and emits strokeStyle", () => {
+    const onChange = vi.fn();
+    render(
+      createElement(Harness, {
+        tool: "shape",
+        style: { ...DEFAULT_RECT_STYLE, strokeStyle: "dashed" },
+        onStyleFieldChange: onChange
+      })
+    );
+    const group = queryPopover().querySelector('[data-testid="shape-stroke-style"]');
+    expect(group).not.toBeNull();
+    const labels = Array.from(group!.querySelectorAll('[role="radio"]')).map((b) =>
+      b.getAttribute("aria-label")
+    );
+    expect(labels).toEqual(["Solid", "Dashed", "Dotted"]);
+    expect(group!.querySelector('[aria-label="Dashed"]')!.getAttribute("aria-checked")).toBe("true");
+    fireClick(group!.querySelector('[aria-label="Dotted"]')!);
+    expect(onChange).toHaveBeenCalledWith("strokeStyle", "dotted");
+  });
+
+  test("8b. a filled shape has no outline to pattern, so the stroke style row steps aside", () => {
+    render(
+      createElement(Harness, {
+        tool: "shape",
+        style: { ...DEFAULT_RECT_STYLE, filled: true }
+      })
+    );
+    expect(queryPopover().querySelector('[data-testid="shape-stroke-style"]')).toBeNull();
   });
 
   test("9. arrow double-ended checkbox click → onStyleFieldChange('doubleEnded', true)", () => {

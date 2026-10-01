@@ -44,7 +44,12 @@ function outlineForText(mode: OverlayOutlineMode): OverlayOutlineMode {
  *     the slot's color. Blur has no color and gives none.
  *   • thickness — shared by arrows and shapes (the same stroke ladder).
  *   • outline — shared by arrows, shapes and text.
- *   • arrow heads (endStyle, stemStyle, doubleEnded) — arrow → arrow.
+ *   • dash pattern — shared by arrows and shapes, under two names: an
+ *     arrow's `stemStyle` IS a shape's `strokeStyle` (same solid /
+ *     dashed / dotted value space). A dashed arrow slot pasted onto a
+ *     box makes the box dashed, and a dotted box slot pasted onto an
+ *     arrow makes its stem dotted.
+ *   • arrow heads (endStyle, doubleEnded) — arrow → arrow.
  *   • fill — shape → shape. The target keeps its geometric kind: a paste
  *     restyles a circle, it never turns it into the slot's rectangle.
  *   • text size + weight — text → text.
@@ -75,6 +80,8 @@ export function slotFieldsForLayer(
     (target === "arrow" || target === "shape")
   ) {
     fields.push(["thickness", slot.style.thickness]);
+    const dash = slot.tool === "arrow" ? slot.style.stemStyle : slot.style.strokeStyle;
+    fields.push([target === "arrow" ? "stemStyle" : "strokeStyle", dash]);
   }
 
   if (
@@ -90,7 +97,6 @@ export function slotFieldsForLayer(
   if (slot.tool === "arrow" && target === "arrow") {
     fields.push(
       ["endStyle", slot.style.endStyle],
-      ["stemStyle", slot.style.stemStyle],
       ["doubleEnded", slot.style.doubleEnded]
     );
   }

@@ -66,6 +66,7 @@ import {
   readShapeFilled,
   readShapeKind,
   readShapeSkewDeg,
+  readShapeStrokeStyle,
   readHighlightOpacity,
   readOverlayRotation,
   readTextWeight,
@@ -336,6 +337,7 @@ function resolveDraftStyleForActiveTool(
         filled: activeStyle.style.filled,
         shape: activeStyle.style.shape,
         skewDeg: activeStyle.style.skewDeg,
+        strokeStyle: activeStyle.style.strokeStyle,
         outline: activeStyle.style.outline
       };
     case "highlight":
@@ -624,6 +626,9 @@ function selectedOverlayToToolStyle(
           readShapeKind(data) === "parallelogram"
             ? readShapeSkewDeg(data)
             : defaults.shape.skewDeg,
+        // Legacy rows have no field and paint solid — project what is
+        // painted, not the active tool's default.
+        strokeStyle: readShapeStrokeStyle(data),
         // Legacy stroked shapes paint the white halo; legacy filled
         // shapes paint no rim (Off is the honest projection).
         outline: data.outline ?? (readShapeFilled(data) ? "none" : "white")
@@ -3221,6 +3226,7 @@ export function Editor({
           thickness: shapeStyleSrc.thickness,
           filled: shapeStyleSrc.filled,
           shape: shapeStyleSrc.shape,
+          strokeStyle: shapeStyleSrc.strokeStyle,
           // Border mode + sampled Auto pick — see the arrow commit.
           outline: shapeStyleSrc.outline
         };

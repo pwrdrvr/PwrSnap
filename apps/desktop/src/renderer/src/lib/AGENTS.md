@@ -35,6 +35,22 @@ will try them. A popover that holds a text field or step buttons is not a
 menu, and can't honour that promise. `ZoomMenu` was `role="menu"` and is a
 `role="dialog"` now.
 
+## A menu shows a ring only for the keyboard
+
+A right-click menu opens with focus on the menu itself (no outline), not on
+its first row. From the keyboard it opens on the first row. The pointer
+selects what it is over: moving onto a row focuses it with
+`focusVisible: false`, so the arrow keys carry on from that row, and the ring
+appears on the next key press. A submenu opened by hover leaves focus on its
+row. ArrowRight, Enter or Space goes in.
+
+Before this, a right-click put a ring on the first row ("Edit") while the
+pointer was elsewhere, and hovering into a submenu moved the ring onto its
+first row. Whether either ring showed was Chromium's `:focus-visible` guess
+from the last input, so one click in the menu made them vanish. The last
+input is tracked in `useMenuNavigation` (`lastInput`, `lastMenuInput()`), and
+the hook decides. Chromium's heuristic no longer does.
+
 ## Escape: one owner, and the key goes no further
 
 `useDismissable` has **one** module-level listener. For each keypress it

@@ -16,6 +16,8 @@ let host: HTMLDivElement | null = null;
 let root: Root | null = null;
 
 afterEach(async () => {
+  // The hook remembers the last input module-wide; start every test from a key.
+  window.dispatchEvent(new KeyboardEvent("keydown", { key: "Shift" }));
   await act(async () => root?.unmount());
   host?.remove();
   host = null;
@@ -131,6 +133,36 @@ describe("useMenuNavigation", () => {
     expect((await press("ArrowDown")).defaultPrevented).toBe(true);
     byId("opener").focus();
     expect((await press("ArrowDown")).defaultPrevented).toBe(false);
+  });
+
+  test("a right-click opens on the menu itself and lights no row; ArrowDown starts at the top", async () => {
+    await render(<Harness />);
+    const opener = byId("opener");
+    await act(async () => {
+      opener.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      opener.click();
+    });
+    expect(document.activeElement).toBe(byId("menu"));
+    // Still one Tab stop, on the first row.
+    expect(byId("cut").tabIndex).toBe(0);
+    await press("ArrowDown");
+    expect(document.activeElement).toBe(byId("cut"));
+  });
+
+  test("the pointer selects the row it moves onto, without a ring, and the arrows carry on from it", async () => {
+    await openMenu();
+    const copy = byId("copy");
+    const focus = vi.spyOn(copy, "focus");
+    await act(async () => {
+      copy.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+    });
+    expect(document.activeElement).toBe(copy);
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true, focusVisible: false });
+    expect(copy.tabIndex).toBe(0);
+    expect(byId("cut").tabIndex).toBe(-1);
+    // Disabled "Paste" is skipped, as from the keyboard.
+    await press("ArrowDown");
+    expect(document.activeElement).toBe(byId("delete"));
   });
 
   test("Tab closes the menu and hands focus back to the opener, for the browser's step on", async () => {

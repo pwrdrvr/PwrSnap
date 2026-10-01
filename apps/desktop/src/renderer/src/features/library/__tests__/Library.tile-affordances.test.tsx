@@ -690,6 +690,41 @@ describe("capture tile context menu — duplicate", () => {
     expect(submenuOf(menu)).toBeNull();
   });
 
+  test("hover opens the submenu without taking focus into it; a click keeps it open; a key off the row closes it", async () => {
+    editSummaryResult = withEdits;
+    await renderLibrary();
+    const menu = await openMenu();
+    const duplicate = Array.from(
+      menu.querySelectorAll<HTMLElement>('[aria-haspopup="menu"]')
+    ).find((el) => el.textContent?.includes("Duplicate") && !el.textContent.includes("Copy"))!;
+    await act(async () => {
+      duplicate.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+      duplicate.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      duplicate.dispatchEvent(new MouseEvent("mouseenter"));
+      await Promise.resolve();
+    });
+    const sub = submenuOf(menu);
+    expect(sub).not.toBeNull();
+    // The row the pointer is on keeps focus; nothing in the submenu is lit.
+    expect(document.activeElement).toBe(duplicate);
+
+    // A pointer click on the open row used to toggle the submenu shut.
+    await act(async () => {
+      duplicate.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+      await Promise.resolve();
+    });
+    expect(submenuOf(menu)).toBe(sub);
+
+    await act(async () => {
+      duplicate.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })
+      );
+      await Promise.resolve();
+    });
+    expect(document.activeElement).toBe(rowByLabel(menu, "Copy Low"));
+    expect(submenuOf(menu)).toBeNull();
+  });
+
   test("ArrowRight on a row whose submenu the pointer opened enters it rather than closing it", async () => {
     editSummaryResult = withEdits;
     await renderLibrary();

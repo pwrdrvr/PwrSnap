@@ -16,7 +16,7 @@
 
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { LayerContextMenu } from "../LayerContextMenu";
 import type {
   LayerContextMenuItem,
@@ -341,6 +341,13 @@ describe("LayerContextMenu — the role=\"menu\" keyboard contract", () => {
     });
     return e;
   }
+
+  // A menu opened from the keyboard. The hook remembers the last input
+  // module-wide, and the dismissal tests above end on a mousedown — which
+  // opens a menu on its root instead (see useMenuNavigation's `lastInput`).
+  beforeEach(() => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Shift" }));
+  });
 
   test("focus lands on the first enabled row, and the menu is ONE Tab stop", async () => {
     const { rootEl } = await renderMenu(ITEMS);

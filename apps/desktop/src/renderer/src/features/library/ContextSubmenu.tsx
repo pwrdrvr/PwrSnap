@@ -5,13 +5,15 @@
 // `useMenuNavigation` filters each menu to its own rows. Keyboard follows
 // the APG: ArrowRight / Enter / Space on the row opens it and focuses its
 // first item, ArrowLeft or Escape closes it and puts focus back on the row.
-// Pointer: hovering the row opens it; the parent closes it when the pointer
-// moves onto another of its rows (`onMouseOver` there).
+// Pointer: hovering the row opens it WITHOUT moving focus into it, as a
+// native submenu does — the row keeps focus, and ArrowRight enters. The parent
+// closes it when the pointer moves onto another of its rows (`onMouseOver`
+// there); a keyboard move off the row closes it here.
 
 import { useRef, type ReactNode, type RefObject } from "react";
 
 import { useDismissable } from "../../lib/useDismissable";
-import { useMenuNavigation } from "../../lib/useMenuNavigation";
+import { lastMenuInput, useMenuNavigation } from "../../lib/useMenuNavigation";
 
 export function ContextSubmenuRow({
   label,
@@ -31,7 +33,18 @@ export function ContextSubmenuRow({
 }) {
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   return (
-    <div className="psl__context-menu-sub">
+    <div
+      className="psl__context-menu-sub"
+      onBlur={(event) => {
+        // The pointer crossing another row is the parent's call, after its
+        // hover-intent delay; only a key that takes focus off the row and
+        // its submenu closes it straight away.
+        if (!open || lastMenuInput() !== "keyboard") return;
+        const next = event.relatedTarget;
+        if (next instanceof Node && event.currentTarget.contains(next)) return;
+        onClose();
+      }}
+    >
       <button
         ref={triggerRef}
         type="button"
@@ -39,7 +52,19 @@ export function ContextSubmenuRow({
         aria-haspopup="menu"
         aria-expanded={open}
         className="psl__context-menu-row psl__context-menu-row--sub"
-        onClick={() => (open ? onClose() : onOpen())}
+        onClick={(event) => {
+          if (!open) {
+            onOpen();
+            return;
+          }
+          // Open already (hover opened it). A pointer click leaves it open —
+          // it used to toggle it shut under the cursor. Enter or Space
+          // (`detail === 0`) goes in, as ArrowRight does.
+          if (event.detail !== 0) return;
+          event.currentTarget.parentElement
+            ?.querySelector<HTMLElement>('[role="menu"] [role="menuitem"]')
+            ?.focus();
+        }}
         onMouseEnter={() => {
           if (!open) onOpen();
         }}
@@ -73,7 +98,14 @@ function ContextSubmenu({
 }) {
   const menuRef = useRef<HTMLDivElement | null>(null);
   useDismissable({ open: true, onDismiss: onClose, surfaceRef: menuRef, triggerRef });
-  useMenuNavigation({ open: true, menuRef, onClose, onBack: onClose });
+  useMenuNavigation({
+    open: true,
+    menuRef,
+    onClose,
+    onBack: onClose,
+    keepFocusOnPointerOpen: true,
+    returnFocusRef: triggerRef
+  });
   return (
     <div
       ref={menuRef}

@@ -131,8 +131,20 @@ one never reaches another. Lineage is two plain columns, `family_id` (the
 root's id) and `duplicated_from`. They are deliberately NOT foreign keys: a
 purged original must leave its copies' family intact. Both are mirrored in
 the bundle manifest, following the rule that SQLite is an index and the bundle
-holds the user's work. No import or reindex path reads them back yet
-(`capture/capture-duplicate.ts`,
+holds the user's work, and both are read back from it
+(`persistence/capture-lineage.ts`). Capture ids are global, so a manifest's
+lineage ids are kept as they are. A `.pwrsnap` imported from another machine
+keeps a foreign `family_id`, and later imports of its siblings or its root
+regroup under it. The root's own row decides the family: a root already in
+the library with no family is rooted, as duplicating it would. An import
+remapped to a new id because the library already holds that id is recorded as
+a copy of the capture that holds it, and the manifest written for it says so
+under the new id. An edge that would close a `duplicated_from` cycle is
+dropped. The boot filename pass already reads every live bundle's manifest,
+and it fills lineage a rebuilt or restored database lost. It only fills empty
+columns: where the row and its manifest disagree, the row wins and the
+disagreement is logged. Videos have no bundle, so their lineage lives only in
+SQLite (`capture/capture-duplicate.ts`,
 `persistence/capture-families-repo.ts`). The duplicate verbs are bus
 commands for the Library only, and none of them is exposed as an MCP tool.
 

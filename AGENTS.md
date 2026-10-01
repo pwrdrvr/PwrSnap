@@ -1140,7 +1140,12 @@ and [stroke-bake.test.ts](apps/desktop/src/main/render/__tests__/stroke-bake.tes
   shape and never a bag slot (settings refuse one). Each piece it leaves
   keeps the original's z_index and, for spray, records `seedOffset` so the
   surviving dots stay where they were. One eraser drag is ONE undo step
-  (the `replace` op in `useUndoRedo.ts`).
+  (the `replace` op in `useUndoRedo.ts`). The original is deleted only
+  after EVERY piece is written. The first build deleted it regardless,
+  and every piece was being refused (a 21-char `nanoid()` id; the bundle
+  schema takes 16), so one swipe erased the whole stroke. The jsdom test
+  missed that because its dispatch stub accepted anything; it now
+  validates upserts against `BundleLayerNode`.
 - **A Draw press does not select what it lands on.** Freehand marks go on
   top of other annotations, and the eraser is dragged across strokes on
   purpose. A finished stroke is not auto-selected either, unlike the other

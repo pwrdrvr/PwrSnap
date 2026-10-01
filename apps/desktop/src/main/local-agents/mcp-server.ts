@@ -54,6 +54,7 @@ import type {
 } from "./local-agent-consent-broker";
 import {
   captureNotBefore,
+  isCapturedAtOrAfter,
   limitLocalAgentMcpList,
   localAgentMcpResultLimit,
   localAgentSearchOrder,
@@ -1004,12 +1005,9 @@ export class LocalAgentMcpServer {
         message: "the local-agent role has no capture-age policy"
       };
     }
-    if (context.maxCaptureAgeDays === null) return null;
-    const capturedAt = this.captureCapturedAt(captureId);
-    const capturedAtMs = capturedAt === null ? Number.NaN : Date.parse(capturedAt);
-    const notBeforeMs =
-      Date.now() - context.maxCaptureAgeDays * 24 * 60 * 60 * 1_000;
-    if (!Number.isFinite(capturedAtMs) || capturedAtMs < notBeforeMs) {
+    const notBefore = captureNotBefore(context.maxCaptureAgeDays);
+    if (notBefore === undefined) return null;
+    if (!isCapturedAtOrAfter(this.captureCapturedAt(captureId), notBefore)) {
       return {
         kind: "permission",
         code: "capture_outside_role_scope",
@@ -1287,7 +1285,6 @@ function isLoopbackRemoteAddress(address: string | undefined): boolean {
   );
 }
 
-
 function usageActionForTool(toolName: string): LocalAgentUsageAction | null {
   switch (toolName) {
     case "pwrsnap_library_search":
@@ -1317,7 +1314,12 @@ function shouldKeepUsageReservation(
   toolName: string,
   result: Result<unknown, PwrSnapError>
 ): boolean {
-  if (!result.ok) return false;
+  // An abandoned wait does not stop the copy: it still commits a whole
+  // bundle or recording, so it spends the budget. Releasing it would let an
+  // agent copy without limit by cancelling every request.
+  if (!result.ok) {
+    return toolName === "pwrsnap_capture_duplicate" && result.error.code === "aborted";
+  }
   if (
     toolName === "pwrsnap_capture_delete_to_trash" &&
     typeof result.value === "object" &&

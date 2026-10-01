@@ -20,8 +20,9 @@ import {
 } from "./mcp-resource-registry";
 import {
   captureNotBefore,
-  limitLocalAgentMcpList,
+  isCapturedAtOrAfter,
   localAgentMcpResultLimit,
+  pageLocalAgentMcpList,
   projectLocalAgentCapture,
   projectLocalAgentSearchRows
 } from "./local-agent-search";
@@ -128,13 +129,13 @@ export class LocalAgentToolService {
   }
 
   async captureFamilies(
-    input: { limit?: number | undefined },
+    input: { limit?: number | undefined; offset?: number | undefined },
     ctx: LocalAgentToolContext
   ): Promise<Result<unknown, PwrSnapError>> {
     const listed = await bus.dispatch("library:families", {}, ctx.commandContext);
     if (!listed.ok) return listed;
     const notBefore = captureNotBefore(ctx.commandContext.localAgent?.maxCaptureAgeDays);
-    const limit = localAgentMcpResultLimit(input);
+    const end = (input.offset ?? 0) + localAgentMcpResultLimit(input);
     const families: Array<{
       familyId: string;
       rootId: string | null;
@@ -147,9 +148,9 @@ export class LocalAgentToolService {
     // visible, so filtering keeps the order and the walk can stop one past
     // the page. Families are rare (one per duplicated snap).
     for (const family of listed.value.families) {
-      if (families.length > limit) break;
+      if (families.length > end) break;
       if (family.liveCount === 0) continue;
-      if (notBefore !== undefined && !isAtOrAfter(family.newestCapturedAt, notBefore)) {
+      if (notBefore !== undefined && !isCapturedAtOrAfter(family.newestCapturedAt, notBefore)) {
         continue;
       }
       const members = await this.visibleFamilyMembers(family.familyId, ctx, notBefore);
@@ -162,20 +163,19 @@ export class LocalAgentToolService {
           : null,
         memberIds: members.value.map((member) => member.id),
         memberCount: members.value.length,
-        newestCapturedAt: members.value.reduce(
-          (newest, member) => member.captured_at > newest ? member.captured_at : newest,
-          ""
-        )
+        // Oldest first, so the last member is the newest.
+        newestCapturedAt: members.value[members.value.length - 1]?.captured_at ?? ""
       });
     }
-    const page = limitLocalAgentMcpList(families, input);
-    return ok({ families: page.items, limit: page.limit, hasMore: page.hasMore });
+    const page = pageLocalAgentMcpList(families, input);
+    return ok({ families: page.items, ...page.cursor });
   }
 
   async captureFamily(
     input: {
       familyId: string;
       limit?: number | undefined;
+      offset?: number | undefined;
       detail?: "summary" | "enriched" | undefined;
     },
     ctx: LocalAgentToolContext
@@ -192,7 +192,7 @@ export class LocalAgentToolService {
         message: `capture family not found: ${input.familyId}`
       });
     }
-    const page = limitLocalAgentMcpList(members.value, input);
+    const page = pageLocalAgentMcpList(members.value, input);
     const detail = input.detail ?? "summary";
     const withMetadata = await bus.dispatch(
       "library:listByIdsWithMetadata",
@@ -209,8 +209,7 @@ export class LocalAgentToolService {
     return ok({
       familyId: input.familyId,
       detail,
-      limit: page.limit,
-      hasMore: page.hasMore,
+      ...page.cursor,
       members: projected.map((row, index) => ({
         ...row,
         isRoot: row.id === input.familyId,
@@ -231,7 +230,7 @@ export class LocalAgentToolService {
       family.value.members.filter(
         (member) =>
           member.deleted_at === null &&
-          (notBefore === undefined || isAtOrAfter(member.captured_at, notBefore))
+          (notBefore === undefined || isCapturedAtOrAfter(member.captured_at, notBefore))
       )
     );
   }
@@ -879,11 +878,4 @@ function trashed(captureId: string): Result<never, PwrSnapError> {
     code: "trashed",
     message: `capture is in Trash: ${captureId}`
   });
-}
-
-/** Same rule as the server's per-capture age check: an unparseable
- *  timestamp is outside the window, never inside it. */
-function isAtOrAfter(capturedAt: string, notBefore: string): boolean {
-  const capturedAtMs = Date.parse(capturedAt);
-  return Number.isFinite(capturedAtMs) && capturedAtMs >= Date.parse(notBefore);
 }

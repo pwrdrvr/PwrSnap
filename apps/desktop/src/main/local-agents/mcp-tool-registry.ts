@@ -297,13 +297,14 @@ export function createDefaultLocalAgentMcpTools(deps: {
     ctx: LocalAgentToolContext
   ) => Promise<Result<unknown, PwrSnapError>>;
   captureFamilies?: (
-    input: { limit?: number | undefined },
+    input: { limit?: number | undefined; offset?: number | undefined },
     ctx: LocalAgentToolContext
   ) => Promise<Result<unknown, PwrSnapError>>;
   captureFamily?: (
     input: {
       familyId: string;
       limit?: number | undefined;
+      offset?: number | undefined;
       detail?: "summary" | "enriched" | undefined;
     },
     ctx: LocalAgentToolContext
@@ -629,6 +630,9 @@ export function createDefaultLocalAgentMcpTools(deps: {
       dispatch: deps.captureEditSummary
     });
   }
+  const familyOffsetSchema = z.number().int().min(0).max(100_000)
+    .describe("Skip this many entries. Pass nextOffset from the previous page; defaults to 0.")
+    .optional();
   if (deps.captureFamilies !== undefined) {
     tools.push({
       name: "pwrsnap_capture_families",
@@ -640,7 +644,8 @@ export function createDefaultLocalAgentMcpTools(deps: {
       inputSchema: {
         limit: z.number().int().min(1).max(LOCAL_AGENT_MCP_MAX_LIMIT)
           .describe(`Maximum families to return. Defaults to ${LOCAL_AGENT_MCP_DEFAULT_LIMIT}.`)
-          .optional()
+          .optional(),
+        offset: familyOffsetSchema
       },
       requiredCapabilities: ["library.read"],
       annotations: {
@@ -664,6 +669,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
         limit: z.number().int().min(1).max(LOCAL_AGENT_MCP_MAX_LIMIT)
           .describe(`Maximum members to return. Defaults to ${LOCAL_AGENT_MCP_DEFAULT_LIMIT}.`)
           .optional(),
+        offset: familyOffsetSchema,
         detail: z.enum(["summary", "enriched"])
           .describe("summary (default) omits generated text; enriched includes title, description and tags.")
           .optional()

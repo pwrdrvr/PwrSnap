@@ -495,6 +495,9 @@ describe("duplicate and family tools", () => {
     expect(familySchema.safeParse({}).success).toBe(false);
     expect(familySchema.safeParse({ familyId: "x".repeat(65) }).success).toBe(false);
     expect(familySchema.safeParse({ familyId: "fam_1", detail: "full" }).success).toBe(false);
+    expect(familySchema.safeParse({ familyId: "fam_1", offset: 25 }).success).toBe(true);
+    expect(familySchema.safeParse({ familyId: "fam_1", offset: -1 }).success).toBe(false);
+    expect(z.object(families.inputSchema).safeParse({ offset: 1.5 }).success).toBe(false);
   });
 
   test("duplicate is a capture.edit write that a read-only grant cannot call", () => {

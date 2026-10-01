@@ -69,6 +69,23 @@ export function limitLocalAgentMcpList<T>(
   };
 }
 
+/** An offset page, for lists with no filter that could narrow them. */
+export function pageLocalAgentMcpList<T>(
+  items: readonly T[],
+  input: { limit?: number | undefined; offset?: number | undefined }
+): {
+  items: T[];
+  cursor: { limit: number; offset: number; hasMore: boolean; nextOffset: number | null };
+} {
+  const limit = localAgentMcpResultLimit(input);
+  const offset = input.offset ?? 0;
+  const hasMore = items.length > offset + limit;
+  return {
+    items: items.slice(offset, offset + limit),
+    cursor: { limit, offset, hasMore, nextOffset: hasMore ? offset + limit : null }
+  };
+}
+
 export function toCaptureSearchRequest(
   input: LocalAgentSearchInput,
   options: { notBefore?: string } = {}
@@ -122,6 +139,14 @@ export function captureNotBefore(maxCaptureAgeDays: number | null | undefined): 
   return new Date(
     Date.now() - maxCaptureAgeDays * 24 * 60 * 60 * 1_000
   ).toISOString();
+}
+
+/** Whether a capture falls inside a role's age window. An unparseable or
+ *  missing timestamp is outside it, never inside. The per-capture tool
+ *  check and the family listings both use this, so they cannot drift. */
+export function isCapturedAtOrAfter(capturedAt: string | null, notBefore: string): boolean {
+  const capturedAtMs = capturedAt === null ? Number.NaN : Date.parse(capturedAt);
+  return Number.isFinite(capturedAtMs) && capturedAtMs >= Date.parse(notBefore);
 }
 
 export function searchRangeEndsBefore(

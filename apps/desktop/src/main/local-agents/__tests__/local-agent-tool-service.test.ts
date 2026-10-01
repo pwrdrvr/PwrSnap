@@ -871,8 +871,37 @@ describe("LocalAgentToolService families", () => {
         }
       ],
       limit: 25,
-      hasMore: false
+      offset: 0,
+      hasMore: false,
+      nextOffset: null
     }));
+  });
+
+  test("pages past the first page with offset and nextOffset", async () => {
+    const families: Record<string, any[]> = {};
+    for (const [index, name] of ["cap_a", "cap_b", "cap_c"].entries()) {
+      families[name] = [
+        member(name, { familyId: name, capturedAt: daysAgo(10 + index) }),
+        member(`${name}_copy`, { familyId: name, capturedAt: daysAgo(1 + index) })
+      ];
+    }
+    registerFamilies(families);
+    const reader = context("lag_reader", ["library.read"]);
+
+    const first = await service().captureFamilies({ limit: 2 }, reader);
+    expect(first).toMatchObject({
+      ok: true,
+      value: {
+        families: [{ familyId: "cap_a" }, { familyId: "cap_b" }],
+        hasMore: true,
+        nextOffset: 2
+      }
+    });
+    const second = await service().captureFamilies({ limit: 2, offset: 2 }, reader);
+    expect(second).toMatchObject({
+      ok: true,
+      value: { families: [{ familyId: "cap_c" }], offset: 2, hasMore: false, nextOffset: null }
+    });
   });
 
   test("keeps an age-limited role inside its window and stops one past the page", async () => {
@@ -907,7 +936,8 @@ describe("LocalAgentToolService families", () => {
           { familyId: "cap_new", rootId: null, memberIds: ["cap_new_copy"], memberCount: 1 }
         ],
         limit: 1,
-        hasMore: true
+        hasMore: true,
+        nextOffset: 1
       }
     });
     // Two walked (the page plus one to know there is more); cap_old was never

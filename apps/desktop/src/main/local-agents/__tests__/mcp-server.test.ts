@@ -984,9 +984,11 @@ describe("LocalAgentMcpServer", () => {
     connected: Client;
     duplicated: unknown[];
     reserved: string[];
+    released: string[];
   }> {
     const duplicated: unknown[] = [];
     const reserved: string[] = [];
+    const released: string[] = [];
     await grantService.createGrant({ name: "Duplicating agent", capabilities });
     server = new LocalAgentMcpServer({
       settings,
@@ -997,6 +999,13 @@ describe("LocalAgentMcpServer", () => {
         deleteToTrash: async () => ok({}),
         captureDuplicate: async (input) => {
           duplicated.push(input);
+          if (input.captureId === "cap_abandoned") {
+            return err({
+              kind: "validation",
+              code: "aborted",
+              message: "stopped waiting; the copy continues in PwrSnap as cap_copy"
+            });
+          }
           return input.captureId === "cap_in_trash"
             ? err({
                 kind: "validation",
@@ -1024,7 +1033,9 @@ describe("LocalAgentMcpServer", () => {
           reserved.push(request.action);
           return allowUsageService.reserve(request);
         },
-        release: () => undefined
+        release: (reservationId) => {
+          released.push(reservationId);
+        }
       },
       captureCapturedAt: () => new Date().toISOString()
     });
@@ -1032,9 +1043,29 @@ describe("LocalAgentMcpServer", () => {
     return {
       connected: await connect(address.url, "pws_local_mcp-token"),
       duplicated,
-      reserved
+      reserved,
+      released
     };
   }
+
+  test("an abandoned duplicate still spends the edit budget, because the copy still lands", async () => {
+    const { connected, released } = await startDuplicateServer(["capture.edit"]);
+
+    const refused = await connected.callTool({
+      name: "pwrsnap_capture_duplicate",
+      arguments: { captureId: "cap_in_trash", withEdits: true }
+    }) as CallToolResult;
+    expect(refused.isError).toBe(true);
+    // A refusal wrote nothing, so its reservation goes back.
+    expect(released).toHaveLength(1);
+
+    const abandoned = await connected.callTool({
+      name: "pwrsnap_capture_duplicate",
+      arguments: { captureId: "cap_abandoned", withEdits: true }
+    }) as CallToolResult;
+    expect(abandoned.isError).toBe(true);
+    expect(released).toHaveLength(1);
+  });
 
   test("a read-only grant cannot duplicate, but may read the edit summary", async () => {
     const { connected, duplicated } = await startDuplicateServer(["library.read"]);

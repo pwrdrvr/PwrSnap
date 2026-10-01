@@ -7,10 +7,12 @@
 // `duplicate_capture`) wait here for the commit.
 //
 // This waits over the BUS, not on `waitForDuplicateJob`. In split mode
-// `capture:*` is agent-owned: the job registry lives in the agent process,
-// while the MCP server runs in the Library's, where a direct wait finds no
-// job and resolves null at once.
+// `capture:*` and its job registry are agent-owned. The MCP server runs in
+// the agent too, but the in-app chat (`codex:libraryChat:*`) runs in the
+// Library's process, where a direct wait finds no job and resolves null at
+// once. The bus routes each poll to wherever the job lives.
 
+import { setTimeout as sleep } from "node:timers/promises";
 import type { CaptureRecord, PwrSnapError, Result } from "@pwrsnap/shared";
 import { err, ok } from "@pwrsnap/shared";
 import { bus, type CommandDispatchOptions } from "../command-bus";
@@ -54,7 +56,8 @@ export async function duplicateAndAwaitCommit(
     const jobs = await bus.dispatch("capture:duplicateJobs", {}, context);
     if (!jobs.ok) return jobs;
     if (!jobs.value.jobs.some((candidate) => candidate.jobId === job.jobId)) break;
-    await delay(pollMs, signal);
+    // Rejects at once on abort; the check at the top of the loop answers.
+    await sleep(pollMs, undefined, signal === undefined ? {} : { signal }).catch(() => undefined);
   }
   const copy = await bus.dispatch("library:byId", { id: job.captureId }, context);
   if (!copy.ok) return copy;
@@ -68,21 +71,4 @@ export async function duplicateAndAwaitCommit(
     });
   }
   return ok({ record: copy.value, copiedInBackground: true });
-}
-
-function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
-  return new Promise((resolve) => {
-    // An already-aborted signal never fires "abort" again.
-    if (signal?.aborted === true) {
-      resolve();
-      return;
-    }
-    const timer = setTimeout(done, ms);
-    signal?.addEventListener("abort", done, { once: true });
-    function done(): void {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", done);
-      resolve();
-    }
-  });
 }

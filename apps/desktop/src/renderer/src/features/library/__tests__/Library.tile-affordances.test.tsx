@@ -17,6 +17,7 @@ import { act, createElement, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import type {
+  CaptureDuplicateJob,
   CaptureEditSummary,
   CaptureRecord,
   DraftCart,
@@ -742,6 +743,161 @@ describe("capture tile context menu — duplicate", () => {
     });
     expect(submenuOf(menu)).toBe(sub);
     expect(document.activeElement?.closest(".psl__context-menu--sub")).toBe(sub);
+  });
+});
+
+describe("background video duplicate progress", () => {
+  // A recording main could not clone comes back as a job; the copy has no
+  // tile until it is whole, so progress shows on the SOURCE tile and in a
+  // toast with Cancel, and the source refuses a second copy meanwhile.
+  // (The source here is the suite's image tile: the progress UI keys on
+  // the source id, not the kind.)
+  const copying = (bytesCopied: number, state: CaptureDuplicateJob["state"] = "copying") =>
+    ({
+      jobId: "job_granola",
+      sourceId: "cap_image",
+      captureId: "cap_copy_pending",
+      withEdits: true,
+      state,
+      bytesCopied,
+      totalBytes: 2_000_000,
+      error: state === "failed" ? "The original recording was deleted while it was being copied." : null
+    }) satisfies CaptureDuplicateJob;
+
+  function emitJob(job: CaptureDuplicateJob): void {
+    for (const [channel, handler] of subscribeMock.mock.calls) {
+      if (channel === EVENT_CHANNELS.captureDuplicateJob) handler({ job });
+    }
+  }
+
+  function toast(): HTMLElement | null {
+    return document.querySelector<HTMLElement>(".ps-duplicate-progress");
+  }
+
+  function tileBar(): HTMLElement | null {
+    return cellEl()?.querySelector<HTMLElement>(".psl__tile-duplicate-progress") ?? null;
+  }
+
+  function duplicateCalls(): number {
+    return dispatchMock.mock.calls.filter(([name]) => name === "capture:duplicate").length;
+  }
+
+  beforeEach(() => {
+    const base = dispatchMock.getMockImplementation()!;
+    dispatchMock.mockImplementation(async (name: string, req: unknown) => {
+      if (name === "capture:duplicate") return ok({ record: null, job: copying(0) });
+      if (name === "capture:duplicateJobs") return ok({ jobs: [] });
+      if (name === "capture:cancelDuplicate") return ok({ cancelled: true });
+      return base(name, req);
+    });
+  });
+
+  test("progress shows on the source tile and in a toast, then clears when the copy ends", async () => {
+    await renderLibrary();
+    expect(toast()).toBeNull();
+    expect(tileBar()).toBeNull();
+
+    const menu = await openMenu();
+    await act(async () => {
+      rowByLabel(menu, "Duplicate").click();
+      for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    });
+    expect(toast()?.textContent).toContain("Copying recording");
+    expect(tileBar()?.getAttribute("aria-valuenow")).toBe("0");
+
+    await act(async () => {
+      emitJob(copying(1_000_000));
+    });
+    expect(toast()?.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow")).toBe("50");
+    expect(toast()?.textContent).toContain("977 KB of 1.9 MB");
+    expect(tileBar()?.getAttribute("aria-valuenow")).toBe("50");
+
+    await act(async () => {
+      emitJob(copying(2_000_000, "done"));
+    });
+    expect(toast()).toBeNull();
+    expect(tileBar()).toBeNull();
+  });
+
+  test("a second Duplicate of the same source is refused while its copy runs", async () => {
+    await renderLibrary();
+    let menu = await openMenu();
+    await act(async () => {
+      rowByLabel(menu, "Duplicate").click();
+      for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    });
+    expect(duplicateCalls()).toBe(1);
+
+    menu = await openMenu();
+    await act(async () => {
+      rowByLabel(menu, "Duplicate").click();
+      for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    });
+    expect(duplicateCalls()).toBe(1);
+    expect(document.querySelector(".psl__action-error-message")?.textContent).toContain(
+      "already copying this recording"
+    );
+  });
+
+  test("Cancel asks main to stop the copy; the cancelled event clears it", async () => {
+    await renderLibrary();
+    const menu = await openMenu();
+    await act(async () => {
+      rowByLabel(menu, "Duplicate").click();
+      for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    });
+    const cancel = Array.from(toast()!.querySelectorAll("button")).find(
+      (button) => button.textContent === "Cancel"
+    );
+    await act(async () => {
+      cancel!.click();
+      await Promise.resolve();
+    });
+    expect(dispatchMock).toHaveBeenCalledWith("capture:cancelDuplicate", { jobId: "job_granola" });
+    // Still copying until main says otherwise.
+    expect(toast()).not.toBeNull();
+
+    await act(async () => {
+      emitJob(copying(400_000, "cancelled"));
+    });
+    expect(toast()).toBeNull();
+    expect(tileBar()).toBeNull();
+    // A cancel is not an error.
+    expect(document.querySelector(".psl__action-error")).toBeNull();
+  });
+
+  test("a copy already running when the Library mounts shows; a failure is reported", async () => {
+    const base = dispatchMock.getMockImplementation()!;
+    dispatchMock.mockImplementation(async (name: string, req: unknown) => {
+      if (name === "capture:duplicateJobs") return ok({ jobs: [copying(500_000)] });
+      return base(name, req);
+    });
+    await renderLibrary();
+    expect(tileBar()?.getAttribute("aria-valuenow")).toBe("25");
+
+    await act(async () => {
+      emitJob(copying(500_000, "failed"));
+    });
+    expect(toast()).toBeNull();
+    expect(document.querySelector(".psl__action-error-message")?.textContent).toContain(
+      "deleted while it was being copied"
+    );
+  });
+
+  test("Edit a Copy opens the copy when its background copy finishes, not before", async () => {
+    await renderLibrary();
+    const menu = await openMenu();
+    await act(async () => {
+      rowByLabel(menu, "Edit a Copy").click();
+      for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    });
+    expect(dispatchMock.mock.calls.some(([name]) => name === "editor:open")).toBe(false);
+
+    await act(async () => {
+      emitJob(copying(2_000_000, "done"));
+      await Promise.resolve();
+    });
+    expect(dispatchMock).toHaveBeenCalledWith("editor:open", { captureId: "cap_copy_pending" });
   });
 });
 

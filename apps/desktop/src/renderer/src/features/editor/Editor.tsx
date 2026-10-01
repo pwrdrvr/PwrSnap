@@ -4066,6 +4066,13 @@ export function Editor({
       // helper below (set up in EditorLoaded which has the record).
       if (event.key === "Escape" && selectedLayerIds.length > 0) {
         event.preventDefault();
+        // Stop here, the way the arrow-key nudge below does: Library's
+        // Focus-mode Escape (bubble phase, no defaultPrevented check)
+        // would otherwise close the editor on the same press. Every
+        // drawing is selected on release, so "Esc to let go of what I
+        // just drew" is the common case — one Escape deselects, the
+        // next one leaves.
+        event.stopImmediatePropagation();
         clearSelection();
         return;
       }

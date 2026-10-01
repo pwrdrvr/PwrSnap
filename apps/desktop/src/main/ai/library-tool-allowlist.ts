@@ -500,7 +500,7 @@ const drawArrow = defineTool({
   namespace: "pwrsnap_library",
   name: "draw_arrow",
   description:
-    "Draw an arrow. `from`/`to` are NORMALIZED points — (0,0)=top-left, (1,1)=bottom-right. Endpoints MAY sit slightly outside [0,1] for an arrow coming in from off-canvas. `color` is #rrggbb (omit = auto). `thickness` is auto|small|medium|large|x-large or a normalized numeric stroke fraction; use this for heavier/thicker arrows, NOT multiple overlapping arrows. Optional `label` rides at the tail. `end_style` filled-triangle|open-triangle|line|dot, `stem_style` solid|dashed|dotted. Stoplight: red=problem, green=fix, yellow=warning, blue=context.",
+    "Draw an arrow. `from`/`to` are NORMALIZED points — (0,0)=top-left, (1,1)=bottom-right. Endpoints MAY sit slightly outside [0,1] for an arrow coming in from off-canvas. `color` is #rrggbb (omit = auto). `thickness` is auto|small|medium|large|x-large or a normalized numeric stroke fraction; use this for heavier/thicker arrows, NOT multiple overlapping arrows. Optional `label` rides at the tail. `end_style` filled-triangle|open-triangle|line|dot|bar (bar + double_ended = a measured range), `stem_style` solid|dashed|dotted. Stoplight: red=problem, green=fix, yellow=warning, blue=context.",
   annotations: { destructiveHint: false },
   argsSchema: z.object({
     capture_id: z.string(),

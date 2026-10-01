@@ -4564,11 +4564,13 @@
   border-color: var(--accent-border);
   color: var(--accent-bright);
 }
+/* `display: contents` makes each field group a flex item of the bar
+   itself, so the tag, the fields and the buttons wrap as one row of
+   peers. As its own flex box the body was one item wider than the bar,
+   which stranded the tag alone on the first row and the buttons on a
+   third. */
 .psl__et-props-body {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 8px 14px;
+  display: contents;
 }
 .psl__et-props-body .pse-color-row {
   flex-wrap: nowrap;

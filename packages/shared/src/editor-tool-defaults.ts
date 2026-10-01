@@ -86,9 +86,8 @@ export function defaultEditorToolStyles(): EditorToolStyles {
   return {
     // Default to the brand accent (tangerine) rather than picking a
     // stoplight color — neutral choice for a first-time user who
-    // hasn't established a personal pattern yet. The shared-COLOR-
-    // slot pattern means the first swatch they pick will propagate
-    // across all tools.
+    // hasn't established a personal pattern yet. Each tool keeps its
+    // own color; the tool bag is where favorite combinations live.
     arrow: {
       color: "accent",
       thickness: "auto",
@@ -120,9 +119,8 @@ export function defaultEditorToolStyles(): EditorToolStyles {
     },
     highlight: {
       // Yellow is the canonical highlight color (same as a yellow
-      // marker on paper); not part of the cross-tool shared COLOR
-      // slot because highlight is the one tool whose semantic is
-      // "color = visual emphasis" rather than "color = severity".
+      // marker on paper) — highlight's color means "visual emphasis",
+      // not the severity the stoplight colors carry on other tools.
       color: "yellow",
       opacity: 0.3,
       blend: "multiply"

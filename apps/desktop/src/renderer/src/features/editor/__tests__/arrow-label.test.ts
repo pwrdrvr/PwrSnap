@@ -12,7 +12,7 @@ import {
 
 const W = 1000;
 const H = 500;
-const FONT = 20; // canvas px → gap 10, half-height 12, estimated width 60
+const FONT = 20; // canvas px → gap 16, half-height 12, estimated width 60
 
 function plan(from: [number, number], to: [number, number]) {
   const p = planArrowLabel({
@@ -28,19 +28,19 @@ function plan(from: [number, number], to: [number, number]) {
 
 describe("planArrowLabel", () => {
   test("arrow pointing right: label ends just left of the tail, centered on it", () => {
-    expect(plan([400, 250], [600, 250])).toEqual({ x: 390, y: 250, align: "end" });
+    expect(plan([400, 250], [600, 250])).toEqual({ x: 384, y: 250, align: "end" });
   });
 
   test("arrow pointing left: label starts just right of the tail", () => {
-    expect(plan([600, 250], [400, 250])).toEqual({ x: 610, y: 250, align: "start" });
+    expect(plan([600, 250], [400, 250])).toEqual({ x: 616, y: 250, align: "start" });
   });
 
   test("arrow pointing up: label centered below the tail", () => {
-    expect(plan([500, 300], [500, 100])).toEqual({ x: 500, y: 322, align: "center" });
+    expect(plan([500, 300], [500, 100])).toEqual({ x: 500, y: 328, align: "center" });
   });
 
   test("arrow pointing down: label centered above the tail", () => {
-    expect(plan([500, 200], [500, 400])).toEqual({ x: 500, y: 178, align: "center" });
+    expect(plan([500, 200], [500, 400])).toEqual({ x: 500, y: 172, align: "center" });
   });
 
   test("a 45° arrow counts as horizontal: beside the tail, away from the head", () => {
@@ -51,7 +51,7 @@ describe("planArrowLabel", () => {
   test("no room beside the tail: moves above or below it instead of off the canvas", () => {
     // Pointing right from x=30 — an end-aligned label would need 60px
     // to the left. Pointing down, so above is "away".
-    expect(plan([30, 200], [300, 260])).toEqual({ x: 30, y: 178, align: "center" });
+    expect(plan([30, 200], [300, 260])).toEqual({ x: 30, y: 172, align: "center" });
   });
 
   test("nothing fits (tail in a corner): keeps its side, slid onto the canvas", () => {

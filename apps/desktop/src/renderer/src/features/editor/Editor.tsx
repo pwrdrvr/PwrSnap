@@ -2509,6 +2509,7 @@ export function Editor({
   function onPointerDown(event: React.PointerEvent<HTMLDivElement>): void {
     if (event.button !== 0) return;
     canvasGestureSeqRef.current += 1;
+    releaseOutsideControlFocus();
     // Defensive clear of any stale multi-drag state. The arming path
     // below stores snapshots in `multiDragStartRef.current` and
     // relies on `onPointerUp` / `onPointerCancel` to clear it; if
@@ -2648,6 +2649,24 @@ export function Editor({
       setDraft({ kind: "text", xn: start.xn, yn: start.yn, body: "" });
       return;
     }
+  }
+
+  /** A press on the canvas takes focus off a control outside it. The
+   *  drawing branches `preventDefault` the pointerdown, which suppresses
+   *  the browser's own "a press elsewhere moves focus", so after picking
+   *  a tool or slot with the mouse its button kept focus through the
+   *  drawing — and Return then re-pressed that button (re-arming the
+   *  slot, dropping the selection) instead of labelling the arrow just
+   *  drawn. Text fields are left alone: a draft's own blur commits it,
+   *  and that click-away path already works natively. */
+  function releaseOutsideControlFocus(): void {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement) || active === document.body) return;
+    if (canvasRef.current?.contains(active) === true) return;
+    if (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.isContentEditable) {
+      return;
+    }
+    active.blur();
   }
 
   // -------------------- Hover cursor affordance --------------------

@@ -339,6 +339,31 @@ describe("Editor — Add label on an arrow", () => {
     expect(dispatchEdit).not.toHaveBeenCalled();
   });
 
+  test("a press on the canvas takes focus off the tool button that armed it, so Return labels", async () => {
+    // The live-app bug: pick a tool with the mouse, draw, press Return —
+    // the canvas's pointerdown preventDefault kept focus on the tool
+    // button, so Return re-pressed it and the arrow lost its selection.
+    const { Editor } = await import("../Editor");
+    await act(async () => {
+      root?.render(createElement(Editor, { captureId: "cap_1" }));
+    });
+    const toolButton = document.createElement("button");
+    document.body.appendChild(toolButton);
+    toolButton.focus();
+    expect(document.activeElement).toBe(toolButton);
+    const canvas = container!.querySelector<HTMLElement>("[data-testid='editor-canvas']")!;
+    await act(async () => {
+      canvas.dispatchEvent(pointer("pointerdown", 700, 500));
+      canvas.dispatchEvent(pointer("pointerup", 700, 500));
+    });
+    expect(document.activeElement).toBe(document.body);
+    await act(async () => {
+      key(document.body, "Enter");
+    });
+    expect(labelInput()).not.toBeNull();
+    toolButton.remove();
+  });
+
   test("Return on a focused button is the button's, not a label", async () => {
     await mountWithArrowSelected();
     const button = document.createElement("button");

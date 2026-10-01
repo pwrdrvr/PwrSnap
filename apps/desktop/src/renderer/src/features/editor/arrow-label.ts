@@ -47,7 +47,7 @@ export type ArrowLabelStyle = {
 };
 
 /** Gap between the tail and the label's near edge, in ems. */
-const GAP_EM = 0.5;
+const GAP_EM = 0.8;
 /** Width the placeholder ("Label") is assumed to take when choosing a
  *  side, in ems. Only used to keep the starting box on the canvas. */
 const ESTIMATED_WIDTH_EM = 3;

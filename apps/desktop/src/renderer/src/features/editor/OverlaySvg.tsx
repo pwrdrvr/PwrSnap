@@ -1144,6 +1144,19 @@ function ShapeGlyph({
   const ry = rect.y * imageHeightPx;
   const rw = rect.w * imageWidthPx;
   const rh = rect.h * imageHeightPx;
+  // Outline stroke pattern — mirrors compose.ts shapeSvg (keep in
+  // sync): every corner mid-dash, carried by the halo too, and
+  // round-capped so a dotted dash renders as a dot. Memoized: the list
+  // has one pair per dash, and every glyph re-renders on each pointer
+  // move of any drag, though only the dragged one changes shape. Filled
+  // shapes have no outline to pattern.
+  const strokeDash = useMemo(
+    () =>
+      filled
+        ? null
+        : computeShapeStrokeDash(strokeStyle, shape, rw, rh, skewDeg, strokeWidthPx),
+    [filled, strokeStyle, shape, rw, rh, skewDeg, strokeWidthPx]
+  );
   const accent =
     color !== undefined && color !== "auto"
       ? color
@@ -1308,17 +1321,6 @@ function ShapeGlyph({
       </g>
     );
   }
-  // Outline stroke pattern — mirrors compose.ts shapeSvg (keep in
-  // sync): every corner mid-dash, carried by the halo too, and
-  // round-capped so a dotted dash renders as a dot.
-  const strokeDash = computeShapeStrokeDash(
-    strokeStyle,
-    shape,
-    rw,
-    rh,
-    skewDeg,
-    strokeWidthPx
-  );
   const dashArray = strokeDash?.dasharray;
   const dashOffset =
     strokeDash === null || strokeDash.dashoffset === 0 ? undefined : strokeDash.dashoffset;

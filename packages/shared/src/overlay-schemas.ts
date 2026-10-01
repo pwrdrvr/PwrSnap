@@ -179,6 +179,14 @@ export const ShapeStrokeStyle = ArrowStemStyle;
 export type ShapeStrokeStyle = ArrowStemStyle;
 export const DEFAULT_SHAPE_STROKE_STYLE: ShapeStrokeStyle = "solid";
 
+/** Plain predicate over the stroke-pattern value space shared by
+ *  `ArrowStemStyle` and `ShapeStrokeStyle` — the one list the settings
+ *  validator and parser check against (see `isOverlayOutlineMode` for
+ *  why it is hand-written rather than a `safeParse`). */
+export function isStrokePatternStyle(value: unknown): value is ArrowStemStyle {
+  return value === "solid" || value === "dashed" || value === "dotted";
+}
+
 /** Contrast-border ("outline") mode carried by arrow / shape / text
  *  overlays. The border is the halo painted UNDER the colored glyph so
  *  it stays legible on busy or same-colored backgrounds.

@@ -12,7 +12,8 @@ import type {
   ToolColor,
   ToolSizePreset
 } from "@pwrsnap/shared";
-import { computeShapeStrokeDash, isColorToken } from "@pwrsnap/shared";
+import { isColorToken } from "@pwrsnap/shared";
+import { ShapeIcon, type ShapeIconBox, type ShapeIconPatternUnit } from "./ShapeIcon";
 
 const COLOR_NAMES: Record<string, string> = {
   red: "Red",
@@ -168,72 +169,36 @@ function ArrowGlyph({ style }: { style: ArrowToolStyle }): ReactElement {
   );
 }
 
-/** Glyph-space boxes for each shape kind (24×24 viewBox), matching the
- *  primitives below. The parallelogram's top edge sits 4 right of its
- *  bottom edge over 11 of height: a shear of 2 each way from centre. */
-const GLYPH_SHAPE_BOX: Record<ShapeToolStyle["shape"], { w: number; h: number; skewDeg: number }> = {
-  rect: { w: 18, h: 11, skewDeg: 0 },
-  square: { w: 15, h: 15, skewDeg: 0 },
-  circle: { w: 15, h: 15, skewDeg: 0 },
-  oval: { w: 18, h: 12, skewDeg: 0 },
-  parallelogram: { w: 14, h: 11, skewDeg: (Math.atan(2 / 5.5) * 180) / Math.PI }
+/** Glyph-space boxes (24×24 viewBox) — the one statement of each shape
+ *  glyph's geometry; `ShapeIcon` builds the primitive and its dash
+ *  pattern from it. */
+const GLYPH_SHAPE_BOX: Record<ShapeToolStyle["shape"], ShapeIconBox> = {
+  rect: { cx: 12, cy: 12, w: 18, h: 11 },
+  square: { cx: 12, cy: 12, w: 15, h: 15 },
+  circle: { cx: 12, cy: 12, w: 15, h: 15 },
+  oval: { cx: 12, cy: 12, w: 18, h: 12 },
+  parallelogram: { cx: 12, cy: 12, w: 14, h: 11, shear: 2 }
 };
 
-/** Pattern unit per style, so a 22px glyph shows a few dashes or dots
- *  per side (the ladder's unit is the painted stroke, far too coarse
- *  here). Dashed lands near 3-on / 1.5-off, dotted near a 3px pitch. */
-const GLYPH_PATTERN_UNIT = { dashed: 0.75, dotted: 1.7 } as const;
+/** A few dashes or dots per side at 22px: dashed lands near 3-on /
+ *  1.5-off, dotted near a 3px pitch. */
+const GLYPH_PATTERN_UNIT: ShapeIconPatternUnit = { dashed: 0.75, dotted: 1.7 };
 
 function ShapeGlyph({ style }: { style: ShapeToolStyle }): ReactElement {
   const paint = glyphPaint(style.color);
-  const w = strokeFor(style.thickness);
-  const box = GLYPH_SHAPE_BOX[style.shape];
-  // The same corner-aligned pattern the editor and the bake draw, so a
-  // dashed box slot looks like the box it will draw: a dash bent round
-  // every corner.
-  const dash =
-    style.filled || style.strokeStyle === "solid"
-      ? null
-      : computeShapeStrokeDash(
-          style.strokeStyle,
-          style.shape,
-          box.w,
-          box.h,
-          box.skewDeg,
-          GLYPH_PATTERN_UNIT[style.strokeStyle]
-        );
-  const fillProps = style.filled
-    ? { fill: paint }
-    : {
-        fill: "none",
-        stroke: paint,
-        strokeWidth: w,
-        strokeLinejoin: "round" as const,
-        // Round caps: a dotted dash is only a dot through its cap.
-        ...(dash !== null
-          ? {
-              strokeDasharray: dash.dasharray,
-              strokeLinecap: "round" as const,
-              ...(dash.dashoffset !== 0 ? { strokeDashoffset: dash.dashoffset } : {})
-            }
-          : {})
-      };
-  // A rounded rect's path starts past the corner radius, which would
-  // put the pattern out of phase with the corners. A patterned outline
-  // is drawn square-cornered; its round joins soften the bends anyway.
-  const rx = dash === null ? "1" : undefined;
-  switch (style.shape) {
-    case "circle":
-      return <circle cx="12" cy="12" r="7.5" {...fillProps} />;
-    case "oval":
-      return <ellipse cx="12" cy="12" rx="9" ry="6" {...fillProps} />;
-    case "square":
-      return <rect x="4.5" y="4.5" width="15" height="15" rx={rx} {...fillProps} />;
-    case "parallelogram":
-      return <path d="M7 6.5 H21 L17 17.5 H3 Z" {...fillProps} />;
-    case "rect":
-      return <rect x="3" y="6.5" width="18" height="11" rx={rx} {...fillProps} />;
-  }
+  return (
+    <ShapeIcon
+      shape={style.shape}
+      box={GLYPH_SHAPE_BOX[style.shape]}
+      paint={
+        style.filled
+          ? { fill: paint }
+          : { fill: "none", stroke: paint, strokeWidth: strokeFor(style.thickness) }
+      }
+      strokeStyle={style.filled ? "solid" : style.strokeStyle}
+      patternUnit={GLYPH_PATTERN_UNIT}
+    />
+  );
 }
 
 export function ToolBagGlyph({ slot }: { slot: ToolBagSlot }): ReactElement {

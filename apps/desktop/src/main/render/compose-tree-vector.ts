@@ -72,20 +72,9 @@ export interface BuildCompositeLayersV2Args {
   renderScale?: number | undefined;
 }
 
-export async function buildCompositeLayersForV2(
-  row: OverlayRow,
-  args: BuildCompositeLayersV2Args
-): Promise<OverlayOptions[]> {
-  const {
-    renderWidthPx,
-    renderHeightPx,
-    canvasWidthPx,
-    canvasHeightPx,
-    sourceWidthPx,
-    sourceHeightPx,
-    renderScale = 1
-  } = args;
-  const data = row.data;
+/** Basis + render-space inputs every SVG-backed shape shares. */
+function annotationBasisForV2(args: BuildCompositeLayersV2Args): number {
+  const { canvasWidthPx, canvasHeightPx, sourceWidthPx, sourceHeightPx, renderScale = 1 } = args;
   // Annotation sizing basis, expressed in RENDER pixels.
   //
   // Two corrections are folded in here, and both are load-bearing:
@@ -104,45 +93,64 @@ export async function buildCompositeLayersForV2(
   //      baked at 1× or upscaled to the 800-wide LOW tier, so its
   //      arrows would export proportionally thinner than the preview
   //      painted them.
-  const annotationBasis =
-    annotationBasisPx(
-      sourceWidthPx ?? canvasWidthPx,
-      sourceHeightPx ?? canvasHeightPx
-    ) * renderScale;
+  return (
+    annotationBasisPx(sourceWidthPx ?? canvasWidthPx, sourceHeightPx ?? canvasHeightPx) *
+    renderScale
+  );
+}
+
+/**
+ * The full-canvas SVG document for a shape that bakes as plain SVG with
+ * normal (source-over) blending — arrows, shapes and Draw strokes — or
+ * `null` for every other kind. These are the shapes `composeV2` may
+ * rasterize together: a run of them stacked in one SVG paints what
+ * compositing them one at a time paints, at the cost of one raster and
+ * one composite instead of one per layer.
+ */
+export function plainVectorSvgForV2(
+  data: OverlayRow["data"],
+  args: BuildCompositeLayersV2Args
+): string | null {
+  const { renderWidthPx, renderHeightPx, renderScale = 1 } = args;
   switch (data.kind) {
     case "arrow":
-      return [
-        await rasterizeSvgForV2(
-          arrowSvgForV2(data, renderWidthPx, renderHeightPx, annotationBasis),
-          renderWidthPx,
-          renderHeightPx
-        )
-      ];
+      return arrowSvgForV2(data, renderWidthPx, renderHeightPx, annotationBasisForV2(args));
     case "shape":
-      return [
-        await rasterizeSvgForV2(
-          shapeSvgForV2(data, renderWidthPx, renderHeightPx, annotationBasis),
-          renderWidthPx,
-          renderHeightPx
-        )
-      ];
+      return shapeSvgForV2(data, renderWidthPx, renderHeightPx, annotationBasisForV2(args));
     case "stroke":
       // Freehand Draw stroke. `renderScale` rides along so the shared
       // geometry is built at canvas scale and only then scaled — see
       // `strokeSvg`.
-      return [
-        await rasterizeSvgForV2(
-          strokeSvgForV2(
-            data,
-            renderWidthPx,
-            renderHeightPx,
-            annotationBasis,
-            renderScale
-          ),
-          renderWidthPx,
-          renderHeightPx
-        )
-      ];
+      return strokeSvgForV2(
+        data,
+        renderWidthPx,
+        renderHeightPx,
+        annotationBasisForV2(args),
+        renderScale
+      );
+    default:
+      return null;
+  }
+}
+
+export async function buildCompositeLayersForV2(
+  row: OverlayRow,
+  args: BuildCompositeLayersV2Args
+): Promise<OverlayOptions[]> {
+  const {
+    renderWidthPx,
+    renderHeightPx,
+    canvasWidthPx,
+    canvasHeightPx,
+    sourceWidthPx,
+    sourceHeightPx
+  } = args;
+  const data = row.data;
+  const plainSvg = plainVectorSvgForV2(data, args);
+  if (plainSvg !== null) {
+    return [await rasterizeSvgForV2(plainSvg, renderWidthPx, renderHeightPx)];
+  }
+  switch (data.kind) {
     case "highlight": {
       // Blend mode is applied at the sharp composite step (libvips
       // `blend: 'multiply' | 'screen' | 'overlay'`), not in the SVG —

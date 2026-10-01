@@ -34,6 +34,8 @@ import {
   selectBaseRaster
 } from "@pwrsnap/shared";
 
+import { rasterizeSvgForV2 } from "./compose";
+import { buildCompositeLayersForV2, plainVectorSvgForV2 } from "./compose-tree-vector";
 import { listLayerTree } from "../persistence/layers-repo";
 import { getCaptureById } from "../persistence/captures-repo";
 import { readSourceForCapture } from "../persistence/bundle-store";
@@ -189,7 +191,39 @@ export async function composeV2(req: ComposeTreeRequest): Promise<ComposeTreeRes
   const sourceWidthPx = baseRaster?.natural_width_px;
   const sourceHeightPx = baseRaster?.natural_height_px;
 
+  // Adjacent plain vector layers (arrows, shapes, Draw strokes) are
+  // painted as ONE run: their SVGs stacked in a single document, one
+  // raster and one composite. Every composite pass rewrites the whole
+  // accumulator, so one pass per layer made a page of handwriting — each
+  // stroke its own layer — cost strokes × canvas pixels, twice over.
+  // Anything else (a raster, an effect, text, a highlight) ends the run
+  // and paints on its own, in order.
+  const vectorArgs = {
+    renderWidthPx: canvasInfo.width,
+    renderHeightPx: canvasInfo.height,
+    canvasWidthPx,
+    canvasHeightPx,
+    sourceWidthPx,
+    sourceHeightPx,
+    renderScale
+  };
+  let run: string[] = [];
+  const flushRun = async (): Promise<void> => {
+    if (run.length === 0) return;
+    accumulator = await compositeSvgRunOntoAccumulator(run, accumulator, canvasInfo);
+    run = [];
+  };
   for (const node of flattened) {
+    // Groups and hidden layers paint nothing, so they do not end a run.
+    if (!node.visible || node.kind === "group") continue;
+    if (node.kind === "vector") {
+      const svg = plainVectorSvgForV2(node.shape as Overlay, vectorArgs);
+      if (svg !== null) {
+        run.push(svg);
+        continue;
+      }
+    }
+    await flushRun();
     accumulator = await renderNode(
       node,
       accumulator,
@@ -202,6 +236,7 @@ export async function composeV2(req: ComposeTreeRequest): Promise<ComposeTreeRes
       renderScale
     );
   }
+  await flushRun();
 
   // Final pass: resize + encode. Single PNG encode at the very end,
   // not per-layer — preserves v1's two-pass discipline.
@@ -519,11 +554,8 @@ async function compositeVectorOntoAccumulator(
     z_index: node.z_index,
     created_at: node.created_at
   };
-  // Lazy-import v1's buildCompositeLayers to avoid a top-level cycle
-  // (compose.ts may eventually import this file). The blur kind in v1
-  // reads from a srcPath — for v2 vector blurs, we'd pass empty since
-  // the v2 effect layer is the canonical blur path. Skip blur shapes
-  // here; the user should use an EffectLayer.
+  // A `kind: "blur"` vector shape reads nothing here: the v2 blur path
+  // is the EffectLayer, so the user should add one of those instead.
   if ((node.shape as Overlay).kind === "blur") {
     return accumulator; // EffectLayer is the v2 blur path
   }
@@ -538,7 +570,6 @@ async function compositeVectorOntoAccumulator(
     return compositeHighlightOntoAccumulator(shape, accumulator, canvasInfo);
   }
 
-  const { buildCompositeLayersForV2 } = await import("./compose-tree-vector");
   const layers = await buildCompositeLayersForV2(fakeRow, {
     // canvasInfo.width/height are the RENDER dims (post-scale). SVG
     // renderers + the HTML text bake produce output at these.
@@ -561,6 +592,33 @@ async function compositeVectorOntoAccumulator(
   if (layers.length === 0) return accumulator;
   return sharp(accumulator, { raw: canvasInfo })
     .composite(layers)
+    .ensureAlpha()
+    .raw()
+    .toBuffer();
+}
+
+/**
+ * Paint a run of plain vector layers (see `plainVectorSvgForV2`) in one
+ * pass. Each layer's SVG is already a full-canvas document at render
+ * dims, so they nest unchanged inside one outer document and paint in
+ * document order — the run's z-order. None of them carries an `id`, so
+ * nesting cannot collide. A one-layer run rasterizes its own document,
+ * byte-for-byte what the per-layer path did.
+ */
+async function compositeSvgRunOntoAccumulator(
+  svgs: readonly string[],
+  accumulator: Buffer,
+  canvasInfo: { width: number; height: number; channels: 4 }
+): Promise<Buffer> {
+  const { width, height } = canvasInfo;
+  const svg =
+    svgs.length === 1
+      ? svgs[0]!
+      : `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" ` +
+        `viewBox="0 0 ${width} ${height}">${svgs.join("")}</svg>`;
+  const layer = await rasterizeSvgForV2(svg, width, height);
+  return sharp(accumulator, { raw: canvasInfo })
+    .composite([layer])
     .ensureAlpha()
     .raw()
     .toBuffer();
@@ -992,8 +1050,13 @@ function flattenTreeInZOrder(layers: readonly BundleLayerNode[]): BundleLayerNod
  *           at "8" are orphaned, per
  *           `docs/solutions/2026-05-28-bake-render-cache-orphans.md`.
  *           Post-mortem:
- *           `docs/solutions/2026-08-28-bake-output-change-needs-a-version-bump.md`. */
-export const BAKE_PIPELINE_VERSION = "9";
+ *           `docs/solutions/2026-08-28-bake-output-change-needs-a-version-bump.md`.
+ *    "10" — adjacent arrows, shapes and Draw strokes rasterize as one
+ *           stacked SVG and composite once, instead of once per layer.
+ *           Same picture, but resvg rounds the stack once where the
+ *           per-layer path rounded every layer to 8 bits, so a few
+ *           pixels move by up to 4/255. */
+export const BAKE_PIPELINE_VERSION = "10";
 
 export function computeTreeRenderHash(input: {
   layers: readonly BundleLayerNode[];

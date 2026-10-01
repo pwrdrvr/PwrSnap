@@ -33,3 +33,22 @@ describe("local-agent video command policy", () => {
     }
   );
 });
+
+describe("local-agent duplicate and family command policy", () => {
+  test("capture:duplicate needs capture.edit, so a read-only grant cannot fork a snap", () => {
+    expect(localAgentCommandRequirement("capture:duplicate", {})).toEqual({
+      all: ["capture.edit"]
+    });
+  });
+
+  test("capture:editSummary is readable by a reader or an editor", () => {
+    // An editor deciding withEdits has to see what the copy would carry.
+    expect(localAgentCommandRequirement("capture:editSummary", {})).toEqual({
+      any: ["library.read", "capture.edit"]
+    });
+  });
+
+  test.each(["library:families", "library:family"])("%s is a library read", (command) => {
+    expect(localAgentCommandRequirement(command, {})).toEqual({ all: ["library.read"] });
+  });
+});

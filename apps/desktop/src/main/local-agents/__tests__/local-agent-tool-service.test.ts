@@ -1,4 +1,10 @@
-import { ok, type CommandName, type LocalAgentCapability } from "@pwrsnap/shared";
+import {
+  emptyCaptureEditSummary,
+  err,
+  ok,
+  type CommandName,
+  type LocalAgentCapability
+} from "@pwrsnap/shared";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { bus, type CommandContext } from "../../command-bus";
 import { LocalAgentToolService } from "../local-agent-tool-service";
@@ -32,14 +38,19 @@ function register(command: CommandName, handler: (req: any) => Promise<any>): vo
 
 function context(
   clientId = "lag_test",
-  capabilities: readonly LocalAgentCapability[] = ["capture.edit", "sizzle.compose"]
+  capabilities: readonly LocalAgentCapability[] = ["capture.edit", "sizzle.compose"],
+  maxCaptureAgeDays?: number | null
 ): LocalAgentToolContext {
   grantCapabilities.set(clientId, capabilities);
   const signal = new AbortController().signal;
   const commandContext: CommandContext = {
     principal: "mcp",
     signal,
-    localAgent: { clientId, capabilities }
+    localAgent: {
+      clientId,
+      capabilities,
+      ...(maxCaptureAgeDays !== undefined ? { maxCaptureAgeDays } : {})
+    }
   };
   return { clientId, capabilities, signal, commandContext };
 }
@@ -603,5 +614,351 @@ describe("LocalAgentToolService Sizzle workflows", () => {
     expect(firstMcp.content.some((content) => content.type === "image")).toBe(
       false
     );
+  });
+});
+
+/** An invented capture row: only the fields the duplicate/family paths read. */
+function member(
+  id: string,
+  args: {
+    familyId?: string;
+    duplicatedFrom?: string | null;
+    capturedAt?: string;
+    deletedAt?: string | null;
+    kind?: "image" | "video";
+  } = {}
+): any {
+  return {
+    id,
+    kind: args.kind ?? "image",
+    captured_at: args.capturedAt ?? new Date().toISOString(),
+    width_px: 1280,
+    height_px: 800,
+    byte_size: 4096,
+    has_alpha: false,
+    source_app_name: "Cereal Box Designer",
+    source_app_bundle_id: null,
+    deleted_at: args.deletedAt ?? null,
+    family_id: args.familyId ?? null,
+    duplicated_from: args.duplicatedFrom ?? null
+  };
+}
+
+const daysAgo = (days: number): string =>
+  new Date(Date.now() - days * 24 * 60 * 60 * 1_000).toISOString();
+
+describe("LocalAgentToolService duplicates", () => {
+  test("returns a receipt with the copy's id and family, passing withEdits through", async () => {
+    const requests: unknown[] = [];
+    register("capture:duplicate", async (request) => {
+      requests.push(request);
+      return ok({
+        record: member("cap_copy", { familyId: "cap_flakes", duplicatedFrom: "cap_flakes" })
+      });
+    });
+
+    const result = await service().captureDuplicate(
+      { captureId: "cap_flakes", withEdits: false },
+      context("lag_dup", ["capture.edit"])
+    );
+
+    expect(requests).toEqual([{ captureId: "cap_flakes", withEdits: false }]);
+    expect(result).toEqual(ok({
+      captureId: "cap_copy",
+      familyId: "cap_flakes",
+      duplicatedFrom: "cap_flakes",
+      withEdits: false,
+      kind: "image",
+      capturedAt: expect.any(String),
+      widthPx: 1280,
+      heightPx: 800
+    }));
+  });
+
+  test("the bus refuses a read-only grant before the handler runs", async () => {
+    let called = false;
+    register("capture:duplicate", async () => {
+      called = true;
+      return ok({ record: member("cap_copy") });
+    });
+
+    const result = await service().captureDuplicate(
+      { captureId: "cap_flakes", withEdits: true },
+      context("lag_reader", ["library.read", "capture.composite.read"])
+    );
+
+    expect(called).toBe(false);
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "local_agent_capability_denied" }
+    });
+  });
+
+  test.each(["not_found", "trashed", "unsupported"])(
+    "passes the handler's %s refusal through unchanged",
+    async (code) => {
+      register("capture:duplicate", async () =>
+        err({ kind: "validation", code, message: "invented refusal" })
+      );
+      const result = await service().captureDuplicate(
+        { captureId: "cap_flakes", withEdits: true },
+        context("lag_dup", ["capture.edit"])
+      );
+      expect(toMcpToolResult(result)).toEqual({
+        isError: true,
+        content: [{ type: "text", text: `${code}: invented refusal` }]
+      });
+    }
+  );
+});
+
+describe("LocalAgentToolService edit summary", () => {
+  test("adds the readable summary line, or null when there is nothing to carry", async () => {
+    register("library:byId", async (request) => ok(member(request.id)));
+    register("capture:editSummary", async (request) =>
+      ok(
+        request.captureId === "cap_plain"
+          ? emptyCaptureEditSummary()
+          : { ...emptyCaptureEditSummary(), hasEdits: true, cropped: true, arrows: 2, blurs: 1 }
+      )
+    );
+
+    const edited = await service().captureEditSummary(
+      { captureId: "cap_edited" },
+      context("lag_editor", ["capture.edit"])
+    );
+    expect(edited).toMatchObject({
+      ok: true,
+      value: {
+        captureId: "cap_edited",
+        kind: "image",
+        hasEdits: true,
+        arrows: 2,
+        summary: "crop · 2 arrows · blur"
+      }
+    });
+    const plain = await service().captureEditSummary(
+      { captureId: "cap_plain" },
+      context("lag_reader", ["library.read"])
+    );
+    expect(plain).toMatchObject({ ok: true, value: { hasEdits: false, summary: null } });
+  });
+
+  test("maps a missing capture to not_found and a trashed one to trashed", async () => {
+    let summarized = 0;
+    register("library:byId", async (request) =>
+      ok(request.id === "cap_gone" ? null : member(request.id, { deletedAt: daysAgo(1) }))
+    );
+    register("capture:editSummary", async () => {
+      summarized += 1;
+      return ok(emptyCaptureEditSummary());
+    });
+
+    const missing = await service().captureEditSummary(
+      { captureId: "cap_gone" },
+      context("lag_reader", ["library.read"])
+    );
+    const binned = await service().captureEditSummary(
+      { captureId: "cap_binned" },
+      context("lag_reader", ["library.read"])
+    );
+
+    expect(missing).toMatchObject({ ok: false, error: { code: "not_found" } });
+    expect(binned).toMatchObject({ ok: false, error: { code: "trashed" } });
+    expect(summarized).toBe(0);
+  });
+});
+
+describe("LocalAgentToolService families", () => {
+  function registerFamilies(members: Record<string, any[]>): string[] {
+    const walked: string[] = [];
+    register("library:families", async () =>
+      ok({
+        families: Object.entries(members).map(([familyId, rows]) => {
+          const live = rows.filter((row) => row.deleted_at === null);
+          return {
+            familyId,
+            rootId: familyId,
+            coverId: live[0]?.id ?? null,
+            liveCount: live.length,
+            trashedCount: rows.length - live.length,
+            newestCapturedAt: live.reduce(
+              (newest: string, row) => (row.captured_at > newest ? row.captured_at : newest),
+              ""
+            )
+          };
+        }).sort((a, b) => b.newestCapturedAt.localeCompare(a.newestCapturedAt))
+      })
+    );
+    register("library:family", async (request) => {
+      walked.push(request.familyId);
+      return ok({ members: members[request.familyId] ?? [] });
+    });
+    return walked;
+  }
+
+  test("lists live members only, and a family with none disappears", async () => {
+    registerFamilies({
+      cap_oats: [
+        member("cap_oats", { familyId: "cap_oats", deletedAt: daysAgo(1), capturedAt: daysAgo(3) }),
+        member("cap_oats_copy", {
+          familyId: "cap_oats",
+          duplicatedFrom: "cap_oats",
+          capturedAt: daysAgo(2)
+        })
+      ],
+      cap_bran: [
+        member("cap_bran", { familyId: "cap_bran", deletedAt: daysAgo(1) }),
+        member("cap_bran_copy", { familyId: "cap_bran", deletedAt: daysAgo(1) })
+      ]
+    });
+
+    const result = await service().captureFamilies({}, context("lag_reader", ["library.read"]));
+
+    expect(result).toEqual(ok({
+      families: [
+        {
+          familyId: "cap_oats",
+          // The original is in Trash: the family is still named for it,
+          // but nothing points the agent at a capture it cannot read.
+          rootId: null,
+          memberIds: ["cap_oats_copy"],
+          memberCount: 1,
+          newestCapturedAt: expect.any(String)
+        }
+      ],
+      limit: 25,
+      hasMore: false
+    }));
+  });
+
+  test("keeps an age-limited role inside its window and stops one past the page", async () => {
+    const walked = registerFamilies({
+      cap_new: [
+        member("cap_new", { familyId: "cap_new", capturedAt: daysAgo(20) }),
+        member("cap_new_copy", { familyId: "cap_new", capturedAt: daysAgo(1) })
+      ],
+      cap_mid: [
+        member("cap_mid", { familyId: "cap_mid", capturedAt: daysAgo(3) }),
+        member("cap_mid_copy", { familyId: "cap_mid", capturedAt: daysAgo(2) })
+      ],
+      cap_low: [
+        member("cap_low", { familyId: "cap_low", capturedAt: daysAgo(5) }),
+        member("cap_low_copy", { familyId: "cap_low", capturedAt: daysAgo(4) })
+      ],
+      cap_old: [
+        member("cap_old", { familyId: "cap_old", capturedAt: daysAgo(40) }),
+        member("cap_old_copy", { familyId: "cap_old", capturedAt: daysAgo(30) })
+      ]
+    });
+
+    const result = await service().captureFamilies(
+      { limit: 1 },
+      context("lag_week", ["library.read"], 7)
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        families: [
+          { familyId: "cap_new", rootId: null, memberIds: ["cap_new_copy"], memberCount: 1 }
+        ],
+        limit: 1,
+        hasMore: true
+      }
+    });
+    // Two walked (the page plus one to know there is more); cap_old was never
+    // opened because its newest member is already outside the window.
+    expect(walked).toEqual(["cap_new", "cap_mid"]);
+  });
+
+  test("reads one family as search rows plus lineage, oldest first", async () => {
+    registerFamilies({
+      cap_flakes: [
+        member("cap_flakes", { familyId: "cap_flakes", capturedAt: daysAgo(3) }),
+        member("cap_flakes_binned", {
+          familyId: "cap_flakes",
+          duplicatedFrom: "cap_flakes",
+          deletedAt: daysAgo(1)
+        }),
+        member("cap_flakes_copy", {
+          familyId: "cap_flakes",
+          duplicatedFrom: "cap_flakes",
+          capturedAt: daysAgo(1)
+        })
+      ]
+    });
+    const asked: unknown[] = [];
+    register("library:listByIdsWithMetadata", async (request) => {
+      asked.push(request);
+      return ok({
+        rows: request.ids.map((id: string) => ({
+          record: member(id, {
+            familyId: "cap_flakes",
+            duplicatedFrom: id === "cap_flakes" ? null : "cap_flakes"
+          }),
+          enrichment: {
+            acceptedTitle: id === "cap_flakes" ? "Frosted flakes box" : "Frosted flakes box copy",
+            acceptedTags: ["cereal"],
+            ocrText: ""
+          }
+        }))
+      });
+    });
+
+    const result = await service().captureFamily(
+      { familyId: "cap_flakes", detail: "enriched" },
+      context("lag_reader", ["library.read"])
+    );
+
+    expect(asked).toEqual([{ ids: ["cap_flakes", "cap_flakes_copy"] }]);
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        familyId: "cap_flakes",
+        detail: "enriched",
+        hasMore: false,
+        members: [
+          { id: "cap_flakes", isRoot: true, duplicatedFrom: null, title: "Frosted flakes box" },
+          {
+            id: "cap_flakes_copy",
+            isRoot: false,
+            duplicatedFrom: "cap_flakes",
+            title: "Frosted flakes box copy",
+            tags: ["cereal"]
+          }
+        ]
+      }
+    });
+  });
+
+  test("a family with no visible member is not_found", async () => {
+    registerFamilies({
+      cap_old: [
+        member("cap_old", { familyId: "cap_old", capturedAt: daysAgo(40) }),
+        member("cap_old_copy", { familyId: "cap_old", capturedAt: daysAgo(30) })
+      ]
+    });
+
+    const outside = await service().captureFamily(
+      { familyId: "cap_old" },
+      context("lag_week", ["library.read"], 7)
+    );
+    const unknown = await service().captureFamily(
+      { familyId: "cap_never" },
+      context("lag_reader", ["library.read"])
+    );
+
+    expect(outside).toMatchObject({ ok: false, error: { code: "not_found" } });
+    expect(unknown).toMatchObject({ ok: false, error: { code: "not_found" } });
+  });
+
+  test("an edit-only grant cannot list families at the bus floor", async () => {
+    registerFamilies({});
+    const result = await service().captureFamilies({}, context("lag_editor", ["capture.edit"]));
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "local_agent_capability_denied" }
+    });
   });
 });

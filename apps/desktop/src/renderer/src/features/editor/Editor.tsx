@@ -81,6 +81,7 @@ import {
   strokePointsToPx,
   strokeBoundsN,
   strokeReachPx,
+  strokePointsFromSegments,
   strokeSegments,
   StrokeEraseSession,
   type EraseTarget
@@ -90,6 +91,7 @@ import { dispatch, captureSrcUrl } from "../../lib/pwrsnap";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import { editorZoomShortcut } from "./editor-zoom-shortcut";
 import { selectBaseRaster } from "./base-raster";
+import { burstTarget, STROKE_BURST_GAP_MS } from "./stroke-burst";
 import { findRootGroupId, overlayToBundleLayerNode } from "./overlayToLayer";
 import { RasterLayers } from "./RasterLayers";
 import { RasterResizeHandles } from "./RasterResizeHandles";
@@ -296,10 +298,11 @@ const INTERACTIVE_KEY_TARGETS =
 
 /** One stroke the eraser cut: its layer id and the display-space shapes
  *  that replace it — empty when the eraser took all of it. */
-/** One stroke an eraser drag cut: the row that replaces it (the same
- *  stroke, its surviving pieces as segments), or `null` when the drag
- *  erased all of it. */
-type EraseChange = { readonly id: string; readonly replacement: StrokeOverlay | null };
+/** A stroke row and the row that replaces it — the same stroke with
+ *  different segments — or `null` to delete it. An eraser drag cuts
+ *  strokes this way, and a burst of strokes grows one this way. */
+type StrokeReplacement = { readonly id: string; readonly replacement: StrokeOverlay | null };
+
 
 /** A stroke row's centerline box. Rows are immutable — an edit writes
  *  a new object — so the box is cached by row for the hover hit-test. */
@@ -1947,6 +1950,11 @@ export function Editor({
   // samples (see `StrokeEraseSession`); the draft shows the session's
   // pieces and the release commits them, so the two cannot disagree.
   const eraseSessionRef = useRef<StrokeEraseSession | null>(null);
+  // When the current Draw drag started, and when the last committed
+  // stroke ended — the gap between them decides whether the new stroke
+  // joins the last one's layer (`STROKE_BURST_GAP_MS`).
+  const strokeStartedAtRef = useRef(0);
+  const lastStrokeRef = useRef<{ endedAt: number } | null>(null);
   // Multi-select model. Tracks the ids of all currently-selected
   // overlays/layers; empty array means nothing selected.
   //
@@ -2752,6 +2760,7 @@ export function Editor({
         points: [{ x: start.xn, y: start.yn }]
       };
       strokeDraftRef.current = stroke;
+      strokeStartedAtRef.current = performance.now();
       eraseSessionRef.current = null;
       const dims = textHitDimsRef.current;
       if (stroke.mode === "eraser" && dims !== null) {
@@ -3539,6 +3548,8 @@ export function Editor({
    *  not wiped when it resumes. */
   async function commitStroke(stroke: DraftStroke): Promise<void> {
     setDraft(null);
+    const releasedAt = performance.now();
+    const startedAt = strokeStartedAtRef.current;
     const session = eraseSessionRef.current;
     eraseSessionRef.current = null;
     if (stroke.mode === "eraser") {
@@ -3549,8 +3560,10 @@ export function Editor({
       // Re-sync first: a row edited or added since the last move is cut
       // from what is on the canvas now, not from what it was then.
       session?.extend([], strokeTargets(overlaysRef.current));
-      const changes: EraseChange[] = session?.changes() ?? [];
-      if (changes.length > 0) await eraseStrokesRef.current?.(changes);
+      const changes: StrokeReplacement[] = session?.changes() ?? [];
+      if (changes.length > 0) await replaceStrokesRef.current?.(changes);
+      // A burst does not reach across an eraser pass.
+      lastStrokeRef.current = null;
       return;
     }
     const dims = textHitDimsRef.current;
@@ -3571,7 +3584,30 @@ export function Editor({
       color: resolveToolColor(style.color),
       thickness: style.thickness
     };
-    const wrote = await persistOverlay(overlay);
+    // A burst — this stroke started soon after the last one ended, in
+    // the same style, with that stroke still the top layer — joins it as
+    // another segment instead of becoming a layer of its own. Writing a
+    // word is a dozen strokes; it should be one layer. It is still its
+    // own undo step: ⌘Z takes back this stroke, not the burst.
+    const previous = lastStrokeRef.current;
+    lastStrokeRef.current = { endedAt: releasedAt };
+    const target =
+      previous !== null && startedAt - previous.endedAt <= STROKE_BURST_GAP_MS
+        ? burstTarget(overlaysRef.current, rastersRef.current, overlay)
+        : null;
+    let wrote: { ok: boolean };
+    if (target !== null) {
+      const merged: StrokeOverlay = {
+        ...target.data,
+        ...strokePointsFromSegments([...strokeSegments(target.data), overlay.points])
+      };
+      const joined =
+        (await replaceStrokesRef.current?.([{ id: target.id, replacement: merged }])) === true;
+      // A join that could not be written still draws the stroke.
+      wrote = joined ? { ok: true } : await persistOverlay(overlay);
+    } else {
+      wrote = await persistOverlay(overlay);
+    }
     // The new stroke is NOT selected, unlike an arrow or a box. Strokes
     // come in runs — a word, a circle and an underline — and selecting
     // each would put handles over the next one and point the property
@@ -4748,7 +4784,7 @@ export function Editor({
   >(null);
   // Hook-owned eraser commit (same pattern as deleteSelectedRef): swaps
   // each cut stroke for its surviving pieces as ONE undo step.
-  const eraseStrokesRef = useRef<((changes: readonly EraseChange[]) => Promise<void>) | null>(
+  const replaceStrokesRef = useRef<((changes: readonly StrokeReplacement[]) => Promise<boolean>) | null>(
     null
   );
   // Burst SETTLE choke point (populated by EditorLoaded's nudge
@@ -5035,7 +5071,7 @@ export function Editor({
       setSelectionTrustingDispatch={setSelectionTrustingDispatch}
       primarySelectedLayerId={primarySelectedLayerId}
       deleteSelectedRef={deleteSelectedRef}
-      eraseStrokesRef={eraseStrokesRef}
+      replaceStrokesRef={replaceStrokesRef}
       nudgeSelectedRef={nudgeSelectedRef}
       applyBagSlotRef={applyBagSlotRef}
       startArrowLabelRef={startArrowLabelRef}
@@ -5124,7 +5160,7 @@ function EditorLoaded({
   setSelectionTrustingDispatch,
   primarySelectedLayerId,
   deleteSelectedRef,
-  eraseStrokesRef,
+  replaceStrokesRef,
   nudgeSelectedRef,
   applyBagSlotRef,
   startArrowLabelRef,
@@ -5313,7 +5349,7 @@ function EditorLoaded({
   >;
   /** The eraser's commit: each change names a stroke layer and the
    *  display-space stroke shapes that replace it (none = erased whole). */
-  eraseStrokesRef: React.RefObject<((changes: readonly EraseChange[]) => Promise<void>) | null>;
+  replaceStrokesRef: React.RefObject<((changes: readonly StrokeReplacement[]) => Promise<boolean>) | null>;
   /** Outer keyboard handler calls into this on arrow-key presses with
    *  source-pixel deltas; EditorLoaded's closure converts to normalized
    *  coords and dispatches one updateGeometry per selected layer. */
@@ -5741,7 +5777,8 @@ function EditorLoaded({
     undo.endInteraction
   ]);
 
-  // Eraser commit. A cut stroke stays ONE layer: it is replaced by one
+  // Stroke replace — the eraser's commit, and a burst stroke joining the
+  // stroke before it. A cut stroke stays ONE layer: it is replaced by one
   // row holding its surviving pieces as segments, at the original's
   // z_index, so it stays where it was in the stack. A stroke erased whole
   // is deleted. The replacement is built from the DISPLAY node (the
@@ -5755,13 +5792,17 @@ function EditorLoaded({
   // write into the loss of the whole stroke — and one whose original
   // will not delete is taken back.
   useEffect(() => {
-    eraseStrokesRef.current = async (changes): Promise<void> => {
+    replaceStrokesRef.current = async (changes): Promise<boolean> => {
       const removed: CreateDeleteItem[] = [];
       const added: CreateDeleteItem[] = [];
+      let allApplied = true;
       for (const change of changes) {
         const display = modelLayers.find((l) => l.id === change.id);
         const stored = storedLayers.find((l) => l.id === change.id) ?? null;
-        if (display === undefined || display.kind !== "vector") continue;
+        if (display === undefined || display.kind !== "vector") {
+          allApplied = false;
+          continue;
+        }
         let written: CreateDeleteItem | null = null;
         if (change.replacement !== null) {
           // eslint-disable-next-line no-await-in-loop
@@ -5773,7 +5814,8 @@ function EditorLoaded({
           });
           if (!result.ok) {
             // eslint-disable-next-line no-console
-            console.error("eraser: replacement upsert failed", result.error);
+            console.error("stroke replace: upsert failed", result.error);
+            allApplied = false;
             continue;
           }
           if (result.value.kind === "upsert") {
@@ -5785,11 +5827,12 @@ function EditorLoaded({
         const deleted = await dispatchEdit({ kind: "delete", id: change.id });
         if (!deleted.ok) {
           // eslint-disable-next-line no-console
-          console.error("eraser: delete failed", deleted.error);
+          console.error("stroke replace: delete failed", deleted.error);
           if (written !== null) {
             // eslint-disable-next-line no-await-in-loop
             await dispatchEdit({ kind: "delete", id: written.row.id });
           }
+          allApplied = false;
           continue;
         }
         if (written !== null) added.push(written);
@@ -5798,11 +5841,12 @@ function EditorLoaded({
       if (!undoApplyingRef.current && (removed.length > 0 || added.length > 0)) {
         undo.recordReplace({ removed, added });
       }
+      return allApplied;
     };
     return () => {
-      eraseStrokesRef.current = null;
+      replaceStrokesRef.current = null;
     };
-  }, [eraseStrokesRef, dispatchEdit, modelLayers, storedLayers, undo, undoApplyingRef]);
+  }, [replaceStrokesRef, dispatchEdit, modelLayers, storedLayers, undo, undoApplyingRef]);
 
   // Phase 3.2 — selection deleter. The outer Editor's keyboard handler
   // reads `deleteSelectedRef.current` on Delete/Backspace. Routes

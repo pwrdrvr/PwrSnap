@@ -1182,6 +1182,13 @@ and [stroke-bake.test.ts](apps/desktop/src/main/render/__tests__/stroke-bake.tes
     sharp composite rewrites the whole accumulator, so one pass per
     stroke made a 150-stroke page at 4K take ~2.9 s; as one run it takes
     ~0.1 s. Text, highlights, rasters and effects end a run.
+- **A burst of strokes is one layer.** A stroke started within
+  `STROKE_BURST_GAP_MS` of the last one ending, in the same tool, color
+  and weight, joins that stroke as another segment, if it is still the
+  top layer (`stroke-burst.ts`). Each stroke stays its own undo step: the
+  join is written as a `replace`, so ⌘Z takes back one stroke, not the
+  burst. Each segment paints on its own, so a burst looks exactly like
+  the separate strokes it holds, crossings included.
 - **A Draw press does not select what it lands on.** Freehand marks go on
   top of other annotations, and the eraser is dragged across strokes on
   purpose. A finished stroke is not auto-selected either, unlike the other

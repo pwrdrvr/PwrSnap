@@ -32,7 +32,10 @@ const hoisted = vi.hoisted(() => ({
   /** The settings `settings:read` answers with. A FAILED read would
    *  park every commit on the tool-state settle timeout. */
   settings: null as Settings | null,
-  dispatchEdit: null as ((op: LayerEditOp) => Promise<unknown>) | null
+  dispatchEdit: null as ((op: LayerEditOp) => Promise<unknown>) | null,
+  /** The model's layers. `realisticDispatch` writes into it, and
+   *  `rerender()` shows the editor what was written. */
+  layers: [] as BundleLayerNode[]
 }));
 
 vi.mock("../../../lib/pwrsnap", () => ({
@@ -158,7 +161,7 @@ vi.mock("../useCaptureModel", async (importOriginal) => {
       format: 2,
       captureId: "cap_draw",
       record,
-      layers,
+      layers: hoisted.layers,
       layersView: [],
       dispatchEdit: (op: LayerEditOp) => hoisted.dispatchEdit!(op)
     })
@@ -181,8 +184,12 @@ async function realisticDispatch(op: LayerEditOp): Promise<unknown> {
         error: { kind: "validation", code: "schema_mismatch", message: parsed.error.message }
       };
     }
-    return { ok: true, value: { kind: "upsert", artifact: { format: 2, node: op.node } } };
+    const top = Math.max(...hoisted.layers.map((l) => l.z_index));
+    const node = op.bumpZIndexToMax === true ? { ...op.node, z_index: top + 1000 } : op.node;
+    hoisted.layers = [...hoisted.layers.filter((l) => l.id !== node.id), node];
+    return { ok: true, value: { kind: "upsert", artifact: { format: 2, node } } };
   }
+  if (op.kind === "delete") hoisted.layers = hoisted.layers.filter((l) => l.id !== op.id);
   return { ok: true, value: { kind: "delete" } };
 }
 let realGetBoundingClientRect: (() => DOMRect) | null = null;
@@ -229,6 +236,7 @@ beforeEach(() => {
   ops.length = 0;
   hoisted.settings = baseSettings;
   hoisted.dispatchEdit = realisticDispatch;
+  hoisted.layers = [...layers];
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -270,6 +278,14 @@ async function mountWithDrawTool(): Promise<HTMLElement> {
   expect(canvas).not.toBeNull();
   expect(canvas!.getAttribute("data-tool")).toBe("draw");
   return canvas!;
+}
+
+/** Render again, so the editor reads the layers written so far. */
+async function rerender(): Promise<void> {
+  const { Editor } = await import("../Editor");
+  await act(async () => {
+    root?.render(createElement(Editor, { captureId: "cap_draw" }));
+  });
 }
 
 async function drag(canvas: HTMLElement, path: ReadonlyArray<readonly [number, number]>): Promise<void> {
@@ -399,5 +415,58 @@ describe("Editor — Draw tool", () => {
     }
     expect(ops.some((op) => op.kind === "upsert")).toBe(true);
     expect(ops.filter((op) => op.kind === "delete")).toEqual([]);
+  });
+
+  describe("a burst of strokes is one layer", () => {
+    /** Moves the clock the editor reads, without stopping it. */
+    function clock(): { advance(ms: number): void; restore(): void } {
+      const real = performance.now.bind(performance);
+      let offset = 0;
+      const spy = vi.spyOn(performance, "now").mockImplementation(() => real() + offset);
+      return { advance: (ms) => (offset += ms), restore: () => spy.mockRestore() };
+    }
+    const upsertsOf = () =>
+      ops.filter((op): op is Extract<LayerEditOp, { kind: "upsert" }> => op.kind === "upsert");
+    const strokeOf = (op: Extract<LayerEditOp, { kind: "upsert" }>) => {
+      if (op.node.kind !== "vector" || op.node.shape.kind !== "stroke") throw new Error("expected a stroke");
+      return op.node.shape;
+    };
+
+    test("a stroke started right after the last one joins its layer as another segment", async () => {
+      const canvas = await mountWithDrawTool();
+      await drag(canvas, [[100, 100], [150, 140], [200, 120]]);
+      await rerender();
+      await drag(canvas, [[300, 300], [350, 340], [400, 320]]);
+      const [first, second] = upsertsOf();
+      expect(upsertsOf()).toHaveLength(2);
+      // The second write replaces the first stroke: same layer, now two
+      // segments, and the first row is deleted — not a second layer.
+      const joined = strokeOf(second!);
+      expect(strokeSegments(joined)).toHaveLength(2);
+      expect(strokeSegments(joined)[0]).toEqual(strokeOf(first!).points);
+      // Still on top: above the fixture's arrow (z 2000), where the first
+      // stroke landed.
+      expect(second!.node.z_index).toBeGreaterThan(2000);
+      expect(second!.bumpZIndexToMax).toBeUndefined();
+      expect(ops.filter((op) => op.kind === "delete").map((op) => (op as { id: string }).id)).toEqual([
+        first!.node.id
+      ]);
+      expect(hoisted.layers.filter((l) => l.kind === "vector" && l.shape.kind === "stroke")).toHaveLength(2);
+    });
+
+    test("a pause longer than the burst gap starts a new layer", async () => {
+      const time = clock();
+      try {
+        const canvas = await mountWithDrawTool();
+        await drag(canvas, [[100, 100], [150, 140], [200, 120]]);
+        await rerender();
+        time.advance(5000);
+        await drag(canvas, [[300, 300], [350, 340], [400, 320]]);
+      } finally {
+        time.restore();
+      }
+      expect(upsertsOf().map((op) => strokeOf(op).breaks)).toEqual([undefined, undefined]);
+      expect(ops.some((op) => op.kind === "delete")).toBe(false);
+    });
   });
 });

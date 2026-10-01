@@ -540,7 +540,7 @@ export function OverlaySvg({
  *  into SVG text (compose.ts `strokeSvgForV2`) — one geometry, two
  *  serializations, so the preview is what exports. `color` "auto" or
  *  absent paints the theme accent, as every other glyph does. */
-function StrokeGlyph({
+export function StrokeGlyph({
   data,
   color,
   imageWidthPx,

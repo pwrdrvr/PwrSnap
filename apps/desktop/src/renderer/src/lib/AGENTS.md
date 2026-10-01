@@ -166,7 +166,15 @@ once one is up, the next control's shows at once (a 400ms warm window).
 Settings, Sizzle, the tray popover, the float-over toast, the region
 selector, and anything portaled to `<body>`. A control opts in with
 `data-tip` (first line), `data-tip-keys` (key chip) and `data-tip-detail`
-(further lines, `\n`-separated). Don't mount a second instance or give a
+(further lines, `\n`-separated). A control that is easier shown than
+described adds `data-tip-preview="<name>"`, and draws a picture above the
+words. The feature that owns the picture registers it under that name
+(`registerTipPreview` in `tip-previews.ts`), so the tooltip never imports
+feature code. The renderer is handed the anchor and reads the rest from
+the anchor's own data attributes. The Draw modes do this to paint a stroke
+in the bar's color and weight (`draw-mode-preview.tsx`). An unregistered
+name shows the words alone. The picture is `aria-hidden`: the words are
+still the description. Don't mount a second instance or give a
 surface a root of its own. Two instances would answer every hover with a
 tooltip of the same id, so a second one logs an error and stays inert.
 

@@ -208,6 +208,34 @@ describe("installQuitStallRecovery", () => {
     }
   });
 
+  it("leaves a will-quit barrier's own retry alone when a window closes during its wait", async () => {
+    const model = new ElectronQuitModel(["library"]);
+    const recovery = install(model);
+    let release!: () => void;
+    let held = false;
+    model.on("will-quit", (event) => {
+      if (held) return;
+      held = true;
+      event.preventDefault();
+      release = () => retryQuitAfterDispatch(model.quit);
+    });
+
+    await model.quitFromNativeTask();
+    await model.settle();
+    // Something opens and closes a window while the barrier waits; Electron
+    // is not quitting, so it reports window-all-closed.
+    model.openWindow("float-over");
+    model.destroyWindow("float-over");
+    await model.settle();
+    expect(model.emitted).toContain("window-all-closed");
+    expect(model.emitted.filter((name) => name === "before-quit")).toHaveLength(1);
+    expect(recovery.warn).not.toHaveBeenCalled();
+
+    release();
+    await model.settle();
+    expect(model.hasQuit).toBe(true);
+  });
+
   it("stays out of a quit that completes", async () => {
     const model = new ElectronQuitModel(["library"]);
     const recovery = install(model, { exitAfterMs: 20 });

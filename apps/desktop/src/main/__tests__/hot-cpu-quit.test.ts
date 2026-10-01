@@ -104,3 +104,17 @@ test("quit joins a stop already started by a settings change", async () => {
   await shutdown;
   expect(mocks.start).toHaveBeenCalledOnce();
 });
+
+test("a monitor with profiling off is not pending quit work; a running profiler is", async () => {
+  mocks.config.mockReturnValue({ enabled: false });
+  const w = await import("../window");
+  // Installed at boot for every role, enabled or not.
+  w.installMainProcessHotCpuMonitor();
+  await vi.waitFor(() => expect(mocks.config).toHaveBeenCalled());
+  expect(w.hasActiveHotCpuProfilers()).toBe(false);
+
+  mocks.config.mockReturnValue({ enabled: true, startDelayMs: 0 });
+  w.syncHotCpuProfilersFromSettings("settings-changed");
+  await vi.waitFor(() => expect(mocks.start).toHaveBeenCalledOnce());
+  expect(w.hasActiveHotCpuProfilers()).toBe(true);
+});

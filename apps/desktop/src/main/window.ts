@@ -439,11 +439,17 @@ type HotCpuProfilerSlot = {
   sync: (reason: string) => void;
   stop: (reason: string) => Promise<void>;
   shutdown: () => Promise<void>;
+  /** A profiler is running, starting, or still stopping. */
+  isActive: () => boolean;
 };
 
-/** True while any hot-CPU monitor exists — only when the env-gated harness is on. */
-export function hasHotCpuProfilers(): boolean {
-  return hotCpuProfilerSlots.size > 0;
+/**
+ * True while any monitor has a profiler that a quit flush would have to save.
+ * Not "any slot exists": the main-process slot is installed at boot for every
+ * role, profiling enabled or not.
+ */
+export function hasActiveHotCpuProfilers(): boolean {
+  return [...hotCpuProfilerSlots].some((slot) => slot.isActive());
 }
 
 /** Stop main and renderer captures before their debugger targets are destroyed. */
@@ -634,7 +640,8 @@ function createHotCpuProfilerSlot(options: {
     stop,
     shutdown: async (): Promise<void> => {
       await Promise.all([stop("app-quit"), syncQueue, ...stopping]);
-    }
+    },
+    isActive: (): boolean => profilerPromise !== null || stopping.size > 0
   };
   hotCpuProfilerSlots.add(slot);
   return slot;

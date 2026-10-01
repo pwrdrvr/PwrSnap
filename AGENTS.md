@@ -2604,9 +2604,12 @@ webContents. Nothing was still closing. Electron had stopped quitting:
   the identical double pass completed and why no spec caught it. A green E2E
   run proves nothing here.
 - **A flush with no work does not defer.** `createDiagnosticsShutdown` takes
-  `hasPendingWork` (a hot-CPU monitor exists, or the trace hook is armed).
-  Without either, `stop()` still runs to latch the targets' shutdown state,
-  but quit is one pass. The #659 guarantee holds whenever a harness is on.
+  `hasPendingWork`: a hot-CPU profiler is running, starting or stopping
+  (`hasActiveHotCpuProfilers`), or the trace hook is armed. Not "a monitor
+  slot exists": the main-process slot is installed at boot for every role, so
+  that test is always true. Without either, `stop()` still runs to latch the
+  targets' shutdown state, but quit is one pass. The #659 guarantee holds
+  whenever a harness is on.
 - **`installQuitStallRecovery`
   ([quit-stall-recovery.ts](apps/desktop/src/main/quit-stall-recovery.ts)) is
   a safety net, not the fix.** After a before-quit pass that nothing deferred,

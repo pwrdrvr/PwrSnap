@@ -265,7 +265,7 @@ import {
   reclaimDockIconIfLibraryAlive,
   scheduleDockReclaim,
   refreshWindowsTitleBarOverlay,
-  hasHotCpuProfilers,
+  hasActiveHotCpuProfilers,
   stopHotCpuProfilers,
   syncHotCpuProfilersFromSettings
 } from "./window";
@@ -1481,9 +1481,10 @@ export function bootstrapApp(): void {
     },
     resumeQuit: () => app.quit(),
     warn: (message) => getMainLogger("pwrsnap:bootstrap").warn(message),
-    // Only the env-gated profiling harnesses have anything to save. Without
-    // them, deferring quit just to flush nothing doubled every quit.
-    hasPendingWork: () => hasHotCpuProfilers() || isContentTraceArmed()
+    // Only a running hot-CPU profiler or an armed trace has anything to
+    // save. Without one, deferring quit just to flush nothing doubled every
+    // quit.
+    hasPendingWork: () => hasActiveHotCpuProfilers() || isContentTraceArmed()
   });
   app.on("before-quit", (event) => {
     // Sizzle may cancel quit while asking to save. Let that decision finish.

@@ -107,8 +107,10 @@ in the page, which the editor installs, made no difference.
   re-issues a deferred quit from `setImmediate`. A macrotask cannot run until
   the outer pass has returned. Both retries use it.
 - `createDiagnosticsShutdown` takes `hasPendingWork`. With no hot-CPU
-  monitor and no armed trace hook it does not defer, so the common quit is
-  one pass. `stop()` still runs, to latch the targets' shutdown flags.
+  profiler running and no armed trace hook it does not defer, so the common
+  quit is one pass. `stop()` still runs, to latch the targets' shutdown
+  flags. The check is per profiler, not per monitor slot: the main-process
+  slot exists in every role, so testing for a slot would always defer.
 - `installQuitStallRecovery` ([quit-stall-recovery.ts](../../apps/desktop/src/main/quit-stall-recovery.ts))
   is armed by a before-quit pass that nothing deferred:
   - it re-asks once on `window-all-closed`;

@@ -77,6 +77,11 @@ export class ElectronQuitModel {
     this.finishQuit(!prevented, "native");
   }
 
+  /** `new BrowserWindow()`. */
+  openWindow(name: string): void {
+    this.windows.add(name);
+  }
+
   /** `BrowserWindow.destroy()`: synchronous, no close event. */
   destroyWindow(name: string): void {
     this.removeWindow(name, "js");

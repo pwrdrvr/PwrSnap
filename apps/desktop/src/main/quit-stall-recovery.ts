@@ -1,7 +1,10 @@
 import { retryQuitAfterDispatch } from "./quit-retry";
 
 type QuitStallApp = {
-  on(event: "before-quit" | "window-all-closed" | "quit", listener: () => void): unknown;
+  on(
+    event: "before-quit" | "will-quit" | "window-all-closed" | "quit",
+    listener: () => void
+  ): unknown;
   quit(): void;
   exit(exitCode?: number): void;
 };
@@ -23,9 +26,12 @@ export const QUIT_STALL_EXIT_MS = 20_000;
  * disarmed by `quit`, which Electron emits only once it is really shutting
  * down.
  *
- * - `window-all-closed` while armed is the measured stall signature:
- *   Electron emits it in place of will-quit when the last window closes
- *   while it believes it is not quitting. Ask again, from a macrotask.
+ * - `window-all-closed` while armed, before any will-quit, is the measured
+ *   stall signature: Electron emits it in place of will-quit when the last
+ *   window closes while it believes it is not quitting. Ask again, from a
+ *   macrotask. After a will-quit it means something else: a listener (the
+ *   recording barrier) prevented will-quit and owns the retry, and asking
+ *   again would run the quit out from under its wait.
  * - If nothing has quit `exitAfterMs` later and no window is left, exit.
  *   That catches the variant with no event at all (a will-quit retry that
  *   lost the flag). If a window IS left, the quit was cancelled — a window
@@ -42,6 +48,7 @@ export function installQuitStallRecovery(
 ): void {
   const exitAfterMs = options.exitAfterMs ?? QUIT_STALL_EXIT_MS;
   let armed = false;
+  let sawWillQuit = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const disarm = (): void => {
@@ -54,6 +61,7 @@ export function installQuitStallRecovery(
     if (!options.isFinalPass()) return;
     disarm();
     armed = true;
+    sawWillQuit = false;
     // Referenced on purpose: with no windows left this may be the only
     // thing that can still end the process.
     timer = setTimeout(() => {
@@ -68,8 +76,12 @@ export function installQuitStallRecovery(
     }, exitAfterMs);
   });
 
+  app.on("will-quit", () => {
+    sawWillQuit = true;
+  });
+
   app.on("window-all-closed", () => {
-    if (!armed) return;
+    if (!armed || sawWillQuit) return;
     options.log.warn("Electron dropped the quit after the last window closed; quitting again");
     retryQuitAfterDispatch(() => app.quit());
   });

@@ -454,6 +454,23 @@ describe("Editor — Draw tool", () => {
       expect(hoisted.layers.filter((l) => l.kind === "vector" && l.shape.kind === "stroke")).toHaveLength(2);
     });
 
+    test("a third stroke joins the row the second one wrote", async () => {
+      // A join writes the stroke under a new id; the next stroke must
+      // follow it there, not look for the layer the burst started in.
+      const canvas = await mountWithDrawTool();
+      await drag(canvas, [[100, 100], [150, 140], [200, 120]]);
+      await rerender();
+      await drag(canvas, [[300, 300], [350, 340], [400, 320]]);
+      await rerender();
+      await drag(canvas, [[500, 500], [550, 540], [600, 520]]);
+      const [, second, third] = upsertsOf();
+      expect(upsertsOf()).toHaveLength(3);
+      expect(strokeSegments(strokeOf(third!))).toHaveLength(3);
+      expect(ops.filter((op) => op.kind === "delete").map((op) => (op as { id: string }).id).at(-1)).toBe(
+        second!.node.id
+      );
+    });
+
     test("a pause longer than the burst gap starts a new layer", async () => {
       const time = clock();
       try {

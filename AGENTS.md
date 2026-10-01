@@ -1184,8 +1184,10 @@ and [stroke-bake.test.ts](apps/desktop/src/main/render/__tests__/stroke-bake.tes
     ~0.1 s. Text, highlights, rasters and effects end a run.
 - **A burst of strokes is one layer.** A stroke started within
   `STROKE_BURST_GAP_MS` of the last one ending, in the same tool, color
-  and weight, joins that stroke as another segment, if it is still the
-  top layer (`stroke-burst.ts`). Each stroke stays its own undo step: the
+  and weight, joins the layer that stroke landed in as another segment,
+  if it is still the top layer (`stroke-burst.ts`). It names that layer
+  by id, not "whatever stroke is on top": after an ⌘Z the top stroke can
+  be an older one the burst never touched. Each stroke stays its own undo step: the
   join is written as a `replace`, so ⌘Z takes back one stroke, not the
   burst. Each segment paints on its own, so a burst looks exactly like
   the separate strokes it holds, crossings included.

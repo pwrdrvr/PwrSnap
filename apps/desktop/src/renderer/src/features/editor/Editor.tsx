@@ -296,13 +296,14 @@ const INTERACTIVE_KEY_TARGETS =
   '[role="option"], [role="tab"], [role="slider"], [role="checkbox"], ' +
   '[role="radio"], [role="switch"], [role="spinbutton"], [role="combobox"]';
 
-/** One stroke the eraser cut: its layer id and the display-space shapes
- *  that replace it — empty when the eraser took all of it. */
 /** A stroke row and the row that replaces it — the same stroke with
  *  different segments — or `null` to delete it. An eraser drag cuts
  *  strokes this way, and a burst of strokes grows one this way. */
 type StrokeReplacement = { readonly id: string; readonly replacement: StrokeOverlay | null };
 
+/** What a stroke replace wrote: whether every change applied, and the
+ *  ids of the rows it added, in order. */
+type StrokeReplaceResult = { readonly allApplied: boolean; readonly addedIds: readonly string[] };
 
 /** A stroke row's centerline box. Rows are immutable — an edit writes
  *  a new object — so the box is cached by row for the hover hit-test. */
@@ -1951,10 +1952,11 @@ export function Editor({
   // pieces and the release commits them, so the two cannot disagree.
   const eraseSessionRef = useRef<StrokeEraseSession | null>(null);
   // When the current Draw drag started, and when the last committed
-  // stroke ended — the gap between them decides whether the new stroke
-  // joins the last one's layer (`STROKE_BURST_GAP_MS`).
+  // stroke ended and which layer it landed in — the gap between them
+  // decides whether the new stroke joins that layer
+  // (`STROKE_BURST_GAP_MS`).
   const strokeStartedAtRef = useRef(0);
-  const lastStrokeRef = useRef<{ endedAt: number } | null>(null);
+  const lastStrokeRef = useRef<{ endedAt: number; layerId: string } | null>(null);
   // Multi-select model. Tracks the ids of all currently-selected
   // overlays/layers; empty array means nothing selected.
   //
@@ -3590,24 +3592,27 @@ export function Editor({
     // word is a dozen strokes; it should be one layer. It is still its
     // own undo step: ⌘Z takes back this stroke, not the burst.
     const previous = lastStrokeRef.current;
-    lastStrokeRef.current = { endedAt: releasedAt };
+    // Cleared across the write: a stroke released before this one lands
+    // must not join a layer this write is about to replace.
+    lastStrokeRef.current = null;
     const target =
       previous !== null && startedAt - previous.endedAt <= STROKE_BURST_GAP_MS
-        ? burstTarget(overlaysRef.current, rastersRef.current, overlay)
+        ? burstTarget(overlaysRef.current, rastersRef.current, overlay, previous.layerId)
         : null;
-    let wrote: { ok: boolean };
+    let wrote: { ok: true; newId: string } | { ok: false } = { ok: false };
     if (target !== null) {
       const merged: StrokeOverlay = {
         ...target.data,
         ...strokePointsFromSegments([...strokeSegments(target.data), overlay.points])
       };
-      const joined =
-        (await replaceStrokesRef.current?.([{ id: target.id, replacement: merged }])) === true;
-      // A join that could not be written still draws the stroke.
-      wrote = joined ? { ok: true } : await persistOverlay(overlay);
-    } else {
-      wrote = await persistOverlay(overlay);
+      const joined = await replaceStrokesRef.current?.([{ id: target.id, replacement: merged }]);
+      const newId = joined?.allApplied === true ? joined.addedIds[0] : undefined;
+      if (newId !== undefined) wrote = { ok: true, newId };
     }
+    // No burst, or a join that could not be written: the stroke is a
+    // layer of its own.
+    if (!wrote.ok) wrote = await persistOverlay(overlay);
+    if (wrote.ok) lastStrokeRef.current = { endedAt: releasedAt, layerId: wrote.newId };
     // The new stroke is NOT selected, unlike an arrow or a box. Strokes
     // come in runs — a word, a circle and an underline — and selecting
     // each would put handles over the next one and point the property
@@ -4782,11 +4787,12 @@ export function Editor({
   const deleteSelectedRef = useRef<
     ((row: Pick<OverlayRow, "id">, opts?: RecordOptions) => Promise<void>) | null
   >(null);
-  // Hook-owned eraser commit (same pattern as deleteSelectedRef): swaps
-  // each cut stroke for its surviving pieces as ONE undo step.
-  const replaceStrokesRef = useRef<((changes: readonly StrokeReplacement[]) => Promise<boolean>) | null>(
-    null
-  );
+  // Hook-owned stroke replace (same pattern as deleteSelectedRef): the
+  // eraser's commit and a burst join — swaps each stroke for the row
+  // that replaces it as ONE undo step.
+  const replaceStrokesRef = useRef<
+    ((changes: readonly StrokeReplacement[]) => Promise<StrokeReplaceResult>) | null
+  >(null);
   // Burst SETTLE choke point (populated by EditorLoaded's nudge
   // effect): commits any pending arrow-key burst + closes its bracket.
   // The outer pointerdown and the copy/duplicate/delete/paste verbs
@@ -5347,9 +5353,12 @@ function EditorLoaded({
   deleteSelectedRef: React.RefObject<
     ((row: Pick<OverlayRow, "id">, opts?: RecordOptions) => Promise<void>) | null
   >;
-  /** The eraser's commit: each change names a stroke layer and the
-   *  display-space stroke shapes that replace it (none = erased whole). */
-  replaceStrokesRef: React.RefObject<((changes: readonly StrokeReplacement[]) => Promise<boolean>) | null>;
+  /** Stroke replace — the eraser's commit and a burst join: each change
+   *  names a stroke layer and the display-space row that replaces it
+   *  (`null` = erased whole). */
+  replaceStrokesRef: React.RefObject<
+    ((changes: readonly StrokeReplacement[]) => Promise<StrokeReplaceResult>) | null
+  >;
   /** Outer keyboard handler calls into this on arrow-key presses with
    *  source-pixel deltas; EditorLoaded's closure converts to normalized
    *  coords and dispatches one updateGeometry per selected layer. */
@@ -5792,7 +5801,7 @@ function EditorLoaded({
   // write into the loss of the whole stroke — and one whose original
   // will not delete is taken back.
   useEffect(() => {
-    replaceStrokesRef.current = async (changes): Promise<boolean> => {
+    replaceStrokesRef.current = async (changes): Promise<StrokeReplaceResult> => {
       const removed: CreateDeleteItem[] = [];
       const added: CreateDeleteItem[] = [];
       let allApplied = true;
@@ -5818,10 +5827,14 @@ function EditorLoaded({
             allApplied = false;
             continue;
           }
-          if (result.value.kind === "upsert") {
-            const node = result.value.artifact.node;
-            written = { row: { id: node.id }, node };
+          if (result.value.kind !== "upsert") {
+            // Nothing to record or take back: leave the original alone
+            // rather than delete it with no replacement on file.
+            allApplied = false;
+            continue;
           }
+          const node = result.value.artifact.node;
+          written = { row: { id: node.id }, node };
         }
         // eslint-disable-next-line no-await-in-loop
         const deleted = await dispatchEdit({ kind: "delete", id: change.id });
@@ -5841,7 +5854,7 @@ function EditorLoaded({
       if (!undoApplyingRef.current && (removed.length > 0 || added.length > 0)) {
         undo.recordReplace({ removed, added });
       }
-      return allApplied;
+      return { allApplied, addedIds: added.map((item) => item.row.id) };
     };
     return () => {
       replaceStrokesRef.current = null;

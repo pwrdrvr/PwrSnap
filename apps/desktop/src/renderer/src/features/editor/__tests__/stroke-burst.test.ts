@@ -39,13 +39,13 @@ const arrow = { kind: "arrow", from: { x: 0, y: 0 }, to: { x: 1, y: 1 }, color: 
 describe("burstTarget", () => {
   test("joins the top layer when it is a stroke in the same style", () => {
     const rows = [row("arrow", 1000, arrow), row("last", 2000, stroke)];
-    expect(burstTarget(rows, [], stroke)).toEqual({ id: "last", data: stroke });
+    expect(burstTarget(rows, [], stroke, "last")).toEqual({ id: "last", data: stroke });
   });
 
   test("an unset thickness matches 'auto'", () => {
     const { thickness: _t, ...noThickness } = stroke;
     const rows = [row("last", 2000, { ...stroke, thickness: "auto" })];
-    expect(burstTarget(rows, [], noThickness)).not.toBeNull();
+    expect(burstTarget(rows, [], noThickness, "last")).not.toBeNull();
   });
 
   test.each([
@@ -55,12 +55,12 @@ describe("burstTarget", () => {
     ["an opacity override", { opacity: 0.5 }]
   ])("refuses a top stroke with %s", (_label, change) => {
     const rows = [row("last", 2000, { ...stroke, ...change })];
-    expect(burstTarget(rows, [], stroke)).toBeNull();
+    expect(burstTarget(rows, [], stroke, "last")).toBeNull();
   });
 
   test("refuses when something else is on top — an arrow, or a pasted image", () => {
-    expect(burstTarget([row("last", 1000, stroke), row("arrow", 2000, arrow)], [], stroke)).toBeNull();
-    expect(burstTarget([row("last", 1000, stroke)], [{ z_index: 3000 }], stroke)).toBeNull();
+    expect(burstTarget([row("last", 1000, stroke), row("arrow", 2000, arrow)], [], stroke, "last")).toBeNull();
+    expect(burstTarget([row("last", 1000, stroke)], [{ z_index: 3000 }], stroke, "last")).toBeNull();
   });
 
   test("refuses when the joined stroke would pass the point cap", () => {
@@ -68,10 +68,15 @@ describe("burstTarget", () => {
       ...stroke,
       points: Array.from({ length: MAX_STROKE_POINTS - 1 }, (_, i) => ({ x: i / MAX_STROKE_POINTS, y: 0.5 }))
     };
-    expect(burstTarget([row("last", 1000, full)], [], stroke)).toBeNull();
+    expect(burstTarget([row("last", 1000, full)], [], stroke, "last")).toBeNull();
+  });
+
+  test("refuses a top stroke the last stroke did not land in", () => {
+    // An ⌘Z took the last stroke back, leaving an older stroke on top.
+    expect(burstTarget([row("older", 2000, stroke)], [], stroke, "last")).toBeNull();
   });
 
   test("nothing to join on an empty canvas", () => {
-    expect(burstTarget([], [], stroke)).toBeNull();
+    expect(burstTarget([], [], stroke, "last")).toBeNull();
   });
 });

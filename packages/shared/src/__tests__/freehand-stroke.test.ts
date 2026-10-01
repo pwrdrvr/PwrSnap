@@ -400,7 +400,7 @@ describe("StrokeEraseSession — the cut the editor previews and commits", () =>
       ? []
       : strokeSegments(row).map((points) => {
           const { breaks: _b, ...rest } = row;
-          return { ...rest, points };
+          return { ...rest, points: [...points] };
         });
 
   const across = {

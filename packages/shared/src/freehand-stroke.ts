@@ -183,10 +183,12 @@ function distanceToSegmentPx(p: StrokePointPx, a: StrokePointPx, b: StrokePointP
 export function strokeSegments<P extends { x: number; y: number }>(data: {
   points: readonly P[];
   breaks?: readonly number[] | undefined;
-}): P[][] {
+}): (readonly P[])[] {
   const breaks = data.breaks ?? [];
-  if (breaks.length === 0) return [[...data.points]];
-  const out: P[][] = [];
+  // No copy for the common one-segment row: the hover hit-test calls
+  // this for every stroke under the pointer.
+  if (breaks.length === 0) return [data.points];
+  const out: (readonly P[])[] = [];
   let start = 0;
   for (const at of [...breaks, data.points.length]) {
     out.push(data.points.slice(start, at));
@@ -450,7 +452,9 @@ export function strokeGeometries(
  * segments: paint rows with `strokeGeometries`.
  */
 export function strokeGeometry(
-  data: Pick<StrokeOverlay, "tool" | "points" | "thickness" | "opacity">,
+  data: Pick<StrokeOverlay, "tool" | "thickness" | "opacity"> & {
+    points: readonly StrokeOverlay["points"][number][];
+  },
   canvasWidthPx: number,
   canvasHeightPx: number,
   basisPx: number
@@ -818,8 +822,6 @@ export class StrokeEraseSession {
     }
     return state.row;
   }
-
-
 }
 
 function boundsPx(points: readonly StrokePointPx[]): PxBounds {

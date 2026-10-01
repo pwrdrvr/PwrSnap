@@ -13,22 +13,26 @@ import { MAX_STROKE_POINTS, type OverlayRow, type StrokeOverlay } from "@pwrsnap
 export const STROKE_BURST_GAP_MS = 1500;
 
 /**
- * The stroke a new one may join as another segment: the TOP layer, if it
- * is a stroke drawn with the same tool, color and weight (and no opacity
+ * The stroke a new one may join as another segment: `lastId`, the layer
+ * the previous stroke landed in, if it is still the TOP layer and a
+ * stroke drawn with the same tool, color and weight (and no opacity
  * override), with room for the new points. Anything drawn, pasted or
  * restacked on top since breaks the burst — the new stroke would
- * otherwise land beneath it.
+ * otherwise land beneath it. Naming the layer, not just "the top
+ * stroke", keeps a stroke drawn right after an ⌘Z from joining an older
+ * stroke that the undo left on top.
  */
 export function burstTarget(
   rows: readonly OverlayRow[],
   rasters: readonly { readonly z_index: number }[],
-  stroke: StrokeOverlay
+  stroke: StrokeOverlay,
+  lastId: string
 ): { id: string; data: StrokeOverlay } | null {
   let top: OverlayRow | null = null;
   for (const row of rows) {
     if (top === null || row.z_index > top.z_index) top = row;
   }
-  if (top === null) return null;
+  if (top === null || top.id !== lastId) return null;
   // A pasted image is a layer too, outside the overlay rows.
   if (rasters.some((raster) => raster.z_index > top.z_index)) return null;
   const data = top.data;

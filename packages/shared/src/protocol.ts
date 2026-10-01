@@ -3261,6 +3261,22 @@ export type BlurToolStyle = {
   radius: BlurRadiusSetting;
 };
 
+/** The Draw family's working style. `mode` picks the tool the next drag
+ *  uses: pen, marker and spray lay a `stroke` overlay down; the eraser
+ *  cuts existing strokes and never commits one of its own. A bag slot
+ *  can hold pen / marker / spray but not the eraser (it has no style to
+ *  save). */
+export type DrawToolMode = "pen" | "marker" | "spray" | "eraser";
+
+export type DrawToolStyle = {
+  mode: DrawToolMode;
+  color: ToolColor;
+  /** Weight on the shared stroke ladder; each tool multiplies it (a
+   *  marker is wider than a pen at the same preset). Sizes the eraser's
+   *  footprint too. */
+  thickness: ToolSizePreset | number;
+};
+
 export type HighlightToolStyle = {
   color: ToolColor;
   /** 0..1; renderer clamps. The popover exposes preset stops 0.2/0.3/0.6. */
@@ -3282,6 +3298,7 @@ export type EditorToolStyles = {
   shape: ShapeToolStyle;
   blur: BlurToolStyle;
   highlight: HighlightToolStyle;
+  draw: DrawToolStyle;
 };
 
 /** One saved, complete tool style in the editor's tool bag: the tool it
@@ -3295,7 +3312,10 @@ export type ToolBagSlot =
   | { tool: "text"; label?: string; style: TextToolStyle }
   | { tool: "shape"; label?: string; style: ShapeToolStyle }
   | { tool: "blur"; label?: string; style: BlurToolStyle }
-  | { tool: "highlight"; label?: string; style: HighlightToolStyle };
+  | { tool: "highlight"; label?: string; style: HighlightToolStyle }
+  /** `style.mode` is never "eraser" in a saved slot — the settings
+   *  parser coerces one to "pen". */
+  | { tool: "draw"; label?: string; style: DrawToolStyle };
 
 /** Number of tool-bag slots, bound to keys 1–9. */
 export const TOOL_BAG_SIZE = 9;
@@ -3787,6 +3807,7 @@ export type SettingsPatch = {
       shape?: Partial<ShapeToolStyle>;
       blur?: Partial<BlurToolStyle>;
       highlight?: Partial<HighlightToolStyle>;
+      draw?: Partial<DrawToolStyle>;
     };
     /** Replaces the whole bag — see {@link EditorToolBag}. */
     toolBag?: EditorToolBag;

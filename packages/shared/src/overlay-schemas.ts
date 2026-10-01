@@ -803,6 +803,59 @@ export const CropOverlay = z.object({
   rect: NormalizedRect
 });
 
+/** Which Draw-family tool laid a freehand stroke down. The eraser is a
+ *  Draw tool too, but it never produces a row — it splits these. */
+export const StrokeTool = z.enum(["pen", "marker", "spray"]);
+export type StrokeTool = z.infer<typeof StrokeTool>;
+
+/** Upper bound on a stroke's stored points. The editor simplifies a
+ *  gesture before it commits (see `simplifyStrokePoints`), so a long,
+ *  slow scribble lands well under this; the cap exists so a hand-edited
+ *  or AI-injected row cannot hand the bake an unbounded path. */
+export const MAX_STROKE_POINTS = 4096;
+
+/** A freehand Draw stroke: pen, marker or spray.
+ *
+ *  `points` follow the same convention as every other overlay — fractions
+ *  of the CURRENT canvas, re-normalized by a crop like an arrow's
+ *  endpoints, finite but not clamped to [0, 1]. Width is a preset on the
+ *  shared annotation ladder (`thickness`, sized off the SOURCE raster's
+ *  `annotationBasisPx`), so a crop never thins a stroke.
+ *
+ *  Spray is baked as dots, and the dots are a pure function of the row:
+ *  `seed` picks the pattern, `seedOffset` is the index of this stroke's
+ *  first segment in the stroke it was erased out of (so the surviving
+ *  half of an erased spray keeps the dots it had). See
+ *  `freehand-stroke.ts`.
+ *
+ *  NEW KIND — a build that predates it rejects any row carrying it.
+ *  `Overlay` is a discriminated union, so an older build fails to parse
+ *  a `.pwrsnap` bundle (and a layer-tree row) that contains a stroke.
+ *  The same forward-compat cost as the `bar` arrow end, larger in scope:
+ *  the whole document fails, not just one field. */
+export const StrokeOverlay = z.object({
+  kind: z.literal("stroke"),
+  tool: StrokeTool,
+  points: z.array(NormalizedPoint).min(1).max(MAX_STROKE_POINTS),
+  color: z.union([z.literal("auto"), z.string().regex(/^#[0-9a-f]{6}$/i)]).default("auto"),
+  /** Stroke-weight preset (see ArrowOverlay.thickness). Missing / "auto"
+   *  is the Medium rung. The tool multiplies it: a marker is wider than
+   *  a pen at the same preset. */
+  thickness: OverlayThickness.optional(),
+  /** Paint opacity, 0..1. Stamped at commit so retuning a tool's default
+   *  never repaints old strokes; read via `readStrokeOpacity`, which
+   *  falls back to the tool's default when absent. */
+  opacity: z.number().min(0).max(1).optional(),
+  /** Spray pattern seed. Required in practice for spray (the editor
+   *  always stamps one); a row without it uses seed 0. Ignored by pen
+   *  and marker. */
+  seed: z.number().int().min(0).max(0x7fffffff).optional(),
+  /** Segment index this stroke starts at within the stroke it was split
+   *  from (eraser). 0 / absent for a stroke drawn whole. */
+  seedOffset: z.number().int().min(0).max(1_000_000).optional()
+});
+export type StrokeOverlay = z.infer<typeof StrokeOverlay>;
+
 /** Internal: discriminated union over the canonical (post-migration)
  *  overlay shapes. Consumers use the `Overlay` export below, which
  *  wraps this in a preprocess shim that transparently rewrites legacy
@@ -816,7 +869,8 @@ const OverlayCanonical = z.discriminatedUnion("kind", [
   BlurOverlay,
   TextOverlay,
   StepOverlay,
-  CropOverlay
+  CropOverlay,
+  StrokeOverlay
 ]);
 
 /** Legacy → canonical input migrator. Any row with `kind: "rect"` is
@@ -848,6 +902,7 @@ export const OVERLAY_RENDER_ORDER: OverlayKind[] = [
   "crop",
   "blur",
   "highlight",
+  "stroke",
   "shape",
   "arrow",
   "step",

@@ -1,7 +1,8 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, aroundEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { UpdateReleaseState } from "../update-release-state";
 
 const mocks = vi.hoisted(() => ({
@@ -35,9 +36,34 @@ const release = {
     { name: "PwrSnap-1.0.0-windows-x64-setup.exe", state: "uploaded" }
   ]
 };
-let updater: typeof import("../auto-updater");
+type Updater = typeof import("../auto-updater");
 let root: string;
 const fetchMock = vi.fn<typeof fetch>();
+
+// A test that times out is abandoned, not cancelled: its body keeps running
+// under the next test, and a restart loop then drives the next test's
+// updater, clock and profile. That once turned one slow test into fifteen
+// failures. Every test therefore runs in its own session, and its async
+// continuations keep that session after vitest moves on, so a stray
+// `restart()` or `updater.*` from an abandoned body throws instead.
+interface Session { ended: boolean; updater?: Updater }
+const sessions = new AsyncLocalStorage<Session>();
+function session(): Session {
+  const current = sessions.getStore();
+  if (!current || current.ended) throw new Error("This test outlived its own run and was stopped.");
+  return current;
+}
+aroundEach(async (runTest) => {
+  const current: Session = { ended: false };
+  try {
+    await sessions.run(current, runTest);
+  } finally {
+    current.ended = true;
+  }
+});
+const updater = new Proxy({} as Updater, {
+  get: (_target, key) => Reflect.get(session().updater ?? {}, key)
+});
 
 function serveReleases(): void {
   fetchMock.mockImplementation(async (input) => new Response(
@@ -47,11 +73,20 @@ function serveReleases(): void {
 }
 
 async function restart(profile = root): Promise<void> {
-  updater?.disposeAutoUpdater();
+  const current = session();
+  current.updater?.disposeAutoUpdater();
   vi.resetModules();
   mocks.userData = profile;
-  updater = await import("../auto-updater");
-  updater.setUpdateSelectionResolver(() => ({ train: "stable", channel: "latest" }));
+  current.updater = await import("../auto-updater");
+  current.updater.setUpdateSelectionResolver(() => ({ train: "stable", channel: "latest" }));
+}
+
+/** A cold launch at `at`. Loops move the clock here rather than with
+ *  `vi.setSystemTime`, so an abandoned loop stops before it moves it. */
+async function launchAt(at: number): Promise<void> {
+  session();
+  vi.setSystemTime(at);
+  await restart();
 }
 
 async function diskState(): Promise<UpdateReleaseState> {
@@ -124,27 +159,29 @@ describe("production release requests across process restarts", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  // 221 module-graph re-imports (`vi.resetModules` + `import`). That costs
-  // ~0.8s on a Mac and sits at the 5s default on the Windows runner, where it
-  // has timed out — and a timed-out loop keeps restarting the updater under
-  // the next test, so its 14 neighbours failed with it.
-  test("20 cold launches/minute and Settings mounts make zero requests during the new-profile grace period", { timeout: 30_000 }, async () => {
-    for (let launch = 0; launch < 200; launch++) {
-      await restart();
+  // Nothing counts launches: whether one may fetch depends only on the
+  // persisted timestamps (`automaticReleaseCheckAt` and the cache TTL). So
+  // each launch below sits on a boundary rather than repeating a rate; 221
+  // launches here once timed out on the Windows runner.
+  test("cold launches and Settings mounts make zero requests during the new-profile grace period and the cache window", async () => {
+    // A fresh profile's first launch, a relaunch 3s later, and the grace
+    // period's middle and last instant.
+    for (const at of [0, 3_000, 5 * MINUTE, 10 * MINUTE - 1]) {
+      await launchAt(START + at);
       await updater.checkForAppUpdatesNow("startup");
       await updater.readAppUpdateReleaseVersions();
-      vi.setSystemTime(START + (launch + 1) * 3_000);
     }
     expect(fetchMock).not.toHaveBeenCalled();
     expect(mocks.check).not.toHaveBeenCalled();
     expect((await diskState()).firstSeenAt).toBe(START);
 
-    await restart();
+    await launchAt(START + 10 * MINUTE);
     await updater.checkForAppUpdatesNow("startup");
     expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([latestURL, pageURL]);
-    for (let launch = 0; launch < 20; launch++) {
-      vi.setSystemTime(START + 10 * MINUTE + launch * 3_000);
-      await restart();
+    // The cache window, from the fetch's own instant to its last one, with
+    // several Settings mounts racing each launch.
+    for (const at of [10 * MINUTE, 10 * MINUTE + 3_000, 40 * MINUTE, 70 * MINUTE - 1]) {
+      await launchAt(START + at);
       await updater.checkForAppUpdatesNow("startup");
       await Promise.all(Array.from({ length: 5 }, () => updater.readAppUpdateReleaseVersions()));
     }
@@ -152,6 +189,10 @@ describe("production release requests across process restarts", () => {
     expect(mocks.check).not.toHaveBeenCalled();
     expect((await diskState()).lastAttemptAt).toBe(START + 10 * MINUTE);
     expect((await diskState()).cache?.fetchedAt).toBe(START + 10 * MINUTE);
+
+    await launchAt(START + 70 * MINUTE);
+    await updater.checkForAppUpdatesNow("startup");
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
   test("resident startup schedules its first check at ten minutes, then hourly", async () => {
@@ -322,8 +363,8 @@ describe("production release requests across process restarts", () => {
     await updater.checkForAppUpdatesNow("manual");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect((await diskState()).rateLimitResetAt).toBe(resetAt);
-    for (let launch = 0; launch < 20; launch++) {
-      await restart();
+    for (const at of [START, resetAt - 1]) {
+      await launchAt(at);
       await updater.checkForAppUpdatesNow("startup");
       await updater.checkForAppUpdatesNow("manual");
       await updater.readAppUpdateReleaseVersions();
@@ -358,8 +399,8 @@ describe("production release requests across process restarts", () => {
     await updater.checkForAppUpdatesNow("manual");
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(admissions).toEqual([START, START]);
-    for (let launch = 0; launch < 20; launch++) {
-      await restart();
+    for (const at of [START, START + HOUR - 1]) {
+      await launchAt(at);
       await updater.checkForAppUpdatesNow("startup");
       await updater.readAppUpdateReleaseVersions();
     }

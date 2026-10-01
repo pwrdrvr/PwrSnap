@@ -8,7 +8,7 @@ overrides:
   '@types/node': 24.12.4
   tar: 7.5.22
 
-pnpmfileChecksum: sha256-8VD98p8ogNwupnZaJ8ZLlwzho8JDtLVZyaccUDy2Q6E=
+pnpmfileChecksum: sha256-VUllCn+v0hXcYC5aJ4RJdr33aDMs3bAVosXcIeHG2N4=
 
 importers:
 
@@ -856,6 +856,7 @@ packages:
   '@img/sharp-wasm32@0.35.4':
     resolution: {integrity: sha512-zQnl4Kwp7Q6NHsENtU2T/00Zi+w3AQNwz3+UaTyVBy2FpXrzXzGjndpK61onhZjRtRpQXxCTeqw19bVyXOh7jA==}
     engines: {node: '>=20.9.0'}
+    os: [linux]
 
   '@img/sharp-webcontainers-wasm32@0.35.4':
     resolution: {integrity: sha512-ESfNkywmCfPNyaZjxooddJQiQ+l/nTpGEOGthxiLnIHXC/CmcBixnfwUleX9mCz9ovrUUvKMap/pm8RYbzfwaA==}
@@ -3615,8 +3616,6 @@ snapshots:
     optional: true
 
   '@img/sharp-freebsd-wasm32@0.35.4':
-    dependencies:
-      '@img/sharp-wasm32': 0.35.4
     optional: true
 
   '@img/sharp-libvips-darwin-arm64@1.3.3':
@@ -3695,8 +3694,6 @@ snapshots:
     optional: true
 
   '@img/sharp-webcontainers-wasm32@0.35.4':
-    dependencies:
-      '@img/sharp-wasm32': 0.35.4
     optional: true
 
   '@img/sharp-win32-arm64@0.35.4':
@@ -5728,6 +5725,7 @@ snapshots:
       '@img/sharp-linux-x64': 0.35.4
       '@img/sharp-linuxmusl-arm64': 0.35.4
       '@img/sharp-linuxmusl-x64': 0.35.4
+      '@img/sharp-wasm32': 0.35.4
       '@img/sharp-webcontainers-wasm32': 0.35.4
       '@img/sharp-win32-arm64': 0.35.4
       '@img/sharp-win32-ia32': 0.35.4

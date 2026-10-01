@@ -3129,3 +3129,66 @@ ignores the sidecar unless its metadata matches the running Electron version,
 Do not "fix" the ABI mismatch by copying the Electron binary over
 `build/Release`, because that breaks Node-based tests with the inverse
 `NODE_MODULE_VERSION` mismatch.
+
+## sharp in Electron on Linux runs its WebAssembly build
+
+**In Electron on Linux, sharp must load `@img/sharp-wasm32`, never the
+native `@img/sharp-linux-*` addon. Every entry that can load sharp imports
+[sharp-wasm-steer.ts](apps/desktop/src/main/sharp-wasm-steer.ts) before
+anything else that could pull sharp in.** Pinned by
+[sharp-wasm-steer.test.ts](apps/desktop/src/main/__tests__/sharp-wasm-steer.test.ts)
+(the policy and the import order) and
+[pnpmfile.test.mjs](scripts/__tests__/pnpmfile.test.mjs) (the install
+wiring and the lockfile).
+
+Electron's Linux binary links the system glib, and sharp's addon imports
+`g_object_ref` / `g_object_unref` meaning the copy statically linked into
+libvips. The global scope wins, so they bind to a GType registry that has
+never seen libvips' objects: every call logs
+`GLib-GObject: g_object_ref: assertion 'G_IS_OBJECT (object)' failed` and
+does nothing, libvips frees images sharp still holds, and main dies with
+**SIGTRAP** a few hundred ms into its first sharp work. Upstream is
+[electron/electron#46323](https://github.com/electron/electron/issues/46323)
+(open). It surfaced as `editor-crop-clip.spec.ts` failing about 40% of runs,
+blamed on a lost `editor:open` intent. The intent was never lost: the
+process was already dead.
+
+Four things that bite:
+
+- **Those GLib lines are not noise.** They were in every Linux E2E log,
+  healthy launches included, which is how they came to be ignored. Read
+  them as "sharp is running native inside Electron", which is now a bug.
+- **The steer must be its own chunk.** `out/main/*.js` is ESM, so every
+  static import, `sharp` included, is evaluated before any module body. A
+  steer inlined into an entry chunk runs after sharp has already loaded
+  native. It is a separate rollup input, and each entry imports it first.
+  Worker threads have their own module loader, so the worker entries each
+  import it too.
+- **The install needs the `.pnpmfile.cjs` hook.** sharp does not depend on
+  `@img/sharp-wasm32` (its docs say to install it alongside), and pnpm's
+  isolated layout hides a sibling from sharp's loader. The hook adds it to
+  sharp's optional dependencies at sharp's own version. It gates the package
+  to `os: linux` so macOS and Windows release staging never ship it (the
+  license notice does not disclose it). It also drops the edge from sharp's
+  FreeBSD and WebContainers wrappers: pnpm 10.33 otherwise reaches the
+  package through them first, skips it along with them, and never
+  reconsiders.
+- **What does not work.** `RTLD_DEEPBIND` on the addon fixes the glib
+  binding but rebinds `free` / `operator new` / `operator delete` away from
+  Chromium's allocator shim, and crashes with SIGSEGV. A `utilityProcess`
+  or `ELECTRON_RUN_AS_NODE` child is still the electron executable, with
+  the same system glib.
+
+The wasm build is slower. It also rasterizes SVG with resvg instead of
+librsvg, and renders SVG `<text>` blank. Text annotations are unaffected:
+they bake through Chromium (`text-html-bake.ts`). On Linux, the cart drag
+icon's labels draw no glyphs. Linux is not a distribution target, so this
+covers the Linux E2E job and Linux dev runs. Plain Node on Linux (vitest,
+scripts, the Playwright runner) keeps the native addon, because it has no
+second glib.
+
+The boot log says which build loaded:
+`sharp: using the WebAssembly build (Electron on Linux)`, or a warn line
+when the wasm package is missing and main is back on the crashing native
+addon. Investigation, probes and measurements:
+[docs/solutions/2026-10-01-sharp-electron-linux-glib-sigtrap.md](docs/solutions/2026-10-01-sharp-electron-linux-glib-sigtrap.md).

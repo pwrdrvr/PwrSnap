@@ -363,6 +363,40 @@ describe("useEditorToolState", () => {
     expect(api!.armedSlot).toBe(4);
   });
 
+  test("6b. a Draw slot saves and arms like any other: the Draw tool with its mode, color and weight", () => {
+    let api: UseEditorToolStateReturn | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-1",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+    act(() => {
+      api!.setBagSlot(8, {
+        tool: "draw",
+        style: { mode: "marker", color: "yellow", thickness: "large" }
+      });
+    });
+    act(() => {
+      api!.armSlot(8);
+    });
+    expect(api!.activeTool).toBe("draw");
+    expect(api!.armedSlot).toBe(8);
+    expect(api!.activeStyle).toEqual({
+      tool: "draw",
+      style: { mode: "marker", color: "yellow", thickness: "large" }
+    });
+    // Switching to the eraser is a change of working style like any
+    // other — the slot reads as edited (and the bar will not offer to
+    // save the eraser into it).
+    act(() => {
+      api!.setStyleField("draw", "mode", "eraser");
+    });
+    expect(api!.armedSlotModified).toBe(true);
+  });
+
   test("7. editing the working style marks the armed slot modified; editing it back clears that", () => {
     let api: UseEditorToolStateReturn | null = null;
     render(

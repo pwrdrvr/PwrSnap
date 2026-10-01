@@ -218,6 +218,12 @@
 .editor-canvas[data-tool][data-hover-hit="true"] {
   cursor: move;
 }
+/* Draw is the exception: it draws over layers instead of selecting
+   them (Editor.tsx onPointerDown), so a layer under the pointer must
+   not promise a move. Same specificity, later in source. */
+.editor-canvas[data-tool="draw"][data-hover-hit="true"] {
+  cursor: crosshair;
+}
 /* Pan takeover: Space-held detaches the canvas's own pointerdown and
    the wrap shows grab/grabbing (.is-pannable / .is-panning above) —
    the canvas must inherit that instead of fighting it with per-tool /

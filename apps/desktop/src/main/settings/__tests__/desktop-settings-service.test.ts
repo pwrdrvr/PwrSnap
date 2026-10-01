@@ -2069,3 +2069,64 @@ describe("DesktopSettingsService updates train/track", () => {
     });
   });
 });
+
+describe("DesktopSettingsService — the Draw tool family", () => {
+  test("a settings file from before Draw existed reads the factory Draw style", async () => {
+    const filePath = join(workDir, "settings.json");
+    const raw = defaultSettings();
+    delete (raw.editor.toolStyles as Partial<Settings["editor"]["toolStyles"]>).draw;
+    writeFileSync(filePath, JSON.stringify(raw), "utf8");
+    const settings = await new DesktopSettingsService({ filePath }).read();
+    expect(settings.editor.toolStyles.draw).toEqual({
+      mode: "pen",
+      color: "accent",
+      thickness: "auto"
+    });
+  });
+
+  test("a Draw slot round-trips, and an eraser slot (a hand edit) reads as a pen of the same color", async () => {
+    const filePath = join(workDir, "settings.json");
+    const raw = defaultSettings();
+    raw.editor.toolBag.slots[8] = {
+      tool: "draw",
+      style: { mode: "marker", color: "yellow", thickness: "large" }
+    };
+    raw.editor.toolBag.slots[7] = {
+      tool: "draw",
+      style: { mode: "eraser", color: "green", thickness: "small" }
+    };
+    writeFileSync(filePath, JSON.stringify(raw), "utf8");
+    const settings = await new DesktopSettingsService({ filePath }).read();
+    expect(settings.editor.toolBag.slots[8]).toEqual({
+      tool: "draw",
+      style: { mode: "marker", color: "yellow", thickness: "large" }
+    });
+    expect(settings.editor.toolBag.slots[7]).toEqual({
+      tool: "draw",
+      style: { mode: "pen", color: "green", thickness: "small" }
+    });
+  });
+
+  test("a slot naming a tool this build does not know reads as empty — what a pre-Draw build does with a Draw slot", async () => {
+    const filePath = join(workDir, "settings.json");
+    const raw = defaultSettings() as unknown as { editor: { toolBag: { slots: unknown[] } } };
+    raw.editor.toolBag.slots[8] = { tool: "lasso", style: { color: "red" } };
+    writeFileSync(filePath, JSON.stringify(raw), "utf8");
+    const settings = await new DesktopSettingsService({ filePath }).read();
+    expect(settings.editor.toolBag.slots[8]).toBeNull();
+  });
+
+  test("an unrelated write keeps a bag slot this build cannot read; only a bag edit replaces it", async () => {
+    // This is the forward-compat half of the older-build note in
+    // docs/architecture.md: the raw slots array survives untouched
+    // until the bag itself is written.
+    const filePath = join(workDir, "settings.json");
+    const raw = defaultSettings() as unknown as { editor: { toolBag: { slots: unknown[] } } };
+    const future = { tool: "lasso", style: { color: "red" } };
+    raw.editor.toolBag.slots[8] = future;
+    writeFileSync(filePath, JSON.stringify(raw), "utf8");
+    const svc = new DesktopSettingsService({ filePath });
+    await svc.write({ general: { developerMode: true } });
+    expect(JSON.parse(readFileSync(filePath, "utf8")).editor.toolBag.slots[8]).toEqual(future);
+  });
+});

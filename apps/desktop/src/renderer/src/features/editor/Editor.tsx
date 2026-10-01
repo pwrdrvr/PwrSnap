@@ -4362,6 +4362,14 @@ export function Editor({
       if (event.key === "Escape" && draft !== null) {
         event.preventDefault();
         setDraft(null);
+        // A Draw drag in progress is abandoned, not committed: the
+        // release that follows finds no stroke to write.
+        if (strokeDraftRef.current !== null) {
+          strokeDraftRef.current = null;
+          const token = activeInteractionTokenRef.current;
+          activeInteractionTokenRef.current = null;
+          if (token !== null) endInteractionRef.current?.(token);
+        }
         return;
       }
       // Escape on the open right-click context menu closes the menu

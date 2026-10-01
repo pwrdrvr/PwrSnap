@@ -1271,3 +1271,66 @@ describe("TransformHandles — rotation detents reach the committed geometry", (
     expect(committedRotationDeg(onGeometryChange)).toBeCloseTo(22, 4);
   });
 });
+
+describe("TransformHandles — Draw strokes", () => {
+  function strokeRow(): OverlayRow {
+    return {
+      ...rectRow(),
+      id: "stroke_1",
+      data: {
+        kind: "stroke",
+        tool: "pen",
+        points: [
+          { x: 0.2, y: 0.4 },
+          { x: 0.6, y: 0.4 },
+          { x: 0.6, y: 0.6 }
+        ],
+        color: "auto",
+        thickness: "small"
+      }
+    };
+  }
+
+  test("8 resize handles and a body, but no rotate handle — a stroke's direction is in its points", async () => {
+    await render({ selectedOverlay: strokeRow() });
+    expect(countResizeHandles()).toBe(8);
+    expect(document.querySelector('[data-testid="transform-handle-rotate"]')).toBeNull();
+    expect(document.querySelector('[data-testid="transform-handle-body"]')).not.toBeNull();
+  });
+
+  test("dragging the east handle stretches the points horizontally about the west edge", async () => {
+    const onGeometryChange = vi.fn();
+    await render({ selectedOverlay: strokeRow(), onGeometryChange });
+    const east = document.querySelector<HTMLElement>('[data-testid="transform-handle-e"]')!;
+    // The handle sits on the painted box's right edge, a few px past 0.6.
+    const startX = parseFloat(east.style.left) * 10;
+    const startY = parseFloat(east.style.top) * 10;
+    firePointer(east, "pointerdown", startX, startY);
+    firePointer(east, "pointermove", startX + 200, startY);
+    firePointer(east, "pointerup", startX + 200, startY);
+    expect(onGeometryChange).toHaveBeenCalledTimes(1);
+    const geom = onGeometryChange.mock.calls[0]?.[0] as GeometryUpdate;
+    expect(geom.kind).toBe("stroke");
+    if (geom.kind !== "stroke") return;
+    expect(geom.points.map((p) => p.y)).toEqual([0.4, 0.4, 0.6]);
+    expect(geom.points[0]!.x).toBeCloseTo(0.2, 2);
+    expect(geom.points[1]!.x).toBeCloseTo(0.8, 2);
+    expect(geom.points[2]!.x).toBeCloseTo(0.8, 2);
+  });
+
+  test("dragging an edge past the opposite one stops short instead of mirroring the stroke", async () => {
+    const onGeometryChange = vi.fn();
+    await render({ selectedOverlay: strokeRow(), onGeometryChange });
+    const east = document.querySelector<HTMLElement>('[data-testid="transform-handle-e"]')!;
+    const startX = parseFloat(east.style.left) * 10;
+    const startY = parseFloat(east.style.top) * 10;
+    firePointer(east, "pointerdown", startX, startY);
+    firePointer(east, "pointermove", 50, startY);
+    firePointer(east, "pointerup", 50, startY);
+    const geom = onGeometryChange.mock.calls[0]?.[0] as GeometryUpdate;
+    if (geom.kind !== "stroke") throw new Error("expected stroke geometry");
+    // Order along x is kept: the first point is still left of the others.
+    expect(geom.points[0]!.x).toBeLessThanOrEqual(geom.points[1]!.x);
+    for (const p of geom.points) expect(p.x).toBeGreaterThan(0.19);
+  });
+});

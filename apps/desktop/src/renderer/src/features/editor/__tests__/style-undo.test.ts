@@ -288,3 +288,82 @@ describe("previousStylePatchFromQueuedUpdate", () => {
     ).toEqual({ kind: "shape", shape: "circle", rect: constrainedRect });
   });
 });
+
+describe("Draw stroke style edits", () => {
+  const dims = {
+    sourceWidthPx: 1600,
+    sourceHeightPx: 900,
+    canvasWidthPx: 1600,
+    canvasHeightPx: 900
+  };
+  const points = [
+    { x: 0.1, y: 0.5 },
+    { x: 0.6, y: 0.5 }
+  ];
+
+  function strokeRow(tool: "pen" | "marker" | "spray", opacity?: number): OverlayRow {
+    return {
+      id: "ly_stroke",
+      capture_id: "cap_1",
+      data: {
+        kind: "stroke",
+        tool,
+        points,
+        color: "#ff5a5a",
+        thickness: "medium",
+        ...(opacity !== undefined ? { opacity } : {})
+      },
+      schema_version: 1,
+      source: "user",
+      ai_run_id: null,
+      z_index: 1000,
+      rejected_at: null,
+      applied_at: "2026-08-02T00:00:00.000Z",
+      superseded_by: null,
+      created_at: "2026-08-02T00:00:00.000Z"
+    };
+  }
+
+  function strokeLayer(tool: "pen" | "marker" | "spray", opacity?: number): BundleLayerNode {
+    const base = arrow("#ff5a5a");
+    if (base.kind !== "vector") throw new Error("fixture is a vector layer");
+    return { ...base, id: "ly_stroke", name: "Pen", shape: strokeRow(tool, opacity).data };
+  }
+
+  test("Mode writes the stroke's tool and clears opacity, so a pen made a marker turns translucent", () => {
+    const update = layerStyleUpdate(strokeRow("pen", 0.8), "mode", "marker", dims);
+    expect(update).toEqual({
+      patch: { kind: "stroke", tool: "marker", opacity: undefined },
+      fallbackPreviousPatch: { kind: "stroke", tool: "pen", opacity: 0.8 },
+      undoField: "mode"
+    });
+  });
+
+  test("Mode never accepts the eraser, and picking the current tool is a no-op", () => {
+    expect(layerStyleUpdate(strokeRow("pen"), "mode", "eraser", dims)).toBeNull();
+    expect(layerStyleUpdate(strokeRow("pen"), "mode", "pen", dims)).toBeNull();
+  });
+
+  test("undo of a queued Mode edit restores tool AND opacity from the predecessor", () => {
+    const update = layerStyleUpdate(strokeRow("marker"), "mode", "spray", dims)!;
+    expect(
+      previousStylePatchFromQueuedUpdate(
+        strokeLayer("pen", 0.7),
+        update.undoField,
+        update.patch,
+        update.fallbackPreviousPatch,
+        { widthPx: 1600, heightPx: 900 }
+      )
+    ).toEqual({ kind: "stroke", tool: "pen", opacity: 0.7 });
+  });
+
+  test("color and weight ride the generic field path, with the color resolved to hex", () => {
+    const color = layerStyleUpdate(strokeRow("pen"), "color", "green", dims);
+    expect(color?.patch.kind).toBe("stroke");
+    expect((color?.patch as { color?: string }).color).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(layerStyleUpdate(strokeRow("pen"), "thickness", "x-large", dims)?.patch).toEqual({
+      kind: "stroke",
+      thickness: "x-large"
+    });
+  });
+});

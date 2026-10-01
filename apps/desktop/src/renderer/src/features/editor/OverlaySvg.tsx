@@ -2637,11 +2637,16 @@ function strokeResizeGeometry(
   if (movesBottom) bottom = Math.max(cy, top + minH);
   const sx = box.w > 0 ? (right - left) / box.w : 1;
   const sy = box.h > 0 ? (bottom - top) / box.h : 1;
+  // An axis no handle moved is copied, not re-derived: `top + (y - top)`
+  // is not always `y` in floating point, and an edge drag must not
+  // nudge the other axis.
+  const scalesX = movesLeft || movesRight;
+  const scalesY = movesTop || movesBottom;
   return {
     kind: "stroke",
     points: data.points.map((p) => ({
-      x: left + (p.x - box.x) * sx,
-      y: top + (p.y - box.y) * sy
+      x: scalesX ? left + (p.x - box.x) * sx : p.x,
+      y: scalesY ? top + (p.y - box.y) * sy : p.y
     }))
   };
 }

@@ -12,11 +12,11 @@
 //   - a video copy is its own file, keeping or dropping the trim + cuts.
 
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
-import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { BundleLayerNode } from "@pwrsnap/shared";
 
@@ -49,8 +49,58 @@ vi.mock("../../log", () => ({
 
 vi.mock("../capture-storage-gate", () => ({
   runWithCapturesDirFallback: async <T>(operation: (root: string) => Promise<T>): Promise<T> =>
-    operation(capturesRoot)
+    operation(capturesRoot),
+  runExclusiveCapturesRootOperation: async <T>(operation: () => Promise<T>): Promise<T> =>
+    operation()
 }));
+
+// The copy primitives have their own tests (file-copy.test.ts). Here the
+// volume is whatever the test says: `cloneMode` decides whether a clone
+// "works", and the byte copy is the real one in small chunks, optionally
+// held at a gate or failed partway so a test can act mid-copy.
+const copyControl: {
+  cloneMode: "clone" | "no-clone";
+  gate: Promise<void> | null;
+  failAfterBytes: number | null;
+  streamCalls: number;
+} = { cloneMode: "clone", gate: null, failAfterBytes: null, streamCalls: 0 };
+
+vi.mock("../file-copy", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../file-copy")>();
+  const { copyFile, rm: rmFile } = await import("node:fs/promises");
+  return {
+    ...actual,
+    cloneFileFast: async (src: string, dest: string): Promise<boolean> => {
+      if (copyControl.cloneMode === "no-clone") return false;
+      try {
+        await copyFile(src, dest);
+        return true;
+      } catch {
+        await rmFile(dest, { force: true });
+        return false;
+      }
+    },
+    streamCopyFile: async (
+      src: string,
+      dest: string,
+      options: import("../file-copy").StreamCopyOptions = {}
+    ): Promise<number> => {
+      copyControl.streamCalls += 1;
+      if (copyControl.gate !== null) await copyControl.gate;
+      const failAfter = copyControl.failAfterBytes;
+      return actual.streamCopyFile(src, dest, {
+        ...options,
+        chunkBytes: 64,
+        onProgress: (copied, total) => {
+          options.onProgress?.(copied, total);
+          if (failAfter !== null && copied >= failAfter) {
+            throw Object.assign(new Error("disk unplugged"), { code: "EIO" });
+          }
+        }
+      });
+    }
+  };
+});
 
 const { openDatabase, closeDatabase, getDb } = await import("../../persistence/db");
 const { persistCaptureFromTempV2, readBundleManifest, cancelScheduledRepacks } = await import(
@@ -67,7 +117,22 @@ const { addUserTag, getCaptureEnrichment } = await import("../../persistence/enr
 const { listCaptureFamilies, listFamilyMembers } = await import(
   "../../persistence/capture-families-repo"
 );
-const { duplicateCapture, captureEditSummary } = await import("../capture-duplicate");
+const {
+  duplicateCapture,
+  captureEditSummary,
+  recoverInterruptedVideoDuplicates,
+  startCaptureDuplicate
+} = await import("../capture-duplicate");
+const {
+  cancelDuplicateJob,
+  listDuplicateJobs,
+  setDuplicateJobListener,
+  setDuplicateProgressIntervalForTests,
+  waitForDuplicateJob
+} = await import("../duplicate-jobs");
+const { insertCaptureDuplicateIntent, listCaptureDuplicateIntents } = await import(
+  "../../persistence/capture-duplicate-intents-repo"
+);
 
 let workDir: string;
 
@@ -247,9 +312,11 @@ describe("duplicateCapture — images", () => {
   });
 });
 
-describe("duplicateCapture — videos", () => {
-  async function recordVideo(): Promise<string> {
-    const bytes = Buffer.from(`not really an mp4 ${Math.random()}`);
+async function recordVideo(size = 0): Promise<string> {
+  const bytes =
+    size > 0
+      ? Buffer.alloc(size, 7)
+      : Buffer.from(`not really an mp4 ${Math.random()}`);
     const id = `vid${Math.random().toString(36).slice(2)}`.slice(0, 16).padEnd(16, "0");
     const path = join(capturesRoot, `${id}.mp4`);
     await writeFile(path, bytes);
@@ -281,8 +348,9 @@ describe("duplicateCapture — videos", () => {
       { start: 14, end: 25 }
     ]);
     return id;
-  }
+}
 
+describe("duplicateCapture — videos", () => {
   test("with edits keeps the trim and cuts; the file is its own", async () => {
     const sourceId = await recordVideo();
     const copy = await duplicateCapture(sourceId, { withEdits: true });
@@ -326,6 +394,236 @@ describe("duplicateCapture — videos", () => {
     const copy = await duplicateCapture(sourceId, { withEdits: true });
     expect(getCaptureById(sourceId)!.family_id).toBe(sourceId);
     expect(copy.family_id).toBe(sourceId);
+  });
+});
+
+describe("video copies that cannot be cloned", () => {
+  // The recording is byte-copied in the background: the command answers
+  // with a job, the row appears only once the file is whole, and every way
+  // the copy can end without one — cancel, failure, crash — leaves no row,
+  // no file and no intent behind.
+  const events: Array<{ jobId: string; state: string; bytesCopied: number }> = [];
+
+  beforeEach(() => {
+    events.length = 0;
+    copyControl.cloneMode = "no-clone";
+    copyControl.gate = null;
+    copyControl.failAfterBytes = null;
+    copyControl.streamCalls = 0;
+    setDuplicateProgressIntervalForTests(0);
+    setDuplicateJobListener((job) =>
+      events.push({ jobId: job.jobId, state: job.state, bytesCopied: job.bytesCopied })
+    );
+  });
+
+  afterEach(() => {
+    setDuplicateJobListener(null);
+    copyControl.cloneMode = "clone";
+  });
+
+  /** Hold the byte copy until `open()` is called. */
+  function holdCopy(): { open: () => void } {
+    let open: () => void = () => undefined;
+    copyControl.gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    return { open };
+  }
+
+  async function capturesRootEntries(): Promise<string[]> {
+    return (await readdir(capturesRoot)).sort();
+  }
+
+  test("a clone answers with the record and sends no job events", async () => {
+    copyControl.cloneMode = "clone";
+    const sourceId = await recordVideo(4096);
+    const committed: string[] = [];
+
+    const outcome = await startCaptureDuplicate(sourceId, {
+      withEdits: true,
+      onCommitted: (record) => committed.push(record.id)
+    });
+
+    expect(outcome.job).toBeNull();
+    expect(outcome.record?.kind).toBe("video");
+    expect(committed).toEqual([outcome.record?.id]);
+    expect(events).toEqual([]);
+    expect(copyControl.streamCalls).toBe(0);
+    expect(listCaptureDuplicateIntents()).toEqual([]);
+  });
+
+  test("a byte copy answers with a job at once; the row exists only when the job is done", async () => {
+    const sourceId = await recordVideo(4096);
+    const before = await capturesRootEntries();
+    const hold = holdCopy();
+    const committed: string[] = [];
+
+    const outcome = await startCaptureDuplicate(sourceId, {
+      withEdits: false,
+      onCommitted: (record) => committed.push(record.id)
+    });
+    expect(outcome.record).toBeNull();
+    const job = outcome.job!;
+    expect(job).toMatchObject({ sourceId, state: "copying", bytesCopied: 0, totalBytes: 4096 });
+
+    // Mid-copy: no row, nothing at the final name, and the job is listed.
+    expect(getCaptureById(job.captureId)).toBeNull();
+    expect(listDuplicateJobs().map((j) => j.jobId)).toEqual([job.jobId]);
+    expect(listCaptureDuplicateIntents().map((i) => i.captureId)).toEqual([job.captureId]);
+    expect(committed).toEqual([]);
+
+    hold.open();
+    const end = await waitForDuplicateJob(job.jobId);
+    expect(end).toMatchObject({ state: "done", bytesCopied: 4096 });
+
+    const copy = getCaptureById(job.captureId)!;
+    expect(copy.family_id).toBe(sourceId);
+    expect(getVideoMetadata(copy.id)?.segments).toEqual([{ start: 0, end: 30 }]);
+    expect(await readFile(copy.legacy_src_path!)).toEqual(
+      await readFile(getCaptureById(sourceId)!.legacy_src_path!)
+    );
+    expect(committed).toEqual([copy.id]);
+    expect(listDuplicateJobs()).toEqual([]);
+    expect(listCaptureDuplicateIntents()).toEqual([]);
+
+    // Progress went out between the start and the end, only ever forward.
+    const states = events.filter((e) => e.jobId === job.jobId).map((e) => e.state);
+    expect(states[0]).toBe("copying");
+    expect(states.at(-1)).toBe("done");
+    const progress = events.filter((e) => e.state === "copying").map((e) => e.bytesCopied);
+    expect(progress.some((bytes) => bytes > 0 && bytes < 4096)).toBe(true);
+    expect([...progress].sort((x, y) => x - y)).toEqual(progress);
+
+    // Only the copy's own file was added to the captures root.
+    const added = (await capturesRootEntries()).filter((name) => !before.includes(name));
+    expect(added).toHaveLength(1);
+    expect(added[0]).not.toMatch(/\.partial$/);
+  });
+
+  test("cancel stops the copy and removes the staging file", async () => {
+    const sourceId = await recordVideo(64 * 1024);
+    const before = await capturesRootEntries();
+    // Cancel from inside the copy, once real bytes have landed.
+    let cancelledAt = -1;
+    setDuplicateJobListener((job) => {
+      events.push({ jobId: job.jobId, state: job.state, bytesCopied: job.bytesCopied });
+      if (job.state === "copying" && job.bytesCopied >= 1024 && cancelledAt < 0) {
+        cancelledAt = job.bytesCopied;
+        expect(cancelDuplicateJob(job.jobId)).toBe(true);
+      }
+    });
+
+    const { job } = await startCaptureDuplicate(sourceId, { withEdits: true });
+    const end = await waitForDuplicateJob(job!.jobId);
+
+    expect(end?.state).toBe("cancelled");
+    expect(cancelledAt).toBeGreaterThan(0);
+    expect(end!.bytesCopied).toBeLessThan(64 * 1024);
+    expect(getCaptureById(job!.captureId)).toBeNull();
+    expect(await capturesRootEntries()).toEqual(before);
+    expect(listCaptureDuplicateIntents()).toEqual([]);
+    // A finished job cannot be cancelled again.
+    expect(cancelDuplicateJob(job!.jobId)).toBe(false);
+    // Nothing joined a family for a copy that never happened.
+    expect(getCaptureById(sourceId)!.family_id).toBeNull();
+  });
+
+  test("a copy that fails partway leaves no row, no file and no intent", async () => {
+    const sourceId = await recordVideo(8192);
+    const before = await capturesRootEntries();
+    copyControl.failAfterBytes = 2048;
+
+    const { job } = await startCaptureDuplicate(sourceId, { withEdits: true });
+    const end = await waitForDuplicateJob(job!.jobId);
+
+    expect(end?.state).toBe("failed");
+    expect(end?.error).toBe("PwrSnap could not copy the recording.");
+    expect(getCaptureById(job!.captureId)).toBeNull();
+    expect(await capturesRootEntries()).toEqual(before);
+    expect(listCaptureDuplicateIntents()).toEqual([]);
+    expect(getCaptureById(sourceId)!.family_id).toBeNull();
+  });
+
+  test("a second duplicate of a source still copying is refused; the source frees up after", async () => {
+    const sourceId = await recordVideo(4096);
+    const hold = holdCopy();
+    const first = await startCaptureDuplicate(sourceId, { withEdits: true });
+
+    await expect(startCaptureDuplicate(sourceId, { withEdits: false })).rejects.toMatchObject({
+      name: "CaptureDuplicateError",
+      code: "in_progress"
+    });
+    expect(listDuplicateJobs()).toHaveLength(1);
+
+    hold.open();
+    expect((await waitForDuplicateJob(first.job!.jobId))?.state).toBe("done");
+    // The job settles before its source is released; let that land.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    copyControl.cloneMode = "clone";
+    const again = await startCaptureDuplicate(sourceId, { withEdits: true });
+    expect(again.record?.family_id).toBe(sourceId);
+  });
+
+  test("a different source copies alongside", async () => {
+    const a = await recordVideo(4096);
+    const b = await recordVideo(4096);
+    const hold = holdCopy();
+    const first = await startCaptureDuplicate(a, { withEdits: true });
+    const second = await startCaptureDuplicate(b, { withEdits: true });
+    expect(listDuplicateJobs()).toHaveLength(2);
+    const ends = [waitForDuplicateJob(first.job!.jobId), waitForDuplicateJob(second.job!.jobId)];
+    hold.open();
+    expect((await Promise.all(ends)).map((end) => end?.state)).toEqual(["done", "done"]);
+  });
+});
+
+describe("interrupted video duplicates", () => {
+  // A crash mid-copy (or between the rename and the insert) leaves an
+  // intent row. The next start removes exactly the two paths it names.
+  test("removes the staging and destination files of a copy that never committed", async () => {
+    const sourceId = await recordVideo(1024);
+    const destPath = join(capturesRoot, "crashedcopy00001.mp4");
+    insertCaptureDuplicateIntent({
+      captureId: "crashedcopy00001",
+      sourceId,
+      stagingPath: `${destPath}.partial`,
+      destPath
+    });
+    await writeFile(`${destPath}.partial`, "half a recording");
+    await writeFile(destPath, "a whole recording with no row");
+    const bystander = join(capturesRoot, "bystander.mp4.partial");
+    await writeFile(bystander, "not ours");
+
+    expect(await recoverInterruptedVideoDuplicates()).toBe(1);
+
+    await expect(stat(`${destPath}.partial`)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(destPath)).rejects.toMatchObject({ code: "ENOENT" });
+    // Only named paths are touched — nothing is swept by pattern.
+    expect((await stat(bystander)).isFile()).toBe(true);
+    expect(listCaptureDuplicateIntents()).toEqual([]);
+    await rm(bystander);
+  });
+
+  test("leaves a copy still running in this process alone", async () => {
+    copyControl.cloneMode = "no-clone";
+    let open: () => void = () => undefined;
+    copyControl.gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    try {
+      const sourceId = await recordVideo(1024);
+      const { job } = await startCaptureDuplicate(sourceId, { withEdits: true });
+
+      expect(await recoverInterruptedVideoDuplicates()).toBe(0);
+      expect(listCaptureDuplicateIntents().map((i) => i.captureId)).toEqual([job!.captureId]);
+
+      open();
+      expect((await waitForDuplicateJob(job!.jobId))?.state).toBe("done");
+    } finally {
+      copyControl.cloneMode = "clone";
+      copyControl.gate = null;
+    }
   });
 });
 

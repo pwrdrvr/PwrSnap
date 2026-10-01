@@ -29,6 +29,7 @@ import {
 } from "@pwrsnap/shared";
 
 import { useDismissable } from "../../lib/useDismissable";
+import { useDuplicateJobForSource } from "./DuplicateProgress";
 import { useFocusTrap } from "../../lib/useFocusTrap";
 import "../shared/DeleteConfirm.css";
 import {
@@ -61,6 +62,8 @@ export function DuplicateChooser({
   const [summary, setSummary] = useState<CaptureEditSummary | null>(null);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  // A background copy of this recording is still running: one at a time.
+  const copying = useDuplicateJobForSource(record.id) !== null;
   const [withEdits, setWithEdits] = useState(prefs[kind]);
   const [openCopy, setOpenCopy] = useState(false);
   const [coords, setCoords] = useState<{ left: number; top: number } | null>(null);
@@ -76,8 +79,12 @@ export function DuplicateChooser({
   // A different snap selected under an open chooser: the question was about
   // the other one.
   useEffect(() => close(), [record.id, close]);
+  useEffect(() => {
+    if (copying) close();
+  }, [copying, close]);
 
   const onTrigger = useCallback(async () => {
+    if (copying) return;
     if (open) {
       close();
       return;
@@ -93,7 +100,7 @@ export function DuplicateChooser({
     setWithEdits(prefs[kind]);
     setOpenCopy(false);
     setOpen(true);
-  }, [open, close, record, onDuplicate, prefs, kind]);
+  }, [copying, open, close, record, onDuplicate, prefs, kind]);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -154,10 +161,14 @@ export function DuplicateChooser({
       <button
         ref={anchorRef}
         type="button"
-        title={`Duplicate (${duplicateShortcutLabel()})`}
+        title={copying ? "Copying this recording…" : `Duplicate (${duplicateShortcutLabel()})`}
         aria-haspopup="dialog"
         aria-expanded={open}
-        aria-busy={busy}
+        aria-busy={busy || copying}
+        // Not `disabled`: confirming the chooser returns focus to this
+        // button just as its copy starts, and a disabled button would
+        // drop that focus to <body>.
+        aria-disabled={copying || undefined}
         onClick={() => void onTrigger()}
       >
         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

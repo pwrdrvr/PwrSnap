@@ -7,6 +7,7 @@
 
 import { BrowserWindow } from "electron";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
+import { setDuplicateJobListener } from "./capture/duplicate-jobs";
 import { setFamiliesChangedListener } from "./persistence/family-change-signal";
 import { relayRendererEventToPeer } from "./process-split/event-relay";
 
@@ -52,6 +53,17 @@ setFamiliesChangedListener((familyIds) => {
     });
   }
   for (const id of familyIds) pendingFamilyIds.add(id);
+});
+
+/**
+ * `events:capture-duplicate:job` — a background video duplicate's
+ * progress or end. Raised by the capture owner (the agent in split
+ * mode) and relayed, because the Library that shows it may be the other
+ * process. duplicate-jobs.ts throttles; nothing to coalesce here.
+ */
+setDuplicateJobListener((job) => {
+  broadcastRendererEventToLocalWindows(EVENT_CHANNELS.captureDuplicateJob, { job });
+  relayRendererEventToPeer(EVENT_CHANNELS.captureDuplicateJob, { job });
 });
 
 /**

@@ -80,6 +80,7 @@
    so the control still reads as unavailable and the ring draws at full
    strength. A new rule that dims a focusable control with opacity joins
    this block. */
+.psl__action-row button[aria-disabled="true"]:focus-visible,
 .pse-chrome__act.is-disabled:focus-visible,
 .layer-context-menu__row.is-disabled:focus-visible,
 .fo__copy-btn.is-running:focus-visible {

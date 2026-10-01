@@ -93,8 +93,9 @@ import {
 import {
   CaptureDuplicateError,
   captureEditSummary,
-  duplicateCapture
+  startCaptureDuplicate
 } from "../capture/capture-duplicate";
+import { cancelDuplicateJob, listDuplicateJobs } from "../capture/duplicate-jobs";
 import { broadcastCapturesChanged } from "../events";
 import { releaseFloatOverDock, setFloatOverState } from "../float-over";
 import { hideTrayPopoverIfVisible, setTrayCountdown } from "../tray";
@@ -1125,13 +1126,20 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       });
     }
     try {
-      const record = await duplicateCapture(req.captureId, { withEdits: req.withEdits });
-      broadcastCapturesChanged(
-        record.duplicated_from === null || record.duplicated_from === undefined
-          ? [record.id]
-          : [record.id, record.duplicated_from]
+      // A background video copy commits after this answers, so the
+      // broadcast rides the commit, not the return.
+      return ok(
+        await startCaptureDuplicate(req.captureId, {
+          withEdits: req.withEdits,
+          onCommitted: (record) => {
+            broadcastCapturesChanged(
+              record.duplicated_from === null || record.duplicated_from === undefined
+                ? [record.id]
+                : [record.id, record.duplicated_from]
+            );
+          }
+        })
       );
-      return ok({ record });
     } catch (cause) {
       if (cause instanceof CaptureDuplicateError) {
         return err({ kind: "validation", code: cause.code, message: cause.message });
@@ -1150,6 +1158,19 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
         cause
       });
     }
+  });
+
+  bus.register("capture:duplicateJobs", async () => ok({ jobs: listDuplicateJobs() }));
+
+  bus.register("capture:cancelDuplicate", async (req) => {
+    if (typeof req?.jobId !== "string" || req.jobId.length === 0 || req.jobId.length > 64) {
+      return err({
+        kind: "validation",
+        code: "invalid_duplicate_job",
+        message: "capture:cancelDuplicate requires { jobId: string }"
+      });
+    }
+    return ok({ cancelled: cancelDuplicateJob(req.jobId) });
   });
 
   bus.register("capture:editSummary", async (req) => {

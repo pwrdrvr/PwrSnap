@@ -19,12 +19,23 @@
 // The copy lands at the top of the grid (captured_at = now) and the glyph
 // on the original tells them it worked. Edit a Copy is the exception — it
 // opens the copy, because opening it is the point.
+//
+// A video that main could not clone comes back as a background JOB, not a
+// record (see `capture:duplicate`). `useCaptureDuplicate` also tracks those:
+// it subscribes to `events:capture-duplicate:job`, then asks
+// `capture:duplicateJobs` for any that started before this window mounted
+// (subscribe first, so nothing ends in the gap). A job's source is busy
+// until it ends — the Duplicate button and ⇧⌘D refuse a second copy — and
+// Edit a Copy opens the copy when the job reaches `done`.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  DUPLICATE_IN_PROGRESS_MESSAGE,
   EVENT_CHANNELS,
   acceleratorToDisplayText,
+  isTerminalDuplicateJob,
   summarizeVideoEdits,
+  type CaptureDuplicateJob,
   type CaptureEditSummary,
   type CaptureFamilySummary,
   type CaptureRecord,
@@ -35,6 +46,7 @@ import {
 
 import { dispatch, subscribe } from "../../lib/pwrsnap";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
+import { createDuplicateJobStore, type DuplicateJobStore } from "./duplicate-job-store";
 
 export type DuplicateMode = "duplicate" | "edit-copy";
 
@@ -72,6 +84,10 @@ export function duplicateChoiceLabels(kind: CaptureRecord["kind"]): {
     : { withEdits: "With Edits", baseOnly: "Base Image Only" };
 }
 
+/** Terminal jobs remembered so a late `capture:duplicate` answer or
+ *  `capture:duplicateJobs` read cannot bring an ended job back. */
+const ENDED_JOBS_KEPT = 64;
+
 export function useCaptureDuplicate({
   onError
 }: {
@@ -82,6 +98,11 @@ export function useCaptureDuplicate({
     record: CaptureRecord,
     options: { withEdits: boolean; mode: DuplicateMode; remember?: boolean }
   ) => Promise<CaptureRecord | null>;
+  /** Background video copies still running, by SOURCE capture id.
+   *  Stable identity; read it with `useSyncExternalStore`, never into
+   *  Library state (see duplicate-job-store.ts). */
+  jobStore: DuplicateJobStore;
+  cancelJob: (jobId: string) => void;
 } {
   const [prefs, setPrefs] = useState<LibraryDuplicateWithEditsSettings>(DEFAULT_PREFS);
   useEffect(() => {
@@ -103,11 +124,83 @@ export function useCaptureDuplicate({
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
 
+  // ---- background jobs ----
+  const [jobStore] = useState(createDuplicateJobStore);
+  const endedRef = useRef(new Map<string, CaptureDuplicateJob>());
+  /** Jobs started here as Edit a Copy: open the copy when they finish. */
+  const openOnDoneRef = useRef(new Set<string>());
+
+  /** Edit a Copy's second half, wherever the copy finished. */
+  const openCopy = useCallback(async (captureId: string): Promise<void> => {
+    const opened = await dispatch("editor:open", { captureId });
+    if (!opened.ok) {
+      onErrorRef.current(`Made a copy, but couldn’t open it — ${opened.error.message}`);
+    }
+  }, []);
+
+  const settle = useCallback(
+    (job: CaptureDuplicateJob): void => {
+      const ended = endedRef.current;
+      if (ended.has(job.jobId)) return;
+      ended.set(job.jobId, job);
+      if (ended.size > ENDED_JOBS_KEPT) ended.delete(ended.keys().next().value as string);
+      jobStore.remove(job);
+      const wantsOpen = openOnDoneRef.current.delete(job.jobId);
+      if (job.state === "failed") {
+        onErrorRef.current(`Couldn’t duplicate the recording — ${job.error ?? "the copy failed."}`);
+      } else if (job.state === "done" && wantsOpen) {
+        void openCopy(job.captureId);
+      }
+    },
+    [jobStore, openCopy]
+  );
+
+  /** Apply one job report, from the event, the command, or the list read. */
+  const track = useCallback(
+    (job: CaptureDuplicateJob): void => {
+      if (isTerminalDuplicateJob(job)) {
+        settle(job);
+        return;
+      }
+      if (endedRef.current.has(job.jobId)) return;
+      jobStore.upsert(job);
+    },
+    [jobStore, settle]
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    const unsubscribe = subscribe(EVENT_CHANNELS.captureDuplicateJob, (payload) => {
+      const job = (payload as { job?: CaptureDuplicateJob } | null)?.job;
+      if (job !== undefined && typeof job.jobId === "string") track(job);
+    });
+    void dispatch("capture:duplicateJobs", {}).then((result) => {
+      if (cancelled || !result.ok) return;
+      for (const job of result.value?.jobs ?? []) track(job);
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [track]);
+
+  const cancelJob = useCallback((jobId: string): void => {
+    void dispatch("capture:cancelDuplicate", { jobId }).then((result) => {
+      if (!result.ok) onErrorRef.current(`Couldn’t cancel the copy — ${result.error.message}`);
+    });
+  }, []);
+
   const duplicate = useCallback(
     async (
       record: CaptureRecord,
       options: { withEdits: boolean; mode: DuplicateMode; remember?: boolean }
     ): Promise<CaptureRecord | null> => {
+      // Main refuses this too; asking first spares the round trip and
+      // says it the same way.
+      if (jobStore.getSnapshot().has(record.id)) {
+        onErrorRef.current(DUPLICATE_IN_PROGRESS_MESSAGE);
+        return null;
+      }
       if (options.remember === true) {
         const kind = record.kind === "video" ? "video" : "image";
         setPrefs((current) => ({ ...current, [kind]: options.withEdits }));
@@ -123,19 +216,24 @@ export function useCaptureDuplicate({
         onErrorRef.current(`Couldn’t duplicate the snap — ${result.error.message}`);
         return null;
       }
-      const copy = result.value.record;
-      if (options.mode === "edit-copy") {
-        const opened = await dispatch("editor:open", { captureId: copy.id });
-        if (!opened.ok) {
-          onErrorRef.current(`Made a copy, but couldn’t open it — ${opened.error.message}`);
+      const { record: copy, job } = result.value;
+      if (copy === null) {
+        // Copying in the background. The row appears when it is whole.
+        if (options.mode === "edit-copy") {
+          const ended = endedRef.current.get(job.jobId);
+          if (ended === undefined) openOnDoneRef.current.add(job.jobId);
+          else if (ended.state === "done") void openCopy(ended.captureId);
         }
+        track(job);
+        return null;
       }
+      if (options.mode === "edit-copy") await openCopy(copy.id);
       return copy;
     },
-    []
+    [jobStore, openCopy, track]
   );
 
-  return { prefs, duplicate };
+  return { prefs, duplicate, jobStore, cancelJob };
 }
 
 export function useCaptureFamilies(): {

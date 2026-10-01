@@ -148,6 +148,21 @@ SQLite (`capture/capture-duplicate.ts`,
 `persistence/capture-families-repo.ts`). The duplicate verbs are bus
 commands for the Library only, and none of them is exposed as an MCP tool.
 
+**A video copy that cannot be cloned runs in the background, and its row
+appears only when the file is whole.** A clone (`/bin/cp -c` on macOS,
+because Node's `COPYFILE_FICLONE` does not clone there; the FICLONE ioctl on
+Linux) commits before `capture:duplicate` answers. Anything else, which
+includes every Windows copy, answers at once with a job. The bytes stream
+outside the captures-root lock so screenshots are not blocked. Progress goes
+to every window on `events:capture-duplicate:job`, relayed across the process
+split because `capture:*` is agent-owned. The job can be cancelled. Until the
+commit, the bytes live under `<copy>.partial`, and no row points at that name.
+An intent row (`capture_duplicate_intents`) names the staging and destination
+paths before anything is written. It is deleted in the transaction that
+inserts the capture, so a crash leaves a record, and the next start removes
+those two paths. Recovery never lists the captures root
+(`capture/file-copy.ts`, `capture/duplicate-jobs.ts`).
+
 ## AI uses the user's chosen agent or direct API
 
 Built-in Codex and ACP connections remain available. Users can also configure

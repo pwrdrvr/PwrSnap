@@ -293,6 +293,7 @@ import {
   wireOpenFileHandler
 } from "./open-file";
 import { reconcileAndSweepPwrsnapImportsOnBoot } from "./import/pwrsnap-import-service";
+import { recoverInterruptedVideoDuplicates } from "./capture/capture-duplicate";
 import { broadcastCapturesChanged } from "./events";
 
 const APP_NAME = "PwrSnap";
@@ -2363,6 +2364,16 @@ export function bootstrapApp(): void {
           });
         });
       processQueuedOpenFiles();
+      // A video duplicate interrupted by the last quit or crash left an
+      // intent row naming its staging + destination files; remove them.
+      // Mutating, so a profiling run on a cloned DB leaves them alone.
+      if (!startupProfilingEnabled()) {
+        void recoverInterruptedVideoDuplicates().catch((cause: unknown) => {
+          log.warn("video duplicate recovery failed", {
+            message: cause instanceof Error ? cause.message : String(cause)
+          });
+        });
+      }
     }
     if (!isE2E && role !== "library") {
       // Read the already-hydrated settings snapshot directly: async hotkey

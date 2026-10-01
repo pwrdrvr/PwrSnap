@@ -48,6 +48,13 @@ export const EVENT_CHANNELS = {
    * annotation edit, and edits never change a family.
    */
   familiesChanged: "events:families:changed",
+  /**
+   * Main (the capture owner) → every BrowserWindow, relayed across the
+   * process split: one background video duplicate's progress or end.
+   * Payload: `{ job: CaptureDuplicateJob }`. Throttled while copying;
+   * the terminal event is always sent.
+   */
+  captureDuplicateJob: "events:capture-duplicate:job",
   overlaysChanged: "events:overlays:changed",
   uploadProgress: "events:upload:progress",
   aiRunUpdated: "events:ai-run:updated",

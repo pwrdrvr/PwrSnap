@@ -32,7 +32,7 @@ export type CaptureEditSummary = {
   blurs: number;
   texts: number;
   steps: number;
-  /** Freehand Draw strokes (pen / marker / spray). */
+  /** Freehand Draw strokes (pen / marker / airbrush). */
   strokes: number;
   /** Pasted rasters. */
   images: number;

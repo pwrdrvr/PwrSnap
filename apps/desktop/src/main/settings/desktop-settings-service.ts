@@ -607,7 +607,7 @@ function parseHighlightToolStyle(raw: unknown, defaults: HighlightToolStyle): Hi
 }
 
 function pickDrawToolMode(value: unknown, fallback: DrawToolMode): DrawToolMode {
-  if (value === "pen" || value === "marker" || value === "spray" || value === "eraser") {
+  if (value === "pen" || value === "marker" || value === "airbrush" || value === "eraser") {
     return value;
   }
   return fallback;

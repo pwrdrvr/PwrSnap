@@ -968,7 +968,7 @@ export function layerStyleUpdate(
   // translucent); the undo patch restores both, explicitly undefined when
   // the row had no opacity, so undo can clear it again.
   if (current.data.kind === "stroke" && field === "mode") {
-    if (value !== "pen" && value !== "marker" && value !== "spray") return null;
+    if (value !== "pen" && value !== "marker" && value !== "airbrush") return null;
     if (value === current.data.tool) return null;
     return {
       patch: { kind: "stroke", tool: value, opacity: undefined },
@@ -2696,8 +2696,7 @@ export function Editor({
       const stroke: DraftStroke = {
         kind: "stroke",
         mode: active.tool === "draw" ? active.style.mode : "pen",
-        points: [{ x: start.xn, y: start.yn }],
-        seed: Math.floor(Math.random() * 0x7fffffff)
+        points: [{ x: start.xn, y: start.yn }]
       };
       strokeDraftRef.current = stroke;
       setDraft({ ...stroke, points: stroke.points.slice() });
@@ -3458,7 +3457,7 @@ export function Editor({
     closeInteraction();
   }
 
-  /** Commit a finished Draw gesture: a pen / marker / spray stroke, or
+  /** Commit a finished Draw gesture: a pen / marker / airbrush stroke, or
    *  an eraser pass. Clears the draft before the first await, like every
    *  other commit, so a second stroke started while this one writes is
    *  not wiped when it resumes. */
@@ -3499,8 +3498,7 @@ export function Editor({
       tool: stroke.mode,
       points: strokePointsToNormalized(simplified, cw, ch),
       color: resolveToolColor(style.color),
-      thickness: style.thickness,
-      ...(stroke.mode === "spray" ? { seed: stroke.seed } : {})
+      thickness: style.thickness
     };
     const wrote = await persistOverlay(overlay);
     // The new stroke is NOT selected, unlike an arrow or a box. Strokes

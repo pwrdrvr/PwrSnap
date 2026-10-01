@@ -3262,11 +3262,11 @@ export type BlurToolStyle = {
 };
 
 /** The Draw family's working style. `mode` picks the tool the next drag
- *  uses: pen, marker and spray lay a `stroke` overlay down; the eraser
+ *  uses: pen, marker and airbrush lay a `stroke` overlay down; the eraser
  *  cuts existing strokes and never commits one of its own. A bag slot
- *  can hold pen / marker / spray but not the eraser (it has no style to
+ *  can hold pen / marker / airbrush but not the eraser (it has no style to
  *  save). */
-export type DrawToolMode = "pen" | "marker" | "spray" | "eraser";
+export type DrawToolMode = "pen" | "marker" | "airbrush" | "eraser";
 
 export type DrawToolStyle = {
   mode: DrawToolMode;

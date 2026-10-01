@@ -116,7 +116,7 @@ export type StyledLayerStyle =
     }
   | {
       readonly tool: "draw";
-      /** "Pen" / "Marker" / "Spray" — the tool that drew it. */
+      /** "Pen" / "Marker" / "Airbrush" — the tool that drew it. */
       readonly label: string;
       /** `mode` is the stroke's own tool, never "eraser". */
       readonly style: DrawToolStyle;

@@ -78,7 +78,7 @@ first; it marks which of its own sections are historical.
 **A new annotation kind is invisible to the builds before it.** A vector
 layer's `shape` is a zod discriminated union, so a build that predates a
 kind cannot parse a layer that carries it. The freehand `stroke` kind (the
-Draw tool: pen, marker, spray) is the current example. On a build without
+Draw tool: pen, marker, airbrush) is the current example. On a build without
 it:
 
 - The Library, editor, thumbnails and exports skip the stroke row (logged

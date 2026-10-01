@@ -129,7 +129,7 @@ export async function buildCompositeLayersForV2(
     case "stroke":
       // Freehand Draw stroke. `renderScale` rides along so the shared
       // geometry is built at canvas scale and only then scaled — see
-      // `strokeSvg` for why spray needs that.
+      // `strokeSvg`.
       return [
         await rasterizeSvgForV2(
           strokeSvgForV2(

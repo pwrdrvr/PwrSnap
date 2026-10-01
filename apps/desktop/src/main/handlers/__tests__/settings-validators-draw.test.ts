@@ -19,7 +19,7 @@ function bagWith(slot: unknown) {
 
 describe("validateSettingsWrite — editor.toolStyles.draw", () => {
   test("accepts every mode, eraser included — it is the tool's working state", () => {
-    for (const mode of ["pen", "marker", "spray", "eraser"]) {
+    for (const mode of ["pen", "marker", "airbrush", "eraser"]) {
       expect(writeDrawStyle({ mode }).ok, mode).toBe(true);
     }
     expect(writeDrawStyle({ color: "green", thickness: "x-large" }).ok).toBe(true);
@@ -38,10 +38,10 @@ describe("validateSettingsWrite — Draw tool-bag slots", () => {
     style: { mode: "marker", color: "yellow", thickness: "large" }
   };
 
-  test("a pen, marker or spray slot is accepted", () => {
+  test("a pen, marker or airbrush slot is accepted", () => {
     expect(bagWith(marker).ok).toBe(true);
     expect(bagWith({ ...marker, style: { ...marker.style, mode: "pen" } }).ok).toBe(true);
-    expect(bagWith({ ...marker, style: { ...marker.style, mode: "spray" } }).ok).toBe(true);
+    expect(bagWith({ ...marker, style: { ...marker.style, mode: "airbrush" } }).ok).toBe(true);
   });
 
   test("an eraser slot is refused — a slot holds what the next drag DRAWS", () => {

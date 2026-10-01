@@ -208,7 +208,7 @@ function ShapeGlyph({ style }: { style: ShapeToolStyle }): ReactElement {
   );
 }
 
-/** A pen loop, a flat marker band, or a spray of dots — the board 4c
+/** A pen loop, a flat marker band, or a soft airbrush line — the board 4c
  *  glyphs, in the slot's color. */
 function DrawGlyph({ style }: { style: DrawToolStyle }): ReactElement {
   const paint = glyphPaint(style.color);
@@ -226,17 +226,12 @@ function DrawGlyph({ style }: { style: DrawToolStyle }): ReactElement {
           opacity={DEFAULT_MARKER_OPACITY + 0.2}
         />
       );
-    case "spray":
+    case "airbrush":
       return (
-        <g fill={paint}>
-          <circle cx="6" cy="13" r="1.2" opacity="0.6" />
-          <circle cx="9" cy="9" r="1.4" />
-          <circle cx="10" cy="15.5" r="1.1" opacity="0.75" />
-          <circle cx="13" cy="11.5" r="1.6" />
-          <circle cx="15" cy="7" r="1" opacity="0.6" />
-          <circle cx="16.5" cy="15" r="1.3" />
-          <circle cx="19" cy="10.5" r="1.1" opacity="0.8" />
-          <circle cx="13" cy="18" r="0.9" opacity="0.5" />
+        <g fill="none" stroke={paint} strokeLinecap="round">
+          <path d="M5 15c4-6 10-6 14-3" strokeWidth="8" opacity="0.2" />
+          <path d="M5 15c4-6 10-6 14-3" strokeWidth="5" opacity="0.35" />
+          <path d="M5 15c4-6 10-6 14-3" strokeWidth="2.5" />
         </g>
       );
     case "eraser":

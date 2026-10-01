@@ -621,14 +621,13 @@ function shapeSvg(
 
 /* ----------------------------- Stroke --------------------------- */
 
-/** Freehand Draw stroke (pen / marker / spray).
+/** Freehand Draw stroke (pen / marker / airbrush).
  *
  *  The geometry comes from the shared `strokeGeometry`, in CANVAS pixels
  *  — the same call, on the same numbers, that the editor's StrokeGlyph
  *  makes. A scaled bake wraps it in `scale(renderScale)` instead of
- *  re-deriving it at render resolution: spray scatters dots per pixel of
- *  path, so measuring the path at 2× would scatter twice the dots and the
- *  export would not be the preview.
+ *  re-deriving it at render resolution, so the export is the preview's
+ *  exact geometry (path text, widths, airbrush bands) at a larger size.
  *
  *  @param basisPx  `annotationBasisPx(sourceW, sourceH) × renderScale`,
  *                  the convention every other `*SvgForV2` follows. It is

@@ -241,8 +241,8 @@ export function strokeLayerName(tool: StrokeTool): string {
       return "Pen";
     case "marker":
       return "Marker";
-    case "spray":
-      return "Spray";
+    case "airbrush":
+      return "Airbrush";
   }
 }
 

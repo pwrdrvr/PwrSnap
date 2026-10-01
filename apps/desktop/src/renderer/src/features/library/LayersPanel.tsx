@@ -319,19 +319,24 @@ function ShapePreview({
 }
 
 /** One squiggle for every Draw stroke: its color, a width that tells pen
- *  from marker, and the marker's translucency. Spray reads as dots. */
+ *  from marker, and the marker's translucency. The airbrush reads as a
+ *  soft-edged line. */
 function StrokePreview({ shape }: { shape: StrokeOverlay }): ReactElement {
   const color = previewColor(shape.color);
-  if (shape.tool === "spray") {
+  if (shape.tool === "airbrush") {
+    const d = "M8 18c8-9 20-9 32-4";
     return (
-      <svg viewBox="0 0 48 28" aria-hidden="true" fill={color}>
-        <circle cx="12" cy="16" r="1.4" opacity="0.6" />
-        <circle cx="17" cy="11" r="1.7" />
-        <circle cx="19" cy="18" r="1.2" opacity="0.7" />
-        <circle cx="24" cy="13" r="1.8" />
-        <circle cx="28" cy="18" r="1.3" opacity="0.6" />
-        <circle cx="31" cy="10" r="1.2" opacity="0.8" />
-        <circle cx="35" cy="15" r="1.6" />
+      <svg
+        viewBox="0 0 48 28"
+        aria-hidden="true"
+        fill="none"
+        stroke={color}
+        strokeLinecap="round"
+        opacity={readStrokeOpacity(shape)}
+      >
+        <path d={d} strokeWidth="10" opacity="0.2" />
+        <path d={d} strokeWidth="7" opacity="0.35" />
+        <path d={d} strokeWidth="4" />
       </svg>
     );
   }

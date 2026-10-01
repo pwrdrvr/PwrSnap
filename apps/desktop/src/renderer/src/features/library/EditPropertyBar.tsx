@@ -86,7 +86,7 @@ export function EditPropertyBar({
       ? target.armedSlot
       : null;
   const saveBlockedTip = saveTarget === null
-    ? "The eraser can't be saved — pick Pen, Marker or Spray"
+    ? "The eraser can't be saved — pick Pen, Marker or Airbrush"
     : firstEmptySlot === null
       ? "The bag is full — right-click a slot to replace or clear it"
       : null;

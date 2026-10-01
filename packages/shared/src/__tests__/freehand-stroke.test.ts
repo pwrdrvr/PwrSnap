@@ -5,18 +5,17 @@ import {
   annotationStrokeWidthPx
 } from "../annotation-scale";
 import {
+  AIRBRUSH_BANDS,
   DEFAULT_MARKER_OPACITY,
   distanceToPolylinePx,
   eraseStroke,
   eraseStrokeOverlay,
   eraserPathPx,
   eraserRadiusPx,
-  MAX_SPRAY_DOTS,
   polylineLengthPx,
   readStrokeOpacity,
   simplifyStrokePoints,
   smoothStrokePathD,
-  sprayDots,
   strokeBoundsN,
   strokeGeometry,
   strokePointsToNormalized,
@@ -105,11 +104,11 @@ describe("stroke widths ride the annotation ladder", () => {
     expect(strokeWidthPx("pen", undefined, basis)).toBe(strokeWidthPx("pen", "medium", basis));
   });
 
-  it("marker and spray are wider than the pen at the same preset", () => {
+  it("marker and airbrush are wider than the pen at the same preset", () => {
     expect(strokeWidthPx("marker", "small", basis)).toBeGreaterThan(
       strokeWidthPx("pen", "small", basis) * 2
     );
-    expect(strokeWidthPx("spray", "small", basis)).toBeGreaterThan(
+    expect(strokeWidthPx("airbrush", "small", basis)).toBeGreaterThan(
       strokeWidthPx("pen", "small", basis) * 2
     );
   });
@@ -198,42 +197,28 @@ describe("smoothing", () => {
   });
 });
 
-describe("spray is deterministic", () => {
-  const pts = line(0, 300, 100, 25);
-
-  it("same row in, same dots out", () => {
-    expect(sprayDots(pts, 30, 1234)).toEqual(sprayDots(pts, 30, 1234));
-  });
-
-  it("a different seed is a different pattern", () => {
-    expect(sprayDots(pts, 30, 1234)).not.toEqual(sprayDots(pts, 30, 99));
-  });
-
-  it("keeps every dot inside the spray's radius", () => {
-    for (const dot of sprayDots(pts, 30, 7)) {
-      expect(distanceToPolylinePx(dot, pts)).toBeLessThanOrEqual(15 + 1e-9);
+describe("the airbrush is bands of one line", () => {
+  it("stacks to the ramp: faint at the rim, solid in the core", () => {
+    // Composite the bands the way SVG does (source-over, same color):
+    // coverage inside band i is what bands 0..i add up to.
+    let coverage = 0;
+    const atEachEdge: number[] = [];
+    for (const band of AIRBRUSH_BANDS) {
+      coverage = coverage + band.alpha * (1 - coverage);
+      atEachEdge.push(coverage);
+    }
+    expect(atEachEdge[0]).toBeCloseTo(0.15, 3);
+    expect(atEachEdge.at(-1)).toBeCloseTo(1, 3);
+    for (let i = 1; i < atEachEdge.length; i += 1) {
+      expect(atEachEdge[i]!).toBeGreaterThan(atEachEdge[i - 1]!);
     }
   });
 
-  it("scales with length, and a tap still sprays", () => {
-    const short = sprayDots(line(0, 50, 0, 25), 30, 1).length;
-    const long = sprayDots(line(0, 500, 0, 25), 30, 1).length;
-    expect(long).toBeGreaterThan(short * 5);
-    expect(sprayDots([{ x: 10, y: 10 }], 30, 1).length).toBeGreaterThan(0);
-  });
-
-  it("is bounded", () => {
-    expect(sprayDots(line(0, 100_000, 0, 50), 400, 1).length).toBeLessThanOrEqual(
-      MAX_SPRAY_DOTS
-    );
-  });
-
-  it("keys dots by original segment, so seedOffset reproduces a tail", () => {
-    // The dots of segments 4.. of the whole stroke are exactly the dots
-    // of a stroke made of those segments with seedOffset 4.
-    const whole = sprayDots(pts, 30, 55);
-    const tail = sprayDots(pts.slice(4), 30, 55, 4);
-    expect(whole.slice(whole.length - tail.length)).toEqual(tail);
+  it("goes widest first, and never wider than the stroke", () => {
+    expect(AIRBRUSH_BANDS[0]!.widthFactor).toBe(1);
+    for (let i = 1; i < AIRBRUSH_BANDS.length; i += 1) {
+      expect(AIRBRUSH_BANDS[i]!.widthFactor).toBeLessThan(AIRBRUSH_BANDS[i - 1]!.widthFactor);
+    }
   });
 });
 
@@ -274,15 +259,33 @@ describe("strokeGeometry is what both surfaces paint", () => {
     ).toMatchObject({ kind: "dot", square: true });
   });
 
-  it("spray is a few paths of dots, and the SVG string carries them", () => {
-    const g = strokeGeometry({ ...row, tool: "spray", seed: 3 }, 1000, 800, basis);
-    expect(g.kind).toBe("spray");
-    if (g.kind !== "spray") throw new Error("unreachable");
-    expect(g.layers.length).toBeGreaterThan(0);
-    expect(g.layers.length).toBeLessThanOrEqual(3);
+  it("airbrush is one centerline per band, and the SVG string carries them all", () => {
+    const g = strokeGeometry({ ...row, tool: "airbrush" }, 1000, 800, basis);
+    expect(g.kind).toBe("airbrush");
+    if (g.kind !== "airbrush") throw new Error("unreachable");
+    const full = strokeWidthPx("airbrush", "medium", basis);
+    expect(g.bands.map((b) => b.widthPx)).toEqual(
+      AIRBRUSH_BANDS.map((b) => b.widthFactor * full)
+    );
+    expect(g.bands.map((b) => b.opacity)).toEqual(AIRBRUSH_BANDS.map((b) => b.alpha));
+    expect(g.opacity).toBe(1);
     const svg = strokeSvgElements(g, "#00ff00");
-    expect(svg.match(/<path /g)?.length).toBe(g.layers.length);
-    expect(svg).toContain('fill="#00ff00"');
+    expect(svg.match(/<path /g)?.length).toBe(AIRBRUSH_BANDS.length);
+    expect(svg.split(`d="${g.d}"`).length - 1).toBe(AIRBRUSH_BANDS.length);
+    expect(svg).toContain('stroke="#00ff00"');
+    expect(svg).toContain('stroke-linecap="round"');
+  });
+
+  it("an airbrush tap is a soft dot, not nothing", () => {
+    const g = strokeGeometry(
+      { ...row, tool: "airbrush", points: [{ x: 0.5, y: 0.5 }] },
+      1000,
+      800,
+      basis
+    );
+    expect(g.kind).toBe("airbrush");
+    if (g.kind !== "airbrush") throw new Error("unreachable");
+    expect(g.d.startsWith("M500 400")).toBe(true);
   });
 
   it("serializes a pen path with its width and caps", () => {
@@ -315,17 +318,14 @@ describe("the eraser cuts strokes", () => {
     expect(pieces).toHaveLength(2);
     const [left, right] = pieces!;
     // The left run keeps the start vertex and stops short of the cut.
-    expect(left!.points[0]).toEqual({ x: 0, y: 0 });
-    const leftEnd = left!.points[left!.points.length - 1]!;
+    expect(left![0]).toEqual({ x: 0, y: 0 });
+    const leftEnd = left![left!.length - 1]!;
     expect(leftEnd.x).toBeGreaterThan(85);
     expect(leftEnd.x).toBeLessThan(90);
     // The right run starts past the cut and keeps the end vertex.
-    expect(right!.points[0]!.x).toBeGreaterThan(110);
-    expect(right!.points[0]!.x).toBeLessThan(115);
-    expect(right!.points[right!.points.length - 1]).toEqual({ x: 200, y: 0 });
-    // The right run starts on the second segment of the original.
-    expect(left!.seedOffset).toBe(0);
-    expect(right!.seedOffset).toBe(1);
+    expect(right![0]!.x).toBeGreaterThan(110);
+    expect(right![0]!.x).toBeLessThan(115);
+    expect(right![right!.length - 1]).toEqual({ x: 200, y: 0 });
   });
 
   it("keeps the original vertices inside each run", () => {
@@ -339,29 +339,15 @@ describe("the eraser cuts strokes", () => {
     ];
     const pieces = eraseStroke(wiggle, [{ x: 50, y: -40 }, { x: 50, y: 40 }], 4);
     expect(pieces).toHaveLength(2);
-    expect(pieces![0]!.points).toContainEqual({ x: 20, y: 10 });
-    expect(pieces![1]!.points).toContainEqual({ x: 80, y: 0 });
+    expect(pieces![0]!).toContainEqual({ x: 20, y: 10 });
+    expect(pieces![1]!).toContainEqual({ x: 80, y: 0 });
   });
 
   it("drops crumbs shorter than the minimum", () => {
     const pieces = eraseStroke(stroke, [{ x: 4, y: -50 }, { x: 4, y: 50 }], 3, 5);
     // The 1px stub left of the cut is a crumb; the long right run stays.
     expect(pieces).toHaveLength(1);
-    expect(pieces![0]!.points[pieces![0]!.points.length - 1]).toEqual({ x: 200, y: 0 });
-  });
-
-  it("an erased spray keeps the dots of its surviving segments", () => {
-    const spray = line(0, 400, 0, 20);
-    const pieces = eraseStroke(spray, [{ x: 100, y: -50 }, { x: 100, y: 50 }], 15);
-    expect(pieces).toHaveLength(2);
-    const right = pieces![1]!;
-    const before = sprayDots(spray, 30, 77);
-    const after = sprayDots(right.points, 30, 77, right.seedOffset);
-    // Every segment of the run after its first (partial) one is an
-    // original segment, and paints exactly the dots it painted before.
-    const fullSegmentsAfter = after.slice(after.length - 200);
-    const tailBefore = before.slice(before.length - 200);
-    expect(fullSegmentsAfter).toEqual(tailBefore);
+    expect(pieces![0]![pieces![0]!.length - 1]).toEqual({ x: 200, y: 0 });
   });
 
   it("erases a single-point stroke only when it covers it", () => {
@@ -403,30 +389,9 @@ describe("eraseStrokeOverlay — the row-level cut the editor previews and commi
     expect(pieces![1]!.points.at(-1)).toEqual({ x: 0.9, y: 0.5 });
     for (const piece of pieces!) {
       expect(piece.tool).toBe("pen");
-      expect(piece.seedOffset).toBeUndefined();
+      expect(piece.color).toBe("auto");
+      expect(piece.thickness).toBe("small");
     }
-  });
-
-  it("offsets a spray piece's seed by where it starts in the original stroke", () => {
-    const row = {
-      kind: "stroke" as const,
-      tool: "spray" as const,
-      points: [
-        { x: 0.1, y: 0.5 },
-        { x: 0.3, y: 0.5 },
-        { x: 0.5, y: 0.5 },
-        { x: 0.7, y: 0.5 },
-        { x: 0.9, y: 0.5 }
-      ],
-      color: "auto" as const,
-      seed: 99,
-      seedOffset: 4
-    };
-    // Cut inside the second segment (0.3 → 0.5).
-    const eraser = eraserPathPx([{ x: 0.4, y: 0.3 }, { x: 0.4, y: 0.7 }], W, H);
-    const pieces = eraseStrokeOverlay(row, eraser, eraserRadiusPx("small", basis), W, H, basis)!;
-    expect(pieces.map((p) => p.seedOffset)).toEqual([4, 5]);
-    expect(pieces.every((p) => p.seed === 99)).toBe(true);
   });
 
   it("returns null for a row the eraser never reached", () => {

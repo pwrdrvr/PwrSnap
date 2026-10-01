@@ -805,7 +805,7 @@ export const CropOverlay = z.object({
 
 /** Which Draw-family tool laid a freehand stroke down. The eraser is a
  *  Draw tool too, but it never produces a row — it splits these. */
-export const StrokeTool = z.enum(["pen", "marker", "spray"]);
+export const StrokeTool = z.enum(["pen", "marker", "airbrush"]);
 export type StrokeTool = z.infer<typeof StrokeTool>;
 
 /** Upper bound on a stroke's stored points. The editor simplifies a
@@ -814,7 +814,7 @@ export type StrokeTool = z.infer<typeof StrokeTool>;
  *  or AI-injected row cannot hand the bake an unbounded path. */
 export const MAX_STROKE_POINTS = 4096;
 
-/** A freehand Draw stroke: pen, marker or spray.
+/** A freehand Draw stroke: pen, marker or airbrush.
  *
  *  `points` follow the same convention as every other overlay — fractions
  *  of the CURRENT canvas, re-normalized by a crop like an arrow's
@@ -822,12 +822,9 @@ export const MAX_STROKE_POINTS = 4096;
  *  shared annotation ladder (`thickness`, sized off the SOURCE raster's
  *  `annotationBasisPx`), so a crop never thins a stroke.
  *
- *  Spray is baked as dots, and the dots are a pure function of the row:
- *  `seed` picks the pattern, `seedOffset` is the index of this stroke's
- *  first segment in the stroke it was erased out of (so the whole
- *  segments that survive an eraser keep the dots they had; the segment a
- *  cut lands in is re-scattered over what is left of it). See
- *  `freehand-stroke.ts`.
+ *  Every tool is a path along `points`: the airbrush's soft edge is that
+ *  path drawn as nested bands (`freehand-stroke.ts`), so a row carries
+ *  no per-tool extras and an eraser cut works the same for all three.
  *
  *  NEW KIND — a build that predates it rejects any row carrying it.
  *  `Overlay` is a discriminated union, so an older build fails to parse
@@ -849,14 +846,7 @@ export const StrokeOverlay = z.object({
    *  every marker that has no override — the same deliberate re-bake a
    *  ladder retune causes (AGENTS.md "Annotation sizing"). A mode change
    *  clears it so the stroke takes the new tool's default. */
-  opacity: z.number().min(0).max(1).optional(),
-  /** Spray pattern seed. Required in practice for spray (the editor
-   *  always stamps one); a row without it uses seed 0. Ignored by pen
-   *  and marker. */
-  seed: z.number().int().min(0).max(0x7fffffff).optional(),
-  /** Segment index this stroke starts at within the stroke it was split
-   *  from (eraser). 0 / absent for a stroke drawn whole. */
-  seedOffset: z.number().int().min(0).max(1_000_000).optional()
+  opacity: z.number().min(0).max(1).optional()
 });
 export type StrokeOverlay = z.infer<typeof StrokeOverlay>;
 

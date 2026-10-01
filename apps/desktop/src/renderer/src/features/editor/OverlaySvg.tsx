@@ -288,9 +288,9 @@ export function OverlaySvg({
   }, [draft, draftStyle?.thickness, effectiveOverlays, imageWidthPx, imageHeightPx, annotationBasis]);
 
   // The live stroke's row shape, built once per draft change. StrokeGlyph
-  // memoizes its geometry on `data` identity, and a spray re-scatters
-  // every dot of the stroke when that changes — an inline object literal
-  // would redo that on every render, not just on every pointer sample.
+  // memoizes its geometry on `data` identity, and rebuilding it smooths
+  // the whole stroke again — an inline object literal would redo that on
+  // every render, not just on every pointer sample.
   const draftThickness = draftStyle?.thickness;
   const draftStrokeData = useMemo(
     () =>
@@ -298,8 +298,7 @@ export function OverlaySvg({
         ? {
             tool: draft.mode,
             points: draft.points,
-            thickness: draftThickness,
-            seed: draft.seed
+            thickness: draftThickness
           }
         : null,
     [draft, draftThickness]
@@ -571,7 +570,7 @@ function StrokeGlyph({
   imageHeightPx,
   basisPx
 }: {
-  data: Pick<StrokeOverlay, "tool" | "points" | "opacity" | "seed" | "seedOffset"> & {
+  data: Pick<StrokeOverlay, "tool" | "points" | "opacity"> & {
     thickness?: OverlayThickness | undefined;
   };
   color?: string | undefined;
@@ -624,11 +623,19 @@ function StrokeGlyph({
         />
       );
     }
-    case "spray":
+    case "airbrush":
       return (
-        <g data-testid="stroke-glyph" data-tool={data.tool} fill={paint}>
-          {geometry.layers.map((layer, i) => (
-            <path key={i} d={layer.d} opacity={layer.opacity} />
+        <g
+          data-testid="stroke-glyph"
+          data-tool={data.tool}
+          fill="none"
+          stroke={paint}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          opacity={geometry.opacity}
+        >
+          {geometry.bands.map((band, i) => (
+            <path key={i} d={geometry.d} strokeWidth={band.widthPx} opacity={band.opacity} />
           ))}
         </g>
       );

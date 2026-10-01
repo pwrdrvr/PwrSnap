@@ -94,7 +94,7 @@ export const TOOLS: ReadonlyArray<{
       </svg>
     )
   },
-  // Draw — the freehand family: pen, marker, spray and the eraser that
+  // Draw — the freehand family: pen, marker, airbrush and the eraser that
   // cuts their strokes. Which one the next drag uses is the Draw style's
   // `mode`, picked in the property bar (or armed from a bag slot).
   {

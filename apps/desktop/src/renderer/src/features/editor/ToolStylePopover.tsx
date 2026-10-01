@@ -217,7 +217,7 @@ const DRAW_MODES: ReadonlyArray<{
 }> = [
   { id: "pen", label: "Pen", Icon: PenModeIcon },
   { id: "marker", label: "Marker", Icon: MarkerModeIcon },
-  { id: "spray", label: "Spray", Icon: SprayModeIcon },
+  { id: "airbrush", label: "Airbrush", Icon: AirbrushModeIcon },
   { id: "eraser", label: "Eraser", Icon: EraserModeIcon }
 ];
 
@@ -1785,17 +1785,22 @@ function MarkerModeIcon(): ReactElement {
   );
 }
 
-function SprayModeIcon(): ReactElement {
+/** A soft line: the same path stroked wide and faint, then narrower and
+ *  stronger — the airbrush's bands in miniature. */
+function AirbrushModeIcon(): ReactElement {
   return (
-    <svg width="20" height="16" viewBox="0 0 20 16" fill="currentColor" aria-hidden="true">
-      <circle cx="4" cy="9" r="1" opacity="0.6" />
-      <circle cx="7" cy="6" r="1.2" />
-      <circle cx="8" cy="11" r="0.9" opacity="0.7" />
-      <circle cx="10.5" cy="8" r="1.3" />
-      <circle cx="12" cy="4.5" r="0.8" opacity="0.6" />
-      <circle cx="13.5" cy="10.5" r="1.1" />
-      <circle cx="16" cy="7" r="1" opacity="0.8" />
-      <circle cx="11" cy="13" r="0.7" opacity="0.5" />
+    <svg
+      width="20"
+      height="16"
+      viewBox="0 0 20 16"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <path d="M4 10c3-4 8-4 12-2" strokeWidth="7" opacity="0.2" />
+      <path d="M4 10c3-4 8-4 12-2" strokeWidth="4.5" opacity="0.35" />
+      <path d="M4 10c3-4 8-4 12-2" strokeWidth="2.2" />
     </svg>
   );
 }

@@ -13,7 +13,7 @@ beforeAll(() => {
     true;
 });
 
-function draw(mode: "pen" | "marker" | "spray" | "eraser", color = "red"): ToolBagSlot {
+function draw(mode: "pen" | "marker" | "airbrush" | "eraser", color = "red"): ToolBagSlot {
   return { tool: "draw", style: { mode, color, thickness: "medium" } };
 }
 
@@ -30,11 +30,11 @@ describe("Draw tool-bag slots", () => {
   test("are named for their color and tool", () => {
     expect(describeBagSlot(draw("pen"))).toBe("Red pen");
     expect(describeBagSlot(draw("marker", "yellow"))).toBe("Yellow marker");
-    expect(describeBagSlot(draw("spray", "green"))).toBe("Green spray");
+    expect(describeBagSlot(draw("airbrush", "green"))).toBe("Green airbrush");
     expect(describeBagSlot({ ...draw("pen"), label: "Signature" })).toBe("Signature");
   });
 
-  test("draw a pen loop, a flat translucent marker band, or a spray of dots, in the slot's color", () => {
+  test("draw a pen loop, a flat translucent marker band, or a soft airbrush line, in the slot's color", () => {
     const pen = renderGlyph(draw("pen")).querySelector("path")!;
     expect(pen.getAttribute("stroke")).toBe("var(--swatch-red)");
     expect(pen.getAttribute("stroke-linecap")).toBe("round");
@@ -43,8 +43,12 @@ describe("Draw tool-bag slots", () => {
     expect(marker.getAttribute("stroke-linecap")).toBe("butt");
     expect(Number(marker.getAttribute("opacity"))).toBeLessThan(1);
 
-    const spray = renderGlyph(draw("spray", "#123456"));
-    expect(spray.querySelector("g")!.getAttribute("fill")).toBe("#123456");
-    expect(spray.querySelectorAll("circle").length).toBeGreaterThan(4);
+    const airbrush = renderGlyph(draw("airbrush", "#123456"));
+    expect(airbrush.querySelector("g")!.getAttribute("stroke")).toBe("#123456");
+    const bands = Array.from(airbrush.querySelectorAll("path"));
+    expect(bands.length).toBeGreaterThan(1);
+    // Widest and faintest first, like the stroke it stands for.
+    const widths = bands.map((b) => Number(b.getAttribute("stroke-width")));
+    expect([...widths].sort((a, b) => b - a)).toEqual(widths);
   });
 });

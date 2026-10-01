@@ -69,7 +69,7 @@ function outlineForText(mode: OverlayOutlineMode): OverlayOutlineMode {
  *     restyles a circle, it never turns it into the slot's rectangle.
  *   • text size + weight — text → text.
  *   • opacity + blend — highlight → highlight.
- *   • draw mode (pen / marker / spray) — draw → draw. A pen slot pasted
+ *   • draw mode (pen / marker / airbrush) — draw → draw. A pen slot pasted
  *     onto a marker stroke makes it a pen stroke along the same path.
  *   • blur mode + radius — blur → blur, and blur takes nothing else.
  *

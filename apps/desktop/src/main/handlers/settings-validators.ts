@@ -1366,8 +1366,8 @@ function validateHighlightStyle(raw: Record<string, unknown>): PwrSnapError | nu
 function validateDrawStyle(raw: Record<string, unknown>): PwrSnapError | null {
   if (!isUndefined(raw.mode)) {
     const v = raw.mode;
-    if (v !== "pen" && v !== "marker" && v !== "spray" && v !== "eraser") {
-      return validationError("invalid_editor_draw_mode", "settings:write: editor.toolStyles.draw.mode must be pen/marker/spray/eraser");
+    if (v !== "pen" && v !== "marker" && v !== "airbrush" && v !== "eraser") {
+      return validationError("invalid_editor_draw_mode", "settings:write: editor.toolStyles.draw.mode must be pen/marker/airbrush/eraser");
     }
   }
   if (!isUndefined(raw.color) && !isToolColor(raw.color)) {
@@ -1379,7 +1379,7 @@ function validateDrawStyle(raw: Record<string, unknown>): PwrSnapError | null {
   return null;
 }
 
-/** A Draw slot holds pen / marker / spray. The eraser has no style worth
+/** A Draw slot holds pen / marker / airbrush. The eraser has no style worth
  *  saving and the toolbar never offers to save it, so a slot naming it is
  *  a bad write, not something to store and coerce later. */
 function validateDrawSlotStyle(raw: Record<string, unknown>): PwrSnapError | null {

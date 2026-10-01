@@ -301,7 +301,7 @@ describe("Draw stroke style edits", () => {
     { x: 0.6, y: 0.5 }
   ];
 
-  function strokeRow(tool: "pen" | "marker" | "spray", opacity?: number): OverlayRow {
+  function strokeRow(tool: "pen" | "marker" | "airbrush", opacity?: number): OverlayRow {
     return {
       id: "ly_stroke",
       capture_id: "cap_1",
@@ -324,7 +324,7 @@ describe("Draw stroke style edits", () => {
     };
   }
 
-  function strokeLayer(tool: "pen" | "marker" | "spray", opacity?: number): BundleLayerNode {
+  function strokeLayer(tool: "pen" | "marker" | "airbrush", opacity?: number): BundleLayerNode {
     const base = arrow("#ff5a5a");
     if (base.kind !== "vector") throw new Error("fixture is a vector layer");
     return { ...base, id: "ly_stroke", name: "Pen", shape: strokeRow(tool, opacity).data };
@@ -345,7 +345,7 @@ describe("Draw stroke style edits", () => {
   });
 
   test("undo of a queued Mode edit restores tool AND opacity from the predecessor", () => {
-    const update = layerStyleUpdate(strokeRow("marker"), "mode", "spray", dims)!;
+    const update = layerStyleUpdate(strokeRow("marker"), "mode", "airbrush", dims)!;
     expect(
       previousStylePatchFromQueuedUpdate(
         strokeLayer("pen", 0.7),

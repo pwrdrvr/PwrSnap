@@ -1,18 +1,19 @@
-// Freehand Draw strokes — pen, marker, spray — and the eraser that cuts
-// them. The single source of truth for what a `stroke` overlay paints.
+// Freehand Draw strokes — pen, marker, airbrush — and the eraser that
+// cuts them. The single source of truth for what a `stroke` overlay paints.
 //
 // The live editor (OverlaySvg's StrokeGlyph) and the bake
 // (compose.ts `strokeSvg`) both call `strokeGeometry` on the same row in
 // the same coordinate space — CANVAS pixels, the space the editor's
 // viewBox and an unscaled bake share — so the two cannot disagree about
-// a path, a width or a single spray dot. The bake draws at render scale
-// by wrapping the same geometry in a `scale()` group rather than
-// re-deriving it at render resolution: spray dot counts depend on path
-// LENGTH, and a length measured at 2× would scatter twice the dots.
+// a path or a width. The bake draws at render scale by wrapping the same
+// geometry in a `scale()` group.
 //
-// Nothing here reads a clock, a random source or the DOM. Spray "noise"
-// is a seeded PRNG keyed by (row seed, segment index), which is what makes
-// the dots deterministic across preview, export, reload and machines.
+// Every tool is a path. The airbrush's soft edge is the same path drawn
+// as a few nested bands, not a filter or a scatter of dots: the bands
+// rasterize identically in Chromium and in the bake, cost a handful of
+// SVG elements however long the stroke is, and an eraser cut ends one
+// cleanly, as it ends a pen line. Nothing here reads a clock, a random
+// source or the DOM.
 
 import { annotationStrokeWidthPx } from "./annotation-scale";
 import {
@@ -31,11 +32,12 @@ export interface StrokePointPx {
 
 /** Width of each tool relative to the stroke ladder at the same preset.
  *  A pen at Medium is exactly an arrow stem at Medium; a marker is wide
- *  enough to run under a line of UI text; a spray's width is its spread. */
+ *  enough to run under a line of UI text; an airbrush's width is its
+ *  outermost, faintest band. */
 export const STROKE_WIDTH_FACTORS: Readonly<Record<StrokeTool, number>> = {
   pen: 1,
   marker: 3,
-  spray: 3
+  airbrush: 3
 };
 
 /** The marker's translucency. Low enough that text under it stays
@@ -273,116 +275,29 @@ export function smoothStrokePathD(points: readonly StrokePointPx[]): string {
   return d;
 }
 
-// ---- Spray ----------------------------------------------------------
+// ---- Airbrush ------------------------------------------------------
 
-/** Alpha of each dot class. Dots are grouped by class into one path per
- *  class, so a spray is three SVG elements however many dots it has. */
-export const SPRAY_DOT_ALPHAS: readonly number[] = [0.35, 0.6, 0.85];
+/** Coverage the airbrush's band stack reaches, from the rim inward. The
+ *  last entry is the solid core. */
+const AIRBRUSH_RAMP: readonly number[] = [0.15, 0.35, 0.55, 0.75, 1];
 
-/** Dots per pixel of centerline, per pixel of spray radius. */
-const SPRAY_DENSITY = 0.1;
-
-/** Hard ceiling on dots per stroke. A screen-length XL spray lands around
- *  a third of this. */
-export const MAX_SPRAY_DOTS = 40_000;
-
-export interface SprayDot {
-  x: number;
-  y: number;
-  r: number;
-  /** Index into SPRAY_DOT_ALPHAS. */
-  alpha: number;
-}
-
-/** mulberry32 — small, fast, and identical in every JS engine. */
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-/** One PRNG per (stroke seed, segment). Keying by the segment's index in
- *  the ORIGINAL stroke (`seedOffset + i`) is what lets an erased spray's
- *  surviving segments keep their exact dots. */
-function segmentRng(seed: number, segmentIndex: number): () => number {
-  return mulberry32((seed ^ Math.imul(segmentIndex + 1, 0x9e3779b1)) >>> 0);
-}
+/** Each band's width as a fraction of the stroke's full width, outermost
+ *  first. The middle 60% is solid; the fade is the outer 20% each side. */
+const AIRBRUSH_WIDTH_FACTORS: readonly number[] = [1, 0.9, 0.8, 0.7, 0.6];
 
 /**
- * The dots a spray stroke paints, in canvas pixels. Pure function of
- * (points, width, seed, seedOffset): same row in, same dots out.
- *
- * Each segment scatters `length × radius × SPRAY_DENSITY` dots (the
- * fraction rounded by the segment's own PRNG) at uniform positions along
- * it, pushed off the centerline by a Gaussian of σ = 0.42 × radius and
- * kept inside the radius. A single-point spray (a tap) scatters as if it
- * were one radius long.
+ * The airbrush's bands, outermost (widest, faintest) first. Each band's
+ * alpha is the one that takes the stack's composite from the coverage
+ * outside it to `AIRBRUSH_RAMP` at its own edge — stacked same-color
+ * layers compose as 1 − Π(1 − αᵢ) — so the edge ramps evenly to a solid
+ * core instead of darkening in uneven steps.
  */
-export function sprayDots(
-  points: readonly StrokePointPx[],
-  widthPx: number,
-  seed: number,
-  seedOffset = 0
-): SprayDot[] {
-  const radius = Math.max(0.5, widthPx / 2);
-  const dots: SprayDot[] = [];
-  const perPx = radius * SPRAY_DENSITY;
-  const scatter = (
-    rng: () => number,
-    a: StrokePointPx,
-    b: StrokePointPx,
-    lengthPx: number
-  ): void => {
-    const exact = lengthPx * perPx;
-    const count = Math.floor(exact) + (rng() < exact - Math.floor(exact) ? 1 : 0);
-    for (let k = 0; k < count && dots.length < MAX_SPRAY_DOTS; k += 1) {
-      const t = rng();
-      // Box–Muller radius, re-drawn until it lands inside the spray.
-      let d = Infinity;
-      for (let attempt = 0; attempt < 4 && d > radius; attempt += 1) {
-        const u = Math.max(1e-9, rng());
-        d = radius * 0.42 * Math.sqrt(-2 * Math.log(u));
-      }
-      if (d > radius) d = radius * rng();
-      const angle = rng() * Math.PI * 2;
-      const r = Math.max(0.5, radius * (0.025 + rng() * 0.05));
-      const alpha = Math.min(SPRAY_DOT_ALPHAS.length - 1, Math.floor(rng() * SPRAY_DOT_ALPHAS.length));
-      dots.push({
-        x: a.x + (b.x - a.x) * t + Math.cos(angle) * d,
-        y: a.y + (b.y - a.y) * t + Math.sin(angle) * d,
-        r,
-        alpha
-      });
-    }
-  };
-  if (points.length === 1) {
-    const only = points[0]!;
-    scatter(segmentRng(seed, seedOffset), only, only, radius);
-    return dots;
-  }
-  for (let i = 1; i < points.length && dots.length < MAX_SPRAY_DOTS; i += 1) {
-    const a = points[i - 1]!;
-    const b = points[i]!;
-    scatter(segmentRng(seed, seedOffset + i - 1), a, b, Math.hypot(b.x - a.x, b.y - a.y));
-  }
-  return dots;
-}
-
-/** One path of circles per alpha class. */
-function sprayPathsByAlpha(dots: readonly SprayDot[]): string[] {
-  const parts: string[][] = SPRAY_DOT_ALPHAS.map(() => []);
-  for (const dot of dots) {
-    const r = dot.r;
-    parts[dot.alpha]!.push(
-      `M${f(dot.x - r)} ${f(dot.y)}a${f(r)} ${f(r)} 0 1 0 ${f(2 * r)} 0a${f(r)} ${f(r)} 0 1 0 ${f(-2 * r)} 0`
-    );
-  }
-  return parts.map((p) => p.join(""));
-}
+export const AIRBRUSH_BANDS: readonly { readonly widthFactor: number; readonly alpha: number }[] =
+  AIRBRUSH_WIDTH_FACTORS.map((widthFactor, i) => {
+    const outside = i === 0 ? 0 : AIRBRUSH_RAMP[i - 1]!;
+    const alpha = 1 - (1 - AIRBRUSH_RAMP[i]!) / (1 - outside);
+    return { widthFactor, alpha: Math.round(alpha * 1e4) / 1e4 };
+  });
 
 // ---- What a stroke paints -------------------------------------------
 
@@ -406,8 +321,13 @@ export type StrokeGeometry =
       readonly opacity: number;
     }
   | {
-      readonly kind: "spray";
-      readonly layers: readonly { readonly opacity: number; readonly d: string }[];
+      /** The same centerline stroked once per band, round-capped, widest
+       *  first; `opacity` applies to the whole stack. A tap is a stub
+       *  0.01px long, which round caps paint as nested discs. */
+      readonly kind: "airbrush";
+      readonly d: string;
+      readonly bands: readonly { readonly widthPx: number; readonly opacity: number }[];
+      readonly opacity: number;
     };
 
 /**
@@ -416,7 +336,7 @@ export type StrokeGeometry =
  * capture's SOURCE-derived `annotationBasisPx`.
  */
 export function strokeGeometry(
-  data: Pick<StrokeOverlay, "tool" | "points" | "thickness" | "opacity" | "seed" | "seedOffset">,
+  data: Pick<StrokeOverlay, "tool" | "points" | "thickness" | "opacity">,
   canvasWidthPx: number,
   canvasHeightPx: number,
   basisPx: number
@@ -424,18 +344,20 @@ export function strokeGeometry(
   const px = strokePointsToPx(data.points, canvasWidthPx, canvasHeightPx);
   const widthPx = strokeWidthPx(data.tool, data.thickness, basisPx);
   const opacity = readStrokeOpacity(data);
-  if (data.tool === "spray") {
-    const dots = sprayDots(px, widthPx, data.seed ?? 0, data.seedOffset ?? 0);
-    const paths = sprayPathsByAlpha(dots);
+  const isTap = px.length === 1 || polylineLengthPx(px) < 0.01;
+  if (data.tool === "airbrush") {
+    const first = px[0]!;
     return {
-      kind: "spray",
-      layers: SPRAY_DOT_ALPHAS.map((alpha, i) => ({
-        opacity: alpha * opacity,
-        d: paths[i] ?? ""
-      })).filter((layer) => layer.d !== "")
+      kind: "airbrush",
+      d: isTap ? `M${f(first.x)} ${f(first.y)}l0.01 0` : smoothStrokePathD(px),
+      bands: AIRBRUSH_BANDS.map((band) => ({
+        widthPx: widthPx * band.widthFactor,
+        opacity: band.alpha
+      })),
+      opacity
     };
   }
-  if (px.length === 1 || polylineLengthPx(px) < 0.01) {
+  if (isTap) {
     const only = px[0]!;
     return {
       kind: "dot",
@@ -475,10 +397,18 @@ export function strokeSvgElements(geometry: StrokeGeometry, paint: string): stri
         : `<circle cx="${f(geometry.cx)}" cy="${f(geometry.cy)}" r="${f(half)}" ` +
             `fill="${paint}" opacity="${geometry.opacity}"/>`;
     }
-    case "spray":
-      return geometry.layers
-        .map((layer) => `<path d="${layer.d}" fill="${paint}" opacity="${layer.opacity}"/>`)
-        .join("");
+    case "airbrush":
+      return (
+        `<g fill="none" stroke="${paint}" stroke-linecap="round" stroke-linejoin="round" ` +
+        `opacity="${geometry.opacity}">` +
+        geometry.bands
+          .map(
+            (band) =>
+              `<path d="${geometry.d}" stroke-width="${f(band.widthPx)}" opacity="${band.opacity}"/>`
+          )
+          .join("") +
+        `</g>`
+      );
   }
 }
 
@@ -493,13 +423,6 @@ export function strokeReachPx(
 
 // ---- The eraser -----------------------------------------------------
 
-/** A run of a stroke the eraser left behind. `seedOffset` is the index,
- *  in the stroke it came from, of the segment the run starts on. */
-export interface StrokePiece {
-  points: StrokePointPx[];
-  seedOffset: number;
-}
-
 /**
  * Cut a stroke where an eraser passed over it.
  *
@@ -510,11 +433,7 @@ export interface StrokePiece {
  * back as separate runs.
  *
  * The runs keep the stroke's own vertices — only the two points at each
- * cut are new — and each run records which original segment it starts
- * on. Together those keep the dots of a spray's WHOLE surviving segments
- * where they were: its dots are keyed by original segment index (see
- * `sprayDots`). The segment a cut lands in is shorter afterwards, so its
- * remainder is re-scattered — dots next to a cut move.
+ * cut are new — so what survives is drawn exactly where it was.
  *
  * Returns `null` when the eraser never touched the stroke (nothing to
  * change), and `[]` when it removed all of it. Runs shorter than
@@ -526,7 +445,7 @@ export function eraseStroke(
   eraser: readonly StrokePointPx[],
   radiusPx: number,
   minPieceLengthPx = 1
-): StrokePiece[] | null {
+): StrokePointPx[][] | null {
   if (stroke.length === 0 || eraser.length === 0) return null;
   const r = Math.max(0, radiusPx);
   const covered = (p: StrokePointPx): boolean => distanceToPolylinePx(p, eraser) <= r;
@@ -549,9 +468,8 @@ export function eraseStroke(
   }
 
   const step = Math.max(0.25, r / 4);
-  const pieces: StrokePiece[] = [];
+  const pieces: StrokePointPx[][] = [];
   let current: StrokePointPx[] | null = null;
-  let currentOffset = 0;
   let touched = false;
   let lastUncovered: StrokePointPx | null = null;
   const pushUnique = (run: StrokePointPx[], p: StrokePointPx): void => {
@@ -572,7 +490,7 @@ export function eraseStroke(
         touched = true;
         if (current !== null) {
           if (lastUncovered !== null) pushUnique(current, lastUncovered);
-          pieces.push({ points: current, seedOffset: currentOffset });
+          pieces.push(current);
           current = null;
         }
         lastUncovered = null;
@@ -580,8 +498,6 @@ export function eraseStroke(
       }
       if (current === null) {
         current = [q];
-        // A run that starts ON the far vertex starts on the next segment.
-        currentOffset = j === steps ? i + 1 : i;
       } else if (atVertex) {
         pushUnique(current, q);
       }
@@ -590,11 +506,11 @@ export function eraseStroke(
   }
   if (current !== null) {
     if (lastUncovered !== null) pushUnique(current, lastUncovered);
-    pieces.push({ points: current, seedOffset: currentOffset });
+    pieces.push(current);
   }
   if (!touched) return null;
   return pieces.filter(
-    (piece) => piece.points.length > 1 && polylineLengthPx(piece.points) >= minPieceLengthPx
+    (piece) => piece.length > 1 && polylineLengthPx(piece) >= minPieceLengthPx
   );
 }
 
@@ -627,8 +543,6 @@ export function eraserPathPx(
  *
  * `eraserRadiusPx` is the eraser's own radius; the stroke's painted
  * reach is added here, so grazing the edge of a wide marker cuts it.
- * Each spray piece records where it starts in the original stroke
- * (`seedOffset`), so its whole surviving segments keep their dots.
  */
 export function eraseStrokeOverlay(
   data: StrokeOverlay,
@@ -646,8 +560,7 @@ export function eraseStrokeOverlay(
   if (pieces === null) return null;
   return pieces.map((piece) => ({
     ...data,
-    points: strokePointsToNormalized(piece.points, canvasWidthPx, canvasHeightPx),
-    ...(data.tool === "spray" ? { seedOffset: (data.seedOffset ?? 0) + piece.seedOffset } : {})
+    points: strokePointsToNormalized(piece, canvasWidthPx, canvasHeightPx)
   }));
 }
 

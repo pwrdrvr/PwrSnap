@@ -1114,7 +1114,7 @@ clamps failed:
 
 ## Draw strokes — one geometry, canvas-normalized points
 
-**The Draw tool (key D: pen, marker, spray, eraser) stores a vector
+**The Draw tool (key D: pen, marker, airbrush, eraser) stores a vector
 `stroke` shape, and everything that paints one goes through
 `strokeGeometry` in
 [packages/shared/src/freehand-stroke.ts](packages/shared/src/freehand-stroke.ts).**
@@ -1129,19 +1129,23 @@ and [stroke-bake.test.ts](apps/desktop/src/main/render/__tests__/stroke-bake.tes
   overlay coordinate**, so crop re-normalizes them
   (`inverseTransformOverlayByCrop`). The width is sized from the SOURCE
   basis (`strokeWidthPx` → `annotationBasisPx`), so a crop never re-thins
-  a stroke. The pen is the arrow ladder exactly; marker and spray are 3×
+  a stroke. The pen is the arrow ladder exactly; marker and airbrush are 3×
   it (`STROKE_WIDTH_FACTORS`).
-- **Spray is baked as dots, not a filter.** Dots come from a seeded PRNG
-  keyed by `(seed, seedOffset + segment index)` in canvas pixels, and a
-  scaled bake wraps the 1× geometry in `scale()` rather than re-scattering.
-  Re-deriving dots at export size would export a different spray than the
-  one previewed.
+- **Every tool is one path along `points`; the airbrush is that path
+  stroked five times.** Its soft edge is `AIRBRUSH_BANDS`: concentric
+  round-capped strokes of the same centerline, widest and faintest first,
+  whose alphas are chosen so the stack composites to an even ramp ending
+  in a solid core. No filter (resvg and Chromium blur differently, and
+  the bake would stop matching the preview), no randomness, nothing
+  stored beyond the points. A scaled bake wraps the 1× geometry in
+  `scale()` like every stroke. The first version was a seeded particle
+  spray; it was replaced because a few hundred dots per stroke cost far
+  more to store, paint and erase than a soft line, and a cut re-scattered
+  the dots beside it.
 - **The eraser cuts only strokes.** It is a mode of the Draw tool, never a
   shape and never a bag slot (settings refuse one). Each piece it leaves
-  keeps the original's z_index and, for spray, records `seedOffset` so its
-  WHOLE surviving segments keep their dots. The segment a cut lands in
-  is re-scattered over the part that is left (dots are per segment, and
-  the segment got shorter), so dots next to a cut do move. One eraser
+  is the original row with fewer points, at the original's z_index, so a
+  cut never changes how the rest of the stroke looks. One eraser
   drag is ONE undo step
   (the `replace` op in `useUndoRedo.ts`). The original is deleted only
   after EVERY piece is written. The first build deleted it regardless,

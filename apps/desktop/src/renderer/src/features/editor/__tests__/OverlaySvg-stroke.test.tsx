@@ -101,15 +101,22 @@ describe("OverlaySvg — persisted strokes", () => {
     expect(svg.style.zIndex).toBe("1000");
   });
 
-  test("a spray paints its dots as the same deterministic layers the bake writes", async () => {
-    const spray: StrokeOverlay = { ...underline, tool: "spray", seed: 1234 };
-    const host = await renderSvg([row("s", spray)]);
-    const geometry = strokeGeometry(spray, W, H, BASIS);
-    if (geometry.kind !== "spray") throw new Error("expected a spray geometry");
-    const paths = Array.from(
-      host.querySelectorAll<SVGPathElement>("[data-testid='stroke-glyph'] path")
+  test("an airbrush paints the same bands the bake writes", async () => {
+    const airbrush: StrokeOverlay = { ...underline, tool: "airbrush", color: "#2489ff" };
+    const host = await renderSvg([row("a", airbrush)]);
+    const geometry = strokeGeometry(airbrush, W, H, BASIS);
+    if (geometry.kind !== "airbrush") throw new Error("expected an airbrush geometry");
+    const group = host.querySelector("[data-testid='stroke-glyph']")!;
+    expect(group.getAttribute("stroke")).toBe("#2489ff");
+    expect(group.getAttribute("stroke-linecap")).toBe("round");
+    const paths = Array.from(group.querySelectorAll<SVGPathElement>("path"));
+    expect(paths.map((p) => p.getAttribute("d"))).toEqual(geometry.bands.map(() => geometry.d));
+    expect(paths.map((p) => Number(p.getAttribute("stroke-width")))).toEqual(
+      geometry.bands.map((b) => b.widthPx)
     );
-    expect(paths.map((p) => p.getAttribute("d"))).toEqual(geometry.layers.map((l) => l.d));
+    expect(paths.map((p) => Number(p.getAttribute("opacity")))).toEqual(
+      geometry.bands.map((b) => b.opacity)
+    );
   });
 
   test("an 'auto' color paints the theme accent", async () => {
@@ -140,8 +147,7 @@ describe("OverlaySvg — Draw drafts", () => {
           { x: 0.2, y: 0.2 },
           { x: 0.4, y: 0.3 },
           { x: 0.6, y: 0.2 }
-        ],
-        seed: 7
+        ]
       },
       draftStyle: { color: "#28c840", thickness: "large" }
     });
@@ -160,8 +166,7 @@ describe("OverlaySvg — Draw drafts", () => {
         points: [
           { x: 0.5, y: 0.3 },
           { x: 0.5, y: 0.7 }
-        ],
-        seed: 0
+        ]
       },
       draftStyle: { thickness: "small" }
     });
@@ -180,8 +185,7 @@ describe("OverlaySvg — Draw drafts", () => {
         points: [
           { x: 0.5, y: 0.05 },
           { x: 0.6, y: 0.05 }
-        ],
-        seed: 0
+        ]
       },
       draftStyle: { thickness: "small" }
     });

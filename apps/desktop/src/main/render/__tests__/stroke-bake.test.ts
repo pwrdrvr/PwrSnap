@@ -2,8 +2,8 @@
 // `strokeGeometry` the editor paints (OverlaySvg's StrokeGlyph), so a
 // stroke exports as it previewed. The two properties pinned here are the
 // ones a bake can break on its own: scaled exports keep the stroke's
-// proportions (spray dots included — they are not re-scattered at the
-// export size), and "auto" resolves to a real color.
+// proportions (the airbrush's bands included — scaled, not re-derived
+// at the export size), and "auto" resolves to a real color.
 
 import { describe, expect, test } from "vitest";
 import type { OverlayRow } from "@pwrsnap/shared";
@@ -43,10 +43,12 @@ describe("strokeSvgForV2 (bake)", () => {
     expect(svg).toContain(at1);
   });
 
-  test("a spray scatters the same dots at any export scale", () => {
-    const spray: Stroke = { ...pen, tool: "spray", seed: 99 };
-    const at1 = strokeSvgElements(strokeGeometry(spray, W, H, BASIS), "#ff5a5a");
-    expect(strokeSvgForV2(spray, W * 3, H * 3, BASIS * 3, 3)).toContain(at1);
+  test("an airbrush bakes the same bands at any export scale", () => {
+    const airbrush: Stroke = { ...pen, tool: "airbrush" };
+    const at1 = strokeSvgElements(strokeGeometry(airbrush, W, H, BASIS), "#ff5a5a");
+    const svg = strokeSvgForV2(airbrush, W * 3, H * 3, BASIS * 3, 3);
+    expect(svg).toContain(at1);
+    expect(svg).toContain('transform="scale(3)"');
   });
 
   test('color "auto" bakes the brand accent, never the literal "auto"', () => {

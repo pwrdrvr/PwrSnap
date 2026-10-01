@@ -774,6 +774,9 @@ export function EditToolbar({
           onFieldChange={onPropertyFieldChange}
           firstEmptySlot={firstEmptySlot}
           onSaveToSlot={toolState.setBagSlot}
+          {...(layersApi != null
+            ? { onAddLabel: (id: string) => void layersApi.addArrowLabel(id) }
+            : {})}
         />
       )}
       <div

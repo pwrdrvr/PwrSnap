@@ -164,3 +164,101 @@ describe("TextDraftInput — caret visibility on fresh placement", () => {
     expect(div.style.minHeight).toBe("1em");
   });
 });
+
+describe("TextDraftInput — arrow label draft", () => {
+  async function renderLabel(opts: {
+    body: string;
+    align: "start" | "center" | "end";
+    onCommit?: (m: { widthFrac: number }) => void;
+  }): Promise<HTMLDivElement> {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const inputRef = { current: null as HTMLTextAreaElement | null };
+    await act(async () => {
+      root?.render(
+        createElement(TextDraftInput, {
+          draft: {
+            kind: "text",
+            xn: 0.5,
+            yn: 0.5,
+            body: opts.body,
+            label: {
+              arrowId: "a1",
+              align: opts.align,
+              style: { color: "#ff5f57", size: "medium", weight: "bold", outline: "auto" }
+            }
+          },
+          inputRef,
+          imageWidthPx: 1920,
+          imageHeightPx: 1080,
+          sourceWidthPx: 1920,
+          sourceHeightPx: 1080,
+          storedSizePx: undefined,
+          canvasCssHeight: 400,
+          colorHex: "#ff5f57",
+          size: "medium",
+          weight: 700,
+          align: opts.align,
+          placeholder: "Label",
+          ariaLabel: "Arrow label",
+          onChange: () => undefined,
+          onCommit: opts.onCommit ?? (() => undefined),
+          onCancel: () => undefined
+        })
+      );
+    });
+    const wrapper = container.querySelector<HTMLDivElement>('[data-testid="text-draft"]');
+    if (wrapper === null) throw new Error("no draft wrapper");
+    return wrapper;
+  }
+
+  test("empty: shows the dimmed placeholder in the label's own style, caret in the field", async () => {
+    const wrapper = await renderLabel({ body: "", align: "start" });
+    const visible = wrapper.querySelector<HTMLDivElement>("[data-placeholder]");
+    expect(visible?.textContent).toBe("Label");
+    expect(visible?.style.opacity).toBe("0.45");
+    expect(visible?.style.color).toBe("rgb(255, 95, 87)");
+    const textarea = wrapper.querySelector("textarea");
+    expect(textarea?.value).toBe("");
+    expect(textarea?.getAttribute("aria-label")).toBe("Arrow label");
+    expect(document.activeElement).toBe(textarea);
+  });
+
+  test("typed: the placeholder is gone and the text is at full strength", async () => {
+    const wrapper = await renderLabel({ body: "Hi", align: "start" });
+    expect(wrapper.querySelector("[data-placeholder]")).toBeNull();
+    expect(wrapper.textContent).toContain("Hi");
+    expect(wrapper.textContent).not.toContain("Label");
+  });
+
+  test.each([
+    ["end", "translateX(-100%) translateY(-50%)"],
+    ["center", "translateX(-50%) translateY(-50%)"],
+    ["start", "translateY(-50%)"]
+  ] as const)("align %s grows the draft away from its anchor", async (align, transform) => {
+    const wrapper = await renderLabel({ body: "Hi", align });
+    expect(wrapper.style.transform).toBe(transform);
+  });
+
+  test("Enter commits with the draft's layout width as a fraction of its containing box", async () => {
+    let measured: { widthFrac: number } | null = null;
+    const wrapper = await renderLabel({
+      body: "Hi",
+      align: "end",
+      onCommit: (m) => {
+        measured = m;
+      }
+    });
+    // jsdom does no layout: stand in a 50px label inside a 400px canvas.
+    const canvas = document.createElement("div");
+    Object.defineProperty(canvas, "clientWidth", { value: 400 });
+    Object.defineProperty(wrapper, "offsetWidth", { value: 50 });
+    Object.defineProperty(wrapper, "offsetParent", { value: canvas });
+    const textarea = wrapper.querySelector("textarea")!;
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(measured).toEqual({ widthFrac: 0.125 });
+  });
+});

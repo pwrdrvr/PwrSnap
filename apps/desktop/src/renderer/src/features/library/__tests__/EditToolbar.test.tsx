@@ -321,7 +321,8 @@ function makeLayersApi(): LayersPanelApi {
     uncrop: vi.fn(async () => undefined),
     resetRasterTransform: vi.fn(async () => undefined),
     updateLayerStyle: vi.fn(),
-    applyBagSlot: vi.fn()
+    applyBagSlot: vi.fn(),
+    addArrowLabel: vi.fn(() => true)
   };
 }
 
@@ -650,6 +651,53 @@ describe("EditToolbar (Library Focus, v2 refresh)", () => {
     await fireClick(host?.querySelector('[data-testid="bag-slot-3"]') as HTMLButtonElement);
     expect(api.clearSelection).toHaveBeenCalledTimes(1);
     expect(api.applyBagSlot).not.toHaveBeenCalled();
+  });
+
+  test("4d. a selected arrow offers Add label, and the button hands that arrow to the editor", async () => {
+    const arrow = makeArrowRow("ov-arrow", { x: 0.2, y: 0.3 });
+    dispatchMock.mockImplementation(async (name: string) => {
+      if (name === "library:byId") return { ok: true, value: makeStubRecord() };
+      if (name === "layers:list") {
+        return { ok: true, value: [...makeBaseLayers(), rowToVectorLayer(arrow)] };
+      }
+      return { ok: true, value: undefined };
+    });
+    const api = makeLayersApi();
+    await render(
+      createElement(Harness, {
+        initialTool: "arrow",
+        selectedLayerIds: ["ov-arrow"],
+        layersApi: api
+      })
+    );
+    const button = propertyBar()?.querySelector<HTMLButtonElement>(
+      '[data-testid="property-bar-add-label"]'
+    );
+    expect(button?.textContent).toBe("Add label");
+    await fireClick(button as HTMLButtonElement);
+    expect(api.addArrowLabel).toHaveBeenCalledWith("ov-arrow");
+    // Labelling is not a restyle: the arrow keeps its selection.
+    expect(api.clearSelection).not.toHaveBeenCalled();
+  });
+
+  test("4e. no Add label for a selected non-arrow", async () => {
+    const shape = makeShapeRow("ov-box");
+    dispatchMock.mockImplementation(async (name: string) => {
+      if (name === "library:byId") return { ok: true, value: makeStubRecord() };
+      if (name === "layers:list") {
+        return { ok: true, value: [...makeBaseLayers(), rowToVectorLayer(shape)] };
+      }
+      return { ok: true, value: undefined };
+    });
+    await render(
+      createElement(Harness, {
+        initialTool: "arrow",
+        selectedLayerIds: ["ov-box"],
+        layersApi: makeLayersApi()
+      })
+    );
+    expect(propertyBar()?.getAttribute("data-target")).toBe("layer");
+    expect(host?.querySelector('[data-testid="property-bar-add-label"]')).toBeNull();
   });
 
   test("7. opening a capture that already has a user arrow does NOT end ⌥ single-shot; a later placement still does", async () => {

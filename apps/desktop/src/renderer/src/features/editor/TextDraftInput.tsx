@@ -53,6 +53,7 @@ import {
   type ResolvedTextOutline,
   type TextSizeBucket
 } from "@pwrsnap/shared";
+import type { LabelAlign } from "./arrow-label";
 import type { DraftText } from "./editor-types";
 import { Z_INDEX_CHROME } from "./OverlaySvg";
 
@@ -70,6 +71,9 @@ export function TextDraftInput({
   weight,
   rotation,
   outline,
+  align = "start",
+  placeholder,
+  ariaLabel = "Edit text annotation",
   onChange,
   onCommit,
   onCancel
@@ -103,8 +107,20 @@ export function TextDraftInput({
    *  display surface (TextHtml). Omitted → legacy translucent-black
    *  stroke. Resolved by `resolveTextDraftStyle`. */
   outline?: ResolvedTextOutline | undefined;
+  /** Which edge of the text sits on `draft.xn`. Text rows are always
+   *  left-anchored ("start"); an arrow label left of its arrow's tail is
+   *  drafted "end" so it grows away from the stem, and converted to a
+   *  left anchor at commit from the width reported to `onCommit`. */
+  align?: LabelAlign;
+  /** Dimmed stand-in shown in the draft's own style until the first
+   *  keystroke, so the user sees what they are about to type into. */
+  placeholder?: string | undefined;
+  ariaLabel?: string;
   onChange: (body: string) => void;
-  onCommit: () => void;
+  /** `widthFrac` is the draft's LAYOUT width as a fraction of the box
+   *  its `left: x%` resolves against (the canvas) — 0 where nothing is
+   *  laid out (jsdom). */
+  onCommit: (measure: { widthFrac: number }) => void;
   onCancel: () => void;
 }): ReactElement {
   // Same helper TextHtml uses — display + edit visible-text go through
@@ -125,8 +141,14 @@ export function TextDraftInput({
     ...(outline !== undefined ? { outline } : {}),
     ...(rotation !== undefined ? { rotation } : {})
   });
+  const alignShift =
+    align === "end" ? "translateX(-100%) " : align === "center" ? "translateX(-50%) " : "";
+  const showPlaceholder = placeholder !== undefined && draft.body.length === 0;
   const wrapperStyle: CSSProperties = {
     ...(style.wrapper as CSSProperties),
+    ...(alignShift !== ""
+      ? { transform: alignShift + String(style.wrapper.transform ?? "") }
+      : {}),
     pointerEvents: "auto",
     // Chrome z-index sentinel — sit ABOVE every persisted layer
     // regardless of their layer.z_index. Without this, a high-z_index
@@ -158,7 +180,10 @@ export function TextDraftInput({
     // inherited font-size. Both auto-scale with the current bucket's
     // fontPx.
     minWidth: "1ch",
-    minHeight: "1em"
+    minHeight: "1em",
+    // The placeholder is the label it will be, dimmed — same color,
+    // size and border — so the first keystroke changes only opacity.
+    ...(showPlaceholder ? { opacity: 0.45 } : {})
   };
   // Invisible textarea — captures keystrokes, shows caret + selection.
   // Inherits sizing from the same `style.glyph` so its internal line
@@ -206,6 +231,19 @@ export function TextDraftInput({
   // asked to abort. Refs survive unmount-time blur firing where
   // setState updates from Escape haven't been flushed yet.
   const cancelledRef = useRef<boolean>(false);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+
+  // Layout measures only (offsetWidth / clientWidth): the editor mounts
+  // inside a scale() entrance animation, and a post-transform rect would
+  // bake that in. See "Never mix a post-transform rect with a layout
+  // measure" in the root AGENTS.md.
+  function commit(): void {
+    const el = wrapperRef.current;
+    const parent = el?.offsetParent;
+    const parentWidth = parent instanceof HTMLElement ? parent.clientWidth : 0;
+    const widthFrac = el !== null && parentWidth > 0 ? el.offsetWidth / parentWidth : 0;
+    onCommit({ widthFrac });
+  }
 
   // Initial focus + caret-at-end. Runs once on mount.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -237,7 +275,7 @@ export function TextDraftInput({
       // Enter alone commits. preventDefault stops the textarea from
       // inserting a newline before our onCommit runs.
       e.preventDefault();
-      onCommit();
+      commit();
       return;
     }
     // Shift+Enter falls through — the textarea's default behavior
@@ -250,12 +288,15 @@ export function TextDraftInput({
       // setDraft(null) from onCancel will unmount us shortly.
       return;
     }
-    onCommit();
+    commit();
   }
 
   return (
     <div
+      ref={wrapperRef}
       style={wrapperStyle}
+      data-testid="text-draft"
+      {...(draft.label !== undefined ? { "data-label-align": align } : {})}
       // The draft input owns every press inside it. Without this, the
       // pointerdown bubbles to `.editor-canvas`, whose click dispatch
       // hit-tests the overlay UNDER the input (the one being edited),
@@ -267,7 +308,9 @@ export function TextDraftInput({
       {/* Visible text — same `<div>` shape and CSS as
           TextHtml.tsx's display surface. NOT editable. Renders glyphs
           + halo identically to display. */}
-      <div style={visibleGlyphStyle}>{draft.body}</div>
+      <div style={visibleGlyphStyle} data-placeholder={showPlaceholder ? "true" : undefined}>
+        {showPlaceholder ? placeholder : draft.body}
+      </div>
       {/* Invisible textarea — captures keyboard, shows caret. The
           user can't see the textarea's own glyphs (color:
           transparent), only the visible div underneath. */}
@@ -279,7 +322,7 @@ export function TextDraftInput({
         onKeyDown={onKeyDown}
         rows={1}
         spellCheck={false}
-        aria-label="Edit text annotation"
+        aria-label={ariaLabel}
         style={textareaStyle}
       />
     </div>

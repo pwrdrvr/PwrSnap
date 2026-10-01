@@ -27,6 +27,7 @@ import type {
   TextToolStyle
 } from "@pwrsnap/shared";
 import { readTextOverlayOutline, readTextWeight } from "@pwrsnap/shared";
+import type { ArrowLabelStyle } from "./arrow-label";
 import { resolveToolColor } from "./resolveToolColor";
 
 /** TextOverlay type — narrowed off the discriminated `Overlay` union.
@@ -98,6 +99,10 @@ export interface ResolveTextDraftStyleArgs {
    *  is unavailable (falls back to solid black, the text auto
    *  fallback) or when the mode isn't auto. Ignored on re-edits. */
   sampledAutoOutline?: OverlayOutlineAutoColor | null;
+  /** An arrow label's style (`draft.label.style`). Wins over the tool
+   *  style for a fresh placement: the label takes the arrow's color,
+   *  size and Border, whatever tool is active. Ignored on re-edits. */
+  labelStyle?: ArrowLabelStyle | null;
 }
 
 /** Auto-resolved colorHex constant — kept inline so the helper stays
@@ -117,7 +122,12 @@ const DEFAULT_WEIGHT = 600;
 export function resolveTextDraftStyle(
   args: ResolveTextDraftStyleArgs
 ): ResolvedTextDraftStyle {
-  const { editingOverlay, activeToolStyle, sampledAutoOutline = null } = args;
+  const {
+    editingOverlay,
+    activeToolStyle,
+    sampledAutoOutline = null,
+    labelStyle = null
+  } = args;
 
   // Re-edit path — mirror the row, ignore the tool. This is the load-
   // bearing branch the original inline code missed.
@@ -132,6 +142,22 @@ export function resolveTextDraftStyle(
       storedSizePx: data.sizePx,
       rotation: data.rotation,
       outline: readTextOverlayOutline(data)
+    };
+  }
+
+  // Arrow label — mirror the style commitText will persist for it.
+  if (labelStyle !== null) {
+    const resolvedColor = resolveToolColor(labelStyle.color);
+    return {
+      colorHex: resolvedColor === "auto" ? AUTO_COLOR_HEX : resolvedColor,
+      size: labelStyle.size,
+      weight: readTextWeight({ weight: labelStyle.weight }),
+      storedSizePx: undefined,
+      rotation: undefined,
+      outline: readTextOverlayOutline({
+        outline: labelStyle.outline,
+        outlineAuto: sampledAutoOutline ?? undefined
+      })
     };
   }
 

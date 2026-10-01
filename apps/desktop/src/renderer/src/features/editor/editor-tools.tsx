@@ -12,7 +12,15 @@
 
 import type { ReactElement } from "react";
 
-export type Tool = "pointer" | "arrow" | "shape" | "highlight" | "blur" | "text" | "crop";
+export type Tool =
+  | "pointer"
+  | "arrow"
+  | "shape"
+  | "draw"
+  | "highlight"
+  | "blur"
+  | "text"
+  | "crop";
 
 /** Canonical toolbar order. Exported as an array of `Tool` so the
  *  toolbar row + the `useEditorToolState` cycle helpers consume the
@@ -23,6 +31,7 @@ export const TOOL_ORDER = [
   "pointer",
   "arrow",
   "shape",
+  "draw",
   "highlight",
   "blur",
   "text",
@@ -38,7 +47,7 @@ export const TOOLS: ReadonlyArray<{
   // Pointer is the default — no-op on drag. Lets the user click on
   // the canvas to focus / inspect without accidentally drawing.
   // Drawing tools require an explicit click on the toolbar (or a key
-  // shortcut: A S H B T).
+  // shortcut: A S D H B T).
   {
     id: "pointer",
     label: "Pointer",
@@ -82,6 +91,26 @@ export const TOOLS: ReadonlyArray<{
       >
         <rect x="5" y="8" width="11" height="10" rx="1" />
         <circle cx="15.5" cy="9.5" r="4" />
+      </svg>
+    )
+  },
+  // Draw — the freehand family: pen, marker, airbrush and the eraser that
+  // cuts their strokes. Which one the next drag uses is the Draw style's
+  // `mode`, picked in the property bar (or armed from a bag slot).
+  {
+    id: "draw",
+    label: "Draw",
+    key: "D",
+    icon: (
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M3.5 16c3.5-11 6.5-11 8.5-4s5 7 8.5-5" />
       </svg>
     )
   },

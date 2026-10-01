@@ -803,6 +803,77 @@ export const CropOverlay = z.object({
   rect: NormalizedRect
 });
 
+/** Which Draw-family tool laid a freehand stroke down. The eraser is a
+ *  Draw tool too, but it never produces a row — it splits these. */
+export const StrokeTool = z.enum(["pen", "marker", "airbrush"]);
+export type StrokeTool = z.infer<typeof StrokeTool>;
+
+/** Upper bound on a stroke's stored points. The editor simplifies a
+ *  gesture before it commits (see `simplifyStrokePoints`), so a long,
+ *  slow scribble lands well under this; the cap exists so a hand-edited
+ *  or AI-injected row cannot hand the bake an unbounded path. */
+export const MAX_STROKE_POINTS = 4096;
+
+/** A freehand Draw stroke: pen, marker or airbrush.
+ *
+ *  `points` follow the same convention as every other overlay — fractions
+ *  of the CURRENT canvas, re-normalized by a crop like an arrow's
+ *  endpoints, finite but not clamped to [0, 1]. Width is a preset on the
+ *  shared annotation ladder (`thickness`, sized off the SOURCE raster's
+ *  `annotationBasisPx`), so a crop never thins a stroke.
+ *
+ *  Every tool is a path along `points`: the airbrush's soft edge is that
+ *  path drawn as nested bands (`freehand-stroke.ts`), so a row carries
+ *  no per-tool extras and an eraser cut works the same for all three.
+ *
+ *  One row can hold several disjoint SEGMENTS: `breaks` lists the
+ *  indices into `points` where a new segment starts. An eraser cut
+ *  leaves its pieces as segments of the one row it cut — one layer, not
+ *  one per piece — and a burst of strokes drawn in the same style lands
+ *  in one row the same way. `points` stays one flat list so a move, a
+ *  resize or a crop maps every point and leaves `breaks` alone.
+ *
+ *  NEW KIND — a build that predates it rejects any row carrying it.
+ *  `Overlay` is a discriminated union, so an older build fails to parse
+ *  a `.pwrsnap` bundle (and a layer-tree row) that contains a stroke.
+ *  The same forward-compat cost as the `bar` arrow end, larger in scope:
+ *  the whole document fails, not just one field. */
+export const StrokeOverlay = z.object({
+  kind: z.literal("stroke"),
+  tool: StrokeTool,
+  points: z.array(NormalizedPoint).min(1).max(MAX_STROKE_POINTS),
+  /** Where each segment after the first starts, as indices into
+   *  `points`: strictly increasing, each in (0, points.length). Absent
+   *  (or empty) means one segment. */
+  breaks: z.array(z.number().int().positive()).max(MAX_STROKE_POINTS).optional(),
+  color: z.union([z.literal("auto"), z.string().regex(/^#[0-9a-f]{6}$/i)]).default("auto"),
+  /** Stroke-weight preset (see ArrowOverlay.thickness). Missing / "auto"
+   *  is the Medium rung. The tool multiplies it: a marker is wider than
+   *  a pen at the same preset. */
+  thickness: OverlayThickness.optional(),
+  /** Paint opacity override, 0..1. The editor does NOT stamp one: a
+   *  committed stroke leaves it absent and paints at its tool's default
+   *  (`readStrokeOpacity`), so retuning `DEFAULT_MARKER_OPACITY` repaints
+   *  every marker that has no override — the same deliberate re-bake a
+   *  ladder retune causes (AGENTS.md "Annotation sizing"). A mode change
+   *  clears it so the stroke takes the new tool's default. */
+  opacity: z.number().min(0).max(1).optional()
+}).superRefine((stroke, ctx) => {
+  const breaks = stroke.breaks ?? [];
+  for (let i = 0; i < breaks.length; i += 1) {
+    const at = breaks[i]!;
+    if (at >= stroke.points.length || (i > 0 && at <= breaks[i - 1]!)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["breaks", i],
+        message: "breaks must increase strictly and stay inside points"
+      });
+      return;
+    }
+  }
+});
+export type StrokeOverlay = z.infer<typeof StrokeOverlay>;
+
 /** Internal: discriminated union over the canonical (post-migration)
  *  overlay shapes. Consumers use the `Overlay` export below, which
  *  wraps this in a preprocess shim that transparently rewrites legacy
@@ -816,7 +887,8 @@ const OverlayCanonical = z.discriminatedUnion("kind", [
   BlurOverlay,
   TextOverlay,
   StepOverlay,
-  CropOverlay
+  CropOverlay,
+  StrokeOverlay
 ]);
 
 /** Legacy → canonical input migrator. Any row with `kind: "rect"` is
@@ -848,6 +920,7 @@ export const OVERLAY_RENDER_ORDER: OverlayKind[] = [
   "crop",
   "blur",
   "highlight",
+  "stroke",
   "shape",
   "arrow",
   "step",

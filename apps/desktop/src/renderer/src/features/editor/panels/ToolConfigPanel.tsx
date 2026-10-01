@@ -57,7 +57,8 @@ const TOOL_TITLES: Record<StyledTool, string> = {
   text: "Text style",
   shape: "Shape style",
   blur: "Blur style",
-  highlight: "Highlight style"
+  highlight: "Highlight style",
+  draw: "Draw style"
 };
 
 export function ToolConfigPanel({

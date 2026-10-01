@@ -113,6 +113,10 @@ export type GeometryUpdate =
       readonly rotation?: number;
     }
   | { readonly kind: "step"; readonly point: NormalizedPoint }
+  /** A Draw stroke's whole point list. A move or a bbox resize rewrites
+   *  every point; the width is not geometry (it rides the source-sized
+   *  ladder), so a resize never thickens the line. */
+  | { readonly kind: "stroke"; readonly points: readonly NormalizedPoint[] }
   /** Raster move (Phase 2 raster unification): the layer's full affine
    *  transform `[sx, 0, 0, sy, tx, ty]` in CANVAS PIXELS of the space
    *  the edit was made in (display space for user drags — the crop
@@ -146,7 +150,8 @@ export type VectorGeometry =
   | { kind: "arrow"; from: Point; to: Point }
   | { kind: "rect"; rect: Rect }
   | { kind: "text"; point: Point; body: string; size: TextSizeBucket }
-  | { kind: "step"; point: Point; index: number };
+  | { kind: "step"; point: Point; index: number }
+  | { kind: "stroke"; points: Point[] };
 
 export type VectorStyle = {
   color: string;
@@ -438,6 +443,17 @@ function overlayToLayerView(
         style: { color: "auto" },
         meta
       };
+    case "stroke":
+      return {
+        kind: "vector",
+        id: row.id,
+        geometry: {
+          kind: "stroke",
+          points: data.points.map((p) => ({ x: p.x * sourceWidth, y: p.y * sourceHeight }))
+        },
+        style: { color: typeof data.color === "string" ? data.color : "auto" },
+        meta
+      };
     case "crop":
       return {
         kind: "effect",
@@ -602,6 +618,9 @@ export function applyGeometryToOverlay(
     case "step":
       if (overlay.kind !== "step") return null;
       return { ...overlay, point: geometry.point };
+    case "stroke":
+      if (overlay.kind !== "stroke") return null;
+      return { ...overlay, points: [...geometry.points] };
     case "transform":
       // Raster-only geometry — never applies to an Overlay shape.
       // Rasters merge via applyGeometryToLayer's raster arm instead.

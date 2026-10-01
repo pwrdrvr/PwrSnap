@@ -1080,4 +1080,54 @@ describe("useUndoRedo", () => {
     }
     expect(undoCount).toBe(100);
   });
+  test("recordReplace (an eraser pass) undoes and redoes as ONE step, restoring before removing", async () => {
+    // The eraser swaps every stroke it crossed for that stroke's pieces.
+    // ⌘Z must put all of it back in one keystroke, and each replay must
+    // add the other side BEFORE removing this one, so a failure halfway
+    // leaves an extra stroke rather than a hole.
+    let api: UseUndoRedoResult | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-1",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+    const original = makeNode("stroke-orig");
+    const pieceA = makeNode("piece-a");
+    const pieceB = makeNode("piece-b");
+    act(() => {
+      api!.recordReplace({
+        removed: [{ row: { id: original.id }, node: original }],
+        added: [
+          { row: { id: pieceA.id }, node: pieceA },
+          { row: { id: pieceB.id }, node: pieceB }
+        ]
+      });
+    });
+    expect(api!.canUndo).toBe(true);
+
+    await act(async () => {
+      await api!.undo();
+    });
+    expect(dispatchEditMock.mock.calls.map(([op]) => op)).toEqual([
+      { kind: "upsert", node: original },
+      { kind: "delete", id: "piece-a" },
+      { kind: "delete", id: "piece-b" }
+    ]);
+    expect(api!.canUndo).toBe(false);
+    expect(api!.canRedo).toBe(true);
+
+    dispatchEditMock.mockClear();
+    await act(async () => {
+      await api!.redo();
+    });
+    expect(dispatchEditMock.mock.calls.map(([op]) => op)).toEqual([
+      { kind: "upsert", node: pieceA },
+      { kind: "upsert", node: pieceB },
+      { kind: "delete", id: "stroke-orig" }
+    ]);
+    expect(api!.canUndo).toBe(true);
+  });
 });

@@ -38,8 +38,10 @@ import type {
   BlurToolStyle,
   BundleLayerNode,
   CaptureRecord,
+  DrawToolStyle,
   HighlightToolStyle,
   Overlay,
+  StrokeOverlay,
   OverlayOutlineAutoColor,
   OverlayRow,
   PwrSnapError,
@@ -71,13 +73,25 @@ import {
   readOverlayRotation,
   readTextWeight,
   resolveCropViewport,
-  revealInFileManagerLabel
+  revealInFileManagerLabel,
+  distanceToPolylinePx,
+  eraserRadiusPx,
+  simplifyStrokePoints,
+  strokePointsToNormalized,
+  strokePointsToPx,
+  strokeBoundsN,
+  strokeReachPx,
+  strokePointsFromSegments,
+  strokeSegments,
+  StrokeEraseSession,
+  type EraseTarget
 } from "@pwrsnap/shared";
 import { nanoid } from "nanoid";
 import { dispatch, captureSrcUrl } from "../../lib/pwrsnap";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import { editorZoomShortcut } from "./editor-zoom-shortcut";
 import { selectBaseRaster } from "./base-raster";
+import { burstTarget, STROKE_BURST_GAP_MS } from "./stroke-burst";
 import { findRootGroupId, overlayToBundleLayerNode } from "./overlayToLayer";
 import { RasterLayers } from "./RasterLayers";
 import { RasterResizeHandles } from "./RasterResizeHandles";
@@ -100,7 +114,12 @@ import {
   type SlotStyleField
 } from "./tool-bag";
 import { useZoomPan, type ZoomMode } from "./useZoomPan";
-import { useUndoRedo, type InteractionToken, type RecordOptions } from "./useUndoRedo";
+import {
+  useUndoRedo,
+  type CreateDeleteItem,
+  type InteractionToken,
+  type RecordOptions
+} from "./useUndoRedo";
 import { decideClickSelection } from "./decideClickSelection";
 import {
   adoptDraftGeometry,
@@ -150,7 +169,8 @@ import {
 import {
   MIN_DRAG_LENGTH,
   rectFromDrag,
-  type Draft
+  type Draft,
+  type DraftStroke
 } from "./editor-types";
 import type { PasteImagePosition } from "./usePasteImage";
 import { useDropImage } from "./useDropImage";
@@ -276,12 +296,58 @@ const INTERACTIVE_KEY_TARGETS =
   '[role="option"], [role="tab"], [role="slider"], [role="checkbox"], ' +
   '[role="radio"], [role="switch"], [role="spinbutton"], [role="combobox"]';
 
+/** A stroke row and the row that replaces it — the same stroke with
+ *  different segments — or `null` to delete it. An eraser drag cuts
+ *  strokes this way, and a burst of strokes grows one this way. */
+type StrokeReplacement = { readonly id: string; readonly replacement: StrokeOverlay | null };
+
+/** What a stroke replace wrote: whether every change applied, and the
+ *  ids of the rows it added, in order. */
+type StrokeReplaceResult = { readonly allApplied: boolean; readonly addedIds: readonly string[] };
+
+/** A stroke row's centerline box. Rows are immutable — an edit writes
+ *  a new object — so the box is cached by row for the hover hit-test. */
+const strokeBoundsCache = new WeakMap<StrokeOverlay, ReturnType<typeof strokeBoundsN>>();
+function cachedStrokeBoundsN(data: StrokeOverlay): ReturnType<typeof strokeBoundsN> {
+  let box = strokeBoundsCache.get(data);
+  if (box === undefined) {
+    box = strokeBoundsN(data.points);
+    strokeBoundsCache.set(data, box);
+  }
+  return box;
+}
+
+/** The stroke rows an eraser may cut. */
+function* strokeTargets(rows: readonly OverlayRow[]): Generator<EraseTarget> {
+  for (const row of rows) {
+    if (row.data.kind === "stroke") yield { id: row.id, data: row.data };
+  }
+}
+
+/** The render copy of a live Draw stroke. It shares the stroke's point
+ *  array — appended in place for the whole drag — and says how much of
+ *  it to show, so a pointer event costs its own samples, not a copy of
+ *  everything drawn so far. */
+function liveStrokeDraft(stroke: DraftStroke, erase: StrokeEraseSession | null): DraftStroke {
+  return {
+    ...stroke,
+    count: stroke.points.length,
+    ...(erase !== null ? { erased: erase.cuts() } : {})
+  };
+}
+
+/** How far a simplified stroke may stray from the pointer path, in
+ *  canvas pixels. Under a pixel, so the smoothing is invisible; enough
+ *  to drop most of a 120Hz pointer stream. */
+const STROKE_SIMPLIFY_TOLERANCE_PX = 0.5;
+
 const STYLED_TOOLS: ReadonlySet<Tool> = new Set<Tool>([
   "arrow",
   "text",
   "shape",
   "blur",
-  "highlight"
+  "highlight",
+  "draw"
 ]);
 
 function isStyledToolKind(tool: Tool): tool is StyledToolKind {
@@ -298,6 +364,8 @@ function pasteTargetFor(kind: Overlay["kind"]): PasteTargetTool | null {
     case "blur":
     case "highlight":
       return kind;
+    case "stroke":
+      return "draw";
     case "crop":
     case "step":
       return null;
@@ -348,6 +416,12 @@ function resolveDraftStyleForActiveTool(
       };
     case "text":
       return { color: resolveToolColor(activeStyle.style.color) };
+    case "draw":
+      // Thickness drives the stroke's width AND the eraser trail's.
+      return {
+        color: resolveToolColor(activeStyle.style.color),
+        thickness: activeStyle.style.thickness
+      };
     default:
       return undefined;
   }
@@ -433,6 +507,10 @@ export function overlayDataToGeometry(data: Overlay): GeometryUpdate | null {
     // Step has no rotation field.
     return { kind: "step", point: data.point };
   }
+  if (data.kind === "stroke") {
+    // No rotation either: a stroke's direction is in its points.
+    return { kind: "stroke", points: data.points };
+  }
   return null;
 }
 
@@ -474,6 +552,12 @@ export function translateOverlayData(
     return {
       ...data,
       point: { x: data.point.x + dxn, y: data.point.y + dyn }
+    };
+  }
+  if (data.kind === "stroke") {
+    return {
+      ...data,
+      points: data.points.map((p) => ({ x: p.x + dxn, y: p.y + dyn }))
     };
   }
   // crop — no anchor to translate; pass through unchanged. Crop is
@@ -532,6 +616,12 @@ export function translateOverlayGeometry(
       point: { x: data.point.x + dxn, y: data.point.y + dyn }
     };
   }
+  if (data.kind === "stroke") {
+    return {
+      kind: "stroke",
+      points: data.points.map((p) => ({ x: p.x + dxn, y: p.y + dyn }))
+    };
+  }
   return null;
 }
 
@@ -566,6 +656,8 @@ function selectedOverlayToStyledTool(
       return { tool: "blur", label: "blur" };
     case "text":
       return { tool: "text", label: "text" };
+    case "stroke":
+      return { tool: "draw", label: data.tool };
     default:
       // step, crop — no popover surface in Phase 3.5.
       return null;
@@ -588,6 +680,7 @@ function selectedOverlayToToolStyle(
     shape: ShapeToolStyle;
     blur: BlurToolStyle;
     highlight: HighlightToolStyle;
+    draw: DrawToolStyle;
   }
 ):
   | { tool: "arrow"; style: ArrowToolStyle }
@@ -595,7 +688,19 @@ function selectedOverlayToToolStyle(
   | { tool: "shape"; style: ShapeToolStyle }
   | { tool: "blur"; style: BlurToolStyle }
   | { tool: "highlight"; style: HighlightToolStyle }
+  | { tool: "draw"; style: DrawToolStyle }
   | null {
+  if (data.kind === "stroke") {
+    return {
+      tool: "draw",
+      style: {
+        ...defaults.draw,
+        mode: data.tool,
+        color: storedColorToToolColor(data.color, defaults.draw.color),
+        thickness: data.thickness ?? defaults.draw.thickness
+      }
+    };
+  }
   if (data.kind === "arrow") {
     return {
       tool: "arrow",
@@ -898,6 +1003,26 @@ export function layerStyleUpdate(
     };
   }
 
+  // Draw's "mode" is the stroke's `tool`. Opacity is cleared alongside it
+  // so the stroke takes the new tool's default (a pen made a marker turns
+  // translucent); the undo patch restores both, explicitly undefined when
+  // the row had no opacity, so undo can clear it again.
+  if (current.data.kind === "stroke" && field === "mode") {
+    if (value !== "pen" && value !== "marker" && value !== "airbrush") return null;
+    if (value === current.data.tool) return null;
+    return {
+      patch: { kind: "stroke", tool: value, opacity: undefined },
+      fallbackPreviousPatch: {
+        kind: "stroke",
+        tool: current.data.tool,
+        opacity: current.data.opacity
+      },
+      // Not a persisted field name: previousStylePatchFromQueuedUpdate
+      // has a "mode" arm that restores tool + opacity together.
+      undoField: "mode"
+    };
+  }
+
   // Blur ToolStyleBody intentionally speaks in terms of a user-facing mode
   // and radius setting. Persisted overlays use `style` and `radiusPx`; v2
   // effect layers use the same overlay-shaped patch and project it to their
@@ -1118,6 +1243,10 @@ export function previousStylePatchFromQueuedUpdate(
       shape: readShapeKind(previous),
       ...(nextPatch.rect !== undefined ? { rect: previous.rect } : {})
     };
+  }
+
+  if (previous.kind === "stroke" && nextPatch.kind === "stroke" && field === "mode") {
+    return { kind: "stroke", tool: previous.tool, opacity: previous.opacity };
   }
 
   // Border edits write outline + outlineAuto together (Auto stores the
@@ -1375,6 +1504,34 @@ export function hitTestOverlays(
       ) {
         return row.id;
       }
+      continue;
+    }
+    if (o.kind === "stroke") {
+      // Distance to the centerline in PIXELS (a normalized distance is
+      // stretched on a non-square canvas), within the painted half-width
+      // plus the usual forgiveness. Without dims, fall back to a square
+      // canvas of the short side and forgiveness only.
+      const w = imageDims?.widthPx ?? canvasPxShortSide;
+      const h = imageDims?.heightPx ?? canvasPxShortSide;
+      const reachPx = textDims !== undefined ? strokeReachPx(o, annotationBasis) : 0;
+      const limitPx = reachPx + hitRadiusN * Math.min(w, h);
+      // Hover runs this for every stroke on every move: reject on the
+      // (cached) box before walking the stroke.
+      const box = cachedStrokeBoundsN(o);
+      if (
+        (xn - box.x) * w < -limitPx ||
+        (xn - box.x - box.w) * w > limitPx ||
+        (yn - box.y) * h < -limitPx ||
+        (yn - box.y - box.h) * h > limitPx
+      ) {
+        continue;
+      }
+      // Per segment: the gap the eraser left between two is empty.
+      const at = { x: xn * w, y: yn * h };
+      const hit = strokeSegments(o).some(
+        (segment) => distanceToPolylinePx(at, strokePointsToPx(segment, w, h)) <= limitPx
+      );
+      if (hit) return row.id;
       continue;
     }
     if (o.kind === "arrow") {
@@ -1785,6 +1942,21 @@ export function Editor({
   }, [effectiveToolState.activeStyle]);
 
   const [draft, setDraft] = useState<Draft | null>(null);
+  // The live Draw stroke. Pointer samples land here synchronously and the
+  // draft state is a render copy: pointermove is a continuous event, so a
+  // release can arrive before React has rendered the last move, and a
+  // commit that read `draft` would drop the stroke's final points.
+  const strokeDraftRef = useRef<DraftStroke | null>(null);
+  // An eraser drag's cuts so far. Each move tests only its own new
+  // samples (see `StrokeEraseSession`); the draft shows the session's
+  // pieces and the release commits them, so the two cannot disagree.
+  const eraseSessionRef = useRef<StrokeEraseSession | null>(null);
+  // When the current Draw drag started, and when the last committed
+  // stroke ended and which layer it landed in — the gap between them
+  // decides whether the new stroke joins that layer
+  // (`STROKE_BURST_GAP_MS`).
+  const strokeStartedAtRef = useRef(0);
+  const lastStrokeRef = useRef<{ endedAt: number; layerId: string } | null>(null);
   // Multi-select model. Tracks the ids of all currently-selected
   // overlays/layers; empty array means nothing selected.
   //
@@ -2570,6 +2742,43 @@ export function Editor({
     const start = clientToNormalized(event.clientX, event.clientY);
     if (start === null) return;
 
+    // Draw draws OVER whatever is there. A freehand mark is usually made
+    // on top of other annotations — a marker under a label, a scribble
+    // across a box — so unlike the other drawing tools a press on a
+    // layer does not select it. The eraser needs the same: it is dragged
+    // across strokes on purpose.
+    if (tool === "draw") {
+      if (draft?.kind === "text") return;
+      if (selectedLayerIds.length > 0) clearSelection();
+      event.preventDefault();
+      (canvasRef.current ?? (event.target as HTMLElement)).setPointerCapture(event.pointerId);
+      if (beginInteractionRef.current !== null) {
+        activeInteractionTokenRef.current = beginInteractionRef.current("drag", "draft-draw");
+      }
+      const active = effectiveToolState.activeStyle;
+      const stroke: DraftStroke = {
+        kind: "stroke",
+        mode: active.tool === "draw" ? active.style.mode : "pen",
+        points: [{ x: start.xn, y: start.yn }]
+      };
+      strokeDraftRef.current = stroke;
+      strokeStartedAtRef.current = performance.now();
+      eraseSessionRef.current = null;
+      const dims = textHitDimsRef.current;
+      if (stroke.mode === "eraser" && dims !== null) {
+        const { canvasWidthPx: cw, canvasHeightPx: ch } = dims;
+        // SOURCE dims, as for every annotation (AGENTS.md "Annotation
+        // sizing"), and the thickness the trail is drawn at.
+        const basis = annotationBasisPx(dims.sourceWidthPx, dims.sourceHeightPx);
+        const thickness = active.tool === "draw" ? active.style.thickness : undefined;
+        const session = new StrokeEraseSession(eraserRadiusPx(thickness, basis), cw, ch, basis);
+        session.extend([{ x: start.xn * cw, y: start.yn * ch }], strokeTargets(overlaysRef.current));
+        eraseSessionRef.current = session;
+      }
+      setDraft(liveStrokeDraft(stroke, eraseSessionRef.current));
+      return;
+    }
+
     // Drawing tools (arrow / rect / highlight / blur / text) hit-test
     // existing layers BEFORE starting a new draft. A click that lands
     // on an existing overlay OR raster (pasted image / captured
@@ -2856,6 +3065,31 @@ export function Editor({
       }
       return;
     }
+    // Draw: take every coalesced sample, not just the one this event
+    // reports — at 60Hz a fast flick would otherwise come out as a few
+    // straight segments. Unclamped, so a stroke can run off the edge.
+    const stroke = strokeDraftRef.current;
+    if (stroke !== null) {
+      const native = event.nativeEvent;
+      const coalesced =
+        typeof native.getCoalescedEvents === "function" ? native.getCoalescedEvents() : [];
+      const from = stroke.points.length;
+      for (const sample of coalesced.length > 0 ? coalesced : [native]) {
+        const p = clientToNormalizedUnclamped(sample.clientX, sample.clientY);
+        if (p !== null) stroke.points.push({ x: p.xn, y: p.yn });
+      }
+      if (stroke.points.length === from) return;
+      const session = eraseSessionRef.current;
+      const dims = textHitDimsRef.current;
+      if (session !== null && dims !== null) {
+        session.extend(
+          strokePointsToPx(stroke.points.slice(from), dims.canvasWidthPx, dims.canvasHeightPx),
+          strokeTargets(overlaysRef.current)
+        );
+      }
+      setDraft(liveStrokeDraft(stroke, session));
+      return;
+    }
     // No gesture in progress (or only an idle text draft): this move
     // is a HOVER — update the cursor affordance and stop.
     if (draft === null || draft.kind === "text") {
@@ -2947,6 +3181,17 @@ export function Editor({
   }
 
   function onPointerCancel(event: React.PointerEvent<HTMLDivElement>): void {
+    // A cancelled Draw gesture commits nothing: an OS-cancelled scribble
+    // is not one the user finished.
+    if (strokeDraftRef.current !== null) {
+      strokeDraftRef.current = null;
+      eraseSessionRef.current = null;
+      setDraft(null);
+      const token = activeInteractionTokenRef.current;
+      activeInteractionTokenRef.current = null;
+      if (token !== null) endInteractionRef.current?.(token);
+      return;
+    }
     // Raster drag cancelled mid-gesture — drop the armed gesture + live
     // override; no commit, so the <img> snaps back to its persisted
     // transform.
@@ -3095,6 +3340,23 @@ export function Editor({
         // snap to their persisted positions.
         setDraftGeometry(null);
         setRasterDrafts(null);
+      }
+      return;
+    }
+    const strokeDraft = strokeDraftRef.current;
+    if (strokeDraft !== null) {
+      strokeDraftRef.current = null;
+      try {
+        (event.target as HTMLElement).releasePointerCapture(event.pointerId);
+      } catch {
+        // Best-effort release; capture may already be gone.
+      }
+      const token = activeInteractionTokenRef.current;
+      activeInteractionTokenRef.current = null;
+      try {
+        await commitStroke(strokeDraft);
+      } finally {
+        if (token !== null) endInteractionRef.current?.(token);
       }
       return;
     }
@@ -3280,6 +3542,84 @@ export function Editor({
     }
     // Fallthrough: close interaction even if no draft branch matched.
     closeInteraction();
+  }
+
+  /** Commit a finished Draw gesture: a pen / marker / airbrush stroke, or
+   *  an eraser pass. Clears the draft before the first await, like every
+   *  other commit, so a second stroke started while this one writes is
+   *  not wiped when it resumes. */
+  async function commitStroke(stroke: DraftStroke): Promise<void> {
+    setDraft(null);
+    const releasedAt = performance.now();
+    const startedAt = strokeStartedAtRef.current;
+    const session = eraseSessionRef.current;
+    eraseSessionRef.current = null;
+    if (stroke.mode === "eraser") {
+      // The session the drag built IS the commit: the pieces the preview
+      // showed, not a second pass over the whole drag. Strokes only —
+      // arrows, boxes and text are never cut; the eraser is part of the
+      // Draw family and edits what Draw made.
+      // Re-sync first: a row edited or added since the last move is cut
+      // from what is on the canvas now, not from what it was then.
+      session?.extend([], strokeTargets(overlaysRef.current));
+      const changes: StrokeReplacement[] = session?.changes() ?? [];
+      if (changes.length > 0) await replaceStrokesRef.current?.(changes);
+      // A burst does not reach across an eraser pass.
+      lastStrokeRef.current = null;
+      return;
+    }
+    const dims = textHitDimsRef.current;
+    if (dims === null) return;
+    const { canvasWidthPx: cw, canvasHeightPx: ch } = dims;
+    // The mode is the one the drag started in; color and weight are the
+    // settled styles (see the arrow commit for why they are awaited).
+    const style = (await effectiveToolState.settledToolStyles()).draw;
+
+    const simplified = simplifyStrokePoints(
+      strokePointsToPx(stroke.points, cw, ch),
+      STROKE_SIMPLIFY_TOLERANCE_PX
+    );
+    const overlay: StrokeOverlay = {
+      kind: "stroke",
+      tool: stroke.mode,
+      points: strokePointsToNormalized(simplified, cw, ch),
+      color: resolveToolColor(style.color),
+      thickness: style.thickness
+    };
+    // A burst — this stroke started soon after the last one ended, in
+    // the same style, with that stroke still the top layer — joins it as
+    // another segment instead of becoming a layer of its own. Writing a
+    // word is a dozen strokes; it should be one layer. It is still its
+    // own undo step: ⌘Z takes back this stroke, not the burst.
+    const previous = lastStrokeRef.current;
+    // Cleared across the write: a stroke released before this one lands
+    // must not join a layer this write is about to replace.
+    lastStrokeRef.current = null;
+    const target =
+      previous !== null && startedAt - previous.endedAt <= STROKE_BURST_GAP_MS
+        ? burstTarget(overlaysRef.current, rastersRef.current, overlay, previous.layerId)
+        : null;
+    let wrote: { ok: true; newId: string } | { ok: false } = { ok: false };
+    if (target !== null) {
+      const merged: StrokeOverlay = {
+        ...target.data,
+        ...strokePointsFromSegments([...strokeSegments(target.data), overlay.points])
+      };
+      const joined = await replaceStrokesRef.current?.([{ id: target.id, replacement: merged }]);
+      const newId = joined?.allApplied === true ? joined.addedIds[0] : undefined;
+      if (newId !== undefined) wrote = { ok: true, newId };
+    }
+    // No burst, or a join that could not be written: the stroke is a
+    // layer of its own.
+    if (!wrote.ok) wrote = await persistOverlay(overlay);
+    if (wrote.ok) lastStrokeRef.current = { endedAt: releasedAt, layerId: wrote.newId };
+    // The new stroke is NOT selected, unlike an arrow or a box. Strokes
+    // come in runs — a word, a circle and an underline — and selecting
+    // each would put handles over the next one and point the property
+    // bar at the stroke instead of the pen.
+    if (wrote.ok && !isControlled) {
+      effectiveToolState.onAnnotationPlaced({ tool: "draw" });
+    }
   }
 
   /**
@@ -4115,6 +4455,15 @@ export function Editor({
       if (event.key === "Escape" && draft !== null) {
         event.preventDefault();
         setDraft(null);
+        // A Draw drag in progress is abandoned, not committed: the
+        // release that follows finds no stroke to write.
+        if (strokeDraftRef.current !== null) {
+          strokeDraftRef.current = null;
+          eraseSessionRef.current = null;
+          const token = activeInteractionTokenRef.current;
+          activeInteractionTokenRef.current = null;
+          if (token !== null) endInteractionRef.current?.(token);
+        }
         return;
       }
       // Escape on the open right-click context menu closes the menu
@@ -4438,6 +4787,12 @@ export function Editor({
   const deleteSelectedRef = useRef<
     ((row: Pick<OverlayRow, "id">, opts?: RecordOptions) => Promise<void>) | null
   >(null);
+  // Hook-owned stroke replace (same pattern as deleteSelectedRef): the
+  // eraser's commit and a burst join — swaps each stroke for the row
+  // that replaces it as ONE undo step.
+  const replaceStrokesRef = useRef<
+    ((changes: readonly StrokeReplacement[]) => Promise<StrokeReplaceResult>) | null
+  >(null);
   // Burst SETTLE choke point (populated by EditorLoaded's nudge
   // effect): commits any pending arrow-key burst + closes its bracket.
   // The outer pointerdown and the copy/duplicate/delete/paste verbs
@@ -4722,6 +5077,7 @@ export function Editor({
       setSelectionTrustingDispatch={setSelectionTrustingDispatch}
       primarySelectedLayerId={primarySelectedLayerId}
       deleteSelectedRef={deleteSelectedRef}
+      replaceStrokesRef={replaceStrokesRef}
       nudgeSelectedRef={nudgeSelectedRef}
       applyBagSlotRef={applyBagSlotRef}
       startArrowLabelRef={startArrowLabelRef}
@@ -4810,6 +5166,7 @@ function EditorLoaded({
   setSelectionTrustingDispatch,
   primarySelectedLayerId,
   deleteSelectedRef,
+  replaceStrokesRef,
   nudgeSelectedRef,
   applyBagSlotRef,
   startArrowLabelRef,
@@ -4995,6 +5352,12 @@ function EditorLoaded({
    *  delete paths for new layer kinds — route them here. */
   deleteSelectedRef: React.RefObject<
     ((row: Pick<OverlayRow, "id">, opts?: RecordOptions) => Promise<void>) | null
+  >;
+  /** Stroke replace — the eraser's commit and a burst join: each change
+   *  names a stroke layer and the display-space row that replaces it
+   *  (`null` = erased whole). */
+  replaceStrokesRef: React.RefObject<
+    ((changes: readonly StrokeReplacement[]) => Promise<StrokeReplaceResult>) | null
   >;
   /** Outer keyboard handler calls into this on arrow-key presses with
    *  source-pixel deltas; EditorLoaded's closure converts to normalized
@@ -5422,6 +5785,81 @@ function EditorLoaded({
     undo.beginInteraction,
     undo.endInteraction
   ]);
+
+  // Stroke replace — the eraser's commit, and a burst stroke joining the
+  // stroke before it. A cut stroke stays ONE layer: it is replaced by one
+  // row holding its surviving pieces as segments, at the original's
+  // z_index, so it stays where it was in the stack. A stroke erased whole
+  // is deleted. The replacement is built from the DISPLAY node (the
+  // wrapped dispatcher maps it into stored space, as for any draw); the
+  // removed original is recorded from the STORED tree, because undo
+  // replays through the raw dispatcher.
+  //
+  // The original is deleted only once its replacement is written. A
+  // replacement that fails leaves the original alone — an eraser that
+  // deleted a stroke it could not re-create would turn one rejected
+  // write into the loss of the whole stroke — and one whose original
+  // will not delete is taken back.
+  useEffect(() => {
+    replaceStrokesRef.current = async (changes): Promise<StrokeReplaceResult> => {
+      const removed: CreateDeleteItem[] = [];
+      const added: CreateDeleteItem[] = [];
+      let allApplied = true;
+      for (const change of changes) {
+        const display = modelLayers.find((l) => l.id === change.id);
+        const stored = storedLayers.find((l) => l.id === change.id) ?? null;
+        if (display === undefined || display.kind !== "vector") {
+          allApplied = false;
+          continue;
+        }
+        let written: CreateDeleteItem | null = null;
+        if (change.replacement !== null) {
+          // eslint-disable-next-line no-await-in-loop
+          const result = await dispatchEdit({
+            kind: "upsert",
+            // Layer ids are 16-char nanoids — the bundle schema rejects
+            // any other length.
+            node: { ...display, id: nanoid(16), shape: change.replacement }
+          });
+          if (!result.ok) {
+            // eslint-disable-next-line no-console
+            console.error("stroke replace: upsert failed", result.error);
+            allApplied = false;
+            continue;
+          }
+          if (result.value.kind !== "upsert") {
+            // Nothing to record or take back: leave the original alone
+            // rather than delete it with no replacement on file.
+            allApplied = false;
+            continue;
+          }
+          const node = result.value.artifact.node;
+          written = { row: { id: node.id }, node };
+        }
+        // eslint-disable-next-line no-await-in-loop
+        const deleted = await dispatchEdit({ kind: "delete", id: change.id });
+        if (!deleted.ok) {
+          // eslint-disable-next-line no-console
+          console.error("stroke replace: delete failed", deleted.error);
+          if (written !== null) {
+            // eslint-disable-next-line no-await-in-loop
+            await dispatchEdit({ kind: "delete", id: written.row.id });
+          }
+          allApplied = false;
+          continue;
+        }
+        if (written !== null) added.push(written);
+        removed.push({ row: { id: change.id }, node: stored });
+      }
+      if (!undoApplyingRef.current && (removed.length > 0 || added.length > 0)) {
+        undo.recordReplace({ removed, added });
+      }
+      return { allApplied, addedIds: added.map((item) => item.row.id) };
+    };
+    return () => {
+      replaceStrokesRef.current = null;
+    };
+  }, [replaceStrokesRef, dispatchEdit, modelLayers, storedLayers, undo, undoApplyingRef]);
 
   // Phase 3.2 — selection deleter. The outer Editor's keyboard handler
   // reads `deleteSelectedRef.current` on Delete/Backspace. Routes
@@ -7637,7 +8075,10 @@ function EditorLoaded({
                 : fallbackStyles.blur,
               highlight: toolState.activeStyle.tool === "highlight"
                 ? toolState.activeStyle.style
-                : fallbackStyles.highlight
+                : fallbackStyles.highlight,
+              draw: toolState.activeStyle.tool === "draw"
+                ? toolState.activeStyle.style
+                : fallbackStyles.draw
             }
           );
           if (projection === null) return null;

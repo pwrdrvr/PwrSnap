@@ -26,7 +26,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactElement
 } from "react";
-import type { ArrowToolStyle, BundleLayerNode } from "@pwrsnap/shared";
+import type { ArrowToolStyle, BundleLayerNode, StrokeOverlay } from "@pwrsnap/shared";
 import {
   readArrowDoubleEnded,
   readArrowEndStyle,
@@ -34,6 +34,7 @@ import {
   readShapeFilled,
   readShapeKind,
   readShapeStrokeStyle,
+  readStrokeOpacity,
   type ShapeKind
 } from "@pwrsnap/shared";
 import { ShapeIcon, type ShapeIconBox, type ShapeIconPatternUnit } from "./ShapeIcon";
@@ -45,6 +46,7 @@ import { affineTransformsEqual } from "../editor/raster-resize";
 import { TOOLS } from "../editor/editor-tools";
 import { ToolStyleBody } from "../editor/ToolStylePopover";
 import { styledLayerStyle } from "./styled-layer-style";
+import { strokeLayerName } from "../editor/overlayToLayer";
 import "./LayersPanel.css";
 
 export type LayersPanelProps = {
@@ -139,6 +141,8 @@ function shapeLabel(node: Extract<BundleLayerNode, { kind: "vector" }>): string 
       return "Blur";
     case "step":
       return "Step";
+    case "stroke":
+      return strokeLayerName(node.shape.tool);
     case "crop":
       return "Crop";
   }
@@ -314,6 +318,44 @@ function ShapePreview({
   );
 }
 
+/** One squiggle for every Draw stroke: its color, a width that tells pen
+ *  from marker, and the marker's translucency. The airbrush reads as a
+ *  soft-edged line. */
+function StrokePreview({ shape }: { shape: StrokeOverlay }): ReactElement {
+  const color = previewColor(shape.color);
+  if (shape.tool === "airbrush") {
+    const d = "M8 18c8-9 20-9 32-4";
+    return (
+      <svg
+        viewBox="0 0 48 28"
+        aria-hidden="true"
+        fill="none"
+        stroke={color}
+        strokeLinecap="round"
+        opacity={readStrokeOpacity(shape)}
+      >
+        <path d={d} strokeWidth="10" opacity="0.2" />
+        <path d={d} strokeWidth="7" opacity="0.35" />
+        <path d={d} strokeWidth="4" />
+      </svg>
+    );
+  }
+  const marker = shape.tool === "marker";
+  return (
+    <svg viewBox="0 0 48 28" aria-hidden="true">
+      <path
+        d={marker ? "M8 15 40 15" : "M8 19c5-12 10-12 13-5s9 7 19-6"}
+        fill="none"
+        stroke={color}
+        strokeOpacity={readStrokeOpacity(shape)}
+        strokeWidth={marker ? 7 : previewStrokeWidth(shape.thickness)}
+        strokeLinecap={marker ? "butt" : "round"}
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function previewForNode(node: BundleLayerNode): ReactElement {
   if (node.kind === "vector") {
     switch (node.shape.kind) {
@@ -377,6 +419,8 @@ function previewForNode(node: BundleLayerNode): ReactElement {
         );
       case "step":
         return STEP_ICON;
+      case "stroke":
+        return <StrokePreview shape={node.shape} />;
     }
   }
   if (node.kind === "effect") {
@@ -796,6 +840,7 @@ export function LayersPanel({
                         api?.updateLayerStyle(id, field, value);
                       }}
                       styleTargetKey={id}
+                      allowEraser={false}
                     />
                   </div>
                 </section>

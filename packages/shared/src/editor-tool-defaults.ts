@@ -126,6 +126,13 @@ export function defaultEditorToolStyles(): EditorToolStyles {
       color: "yellow",
       opacity: 0.3,
       blend: "multiply"
+    },
+    draw: {
+      mode: "pen",
+      color: "accent",
+      // Same rung as a fresh arrow so a first pen stroke and a first
+      // arrow read as the same weight.
+      thickness: "auto"
     }
   };
 }

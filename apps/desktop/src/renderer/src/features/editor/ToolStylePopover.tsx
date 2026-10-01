@@ -57,6 +57,8 @@ import type {
   BlurEffectMode,
   BlurToolStyle,
   ColorToken,
+  DrawToolMode,
+  DrawToolStyle,
   HighlightToolStyle,
   OverlayOutlineMode,
   ShapeKind,
@@ -75,17 +77,18 @@ import { useSettings } from "../settings/useSettings";
 
 // ---- Public types ---------------------------------------------------
 
-/** The five tool kinds that have a persistent style block. Pointer +
- *  crop are excluded — the parent toolbar simply doesn't mount the
- *  popover for those. */
-export type StyledToolKind = "arrow" | "text" | "shape" | "blur" | "highlight";
+/** The tool kinds that have a persistent style block. Pointer + crop
+ *  are excluded — the parent toolbar simply doesn't mount the popover
+ *  for those. */
+export type StyledToolKind = "arrow" | "text" | "shape" | "blur" | "highlight" | "draw";
 
 export type ToolStylePopoverStyle =
   | ArrowToolStyle
   | TextToolStyle
   | ShapeToolStyle
   | BlurToolStyle
-  | HighlightToolStyle;
+  | HighlightToolStyle
+  | DrawToolStyle;
 
 export interface ToolStylePopoverProps {
   /** Anchor element to position alongside (typically the toolbar's
@@ -202,6 +205,20 @@ const STEM_STYLES: ReadonlyArray<{
   { id: "solid", label: "Solid", dash: "0" },
   { id: "dashed", label: "Dashed", dash: "5,3" },
   { id: "dotted", label: "Dotted", dash: "1,3" }
+];
+
+/** Draw family modes. The eraser is a mode of the tool, not a style a
+ *  stroke can carry, so a selected stroke's bar offers only the first
+ *  three (`ToolStyleBody`'s `allowEraser`). */
+const DRAW_MODES: ReadonlyArray<{
+  id: DrawToolMode;
+  label: string;
+  Icon: () => ReactElement;
+}> = [
+  { id: "pen", label: "Pen", Icon: PenModeIcon },
+  { id: "marker", label: "Marker", Icon: MarkerModeIcon },
+  { id: "airbrush", label: "Airbrush", Icon: AirbrushModeIcon },
+  { id: "eraser", label: "Eraser", Icon: EraserModeIcon }
 ];
 
 const TEXT_WEIGHTS: ReadonlyArray<{ id: TextFontWeight; label: string }> = [
@@ -610,6 +627,8 @@ export function ToolStylePopover(props: ToolStylePopoverProps): ReactElement | n
       onStyleFieldChange={onStyleFieldChange}
       {...(styleTargetKey !== undefined ? { styleTargetKey } : {})}
       {...(customTextSizeLabel !== undefined ? { customTextSizeLabel } : {})}
+      // A selected stroke cannot become an eraser.
+      allowEraser={!isSelectedMode}
     />
   );
 
@@ -703,6 +722,10 @@ export interface ToolStyleBodyProps {
    *  width; it moves to each row's tooltip there. Elsewhere the hint is
    *  on screen, and a tooltip would only repeat it. */
   hintsInTooltips?: boolean;
+  /** Draw only: offer the Eraser mode. True for the tool's own style;
+   *  a selected stroke passes false, because a stroke cannot BE an
+   *  eraser. */
+  allowEraser?: boolean;
 }
 
 /**
@@ -723,7 +746,8 @@ export function ToolStyleBody({
   onStyleFieldChange,
   styleTargetKey,
   customTextSizeLabel,
-  hintsInTooltips = false
+  hintsInTooltips = false,
+  allowEraser = true
 }: ToolStyleBodyProps): ReactElement {
   switch (tool) {
     case "arrow":
@@ -762,6 +786,14 @@ export function ToolStyleBody({
           style={style as HighlightToolStyle}
           onStyleFieldChange={onStyleFieldChange}
           {...(styleTargetKey !== undefined ? { styleTargetKey } : {})}
+        />
+      );
+    case "draw":
+      return (
+        <DrawBody
+          style={style as DrawToolStyle}
+          allowEraser={allowEraser}
+          onStyleFieldChange={onStyleFieldChange}
         />
       );
   }
@@ -1049,6 +1081,59 @@ function ShapeBody({ style, onStyleFieldChange }: ShapeBodyProps): ReactElement 
           />
         </FieldGroup>
       ) : null}
+    </>
+  );
+}
+
+interface DrawBodyProps {
+  style: DrawToolStyle;
+  allowEraser: boolean;
+  onStyleFieldChange: ToolStylePopoverProps["onStyleFieldChange"];
+}
+
+function DrawBody({ style, allowEraser, onStyleFieldChange }: DrawBodyProps): ReactElement {
+  const modes = allowEraser ? DRAW_MODES : DRAW_MODES.filter((m) => m.id !== "eraser");
+  const erasing = style.mode === "eraser";
+  return (
+    <>
+      <FieldGroup label="Mode" testid="draw-mode">
+        <div className="pse-icon-row" role="radiogroup" aria-label="Draw mode">
+          {modes.map((opt) => {
+            const Icon = opt.Icon;
+            const active = style.mode === opt.id;
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                aria-label={opt.label}
+                title={opt.label}
+                className={"pse-icon-btn" + (active ? " is-on" : "")}
+                onClick={() => onStyleFieldChange("mode", opt.id)}
+                data-testid={`draw-mode-${opt.id}`}
+              >
+                <Icon />
+              </button>
+            );
+          })}
+        </div>
+      </FieldGroup>
+      {/* The eraser paints nothing, so a color would be a control that
+          does nothing. Its size still matters: it is the eraser's width. */}
+      {!erasing && (
+        <ColorRow
+          value={style.color}
+          onChange={(c) => onStyleFieldChange("color", c)}
+        />
+      )}
+      <Segmented
+        label={erasing ? "Eraser size" : "Weight"}
+        testid="draw-thickness"
+        options={THICKNESS_PRESETS}
+        value={style.thickness}
+        onChange={(v) => onStyleFieldChange("thickness", v)}
+      />
     </>
   );
 }
@@ -1675,6 +1760,67 @@ function DotIcon(): ReactElement {
   );
 }
 
+// ---- Draw mode icons ------------------------------------------------
+
+function PenModeIcon(): ReactElement {
+  return (
+    <svg width="20" height="16" viewBox="0 0 20 16" aria-hidden="true">
+      <path
+        d="M2 12c3-8 6-8 7.5-3s4 5 8.5-4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function MarkerModeIcon(): ReactElement {
+  return (
+    <svg width="20" height="16" viewBox="0 0 20 16" aria-hidden="true">
+      <line x1="2" y1="9" x2="18" y2="9" stroke="currentColor" strokeWidth="6" opacity="0.5" />
+    </svg>
+  );
+}
+
+/** A soft line: the same path stroked wide and faint, then narrower and
+ *  stronger — the airbrush's bands in miniature. */
+function AirbrushModeIcon(): ReactElement {
+  return (
+    <svg
+      width="20"
+      height="16"
+      viewBox="0 0 20 16"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <path d="M4 10c3-4 8-4 12-2" strokeWidth="7" opacity="0.2" />
+      <path d="M4 10c3-4 8-4 12-2" strokeWidth="4.5" opacity="0.35" />
+      <path d="M4 10c3-4 8-4 12-2" strokeWidth="2.2" />
+    </svg>
+  );
+}
+
+function EraserModeIcon(): ReactElement {
+  return (
+    <svg width="20" height="16" viewBox="0 0 20 16" aria-hidden="true">
+      <path
+        d="M7.5 13.5 3 9l7-7 6.5 6.5-5 5z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+      <path d="M5.5 6.5 12 13" stroke="currentColor" strokeWidth="1.6" />
+      <line x1="7.5" y1="14" x2="18" y2="14" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 // ---- Blur mode icons ------------------------------------------------
 //
 // One glyph per BlurEffectMode. Kept as inline SVG (rather than the
@@ -1726,7 +1872,14 @@ function RedactIcon(): ReactElement {
 
 // Re-export so a test or a panel can use the same type without
 // reaching back into the popover module.
-export type { ArrowToolStyle, TextToolStyle, ShapeToolStyle, BlurToolStyle, HighlightToolStyle };
+export type {
+  ArrowToolStyle,
+  TextToolStyle,
+  ShapeToolStyle,
+  BlurToolStyle,
+  HighlightToolStyle,
+  DrawToolStyle
+};
 // Suppress unused-symbol churn for the type-narrow helper retained
 // for future "polymorphic body" tunings.
 void styleHasColor;

@@ -22,6 +22,8 @@ import type {
   BlurEffectMode,
   BlurRadiusSetting,
   BlurToolStyle,
+  DrawToolMode,
+  DrawToolStyle,
   ChatSettings,
   EditorCoachmarks,
   EditorSettings,
@@ -604,6 +606,22 @@ function parseHighlightToolStyle(raw: unknown, defaults: HighlightToolStyle): Hi
   };
 }
 
+function pickDrawToolMode(value: unknown, fallback: DrawToolMode): DrawToolMode {
+  if (value === "pen" || value === "marker" || value === "airbrush" || value === "eraser") {
+    return value;
+  }
+  return fallback;
+}
+
+function parseDrawToolStyle(raw: unknown, defaults: DrawToolStyle): DrawToolStyle {
+  if (!isRecord(raw)) return defaults;
+  return {
+    mode: pickDrawToolMode(raw.mode, defaults.mode),
+    color: pickToolColor(raw.color, defaults.color),
+    thickness: pickToolSizePreset(raw.thickness, defaults.thickness)
+  };
+}
+
 function parseEditorToolStyles(raw: unknown, defaults: EditorToolStyles): EditorToolStyles {
   if (!isRecord(raw)) return defaults;
   // Legacy fallback: pre-Shape rename, the tool block was keyed
@@ -618,7 +636,10 @@ function parseEditorToolStyles(raw: unknown, defaults: EditorToolStyles): Editor
     text: parseTextToolStyle(raw.text, defaults.text),
     shape: parseShapeToolStyle(shapeRaw, defaults.shape),
     blur: parseBlurToolStyle(raw.blur, defaults.blur),
-    highlight: parseHighlightToolStyle(raw.highlight, defaults.highlight)
+    highlight: parseHighlightToolStyle(raw.highlight, defaults.highlight),
+    // Absent in every settings file written before the Draw family
+    // existed — those pick up the factory Draw style.
+    draw: parseDrawToolStyle(raw.draw, defaults.draw)
   };
 }
 
@@ -653,6 +674,18 @@ function parseToolBagSlot(raw: unknown): ToolBagSlot | null {
         tool: "highlight",
         style: parseHighlightToolStyle(raw.style, factory.highlight)
       });
+    case "draw": {
+      // A slot never holds the eraser (it has no style to save); one
+      // that says so — a hand edit — keeps its color and weight as a pen.
+      const style = parseDrawToolStyle(raw.style, factory.draw);
+      return withLabel({
+        tool: "draw",
+        style: style.mode === "eraser" ? { ...style, mode: "pen" } : style
+      });
+    }
+    // Unknown tool: the slot comes back empty. That is also what a build
+    // that predates a tool does with a slot holding it — see the
+    // older-build note in docs/architecture.md.
     default:
       return null;
   }
@@ -2204,7 +2237,8 @@ function mergeToolStyles(
     text: mergeSection(current.text, patch.text),
     shape: mergeSection(current.shape, patch.shape),
     blur: mergeSection(current.blur, patch.blur),
-    highlight: mergeSection(current.highlight, patch.highlight)
+    highlight: mergeSection(current.highlight, patch.highlight),
+    draw: mergeSection(current.draw, patch.draw)
   };
 }
 

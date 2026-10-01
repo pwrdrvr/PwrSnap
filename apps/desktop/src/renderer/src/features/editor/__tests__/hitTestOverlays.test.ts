@@ -32,6 +32,67 @@ function makeRow(
   };
 }
 
+describe("hitTestOverlays — Draw strokes", () => {
+  // 2000×1000 canvas, uncropped: annotationBasisPx = hypot/2 ≈ 1118, so
+  // a Large marker paints ~49px wide (reach ~25px) and a Small pen ~7px.
+  // The hit radius is 10px on a 1000px short side.
+  const dims = {
+    canvasWidthPx: 2000,
+    canvasHeightPx: 1000,
+    sourceWidthPx: 2000,
+    sourceHeightPx: 1000
+  };
+  const line = [
+    { x: 0.2, y: 0.5 },
+    { x: 0.8, y: 0.5 }
+  ];
+
+  test("hits within the painted width plus the hit radius — a wide marker is grabbable by its edge", () => {
+    const rows = [
+      makeRow("m", { kind: "stroke", tool: "marker", points: line, color: "auto", thickness: "large" })
+    ];
+    // 30px below the centerline: inside 25px reach + 10px forgiveness.
+    expect(hitTestOverlays(rows, 0.5, 0.53, 1000, dims)).toBe("m");
+    // 40px below: outside.
+    expect(hitTestOverlays(rows, 0.5, 0.54, 1000, dims)).toBe(null);
+  });
+
+  test("the same offset misses a thin pen stroke", () => {
+    const rows = [
+      makeRow("p", { kind: "stroke", tool: "pen", points: line, color: "auto", thickness: "small" })
+    ];
+    expect(hitTestOverlays(rows, 0.5, 0.53, 1000, dims)).toBe(null);
+    expect(hitTestOverlays(rows, 0.5, 0.505, 1000, dims)).toBe("p");
+  });
+
+  test("distance is measured in pixels, so a non-square canvas does not stretch the target", () => {
+    const rows = [
+      makeRow("p", {
+        kind: "stroke",
+        tool: "pen",
+        points: [
+          { x: 0.5, y: 0.2 },
+          { x: 0.5, y: 0.8 }
+        ],
+        color: "auto",
+        thickness: "small"
+      })
+    ];
+    // 0.006 of a 2000px width is 12px — inside 3.5 + 10.
+    expect(hitTestOverlays(rows, 0.506, 0.5, 1000, dims)).toBe("p");
+    // 0.01 of the width is 20px — outside, though 0.01 of the HEIGHT
+    // (10px) would have hit.
+    expect(hitTestOverlays(rows, 0.51, 0.5, 1000, dims)).toBe(null);
+  });
+
+  test("a tap (one point) is hit around its dot", () => {
+    const rows = [
+      makeRow("dot", { kind: "stroke", tool: "pen", points: [{ x: 0.5, y: 0.5 }], color: "auto" })
+    ];
+    expect(hitTestOverlays(rows, 0.502, 0.502, 1000, dims)).toBe("dot");
+  });
+});
+
 describe("hitTestOverlays", () => {
   test("returns null on empty list", () => {
     expect(hitTestOverlays([], 0.5, 0.5, 1000)).toBe(null);

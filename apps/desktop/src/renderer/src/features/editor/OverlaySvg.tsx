@@ -29,7 +29,8 @@ import type {
   OverlayRow,
   OverlayThickness,
   ShapeKind,
-  ShapeStrokeStyle
+  ShapeStrokeStyle,
+  StrokeOverlay
 } from "@pwrsnap/shared";
 import {
   CURRENT_ARROW_STYLE_VERSION,
@@ -57,7 +58,15 @@ import {
   readShapeSkewDeg,
   readShapeStrokeStyle,
   readTextWeight,
-  shapeStripeDash
+  shapeStripeDash,
+  eraserRadiusPx,
+  smoothStrokeSpanD,
+  strokeBoundsN,
+  strokeGeometries,
+  strokePaintStyle,
+  strokeReachPx,
+  type StrokeGeometry,
+  type StrokeTool
 } from "@pwrsnap/shared";
 import { rectFromDrag, type Draft } from "./editor-types";
 import type { GeometryUpdate, NormalizedPoint, NormalizedRect } from "./useCaptureModel";
@@ -252,6 +261,18 @@ export function OverlaySvg({
       ? rectFromDrag(draft, canvasAspect)
       : null;
 
+  // Eraser preview: while the eraser is dragged, every stroke it has cut
+  // is painted as the pieces it will leave, so the cut is visible before
+  // the release commits it. The editor's `StrokeEraseSession` owns the
+  // cut and keeps an untouched stroke's pieces the same array, so only
+  // the strokes a pointer event actually cut repaint.
+  const erasePreview =
+    draft !== null && draft.kind === "stroke" && draft.mode === "eraser"
+      ? (draft.erased ?? null)
+      : null;
+  const liveStroke =
+    draft !== null && draft.kind === "stroke" && draft.mode !== "eraser" ? draft : null;
+
   // `overflow="visible"` on the svg element AND `overflow: visible`
   // in the CSS — belt-and-suspenders. SVG 1.1 spec says the
   // outermost <svg> defaults to overflow:hidden via the SVG
@@ -294,7 +315,8 @@ export function OverlaySvg({
         if (
           data.kind !== "highlight" &&
           data.kind !== "shape" &&
-          data.kind !== "arrow"
+          data.kind !== "arrow" &&
+          data.kind !== "stroke"
         ) {
           // text → TextHtmlOverlays; blur → BlurOverlays; crop →
           // no-op (canvas dim mutation). step is a Phase 6 affordance
@@ -369,6 +391,21 @@ export function OverlaySvg({
                 basisPx={annotationBasis}
               />
             )}
+            {data.kind === "stroke" &&
+              (() => {
+                // Mid-erase, a cut stroke paints as what the release
+                // will leave: the same row with fewer points, or nothing.
+                const shown = erasePreview?.has(row.id) === true ? erasePreview.get(row.id)! : data;
+                return shown === null ? null : (
+                  <StrokeGlyph
+                    data={shown}
+                    color={shown.color}
+                    imageWidthPx={imageWidthPx}
+                    imageHeightPx={imageHeightPx}
+                    basisPx={annotationBasis}
+                  />
+                );
+              })()}
           </svg>
         );
       })}
@@ -440,6 +477,27 @@ export function OverlaySvg({
             isDraft
           />
         )}
+        {liveStroke !== null && liveStroke.mode !== "eraser" && (
+          <LiveStrokeGlyph
+            tool={liveStroke.mode}
+            points={liveStroke.points}
+            count={liveStroke.count ?? liveStroke.points.length}
+            thickness={draftStyle?.thickness}
+            color={draftStyle?.color}
+            imageWidthPx={imageWidthPx}
+            imageHeightPx={imageHeightPx}
+            basisPx={annotationBasis}
+          />
+        )}
+        {draft?.kind === "stroke" && draft.mode === "eraser" && (
+          <EraserTrail
+            points={draft.points}
+            count={draft.count ?? draft.points.length}
+            radiusPx={eraserRadiusPx(draftStyle?.thickness, annotationBasis)}
+            imageWidthPx={imageWidthPx}
+            imageHeightPx={imageHeightPx}
+          />
+        )}
         {draft?.kind === "shape-drag" && liveRect !== null && (
           <>
             {draft.tool === "highlight" && (
@@ -476,6 +534,314 @@ export function OverlaySvg({
       </svg>
     </>
   );
+}
+
+/** A Draw stroke, painted from the SAME `strokeGeometries` the bake turns
+ *  into SVG text (compose.ts `strokeSvgForV2`) — one geometry, two
+ *  serializations, so the preview is what exports. `color` "auto" or
+ *  absent paints the theme accent, as every other glyph does. */
+function StrokeGlyph({
+  data,
+  color,
+  imageWidthPx,
+  imageHeightPx,
+  basisPx
+}: {
+  data: Pick<StrokeOverlay, "tool" | "points" | "breaks" | "opacity"> & {
+    thickness?: OverlayThickness | undefined;
+  };
+  color?: string | undefined;
+  imageWidthPx: number;
+  imageHeightPx: number;
+  basisPx: number;
+}): ReactElement {
+  // One geometry per segment: a row the eraser cut, or a burst of
+  // strokes, paints each segment as the separate stroke it was.
+  const geometries: StrokeGeometry[] = useMemo(
+    () => strokeGeometries(data, imageWidthPx, imageHeightPx, basisPx),
+    [data, imageWidthPx, imageHeightPx, basisPx]
+  );
+  const paint = strokePaint(color);
+  return (
+    <>
+      {geometries.map((geometry, i) => (
+        <StrokeSegmentGlyph key={i} geometry={geometry} tool={data.tool} paint={paint} />
+      ))}
+    </>
+  );
+}
+
+function StrokeSegmentGlyph({
+  geometry,
+  tool,
+  paint
+}: {
+  geometry: StrokeGeometry;
+  tool: StrokeTool;
+  paint: string;
+}): ReactElement {
+  switch (geometry.kind) {
+    case "path":
+      return (
+        <path
+          data-testid="stroke-glyph"
+          data-tool={tool}
+          d={geometry.d}
+          fill="none"
+          stroke={paint}
+          strokeWidth={geometry.widthPx}
+          strokeLinecap={geometry.cap}
+          strokeLinejoin="round"
+          opacity={geometry.opacity}
+        />
+      );
+    case "dot": {
+      const half = geometry.widthPx / 2;
+      return geometry.square ? (
+        <rect
+          data-testid="stroke-glyph"
+          data-tool={tool}
+          x={geometry.cx - half}
+          y={geometry.cy - half}
+          width={geometry.widthPx}
+          height={geometry.widthPx}
+          fill={paint}
+          opacity={geometry.opacity}
+        />
+      ) : (
+        <circle
+          data-testid="stroke-glyph"
+          data-tool={tool}
+          cx={geometry.cx}
+          cy={geometry.cy}
+          r={half}
+          fill={paint}
+          opacity={geometry.opacity}
+        />
+      );
+    }
+    case "airbrush":
+      return (
+        <g
+          data-testid="stroke-glyph"
+          data-tool={tool}
+          fill="none"
+          stroke={paint}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          opacity={geometry.opacity}
+        >
+          {geometry.bands.map((band, i) => (
+            <path key={i} d={geometry.d} strokeWidth={band.widthPx} opacity={band.opacity} />
+          ))}
+        </g>
+      );
+  }
+}
+
+/** A stroke's resolved paint: its color, or the theme accent for
+ *  "auto" or none — as every other glyph does. */
+function strokePaint(color: string | undefined): string {
+  return color !== undefined && color !== "auto" ? color : "var(--accent, #ff8a1f)";
+}
+
+/** Curve sections per frozen span of a live stroke. */
+const LIVE_STROKE_SPAN = 64;
+
+/**
+ * Path data for a live stroke — the first `count` of `points`
+ * (normalized, appended in place by the editor) — as a list of spans.
+ * Every span but the last is FROZEN: its curve sections are final once
+ * the next point exists, so its string is built once and returned
+ * as-is on every later call, and React leaves its `<path>` alone. Only
+ * the last span is rebuilt per pointer event. Without this, each event
+ * re-smoothed, re-serialized and re-rasterized the whole stroke, which
+ * made a long stroke quadratic and a long drag visibly lag.
+ *
+ * Each span after the first starts one section early, overlapping the
+ * span before it, so joints never show a seam. Callers paint the spans
+ * inside a group that carries the opacity: the overlap is opaque over
+ * opaque inside the group, and the group composites once.
+ */
+function useLiveStrokeSpans(
+  points: readonly { x: number; y: number }[],
+  count: number,
+  imageWidthPx: number,
+  imageHeightPx: number
+): readonly string[] {
+  const cache = useRef<{
+    points: readonly { x: number; y: number }[];
+    w: number;
+    h: number;
+    frozen: string[];
+  } | null>(null);
+  if (count < 3) {
+    // No curve yet: a tap stub or a straight line.
+    const x0 = (points[0]?.x ?? 0) * imageWidthPx;
+    const y0 = (points[0]?.y ?? 0) * imageHeightPx;
+    if (count < 2) return count === 1 ? [`M${x0} ${y0}l0.01 0`] : [];
+    return [`M${x0} ${y0}L${points[1]!.x * imageWidthPx} ${points[1]!.y * imageHeightPx}`];
+  }
+  let c = cache.current;
+  // Sections 1..count-2 exist; span k covers k*SPAN+1 .. (k+1)*SPAN.
+  const frozenCount = Math.floor((count - 2) / LIVE_STROKE_SPAN);
+  if (
+    c === null ||
+    c.points !== points ||
+    c.w !== imageWidthPx ||
+    c.h !== imageHeightPx ||
+    c.frozen.length > frozenCount
+  ) {
+    c = { points, w: imageWidthPx, h: imageHeightPx, frozen: [] };
+    cache.current = c;
+  }
+  while (c.frozen.length < frozenCount) {
+    const k = c.frozen.length;
+    c.frozen.push(
+      smoothStrokeSpanD(
+        points,
+        count,
+        Math.max(1, k * LIVE_STROKE_SPAN),
+        (k + 1) * LIVE_STROKE_SPAN,
+        false,
+        imageWidthPx,
+        imageHeightPx
+      )
+    );
+  }
+  const tail =
+    frozenCount * LIVE_STROKE_SPAN < count - 2
+      ? smoothStrokeSpanD(
+          points,
+          count,
+          Math.max(1, frozenCount * LIVE_STROKE_SPAN),
+          count - 2,
+          true,
+          imageWidthPx,
+          imageHeightPx
+        )
+      : // Every section is frozen; the tail is just the closing run.
+        smoothStrokeSpanD(points, count, count - 2, count - 2, true, imageWidthPx, imageHeightPx);
+  return [...c.frozen, tail];
+}
+
+/** A Draw stroke while it is being drawn. Short strokes paint exactly
+ *  as they will commit (`StrokeGlyph`); a long one paints its frozen
+ *  spans plus a live tail (`useLiveStrokeSpans`), in the same widths,
+ *  caps, opacities and airbrush bands. */
+function LiveStrokeGlyph({
+  tool,
+  points,
+  count,
+  thickness,
+  color,
+  imageWidthPx,
+  imageHeightPx,
+  basisPx
+}: {
+  tool: StrokeTool;
+  points: readonly { x: number; y: number }[];
+  count: number;
+  thickness: OverlayThickness | undefined;
+  color: string | undefined;
+  imageWidthPx: number;
+  imageHeightPx: number;
+  basisPx: number;
+}): ReactElement {
+  const short = count <= LIVE_STROKE_SPAN + 2;
+  // A short stroke renders through StrokeGlyph below; build no spans.
+  const spans = useLiveStrokeSpans(points, short ? 0 : count, imageWidthPx, imageHeightPx);
+  // Short strokes: the committed glyph, over a copy of at most a span.
+  const shortData = useMemo(
+    () => (short ? { tool, points: points.slice(0, count), thickness } : null),
+    // `points` is appended in place, so `count` is what changes.
+    [short, tool, points, count, thickness]
+  );
+  if (shortData !== null) {
+    return (
+      <StrokeGlyph
+        data={shortData}
+        color={color}
+        imageWidthPx={imageWidthPx}
+        imageHeightPx={imageHeightPx}
+        basisPx={basisPx}
+      />
+    );
+  }
+  // The same width, cap, opacity and bands the committed stroke gets.
+  const style = strokePaintStyle({ tool, thickness }, basisPx);
+  const paths = spans.map((d, i) => <path key={i} d={d} />);
+  return (
+    <g
+      data-testid="stroke-glyph"
+      data-tool={tool}
+      data-live-spans={spans.length}
+      fill="none"
+      stroke={strokePaint(color)}
+      strokeLinecap={style.cap}
+      strokeLinejoin="round"
+      opacity={style.opacity}
+      {...(style.bands.length > 0 ? {} : { strokeWidth: style.widthPx })}
+    >
+      {style.bands.length > 0
+        ? style.bands.map((band, i) => (
+            <g key={i} strokeWidth={band.widthPx} opacity={band.opacity}>
+              {paths}
+            </g>
+          ))
+        : paths}
+    </g>
+  );
+}
+
+/** The eraser's footprint while it is dragged: a faint band as wide as
+ *  what it cuts, outlined so it reads on light and dark captures. It is
+ *  chrome — it never reaches the bake. Drawn as live spans, like a long
+ *  stroke, so a long scrub does not repaint its whole trail per move. */
+function EraserTrail({
+  points,
+  count,
+  radiusPx,
+  imageWidthPx,
+  imageHeightPx
+}: {
+  points: readonly { x: number; y: number }[];
+  count: number;
+  radiusPx: number;
+  imageWidthPx: number;
+  imageHeightPx: number;
+}): ReactElement {
+  const spans = useLiveStrokeSpans(points, count, imageWidthPx, imageHeightPx);
+  const shortSide = Math.min(imageWidthPx, imageHeightPx);
+  const edge = Math.max(1, shortSide * 0.002);
+  const paths = spans.map((d, i) => <path key={i} d={d} />);
+  return (
+    <g data-testid="eraser-trail" fill="none" strokeLinecap="round" strokeLinejoin="round">
+      <g stroke="black" opacity={0.35} strokeWidth={radiusPx * 2 + edge * 2}>
+        {paths}
+      </g>
+      <g stroke="white" opacity={0.55} strokeWidth={radiusPx * 2}>
+        {paths}
+      </g>
+    </g>
+  );
+}
+
+/** Normalized box a stroke paints into: its centerline bounds grown by
+ *  the painted half-width. The selection outline, the body-hit rect and
+ *  the resize handles all use it. */
+function strokeBoxN(
+  data: StrokeOverlay,
+  imageWidthPx: number,
+  imageHeightPx: number,
+  sourceWidthPx: number,
+  sourceHeightPx: number
+): { x: number; y: number; w: number; h: number } {
+  const b = strokeBoundsN(data.points);
+  const reach = strokeReachPx(data, annotationBasisPx(sourceWidthPx, sourceHeightPx));
+  const padX = imageWidthPx > 0 ? reach / imageWidthPx : 0;
+  const padY = imageHeightPx > 0 ? reach / imageHeightPx : 0;
+  return { x: b.x - padX, y: b.y - padY, w: b.w + padX * 2, h: b.h + padY * 2 };
 }
 
 /** CSS z-index used for editor chrome (drafts, selection outlines,
@@ -1669,6 +2035,8 @@ function SelectionOutline({
     );
   } else if (data.kind === "crop") {
     box = data.rect;
+  } else if (data.kind === "stroke") {
+    box = strokeBoxN(data, imageWidthPx, imageHeightPx, sourceWidthPx, sourceHeightPx);
   }
   if (box === null) return null;
   // Pad slightly so the outline doesn't sit ON the stroke. Normalized
@@ -2043,6 +2411,23 @@ function handlesForOverlay(
       { kind: "anchor", xn: data.point.x, yn: data.point.y, cursor: "move" }
     ];
   }
+  if (data.kind === "stroke") {
+    // Resize only: a stroke has no rotation field (its direction is in
+    // its points), so no rotate handle. The handles sit on the painted
+    // box, the same box the outline draws.
+    if (bodyBox === null) return [];
+    const { x, y, w, h } = bodyBox;
+    return [
+      { kind: "nw", xn: x, yn: y, cursor: cornerCursor("nw") },
+      { kind: "ne", xn: x + w, yn: y, cursor: cornerCursor("ne") },
+      { kind: "se", xn: x + w, yn: y + h, cursor: cornerCursor("se") },
+      { kind: "sw", xn: x, yn: y + h, cursor: cornerCursor("sw") },
+      { kind: "n", xn: x + w / 2, yn: y, cursor: edgeCursor("n") },
+      { kind: "e", xn: x + w, yn: y + h / 2, cursor: edgeCursor("e") },
+      { kind: "s", xn: x + w / 2, yn: y + h, cursor: edgeCursor("s") },
+      { kind: "w", xn: x, yn: y + h / 2, cursor: edgeCursor("w") }
+    ];
+  }
   // crop — no handles (CropTool owns its own UI).
   return null;
 }
@@ -2183,6 +2568,12 @@ function geometryFromDrag(
       return {
         kind: "step",
         point: { x: data.point.x + dx, y: data.point.y + dy }
+      };
+    }
+    if (data.kind === "stroke") {
+      return {
+        kind: "stroke",
+        points: data.points.map((p) => ({ x: p.x + dx, y: p.y + dy }))
       };
     }
     return null;
@@ -2372,7 +2763,77 @@ function geometryFromDrag(
     if (handle !== "anchor") return null;
     return { kind: "step", point: { x: cx, y: cy } };
   }
+  if (data.kind === "stroke") {
+    return strokeResizeGeometry(
+      data,
+      handle,
+      cx,
+      cy,
+      strokeBoxN(data, imageWidthPx, imageHeightPx, sourceWidthPx, sourceHeightPx),
+      imageWidthPx,
+      imageHeightPx
+    );
+  }
   return null;
+}
+
+/** Resize a stroke by moving one edge (or two, at a corner) of its
+ *  painted box. The painted width does not scale — it is a weight on the
+ *  ladder, not geometry — so a squashed scribble keeps its line weight.
+ *  That is also why the points are mapped between CENTERLINE boxes: the
+ *  painted box is the centerline box plus a fixed reach on each side, and
+ *  scaling that reach along with the points would leave the edge short
+ *  of (or past) the cursor by reach × (1 − scale).
+ *
+ *  The box never inverts: an edge dragged past the fixed one stops
+ *  short of it, with the centerline no narrower than it was or 4px,
+ *  whichever is smaller. A zero-extent axis (a dead-level underline's
+ *  height) has nothing to scale and is left alone. */
+function strokeResizeGeometry(
+  data: StrokeOverlay,
+  handle: HandleKind,
+  cx: number,
+  cy: number,
+  box: { x: number; y: number; w: number; h: number },
+  imageWidthPx: number,
+  imageHeightPx: number
+): GeometryUpdate | null {
+  const movesLeft = handle === "nw" || handle === "sw" || handle === "w";
+  const movesRight = handle === "ne" || handle === "se" || handle === "e";
+  const movesTop = handle === "nw" || handle === "ne" || handle === "n";
+  const movesBottom = handle === "sw" || handle === "se" || handle === "s";
+  if (!movesLeft && !movesRight && !movesTop && !movesBottom) return null;
+  // `box` is the centerline bounds grown by the reach on every side
+  // (strokeBoxN), so the reach is whatever the box adds.
+  const center = strokeBoundsN(data.points);
+  const padX = Math.max(0, (box.w - center.w) / 2);
+  const padY = Math.max(0, (box.h - center.h) / 2);
+  const minCenterW = Math.min(center.w, imageWidthPx > 0 ? 4 / imageWidthPx : 0.004);
+  const minCenterH = Math.min(center.h, imageHeightPx > 0 ? 4 / imageHeightPx : 0.004);
+  // Work in centerline coordinates: the cursor names a painted edge, so
+  // the centerline edge sits one reach inside it.
+  let left = center.x;
+  let right = center.x + center.w;
+  let top = center.y;
+  let bottom = center.y + center.h;
+  if (movesLeft) left = Math.min(cx + padX, right - minCenterW);
+  if (movesRight) right = Math.max(cx - padX, left + minCenterW);
+  if (movesTop) top = Math.min(cy + padY, bottom - minCenterH);
+  if (movesBottom) bottom = Math.max(cy - padY, top + minCenterH);
+  // An axis no handle moved — or one with no extent to scale — is
+  // copied, not re-derived: `top + (y - top)` is not always `y` in
+  // floating point, and an edge drag must not nudge the other axis.
+  const scalesX = (movesLeft || movesRight) && center.w > 0;
+  const scalesY = (movesTop || movesBottom) && center.h > 0;
+  const sx = scalesX ? (right - left) / center.w : 1;
+  const sy = scalesY ? (bottom - top) / center.h : 1;
+  return {
+    kind: "stroke",
+    points: data.points.map((p) => ({
+      x: scalesX ? left + (p.x - center.x) * sx : p.x,
+      y: scalesY ? top + (p.y - center.y) * sy : p.y
+    }))
+  };
 }
 
 /** Drag-handles overlay rendered ON TOP of the OverlaySvg. Receives
@@ -2992,6 +3453,9 @@ function bodyBoxForOverlay(
       sourceHeightPx,
       measured
     );
+  }
+  if (data.kind === "stroke") {
+    return strokeBoxN(data, imageWidthPx, imageHeightPx, sourceWidthPx, sourceHeightPx);
   }
   if (data.kind === "step") {
     // Step keeps its small approximate box — no body length to

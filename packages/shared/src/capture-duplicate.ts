@@ -32,6 +32,8 @@ export type CaptureEditSummary = {
   blurs: number;
   texts: number;
   steps: number;
+  /** Freehand Draw strokes (pen / marker / airbrush). */
+  strokes: number;
   /** Pasted rasters. */
   images: number;
   /** The capture-time cursor raster. */
@@ -53,6 +55,7 @@ export function emptyCaptureEditSummary(): CaptureEditSummary {
     blurs: 0,
     texts: 0,
     steps: 0,
+    strokes: 0,
     images: 0,
     cursors: 0
   };
@@ -104,6 +107,16 @@ export function summarizeImageEdits(
           case "step":
             out.steps += 1;
             break;
+          case "stroke":
+            out.strokes += 1;
+            break;
+          default: {
+            // A new shape kind must be counted here, or a capture whose
+            // only edits are that kind reads as unedited and is copied
+            // without asking (the Draw stroke shipped that way first).
+            const unhandled: never = layer.shape;
+            void unhandled;
+          }
         }
         break;
       case "effect":
@@ -141,7 +154,7 @@ export function summarizeVideoEdits(video: {
 
 function countAnnotations(s: CaptureEditSummary): number {
   return (
-    s.arrows + s.shapes + s.highlights + s.blurs + s.texts + s.steps + s.images + s.cursors
+    s.arrows + s.shapes + s.highlights + s.blurs + s.texts + s.steps + s.strokes + s.images + s.cursors
   );
 }
 
@@ -165,6 +178,7 @@ export function formatCaptureEditSummary(s: CaptureEditSummary): string {
     counted(s.blurs, "blur", "blurs"),
     counted(s.texts, "text", "texts"),
     counted(s.steps, "step", "steps"),
+    counted(s.strokes, "drawing", "drawings"),
     counted(s.images, "image", "images"),
     counted(s.cursors, "cursor", "cursors")
   ].filter((p): p is string => p !== null);

@@ -100,6 +100,13 @@ export function inverseTransformOverlayByCrop(
         ...overlay,
         point: { x: tx(overlay.point.x), y: ty(overlay.point.y) }
       };
+    case "stroke":
+      // Every point moves like an arrow endpoint. The stroke's WIDTH is
+      // sized off the source raster, so it does not change with the crop.
+      return {
+        ...overlay,
+        points: overlay.points.map((p) => ({ x: tx(p.x), y: ty(p.y) }))
+      };
     case "crop":
       return null;
   }

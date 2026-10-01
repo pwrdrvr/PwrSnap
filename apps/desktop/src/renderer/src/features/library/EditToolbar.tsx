@@ -70,6 +70,7 @@ import {
 } from "../editor/useEditorToolState";
 import type { StyledToolKind } from "../editor/ToolStylePopover";
 import { useCaptureModel } from "../editor/useCaptureModel";
+import { bagSlotForStyle } from "../editor/tool-bag";
 import { EditPropertyBar, type PropertyBarTarget } from "./EditPropertyBar";
 import { styledLayerStyle } from "./styled-layer-style";
 import { ToolBagSlots } from "./ToolBagSlots";
@@ -713,10 +714,11 @@ export function EditToolbar({
     toolState.armedSlotModified
   ]);
 
+  // Null for the eraser too: a slot holds something the next drag draws.
   const currentStyleForBag: ToolBagSlot | null =
     propertyTarget === null || propertyTarget.kind === "multi"
       ? null
-      : ({ tool: propertyTarget.tool, style: propertyTarget.style } as ToolBagSlot);
+      : bagSlotForStyle(propertyTarget.tool, propertyTarget.style);
   const firstEmptySlot = (() => {
     const i = toolState.bag.slots.findIndex((slot) => slot === null);
     return i === -1 ? null : i;
@@ -1058,6 +1060,8 @@ function describePlacement(row: OverlayRow): { tool: Tool } | null {
     case "text":
     case "crop":
       return { tool: o.kind };
+    case "stroke":
+      return { tool: "draw" };
     case "step":
       // Step overlays don't map to a v2 tool — ignore.
       return null;

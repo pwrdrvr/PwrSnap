@@ -161,7 +161,8 @@ function makeSettings(): Settings {
         text: { color: "accent", fontSize: "auto", weight: "regular", outline: "auto" },
         shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15, strokeStyle: "solid", outline: "auto" },
         blur: { mode: "gaussian", radius: { mode: "auto" } },
-        highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
+        highlight: { color: "yellow", opacity: 0.3, blend: "multiply" },
+        draw: { mode: "pen", color: "accent", thickness: "auto" }
       },
       toolBag: defaultEditorToolBag(),
       coachmarks: { stoplightSeen: true },
@@ -511,19 +512,20 @@ afterEach(async () => {
 // ---- Tests ----------------------------------------------------------
 
 describe("EditToolbar (Library Focus, v2 refresh)", () => {
-  test("1. renders all 7 tool buttons (pointer/arrow/rect/highlight/blur/text/crop)", async () => {
+  test("1. renders all 8 tool buttons (pointer/arrow/rect/draw/highlight/blur/text/crop)", async () => {
     await render(createElement(Harness));
 
-    // Post-BlurMenu-fold: all 7 tool buttons carry the same
+    // Post-BlurMenu-fold: all 8 tool buttons carry the same
     // `data-tool` attribute. Earlier shape rendered blur through a
     // bespoke <BlurMenu>; we now use the unified ToolButton + caret
     // pattern for every styled tool.
     const dataTooled = host?.querySelectorAll("button[data-tool]");
-    expect(dataTooled?.length).toBe(7);
+    expect(dataTooled?.length).toBe(8);
     for (const id of [
       "pointer",
       "arrow",
       "shape",
+      "draw",
       "highlight",
       "blur",
       "text",

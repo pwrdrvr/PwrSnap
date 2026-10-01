@@ -6,6 +6,7 @@ import type {
   ArrowToolStyle,
   BlurToolStyle,
   BundleLayerNode,
+  DrawToolStyle,
   HighlightToolStyle,
   ShapeKind,
   ShapeToolStyle,
@@ -29,6 +30,7 @@ import {
   readShapeStrokeStyle
 } from "@pwrsnap/shared";
 import { storedColorToToolColor } from "../editor/resolveToolColor";
+import { strokeLayerName } from "../editor/overlayToLayer";
 
 // Layer-projection outline defaults describe what a LEGACY row (no
 // `outline` field) actually renders, so the panel's Border control
@@ -72,6 +74,12 @@ const DEFAULT_LAYER_HIGHLIGHT_STYLE: HighlightToolStyle = {
   blend: DEFAULT_HIGHLIGHT_BLEND_MODE
 };
 
+const DEFAULT_LAYER_DRAW_STYLE: DrawToolStyle = {
+  mode: "pen",
+  color: "accent",
+  thickness: "auto"
+};
+
 const SHAPE_LABELS: Record<ShapeKind, string> = {
   rect: "Rectangle",
   square: "Square",
@@ -105,6 +113,13 @@ export type StyledLayerStyle =
       readonly tool: "highlight";
       readonly label: "Highlight";
       readonly style: HighlightToolStyle;
+    }
+  | {
+      readonly tool: "draw";
+      /** "Pen" / "Marker" / "Airbrush" — the tool that drew it. */
+      readonly label: string;
+      /** `mode` is the stroke's own tool, never "eraser". */
+      readonly style: DrawToolStyle;
     };
 
 /**
@@ -239,6 +254,18 @@ export function styledLayerStyle(
           ),
           opacity: readHighlightOpacity(highlight),
           blend: readHighlightBlend(highlight)
+        }
+      };
+    }
+    case "stroke": {
+      const stroke = node.shape;
+      return {
+        tool: "draw",
+        label: strokeLayerName(stroke.tool),
+        style: {
+          mode: stroke.tool,
+          color: storedColorToToolColor(stroke.color, DEFAULT_LAYER_DRAW_STYLE.color),
+          thickness: stroke.thickness ?? DEFAULT_LAYER_DRAW_STYLE.thickness
         }
       };
     }

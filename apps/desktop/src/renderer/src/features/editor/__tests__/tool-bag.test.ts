@@ -32,6 +32,53 @@ function shapeSlot(patch: Partial<ShapeSlotStyle>): ToolBagSlot {
   return { tool: "shape", style: { ...(RED_BOX.style as ShapeSlotStyle), ...patch } };
 }
 
+const GREEN_MARKER: ToolBagSlot = {
+  tool: "draw",
+  style: { mode: "marker", color: "green", thickness: "large" }
+};
+
+describe("slotFieldsForLayer — Draw slots", () => {
+  test("a marker slot onto a pen stroke makes it a marker stroke: color, weight and tool", () => {
+    expect(slotFieldsForLayer(GREEN_MARKER, "draw")).toEqual([
+      ["color", "green"],
+      ["thickness", "large"],
+      ["mode", "marker"]
+    ]);
+  });
+
+  test("a Draw slot restyles an arrow or a box like any stroke tool, without a mode", () => {
+    expect(slotFieldsForLayer(GREEN_MARKER, "arrow")).toEqual([
+      ["color", "green"],
+      ["thickness", "large"]
+    ]);
+    expect(slotFieldsForLayer(GREEN_MARKER, "shape")).toEqual([
+      ["color", "green"],
+      ["thickness", "large"]
+    ]);
+  });
+
+  test("text and highlight take only the color; blur takes nothing", () => {
+    expect(slotFieldsForLayer(GREEN_MARKER, "text")).toEqual([["color", "green"]]);
+    expect(slotFieldsForLayer(GREEN_MARKER, "highlight")).toEqual([["color", "green"]]);
+    expect(slotFieldsForLayer(GREEN_MARKER, "blur")).toEqual([]);
+  });
+
+  test("an arrow slot onto a stroke gives color and weight, never arrow heads or a border", () => {
+    expect(slotFieldsForLayer(RED_ARROW, "draw")).toEqual([
+      ["color", "red"],
+      ["thickness", "small"]
+    ]);
+  });
+
+  test("an eraser slot (hand-edited file) pastes no mode", () => {
+    const eraser: ToolBagSlot = {
+      tool: "draw",
+      style: { mode: "eraser", color: "red", thickness: "small" }
+    };
+    expect(slotFieldsForLayer(eraser, "draw").map(([field]) => field)).not.toContain("mode");
+  });
+});
+
 describe("slotFieldsForLayer — the ⇧1–9 paste", () => {
   test("an arrow slot restyles a box without giving it arrow heads", () => {
     expect(slotFieldsForLayer(YELLOW_RANGE, "shape")).toEqual([

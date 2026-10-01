@@ -157,6 +157,14 @@ export function overlayMatchesDraftGeometry(
         near(data.point.x, geom.point.x, "x") &&
         near(data.point.y, geom.point.y, "y")
       );
+    case "stroke":
+      return (
+        data.kind === "stroke" &&
+        data.points.length === geom.points.length &&
+        data.points.every(
+          (p, i) => near(p.x, geom.points[i]!.x, "x") && near(p.y, geom.points[i]!.y, "y")
+        )
+      );
     case "transform":
       // Raster-only geometry — never carried by an overlay draft
       // override (raster live-drag rides RasterLayers' draftTransforms).

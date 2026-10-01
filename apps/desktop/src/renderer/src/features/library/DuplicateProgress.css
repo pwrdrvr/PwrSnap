@@ -1,0 +1,93 @@
+/* Background video duplicate progress (features/library/DuplicateProgress.tsx).
+   The toast sits in the App's lower-left toast stack beside the Undo toast
+   and shares its card language; the tile bar runs along the bottom of the
+   SOURCE tile's thumbnail. */
+
+.ps-duplicate-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 260px;
+  padding: 10px 8px 10px 13px;
+  background: color-mix(in srgb, var(--bg-panel-elevated) 96%, transparent);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  backdrop-filter: blur(18px) saturate(1.2);
+  -webkit-backdrop-filter: blur(18px) saturate(1.2);
+  box-shadow: 0 14px 36px color-mix(in srgb, var(--shadow-base) 50%, transparent);
+  animation: ps-duplicate-progress-in 140ms ease-out;
+}
+
+@keyframes ps-duplicate-progress-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.ps-duplicate-progress__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ps-duplicate-progress__msg {
+  color: var(--text-primary);
+  font: 600 12px/1 var(--font-sans);
+  white-space: nowrap;
+}
+
+.ps-duplicate-progress__detail {
+  flex: 1 1 auto;
+  color: var(--text-muted);
+  font: 500 11px/1 var(--font-mono);
+  white-space: nowrap;
+}
+
+.ps-duplicate-progress__cancel {
+  height: 26px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-primary);
+  font: 700 11px/1 var(--font-sans);
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+.ps-duplicate-progress__cancel:hover {
+  background: var(--bg-panel-hover);
+}
+
+.ps-duplicate-progress__track {
+  height: 3px;
+  margin-right: 5px;
+  border-radius: var(--radius-pill);
+  background: var(--border-subtle);
+  overflow: hidden;
+}
+
+.ps-duplicate-progress__fill,
+.psl__tile-duplicate-progress-fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent-strong) 100%);
+  transform-origin: left center;
+  transition: transform 120ms linear;
+}
+
+/* Along the source tile's bottom edge, over the thumbnail. */
+.psl__tile-duplicate-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  height: 3px;
+  background: color-mix(in srgb, var(--bg-app) 60%, transparent);
+  pointer-events: none;
+}

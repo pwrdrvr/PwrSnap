@@ -9,7 +9,7 @@ import type { CustomConnection, CustomConnectionInput, CustomModel, CustomModelD
 // up the new command for free.
 
 import type { BundleLayerNode } from "./bundle-manifest-schema-v2";
-import type { CaptureEditSummary } from "./capture-duplicate";
+import type { CaptureDuplicateJob, CaptureEditSummary } from "./capture-duplicate";
 import type { CaptureEnrichment, AiRunStatus } from "./ai-enrichment-schemas";
 
 export type CaptureInvocationOrigin =
@@ -4223,11 +4223,30 @@ export type Commands = {
    * and the title/filename get a " copy" / "-copy" suffix numbered within
    * the family; enrichment is NOT re-run.
    *
+   * Images, and videos that clone (APFS clonefile, a reflink), answer
+   * with the committed `record`. A video that has to be byte-copied
+   * answers at once with a `job` instead and is copied in the
+   * background; its row appears only when the job reaches `done` (see
+   * {@link CaptureDuplicateJob}). A second duplicate of a source with a
+   * copy already in flight is refused (`code: "in_progress"`).
+   *
    * Not exposed over MCP.
    */
   "capture:duplicate": {
     req: { captureId: string; withEdits: boolean };
-    res: { record: CaptureRecord };
+    res: { record: CaptureRecord; job: null } | { record: null; job: CaptureDuplicateJob };
+  };
+  /** Background video copies still in flight, for a window that mounts
+   *  mid-copy. Terminal jobs are never listed. */
+  "capture:duplicateJobs": {
+    req: Record<string, never>;
+    res: { jobs: CaptureDuplicateJob[] };
+  };
+  /** Stop a background video copy and remove its staging file.
+   *  `cancelled: false` when the job had already finished or failed. */
+  "capture:cancelDuplicate": {
+    req: { jobId: string };
+    res: { cancelled: boolean };
   };
   /** What a "with edits" duplicate would carry that a base copy would
    *  not. The duplicate menus ask the question only when `hasEdits`. */

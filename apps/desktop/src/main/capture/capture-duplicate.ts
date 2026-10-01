@@ -15,21 +15,25 @@
 //   image, base only    The base raster alone, through the ordinary capture
 //                       persist path — exactly what a fresh capture of the
 //                       same pixels would have produced.
-//   video               The recording cloned (APFS clonefile where the
-//                       volume supports it, a byte copy otherwise), plus a
+//   video               The recording cloned (APFS clonefile, a Linux
+//                       reflink) where the volume can, plus a
 //                       video_captures row. With edits keeps the trim and
-//                       cuts; without, the full recording.
+//                       cuts; without, the full recording. A recording that
+//                       cannot be cloned is byte-copied in the BACKGROUND:
+//                       the command answers at once with a job, progress
+//                       goes out on `events:capture-duplicate:job`, the user
+//                       can cancel, and the row appears only once the file
+//                       is whole (see "Video" below).
 //
 // Every copy is `captured_at = now` so it sorts to the top, and joins the
 // source's family (see capture-families-repo.ts). Enrichment is copied, not
 // re-run.
 
-import { constants as fsConstants } from "node:fs";
-import { copyFile, lstat, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 
-import type { CaptureEditSummary, CaptureRecord } from "@pwrsnap/shared";
+import type { CaptureDuplicateJob, CaptureEditSummary, CaptureRecord } from "@pwrsnap/shared";
 import { summarizeImageEdits, summarizeVideoEdits } from "@pwrsnap/shared";
 import { nanoid } from "nanoid";
 
@@ -53,12 +57,30 @@ import {
   copyCaptureEnrichment,
   rootCaptureFamily
 } from "../persistence/capture-families-repo";
+import {
+  deleteCaptureDuplicateIntent,
+  insertCaptureDuplicateIntent,
+  listCaptureDuplicateIntents
+} from "../persistence/capture-duplicate-intents-repo";
 import { getCaptureById, insertCapture } from "../persistence/captures-repo";
 import { getDb } from "../persistence/db";
 import { insertImportedLayerTreeForCapture, listLayerTree } from "../persistence/layers-repo";
 import { remapPortableBundleMetadata } from "../persistence/portable-bundle-metadata";
 import { renameVideoSourceToEffectiveFilename } from "../persistence/video-filename-maintenance";
-import { runWithCapturesDirFallback } from "./capture-storage-gate";
+import {
+  runExclusiveCapturesRootOperation,
+  runWithCapturesDirFallback
+} from "./capture-storage-gate";
+import {
+  claimDuplicateSource,
+  finishDuplicateJob,
+  isDuplicateCopyLive,
+  reportDuplicateProgress,
+  startDuplicateJob,
+  waitForDuplicateJob,
+  type StartedDuplicateJob
+} from "./duplicate-jobs";
+import { cloneFileFast, streamCopyFile } from "./file-copy";
 
 const log = getMainLogger("pwrsnap:capture-duplicate");
 
@@ -67,7 +89,7 @@ const MAX_STEM_PROBES = 100;
 /** A duplicate refused for a reason the caller can name. */
 export class CaptureDuplicateError extends Error {
   constructor(
-    readonly code: "not_found" | "trashed" | "unsupported",
+    readonly code: "not_found" | "trashed" | "unsupported" | "in_progress",
     message: string
   ) {
     super(message);
@@ -86,10 +108,28 @@ export function captureEditSummary(record: CaptureRecord): CaptureEditSummary {
   return summarizeImageEdits(listLayerTree(record.id), record);
 }
 
-export async function duplicateCapture(
+/**
+ * What `capture:duplicate` answers: the committed copy, or — for a video
+ * that has to be byte-copied — the background job that will commit it.
+ */
+export type DuplicateOutcome =
+  | { record: CaptureRecord; job: null }
+  | { record: null; job: CaptureDuplicateJob };
+
+export type DuplicateOptions = {
+  withEdits: boolean;
+  /**
+   * The copy's row has committed: synchronously for images and clones,
+   * later for a background copy. The handler broadcasts from here, since
+   * a background copy commits long after the command has answered.
+   */
+  onCommitted?: (record: CaptureRecord) => void;
+};
+
+export async function startCaptureDuplicate(
   sourceId: string,
-  options: { withEdits: boolean }
-): Promise<CaptureRecord> {
+  options: DuplicateOptions
+): Promise<DuplicateOutcome> {
   const source = getCaptureById(sourceId);
   if (source === null) {
     throw new CaptureDuplicateError("not_found", "That snap no longer exists.");
@@ -106,31 +146,51 @@ export async function duplicateCapture(
   const rootSource = (): void => {
     if (rootCaptureFamily(sourceId)) sourceRooted = true;
   };
+  const finish = async (newId: string): Promise<CaptureRecord> => {
+    // The source's bundle manifest mirrors its lineage; it just changed.
+    if (sourceRooted) scheduleRepack(sourceId);
 
-  let newId: string;
+    await renameCopyToEffectiveFilename(newId, source.kind);
+
+    const record = getCaptureById(newId);
+    if (record === null) throw new Error("capture-duplicate: copy disappeared after insert");
+    log.info("capture duplicated", {
+      sourceId,
+      captureId: newId,
+      kind: source.kind,
+      withEdits: options.withEdits
+    });
+    options.onCommitted?.(record);
+    return record;
+  };
+
   if (source.kind === "video") {
-    newId = await duplicateVideo(source, lineage, capturedAt, options.withEdits, rootSource);
-  } else if (source.bundle_format_version === 2 && source.bundle_path !== null) {
-    newId = options.withEdits
-      ? await duplicateImageWithEdits(source, lineage, capturedAt, rootSource)
-      : await duplicateImageBaseOnly(source, lineage, capturedAt, rootSource);
-  } else {
+    return startVideoDuplicate(source, lineage, capturedAt, options.withEdits, rootSource, finish);
+  }
+  if (source.bundle_format_version !== 2 || source.bundle_path === null) {
     throw new CaptureDuplicateError("unsupported", "This snap has no bundle to copy.");
   }
+  const newId = options.withEdits
+    ? await duplicateImageWithEdits(source, lineage, capturedAt, rootSource)
+    : await duplicateImageBaseOnly(source, lineage, capturedAt, rootSource);
+  return { record: await finish(newId), job: null };
+}
 
-  // The source's bundle manifest mirrors its lineage; it just changed.
-  if (sourceRooted) scheduleRepack(sourceId);
-
-  await renameCopyToEffectiveFilename(newId, source.kind);
-
-  const record = getCaptureById(newId);
-  if (record === null) throw new Error("capture-duplicate: copy disappeared after insert");
-  log.info("capture duplicated", {
-    sourceId,
-    captureId: newId,
-    kind: source.kind,
-    withEdits: options.withEdits
-  });
+/**
+ * Duplicate and wait for the copy to commit, however long a background
+ * video copy takes. For callers with no UI to report progress to.
+ */
+export async function duplicateCapture(
+  sourceId: string,
+  options: DuplicateOptions
+): Promise<CaptureRecord> {
+  const outcome = await startCaptureDuplicate(sourceId, options);
+  if (outcome.record !== null) return outcome.record;
+  const end = await waitForDuplicateJob(outcome.job.jobId);
+  const record = end?.state === "done" ? getCaptureById(end.captureId) : null;
+  if (record === null) {
+    throw new Error(end?.error ?? `capture-duplicate: copy ${end?.state ?? "lost"}`);
+  }
   return record;
 }
 
@@ -317,53 +377,240 @@ async function duplicateImageBaseOnly(
 // Video
 // ---------------------------------------------------------------------------
 
-async function duplicateVideo(
+type VideoCopyPaths = {
+  captureId: string;
+  sourceId: string;
+  stagingPath: string;
+  destPath: string;
+};
+
+/**
+ * Every video duplicate follows one protocol, cloned or not:
+ *
+ *   1. an intent row names the two paths this copy may write
+ *      (migration 0036);
+ *   2. the bytes land in `<dest>.partial` — a name no capture row points
+ *      at, so nothing can list, play or export it;
+ *   3. `<dest>.partial` is renamed to `<dest>`, and in the same tick one
+ *      transaction inserts the capture row and deletes the intent.
+ *
+ * Any failure removes both paths and the intent. A crash leaves the
+ * intent, and the next start removes the paths it names
+ * (`recoverInterruptedVideoDuplicates`) — no directory is ever listed.
+ *
+ * Steps 1 and 2's clone attempt run under the captures-root lock, like
+ * every write into the root; a clone is instant, or abandoned after
+ * CLONE_GRACE_MS. A byte copy does NOT: holding the lock for minutes
+ * would stall every screenshot taken meanwhile. It streams outside the
+ * lock and takes it again only for step 3.
+ */
+async function startVideoDuplicate(
   source: CaptureRecord,
   lineage: { familyId: string; duplicatedFrom: string },
   capturedAt: string,
   withEdits: boolean,
-  rootSource: () => void
-): Promise<string> {
+  rootSource: () => void,
+  finish: (newId: string) => Promise<CaptureRecord>
+): Promise<DuplicateOutcome> {
   const sourcePath = source.legacy_src_path;
   if (sourcePath === null) {
     throw new CaptureDuplicateError("unsupported", "This recording has no file to copy.");
   }
   const newId = nanoid(16);
+  const release = claimDuplicateSource(source.id, newId);
+  if (release === null) {
+    throw new CaptureDuplicateError(
+      "in_progress",
+      "PwrSnap is already copying this recording. Wait for it to finish, or cancel it."
+    );
+  }
   const ext = extname(sourcePath).toLowerCase() || ".mp4";
+  const commit = (paths: VideoCopyPaths): void => {
+    const db = getDb();
+    db.transaction(() => {
+      rootSource();
+      insertCapture({
+        id: newId,
+        kind: "video",
+        captured_at: capturedAt,
+        source_app_bundle_id: source.source_app_bundle_id,
+        source_app_name: source.source_app_name,
+        source_window_title: source.source_window_title,
+        legacy_src_path: paths.destPath,
+        width_px: source.width_px,
+        height_px: source.height_px,
+        device_pixel_ratio: source.device_pixel_ratio,
+        // Identical bytes, so the source's hash and size hold.
+        byte_size: source.byte_size,
+        sha256: source.sha256,
+        family_id: lineage.familyId,
+        duplicated_from: lineage.duplicatedFrom
+      });
+      copyVideoMetadata(source.id, newId, withEdits);
+      copyCaptureEnrichment({ fromId: source.id, toId: newId, familyId: lineage.familyId });
+      deleteCaptureDuplicateIntent(newId);
+    })();
+  };
+  let handedOff = false;
+  try {
+    const started = await runWithCapturesDirFallback(async (capturesRoot) => {
+      const destPath = join(capturesRoot, `${newId}${ext}`);
+      const attempt: VideoCopyPaths = {
+        captureId: newId,
+        sourceId: source.id,
+        stagingPath: `${destPath}.partial`,
+        destPath
+      };
+      insertCaptureDuplicateIntent(attempt);
+      try {
+        if (await cloneFileFast(sourcePath, attempt.stagingPath)) {
+          await publishVideoCopy(attempt, commit);
+          return { cloned: true as const, paths: attempt, totalBytes: 0 };
+        }
+        const totalBytes = (await stat(sourcePath)).size;
+        return { cloned: false as const, paths: attempt, totalBytes };
+      } catch (cause) {
+        await discardVideoCopy(attempt);
+        throw cause;
+      }
+    });
+    if (started.cloned) return { record: await finish(newId), job: null };
 
-  return runWithCapturesDirFallback(async (capturesRoot) => {
-    const destPath = join(capturesRoot, `${newId}${ext}`);
-    await cloneFile(sourcePath, destPath);
-    try {
-      const db = getDb();
-      db.transaction(() => {
-        rootSource();
-        insertCapture({
-          id: newId,
-          kind: "video",
-          captured_at: capturedAt,
-          source_app_bundle_id: source.source_app_bundle_id,
-          source_app_name: source.source_app_name,
-          source_window_title: source.source_window_title,
-          legacy_src_path: destPath,
-          width_px: source.width_px,
-          height_px: source.height_px,
-          device_pixel_ratio: source.device_pixel_ratio,
-          // Identical bytes, so the source's hash and size hold.
-          byte_size: source.byte_size,
-          sha256: source.sha256,
-          family_id: lineage.familyId,
-          duplicated_from: lineage.duplicatedFrom
+    const job = startDuplicateJob({
+      sourceId: source.id,
+      captureId: newId,
+      withEdits,
+      totalBytes: started.totalBytes
+    });
+    handedOff = true;
+    void copyVideoInBackground(job, sourcePath, started.paths, commit, finish)
+      .catch((cause: unknown) => {
+        log.error("video duplicate crashed", {
+          captureId: newId,
+          message: cause instanceof Error ? cause.message : String(cause)
         });
-        copyVideoMetadata(source.id, newId, withEdits);
-        copyCaptureEnrichment({ fromId: source.id, toId: newId, familyId: lineage.familyId });
-      })();
-    } catch (cause) {
-      await rm(destPath, { force: true }).catch(() => undefined);
-      throw cause;
+        finishDuplicateJob(job.jobId, "failed", "PwrSnap could not copy the recording.");
+      })
+      .finally(release);
+    return { record: null, job: job.snapshot };
+  } finally {
+    if (!handedOff) release();
+  }
+}
+
+async function copyVideoInBackground(
+  job: StartedDuplicateJob,
+  sourcePath: string,
+  paths: VideoCopyPaths,
+  commit: (paths: VideoCopyPaths) => void,
+  finish: (newId: string) => Promise<CaptureRecord>
+): Promise<void> {
+  let committed = false;
+  try {
+    await streamCopyFile(sourcePath, paths.stagingPath, {
+      signal: job.signal,
+      onProgress: (copied, total) => reportDuplicateProgress(job.jobId, copied, total)
+    });
+    await runExclusiveCapturesRootOperation(async () => {
+      if (!job.beginCommit()) job.signal.throwIfAborted();
+      // The original can be purged while its copy streams. Its
+      // video_captures row goes with it, and that is what the copy's is
+      // made from.
+      if (getCaptureById(paths.sourceId) === null) {
+        throw new CaptureDuplicateError(
+          "not_found",
+          "The original recording was deleted while it was being copied."
+        );
+      }
+      await publishVideoCopy(paths, commit);
+      committed = true;
+    });
+    await finish(paths.captureId);
+    finishDuplicateJob(job.jobId, "done");
+  } catch (cause) {
+    if (committed) {
+      // The capture exists; only the follow-up (rename to its effective
+      // filename) failed, and boot maintenance retries that.
+      log.warn("duplicate committed, follow-up failed", {
+        captureId: paths.captureId,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      finishDuplicateJob(job.jobId, "done");
+      return;
     }
-    return newId;
-  });
+    await discardVideoCopy(paths);
+    if (job.signal.aborted) {
+      log.info("video duplicate cancelled", { sourceId: paths.sourceId, captureId: paths.captureId });
+      finishDuplicateJob(job.jobId, "cancelled");
+      return;
+    }
+    log.error("video duplicate failed", {
+      sourceId: paths.sourceId,
+      captureId: paths.captureId,
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+    finishDuplicateJob(
+      job.jobId,
+      "failed",
+      cause instanceof CaptureDuplicateError ? cause.message : "PwrSnap could not copy the recording."
+    );
+  }
+}
+
+/** Step 3 of the protocol: rename into place, commit in the same tick.
+ *  A failed commit takes the file back out. */
+async function publishVideoCopy(
+  paths: VideoCopyPaths,
+  commit: (paths: VideoCopyPaths) => void
+): Promise<void> {
+  await rename(paths.stagingPath, paths.destPath);
+  try {
+    commit(paths);
+  } catch (cause) {
+    await discardVideoCopy(paths);
+    throw cause;
+  }
+}
+
+/** Remove everything an uncommitted copy may have written, then its
+ *  intent. The intent goes last: if a removal fails, the next start
+ *  tries again. */
+async function discardVideoCopy(paths: VideoCopyPaths): Promise<void> {
+  const removals = await Promise.allSettled([
+    rm(paths.stagingPath, { force: true }),
+    rm(paths.destPath, { force: true })
+  ]);
+  if (removals.some((removal) => removal.status === "rejected")) {
+    log.warn("video duplicate cleanup incomplete; retrying at next start", {
+      captureId: paths.captureId
+    });
+    return;
+  }
+  deleteCaptureDuplicateIntent(paths.captureId);
+}
+
+/**
+ * Clean up after video duplicates that never committed — the process quit
+ * or crashed mid-copy, or between the rename and the insert. Run once at
+ * startup by the process that owns `capture:*`. Touches only the two
+ * paths each intent names, and skips copies still running here.
+ */
+export async function recoverInterruptedVideoDuplicates(): Promise<number> {
+  let recovered = 0;
+  for (const intent of listCaptureDuplicateIntents()) {
+    if (isDuplicateCopyLive(intent.captureId)) continue;
+    if (getCaptureById(intent.captureId) !== null) {
+      // Committed: the intent is deleted in the insert's transaction, so
+      // this cannot happen — but if it did, the file is the capture's.
+      deleteCaptureDuplicateIntent(intent.captureId);
+      await rm(intent.stagingPath, { force: true }).catch(() => undefined);
+      continue;
+    }
+    await discardVideoCopy(intent);
+    recovered += 1;
+  }
+  if (recovered > 0) log.info("removed interrupted video duplicates", { count: recovered });
+  return recovered;
 }
 
 /**
@@ -397,24 +644,6 @@ function copyVideoMetadata(fromId: string, toId: string, withEdits: boolean): vo
     .run({ fromId, toId });
   if (result.changes !== 1) {
     throw new CaptureDuplicateError("unsupported", "This recording has no video metadata.");
-  }
-}
-
-/**
- * Copy `src` to `dest` without ever exposing a partial `dest`: clone (or
- * copy) to a hidden sibling, then rename. `COPYFILE_FICLONE` makes the copy
- * a copy-on-write clone on APFS / Btrfs / ReFS and falls back to a byte
- * copy elsewhere, so a multi-gigabyte recording duplicates instantly on the
- * common case.
- */
-async function cloneFile(src: string, dest: string): Promise<void> {
-  const staging = `${dest}.partial`;
-  try {
-    await copyFile(src, staging, fsConstants.COPYFILE_EXCL | fsConstants.COPYFILE_FICLONE);
-    await rename(staging, dest);
-  } catch (cause) {
-    await rm(staging, { force: true }).catch(() => undefined);
-    throw cause;
   }
 }
 

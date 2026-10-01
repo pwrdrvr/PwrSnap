@@ -75,6 +75,11 @@ import {
   useFamilyMembers,
   type DuplicateMode
 } from "./useCaptureDuplicate";
+import {
+  DuplicateJobsContext,
+  DuplicateProgressToast,
+  DuplicateTileProgress
+} from "./DuplicateProgress";
 import { GridCopyPalette } from "./GridCopyPalette";
 import { closeWhenFocusLeaves } from "../shared/close-when-focus-leaves";
 import { resolveLibraryAiToggleAction } from "./library-ai-toggle";
@@ -935,7 +940,12 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
     const timer = setTimeout(() => setActionError(null), ACTION_ERROR_MS);
     return () => clearTimeout(timer);
   }, [actionError]);
-  const { prefs: duplicatePrefs, duplicate: duplicateRecord } = useCaptureDuplicate({
+  const {
+    prefs: duplicatePrefs,
+    duplicate: duplicateRecord,
+    jobsBySource: duplicateJobsBySource,
+    cancelJob: cancelDuplicateJob
+  } = useCaptureDuplicate({
     onError: (message) => setActionError({ message })
   });
   const { families: captureFamilies, liveCountByFamily } = useCaptureFamilies();
@@ -4311,6 +4321,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   const leftState = leftEffectivePinned ? "pinned" : leftRevealed ? "peek" : "collapsed";
 
   return (
+    <DuplicateJobsContext.Provider value={duplicateJobsBySource}>
     <div
       className="psl"
       data-mode={view.kind}
@@ -5333,6 +5344,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                                     projectCoverRecord={coverRecord}
                                     width={140}
                                   />
+                                  <DuplicateTileProgress sourceId={record?.id} />
                                   <span className="psl__frame-num">
                                     <FamilyGlyph record={record} familySizes={liveCountByFamily} />
                                     {c.time}
@@ -5472,6 +5484,18 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
             onUndo={() => undoDelete(lastDeleted.ids)}
             onDismiss={clearLastDeleted}
           />,
+          document.querySelector(".app-toast-stack") ?? document.body
+        )}
+
+      {/* Background video duplicates: one progress row per copy, with
+          Cancel, in the same lower-left stack. */}
+      {duplicateJobsBySource.size > 0 &&
+        createPortal(
+          <>
+            {[...duplicateJobsBySource.values()].map((job) => (
+              <DuplicateProgressToast key={job.jobId} job={job} onCancel={cancelDuplicateJob} />
+            ))}
+          </>,
           document.querySelector(".app-toast-stack") ?? document.body
         )}
 
@@ -5682,6 +5706,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
         />
       ) : null}
     </div>
+    </DuplicateJobsContext.Provider>
   );
 }
 
@@ -6790,6 +6815,7 @@ function CellRow({
                 projectCoverRecord={projectCoverRecord}
                 width={400}
               />
+              <DuplicateTileProgress sourceId={record?.id} />
               {cartEligible && record !== null ? (
                 <CartCellCheckbox captureId={record.id} />
               ) : null}

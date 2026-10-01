@@ -227,3 +227,45 @@ export function copyTitle(base: string, n: number): string {
 export function copyStem(base: string, n: number): string {
   return n === 1 ? `${base}-copy` : `${base}-copy-${n}`;
 }
+
+// ---------------------------------------------------------------------------
+// Background video copies
+// ---------------------------------------------------------------------------
+
+/**
+ * A video duplicate that could not be cloned and is being byte-copied in
+ * main (see `capture:duplicate`). The copy has NO capture row until the
+ * job reaches `done`: `captureId` is the id it will be committed under,
+ * never something to look up or open before then.
+ *
+ * Broadcast on `events:capture-duplicate:job` as `{ job }` — once when
+ * the copy starts, then throttled while bytes move, then exactly once in
+ * a terminal state (`done`, `failed`, `cancelled`), after which main
+ * forgets the job. `capture:duplicateJobs` lists the ones still copying
+ * for a window that mounts mid-copy.
+ */
+export type CaptureDuplicateJob = {
+  jobId: string;
+  sourceId: string;
+  captureId: string;
+  withEdits: boolean;
+  state: CaptureDuplicateJobState;
+  bytesCopied: number;
+  totalBytes: number;
+  /** User-facing reason, set only when `state === "failed"`. */
+  error: string | null;
+};
+
+export type CaptureDuplicateJobState = "copying" | "done" | "failed" | "cancelled";
+
+export function isTerminalDuplicateJob(job: Pick<CaptureDuplicateJob, "state">): boolean {
+  return job.state !== "copying";
+}
+
+/** 0..1, for a progress bar. A zero-byte source reads as complete. */
+export function duplicateJobFraction(
+  job: Pick<CaptureDuplicateJob, "bytesCopied" | "totalBytes">
+): number {
+  if (job.totalBytes <= 0) return 1;
+  return Math.min(1, Math.max(0, job.bytesCopied / job.totalBytes));
+}

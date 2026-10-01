@@ -59,14 +59,12 @@ import {
   readShapeStrokeStyle,
   readTextWeight,
   shapeStripeDash,
-  AIRBRUSH_BANDS,
   eraserRadiusPx,
-  readStrokeOpacity,
   smoothStrokeSpanD,
   strokeBoundsN,
   strokeGeometry,
+  strokePaintStyle,
   strokeReachPx,
-  strokeWidthPx,
   type StrokeGeometry,
   type StrokeTool
 } from "@pwrsnap/shared";
@@ -557,7 +555,7 @@ function StrokeGlyph({
     () => strokeGeometry(data, imageWidthPx, imageHeightPx, basisPx),
     [data, imageWidthPx, imageHeightPx, basisPx]
   );
-  const paint = color !== undefined && color !== "auto" ? color : "var(--accent, #ff8a1f)";
+  const paint = strokePaint(color);
   switch (geometry.kind) {
     case "path":
       return (
@@ -615,6 +613,12 @@ function StrokeGlyph({
         </g>
       );
   }
+}
+
+/** A stroke's resolved paint: its color, or the theme accent for
+ *  "auto" or none — as every other glyph does. */
+function strokePaint(color: string | undefined): string {
+  return color !== undefined && color !== "auto" ? color : "var(--accent, #ff8a1f)";
 }
 
 /** Curve sections per frozen span of a live stroke. */
@@ -720,8 +724,9 @@ function LiveStrokeGlyph({
   imageHeightPx: number;
   basisPx: number;
 }): ReactElement {
-  const spans = useLiveStrokeSpans(points, count, imageWidthPx, imageHeightPx);
   const short = count <= LIVE_STROKE_SPAN + 2;
+  // A short stroke renders through StrokeGlyph below; build no spans.
+  const spans = useLiveStrokeSpans(points, short ? 0 : count, imageWidthPx, imageHeightPx);
   // Short strokes: the committed glyph, over a copy of at most a span.
   const shortData = useMemo(
     () => (short ? { tool, points: points.slice(0, count), thickness } : null),
@@ -739,9 +744,8 @@ function LiveStrokeGlyph({
       />
     );
   }
-  const paint = color !== undefined && color !== "auto" ? color : "var(--accent, #ff8a1f)";
-  const widthPx = strokeWidthPx(tool, thickness, basisPx);
-  const opacity = readStrokeOpacity({ tool });
+  // The same width, cap, opacity and bands the committed stroke gets.
+  const style = strokePaintStyle({ tool, thickness }, basisPx);
   const paths = spans.map((d, i) => <path key={i} d={d} />);
   return (
     <g
@@ -749,15 +753,15 @@ function LiveStrokeGlyph({
       data-tool={tool}
       data-live-spans={spans.length}
       fill="none"
-      stroke={paint}
-      strokeLinecap={tool === "marker" ? "butt" : "round"}
+      stroke={strokePaint(color)}
+      strokeLinecap={style.cap}
       strokeLinejoin="round"
-      opacity={opacity}
-      {...(tool === "airbrush" ? {} : { strokeWidth: widthPx })}
+      opacity={style.opacity}
+      {...(style.bands.length > 0 ? {} : { strokeWidth: style.widthPx })}
     >
-      {tool === "airbrush"
-        ? AIRBRUSH_BANDS.map((band, i) => (
-            <g key={i} strokeWidth={widthPx * band.widthFactor} opacity={band.alpha}>
+      {style.bands.length > 0
+        ? style.bands.map((band, i) => (
+            <g key={i} strokeWidth={band.widthPx} opacity={band.opacity}>
               {paths}
             </g>
           ))

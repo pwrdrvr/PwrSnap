@@ -3169,6 +3169,7 @@ export function Editor({
     // is not one the user finished.
     if (strokeDraftRef.current !== null) {
       strokeDraftRef.current = null;
+      eraseSessionRef.current = null;
       setDraft(null);
       const token = activeInteractionTokenRef.current;
       activeInteractionTokenRef.current = null;
@@ -3540,6 +3541,9 @@ export function Editor({
       // showed, not a second pass over the whole drag. Strokes only —
       // arrows, boxes and text are never cut; the eraser is part of the
       // Draw family and edits what Draw made.
+      // Re-sync first: a row edited or added since the last move is cut
+      // from what is on the canvas now, not from what it was then.
+      session?.extend([], strokeTargets(overlaysRef.current));
       const changes: EraseChange[] = session?.changes() ?? [];
       if (changes.length > 0) await eraseStrokesRef.current?.(changes);
       return;
@@ -4409,6 +4413,7 @@ export function Editor({
         // release that follows finds no stroke to write.
         if (strokeDraftRef.current !== null) {
           strokeDraftRef.current = null;
+          eraseSessionRef.current = null;
           const token = activeInteractionTokenRef.current;
           activeInteractionTokenRef.current = null;
           if (token !== null) endInteractionRef.current?.(token);

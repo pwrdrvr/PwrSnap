@@ -168,14 +168,26 @@ describe("composeV2 vector runs", () => {
     expect([...batched.subarray(center, center + 4)]).toEqual([0, 0, 255, 255]);
   });
 
-  test("hidden layers and groups do not paint, and do not split a run", async () => {
+  test("hidden layers, a group and a crop inside a run paint nothing", async () => {
     const W = 160;
     const H = 100;
     const hidden = { ...vectorNode(stroke("pen", 0.5, "#00ff00")), visible: false } as BundleLayerNode;
-    tree = [vectorNode(stroke("pen", 0.3, "#ff0000")), hidden, vectorNode(stroke("pen", 0.7, "#0000ff"))];
+    const { shape: _shape, ...common } = vectorNode(stroke("pen", 0.5, "#00ff00")) as Extract<
+      BundleLayerNode,
+      { kind: "vector" }
+    >;
+    const group = { ...common, kind: "group", collapsed: false } as BundleLayerNode;
+    const crop = vectorNode({ kind: "crop", rect: { x: 0, y: 0, w: 1, h: 1 } } as Overlay);
+    tree = [
+      vectorNode(stroke("pen", 0.3, "#ff0000")),
+      hidden,
+      group,
+      crop,
+      vectorNode(stroke("pen", 0.7, "#0000ff"))
+    ];
     const batched = await bakeComposeV2(W, H);
     const perLayer = await bakePerLayer(
-      tree.filter((n) => n.visible),
+      tree.filter((n) => n.visible && n.kind === "vector" && n.shape.kind === "stroke"),
       W,
       H
     );

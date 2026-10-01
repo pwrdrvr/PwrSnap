@@ -217,7 +217,12 @@ export async function composeV2(req: ComposeTreeRequest): Promise<ComposeTreeRes
     // Groups and hidden layers paint nothing, so they do not end a run.
     if (!node.visible || node.kind === "group") continue;
     if (node.kind === "vector") {
-      const svg = plainVectorSvgForV2(node.shape as Overlay, vectorArgs);
+      const shape = node.shape as Overlay;
+      // Nor do the vector kinds the bake skips: a crop is applied as the
+      // viewport, a step is editor chrome, and a vector blur is drawn by
+      // its EffectLayer (see `compositeVectorOntoAccumulator`).
+      if (shape.kind === "crop" || shape.kind === "step" || shape.kind === "blur") continue;
+      const svg = plainVectorSvgForV2(shape, vectorArgs);
       if (svg !== null) {
         run.push(svg);
         continue;
@@ -501,8 +506,10 @@ async function compositeRasterOntoAccumulator(
 }
 
 /**
- * Composite a vector layer (arrow / rect / text / step / highlight /
- * crop / blur) onto the accumulator. Reuses v1's SVG-rasterize logic
+ * Composite a vector layer that cannot join a plain-vector run — text
+ * and legacy vector highlights — onto the accumulator. Arrows, shapes
+ * and Draw strokes never reach here: `composeV2` paints them in runs
+ * (`compositeSvgRunOntoAccumulator`), and it skips crop, step and blur. Reuses v1's SVG-rasterize logic
  * via the OverlayRow shape — the discriminated union is identical
  * between v1's `OverlayRow.data` and v2's `VectorLayer.shape`.
  *

@@ -500,6 +500,22 @@ describe("StrokeEraseSession — the cut the editor previews and commits", () =>
     expect(change!.pieces[0]!.color).toBe("#ff0000");
   });
 
+  it("a release with no new samples re-cuts a row added or edited since the last move", () => {
+    const session = new StrokeEraseSession(radius, W, H, basis);
+    session.extend([px(0.5, 0.2), px(0.5, 0.8)], [{ id: "a", data: across }]);
+    // A row the drag already crossed lands after the final move…
+    const late = { ...across, points: [{ x: 0.1, y: 0.6 }, { x: 0.9, y: 0.6 }] };
+    // …and `a` was recolored. Syncing with no samples picks up both.
+    const edited = { ...across, color: "#00ff00" };
+    session.extend([], [
+      { id: "a", data: edited },
+      { id: "late", data: late }
+    ]);
+    const changes = new Map(session.changes().map((c) => [c.id, c.pieces]));
+    expect(changes.get("a")!.every((piece) => piece.color === "#00ff00")).toBe(true);
+    expect(changes.get("late")).toHaveLength(2);
+  });
+
   it("drops a row that left the canvas mid-drag", () => {
     const session = new StrokeEraseSession(radius, W, H, basis);
     session.extend([px(0.5, 0.2), px(0.5, 0.8)], [{ id: "a", data: across }]);

@@ -357,6 +357,37 @@ export type StrokeGeometry =
     };
 
 /**
+ * How a stroke is painted, apart from its path: width, cap, opacity, and
+ * the airbrush's bands (empty for the other tools). `strokeGeometry`
+ * and the editor's live long-stroke preview both read it, so the two
+ * cannot paint a stroke differently.
+ */
+export function strokePaintStyle(
+  data: Pick<StrokeOverlay, "tool" | "thickness" | "opacity">,
+  basisPx: number
+): {
+  widthPx: number;
+  cap: "round" | "butt";
+  opacity: number;
+  bands: readonly { readonly widthPx: number; readonly opacity: number }[];
+} {
+  const widthPx = strokeWidthPx(data.tool, data.thickness, basisPx);
+  return {
+    widthPx,
+    // The marker's flat tip; the pen and the airbrush are round.
+    cap: data.tool === "marker" ? "butt" : "round",
+    opacity: readStrokeOpacity(data),
+    bands:
+      data.tool === "airbrush"
+        ? AIRBRUSH_BANDS.map((band) => ({
+            widthPx: widthPx * band.widthFactor,
+            opacity: band.alpha
+          }))
+        : []
+  };
+}
+
+/**
  * Everything needed to paint `data` on a canvas of
  * `canvasWidthPx × canvasHeightPx`, in canvas pixels. `basisPx` is the
  * capture's SOURCE-derived `annotationBasisPx`.
@@ -368,18 +399,14 @@ export function strokeGeometry(
   basisPx: number
 ): StrokeGeometry {
   const px = strokePointsToPx(data.points, canvasWidthPx, canvasHeightPx);
-  const widthPx = strokeWidthPx(data.tool, data.thickness, basisPx);
-  const opacity = readStrokeOpacity(data);
+  const { widthPx, cap, opacity, bands } = strokePaintStyle(data, basisPx);
   const isTap = px.length === 1 || polylineLengthPx(px) < 0.01;
   if (data.tool === "airbrush") {
     const first = px[0]!;
     return {
       kind: "airbrush",
       d: isTap ? `M${f(first.x)} ${f(first.y)}l0.01 0` : smoothStrokePathD(px),
-      bands: AIRBRUSH_BANDS.map((band) => ({
-        widthPx: widthPx * band.widthFactor,
-        opacity: band.alpha
-      })),
+      bands,
       opacity
     };
   }
@@ -398,7 +425,7 @@ export function strokeGeometry(
     kind: "path",
     d: smoothStrokePathD(px),
     widthPx,
-    cap: data.tool === "marker" ? "butt" : "round",
+    cap,
     opacity
   };
 }
@@ -478,16 +505,8 @@ export function eraseStroke(
 
   // Cheap rejection: the stroke's bounds never come within `r` of the
   // eraser's.
-  const sb = boundsPx(stroke);
   const eb = boundsPx(eraser);
-  if (
-    sb.maxX < eb.minX - r ||
-    sb.minX > eb.maxX + r ||
-    sb.maxY < eb.minY - r ||
-    sb.minY > eb.maxY + r
-  ) {
-    return null;
-  }
+  if (!boundsWithin(boundsPx(stroke), eb, r)) return null;
 
   if (stroke.length === 1) {
     return covered(stroke[0]!) ? [] : null;
@@ -511,12 +530,7 @@ export function eraseStroke(
     // is what keeps a cut proportional to the stroke's vertex count, not
     // its length in pixels. (`a` is uncovered too: it is in the box. At
     // i > 0 that means a run is already open; at i === 0 it opens one.)
-    if (
-      Math.max(a.x, b.x) < eb.minX - r ||
-      Math.min(a.x, b.x) > eb.maxX + r ||
-      Math.max(a.y, b.y) < eb.minY - r ||
-      Math.min(a.y, b.y) > eb.maxY + r
-    ) {
+    if (!boundsWithin(boundsPx([a, b]), eb, r)) {
       if (current === null) current = [a];
       pushUnique(current, b);
       lastUncovered = b;
@@ -624,25 +638,35 @@ export class StrokeEraseSession {
    * canvas's current stroke rows; a row seen for the first time, or
    * edited since the last call, is cut against the whole path so far.
    * Returns whether any stroke's pieces changed.
+   *
+   * With no new points it only re-syncs `targets`: a release calls it so
+   * a row edited or added after the last move is cut from its current
+   * data, as the commit used to by re-reading the canvas.
    */
   extend(points: readonly StrokePointPx[], targets: Iterable<EraseTarget>): boolean {
-    if (points.length === 0) return false;
     const segment =
-      this.path.length === 0 ? [...points] : [this.path[this.path.length - 1]!, ...points];
+      points.length === 0 || this.path.length === 0
+        ? [...points]
+        : [this.path[this.path.length - 1]!, ...points];
     for (const p of points) this.path.push(p);
+    // Bounds once per eraser, not once per stroke.
+    const segmentBounds = boundsPx(segment);
+    let pathBounds: PxBounds | null = null;
     let changed = false;
     const live = new Set<string>();
     for (const { id, data } of targets) {
       live.add(id);
       let state = this.strokes.get(id);
       let eraser = segment;
+      let eraserBounds = segmentBounds;
       if (state === undefined || state.data !== data) {
         if (state?.touched === true) changed = true;
         state = this.track(data);
         this.strokes.set(id, state);
         eraser = this.path;
+        eraserBounds = pathBounds ??= boundsPx(this.path);
       }
-      if (this.cut(state, eraser)) changed = true;
+      if (eraser.length > 0 && this.cut(state, eraser, eraserBounds)) changed = true;
     }
     for (const id of this.live) {
       if (!live.has(id) && this.strokes.get(id)?.touched === true) changed = true;
@@ -684,9 +708,8 @@ export class StrokeEraseSession {
     };
   }
 
-  private cut(state: ErasedStroke, eraser: readonly StrokePointPx[]): boolean {
+  private cut(state: ErasedStroke, eraser: readonly StrokePointPx[], eb: PxBounds): boolean {
     if (state.pieces.length === 0) return false;
-    const eb = boundsPx(eraser);
     if (!boundsWithin(state.bounds, eb, state.reachPx)) return false;
     let changed = false;
     const next: ErasedStroke["pieces"] = [];

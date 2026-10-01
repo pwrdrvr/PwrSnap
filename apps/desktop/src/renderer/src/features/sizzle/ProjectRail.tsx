@@ -179,7 +179,7 @@ function ProjectRow({
       <button
         type="button"
         className="szl__row-duplicate"
-        title="Duplicate Sizzle Reel"
+        data-tip="Duplicate Sizzle Reel"
         aria-label={`Duplicate ${project.name}`}
         onClick={(event) => {
           event.stopPropagation();

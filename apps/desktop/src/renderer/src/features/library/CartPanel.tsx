@@ -348,7 +348,8 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
           <button
             type="button"
             className="psl__cart-clear"
-            title="Empty the cart (does not delete the captures)"
+            data-tip="Empty the cart"
+            data-tip-detail="Does not delete the captures"
             aria-label="Empty the cart"
             onClick={onClear}
           >
@@ -379,7 +380,7 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
                 }
                 draggable
                 onClick={() => onJumpTo?.(captureId)}
-                title={onJumpTo !== undefined ? "Show in the library" : undefined}
+                data-tip={onJumpTo !== undefined ? "Show in the library" : undefined}
                 onDragStart={(e) => {
                   e.dataTransfer.setData("text/plain", String(idx));
                   e.dataTransfer.effectAllowed = "move";
@@ -436,7 +437,7 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
                   type="button"
                   className="psl__cart-remove"
                   aria-label="Remove from cart"
-                  title="Remove from cart"
+                  data-tip="Remove from cart"
                   onClick={(e) => {
                     e.stopPropagation();
                     onRemove(captureId);
@@ -569,7 +570,7 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
                     className="fo__copy-file"
                     draggable={!disabled}
                     href="#"
-                    title={`Drag the ${ZIP_PRESET_LABELS[p]} Zip out`}
+                    data-tip={`Drag the ${ZIP_PRESET_LABELS[p]} Zip out`}
                     aria-label={`Drag the ${ZIP_PRESET_LABELS[p]} Zip file out`}
                     role="button"
                     onClick={(e) => e.preventDefault()}

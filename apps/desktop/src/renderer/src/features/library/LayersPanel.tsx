@@ -682,7 +682,7 @@ export function LayersPanel({
                     className="psl-layers__grip"
                     data-testid={`layer-grip-${id}`}
                     aria-hidden="true"
-                    title="Drag to reorder"
+                    data-tip="Drag to reorder"
                     onClick={(e): void => e.stopPropagation()}
                     onPointerDown={(e): void => {
                       if (e.button !== 0) return;
@@ -717,7 +717,7 @@ export function LayersPanel({
                     }
                     aria-controls={inspectorDomId}
                     aria-expanded={inspectorExpanded}
-                    title={inspectorExpanded ? "Collapse properties" : "Expand properties"}
+                    data-tip={inspectorExpanded ? "Collapse properties" : "Expand properties"}
                     onClick={(e): void => {
                       e.stopPropagation();
                       toggleLayerInspector(id);
@@ -733,7 +733,7 @@ export function LayersPanel({
                     data-testid={`layer-visibility-${id}`}
                     aria-label={visible ? "Hide layer" : "Show layer"}
                     aria-pressed={!visible}
-                    title={visible ? "Hide" : "Show"}
+                    data-tip={visible ? "Hide layer" : "Show layer"}
                     onClick={(e): void => {
                       e.stopPropagation();
                       void api?.setLayerVisibility(id, !visible);
@@ -747,7 +747,7 @@ export function LayersPanel({
                       className="psl-layers__btn"
                       data-testid={`layer-reset-${id}`}
                       aria-label="Reset position and size"
-                      title="Reset to original position & size"
+                      data-tip="Reset to original position & size"
                       disabled={affineTransformsEqual(node.transform, rasterHome)}
                       onClick={(e): void => {
                         e.stopPropagation();
@@ -762,7 +762,8 @@ export function LayersPanel({
                     className="psl-layers__btn psl-layers__btn--danger"
                     data-testid={`layer-delete-${id}`}
                     aria-label={crop ? "Remove crop (restore full image)" : "Delete layer"}
-                    title={crop ? "Remove crop" : "Delete"}
+                    data-tip={crop ? "Remove crop" : "Delete layer"}
+                    data-tip-detail={crop ? "Restores the full image" : undefined}
                     disabled={sourceRaster}
                     onClick={(e): void => {
                       e.stopPropagation();

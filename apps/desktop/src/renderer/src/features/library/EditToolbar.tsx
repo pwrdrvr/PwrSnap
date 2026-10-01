@@ -74,7 +74,6 @@ import { EditPropertyBar, type PropertyBarTarget } from "./EditPropertyBar";
 import { styledLayerStyle } from "./styled-layer-style";
 import { ToolBagSlots } from "./ToolBagSlots";
 import { useHideDanglingSeparators } from "./useHideDanglingSeparators";
-import { useToolbarTooltip } from "./useToolbarTooltip";
 import { dispatch } from "../../lib/pwrsnap";
 import { nanoid } from "nanoid";
 
@@ -552,7 +551,6 @@ export function EditToolbar({
   } | null>(null);
   const toolbarRef = useRef<HTMLDivElement | null>(null);
   const toolRowRef = useRef<HTMLDivElement | null>(null);
-  const tooltip = useToolbarTooltip(toolbarRef);
   useHideDanglingSeparators(toolRowRef);
 
   function getStageEl(): HTMLElement | null {
@@ -947,7 +945,6 @@ export function EditToolbar({
           </>
         )}
       </div>
-      {tooltip}
     </div>
   );
 }

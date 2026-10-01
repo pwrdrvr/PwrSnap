@@ -699,6 +699,10 @@ export interface ToolStyleBodyProps {
   /** pwrdrvr/PwrSnap#110 — pass-through to TextBody's Custom indicator
    *  (see `ToolStylePopoverProps.customTextSizeLabel`). */
   customTextSizeLabel?: string;
+  /** The docked property bar hides the blur-mode rows' hint text for
+   *  width; it moves to each row's tooltip there. Elsewhere the hint is
+   *  on screen, and a tooltip would only repeat it. */
+  hintsInTooltips?: boolean;
 }
 
 /**
@@ -718,7 +722,8 @@ export function ToolStyleBody({
   style,
   onStyleFieldChange,
   styleTargetKey,
-  customTextSizeLabel
+  customTextSizeLabel,
+  hintsInTooltips = false
 }: ToolStyleBodyProps): ReactElement {
   switch (tool) {
     case "arrow":
@@ -748,6 +753,7 @@ export function ToolStyleBody({
         <BlurBody
           style={style as BlurToolStyle}
           onStyleFieldChange={onStyleFieldChange}
+          hintsInTooltips={hintsInTooltips}
         />
       );
     case "highlight":
@@ -957,7 +963,7 @@ function ShapeBody({ style, onStyleFieldChange }: ShapeBodyProps): ReactElement 
                 role="radio"
                 aria-checked={active}
                 aria-label={opt.label}
-                title={opt.label}
+                data-tip={opt.label}
                 className={"pse-icon-btn" + (active ? " is-on" : "")}
                 onClick={() => onStyleFieldChange("shape", opt.id)}
                 data-testid={`shape-kind-${opt.id}`}
@@ -1014,9 +1020,10 @@ function ShapeBody({ style, onStyleFieldChange }: ShapeBodyProps): ReactElement 
 interface BlurBodyProps {
   style: BlurToolStyle;
   onStyleFieldChange: ToolStylePopoverProps["onStyleFieldChange"];
+  hintsInTooltips: boolean;
 }
 
-function BlurBody({ style, onStyleFieldChange }: BlurBodyProps): ReactElement {
+function BlurBody({ style, onStyleFieldChange, hintsInTooltips }: BlurBodyProps): ReactElement {
   const isCustom = style.radius.mode === "px";
   const customValue = style.radius.mode === "px" ? style.radius.value : 0;
   return (
@@ -1044,9 +1051,9 @@ function BlurBody({ style, onStyleFieldChange }: BlurBodyProps): ReactElement {
                 aria-checked={active}
                 aria-label={opt.label}
                 // Its description in the docked bar, where the hint text
-                // is hidden; the dock's tooltip reads these.
-                data-tip={opt.label}
-                data-tip-detail={opt.hint}
+                // is hidden. Elsewhere both lines are on screen already.
+                data-tip={hintsInTooltips ? opt.label : undefined}
+                data-tip-detail={hintsInTooltips ? opt.hint : undefined}
                 data-testid={`blur-mode-${opt.id}`}
                 className={"pse-mode-row" + (active ? " is-on" : "")}
                 onClick={() => onStyleFieldChange("mode", opt.id)}
@@ -1420,7 +1427,8 @@ function OutlineRow({ value, allowStripe, onChange }: OutlineRowProps): ReactEle
               role="radio"
               aria-checked={active}
               aria-label={OUTLINE_LABELS[mode]}
-              title={OUTLINE_LABELS[mode]}
+              // Off and Auto say so on the button; the swatches say nothing.
+              data-tip={mode === "none" || mode === "auto" ? undefined : OUTLINE_LABELS[mode]}
               data-testid={`outline-${mode}`}
               className={
                 "pse-seg-btn" +
@@ -1521,6 +1529,9 @@ function ColorRow({ value, onChange }: ColorRowProps): ReactElement {
               role="radio"
               aria-checked={active}
               aria-label={COLOR_LABELS[token]}
+              // A swatch is a color and nothing else; its name was only
+              // in the accessible tree. The tooltip says it on hover.
+              data-tip={COLOR_LABELS[token]}
               className={"pse-sw" + (active ? " is-on" : "")}
               data-color={token}
               data-testid={`swatch-${token}`}

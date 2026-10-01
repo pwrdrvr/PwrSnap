@@ -112,7 +112,9 @@ export function ClipInspector(props: ClipInspectorProps): ReactElement {
           className="szl__insp-close"
           onClick={onClose}
           aria-label="Close inspector"
-          title="Close inspector (click bare track or press Esc)"
+          data-tip="Close inspector"
+          data-tip-keys="Esc"
+          data-tip-detail="Or click the bare track"
           data-testid="sizzle-inspector-close"
         >
           ✕
@@ -353,7 +355,8 @@ export function ClipInspector(props: ClipInspectorProps): ReactElement {
           className="szl__scene-mini"
           onClick={() => onReorder(-1)}
           disabled={isFirst}
-          title="Move clip earlier"
+          aria-label="Move clip earlier"
+          data-tip="Move clip earlier"
           data-testid="sizzle-inspector-move-earlier"
         >
           ◀
@@ -363,7 +366,8 @@ export function ClipInspector(props: ClipInspectorProps): ReactElement {
           className="szl__scene-mini"
           onClick={() => onReorder(1)}
           disabled={isFinal}
-          title="Move clip later"
+          aria-label="Move clip later"
+          data-tip="Move clip later"
           data-testid="sizzle-inspector-move-later"
         >
           ▶

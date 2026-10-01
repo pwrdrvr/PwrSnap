@@ -133,7 +133,9 @@ export function SceneInspector(props: SceneInspectorProps): ReactElement {
           className="szl__insp-close"
           onClick={onClose}
           aria-label="Close inspector"
-          title="Close inspector (click bare track or press Esc)"
+          data-tip="Close inspector"
+          data-tip-keys="Esc"
+          data-tip-detail="Or click the bare track"
           data-testid="sizzle-scene-inspector-close"
         >
           ✕
@@ -316,7 +318,8 @@ export function SceneInspector(props: SceneInspectorProps): ReactElement {
           className="szl__scene-mini"
           onClick={() => onMoveScene(-1)}
           disabled={isFirst}
-          title="Move scene earlier"
+          aria-label="Move scene earlier"
+          data-tip="Move scene earlier"
           data-testid="sizzle-scene-inspector-move-earlier"
         >
           ◀
@@ -326,7 +329,8 @@ export function SceneInspector(props: SceneInspectorProps): ReactElement {
           className="szl__scene-mini"
           onClick={() => onMoveScene(1)}
           disabled={isLast}
-          title="Move scene later"
+          aria-label="Move scene later"
+          data-tip="Move scene later"
           data-testid="sizzle-scene-inspector-move-later"
         >
           ▶

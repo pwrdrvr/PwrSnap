@@ -446,7 +446,7 @@ describe("FloatOverHost dock", () => {
 
     // X on the second toast: the first is still waiting, so the window
     // becomes the dock rather than going away.
-    const dismiss = el.querySelector<HTMLButtonElement>('button[title="Dismiss"]');
+    const dismiss = el.querySelector<HTMLButtonElement>('button[aria-label="Dismiss"]');
     await act(async () => {
       dismiss?.click();
     });

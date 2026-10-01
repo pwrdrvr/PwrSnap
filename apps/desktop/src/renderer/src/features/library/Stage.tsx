@@ -201,7 +201,9 @@ function StageBody({
           className="psl__focus-close"
           // Stable hook for the E2E specs' closeEditorWindow() helper.
           data-testid="focus-back"
-          title="Back to grid (Esc)"
+          aria-label="Back to grid"
+          data-tip="Back to grid"
+          data-tip-keys="Esc"
           onClick={() => dispatch({ type: "CLOSE_FOCUS" })}
         >
           <svg
@@ -221,7 +223,9 @@ function StageBody({
       <button
         type="button"
         className="psl__stage-nav is-prev"
-        title="Previous (←)"
+        aria-label="Previous capture"
+        data-tip="Previous"
+        data-tip-keys="←"
         disabled={prevRecordId === null}
         onClick={() => {
           if (prevRecordId !== null) dispatch({ type: "NAVIGATE", recordId: prevRecordId });
@@ -242,7 +246,9 @@ function StageBody({
       <button
         type="button"
         className="psl__stage-nav is-next"
-        title="Next (→)"
+        aria-label="Next capture"
+        data-tip="Next"
+        data-tip-keys="→"
         disabled={nextRecordId === null}
         onClick={() => {
           if (nextRecordId !== null) dispatch({ type: "NAVIGATE", recordId: nextRecordId });

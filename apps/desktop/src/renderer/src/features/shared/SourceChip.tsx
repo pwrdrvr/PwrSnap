@@ -300,7 +300,9 @@ export function SourceChip({
         className={className}
         data-state={state}
         data-source={source}
-        {...(detail !== undefined ? { title: detail } : {})}
+        // The long reason the one-word `why` stands for. The receipt is in
+        // the float-over toast, so it gets the app's fast tooltip.
+        data-tip={detail}
         {...(testId !== undefined ? { "data-testid": testId } : {})}
       >
         <SourceGlyph source={source} />
@@ -341,16 +343,25 @@ export function SourceChip({
   // behavior it happened to give.
   //
   // Siblings inside a non-interactive wrapper is the fix. The wrapper
-  // keeps every class, data attribute and `title` the <button> carried,
-  // so all the `.ps-chip[data-state=...]` rules and both test suites
-  // still resolve against one element; `.ps-chip__body` adds no chrome
-  // and no width of its own (see SourceChip.css).
+  // keeps every class and data attribute the <button> carried, so all
+  // the `.ps-chip[data-state=...]` rules and both test suites still
+  // resolve against one element; `.ps-chip__body` adds no chrome and no
+  // width of its own (see SourceChip.css).
+  //
+  // The tooltip says what the chip does not draw. At control density the
+  // name and the reason are both visible text, so there is nothing to
+  // add. Dense drops the name, and dense is only the recording HUD: a
+  // window sized to its own pill, which an in-page tooltip could not leave
+  // and would cover the HUD's buttons inside. So it keeps the native
+  // `title`, which the OS draws in a window of its own.
+  const hudTitle =
+    density === "dense" ? (why === undefined ? name : `${name} — ${why}`) : undefined;
   return (
     <span
       className={className}
       data-state={state}
       data-source={source}
-      title={why}
+      title={hudTitle}
       {...(grouped ? { role: "group", "aria-label": name } : {})}
       {...(testId !== undefined ? { "data-testid": testId } : {})}
     >

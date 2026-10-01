@@ -1,0 +1,50 @@
+/* The app's hover tooltip (lib/useFastTooltip.tsx). One per window,
+   portaled to <body>, fixed, and never a hit target: it must not eat the
+   hover it is describing.
+
+   z-index: level with the settings modal scrim, which it follows in the
+   DOM (it is appended when shown), so a control inside a modal still gets
+   its tooltip. Below only the Linux window hairline and the renderer
+   diagnostics panel. Editor chrome's Z_INDEX_CHROME lives inside the
+   canvas's own stacking context, so it does not compete. */
+.ps-tip {
+  position: fixed;
+  z-index: 2147483646;
+  /* Its own content's width, never the room left beside wherever it sat
+     last: fixed and shrink-to-fit, a tooltip still at the previous
+     anchor's right-edge spot measured narrow and tall, and was placed by
+     that height. */
+  width: max-content;
+  max-width: 320px;
+  padding: 6px 9px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--shadow-base) 45%, transparent);
+  color: var(--text-secondary);
+  font: 500 11px/1.4 var(--font-sans);
+  text-align: left;
+  white-space: normal;
+  pointer-events: none;
+}
+.ps-tip__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-primary);
+  font-weight: 600;
+  font-size: 12px;
+}
+.ps-tip__title + .ps-tip__line {
+  margin-top: 3px;
+}
+.ps-tip__key {
+  display: inline-block;
+  min-width: 14px;
+  padding: 1px 3px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  font: 700 10px/1.2 var(--font-mono);
+  text-align: center;
+  color: var(--text-secondary);
+}

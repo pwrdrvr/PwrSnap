@@ -113,7 +113,7 @@ describe("VideoExportCard progress accessibility", () => {
 
     expect(button.disabled).toBe(false);
     expect(button.getAttribute("aria-busy")).toBe("false");
-    expect(button.title).toBe("Failed: Encoder exited 1");
+    expect(button.dataset.tip).toBe("Failed: Encoder exited 1");
     expect(button.textContent).toContain("Failed");
     expect(button.textContent).toContain("retry?");
     expect(container!.querySelector("[role='progressbar']")).toBeNull();

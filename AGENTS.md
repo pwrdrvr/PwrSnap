@@ -110,8 +110,8 @@
   until the README-chip work put a load-bearing path rule in it that Codex
   could not see.
 - `apps/desktop/src/renderer/src/lib/`: `CLAUDE.md → AGENTS.md` — the focus
-  hooks every dialog, popover and menu uses (Escape, Tab, focus return), and
-  why each rule in them is there.
+  hooks every dialog, popover and menu uses (Escape, Tab, focus return), the
+  app's fast hover tooltip, and why each rule in them is there.
 
 ## Brand and Identity
 
@@ -807,6 +807,22 @@ That is why the app's own Escape handlers (Library view, editor, Sizzle
 inspector) never need a `defaultPrevented` check, and why a second overlay
 listener would break the ordering. Rules, measurements and test recipes:
 [apps/desktop/src/renderer/src/lib/AGENTS.md](apps/desktop/src/renderer/src/lib/AGENTS.md).
+
+## Icon-only controls name themselves with `data-tip`, not `title`
+
+**A control whose meaning a sighted user can only get from its tooltip
+opts into the app's fast tooltip with `data-tip` (plus `data-tip-keys` /
+`data-tip-detail`), never `title`, and still carries an `aria-label` or
+text for its name.** The native tooltip waits out the macOS delay and
+restarts it on every pointer move, so an icon took seconds to say anything.
+`useFastTooltip` is mounted once per window by `App`. Nothing else mounts
+it, and no element carries `data-tip` and `title` together or nested.
+Two places keep `title` on purpose: the recording HUD and the float-over
+dock, windows too small for an in-page tooltip. Rules and the list:
+[apps/desktop/src/renderer/src/lib/AGENTS.md](apps/desktop/src/renderer/src/lib/AGENTS.md)
+§"Hover tooltips". Pinned by
+[fast-tooltip-contract.test.ts](apps/desktop/src/renderer/src/lib/__tests__/fast-tooltip-contract.test.ts)
+and [useFastTooltip.test.tsx](apps/desktop/src/renderer/src/lib/__tests__/useFastTooltip.test.tsx).
 
 ## Never mix a post-transform rect with a layout measure
 

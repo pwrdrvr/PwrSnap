@@ -965,7 +965,8 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
                       drag?.mode.kind === "split" && drag.mode.index === i ? " is-active" : ""
                     }`}
                     style={{ left: `${x}px` }}
-                    title="Split — drag to move, double-click to remove"
+                    data-tip="Split"
+                    data-tip-detail={"Drag to move\nDouble-click to remove"}
                     aria-label={`Split at ${formatTimecode(seg.start)}`}
                     onPointerDown={beginDrag({ kind: "split", index: i })}
                     onDoubleClick={() =>
@@ -987,7 +988,8 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
                   type="button"
                   className={`vtl__handle is-out is-edge${active("end", i - 1)}`}
                   style={{ left: `${outEdgeX - EDGE_W}px` }}
-                  title="Cut starts here — drag to adjust, or onto the other edge to undo the cut"
+                  data-tip="Cut starts here"
+                  data-tip-detail={"Drag to adjust\nDrag onto the other edge to undo the cut"}
                   aria-label={`Cut from ${formatTimecode(prev.end)}`}
                   onPointerDown={beginDrag({ kind: "edge", index: i - 1, side: "end" })}
                   data-testid="video-timeline-cut-in"
@@ -997,7 +999,8 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
                   type="button"
                   className={`vtl__handle is-in is-edge${active("start", i)}`}
                   style={{ left: `${inEdgeX}px` }}
-                  title="Cut ends here — drag to adjust, or onto the other edge to undo the cut"
+                  data-tip="Cut ends here"
+                  data-tip-detail={"Drag to adjust\nDrag onto the other edge to undo the cut"}
                   aria-label={`Cut to ${formatTimecode(seg.start)}`}
                   onPointerDown={beginDrag({ kind: "edge", index: i, side: "start" })}
                   data-testid="video-timeline-cut-out"
@@ -1010,7 +1013,9 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
             type="button"
             className={`vtl__handle is-in${drag?.mode.kind === "in" ? " is-active" : ""}`}
             style={{ left: `${inX}px` }}
-            title="Trim in — drag, or press I at the playhead"
+            data-tip="Trim in"
+            data-tip-keys="I"
+            data-tip-detail="Drag, or press I at the playhead"
             aria-label={`Trim in ${formatTimecode(range.start)}`}
             onPointerDown={beginDrag({ kind: "in" })}
             data-testid="video-timeline-in"
@@ -1019,7 +1024,9 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
             type="button"
             className={`vtl__handle is-out${drag?.mode.kind === "out" ? " is-active" : ""}`}
             style={{ left: `${outX - HANDLE_W}px` }}
-            title="Trim out — drag, or press O at the playhead"
+            data-tip="Trim out"
+            data-tip-keys="O"
+            data-tip-detail="Drag, or press O at the playhead"
             aria-label={`Trim out ${formatTimecode(range.end)}`}
             onPointerDown={beginDrag({ kind: "out" })}
             data-testid="video-timeline-out"

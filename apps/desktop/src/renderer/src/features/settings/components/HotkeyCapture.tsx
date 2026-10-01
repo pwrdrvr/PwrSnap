@@ -706,7 +706,7 @@ export function HotkeyCapture({
           onClick={() => void clear()}
           disabled={clearing}
           aria-label={`Clear ${label} hotkey`}
-          title="Clear hotkey"
+          data-tip="Clear hotkey"
         >
           {clearing ? "…" : "×"}
         </button>

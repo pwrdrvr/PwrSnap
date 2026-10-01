@@ -768,7 +768,7 @@ describe("post-recording source summary", () => {
     expect(silent?.getAttribute("data-state")).toBe("silent");
     expect(silent?.querySelector(".ps-meter")).toBeNull();
     expect(silent?.querySelector(".ps-chip__why")?.textContent).toBe("none");
-    expect(silent?.getAttribute("title")).toBe("no audio captured");
+    expect(silent?.getAttribute("data-tip")).toBe("no audio captured");
     // The live chip beside it keeps its recorded meter.
     const live = el.querySelector('[data-testid="fo-source-microphone"]');
     expect(live?.querySelector(".ps-meter")?.getAttribute("data-tone")).toBe("recorded");
@@ -891,7 +891,7 @@ describe("FloatOverHost", () => {
     });
 
     const reveal = Array.from(container.querySelectorAll("button")).find(
-      (b) => b.getAttribute("title") === "Reveal in library"
+      (b) => b.dataset.tip === "Reveal in library"
     );
     expect(reveal).toBeDefined();
     expect(reveal?.disabled).toBe(false);
@@ -918,7 +918,7 @@ describe("FloatOverHost", () => {
   test("the Reveal button disables itself when no handler is wired", async () => {
     const el = await renderFloatOver({ src: "data:image/png;base64,iVBORw0KGgo=" });
     const reveal = Array.from(el.querySelectorAll("button")).find(
-      (b) => b.getAttribute("title") === "Reveal in library"
+      (b) => b.dataset.tip === "Reveal in library"
     );
     expect(reveal).toBeDefined();
     expect(reveal?.disabled).toBe(true);
@@ -1760,9 +1760,7 @@ describe("FloatOver AI suggestions", () => {
     // keeps the full name, which still begins with the visible words.
     expect(autoAccept?.textContent).toBe("Auto-apply");
     expect(checkbox?.getAttribute("aria-label")).toBe("Auto-apply AI enrichment");
-    expect(autoAccept?.getAttribute("title")).toBe(
-      "Apply AI enrichment automatically when ready"
-    );
+    expect(autoAccept?.dataset.tip).toBe("Apply AI enrichment automatically when ready");
 
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(

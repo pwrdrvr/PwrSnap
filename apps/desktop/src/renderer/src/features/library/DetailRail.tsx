@@ -1134,11 +1134,10 @@ export function DetailRail({
             <>
               <button
                 type="button"
-                title={
-                  isVideo
-                    ? `Click to reveal in ${desktopFileManagerName(window.pwrsnapApi?.platform)}`
-                    : `Drag PNG file or click to reveal in ${desktopFileManagerName(window.pwrsnapApi?.platform)}`
-                }
+                // "File" alone does not say what a click does; the
+                // tooltip does.
+                data-tip={`Reveal in ${desktopFileManagerName(window.pwrsnapApi?.platform)}`}
+                data-tip-detail={isVideo ? undefined : "Or drag the PNG file out"}
                 // Image: this is the only drag affordance in the
                 // rail, so it carries `draggable` + HIGH preset.
                 // Video: drag-out lives in the 6-card grid above
@@ -1213,7 +1212,8 @@ export function DetailRail({
                   <button
                     type="button"
                     className="is-danger"
-                    title="Move to Trash"
+                    aria-label="Move to Trash"
+                    data-tip="Move to Trash"
                     {...trigger}
                   >
                     <svg
@@ -1737,7 +1737,7 @@ function DetailTab({
               </span>
               {/* Same switch, wording and tooltip as the post-capture popover. */}
               {autoApply !== null ? (
-                <label className="ps-codex-pill__auto" title="Apply AI enrichment automatically when ready">
+                <label className="ps-codex-pill__auto" data-tip="Apply AI enrichment automatically when ready">
                   <input
                     type="checkbox"
                     aria-label="Auto-apply AI enrichment"
@@ -1763,7 +1763,7 @@ function DetailTab({
                   type="button"
                   className="psl__field-use"
                   onClick={() => void useTitleDraft()}
-                  title="Save this draft as your title"
+                  data-tip="Save this draft as your title"
                 >
                   Use
                 </button>
@@ -1798,7 +1798,7 @@ function DetailTab({
                   type="button"
                   className="psl__field-use"
                   onClick={() => void useDescriptionDraft()}
-                  title="Save this draft as your description"
+                  data-tip="Save this draft as your description"
                 >
                   Use
                 </button>
@@ -1835,7 +1835,7 @@ function DetailTab({
                 onClick={() => {
                   void dispatch("clipboard:copyText", { text: filenameValue });
                 }}
-                title="Copy the export filename stem to the clipboard"
+                data-tip="Copy the export filename stem to the clipboard"
               >
                 Copy
               </button>
@@ -2039,7 +2039,7 @@ function TagEditor({
               className="psl__tag-remove"
               onClick={() => void removeTag(tag)}
               aria-label={`remove ${tag}`}
-              title="Remove tag"
+              data-tip="Remove tag"
             >
               ×
             </button>
@@ -2187,7 +2187,7 @@ function DraftPreview({ label, text, onUse }: DraftPreviewProps): ReactElement {
           type="button"
           className="psl__draft-preview-use"
           onClick={onUse}
-          title="Replace current text with this draft"
+          data-tip="Replace current text with this draft"
         >
           Use this
         </button>

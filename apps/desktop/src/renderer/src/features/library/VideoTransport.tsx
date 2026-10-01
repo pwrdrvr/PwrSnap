@@ -71,17 +71,31 @@ function TransportTimecode({
   return <b ref={ref}>{formatTimecode(currentTime)}</b>;
 }
 
+/** A key hint ("Play / pause (space) · J shuttle back · …") as the fast
+ *  tooltip's first line and its further lines. */
+function tipLines(hint: string): { first: string; rest: string | undefined } {
+  const [first = hint, ...rest] = hint.split(" · ");
+  return { first, rest: rest.length > 0 ? rest.join("\n") : undefined };
+}
+
 export function VideoTransport(props: VideoTransportProps): ReactElement {
   const { playing, currentTime, playhead, durationSec, loopInRange, muted, volume } = props;
   const keyHints = videoTransportKeyHints(
     props.shortcutPlatform ?? rendererShortcutPlatform()
   );
+  // Icon buttons: the tooltip is their only visible label, so it is the
+  // app's fast one (lib/useFastTooltip), not `title`.
+  const playTip = tipLines(keyHints.play);
+  const stepTip = tipLines(keyHints.step);
+  const splitTip = tipLines(keyHints.split);
+  const loopTip = tipLines(`${keyHints.loop} · ${keyHints.trim}`);
   return (
     <div className="psl__vt" role="toolbar" aria-label="Video transport" data-testid="video-transport">
       <button
         type="button"
         className="psl__vt-btn is-play"
-        title={keyHints.play}
+        data-tip={playTip.first}
+        data-tip-detail={playTip.rest}
         aria-label={playing ? "Pause" : "Play"}
         aria-pressed={playing}
         onMouseDown={keepFocus}
@@ -100,7 +114,12 @@ export function VideoTransport(props: VideoTransportProps): ReactElement {
         )}
       </button>
 
-      <span className="psl__vt-time" title={keyHints.step} data-testid="video-transport-time">
+      <span
+        className="psl__vt-time"
+        data-tip={stepTip.first}
+        data-tip-detail={stepTip.rest}
+        data-testid="video-transport-time"
+      >
         <TransportTimecode currentTime={currentTime} playhead={playhead} />
         <i>/</i>
         <span>{formatTimecode(durationSec)}</span>
@@ -112,7 +131,8 @@ export function VideoTransport(props: VideoTransportProps): ReactElement {
         <button
           type="button"
           className="psl__vt-btn"
-          title={keyHints.split}
+          data-tip={splitTip.first}
+          data-tip-detail={splitTip.rest}
           aria-label="Split at playhead"
           onMouseDown={keepFocus}
           onClick={props.onSplit}
@@ -142,7 +162,8 @@ export function VideoTransport(props: VideoTransportProps): ReactElement {
       <button
         type="button"
         className={`psl__vt-btn${loopInRange ? " is-on" : ""}`}
-        title={`${keyHints.loop} · ${keyHints.trim}`}
+        data-tip={loopTip.first}
+        data-tip-detail={loopTip.rest}
         aria-label="Loop in range"
         aria-pressed={loopInRange}
         onMouseDown={keepFocus}
@@ -176,7 +197,7 @@ export function VideoTransport(props: VideoTransportProps): ReactElement {
       <button
         type="button"
         className={`psl__vt-btn${muted ? " is-on" : ""}`}
-        title={keyHints.mute}
+        data-tip={keyHints.mute}
         aria-label={muted ? "Unmute" : "Mute"}
         aria-pressed={muted}
         onMouseDown={keepFocus}
@@ -246,7 +267,7 @@ export function VideoTransport(props: VideoTransportProps): ReactElement {
       <button
         type="button"
         className="psl__vt-btn"
-        title={keyHints.fullscreen}
+        data-tip={keyHints.fullscreen}
         aria-label="Fullscreen"
         onMouseDown={keepFocus}
         onClick={props.onFullscreen}

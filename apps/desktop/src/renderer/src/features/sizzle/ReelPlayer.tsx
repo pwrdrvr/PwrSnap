@@ -231,7 +231,7 @@ export function ReelPlayer({
           className="szl__reel-play"
           onClick={playback.toggle}
           disabled={model.totalSec <= 0}
-          title={playing ? "Pause" : "Play the whole reel"}
+          data-tip={playing ? "Pause" : "Play the whole reel"}
           aria-label={playing ? "Pause reel" : "Play reel"}
           data-testid="sizzle-reel-play"
         >
@@ -250,7 +250,7 @@ export function ReelPlayer({
           type="button"
           className={"szl__reel-mute" + (playback.muted ? " is-muted" : "")}
           onClick={playback.toggleMuted}
-          title={playback.muted ? "Unmute" : "Mute"}
+          data-tip={playback.muted ? "Unmute" : "Mute"}
           aria-label={playback.muted ? "Unmute reel" : "Mute reel"}
           aria-pressed={playback.muted}
           data-testid="sizzle-reel-mute"
@@ -265,7 +265,7 @@ export function ReelPlayer({
           step={0.05}
           value={playback.muted ? 0 : playback.volume}
           onChange={(event) => playback.setVolume(Number(event.target.value))}
-          title="Narration volume"
+          data-tip="Narration volume"
           aria-label="Narration volume"
           data-testid="sizzle-reel-volume"
         />

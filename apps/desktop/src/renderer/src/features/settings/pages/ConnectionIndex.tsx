@@ -38,10 +38,12 @@ export function ConnectionIndex({
               {status.models.length > 0 ? (
                 <span className="pss__dapi-chips">
                   {status.models.map((m) => (
-                    <span key={m.id} className="pss__dapi-mchip" title={m.modelId}>
+                    <span key={m.id} className="pss__dapi-mchip" data-tip={m.modelId}>
                       {m.displayName}
                       {m.capabilities.vision === true ? (
-                        <span className="pss__dapi-img" title="Accepts images">
+                        // "IMG" says nothing on its own. Fast tooltip, so
+                        // its parent chip's tip has to be one too.
+                        <span className="pss__dapi-img" data-tip="Accepts images">
                           IMG
                         </span>
                       ) : null}

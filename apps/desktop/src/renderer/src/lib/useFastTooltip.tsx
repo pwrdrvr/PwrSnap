@@ -24,10 +24,11 @@
 // `aria-label` or visible text. While it is up it is added to the anchor's
 // `aria-describedby`, unless all it would say is the name again.
 //
-// It never takes a key: any keydown hides it and the key carries on to
-// whoever owns it. That listener is on `document` capture, NOT `window`
-// capture: the focus hooks' Escape listener must stay the first
-// window-capture keydown listener (lib/AGENTS.md, "Escape: one owner").
+// It never takes a key: any keydown hides it (an Escape an overlay claimed,
+// on its keyup) and the key carries on to whoever owns it. Those listeners
+// are on `document` capture, NOT `window` capture: the focus hooks' Escape
+// listener must stay the first window-capture keydown listener
+// (lib/AGENTS.md, "Escape: one owner").
 //
 // Where the native tooltip is still the right one, see lib/AGENTS.md
 // ("Hover tooltips").
@@ -135,6 +136,12 @@ export function useFastTooltip(): ReactElement | null {
     let timer: number | undefined;
     let current: HTMLElement | null = null;
     let warmUntil = 0;
+    // An anchor that leaves the document (a re-render replaced it, its row
+    // was deleted) takes its tooltip with it. Nothing else would tell us:
+    // the pointer never "left" an element that is simply gone. Watched
+    // only while a tooltip is up, and through `hide`, so `current` and the
+    // rendered tip can never disagree.
+    let removal: MutationObserver | null = null;
 
     const tipTarget = (target: EventTarget | null): HTMLElement | null => {
       if (!(target instanceof Element)) return null;
@@ -143,10 +150,17 @@ export function useFastTooltip(): ReactElement | null {
     const show = (el: HTMLElement): void => {
       window.clearTimeout(timer);
       current = el;
+      removal?.disconnect();
+      removal = new MutationObserver(() => {
+        if (!el.isConnected) hide(false);
+      });
+      removal.observe(document.body, { childList: true, subtree: true });
       setTip(readTip(el));
     };
     const hide = (warm: boolean): void => {
       window.clearTimeout(timer);
+      removal?.disconnect();
+      removal = null;
       warmUntil = warm && current !== null ? performance.now() + WARM_MS : 0;
       current = null;
       setTip(null);
@@ -187,6 +201,13 @@ export function useFastTooltip(): ReactElement | null {
       }
     };
     const onPress = (): void => hide(false);
+    // An Escape an overlay claimed never reaches `keydown` here:
+    // useDismissable stops it at window capture. Its keyup is not claimed.
+    // Escape only: a Tab's keyup lands after the focus it moved has shown
+    // the next control's tooltip.
+    const onKeyUp = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") hide(false);
+    };
 
     document.addEventListener("pointerover", onPointerOver);
     document.addEventListener("pointerout", onPointerOut);
@@ -195,47 +216,41 @@ export function useFastTooltip(): ReactElement | null {
     document.addEventListener("pointerdown", onPress, true);
     // Document, not window: see the header.
     document.addEventListener("keydown", onPress, true);
+    document.addEventListener("keyup", onKeyUp, true);
     window.addEventListener("blur", onPress);
     return () => {
       installed -= 1;
       window.clearTimeout(timer);
+      removal?.disconnect();
       document.removeEventListener("pointerover", onPointerOver);
       document.removeEventListener("pointerout", onPointerOut);
       document.removeEventListener("focusin", onFocusIn);
       document.removeEventListener("focusout", onFocusOut);
       document.removeEventListener("pointerdown", onPress, true);
       document.removeEventListener("keydown", onPress, true);
+      document.removeEventListener("keyup", onKeyUp, true);
       window.removeEventListener("blur", onPress);
     };
   }, []);
 
-  // The tooltip describes the anchor while it is up. Added to, not
-  // replacing, whatever description the anchor already carries.
+  // The tooltip describes the anchor while it is up. Added to whatever
+  // description the anchor already carries, and on hide only our own
+  // token comes out: React may have changed the rest meanwhile (an export
+  // card gains and drops its progress id), and restoring a snapshot would
+  // write back a value React believes is gone.
   useEffect(() => {
     if (tip === null || tipRepeatsName(tip)) return;
     const { anchor } = tip;
-    const before = anchor.getAttribute("aria-describedby");
-    anchor.setAttribute(
-      "aria-describedby",
-      before === null || before.trim() === "" ? TOOLTIP_ID : `${before} ${TOOLTIP_ID}`
-    );
+    const tokens = (): string[] =>
+      (anchor.getAttribute("aria-describedby") ?? "")
+        .split(/\s+/)
+        .filter((t) => t !== "" && t !== TOOLTIP_ID);
+    anchor.setAttribute("aria-describedby", [...tokens(), TOOLTIP_ID].join(" "));
     return () => {
-      if (before === null) anchor.removeAttribute("aria-describedby");
-      else anchor.setAttribute("aria-describedby", before);
+      const rest = tokens();
+      if (rest.length === 0) anchor.removeAttribute("aria-describedby");
+      else anchor.setAttribute("aria-describedby", rest.join(" "));
     };
-  }, [tip]);
-
-  // An anchor that leaves the document (a re-render replaced it, its row
-  // was deleted) takes its tooltip with it. Nothing else would tell us:
-  // the pointer never "left" an element that is simply gone.
-  useEffect(() => {
-    if (tip === null) return;
-    const { anchor } = tip;
-    const observer = new MutationObserver(() => {
-      if (!anchor.isConnected) setTip(null);
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
-    return () => observer.disconnect();
   }, [tip]);
 
   if (tip === null) return null;

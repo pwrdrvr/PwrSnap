@@ -230,6 +230,70 @@ describe("useFastTooltip", () => {
     expect(tooltip()).toBeNull();
   });
 
+  test("after an anchor leaves the document, the next hover waits the delay again", async () => {
+    hoverUntilShown(el("two"));
+    await act(async () => {
+      setShowTwo(false);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(tooltip()).toBeNull();
+    // Not warm: the removal hid it the same way a pointer leaving would
+    // not, so nothing is "still up" to swap from.
+    act(() => vi.advanceTimersByTime(1000));
+    pointer("pointerover", el("one"), el("gap"));
+    expect(tooltip()).toBeNull();
+    act(() => vi.advanceTimersByTime(400));
+    expect(tooltip()?.textContent).toContain("Red arrow");
+  });
+
+  test("an Escape an overlay claimed at window capture still hides it, on keyup", () => {
+    // useDismissable stops a claimed Escape's keydown before document
+    // capture ever sees it.
+    const claim = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") event.stopImmediatePropagation();
+    };
+    window.addEventListener("keydown", claim, true);
+    try {
+      hoverUntilShown(el("one"));
+      act(() => {
+        document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      });
+      expect(tooltip()).not.toBeNull();
+      act(() => {
+        document.body.dispatchEvent(new KeyboardEvent("keyup", { key: "Escape", bubbles: true }));
+      });
+      expect(tooltip()).toBeNull();
+    } finally {
+      window.removeEventListener("keydown", claim, true);
+    }
+  });
+
+  test("a Tab's keyup leaves the tooltip its focus move showed", () => {
+    stubFocusVisible(true);
+    act(() => el("two").focus());
+    act(() => {
+      document.body.dispatchEvent(new KeyboardEvent("keyup", { key: "Tab", bubbles: true }));
+    });
+    expect(tooltip()?.textContent).toContain("Green arrow");
+  });
+
+  test("on hide, only its own token leaves aria-describedby", () => {
+    el("named").setAttribute("data-tip-keys", "Ctrl+,");
+    hoverUntilShown(el("named"));
+    // The component re-renders its own description while the tip is up.
+    el("named").setAttribute("aria-describedby", `progress ${tooltip()?.id ?? ""}`);
+    pointer("pointerout", el("named"), el("gap"));
+    expect(el("named").getAttribute("aria-describedby")).toBe("progress");
+
+    hoverUntilShown(el("named"));
+    // ...or drops it altogether: hiding must not write the old one back.
+    el("named").removeAttribute("aria-describedby");
+    pointer("pointerout", el("named"), el("gap"));
+    expect(el("named").hasAttribute("aria-describedby")).toBe(false);
+  });
+
   test("follows its anchor on scroll instead of hiding", () => {
     let anchorRect = rect(100, 300, 24, 24);
     vi.spyOn(el("two"), "getBoundingClientRect").mockImplementation(() => anchorRect);

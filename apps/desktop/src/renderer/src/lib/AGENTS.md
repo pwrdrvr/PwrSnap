@@ -166,11 +166,16 @@ Rules, each pinned by a test:
   link or `role` element still needs `aria-label` or text; the same test
   checks. Several icon buttons had only `title` for a name, and got an
   `aria-label` when they moved. While a tip is up it is appended to the
-  anchor's `aria-describedby`, and the original is restored after. It is
-  skipped when the tip would only repeat the name.
+  anchor's `aria-describedby`, and on hide only that token comes out.
+  Restoring a snapshot instead would write back a value React changed in
+  the meantime (an export card drops its progress id). It is skipped when
+  the tip would only repeat the name.
 - **It never takes a key.** Any keydown hides it and carries on. The
   listener is on `document` capture, because `useDismissable`'s Escape
-  listener must stay the first window-capture listener (above).
+  listener must stay the first window-capture listener (above). An Escape
+  that listener claims never reaches document capture, so Escape's keyup
+  hides it too. Only Escape's: a Tab's keyup lands after the focus move
+  has shown the next control's tooltip.
 - **It shows on keyboard focus only when `:focus-visible`**, so a click
   does not pop one up under the pointer. A tipped `<label>` shows when the
   checkbox inside it is focused.
@@ -179,10 +184,13 @@ Rules, each pinned by a test:
   never clamped vertically: with no room on either side it takes the
   roomier side and runs off the edge, rather than sliding back over the
   ring.
+- **An anchor that leaves the DOM takes its tooltip with it**, through the
+  same `hide` the pointer uses. An earlier draft cleared only the rendered
+  tip, so the hook still thought one was up and showed the next hover's at
+  once.
 - **It follows its anchor on scroll rather than hiding.** A control that
   takes keyboard focus inside a scroller is scrolled into view just after,
   so hiding on scroll would hide every such tooltip as soon as it showed.
-  It does disappear when its anchor leaves the DOM.
 
 ### Where `title` stays
 

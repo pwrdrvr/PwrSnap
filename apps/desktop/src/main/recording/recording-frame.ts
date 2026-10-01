@@ -239,7 +239,14 @@ export function installRecordingFrame(): void {
 export function disposeRecordingFrame(): void {
   unsubscribe?.();
   unsubscribe = null;
-  screen.removeListener("display-metrics-changed", onDisplayMetricsChanged);
+  // Only an installed frame has a listener to remove — and only then is
+  // `screen` safe to touch. Electron's `screen` getter THROWS before the
+  // app's `ready` event, and quit teardown runs this unconditionally: a
+  // dev launch that loses the single-instance lock quits before ready,
+  // and the uncaught throw surfaced as a main-process error dialog.
+  if (installed) {
+    screen.removeListener("display-metrics-changed", onDisplayMetricsChanged);
+  }
   installed = false;
   verdictSessionId = null;
   enabled = true;

@@ -63,7 +63,9 @@ const mocks = vi.hoisted(() => ({
     fakeDisplay(2, { x: 1440, y: 0, width: 1920, height: 1080 })
   ],
   showRegionFrame: true,
-  readDomain: vi.fn()
+  readDomain: vi.fn(),
+  /** Electron's `screen` getter throws until the app is ready. */
+  appReady: true
 }));
 
 let nextWindowId = 1;
@@ -102,14 +104,20 @@ function makeWindowSpy(): WindowSpy {
 }
 
 vi.mock("electron", () => ({
-  screen: {
-    getAllDisplays: () => mocks.displays,
-    on: (event: string, handler: () => void) => {
-      mocks.displayListeners.set(event, handler);
-    },
-    removeListener: (event: string) => {
-      mocks.displayListeners.delete(event);
+  get screen() {
+    if (!mocks.appReady) {
+      // Electron's own message, so a failure reads like the real one.
+      throw new Error("The 'screen' module can't be used before the app 'ready' event");
     }
+    return {
+      getAllDisplays: () => mocks.displays,
+      on: (event: string, handler: () => void) => {
+        mocks.displayListeners.set(event, handler);
+      },
+      removeListener: (event: string) => {
+        mocks.displayListeners.delete(event);
+      }
+    };
   }
 }));
 
@@ -195,6 +203,7 @@ beforeEach(() => {
     fakeDisplay(2, { x: 1440, y: 0, width: 1920, height: 1080 })
   ];
   mocks.showRegionFrame = true;
+  mocks.appReady = true;
   mocks.readDomain.mockReset();
   mocks.readDomain.mockImplementation(async () => ({
     showRegionFrame: mocks.showRegionFrame
@@ -202,6 +211,16 @@ beforeEach(() => {
 });
 
 describe("recording frame lifecycle", () => {
+  test("dispose before the app is ready does not touch screen", async () => {
+    // Quit teardown disposes every transient window unconditionally, and
+    // a launch that loses the single-instance lock quits before `ready`.
+    // Touching `screen` there threw an uncaught main-process error.
+    const mod = await load();
+    mocks.appReady = false;
+
+    expect(() => mod.disposeRecordingFrame()).not.toThrow();
+  });
+
   test("shows for the recording phase and sends the layout it planned", async () => {
     const mod = await load();
     mod.installRecordingFrame();

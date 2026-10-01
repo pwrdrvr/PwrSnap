@@ -30,6 +30,7 @@
     "verify:asar-contents": "node ./scripts/verify-asar-contents.mjs",
     "tray-icon": "node ./scripts/generate-tray-icon.mjs",
     "probe:linux-capture": "electron ./scripts/linux-capture-probe.mjs",
+    "probe:quit-reentry": "electron ./scripts/electron-quit-reentry-probe.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

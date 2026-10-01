@@ -2571,6 +2571,52 @@ another app and got recorded that way.
 Measurements, the two hypotheses it replaced, and the log recipe:
 [docs/solutions/2026-09-17-recording-lead-in-activation-loss.md](docs/solutions/2026-09-17-recording-lead-in-activation-loss.md).
 
+## A deferred quit is retried from a macrotask, never from its own promise chain
+
+**Any `before-quit` or `will-quit` listener that calls `preventDefault()` and
+later asks again must do it through `retryQuitAfterDispatch`
+([quit-retry.ts](apps/desktop/src/main/quit-retry.ts)), and nothing defers a
+quit that has nothing to wait for.** Pinned by
+[quit-reentry.test.ts](apps/desktop/src/main/__tests__/quit-reentry.test.ts),
+against a model of Electron's quit state machine
+([electron-quit-model.ts](apps/desktop/src/main/__tests__/electron-quit-model.ts))
+that `pnpm --filter @pwrsnap/desktop probe:quit-reentry` checks against the
+real runtime.
+
+⌘Q hung intermittently from #659 on: two before-quit passes, every window
+closed, `quit stalled: no will-quit` with zero BaseWindows and zero
+webContents. Nothing was still closing. Electron had stopped quitting:
+
+- **`Browser::Quit()` writes `is_quitting_ = HandleBeforeQuit()` AFTER the
+  emit, and a native-started emit runs a microtask checkpoint before it
+  returns.** ⌘Q (`terminate:`), Dock → Quit and a raw SIGTERM all start
+  natively. The diagnostics flush settled in microtasks when no profiler was
+  recording, so its `app.quit()` ran nested inside the pass it was retrying.
+  The nested pass set the flag and closed the Library; the outer pass then
+  wrote `false` over it. The Library finished closing, and Electron emitted
+  `window-all-closed` in place of `will-quit`. With no window left, nothing
+  ever asked again.
+- **will-quit is worse: it is ALWAYS native-started** (the last window
+  finishing its close), so a microtask retry from will-quit is lost even when
+  the quit began in JS. The recording barrier's retry had this shape.
+- **A tray-menu Quit is JS-started and never nested**, and neither is E2E
+  teardown (`setImmediate(() => app.quit())`), which is why some quits with
+  the identical double pass completed and why no spec caught it. A green E2E
+  run proves nothing here.
+- **A flush with no work does not defer.** `createDiagnosticsShutdown` takes
+  `hasPendingWork` (a hot-CPU monitor exists, or the trace hook is armed).
+  Without either, `stop()` still runs to latch the targets' shutdown state,
+  but quit is one pass. The #659 guarantee holds whenever a harness is on.
+- **`installQuitStallRecovery`
+  ([quit-stall-recovery.ts](apps/desktop/src/main/quit-stall-recovery.ts)) is
+  a safety net, not the fix.** After a before-quit pass that nothing deferred,
+  it re-asks once if Electron emits `window-all-closed` (the stall signature).
+  It also exits if nothing has quit 20 s later and no window is left. Do not
+  delete the root fix on the strength of it.
+
+Full trail, probe output and the source lines:
+[docs/solutions/2026-09-30-quit-stall-nested-before-quit.md](docs/solutions/2026-09-30-quit-stall-nested-before-quit.md).
+
 ## A one-shot intent sent to a renderer must not be droppable
 
 **An event that carries a user's intent and exists nowhere else — today

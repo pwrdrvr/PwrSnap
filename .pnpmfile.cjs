@@ -69,7 +69,57 @@ function isGitSpec(spec) {
   return typeof spec === "string" && GIT_SPEC_PATTERN.test(spec);
 }
 
+// sharp's WebAssembly build, which Electron on Linux loads instead of the
+// native addon (apps/desktop/src/main/sharp-wasm-steer.ts says why: the
+// native addon and Electron's system glib crash main with SIGTRAP).
+//
+// Two edits, because sharp's own manifest gets neither right for us:
+//
+//   • sharp does not depend on `@img/sharp-wasm32`. Its loader
+//     `require()`s it as a last resort and its docs say to install it
+//     alongside (`npm install sharp @img/sharp-wasm32`), which pnpm's
+//     isolated layout does not make visible to sharp. So declare it as one
+//     of sharp's optional dependencies, at sharp's OWN version: the wasm
+//     binding is built from the same release, and deriving the version here
+//     means a Dependabot sharp bump moves both together.
+//   • `@img/sharp-wasm32` has no platform fields, so as-is it would install
+//     on every host — including the macOS and Windows hosts that stage
+//     release builds, which would ship ~10 MB of LGPL libvips that the
+//     license notice never discloses. Gate it to linux: Linux hosts install
+//     it, and the release hosts skip it because linux is not in their
+//     pnpm-workspace.yaml supportedArchitectures.
+//   • sharp's FreeBSD and WebContainers wrappers also depend on it, and
+//     both are platform-skipped everywhere we install. pnpm reaches
+//     `@img/sharp-wasm32` through them first, marks it skipped with them,
+//     and never revisits it through sharp's edge — measured on 10.33.0: a
+//     Linux install listed it under `skipped` with no platform reason of
+//     its own. Neither wrapper can install on a PwrSnap host, so drop their
+//     edge and leave sharp as its only parent.
+const SHARP_WASM_PACKAGE = "@img/sharp-wasm32";
+const SHARP_WASM_WRAPPERS = new Set([
+  "@img/sharp-freebsd-wasm32",
+  "@img/sharp-webcontainers-wasm32"
+]);
+
+function wireSharpWasmForLinux(pkg) {
+  if (pkg.name === "sharp" && typeof pkg.version === "string") {
+    pkg.optionalDependencies = {
+      ...pkg.optionalDependencies,
+      [SHARP_WASM_PACKAGE]: pkg.version
+    };
+    return;
+  }
+  if (SHARP_WASM_WRAPPERS.has(pkg.name)) {
+    if (pkg.dependencies) delete pkg.dependencies[SHARP_WASM_PACKAGE];
+    return;
+  }
+  if (pkg.name !== SHARP_WASM_PACKAGE) return;
+  delete pkg.cpu;
+  pkg.os = ["linux"];
+}
+
 function readPackage(pkg) {
+  wireSharpWasmForLinux(pkg);
   for (const field of DEPENDENCY_FIELDS) {
     const deps = pkg[field];
     if (!deps) continue;
@@ -259,6 +309,7 @@ module.exports = {
   // reads `hooks`, so extra keys here are inert at install time.
   isGitSpec,
   gitSpecsInWorkspaceOverrides,
+  wireSharpWasmForLinux,
   hooks: {
     readPackage,
     fetchers: {

@@ -194,6 +194,11 @@ export default defineConfig(({ command }) => {
         rollupOptions: {
           input: {
             index: resolve(__dirname, "src/main/index.ts"),
+            // Its own input so every entry imports it as a separate chunk.
+            // ESM evaluates that chunk before the hoisted `import sharp`;
+            // inlined into an entry chunk it would run after it. See
+            // src/main/sharp-wasm-steer.ts.
+            "sharp-wasm-steer": resolve(__dirname, "src/main/sharp-wasm-steer.ts"),
             "paste-image-worker": resolve(
               __dirname,
               "src/main/workers/paste-image-worker.ts"

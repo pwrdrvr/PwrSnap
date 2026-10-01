@@ -2,6 +2,10 @@
 // starts the main-process CPU profiler before the rest of the bundle
 // evaluates. No-op otherwise. See startup-profiler.ts.
 import "./startup-profile-boot";
+// ⚠️ Keep this second, ahead of anything that imports sharp: in Electron on
+// Linux it steers sharp to its WebAssembly build before sharp loads. See
+// sharp-wasm-steer.ts.
+import { sharpWasmSteerDecision } from "./sharp-wasm-steer";
 import { access } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -1498,9 +1502,25 @@ function installQuitDiagnostics(): void {
   });
 }
 
+function logSharpWasmSteerDecision(): void {
+  const decision = sharpWasmSteerDecision;
+  if (decision.kind === "steered") {
+    log.info("sharp: using the WebAssembly build (Electron on Linux)", {
+      wasmBinding: decision.wasmBinding
+    });
+  } else if (decision.kind === "wasm-unavailable") {
+    // Native sharp in Electron on Linux crashes main with SIGTRAP. This is
+    // the line that explains a crash after an install without the package.
+    log.warn("sharp: @img/sharp-wasm32 is not installed; using the native addon, which can crash Electron on Linux", {
+      reason: decision.reason
+    });
+  }
+}
+
 export function bootstrapApp(): void {
   markStartup("main: bootstrapApp begin");
   initializeMainLogger();
+  logSharpWasmSteerDecision();
   installTerminalSignalShutdown();
   // Install first: a Sizzle save may defer the initial before-quit pass.
   // Transient teardown skips that pass and runs on the resumed app.quit().

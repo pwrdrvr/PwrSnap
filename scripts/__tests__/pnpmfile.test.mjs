@@ -12,6 +12,7 @@
 // A test that only asserted git specs are blocked would still pass
 // against the broken pattern. Both tables below are load-bearing.
 
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
@@ -108,6 +109,66 @@ describe("readPackage", () => {
   });
 });
 
+// Electron on Linux loads sharp's wasm build (apps/desktop/src/main/
+// sharp-wasm-steer.ts). sharp does not depend on it, and its manifest has no
+// platform fields, so without these edits pnpm would either hide it from
+// sharp's loader or install it on the hosts that stage release builds.
+describe("readPackage / sharp wasm wiring", () => {
+  test("adds @img/sharp-wasm32 to sharp's optional dependencies at sharp's own version", () => {
+    const pkg = {
+      name: "sharp",
+      version: "9.8.7",
+      optionalDependencies: { "@img/sharp-linux-x64": "9.8.7" }
+    };
+    readPackage(pkg);
+    expect(pkg.optionalDependencies).toEqual({
+      "@img/sharp-linux-x64": "9.8.7",
+      "@img/sharp-wasm32": "9.8.7"
+    });
+  });
+
+  test("gates @img/sharp-wasm32 to linux", () => {
+    const pkg = { name: "@img/sharp-wasm32", version: "0.35.4", cpu: ["wasm32"] };
+    readPackage(pkg);
+    expect(pkg.cpu).toBeUndefined();
+    expect(pkg.os).toEqual(["linux"]);
+  });
+
+  test("drops the FreeBSD / WebContainers wrappers' edge so pnpm cannot skip it through them", () => {
+    for (const name of ["@img/sharp-freebsd-wasm32", "@img/sharp-webcontainers-wasm32"]) {
+      const pkg = { name, os: ["freebsd"], dependencies: { "@img/sharp-wasm32": "0.35.4" } };
+      readPackage(pkg);
+      expect(pkg.dependencies).toEqual({});
+      expect(pkg.os).toEqual(["freebsd"]);
+    }
+  });
+
+  test("leaves every other @img package's platform fields alone", () => {
+    const pkg = { name: "@img/sharp-linux-x64", os: ["linux"], cpu: ["x64"], libc: ["glibc"] };
+    readPackage(pkg);
+    expect(pkg).toEqual({ name: "@img/sharp-linux-x64", os: ["linux"], cpu: ["x64"], libc: ["glibc"] });
+  });
+
+  test("the lockfile carries both edits, so a frozen install on Linux gets the wasm build", () => {
+    const lockfile = readFileSync(fileURLToPath(new URL("../../pnpm-lock.yaml", import.meta.url)), "utf8");
+    const packageEntry = /\n {2}'@img\/sharp-wasm32@[^']+':\n((?: {4}.*\n)+)/.exec(lockfile);
+    expect(packageEntry, "@img/sharp-wasm32 package entry").not.toBeNull();
+    expect(packageEntry[1]).toMatch(/^ {4}os: \[linux\]$/m);
+    expect(packageEntry[1]).not.toMatch(/^ {4}cpu:/m);
+
+    const snapshots = lockfile.slice(lockfile.indexOf("\nsnapshots:\n"));
+    const sharpSnapshot = /\n {2}sharp@([0-9][^(':]*)[^:]*:\n((?: {4}.*\n)+)/.exec(snapshots);
+    expect(sharpSnapshot, "sharp snapshot entry").not.toBeNull();
+    expect(sharpSnapshot[2]).toContain(`'@img/sharp-wasm32': ${sharpSnapshot[1]}`);
+
+    for (const wrapper of ["sharp-freebsd-wasm32", "sharp-webcontainers-wasm32"]) {
+      const entry = new RegExp(`\\n {2}'@img\\/${wrapper}@[^']+':\\n((?: {4}.*\\n)*)`).exec(snapshots);
+      expect(entry, `${wrapper} snapshot entry`).not.toBeNull();
+      expect(entry[1]).not.toContain("@img/sharp-wasm32");
+    }
+  });
+});
+
 // `pnpm.overrides` and `resolutions` are not dependency fields, so the
 // DEPENDENCY_FIELDS loop never sees them — yet pnpm resolves their values
 // exactly like a spec. An override repoints a TRANSITIVE package, so it
@@ -163,7 +224,6 @@ describe("readPackage / override fields", () => {
   });
 
   test("does not trip on the overrides this repo actually ships", async () => {
-    const { readFileSync } = await import("node:fs");
     const root = JSON.parse(
       readFileSync(fileURLToPath(new URL("../../package.json", import.meta.url)), "utf8")
     );
@@ -244,7 +304,6 @@ describe("gitSpecsInWorkspaceOverrides", () => {
   // The repo's own file must stay clean, and must parse to "nothing to flag"
   // rather than throwing.
   test("this repo's pnpm-workspace.yaml declares no git override", async () => {
-    const { readFileSync } = await import("node:fs");
     const text = readFileSync(
       fileURLToPath(new URL("../../pnpm-workspace.yaml", import.meta.url)),
       "utf8"

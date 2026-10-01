@@ -50,6 +50,7 @@ import {
   ShapeKind,
   ShapeStrokeStyle
 } from "@pwrsnap/shared/overlay";
+import { duplicateAndAwaitCommit } from "../capture/await-duplicate";
 import { bus } from "../command-bus";
 import { currentChatToolCommandContext } from "./chat-tool-command-context";
 import { defineTool, type ToolDispatchResult, type ToolSpec } from "./define-tool";
@@ -1165,8 +1166,8 @@ const duplicateCapture = defineTool({
   annotations: { idempotentHint: false },
   argsSchema: z.object({ capture_id: z.string(), with_edits: z.boolean() }),
   dispatch: async (args) => {
-    const result = await bus.dispatch(
-      "capture:duplicate",
+    // Waits out a background video copy: the next tool call edits the copy.
+    const result = await duplicateAndAwaitCommit(
       { captureId: args.capture_id, withEdits: args.with_edits },
       currentChatToolCommandContext()
     );

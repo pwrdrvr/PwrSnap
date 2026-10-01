@@ -35,10 +35,15 @@ describe("local-agent video command policy", () => {
 });
 
 describe("local-agent duplicate and family command policy", () => {
-  test("capture:duplicate needs capture.edit, so a read-only grant cannot fork a snap", () => {
-    expect(localAgentCommandRequirement("capture:duplicate", {})).toEqual({
-      all: ["capture.edit"]
-    });
+  test.each(["capture:duplicate", "capture:duplicateJobs"])(
+    "%s needs capture.edit, so a read-only grant cannot fork a snap",
+    (command) => {
+      expect(localAgentCommandRequirement(command, {})).toEqual({ all: ["capture.edit"] });
+    }
+  );
+
+  test("cancelling a copy stays denied — that is the user's call in the Library", () => {
+    expect(localAgentCommandRequirement("capture:cancelDuplicate", {})).toBeNull();
   });
 
   test("capture:editSummary is readable by a reader or an editor", () => {

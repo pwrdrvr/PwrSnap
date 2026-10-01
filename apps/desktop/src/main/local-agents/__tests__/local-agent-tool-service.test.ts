@@ -653,7 +653,8 @@ describe("LocalAgentToolService duplicates", () => {
     register("capture:duplicate", async (request) => {
       requests.push(request);
       return ok({
-        record: member("cap_copy", { familyId: "cap_flakes", duplicatedFrom: "cap_flakes" })
+        record: member("cap_copy", { familyId: "cap_flakes", duplicatedFrom: "cap_flakes" }),
+        job: null
       });
     });
 
@@ -675,11 +676,53 @@ describe("LocalAgentToolService duplicates", () => {
     }));
   });
 
+  test("waits out a background video copy before answering", async () => {
+    let polls = 0;
+    register("capture:duplicate", async () =>
+      ok({
+        record: null,
+        job: {
+          jobId: "job_rec",
+          sourceId: "cap_rec",
+          captureId: "cap_rec_copy",
+          withEdits: true,
+          state: "copying",
+          bytesCopied: 0,
+          totalBytes: 2_048,
+          error: null
+        }
+      })
+    );
+    register("capture:duplicateJobs", async () => {
+      polls += 1;
+      return ok({ jobs: polls === 1 ? [{ jobId: "job_rec" }] : [] });
+    });
+    register("library:byId", async (request) =>
+      ok(member(request.id, { kind: "video", familyId: "cap_rec", duplicatedFrom: "cap_rec" }))
+    );
+
+    const result = await new LocalAgentToolService(
+      new LocalAgentMcpResourceRegistry(),
+      new LocalAgentSignedUrlService(Buffer.alloc(32, 7)),
+      () => null,
+      { duplicatePollMs: 1 }
+    ).captureDuplicate(
+      { captureId: "cap_rec", withEdits: true },
+      context("lag_dup", ["capture.edit"])
+    );
+
+    expect(polls).toBe(2);
+    expect(result).toMatchObject({
+      ok: true,
+      value: { captureId: "cap_rec_copy", familyId: "cap_rec", kind: "video", withEdits: true }
+    });
+  });
+
   test("the bus refuses a read-only grant before the handler runs", async () => {
     let called = false;
     register("capture:duplicate", async () => {
       called = true;
-      return ok({ record: member("cap_copy") });
+      return ok({ record: member("cap_copy"), job: null });
     });
 
     const result = await service().captureDuplicate(

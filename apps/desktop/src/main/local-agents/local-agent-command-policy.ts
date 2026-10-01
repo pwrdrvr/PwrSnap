@@ -80,8 +80,11 @@ export function localAgentCommandRequirement(
     case "video:setDefaultRange":
     // A duplicate adds a capture rather than changing one, but it is the
     // first half of "make an edited copy": the grant that may draw on a
-    // snap may also fork it. The source is never touched.
+    // snap may also fork it. The source is never touched. The job list is
+    // how a duplicating agent waits out a background video copy; it is
+    // not a catalog read.
     case "capture:duplicate":
+    case "capture:duplicateJobs":
       return { all: ["capture.edit"] };
 
     // Reading a video's edit and its activity track. An agent granted

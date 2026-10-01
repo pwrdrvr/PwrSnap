@@ -589,6 +589,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
         "Make an independent copy of a live capture: a new captureId with its own bundle, in the same duplicate family as the source. " +
         "withEdits is required. true carries the current edit (image: crop and annotations; video: trim and cuts); false copies only the original pixels or the full recording. " +
         "Title, description, tags and OCR are copied, with the title numbered within the family (\"… copy 2\"). The source is never changed. " +
+        "A large recording that cannot be cloned is byte-copied; the call waits until the copy exists. One copy of a source at a time (in_progress otherwise). " +
         "Returns the copy's captureId and familyId; edit the copy with pwrsnap_image_edit_send or pwrsnap_video_edit. " +
         "pwrsnap_capture_edit_summary says what withEdits=true would carry.",
       inputSchema: {

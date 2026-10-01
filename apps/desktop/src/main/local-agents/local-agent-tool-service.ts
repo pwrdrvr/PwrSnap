@@ -11,6 +11,7 @@ import {
   type Result
 } from "@pwrsnap/shared";
 import { createHash } from "node:crypto";
+import { duplicateAndAwaitCommit } from "../capture/await-duplicate";
 import { bus } from "../command-bus";
 import {
   LocalAgentMcpResourceRegistry,
@@ -35,7 +36,8 @@ export class LocalAgentToolService {
   constructor(
     private readonly resources: LocalAgentMcpResourceRegistry,
     private readonly signedUrls: LocalAgentSignedUrlService,
-    private readonly getBaseUrl: () => string | null
+    private readonly getBaseUrl: () => string | null,
+    private readonly options: { duplicatePollMs?: number } = {}
   ) {}
 
   async metadata(
@@ -68,12 +70,18 @@ export class LocalAgentToolService {
     input: { captureId: string; withEdits: boolean },
     ctx: LocalAgentToolContext
   ): Promise<Result<unknown, PwrSnapError>> {
-    // The handler maps not_found / trashed / unsupported itself, and
-    // broadcasts the change so an open Library shows the copy.
-    const duplicated = await bus.dispatch(
-      "capture:duplicate",
+    // The handler maps not_found / trashed / unsupported / in_progress
+    // itself, and broadcasts the commit so an open Library shows the copy.
+    // A byte-copied video is waited out: the agent's next call edits it.
+    const duplicated = await duplicateAndAwaitCommit(
       { captureId: input.captureId, withEdits: input.withEdits },
-      ctx.commandContext
+      ctx.commandContext,
+      {
+        signal: ctx.signal,
+        ...(this.options.duplicatePollMs !== undefined
+          ? { pollMs: this.options.duplicatePollMs }
+          : {})
+      }
     );
     if (!duplicated.ok) return duplicated;
     const { record } = duplicated.value;

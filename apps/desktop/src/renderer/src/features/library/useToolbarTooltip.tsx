@@ -123,7 +123,10 @@ export function useToolbarTooltip(rootRef: RefObject<HTMLElement | null>): React
     root.addEventListener("focusin", onFocusIn);
     root.addEventListener("focusout", onFocusOut);
     root.addEventListener("pointerdown", onPointerDown, true);
-    window.addEventListener("keydown", onKeyDown, true);
+    // Document, not window: the focus hooks' Escape listener must stay the
+    // first window-capture keydown listener (root AGENTS.md, "Overlays get
+    // Escape, Tab and focus"). Window capture runs before document capture.
+    document.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("blur", onPointerDown);
     return () => {
       window.clearTimeout(timer);
@@ -132,7 +135,7 @@ export function useToolbarTooltip(rootRef: RefObject<HTMLElement | null>): React
       root.removeEventListener("focusin", onFocusIn);
       root.removeEventListener("focusout", onFocusOut);
       root.removeEventListener("pointerdown", onPointerDown, true);
-      window.removeEventListener("keydown", onKeyDown, true);
+      document.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("blur", onPointerDown);
     };
   }, [rootRef]);

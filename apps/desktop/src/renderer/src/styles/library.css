@@ -4399,6 +4399,11 @@
 .psl-tip {
   position: fixed;
   z-index: 1000;
+  /* Its own content's width, never the room left beside wherever it sat
+     last: fixed and shrink-to-fit, a tooltip still at the previous
+     anchor's right-edge spot measured narrow and tall, and was placed by
+     that height. */
+  width: max-content;
   max-width: 320px;
   padding: 6px 9px;
   border: 1px solid var(--border-default);
@@ -4419,15 +4424,6 @@
 }
 .psl-tip__title + .psl-tip__line {
   margin-top: 3px;
-}
-.psl-tip__key {
-  min-width: 16px;
-  padding: 1px 4px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 3px;
-  font: 700 10px/1.2 var(--font-mono);
-  text-align: center;
-  color: var(--text-secondary);
 }
 /* Tool button hover — solid `--accent` fill regardless of active
    state. Strong unambiguous "this is clickable" signal that reads
@@ -4579,7 +4575,10 @@
      to itself. Flex and grid have no "end of row one" slot; a float is
      exactly that, and the narrow-stage grid below ignores it. */
   display: flow-root;
-  padding: 4px 12px;
+  /* No right padding: every item's 14px right margin is the gap to the
+     border. With both, a row's last item needed 26px of slack to fit and
+     rows broke 14px before the visible edge. */
+  padding: 4px 0 4px 12px;
   /* Exactly the toolbar's width. `width: 0` keeps the bar out of the
      dock's max-content sizing, so the dock is as wide as the toolbar;
      `min-width: 100%` then fills it. Sized to its own content, the bar
@@ -4675,7 +4674,7 @@
   float: right;
   /* Centered on row one's 38px line box (30px groups + 4px margins each
      side); the buttons are 26px. */
-  margin: 6px 0 6px 14px;
+  margin: 6px 12px 6px 14px;
 }
 .psl__et-props-btn {
   height: 26px;
@@ -4707,7 +4706,8 @@
   font: 500 11px/1.2 var(--font-sans);
   white-space: nowrap;
 }
-.psl__et-props-hint kbd {
+.psl__et-props-hint kbd,
+.psl-tip__key {
   display: inline-block;
   min-width: 14px;
   padding: 1px 3px;
@@ -4717,6 +4717,10 @@
   font: 700 9px/1.2 var(--font-mono);
   text-align: center;
   color: var(--text-secondary);
+}
+.psl-tip__key {
+  margin: 0;
+  font-size: 10px;
 }
 /* Two-row property bar on a narrow stage.
 
@@ -4773,6 +4777,9 @@
       "body body body";
     align-items: center;
     gap: 6px 10px;
+    /* The base padding leaves the vertical gaps to item margins, which
+       this grid zeroes. */
+    padding: 8px 12px;
   }
   .psl__et-props.is-multi {
     grid-template-areas: "tag hint actions";

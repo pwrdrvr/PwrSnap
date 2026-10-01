@@ -94,7 +94,7 @@ describe("useToolbarTooltip", () => {
     act(() => vi.advanceTimersByTime(400));
     const event = new KeyboardEvent("keydown", { key: "2", bubbles: true, cancelable: true });
     act(() => {
-      window.dispatchEvent(event);
+      document.body.dispatchEvent(event);
     });
     expect(tooltip()).toBeNull();
     expect(event.defaultPrevented).toBe(false);

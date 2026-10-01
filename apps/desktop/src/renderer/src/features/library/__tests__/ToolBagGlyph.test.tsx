@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test } from "vitest";
-import { defaultEditorToolBag, type ToolBagSlot } from "@pwrsnap/shared";
+import { computeShapeStrokeDash, defaultEditorToolBag, type ToolBagSlot } from "@pwrsnap/shared";
 import { describeBagSlot, ToolBagGlyph } from "../ToolBagGlyph";
 
 type ShapeSlotStyle = Extract<ToolBagSlot, { tool: "shape" }>["style"];
@@ -37,10 +37,17 @@ describe("describeBagSlot — stroke pattern", () => {
 });
 
 describe("ToolBagGlyph — shape stroke pattern", () => {
-  test("a dashed box draws a dashed, round-capped outline", () => {
+  test("a dashed box draws the editor's corner-aligned pattern, round-capped", () => {
     const html = renderToStaticMarkup(<ToolBagGlyph slot={box({ strokeStyle: "dashed" })} />);
-    expect(html).toContain('stroke-dasharray="3 2.5"');
+    // Same helper the editor and bake use: the 18×11 glyph box, in a
+    // glyph-sized pattern unit.
+    const expected = computeShapeStrokeDash("dashed", "rect", 18, 11, 0, 0.75)!;
+    expect(html).toContain(`stroke-dasharray="${expected.dasharray}"`);
+    expect(html).toContain(`stroke-dashoffset="${expected.dashoffset}"`);
     expect(html).toContain('stroke-linecap="round"');
+    // A rounded corner would start the path past the corner and put the
+    // pattern out of phase.
+    expect(html).not.toContain("rx=");
   });
 
   test("a solid box and a filled dashed box draw no dash", () => {

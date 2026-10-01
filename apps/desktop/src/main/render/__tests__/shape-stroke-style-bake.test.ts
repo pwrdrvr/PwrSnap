@@ -6,9 +6,8 @@ import { describe, expect, test } from "vitest";
 import type { OverlayRow } from "@pwrsnap/shared";
 import {
   annotationBasisPx,
-  computeShapeStrokeDashArray,
-  outlineStripeDashArrayForStemDash,
-  shapeOutlinePerimeterPx
+  computeShapeStrokeDash,
+  shapeStripeDash
 } from "@pwrsnap/shared";
 import { rasterizeSvgForV2, shapeSvgForV2 } from "../compose";
 
@@ -33,6 +32,13 @@ const coloredStroke = (svg: string): number =>
 const dashesOf = (svg: string): string[] =>
   Array.from(svg.matchAll(/stroke-dasharray="([^"]+)"/g), (m) => m[1]!);
 
+const offsetsOf = (svg: string): number[] =>
+  Array.from(svg.matchAll(/stroke-dashoffset="([^"]+)"/g), (m) => Number(m[1]!));
+
+/** The middle (whole, un-split) dash of the list — the corner dashes
+ *  at either end are two halves from different edges. */
+const midDash = (dasharray: string): number => Number(dasharray.split(" ")[2]);
+
 describe("shapeSvg (bake) — strokeStyle", () => {
   test("solid is byte-identical to a legacy row with no field", () => {
     const legacy = shapeSvgForV2(shape(), W, H);
@@ -47,17 +53,16 @@ describe("shapeSvg (bake) — strokeStyle", () => {
     expect(dashes).toHaveLength(2);
     expect(dashes[0]).toBe(dashes[1]);
     expect(svg).toContain('stroke-linecap="round"');
-    const expected = computeShapeStrokeDashArray(
-      "dashed",
-      shapeOutlinePerimeterPx("rect", 0.5 * W, 0.5 * H, 0),
-      coloredStroke(svg)
-    );
-    expect(dashes[0]).toBe(expected);
+    const expected = computeShapeStrokeDash("dashed", "rect", 0.5 * W, 0.5 * H, 0, coloredStroke(svg))!;
+    expect(dashes[0]).toBe(expected.dasharray);
+    // Both strokes start half-way into the corner dash at the top-left.
+    expect(offsetsOf(svg)).toEqual([expected.dashoffset, expected.dashoffset]);
+    expect(expected.dashoffset).toBeGreaterThan(0);
   });
 
   test("the dash is a multiple of the ladder's stroke, so it grows with thickness", () => {
     const dashOf = (thickness: "small" | "x-large"): number =>
-      Number(dashesOf(shapeSvgForV2(shape({ strokeStyle: "dashed", thickness }), W, H))[0]!.split(" ")[0]);
+      midDash(dashesOf(shapeSvgForV2(shape({ strokeStyle: "dashed", thickness }), W, H))[0]!);
     const basis = annotationBasisPx(W, H);
     // ≈ 4 × stroke, give or take the whole-cycle fit.
     expect(dashOf("small") / (basis / 160)).toBeCloseTo(4, 0);
@@ -68,14 +73,21 @@ describe("shapeSvg (bake) — strokeStyle", () => {
     const basis = annotationBasisPx(W, H);
     const one = dashesOf(shapeSvgForV2(shape({ strokeStyle: "dashed" }), W, H, basis))[0]!;
     const two = dashesOf(shapeSvgForV2(shape({ strokeStyle: "dashed" }), W * 2, H * 2, basis * 2))[0]!;
-    expect(Number(two.split(" ")[0])).toBeCloseTo(2 * Number(one.split(" ")[0]), 6);
+    expect(midDash(two)).toBeCloseTo(2 * midDash(one), 3);
   });
 
-  test("every primitive is patterned, fitted to its own perimeter", () => {
+  test("every primitive is patterned by the shared helper, with the editor's geometry", () => {
     for (const kind of ["circle", "oval", "parallelogram", "square"] as const) {
       const svg = shapeSvgForV2(shape({ shape: kind, strokeStyle: "dotted", skewDeg: 20 }), W, H);
-      const perimeter = shapeOutlinePerimeterPx(kind, 0.5 * W, 0.5 * H, kind === "parallelogram" ? 20 : 0);
-      expect(dashesOf(svg)[0]).toBe(computeShapeStrokeDashArray("dotted", perimeter, coloredStroke(svg)));
+      const expected = computeShapeStrokeDash(
+        "dotted",
+        kind,
+        0.5 * W,
+        0.5 * H,
+        kind === "parallelogram" ? 20 : 0,
+        coloredStroke(svg)
+      )!;
+      expect(dashesOf(svg)[0]).toBe(expected.dasharray);
     }
   });
 
@@ -85,11 +97,13 @@ describe("shapeSvg (bake) — strokeStyle", () => {
     expect(svg).toContain('stroke-linecap="round"');
   });
 
-  test("a striped border stripes WITHIN the dashes, the arrow stem's rule", () => {
+  test("a striped border stripes WITHIN the dashes, in phase with the halo", () => {
     const svg = shapeSvgForV2(shape({ strokeStyle: "dashed", outline: "stripe" }), W, H);
     const dashes = dashesOf(svg);
     expect(dashes).toHaveLength(3);
-    expect(dashes[1]).toBe(outlineStripeDashArrayForStemDash(dashes[0]!)!.dasharray);
+    const halo = { dasharray: dashes[0]!, dashoffset: offsetsOf(svg)[0]! };
+    expect(dashes[1]).toBe(shapeStripeDash(halo, "dashed").dasharray);
+    expect(offsetsOf(svg)).toEqual([halo.dashoffset, halo.dashoffset, halo.dashoffset]);
   });
 
   test("a filled shape has no outline to pattern — strokeStyle is inert", () => {
@@ -122,5 +136,35 @@ describe("shapeSvg (bake) — strokeStyle rasterizes for real", () => {
     const dashed = await opaqueRunAlongTop(shape({ strokeStyle: "dashed" }));
     expect(dashed.on).toBeGreaterThan(10);
     expect(dashed.off).toBeGreaterThan(5);
+  });
+
+  test("every corner of a dashed / dotted rect and parallelogram is painted", async () => {
+    // The corner pixel itself, for every corner: the pattern is aligned
+    // so each one sits in the middle of a dash (or a dot).
+    const at = (raw: Buffer, x: number, y: number): number =>
+      raw[(Math.round(y) * 400 + Math.round(x)) * 4 + 3]!;
+    const rect = { x: 0.1, y: 0.1, w: 0.5, h: 0.5 };
+    for (const strokeStyle of ["dashed", "dotted"] as const) {
+      for (const kind of ["rect", "parallelogram"] as const) {
+        const skewDeg = kind === "parallelogram" ? 20 : 0;
+        const svg = shapeSvgForV2(
+          { ...shape({ shape: kind, strokeStyle, skewDeg, rect }), outline: "none", thickness: "x-large" },
+          400,
+          300
+        );
+        const raw = (await rasterizeSvgForV2(svg, 400, 300)).input as Buffer;
+        const [x0, y0, w, h] = [rect.x * 400, rect.y * 300, rect.w * 400, rect.h * 300];
+        const shear = kind === "parallelogram" ? (h / 2) * Math.tan((skewDeg * Math.PI) / 180) : 0;
+        const corners = [
+          [x0 + shear, y0],
+          [x0 + w + shear, y0],
+          [x0 + w - shear, y0 + h],
+          [x0 - shear, y0 + h]
+        ] as const;
+        for (const [x, y] of corners) {
+          expect(at(raw, x, y), `${strokeStyle} ${kind} corner ${x},${y}`).toBeGreaterThan(200);
+        }
+      }
+    }
   });
 });

@@ -12,11 +12,7 @@ import { act, createElement, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import type { OverlayRow } from "@pwrsnap/shared";
-import {
-  annotationBasisPx,
-  computeShapeStrokeDashArray,
-  shapeOutlinePerimeterPx
-} from "@pwrsnap/shared";
+import { annotationBasisPx, computeShapeStrokeDash } from "@pwrsnap/shared";
 
 import { OverlaySvg, TransformHandles } from "../OverlaySvg";
 import { clearGlyphSize, reportGlyphSize } from "../text-measure-registry";
@@ -479,12 +475,19 @@ describe("OverlaySvg ShapeGlyph — strokeStyle", () => {
     const colored = Array.from(svg.querySelectorAll("rect")).find(
       (r) => r.getAttribute("stroke") !== "white"
     )!;
-    const expected = computeShapeStrokeDashArray(
+    const expected = computeShapeStrokeDash(
       "dashed",
-      shapeOutlinePerimeterPx("rect", 0.5 * 800, 0.5 * 600, 0),
+      "rect",
+      0.5 * 800,
+      0.5 * 600,
+      0,
       Number(colored.getAttribute("stroke-width"))
-    );
-    expect(dashes(svg)).toEqual([expected, expected]);
+    )!;
+    expect(dashes(svg)).toEqual([expected.dasharray, expected.dasharray]);
+    // The corner-alignment offset rides on both strokes.
+    for (const r of Array.from(svg.querySelectorAll("rect"))) {
+      expect(Number(r.getAttribute("stroke-dashoffset"))).toBe(expected.dashoffset);
+    }
     // Round caps live on the wrapping group, so both strokes get them.
     expect(colored.parentElement?.getAttribute("stroke-linecap")).toBe("round");
   });

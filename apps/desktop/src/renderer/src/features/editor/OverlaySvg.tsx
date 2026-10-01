@@ -36,7 +36,7 @@ import {
   annotationBasisPx,
   arrowBarEndpoints,
   computeArrowGeometry,
-  computeShapeStrokeDashArray,
+  computeShapeStrokeDash,
   computeStemDashArray,
   DEFAULT_PARALLELOGRAM_SKEW_DEG,
   outlineHaloColor,
@@ -57,7 +57,7 @@ import {
   readShapeSkewDeg,
   readShapeStrokeStyle,
   readTextWeight,
-  shapeOutlinePerimeterPx
+  shapeStripeDash
 } from "@pwrsnap/shared";
 import { rectFromDrag, type Draft } from "./editor-types";
 import type { GeometryUpdate, NormalizedPoint, NormalizedRect } from "./useCaptureModel";
@@ -1309,33 +1309,40 @@ function ShapeGlyph({
     );
   }
   // Outline stroke pattern — mirrors compose.ts shapeSvg (keep in
-  // sync): fitted to the closed perimeter, carried by the halo too, and
+  // sync): every corner mid-dash, carried by the halo too, and
   // round-capped so a dotted dash renders as a dot.
-  const strokeDash =
-    computeShapeStrokeDashArray(
-      strokeStyle,
-      shapeOutlinePerimeterPx(shape, rw, rh, skewDeg),
-      strokeWidthPx
-    ) ?? undefined;
+  const strokeDash = computeShapeStrokeDash(
+    strokeStyle,
+    shape,
+    rw,
+    rh,
+    skewDeg,
+    strokeWidthPx
+  );
+  const dashArray = strokeDash?.dasharray;
+  const dashOffset =
+    strokeDash === null || strokeDash.dashoffset === 0 ? undefined : strokeDash.dashoffset;
   const strokeGroupProps =
-    strokeDash === undefined
+    strokeDash === null
       ? wrapperProps
       : { ...wrapperProps, strokeLinecap: "round" as const };
   if (resolvedOutline.kind === "none") {
     return (
-      <g {...strokeGroupProps}>{strokedPrimitive(accent, strokeWidthPx, strokeDash)}</g>
+      <g {...strokeGroupProps}>
+        {strokedPrimitive(accent, strokeWidthPx, dashArray, dashOffset)}
+      </g>
     );
   }
   const haloWidthPx = strokeWidthPx + outlineWidthPx * 2;
   const stripe =
     resolvedOutline.kind !== "stripe"
       ? null
-      : strokeDash !== undefined
-        ? outlineStripeDashArrayForStemDash(strokeDash)
+      : strokeDash !== null && strokeStyle !== "solid"
+        ? shapeStripeDash(strokeDash, strokeStyle)
         : { dasharray: outlineStripeDashArray(haloWidthPx), dashoffset: 0 };
   return (
     <g {...strokeGroupProps}>
-      {strokedPrimitive(haloColor, haloWidthPx, strokeDash)}
+      {strokedPrimitive(haloColor, haloWidthPx, dashArray, dashOffset)}
       {stripe !== null &&
         strokedPrimitive(
           "black",
@@ -1343,7 +1350,7 @@ function ShapeGlyph({
           stripe.dasharray,
           stripe.dashoffset === 0 ? undefined : stripe.dashoffset
         )}
-      {strokedPrimitive(accent, strokeWidthPx, strokeDash)}
+      {strokedPrimitive(accent, strokeWidthPx, dashArray, dashOffset)}
     </g>
   );
 }

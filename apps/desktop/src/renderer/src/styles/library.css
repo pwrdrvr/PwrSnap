@@ -4530,7 +4530,9 @@
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
-  justify-content: center;
+  /* Start-aligned so a wrapped second row reads as the first row
+     continuing; centered rows left a lone control stranded mid-bar. */
+  justify-content: flex-start;
   gap: 8px 14px;
   max-width: 100%;
   flex: 0 1 auto;

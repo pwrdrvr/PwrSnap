@@ -22,7 +22,7 @@ import { openEditor, openToolStyleBar, seedImageCapture, selectTool } from "./fi
 
 test.setTimeout(90_000);
 
-test("editor-shape-tool: picking a shape kind in the popover persists across reopen", async () => {
+test("editor-shape-tool: picking a shape kind in the property bar persists across reopen", async () => {
   const app = await launchPwrSnap();
   try {
     const captureId = await seedImageCapture(app, { idPrefix: "shape", sourceAppName: "Shape Tool Spec" });

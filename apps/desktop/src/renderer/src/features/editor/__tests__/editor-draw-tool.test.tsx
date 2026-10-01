@@ -20,7 +20,8 @@ import {
   test,
   vi
 } from "vitest";
-import type { BundleLayerNode, CaptureRecord, Settings } from "@pwrsnap/shared";
+import { BundleLayerNode } from "@pwrsnap/shared";
+import type { CaptureRecord, Settings } from "@pwrsnap/shared";
 import type { LayerEditOp } from "../useCaptureModel";
 import { baseSettings } from "../../settings/__tests__/settings-fixture";
 
@@ -145,6 +146,8 @@ const layers: BundleLayerNode[] = [
     }
   }
 ] as BundleLayerNode[];
+// The fixture ids are readable, not schema ids; only what the editor
+// WRITES is held to the schema.
 
 vi.mock("../useCaptureModel", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../useCaptureModel")>();
@@ -163,6 +166,25 @@ vi.mock("../useCaptureModel", async (importOriginal) => {
 });
 
 const ops: LayerEditOp[] = [];
+
+/** Answers an upsert the way `layers:upsert` does: a node that fails the
+ *  bundle schema is refused, so a malformed piece (a wrong-length id, a
+ *  bad field) fails here as it would in the app instead of being
+ *  accepted by a permissive stub. */
+async function realisticDispatch(op: LayerEditOp): Promise<unknown> {
+  ops.push(op);
+  if (op.kind === "upsert") {
+    const parsed = BundleLayerNode.safeParse(op.node);
+    if (!parsed.success) {
+      return {
+        ok: false,
+        error: { kind: "validation", code: "schema_mismatch", message: parsed.error.message }
+      };
+    }
+    return { ok: true, value: { kind: "upsert", artifact: { format: 2, node: op.node } } };
+  }
+  return { ok: true, value: { kind: "delete" } };
+}
 let realGetBoundingClientRect: (() => DOMRect) | null = null;
 
 beforeAll(() => {
@@ -206,13 +228,7 @@ let root: Root | null = null;
 beforeEach(() => {
   ops.length = 0;
   hoisted.settings = baseSettings;
-  hoisted.dispatchEdit = async (op) => {
-    ops.push(op);
-    if (op.kind === "upsert") {
-      return { ok: true, value: { kind: "upsert", artifact: { format: 2, node: op.node } } };
-    }
-    return { ok: true, value: { kind: "delete" } };
-  };
+  hoisted.dispatchEdit = realisticDispatch;
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -350,5 +366,45 @@ describe("Editor — Draw tool", () => {
     // One piece ends left of the cut, the other starts right of it.
     expect(Math.max(...left!.map((p) => p.x))).toBeLessThan(0.5);
     expect(Math.min(...right!.map((p) => p.x))).toBeGreaterThan(0.5);
+  });
+
+  test("a piece that fails to write keeps the original stroke: no delete, and the written piece is taken back", async () => {
+    hoisted.settings = {
+      ...baseSettings,
+      editor: {
+        ...baseSettings.editor,
+        toolStyles: {
+          ...baseSettings.editor.toolStyles,
+          draw: { mode: "eraser", color: "accent", thickness: "small" }
+        }
+      }
+    };
+    let upserts = 0;
+    hoisted.dispatchEdit = async (op) => {
+      if (op.kind === "upsert" && ++upserts === 2) {
+        ops.push(op);
+        return { ok: false, error: { kind: "validation", code: "schema_mismatch", message: "stub" } };
+      }
+      return realisticDispatch(op);
+    };
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const canvas = await mountWithDrawTool();
+      await drag(canvas, [
+        [500, 300],
+        [500, 500],
+        [500, 700]
+      ]);
+    } finally {
+      errors.mockRestore();
+    }
+    const firstPiece = ops.find(
+      (op): op is Extract<LayerEditOp, { kind: "upsert" }> => op.kind === "upsert"
+    );
+    const deletes = ops
+      .filter((op): op is Extract<LayerEditOp, { kind: "delete" }> => op.kind === "delete")
+      .map((op) => op.id);
+    expect(deletes).not.toContain("stroke_1");
+    expect(deletes).toEqual([firstPiece!.node.id]);
   });
 });

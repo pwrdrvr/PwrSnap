@@ -5693,6 +5693,12 @@ function EditorLoaded({
   // the removed originals are recorded from the STORED tree, because
   // undo replays through the raw dispatcher. Pieces keep the original's
   // z_index, so a stroke cut in two stays where it was in the stack.
+  //
+  // A stroke is replaced all-or-nothing: the original is deleted only
+  // once EVERY piece has been written. A piece that fails takes back the
+  // pieces already written and leaves the original alone — an eraser
+  // that deleted a stroke it could not re-create would turn one rejected
+  // write into the loss of the whole stroke.
   useEffect(() => {
     eraseStrokesRef.current = async (changes): Promise<void> => {
       const removed: CreateDeleteItem[] = [];
@@ -5701,29 +5707,46 @@ function EditorLoaded({
         const display = modelLayers.find((l) => l.id === change.id);
         const stored = storedLayers.find((l) => l.id === change.id) ?? null;
         if (display === undefined || display.kind !== "vector") continue;
+        const written: CreateDeleteItem[] = [];
+        let failed = false;
         for (const shape of change.pieces) {
           // eslint-disable-next-line no-await-in-loop
           const result = await dispatchEdit({
             kind: "upsert",
-            node: { ...display, id: nanoid(), shape }
+            // Layer ids are 16-char nanoids — the bundle schema rejects
+            // any other length.
+            node: { ...display, id: nanoid(16), shape }
           });
           if (!result.ok) {
             // eslint-disable-next-line no-console
             console.error("eraser: piece upsert failed", result.error);
-            continue;
+            failed = true;
+            break;
           }
           if (result.value.kind === "upsert") {
             const node = result.value.artifact.node;
-            added.push({ row: { id: node.id }, node });
+            written.push({ row: { id: node.id }, node });
           }
+        }
+        if (failed) {
+          for (const piece of written) {
+            // eslint-disable-next-line no-await-in-loop
+            await dispatchEdit({ kind: "delete", id: piece.row.id });
+          }
+          continue;
         }
         // eslint-disable-next-line no-await-in-loop
         const deleted = await dispatchEdit({ kind: "delete", id: change.id });
         if (!deleted.ok) {
           // eslint-disable-next-line no-console
           console.error("eraser: delete failed", deleted.error);
+          for (const piece of written) {
+            // eslint-disable-next-line no-await-in-loop
+            await dispatchEdit({ kind: "delete", id: piece.row.id });
+          }
           continue;
         }
+        added.push(...written);
         removed.push({ row: { id: change.id }, node: stored });
       }
       if (!undoApplyingRef.current && (removed.length > 0 || added.length > 0)) {

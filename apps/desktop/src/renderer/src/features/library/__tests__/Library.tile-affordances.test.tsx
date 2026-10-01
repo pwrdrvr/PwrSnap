@@ -23,7 +23,7 @@ import type {
   Settings,
   StorageSnapshot
 } from "@pwrsnap/shared";
-import { emptyCaptureEditSummary } from "@pwrsnap/shared";
+import { EVENT_CHANNELS, emptyCaptureEditSummary } from "@pwrsnap/shared";
 
 const dispatchMock = vi.fn();
 const subscribeMock = vi.fn((_channel: string, _handler: (payload: unknown) => void) => {
@@ -530,6 +530,35 @@ describe("capture tile context menu — duplicate", () => {
   function submenuOf(menu: HTMLElement): HTMLElement | null {
     return menu.querySelector<HTMLElement>(".psl__context-menu--sub");
   }
+
+  test("families are re-read on families-changed only, never on an edit's captures-changed", async () => {
+    await renderLibrary();
+    const handlersFor = (channel: string): Array<(payload: unknown) => void> =>
+      subscribeMock.mock.calls
+        .filter(([name]) => name === channel)
+        .map(([, handler]) => handler);
+    const familiesReads = (): number =>
+      dispatchMock.mock.calls.filter(([name]) => name === "library:families").length;
+    const before = familiesReads();
+
+    await act(async () => {
+      for (let edit = 0; edit < 10; edit += 1) {
+        for (const handler of handlersFor(EVENT_CHANNELS.capturesChanged)) {
+          handler({ changedIds: ["cap_image"] });
+        }
+      }
+      await Promise.resolve();
+    });
+    expect(familiesReads()).toBe(before);
+
+    await act(async () => {
+      for (const handler of handlersFor(EVENT_CHANNELS.familiesChanged)) {
+        handler({ familyIds: ["fam_cereal"] });
+      }
+      await Promise.resolve();
+    });
+    expect(familiesReads()).toBe(before + 1);
+  });
 
   test("a snap with no edits duplicates straight away, keeping the selection", async () => {
     await renderLibrary();

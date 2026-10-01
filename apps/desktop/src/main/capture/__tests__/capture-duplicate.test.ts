@@ -57,7 +57,9 @@ const { persistCaptureFromTempV2, readBundleManifest, cancelScheduledRepacks } =
   "../../persistence/bundle-store"
 );
 const { insertLayer, listLayerTree } = await import("../../persistence/layers-repo");
-const { getCaptureById, insertCapture } = await import("../../persistence/captures-repo");
+const { getCaptureById, insertCapture, softDeleteCapture, restoreCapture, hardDeleteCapture } =
+  await import("../../persistence/captures-repo");
+const { setFamiliesChangedListener } = await import("../../persistence/family-change-signal");
 const { insertVideoMetadata, setVideoSegments, getVideoMetadata } = await import(
   "../../persistence/video-repo"
 );
@@ -324,5 +326,42 @@ describe("duplicateCapture — videos", () => {
     const copy = await duplicateCapture(sourceId, { withEdits: true });
     expect(getCaptureById(sourceId)!.family_id).toBe(sourceId);
     expect(copy.family_id).toBe(sourceId);
+  });
+});
+
+describe("families-changed signal", () => {
+  // The Library re-reads families only on this signal, so it must fire for
+  // every write that changes a family and stay quiet for everything else —
+  // above all for annotation edits, which happen many times a minute.
+  test("fires for copies, trash, restore and purge of members; not for edits or unrelated snaps", async () => {
+    const events: string[][] = [];
+    setFamiliesChangedListener((ids) => events.push(ids));
+    try {
+      const sourceId = await captureImage();
+      addArrow(sourceId);
+      addArrow(sourceId);
+      expect(events).toEqual([]);
+
+      const copy = await duplicateCapture(sourceId, { withEdits: true });
+      expect(events.flat()).toContain(sourceId);
+      events.length = 0;
+
+      addArrow(copy.id);
+      expect(events).toEqual([]);
+
+      softDeleteCapture(copy.id);
+      restoreCapture(copy.id);
+      softDeleteCapture(copy.id);
+      hardDeleteCapture(copy.id);
+      expect(events).toEqual([[sourceId], [sourceId], [sourceId], [sourceId]]);
+      events.length = 0;
+
+      const loner = await captureImage();
+      softDeleteCapture(loner);
+      hardDeleteCapture(loner);
+      expect(events).toEqual([]);
+    } finally {
+      setFamiliesChangedListener(null);
+    }
   });
 });

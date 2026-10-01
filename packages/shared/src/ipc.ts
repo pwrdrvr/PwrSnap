@@ -40,6 +40,14 @@ export const EVENT_CHANNELS = {
   /** Main → local renderers: one formatted current-session log line. */
   logEntry: "events:logs:entry",
   capturesChanged: "events:captures:changed",
+  /**
+   * Main → every BrowserWindow: a duplicate family's membership or
+   * live/trashed counts changed — a copy was made, or a member was
+   * trashed, restored or purged. Payload: `{ familyIds: string[] }`.
+   * Separate from `capturesChanged` on purpose: that fires on every
+   * annotation edit, and edits never change a family.
+   */
+  familiesChanged: "events:families:changed",
   overlaysChanged: "events:overlays:changed",
   uploadProgress: "events:upload:progress",
   aiRunUpdated: "events:ai-run:updated",

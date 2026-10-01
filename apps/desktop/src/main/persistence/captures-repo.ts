@@ -31,6 +31,7 @@ import type {
 } from "@pwrsnap/shared";
 import { normalizeTagLabel } from "@pwrsnap/shared";
 import { getDb } from "./db";
+import { notifyFamiliesChanged } from "./family-change-signal";
 import {
   capturePathReferencePredicate,
   capturePathReferencePrefix,
@@ -270,6 +271,7 @@ function insertCaptureInTx(
     .get(params) as CaptureRow;
 
   bumpAppStat(input.source_app_bundle_id, +1);
+  notifyFamiliesChanged([inserted.family_id]);
   return { record: rowToRecord(inserted) };
 }
 
@@ -1001,11 +1003,14 @@ export function softDeleteCapture(id: string): void {
   const db = getDb();
   db.transaction(() => {
     const row = db
-      .prepare("SELECT source_app_bundle_id FROM captures WHERE id = ? AND deleted_at IS NULL")
-      .get(id) as { source_app_bundle_id: string | null } | undefined;
+      .prepare(
+        "SELECT source_app_bundle_id, family_id FROM captures WHERE id = ? AND deleted_at IS NULL"
+      )
+      .get(id) as { source_app_bundle_id: string | null; family_id: string | null } | undefined;
     if (row === undefined) return; // already deleted or unknown id
     db.prepare("UPDATE captures SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL").run(id);
     bumpAppStat(row.source_app_bundle_id, -1);
+    notifyFamiliesChanged([row.family_id]);
   })();
 }
 
@@ -1023,12 +1028,13 @@ export function restoreCapture(id: string): void {
   db.transaction(() => {
     const row = db
       .prepare(
-        "SELECT source_app_bundle_id FROM captures WHERE id = ? AND deleted_at IS NOT NULL"
+        "SELECT source_app_bundle_id, family_id FROM captures WHERE id = ? AND deleted_at IS NOT NULL"
       )
-      .get(id) as { source_app_bundle_id: string | null } | undefined;
+      .get(id) as { source_app_bundle_id: string | null; family_id: string | null } | undefined;
     if (row === undefined) return; // already live or unknown id
     db.prepare("UPDATE captures SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL").run(id);
     bumpAppStat(row.source_app_bundle_id, +1);
+    notifyFamiliesChanged([row.family_id]);
   })();
 }
 
@@ -1044,14 +1050,17 @@ export function hardDeleteCapture(id: string): void {
   const db = getDb();
   db.transaction(() => {
     const row = db
-      .prepare("SELECT source_app_bundle_id, deleted_at FROM captures WHERE id = ?")
-      .get(id) as { source_app_bundle_id: string | null; deleted_at: string | null } | undefined;
+      .prepare("SELECT source_app_bundle_id, deleted_at, family_id FROM captures WHERE id = ?")
+      .get(id) as
+      | { source_app_bundle_id: string | null; deleted_at: string | null; family_id: string | null }
+      | undefined;
     if (row === undefined) return;
     if (row.deleted_at === null) {
       bumpAppStat(row.source_app_bundle_id, -1);
     }
     // ON DELETE CASCADE removes the render_cache + layers rows.
     db.prepare("DELETE FROM captures WHERE id = ?").run(id);
+    notifyFamiliesChanged([row.family_id]);
   })();
 }
 

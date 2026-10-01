@@ -16,6 +16,7 @@ import {
 
 import { getCapturesByIds } from "./captures-repo";
 import { getDb } from "./db";
+import { notifyFamiliesChanged } from "./family-change-signal";
 
 type FamilyRow = {
   family_id: string;
@@ -88,11 +89,12 @@ export function listFamilyMembers(familyId: string): CaptureRecord[] {
  * when the first one failed, saw its root un-rooted under it.
  */
 export function rootCaptureFamily(sourceId: string): boolean {
-  return (
+  const rooted =
     getDb()
       .prepare("UPDATE captures SET family_id = id WHERE id = ? AND family_id IS NULL")
-      .run(sourceId).changes === 1
-  );
+      .run(sourceId).changes === 1;
+  if (rooted) notifyFamiliesChanged([sourceId]);
+  return rooted;
 }
 
 type EnrichmentCopyRow = {

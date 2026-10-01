@@ -7,8 +7,13 @@
 //                         choice), the remembered choice per kind, and the
 //                         action itself.
 //   useCaptureFamilies    every family's live size (the ⧉ N glyph) and the
-//                         list behind the Family tab, kept fresh from the
-//                         captures-changed broadcast.
+//                         list behind the Family tab, kept fresh from
+//                         `events:families:changed`.
+//
+// Neither hook listens to `events:captures:changed`. That fires on every
+// annotation edit, and an edit never changes a family; main raises the
+// families event only when a copy is made or a member is trashed,
+// restored or purged.
 //
 // A plain Duplicate never moves the user: no selection change, no scroll.
 // The copy lands at the top of the grid (captured_at = now) and the glyph
@@ -151,7 +156,7 @@ export function useCaptureFamilies(): {
       });
     };
     refresh();
-    const unsubscribe = subscribe(EVENT_CHANNELS.capturesChanged, refresh);
+    const unsubscribe = subscribe(EVENT_CHANNELS.familiesChanged, refresh);
     return () => {
       seq += 1;
       unsubscribe();
@@ -164,8 +169,11 @@ export function useCaptureFamilies(): {
   return { families, liveCountByFamily };
 }
 
-/** A family's members, refreshed when captures change. Trashed members
- *  are included; callers decide how to show them. `null` until the first
+/** A family's members, refreshed when main says THIS family changed.
+ *  Trashed members are included; callers decide how to show them. The
+ *  records are as of that read: an edit to a member does not refetch
+ *  them, so callers that draw a thumbnail prefer a live record they
+ *  already hold. `null` until the first
  *  read for this family lands — a grid filtered to it must not read
  *  "loading" as "empty" and drop the selection. */
 export function useFamilyMembers(familyId: string | null): CaptureRecord[] | null {
@@ -183,7 +191,11 @@ export function useFamilyMembers(familyId: string | null): CaptureRecord[] | nul
       });
     };
     refresh();
-    const unsubscribe = subscribe(EVENT_CHANNELS.capturesChanged, refresh);
+    const unsubscribe = subscribe(EVENT_CHANNELS.familiesChanged, (payload) => {
+      const changed = (payload as { familyIds?: unknown } | null)?.familyIds;
+      if (Array.isArray(changed) && !changed.includes(familyId)) return;
+      refresh();
+    });
     return () => {
       seq += 1;
       unsubscribe();

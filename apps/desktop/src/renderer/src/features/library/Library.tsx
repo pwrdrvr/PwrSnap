@@ -1984,15 +1984,19 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   // trash to make that clear.
   const sourceAppState = includeFetchActive ? sourceAppRows[sourceAppFacetKey] : undefined;
   const familyFilterActive = familyFilterId !== null && !isTrashView;
-  const familyFilterRows = useMemo(
-    () =>
-      familyFilterMembers === null
-        ? null
-        : familyFilterMembers
-            .filter((record) => record.deleted_at === null)
-            .sort((a, b) => b.captured_at.localeCompare(a.captured_at)),
-    [familyFilterMembers]
-  );
+  // The member list is re-read only when the family itself changes, so an
+  // edit to a member leaves its row stale. Prefer the copy the Library
+  // already keeps live (the paged window, or a retained opened record).
+  const familyFilterRows = useMemo(() => {
+    if (familyFilterMembers === null) return null;
+    const live = new Map<string, CaptureRecord>();
+    for (const record of records) live.set(record.id, record);
+    for (const record of openedRecords) live.set(record.id, record);
+    return familyFilterMembers
+      .map((member) => live.get(member.id) ?? member)
+      .filter((record) => record.deleted_at === null)
+      .sort((a, b) => b.captured_at.localeCompare(a.captured_at));
+  }, [familyFilterMembers, records, openedRecords]);
   const universeRecordsRaw = isTrashView
     ? trashRecords
     : familyFilterActive && familyFilterRows !== null

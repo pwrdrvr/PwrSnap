@@ -157,7 +157,9 @@ export function FamilyTab({
                     disabled={isTrashed}
                     onClick={() => onSelectMember(member.id)}
                   >
-                    <MemberThumb record={member} />
+                    {/* The member list is not re-read on edits; the selected
+                        snap's own record is live, so its thumbnail follows. */}
+                    <MemberThumb record={isCurrent ? record : member} />
                     <span className="psl__family-body">
                       <span className="psl__family-title">
                         {titleOf(member, row?.enrichment ?? null)}

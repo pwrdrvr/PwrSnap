@@ -16,7 +16,14 @@
 import { act, createElement, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import type { CaptureRecord, DraftCart, Settings, StorageSnapshot } from "@pwrsnap/shared";
+import type {
+  CaptureEditSummary,
+  CaptureRecord,
+  DraftCart,
+  Settings,
+  StorageSnapshot
+} from "@pwrsnap/shared";
+import { emptyCaptureEditSummary } from "@pwrsnap/shared";
 
 const dispatchMock = vi.fn();
 const subscribeMock = vi.fn((_channel: string, _handler: (payload: unknown) => void) => {
@@ -187,6 +194,7 @@ const confirmMock = vi.fn(() => true);
  *  CANCELLED shape (`ok({ path: null })`) — the handler distinguishes a
  *  dismissed save sheet from a real failure, and only the latter should
  *  reach the user. */
+let editSummaryResult: CaptureEditSummary = emptyCaptureEditSummary();
 let saveAsResult: { ok: true; value: { path: string | null } } | { ok: false; error: unknown } = {
   ok: true,
   value: { path: null }
@@ -198,6 +206,7 @@ beforeEach(() => {
   } as unknown as NonNullable<Window["pwrsnapApi"]>;
   cartState = emptyCart;
   saveAsResult = { ok: true, value: { path: null } };
+  editSummaryResult = emptyCaptureEditSummary();
   confirmMock.mockReset();
   confirmMock.mockReturnValue(true);
   vi.stubGlobal("confirm", confirmMock);
@@ -224,6 +233,18 @@ beforeEach(() => {
     if (name === "app:version") return ok({ version: "0.0.0-test" });
     if (name === "cart:get" || name === "cart:toggle") return ok(cartState);
     if (name === "capture:saveAs") return saveAsResult;
+    if (name === "capture:editSummary") return ok(editSummaryResult);
+    if (name === "capture:duplicate") {
+      return ok({
+        record: {
+          ...imageRecord,
+          id: "cap_copy",
+          family_id: "cap_image",
+          duplicated_from: "cap_image"
+        }
+      });
+    }
+    if (name === "library:families") return ok({ families: [] });
     return ok(undefined);
   });
   subscribeMock.mockClear();
@@ -266,7 +287,8 @@ async function openMenu(): Promise<HTMLElement> {
         clientY: 120
       })
     );
-    await Promise.resolve();
+    // The menu waits for the edit summary (one dispatch) before drawing.
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
   });
   const menu = container?.querySelector<HTMLElement>('[role="menu"]');
   expect(menu).not.toBeNull();
@@ -291,6 +313,8 @@ describe("capture tile context menu", () => {
     );
     expect(labels).toEqual([
       "Edit",
+      "Edit a Copy",
+      "Duplicate",
       "Copy Low",
       "Copy Med",
       "Copy High",
@@ -495,6 +519,108 @@ describe("capture tile context menu", () => {
 // Keyboard. Before: the menu focused its own root, every row was a Tab stop
 // (Tab walked the rows and then out of the menu, leaving it open), no arrow
 // key did anything, and Escape dropped focus to <body>.
+describe("capture tile context menu — duplicate", () => {
+  const withEdits: CaptureEditSummary = {
+    ...emptyCaptureEditSummary(),
+    hasEdits: true,
+    cropped: true,
+    arrows: 2
+  };
+
+  function submenuOf(menu: HTMLElement): HTMLElement | null {
+    return menu.querySelector<HTMLElement>(".psl__context-menu--sub");
+  }
+
+  test("a snap with no edits duplicates straight away, keeping the selection", async () => {
+    await renderLibrary();
+    const menu = await openMenu();
+    const row = rowByLabel(menu, "Duplicate");
+    expect(row.getAttribute("aria-haspopup")).toBeNull();
+    await act(async () => {
+      row.click();
+      await Promise.resolve();
+    });
+    expect(dispatchMock).toHaveBeenCalledWith("capture:duplicate", {
+      captureId: "cap_image",
+      withEdits: true
+    });
+    expect(dispatchMock.mock.calls.some(([name]) => name === "editor:open")).toBe(false);
+    // No choice was offered, so nothing is remembered.
+    expect(dispatchMock.mock.calls.some(([name]) => name === "settings:write")).toBe(false);
+  });
+
+  test("a snap with edits asks, names the edits, and remembers the answer", async () => {
+    editSummaryResult = withEdits;
+    await renderLibrary();
+    const menu = await openMenu();
+    const duplicate = Array.from(
+      menu.querySelectorAll<HTMLElement>('[aria-haspopup="menu"]')
+    ).find((el) => el.textContent?.includes("Duplicate") && !el.textContent.includes("Copy"));
+    expect(duplicate).toBeDefined();
+    await act(async () => {
+      duplicate!.click();
+      await Promise.resolve();
+    });
+    const sub = submenuOf(menu);
+    expect(sub).not.toBeNull();
+    const choices = Array.from(sub!.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+    expect(choices.map((el) => el.querySelector("span")?.textContent)).toEqual([
+      "With Edits",
+      "Base Image Only"
+    ]);
+    expect(sub!.querySelector(".psl__context-menu-hint")?.textContent).toBe("crop · 2 arrows");
+
+    await act(async () => {
+      choices[1]!.click();
+      await Promise.resolve();
+    });
+    expect(dispatchMock).toHaveBeenCalledWith("capture:duplicate", {
+      captureId: "cap_image",
+      withEdits: false
+    });
+    expect(dispatchMock).toHaveBeenCalledWith("settings:write", {
+      library: { duplicateWithEdits: { image: false } }
+    });
+    expect(container?.querySelector('[role="menu"]')).toBeNull();
+  });
+
+  test("Edit a Copy opens the copy, not the original", async () => {
+    await renderLibrary();
+    const menu = await openMenu();
+    await act(async () => {
+      rowByLabel(menu, "Edit a Copy").click();
+      for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    });
+    expect(dispatchMock).toHaveBeenCalledWith("editor:open", { captureId: "cap_copy" });
+  });
+
+  test("ArrowRight opens the submenu on its first row; ArrowLeft backs out to the row", async () => {
+    editSummaryResult = withEdits;
+    await renderLibrary();
+    const menu = await openMenu();
+    const trigger = Array.from(menu.querySelectorAll<HTMLElement>('[aria-haspopup="menu"]'))[0]!;
+    trigger.focus();
+    const press = async (key: string): Promise<void> => {
+      const target = document.activeElement as HTMLElement;
+      await act(async () => {
+        target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+        await Promise.resolve();
+      });
+    };
+    await press("ArrowRight");
+    const sub = submenuOf(menu);
+    expect(sub).not.toBeNull();
+    expect(document.activeElement?.closest(".psl__context-menu--sub")).toBe(sub);
+    // The parent's arrows do not walk into the submenu's rows.
+    await press("ArrowDown");
+    expect(document.activeElement?.closest(".psl__context-menu--sub")).toBe(sub);
+    await press("ArrowLeft");
+    expect(submenuOf(menu)).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    expect(container?.querySelector('[role="menu"]')).not.toBeNull();
+  });
+});
+
 describe("capture tile context menu — keyboard", () => {
   async function press(key: string): Promise<KeyboardEvent> {
     const target = (document.activeElement as HTMLElement | null) ?? document.body;
@@ -519,7 +645,7 @@ describe("capture tile context menu — keyboard", () => {
     );
     expect(stops).toHaveLength(1);
     await press("ArrowDown");
-    expect(document.activeElement).toBe(rowByLabel(menu, "Copy Low"));
+    expect(document.activeElement).toBe(rowByLabel(menu, "Edit a Copy"));
     await press("End");
     expect(document.activeElement).toBe(rowByLabel(menu, "Move to Trash"));
     await press("Home");

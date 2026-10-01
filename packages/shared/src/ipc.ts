@@ -313,6 +313,14 @@ export const EVENT_CHANNELS = {
   editUndo: "events:edit:undo",
   editRedo: "events:edit:redo",
   /**
+   * Main → focused Library window: File ▸ Duplicate Snap (⇧⌘D) or File ▸
+   * Edit a Copy was chosen. The Library acts on its selected snap.
+   * Payload: `{ mode: "duplicate" | "edit-copy"; viaAccelerator: boolean }`
+   * — `viaAccelerator` lets the renderer drop an accelerator activation
+   * that raced its own ⇧⌘D keydown, exactly as the edit-menu bridge does.
+   */
+  libraryDuplicate: "events:library:duplicate",
+  /**
    * Main → every BrowserWindow: a Library chat thread's metadata
    * changed (created, renamed, archived, anchor moved, status flipped
    * to streaming/awaiting-approval/idle, or last-message preview

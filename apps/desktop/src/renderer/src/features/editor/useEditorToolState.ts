@@ -288,6 +288,7 @@ export function useEditorToolState(
   // section); read at call time.
   const effectiveStylesRef = useRef<EditorToolStyles | null>(null);
   const bagRef = useRef<EditorToolBag>(defaultEditorToolBag());
+  const bagLoadedRef = useRef<boolean>(false);
   // Settle bookkeeping for `settledToolStyles` — one shared deferred
   // + one bounded-wait timer per unsettled window, and a latch that
   // stops repeat 3s parks once a timeout has fired.
@@ -439,6 +440,11 @@ export function useEditorToolState(
   const setBagSlot = useCallback(
     (index: number, slot: ToolBagSlot | null): void => {
       if (!Number.isInteger(index) || index < 0 || index >= TOOL_BAG_SIZE) return;
+      // The bag is written WHOLE. Until settings land, `bagRef` holds
+      // the factory bag, and a save then would write the factory slots
+      // over the user's saved ones. Settings arrive in one local IPC
+      // round-trip, so dropping a save that early costs one click.
+      if (!bagLoadedRef.current) return;
       const slots = [...bagRef.current.slots];
       slots[index] = slot;
       const next: EditorToolBag = { slots };
@@ -496,6 +502,7 @@ export function useEditorToolState(
   effectiveStylesRef.current = effectiveStyles;
   settingsLoadedRef.current = settingsToolStyles !== null;
   bagRef.current = bag;
+  bagLoadedRef.current = settingsBag !== null;
 
   // One shared deferred for every settled-styles waiter, with one
   // bounded-wait timer, both torn down when settings land. Sequential

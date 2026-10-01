@@ -48,6 +48,7 @@ import type {
   ShapeKind,
   ShapeToolStyle,
   TextToolStyle,
+  ToolBagSlot,
   ToolColor,
   ToolSizePreset
 } from "@pwrsnap/shared";
@@ -250,12 +251,12 @@ export type LayersPanelApi = {
    *  updateOverlay + undo path. This edits the placed layer instead of
    *  changing the active drawing tool's defaults. */
   updateLayerStyle: (id: string, field: string, value: unknown) => void;
-  /** Several style fields on one layer as ONE edit: one dispatch, one
-   *  undo step. The tool bag's paste (⇧1–9, ⇧-click a slot) uses it —
-   *  a slot restyles color, heads and border together, and ⌘Z should
-   *  take all of that back at once. Same field vocabulary as
-   *  `updateLayerStyle`. */
-  applyLayerStyleFields: (id: string, fields: readonly SlotStyleField[]) => void;
+  /** Paste a tool-bag slot onto layers (⇧-click a slot; ⇧1–9 is the
+   *  editor's own twin and calls the same code). Each layer takes the
+   *  fields the slot says that its kind can carry — see
+   *  `slotFieldsForLayer` — as ONE edit: one dispatch, one undo step per
+   *  layer, so ⌘Z takes a slot's color, heads and border back at once. */
+  applyBagSlot: (slot: ToolBagSlot, ids: readonly string[]) => void;
 };
 
 /** Multiplier for one ⌘+ / ⌘- press. Deliberately NOT ZoomMenu's
@@ -4254,13 +4255,7 @@ export function Editor({
         if (slot === null) return;
         event.preventDefault();
         if (event.shiftKey && selectedLayerIds.length > 0) {
-          for (const id of selectedLayerIds) {
-            const row = overlaysRef.current.find((o) => o.id === id);
-            const target = row === undefined ? null : pasteTargetFor(row.data.kind);
-            if (target === null) continue;
-            const fields = slotFieldsForLayer(slot, target);
-            if (fields.length > 0) applyLayerStyleFieldsRef.current?.(id, fields);
-          }
+          applyBagSlotRef.current?.(slot, selectedLayerIds);
           return;
         }
         if (selectedLayerIds.length > 0) clearSelection();
@@ -4337,11 +4332,11 @@ export function Editor({
   // dyn) from the arrow-key + Shift modifier and calls in.
   const nudgeSelectedRef =
     useRef<((dxn: number, dyn: number) => void) | null>(null);
-  // Hook-owned multi-field restyle (same pattern). The ⇧1–9 bag paste
-  // below computes the fields per selected layer and calls in once per
-  // layer; EditorLoaded owns the overlay list, dispatch and undo.
-  const applyLayerStyleFieldsRef =
-    useRef<((id: string, fields: readonly SlotStyleField[]) => void) | null>(null);
+  // Hook-owned tool-bag paste (same pattern). The ⇧1–9 handler above
+  // and the toolbar's ⇧-click (through LayersPanelApi) both call in;
+  // EditorLoaded owns the overlay list, dispatch and undo.
+  const applyBagSlotRef =
+    useRef<((slot: ToolBagSlot, ids: readonly string[]) => void) | null>(null);
   // Hook-owned reorderer. Same pattern as deleteSelectedRef /
   // nudgeSelectedRef — EditorLoaded populates with a closure that
   // owns the current overlay list + dispatchEdit, so the outer
@@ -4609,7 +4604,7 @@ export function Editor({
       primarySelectedLayerId={primarySelectedLayerId}
       deleteSelectedRef={deleteSelectedRef}
       nudgeSelectedRef={nudgeSelectedRef}
-      applyLayerStyleFieldsRef={applyLayerStyleFieldsRef}
+      applyBagSlotRef={applyBagSlotRef}
       settleNudgeBurstRef={settleNudgeBurstRef}
       reorderSelectedRef={reorderSelectedRef}
       commitMultiDragRef={commitMultiDragRef}
@@ -4696,7 +4691,7 @@ function EditorLoaded({
   primarySelectedLayerId,
   deleteSelectedRef,
   nudgeSelectedRef,
-  applyLayerStyleFieldsRef,
+  applyBagSlotRef,
   settleNudgeBurstRef,
   reorderSelectedRef,
   commitMultiDragRef,
@@ -4886,10 +4881,10 @@ function EditorLoaded({
   nudgeSelectedRef: React.RefObject<
     ((dxnSteps: number, dynSteps: number) => void) | null
   >;
-  /** Populated here with the multi-field restyle; the outer ⇧1–9
-   *  handler calls into it once per selected layer. */
-  applyLayerStyleFieldsRef: React.RefObject<
-    ((id: string, fields: readonly SlotStyleField[]) => void) | null
+  /** Populated here with the tool-bag paste; the outer ⇧1–9 handler
+   *  and LayersPanelApi.applyBagSlot both call into it. */
+  applyBagSlotRef: React.RefObject<
+    ((slot: ToolBagSlot, ids: readonly string[]) => void) | null
   >;
   /** Commit-and-close for a pending arrow-key nudge burst. Populated by
    *  EditorLoaded's nudge effect; the OUTER pointerdown + clipboard
@@ -5354,8 +5349,8 @@ function EditorLoaded({
       updateLayerStyle: (id, field, value) => {
         updateLayerStyleRef.current?.(id, field, value);
       },
-      applyLayerStyleFields: (id, fields) => {
-        applyLayerStyleFieldsRef.current?.(id, fields);
+      applyBagSlot: (slot, ids) => {
+        applyBagSlotRef.current?.(slot, ids);
       },
       setLayerVisibility: async (id, visible) => {
         // RAW node: this is a FULL-NODE replace, so it must carry stored
@@ -6481,10 +6476,16 @@ function EditorLoaded({
   // It resolves by id rather than by the currently selected row so the
   // inspector never edits a different layer during a selection change.
   useEffect(() => {
-    applyLayerStyleFieldsRef.current = (id, fields): void => {
-      const current = overlays.find((row) => row.id === id);
-      if (current !== undefined) {
-        applyOverlayStyleFields(adoptDraftGeometry(current, draftGeometry), fields);
+    applyBagSlotRef.current = (slot, ids): void => {
+      for (const id of ids) {
+        const current = overlays.find((row) => row.id === id);
+        if (current === undefined) continue;
+        const target = pasteTargetFor(current.data.kind);
+        if (target === null) continue;
+        const fields = slotFieldsForLayer(slot, target);
+        if (fields.length > 0) {
+          applyOverlayStyleFields(adoptDraftGeometry(current, draftGeometry), fields);
+        }
       }
     };
     updateLayerStyleRef.current = (id, field, value): void => {
@@ -6506,7 +6507,7 @@ function EditorLoaded({
       }
     };
     return () => {
-      applyLayerStyleFieldsRef.current = null;
+      applyBagSlotRef.current = null;
       updateLayerStyleRef.current = null;
     };
     // `draftGeometry` is a dep because the closure above reads it —
@@ -6517,7 +6518,7 @@ function EditorLoaded({
   }, [
     overlays,
     draftGeometry,
-    applyLayerStyleFieldsRef,
+    applyBagSlotRef,
     applyOverlayStyleFields,
     updateLayerStyleRef,
     updateOverlayStyleField

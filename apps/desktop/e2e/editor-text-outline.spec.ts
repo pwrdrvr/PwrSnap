@@ -24,7 +24,7 @@
 // against a 180ms CSS animation, not a font-metric difference.
 
 import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
-import { openEditor, seedImageCapture, selectTool } from "./fixtures/editor";
+import { deselectAfterDraw, openEditor, seedImageCapture, selectTool } from "./fixtures/editor";
 
 // First spec cold-starts Electron; mirror the 90s bump used by the other
 // editor specs.
@@ -62,6 +62,8 @@ test("editor-text-outline: selection outline hugs the rendered glyph", async () 
     //    refetch) to paint it.
     const glyph = win.locator('[data-testid="text-glyph"]', { hasText: body });
     await glyph.waitFor({ state: "visible", timeout: 15_000 });
+    // The new text starts selected; drop that so step 3's click selects.
+    await deselectAfterDraw(win);
 
     // 3) Select it. The text tool is sticky, so switch to the pointer
     //    tool first; then click the glyph's center on the canvas (the
@@ -206,6 +208,7 @@ test("editor-text-outline: outline hugs under zoom, multi-line, and rotation", a
       await draft.waitFor({ state: "visible", timeout: 5_000 });
       await draft.fill(body);
       await win.keyboard.press("Enter");
+      await deselectAfterDraw(win);
       await selectTool(win, "pointer");
     };
 

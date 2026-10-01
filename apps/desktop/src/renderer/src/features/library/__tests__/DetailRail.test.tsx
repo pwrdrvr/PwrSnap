@@ -1711,7 +1711,7 @@ describe("DetailRail — Layers tab", () => {
     uncrop: async () => undefined,
     resetRasterTransform: async () => undefined,
     updateLayerStyle: () => undefined,
-    applyLayerStyleFields: () => undefined
+    applyBagSlot: () => undefined
   };
 
   test("shows Properties and Layers tabs for an image capture when layersApi is present", async () => {

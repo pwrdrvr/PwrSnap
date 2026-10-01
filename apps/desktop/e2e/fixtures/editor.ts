@@ -142,3 +142,14 @@ export async function selectTool(win: Page, tool: string): Promise<void> {
     win.locator(`.psl__edit-toolbar button[data-tool="${tool}"].is-active`)
   ).toHaveCount(1);
 }
+
+/** A finished drawing is selected on release. Let go of it so the next
+ *  click behaves like a first click: a click on an already-selected text
+ *  layer opens it for editing instead of selecting it. Waits for the
+ *  selection first, because Escape with nothing selected leaves Focus. */
+export async function deselectAfterDraw(win: Page): Promise<void> {
+  const outline = win.locator('[data-testid="selection-outline"]');
+  await outline.first().waitFor({ state: "visible", timeout: 5_000 });
+  await win.keyboard.press("Escape");
+  await outline.first().waitFor({ state: "detached", timeout: 5_000 });
+}

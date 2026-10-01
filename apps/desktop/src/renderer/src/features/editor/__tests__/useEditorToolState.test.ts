@@ -472,6 +472,24 @@ describe("useEditorToolState", () => {
     expect(api!.bag.slots[8]).toBeNull();
   });
 
+  test("10b. a save before settings land is dropped, so the factory bag never overwrites the saved one", () => {
+    installSettingsMock(null);
+    let api: UseEditorToolStateReturn | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-10b",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+    act(() => {
+      api!.setBagSlot(8, { tool: "blur", style: { mode: "pixelate", radius: { mode: "auto" } } });
+    });
+    expect(dispatchMock.mock.calls.some((c) => c[0] === "settings:write")).toBe(false);
+    expect(api!.bag.slots[8]).toBeNull();
+  });
+
   test("11. clearing the armed slot disarms it", () => {
     let api: UseEditorToolStateReturn | null = null;
     render(

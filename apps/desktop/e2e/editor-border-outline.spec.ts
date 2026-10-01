@@ -120,7 +120,10 @@ test("editor-border-outline: Auto samples a WHITE background into a black border
       bar.locator('[data-testid="outline-white"][aria-checked="true"]')
     ).toHaveCount(1);
 
-    await drawArrow(win, { x: 0.25, y: 0.75 }, { x: 0.75, y: 0.8 });
+    // Near the top: the docked property bar can cover the bottom of the
+    // canvas in a small window (it did on the Windows runner), and a
+    // drag that starts on the bar draws nothing.
+    await drawArrow(win, { x: 0.3, y: 0.1 }, { x: 0.8, y: 0.18 });
     await expect
       .poll(
         async () =>

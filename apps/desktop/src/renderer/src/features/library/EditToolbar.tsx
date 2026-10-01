@@ -69,7 +69,6 @@ import {
   type UseEditorToolStateReturn
 } from "../editor/useEditorToolState";
 import type { StyledToolKind } from "../editor/ToolStylePopover";
-import { slotFieldsForLayer } from "../editor/tool-bag";
 import { useCaptureModel } from "../editor/useCaptureModel";
 import { EditPropertyBar, type PropertyBarTarget } from "./EditPropertyBar";
 import { styledLayerStyle } from "./styled-layer-style";
@@ -134,6 +133,13 @@ export type EditToolbarProps = {
  *  unmount the toolbar when the user toggles into Reel/Grid view),
  *  but resets each app launch because the module is fresh. `null`
  *  means "use the default CSS bottom-center position."
+ *
+ *  The point stored is the dock's BOTTOM-CENTER, the same anchor the
+ *  default position uses. The property bar sits above the toolbar in
+ *  the dock and comes and goes with the selection and the active tool;
+ *  pinned by its top-left, the dock moved the toolbar down and sideways
+ *  every time the bar appeared. Pinned by its bottom-center, the bar
+ *  grows upward and the toolbar stays under the cursor.
  *
  *  Coordinate space is stage-relative — offsets in pixels from the
  *  top-left of `.psl__stage-wrap`, NOT the viewport. Storing stage-
@@ -495,12 +501,16 @@ export function EditToolbar({
       // Mirror the drag-time clamp: leave DRAG_MARGIN_PX between the
       // toolbar edges and the stage edges, and never invert the
       // clamp interval when the stage is smaller than the toolbar.
-      const maxX = Math.max(DRAG_MARGIN_PX, sr.width - tr.width - DRAG_MARGIN_PX);
-      const maxY = Math.max(DRAG_MARGIN_PX, sr.height - tr.height - DRAG_MARGIN_PX);
+      // The anchor is the bottom-center, so the bounds are offset by
+      // half the width and the whole height.
+      const minX = DRAG_MARGIN_PX + tr.width / 2;
+      const maxX = Math.max(minX, sr.width - tr.width / 2 - DRAG_MARGIN_PX);
+      const minY = DRAG_MARGIN_PX + tr.height;
+      const maxY = Math.max(minY, sr.height - DRAG_MARGIN_PX);
       setPosition((prev) => {
         if (prev === null) return prev;
-        const cx = clamp(prev.x, DRAG_MARGIN_PX, maxX);
-        const cy = clamp(prev.y, DRAG_MARGIN_PX, maxY);
+        const cx = clamp(prev.x, minX, maxX);
+        const cy = clamp(prev.y, minY, maxY);
         if (cx === prev.x && cy === prev.y) return prev;
         return { x: cx, y: cy };
       });
@@ -533,8 +543,9 @@ export function EditToolbar({
   const dragStart = useRef<{
     pointerX: number;
     pointerY: number;
-    toolbarLeft: number;
-    toolbarTop: number;
+    /** The dock's bottom-center at drag-start, viewport px. */
+    anchorX: number;
+    anchorY: number;
     stageRect: DOMRect | null;
   } | null>(null);
   const toolbarRef = useRef<HTMLDivElement | null>(null);
@@ -554,8 +565,8 @@ export function EditToolbar({
     dragStart.current = {
       pointerX: event.clientX,
       pointerY: event.clientY,
-      toolbarLeft: rect.left,
-      toolbarTop: rect.top,
+      anchorX: rect.left + rect.width / 2,
+      anchorY: rect.bottom,
       stageRect: stageEl?.getBoundingClientRect() ?? null
     };
   }
@@ -580,15 +591,15 @@ export function EditToolbar({
     const boundsTop = stageRect?.top ?? 0;
     const boundsRight = stageRect?.right ?? window.innerWidth;
     const boundsBottom = stageRect?.bottom ?? window.innerHeight;
-    const minViewportX = boundsLeft + DRAG_MARGIN_PX;
-    const maxViewportX = boundsRight - rect.width - DRAG_MARGIN_PX;
-    const minViewportY = boundsTop + DRAG_MARGIN_PX;
-    const maxViewportY = boundsBottom - rect.height - DRAG_MARGIN_PX;
+    const minViewportX = boundsLeft + DRAG_MARGIN_PX + rect.width / 2;
+    const maxViewportX = boundsRight - rect.width / 2 - DRAG_MARGIN_PX;
+    const minViewportY = boundsTop + DRAG_MARGIN_PX + rect.height;
+    const maxViewportY = boundsBottom - DRAG_MARGIN_PX;
     // Guard against degenerate stage smaller than the toolbar
     // (max < min after subtracting toolbar width/height): clamp to
     // [min, max(min, max)] so we never invert the clamp interval.
-    const targetX = dragStart.current.toolbarLeft + dx;
-    const targetY = dragStart.current.toolbarTop + dy;
+    const targetX = dragStart.current.anchorX + dx;
+    const targetY = dragStart.current.anchorY + dy;
     const clampedViewportX = clamp(
       targetX,
       minViewportX,
@@ -619,7 +630,8 @@ export function EditToolbar({
 
   // When a custom position is in effect, override the default
   // bottom-center anchor (`left: 50%; transform: translateX(-50%);
-  // bottom: 24px`) with explicit stage-relative `left`/`top`. The
+  // bottom: 24px`) with explicit stage-relative `left`/`top` for the
+  // dock's bottom-center, and translate the box up and left from it. The
   // toolbar stays on `position: absolute` — parented to
   // `.psl__stage-wrap` — so the offsets are interpreted in the same
   // coord space we store them in. (Earlier versions used
@@ -635,7 +647,7 @@ export function EditToolbar({
           left: position.x,
           top: position.y,
           bottom: "auto",
-          transform: "none"
+          transform: "translate(-50%, -100%)"
         };
 
   // ---- Tool clicks ----------------------------------------------
@@ -725,21 +737,12 @@ export function EditToolbar({
     )(propertyTarget.tool, field, value);
   };
 
-  // ⇧-click a slot: restyle every selected layer that can take it.
+  // ⇧-click a slot: restyle every selected layer that can take it —
+  // the same paste ⇧1–9 runs, which the editor owns.
   const applySlotToSelection = (index: number): void => {
     const slot = toolState.bag.slots[index] ?? null;
-    if (slot === null || layersApi === null || model.kind !== "loaded") return;
-    for (const id of selectedLayerIds) {
-      const node = model.layers.find((layer) => layer.id === id);
-      if (node === undefined) continue;
-      const projected = styledLayerStyle(node, {
-        width: model.record.width_px,
-        height: model.record.height_px
-      });
-      if (projected === null) continue;
-      const fields = slotFieldsForLayer(slot, projected.tool);
-      if (fields.length > 0) layersApi.applyLayerStyleFields(id, fields);
-    }
+    if (slot === null || layersApi === null) return;
+    layersApi.applyBagSlot(slot, selectedLayerIds);
   };
 
   const armSlot = (index: number, singleShot: boolean): void => {
@@ -957,6 +960,9 @@ function ToolButton({
     <button
       type="button"
       className={"psl__et-btn psl__et-btn--tool" + (active ? " is-active" : "")}
+      // With the label visually hidden, the accent is the only sign
+      // of which tool is on; say it to assistive tech too.
+      aria-pressed={active}
       onClick={onClick}
       title={`${tool.label} (${tool.key})`}
       data-tool={tool.id}

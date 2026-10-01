@@ -321,7 +321,7 @@ function makeLayersApi(): LayersPanelApi {
     uncrop: vi.fn(async () => undefined),
     resetRasterTransform: vi.fn(async () => undefined),
     updateLayerStyle: vi.fn(),
-    applyLayerStyleFields: vi.fn()
+    applyBagSlot: vi.fn()
   };
 }
 
@@ -622,18 +622,22 @@ describe("EditToolbar (Library Focus, v2 refresh)", () => {
     );
     expect(api.updateLayerStyle).toHaveBeenCalledWith("ov-box", "color", "green");
 
-    // ⇧-click slot 4 (the yellow range): the box turns yellow and
-    // keeps being a box — no arrow heads on a rectangle.
+    // ⇧-click slot 4 (the yellow range) hands the slot and the
+    // selection to the editor's paste — the same one ⇧4 runs. Which
+    // fields a box takes from it is slotFieldsForLayer's job (pinned in
+    // tool-bag.test.ts).
     await act(async () => {
       host
         ?.querySelector('[data-testid="bag-slot-4"]')
         ?.dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey: true }));
     });
-    expect(api.applyLayerStyleFields).toHaveBeenCalledWith("ov-box", [
-      ["color", "yellow"],
-      ["thickness", "small"],
-      ["outline", "auto"]
-    ]);
+    expect(api.applyBagSlot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tool: "arrow",
+        style: expect.objectContaining({ color: "yellow", endStyle: "bar", doubleEnded: true })
+      }),
+      ["ov-box"]
+    );
     // A paste is not an arm.
     expect(api.clearSelection).not.toHaveBeenCalled();
   });
@@ -645,7 +649,7 @@ describe("EditToolbar (Library Focus, v2 refresh)", () => {
     );
     await fireClick(host?.querySelector('[data-testid="bag-slot-3"]') as HTMLButtonElement);
     expect(api.clearSelection).toHaveBeenCalledTimes(1);
-    expect(api.applyLayerStyleFields).not.toHaveBeenCalled();
+    expect(api.applyBagSlot).not.toHaveBeenCalled();
   });
 
   test("7. opening a capture that already has a user arrow does NOT end ⌥ single-shot; a later placement still does", async () => {

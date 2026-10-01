@@ -35,6 +35,15 @@ function deferred() {
 
 afterEach(() => vi.useRealTimers());
 
+/**
+ * resumeQuit runs one macrotask after the flush settles (quit-retry.ts).
+ * A fake setImmediate queued while the clock sits at T runs only once the
+ * clock moves past T, so step 1 ms rather than 0.
+ */
+async function afterQuitDispatch(): Promise<void> {
+  await vi.advanceTimersByTimeAsync(1);
+}
+
 function fixture(stop: () => void | Promise<void>) {
   vi.useFakeTimers();
   const warn = vi.fn();
@@ -72,6 +81,7 @@ describe("diagnostics shutdown", () => {
     expect(timer.hasRef()).toBe(true);
     await vi.advanceTimersByTimeAsync(10_000);
     expect(f.stopSpy).toHaveBeenCalledOnce();
+    await afterQuitDispatch();
     expect(f.resumeQuit).toHaveBeenCalledOnce();
     timeout.mockRestore();
   });
@@ -108,6 +118,7 @@ describe("diagnostics shutdown", () => {
     expect(f.resumeQuit).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     expect(f.stopSpy).toHaveBeenCalledOnce();
+    await afterQuitDispatch();
     expect(f.resumeQuit).toHaveBeenCalledOnce();
     expect(f.warn).toHaveBeenCalledWith("diagnostics shutdown exceeded 10000 ms; continuing quit");
     capture.resolve();
@@ -135,7 +146,7 @@ describe("diagnostics shutdown", () => {
     f.shutdown.beforeQuit(f.event);
     await vi.advanceTimersByTimeAsync(10_000);
     reject(new Error("late failure"));
-    await vi.advanceTimersByTimeAsync(0);
+    await afterQuitDispatch();
     expect(f.resumeQuit).toHaveBeenCalledOnce();
     expect(f.warn).toHaveBeenCalledOnce();
   });
@@ -145,6 +156,7 @@ describe("diagnostics shutdown", () => {
     f.warn.mockImplementation(() => { throw new Error("log disk unavailable"); });
     f.shutdown.beforeQuit(f.event);
     await vi.advanceTimersByTimeAsync(10_000);
+    await afterQuitDispatch();
     expect(f.resumeQuit).toHaveBeenCalledOnce();
   });
 

@@ -24,11 +24,21 @@
  * SOFTWARE.
  */
 
+import { retryQuitAfterDispatch } from "../quit-retry";
+
 /** Keep diagnostic targets alive while flushing, with one deadline per quit. */
 export function createDiagnosticsShutdown(options: {
   stop: () => void | Promise<unknown>;
   resumeQuit: () => void;
   warn: (message: string) => void;
+  /**
+   * Whether anything is recording that a flush would have to save. When
+   * this says no, quit is not deferred at all: `stop()` still runs (it
+   * latches the targets' shutting-down flags) but nothing waits on it, so
+   * the common quit is one before-quit pass instead of two. Omitted means
+   * always defer.
+   */
+  hasPendingWork?: () => boolean;
 }) {
   let complete = false;
   let resumingQuit = false;
@@ -79,11 +89,23 @@ export function createDiagnosticsShutdown(options: {
       // The next quit still needs its own recording-finalization budget.
       startedAt ??= Date.now();
       if (complete) return false;
+      if (!resumingQuit && !updateOwnsQuit && options.hasPendingWork?.() === false) {
+        void flush();
+        return false;
+      }
       event.preventDefault();
       if (!resumingQuit) {
         resumingQuit = true;
+        // Not from this chain directly: with nothing to flush it settles in
+        // microtasks, which run INSIDE the native quit pass being deferred,
+        // and that pass then cancels the retry. See quit-retry.ts.
+        // An update that took over decides at settle time, as before; one
+        // that takes over during the hop wins too.
         void flush().then(() => {
-          if (!updateOwnsQuit) options.resumeQuit();
+          if (updateOwnsQuit) return;
+          retryQuitAfterDispatch(() => {
+            if (!updateOwnsQuit) options.resumeQuit();
+          });
         });
       }
       return true;

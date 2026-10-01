@@ -265,14 +265,18 @@ import {
   reclaimDockIconIfLibraryAlive,
   scheduleDockReclaim,
   refreshWindowsTitleBarOverlay,
+  hasActiveHotCpuProfilers,
   stopHotCpuProfilers,
   syncHotCpuProfilersFromSettings
 } from "./window";
 import {
   installContentTraceHook,
+  isContentTraceArmed,
   shutdownContentTrace
 } from "./diagnostics/content-trace-recorder";
 import { createDiagnosticsShutdown } from "./diagnostics/diagnostics-shutdown";
+import { retryQuitAfterDispatch } from "./quit-retry";
+import { installQuitStallRecovery } from "./quit-stall-recovery";
 import { installLaunchAtLoginSync, wasLaunchedAtLogin } from "./launch-at-login";
 import { wireAppMenuBridge } from "./app-menu-bridge";
 import {
@@ -1386,8 +1390,9 @@ function scheduleDarwinRegionSelectorPreWarm(): void {
  * Log lines that say where a quit stopped. A quit has stalled with every
  * window gone and nothing logged: the second before-quit pass tore the
  * helper windows down, the Library closed, and will-quit never fired.
- * Electron only emits will-quit once its native window list is empty, so
- * something it still counted had not finished closing.
+ * The cause was not a window still closing: the retried app.quit() ran
+ * nested inside the first, deferred pass, which then reset Electron's
+ * `is_quitting_` (quit-retry.ts). These lines are what showed it.
  *
  * Registered after the transient-window teardown, so the list on each
  * pass is what the close pass will have to close. Windows are named by
@@ -1475,7 +1480,11 @@ export function bootstrapApp(): void {
       if (failure?.status === "rejected") throw failure.reason;
     },
     resumeQuit: () => app.quit(),
-    warn: (message) => getMainLogger("pwrsnap:bootstrap").warn(message)
+    warn: (message) => getMainLogger("pwrsnap:bootstrap").warn(message),
+    // Only a running hot-CPU profiler or an armed trace has anything to
+    // save. Without one, deferring quit just to flush nothing doubled every
+    // quit.
+    hasPendingWork: () => hasActiveHotCpuProfilers() || isContentTraceArmed()
   });
   app.on("before-quit", (event) => {
     // Sizzle may cancel quit while asking to save. Let that decision finish.
@@ -1483,6 +1492,8 @@ export function bootstrapApp(): void {
     diagnosticsQuitDeferred = diagnosticsShutdown.beforeQuit(event);
   });
   setAppUpdateInstallHandler((install) => diagnosticsShutdown.quitAndInstall(install));
+  // The pass Electron will act on: nothing above deferred it.
+  const isFinalQuitPass = (): boolean => !isSizzleQuitDeferred() && !diagnosticsQuitDeferred;
   // Electron emits before-quit before it begins closing BrowserWindows. Tear
   // down persistent transient/infrastructure windows there so they cannot
   // hold the graceful quit handshake open. The returned idempotent helper is
@@ -1499,9 +1510,14 @@ export function bootstrapApp(): void {
       disposeFocusSink,
       destroyTextBakePool
     },
-    { shouldDisposeOnBeforeQuit: () => !isSizzleQuitDeferred() && !diagnosticsQuitDeferred }
+    { shouldDisposeOnBeforeQuit: isFinalQuitPass }
   );
   installQuitDiagnostics();
+  installQuitStallRecovery(app, {
+    isFinalPass: isFinalQuitPass,
+    hasWindows: () => BaseWindow.getAllWindows().length > 0,
+    log: getMainLogger("pwrsnap:quit")
+  });
 
   // setName BEFORE the first app.getPath("userData") access — Electron
   // derives userData from the app name, and the role peek below reads
@@ -2745,8 +2761,10 @@ export function bootstrapApp(): void {
         .finally(() => {
           // Retry the quit — the second time around the recording
           // state is idle so this branch falls through to the
-          // ordinary teardown below.
-          app.quit();
+          // ordinary teardown below. From a macrotask: will-quit is
+          // emitted from a native task, so a retry that settles in
+          // microtasks runs inside it and is lost (quit-retry.ts).
+          retryQuitAfterDispatch(() => app.quit());
         });
       return;
     }

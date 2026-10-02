@@ -16,6 +16,14 @@ default, even when the version string has no prerelease suffix. Promotion to
 Latest is a separate operator action after the build, assets, updater metadata,
 and smoke checks are validated.
 
+Every release, including prereleases, must run the remote Winget and Homebrew
+baseline in the [package-manager release runbook](package-manager-release-runbook.md)
+before changing metadata and again at handoff. Advance eligible stable updates
+within the authorized scope, and record submission links, accepted source and
+refreshed client versions, delays, blockers and a named follow-up owner. The new
+GitHub Pre-release waits for manual promotion; package channels may still need
+to catch up to an earlier promoted stable release.
+
 ---
 
 ## One-time setup
@@ -213,12 +221,17 @@ bundle with `codesign --verify --deep --strict PwrSnap.app`.
 
 ## Cutting a release (CI path — preferred)
 
-```bash
-# 1. Bump the version. Use semver pre-release tags during alpha/beta:
-pnpm --filter @pwrsnap/desktop version 0.0.1-alpha.1
+First complete the package-channel baseline above, then follow the
+[release skill](../.agents/skills/release/SKILL.md) for branch selection,
+changelog, signed metadata commit and tagging. Do not let a version command
+create a tag before the metadata is reviewed and landed:
 
-# 2. Push the tag (the version command commits and tags automatically).
-git push --follow-tags
+```bash
+pnpm --filter @pwrsnap/desktop version <version> --no-git-tag-version
+# Add matching CHANGELOG.md notes, validate, commit and land on RELEASE_BRANCH.
+RELEASE_TAG=v<version> pnpm release:check
+# Create a signed tag on the intended landed commit as described in the skill.
+git push origin v<version>
 ```
 
 The release workflow separates preparation, signing, and publication:
@@ -298,6 +311,13 @@ instead of the releases page, and drop the guard against it in
 No signing job publishes directly. A macOS or Windows signing failure, an
 unapproved environment, or a Linux build failure leaves no partial GitHub
 Release behind.
+
+After GitHub asset/notes verification, perform the package-manager runbook's
+post-publication steps and leave its completion record. `release.yml` does not
+submit Winget or merge Homebrew updates. Homebrew's separate tap workflow opens
+bump PRs; its success is not publication. Repeat channel follow-up after the
+operator manually promotes the release, retaining ownership through submission
+acceptance and refreshed-client verification.
 
 For a non-publishing Windows signing smoke check, apply `ci:windows-signing` to
 a same-repository PR after reviewing its head SHA. Temporarily allow that exact

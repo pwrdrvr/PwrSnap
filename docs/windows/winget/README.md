@@ -1,16 +1,20 @@
 # winget submission — `PwrDrvr.PwrSnap`
 
-This directory prepares a future PwrSnap submission to the Windows Package
-Manager community repository. PwrSnap is not published there yet, so this
-command does not currently resolve:
+This directory contains a historical starter for PwrSnap's first Windows Package
+Manager community submission. On 2026-10-02, the remote
+`microsoft/winget-pkgs:master` path `manifests/p/PwrDrvr/PwrSnap` was absent
+and submission searches found no PR, so this command was not yet supported:
 
 ```powershell
 winget install PwrDrvr.PwrSnap
 ```
 
-The three manifests in this directory are the proposed submission payload and
-the repository source of truth. There is no downstream copy in
-`microsoft/winget-pkgs` yet.
+The three manifests describe **1.0.3**, not a published Winget catalog entry.
+Read the [package-manager release runbook](../../package-manager-release-runbook.md)
+before every release to compare GitHub's eligible stable versions against remote
+Winget manifests and pending submissions. That runbook defines update and
+post-merge source/install/upgrade verification for this checklist. Reinspect
+the remote repository before deciding whether to create or update the package.
 
 **Submitting the pull request to `microsoft/winget-pkgs` is the operator's
 call.** Nothing in this directory submits anything on its own.
@@ -24,9 +28,12 @@ call.** Nothing in this directory submits anything on its own.
 | [`PwrDrvr.PwrSnap.locale.en-US.yaml`](PwrDrvr.PwrSnap.locale.en-US.yaml) | Default-locale manifest — the human-facing metadata `winget show` prints. |
 | [`validate-manifests.mjs`](validate-manifests.mjs) | Cross-platform schema pre-check for the three manifests above. |
 
-Current contents describe **v1.0.3**, the newest stable release. Alpha, beta,
-and prerelease tags are not submitted — winget's community repo is for shipping
-versions.
+Current contents describe **v1.0.3**, a historical signed release. Prepare a
+reviewable payload for the newest appropriate promoted stable version; replace
+the `1.0.3` examples below with that target and its actual metadata. Alpha, beta,
+and RC tags are excluded by PwrSnap's stable-package policy. A bare SemVer tag
+still marked GitHub Pre-release must wait for operator smoke checks and manual
+promotion before submission.
 
 ## Schema version
 
@@ -34,13 +41,12 @@ versions.
 `# yaml-language-server: $schema=https://aka.ms/winget-manifest.*.1.12.0.schema.json`
 header on each file.
 
-That is the version actually merging into `microsoft/winget-pkgs` today —
-verified against manifests merged on 2026-08-22, and the version
-`wingetcreate 1.12.x` emits. The `microsoft/winget-cli` repo carries frozen
-schema snapshots numbered higher than this (a `latest/` in-development schema
-plus `v1.28.0`), but nothing in the community repo uses them yet, and a
-`winget validate` run only understands the schema versions its own client build
-ships. Do not jump ahead of what the repo is merging.
+The original schema check used manifests merged on 2026-08-22 and
+`wingetcreate 1.12.x` output. Upstream also carried newer schema snapshots at
+that time. `winget validate` understands only schemas supported by its client
+build. Recheck current upstream requirements and the validator's supported
+schema before an update; the 2026-08-22 observation does not establish today's
+accepted schema version.
 
 All three files have been checked against the published draft-07 JSON schemas
 for 1.12.0. Re-check after any edit — from the repo root, on any platform:
@@ -149,6 +155,8 @@ same box is the right place to run this.
 ### 1. Confirm the release is the one to publish
 
 - [ ] The tag is a stable release, not an alpha/beta/prerelease.
+- [ ] The release is public/non-draft and `prerelease=false` after operator
+      promotion; compare all promoted stable versions and GitHub Latest.
 - [ ] `PwrSnap-<version>-windows-x64-setup.exe` is attached to the GitHub release.
 - [ ] The installer is Authenticode-signed as `CN=PwrDrvr LLC`.
 - [ ] `PwrSnap-windows-SHA256SUMS` is attached and its hash matches the manifest.
@@ -240,11 +248,13 @@ and where the app actually gets launched.
 - [ ] Silent install lands in `%LOCALAPPDATA%\Programs\PwrSnap`.
 - [ ] The registry query from the `ProductCode` section above matches the
       `AppsAndFeaturesEntries` block. `ProductCode` and `Publisher` are stable
-      across releases; `DisplayName` carries the version and is the one that
-      moves.
+      across releases; current installers use stable `DisplayName: PwrSnap`.
 - [ ] PwrSnap launches, and Control+Shift+C takes a capture.
 - [ ] A `.pwrsnap` file shows the PwrSnap icon in File Explorer.
 - [ ] `winget uninstall PwrDrvr.PwrSnap` removes it cleanly.
+- [ ] Upgrade from the previous stable install preserves settings/captures and
+      remains correlated with the exact package ID. Use an isolated test host;
+      do not uninstall or reset the operator's real installation.
 
 ### 8. Commit, push, open the pull request
 
@@ -258,6 +268,10 @@ git push --set-upstream origin pwrsnap-1.0.3
 ```
 
 Then open the pull request against `microsoft/winget-pkgs` `master`.
+Record the submission URL and named owner. After merge, re-read the remote
+manifest, refresh `winget` source, and verify exact-ID show/install/upgrade as
+specified in the package-manager runbook. A merged PR still awaiting index
+availability is pending distribution, not a completed client check.
 
 ## Labels to expect on the pull request
 
@@ -307,26 +321,17 @@ The ones that matter for a submission shaped like ours:
 
 ## Keeping the manifest current
 
-Two workable options; the second is the recommendation for now.
-
-**Automate from the release workflow.** Microsoft's `wingetcreate` can fetch a
-new installer, recompute the hash, clone the fork, and open the pull request in
-one command:
+Use the [package-manager release runbook](../../package-manager-release-runbook.md)
+on every release. There is no PwrSnap CI submission wiring. Check the remote
+package and existing PRs first: `wingetcreate update` requires an existing
+accepted package and cannot create the first submission. Once published,
+prefer generating a payload without submitting, then validate on Windows:
 
 ```powershell
-wingetcreate update PwrDrvr.PwrSnap --urls "https://github.com/pwrdrvr/PwrSnap/releases/download/v<version>/PwrSnap-<version>-windows-x64-setup.exe" --version <version> --submit --token $env:WINGET_PAT
+wingetcreate update PwrDrvr.PwrSnap --urls "https://github.com/pwrdrvr/PwrSnap/releases/download/v<version>/PwrSnap-<version>-windows-x64-setup.exe" --version <version> --out .local\winget
 ```
 
-Wiring that into the `publish-release-assets` job in
-[`.github/workflows/release.yml`](../../../.github/workflows/release.yml) needs
-three things that do not exist today: a Windows runner in that job (it currently
-runs on `ubuntu-24.04`), a GitHub token with `public_repo` scope on the
-`winget-pkgs` fork stored as a repository secret, and a guard so it only fires
-for stable tags — every CI release is born a prerelease, and shipping an alpha
-to the community repo would be wrong. It also submits unattended, which means a
-bad release reaches a public catalog with no human in the loop.
-
-**Bump manually, one pull request per stable release.** Copy the previous
+**For a first submission or manual bump**, copy the previous
 version's three files, then change:
 
 - `PackageVersion` — all three files.
@@ -337,10 +342,10 @@ version's three files, then change:
   predates the pin. Set it once when bumping off v1.0.3, then leave it alone.
 - `ReleaseNotesUrl` — locale manifest.
 
-Then walk the checklist above. Stable releases are infrequent enough that the automation's setup cost
-and its unattended-submission risk both outweigh the few minutes it saves, and a
-human confirming that the app actually launches on Windows before it reaches a
-public catalog is worth keeping. Revisit if the stable cadence tightens.
+Then walk the checklist above. Submit the validated directory with
+`wingetcreate submit <manifest-directory>` using interactive GitHub login, or
+the fork PR procedure. Track review, manifest acceptance, source indexing and
+installation/upgrade separately; record blockers and an owner through completion.
 
 **Done: `nsis.uninstallDisplayName` is pinned.**
 [`apps/desktop/electron-builder.yml`](../../../apps/desktop/electron-builder.yml)
@@ -349,5 +354,5 @@ now sets it to `PwrSnap`, so the ARP name no longer carries the version and
 [`windows-release-config.test.mjs`](../../../apps/desktop/scripts/windows-release-config.test.mjs).
 v1.0.3 shipped before the change and keeps `PwrSnap 1.0.3` in its manifest.
 
-**No CI wiring here.** Automating the submission remains a proposal; picking
-between it and the manual bump is the operator's call.
+**No CI wiring here.** Automating submission would need a separate approved
+design that gates on operator promotion, not merely a stable-looking tag.

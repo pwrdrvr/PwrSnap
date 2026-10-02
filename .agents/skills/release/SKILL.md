@@ -1,6 +1,6 @@
 ---
 name: release
-description: Prepare, validate, tag, publish, and monitor guarded PwrSnap desktop releases. Use when the user asks to release PwrSnap, select alpha/beta/maintenance-candidate/RC/stable versions, prepare a vX.Y.Z or vX.Y.Z-prerelease tag, update release notes or CHANGELOG.md for a desktop release, verify package.json/tag/changelog alignment, trigger the macOS signed/notarized release workflow, or inspect release workflow status.
+description: Prepare, validate, tag, publish, and monitor guarded PwrSnap desktop releases, including remote Winget and Homebrew version checks and distribution follow-up. Use when the user asks to release PwrSnap, select alpha/beta/maintenance-candidate/RC/stable versions, prepare a vX.Y.Z or vX.Y.Z-prerelease tag, update release notes or CHANGELOG.md for a desktop release, verify package.json/tag/changelog alignment, trigger the macOS signed/notarized release workflow, or inspect release workflow status.
 ---
 
 # Release
@@ -15,6 +15,8 @@ Read these files before changing release metadata:
 1. [../../../docs/desktop-release-runbook.md](../../../docs/desktop-release-runbook.md)
 2. [../../../.github/workflows/release.yml](../../../.github/workflows/release.yml)
 3. [../../../scripts/check-desktop-release-metadata.mjs](../../../scripts/check-desktop-release-metadata.mjs)
+4. [../../../docs/package-manager-release-runbook.md](../../../docs/package-manager-release-runbook.md)
+5. [../../../docs/windows/winget/README.md](../../../docs/windows/winget/README.md)
 
 ## Guardrails
 
@@ -62,6 +64,19 @@ Read these files before changing release metadata:
 - Never promote a GitHub Release to Latest as part of this skill. Every release
   task ends with the release still marked Pre-release; the operator promotes it
   manually in GitHub only after their own smoke checks.
+- Every release, including alpha/beta/RC, must inspect the **remote** Winget
+  manifests and Homebrew cask before editing metadata and again at handoff.
+  Follow the package-manager runbook; local `winget show` / `brew info` alone
+  do not establish the published version.
+- Keep both package channels as current as practical with the newest eligible
+  stable release. A newly uploaded GitHub Pre-release is not eligible, even
+  with bare stable SemVer. Catch up an older eligible release when authorized;
+  otherwise prepare the payload and name the owner/blocker. Never publish an
+  alpha/beta/RC to these stable packages or downgrade a channel automatically.
+- A bump workflow, open PR, or merged manifest is not proof of client
+  availability. Record submission links, accepted source versions, refreshed
+  client versions, validation results, and pending review/index/cache delays
+  separately. Do not declare the channels current while any of these is unknown.
 - Do not force-push the default branch or rewrite an existing release tag
   without explicit user approval.
 - Keep the MIT license intact: do not swap LICENSE for a different SPDX or
@@ -138,7 +153,12 @@ train's maintenance branch exists before preparing a prior-train patch.
 
 ## Prepare Release Metadata
 
-1. Determine the next version from the previous tag and user intent:
+1. Run the mandatory **Before every release** inspection in the
+   [package-manager runbook](../../../docs/package-manager-release-runbook.md).
+   Record GitHub Latest and the highest published stable SemVer, Winget
+   `PwrDrvr.PwrSnap` (or confirmed absence), Homebrew
+   `pwrdrvr/tap/pwrsnap`, and pending submissions. Select each channel's target
+   before determining the next version from the previous tag and user intent:
 
    ```bash
    git tag --sort=-version:refname | head -n 10
@@ -366,6 +386,29 @@ gh release edit v<version> --repo pwrdrvr/PwrSnap --notes-file .local/release-v<
 gh release view v<version> --repo pwrdrvr/PwrSnap --json body --jq '.body | length'
 gh release view v<version> --repo pwrdrvr/PwrSnap --json isPrerelease --jq '.isPrerelease'
 ```
+
+## Package Channels And Release Handoff
+
+After asset/notes verification, repeat the remote baseline and perform the
+**After publication or manual promotion** steps in the
+[package-manager runbook](../../../docs/package-manager-release-runbook.md).
+This is required even when the new release must wait for manual promotion:
+check existing stable-channel lag and prepare or advance eligible updates.
+
+Reuse `pwrdrvr/homebrew-tap`'s `bump.yml` and `scripts/bump-cask.sh`; the cask
+uses the universal macOS DMG on both Intel and Apple Silicon. Winget uses the
+signed Windows x64 NSIS installer and requires first submission if its remote
+package directory is absent. Its local `1.0.3` manifests are a historical
+starter, not evidence of publication. Do not modify another thread's checkout
+to prepare either update.
+
+Keep the newly published release marked Pre-release. Leave a concrete follow-up
+for the operator to resume channel updates after manual promotion, including
+target version, artifact URLs/digests, payload or submission links, test gaps,
+owner, next action and next check time. Report GitHub publication separately
+from each channel's state using the runbook's completion record. Pending channel
+work must remain owned through acceptance and refreshed-client verification;
+it is not complete merely because the GitHub release workflow succeeded.
 
 ## Local Fallback
 

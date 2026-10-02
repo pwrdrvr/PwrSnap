@@ -104,12 +104,24 @@ afterEach(async () => {
 describe("CodexCompatibilityBanner", () => {
   test("warns at startup only with AI enabled, copies the installer command, and keeps dismissal through unrelated saves", async () => {
     const api = await renderBanner(null, { settings: AI_ON, advisory: ADVISORY });
-    expect(container?.textContent).toContain("is out of date");
-    expect(container?.textContent).toContain("GPT-6.1-Sol");
-    expect(container?.textContent).toContain("0.159.2+");
-    const copy = Array.from(container!.querySelectorAll("button")).find((b) => b.textContent === "Copy command");
+    expect(container?.querySelector(".codex-version-banner")).not.toBeNull();
+    expect(container?.querySelector(".app-update-banner__eyebrow")?.textContent).toBe("Codex update available");
+    expect(container?.querySelector(".app-update-banner__message")?.textContent).toBe(
+      "Codex 0.159.1 predates GPT-6.1-Sol. Run this, then restart PwrSnap:"
+    );
+    expect(container?.querySelector(".app-update-banner__command")?.textContent).toBe("brew upgrade --cask codex");
+    // Copy is the primary action; Settings drops to a text link.
+    const copy = container!.querySelector<HTMLButtonElement>(".app-update-banner__restart");
+    expect(copy?.textContent).toBe("Copy command");
+    expect(container?.querySelector(".app-update-banner__notes")?.textContent).toBe("Codex settings");
+    const before = container!.querySelector("aside")!.childElementCount;
     await act(async () => copy?.click());
     expect(api.calls).toContainEqual({ name: "clipboard:copyText", req: { text: "brew upgrade --cask codex" } });
+    // The label flips in place; no status line is added to the card.
+    expect(copy?.textContent).toBe("Copied");
+    expect(copy?.getAttribute("aria-label")).toBe("Copied Codex update command");
+    expect(container!.querySelector("aside")!.childElementCount).toBe(before);
+    expect(container?.querySelector("[role=status]")).toBeNull();
     const dismiss = container!.querySelector<HTMLButtonElement>(".app-update-banner__dismiss");
     await act(async () => dismiss?.click());
     await act(async () => {
@@ -129,7 +141,7 @@ describe("CodexCompatibilityBanner", () => {
     expect(api.calls.some((c) => c.name === "settings:refreshCodexDiscovery")).toBe(false);
     expect(container?.querySelector("aside")).toBeNull();
     await act(async () => api.pushEvent(EVENT_CHANNELS.settingsChanged, { settings: AI_ON }));
-    expect(container?.textContent).toContain("GPT-6.1-Sol");
+    expect(container?.textContent).toContain("predates GPT-6.1-Sol");
     await act(async () => api.pushEvent(EVENT_CHANNELS.settingsChanged, { settings: baseSettings }));
     expect(container?.querySelector("aside")).toBeNull();
   });
@@ -144,9 +156,55 @@ describe("CodexCompatibilityBanner", () => {
   });
 
   test("does not duplicate the launch failure and model advisory", async () => {
-    await renderBanner(FIRST_ALERT, { settings: AI_ON, advisory: ADVISORY });
+    const api = await renderBanner(FIRST_ALERT, { settings: AI_ON, advisory: ADVISORY });
     expect(container?.querySelectorAll("aside")).toHaveLength(1);
+    expect(container?.querySelector(".codex-compatibility-banner")).not.toBeNull();
     expect(container?.textContent).toContain("Codex update required");
+    expect(container?.querySelector(".app-update-banner__message")?.textContent).toBe(
+      "Codex CLI 0.143.0 can’t be used. PwrSnap requires 0.144.0 or newer. Run this, then restart PwrSnap:"
+    );
+    const settingsLink = container!.querySelector<HTMLButtonElement>(".app-update-banner__notes");
+    await act(async () => settingsLink?.click());
+    expect(api.calls).toContainEqual({ name: "settings:open", req: { page: "ai", sub: "codex" } });
+  });
+
+  test("an advisory on a Codex that cannot run is a required update, not an available one", async () => {
+    await renderBanner(null, { settings: AI_ON, advisory: { ...ADVISORY, blocking: true } });
+    expect(container?.querySelector(".codex-compatibility-banner")).not.toBeNull();
+    expect(container?.querySelector(".codex-version-banner")).toBeNull();
+    expect(container?.querySelector(".app-update-banner__eyebrow")?.textContent).toBe("Codex update required");
+    expect(container?.querySelector(".app-update-banner__message")?.textContent).toBe(
+      "Codex 0.159.1 is too old to run. Run this, then restart PwrSnap:"
+    );
+  });
+
+  test("without a known command, Settings is primary and an unknown install links the release index", async () => {
+    const unknown: DesktopCodexVersionAdvisory = {
+      command: "/opt/custom/codex", version: "0.150.0", minimumVersion: "0.159.2", installer: "unknown"
+    };
+    const api = await renderBanner(null, { settings: AI_ON, advisory: unknown });
+    expect(container?.querySelector(".app-update-banner__command")).toBeNull();
+    expect(container?.querySelector(".app-update-banner__message")?.textContent).toBe(
+      "Codex 0.150.0 predates GPT-6.1-Sol. Update it the way you installed it, then restart PwrSnap."
+    );
+    expect(container?.querySelector(".app-update-banner__restart")?.textContent).toBe("Open Settings");
+    const releases = container!.querySelector<HTMLAnchorElement>("a.app-update-banner__notes");
+    expect(releases?.getAttribute("href")).toBe("https://github.com/openai/codex/releases");
+    await act(async () => releases?.click());
+    expect(api.calls).toContainEqual({
+      name: "app:openExternal", req: { url: "https://github.com/openai/codex/releases" }
+    });
+  });
+
+  test("an app-bundled Codex gets app instructions and no releases link", async () => {
+    await renderBanner(null, {
+      settings: AI_ON,
+      advisory: { command: "/Applications/Codex.app/Contents/Resources/codex", version: "0.150.0", minimumVersion: "0.159.2", installer: "application" }
+    });
+    expect(container?.querySelector(".app-update-banner__message")?.textContent).toBe(
+      "Codex 0.150.0 predates GPT-6.1-Sol. Update the ChatGPT or Codex app it ships with, then restart PwrSnap."
+    );
+    expect(container?.querySelector(".app-update-banner__notes")).toBeNull();
   });
   test("snapshot-reads a pre-existing guard failure and opens AI Providers", async () => {
     const api = await renderBanner(FIRST_ALERT);

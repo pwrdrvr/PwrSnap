@@ -56,8 +56,20 @@ describe("AI provider sub ids", () => {
       command: "/opt/homebrew/bin/codex", version: "0.148.0", minimumVersion: "0.159.2", installer: "unknown"
     } });
     expect(describeCodexStatus(snapshot, false)).toMatchObject({ tone: "warn", chip: "update", badge: "Update available" });
-    expect(describeCodexStatus({ ...snapshot, resolvedPath: null }, false)).toMatchObject({ tone: "warn", chip: "update", badge: "Update required" });
+    expect(describeCodexStatus({ ...snapshot, resolvedPath: null }, false)).toMatchObject({ tone: "bad", chip: "update", badge: "Update required" });
     expect(describeCodexStatus(codexSnapshot(), false)).toMatchObject({ tone: "ok", badge: "Ready" });
+  });
+  test("a sign-in or auth failure outranks the version advisory", () => {
+    const versionAdvisory = {
+      command: "/opt/homebrew/bin/codex", version: "0.148.0", minimumVersion: "0.159.2", installer: "unknown" as const
+    };
+    const testedAt = "2026-10-01T00:00:00Z";
+    expect(describeCodexStatus(codexSnapshot({
+      versionAdvisory, auth: { status: "unauthenticated", testedAt, durationMs: 1 }
+    }), false)).toMatchObject({ chip: "sign in", badge: "Sign in" });
+    expect(describeCodexStatus(codexSnapshot({
+      versionAdvisory, auth: { status: "failed", testedAt, durationMs: 1, errorMessage: "boom" }
+    }), false)).toMatchObject({ chip: "check", badge: "Auth check failed" });
   });
   test("Codex leads, OpenAI trails, Gemini sorts last among the ACP agents", () => {
     expect(AI_PROVIDER_SUBS).toEqual(["codex", "grok", "kimi", "qwen", "gemini", "openai"]);

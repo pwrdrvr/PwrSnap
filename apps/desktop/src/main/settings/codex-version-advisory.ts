@@ -65,6 +65,8 @@ export async function buildCodexVersionAdvisory(params: {
   command: string;
   version?: string | undefined;
   source?: DesktopCodexCandidateSource | undefined;
+  /** True when discovery resolved no launchable binary. */
+  blocking?: boolean;
   resolvePath?: (command: string) => Promise<string | undefined>;
 }): Promise<DesktopCodexVersionAdvisory | undefined> {
   if (!isCodexVersionBelowMinimum(params.version)) return undefined;
@@ -73,7 +75,8 @@ export async function buildCodexVersionAdvisory(params: {
     command: params.command,
     version: parseCodexVersionCore(params.version)!.join("."),
     minimumVersion: CODEX_MINIMUM_RECOMMENDED_VERSION,
-    ...classifyCodexInstaller({ ...params, resolvedPath })
+    ...classifyCodexInstaller({ ...params, resolvedPath }),
+    ...(params.blocking ? { blocking: true as const } : {})
   };
 }
 

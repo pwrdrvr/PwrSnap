@@ -216,6 +216,11 @@ describe("theme contract: WCAG contrast spot-checks", () => {
     it("button-text-on-accent on accent meets AA", () => {
       expect(contrastRatio(buttonText, accent)).toBeGreaterThanOrEqual(4.5);
     });
+    it("button-text-on-warn on warn-strong meets AA", () => {
+      expect(
+        contrastRatio(tokenValue(block, "button-text-on-warn"), tokenValue(block, "warn-strong"))
+      ).toBeGreaterThanOrEqual(4.5);
+    });
     // --focus-ring IS --accent (pinned above). WCAG 1.4.11 wants a focus
     // indicator at 3:1 against what it sits on: every surface a control
     // lives on. Measured 8.6:1 on --bg-app.
@@ -246,6 +251,13 @@ describe("theme contract: WCAG contrast spot-checks", () => {
     // accent past this, the button label becomes unreadable.
     it("button-text-on-accent on accent meets AA", () => {
       expect(contrastRatio(buttonText, accent)).toBeGreaterThanOrEqual(4.5);
+    });
+    // White on the light --warn (#a86b00) is 4.39:1, which is why warn
+    // buttons fill with --warn-strong rather than --warn.
+    it("button-text-on-warn on warn-strong meets AA", () => {
+      expect(
+        contrastRatio(tokenValue(block, "button-text-on-warn"), tokenValue(block, "warn-strong"))
+      ).toBeGreaterThanOrEqual(4.5);
     });
     // The light accent was deepened for text on white; the ring rides on
     // it (4.6:1 on --bg-app). A lighter light-theme accent would have to

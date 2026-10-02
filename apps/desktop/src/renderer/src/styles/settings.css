@@ -1233,11 +1233,46 @@ a.pss__top-btn[aria-disabled="true"]:hover {
 }
 .pss__cand-sep { color: var(--border-default); }
 .pss__cand-unavail { color: var(--danger-text); }
+.pss__cand-outdated { color: var(--warn-text); }
 .pss__cand-action {
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
+  gap: 6px;
   margin-top: 1px;
+}
+
+/* Codex upgrade help, folded under the binary it is about (the same seam as
+   the attached connection test). Command + Copy is the Local Agents recipe
+   pair. Danger-tinted when no installation can run at all. */
+.pss__codex-update {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: -2px;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--warn-border);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--warn) 7%, var(--bg-panel));
+}
+.pss__codex-update.is-blocking {
+  border-color: var(--danger-border);
+  background: color-mix(in srgb, var(--danger) 7%, var(--bg-panel));
+}
+.pss__codex-update-hdr {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.pss__codex-update-title {
+  flex: 1;
+  min-width: 0;
+  font: 600 12px/1.35 var(--font-sans);
+  color: var(--text-primary);
+}
+.pss__codex-update-sub {
+  font: 500 11px/1.4 var(--font-sans);
+  color: var(--text-muted);
 }
 
 /* connection test, folded under the candidate list (was its own labeled Row) */

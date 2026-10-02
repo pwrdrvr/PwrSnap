@@ -75,9 +75,13 @@
   --warn-soft:     rgba(216, 168, 90, 0.14);
   --warn-border:   rgba(216, 168, 90, 0.32);
   --warn-text:     #e8c890;
+  /* Fill for a warn-tone button. Its own token because the light --warn
+     carries white text at only 4.39:1; see --button-text-on-warn. */
+  --warn-strong:   #d8a85a;
 
   /* ---------- BUTTON ---------- */
   --button-text-on-accent: #000000;   /* pure black on tangerine fills */
+  --button-text-on-warn:   #000000;   /* on --warn-strong: 9.7:1 */
 
   /* ---------- SHADOWS ---------- */
   /* --shadow-base is the color every drop-shadow derives from via
@@ -240,9 +244,11 @@
   --warn-soft:     rgba(168, 107, 0, 0.12);
   --warn-border:   rgba(168, 107, 0, 0.28);
   --warn-text:     #6b4400;
+  --warn-strong:   #8f5b00;   /* white on it: 5.7:1 */
 
   /* ---------- BUTTON ---------- */
   --button-text-on-accent: #ffffff;   /* white reads cleanest on deep tangerine */
+  --button-text-on-warn:   #ffffff;
 
   /* ---------- SHADOWS — softer on light surfaces ---------- */
   --shadow-xs:     0 1px 2px color-mix(in srgb, var(--shadow-base) 6%, transparent);

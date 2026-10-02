@@ -708,7 +708,8 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
       ? await buildCodexVersionAdvisory({
           command: selected.command,
           version: selected.version,
-          source: selected.source
+          source: selected.source,
+          blocking: resolvedPath === null
         })
       : undefined;
     const snapshot = deepFreeze({

@@ -188,7 +188,7 @@ describe("DesktopSettingsStore provider publications", () => {
     });
     const snapshot = await store.getCodexDiscoverySnapshot();
     expect(snapshot.resolvedPath).toBeNull();
-    expect(snapshot.versionAdvisory).toMatchObject({ version: "0.143.0", installer: "application" });
+    expect(snapshot.versionAdvisory).toMatchObject({ version: "0.143.0", installer: "application", blocking: true });
   });
   test("advises on the selected binary, ignores an old unused install, and clears after Refresh", async () => {
     let selectedVersion = "0.159.1";
@@ -210,6 +210,8 @@ describe("DesktopSettingsStore provider publications", () => {
     });
     const first = await store.getCodexDiscoverySnapshot();
     expect(first.versionAdvisory).toMatchObject({ command: "/opt/custom/codex", version: "0.159.1", minimumVersion: "0.159.2" });
+    // A launchable binary is an advisory, not a blocker.
+    expect(first.versionAdvisory).not.toHaveProperty("blocking");
     await store.getCodexDiscoverySnapshot();
     expect(discoverCodex).toHaveBeenCalledTimes(1);
     selectedVersion = "0.159.2";

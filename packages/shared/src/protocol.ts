@@ -2126,6 +2126,9 @@ export type DesktopCodexVersionAdvisory = {
   minimumVersion: string;
   installer: DesktopCodexInstaller;
   upgradeCommand?: string;
+  /** No installation clears the launch floor, so Codex cannot run at all.
+   *  Surfaces say "required" in danger tone rather than "available". */
+  blocking?: true;
 };
 
 /**

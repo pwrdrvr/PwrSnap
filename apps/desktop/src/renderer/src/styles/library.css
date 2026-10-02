@@ -4913,6 +4913,543 @@
   }
 }
 
+/* ---- Docked edit toolbar ------------------------------------------
+   `library.editToolbarDock` other than `float` takes the dock out of the
+   overlay and puts it in the stage's own layout: the stage-wrap becomes a
+   grid of a canvas cell and a dock cell, so the canvas fits what is left
+   and nothing covers the snap (it re-fits once, when the dock moves).
+   Keyed off the dock with :has(), so Stage needs no prop for it and a
+   video (no edit toolbar) never takes the grid. In Reel the filmstrip sits
+   above the stage-wrap, so a top dock lands under it. */
+.psl__stage-wrap:has(> .psl__edit-dock.is-docked) {
+  display: grid;
+  /* The flex layout's `align-items: center` would also centre the dock in
+     its cell; a side column has to run the stage's full height. */
+  align-items: stretch;
+  justify-items: stretch;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: "canvas";
+}
+.psl__stage-wrap:has(> .psl__edit-dock.is-docked[data-dock="bottom"]) {
+  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-areas: "canvas" "dock";
+}
+.psl__stage-wrap:has(> .psl__edit-dock.is-docked[data-dock="top"]) {
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas: "dock" "canvas";
+}
+.psl__stage-wrap:has(> .psl__edit-dock.is-docked[data-dock="left"]) {
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas: "dock canvas";
+}
+.psl__stage-wrap:has(> .psl__edit-dock.is-docked[data-dock="right"]) {
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "canvas dock";
+}
+/* The canvas, ←/→ and × all go in the canvas cell. The buttons are
+   absolutely positioned, and an absolute grid child with a grid-area is
+   placed against that AREA, so their offsets (top: 50%, right: 14px)
+   measure from the canvas cell instead of the whole stage. */
+.psl__stage-wrap:has(> .psl__edit-dock.is-docked) > :not(.psl__edit-dock) {
+  grid-area: canvas;
+}
+.psl__stage-wrap:has(> .psl__edit-dock.is-docked) > .psl__stage-img {
+  place-self: center;
+}
+/* Reel's breathing room under the filmstrip would sit between the strip
+   and a top band or side column; their own borders separate them. */
+.psl__reel-mode .psl__stage-wrap:has(> .psl__edit-dock.is-docked:not([data-dock="bottom"])) {
+  padding-top: 0;
+}
+
+.psl__edit-dock.is-docked {
+  grid-area: dock;
+  position: relative;
+  left: auto;
+  bottom: auto;
+  transform: none;
+  width: auto;
+  max-width: none;
+  max-height: none;
+  min-width: 0;
+  min-height: 0;
+  gap: 0;
+  background: var(--bg-panel);
+}
+.psl__edit-dock.is-docked[data-dock="bottom"] {
+  border-top: 1px solid var(--border-default);
+}
+.psl__edit-dock.is-docked[data-dock="top"] {
+  border-bottom: 1px solid var(--border-default);
+}
+.psl__edit-dock.is-docked[data-dock="left"] {
+  border-right: 1px solid var(--border-default);
+}
+.psl__edit-dock.is-docked[data-dock="right"] {
+  border-left: 1px solid var(--border-default);
+}
+/* The band is the panel now; the rows inside it are flat. */
+.psl__edit-dock.is-docked > .psl__edit-toolbar,
+.psl__edit-dock.is-docked > .psl__et-props {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* Top / bottom: one centred column as wide as the toolbar (the same
+   `width: 0; min-width: 100%` trick the floating dock uses, so the
+   property row is as wide as the tools and never wider). */
+.psl__edit-dock.is-docked:is([data-dock="top"], [data-dock="bottom"]) {
+  display: grid;
+  grid-template-columns: minmax(0, max-content);
+  justify-content: center;
+}
+.psl__edit-dock.is-docked:is([data-dock="top"], [data-dock="bottom"]) > .psl__edit-toolbar {
+  justify-self: center;
+}
+/* The property row has ONE height whatever it holds — the tool, the
+   selection, or nothing — so selecting a layer never re-fits the snap.
+   Its controls sit on one line that scrolls sideways, like the narrow
+   floating bar's second row. */
+.psl__edit-dock.is-docked:is([data-dock="top"], [data-dock="bottom"]) > .psl__et-props {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: "tag body actions";
+  align-items: center;
+  column-gap: 12px;
+  width: 0;
+  min-width: 100%;
+  max-width: 100%;
+  height: 46px;
+  padding: 0 12px;
+  overflow: hidden;
+}
+.psl__edit-dock.is-docked[data-dock="bottom"] > .psl__et-props {
+  border-bottom: 1px solid var(--border-subtle);
+}
+.psl__edit-dock.is-docked[data-dock="top"] > .psl__et-props {
+  border-top: 1px solid var(--border-subtle);
+}
+.psl__edit-dock.is-docked:is([data-dock="top"], [data-dock="bottom"]) > .psl__et-props.is-multi {
+  grid-template-areas: "tag hint actions";
+}
+.psl__edit-dock.is-docked:is([data-dock="top"], [data-dock="bottom"]) > .psl__et-props.is-empty {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "hint";
+  justify-items: center;
+}
+.psl__edit-dock.is-docked:is([data-dock="top"], [data-dock="bottom"]) .psl__et-props-tag {
+  grid-area: tag;
+  margin: 0;
+}
+.psl__edit-dock.is-docked:is([data-dock="top"], [data-dock="bottom"]) .psl__et-props-hint {
+  grid-area: hint;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.psl__edit-dock.is-docked:is([data-dock="top"], [data-dock="bottom"]) .psl__et-props-actions {
+  grid-area: actions;
+  float: none;
+  margin: 0;
+}
+.psl__edit-dock.is-docked:is([data-dock="top"], [data-dock="bottom"]) .psl__et-props-body {
+  grid-area: body;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 3px;
+  margin: -3px;
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    black var(--psl-strip-fade-start),
+    black calc(100% - var(--psl-strip-fade-end)),
+    transparent
+  );
+  animation: psl-strip-fade linear both;
+  animation-timeline: scroll(self inline);
+}
+.psl__edit-dock.is-docked:is([data-dock="top"], [data-dock="bottom"]) .psl__et-props-body > * {
+  flex: none;
+  margin: 0;
+}
+
+/* Left / right: a column beside the canvas. Tools wrap into a grid, the
+   separators become rules across the column, and the properties stack
+   under them. A Reel stage can be ~300px tall, so the whole column
+   scrolls when it has to. */
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) {
+  --psl-dock-col-w: 172px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: var(--psl-dock-col-w);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+/* ...which would clip the dock and zoom menus that open sideways out of
+   it, so nothing between those menus and the stage is positioned: their
+   containing block is `.psl__stage-wrap`, outside the scroller. With
+   `top: auto` each opens at its static position, level with its button,
+   and the column's width carries it clear of the column. */
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]),
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) :is(.psl__et-dockctl, .ed-zoom) {
+  position: static;
+}
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) :is(.psl__et-dockmenu, .ed-zoom-menu) {
+  top: auto;
+  bottom: auto;
+}
+.psl__edit-dock.is-docked[data-dock="right"] :is(.psl__et-dockmenu, .ed-zoom-menu) {
+  left: auto;
+  right: calc(var(--psl-dock-col-w) + 8px);
+}
+.psl__edit-dock.is-docked[data-dock="left"] :is(.psl__et-dockmenu, .ed-zoom-menu) {
+  left: calc(var(--psl-dock-col-w) + 8px);
+  right: auto;
+}
+/* Zoom sits at the foot of the tools; open upward from it so a short
+   stage does not cut the menu off. */
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) .ed-zoom-menu {
+  transform: translateY(calc(-100% + 36px));
+}
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) > .psl__edit-toolbar {
+  flex: none;
+  width: auto;
+  max-width: none;
+  justify-content: flex-start;
+  padding: 8px;
+}
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) .psl__et-sep,
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) .psl__et-sep.is-dangling {
+  flex-basis: 100%;
+  width: auto;
+  height: 1px;
+  margin: 4px 0;
+  visibility: visible;
+}
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) .psl__bag {
+  display: grid;
+  grid-template-columns: repeat(3, 36px);
+}
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) > .psl__et-props {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--border-subtle);
+  overflow: visible;
+}
+/* The column scrolls; nothing in it shrinks. The tag clips its own text
+   (`overflow: hidden`), which makes its automatic min-height 0, so as a
+   shrinkable flex item it was squashed to a sliver in a short window. */
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) > .psl__et-props > * {
+  flex: none;
+}
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) .psl__et-props-tag {
+  align-self: flex-start;
+  margin: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) .psl__et-props-hint {
+  margin: 0;
+  white-space: normal;
+}
+/* Save / Update / Add label go last in the column, after the controls. */
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) .psl__et-props-actions {
+  order: 1;
+  float: none;
+  flex-wrap: wrap;
+  margin: 0;
+}
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) .psl__et-props-body {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+}
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) .psl__et-props-body > * {
+  margin: 0;
+}
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) .psl__et-props-body .pse-field-group {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-height: 0;
+}
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) .psl__et-props-body :is(.pse-color-row, .pse-icon-row, .pse-mode-rows) {
+  flex-wrap: wrap;
+}
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) .psl__et-props-body .pse-seg-btn {
+  padding: 0 6px;
+}
+
+/* The zoom menu opens upward by default, which a top dock would push off
+   the stage. Open it downward there (the side columns are above). */
+.psl__edit-dock.is-docked[data-dock="top"] .ed-zoom-menu {
+  top: calc(100% + 8px);
+  bottom: auto;
+}
+
+/* Drop zones, shown only while the grip is held. The edge the pointer is
+   in is lit; the floating toolbar fades, since the lit edge is where it
+   is about to go. */
+.psl__dock-zone {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px dashed color-mix(in srgb, var(--accent) 55%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  pointer-events: none;
+}
+.psl__dock-zone.is-top {
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  height: 48px;
+}
+.psl__dock-zone.is-bottom {
+  bottom: 8px;
+  left: 8px;
+  right: 8px;
+  height: 48px;
+}
+.psl__dock-zone.is-left {
+  left: 8px;
+  top: 64px;
+  bottom: 64px;
+  width: 48px;
+}
+.psl__dock-zone.is-right {
+  right: 8px;
+  top: 64px;
+  bottom: 64px;
+  width: 48px;
+}
+.psl__dock-zone > span {
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: var(--bg-app);
+  color: var(--accent-bright);
+  font: 600 10px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+/* Side labels sit at the top of their strip: the stage's ←/→ buttons
+   are at mid-height and would cover them. */
+.psl__dock-zone:is(.is-left, .is-right) {
+  align-items: flex-start;
+  padding-top: 16px;
+}
+.psl__dock-zone:is(.is-left, .is-right) > span {
+  writing-mode: vertical-rl;
+}
+.psl__dock-zone.is-hot {
+  border-style: solid;
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.psl__edit-dock.is-over-zone {
+  opacity: 0.55;
+}
+
+/* Dock control, beside the grip. */
+.psl__et-dockctl {
+  position: relative;
+  display: inline-flex;
+}
+.psl__et-dockbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.psl__et-dockbtn:hover {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+.psl__et-dockbtn.is-open {
+  background: var(--accent-soft);
+  color: var(--accent-bright);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+}
+.psl__et-dockmenu {
+  position: absolute;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 288px;
+  padding: 6px;
+  background: color-mix(in srgb, var(--bg-panel-hover) 96%, transparent);
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  box-shadow: 0 16px 40px color-mix(in srgb, var(--shadow-base) 60%, transparent);
+}
+.psl__et-dockmenu.is-up {
+  bottom: calc(100% + 8px);
+  left: -6px;
+}
+.psl__et-dockmenu.is-down {
+  top: calc(100% + 8px);
+  left: -6px;
+}
+.psl__et-dockmenu.is-right {
+  top: -6px;
+  left: calc(100% + 8px);
+}
+.psl__et-dockmenu.is-left {
+  top: -6px;
+  right: calc(100% + 8px);
+}
+.psl__et-dockmenu-head {
+  padding: 6px 8px 4px;
+  color: var(--text-muted);
+  font: 600 9.5px/1 var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+/* A picture of the stage: click an edge, or the bar in the middle. */
+.psl__et-dockmap {
+  position: relative;
+  height: 88px;
+  margin: 2px 4px 6px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--bg-app);
+}
+.psl__et-dockmap > i {
+  position: absolute;
+  inset: 20px 26px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 2px;
+}
+.psl__et-dockmap > b {
+  position: absolute;
+  border-radius: 2px;
+  background: var(--border-default);
+  cursor: pointer;
+}
+.psl__et-dockmap > b.is-top {
+  top: 5px;
+  left: 5px;
+  right: 5px;
+  height: 9px;
+}
+.psl__et-dockmap > b.is-bottom {
+  bottom: 5px;
+  left: 5px;
+  right: 5px;
+  height: 9px;
+}
+.psl__et-dockmap > b.is-left {
+  top: 18px;
+  bottom: 18px;
+  left: 5px;
+  width: 11px;
+}
+.psl__et-dockmap > b.is-right {
+  top: 18px;
+  bottom: 18px;
+  right: 5px;
+  width: 11px;
+}
+.psl__et-dockmap > b.is-float {
+  bottom: 26px;
+  left: 50%;
+  width: 56px;
+  height: 7px;
+  margin-left: -28px;
+  border-radius: 4px;
+}
+.psl__et-dockmap > b.is-hot {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.psl__et-dockmap > b.is-on {
+  background: var(--accent);
+}
+.psl__et-dockmenu-row {
+  display: grid;
+  grid-template-columns: 12px 16px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 8px 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: 600 12px/1 var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+.psl__et-dockmenu-row > span {
+  white-space: nowrap;
+}
+.psl__et-dockmenu-row:is(:hover, :focus) {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+.psl__et-dockmenu-row[aria-checked="true"] {
+  color: var(--accent-bright);
+}
+.psl__et-dockmenu-check {
+  color: var(--accent-bright);
+  font: 700 11px/1 var(--font-sans);
+}
+.psl__et-dockmenu-spacer {
+  width: 16px;
+}
+/* The reset row carries its shortcut as a second line under the label;
+   beside it, the pair is wider than the menu. */
+.psl__et-dockmenu-row:has(> .psl__et-dockmenu-meta) {
+  grid-template-columns: 12px 16px 1fr;
+  row-gap: 4px;
+  height: auto;
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+.psl__et-dockmenu-meta {
+  grid-column: 3;
+  color: var(--text-muted);
+  font: 500 10.5px/1 var(--font-mono);
+}
+.psl__et-dockmenu-sep {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--border-subtle);
+}
+
 /* DetailRail layout — fixed 360px column grid-column 3 in focus +
    reel modes. Contains tabs row + body. The body holds the
    metadata block, the AI caption card, the L/M/H copy row, and the

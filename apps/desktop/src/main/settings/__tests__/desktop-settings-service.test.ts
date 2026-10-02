@@ -684,6 +684,23 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     });
   });
 
+  test("library.editToolbarDock round-trips, and a missing or unknown value floats", async () => {
+    const read = async (name: string, library: unknown) => {
+      const filePath = join(workDir, name);
+      writeFileSync(filePath, JSON.stringify({ schemaVersion: 1, library }), "utf8");
+      return (await new DesktopSettingsService({ filePath }).read()).library;
+    };
+    expect((await read("dock-top.json", { editToolbarDock: "top" })).editToolbarDock).toBe("top");
+    // Files from before the field existed.
+    const missing = await read("dock-missing.json", { confirmBeforeTrash: false });
+    expect(missing.editToolbarDock).toBe("float");
+    expect(missing.confirmBeforeTrash).toBe(false);
+    // A value a newer build might write falls back instead of quarantining.
+    expect((await read("dock-junk.json", { editToolbarDock: "sideways" })).editToolbarDock).toBe(
+      "float"
+    );
+  });
+
   test("v1 shape missing `general.launchAtLogin` gets the opt-in default (false) filled in", async () => {
     // `general.launchAtLogin` landed after v1 shipped; older files
     // carry `general` with only `developerMode`. parseV1 fills the
@@ -1651,6 +1668,18 @@ describe("mergeSettings", () => {
     // Sibling library fields preserved.
     expect(dragged.library.detailRail).toEqual(current.library.detailRail);
     expect(dragged.library.gridZoom).toBe(current.library.gridZoom);
+  });
+
+  test("library.editToolbarDock defaults to float and a patch moves only it", () => {
+    const current = defaultSettings();
+    expect(current.library.editToolbarDock).toBe("float");
+    const docked = mergeSettings(current, { library: { editToolbarDock: "right" } });
+    expect(docked.library.editToolbarDock).toBe("right");
+    expect(docked.library.gridZoom).toBe(current.library.gridZoom);
+    // A patch that does not name it leaves the dock where it was.
+    expect(mergeSettings(docked, { library: { gridZoom: 280 } }).library.editToolbarDock).toBe(
+      "right"
+    );
   });
 
   test("storage.filenameTimestampZone patch overwrites only the specified field", () => {

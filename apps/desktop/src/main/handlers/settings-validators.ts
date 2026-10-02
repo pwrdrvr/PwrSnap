@@ -27,12 +27,14 @@ import {
   isColorToken,
   isEditorSidebarPanel,
   isGridCopyPaletteAnchor,
+  isEditToolbarDock,
   isLibrarySidebarTab,
   isQuickCaptureAction,
   isRedactionStyle,
   isSettingsPage,
   isSettingsSub,
   GRID_COPY_PALETTE_ANCHORS,
+  EDIT_TOOLBAR_DOCKS,
   GRID_ZOOM_MAX,
   GRID_ZOOM_MIN,
   isHotCpuProfileStartDelayMs,
@@ -711,7 +713,7 @@ function validateExperimentalPatch(raw: unknown): PwrSnapError | null {
 
 /** Validate the library section of a settings patch. Exposes two
  *  nested objects — `detailRail` and `gridCopyPalette` — plus the flat
- *  `confirmBeforeTrash` / `gridZoom` leaves. Symmetric with
+ *  `confirmBeforeTrash` / `gridZoom` / `editToolbarDock` leaves. Symmetric with
  *  `validateEditorPatch`. */
 function validateLibraryPatch(raw: unknown): PwrSnapError | null {
   if (!isObject(raw)) {
@@ -789,6 +791,12 @@ function validateLibraryPatch(raw: unknown): PwrSnapError | null {
         );
       }
     }
+  }
+  if (!isUndefined(raw.editToolbarDock) && !isEditToolbarDock(raw.editToolbarDock)) {
+    return validationError(
+      "invalid_library_editToolbarDock",
+      `settings:write: library.editToolbarDock must be one of ${EDIT_TOOLBAR_DOCKS.join("/")}`
+    );
   }
   return null;
 }

@@ -151,8 +151,10 @@ describe("property bar on a wide stage", () => {
     (rest, rule) => rest.replace(`${rule.prelude}{${rule.body}}`, ""),
     css
   );
+  // Anchored to a rule that STARTS with the selector: the docked-toolbar
+  // rules end in `.psl__et-props` too, as descendants of `.psl__edit-dock`.
   const base = (selectorPattern: string): string =>
-    extractBlock(baseCss, selectorPattern, { label: LABEL, expectSingle: true });
+    extractBlock(baseCss, `\\n${selectorPattern}`, { label: LABEL, expectSingle: true });
 
   it("floats its buttons to the end of row one instead of wrapping them onto a row of their own", () => {
     // A flex row has no "end of row one" slot: the buttons were the last

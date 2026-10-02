@@ -87,6 +87,7 @@ import {
   isHotCpuProfileStartDelayMs,
   isHotCpuProfileTriggerMode,
   isGridCopyPaletteAnchor,
+  isEditToolbarDock,
   isLibrarySidebarTab,
   isLocalAgentCapability,
   isQuickCaptureAction,
@@ -322,7 +323,9 @@ function defaultLibrarySettings(): Settings["library"] {
     // the grid steps this through GRID_ZOOM_LEVELS.
     gridZoom: GRID_ZOOM_DEFAULT,
     // A copy keeps its source's edits unless the user says otherwise.
-    duplicateWithEdits: { image: true, video: true }
+    duplicateWithEdits: { image: true, video: true },
+    // The edit toolbar floats over the canvas until the user docks it.
+    editToolbarDock: "float"
   };
 }
 
@@ -1251,6 +1254,10 @@ function parseLibrarySettings(
     image: pickBoolean(dupRaw.image, defaults.duplicateWithEdits.image),
     video: pickBoolean(dupRaw.video, defaults.duplicateWithEdits.video)
   };
+  // editToolbarDock is additive; an unknown value floats.
+  const editToolbarDock = isEditToolbarDock(raw.editToolbarDock)
+    ? raw.editToolbarDock
+    : defaults.editToolbarDock;
   const detailRaw = raw.detailRail;
   if (!isRecord(detailRaw)) {
     return {
@@ -1258,7 +1265,8 @@ function parseLibrarySettings(
       gridCopyPalette,
       confirmBeforeTrash,
       gridZoom,
-      duplicateWithEdits
+      duplicateWithEdits,
+      editToolbarDock
     };
   }
   // Route the on-disk tab value through the shared type guard so the
@@ -1278,7 +1286,8 @@ function parseLibrarySettings(
     gridCopyPalette,
     confirmBeforeTrash,
     gridZoom,
-    duplicateWithEdits
+    duplicateWithEdits,
+    editToolbarDock
   };
 }
 
@@ -2200,7 +2209,11 @@ function mergeLibrary(
     duplicateWithEdits: mergeSection(
       current.duplicateWithEdits,
       patch.duplicateWithEdits
-    )
+    ),
+    editToolbarDock:
+      patch.editToolbarDock !== undefined
+        ? patch.editToolbarDock
+        : current.editToolbarDock
   };
 }
 

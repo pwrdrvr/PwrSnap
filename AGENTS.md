@@ -455,14 +455,23 @@ the other, mutually exclusive path:
 
 ```jsonc
 "permissions": "pwrsnap_enrichment",     // NOT "sandbox" — cannot combine
-"config": { "permissions": { "pwrsnap_enrichment": {
+"config": { "default_permissions": "pwrsnap_enrichment",
+  "permissions": { "pwrsnap_enrichment": {
   "filesystem": { ":root": "deny", ":minimal": "read", "<jail>": "read" } } } }
 ```
 
 Measured result: `~/Documents`, `~/.ssh`, `~/.aws`, and any path outside
 the jail are DENIED; the jail stays readable and network stays denied.
 
-Two things that bite if you touch this:
+Three things that bite if you touch this:
+
+- **Keep the selection in `config.default_permissions` too.** Codex 0.160
+  reloads the retained session config before inference without the explicit
+  `thread/start.permissions` override. A profile table without a selected
+  default then fails validation, surfaced only as "failed to load workspace
+  requirements". The legacy `sandbox` fallback leaves this named profile
+  unselected. See
+  [docs/solutions/2026-10-02-codex-workspace-requirements-enrichment.md](docs/solutions/2026-10-02-codex-workspace-requirements-enrichment.md).
 
 - **`":minimal" = "read"` is load-bearing.** Denying `:root` also denies
   reading `/bin/cat`, so without `:minimal` no command can exec at all

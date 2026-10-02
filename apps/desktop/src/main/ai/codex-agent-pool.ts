@@ -598,7 +598,7 @@ class CodexAgentOwner {
             ...(threadConfig ?? {}),
             // The profile the `permissions` id above resolves to. Harmless on
             // the fallback path — an unreferenced profile is inert.
-            ...codexEnrichmentPermissionProfile(workspaceDir)
+            ...codexEnrichmentPermissionProfile(workspaceDir, kind)
           },
           experimentalRawEvents: false
         },

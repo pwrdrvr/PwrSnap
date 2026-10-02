@@ -1,5 +1,5 @@
 import type { CSSProperties, ReactElement, ReactNode } from "react";
-import { DEFAULT_CODEX_CAPTION_MODEL, type AiRunStatus, type CustomModel, type CustomConnection } from "@pwrsnap/shared";
+import { type AiRunStatus, type CustomModel, type CustomConnection } from "@pwrsnap/shared";
 
 // CodexStatusPill — single source of truth for "what is Codex doing"
 // across both the float-over toast and the Library Detail rail.
@@ -64,7 +64,9 @@ export function enrichmentRegenerateLabel(
   const { providerLabel, modelLabel } = enrichmentBackendLabel(enrichment, custom);
   const provider = enrichment?.provider ?? "";
   if (provider.startsWith("custom:")) return modelLabel ? `${providerLabel} (${modelLabel})` : providerLabel;
-  const model = enrichment?.model || (provider.startsWith("acp:") ? "agent default" : DEFAULT_CODEX_CAPTION_MODEL);
+  // Codex's managed default is resolved per run against the live catalog, so
+  // without a pinned model this cannot name a specific id truthfully.
+  const model = enrichment?.model || (provider.startsWith("acp:") ? "agent default" : "default model");
   return `${providerLabel} (${model})`;
 }
 

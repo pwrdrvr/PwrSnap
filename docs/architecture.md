@@ -207,7 +207,10 @@ being migrated. Saved Codex defaults move to advertised replacements:
 GPT-5.5, GPT-5.6 (except Luna), and GPT-6-Sol move to GPT-6.1-Sol;
 GPT-5.6-Luna moves to GPT-6-Luna. Discovery reconciles these defaults inside
 the serialized settings store, including before automatic Codex enrichment.
-GPT-6-Astra selections, existing threads, and ACP/direct API defaults retain
+Only explicit choices migrate. An unset enrichment model is PwrSnap's managed
+default: it resolves per run to GPT-5.6-Luna or its advertised successor and
+is never written to settings, so a later default change still reaches everyone
+who never picked a model. GPT-6-Astra selections, existing threads, and ACP/direct API defaults retain
 their configured models. Replacement capabilities and reasoning efforts
 come from the catalog, never from the model's name.
 

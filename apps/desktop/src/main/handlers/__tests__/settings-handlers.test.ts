@@ -875,6 +875,8 @@ describe("settings:read + settings:write round-trip (integration)", () => {
     const dir = await mkdtemp(join(tmpdir(), "pwrsnap-codex-default-broadcast-"));
     const service = new DesktopSettingsStore({ filePath: join(dir, "settings.json") });
     const secrets = new DesktopSecretStore({ filePath: join(dir, "secrets.bin") });
+    // An explicit choice migrates; the managed default (unset) never does.
+    await service.write({ ai: { defaults: { enrichment: { model: "gpt-5.6-luna" } } } });
     __setSettingsServicesForTests({ service, secrets });
     const listener = vi.fn();
     const unsubscribe = onSettingsChanged(listener);

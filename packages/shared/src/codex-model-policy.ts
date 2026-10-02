@@ -1,7 +1,6 @@
 import {
   AI_SURFACE_IDS,
   DEFAULT_CODEX_CAPTION_MODEL,
-  DEFAULT_ENRICHMENT_REASONING_EFFORT,
   type AiSurfaceId,
   type CodexModelOption,
   type Settings,
@@ -32,16 +31,39 @@ export function upgradedCodexModelId(model: string, availableIds: readonly strin
   return target !== undefined && availableIds.includes(target) ? target : model;
 }
 
+/** True when a surface's EXPLICIT Codex model has a successor. An unset
+ *  enrichment model is PwrSnap's managed default, which is resolved per run
+ *  (see resolveManagedCodexEnrichmentModel) and never needs migrating. */
 export function hasObsoleteCodexDefaults(
   settings: Settings,
   surfaces: readonly AiSurfaceId[] = AI_SURFACE_IDS
 ): boolean {
   return surfaces.some((surface) => {
     const value = settings.ai.defaults[surface];
-    return (!value.provider || value.provider === "codex") && replacementId(
-      value.model || (surface === "enrichment" ? DEFAULT_CODEX_CAPTION_MODEL : "")
-    ) !== undefined;
+    return (!value.provider || value.provider === "codex") && !!value.model &&
+      replacementId(value.model) !== undefined;
   });
+}
+
+/** The managed enrichment default for this catalog: DEFAULT_CODEX_CAPTION_MODEL,
+ *  or its advertised successor. Resolved at run time and never written to
+ *  settings, so a later default change still reaches every user who did not
+ *  pick a model. Undefined when the catalog lists neither. */
+export function resolveManagedCodexEnrichmentModel(
+  models: readonly CodexModelOption[]
+): CodexModelOption | undefined {
+  const available = usableModels(models);
+  const id = upgradedCodexModelId(DEFAULT_CODEX_CAPTION_MODEL, available.map((model) => model.id));
+  return available.find((model) => model.id === id);
+}
+
+/** Keep a reasoning effort the target advertises; otherwise use its own
+ *  default, or the first effort it lists. Unknown support keeps the effort. */
+export function codexEffortForModel(effort: string, target: CodexModelOption): string {
+  const supported = target.supportedReasoningEfforts;
+  if (supported === undefined || supported.length === 0 || supported.includes(effort)) return effort;
+  return target.defaultReasoningEffort && supported.includes(target.defaultReasoningEffort)
+    ? target.defaultReasoningEffort : supported[0]!;
 }
 
 /** Respect includeHidden while hiding superseded models from normal pickers.
@@ -63,7 +85,8 @@ export function applyCodexModelVisibility(
   }).filter((model) => includeHidden || !model.hidden);
 }
 
-/** Called inside the serialized settings write, using its latest snapshot. */
+/** Called inside the serialized settings write, using its latest snapshot.
+ *  Migrates only explicit model choices; the managed default stays unset. */
 export function codexModelDefaultsPatch(
   settings: Settings,
   models: readonly CodexModelOption[]
@@ -74,20 +97,12 @@ export function codexModelDefaultsPatch(
   for (const surface of AI_SURFACE_IDS) {
     const value = settings.ai.defaults[surface];
     if (value.provider && value.provider !== "codex") continue;
-    const model = value.model || (surface === "enrichment" ? DEFAULT_CODEX_CAPTION_MODEL : "");
-    const targetId = upgradedCodexModelId(model, ids);
-    if (targetId === model) continue;
+    if (!value.model) continue;
+    const targetId = upgradedCodexModelId(value.model, ids);
+    if (targetId === value.model) continue;
     const target = available.find((candidate) => candidate.id === targetId);
     if (target === undefined) continue;
-    const effort = value.reasoning ??
-      (surface === "enrichment" ? DEFAULT_ENRICHMENT_REASONING_EFFORT : undefined);
-    const supported = target.supportedReasoningEfforts;
-    let reasoning = effort;
-    if (effort !== undefined && supported !== undefined &&
-        supported.length > 0 && !supported.includes(effort)) {
-      reasoning = target.defaultReasoningEffort && supported.includes(target.defaultReasoningEffort)
-        ? target.defaultReasoningEffort : supported[0];
-    }
+    const reasoning = value.reasoning === undefined ? undefined : codexEffortForModel(value.reasoning, target);
     defaults[surface] = { model: targetId, ...(reasoning !== undefined ? { reasoning } : {}) };
   }
   return Object.keys(defaults).length > 0 ? { ai: { defaults } } : undefined;

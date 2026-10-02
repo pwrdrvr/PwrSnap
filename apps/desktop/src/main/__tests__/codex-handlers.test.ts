@@ -827,7 +827,21 @@ describe("Codex handlers", () => {
       .toEqual(["gpt-5.5", "gpt-5.6-terra", "gpt-5.6-luna"]);
   });
 
-  test("automatic enrichment upgrades the managed Luna default before its first run", async () => {
+  test("codex:models names the resolved managed default without writing it", async () => {
+    const store = new DesktopSettingsStore({ filePath: join(tempRoot, "settings.json") });
+    await store.write({ ai: { enabled: true } });
+    const models = ["gpt-5.6-luna", "gpt-6-luna"].map((id) => ({
+      ...fakeCodexModels()[0]!, id, model: id, displayName: id
+    }));
+    registerCodexHandlers({ settingsReader: () => store.read(), modelLister: async () => models,
+      modelDefaultsReconciler: async (catalogModels, catalog) =>
+        (await store.reconcileCodexModelDefaults(catalogModels, catalog)).settings });
+    const result = await bus.dispatch("codex:models", {}, { principal: "ipc" });
+    expect(result.ok && result.value.selectedModel).toBe("gpt-6-luna");
+    expect((await store.read()).ai.defaults.enrichment).toEqual({});
+  });
+
+  test("automatic enrichment resolves the managed Luna default at run time, unpinned", async () => {
     const store = new DesktopSettingsStore({ filePath: join(tempRoot, "settings.json") });
     await store.write({ ai: { enabled: true, consentAcceptedAt: "2026-10-01T00:00:00Z" } });
     const fakeClient = new FakeCodexClient();
@@ -843,6 +857,25 @@ describe("Codex handlers", () => {
     expect(modelLister).toHaveBeenCalledTimes(1);
     expect(getAiRun(started.value.runId)?.selectedModel).toBe("gpt-6-luna");
     expect(fakeClient.lastRequest).toMatchObject({ model: "gpt-6-luna", effort: "low" });
+    // Nothing was pinned: a later managed-default change still applies.
+    expect((await store.read()).ai.defaults.enrichment).toEqual({});
+  });
+
+  test("the managed default's effort follows what the resolved model advertises", async () => {
+    const store = new DesktopSettingsStore({ filePath: join(tempRoot, "settings.json") });
+    await store.write({ ai: { enabled: true, consentAcceptedAt: "2026-10-01T00:00:00Z" } });
+    const fakeClient = new FakeCodexClient();
+    registerCodexHandlers({ settingsReader: () => store.read(), clientFactory: () => fakeClient as never,
+      modelLister: async () => [{ ...fakeCodexModels()[0]!, id: "gpt-6-luna", model: "gpt-6-luna",
+        supportedReasoningEfforts: ["medium", "high"], defaultReasoningEffort: "medium" }],
+      modelDefaultsReconciler: async (models, catalog) =>
+        (await store.reconcileCodexModelDefaults(models, catalog)).settings });
+    const started = await bus.dispatch("codex:enrich", { captureId: "cap_1" },
+      { principal: "ipc", cancellationKey: "cap_1" });
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    await waitFor(() => getAiRun(started.value.runId)?.status === "completed");
+    expect(fakeClient.lastRequest).toMatchObject({ model: "gpt-6-luna", effort: "medium" });
   });
 
   test("a catalog without the replacement is listed once, not before every enrichment", async () => {

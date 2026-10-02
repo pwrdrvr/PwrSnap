@@ -26,10 +26,12 @@ import {
   AI_REASONING_EFFORTS,
   builtInAcpAgentDisplayName,
   CODEX_CAPTION_MODELS,
+  codexEffortForModel,
   DEFAULT_CODEX_CAPTION_MODEL,
   DEFAULT_ENRICHMENT_REASONING_EFFORT,
   EVENT_CHANNELS,
-  isAiReasoningEffort
+  isAiReasoningEffort,
+  resolveManagedCodexEnrichmentModel
 } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "../../../lib/pwrsnap";
 import { Card, Row, Switch } from "../components";
@@ -484,8 +486,12 @@ export function AiSurfaceDefaultControl({
   const isCustomProvider = chatProviderValue.startsWith("custom:");
   const isAcpProvider = chatProviderValue.startsWith("acp:") || isCustomProvider;
   const codexModels = surfaceModelOptions(models);
+  // Enrichment's managed default is resolved against the live catalog at run
+  // time (main does the same), so name what a run will actually use.
+  const managedCodexDefault =
+    surface === "enrichment" ? resolveManagedCodexEnrichmentModel(models) : undefined;
   const managedCodexDefaultModelId =
-    surface === "enrichment" ? DEFAULT_CODEX_CAPTION_MODEL : undefined;
+    surface === "enrichment" ? managedCodexDefault?.id ?? DEFAULT_CODEX_CAPTION_MODEL : undefined;
   const isCodexDefaultForSurface = (model: CodexModelOption): boolean =>
     managedCodexDefaultModelId !== undefined
       ? model.id === managedCodexDefaultModelId
@@ -604,7 +610,9 @@ export function AiSurfaceDefaultControl({
       ? "Default (Fast)"
       : "Default (Thinking)"
     : surface === "enrichment"
-      ? `Default (${DEFAULT_ENRICHMENT_REASONING_EFFORT})`
+      ? `Default (${!modelValue && managedCodexDefault !== undefined
+        ? codexEffortForModel(DEFAULT_ENRICHMENT_REASONING_EFFORT, managedCodexDefault)
+        : DEFAULT_ENRICHMENT_REASONING_EFFORT})`
       : codexDefaultReasoning !== undefined
       ? `Default (${codexDefaultReasoning})`
       : "Default";

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
-  applyCodexModelVisibility, codexModelDefaultsPatch, upgradedCodexModelId
+  applyCodexModelVisibility, codexEffortForModel, codexModelDefaultsPatch, hasObsoleteCodexDefaults,
+  resolveManagedCodexEnrichmentModel, upgradedCodexModelId
 } from "../codex-model-policy";
 import { DEFAULT_AI_SURFACE_DEFAULTS, type CodexModelOption, type Settings } from "../protocol";
 
@@ -89,14 +90,30 @@ describe("Codex live catalog policy", () => {
     expect(codexModelDefaultsPatch(settings, models)).toBeUndefined();
   });
 
-  test("managed enrichment default upgrades only when image-capable Luna is visible", () => {
+  test("the managed enrichment default is never written to settings", () => {
     const settings = { ai: { defaults: DEFAULT_AI_SURFACE_DEFAULTS } } as Settings;
-    expect(codexModelDefaultsPatch(settings, [model("gpt-6-luna")])).toEqual({ ai: { defaults: {
-      enrichment: { model: "gpt-6-luna", reasoning: "low" }
-    } } });
-    for (const target of [model("gpt-6-luna", { hidden: true }),
+    expect(hasObsoleteCodexDefaults(settings)).toBe(false);
+    expect(codexModelDefaultsPatch(settings, [model("gpt-6-luna")])).toBeUndefined();
+  });
+
+  test("the managed enrichment default resolves to an image-capable visible successor", () => {
+    expect(resolveManagedCodexEnrichmentModel([model("gpt-5.6-luna"), model("gpt-6-luna")])?.id)
+      .toBe("gpt-6-luna");
+    for (const successor of [model("gpt-6-luna", { hidden: true }),
       model("gpt-6-luna", { inputModalities: ["text"] })]) {
-      expect(codexModelDefaultsPatch(settings, [target])).toBeUndefined();
+      expect(resolveManagedCodexEnrichmentModel([model("gpt-5.6-luna"), successor])?.id)
+        .toBe("gpt-5.6-luna");
     }
+    expect(resolveManagedCodexEnrichmentModel([model("gpt-6-sol")])).toBeUndefined();
+  });
+
+  test("an effort the target does not advertise falls back to its default, then its first", () => {
+    expect(codexEffortForModel("low", model("m"))).toBe("low");
+    expect(codexEffortForModel("low", model("m", { supportedReasoningEfforts: ["low", "high"] }))).toBe("low");
+    expect(codexEffortForModel("low", model("m", {
+      supportedReasoningEfforts: ["medium", "high"], defaultReasoningEffort: "high"
+    }))).toBe("high");
+    expect(codexEffortForModel("low", model("m", { supportedReasoningEfforts: ["medium", "high"] })))
+      .toBe("medium");
   });
 });

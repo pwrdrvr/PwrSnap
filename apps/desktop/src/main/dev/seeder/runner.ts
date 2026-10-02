@@ -1,6 +1,7 @@
 // Seeder orchestration. Walks a planned row list in temporal order,
-// composes a tiny color-banded PNG per row via sharp, dispatches
-// `capture:ingest` through the live command-bus, records per-bucket
+// composes a tiny color-banded PNG per row (synthetic-png.ts), dispatches
+// `capture:ingest` through the live command-bus — which packs each row
+// into a real v2 `.pwrsnap` bundle — records per-bucket
 // latency to JSONL, and absorbs the per-row `events:captures:changed`
 // broadcasts so the live Library doesn't thrash on bulk inserts.
 //
@@ -13,7 +14,6 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { ipcMain } from "electron";
-import sharp from "sharp";
 import { IterableQueueMapperSimple } from "@shutterstock/p-map-iterable";
 import {
   EVENT_CHANNELS,
@@ -28,6 +28,7 @@ import { getMainLogger } from "../../log";
 import { getDb, openDatabase } from "../../persistence/db";
 import { renderViaCoordinator } from "../../render/coordinator";
 import { findMainLibraryWindow } from "../../window";
+import { composeSyntheticPng } from "./synthetic-png";
 import { createSentinel, wipeDataRoot } from "./wipe";
 import {
   isFlagged,
@@ -112,84 +113,10 @@ async function renderOneThumb(job: ThumbRenderJob): Promise<void> {
   });
 }
 
-// ── PNG generator ─────────────────────────────────────────────────
-
-/**
- * Compose a 64×64 PNG: bundle-id-derived hue background + 8×8 index
- * region top-left. ~150–250 bytes after PNG compression. Each row's
- * sha256 is unique because the index region's RGB derives from the
- * row index.
- *
- * `compressionLevel: 0` writes uncompressed PNG — fastest for
- * synthetic content where size doesn't matter (~20 MB at 100k rows
- * is acceptable on an external SSD).
- */
-async function composePng(row: PlannedRow): Promise<Buffer> {
-  const bg = bundleIdToColor(row.bundleId);
-  const idx = indexToColor(row.index);
-  const block = await sharp({
-    create: {
-      width: 8,
-      height: 8,
-      channels: 4,
-      background: { r: idx.r, g: idx.g, b: idx.b, alpha: 1 }
-    }
-  })
-    .png({ compressionLevel: 0 })
-    .toBuffer();
-  return sharp({
-    create: {
-      width: 64,
-      height: 64,
-      channels: 4,
-      background: { r: bg.r, g: bg.g, b: bg.b, alpha: 1 }
-    }
-  })
-    .composite([{ input: block, top: 0, left: 0 }])
-    .png({ compressionLevel: 0 })
-    .toBuffer();
-}
-
-function bundleIdToColor(bundleId: string): { r: number; g: number; b: number } {
-  let h = 5381;
-  for (let i = 0; i < bundleId.length; i++) {
-    h = ((h << 5) + h + bundleId.charCodeAt(i)) | 0;
-  }
-  // Map to a HSL-inspired palette: warm, saturated, mid-light.
-  const hue = (h >>> 0) % 360;
-  return hslToRgb(hue, 0.55, 0.40);
-}
-
-function indexToColor(index: number): { r: number; g: number; b: number } {
-  return {
-    r: index & 0xff,
-    g: (index >>> 8) & 0xff,
-    b: (index >>> 16) & 0xff
-  };
-}
-
-function hslToRgb(h: number, s: number, l: number): { r: number; g: number; b: number } {
-  const c = (1 - Math.abs(2 * l - 1)) * s;
-  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
-  const m = l - c / 2;
-  let r = 0;
-  let g = 0;
-  let b = 0;
-  if (h < 60)       { r = c; g = x; b = 0; }
-  else if (h < 120) { r = x; g = c; b = 0; }
-  else if (h < 180) { r = 0; g = c; b = x; }
-  else if (h < 240) { r = 0; g = x; b = c; }
-  else if (h < 300) { r = x; g = 0; b = c; }
-  else              { r = c; g = 0; b = x; }
-  return {
-    r: Math.round((r + m) * 255),
-    g: Math.round((g + m) * 255),
-    b: Math.round((b + m) * 255)
-  };
-}
+// ── PNG writer ────────────────────────────────────────────────────
 
 async function writeTempPng(perfTmpDir: string, row: PlannedRow): Promise<string> {
-  const buf = await composePng(row);
+  const buf = await composeSyntheticPng(row);
   const path = join(perfTmpDir, `r${String(row.index).padStart(7, "0")}.png`);
   await writeFile(path, buf);
   return path;
@@ -619,12 +546,9 @@ export async function runProfile(name: ProfileName, options: RunOptions = {}): P
     // bounding memory regardless of profile size).
     await thumbQueue.enqueue({
       captureId: result.value.record.id,
-      // Perf seeder uses the legacy capture-flow (putCaptureSource +
-      // insertCapture) — synthesized rows always have
-      // legacy_src_path populated. Bundle-flow captures (live ⌘⇧P)
-      // route through persistCaptureFromTempV2 and use bundle_path
-      // instead.
-      srcPath: result.value.record.legacy_src_path ?? "",
+      // `capture:ingest` writes a v2 bundle, so there is no source path
+      // to pass; the coordinator reads the bundle from the record.
+      srcPath: "",
       widthPx: result.value.record.width_px,
       heightPx: result.value.record.height_px
     });
@@ -677,7 +601,8 @@ export async function runProfile(name: ProfileName, options: RunOptions = {}): P
   await runColdLoadProbes(measurement);
   await runScrollProbes(measurement);
 
-  // Cleanup scratch dir — every PNG is now owned by source-store.
+  // Cleanup scratch dir — `capture:ingest` deletes each temp PNG once
+  // it is packed, so this only catches leftovers from a failed row.
   if (existsSync(perfTmpDir)) {
     await rm(perfTmpDir, { recursive: true, force: true });
   }

@@ -38,6 +38,19 @@ export const TOOL_ORDER = [
   "crop"
 ] as const satisfies readonly Tool[];
 
+/** The Blur icon's cells: top-left corner and tone of each. */
+const BLUR_MOSAIC: ReadonlyArray<readonly [number, number, number]> = [
+  [3.5, 3.5, 0.95],
+  [10, 3.5, 0.4],
+  [16.5, 3.5, 0.7],
+  [3.5, 10, 0.45],
+  [10, 10, 0.8],
+  [16.5, 10, 0.25],
+  [3.5, 16.5, 0.7],
+  [10, 16.5, 0.25],
+  [16.5, 16.5, 0.55]
+];
+
 export const TOOLS: ReadonlyArray<{
   id: Tool;
   label: string;
@@ -79,8 +92,11 @@ export const TOOLS: ReadonlyArray<{
     label: "Shape",
     key: "S",
     icon: (
-      // Offset overlapping shapes read as a shape palette without
-      // implying a camera body + centered lens.
+      // A square in front of a circle. The circle stops short of the
+      // square, so the two read as separate objects; drawn through each
+      // other they read as a camera body and lens. The arc's ends sit
+      // where the circle crosses a box 1.6 outside the square, with butt
+      // caps so they stay square to that box.
       <svg
         viewBox="0 0 24 24"
         fill="none"
@@ -89,8 +105,8 @@ export const TOOLS: ReadonlyArray<{
         strokeLinecap="round"
         strokeLinejoin="round"
       >
-        <rect x="5" y="8" width="11" height="10" rx="1" />
-        <circle cx="15.5" cy="9.5" r="4" />
+        <path d="M9.51 7.9A5.6 5.6 0 1 1 16.1 14.49" strokeLinecap="butt" />
+        <rect x="3.5" y="9.5" width="11" height="11" rx="2.2" />
       </svg>
     )
   },
@@ -119,17 +135,19 @@ export const TOOLS: ReadonlyArray<{
     label: "Highlight",
     key: "H",
     icon: (
+      // Two lines of text with a see-through box across them: the tool
+      // drags a box, it does not draw a stroke. (A pen or marker here
+      // would be Draw's picture.)
       <svg
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"
         strokeWidth="1.8"
         strokeLinecap="round"
+        strokeLinejoin="round"
       >
-        <path d="m14 4 6 6" />
-        <path d="M5 18.5 15.5 8l2.5 2.5L7.5 21H5z" />
-        <path d="M12.5 5.5 15 3l6 6-2.5 2.5" />
-        <path d="M3 21h9" />
+        <path d="M4 4.5h16M4 19.5h10" />
+        <rect x="3" y="8.5" width="18" height="7" rx="1.6" fill="currentColor" fillOpacity="0.38" />
       </svg>
     )
   },
@@ -138,11 +156,12 @@ export const TOOLS: ReadonlyArray<{
     label: "Blur",
     key: "B",
     icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <circle cx="7" cy="12" r="2" />
-        <circle cx="13" cy="8" r="2" />
-        <circle cx="17" cy="14" r="2" />
-        <circle cx="11" cy="17" r="2" />
+      // A 3x3 mosaic of uneven tones, the usual "this is hidden" mark.
+      // It stands for all three modes: gaussian, pixelate and redact.
+      <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+        {BLUR_MOSAIC.map(([x, y, opacity]) => (
+          <rect key={`${x},${y}`} x={x} y={y} width="4" height="4" rx="0.8" fillOpacity={opacity} />
+        ))}
       </svg>
     )
   },
@@ -151,8 +170,17 @@ export const TOOLS: ReadonlyArray<{
     label: "Text",
     key: "T",
     icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M5 6h14M12 6v14M9 20h6" />
+      // The type-tool T: ticks on the crossbar and a foot on the stem
+      // give it the weight of the glyphs beside it.
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M5 7.5V5h14v2.5M12 5v14M9 19h6" />
       </svg>
     )
   },
@@ -165,9 +193,19 @@ export const TOOLS: ReadonlyArray<{
     label: "Crop",
     key: "C",
     icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M6 2v16h16" />
-        <path d="M2 6h16v16" />
+      // Two interlocked crop brackets. Short tails and rounded inner
+      // corners keep them from reading as a hash mark, which two
+      // edge-to-edge L's did.
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M7 2.5V15a2 2 0 0 0 2 2h12.5" />
+        <path d="M17 21.5V9a2 2 0 0 0-2-2H2.5" />
       </svg>
     )
   }

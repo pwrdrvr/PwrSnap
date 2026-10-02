@@ -655,6 +655,15 @@ describe("EditToolbar (Library Focus, v2 refresh)", () => {
     expect(api.applyBagSlot).not.toHaveBeenCalled();
   });
 
+  test("4c'. picking a drawing tool lets go of the selection; the pointer keeps it", async () => {
+    const api = makeLayersApi();
+    await render(createElement(Harness, { selectedLayerIds: ["ov-gone"], layersApi: api }));
+    await fireClick(host?.querySelector('button[data-tool="pointer"]') as HTMLButtonElement);
+    expect(api.clearSelection).not.toHaveBeenCalled();
+    await fireClick(host?.querySelector('button[data-tool="draw"]') as HTMLButtonElement);
+    expect(api.clearSelection).toHaveBeenCalledTimes(1);
+  });
+
   test("4d. a selected arrow offers Add label, and the button hands that arrow to the editor", async () => {
     const arrow = makeArrowRow("ov-arrow", { x: 0.2, y: 0.3 });
     dispatchMock.mockImplementation(async (name: string) => {

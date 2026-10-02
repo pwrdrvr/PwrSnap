@@ -4747,6 +4747,9 @@ export function Editor({
           return;
         }
         lastShortcutToolRef.current = matched.id;
+        // A drawing tool's key lets go of the selection, like its button
+        // and like a slot key, so the property bar shows the tool.
+        if (matched.id !== "pointer" && selectedLayerIds.length > 0) clearSelection();
         setTool(matched.id);
       }
     }

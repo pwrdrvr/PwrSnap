@@ -331,6 +331,29 @@ describe("Editor — Draw tool", () => {
     expect(container!.querySelector("[data-testid='transform-handles']")).toBeNull();
   });
 
+  test("pressing D with a layer selected lets go of it, so the bar shows the pen", async () => {
+    const { Editor } = await import("../Editor");
+    const selections: (readonly string[])[] = [];
+    await act(async () => {
+      root?.render(
+        createElement(Editor, { captureId: "cap_draw", onSelectionChange: (ids) => selections.push(ids) })
+      );
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const canvas = container!.querySelector<HTMLElement>("[data-testid='editor-canvas']")!;
+    expect(canvas.getAttribute("data-tool")).toBe("pointer");
+    // Select the arrow with the pointer.
+    await drag(canvas, [[500, 400]]);
+    expect(selections.at(-1)).toEqual(["arrow_1"]);
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "d", bubbles: true }));
+    });
+    expect(canvas.getAttribute("data-tool")).toBe("draw");
+    expect(selections.at(-1)).toEqual([]);
+  });
+
   test("a press that lands on an existing layer draws over it instead of selecting it", async () => {
     const canvas = await mountWithDrawTool();
     // Start right on the arrow's stem.

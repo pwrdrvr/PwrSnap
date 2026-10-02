@@ -402,6 +402,14 @@ and [acp-approval-policy.test.ts](apps/desktop/src/main/ai/__tests__/acp-approva
   (`disableConfiguredMcpServers`), so the user's own Codex MCP setup never
   attaches to an enrichment thread. `web_search: "disabled"` and
   `project_doc_max_bytes: 0` come from the thread-config overlay.
+- **Codex enrichment disables lifecycle hooks and legacy notification
+  commands in its thread config** (`features.hooks: false`, `notify: []`).
+  Trusted hooks execute outside the agent sandbox and can inject context;
+  `notify` executes separately from the hooks feature and receives the last
+  assistant message. Pin both on every enrichment start, including the
+  legacy sandbox fallback. Keep these overrides per-thread: enrichment and
+  chat share an App Server process, and chat retains the user's choices.
+  See [docs/solutions/2026-10-02-codex-enrichment-config-overlays.md](docs/solutions/2026-10-02-codex-enrichment-config-overlays.md).
 - **Every one-shot thread carries explicit deny handlers.** An approval
   request or tool call from an enrichment turn is denied and logged at
   **error** with `{ runId, captureId }` through

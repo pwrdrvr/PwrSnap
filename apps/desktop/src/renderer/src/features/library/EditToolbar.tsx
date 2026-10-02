@@ -59,7 +59,7 @@ import {
   useState,
   type ReactElement
 } from "react";
-import type { BlurStyle, OverlayRow, ToolBagSlot } from "@pwrsnap/shared";
+import type { BlurStyle, EditToolbarDock, OverlayRow, ToolBagSlot } from "@pwrsnap/shared";
 import { TOOLS, type Tool } from "../editor/editor-tools";
 import type { LayersPanelApi, ZoomApi } from "../editor/Editor";
 import { ZoomMenu } from "../editor/ZoomMenu";
@@ -75,6 +75,8 @@ import { bagSlotForStyle } from "../editor/tool-bag";
 import { EditPropertyBar, type PropertyBarTarget } from "./EditPropertyBar";
 import { styledLayerStyle } from "./styled-layer-style";
 import { ToolBagSlots } from "./ToolBagSlots";
+import { DOCK_LABELS, EditToolbarDockMenu } from "./EditToolbarDockMenu";
+import { dockZoneAt, useEditToolbarDock, type DockEdge } from "./useEditToolbarDock";
 import { useHideDanglingSeparators } from "./useHideDanglingSeparators";
 import { dispatch } from "../../lib/pwrsnap";
 import { nanoid } from "nanoid";
@@ -163,6 +165,13 @@ let savedPosition: { x: number; y: number } | null = null;
  *  scroll-shadow / border. */
 const DRAG_MARGIN_PX = 8;
 
+/** How far the grip must travel before a docked toolbar comes loose. A
+ *  press that stays inside it is a click (or the first half of the
+ *  double-click that floats it back to its default spot). */
+const TEAR_OFF_PX = 24;
+
+const DOCK_EDGES: readonly DockEdge[] = ["top", "bottom", "left", "right"];
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
@@ -184,6 +193,19 @@ export function EditToolbar({
   layersApi = null
 }: EditToolbarProps): ReactElement {
   const [position, setPosition] = useState<{ x: number; y: number } | null>(savedPosition);
+  // Docked or floating. A drag that pulls a docked toolbar loose floats it
+  // under the pointer (`tornOff`) without writing the setting; the release
+  // decides where it lands and writes once.
+  const { dock, setDock } = useEditToolbarDock();
+  const [tornOff, setTornOff] = useState(false);
+  const liveDock: EditToolbarDock = tornOff ? "float" : dock;
+  const floating = liveDock === "float";
+  // While the grip is held: the edges are drop targets, and the one the
+  // pointer is in (if any) is lit. The ref is what the release reads — a
+  // pointermove's state update may not have rendered by then.
+  const [dragging, setDragging] = useState(false);
+  const [hotZone, setHotZone] = useState<DockEdge | null>(null);
+  const hotZoneRef = useRef<DockEdge | null>(null);
   // Two-click confirm state for Reset. `null` = idle; non-null =
   // armed timestamp. Auto-disarms after RESET_CONFIRM_WINDOW_MS so a
   // stale armed state doesn't bite the user later.
@@ -493,7 +515,9 @@ export function EditToolbar({
   // observer rather than thrashing one per render.
   const isPositioned = position !== null;
   useLayoutEffect(() => {
-    if (!isPositioned) return;
+    // Docked, the toolbar is in the stage's layout, not over it: clamping
+    // the saved float position to the band's size would corrupt it.
+    if (!isPositioned || !floating) return;
     const toolbar = toolbarRef.current;
     if (toolbar === null) return;
     const stageEl = getStageEl();
@@ -529,7 +553,7 @@ export function EditToolbar({
     return () => {
       ro.disconnect();
     };
-  }, [isPositioned]);
+  }, [isPositioned, floating]);
 
   // Drag tracking. We compute the new position from clientX/clientY +
   // the original offset of the toolbar at drag-start, so the grip
@@ -550,13 +574,24 @@ export function EditToolbar({
     anchorX: number;
     anchorY: number;
     stageRect: DOMRect | null;
+    /** Pressed on a docked toolbar that has not been pulled loose yet. */
+    docked: boolean;
   } | null>(null);
   const toolbarRef = useRef<HTMLDivElement | null>(null);
   const toolRowRef = useRef<HTMLDivElement | null>(null);
+  const gripRef = useRef<HTMLButtonElement | null>(null);
+  /** Where the pointer was when a docked toolbar came loose. The layout
+   *  effect below parks the floating grip under it once it has laid out. */
+  const pendingGripRef = useRef<{ x: number; y: number } | null>(null);
   useHideDanglingSeparators(toolRowRef);
 
   function getStageEl(): HTMLElement | null {
     return toolbarRef.current?.closest<HTMLElement>(".psl__stage-wrap") ?? null;
+  }
+
+  function setHot(zone: DockEdge | null): void {
+    hotZoneRef.current = zone;
+    setHotZone(zone);
   }
 
   function onGripPointerDown(event: React.PointerEvent<HTMLButtonElement>): void {
@@ -572,13 +607,33 @@ export function EditToolbar({
       pointerY: event.clientY,
       anchorX: rect.left + rect.width / 2,
       anchorY: rect.bottom,
-      stageRect: stageEl?.getBoundingClientRect() ?? null
+      stageRect: stageEl?.getBoundingClientRect() ?? null,
+      docked: !floating
     };
   }
   function onGripPointerMove(event: React.PointerEvent<HTMLButtonElement>): void {
-    if (dragStart.current === null) return;
-    const dx = event.clientX - dragStart.current.pointerX;
-    const dy = event.clientY - dragStart.current.pointerY;
+    const start = dragStart.current;
+    if (start === null) return;
+    const dx = event.clientX - start.pointerX;
+    const dy = event.clientY - start.pointerY;
+    if (start.docked) {
+      if (Math.hypot(dx, dy) < TEAR_OFF_PX) return;
+      // Pulled loose: float it, centred under the pointer for this frame;
+      // the layout effect then moves it so the grip is under the pointer.
+      start.docked = false;
+      pendingGripRef.current = { x: event.clientX, y: event.clientY };
+      const sr = start.stageRect;
+      setTornOff(true);
+      setDragging(true);
+      setPosition({
+        x: event.clientX - (sr?.left ?? 0),
+        y: event.clientY - (sr?.top ?? 0) + 24
+      });
+      setHot(event.altKey ? null : dockZoneAt(event.clientX, event.clientY, sr));
+      return;
+    }
+    setDragging(true);
+    setHot(event.altKey ? null : dockZoneAt(event.clientX, event.clientY, start.stageRect));
     const toolbar = toolbarRef.current;
     if (toolbar === null) return;
     // Read the LIVE toolbar rect (not the drag-start snapshot) so the
@@ -586,12 +641,14 @@ export function EditToolbar({
     // can change mid-session as the toolbar wraps to a 2nd row at
     // narrow stage widths.
     const rect = toolbar.getBoundingClientRect();
-    const { stageRect } = dragStart.current;
+    const { stageRect } = start;
     // Clamp to stage bounds when present, viewport otherwise. The
     // stage path keeps the toolbar entirely inside the editor area —
     // it can't be parked over the Library sidebar or the Detail rail.
     // Viewport fallback preserves the old behavior for the unit test
-    // harness (no `.psl__stage-wrap` ancestor there).
+    // harness (no `.psl__stage-wrap` ancestor there). The drop zones
+    // read the POINTER, not this clamped box: a toolbar nearly as wide
+    // as the stage cannot reach the right edge, but the hand can.
     const boundsLeft = stageRect?.left ?? 0;
     const boundsTop = stageRect?.top ?? 0;
     const boundsRight = stageRect?.right ?? window.innerWidth;
@@ -603,8 +660,8 @@ export function EditToolbar({
     // Guard against degenerate stage smaller than the toolbar
     // (max < min after subtracting toolbar width/height): clamp to
     // [min, max(min, max)] so we never invert the clamp interval.
-    const targetX = dragStart.current.anchorX + dx;
-    const targetY = dragStart.current.anchorY + dy;
+    const targetX = start.anchorX + dx;
+    const targetY = start.anchorY + dy;
     const clampedViewportX = clamp(
       targetX,
       minViewportX,
@@ -624,14 +681,56 @@ export function EditToolbar({
       y: clampedViewportY - boundsTop
     });
   }
-  function onGripPointerUp(event: React.PointerEvent<HTMLButtonElement>): void {
-    if (dragStart.current === null) return;
-    (event.target as HTMLElement).releasePointerCapture(event.pointerId);
+  function endDrag(event: React.PointerEvent<HTMLButtonElement>, land: boolean): void {
+    const start = dragStart.current;
+    if (start === null) return;
+    if ((event.target as HTMLElement).hasPointerCapture(event.pointerId)) {
+      (event.target as HTMLElement).releasePointerCapture(event.pointerId);
+    }
     dragStart.current = null;
+    const zone = land && !event.altKey ? hotZoneRef.current : null;
+    setDragging(false);
+    setHot(null);
+    // Still docked: the press never pulled it loose, so it was a click.
+    if (start.docked) return;
+    setTornOff(false);
+    if (zone !== null) setDock(zone);
+    else if (dock !== "float") setDock("float");
+  }
+  function onGripPointerUp(event: React.PointerEvent<HTMLButtonElement>): void {
+    endDrag(event, true);
+  }
+  function onGripPointerCancel(event: React.PointerEvent<HTMLButtonElement>): void {
+    endDrag(event, false);
+  }
+  function floatAtDefault(): void {
+    setPosition(null);
+    setTornOff(false);
+    if (dock !== "float") setDock("float");
   }
   function onGripDoubleClick(): void {
-    setPosition(null);
+    floatAtDefault();
   }
+
+  // A docked toolbar just came loose: it has re-laid out as the floating
+  // panel, so move it until the grip sits under the pointer, and rebase
+  // the drag on that so the next pointermove continues from here.
+  useLayoutEffect(() => {
+    const pending = pendingGripRef.current;
+    const start = dragStart.current;
+    const grip = gripRef.current;
+    const toolbar = toolbarRef.current;
+    if (!tornOff || pending === null || start === null || grip === null || toolbar === null) return;
+    pendingGripRef.current = null;
+    const g = grip.getBoundingClientRect();
+    const t = toolbar.getBoundingClientRect();
+    start.pointerX = pending.x;
+    start.pointerY = pending.y;
+    start.anchorX = t.left + t.width / 2 + (pending.x - (g.left + g.width / 2));
+    start.anchorY = t.bottom + (pending.y - (g.top + g.height / 2));
+    const sr = start.stageRect;
+    setPosition({ x: start.anchorX - (sr?.left ?? 0), y: start.anchorY - (sr?.top ?? 0) });
+  }, [tornOff]);
 
   // When a custom position is in effect, override the default
   // bottom-center anchor (`left: 50%; transform: translateX(-50%);
@@ -646,7 +745,7 @@ export function EditToolbar({
   // toolbar over the Library / Detail rail; the drag handler now
   // converts to stage-relative before storing.)
   const style: React.CSSProperties =
-    position === null
+    position === null || !floating
       ? {}
       : {
           left: position.x,
@@ -776,200 +875,246 @@ export function EditToolbar({
     toolState.armSlot(index, { singleShot });
   };
 
-  return (
+  // Docked, the property row is always there, so the snap re-fits only when
+  // the toolbar moves, never when the selection or the tool changes.
+  const propertyRow =
+    propertyTarget !== null ? (
+      <EditPropertyBar
+        key="props"
+        target={propertyTarget}
+        onFieldChange={onPropertyFieldChange}
+        firstEmptySlot={firstEmptySlot}
+        onSaveToSlot={toolState.setBagSlot}
+        {...(layersApi != null
+          ? { onAddLabel: (id: string) => void layersApi.addArrowLabel(id) }
+          : {})}
+      />
+    ) : floating ? null : (
+      <div key="props" className="psl__et-props is-empty" data-testid="edit-property-bar-empty">
+        <span className="psl__et-props-hint">Nothing selected — pick a tool, or click a layer to edit its style</span>
+      </div>
+    );
+  // Bottom (and floating) put the properties above the tools, nearest the
+  // canvas; top and the side columns put the tools first. DOM order follows
+  // the visual order so Tab does too. Keyed, so swapping them never
+  // remounts the row whose grip holds the pointer.
+  const toolsFirst = liveDock === "top" || liveDock === "left" || liveDock === "right";
+
+  const toolRow = (
     <div
-      ref={toolbarRef}
-      className={"psl__edit-dock" + (position === null ? "" : " is-positioned")}
-      style={style}
-      // Stop pointer-down from bubbling to the canvas behind — the
-      // property bar sits over the canvas just like the toolbar does.
+      key="tools"
+      ref={toolRowRef}
+      className="psl__edit-toolbar"
+      role="toolbar"
+      aria-label="Annotation tools"
+      aria-orientation={liveDock === "left" || liveDock === "right" ? "vertical" : "horizontal"}
+      // Stop pointer-down from bubbling to the canvas behind. Without
+      // this, clicking a tool button inside the canvas's pointer-down
+      // area would also fire the canvas's drag-to-draw handler — the
+      // "I clicked Rect and accidentally drew on the canvas" bug
+      // class julik flagged. mousedown (not click) because the canvas
+      // listens for pointerdown for drag-start. Plan §5
+      // (in-canvas-toolbar pattern).
       onMouseDown={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
     >
-      {propertyTarget !== null && (
-        <EditPropertyBar
-          target={propertyTarget}
-          onFieldChange={onPropertyFieldChange}
-          firstEmptySlot={firstEmptySlot}
-          onSaveToSlot={toolState.setBagSlot}
-          {...(layersApi != null
-            ? { onAddLabel: (id: string) => void layersApi.addArrowLabel(id) }
-            : {})}
-        />
+      <button
+        ref={gripRef}
+        type="button"
+        className="psl__et-grip"
+        aria-label="Drag toolbar (double-click to reset)"
+        data-tip="Drag to move"
+        data-tip-detail={
+          floating
+            ? "Drop on an edge to dock it · double-click to put it back"
+            : "Pull it out to float it · double-click to put it back"
+        }
+        onPointerDown={onGripPointerDown}
+        onPointerMove={onGripPointerMove}
+        onPointerUp={onGripPointerUp}
+        onPointerCancel={onGripPointerCancel}
+        onDoubleClick={onGripDoubleClick}
+      >
+        <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor" aria-hidden="true">
+          <circle cx="2.5" cy="2.5" r="1.1" />
+          <circle cx="7.5" cy="2.5" r="1.1" />
+          <circle cx="2.5" cy="7" r="1.1" />
+          <circle cx="7.5" cy="7" r="1.1" />
+          <circle cx="2.5" cy="11.5" r="1.1" />
+          <circle cx="7.5" cy="11.5" r="1.1" />
+        </svg>
+      </button>
+      <EditToolbarDockMenu dock={liveDock} onPick={setDock} onFloatAtDefault={floatAtDefault} />
+      <span className="psl__et-sep" aria-hidden="true" />
+      <ToolBagSlots
+        bag={toolState.bag}
+        armedSlot={toolState.armedSlot}
+        armedSlotModified={toolState.armedSlotModified}
+        hasSelection={selectedLayerIds.length > 0}
+        currentStyle={currentStyleForBag}
+        onArm={armSlot}
+        onApply={applySlotToSelection}
+        onSaveSlot={toolState.setBagSlot}
+      />
+      <span className="psl__et-sep" aria-hidden="true" />
+      {TOOLS.map((t, i) => (
+        <Fragment key={t.id}>
+          {/* Vertical separator after the first tool (Pointer) —
+              divides the "select / inspect" tool from the "draw"
+              tools. Mirrors the design's separator placement; the
+              design also has a separator before color swatches +
+              magic wand + undo, but those clusters aren't rendered
+              in this phase. */}
+          {i === 1 && <span className="psl__et-sep" aria-hidden="true" />}
+          <ToolButton
+            tool={t}
+            // A family reads as active only when no slot is armed —
+            // otherwise the armed slot is the thing that is "on".
+            active={
+              toolState.activeTool === t.id &&
+              !(toolState.armedSlot !== null && isStyledTool(t.id))
+            }
+            onClick={(e) => handleToolClick(t.id, e)}
+            tipProps={t.id === "draw" ? drawButtonTip : undefined}
+          />
+        </Fragment>
+      ))}
+      <span className="psl__et-sep" aria-hidden="true" />
+      <ResetButton
+        captureId={captureId}
+        overlayCount={overlayCount}
+        isV2Cropped={isV2Cropped}
+        armed={resetArmedAt !== null}
+        onArm={() => setResetArmedAt(Date.now())}
+        onConfirm={async () => {
+          if (captureId === undefined) return;
+          setResetArmedAt(null);
+          const recordRes = await dispatch("library:byId", { id: captureId });
+          if (!recordRes.ok || recordRes.value === null) return;
+          const list = await dispatch("layers:list", { captureId });
+          if (!list.ok) return;
+          // Find the raster's natural dims BEFORE we delete layers
+          // — we need them to restore canvas dimensions if the user
+          // had previously cropped. Crop writes to the captures
+          // row's width_px/height_px (non-destructively, the raster
+          // source bytes are preserved) via
+          // `bundle:updateCanvasDimensions`; without restoring those
+          // here, Reset would only clear annotations and leave the
+          // capture in its cropped state forever. The user's
+          // intuition is "Reset = full original" so we restore both.
+          let rasterDims: { width: number; height: number } | null = null;
+          // Snapshot the raster layer too — Reset needs to restore
+          // its transform to identity if a previous off-origin crop
+          // translated it (useCaptureModel.ts Step 0.5 writes
+          // raster.transform[4]/[5] when the user drags a non-(0,0)
+          // crop rect, per PR #110). Without resetting, the
+          // captures-row dim restore below leaves the raster
+          // shifted inside the now-full canvas — visible as the
+          // image appearing offset from the canvas's top-left with
+          // empty space on the opposite edges. (Reproduced live
+          // by the user after Reset on lPK1jAx7uXAACf9k.)
+          let rasterNeedingReset: (typeof list.value)[number] | null = null;
+          for (const node of list.value) {
+            if (
+              node.kind === "raster" &&
+              node.parent_id !== null
+            ) {
+              rasterDims = {
+                width: node.natural_width_px,
+                height: node.natural_height_px
+              };
+              if (node.transform[4] !== 0 || node.transform[5] !== 0) {
+                rasterNeedingReset = node;
+              }
+              break;
+            }
+          }
+          // Skip the synthesized root group + raster source; just
+          // delete user-facing annotation layers. Sequential to
+          // avoid racing the per-write broadcasts / edits_version.
+          for (const node of list.value) {
+            if (node.kind === "group" || node.kind === "raster") continue;
+            // eslint-disable-next-line no-await-in-loop
+            await dispatch("layers:delete", { id: node.id });
+          }
+          // Restore the raster's identity transform if a previous
+          // off-origin crop translated it. Delete + reinsert mirrors
+          // the dispatcher's pattern (the IPC surface has no
+          // updateLayer verb; edits are delete-plus-insert via
+          // `layers:delete` + `layers:upsert`). Skip when transform
+          // is already identity so the common case stays churn-free.
+          if (rasterNeedingReset !== null) {
+            await dispatch("layers:delete", { id: rasterNeedingReset.id });
+            await dispatch("layers:upsert", {
+              captureId,
+              layer: {
+                ...rasterNeedingReset,
+                id: nanoid(16),
+                transform: [1, 0, 0, 1, 0, 0]
+              }
+            });
+          }
+          // Restore canvas to raster-natural dims if the capture
+          // was cropped. The `updateCanvasDimensions` handler
+          // refuses values exceeding the raster's natural dims so
+          // this can never grow the canvas past the source — only
+          // restore it to what was captured originally. Skip when
+          // already at natural dims (no-op writes burn an
+          // edits_version bump + a captures:changed broadcast for
+          // nothing).
+          if (
+            rasterDims !== null &&
+            (recordRes.value.width_px !== rasterDims.width ||
+              recordRes.value.height_px !== rasterDims.height)
+          ) {
+            await dispatch("bundle:updateCanvasDimensions", {
+              captureId,
+              widthPx: rasterDims.width,
+              heightPx: rasterDims.height
+            });
+          }
+        }}
+      />
+      {zoom !== null && zoom !== undefined && (
+        <>
+          <span className="psl__et-sep" aria-hidden="true" />
+          <ZoomMenu zoom={zoom} />
+        </>
       )}
+    </div>
+  );
+
+  return (
+    <>
+      {dragging && floating &&
+        DOCK_EDGES.map((edge) => (
+          <div
+            key={`zone-${edge}`}
+            className={`psl__dock-zone is-${edge}` + (hotZone === edge ? " is-hot" : "")}
+            data-testid={`edit-toolbar-dock-zone-${edge}`}
+            aria-hidden="true"
+          >
+            <span>{DOCK_LABELS[edge].replace("Docked", "Dock")}</span>
+          </div>
+        ))}
       <div
-        ref={toolRowRef}
-        className="psl__edit-toolbar"
-        role="toolbar"
-        aria-label="Annotation tools"
-        // Stop pointer-down from bubbling to the canvas behind. Without
-        // this, clicking a tool button inside the canvas's pointer-down
-        // area would also fire the canvas's drag-to-draw handler — the
-        // "I clicked Rect and accidentally drew on the canvas" bug
-        // class julik flagged. mousedown (not click) because the canvas
-        // listens for pointerdown for drag-start. Plan §5
-        // (in-canvas-toolbar pattern).
+        ref={toolbarRef}
+        className={
+          "psl__edit-dock" +
+          (floating ? (position === null ? "" : " is-positioned") : " is-docked") +
+          (hotZone !== null ? " is-over-zone" : "")
+        }
+        data-dock={liveDock}
+        data-testid="edit-dock"
+        style={style}
+        // Stop pointer-down from bubbling to the canvas behind — the
+        // property bar sits over the canvas just like the toolbar does.
         onMouseDown={(e) => e.stopPropagation()}
         onPointerDown={(e) => e.stopPropagation()}
       >
-        <button
-          type="button"
-          className="psl__et-grip"
-          aria-label="Drag toolbar (double-click to reset)"
-          data-tip="Drag to move"
-          data-tip-detail="Double-click to put it back"
-          onPointerDown={onGripPointerDown}
-          onPointerMove={onGripPointerMove}
-          onPointerUp={onGripPointerUp}
-          onDoubleClick={onGripDoubleClick}
-        >
-          <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor" aria-hidden="true">
-            <circle cx="2.5" cy="2.5" r="1.1" />
-            <circle cx="7.5" cy="2.5" r="1.1" />
-            <circle cx="2.5" cy="7" r="1.1" />
-            <circle cx="7.5" cy="7" r="1.1" />
-            <circle cx="2.5" cy="11.5" r="1.1" />
-            <circle cx="7.5" cy="11.5" r="1.1" />
-          </svg>
-        </button>
-        <span className="psl__et-sep" aria-hidden="true" />
-        <ToolBagSlots
-          bag={toolState.bag}
-          armedSlot={toolState.armedSlot}
-          armedSlotModified={toolState.armedSlotModified}
-          hasSelection={selectedLayerIds.length > 0}
-          currentStyle={currentStyleForBag}
-          onArm={armSlot}
-          onApply={applySlotToSelection}
-          onSaveSlot={toolState.setBagSlot}
-        />
-        <span className="psl__et-sep" aria-hidden="true" />
-        {TOOLS.map((t, i) => (
-          <Fragment key={t.id}>
-            {/* Vertical separator after the first tool (Pointer) —
-                divides the "select / inspect" tool from the "draw"
-                tools. Mirrors the design's separator placement; the
-                design also has a separator before color swatches +
-                magic wand + undo, but those clusters aren't rendered
-                in this phase. */}
-            {i === 1 && <span className="psl__et-sep" aria-hidden="true" />}
-            <ToolButton
-              tool={t}
-              // A family reads as active only when no slot is armed —
-              // otherwise the armed slot is the thing that is "on".
-              active={
-                toolState.activeTool === t.id &&
-                !(toolState.armedSlot !== null && isStyledTool(t.id))
-              }
-              onClick={(e) => handleToolClick(t.id, e)}
-              tipProps={t.id === "draw" ? drawButtonTip : undefined}
-            />
-          </Fragment>
-        ))}
-        <span className="psl__et-sep" aria-hidden="true" />
-        <ResetButton
-          captureId={captureId}
-          overlayCount={overlayCount}
-          isV2Cropped={isV2Cropped}
-          armed={resetArmedAt !== null}
-          onArm={() => setResetArmedAt(Date.now())}
-          onConfirm={async () => {
-            if (captureId === undefined) return;
-            setResetArmedAt(null);
-            const recordRes = await dispatch("library:byId", { id: captureId });
-            if (!recordRes.ok || recordRes.value === null) return;
-            const list = await dispatch("layers:list", { captureId });
-            if (!list.ok) return;
-            // Find the raster's natural dims BEFORE we delete layers
-            // — we need them to restore canvas dimensions if the user
-            // had previously cropped. Crop writes to the captures
-            // row's width_px/height_px (non-destructively, the raster
-            // source bytes are preserved) via
-            // `bundle:updateCanvasDimensions`; without restoring those
-            // here, Reset would only clear annotations and leave the
-            // capture in its cropped state forever. The user's
-            // intuition is "Reset = full original" so we restore both.
-            let rasterDims: { width: number; height: number } | null = null;
-            // Snapshot the raster layer too — Reset needs to restore
-            // its transform to identity if a previous off-origin crop
-            // translated it (useCaptureModel.ts Step 0.5 writes
-            // raster.transform[4]/[5] when the user drags a non-(0,0)
-            // crop rect, per PR #110). Without resetting, the
-            // captures-row dim restore below leaves the raster
-            // shifted inside the now-full canvas — visible as the
-            // image appearing offset from the canvas's top-left with
-            // empty space on the opposite edges. (Reproduced live
-            // by the user after Reset on lPK1jAx7uXAACf9k.)
-            let rasterNeedingReset: (typeof list.value)[number] | null = null;
-            for (const node of list.value) {
-              if (
-                node.kind === "raster" &&
-                node.parent_id !== null
-              ) {
-                rasterDims = {
-                  width: node.natural_width_px,
-                  height: node.natural_height_px
-                };
-                if (node.transform[4] !== 0 || node.transform[5] !== 0) {
-                  rasterNeedingReset = node;
-                }
-                break;
-              }
-            }
-            // Skip the synthesized root group + raster source; just
-            // delete user-facing annotation layers. Sequential to
-            // avoid racing the per-write broadcasts / edits_version.
-            for (const node of list.value) {
-              if (node.kind === "group" || node.kind === "raster") continue;
-              // eslint-disable-next-line no-await-in-loop
-              await dispatch("layers:delete", { id: node.id });
-            }
-            // Restore the raster's identity transform if a previous
-            // off-origin crop translated it. Delete + reinsert mirrors
-            // the dispatcher's pattern (the IPC surface has no
-            // updateLayer verb; edits are delete-plus-insert via
-            // `layers:delete` + `layers:upsert`). Skip when transform
-            // is already identity so the common case stays churn-free.
-            if (rasterNeedingReset !== null) {
-              await dispatch("layers:delete", { id: rasterNeedingReset.id });
-              await dispatch("layers:upsert", {
-                captureId,
-                layer: {
-                  ...rasterNeedingReset,
-                  id: nanoid(16),
-                  transform: [1, 0, 0, 1, 0, 0]
-                }
-              });
-            }
-            // Restore canvas to raster-natural dims if the capture
-            // was cropped. The `updateCanvasDimensions` handler
-            // refuses values exceeding the raster's natural dims so
-            // this can never grow the canvas past the source — only
-            // restore it to what was captured originally. Skip when
-            // already at natural dims (no-op writes burn an
-            // edits_version bump + a captures:changed broadcast for
-            // nothing).
-            if (
-              rasterDims !== null &&
-              (recordRes.value.width_px !== rasterDims.width ||
-                recordRes.value.height_px !== rasterDims.height)
-            ) {
-              await dispatch("bundle:updateCanvasDimensions", {
-                captureId,
-                widthPx: rasterDims.width,
-                heightPx: rasterDims.height
-              });
-            }
-          }}
-        />
-        {zoom !== null && zoom !== undefined && (
-          <>
-            <span className="psl__et-sep" aria-hidden="true" />
-            <ZoomMenu zoom={zoom} />
-          </>
-        )}
+        {toolsFirst ? [toolRow, propertyRow] : [propertyRow, toolRow]}
       </div>
-    </div>
+    </>
   );
 }
 

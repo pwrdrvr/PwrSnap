@@ -70,11 +70,16 @@ vi.mock("../../settings/useSettings", () => ({
 }));
 
 import { EditToolbar } from "../EditToolbar";
+import {
+  dockZoneAt,
+  primeEditToolbarDock,
+  resetEditToolbarDockForTests
+} from "../useEditToolbarDock";
 import type { Tool } from "../../editor/editor-tools";
 import { useEditorToolState } from "../../editor/useEditorToolState";
 import { DRAW_MODE_TIP } from "../../editor/draw-mode-preview";
 import { renderTipPreview } from "../../../lib/tip-previews";
-import { defaultEditorToolBag } from "@pwrsnap/shared";
+import { EVENT_CHANNELS, defaultEditorToolBag } from "@pwrsnap/shared";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -170,7 +175,7 @@ function makeSettings(): Settings {
       coachmarks: { stoplightSeen: true },
       sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }
     },
-    library: { detailRail: { pinned: true, lastSelectedTab: "info" }, gridCopyPalette: { anchor: "follow" }, confirmBeforeTrash: true, gridZoom: 180, duplicateWithEdits: { image: true, video: true } },
+    library: { detailRail: { pinned: true, lastSelectedTab: "info" }, gridCopyPalette: { anchor: "follow" }, confirmBeforeTrash: true, gridZoom: 180, duplicateWithEdits: { image: true, video: true }, editToolbarDock: "float" },
   localAgents: { enabled: false, grants: [], roles: [], audit: [] }
   };
 }
@@ -495,6 +500,7 @@ beforeEach(() => {
   subscribeHandlers = [];
   useSettingsMock.mockReset();
   installSettingsMock(makeSettings());
+  resetEditToolbarDockForTests();
 });
 
 afterEach(async () => {
@@ -1120,5 +1126,224 @@ describe("EditToolbar (Library Focus, v2 refresh)", () => {
     // Tool returned to pointer; parent saw the transition.
     expect(onToolChange).toHaveBeenCalledWith("pointer");
     expect(findToolButton("pointer").className).toContain("is-active");
+  });
+});
+
+// ---- Docking -------------------------------------------------------
+
+function dockEl(): HTMLElement {
+  const el = host?.querySelector<HTMLElement>('[data-testid="edit-dock"]');
+  if (el === null || el === undefined) throw new Error("edit dock not rendered");
+  return el;
+}
+
+/** The two rows of the dock, in DOM order, by what they are. */
+function dockRowOrder(): string[] {
+  return Array.from(dockEl().children).map((el) =>
+    el.getAttribute("role") === "toolbar" ? "tools" : "props"
+  );
+}
+
+function grip(): HTMLButtonElement {
+  const el = host?.querySelector<HTMLButtonElement>(".psl__et-grip");
+  if (el === null || el === undefined) throw new Error("grip not rendered");
+  return el;
+}
+
+/** Wrap the toolbar in a stage the size of a Focus canvas, so the drop
+ *  zones have edges to measure against. */
+function StagedHarness(): ReactElement {
+  return createElement("div", { className: "psl__stage-wrap" }, createElement(Harness));
+}
+
+function stubStageRect(): void {
+  const stage = host?.querySelector<HTMLElement>(".psl__stage-wrap");
+  if (stage === null || stage === undefined) throw new Error("stage not rendered");
+  stage.getBoundingClientRect = () =>
+    ({
+      x: 100,
+      y: 50,
+      left: 100,
+      top: 50,
+      right: 1100,
+      bottom: 750,
+      width: 1000,
+      height: 700,
+      toJSON() {
+        return this;
+      }
+    }) as DOMRect;
+}
+
+async function firePointer(
+  el: HTMLElement,
+  type: "pointerdown" | "pointermove" | "pointerup",
+  x: number,
+  y: number,
+  init: { altKey?: boolean } = {}
+): Promise<void> {
+  // jsdom has no PointerEvent; React reads the fields off a MouseEvent
+  // carrying the pointer type name just the same.
+  const event = new MouseEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    button: 0,
+    clientX: x,
+    clientY: y,
+    altKey: init.altKey === true
+  });
+  Object.defineProperty(event, "pointerId", { value: 1 });
+  await act(async () => {
+    el.dispatchEvent(event);
+  });
+}
+
+function lastSettingsWrite(): unknown {
+  const writes = dispatchMock.mock.calls.filter(([name]) => name === "settings:write");
+  return writes.at(-1)?.[1];
+}
+
+describe("EditToolbar docking", () => {
+  beforeAll(() => {
+    // jsdom implements no pointer capture.
+    const proto = HTMLElement.prototype as unknown as Record<string, unknown>;
+    proto["setPointerCapture"] ??= () => undefined;
+    proto["releasePointerCapture"] ??= () => undefined;
+    proto["hasPointerCapture"] ??= () => false;
+  });
+
+  test("floats by default, with no reserved property row", async () => {
+    await render(createElement(Harness));
+    expect(dockEl().dataset["dock"]).toBe("float");
+    expect(dockEl().classList.contains("is-docked")).toBe(false);
+    expect(host?.querySelector('[data-testid="edit-property-bar-empty"]')).toBeNull();
+    const button = host?.querySelector('[data-testid="edit-toolbar-dock-button"]');
+    expect(button?.getAttribute("aria-label")).toBe("Toolbar position: Floating");
+  });
+
+  test("docked bottom: properties above the tools, and the row is reserved with nothing selected", async () => {
+    primeEditToolbarDock("bottom");
+    await render(createElement(Harness));
+    expect(dockEl().classList.contains("is-docked")).toBe(true);
+    expect(dockEl().dataset["dock"]).toBe("bottom");
+    expect(dockRowOrder()).toEqual(["props", "tools"]);
+    expect(host?.querySelector('[data-testid="edit-property-bar-empty"]')).not.toBeNull();
+    // A tool with style takes the row over; no second row appears.
+    await fireClick(findToolButton("arrow"));
+    expect(propertyBar()).not.toBeNull();
+    expect(host?.querySelector('[data-testid="edit-property-bar-empty"]')).toBeNull();
+    expect(dockRowOrder()).toEqual(["props", "tools"]);
+  });
+
+  test("docked top and the side columns put the tools first; the sides are vertical", async () => {
+    primeEditToolbarDock("top");
+    await render(createElement(Harness));
+    expect(dockRowOrder()).toEqual(["tools", "props"]);
+    expect(host?.querySelector('[role="toolbar"]')?.getAttribute("aria-orientation")).toBe(
+      "horizontal"
+    );
+    await act(async () => primeEditToolbarDock("left"));
+    expect(dockRowOrder()).toEqual(["tools", "props"]);
+    expect(host?.querySelector('[role="toolbar"]')?.getAttribute("aria-orientation")).toBe(
+      "vertical"
+    );
+  });
+
+  test("the dock menu moves the toolbar and saves the choice", async () => {
+    await render(createElement(Harness));
+    const button = host!.querySelector<HTMLButtonElement>('[data-testid="edit-toolbar-dock-button"]')!;
+    await fireClick(button);
+    expect(host?.querySelector('[data-testid="edit-toolbar-dock-menu"]')).not.toBeNull();
+    expect(
+      host?.querySelector('[data-testid="edit-toolbar-dock-float"]')?.getAttribute("aria-checked")
+    ).toBe("true");
+    await fireClick(host!.querySelector<HTMLElement>('[data-testid="edit-toolbar-dock-right"]')!);
+    expect(host?.querySelector('[data-testid="edit-toolbar-dock-menu"]')).toBeNull();
+    expect(dockEl().dataset["dock"]).toBe("right");
+    expect(lastSettingsWrite()).toEqual({ library: { editToolbarDock: "right" } });
+    expect(button.getAttribute("aria-label")).toBe("Toolbar position: Docked right");
+  });
+
+  test("a settings broadcast from another window moves it", async () => {
+    await render(createElement(Harness));
+    const handler = subscribeMock.mock.calls
+      .filter(([channel]) => channel === EVENT_CHANNELS.settingsChanged)
+      .at(-1)?.[1];
+    expect(handler).toBeDefined();
+    await act(async () => {
+      handler!({ settings: { library: { editToolbarDock: "top" } }, secrets: {} });
+    });
+    expect(dockEl().dataset["dock"]).toBe("top");
+  });
+
+  test("double-clicking the grip of a docked toolbar floats it again", async () => {
+    primeEditToolbarDock("right");
+    await render(createElement(Harness));
+    await act(async () => {
+      grip().dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+    expect(dockEl().dataset["dock"]).toBe("float");
+    expect(lastSettingsWrite()).toEqual({ library: { editToolbarDock: "float" } });
+  });
+
+  test("dragging the floating toolbar to an edge lights that zone and docks there on release", async () => {
+    await render(createElement(StagedHarness));
+    stubStageRect();
+    await firePointer(grip(), "pointerdown", 600, 700);
+    await firePointer(grip(), "pointermove", 600, 500);
+    // Zones show for the whole drag; none is hot mid-stage.
+    expect(host?.querySelectorAll(".psl__dock-zone").length).toBe(4);
+    expect(host?.querySelector(".psl__dock-zone.is-hot")).toBeNull();
+    // Overshooting past the stage's right edge still aims right.
+    await firePointer(grip(), "pointermove", 1130, 400);
+    expect(
+      host?.querySelector('[data-testid="edit-toolbar-dock-zone-right"]')?.classList.contains("is-hot")
+    ).toBe(true);
+    expect(dockEl().classList.contains("is-over-zone")).toBe(true);
+    await firePointer(grip(), "pointerup", 1130, 400);
+    expect(host?.querySelectorAll(".psl__dock-zone").length).toBe(0);
+    expect(dockEl().dataset["dock"]).toBe("right");
+    expect(lastSettingsWrite()).toEqual({ library: { editToolbarDock: "right" } });
+  });
+
+  test("holding ⌥ on release keeps it floating", async () => {
+    await render(createElement(StagedHarness));
+    stubStageRect();
+    await firePointer(grip(), "pointerdown", 600, 700);
+    await firePointer(grip(), "pointermove", 600, 60, { altKey: true });
+    expect(host?.querySelector(".psl__dock-zone.is-hot")).toBeNull();
+    await firePointer(grip(), "pointerup", 600, 60, { altKey: true });
+    expect(dockEl().dataset["dock"]).toBe("float");
+    expect(lastSettingsWrite()).toBeUndefined();
+  });
+
+  test("a docked toolbar stays put until the grip is pulled past the tear-off distance", async () => {
+    primeEditToolbarDock("bottom");
+    await render(createElement(StagedHarness));
+    stubStageRect();
+    await firePointer(grip(), "pointerdown", 600, 730);
+    await firePointer(grip(), "pointermove", 610, 720);
+    expect(dockEl().dataset["dock"]).toBe("bottom");
+    // Pulled loose: floats locally while held, without writing anything.
+    await firePointer(grip(), "pointermove", 600, 400);
+    expect(dockEl().dataset["dock"]).toBe("float");
+    expect(dockEl().classList.contains("is-positioned")).toBe(true);
+    expect(lastSettingsWrite()).toBeUndefined();
+    // Released mid-stage: it stays floating, and that is saved.
+    await firePointer(grip(), "pointerup", 600, 400);
+    expect(dockEl().dataset["dock"]).toBe("float");
+    expect(lastSettingsWrite()).toEqual({ library: { editToolbarDock: "float" } });
+  });
+
+  test("dockZoneAt: the pointer, within reach of an edge, nearest edge wins", () => {
+    const stage = { left: 0, top: 0, right: 1000, bottom: 700 } as DOMRect;
+    expect(dockZoneAt(500, 350, stage)).toBeNull();
+    expect(dockZoneAt(500, 10, stage)).toBe("top");
+    expect(dockZoneAt(500, 690, stage)).toBe("bottom");
+    expect(dockZoneAt(10, 350, stage)).toBe("left");
+    expect(dockZoneAt(1040, 350, stage)).toBe("right");
+    // A corner: 20 from the top, 40 from the left.
+    expect(dockZoneAt(40, 20, stage)).toBe("top");
+    expect(dockZoneAt(500, 350, null)).toBeNull();
   });
 });

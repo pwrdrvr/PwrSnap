@@ -82,6 +82,7 @@ import {
 } from "./DuplicateProgress";
 import { GridCopyPalette } from "./GridCopyPalette";
 import { closeWhenFocusLeaves } from "../shared/close-when-focus-leaves";
+import { primeEditToolbarDock } from "./useEditToolbarDock";
 import { resolveLibraryAiToggleAction } from "./library-ai-toggle";
 import { nextAfterDelete } from "./delete-nav";
 import { DeleteUndoStack } from "./delete-undo-stack";
@@ -1177,6 +1178,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
       }
       if (result.ok) {
         setConfirmBeforeTrash(result.value.library.confirmBeforeTrash);
+        primeEditToolbarDock(result.value.library.editToolbarDock);
         setCapturesLocationState(result.value.storage?.capturesLocation ?? "documents");
         // `??=` so a codex-change broadcast that raced this read wins.
         lastCodexSettingsRef.current ??= JSON.stringify(result.value.codex);

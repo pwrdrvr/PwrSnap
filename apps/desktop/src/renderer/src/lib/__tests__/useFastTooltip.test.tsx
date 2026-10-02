@@ -2,7 +2,12 @@ import { act, useState, type ReactElement } from "react";
 import { createPortal } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { registerTipPreview } from "../tip-previews";
 import { GAP_PX, RING_REACH_PX, placeTooltip, useFastTooltip } from "../useFastTooltip";
+
+registerTipPreview("swatch", (anchor) => (
+  <svg data-testid="swatch" data-color={anchor.dataset.swatchColor} />
+));
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -37,6 +42,16 @@ function Harness(): ReactElement {
       <button type="button" data-testid="untipped" data-tip="">
         Plain
       </button>
+      <button
+        type="button"
+        data-testid="pictured"
+        aria-label="Marker"
+        data-tip="Marker"
+        data-tip-detail="Wide and see-through"
+        data-tip-preview="swatch"
+        data-swatch-color="#00ff00"
+      />
+      <button type="button" data-testid="unregistered" aria-label="Pen" data-tip="Pen" data-tip-preview="nobody" />
       <span data-testid="gap">gap</span>
       {createPortal(
         <button type="button" data-testid="portaled" aria-label="Close" data-tip="Close" data-tip-keys="Esc" />,
@@ -118,6 +133,26 @@ describe("useFastTooltip", () => {
     expect(tip?.querySelector("kbd")?.textContent).toBe("1");
     expect(tip?.textContent).toContain("Press 1 or click to draw with it");
     expect(el("one").getAttribute("aria-describedby")).toBe(tip?.id);
+  });
+
+  test("a registered preview draws above the words, from the anchor's own data", () => {
+    hoverUntilShown(el("pictured"));
+    const tip = tooltip();
+    expect(tip?.className).toContain("ps-tip--preview");
+    const picture = tip?.querySelector(".ps-tip__preview");
+    expect(picture?.getAttribute("aria-hidden")).toBe("true");
+    expect(picture?.querySelector('[data-testid="swatch"]')?.getAttribute("data-color")).toBe("#00ff00");
+    // The picture comes first; the words still follow it.
+    expect(picture?.nextElementSibling?.textContent).toContain("Marker");
+    expect(tip?.textContent).toContain("Wide and see-through");
+  });
+
+  test("an unregistered preview name shows the words alone", () => {
+    hoverUntilShown(el("unregistered"));
+    const tip = tooltip();
+    expect(tip?.textContent).toContain("Pen");
+    expect(tip?.className).toBe("ps-tip");
+    expect(tip?.querySelector(".ps-tip__preview")).toBeNull();
   });
 
   test("moving within the same button does not restart or hide it", () => {

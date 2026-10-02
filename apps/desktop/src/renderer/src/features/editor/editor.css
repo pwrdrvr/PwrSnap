@@ -1592,3 +1592,27 @@
 .pse-mode-row.is-on .pse-mode-row-hint {
   color: color-mix(in srgb, var(--accent-bright) 70%, transparent);
 }
+
+/* The Draw mode tooltip's picture (draw-mode-preview.tsx): a scrap of
+   screenshot for the stroke to sit on, and the eraser's footprint. */
+.draw-tip__paper {
+  fill: color-mix(in srgb, var(--text-primary) 5%, var(--bg-app));
+}
+.draw-tip__text {
+  fill: var(--text-primary);
+  opacity: 0.12;
+}
+.draw-tip__text--head {
+  opacity: 0.22;
+}
+.draw-tip__trail {
+  fill: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  stroke: color-mix(in srgb, var(--text-primary) 30%, transparent);
+  stroke-dasharray: 3 3;
+}
+.draw-tip__ring {
+  fill: none;
+  stroke: var(--text-primary);
+  stroke-width: 1.3;
+  opacity: 0.85;
+}

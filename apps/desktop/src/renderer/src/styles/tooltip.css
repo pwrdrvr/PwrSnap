@@ -48,3 +48,30 @@
   text-align: center;
   color: var(--text-secondary);
 }
+
+/* A tip with a picture (`data-tip-preview`): the picture on top, the words
+   under it, wrapped to the picture's width. */
+.ps-tip--preview {
+  width: 218px;
+  padding: 6px;
+}
+.ps-tip__preview {
+  overflow: hidden;
+  border-radius: 4px;
+  line-height: 0;
+}
+.ps-tip__preview > svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.ps-tip--preview > .ps-tip__title {
+  margin-top: 7px;
+  padding: 0 3px;
+}
+.ps-tip--preview > .ps-tip__line {
+  padding: 0 3px;
+}
+.ps-tip--preview > .ps-tip__line:last-child {
+  padding-bottom: 2px;
+}

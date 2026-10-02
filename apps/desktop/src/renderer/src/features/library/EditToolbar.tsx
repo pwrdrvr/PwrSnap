@@ -663,6 +663,14 @@ export function EditToolbar({
     // ⌥-click → single-shot mode (legacy affordance: place ONE
     // annotation, then return to pointer). Holding Option signals
     // "I just want this one, don't stick."
+    //
+    // Picking a drawing tool is "draw with this next", the same as
+    // arming a slot, so it lets go of the selection too. Otherwise the
+    // property bar keeps showing the selected layer: pick Draw with an
+    // arrow selected and the bar still offers the arrow's thickness and
+    // ends, never the pen. The pointer keeps the selection; it is how a
+    // selection gets made.
+    if (t !== "pointer" && selectedLayerIds.length > 0) layersApi?.clearSelection();
     toolState.setActiveTool(t, { singleShot: event.altKey });
   };
 

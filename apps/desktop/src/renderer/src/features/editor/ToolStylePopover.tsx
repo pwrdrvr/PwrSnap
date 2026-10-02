@@ -74,6 +74,7 @@ import { useDismissable } from "../../lib/useDismissable";
 import { useFocusTrap } from "../../lib/useFocusTrap";
 import { useModal } from "../../lib/useModal";
 import { useSettings } from "../settings/useSettings";
+import { drawModeTipProps } from "./draw-mode-preview";
 
 // ---- Public types ---------------------------------------------------
 
@@ -209,16 +210,34 @@ const STEM_STYLES: ReadonlyArray<{
 
 /** Draw family modes. The eraser is a mode of the tool, not a style a
  *  stroke can carry, so a selected stroke's bar offers only the first
- *  three (`ToolStyleBody`'s `allowEraser`). */
+ *  three (`ToolStyleBody`'s `allowEraser`). The buttons are icons, so
+ *  the tooltip carries the name, `hint`, and a picture of the stroke
+ *  (draw-mode-preview.tsx). */
 const DRAW_MODES: ReadonlyArray<{
   id: DrawToolMode;
   label: string;
+  hint: string;
   Icon: () => ReactElement;
 }> = [
-  { id: "pen", label: "Pen", Icon: PenModeIcon },
-  { id: "marker", label: "Marker", Icon: MarkerModeIcon },
-  { id: "airbrush", label: "Airbrush", Icon: AirbrushModeIcon },
-  { id: "eraser", label: "Eraser", Icon: EraserModeIcon }
+  { id: "pen", label: "Pen", hint: "A thin, crisp line, for writing and circling.", Icon: PenModeIcon },
+  {
+    id: "marker",
+    label: "Marker",
+    hint: "Wide and see-through, for highlighting. Overlapping passes darken.",
+    Icon: MarkerModeIcon
+  },
+  {
+    id: "airbrush",
+    label: "Airbrush",
+    hint: "A soft-edged line, for a glow or gentle emphasis.",
+    Icon: AirbrushModeIcon
+  },
+  {
+    id: "eraser",
+    label: "Eraser",
+    hint: "Cuts Draw strokes where you drag. Arrows, boxes and text stay.",
+    Icon: EraserModeIcon
+  }
 ];
 
 const TEXT_WEIGHTS: ReadonlyArray<{ id: TextFontWeight; label: string }> = [
@@ -1108,7 +1127,11 @@ function DrawBody({ style, allowEraser, onStyleFieldChange }: DrawBodyProps): Re
                 role="radio"
                 aria-checked={active}
                 aria-label={opt.label}
-                title={opt.label}
+                // The picture paints with this bar's color and weight: on
+                // a selected stroke, what that stroke would become.
+                data-tip={opt.label}
+                data-tip-detail={opt.hint}
+                {...drawModeTipProps(opt.id, style)}
                 className={"pse-icon-btn" + (active ? " is-on" : "")}
                 onClick={() => onStyleFieldChange("mode", opt.id)}
                 data-testid={`draw-mode-${opt.id}`}

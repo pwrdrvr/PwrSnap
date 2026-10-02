@@ -15,6 +15,8 @@
 //   data-tip         the first line (what the control does)
 //   data-tip-keys    optional key chip beside it ("2", "Esc")
 //   data-tip-detail  optional further lines, separated by "\n"
+//   data-tip-preview optional picture above the words, by the name a
+//                    feature registered it under (tip-previews.ts)
 //
 // and must NOT also carry `title`, nor sit inside an element that does, or
 // the slow native tooltip shows as well. `__tests__/fast-tooltip-contract.test.ts`
@@ -41,6 +43,7 @@ import {
   type ReactElement
 } from "react";
 import { createPortal } from "react-dom";
+import { renderTipPreview } from "./tip-previews";
 
 const DELAY_MS = 350;
 /** After a tooltip hides, the next one within this window shows at once. */
@@ -63,6 +66,7 @@ type Tip = {
   readonly title: string;
   readonly keys: string | null;
   readonly detail: readonly string[];
+  readonly preview: string | null;
 };
 
 function readTip(anchor: HTMLElement): Tip {
@@ -71,7 +75,8 @@ function readTip(anchor: HTMLElement): Tip {
     anchor,
     title: anchor.dataset.tip ?? "",
     keys: keys === undefined || keys === "" ? null : keys,
-    detail: (anchor.dataset.tipDetail ?? "").split("\n").filter((line) => line !== "")
+    detail: (anchor.dataset.tipDetail ?? "").split("\n").filter((line) => line !== ""),
+    preview: anchor.dataset.tipPreview || null
   };
 }
 
@@ -289,12 +294,15 @@ function FastTooltip({ tip }: { tip: Tip }): ReactElement {
     };
   }, [tip]);
 
+  // Read when the tip opens, like the words: a picture of what the control
+  // does with the settings it has now.
+  const preview = tip.preview === null ? null : renderTipPreview(tip.preview, tip.anchor);
   return (
     <div
       ref={ref}
       id={TOOLTIP_ID}
       role="tooltip"
-      className="ps-tip"
+      className={preview === null ? "ps-tip" : "ps-tip ps-tip--preview"}
       data-testid="fast-tooltip"
       style={
         pos === null
@@ -302,6 +310,11 @@ function FastTooltip({ tip }: { tip: Tip }): ReactElement {
           : { left: `${pos.left}px`, top: `${pos.top}px` }
       }
     >
+      {preview !== null && (
+        <div className="ps-tip__preview" aria-hidden="true">
+          {preview}
+        </div>
+      )}
       <div className="ps-tip__title">
         <span>{tip.title}</span>
         {tip.keys !== null && <kbd className="ps-tip__key">{tip.keys}</kbd>}

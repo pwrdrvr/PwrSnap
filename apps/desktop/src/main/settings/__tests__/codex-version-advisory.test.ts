@@ -33,6 +33,31 @@ describe("Codex model version advisory", () => {
     expect(classifyCodexInstaller({ command })).toEqual({ installer, ...(upgradeCommand ? { upgradeCommand } : {}) });
   });
 
+  test.each([
+    "/usr/local/bin/codex",
+    "/opt/homebrew/bin/codex",
+    "/home/example/.nvm/versions/node/v24.14.1/bin/codex"
+  ])("does not treat discovery's application label as installer provenance for %s", async (command) => {
+    const advisory = await buildCodexVersionAdvisory({
+      command,
+      version: "0.158.0",
+      source: "application",
+      resolvePath: async () => command
+    });
+    expect(advisory).toMatchObject({ command, installer: "unknown" });
+    expect(advisory?.upgradeCommand).toBeUndefined();
+  });
+
+  test("recognizes a real app bundle behind a symlink regardless of discovery source", async () => {
+    const advisory = await buildCodexVersionAdvisory({
+      command: "/usr/local/bin/codex",
+      version: "0.158.0",
+      source: "env",
+      resolvePath: async () => "/Applications/Codex.app/Contents/Resources/codex"
+    });
+    expect(advisory?.installer).toBe("application");
+  });
+
   test("resolves symlinks only for old binaries, and deduplicates publications", async () => {
     const resolvePath = vi.fn(async () => "/opt/homebrew/Caskroom/codex/0.158.0/codex");
     expect(await buildCodexVersionAdvisory({ command: "codex", version: "0.159.2", resolvePath })).toBeUndefined();

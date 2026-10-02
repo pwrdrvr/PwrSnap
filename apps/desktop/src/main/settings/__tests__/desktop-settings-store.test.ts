@@ -71,6 +71,47 @@ function rejectedAcpGroup(
 }
 
 describe("DesktopSettingsStore provider publications", () => {
+  test("an incompatible environment override keeps its upgrade advice ahead of pinned and automatic installations", async () => {
+    const override = "/fixture/overridden/codex";
+    const pinned = "/fixture/pinned/codex";
+    const settings = mergeSettings(defaultSettings(), {
+      codex: { mode: "pinned", pinnedPath: pinned }
+    });
+    const store = new DesktopSettingsStore({
+      filePath: join(workDir, "settings.json"),
+      readTextFile: async () => JSON.stringify(settings),
+      env: { PWRSNAP_CODEX_COMMAND: ` ${override} ` },
+      discoverCodex: async () => ({ candidates: [
+        { command: override, source: "env", executable: false, selected: false,
+          version: "0.141.0", failureReason: "codex_too_old" },
+        { command: pinned, source: "config", executable: false, selected: false,
+          version: "0.142.0", failureReason: "codex_too_old" },
+        { command: "codex", source: "path", executable: false, selected: false,
+          version: "0.143.0", failureReason: "codex_too_old" }
+      ] })
+    });
+    const snapshot = await store.getCodexDiscoverySnapshot();
+    expect(snapshot.resolvedPath).toBeNull();
+    expect(snapshot.versionAdvisory).toMatchObject({
+      command: override, version: "0.141.0", minimumVersion: "0.159.2", installer: "unknown"
+    });
+  });
+
+  test("an unverified environment override does not borrow upgrade advice from an automatic installation", async () => {
+    const store = new DesktopSettingsStore({
+      filePath: join(workDir, "settings.json"),
+      readTextFile: async () => JSON.stringify(defaultSettings()),
+      env: { PWRSNAP_CODEX_COMMAND: "/fixture/missing/codex" },
+      discoverCodex: async () => ({ candidates: [
+        { command: "/fixture/missing/codex", source: "env", executable: false, selected: false },
+        { command: "codex", source: "path", executable: false, selected: false,
+          version: "0.143.0", failureReason: "codex_too_old" }
+      ] })
+    });
+    const snapshot = await store.getCodexDiscoverySnapshot();
+    expect(snapshot.versionAdvisory).toBeUndefined();
+  });
+
   test("auto discovery still offers upgrade help when every verified CLI is below the launch floor", async () => {
     const store = new DesktopSettingsStore({
       filePath: join(workDir, "settings.json"),

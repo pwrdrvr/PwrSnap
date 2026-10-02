@@ -657,9 +657,10 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
         available: candidate.executable
       })
     );
+    const envOverride = params.env[PWRSNAP_CODEX_COMMAND_ENV]?.trim();
     const resolved = selectResolvedCodexCommand(
       discovery,
-      params.configuredCommand ?? "codex"
+      envOverride || params.configuredCommand || "codex"
     );
     let resolvedPath: string | null = null;
     let auth: DesktopCodexAuthProbe | null = null;
@@ -675,7 +676,7 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
     // no selection. Still show upgrade help for the newest verified old CLI;
     // a pin/override must keep its own diagnosis rather than another binary's.
     const selected = discovery.candidates.find((candidate) => candidate.command === resolved.command && candidate.version !== undefined)
-      ?? (params.configuredCommand === undefined && !params.env[PWRSNAP_CODEX_COMMAND_ENV]?.trim() && resolvedPath === null
+      ?? (params.configuredCommand === undefined && !envOverride && resolvedPath === null
         ? discovery.candidates
             .filter((candidate) => candidate.failureReason === "codex_too_old" && candidate.version)
             .sort((left, right) => compareCodexCliVersions(right.version!, left.version!))[0]

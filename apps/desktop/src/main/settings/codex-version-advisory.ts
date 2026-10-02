@@ -53,7 +53,9 @@ export function classifyCodexInstaller(params: {
       has(/\/AppData\/Roaming\/npm\/codex\.(?:cmd|ps1)$/iu)) {
     return { installer: "npm", upgradeCommand: "npm install -g @openai/codex@latest" };
   }
-  if (params.source === "application" || has(/\/(?:ChatGPT|Codex)\.app\//iu)) {
+  // Discovery's "application" group includes standalone search locations.
+  // Only an actual app bundle path identifies an app-managed installation.
+  if (has(/\/(?:ChatGPT|Codex)\.app\//iu)) {
     return { installer: "application" };
   }
   return { installer: "unknown" };

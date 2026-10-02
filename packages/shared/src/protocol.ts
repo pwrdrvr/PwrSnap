@@ -3485,7 +3485,31 @@ export type LibrarySettings = {
    *  `false` starts the copy from the capture as taken. Remembered per
    *  media kind so the chooser opens on the last choice. */
   duplicateWithEdits: LibraryDuplicateWithEditsSettings;
+  /** Where the Focus / Reel edit toolbar lives. `float` (default) is the
+   *  draggable panel over the canvas; the other four dock it to that
+   *  edge of the stage, which shrinks the canvas so nothing covers the
+   *  snap. See {@link EditToolbarDock}. */
+  editToolbarDock: EditToolbarDock;
 };
+
+/** Position of the Library's edit toolbar. Docking takes its room from
+ *  the canvas (the snap re-fits once); `float` overlays it, as before. */
+export type EditToolbarDock = "float" | "top" | "bottom" | "left" | "right";
+
+export const EDIT_TOOLBAR_DOCKS = [
+  "float",
+  "top",
+  "bottom",
+  "left",
+  "right"
+] as const satisfies readonly EditToolbarDock[];
+
+export function isEditToolbarDock(value: unknown): value is EditToolbarDock {
+  return (
+    typeof value === "string" &&
+    (EDIT_TOOLBAR_DOCKS as readonly string[]).includes(value)
+  );
+}
 
 export type LibraryDuplicateWithEditsSettings = {
   image: boolean;
@@ -3828,6 +3852,7 @@ export type SettingsPatch = {
      *  {@link LibrarySettings.gridZoom}. */
     gridZoom?: number;
     duplicateWithEdits?: Partial<LibraryDuplicateWithEditsSettings>;
+    editToolbarDock?: EditToolbarDock;
   };
   localAgents?: {
     enabled?: boolean;

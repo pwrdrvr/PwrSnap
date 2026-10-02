@@ -207,15 +207,15 @@ async function seedCapture(
 
   const captureId = `fo-e2e-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   await app.electronApp.evaluate(
-    (_electron, payload: { id: string; pngPath: string }) => {
+    async (_electron, payload: { id: string; pngPath: string }) => {
       const bridge = (
         globalThis as unknown as {
           __PWRSNAP_TEST__: {
-            seedCapture: (input: Record<string, unknown>) => unknown;
+            seedCapture: (input: Record<string, unknown>) => Promise<unknown>;
           };
         }
       ).__PWRSNAP_TEST__;
-      bridge.seedCapture({
+      await bridge.seedCapture({
         id: payload.id,
         kind: "image",
         captured_at: new Date().toISOString(),

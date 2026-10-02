@@ -22,8 +22,9 @@
 // in this commit).
 
 import { type Page } from "@playwright/test";
-import { expect, type LaunchedApp, launchPwrSnap, test } from "./fixtures/electron-app";
+import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 import { openEditor, seedImageCapture, selectTool } from "./fixtures/editor";
+import { expectPlacedLayerCount } from "./fixtures/editor-helpers";
 
 test.setTimeout(90_000);
 
@@ -52,7 +53,7 @@ test("editor-sticky-tool: placing an arrow keeps arrow selected", async () => {
     );
 
     // Wait for the layers:upsert round-trip to settle.
-    await expectLayerCount(app, captureId, 1);
+    await expectPlacedLayerCount(app, captureId, 1);
 
     // Sticky assertion: arrow is STILL the active tool.
     await expect(
@@ -113,20 +114,6 @@ test(
 );
 
 // ---- Shared helpers --------------------------------------------------
-
-async function expectLayerCount(
-  app: LaunchedApp,
-  captureId: string,
-  count: number
-): Promise<void> {
-  await expect
-    .poll(async () => {
-      const result = await app.dispatch("layers:list", { captureId });
-      if (!result.ok) return -1;
-      return result.value.length;
-    })
-    .toBe(count);
-}
 
 /**
  * Simulate a pointer drag on the canvas. The editor's pointer handlers

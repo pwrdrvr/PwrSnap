@@ -65,13 +65,13 @@ async function seedLatestCapture(
 ): Promise<void> {
   const captureId = `tray-paint-${Date.now().toString(36)}`;
   await app.electronApp.evaluate(
-    (_electron, payload) => {
+    async (_electron, payload) => {
       const bridge = (
         globalThis as unknown as {
-          __PWRSNAP_TEST__: { seedCapture: (input: Record<string, unknown>) => unknown };
+          __PWRSNAP_TEST__: { seedCapture: (input: Record<string, unknown>) => Promise<unknown> };
         }
       ).__PWRSNAP_TEST__;
-      bridge.seedCapture({
+      await bridge.seedCapture({
         id: payload.captureId,
         kind: "image",
         captured_at: new Date().toISOString(),

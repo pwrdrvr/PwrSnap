@@ -224,12 +224,14 @@ import {
 } from "./persistence/db";
 import {
   getCaptureById,
-  insertCapture,
-  insertCapturesBatch,
   listCaptures,
   listExpiredTrash
 } from "./persistence/captures-repo";
 import { insertVideoMetadata } from "./persistence/video-repo";
+import {
+  seedCapturesForE2E,
+  type E2ESeedCaptureInput
+} from "./persistence/e2e-capture-seed";
 import { failOrphanedRunsOnBoot } from "./persistence/ai-runs-repo";
 import { migrateLegacyCaptureSources } from "./persistence/capture-source-maintenance";
 import { migrateLegacyRenderCache } from "./persistence/render-cache-maintenance";
@@ -2492,42 +2494,21 @@ export function bootstrapApp(): void {
         // bridge surface so specs don't reach into module internals
         // via dynamic imports — those tend to drift across path /
         // bundler changes.
-        // seedCapture accepts the pre-bundle-storage `src_path` field
-        // name as a back-compat alias. Migration 0005 renamed the
-        // column to `legacy_src_path`, but specs pulled from main still
-        // use the old name. Normalize here so specs work unchanged.
-        seedCapture: (input: Parameters<typeof insertCapture>[0] & { src_path?: string }) => {
-          const { src_path: legacyAlias, ...rest } = input;
-          const normalized =
-            legacyAlias !== undefined && rest.legacy_src_path === undefined
-              ? { ...rest, legacy_src_path: legacyAlias }
-              : rest;
-          // v2 is the only bundle format. Default row-only seeds to v2 so
-          // the editor's useCaptureModel resolves the v2 layer-tree model
-          // — a `bundle_format_version = 1` row now resolves to an error
-          // model (the v1 read path is gone). An explicit version in the
-          // input still wins. (Harmless for `kind: "video"`: nothing reads
-          // the flag for videos — they render via pwrsnap-capture://.)
-          return insertCapture({ bundle_format_version: 2, ...normalized });
+        // Seed capture rows. An image row gets a real v2 `.pwrsnap`
+        // (the coordinator renders nothing else), its layer tree and its
+        // source.png cache before the row lands, so Library thumbnails
+        // load; a video row is inserted as given. Async — specs must
+        // await it before broadcasting captures-changed. `src_path` is
+        // accepted as the pre-0005 name of `legacy_src_path`. See
+        // persistence/e2e-capture-seed.ts.
+        seedCapture: async (input: E2ESeedCaptureInput) => {
+          const [result] = await seedCapturesForE2E([input]);
+          return result;
         },
-        // Batch variant — runs all inserts inside one SQLite
-        // transaction so the chain pays one fsync instead of N.
-        // Lets specs seed 100+ captures inside a single
-        // `electronApp.evaluate` without blowing their time budget
-        // on slow CI disks. Same src_path alias applied to each input.
-        seedCaptures: (inputs: Array<Parameters<typeof insertCapture>[0] & { src_path?: string }>) => {
-          const normalized = inputs.map((input) => {
-            const { src_path: legacyAlias, ...rest } = input;
-            const withAlias =
-              legacyAlias !== undefined && rest.legacy_src_path === undefined
-                ? { ...rest, legacy_src_path: legacyAlias }
-                : rest;
-            // Default to v2 (the only bundle format); explicit wins. See
-            // `seedCapture` above for the rationale.
-            return { bundle_format_version: 2, ...withAlias };
-          });
-          return insertCapturesBatch(normalized);
-        },
+        // Batch variant: one SQLite transaction for every row, and the
+        // per-fixture decode/thumbnail work is shared, so specs can seed
+        // 100+ captures inside a single `electronApp.evaluate`.
+        seedCaptures: (inputs: E2ESeedCaptureInput[]) => seedCapturesForE2E(inputs),
         // Insert the video_captures metadata row for a previously-
         // seeded `kind="video"` capture. Specs use this to drive the
         // float-over's video asset branch without spawning a real

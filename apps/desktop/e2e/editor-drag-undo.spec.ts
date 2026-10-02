@@ -17,7 +17,7 @@ import {
   accel,
   drawAnnotation,
   drawOnCanvas,
-  expectLayerCount,
+  expectPlacedLayerCount,
   openEditorFocus,
   seedImageCapture,
   selectTool
@@ -35,7 +35,7 @@ test("editor-drag-undo: moving a layer then ⌘Z returns the glyph to its origin
     // renders as a single <rect> we can measure.
     await selectTool(win, "highlight");
     await drawOnCanvas(win);
-    await expectLayerCount(app, captureId, 1);
+    await expectPlacedLayerCount(app, captureId, 1);
 
     const glyph = win.locator('[data-testid="persisted-glyph-svg"] rect').first();
     await glyph.waitFor({ state: "attached", timeout: 5_000 });
@@ -89,7 +89,7 @@ test("editor-drag-undo: releasing a body-drag OUTSIDE the canvas still commits a
     // masked undo).
     await selectTool(win, "highlight");
     await drawOnCanvas(win);
-    await expectLayerCount(app, captureId, 1);
+    await expectPlacedLayerCount(app, captureId, 1);
     const rectXBefore = await firstAnnotationX(app, captureId);
     expect(rectXBefore).not.toBeNull();
 
@@ -151,7 +151,7 @@ test("editor-drag-undo: MULTI-select body-drag released OUTSIDE the canvas commi
     await selectTool(win, "shape");
     await drawAnnotation(win, 0.15, 0.3, 0.32, 0.5);
     await drawAnnotation(win, 0.4, 0.3, 0.57, 0.5);
-    await expectLayerCount(app, captureId, 2);
+    await expectPlacedLayerCount(app, captureId, 2);
     const xsBefore = await allVectorRectXs(app, captureId);
     expect(xsBefore.length).toBe(2);
 

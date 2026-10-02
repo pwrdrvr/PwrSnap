@@ -4182,8 +4182,9 @@ export type Commands = {
   "capture:pasteFromClipboard": { req: Record<string, never>; res: CaptureRecord };
   /**
    * Synthetic ingest path — accepts a temp PNG already on disk and a
-   * backdated `capturedAt`, persists via the same source-store +
-   * captures-repo chain as `capture:region`. Used by the dev seeder
+   * backdated `capturedAt`, and persists it as a v2 layer-tree bundle
+   * through `persistCaptureFromTempV2`, the same write entrypoint as
+   * every real capture. Used by the dev seeder
    * to populate large datasets through the live command-bus so DB
    * page packing + index maintenance reflect production behavior.
    *
@@ -4194,16 +4195,14 @@ export type Commands = {
    */
   "capture:ingest": {
     req: {
-      /** Absolute path to a temp PNG. Caller owns; handler reads, hashes, persists. */
+      /** Absolute path to a temp PNG. The handler packs it into a bundle and deletes it. */
       tempPngPath: string;
-      /** ISO 8601 with millisecond precision. Drives the captures/<yyyy>/<mm>/ layout
+      /** ISO 8601 with millisecond precision. Drives the bundle's filename
        *  and the row's `captured_at` column. */
       capturedAt: string;
       sourceAppBundleId: string | null;
       sourceAppName: string | null;
-      /** Optional dim hints — when omitted, source-store reads via sharp.metadata(). */
-      widthPxHint?: number | undefined;
-      heightPxHint?: number | undefined;
+      /** Defaults to 2. The canvas dims always come from the PNG itself. */
       devicePixelRatio?: number | undefined;
     };
     res: { record: CaptureRecord; isNew: boolean };

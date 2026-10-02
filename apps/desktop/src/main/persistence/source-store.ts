@@ -15,7 +15,6 @@ import { lstat, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "no
 import { tmpdir } from "node:os";
 import { dirname, extname, join } from "node:path";
 import { nanoid } from "nanoid";
-import sharp from "sharp";
 
 import { deletePendingSourcesForCapture } from "./pending-source-store";
 import { moveFileWithExdevFallback } from "./cross-device-move";
@@ -47,68 +46,12 @@ export type StoredSource = {
 };
 
 /**
- * Take a freshly-captured PNG (path to a temp file the screencapture
- * CLI wrote) and persist it under `<capturesRoot>/<id>.png`. By
- * default that's `~/Documents/PwrSnap/<id>.png` — see paths.ts for why.
- * Under `PWRSNAP_DATA_ROOT` override mode the same flat layout applies
- * relative to `<root>/captures/`. No yyyy/mm subdirectories: filenames
- * are nanoid-shaped, sort fine in Finder by mtime, and the DB indexes
- * captured_at — the file system is asked only "give me this exact
- * path", not "list everything from May 2026."
- *
- * Returns the immutable storage record. Hashes via SHA-256 so the
- * row carries a content-addressable identifier; identical bytes are
- * allowed to coexist as separate captures (see migration 0021).
- *
- * Uses sharp to read width/height in one pass while we already have
- * the buffer in flight; this saves a second decode in the capture hot
- * path (latency budget for ⌘⇧P is tight).
- */
-export async function putCaptureSource(tempPath: string): Promise<StoredSource> {
-  const id = nanoid(16);
-  const buf = await readFile(tempPath);
-
-  const sha256 = createHash("sha256").update(buf).digest("hex");
-  const meta = await sharp(buf).metadata();
-  const widthPx = meta.width ?? 0;
-  const heightPx = meta.height ?? 0;
-  if (widthPx === 0 || heightPx === 0) {
-    throw new Error(`source-store: failed to read PNG dimensions from ${tempPath}`);
-  }
-
-  const dir = getCapturesRoot();
-  await mkdir(dir, { recursive: true });
-  const srcPath = join(dir, `${id}.png`);
-
-  // The capture tool writes under os.tmpdir(), which may be a different
-  // volume from Documents (especially on Windows with a relocated profile).
-  // Same-volume moves stay a single atomic rename; EXDEV stages beside the
-  // destination and deletes the temp source only after installation.
-  await moveFileWithExdevFallback(tempPath, srcPath);
-
-  // debug-level: this fires once per capture, including 100k× under
-  // the dev seeder. Production can re-enable via the logger's level
-  // override; a single ⌘⇧P capture is logged elsewhere by the
-  // capture handlers' "capture persisted" line at info.
-  log.debug("stored capture source", { id, srcPath, byteSize: buf.length, widthPx, heightPx });
-
-  return {
-    id,
-    srcPath,
-    sha256,
-    byteSize: buf.length,
-    widthPx,
-    heightPx
-  };
-}
-
-/**
  * Take an existing file (a video container the recorder wrote, a copy
  * of an imported asset, …) and adopt it as a capture source. Image
- * captures keep going through `putCaptureSource` so the sharp-based
- * dim probe stays on the screenshot hot path; this variant is for
- * any source whose dimensions are known upstream (the recorder
- * reports the recording rect; importers read their own metadata).
+ * captures do not come through here: they are packed into v2 bundles by
+ * `persistCaptureFromTempV2` (bundle-store.ts). This is for any source
+ * whose dimensions are known upstream (the recorder reports the
+ * recording rect; importers read their own metadata).
  *
  * Extension is taken from `tempPath` so the on-disk name reflects
  * the actual container — `<id>.mp4` for video, `<id>.png` for image
@@ -124,10 +67,9 @@ export async function adoptExistingFileAsSource(
   const buf = await readFile(tempPath);
   const sha256 = createHash("sha256").update(buf).digest("hex");
 
-  // Width/height are video-context-only here. Image dim probing
-  // lives in `putCaptureSource`; for adopted files (video, future
-  // imports) the caller passes the right values when persisting the
-  // metadata row. Returning 0/0 makes any downstream code that
+  // Width/height are video-context-only here. For adopted files
+  // (video, future imports) the caller passes the right values when
+  // persisting the metadata row. Returning 0/0 makes any downstream code that
   // requires real dims fail loud.
   const byteSize = buf.length;
   const ext = extname(tempPath).toLowerCase() || ".bin";

@@ -8,10 +8,9 @@
 //      cancellation.
 //   2. captureRegion() — shells out to /usr/sbin/screencapture, writes
 //      a temp PNG.
-//   3. putCaptureSource() — moves to ~/Documents/PwrSnap/<id>.png,
-//      hashes, returns metadata.
-//   4. insertCapture() — INSERT.
-//   5. webContents.send 'events:captures:changed' — library + float-over
+//   3. persistCaptureFromTempV2() — packs a v2 `.pwrsnap` bundle into
+//      the captures root, then INSERTs the row + its layer tree.
+//   4. webContents.send 'events:captures:changed' — library + float-over
 //      refetch.
 //
 // Phase 1.5 wires the float-over to actually fire after a successful
@@ -101,9 +100,10 @@ import { releaseFloatOverDock, setFloatOverState } from "../float-over";
 import { hideTrayPopoverIfVisible, setTrayCountdown } from "../tray";
 import { findMainLibraryWindow, scheduleDockReclaim } from "../window";
 import { maybeEnqueueCaptureEnrichment } from "./codex-handlers";
-import { getCaptureById, insertCapture } from "../persistence/captures-repo";
-import { ensureEffectiveSrcPath, putCaptureSource } from "../persistence/source-store";
+import { getCaptureById } from "../persistence/captures-repo";
+import { ensureEffectiveSrcPath } from "../persistence/source-store";
 import { persistCaptureFromTempV2 } from "../persistence/bundle-store";
+import { ingestSyntheticCapture } from "../capture/synthetic-ingest";
 import {
   resolveCursorLayerForRect,
   type CursorLayerPlacement,
@@ -1306,23 +1306,11 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
   // DB page packing, index maintenance, and broadcast cost reflect
   // production behavior. Production builds: this branch tree-shakes
   // out (electron-vite statically replaces `import.meta.env.DEV`).
+  // Every row becomes a real v2 bundle; see synthetic-ingest.ts.
   if (import.meta.env.DEV) {
     bus.register("capture:ingest", async (req) => {
       try {
-        const stored = await putCaptureSource(req.tempPngPath);
-        const { record } = insertCapture({
-          id: stored.id,
-          kind: "image",
-          captured_at: req.capturedAt,
-          source_app_bundle_id: req.sourceAppBundleId,
-          source_app_name: req.sourceAppName,
-          legacy_src_path: stored.srcPath,
-          width_px: req.widthPxHint ?? stored.widthPx,
-          height_px: req.heightPxHint ?? stored.heightPx,
-          device_pixel_ratio: req.devicePixelRatio ?? 2,
-          byte_size: stored.byteSize,
-          sha256: stored.sha256
-        });
+        const record = await ingestSyntheticCapture(req);
         broadcastCapturesChanged([record.id]);
         return ok({ record, isNew: true });
       } catch (cause) {

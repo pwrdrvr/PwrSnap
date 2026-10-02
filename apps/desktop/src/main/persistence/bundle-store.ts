@@ -146,8 +146,19 @@ export function manifestLineage(
  *
  * The three steps are ordered for iCloud/Files-on-Demand safety — a
  * bundle must never be observable half-written by the sync daemon.
+ *
+ * `durable: false` drops both fsyncs (rules 2 and 3) and keeps the
+ * temp-file + rename, so a reader still never sees partial bytes; only
+ * the power-loss guarantee goes. On macOS libuv makes each fsync an
+ * F_FULLFSYNC, about 4 ms apiece, which dominated the dev seeder's cost
+ * per synthetic row. Nothing that writes user data passes it.
  */
-export async function atomicWriteBundle(destPath: string, contents: Buffer): Promise<void> {
+export async function atomicWriteBundle(
+  destPath: string,
+  contents: Buffer,
+  options: { durable?: boolean } = {}
+): Promise<void> {
+  const durable = options.durable ?? true;
   const dir = dirname(destPath);
   await mkdir(dir, { recursive: true });
 
@@ -163,7 +174,7 @@ export async function atomicWriteBundle(destPath: string, contents: Buffer): Pro
   try {
     fh = await open(tmp, "w", 0o600);
     await fh.writeFile(contents);
-    await fh.sync();
+    if (durable) await fh.sync();
     await fh.close();
     fh = null;
 
@@ -183,6 +194,8 @@ export async function atomicWriteBundle(destPath: string, contents: Buffer): Pro
     }
     throw err;
   }
+
+  if (!durable) return;
 
   // fsync the containing directory so the rename itself is durable
   // across a power loss. On Linux this is required; on macOS it's
@@ -685,6 +698,13 @@ export type PersistCaptureFromTempArgs = {
   /** Defaults to `getCapturesRoot()` (`~/Documents/PwrSnap/`). */
   outputDir?: string;
   /**
+   * Defaults to true. False skips the bundle write's fsyncs (see
+   * {@link atomicWriteBundle}). Only the dev seeder's `capture:ingest`
+   * passes false: its rows are synthetic, regenerated from a fixed plan,
+   * and wiped on every run. Never pass it for a capture a user made.
+   */
+  durable?: boolean | undefined;
+  /**
    * Captured-display DPR. Capture callers pass the selected display's
    * scale explicitly. Unknown/imported density defaults to 1 because
    * inventing Retina/High-DPI detail produces false export labels.
@@ -1154,7 +1174,7 @@ export async function persistCaptureFromTempV2(
     thumbnailJpg
   });
 
-  await atomicWriteBundle(bundlePath, bundleBuf);
+  await atomicWriteBundle(bundlePath, bundleBuf, { durable: args.durable ?? true });
 
   // Materialize source.png to per-capture cache.
   const cacheSource = getCacheSourcePath(id);

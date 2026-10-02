@@ -164,6 +164,11 @@ sensitive flakes (the bulk of E2E breakage). Just keep in mind
 that "renderer crashes with GLib errors" is an arm64-emulation
 artifact, not a GHA bug.
 
+The native run is also the right place to regenerate the Linux
+visual-regression goldens: they render the same on both
+architectures, so it needs no `--platform` (see CONTRIBUTING.md
+§"Visual-regression goldens").
+
 ## When NOT to use this
 
 - For fast unit tests: just `pnpm test` locally.

@@ -1,4 +1,4 @@
-// Linux/x64 and macOS/arm64 visual-regression coverage for the two primary
+// Linux and macOS/arm64 visual-regression coverage for the two primary
 // PwrSnap renderer states. These are intentionally locator-scoped: native
 // BrowserWindow frames and OS chrome are outside the renderer contract and
 // vary by host.
@@ -9,10 +9,11 @@
 // go stale silently; they are generated locally in the Docker harness and are
 // only as honest as the last deliberate regeneration (most recently
 // 2026-09-19, against the UI that shipped through #591/#628). Run it from the
-// repository root:
+// repository root, on the host's native architecture — the Linux goldens are
+// the same on linux/arm64 and linux/amd64, so there is no need to emulate
+// amd64 on Apple Silicon:
 //
-//   pnpm test:desktop-e2e:docker --platform linux/amd64 \
-//     --test 'visual regression' --update-snapshots
+//   pnpm test:desktop-e2e:docker --test 'visual regression' --update-snapshots
 //
 // Pass those flags straight through — an inserted `--` reaches run-docker.sh
 // as an argument and it exits 2 with `unknown arg: --`.
@@ -256,12 +257,12 @@ async function launchVisualPwrSnap(): Promise<LaunchedApp> {
 
 test.describe("visual regression", () => {
   // Screenshot baselines depend on the rendering platform. The project has
-  // Linux/x64 and macOS/arm64 goldens. Linux CI temporarily excludes this
+  // Linux and macOS/arm64 goldens. Linux CI temporarily excludes this
   // suite until its worker teardown is stable; the macOS VM is the active
   // visual CI lane. Windows continues to exercise behavioral E2E coverage.
   test.skip(
     process.platform !== "linux" && process.platform !== "darwin",
-    "visual goldens are generated and compared in Linux/x64 and macOS/arm64 only"
+    "visual goldens are generated and compared in Linux and macOS/arm64 only"
   );
 
   test.setTimeout(120_000);

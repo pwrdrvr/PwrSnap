@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.1.13 - 2026-10-02
+
+This release adds freehand drawing and flexible toolbar docking, and improves
+annotation controls and Codex model selection.
+
+- Freehand Drawing - Added pen, marker, airbrush, and eraser tools for drawing
+  directly on captures. Save favorite drawing styles in the tool bag and erase
+  parts of a stroke without changing the underlying image.
+- Editor Toolbar - Added docking to the top, bottom, left, or right of the
+  editing stage, keeping tools accessible without covering the capture.
+  Drag the toolbar to an edge or choose its position from the docking menu.
+- Annotation Controls - Improved tool icons and fast tooltips with previews
+  of the stroke you will draw, using the selected color and weight.
+- Codex Models - Improved the model picker and saved defaults for the current
+  model catalog, and added installation-specific upgrade guidance when an
+  older Codex version cannot offer the latest models.
+
 ## v1.1.12 - 2026-10-01
 
 This release adds capture copies and families, expands annotation tools, and

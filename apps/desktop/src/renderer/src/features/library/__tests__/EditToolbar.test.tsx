@@ -72,6 +72,8 @@ vi.mock("../../settings/useSettings", () => ({
 import { EditToolbar } from "../EditToolbar";
 import type { Tool } from "../../editor/editor-tools";
 import { useEditorToolState } from "../../editor/useEditorToolState";
+import { DRAW_MODE_TIP } from "../../editor/draw-mode-preview";
+import { renderTipPreview } from "../../../lib/tip-previews";
 import { defaultEditorToolBag } from "@pwrsnap/shared";
 
 beforeAll(() => {
@@ -662,6 +664,23 @@ describe("EditToolbar (Library Focus, v2 refresh)", () => {
     expect(api.clearSelection).not.toHaveBeenCalled();
     await fireClick(host?.querySelector('button[data-tool="draw"]') as HTMLButtonElement);
     expect(api.clearSelection).toHaveBeenCalledTimes(1);
+  });
+
+  test("4c''. the Draw button's tooltip paints the working Draw style, and follows the bar", async () => {
+    await render(createElement(Harness, {}));
+    const draw = host?.querySelector('button[data-tool="draw"]') as HTMLButtonElement;
+    expect(draw.getAttribute("data-tip-preview")).toBe(DRAW_MODE_TIP);
+    expect(draw.getAttribute("data-draw-mode")).toBe("pen");
+    expect(draw.getAttribute("data-tip-detail")).toMatch(/^Pen: /);
+    expect(renderTipPreview(DRAW_MODE_TIP, draw)).not.toBeNull();
+    // Only Draw gets a picture.
+    const arrow = host?.querySelector('button[data-tool="arrow"]') as HTMLButtonElement;
+    expect(arrow.hasAttribute("data-tip-preview")).toBe(false);
+    // Switch the working mode in the bar; the button's tooltip follows.
+    await fireClick(draw);
+    await fireClick(host?.querySelector('[data-testid="draw-mode-marker"]') as HTMLButtonElement);
+    expect(draw.getAttribute("data-draw-mode")).toBe("marker");
+    expect(draw.getAttribute("data-tip-detail")).toMatch(/^Marker: /);
   });
 
   test("4d. a selected arrow offers Add label, and the button hands that arrow to the editor", async () => {

@@ -24,6 +24,15 @@ refreshed client versions, delays, blockers and a named follow-up owner. The new
 GitHub Pre-release waits for manual promotion; package channels may still need
 to catch up to an earlier promoted stable release.
 
+Release CI invokes `distribution-audit.yml` before preparation and after
+publication. Only its public Winget/Homebrew/source searches use organization
+secret `DISTRIBUTION_READ_TOKEN` with the workflow-token fallback. Publication
+and signing credentials remain separate. The
+[package-manager runbook](package-manager-release-runbook.md#organization-provided-public-read-credential)
+describes public-read-only scope, bounded rate-limit retries, fork behavior and
+organization-owned expiry/rotation. An incomplete or throttled audit is a
+blocker, not package absence; a post-publication blocker does not undo publication.
+
 ---
 
 ## One-time setup

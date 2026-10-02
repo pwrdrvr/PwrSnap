@@ -15,6 +15,11 @@ before every release to compare GitHub's eligible stable versions against remote
 Winget manifests and pending submissions. That runbook defines update and
 post-merge source/install/upgrade verification for this checklist. Reinspect
 the remote repository before deciding whether to create or update the package.
+The read-only audit workflow uses the organization-provided
+`DISTRIBUTION_READ_TOKEN` for public source/identity/submission searches only.
+See the runbook for bounded retry and expiry/rotation requirements. The PAT does
+not grant submission access; continue using the operator's separately authorized
+WingetCreate login or fork PR credentials for writes.
 
 **Submitting the pull request to `microsoft/winget-pkgs` is the operator's
 call.** Nothing in this directory submits anything on its own.

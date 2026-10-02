@@ -31,6 +31,82 @@ Do not feed alpha, beta, `-prerelease.N`, or RC versions to these stable package
 
 ## Before every release: inspect remote sources
 
+Prefer the dependency-free, read-only audit helper. It compares promoted stable
+release metadata with the authoritative Winget directory and vendor cask, and
+searches Winget identities/submissions plus official Homebrew casks/formulae.
+It reports source versions and pending PRs; it does not submit, merge, install,
+promote, or prove refreshed-client availability:
+
+```bash
+node scripts/release/audit-package-channels.mjs .local/package-channels/audit.json
+```
+
+The [distribution audit workflow](../.github/workflows/distribution-audit.yml)
+runs this helper on relevant PRs, on manual dispatch, and from `release.yml`
+before preparation and after publication. Failed/incomplete audits block the
+preflight; after publication, an audit failure means GitHub may already be
+published and the channel inspection needs an owned retry. It preserves a JSON
+artifact with either a complete snapshot or an actionable blocker. Use
+`gh workflow run distribution-audit.yml --repo pwrdrvr/PwrSnap --ref <branch>`
+for a non-publishing verification, then inspect the run and its artifact.
+
+### Organization-provided public read credential
+
+Harold provides `DISTRIBUTION_READ_TOKEN` as a PwrDrvr **organization Actions
+secret**, explicitly shared with PwrSnap, PwrGit and PwrAgent. It is a dedicated
+fine-grained PAT restricted to public repositories with no additional
+permissions. Public package-source audit/search/metadata steps use:
+
+```yaml
+env:
+  GH_TOKEN: ${{ secrets.DISTRIBUTION_READ_TOKEN || github.token }}
+```
+
+Scope that environment to public cross-repository read steps. Checkout, artifact
+upload, same-repository operations, release publication, pushes and submissions
+keep their existing workflow/App/operator credentials. This secret is **not** a
+write credential; do not pass it to `wingetcreate --token` for submission or use
+it to create/merge a tap PR. Local runs use the operator's existing `gh` login;
+never retrieve, print, copy, or persist the organization secret locally. Fork PRs
+without organization secrets use the default workflow token. If an available PAT
+returns 401, report an expired/revoked-token blocker instead of silently masking
+it with a second credential.
+
+The prior PwrGit failures were HTTP 429 throttling, not missing public-repository
+access. User authentication changes the rate-limit context; it does not remove
+code-search/secondary limits. The helper makes at most three attempts per read,
+honors `Retry-After`/primary reset times within a 120-second per-wait budget, and
+stops if the server requires a longer delay. Searches run sequentially and must
+have `incomplete_results=false`, complete pagination, and no 1,000-result
+truncation before any absence conclusion. Persistent 403/429, authentication
+failure, timeout, or incomplete search means **audit blocked**, never “package
+not found.” Retain the blocker, owner and next retry time; do not broaden token
+permissions to address throttling.
+
+Harold/the organization secret maintainer owns expiration and rotation. Record
+the PAT expiry in the organization's credential inventory and arrange renewal
+before it expires; the secret metadata API does not reveal that date. Replace
+the value under the same secret name, preserve public-read-only restrictions
+and the selected repository access list, and rerun the read-only audit in each
+recipient repository. Do not duplicate it as a repository secret. Diagnose
+availability with secret **metadata** and the workflow's boolean credential
+source message, never an environment dump or token output:
+
+```bash
+gh api orgs/pwrdrvr/actions/secrets/DISTRIBUTION_READ_TOKEN \
+  --jq '{name,visibility,updated_at}'
+gh api orgs/pwrdrvr/actions/secrets/DISTRIBUTION_READ_TOKEN/repositories \
+  --jq '{repositories:[.repositories[].full_name]}'
+```
+
+On 2026-10-02 the organization API confirmed `visibility=selected`, including
+`pwrdrvr/PwrSnap`, `pwrdrvr/PwrGit` and `pwrdrvr/PwrAgent`. A repository-level
+secret lookup can return 404 for this organization secret; that is not evidence
+that the workflow lacks access. Metadata confirms sharing; a successful workflow
+using the organization credential confirms runtime public reads.
+
+### Manual inspection and troubleshooting
+
 From the assigned PwrSnap workspace, with authenticated `gh` and `jq`:
 
 ```bash
@@ -143,17 +219,23 @@ On Windows, substitute the chosen version and actual generated directory:
 ```powershell
 $version = '<eligible-version>'
 $url = "https://github.com/pwrdrvr/PwrSnap/releases/download/v$version/PwrSnap-$version-windows-x64-setup.exe"
+$assetDir = ".local\package-channels\v$version"
+New-Item -ItemType Directory -Force -Path $assetDir | Out-Null
+$installer = Join-Path $assetDir "PwrSnap-$version-windows-x64-setup.exe"
+Invoke-WebRequest -Uri $url -OutFile $installer -ErrorAction Stop
 # Existing remote package only; not usable before the first submission merges.
 wingetcreate update PwrDrvr.PwrSnap --version $version --urls $url --out .local\winget
 $manifestDir = ".local\winget\manifests\p\PwrDrvr\PwrSnap\$version"
 # For a first submission, point this at the prepared three-file payload instead.
 winget validate --manifest $manifestDir
-Get-AuthenticodeSignature ".\PwrSnap-$version-windows-x64-setup.exe" |
+Get-AuthenticodeSignature $installer |
   Format-List Status,SignerCertificate
-Get-FileHash ".\PwrSnap-$version-windows-x64-setup.exe" -Algorithm SHA256
+Get-FileHash $installer -Algorithm SHA256
 ```
 
 Require `Valid` Authenticode and PwrDrvr LLC identity on the downloaded installer.
+Both checks use the explicitly downloaded `$installer`; WingetCreate's temporary
+download cache and manifest `--out` directory are not installer locations.
 Run `Tools\SandboxTest.ps1` from a scoped `microsoft/winget-pkgs` checkout where
 Windows Sandbox is supported. Otherwise record the unsupported environment and
 use an isolated Windows test machine plus the upstream validation pipeline.
@@ -323,6 +405,9 @@ This inspection did not submit Winget, merge the tap, or publish a new release.
   [commands, audit, and greedy upgrades](https://docs.brew.sh/Manpage),
   [item-scoped tap trust](https://docs.brew.sh/Tap-Trust).
 - GitHub: [`GITHUB_TOKEN` workflow triggers and PR approval](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow).
+- GitHub: [public code search and fine-grained tokens](https://docs.github.com/en/rest/search/search#search-code),
+  [rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api),
+  [organization secrets](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets).
 
 Recheck official requirements and live workflow definitions when preparing an
 update; this snapshot is not a substitute for a remote inspection.

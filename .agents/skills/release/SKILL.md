@@ -77,6 +77,14 @@ Read these files before changing release metadata:
   availability. Record submission links, accepted source versions, refreshed
   client versions, validation results, and pending review/index/cache delays
   separately. Do not declare the channels current while any of these is unknown.
+- Public cross-repository audits/searches use the organization-provided
+  `DISTRIBUTION_READ_TOKEN` only on read steps, with
+  `GH_TOKEN: ${{ secrets.DISTRIBUTION_READ_TOKEN || github.token }}` so fork PRs
+  retain the workflow-token fallback. It is a public-read-only fine-grained PAT,
+  not a push/submission/release credential. Leave unrelated operations on their
+  existing tokens, and never print/copy the secret or broaden its permissions.
+  Follow the runbook's expiration/rotation requirements. HTTP 429 and incomplete
+  search results remain blockers after bounded retries, never package absence.
 - Do not force-push the default branch or rewrite an existing release tag
   without explicit user approval.
 - Keep the MIT license intact: do not swap LICENSE for a different SPDX or
@@ -159,6 +167,16 @@ train's maintenance branch exists before preparing a prior-train patch.
    `PwrDrvr.PwrSnap` (or confirmed absence), Homebrew
    `pwrdrvr/tap/pwrsnap`, and pending submissions. Select each channel's target
    before determining the next version from the previous tag and user intent:
+
+   ```bash
+   node scripts/release/audit-package-channels.mjs .local/package-channels/audit.json
+   ```
+
+   The reusable `distribution-audit.yml` performs the same public-read-only
+   inspection in release CI before preparation and after publication. Verify
+   its report and token-source boolean; metadata sharing alone does not prove
+   successful runtime searches. A preflight failure blocks preparation. A
+   post-publication failure needs follow-up without republishing the release.
 
    ```bash
    git tag --sort=-version:refname | head -n 10
@@ -394,6 +412,9 @@ After asset/notes verification, repeat the remote baseline and perform the
 [package-manager runbook](../../../docs/package-manager-release-runbook.md).
 This is required even when the new release must wait for manual promotion:
 check existing stable-channel lag and prepare or advance eligible updates.
+Inspect `distribution-audit-after`'s report; a complete source audit still does
+not prove client indexing, installation or upgrade. No audit uses the read token
+to submit manifests or merge Homebrew updates.
 
 Reuse `pwrdrvr/homebrew-tap`'s `bump.yml` and `scripts/bump-cask.sh`; the cask
 uses the universal macOS DMG on both Intel and Apple Silicon. Winget uses the

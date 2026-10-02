@@ -200,7 +200,23 @@ Completions, and Anthropic Messages. Main makes these requests itself; no
 agent, external proxy, or subprocess is required. Legacy text `/completions`
 is a different protocol and is not supported.
 
-Codex model choices come from the selected installation's live catalog.
+Sign in with ChatGPT is an independent public native OAuth client in main.
+Its stable installation host id, issued client id and rotating tokens stay in
+DesktopSecretStore on the user's machine. Public settings contain only labels
+and permission/consent booleans. In split mode the agent process serializes
+registration and refresh; a bridge-only command supplies the local Library
+main process's Codex child, never a renderer or MCP caller. The optional billing
+selection applies to existing Codex jobs, keeps their sandbox/tool policy,
+and requires separate consent before automatic post-capture use. Missing or
+revoked permission fails closed without switching accounts/providers. Renewal
+restarts the Codex child and its next turn resumes the existing thread.
+SIWC models come from the account's `GET /v1/models` visibility list. No SIWC
+Responses request is made directly by PwrSnap; inference uses Codex app-server
+with the documented `openai_chatgpt_plan` provider. See
+[Sign in with ChatGPT](sign-in-with-chatgpt.md) for preview restrictions and
+operator steps.
+
+Other Codex model choices come from the selected installation's live catalog.
 Normal pickers hide GPT-5.5 and the GPT-5.6 family, each model only when its
 own replacement is advertised, so a saved default never disappears without
 being migrated. Saved Codex defaults move to advertised replacements:

@@ -1,3 +1,4 @@
+import { ChatgptUsageAction, isChatgptUsageLimit } from "./ChatgptUsageAction";
 // Shared Library/Sizzle chat widget. Surface-specific wrappers provide only
 // scope identity and root test id; this component owns the lifecycle once so
 // Stop, drafts, streams, approvals, archive, and terminal races cannot drift.
@@ -192,6 +193,7 @@ export function ChatPanelSurface({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [codexError, setCodexError] = useState<ChatPanelError | null>(null);
+  const [chatgptPlanEnabled, setChatgptPlanEnabled] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [draftResetVersion, setDraftResetVersion] = useState(0);
   const [loading, setLoading] = useState<boolean>(true);
@@ -319,6 +321,7 @@ export function ChatPanelSurface({
   useEffect(() => {
     let cancelled = false;
     const updateProviders = (settings: Settings): void => {
+      setChatgptPlanEnabled(settings.codex?.chatgptPlanEnabled === true);
       const enabled = settings.ai?.acp?.enabledAgentIds ?? [];
       setProviders(["codex", ...enabled.map((id) => `acp:${id}`), ...(settings.ai?.customModels ?? []).map((m) => `custom:${m.id}`)]);
       setProviderLabels(Object.fromEntries((settings.ai?.customModels ?? []).map((m) => [`custom:${m.id}`, m.displayName])));
@@ -819,6 +822,7 @@ export function ChatPanelSurface({
       <div className="ps-libchat ps-libchat--empty" data-testid={testId}>
         <div className="ps-libchat-empty-title">Chat is unavailable</div>
         <p className="ps-libchat-empty-body">{codexError.message}</p>
+        {isChatgptUsageLimit(codexError.message) ? <ChatgptUsageAction /> : null}
         {codexError.showSettingsHint ? (
           <p className="ps-libchat-empty-body">
             Open <b>Settings → AI Providers</b> to configure Codex, Gemini, or
@@ -920,6 +924,8 @@ export function ChatPanelSurface({
       </div>
 
       <div className="ps-libchat-main">
+        {chatgptPlanEnabled && (lockedChoice?.provider ?? draftConfig.provider) === "codex" ?
+          <div className="ps-libchat-empty-body">Using ChatGPT plan <ChatgptUsageAction /></div> : null}
         {showGreeting ? (
           <div className="ps-libchat-greeting">
             <div className="ps-libchat-empty-title">
@@ -976,6 +982,7 @@ export function ChatPanelSurface({
         {actionError !== null ? (
           <div className="ps-libchat-action-error" role="alert">
             {actionError}
+            {isChatgptUsageLimit(actionError) ? <ChatgptUsageAction /> : null}
           </div>
         ) : null}
         <Composer

@@ -37,6 +37,9 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
+const mockPlanRuntime = vi.hoisted(() => vi.fn(async (): Promise<{ accessToken: string; generation: string } | null> => null));
+const mockCodexClientOptions = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+vi.mock("../chatgpt-plan/session", () => ({ planRuntime: mockPlanRuntime, accountModels: vi.fn(), invalidatePlanSession: vi.fn() }));
 const mockCodexThreadClients = vi.hoisted(() => [] as MockCodexThreadClient[]);
 const mockConnectionRequest = vi.hoisted(() =>
   vi.fn(async (_method: string, _params: unknown): Promise<unknown> => ({}))
@@ -135,6 +138,7 @@ vi.mock("@pwrdrvr/agent-client", () => {
     readonly handleNotification = vi.fn();
 
     constructor(_options: unknown) {
+      mockCodexClientOptions.push(_options as Record<string, unknown>);
       mockCodexThreadClients.push(this);
     }
 
@@ -150,6 +154,8 @@ afterEach(async () => {
   await closeCodexAgentPool();
   __setDesktopSettingsStoreForTests(null);
   mockCodexThreadClients.length = 0;
+  mockCodexClientOptions.length = 0;
+  mockPlanRuntime.mockResolvedValue(null);
   vi.clearAllMocks();
   mockLogger.error.mockClear();
   mockConnectionRequest.mockReset();
@@ -968,3 +974,19 @@ describe("Codex agent pool", () => {
     ).toHaveLength(1);
   });
 });
+
+ test("SIWC refresh replaces child and retains the view/thread for the next turn", async () => {
+  mockPlanRuntime.mockResolvedValue({ accessToken: "fixture-access", generation: "fixture-1" });
+  const view = acquireCodexAgentBackendView({ command: "codex", env: { CODEX_HOME: "/tmp/pwrsnap-siwc-pool-test" }, loggerScope: "test" });
+  await view.startThread({ model: "fixture-model", config: { web_search: "enabled" } });
+  expect(mockCodexClientOptions.at(-1)?.clientName).toBe("PwrSnap");
+  expect(mockCodexClientOptions.at(-1)?.transportFactory).toBeTypeOf("function");
+  const planClient = mockCodexThreadClients.at(-1)!;
+  expect(planClient.startThread).toHaveBeenCalledWith(expect.objectContaining({ modelProvider: "openai_chatgpt_plan", config: expect.objectContaining({ web_search: "disabled" }) }));
+  mockPlanRuntime.mockResolvedValue({ accessToken: "fixture-rotated-access", generation: "fixture-2" });
+  await view.startTurn({ threadId: "thread-1", input: { text: "fixture prompt" } });
+  expect(mockCodexThreadClients).toHaveLength(3);
+  expect(mockCodexThreadClients.at(-1)).not.toBe(planClient);
+  // Published CodexThreadClient.startTurn resumes this id on the replacement child.
+  expect(mockCodexClientOptions.at(-1)?.clientName).toBe("PwrSnap");
+ });

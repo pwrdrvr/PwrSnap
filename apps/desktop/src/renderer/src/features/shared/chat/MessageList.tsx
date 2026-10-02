@@ -1,3 +1,4 @@
+import { ChatgptUsageAction, isChatgptUsageLimit } from "./ChatgptUsageAction";
 // MessageList — the shared streaming message-list primitive for every
 // PwrSnap chat surface (Library DetailRail chat, editor chat). Pure
 // presentational: props in, callbacks out, NO bus / IPC wiring. The
@@ -330,12 +331,13 @@ const MessageBubble = memo(function MessageBubble(
           />
         )}
 
+        {message.status === "failed" && isChatgptUsageLimit(messageText) ? <ChatgptUsageAction /> : null}
         <StatusFooter
           status={message.status}
           messageId={message.id}
           aiRunId={message.aiRunId}
           onRejectAiRun={onRejectAiRun}
-          onRetry={onRetry}
+          onRetry={isChatgptUsageLimit(messageText) ? undefined : onRetry}
           testIdPrefix={testIdPrefix}
         />
       </div>

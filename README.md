@@ -19,7 +19,7 @@
 </p>
 
 <sub>macOS 14 or newer · Windows 10 or newer · MIT · Developer ID-signed and Apple-notarized; the Windows installer is Authenticode-signed
-No account, no telemetry, no PwrSnap server. AI is optional, and rides the Codex you already have.</sub>
+No account, no telemetry, no PwrSnap server. AI is optional: use your local Codex, Sign in with ChatGPT, or a configured API connection.</sub>
 
 <br>
 
@@ -69,8 +69,14 @@ provider you've already set Codex up with.
   Codex is set to talk to (OpenAI by default — Codex itself is an OpenAI
   product — but Codex can be configured to route elsewhere), billed to
   the plan you already have with that provider through Codex. PwrSnap
-  itself opens no new account, holds no API key of its own, and never
-  calls a model provider directly. Settings → AI Providers auto-discovers
+  can also use **Sign in with ChatGPT**: local encrypted OAuth tokens authorize
+  the Codex child to use your eligible ChatGPT plan at OpenAI’s Responses API.
+  Automatic post-capture use requires separate consent. PwrSnap is free;
+  **Use your ChatGPT plan** requires no paid PwrSnap upgrade.
+  [Learn more](https://help.openai.com/en/articles/20001542-using-your-chatgpt-plan-in-other-apps-and-sites)
+  and [connection details and operator steps](docs/sign-in-with-chatgpt.md).
+  Custom API connections additionally make requests directly from main with
+  the credential you configure. Settings → AI Providers auto-discovers
   every Codex binary on the system and lets you pin a specific path.
 - **Local-first and quiet.** Durable captures and chat threads live in the OS
   Documents folder under `PwrSnap` (`~/Documents/PwrSnap` on macOS and normally

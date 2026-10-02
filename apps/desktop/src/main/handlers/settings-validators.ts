@@ -153,6 +153,9 @@ export function validateSettingsWrite(
       };
     }
     const codex = p.codex as Record<string, unknown>;
+    if (Object.keys(codex).some(key => key.startsWith("chatgpt"))) {
+      return { ok: false, error: validationError("main_owned_setting", "Use the ChatGPT provider controls") };
+    }
     // pinnedPath: non-nullable string. `null` is rejected; "" is a valid clear.
     if (!isUndefined(codex.pinnedPath) && !isString(codex.pinnedPath)) {
       return {
@@ -1586,7 +1589,7 @@ export function validateClearSecret(
 function isKnownSecretName(value: unknown): value is DesktopSettingsSecretName {
   return (
     typeof value === "string" &&
-    (KNOWN_SECRET_NAMES as readonly string[]).includes(value)
+    value !== "chatgptPlanRegistration" && (KNOWN_SECRET_NAMES as readonly string[]).includes(value)
   );
 }
 

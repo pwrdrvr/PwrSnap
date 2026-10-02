@@ -839,15 +839,15 @@ describe("Direct API connections", () => {
     withCloudKey();
     const page = await render(createElement(AIProvidersPage, { sub: null }), directSettings());
     const cards = Array.from(page.querySelectorAll(".pss__card"));
-    expect(cards.map((c) => c.querySelector(".pss__card-title")?.textContent)).toEqual(["Agents", "Connections"]);
-    const rows = Array.from(cards[1]?.querySelectorAll(".pss__prov-row") ?? []);
+    expect(cards.map((c) => c.querySelector(".pss__card-title")?.textContent)).toEqual(["Sign in with ChatGPT", "Agents", "Connections"]);
+    const rows = Array.from(cards[2]?.querySelectorAll(".pss__prov-row") ?? []);
     expect(rows.map((r) => r.querySelector(".pss__dapi-cap")?.textContent)).toEqual(["api.fixture-cloud.example", "THIS COMPUTER"]);
     expect(rows.map((r) => r.querySelector(".pss__prov-meta")?.textContent)).toEqual([
       "Anthropic Messages · API key · 1 model", "Chat Completions · no auth · 1 model"]);
     // IMG only where the saved answer is Yes — never for Unknown.
     expect(rows.map((r) => r.querySelector(".pss__dapi-mchip")?.textContent)).toEqual(["Granola LargeIMG", "muesli-8b"]);
     expect(rows.map((r) => r.querySelector(".pss__badge")?.textContent)).toEqual(["Ready", "Ready"]);
-    await click(button(cards[1], "+ Add connection"));
+    await click(button(cards[2], "+ Add connection"));
     expect(window.location.hash).toBe("#stage=settings&page=ai&sub=new-connection");
   });
 

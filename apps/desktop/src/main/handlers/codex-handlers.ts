@@ -603,6 +603,10 @@ export function registerCodexHandlers(params?: {
     }
 
     const enrichmentProvider = settings.ai.defaults.enrichment.provider;
+    if (triggerSource === "auto-enrichment" && settings.codex.chatgptPlanEnabled &&
+        (!enrichmentProvider || enrichmentProvider === "codex") && !settings.codex.chatgptBackgroundConsent) {
+      return validationError("chatgpt_background_consent_required", "Allow automatic post-capture use in Sign in with ChatGPT settings first.");
+    }
     if (refreshDefaultsBeforeEnrichment && (!enrichmentProvider || enrichmentProvider === "codex") &&
         !managedEnrichmentByCatalog.has(codexCatalogKey(settings)) &&
         (!settings.ai.defaults.enrichment.model || hasObsoleteCodexDefaults(settings, ["enrichment"]))) {

@@ -1259,6 +1259,24 @@ describe("Codex handlers", () => {
       expect(tooLong.error.code).toBe("invalid_request");
     }
   });
+ test("SIWC automatic captures require distinct background consent; clicked actions remain available", async () => {
+  const client = new FakeCodexClient();
+  const settings = testSettings({ codex: { ...defaultSettings().codex, chatgptPlanEnabled: true, chatgptBackgroundConsent: false },
+    ai: { ...defaultSettings().ai, enabled: true, consentAcceptedAt: "2026-10-02T00:00:00Z" } });
+  registerCodexHandlers({ clientFactory: () => client as never, settingsReader: async () => settings, budget: new AiEnrichmentBudget() });
+  const auto = await bus.dispatch("codex:enrich", { captureId: "cap_1", triggerSource: "auto-enrichment" }, { principal: "ipc" });
+  expect(auto.ok).toBe(false);
+  if (!auto.ok) expect(auto.error.code).toBe("chatgpt_background_consent_required");
+  expect(client.lastRequest).toBeNull();
+  const clicked = await bus.dispatch("codex:enrich", { captureId: "cap_1", triggerSource: "library-regenerate" }, { principal: "ipc" });
+  expect(clicked.ok).toBe(true);
+  if (clicked.ok) await waitFor(() => getAiRun(clicked.value.runId)?.status === "completed");
+  settings.codex.chatgptBackgroundConsent = true;
+  const consentedAuto = await bus.dispatch("codex:enrich", { captureId: "cap_1", triggerSource: "auto-enrichment" }, { principal: "ipc" });
+  expect(consentedAuto.ok).toBe(true);
+  if (consentedAuto.ok) await waitFor(() => getAiRun(consentedAuto.value.runId)?.status === "completed");
+ });
+
 });
 
 describe("enrichmentSelectedModel", () => {

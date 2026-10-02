@@ -168,6 +168,11 @@ export function defaultSettings(
     schemaVersion: 1,
     lastDefaultsMigrationVersion: CURRENT_DEFAULTS_MIGRATION_VERSION,
     codex: {
+      chatgptPlanEnabled: false,
+      chatgptPlanGranted: false,
+      chatgptAccountLabel: "",
+      chatgptBackgroundConsent: false,
+      chatgptWelcomeSeen: false,
       mode: "auto",
       pinnedPath: "",
       profile: "",
@@ -908,6 +913,11 @@ function parseV1(
       ? CURRENT_DEFAULTS_MIGRATION_VERSION
       : storedDefaultsMigrationVersion,
     codex: {
+      chatgptPlanEnabled: pickBoolean(codex.chatgptPlanEnabled, false),
+      chatgptPlanGranted: pickBoolean(codex.chatgptPlanGranted, false),
+      chatgptAccountLabel: pickString(codex.chatgptAccountLabel, ""),
+      chatgptBackgroundConsent: pickBoolean(codex.chatgptBackgroundConsent, false),
+      chatgptWelcomeSeen: pickBoolean(codex.chatgptWelcomeSeen, false),
       mode: pickMode(codex.mode ?? defaults.codex.mode),
       pinnedPath: pickString(codex.pinnedPath, defaults.codex.pinnedPath),
       profile: pickString(codex.profile, defaults.codex.profile),

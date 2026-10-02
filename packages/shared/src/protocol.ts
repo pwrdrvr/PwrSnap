@@ -1466,6 +1466,7 @@ export type LocalAgentAuditEntry = {
  *  write-only inputs are immediately persisted by main. Reads return status only. */
 export type DesktopSettingsSecretName =
   | "openaiApiKey"
+  | "chatgptPlanRegistration"
   | `localAgentToken:${string}`
   | `customModelCredential:${string}`;
 
@@ -2779,6 +2780,12 @@ export type Settings = {
      *  compatibility with older settings files. Active selection lives at
      *  `ai.defaults.enrichment`; runtime intentionally ignores this field. */
     captionModel: CodexCaptionModel;
+    /** Main-owned SIWC state; credentials remain in DesktopSecretStore. */
+    chatgptPlanEnabled?: boolean;
+    chatgptPlanGranted?: boolean;
+    chatgptAccountLabel?: string;
+    chatgptBackgroundConsent?: boolean;
+    chatgptWelcomeSeen?: boolean;
   };
   ai: {
     /** Phase 4 AI-pipeline kill switch. */
@@ -4867,6 +4874,14 @@ export type Commands = {
     req: Record<string, never>;
     res: Record<DesktopSettingsSecretName, SecretStatus>;
   };
+  "chatgptPlan:status": { req: Record<string, never>; res: ChatgptPlanStatus };
+  "chatgptPlan:login": { req: Record<string, never>; res: ChatgptPlanStatus };
+  "chatgptPlan:logout": { req: Record<string, never>; res: { revocationConfirmed: boolean } };
+  "chatgptPlan:configure": { req: { enabled?: boolean; backgroundConsent?: boolean; welcomeSeen?: boolean }; res: ChatgptPlanStatus };
+  /** Main-to-main bridge only; every renderer/RPC/MCP request is denied. */
+  "chatgptPlan:runtime": { req: Record<string, never>; res: { accessToken: string; generation: string } | null };
+  "chatgptPlan:invalidate": { req: Record<string, never>; res: undefined };
+  "chatgptPlan:models": { req: Record<string, never>; res: CodexModelOption[] };
   "customModels:saveConnection": { req: { connection: CustomConnectionInput }; res: CustomConnection };
   "customModels:removeConnection": { req: { connectionId: string }; res: undefined };
   "customModels:setKey": { req: { connectionId: string; value: string }; res: undefined };
@@ -5830,3 +5845,7 @@ export type FloatOverOverflowChoice =
   | { kind: "open"; captureId: string }
   | { kind: "clear-finished" }
   | null;
+
+/** Public projection: no token, client id, host id, or authorization URL. */
+export type ChatgptPlanStatus = { label: string; connected: boolean; planGranted: boolean;
+  enabled: boolean; backgroundConsent: boolean; welcomeSeen: boolean };

@@ -1,3 +1,4 @@
+import { ChatgptPlanCard } from "./ChatgptPlanCard";
 import { ConnectionIndex } from "./ConnectionIndex";
 import { ConnectionPage } from "./ConnectionPage";
 import { CodexUpgradeStrip } from "../CodexUpgradeHelp";
@@ -301,6 +302,7 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
         </div>
       </div>
 
+      <ChatgptPlanCard />
       <Card eyebrow="INSTALLED AGENTS" title="Agents">
         <Row
           label="Ready to use?"

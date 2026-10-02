@@ -18,6 +18,7 @@ import {
   type LocalAcpDiscoveryOptions
 } from "@pwrdrvr/agent-acp";
 import type {
+  CodexModelOption,
   CodexTestResult,
   DesktopCodexAuthProbe,
   DesktopCodexCandidateSource,
@@ -26,6 +27,7 @@ import type {
   Settings,
   SettingsPatch
 } from "@pwrsnap/shared";
+import { codexModelDefaultsPatch } from "@pwrsnap/shared";
 
 import { execAgentCommand } from "../ai/agent-command";
 import { resolveActiveAcpInstance } from "../ai/acp-instance-resolver";
@@ -132,6 +134,9 @@ export interface DesktopSettingsStoreApi {
   getCurrentSnapshot(): Settings | null;
   getCurrentDomain<K extends DesktopSettingsDomain>(domain: K): Settings[K] | null;
   write(patch: SettingsPatch, options?: DesktopSettingsWriteOptions): Promise<Settings>;
+  reconcileCodexModelDefaults(
+    models: readonly CodexModelOption[], catalog: { command: string; profile: string }
+  ): Promise<{ settings: Settings; changed: boolean }>;
   adoptTrustedPeerSnapshot(settings: Settings): Settings;
   getCurrentCodexDiscoveryPublication(): DesktopCodexDiscoveryPublication | null;
   getCurrentAcpDiscoveryPublication(): DesktopAcpDiscoveryPublication | null;
@@ -224,6 +229,24 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
     const snapshot = this.persistence.adoptTrustedSnapshot(settings);
     this.observeSnapshot(snapshot, true);
     return snapshot;
+  }
+
+  async reconcileCodexModelDefaults(
+    models: readonly CodexModelOption[], catalog: { command: string; profile: string }
+  ): Promise<{ settings: Settings; changed: boolean }> {
+    let changed = false;
+    const settings = await this.persistence.writeComputed((current) => {
+      // A catalog requested before the user switches installations/profiles
+      // must not migrate defaults using the previous account's capabilities.
+      const command = current.codex.mode === "pinned" && current.codex.pinnedPath !== ""
+        ? current.codex.pinnedPath : "codex";
+      if (command !== catalog.command || current.codex.profile !== catalog.profile) return undefined;
+      const patch = codexModelDefaultsPatch(current, models);
+      changed = patch !== undefined;
+      return patch;
+    });
+    this.observeSnapshot(this.persistence.getCurrentSnapshot() ?? settings, changed);
+    return { settings, changed };
   }
 
   /** Export the latest complete Codex publication without probing. Split-mode

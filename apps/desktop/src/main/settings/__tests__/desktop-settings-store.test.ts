@@ -10,11 +10,72 @@ import {
 
 import { defaultSettings, mergeSettings } from "../desktop-settings-service";
 import { DesktopSettingsStore } from "../desktop-settings-store";
+import type { CodexModelOption } from "@pwrsnap/shared";
 
 let workDir = "";
 
 beforeEach(() => {
   workDir = mkdtempSync(join(tmpdir(), "pwrsnap-settings-store-"));
+});
+
+const successorModels: CodexModelOption[] = ["gpt-6.1-sol", "gpt-6-luna"].map((id) => ({
+  id, model: id, displayName: id, description: "", hidden: false,
+  inputModalities: ["text", "image"], defaultServiceTier: null, isDefault: false
+}));
+
+describe("catalog-driven Codex default persistence", () => {
+  test("persists all three defaults and a repeated catalog writes nothing", async () => {
+    const filePath = join(workDir, "settings.json");
+    const store = new DesktopSettingsStore({ filePath });
+    await store.write({ ai: { defaults: {
+      libraryChat: { model: "gpt-5.6-terra", reasoning: "high" },
+      sizzleChat: { model: "gpt-6-sol" }, enrichment: { model: "gpt-5.6-luna" }
+    } } });
+    const catalog = { command: "codex", profile: "" };
+    const result = await store.reconcileCodexModelDefaults(successorModels, catalog);
+    expect(result.changed).toBe(true);
+    expect(result.settings.ai.defaults).toMatchObject({
+      libraryChat: { model: "gpt-6.1-sol", reasoning: "high" },
+      sizzleChat: { model: "gpt-6.1-sol" }, enrichment: { model: "gpt-6-luna" }
+    });
+    const publications = vi.fn();
+    store.subscribe(["ai"], publications);
+    const writes = store.readDiagnostics().settingsAtomicWrites;
+    expect((await store.reconcileCodexModelDefaults(successorModels, catalog)).changed).toBe(false);
+    expect(store.readDiagnostics().settingsAtomicWrites).toBe(writes);
+    expect(publications).not.toHaveBeenCalled();
+    expect((await new DesktopSettingsStore({ filePath }).read()).ai.defaults).toEqual(result.settings.ai.defaults);
+  });
+
+  test("unavailable replacements neither write nor materialize the managed default", async () => {
+    const store = new DesktopSettingsStore({ filePath: join(workDir, "settings.json") });
+    await store.write({ ai: { defaults: { libraryChat: { model: "gpt-6-sol" } } } });
+    const writes = store.readDiagnostics().settingsAtomicWrites;
+    const result = await store.reconcileCodexModelDefaults([], { command: "codex", profile: "" });
+    expect(result.changed).toBe(false);
+    expect(store.readDiagnostics().settingsAtomicWrites).toBe(writes);
+    expect(result.settings.ai.defaults.enrichment).toEqual({});
+  });
+
+  test("a queued user selection of GPT-6-Astra wins over a stale catalog snapshot", async () => {
+    const store = new DesktopSettingsStore({ filePath: join(workDir, "settings.json") });
+    await store.write({ ai: { defaults: { libraryChat: { model: "gpt-5.6-terra" } } } });
+    const selected = store.write({ ai: { defaults: {
+      libraryChat: { model: "gpt-6-astra", reasoning: "ultra" }
+    } } });
+    const migration = store.reconcileCodexModelDefaults(successorModels, { command: "codex", profile: "" });
+    await selected;
+    expect((await migration).settings.ai.defaults.libraryChat).toEqual({ model: "gpt-6-astra", reasoning: "ultra" });
+  });
+
+  test.each([{ command: "/old/codex", profile: "" }, { command: "codex", profile: "old" }])(
+    "discards a catalog from a previous installation or profile: %j", async (catalog) => {
+      const store = new DesktopSettingsStore({ filePath: join(workDir, "settings.json") });
+      await store.write({ ai: { defaults: { libraryChat: { model: "gpt-6-sol" } } } });
+      expect((await store.reconcileCodexModelDefaults(successorModels, catalog)).changed).toBe(false);
+      expect((await store.read()).ai.defaults.libraryChat.model).toBe("gpt-6-sol");
+    }
+  );
 });
 
 function rawCodexSnapshot(command: string) {

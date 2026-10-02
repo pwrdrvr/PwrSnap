@@ -82,6 +82,7 @@ type SettingsHandlerStore = Pick<
       | "getCurrentCodexDiscoveryPublication"
       | "refreshCodexDiscoveryForUserRequest"
       | "testCodexForUserRequest"
+      | "reconcileCodexModelDefaults"
     >
   >;
 
@@ -219,6 +220,17 @@ export async function broadcastSettingsChanged(
       });
     }
   }
+}
+
+export async function reconcileCodexModelDefaults(
+  models: Parameters<DesktopSettingsStore["reconcileCodexModelDefaults"]>[0],
+  catalog: Parameters<DesktopSettingsStore["reconcileCodexModelDefaults"]>[1]
+): Promise<Settings> {
+  const { service, secrets } = ensureServices();
+  if (service.reconcileCodexModelDefaults === undefined) return service.read();
+  const result = await service.reconcileCodexModelDefaults(models, catalog);
+  if (result.changed) await broadcastSettingsChanged(service, secrets, { settings: result.settings });
+  return result.settings;
 }
 
 /** Test seam: reset main-side listeners between specs that exercise

@@ -200,6 +200,16 @@ Completions, and Anthropic Messages. Main makes these requests itself; no
 agent, external proxy, or subprocess is required. Legacy text `/completions`
 is a different protocol and is not supported.
 
+Codex model choices come from the selected installation's live catalog. When
+GPT-6-Sol or GPT-6.1-Sol is advertised, normal pickers hide GPT-5.5 and the
+GPT-5.6 family. Saved Codex defaults move to advertised replacements:
+GPT-5.5, GPT-5.6 (except Luna), and GPT-6-Sol move to GPT-6.1-Sol;
+GPT-5.6-Luna moves to GPT-6-Luna. Discovery reconciles these defaults inside
+the serialized settings store, including before automatic Codex enrichment.
+GPT-6-Astra selections, existing threads, and ACP/direct API defaults retain
+their configured models. Replacement capabilities and reasoning efforts
+come from the catalog, never from the model's name.
+
 A connection (`ai.customConnections`) is one endpoint: a stable UUID, a name,
 the base URL, an explicit protocol, and public sign-in configuration (none,
 API key, or OAuth). Models (`ai.customModels`) hang under a connection by

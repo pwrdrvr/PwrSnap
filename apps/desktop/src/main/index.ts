@@ -2132,9 +2132,10 @@ export function bootstrapApp(): void {
       // Startup Codex readiness probe — deferred past the library's first
       // contentful paint (#238). The probe's `codex` process spawns
       // (~0.9s) otherwise land in the window-shown→first-paint gap,
-      // stalling the main thread in ~100ms chunks. Nothing on the boot
-      // path consumes the result; on-demand dispatches (Settings → AI)
-      // trigger their own. E2E skips the boot probe entirely: each spec
+      // stalling the main thread in ~100ms chunks. Enabled Codex surfaces
+      // then reconcile defaults against the live catalog. On-demand model
+      // pickers and enrichment use the same policy. E2E skips the boot probe
+      // entirely: each spec
       // launches a fresh app, so probing the host's real Codex install on
       // every launch adds unrelated child-process work and makes ordinary
       // specs depend on the runner's installed Codex state. The discovery E2E
@@ -2148,12 +2149,20 @@ export function bootstrapApp(): void {
           // publication as renderer mounts. If Library/Float-Over already
           // populated it, this is an in-memory read rather than a second scan.
           .dispatch("settings:refreshCodexDiscovery", { force: false }, { principal: "ipc" })
-          .then((result) => {
+          .then(async (result) => {
             if (!result.ok) {
               log.warn("startup Codex readiness probe failed", {
                 code: result.error.code,
                 message: result.error.message
               });
+            }
+            if (result.ok && result.value.resolvedPath !== null) {
+              const settings = await bus.dispatch("settings:read", {}, { principal: "ipc" });
+              if (settings.ok && settings.value.ai.enabled &&
+                  Object.values(settings.value.ai.defaults).some((value) =>
+                    !value.provider || value.provider === "codex")) {
+                await bus.dispatch("codex:models", {}, { principal: "ipc" });
+              }
             }
           });
       };

@@ -11,6 +11,7 @@ import { useCallback, useEffect, useRef, useState, type ReactElement } from "rea
 import {
   AI_REASONING_EFFORTS,
   CODEX_CAPTION_MODELS,
+  upgradedCodexModelId,
   builtInAcpAgentDisplayName,
   type AcpAgentModelOption,
   type CodexModelOption
@@ -221,6 +222,14 @@ export function NewChatConfigChips({
         setModelsError(null);
         setModelsLoading(false);
         reportAvailability("available", null);
+        if (provider === "codex" && value.model !== null) {
+          const upgraded = upgradedCodexModelId(value.model, opts.map((option) => option.id));
+          const target = opts.find((option) => option.id === upgraded);
+          if (upgraded !== value.model && target !== undefined) {
+            onChange({ ...value, model: upgraded, reasoning: reasoningForModel(target, value.reasoning) });
+            return;
+          }
+        }
         // If the current model isn't valid for this provider, clear it so the
         // user must pick one (required) rather than silently carrying a stale id.
         if (value.model !== null && !opts.some((o) => o.id === value.model)) {

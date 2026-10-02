@@ -13,6 +13,8 @@ import {
   DEFAULT_ENRICHMENT_REASONING_EFFORT,
   RejectTagRequestSchema,
   customEnrichmentConcurrency,
+  applyCodexModelVisibility,
+  hasObsoleteCodexDefaults,
   resolveCustomModel,
   err,
   ok
@@ -106,6 +108,9 @@ export type CodexClientFactory = (
 ) => CaptureEnrichmentClient | Promise<CaptureEnrichmentClient>;
 export type SettingsReader = () => Promise<Settings>;
 export type SettingsWriter = (patch: SettingsPatch) => Promise<Settings>;
+type ModelDefaultsReconciler = (
+  models: readonly CodexModelOption[], catalog: { command: string; profile: string }
+) => Promise<Settings>;
 
 const activeRuns = new Map<string, AbortController>();
 const directEnrichmentQueue = new EnrichmentQueue();
@@ -491,6 +496,7 @@ export function registerCodexHandlers(params?: {
   modelLister?: CodexModelLister;
   settingsReader?: SettingsReader;
   settingsWriter?: SettingsWriter;
+  modelDefaultsReconciler?: ModelDefaultsReconciler;
   budget?: AiEnrichmentBudget;
   /** Override the per-turn enrichment timeout (ms). Defaults to
    *  `ENRICHMENT_TURN_TIMEOUT_MS`; tests pass a tiny value. */
@@ -519,6 +525,15 @@ export function registerCodexHandlers(params?: {
   const closeClientAfterRun = params?.clientFactory !== undefined;
   const settingsReader = params?.settingsReader ?? defaultSettingsReader;
   const settingsWriter = params?.settingsWriter ?? defaultSettingsWriter;
+  // Injected readers own an isolated settings state in tests; production
+  // reconciliation uses the serialized store and broadcasts committed changes.
+  const modelDefaultsReconciler: ModelDefaultsReconciler = params?.modelDefaultsReconciler ??
+    (params?.settingsReader !== undefined ? async () => settingsReader() : async (models, catalog) => {
+      const { reconcileCodexModelDefaults } = await import("./settings-handlers");
+      return reconcileCodexModelDefaults(models, catalog);
+    });
+  const refreshDefaultsBeforeEnrichment = params?.settingsReader === undefined ||
+    params?.modelDefaultsReconciler !== undefined;
   const budget = params?.budget ?? aiEnrichmentBudget;
   const turnTimeoutMs = params?.turnTimeoutMs ?? ENRICHMENT_TURN_TIMEOUT_MS;
 
@@ -557,6 +572,21 @@ export function registerCodexHandlers(params?: {
     const capture = getCaptureById(req.captureId);
     if (capture === null || capture.deleted_at !== null) {
       return validationError("not_found", `capture not found: ${req.captureId}`);
+    }
+
+    const enrichmentProvider = settings.ai.defaults.enrichment.provider;
+    if (refreshDefaultsBeforeEnrichment && (!enrichmentProvider || enrichmentProvider === "codex") &&
+        hasObsoleteCodexDefaults(settings)) {
+      // Automatic capture enrichment can precede the first model picker. Use
+      // the same live catalog policy before taking the run's settings snapshot.
+      const catalog = await bus.dispatch("codex:models", {}, { principal: "ipc" });
+      if (!catalog.ok) log.warn("Codex default migration catalog unavailable", { code: catalog.error.code });
+      settings = await settingsReader();
+      // A user can turn AI off while model discovery is in flight.
+      if (!settings.ai.enabled || settings.ai.consentAcceptedAt === null ||
+          settings.ai.budgetSafetyDisabledAt !== null) {
+        return validationError("ai_disabled", "AI enrichment is disabled");
+      }
     }
 
     const codexCommand = codexCommandForSettings(settings);
@@ -845,7 +875,7 @@ export function registerCodexHandlers(params?: {
     const env = codexEnvForProfile(settings.codex.profile);
     const codexHome = env["CODEX_HOME"] ?? null;
     const profile = settings.codex.profile.length > 0 ? settings.codex.profile : "(default)";
-    const selectedModel = enrichmentModelForSettings(settings);
+    let selectedModel = enrichmentModelForSettings(settings);
     log.info("codex:models listing", {
       command,
       codexHome,
@@ -879,6 +909,9 @@ export function registerCodexHandlers(params?: {
       // Persist id → displayName so the usage strip can show a Codex run's
       // friendly model name (the run record only stores the id).
       saveCodexModelLabels(models);
+      const reconciled = await modelDefaultsReconciler(models, { command, profile: settings.codex.profile });
+      selectedModel = enrichmentModelForSettings(reconciled);
+      models = applyCodexModelVisibility(models, includeHidden);
       const modelIds = models.map((model) => model.id);
       const imageCapableModelIds = models
         .filter(

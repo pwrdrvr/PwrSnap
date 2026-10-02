@@ -864,6 +864,38 @@ describe("settings:* validation", () => {
 // seam so the lazy-init code path doesn't try to call `app.getPath`
 // through the partial mock above.
 describe("settings:read + settings:write round-trip (integration)", () => {
+  test("catalog migration broadcasts committed defaults once to settings listeners", async () => {
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { DesktopSettingsStore } = await import("../../settings/desktop-settings-store");
+    const { DesktopSecretStore } = await import("../../settings/desktop-secret-store");
+    const { __setSettingsServicesForTests, reconcileCodexModelDefaults, onSettingsChanged } =
+      await import("../settings-handlers");
+    const dir = await mkdtemp(join(tmpdir(), "pwrsnap-codex-default-broadcast-"));
+    const service = new DesktopSettingsStore({ filePath: join(dir, "settings.json") });
+    const secrets = new DesktopSecretStore({ filePath: join(dir, "secrets.bin") });
+    __setSettingsServicesForTests({ service, secrets });
+    const listener = vi.fn();
+    const unsubscribe = onSettingsChanged(listener);
+    try {
+      const models = [{ id: "gpt-6-luna", model: "gpt-6-luna", displayName: "GPT-6-Luna",
+        description: "", hidden: false, inputModalities: ["text", "image"] as ("text" | "image")[],
+        defaultServiceTier: null, isDefault: true }];
+      const result = await reconcileCodexModelDefaults(models, { command: "codex", profile: "" });
+      expect(result.ai.defaults.enrichment.model).toBe("gpt-6-luna");
+      expect(listener).toHaveBeenCalledExactlyOnceWith(result);
+      await reconcileCodexModelDefaults(models, { command: "codex", profile: "" });
+      expect(listener).toHaveBeenCalledTimes(1);
+      const read = await bus.dispatch("settings:read", {}, { principal: "ipc" });
+      expect(read.ok && read.value.ai.defaults.enrichment.model).toBe("gpt-6-luna");
+    } finally {
+      unsubscribe();
+      __setSettingsServicesForTests({ service: null, secrets: null });
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("repeated settings and export-strategy reads share one disk hydration", async () => {
     const { DesktopSettingsService, defaultSettings } = await import(
       "../../settings/desktop-settings-service"

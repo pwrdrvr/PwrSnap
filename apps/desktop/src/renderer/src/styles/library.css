@@ -4900,6 +4900,10 @@
    above the stage-wrap, so a top dock lands under it. */
 .psl__stage-wrap:has(> .psl__edit-dock.is-docked) {
   display: grid;
+  /* The flex layout's `align-items: center` would also centre the dock in
+     its cell; a side column has to run the stage's full height. */
+  align-items: stretch;
+  justify-items: stretch;
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   grid-template-areas: "canvas";
@@ -4929,6 +4933,11 @@
 }
 .psl__stage-wrap:has(> .psl__edit-dock.is-docked) > .psl__stage-img {
   place-self: center;
+}
+/* Reel's breathing room under the filmstrip would sit between the strip
+   and a top band or side column; their own borders separate them. */
+.psl__reel-mode .psl__stage-wrap:has(> .psl__edit-dock.is-docked:not([data-dock="bottom"])) {
+  padding-top: 0;
 }
 
 .psl__edit-dock.is-docked {
@@ -5054,14 +5063,42 @@
 
 /* Left / right: a column beside the canvas. Tools wrap into a grid, the
    separators become rules across the column, and the properties stack
-   under them and scroll on their own if the window is short. The tools
-   row never scrolls: the dock and zoom menus open out of it, and a
-   scroller would clip them. */
+   under them. A Reel stage can be ~300px tall, so the whole column
+   scrolls when it has to. */
 .psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) {
+  --psl-dock-col-w: 172px;
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  width: 172px;
+  width: var(--psl-dock-col-w);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+/* ...which would clip the dock and zoom menus that open sideways out of
+   it, so nothing between those menus and the stage is positioned: their
+   containing block is `.psl__stage-wrap`, outside the scroller. With
+   `top: auto` each opens at its static position, level with its button,
+   and the column's width carries it clear of the column. */
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]),
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) :is(.psl__et-dockctl, .ed-zoom) {
+  position: static;
+}
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) :is(.psl__et-dockmenu, .ed-zoom-menu) {
+  top: auto;
+  bottom: auto;
+}
+.psl__edit-dock.is-docked[data-dock="right"] :is(.psl__et-dockmenu, .ed-zoom-menu) {
+  left: auto;
+  right: calc(var(--psl-dock-col-w) + 8px);
+}
+.psl__edit-dock.is-docked[data-dock="left"] :is(.psl__et-dockmenu, .ed-zoom-menu) {
+  left: calc(var(--psl-dock-col-w) + 8px);
+  right: auto;
+}
+/* Zoom sits at the foot of the tools; open upward from it so a short
+   stage does not cut the menu off. */
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) .ed-zoom-menu {
+  transform: translateY(calc(-100% + 36px));
 }
 .psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) > .psl__edit-toolbar {
   flex: none;
@@ -5084,18 +5121,22 @@
 }
 .psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) > .psl__et-props {
   display: flex;
-  flex: 0 1 auto;
+  flex: none;
   flex-direction: column;
   align-items: stretch;
   gap: 10px;
   width: auto;
   min-width: 0;
   max-width: none;
-  min-height: 0;
   padding: 10px 12px 12px;
   border-top: 1px solid var(--border-subtle);
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow: visible;
+}
+/* The column scrolls; nothing in it shrinks. The tag clips its own text
+   (`overflow: hidden`), which makes its automatic min-height 0, so as a
+   shrinkable flex item it was squashed to a sliver in a short window. */
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) > .psl__et-props > * {
+  flex: none;
 }
 .psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) .psl__et-props-tag {
   align-self: flex-start;
@@ -5138,21 +5179,10 @@
 }
 
 /* The zoom menu opens upward by default, which a top dock would push off
-   the stage. Open it away from the docked edge instead. */
+   the stage. Open it downward there (the side columns are above). */
 .psl__edit-dock.is-docked[data-dock="top"] .ed-zoom-menu {
   top: calc(100% + 8px);
   bottom: auto;
-}
-.psl__edit-dock.is-docked[data-dock="left"] .ed-zoom-menu {
-  top: 0;
-  bottom: auto;
-  left: calc(100% + 8px);
-  right: auto;
-}
-.psl__edit-dock.is-docked[data-dock="right"] .ed-zoom-menu {
-  top: 0;
-  bottom: auto;
-  right: calc(100% + 8px);
 }
 
 /* Drop zones, shown only while the grip is held. The edge the pointer is
@@ -5248,7 +5278,7 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  width: 248px;
+  width: 288px;
   padding: 6px;
   background: color-mix(in srgb, var(--bg-panel-hover) 96%, transparent);
   border: 1px solid var(--border-default);
@@ -5353,6 +5383,9 @@
   font: 600 12px/1 var(--font-sans);
   text-align: left;
   cursor: pointer;
+}
+.psl__et-dockmenu-row > span {
+  white-space: nowrap;
 }
 .psl__et-dockmenu-row:is(:hover, :focus) {
   background: var(--bg-panel);

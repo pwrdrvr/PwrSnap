@@ -10,20 +10,24 @@
 // roving tab stop, and focus that leaves the menu closes it.
 
 import { useEffect, useLayoutEffect, useRef, useState, type ReactElement } from "react";
-import type { EditToolbarDock } from "@pwrsnap/shared";
+import { EDIT_TOOLBAR_DOCKS, type EditToolbarDock } from "@pwrsnap/shared";
 import { useDismissable } from "../../lib/useDismissable";
 import { useMenuNavigation } from "../../lib/useMenuNavigation";
 import { closeWhenFocusLeaves } from "../shared/close-when-focus-leaves";
 
-const POSITIONS: ReadonlyArray<{ readonly dock: EditToolbarDock; readonly label: string }> = [
-  { dock: "float", label: "Floating" },
-  { dock: "top", label: "Dock top" },
-  { dock: "bottom", label: "Dock bottom" },
-  { dock: "left", label: "Dock left" },
-  { dock: "right", label: "Dock right" }
-];
+/** What choosing each position does: the menu's rows, and the drop zones a
+ *  grip drag lights up. */
+export const DOCK_ACTION_LABELS: Readonly<Record<EditToolbarDock, string>> = {
+  float: "Floating",
+  top: "Dock top",
+  bottom: "Dock bottom",
+  left: "Dock left",
+  right: "Dock right"
+};
 
-export const DOCK_LABELS: Readonly<Record<EditToolbarDock, string>> = {
+const POSITIONS = EDIT_TOOLBAR_DOCKS.map((dock) => ({ dock, label: DOCK_ACTION_LABELS[dock] }));
+
+const DOCK_LABELS: Readonly<Record<EditToolbarDock, string>> = {
   float: "Floating",
   top: "Docked top",
   bottom: "Docked bottom",

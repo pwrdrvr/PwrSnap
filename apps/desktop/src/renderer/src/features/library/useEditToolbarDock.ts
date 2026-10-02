@@ -19,6 +19,10 @@ import { dispatch, subscribe } from "../../lib/pwrsnap";
 let current: EditToolbarDock = "float";
 let hydrated = false;
 let reading = false;
+/** Counts this window's dock writes; non-zero `pendingWrites` means one is
+ *  still in flight. */
+let writeSeq = 0;
+let pendingWrites = 0;
 const listeners = new Set<() => void>();
 
 function set(next: EditToolbarDock): void {
@@ -28,8 +32,14 @@ function set(next: EditToolbarDock): void {
   for (const listener of listeners) listener();
 }
 
-/** Seed the store from a settings snapshot the caller already has. */
+/** Seed the store from a settings snapshot the caller already has.
+ *
+ *  Ignored while one of this window's dock writes is in flight: a snapshot
+ *  read or broadcast before that write landed still carries the OLD dock,
+ *  and taking it would snap the toolbar back and re-fit the snap twice.
+ *  The write's own result settles the value when it resolves. */
 export function primeEditToolbarDock(value: unknown): void {
+  if (pendingWrites > 0) return;
   if (isEditToolbarDock(value)) set(value);
 }
 
@@ -38,6 +48,8 @@ export function resetEditToolbarDockForTests(): void {
   current = "float";
   hydrated = false;
   reading = false;
+  writeSeq = 0;
+  pendingWrites = 0;
   listeners.clear();
 }
 
@@ -55,10 +67,16 @@ export function useEditToolbarDock(): {
   useEffect(() => {
     if (hydrated || reading) return;
     reading = true;
-    void dispatch("settings:read", {}).then((result) => {
-      reading = false;
-      if (result.ok && !hydrated) primeEditToolbarDock(result.value?.library?.editToolbarDock);
-    });
+    void dispatch("settings:read", {}).then(
+      (result) => {
+        reading = false;
+        if (result.ok && !hydrated) primeEditToolbarDock(result.value?.library?.editToolbarDock);
+      },
+      () => {
+        // Leave the next mount free to try again.
+        reading = false;
+      }
+    );
   }, []);
 
   useEffect(
@@ -71,10 +89,33 @@ export function useEditToolbarDock(): {
   );
 
   const setDock = useCallback((next: EditToolbarDock): void => {
-    // Local first, so the layout answers the click without a round trip;
-    // the broadcast that follows the write carries the same value.
+    // Already there: nothing to save, and nothing to broadcast to every
+    // window. (Before hydration `current` is only the default, so write.)
+    if (hydrated && next === current) return;
+    // Local first, so the layout answers the click without a round trip.
     set(next);
-    void dispatch("settings:write", { library: { editToolbarDock: next } });
+    const seq = ++writeSeq;
+    pendingWrites += 1;
+    const settle = (saved: unknown): void => {
+      pendingWrites -= 1;
+      // Only the newest write speaks for the setting; an older one that
+      // resolves late would put back a value the user has moved on from.
+      if (seq === writeSeq) primeEditToolbarDock(saved);
+    };
+    void dispatch("settings:write", { library: { editToolbarDock: next } }).then(
+      (result) => {
+        if (result.ok) {
+          settle(result.value?.library?.editToolbarDock);
+          return;
+        }
+        // Not saved: go back to what the file says.
+        settle(undefined);
+        void dispatch("settings:read", {}).then((read) => {
+          if (read.ok) primeEditToolbarDock(read.value?.library?.editToolbarDock);
+        });
+      },
+      () => settle(undefined)
+    );
   }, []);
 
   return { dock, setDock };

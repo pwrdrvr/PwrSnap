@@ -75,7 +75,7 @@ import { bagSlotForStyle } from "../editor/tool-bag";
 import { EditPropertyBar, type PropertyBarTarget } from "./EditPropertyBar";
 import { styledLayerStyle } from "./styled-layer-style";
 import { ToolBagSlots } from "./ToolBagSlots";
-import { DOCK_LABELS, EditToolbarDockMenu } from "./EditToolbarDockMenu";
+import { DOCK_ACTION_LABELS, EditToolbarDockMenu } from "./EditToolbarDockMenu";
 import { dockZoneAt, useEditToolbarDock, type DockEdge } from "./useEditToolbarDock";
 import { useHideDanglingSeparators } from "./useHideDanglingSeparators";
 import { dispatch } from "../../lib/pwrsnap";
@@ -169,6 +169,10 @@ const DRAG_MARGIN_PX = 8;
  *  press that stays inside it is a click (or the first half of the
  *  double-click that floats it back to its default spot). */
 const TEAR_OFF_PX = 24;
+
+/** How far a floating toolbar's grip must travel before the press counts
+ *  as a drag rather than a click. */
+const DRAG_SLOP_PX = 3;
 
 const DOCK_EDGES: readonly DockEdge[] = ["top", "bottom", "left", "right"];
 
@@ -576,6 +580,12 @@ export function EditToolbar({
     stageRect: DOMRect | null;
     /** Pressed on a docked toolbar that has not been pulled loose yet. */
     docked: boolean;
+    /** The pointer has travelled past DRAG_SLOP_PX: this is a drag. */
+    moved: boolean;
+    /** The drop zone the press landed in, and whether the pointer has left
+     *  it since. See `zoneFor`. */
+    startZone: DockEdge | null;
+    leftStartZone: boolean;
   } | null>(null);
   const toolbarRef = useRef<HTMLDivElement | null>(null);
   const toolRowRef = useRef<HTMLDivElement | null>(null);
@@ -594,21 +604,37 @@ export function EditToolbar({
     setHotZone(zone);
   }
 
+  /** The edge a release here would dock to. The zone the press started in
+   *  does not count until the pointer has left it once: the floating
+   *  toolbar's default spot is inside the bottom zone, and a nudge along
+   *  the bottom is a move, not a request to dock there. */
+  function zoneFor(
+    start: NonNullable<typeof dragStart.current>,
+    event: React.PointerEvent<HTMLButtonElement>
+  ): DockEdge | null {
+    const zone = dockZoneAt(event.clientX, event.clientY, start.stageRect);
+    if (zone !== start.startZone) start.leftStartZone = true;
+    return event.altKey || !start.leftStartZone ? null : zone;
+  }
+
   function onGripPointerDown(event: React.PointerEvent<HTMLButtonElement>): void {
     if (event.button !== 0) return;
     event.preventDefault();
     const toolbar = toolbarRef.current;
     if (toolbar === null) return;
     const rect = toolbar.getBoundingClientRect();
-    const stageEl = getStageEl();
+    const stageRect = getStageEl()?.getBoundingClientRect() ?? null;
     (event.target as HTMLElement).setPointerCapture(event.pointerId);
     dragStart.current = {
       pointerX: event.clientX,
       pointerY: event.clientY,
       anchorX: rect.left + rect.width / 2,
       anchorY: rect.bottom,
-      stageRect: stageEl?.getBoundingClientRect() ?? null,
-      docked: !floating
+      stageRect,
+      docked: !floating,
+      moved: false,
+      startZone: dockZoneAt(event.clientX, event.clientY, stageRect),
+      leftStartZone: false
     };
   }
   function onGripPointerMove(event: React.PointerEvent<HTMLButtonElement>): void {
@@ -621,6 +647,7 @@ export function EditToolbar({
       // Pulled loose: float it, centred under the pointer for this frame;
       // the layout effect then moves it so the grip is under the pointer.
       start.docked = false;
+      start.moved = true;
       pendingGripRef.current = { x: event.clientX, y: event.clientY };
       const sr = start.stageRect;
       setTornOff(true);
@@ -629,11 +656,17 @@ export function EditToolbar({
         x: event.clientX - (sr?.left ?? 0),
         y: event.clientY - (sr?.top ?? 0) + 24
       });
-      setHot(event.altKey ? null : dockZoneAt(event.clientX, event.clientY, sr));
+      setHot(zoneFor(start, event));
       return;
     }
+    // A press that wobbles a pixel or two is still a click (or half of the
+    // double-click that resets the toolbar): no zones, no move.
+    if (!start.moved) {
+      if (Math.hypot(dx, dy) < DRAG_SLOP_PX) return;
+      start.moved = true;
+    }
     setDragging(true);
-    setHot(event.altKey ? null : dockZoneAt(event.clientX, event.clientY, start.stageRect));
+    setHot(zoneFor(start, event));
     const toolbar = toolbarRef.current;
     if (toolbar === null) return;
     // Read the LIVE toolbar rect (not the drag-start snapshot) so the
@@ -707,9 +740,6 @@ export function EditToolbar({
     setPosition(null);
     setTornOff(false);
     if (dock !== "float") setDock("float");
-  }
-  function onGripDoubleClick(): void {
-    floatAtDefault();
   }
 
   // A docked toolbar just came loose: it has re-laid out as the floating
@@ -933,7 +963,7 @@ export function EditToolbar({
         onPointerMove={onGripPointerMove}
         onPointerUp={onGripPointerUp}
         onPointerCancel={onGripPointerCancel}
-        onDoubleClick={onGripDoubleClick}
+        onDoubleClick={floatAtDefault}
       >
         <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor" aria-hidden="true">
           <circle cx="2.5" cy="2.5" r="1.1" />
@@ -1094,7 +1124,7 @@ export function EditToolbar({
             data-testid={`edit-toolbar-dock-zone-${edge}`}
             aria-hidden="true"
           >
-            <span>{DOCK_LABELS[edge].replace("Docked", "Dock")}</span>
+            <span>{DOCK_ACTION_LABELS[edge]}</span>
           </div>
         ))}
       <div

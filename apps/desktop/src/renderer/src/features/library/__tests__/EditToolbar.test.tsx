@@ -1335,6 +1335,76 @@ describe("EditToolbar docking", () => {
     expect(lastSettingsWrite()).toEqual({ library: { editToolbarDock: "float" } });
   });
 
+  test("a press that starts in a zone does not dock there until the pointer has left it", async () => {
+    // The default floating spot is inside the bottom zone (bottom: 24px).
+    await render(createElement(StagedHarness));
+    stubStageRect();
+    await firePointer(grip(), "pointerdown", 600, 720);
+    // A wobble during a click is not a drag: no zones at all.
+    await firePointer(grip(), "pointermove", 601, 721);
+    expect(host?.querySelectorAll(".psl__dock-zone").length).toBe(0);
+    // A nudge along the bottom moves it but does not aim at the bottom.
+    await firePointer(grip(), "pointermove", 400, 722);
+    expect(host?.querySelectorAll(".psl__dock-zone").length).toBe(4);
+    expect(host?.querySelector(".psl__dock-zone.is-hot")).toBeNull();
+    await firePointer(grip(), "pointerup", 400, 722);
+    expect(dockEl().dataset["dock"]).toBe("float");
+    expect(lastSettingsWrite()).toBeUndefined();
+    // Out of the zone and back in: now it is a drop target.
+    await firePointer(grip(), "pointerdown", 400, 722);
+    await firePointer(grip(), "pointermove", 400, 400);
+    await firePointer(grip(), "pointermove", 400, 730);
+    expect(
+      host?.querySelector('[data-testid="edit-toolbar-dock-zone-bottom"]')?.classList.contains("is-hot")
+    ).toBe(true);
+    await firePointer(grip(), "pointerup", 400, 730);
+    expect(dockEl().dataset["dock"]).toBe("bottom");
+  });
+
+  test("choosing where it already is saves nothing", async () => {
+    primeEditToolbarDock("right");
+    await render(createElement(Harness));
+    await fireClick(host!.querySelector<HTMLElement>('[data-testid="edit-toolbar-dock-button"]')!);
+    await fireClick(host!.querySelector<HTMLElement>('[data-testid="edit-toolbar-dock-right"]')!);
+    expect(dockEl().dataset["dock"]).toBe("right");
+    expect(lastSettingsWrite()).toBeUndefined();
+  });
+
+  test("a stale snapshot that lands while the dock is saving does not move it back", async () => {
+    let finishWrite: ((value: unknown) => void) | null = null;
+    dispatchMock.mockImplementation(async (name: string) => {
+      if (name === "library:byId") return { ok: true, value: makeStubRecord() };
+      if (name === "layers:list") return { ok: true, value: [] };
+      if (name === "settings:write") {
+        return new Promise((resolve) => {
+          finishWrite = resolve;
+        });
+      }
+      return { ok: true, value: undefined };
+    });
+    await render(createElement(Harness));
+    const handler = subscribeMock.mock.calls
+      .filter(([channel]) => channel === EVENT_CHANNELS.settingsChanged)
+      .at(-1)?.[1];
+    await fireClick(host!.querySelector<HTMLElement>('[data-testid="edit-toolbar-dock-button"]')!);
+    await fireClick(host!.querySelector<HTMLElement>('[data-testid="edit-toolbar-dock-left"]')!);
+    expect(dockEl().dataset["dock"]).toBe("left");
+    // An earlier write's broadcast, from before this one landed.
+    await act(async () => {
+      handler!({ settings: { library: { editToolbarDock: "float" } }, secrets: {} });
+    });
+    expect(dockEl().dataset["dock"]).toBe("left");
+    await act(async () => {
+      finishWrite!({ ok: true, value: { library: { editToolbarDock: "left" } } });
+    });
+    expect(dockEl().dataset["dock"]).toBe("left");
+    // Once it has landed, broadcasts move it again.
+    await act(async () => {
+      handler!({ settings: { library: { editToolbarDock: "top" } }, secrets: {} });
+    });
+    expect(dockEl().dataset["dock"]).toBe("top");
+  });
+
   test("dockZoneAt: the pointer, within reach of an edge, nearest edge wins", () => {
     const stage = { left: 0, top: 0, right: 1000, bottom: 700 } as DOMRect;
     expect(dockZoneAt(500, 350, stage)).toBeNull();

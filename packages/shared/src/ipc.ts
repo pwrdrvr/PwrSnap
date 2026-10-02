@@ -150,6 +150,7 @@ export const EVENT_CHANNELS = {
    * Payload: `CodexCliCompatibilityAlert | null`.
    */
   codexCompatibilityAlertChanged: "events:codex:compatibility-alert-changed",
+  codexVersionAdvisoryChanged: "events:codex:version-advisory-changed",
   /**
    * Main → renderer navigation signal for the Settings window. Sent by
    * `settings:open` when the window is already focused and the caller
@@ -608,6 +609,7 @@ export type AiUsageUpdatedEvent = {
 };
 
 export type EventPayloads = {
+  [EVENT_CHANNELS.codexVersionAdvisoryChanged]: import("./protocol").DesktopCodexVersionAdvisory | null;
   [EVENT_CHANNELS.logEntry]: import("./protocol").AppLogEntry;
   [EVENT_CHANNELS.windowFrameState]: WindowFrameState;
   [EVENT_CHANNELS.trayWorkAreaChanged]: { widthDip: number; heightDip: number };

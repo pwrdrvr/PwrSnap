@@ -16,7 +16,7 @@
 /** URLs PwrSnap is allowed to open in the user's default browser. Keeps
  *  `shell.openExternal` from becoming an arbitrary-navigation gadget: a
  *  compromised/buggy renderer can only reach the product site, the docs
- *  site, and PwrDrvr's own GitHub org. https-only. GitHub is scoped to
+ *  site, PwrDrvr's own GitHub org, and the Codex release index. https-only. GitHub is scoped to
  *  the `/pwrdrvr/*` path so an attacker can't bounce the user to an
  *  arbitrary repo/gist/profile under the (trusted) github.com host. */
 export function isAllowedExternalUrl(raw: string): boolean {
@@ -30,6 +30,8 @@ export function isAllowedExternalUrl(raw: string): boolean {
   const host = url.hostname.toLowerCase();
   if (host === "pwrsnap.com" || host.endsWith(".pwrsnap.com")) return true;
   if (host === "github.com") {
+    // Codex upgrade help links to this one upstream release index only.
+    if (url.pathname === "/openai/codex/releases" && !url.search && !url.hash) return true;
     // `/pwrdrvr` (org page) or `/pwrdrvr/<repo>...`; reject `/pwrdrvrx`.
     return url.pathname === "/pwrdrvr" || url.pathname.startsWith("/pwrdrvr/");
   }

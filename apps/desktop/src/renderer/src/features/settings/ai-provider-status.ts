@@ -103,6 +103,14 @@ export function describeCodexStatus(
     return { ...base, badge: loading ? "Checking…" : "Unknown", meta: "Discovery has not reported yet" };
   }
   if (snapshot.resolvedPath === null) {
+    if (snapshot.versionAdvisory?.blocking) {
+      // Every installation is below the launch floor: nothing can run, so
+      // this is the same danger state the Library raises, not an advisory.
+      return {
+        ...base, tone: "bad", chip: "update", badge: "Update required",
+        meta: `v${snapshot.versionAdvisory.version} · ${snapshot.versionAdvisory.command}`
+      };
+    }
     return {
       ...base,
       tone: "bad",
@@ -115,11 +123,16 @@ export function describeCodexStatus(
   const meta = version !== null && version !== undefined
     ? `v${version} · ${snapshot.resolvedPath}`
     : snapshot.resolvedPath;
+  // A blocker outranks an advisory: an old-but-runnable Codex still works,
+  // a signed-out one does not.
   if (snapshot.auth?.status === "unauthenticated") {
     return { ...base, tone: "warn", chip: "sign in", badge: "Sign in", meta };
   }
   if (snapshot.auth?.status === "failed") {
     return { ...base, tone: "warn", chip: "check", badge: "Auth check failed", meta };
+  }
+  if (snapshot.versionAdvisory) {
+    return { ...base, tone: "warn", chip: "update", badge: "Update available", meta };
   }
   return { ...base, tone: "ok", badge: "Ready", meta };
 }

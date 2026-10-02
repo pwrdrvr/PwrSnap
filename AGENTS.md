@@ -313,7 +313,7 @@ not main's fixed direct inference request.
 TypeScript types for the protocol are consumed from the published
 **[`@pwrdrvr/codex-app-server-protocol`](https://www.npmjs.com/package/@pwrdrvr/codex-app-server-protocol)**
 package (pinned to an exact version in
-[apps/desktop/package.json](apps/desktop/package.json) — currently `0.144.0`).
+[apps/desktop/package.json](apps/desktop/package.json) — currently `0.159.2`).
 The package version tracks the Codex CLI release it was generated from, so the
 pinned number tells you which Codex protocol surface PwrSnap is built against.
 Import the v2 surface via `@pwrdrvr/codex-app-server-protocol/v2`.

@@ -13,6 +13,10 @@ import {
   DEFAULT_ENRICHMENT_REASONING_EFFORT,
   RejectTagRequestSchema,
   customEnrichmentConcurrency,
+  applyCodexModelVisibility,
+  codexEffortForModel,
+  hasObsoleteCodexDefaults,
+  resolveManagedCodexEnrichmentModel,
   resolveCustomModel,
   err,
   ok
@@ -106,6 +110,9 @@ export type CodexClientFactory = (
 ) => CaptureEnrichmentClient | Promise<CaptureEnrichmentClient>;
 export type SettingsReader = () => Promise<Settings>;
 export type SettingsWriter = (patch: SettingsPatch) => Promise<Settings>;
+type ModelDefaultsReconciler = (
+  models: readonly CodexModelOption[], catalog: { command: string; profile: string }
+) => Promise<Settings>;
 
 const activeRuns = new Map<string, AbortController>();
 const directEnrichmentQueue = new EnrichmentQueue();
@@ -331,10 +338,18 @@ function codexCommandForSettings(settings: Settings): string {
  *  PwrSnap's managed default. `codex.captionModel` is a read-compatibility
  *  field only; using it here would materialize an old product default as a
  *  permanent user pin. */
-function enrichmentModelForSettings(settings: Settings): string {
+function enrichmentModelForSettings(
+  settings: Settings,
+  managedModel: string = DEFAULT_CODEX_CAPTION_MODEL
+): string {
   const surfaceModel = settings.ai.defaults.enrichment.model;
   if (surfaceModel !== undefined && surfaceModel.length > 0) return surfaceModel;
-  return DEFAULT_CODEX_CAPTION_MODEL;
+  return managedModel;
+}
+
+/** One live Codex catalog: the installation + auth profile it was listed for. */
+function codexCatalogKey(settings: Settings): string {
+  return JSON.stringify([codexCommandForSettings(settings), settings.codex.profile]);
 }
 
 /** Enrich a usage detail with friendly model labels for the UI. `lookupLabel`
@@ -374,23 +389,35 @@ export function withUsageModelLabels(
  *  managed Codex fallback is meaningless there and a Codex id would be wrong.
  *  A disabled ACP selection falls back to PwrSnap's managed Codex default.
  *  Exported for testing. */
-export function enrichmentSelectedModel(settings: Settings, acpAgentId: string | undefined): string {
+export function enrichmentSelectedModel(
+  settings: Settings,
+  acpAgentId: string | undefined,
+  managedModel: string = DEFAULT_CODEX_CAPTION_MODEL
+): string {
   if (settings.ai.defaults.enrichment.provider?.startsWith("custom:")) {
     return settings.ai.customModels?.find((m) => `custom:${m.id}` === settings.ai.defaults.enrichment.provider)?.modelId ?? "";
   }
   if (acpAgentId !== undefined) return settings.ai.defaults.enrichment.model ?? "";
   if (settings.ai.defaults.enrichment.provider?.startsWith("acp:") === true) {
-    return DEFAULT_CODEX_CAPTION_MODEL;
+    return managedModel;
   }
-  return enrichmentModelForSettings(settings);
+  return enrichmentModelForSettings(settings, managedModel);
 }
 
 /** Resolve the enrichment reasoning effort from the per-surface AI
  *  default. Enrichment is high-volume + cost-sensitive, so the
  *  historical default is "low" — preserved when the user hasn't pinned
  *  a reasoning value. */
-function enrichmentEffortForSettings(settings: Settings): string {
-  return settings.ai.defaults.enrichment.reasoning ?? DEFAULT_ENRICHMENT_REASONING_EFFORT;
+function enrichmentEffortForSettings(
+  settings: Settings,
+  managedModel: CodexModelOption | undefined
+): string {
+  const { model, reasoning } = settings.ai.defaults.enrichment;
+  if (reasoning !== undefined) return reasoning;
+  // The managed model can be a successor that does not take "low".
+  return managedModel !== undefined && !model
+    ? codexEffortForModel(DEFAULT_ENRICHMENT_REASONING_EFFORT, managedModel)
+    : DEFAULT_ENRICHMENT_REASONING_EFFORT;
 }
 
 /** The ACP agent id to run enrichment on, when `ai.defaults.enrichment.provider`
@@ -491,6 +518,7 @@ export function registerCodexHandlers(params?: {
   modelLister?: CodexModelLister;
   settingsReader?: SettingsReader;
   settingsWriter?: SettingsWriter;
+  modelDefaultsReconciler?: ModelDefaultsReconciler;
   budget?: AiEnrichmentBudget;
   /** Override the per-turn enrichment timeout (ms). Defaults to
    *  `ENRICHMENT_TURN_TIMEOUT_MS`; tests pass a tiny value. */
@@ -519,6 +547,21 @@ export function registerCodexHandlers(params?: {
   const closeClientAfterRun = params?.clientFactory !== undefined;
   const settingsReader = params?.settingsReader ?? defaultSettingsReader;
   const settingsWriter = params?.settingsWriter ?? defaultSettingsWriter;
+  // Injected readers own an isolated settings state in tests; production
+  // reconciliation uses the serialized store and broadcasts committed changes.
+  const modelDefaultsReconciler: ModelDefaultsReconciler = params?.modelDefaultsReconciler ??
+    (params?.settingsReader !== undefined ? async () => settingsReader() : async (models, catalog) => {
+      const { reconcileCodexModelDefaults } = await import("./settings-handlers");
+      return reconcileCodexModelDefaults(models, catalog);
+    });
+  const refreshDefaultsBeforeEnrichment = params?.settingsReader === undefined ||
+    params?.modelDefaultsReconciler !== undefined;
+  // What each live catalog (command + profile) resolves PwrSnap's managed
+  // enrichment default to, recorded by every successful codex:models listing
+  // (null: it lists neither managed id). Enrichment lists a catalog at most
+  // once per process; after that the managed default is a lookup. The result
+  // is never written to settings, so a later default change still applies.
+  const managedEnrichmentByCatalog = new Map<string, CodexModelOption | null>();
   const budget = params?.budget ?? aiEnrichmentBudget;
   const turnTimeoutMs = params?.turnTimeoutMs ?? ENRICHMENT_TURN_TIMEOUT_MS;
 
@@ -559,6 +602,24 @@ export function registerCodexHandlers(params?: {
       return validationError("not_found", `capture not found: ${req.captureId}`);
     }
 
+    const enrichmentProvider = settings.ai.defaults.enrichment.provider;
+    if (refreshDefaultsBeforeEnrichment && (!enrichmentProvider || enrichmentProvider === "codex") &&
+        !managedEnrichmentByCatalog.has(codexCatalogKey(settings)) &&
+        (!settings.ai.defaults.enrichment.model || hasObsoleteCodexDefaults(settings, ["enrichment"]))) {
+      // Both the managed default and a superseded explicit model depend on
+      // the live catalog, and automatic enrichment can precede any model
+      // picker. List it once before taking the run's settings snapshot.
+      const catalog = await bus.dispatch("codex:models", {}, { principal: "ipc" });
+      if (!catalog.ok) log.warn("Codex enrichment catalog unavailable", { code: catalog.error.code });
+      settings = await settingsReader();
+      // A user can turn AI off while model discovery is in flight.
+      if (!settings.ai.enabled || settings.ai.consentAcceptedAt === null ||
+          settings.ai.budgetSafetyDisabledAt !== null) {
+        return validationError("ai_disabled", "AI enrichment is disabled");
+      }
+    }
+
+    const managedEnrichment = managedEnrichmentByCatalog.get(codexCatalogKey(settings)) ?? undefined;
     const codexCommand = codexCommandForSettings(settings);
     const budgetDecision = budget.consume(settings);
     broadcastAiBudgetUpdated(budgetDecision.after);
@@ -633,7 +694,7 @@ export function registerCodexHandlers(params?: {
       captureId: capture.id,
       codexCommand,
       triggerSource,
-      selectedModel: enrichmentSelectedModel(settings, enrichmentAgent),
+      selectedModel: enrichmentSelectedModel(settings, enrichmentAgent, managedEnrichment?.id),
       request: {
         media: {
           maxLongEdgePx: 1024,
@@ -678,7 +739,7 @@ export function registerCodexHandlers(params?: {
         run.selectedModel ?? (enrichmentAgent !== undefined ? "" : DEFAULT_CODEX_CAPTION_MODEL),
       ...(settings.ai.defaults.enrichment.provider?.startsWith("custom:") ? { selectedProvider: settings.ai.defaults.enrichment.provider } : {}),
       ...(customConnection && customModel ? { customConnection, customModel } : {}),
-      effort: enrichmentEffortForSettings(settings),
+      effort: enrichmentEffortForSettings(settings, managedEnrichment),
       // When enrichment is routed to an ACP agent (Gemini/Qwen), pass its id +
       // the settings snapshot so the run resolves + spawns that agent instead
       // of Codex. Undefined → the Codex one-shot path.
@@ -845,7 +906,7 @@ export function registerCodexHandlers(params?: {
     const env = codexEnvForProfile(settings.codex.profile);
     const codexHome = env["CODEX_HOME"] ?? null;
     const profile = settings.codex.profile.length > 0 ? settings.codex.profile : "(default)";
-    const selectedModel = enrichmentModelForSettings(settings);
+    let selectedModel = enrichmentModelForSettings(settings);
     log.info("codex:models listing", {
       command,
       codexHome,
@@ -879,6 +940,11 @@ export function registerCodexHandlers(params?: {
       // Persist id → displayName so the usage strip can show a Codex run's
       // friendly model name (the run record only stores the id).
       saveCodexModelLabels(models);
+      const managed = resolveManagedCodexEnrichmentModel(models);
+      managedEnrichmentByCatalog.set(codexCatalogKey(settings), managed ?? null);
+      const reconciled = await modelDefaultsReconciler(models, { command, profile: settings.codex.profile });
+      selectedModel = enrichmentModelForSettings(reconciled, managed?.id);
+      models = applyCodexModelVisibility(models, includeHidden);
       const modelIds = models.map((model) => model.id);
       const imageCapableModelIds = models
         .filter(

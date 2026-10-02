@@ -1,10 +1,11 @@
 import { ConnectionIndex } from "./ConnectionIndex";
 import { ConnectionPage } from "./ConnectionPage";
+import { CodexUpgradeStrip } from "../CodexUpgradeHelp";
 // The "Using" pill follows `snapshot.resolvedPath`, NOT
 // `settings.codex.mode` — same logic stdio-transport uses to spawn
 // Codex, so the renderer doesn't lie about which binary actually runs.
 
-import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import type {
   AcpAgentDiscovery,
   AcpAgentDiscoveryEntry,
@@ -500,6 +501,8 @@ export function CodexCandidates({
   loading,
   onPin
 }: CodexCandidatesProps): ReactElement {
+  // Upgrade help sits directly under the binary it is about.
+  const advisory = snapshot?.versionAdvisory;
   const [manualPath, setManualPath] = useState("");
   const [manualError, setManualError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -574,13 +577,13 @@ export function CodexCandidates({
             <span className="pss__opt-sub">
               {platform === "darwin" ? (
                 <>
-                  Install Codex Desktop or run <code>brew install codex</code>, then
+                  Install Codex Desktop or run <code>brew install --cask codex</code>, then
                   Refresh — or pin the binary&apos;s full path below.
                 </>
               ) : (
                 <>
-                  Install Codex Desktop or the Codex CLI, then Refresh — or pin
-                  the binary&apos;s full path below.
+                  Install the Codex CLI with <code>npm install -g @openai/codex@latest</code>,
+                  then Refresh — or pin the binary&apos;s full path below.
                 </>
               )}
             </span>
@@ -592,16 +595,26 @@ export function CodexCandidates({
   }
   return (
     <>
-      {snapshot.candidates.map((c) => (
-        <CandidateRow
-          key={c.path}
-          candidate={c}
-          using={c.path === snapshot.resolvedPath}
-          onPin={() => {
-            void persistPath(c.path, false);
-          }}
-        />
-      ))}
+      {snapshot.candidates.map((c) => {
+        const advised = advisory !== undefined && c.path === advisory.command;
+        return (
+          <Fragment key={c.path}>
+            <CandidateRow
+              candidate={c}
+              using={c.path === snapshot.resolvedPath}
+              outdated={advised ? (advisory.blocking ? "blocking" : "advisory") : null}
+              onPin={() => {
+                void persistPath(c.path, false);
+              }}
+            />
+            {advised ? <CodexUpgradeStrip key={JSON.stringify(advisory)} advisory={advisory} /> : null}
+          </Fragment>
+        );
+      })}
+      {/* An override path discovery did not list still gets its upgrade help. */}
+      {advisory !== undefined && !snapshot.candidates.some((c) => c.path === advisory.command) ? (
+        <CodexUpgradeStrip key={JSON.stringify(advisory)} advisory={advisory} />
+      ) : null}
       {manualControl}
     </>
   );
@@ -610,10 +623,13 @@ export function CodexCandidates({
 type CandidateRowProps = {
   candidate: DesktopCodexDiscoveryCandidate;
   using: boolean;
+  /** Below the model-catalog baseline; its upgrade strip follows the row.
+   *  "blocking" when no installation can run, matching the danger strip. */
+  outdated: "advisory" | "blocking" | null;
   onPin: () => void;
 };
 
-function CandidateRow({ candidate, using, onPin }: CandidateRowProps): ReactElement {
+function CandidateRow({ candidate, using, outdated, onPin }: CandidateRowProps): ReactElement {
   // The path gets its own full-width line (never squeezed by the badges, which
   // is what chopped `/Applications/Code…` before). Source/version/status drop
   // to a muted meta line below — the same shape as the ACP installed-agent card.
@@ -633,7 +649,7 @@ function CandidateRow({ candidate, using, onPin }: CandidateRowProps): ReactElem
               <span className="pss__cand-sep" aria-hidden="true">
                 ·
               </span>
-              <span>v{candidate.version}</span>
+              <span className={outdated !== null ? "pss__cand-outdated" : undefined}>v{candidate.version}</span>
             </>
           ) : null}
           <span className="pss__cand-sep" aria-hidden="true">
@@ -645,6 +661,9 @@ function CandidateRow({ candidate, using, onPin }: CandidateRowProps): ReactElem
         </span>
       </div>
       <div className="pss__cand-action">
+        {outdated !== null ? (
+          <span className={"pss__badge " + (outdated === "blocking" ? "is-danger" : "is-warn")}>Update</span>
+        ) : null}
         {using ? (
           <span className="pss__badge is-using">Using</span>
         ) : (

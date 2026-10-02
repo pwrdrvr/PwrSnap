@@ -10,11 +10,72 @@ import {
 
 import { defaultSettings, mergeSettings } from "../desktop-settings-service";
 import { DesktopSettingsStore } from "../desktop-settings-store";
+import type { CodexModelOption } from "@pwrsnap/shared";
 
 let workDir = "";
 
 beforeEach(() => {
   workDir = mkdtempSync(join(tmpdir(), "pwrsnap-settings-store-"));
+});
+
+const successorModels: CodexModelOption[] = ["gpt-6.1-sol", "gpt-6-luna"].map((id) => ({
+  id, model: id, displayName: id, description: "", hidden: false,
+  inputModalities: ["text", "image"], defaultServiceTier: null, isDefault: false
+}));
+
+describe("catalog-driven Codex default persistence", () => {
+  test("persists all three defaults and a repeated catalog writes nothing", async () => {
+    const filePath = join(workDir, "settings.json");
+    const store = new DesktopSettingsStore({ filePath });
+    await store.write({ ai: { defaults: {
+      libraryChat: { model: "gpt-5.6-terra", reasoning: "high" },
+      sizzleChat: { model: "gpt-6-sol" }, enrichment: { model: "gpt-5.6-luna" }
+    } } });
+    const catalog = { command: "codex", profile: "" };
+    const result = await store.reconcileCodexModelDefaults(successorModels, catalog);
+    expect(result.changed).toBe(true);
+    expect(result.settings.ai.defaults).toMatchObject({
+      libraryChat: { model: "gpt-6.1-sol", reasoning: "high" },
+      sizzleChat: { model: "gpt-6.1-sol" }, enrichment: { model: "gpt-6-luna" }
+    });
+    const publications = vi.fn();
+    store.subscribe(["ai"], publications);
+    const writes = store.readDiagnostics().settingsAtomicWrites;
+    expect((await store.reconcileCodexModelDefaults(successorModels, catalog)).changed).toBe(false);
+    expect(store.readDiagnostics().settingsAtomicWrites).toBe(writes);
+    expect(publications).not.toHaveBeenCalled();
+    expect((await new DesktopSettingsStore({ filePath }).read()).ai.defaults).toEqual(result.settings.ai.defaults);
+  });
+
+  test("unavailable replacements neither write nor materialize the managed default", async () => {
+    const store = new DesktopSettingsStore({ filePath: join(workDir, "settings.json") });
+    await store.write({ ai: { defaults: { libraryChat: { model: "gpt-6-sol" } } } });
+    const writes = store.readDiagnostics().settingsAtomicWrites;
+    const result = await store.reconcileCodexModelDefaults([], { command: "codex", profile: "" });
+    expect(result.changed).toBe(false);
+    expect(store.readDiagnostics().settingsAtomicWrites).toBe(writes);
+    expect(result.settings.ai.defaults.enrichment).toEqual({});
+  });
+
+  test("a queued user selection of GPT-6-Astra wins over a stale catalog snapshot", async () => {
+    const store = new DesktopSettingsStore({ filePath: join(workDir, "settings.json") });
+    await store.write({ ai: { defaults: { libraryChat: { model: "gpt-5.6-terra" } } } });
+    const selected = store.write({ ai: { defaults: {
+      libraryChat: { model: "gpt-6-astra", reasoning: "ultra" }
+    } } });
+    const migration = store.reconcileCodexModelDefaults(successorModels, { command: "codex", profile: "" });
+    await selected;
+    expect((await migration).settings.ai.defaults.libraryChat).toEqual({ model: "gpt-6-astra", reasoning: "ultra" });
+  });
+
+  test.each([{ command: "/old/codex", profile: "" }, { command: "codex", profile: "old" }])(
+    "discards a catalog from a previous installation or profile: %j", async (catalog) => {
+      const store = new DesktopSettingsStore({ filePath: join(workDir, "settings.json") });
+      await store.write({ ai: { defaults: { libraryChat: { model: "gpt-6-sol" } } } });
+      expect((await store.reconcileCodexModelDefaults(successorModels, catalog)).changed).toBe(false);
+      expect((await store.read()).ai.defaults.libraryChat.model).toBe("gpt-6-sol");
+    }
+  );
 });
 
 function rawCodexSnapshot(command: string) {
@@ -71,6 +132,110 @@ function rejectedAcpGroup(
 }
 
 describe("DesktopSettingsStore provider publications", () => {
+  test("an incompatible environment override keeps its upgrade advice ahead of pinned and automatic installations", async () => {
+    const override = "/fixture/overridden/codex";
+    const pinned = "/fixture/pinned/codex";
+    const settings = mergeSettings(defaultSettings(), {
+      codex: { mode: "pinned", pinnedPath: pinned }
+    });
+    const store = new DesktopSettingsStore({
+      filePath: join(workDir, "settings.json"),
+      readTextFile: async () => JSON.stringify(settings),
+      env: { PWRSNAP_CODEX_COMMAND: ` ${override} ` },
+      discoverCodex: async () => ({ candidates: [
+        { command: override, source: "env", executable: false, selected: false,
+          version: "0.141.0", failureReason: "codex_too_old" },
+        { command: pinned, source: "config", executable: false, selected: false,
+          version: "0.142.0", failureReason: "codex_too_old" },
+        { command: "codex", source: "path", executable: false, selected: false,
+          version: "0.143.0", failureReason: "codex_too_old" }
+      ] })
+    });
+    const snapshot = await store.getCodexDiscoverySnapshot();
+    expect(snapshot.resolvedPath).toBeNull();
+    expect(snapshot.versionAdvisory).toMatchObject({
+      command: override, version: "0.141.0", minimumVersion: "0.159.2", installer: "unknown"
+    });
+  });
+
+  test("an unlaunchable binary that is not too old gets advice, but not a blocking diagnosis", async () => {
+    const store = new DesktopSettingsStore({
+      filePath: join(workDir, "settings.json"),
+      readTextFile: async () => JSON.stringify(defaultSettings()),
+      env: { PWRSNAP_CODEX_COMMAND: "/fixture/quarantined/codex" },
+      discoverCodex: async () => ({ candidates: [
+        { command: "/fixture/quarantined/codex", source: "env", executable: false, selected: false,
+          version: "0.150.0", failureReason: "not_executable" }
+      ] })
+    });
+    const snapshot = await store.getCodexDiscoverySnapshot();
+    expect(snapshot.resolvedPath).toBeNull();
+    expect(snapshot.versionAdvisory).toMatchObject({ version: "0.150.0" });
+    expect(snapshot.versionAdvisory).not.toHaveProperty("blocking");
+  });
+
+  test("an unverified environment override does not borrow upgrade advice from an automatic installation", async () => {
+    const store = new DesktopSettingsStore({
+      filePath: join(workDir, "settings.json"),
+      readTextFile: async () => JSON.stringify(defaultSettings()),
+      env: { PWRSNAP_CODEX_COMMAND: "/fixture/missing/codex" },
+      discoverCodex: async () => ({ candidates: [
+        { command: "/fixture/missing/codex", source: "env", executable: false, selected: false },
+        { command: "codex", source: "path", executable: false, selected: false,
+          version: "0.143.0", failureReason: "codex_too_old" }
+      ] })
+    });
+    const snapshot = await store.getCodexDiscoverySnapshot();
+    expect(snapshot.versionAdvisory).toBeUndefined();
+  });
+
+  test("auto discovery still offers upgrade help when every verified CLI is below the launch floor", async () => {
+    const store = new DesktopSettingsStore({
+      filePath: join(workDir, "settings.json"),
+      readTextFile: async () => JSON.stringify(defaultSettings()),
+      env: {},
+      discoverCodex: async () => ({ candidates: [
+        { command: "codex", source: "path", executable: false, selected: false },
+        { command: "/Applications/Codex.app/Contents/Resources/codex", source: "application", executable: false, selected: false,
+          version: "0.143.0", failureReason: "codex_too_old" },
+        { command: "/opt/old/codex", source: "path", executable: false, selected: false,
+          version: "0.142.0", failureReason: "codex_too_old" }
+      ] })
+    });
+    const snapshot = await store.getCodexDiscoverySnapshot();
+    expect(snapshot.resolvedPath).toBeNull();
+    expect(snapshot.versionAdvisory).toMatchObject({ version: "0.143.0", installer: "application", blocking: true });
+  });
+  test("advises on the selected binary, ignores an old unused install, and clears after Refresh", async () => {
+    let selectedVersion = "0.159.1";
+    const discoverCodex = vi.fn(async () => ({
+      selectedCommand: "/opt/custom/codex",
+      selectedSource: "config" as const,
+      candidates: [
+        { command: "/Applications/Codex.app/Contents/Resources/codex", source: "application" as const,
+          executable: true, selected: false, version: "0.150.0" },
+        { command: "/opt/custom/codex", source: "config" as const,
+          executable: true, selected: true, version: selectedVersion }
+      ]
+    }));
+    const store = new DesktopSettingsStore({
+      filePath: join(workDir, "settings.json"),
+      readTextFile: async () => JSON.stringify(defaultSettings()),
+      discoverCodex,
+      probeCodexAuthentication: async () => ({ status: "authenticated", testedAt: "2026-10-01T00:00:00Z", durationMs: 1 })
+    });
+    const first = await store.getCodexDiscoverySnapshot();
+    expect(first.versionAdvisory).toMatchObject({ command: "/opt/custom/codex", version: "0.159.1", minimumVersion: "0.159.2" });
+    // A launchable binary is an advisory, not a blocker.
+    expect(first.versionAdvisory).not.toHaveProperty("blocking");
+    await store.getCodexDiscoverySnapshot();
+    expect(discoverCodex).toHaveBeenCalledTimes(1);
+    selectedVersion = "0.159.2";
+    const current = await store.refreshCodexDiscoveryForUserRequest();
+    expect(current.versionAdvisory).toBeUndefined();
+    expect(current.resolvedPath).toBe("/opt/custom/codex");
+    expect(discoverCodex).toHaveBeenCalledTimes(2);
+  });
   test("Codex UI, runtime, and concurrent readers share one discovery pass", async () => {
     const release = deferredSignal();
     const discoverCodex = vi.fn(async ({ configuredCommand } = {}) => {

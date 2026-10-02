@@ -677,3 +677,59 @@ body[data-stage="float-over"] .fo {
 .codex-compatibility-banner .app-update-banner__restart:hover:not(:disabled) {
   background: color-mix(in oklab, var(--danger) 88%, white);
 }
+
+/* An advisory on a Codex that still runs: the same card as its danger and
+   accent siblings, tinted warn. The fill is --warn-strong, not --warn, so
+   the light theme's white label clears AA. */
+.codex-version-banner {
+  border-color: var(--warn-border);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--warn) 14%, var(--bg-panel-elevated)),
+    color-mix(in srgb, var(--warn) 7%, var(--bg-panel-elevated))
+  );
+}
+
+.codex-version-banner .app-update-banner__eyebrow {
+  color: var(--warn-text);
+}
+
+.codex-version-banner .app-update-banner__restart {
+  background: var(--warn-strong);
+  border-color: var(--warn-strong);
+  color: var(--button-text-on-warn);
+}
+
+.codex-version-banner .app-update-banner__restart:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--warn-strong) 88%, white);
+}
+
+/* The upgrade command. One selectable mono line in a well, so it reads as a
+   command and not as the sentence above it. */
+.app-update-banner__command {
+  margin: 8px 0 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-app) 55%, transparent);
+  color: var(--text-primary);
+  font: 500 11.5px/1.4 var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.app-update-banner__command::before {
+  content: "$ ";
+  color: var(--text-muted);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* `.app-update-banner__notes` on a <button> (an in-app route, not a URL). */
+button.app-update-banner__notes {
+  appearance: none;
+  border: 0;
+  background: transparent;
+}

@@ -1821,8 +1821,19 @@ export class DesktopSettingsService {
     patch: SettingsPatch,
     options: DesktopSettingsWriteOptions = {}
   ): Promise<Settings> {
+    return this.writeComputed(() => patch, options);
+  }
+
+  /** Derive a conditional patch inside the same queue as user writes. An
+   *  omitted patch leaves both disk and the immutable snapshot untouched. */
+  async writeComputed(
+    computePatch: (current: Settings) => SettingsPatch | undefined,
+    options: DesktopSettingsWriteOptions = {}
+  ): Promise<Settings> {
     const task = async (): Promise<Settings> => {
       const current = await this.read();
+      const patch = computePatch(current);
+      if (patch === undefined) return current;
       const merged = mergeSettings(current, patch);
       // A disk round-trip used to re-run shape normalization after every
       // write. Preserve that invariant without the I/O: additive defaults and

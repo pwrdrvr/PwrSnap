@@ -33,6 +33,8 @@ afterEach(async () => {
 
 async function mountChips(params: {
   provider?: string;
+  model?: string;
+  reasoning?: string;
   providers?: string[];
   dispatchImpl: (name: string, req: unknown) => Promise<unknown>;
   onAvailabilityChange?: (availability: ChatBackendAvailability) => void;
@@ -45,8 +47,8 @@ async function mountChips(params: {
 
   const initialValue: ChatBackendChoice = {
     provider: params.provider ?? "codex",
-    model: null,
-    reasoning: "medium"
+    model: params.model ?? null,
+    reasoning: params.reasoning ?? "medium"
   };
   function Harness(): ReactElement {
     const [value, setValue] = useState<ChatBackendChoice>(initialValue);
@@ -80,6 +82,19 @@ async function mountWithModels(models: unknown[]): Promise<HTMLDivElement> {
 }
 
 describe("NewChatConfigChips", () => {
+  test.each([
+    ["gpt-5.6-terra", "gpt-6.1-sol"], ["gpt-6-sol", "gpt-6.1-sol"],
+    ["gpt-5.6-luna", "gpt-6-luna"], ["gpt-6-astra", "gpt-6-astra"]
+  ])("a new draft upgrades %s to %s after discovery", async (oldModel, target) => {
+    const models = ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra"].map((id) => ({
+      id, model: id, displayName: id, hidden: false, inputModalities: ["text", "image"],
+      supportedReasoningEfforts: ["low", "high"], defaultReasoningEffort: "high"
+    }));
+    const el = await mountChips({ model: oldModel, reasoning: "low",
+      dispatchImpl: async () => ({ ok: true, value: { models } }) });
+    expect(el.querySelector<HTMLSelectElement>('select[aria-label="New chat model"]')?.value).toBe(target);
+    expect(el.querySelector<HTMLSelectElement>('select[aria-label="New chat reasoning"]')?.value).toBe("low");
+  });
   test("Codex model picker falls back when live model list is empty", async () => {
     const el = await mountWithModels([]);
     const modelSelect = el.querySelector<HTMLSelectElement>(

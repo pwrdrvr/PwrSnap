@@ -18,6 +18,7 @@ import {
   type LocalAcpDiscoveryOptions
 } from "@pwrdrvr/agent-acp";
 import type {
+  CodexModelOption,
   CodexTestResult,
   DesktopCodexAuthProbe,
   DesktopCodexCandidateSource,
@@ -26,6 +27,7 @@ import type {
   Settings,
   SettingsPatch
 } from "@pwrsnap/shared";
+import { codexModelDefaultsPatch } from "@pwrsnap/shared";
 
 import { execAgentCommand } from "../ai/agent-command";
 import { resolveActiveAcpInstance } from "../ai/acp-instance-resolver";
@@ -49,6 +51,8 @@ import {
   type DesktopCodexDiscoverySnapshot as RawCodexDiscoverySnapshot,
   type ResolvedCodexCommandCandidate
 } from "./codex-discovery";
+import { buildCodexVersionAdvisory, publishCodexVersionAdvisory } from "./codex-version-advisory";
+import { PWRSNAP_CODEX_COMMAND_ENV } from "./env";
 
 const CODEX_TEST_TIMEOUT_MS = 7_500;
 const ERROR_MESSAGE_LIMIT = 240;
@@ -130,6 +134,9 @@ export interface DesktopSettingsStoreApi {
   getCurrentSnapshot(): Settings | null;
   getCurrentDomain<K extends DesktopSettingsDomain>(domain: K): Settings[K] | null;
   write(patch: SettingsPatch, options?: DesktopSettingsWriteOptions): Promise<Settings>;
+  reconcileCodexModelDefaults(
+    models: readonly CodexModelOption[], catalog: { command: string; profile: string }
+  ): Promise<{ settings: Settings; changed: boolean }>;
   adoptTrustedPeerSnapshot(settings: Settings): Settings;
   getCurrentCodexDiscoveryPublication(): DesktopCodexDiscoveryPublication | null;
   getCurrentAcpDiscoveryPublication(): DesktopAcpDiscoveryPublication | null;
@@ -222,6 +229,23 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
     const snapshot = this.persistence.adoptTrustedSnapshot(settings);
     this.observeSnapshot(snapshot, true);
     return snapshot;
+  }
+
+  async reconcileCodexModelDefaults(
+    models: readonly CodexModelOption[], catalog: { command: string; profile: string }
+  ): Promise<{ settings: Settings; changed: boolean }> {
+    let changed = false;
+    const settings = await this.persistence.writeComputed((current) => {
+      // A catalog requested before the user switches installations/profiles
+      // must not migrate defaults using the previous account's capabilities.
+      const command = configuredCodexCommand(current) ?? "codex";
+      if (command !== catalog.command || current.codex.profile !== catalog.profile) return undefined;
+      const patch = codexModelDefaultsPatch(current, models);
+      changed = patch !== undefined;
+      return patch;
+    });
+    this.observeSnapshot(this.persistence.getCurrentSnapshot() ?? settings, changed);
+    return { settings, changed };
   }
 
   /** Export the latest complete Codex publication without probing. Split-mode
@@ -655,9 +679,10 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
         available: candidate.executable
       })
     );
+    const envOverride = params.env[PWRSNAP_CODEX_COMMAND_ENV]?.trim();
     const resolved = selectResolvedCodexCommand(
       discovery,
-      params.configuredCommand ?? "codex"
+      envOverride || params.configuredCommand || "codex"
     );
     let resolvedPath: string | null = null;
     let auth: DesktopCodexAuthProbe | null = null;
@@ -669,10 +694,30 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
       resolvedPath = resolved.command;
       auth = await this.probeCodexAuthentication(resolved.command, params.env);
     }
+    // When every installation is below the launch floor, auto discovery has
+    // no selection. Still show upgrade help for the newest verified old CLI;
+    // a pin/override must keep its own diagnosis rather than another binary's.
+    const selected = discovery.candidates.find((candidate) => candidate.command === resolved.command && candidate.version !== undefined)
+      ?? (params.configuredCommand === undefined && !envOverride && resolvedPath === null
+        ? discovery.candidates
+            .filter((candidate) => candidate.failureReason === "codex_too_old" && candidate.version)
+            .sort((left, right) => compareCodexCliVersions(right.version!, left.version!))[0]
+        : undefined);
+    const versionAdvisory = selected
+      ? await buildCodexVersionAdvisory({
+          command: selected.command,
+          version: selected.version,
+          source: selected.source,
+          // Only "too old" makes an upgrade the fix. A binary that fails for
+          // another reason (permissions, quarantine) must not be told so.
+          blocking: resolvedPath === null && selected.failureReason === "codex_too_old"
+        })
+      : undefined;
     const snapshot = deepFreeze({
       candidates,
       resolvedPath,
       auth,
+      ...(versionAdvisory ? { versionAdvisory } : {}),
       refreshedAt: new Date(this.now()).toISOString()
     });
     if (
@@ -680,6 +725,7 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
       params.fingerprint
     ) {
       this.codexUiCache.set(params.fingerprint, snapshot);
+      publishCodexVersionAdvisory(versionAdvisory ?? null);
     }
     return snapshot;
   }
@@ -1007,8 +1053,8 @@ function codexNotFoundMessage(command: string): string {
   return (
     `Codex CLI not found: ${command}. Install the Codex CLI ` +
     (process.platform === "darwin"
-      ? `(Codex Desktop / ChatGPT Desktop or \`brew install codex\`), or pin its `
-      : `(Codex Desktop / ChatGPT Desktop or another supported CLI install), or pin its `) +
+      ? `(Codex Desktop / ChatGPT Desktop or \`brew install --cask codex\`), or pin its `
+      : `(\`npm install -g @openai/codex@latest\`), or pin its `) +
     `full path in Settings → AI Providers → Codex.`
   );
 }

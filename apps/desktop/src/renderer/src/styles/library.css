@@ -104,7 +104,9 @@
 .ps-app-tag.is-lg .ps-app-tag__tile { width: 26px; height: 26px; }
 .ps-app-tag.is-sm { height: 18px; font-size: 9px; padding-right: 6px; gap: 4px; }
 .ps-app-tag.is-sm .ps-app-tag__tile { width: 18px; height: 18px; }
-.ps-app-tag.is-sm .ps-app-tag__tile svg { width: 10px; height: 10px; }
+/* Glyphs only: an svg wearing `ps-app-icon-img` (the initials squircle,
+   the clipboard glyph) is an app icon and fills the tile like an <img>. */
+.ps-app-tag.is-sm .ps-app-tag__tile svg:not(.ps-app-icon-img) { width: 10px; height: 10px; }
 /* Real-bundle full-color icons (extracted from the installed .app
    via the pwrsnap-app-icon:// protocol). macOS app icons carry their
    own squircle + bezel — the copper-bordered tile chrome that frames

@@ -36,7 +36,6 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { nanoid } from "nanoid";
 import sharp from "sharp";
 
 import { BundleManifestV2, type BundleLayerNode, type CaptureRecord } from "@pwrsnap/shared";
@@ -159,7 +158,11 @@ async function prepareSource(
 
 function bundleStemFor(id: string): string {
   const safe = id.replace(/[^A-Za-z0-9._-]/g, "_");
-  return `e2e-seed-${safe.length > 0 ? safe : nanoid(16)}`;
+  if (safe === id) return `e2e-seed-${id}`;
+  // Sanitizing can map two ids to one name; a hash of the raw id keeps
+  // their bundles apart.
+  const tag = createHash("sha256").update(id).digest("hex").slice(0, 8);
+  return `e2e-seed-${safe}-${tag}`;
 }
 
 type PlannedRow = { row: InsertCapture; layers: BundleLayerNode[] | null };

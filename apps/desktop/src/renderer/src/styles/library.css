@@ -5233,6 +5233,12 @@
   text-transform: uppercase;
   white-space: nowrap;
 }
+/* Side labels sit at the top of their strip: the stage's ←/→ buttons
+   are at mid-height and would cover them. */
+.psl__dock-zone:is(.is-left, .is-right) {
+  align-items: flex-start;
+  padding-top: 16px;
+}
 .psl__dock-zone:is(.is-left, .is-right) > span {
   writing-mode: vertical-rl;
 }
@@ -5401,7 +5407,17 @@
 .psl__et-dockmenu-spacer {
   width: 16px;
 }
+/* The reset row carries its shortcut as a second line under the label;
+   beside it, the pair is wider than the menu. */
+.psl__et-dockmenu-row:has(> .psl__et-dockmenu-meta) {
+  grid-template-columns: 12px 16px 1fr;
+  row-gap: 4px;
+  height: auto;
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
 .psl__et-dockmenu-meta {
+  grid-column: 3;
   color: var(--text-muted);
   font: 500 10.5px/1 var(--font-mono);
 }

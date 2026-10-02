@@ -233,22 +233,25 @@ interruption — but an agent must get explicit approval before taking your scre
 
 The focused Playwright visual-regression suite uses lossless WebP references
 stored in Git LFS under `apps/desktop/e2e/*.spec.ts-snapshots/`. Screenshot
-rendering varies across operating systems, so Linux/x64 and macOS/arm64 use
+rendering varies across operating systems, so Linux and macOS/arm64 use
 separate reviewed baseline environments. The self-hosted macOS VM is the
 active visual CI lane while Linux visual coverage is temporarily excluded until
 its worker teardown is stabilized; Windows continues to run behavioral E2E
 coverage.
 
-To update a Linux-focused baseline, use the Docker runner with the same
-architecture as GitHub Actions. `--update-snapshots` requires `--test` and
-safely copies only generated baseline directories back to the source worktree.
-Run it from the repository root, and pass the flags straight through — an
-inserted `--` reaches `run-docker.sh` as an argument and it exits 2 with
-`unknown arg: --`:
+To update a Linux-focused baseline, use the Docker runner on your host's
+native architecture. The Linux goldens do not depend on CPU architecture: on
+2026-10-02 a native linux/arm64 run on Apple Silicon matched the
+linux/amd64-generated `library-grid-linux.webp` at the suite's default
+comparison, with no pixel allowance. Emulating amd64 on an Apple Silicon host
+works too, but it is many times slower and buys nothing here.
+`--update-snapshots` requires `--test` and safely copies only generated
+baseline directories back to the source worktree. Run it from the repository
+root, and pass the flags straight through — an inserted `--` reaches
+`run-docker.sh` as an argument and it exits 2 with `unknown arg: --`:
 
 ```bash
-pnpm test:desktop-e2e:docker --platform linux/amd64 \
-  --test 'visual regression' --update-snapshots
+pnpm test:desktop-e2e:docker --test 'visual regression' --update-snapshots
 ```
 
 A failed run copies nothing back, so it has to be repeated — but read the

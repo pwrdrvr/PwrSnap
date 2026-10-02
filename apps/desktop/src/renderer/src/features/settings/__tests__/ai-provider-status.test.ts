@@ -56,7 +56,11 @@ describe("AI provider sub ids", () => {
       command: "/opt/homebrew/bin/codex", version: "0.148.0", minimumVersion: "0.159.2", installer: "unknown"
     } });
     expect(describeCodexStatus(snapshot, false)).toMatchObject({ tone: "warn", chip: "update", badge: "Update available" });
-    expect(describeCodexStatus({ ...snapshot, resolvedPath: null }, false)).toMatchObject({ tone: "bad", chip: "update", badge: "Update required" });
+    expect(describeCodexStatus({
+      ...snapshot, resolvedPath: null, versionAdvisory: { ...snapshot.versionAdvisory!, blocking: true }
+    }, false)).toMatchObject({ tone: "bad", chip: "update", badge: "Update required" });
+    // Unresolved for a reason other than age: not an upgrade problem.
+    expect(describeCodexStatus({ ...snapshot, resolvedPath: null }, false)).toMatchObject({ badge: "Not found" });
     expect(describeCodexStatus(codexSnapshot(), false)).toMatchObject({ tone: "ok", badge: "Ready" });
   });
   test("a sign-in or auth failure outranks the version advisory", () => {

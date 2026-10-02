@@ -2,6 +2,7 @@ import {
   AI_SURFACE_IDS,
   DEFAULT_CODEX_CAPTION_MODEL,
   DEFAULT_ENRICHMENT_REASONING_EFFORT,
+  type AiSurfaceId,
   type CodexModelOption,
   type Settings,
   type SettingsPatch
@@ -31,8 +32,11 @@ export function upgradedCodexModelId(model: string, availableIds: readonly strin
   return target !== undefined && availableIds.includes(target) ? target : model;
 }
 
-export function hasObsoleteCodexDefaults(settings: Settings): boolean {
-  return AI_SURFACE_IDS.some((surface) => {
+export function hasObsoleteCodexDefaults(
+  settings: Settings,
+  surfaces: readonly AiSurfaceId[] = AI_SURFACE_IDS
+): boolean {
+  return surfaces.some((surface) => {
     const value = settings.ai.defaults[surface];
     return (!value.provider || value.provider === "codex") && replacementId(
       value.model || (surface === "enrichment" ? DEFAULT_CODEX_CAPTION_MODEL : "")

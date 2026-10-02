@@ -22,6 +22,7 @@ import {
 } from "electron";
 import {
   EVENT_CHANNELS,
+  hasObsoleteCodexDefaults,
   revealInFileManagerLabel,
   shortcutPlatformFromString
 } from "@pwrsnap/shared";
@@ -2158,9 +2159,10 @@ export function bootstrapApp(): void {
             }
             if (result.ok && result.value.resolvedPath !== null) {
               const settings = await bus.dispatch("settings:read", {}, { principal: "ipc" });
+              // List the catalog only when a saved Codex default can migrate;
+              // an up-to-date install pays nothing at boot.
               if (settings.ok && settings.value.ai.enabled &&
-                  Object.values(settings.value.ai.defaults).some((value) =>
-                    !value.provider || value.provider === "codex")) {
+                  hasObsoleteCodexDefaults(settings.value)) {
                 await bus.dispatch("codex:models", {}, { principal: "ipc" });
               }
             }

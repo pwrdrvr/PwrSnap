@@ -158,6 +158,22 @@ describe("DesktopSettingsStore provider publications", () => {
     });
   });
 
+  test("an unlaunchable binary that is not too old gets advice, but not a blocking diagnosis", async () => {
+    const store = new DesktopSettingsStore({
+      filePath: join(workDir, "settings.json"),
+      readTextFile: async () => JSON.stringify(defaultSettings()),
+      env: { PWRSNAP_CODEX_COMMAND: "/fixture/quarantined/codex" },
+      discoverCodex: async () => ({ candidates: [
+        { command: "/fixture/quarantined/codex", source: "env", executable: false, selected: false,
+          version: "0.150.0", failureReason: "not_executable" }
+      ] })
+    });
+    const snapshot = await store.getCodexDiscoverySnapshot();
+    expect(snapshot.resolvedPath).toBeNull();
+    expect(snapshot.versionAdvisory).toMatchObject({ version: "0.150.0" });
+    expect(snapshot.versionAdvisory).not.toHaveProperty("blocking");
+  });
+
   test("an unverified environment override does not borrow upgrade advice from an automatic installation", async () => {
     const store = new DesktopSettingsStore({
       filePath: join(workDir, "settings.json"),

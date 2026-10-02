@@ -157,8 +157,10 @@ function CodexBannerCard({ alert, advisory, openError, onOpenSettings, onDismiss
   return (
     <aside
       className={`app-update-banner ${required ? "codex-compatibility-banner" : "codex-version-banner"}`}
-      role="alert"
-      aria-live="assertive"
+      // Only a Codex that cannot run interrupts a screen reader; an optional
+      // update is announced politely, like the other informational toasts.
+      role={required ? "alert" : "status"}
+      aria-live={required ? "assertive" : "polite"}
     >
       <div className="app-update-banner__content">
         <p className="app-update-banner__eyebrow">

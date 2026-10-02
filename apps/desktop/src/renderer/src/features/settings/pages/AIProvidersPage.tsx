@@ -602,7 +602,7 @@ export function CodexCandidates({
             <CandidateRow
               candidate={c}
               using={c.path === snapshot.resolvedPath}
-              outdated={advised}
+              outdated={advised ? (advisory.blocking ? "blocking" : "advisory") : null}
               onPin={() => {
                 void persistPath(c.path, false);
               }}
@@ -623,8 +623,9 @@ export function CodexCandidates({
 type CandidateRowProps = {
   candidate: DesktopCodexDiscoveryCandidate;
   using: boolean;
-  /** Below the model-catalog baseline; its upgrade strip follows the row. */
-  outdated: boolean;
+  /** Below the model-catalog baseline; its upgrade strip follows the row.
+   *  "blocking" when no installation can run, matching the danger strip. */
+  outdated: "advisory" | "blocking" | null;
   onPin: () => void;
 };
 
@@ -648,7 +649,7 @@ function CandidateRow({ candidate, using, outdated, onPin }: CandidateRowProps):
               <span className="pss__cand-sep" aria-hidden="true">
                 ·
               </span>
-              <span className={outdated ? "pss__cand-outdated" : undefined}>v{candidate.version}</span>
+              <span className={outdated !== null ? "pss__cand-outdated" : undefined}>v{candidate.version}</span>
             </>
           ) : null}
           <span className="pss__cand-sep" aria-hidden="true">
@@ -660,7 +661,9 @@ function CandidateRow({ candidate, using, outdated, onPin }: CandidateRowProps):
         </span>
       </div>
       <div className="pss__cand-action">
-        {outdated ? <span className="pss__badge is-warn">Update</span> : null}
+        {outdated !== null ? (
+          <span className={"pss__badge " + (outdated === "blocking" ? "is-danger" : "is-warn")}>Update</span>
+        ) : null}
         {using ? (
           <span className="pss__badge is-using">Using</span>
         ) : (

@@ -534,6 +534,10 @@ export function registerCodexHandlers(params?: {
     });
   const refreshDefaultsBeforeEnrichment = params?.settingsReader === undefined ||
     params?.modelDefaultsReconciler !== undefined;
+  // Catalogs (command + profile) already listed for a pre-enrichment
+  // migration. A catalog without the replacement leaves the default obsolete
+  // forever, so without this every capture would pay for a model listing.
+  const enrichmentMigrationCatalogs = new Set<string>();
   const budget = params?.budget ?? aiEnrichmentBudget;
   const turnTimeoutMs = params?.turnTimeoutMs ?? ENRICHMENT_TURN_TIMEOUT_MS;
 
@@ -574,13 +578,14 @@ export function registerCodexHandlers(params?: {
       return validationError("not_found", `capture not found: ${req.captureId}`);
     }
 
-    const enrichmentProvider = settings.ai.defaults.enrichment.provider;
-    if (refreshDefaultsBeforeEnrichment && (!enrichmentProvider || enrichmentProvider === "codex") &&
-        hasObsoleteCodexDefaults(settings)) {
+    const migrationCatalog = JSON.stringify([codexCommandForSettings(settings), settings.codex.profile]);
+    if (refreshDefaultsBeforeEnrichment && !enrichmentMigrationCatalogs.has(migrationCatalog) &&
+        hasObsoleteCodexDefaults(settings, ["enrichment"])) {
       // Automatic capture enrichment can precede the first model picker. Use
       // the same live catalog policy before taking the run's settings snapshot.
       const catalog = await bus.dispatch("codex:models", {}, { principal: "ipc" });
-      if (!catalog.ok) log.warn("Codex default migration catalog unavailable", { code: catalog.error.code });
+      if (catalog.ok) enrichmentMigrationCatalogs.add(migrationCatalog);
+      else log.warn("Codex default migration catalog unavailable", { code: catalog.error.code });
       settings = await settingsReader();
       // A user can turn AI off while model discovery is in flight.
       if (!settings.ai.enabled || settings.ai.consentAcceptedAt === null ||

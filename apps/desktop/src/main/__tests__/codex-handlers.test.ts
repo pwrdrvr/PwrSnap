@@ -845,6 +845,26 @@ describe("Codex handlers", () => {
     expect(fakeClient.lastRequest).toMatchObject({ model: "gpt-6-luna", effort: "low" });
   });
 
+  test("a catalog without the replacement is listed once, not before every enrichment", async () => {
+    const store = new DesktopSettingsStore({ filePath: join(tempRoot, "settings.json") });
+    await store.write({ ai: { enabled: true, consentAcceptedAt: "2026-10-01T00:00:00Z" } });
+    const fakeClient = new FakeCodexClient();
+    // No gpt-6-luna: the managed gpt-5.6-luna default stays obsolete.
+    const modelLister = vi.fn(async () => [{ ...fakeCodexModels()[0]!, id: "gpt-5.6-luna", model: "gpt-5.6-luna" }]);
+    registerCodexHandlers({ settingsReader: () => store.read(), clientFactory: () => fakeClient as never,
+      modelLister, modelDefaultsReconciler: async (models, catalog) =>
+        (await store.reconcileCodexModelDefaults(models, catalog)).settings });
+    for (let run = 0; run < 2; run += 1) {
+      const started = await bus.dispatch("codex:enrich", { captureId: "cap_1" },
+        { principal: "ipc", cancellationKey: "cap_1" });
+      expect(started.ok).toBe(true);
+      if (!started.ok) return;
+      await waitFor(() => getAiRun(started.value.runId)?.status === "completed");
+    }
+    expect(modelLister).toHaveBeenCalledTimes(1);
+    expect(fakeClient.lastRequest).toMatchObject({ model: "gpt-5.6-luna" });
+  });
+
   test("codex:models joins concurrent identical listings", async () => {
     const models = deferred<CodexModelOption[]>();
     const modelLister = vi.fn(() => models.promise);

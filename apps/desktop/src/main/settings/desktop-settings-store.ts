@@ -238,8 +238,7 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
     const settings = await this.persistence.writeComputed((current) => {
       // A catalog requested before the user switches installations/profiles
       // must not migrate defaults using the previous account's capabilities.
-      const command = current.codex.mode === "pinned" && current.codex.pinnedPath !== ""
-        ? current.codex.pinnedPath : "codex";
+      const command = configuredCodexCommand(current) ?? "codex";
       if (command !== catalog.command || current.codex.profile !== catalog.profile) return undefined;
       const patch = codexModelDefaultsPatch(current, models);
       changed = patch !== undefined;
@@ -709,7 +708,9 @@ export class DesktopSettingsStore implements DesktopSettingsStoreApi {
           command: selected.command,
           version: selected.version,
           source: selected.source,
-          blocking: resolvedPath === null
+          // Only "too old" makes an upgrade the fix. A binary that fails for
+          // another reason (permissions, quarantine) must not be told so.
+          blocking: resolvedPath === null && selected.failureReason === "codex_too_old"
         })
       : undefined;
     const snapshot = deepFreeze({

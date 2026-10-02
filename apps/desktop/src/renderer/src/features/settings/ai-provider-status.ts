@@ -103,7 +103,7 @@ export function describeCodexStatus(
     return { ...base, badge: loading ? "Checking…" : "Unknown", meta: "Discovery has not reported yet" };
   }
   if (snapshot.resolvedPath === null) {
-    if (snapshot.versionAdvisory) {
+    if (snapshot.versionAdvisory?.blocking) {
       // Every installation is below the launch floor: nothing can run, so
       // this is the same danger state the Library raises, not an advisory.
       return {

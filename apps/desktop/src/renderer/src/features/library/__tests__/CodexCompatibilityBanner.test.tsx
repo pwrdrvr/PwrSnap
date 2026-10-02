@@ -121,7 +121,10 @@ describe("CodexCompatibilityBanner", () => {
     expect(copy?.textContent).toBe("Copied");
     expect(copy?.getAttribute("aria-label")).toBe("Copied Codex update command");
     expect(container!.querySelector("aside")!.childElementCount).toBe(before);
-    expect(container?.querySelector("[role=status]")).toBeNull();
+    expect(container!.querySelector("aside")!.querySelector("[role=status]")).toBeNull();
+    // An optional update is announced politely; only a blocker interrupts.
+    expect(container!.querySelector("aside")!.getAttribute("role")).toBe("status");
+    expect(container!.querySelector("aside")!.getAttribute("aria-live")).toBe("polite");
     const dismiss = container!.querySelector<HTMLButtonElement>(".app-update-banner__dismiss");
     await act(async () => dismiss?.click());
     await act(async () => {
@@ -173,6 +176,7 @@ describe("CodexCompatibilityBanner", () => {
     expect(container?.querySelector(".codex-compatibility-banner")).not.toBeNull();
     expect(container?.querySelector(".codex-version-banner")).toBeNull();
     expect(container?.querySelector(".app-update-banner__eyebrow")?.textContent).toBe("Codex update required");
+    expect(container?.querySelector("aside")?.getAttribute("role")).toBe("alert");
     expect(container?.querySelector(".app-update-banner__message")?.textContent).toBe(
       "Codex 0.159.1 is too old to run. Run this, then restart PwrSnap:"
     );

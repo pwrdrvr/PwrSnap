@@ -256,7 +256,7 @@ test("active source-app filter refetches after capture stats change", async () =
         const inputs: SeedInput[] = [];
         for (let i = 0; i < payload.headPageSize; i++) {
           inputs.push({
-            id: `source-filter-refresh-recent-${i.toString().padStart(3, "0")}`,
+            id: `source-filter-rf-recent-${i.toString().padStart(3, "0")}`,
             kind: "image",
             captured_at: new Date(now - i * 1000).toISOString(),
             source_app_bundle_id: payload.primaryBundleId,
@@ -266,11 +266,11 @@ test("active source-app filter refetches after capture stats change", async () =
             height_px: 600,
             device_pixel_ratio: 1,
             byte_size: 70,
-            sha256: `source-filter-refresh-recent-${i.toString().padStart(3, "0")}`
+            sha256: `source-filter-rf-recent-${i.toString().padStart(3, "0")}`
           });
         }
         for (let i = 0; i < payload.targetCount; i++) {
-          const id = `source-filter-refresh-${payload.seedPrefix}-${i.toString().padStart(3, "0")}`;
+          const id = `source-filter-rf-${payload.seedPrefix}-${i.toString().padStart(3, "0")}`;
           inputs.push({
             id,
             kind: "image",
@@ -306,7 +306,7 @@ test("active source-app filter refetches after capture stats change", async () =
     await waitForAppStat(app, filterCase.bundleId, filterCase.count);
     await clickSourceFilterButton(window, filterCase);
 
-    const targetId = "source-filter-refresh-telegram-000";
+    const targetId = "source-filter-rf-telegram-000";
     await expect.poll(() => countGridCells(window, targetId), { timeout: 10_000 }).toBe(1);
 
     await app.electronApp.evaluate(
@@ -335,7 +335,7 @@ test("active source-app filter refetches after capture stats change", async () =
         };
         const bridge = (globalThis as unknown as { __PWRSNAP_TEST__: Bridge }).__PWRSNAP_TEST__;
         await bridge.seedCapture({
-          id: "source-filter-refresh-telegram-new",
+          id: "source-filter-rf-telegram-new",
           kind: "image",
           captured_at: new Date(Date.now() + 1000).toISOString(),
           source_app_bundle_id: payload.targetBundleId,
@@ -345,7 +345,7 @@ test("active source-app filter refetches after capture stats change", async () =
           height_px: 600,
           device_pixel_ratio: 1,
           byte_size: 70,
-          sha256: "source-filter-refresh-telegram-new"
+          sha256: "source-filter-rf-telegram-new"
         });
       },
       {
@@ -359,7 +359,7 @@ test("active source-app filter refetches after capture stats change", async () =
 
     await waitForAppStat(app, filterCase.bundleId, filterCase.count + 1);
     await expect
-      .poll(() => countGridCells(window, "source-filter-refresh-telegram-new"), { timeout: 10_000 })
+      .poll(() => countGridCells(window, "source-filter-rf-telegram-new"), { timeout: 10_000 })
       .toBe(1);
     await expect.poll(() => countGridCells(window, targetId), { timeout: 10_000 }).toBe(1);
   } finally {
@@ -403,7 +403,7 @@ test("top-level filters do not appear as empty source-app rows after leaving Unk
         };
         const bridge = (globalThis as unknown as { __PWRSNAP_TEST__: Bridge }).__PWRSNAP_TEST__;
         await bridge.seedCapture({
-          id: "source-filter-unknown-null-bundle",
+          id: "source-filter-unknown-null",
           kind: "image",
           captured_at: new Date().toISOString(),
           source_app_bundle_id: null,
@@ -413,7 +413,7 @@ test("top-level filters do not appear as empty source-app rows after leaving Unk
           height_px: 600,
           device_pixel_ratio: 1,
           byte_size: 70,
-          sha256: "source-filter-unknown-null-bundle"
+          sha256: "source-filter-unknown-null"
         });
       },
       { imagePath }
@@ -430,12 +430,12 @@ test("top-level filters do not appear as empty source-app rows after leaving Unk
     await expect(unknownSourceButton).toHaveCount(1, { timeout: 10_000 });
 
     await unknownSourceButton.first().click();
-    await expect(window.locator(".psl__cell[data-cell-id='source-filter-unknown-null-bundle']")).toHaveCount(1, {
+    await expect(window.locator(".psl__cell[data-cell-id='source-filter-unknown-null']")).toHaveCount(1, {
       timeout: 10_000
     });
 
     // Double-click opens Focus (single-click selects in the grid-first model).
-    await window.locator(".psl__cell[data-cell-id='source-filter-unknown-null-bundle']").dblclick();
+    await window.locator(".psl__cell[data-cell-id='source-filter-unknown-null']").dblclick();
     await expect(window.locator(".psl")).toHaveAttribute("data-mode", "focus", {
       timeout: 10_000
     });

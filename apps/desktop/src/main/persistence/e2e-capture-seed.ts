@@ -39,7 +39,7 @@ import { dirname, join } from "node:path";
 import { nanoid } from "nanoid";
 import sharp from "sharp";
 
-import type { BundleLayerNode, CaptureRecord } from "@pwrsnap/shared";
+import { BundleManifestV2, type BundleLayerNode, type CaptureRecord } from "@pwrsnap/shared";
 
 import { getMainLogger } from "../log";
 import {
@@ -165,6 +165,14 @@ function bundleStemFor(id: string): string {
 type PlannedRow = { row: InsertCapture; layers: BundleLayerNode[] | null };
 
 async function planImageRow(row: InsertCapture, outputDir: string): Promise<PlannedRow> {
+  // The bundle manifest bounds capture_id; the captures table does not.
+  // Name the limit here rather than surfacing a bare ZodError from the pack.
+  if (!BundleManifestV2.shape.capture_id.safeParse(row.id).success) {
+    throw new Error(
+      `seedCapture: image capture id "${row.id}" (${row.id.length} chars) does not fit ` +
+        "the v2 bundle manifest's capture_id (8–32 chars); use a shorter fixture id"
+    );
+  }
   const widthPx = Math.max(1, Math.round(row.width_px));
   const heightPx = Math.max(1, Math.round(row.height_px));
   const fixture = await readFixture(row.legacy_src_path);

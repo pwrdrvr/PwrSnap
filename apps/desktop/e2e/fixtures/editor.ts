@@ -55,7 +55,9 @@ export async function seedImageCapture(
   const pngBytes = Buffer.from(pngHex, "hex");
   await writeFile(pngPath, pngBytes);
 
-  const captureId = `${idPrefix}-${Date.now().toString(36)}-${Math.random()
+  // The v2 bundle manifest caps capture_id at 32 chars and the suffix
+  // takes 16, so the prefix (a debugging label) is cut to fit.
+  const captureId = `${idPrefix.slice(0, 16)}-${Date.now().toString(36)}-${Math.random()
     .toString(36)
     .slice(2, 8)}`;
   await app.electronApp.evaluate(

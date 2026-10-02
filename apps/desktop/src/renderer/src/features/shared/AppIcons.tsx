@@ -191,7 +191,10 @@ function ClipboardGlyph({ size }: { size: number }): ReactElement {
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
-      style={{ display: "block", color: "var(--text-secondary)" }}
+      // `--ps-app-glyph-fg` lets a container that draws it straight over a
+      // capture (the collapsed grid-cell chip) re-tint it; `--text-secondary`
+      // is dark in the light theme.
+      style={{ display: "block", color: "var(--ps-app-glyph-fg, var(--text-secondary))" }}
     >
       {/* Clipboard body */}
       <rect x="6" y="4" width="12" height="17" rx="2" />

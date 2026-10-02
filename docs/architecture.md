@@ -200,9 +200,10 @@ Completions, and Anthropic Messages. Main makes these requests itself; no
 agent, external proxy, or subprocess is required. Legacy text `/completions`
 is a different protocol and is not supported.
 
-Codex model choices come from the selected installation's live catalog. When
-GPT-6-Sol or GPT-6.1-Sol is advertised, normal pickers hide GPT-5.5 and the
-GPT-5.6 family. Saved Codex defaults move to advertised replacements:
+Codex model choices come from the selected installation's live catalog.
+Normal pickers hide GPT-5.5 and the GPT-5.6 family, each model only when its
+own replacement is advertised, so a saved default never disappears without
+being migrated. Saved Codex defaults move to advertised replacements:
 GPT-5.5, GPT-5.6 (except Luna), and GPT-6-Sol move to GPT-6.1-Sol;
 GPT-5.6-Luna moves to GPT-6-Luna. Discovery reconciles these defaults inside
 the serialized settings store, including before automatic Codex enrichment.

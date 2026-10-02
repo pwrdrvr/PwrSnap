@@ -44,19 +44,21 @@ export function hasObsoleteCodexDefaults(
   });
 }
 
-/** Respect includeHidden while hiding superseded families from normal pickers. */
+/** Respect includeHidden while hiding superseded models from normal pickers.
+ *  A superseded model is hidden only when its own replacement is listed, so a
+ *  saved default never disappears without the migration that replaces it. */
 export function applyCodexModelVisibility(
   models: readonly CodexModelOption[],
   includeHidden = false
 ): CodexModelOption[] {
   const available = usableModels(models);
   const ids = available.map((model) => model.id);
-  const hasSol = ids.includes("gpt-6-sol") || ids.includes("gpt-6.1-sol");
   const oldDefault = models.find((model) => model.isDefault);
   const replacementDefault = oldDefault === undefined
     ? undefined : upgradedCodexModelId(oldDefault.id, ids);
   return models.map((model) => {
-    const hidden = model.hidden || (hasSol && isSupersededModel(model.id));
+    const hidden = model.hidden ||
+      (isSupersededModel(model.id) && upgradedCodexModelId(model.id, ids) !== model.id);
     return { ...model, hidden, isDefault: replacementDefault === model.id && !hidden };
   }).filter((model) => includeHidden || !model.hidden);
 }

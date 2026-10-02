@@ -13,14 +13,35 @@ const oldModels = ["gpt-5.5", "gpt-5.6", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5
 const newModels = ["gpt-6-sol", "gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra"];
 
 describe("Codex live catalog policy", () => {
-  test.each(["gpt-6-sol", "gpt-6.1-sol"])("%s hides both superseded families", (sol) => {
-    const models = [...oldModels, sol, "gpt-6-astra", "gpt-6-luna"].map((id) => model(id));
+  test("hides both superseded families when both replacements are listed", () => {
+    const models = [...oldModels, "gpt-6.1-sol", "gpt-6-astra", "gpt-6-luna"].map((id) => model(id));
     expect(applyCodexModelVisibility(models).map((value) => value.id)).toEqual([
-      sol, "gpt-6-astra", "gpt-6-luna"
+      "gpt-6.1-sol", "gpt-6-astra", "gpt-6-luna"
     ]);
     expect(applyCodexModelVisibility(models, true).filter((value) => value.hidden)
       .map((value) => value.id)).toEqual(oldModels);
     expect(models.every((value) => !value.hidden)).toBe(true);
+  });
+
+  test("hides a superseded model only when its own replacement is listed", () => {
+    // GPT-6-Sol alone replaces nothing: GPT-5.5 / GPT-5.6 move to GPT-6.1-Sol.
+    const solOnly = [...oldModels, "gpt-6-sol", "gpt-6-luna"].map((id) => model(id));
+    expect(applyCodexModelVisibility(solOnly).map((value) => value.id)).toEqual([
+      "gpt-5.5", "gpt-5.6", "gpt-5.6-terra", "gpt-5.6-astra", "gpt-6-sol", "gpt-6-luna"
+    ]);
+    // GPT-6.1-Sol without GPT-6-Luna leaves GPT-5.6-Luna visible.
+    const noLuna = [...oldModels, "gpt-6.1-sol"].map((id) => model(id));
+    expect(applyCodexModelVisibility(noLuna).map((value) => value.id)).toEqual([
+      "gpt-5.6-luna", "gpt-6.1-sol"
+    ]);
+  });
+
+  test("a superseded CLI default without a listed replacement keeps its default flag", () => {
+    const models = [model("gpt-5.6-luna", { isDefault: true }), model("gpt-6-sol")];
+    expect(applyCodexModelVisibility(models)).toEqual([
+      expect.objectContaining({ id: "gpt-5.6-luna", isDefault: true }),
+      expect.objectContaining({ id: "gpt-6-sol", isDefault: false })
+    ]);
   });
 
   test("unavailable or hidden Sol does not hide older models", () => {

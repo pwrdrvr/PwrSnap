@@ -69,6 +69,7 @@ import { VideoExportPresetGrid } from "../shared/VideoExportPresetGrid";
 import { exportRangeLabel, exportSegmentsOf } from "../shared/video-range";
 import { AppTag } from "../shared/AppIcons";
 import { DeleteConfirm } from "../shared/DeleteConfirm";
+import { PsIcon } from "../shared/PsIcon";
 import {
   RightActivityBar,
   type RightActivityTab
@@ -1088,17 +1089,7 @@ export function DetailRail({
                   else void dispatch("library:restore", { id: record.id });
                 }}
               >
-                <svg
-                  width="11"
-                  height="11"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                >
-                  <path d="M3 12a9 9 0 1 0 3-6.7" />
-                  <path d="M3 4v5h5" />
-                </svg>
+                <PsIcon name="restore" size={13} line={1.2} />
                 Restore
               </button>
               <button
@@ -1117,16 +1108,7 @@ export function DetailRail({
                   void dispatch("library:purge", { id: record.id });
                 }}
               >
-                <svg
-                  width="11"
-                  height="11"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                >
-                  <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
-                </svg>
+                <PsIcon name="purge" size={13} line={1.2} />
                 Delete
               </button>
             </>
@@ -1155,8 +1137,8 @@ export function DetailRail({
                 }}
               >
                 <svg
-                  width="11"
-                  height="11"
+                  width="13"
+                  height="13"
                   viewBox="0 0 24 24"
                   fill="none"
                   stroke="currentColor"
@@ -1183,8 +1165,8 @@ export function DetailRail({
                   }}
                 >
                   <svg
-                    width="11"
-                    height="11"
+                    width="13"
+                    height="13"
                     viewBox="0 0 24 24"
                     fill="none"
                     stroke="currentColor"
@@ -1216,16 +1198,7 @@ export function DetailRail({
                     data-tip="Move to Trash"
                     {...trigger}
                   >
-                    <svg
-                      width="11"
-                      height="11"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                    >
-                      <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
-                    </svg>
+                    <PsIcon name="trash" size={13} line={1.2} />
                   </button>
                 )}
               </DeleteConfirm>

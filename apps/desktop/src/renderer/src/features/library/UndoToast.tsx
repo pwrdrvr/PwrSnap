@@ -12,6 +12,7 @@
 // fresh countdown without any reset plumbing here.
 
 import { useEffect, useRef, useState, type ReactElement } from "react";
+import { PsIcon } from "../shared/PsIcon";
 import "./UndoToast.css";
 
 export type UndoToastProps = {
@@ -83,18 +84,7 @@ export function UndoToast({
           style={{ transform: `scaleX(${progress})` }}
         />
       </div>
-      <svg
-        className="ps-undo-toast__icon"
-        width="13"
-        height="13"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        aria-hidden="true"
-      >
-        <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
-      </svg>
+      <PsIcon className="ps-undo-toast__icon" name="trash" size={14} line={1.2} />
       <span className="ps-undo-toast__msg">{message}</span>
       <button
         type="button"

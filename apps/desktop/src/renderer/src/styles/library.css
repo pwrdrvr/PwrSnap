@@ -1335,18 +1335,15 @@
   width: 18px; height: 18px;
   display: inline-flex; align-items: center; justify-content: center;
   flex-shrink: 0;
-  color: var(--accent);
-  border-radius: 4px;
-  border: 1px solid var(--accent-border);
-  background: var(--bg-panel-elevated);
+  color: var(--text-secondary);
 }
-.psl__nav-icon svg { width: 11px; height: 11px; }
-/* Real-bundle icons in the Source App sidebar list — drop tile chrome
-   so the macOS squircle stands on its own (see .ps-app-tag__tile note). */
-.psl__nav-icon:has(> .ps-app-icon-img) {
-  border-color: transparent;
-  background: transparent;
-}
+/* Bare 16px glyphs, no tile: the Source App rows below are app icons
+   with no ring, so a framed tile on every scope row made the column
+   two different controls. Accent is reserved for the row that is
+   selected (and the CTA). Glyphs come from PsIcon, whose stroke is
+   sized for 16px — do not shrink them here with a CSS width. */
+.psl__nav-icon > svg { display: block; }
+.psl__nav.is-active .psl__nav-icon { color: var(--accent-bright); }
 .psl__nav-icon > .ps-app-icon-img {
   width: 16px;
   height: 16px;
@@ -1588,7 +1585,7 @@
 .psl__frame-trash {
   position: absolute; top: 2px; right: 2px;
   display: flex; align-items: center; justify-content: center;
-  width: 16px; height: 16px;
+  width: 18px; height: 18px;
   border-radius: 3px;
   background: color-mix(in srgb, var(--bg-app) 78%, transparent);
   border: 1px solid var(--border-subtle);

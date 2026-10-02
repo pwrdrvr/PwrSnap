@@ -107,14 +107,34 @@ export function initialsFor(name: string | undefined, fallback: string): string 
 }
 
 function ProceduralIcon({ size, label }: { size: number; label: string }): ReactElement {
-  // Glyph rendered in `currentColor` so it inherits the copper accent
-  // from `.ps-app-tag__tile` (and the dot color in `.psl__app-dot`).
-  // viewBox is 0 0 24 24 to match the extracted-icon render box;
-  // intrinsic size comes from `width`/`height` attrs, not font-size
-  // units.
+  // A stand-in APP ICON, not a glyph in a frame: a filled squircle with
+  // the initials, carrying its own colors and sized exactly like an
+  // extracted icon. It wears `ps-app-icon-img`, so every container
+  // (`.psl__nav-icon`, `.ps-app-tag__tile`, `.psl__frame-app`) drops its
+  // tile chrome for it the same way it does for a real icon. It used to
+  // be bare initials inside the container's copper-bordered tile — the
+  // only ringed icon in a Source App list of ringless app icons.
+  // viewBox is 0 0 24 24; intrinsic size comes from `width`/`height`
+  // attrs, not font-size units.
+  const renderSize = Math.min(22, Math.max(size + 5, 14));
   const fontSize = label.length >= 2 ? 11 : 14;
   return (
-    <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden="true">
+    <svg
+      className="ps-app-icon-img"
+      viewBox="0 0 24 24"
+      width={renderSize}
+      height={renderSize}
+      aria-hidden="true"
+      style={{ display: "block" }}
+    >
+      <rect
+        x="1"
+        y="1"
+        width="22"
+        height="22"
+        rx="5.5"
+        style={{ fill: "color-mix(in srgb, var(--accent) 20%, var(--bg-panel-elevated))" }}
+      />
       <text
         x="12"
         y="12"
@@ -124,7 +144,7 @@ function ProceduralIcon({ size, label }: { size: number; label: string }): React
         fontWeight={700}
         fontSize={fontSize}
         letterSpacing="-0.02em"
-        fill="currentColor"
+        style={{ fill: "var(--accent-bright)" }}
       >
         {label}
       </text>
@@ -236,12 +256,11 @@ export function AppIcon({
   }
 
   if (isResolvableAppIdentifier(bundleId) && !imageFailed) {
-    // Real bundle icons get a small density bump over the procedural
-    // initials glyph size — macOS app icons carry their own rounded
-    // shape and bezel, so 11px in an 18px tile feels lost. The CSS rule below
-    // (`.psl__nav-icon:has(> .ps-app-icon-img)`) also drops the
-    // copper tile chrome so the icon stands on its own. Cap at 22 to
-    // keep AppTag's tight 18×18 tile happy when this is invoked at
+    // App icons render a little larger than `size` — macOS app icons
+    // carry their own rounded shape and bezel, so 11px in an 18px tile
+    // feels lost. The procedural initials squircle uses the same
+    // formula so the two are interchangeable in every list. Cap at 22
+    // to keep AppTag's tight 18×18 tile happy when this is invoked at
     // size=10.
     const renderSize = Math.min(22, Math.max(size + 5, 14));
     return (

@@ -53,6 +53,7 @@ import {
   appIdentifierDisplayLabel
 } from "../shared/AppIcons";
 import { DeleteConfirm } from "../shared/DeleteConfirm";
+import { PsIcon } from "../shared/PsIcon";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import type { CopyPreset } from "../shared/CopyButton";
 import { useEditorToolState } from "../editor/useEditorToolState";
@@ -4702,12 +4703,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
           onClick={() => applyFilterAction({ type: "SET_SCOPE", scope: "all" })}
         >
           <span className="psl__nav-icon">
-            <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <rect x="3" y="3" width="7" height="7" />
-              <rect x="14" y="3" width="7" height="7" />
-              <rect x="3" y="14" width="7" height="7" />
-              <rect x="14" y="14" width="7" height="7" />
-            </svg>
+            <PsIcon name="all" size={16} />
           </span>
           <span className="psl__nav-label">All Captures</span>
           <span className="psl__nav-count">{totalItems}</span>
@@ -4718,10 +4714,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
           onClick={() => applyFilterAction({ type: "SET_SCOPE", scope: "today" })}
         >
           <span className="psl__nav-icon">
-            <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <circle cx="12" cy="12" r="9" />
-              <path d="M12 7v5l3 2" />
-            </svg>
+            <PsIcon name="today" size={16} />
           </span>
           <span className="psl__nav-label">Today</span>
           <span className="psl__nav-count">{todayCount}</span>
@@ -4732,10 +4725,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
           onClick={() => applyFilterAction({ type: "SET_SCOPE", scope: "trash" })}
         >
           <span className="psl__nav-icon">
-            <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <path d="M5 4l1 16h12l1-16" />
-              <path d="M9 4V2h6v2" />
-            </svg>
+            <PsIcon name="trash" size={16} />
           </span>
           <span className="psl__nav-label">Trash</span>
           <span className="psl__nav-count">{trashTotal}</span>
@@ -4747,33 +4737,17 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
             {
               key: "images" as const,
               label: "Images",
-              icon: (
-                <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
-                  <rect x="3" y="5" width="18" height="14" rx="2" />
-                  <circle cx="9" cy="11" r="1.4" fill="currentColor" />
-                  <path d="m21 17-5-5-7 7" />
-                </svg>
-              )
+              icon: <PsIcon name="images" size={16} />
             },
             {
               key: "videos" as const,
               label: "Videos",
-              icon: (
-                <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
-                  <rect x="3" y="6" width="14" height="12" rx="1.5" />
-                  <path d="m17 10 4-2v8l-4-2z" fill="currentColor" />
-                </svg>
-              )
+              icon: <PsIcon name="videos" size={16} />
             },
             {
               key: "projects" as const,
               label: "Projects",
-              icon: (
-                <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
-                  <rect x="3" y="6" width="14" height="12" rx="2" />
-                  <path d="m17 10 4-2v8l-4-2z" fill="currentColor" />
-                </svg>
-              )
+              icon: <PsIcon name="projects" size={16} />
             }
           ] as const
         ).map(({ key, label, icon }) => {
@@ -4893,17 +4867,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
           aria-label="Create a new Sizzle Reel"
         >
           <span className="psl__nav-icon">
-            <svg
-              viewBox="0 0 24 24"
-              width="11"
-              height="11"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-            >
-              <path d="M12 5v14M5 12h14" />
-            </svg>
+            <PsIcon name="plus" size={16} />
           </span>
           <span className="psl__nav-label">New Sizzle Reel</span>
         </button>
@@ -5380,10 +5344,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                                           aria-label="Restore from Trash"
                                           onClick={(e) => restoreCaptureAction(c.id, e)}
                                         >
-                                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                            <path d="M3 12a9 9 0 1 0 3-6.7" />
-                                            <path d="M3 4v5h5" />
-                                          </svg>
+                                          <PsIcon name="restore" size={12} line={1.2} />
                                         </span>
                                         <span
                                           role="button"
@@ -5393,9 +5354,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                                           aria-label="Delete permanently"
                                           onClick={(e) => purgeCaptureAction(c.id, e)}
                                         >
-                                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                            <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
-                                          </svg>
+                                          <PsIcon name="purge" size={12} line={1.2} />
                                         </span>
                                       </span>
                                     ) : (
@@ -5416,9 +5375,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                                             aria-label="Move to Trash"
                                             {...trigger}
                                           >
-                                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                              <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
-                                            </svg>
+                                            <PsIcon name="trash" size={12} line={1.2} />
                                           </span>
                                         )}
                                       </DeleteConfirm>
@@ -6894,10 +6851,7 @@ function CellRow({
                         aria-label="Restore from Trash"
                         onClick={(e) => restoreCaptureAction(c.id, e)}
                       >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <path d="M3 12a9 9 0 1 0 3-6.7" />
-                          <path d="M3 4v5h5" />
-                        </svg>
+                        <PsIcon name="restore" size={16} line={1.5} />
                       </button>
                       <button
                         type="button"
@@ -6906,9 +6860,7 @@ function CellRow({
                         aria-label="Delete permanently"
                         onClick={(e) => purgeCaptureAction(c.id, e)}
                       >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
-                        </svg>
+                        <PsIcon name="purge" size={16} line={1.5} />
                       </button>
                     </>
                   ) : (
@@ -6928,9 +6880,7 @@ function CellRow({
                           aria-label="Move to Trash"
                           {...trigger}
                         >
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
-                          </svg>
+                          <PsIcon name="trash" size={16} line={1.5} />
                         </button>
                       )}
                     </DeleteConfirm>

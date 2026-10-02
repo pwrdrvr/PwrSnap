@@ -12,13 +12,17 @@
 // Two departures from a real capture, both deliberate:
 //   - No `persistAndBroadcast`, which would enqueue AI enrichment for
 //     every synthetic row.
-//   - `durable: false`, which drops the bundle write's two fsyncs. They
-//     were most of a seeded row's cost, and the rows are synthetic and
-//     wiped on every run.
+//   - No fsyncs (`durable: false`) when the data root is overridden,
+//     which is the only place the seeder runs. They were most of a
+//     seeded row's cost, and that tree is wiped on every run. The verb
+//     is registered in every dev build, so it checks the root itself
+//     rather than trusting its caller: against the real library it
+//     writes durably like any capture.
 
 import type { CaptureRecord, Req } from "@pwrsnap/shared";
 
 import { persistCaptureFromTempV2 } from "../persistence/bundle-store";
+import { isOverriddenDataRoot } from "../persistence/paths";
 
 export async function ingestSyntheticCapture(
   req: Req<"capture:ingest">
@@ -28,7 +32,7 @@ export async function ingestSyntheticCapture(
     capturedAt: req.capturedAt,
     sourceApp: { bundleId: req.sourceAppBundleId, appName: req.sourceAppName },
     devicePixelRatio: req.devicePixelRatio ?? 2,
-    durable: false
+    durable: !isOverriddenDataRoot()
   });
   return record;
 }

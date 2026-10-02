@@ -152,6 +152,6 @@ describe("a seeded capture", () => {
     const end = source.indexOf("bus.register(", start + 1);
     const block = source.slice(start, end === -1 ? undefined : end);
     expect(block).toContain("ingestSyntheticCapture(req)");
-    expect(block).not.toMatch(/insertCapture|putCaptureSource/);
+    expect(block).not.toMatch(/insertCapture\(/);
   });
 });

@@ -28,8 +28,10 @@ const CHANNELS = 3;
  * - **One encode.** The previous generator ran three sharp pipelines a
  *   row (block, background, composite).
  *
- * `compressionLevel: 0` writes uncompressed PNG — fastest for synthetic
- * content where size doesn't matter.
+ * Default compression, not `compressionLevel: 0`: two flat colors
+ * deflate to ~200 bytes against ~12 KB stored, at the same encode time,
+ * and a v2 capture keeps its source twice (in the bundle and as the
+ * render cache's source.png).
  */
 export async function composeSyntheticPng(
   row: Pick<PlannedRow, "index" | "bundleId">
@@ -37,7 +39,7 @@ export async function composeSyntheticPng(
   return sharp(composeSyntheticPixels(row), {
     raw: { width: SYNTHETIC_PNG_SIZE_PX, height: SYNTHETIC_PNG_SIZE_PX, channels: CHANNELS }
   })
-    .png({ compressionLevel: 0 })
+    .png()
     .toBuffer();
 }
 

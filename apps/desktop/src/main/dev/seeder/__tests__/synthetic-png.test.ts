@@ -24,6 +24,9 @@ describe("composeSyntheticPng", () => {
     expect(meta.height).toBe(SYNTHETIC_PNG_SIZE_PX);
     expect(meta.channels).toBe(3);
     expect(meta.hasAlpha).toBe(false);
+    // Compressed: a v2 capture stores its source twice, and an
+    // uncompressed one is ~12 KB a row.
+    expect(png.length).toBeLessThan(1024);
   });
 
   test("paints the row index into the top-left block and the hue elsewhere", async () => {

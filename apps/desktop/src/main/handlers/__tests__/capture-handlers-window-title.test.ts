@@ -143,8 +143,7 @@ vi.mock("../../persistence/captures-repo", () => ({
 }));
 
 vi.mock("../../persistence/source-store", () => ({
-  ensureEffectiveSrcPath: async () => "",
-  putCaptureSource: async () => ({})
+  ensureEffectiveSrcPath: async () => ""
 }));
 
 vi.mock("../../persistence/bundle-store", () => ({

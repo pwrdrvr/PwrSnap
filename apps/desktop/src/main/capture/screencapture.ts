@@ -278,9 +278,9 @@ export async function captureDisplayBitmap(
 
 /**
  * Result of a region capture attempt. Caller awaits `tempPath` and
- * passes it into `source-store.putCaptureSource`. On success, the
- * file at `tempPath` is owned by the caller — they should rename or
- * delete it.
+ * passes it into `persistCaptureFromTempV2` (bundle-store.ts). On
+ * success, the file at `tempPath` is owned by the caller — they should
+ * rename or delete it.
  */
 export type CaptureRegionResult =
   | { ok: true; tempPath: string; displayId: number }

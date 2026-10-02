@@ -93,7 +93,6 @@ const THUMB_RENDER_WIDTH = 400;
 
 type ThumbRenderJob = {
   captureId: string;
-  srcPath: string;
   widthPx: number;
   heightPx: number;
 };
@@ -102,10 +101,11 @@ async function renderOneThumb(job: ThumbRenderJob): Promise<void> {
   // renderViaCoordinator walks the capture's v2 layer tree (the only
   // bundle format) and writes the cache file itself. It reads the
   // bundle from the DB record, so the srcPath / dims passed here are
-  // ignored — they're kept only to satisfy the RenderRequest shape.
+  // ignored — they're kept only to satisfy the RenderRequest shape. A
+  // seeded capture is a v2 bundle and has no source path at all.
   await renderViaCoordinator({
     captureId: job.captureId,
-    srcPath: job.srcPath,
+    srcPath: "",
     imageWidthPx: job.widthPx,
     imageHeightPx: job.heightPx,
     width: THUMB_RENDER_WIDTH,
@@ -546,9 +546,6 @@ export async function runProfile(name: ProfileName, options: RunOptions = {}): P
     // bounding memory regardless of profile size).
     await thumbQueue.enqueue({
       captureId: result.value.record.id,
-      // `capture:ingest` writes a v2 bundle, so there is no source path
-      // to pass; the coordinator reads the bundle from the record.
-      srcPath: "",
       widthPx: result.value.record.width_px,
       heightPx: result.value.record.height_px
     });

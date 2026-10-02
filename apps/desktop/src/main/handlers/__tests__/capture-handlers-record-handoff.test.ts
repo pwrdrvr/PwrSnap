@@ -164,8 +164,7 @@ vi.mock("../../persistence/captures-repo", () => ({
   insertCapture: () => ({})
 }));
 vi.mock("../../persistence/source-store", () => ({
-  ensureEffectiveSrcPath: async () => "",
-  putCaptureSource: async () => ({})
+  ensureEffectiveSrcPath: async () => ""
 }));
 vi.mock("../../persistence/bundle-store", () => ({
   persistCaptureFromTempV2: async () => ({})

@@ -240,6 +240,13 @@ const DRAW_MODES: ReadonlyArray<{
   }
 ];
 
+/** A Draw mode's name and one-line hint, for a tooltip outside the bar
+ *  (the toolbar's Draw button names the mode it would draw with). */
+export function drawModeHint(mode: DrawToolMode): { label: string; hint: string } {
+  const opt = DRAW_MODES.find((m) => m.id === mode) ?? DRAW_MODES[0]!;
+  return { label: opt.label, hint: opt.hint };
+}
+
 const TEXT_WEIGHTS: ReadonlyArray<{ id: TextFontWeight; label: string }> = [
   { id: "regular", label: "Regular" },
   { id: "bold", label: "Bold" }

@@ -68,7 +68,8 @@ import {
   isStyledTool,
   type UseEditorToolStateReturn
 } from "../editor/useEditorToolState";
-import type { StyledToolKind } from "../editor/ToolStylePopover";
+import { drawModeHint, type StyledToolKind } from "../editor/ToolStylePopover";
+import { drawModeTipProps } from "../editor/draw-mode-preview";
 import { useCaptureModel } from "../editor/useCaptureModel";
 import { bagSlotForStyle } from "../editor/tool-bag";
 import { EditPropertyBar, type PropertyBarTarget } from "./EditPropertyBar";
@@ -674,6 +675,15 @@ export function EditToolbar({
     toolState.setActiveTool(t, { singleShot: event.altKey });
   };
 
+  // The Draw button's tooltip paints what picking Draw would draw: the
+  // working Draw style's mode, color and weight (the same picture as the
+  // mode buttons in the bar), and names the mode under it.
+  const drawStyle = toolState.toolStyles.draw;
+  const drawButtonTip = useMemo<Record<string, string>>(() => {
+    const { label, hint } = drawModeHint(drawStyle.mode);
+    return { "data-tip-detail": `${label}: ${hint}`, ...drawModeTipProps(drawStyle.mode, drawStyle) };
+  }, [drawStyle]);
+
   // ---- Property bar target ------------------------------------------
   //
   // A single selected styled layer wins: that is what an edit would
@@ -852,6 +862,7 @@ export function EditToolbar({
                 !(toolState.armedSlot !== null && isStyledTool(t.id))
               }
               onClick={(e) => handleToolClick(t.id, e)}
+              tipProps={t.id === "draw" ? drawButtonTip : undefined}
             />
           </Fragment>
         ))}
@@ -968,11 +979,14 @@ export function EditToolbar({
 function ToolButton({
   tool,
   active,
-  onClick
+  onClick,
+  tipProps
 }: {
   tool: { id: Tool; label: string; key: string; icon: ReactElement };
   active: boolean;
   onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  /** Extra tooltip attributes: a detail line, a picture. */
+  tipProps?: Record<string, string> | undefined;
 }): ReactElement {
   return (
     <button
@@ -984,6 +998,7 @@ function ToolButton({
       onClick={onClick}
       data-tip={tool.label}
       data-tip-keys={tool.key}
+      {...tipProps}
       data-tool={tool.id}
     >
       {tool.icon}

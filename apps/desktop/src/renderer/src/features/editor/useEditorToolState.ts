@@ -99,6 +99,11 @@ export interface UseEditorToolStateOptions {
 export interface UseEditorToolStateReturn {
   activeTool: Tool;
   activeStyle: ActiveStyle;
+  /** Every tool's working style, active or not — what picking that tool
+   *  would draw with (the Draw button's tooltip paints `draw` from it).
+   *  Same rendering-read caveat as `activeStyle`: factory defaults until
+   *  settings land, so nothing that persists may read it. */
+  toolStyles: EditorToolStyles;
   setActiveTool(tool: Tool, options?: { singleShot?: boolean }): void;
   setStyleField<T extends StyledTool, K extends keyof StyleFor<T>>(
     tool: T,
@@ -565,6 +570,7 @@ export function useEditorToolState(
   return {
     activeTool,
     activeStyle,
+    toolStyles: effectiveStyles,
     setActiveTool,
     setStyleField,
     onAnnotationPlaced,

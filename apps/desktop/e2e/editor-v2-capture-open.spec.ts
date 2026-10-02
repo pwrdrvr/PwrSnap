@@ -58,10 +58,13 @@ test("editor-v2-capture-open: v2 capture opens with format=2, no v2-not-supporte
     ).toHaveCount(0);
 
     // Sanity check the IPC contract directly: layers:list must succeed
-    // (returns [] — fresh capture).
+    // and return only the tree a fresh capture starts with (root group +
+    // Source raster).
     const layersResult = await app.dispatch("layers:list", { captureId });
     expect(layersResult.ok).toBe(true);
-    if (layersResult.ok) expect(layersResult.value).toHaveLength(0);
+    if (layersResult.ok) {
+      expect(layersResult.value.map((layer) => layer.kind).sort()).toEqual(["group", "raster"]);
+    }
   } finally {
     await app.close();
   }
@@ -91,9 +94,12 @@ test("editor-v2-capture-open: ⌘Z on a freshly-opened v2 capture is a no-op (bu
       editorWindow.locator('[data-testid="editor-root"]')
     ).toHaveAttribute("data-bundle-format-version", "2");
 
+    // Nothing was undone off the fresh tree (root group + Source raster).
     const layers = await app.dispatch("layers:list", { captureId });
     expect(layers.ok).toBe(true);
-    if (layers.ok) expect(layers.value).toHaveLength(0);
+    if (layers.ok) {
+      expect(layers.value.map((layer) => layer.kind).sort()).toEqual(["group", "raster"]);
+    }
   } finally {
     await app.close();
   }
@@ -126,7 +132,7 @@ async function seedCapture(
     .slice(2, 8)}`;
 
   await app.electronApp.evaluate(
-    (
+    async (
       _electron,
       payload: { id: string; pngPath: string; bundleFormatVersion: number }
     ) => {
@@ -146,11 +152,11 @@ async function seedCapture(
               byte_size: number;
               sha256: string;
               bundle_format_version?: number;
-            }) => unknown;
+            }) => Promise<unknown>;
           };
         }
       ).__PWRSNAP_TEST__;
-      bridge.seedCapture({
+      await bridge.seedCapture({
         id: payload.id,
         kind: "image",
         captured_at: new Date().toISOString(),

@@ -17,7 +17,8 @@ import { expect, type Locator, type Page } from "@playwright/test";
 import type { LaunchedApp } from "./electron-app";
 
 /** 1×1 transparent PNG — enough for captures whose pixels the spec
- *  doesn't assert on (it only needs a real file on disk + a DB row). */
+ *  doesn't assert on. The bridge seeder stretches it to the declared
+ *  canvas dims and packs it into a real v2 bundle. */
 const ONE_BY_ONE_PNG_HEX =
   "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c63000100000005000158d57340000000049454e44ae426082";
 
@@ -58,7 +59,7 @@ export async function seedImageCapture(
     .toString(36)
     .slice(2, 8)}`;
   await app.electronApp.evaluate(
-    (
+    async (
       _electron,
       payload: {
         id: string;
@@ -83,11 +84,11 @@ export async function seedImageCapture(
               device_pixel_ratio: number;
               byte_size: number;
               sha256: string;
-            }) => unknown;
+            }) => Promise<unknown>;
           };
         }
       ).__PWRSNAP_TEST__;
-      bridge.seedCapture({
+      await bridge.seedCapture({
         id: payload.id,
         kind: "image",
         captured_at: new Date().toISOString(),

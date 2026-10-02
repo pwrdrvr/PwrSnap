@@ -91,7 +91,7 @@ test("source-app filters load captures outside the initial virtualized page", as
     await writeFile(imagePath, fixtureImageBytes());
 
     await app.electronApp.evaluate(
-      (
+      async (
         _electron,
         payload: {
           headPageSize: number;
@@ -119,7 +119,7 @@ test("source-app filters load captures outside the initial virtualized page", as
           byte_size: number;
           sha256: string;
         };
-        type Bridge = { seedCaptures: (inputs: SeedInput[]) => unknown };
+        type Bridge = { seedCaptures: (inputs: SeedInput[]) => Promise<unknown> };
         const bridge = (globalThis as unknown as { __PWRSNAP_TEST__: Bridge }).__PWRSNAP_TEST__;
         const now = Date.now();
         const recentCount = payload.headPageSize - Math.max(
@@ -169,7 +169,7 @@ test("source-app filters load captures outside the initial virtualized page", as
           }
           olderOffsetSeconds += filterCase.count;
         }
-        bridge.seedCaptures(inputs);
+        await bridge.seedCaptures(inputs);
       },
       {
         headPageSize: HEAD_PAGE_SIZE,
@@ -225,7 +225,7 @@ test("active source-app filter refetches after capture stats change", async () =
     await writeFile(imagePath, fixtureImageBytes());
 
     await app.electronApp.evaluate(
-      (
+      async (
         _electron,
         payload: {
           headPageSize: number;
@@ -250,7 +250,7 @@ test("active source-app filter refetches after capture stats change", async () =
           byte_size: number;
           sha256: string;
         };
-        type Bridge = { seedCaptures: (inputs: SeedInput[]) => unknown };
+        type Bridge = { seedCaptures: (inputs: SeedInput[]) => Promise<unknown> };
         const bridge = (globalThis as unknown as { __PWRSNAP_TEST__: Bridge }).__PWRSNAP_TEST__;
         const now = Date.now();
         const inputs: SeedInput[] = [];
@@ -285,7 +285,7 @@ test("active source-app filter refetches after capture stats change", async () =
             sha256: id
           });
         }
-        bridge.seedCaptures(inputs);
+        await bridge.seedCaptures(inputs);
       },
       {
         headPageSize: HEAD_PAGE_SIZE,
@@ -310,7 +310,7 @@ test("active source-app filter refetches after capture stats change", async () =
     await expect.poll(() => countGridCells(window, targetId), { timeout: 10_000 }).toBe(1);
 
     await app.electronApp.evaluate(
-      (
+      async (
         _electron,
         payload: {
           imagePath: string;
@@ -331,10 +331,10 @@ test("active source-app filter refetches after capture stats change", async () =
             device_pixel_ratio: number;
             byte_size: number;
             sha256: string;
-          }) => unknown;
+          }) => Promise<unknown>;
         };
         const bridge = (globalThis as unknown as { __PWRSNAP_TEST__: Bridge }).__PWRSNAP_TEST__;
-        bridge.seedCapture({
+        await bridge.seedCapture({
           id: "source-filter-refresh-telegram-new",
           kind: "image",
           captured_at: new Date(Date.now() + 1000).toISOString(),
@@ -385,7 +385,7 @@ test("top-level filters do not appear as empty source-app rows after leaving Unk
     await writeFile(imagePath, fixtureImageBytes());
 
     await app.electronApp.evaluate(
-      (_electron, payload: { imagePath: string }) => {
+      async (_electron, payload: { imagePath: string }) => {
         type Bridge = {
           seedCapture: (input: {
             id: string;
@@ -399,10 +399,10 @@ test("top-level filters do not appear as empty source-app rows after leaving Unk
             device_pixel_ratio: number;
             byte_size: number;
             sha256: string;
-          }) => unknown;
+          }) => Promise<unknown>;
         };
         const bridge = (globalThis as unknown as { __PWRSNAP_TEST__: Bridge }).__PWRSNAP_TEST__;
-        bridge.seedCapture({
+        await bridge.seedCapture({
           id: "source-filter-unknown-null-bundle",
           kind: "image",
           captured_at: new Date().toISOString(),
@@ -498,7 +498,7 @@ test("Source-app sidebar row renders the real native icon for an installed app",
     await writeFile(imagePath, fixtureImageBytes());
 
     await app.electronApp.evaluate(
-      (
+      async (
         _electron,
         payload: { imagePath: string; identifier: string; name: string; captureId: string }
       ) => {
@@ -515,10 +515,10 @@ test("Source-app sidebar row renders the real native icon for an installed app",
             device_pixel_ratio: number;
             byte_size: number;
             sha256: string;
-          }) => unknown;
+          }) => Promise<unknown>;
         };
         const bridge = (globalThis as unknown as { __PWRSNAP_TEST__: Bridge }).__PWRSNAP_TEST__;
-        bridge.seedCapture({
+        await bridge.seedCapture({
           id: payload.captureId,
           kind: "image",
           captured_at: new Date().toISOString(),

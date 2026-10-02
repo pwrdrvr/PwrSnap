@@ -29,6 +29,7 @@ import yazl from "yazl";
 import {
   BundleDocumentV2,
   BundleManifestV2,
+  type BundleLayerNode,
   cloneAffineTransform,
   validateBundleZipEntryNamesV2
 } from "@pwrsnap/shared";
@@ -151,7 +152,8 @@ export function manifestLineage(
  * temp-file + rename, so a reader still never sees partial bytes; only
  * the power-loss guarantee goes. On macOS libuv makes each fsync an
  * F_FULLFSYNC, about 4 ms apiece, which dominated the dev seeder's cost
- * per synthetic row. Nothing that writes user data passes it.
+ * per synthetic row. The E2E seeder (`e2e-capture-seed.ts`) passes it
+ * too. Nothing that writes user data does.
  */
 export async function atomicWriteBundle(
   destPath: string,
@@ -961,6 +963,92 @@ export async function compositeCursorForThumbnail(
     .toBuffer();
 }
 
+/**
+ * The manifest and layer tree every new v2 capture starts with: canvas
+ * == source dimensions, a root group, and one raster at identity
+ * pointing at the single embedded source. `persistCaptureFromTempV2`
+ * builds on this (adding an optional cursor layer); the E2E seeder
+ * (`e2e-capture-seed.ts`) uses it as-is, so a seeded capture has the
+ * same shape a real one does.
+ */
+export function buildInitialV2Tree(args: {
+  captureId: string;
+  createdAt: string;
+  sha256: string;
+  widthPx: number;
+  heightPx: number;
+  pairedPngFilename: string;
+  lineage?: { familyId: string; duplicatedFrom: string } | undefined;
+}): { manifest: BundleManifestV2; rootGroupId: string; layers: BundleLayerNode[] } {
+  const now = args.createdAt;
+  const rootGroupId = nanoid(16);
+  const rasterLayerId = nanoid(16);
+
+  const manifest: BundleManifestV2 = {
+    bundle_format_version: 2,
+    capture_id: args.captureId,
+    canvas_dimensions: { width_px: args.widthPx, height_px: args.heightPx },
+    paired_png_filename: args.pairedPngFilename,
+    created_at: now,
+    bundle_modified_at: now,
+    ...(args.lineage === undefined
+      ? {}
+      : manifestLineage({
+          family_id: args.lineage.familyId,
+          duplicated_from: args.lineage.duplicatedFrom
+        }))
+  };
+
+  const layers: BundleLayerNode[] = [
+    {
+      id: rootGroupId,
+      parent_id: null,
+      kind: "group" as const,
+      collapsed: false,
+      name: "Root",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal" as const,
+      transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
+      z_index: 0,
+      source: "user" as const,
+      ai_run_id: null,
+      applied_at: now,
+      rejected_at: null,
+      superseded_by: null,
+      created_at: now
+    },
+    {
+      id: rasterLayerId,
+      parent_id: rootGroupId,
+      kind: "raster" as const,
+      source_ref: { kind: "embedded" as const, sha256: args.sha256 },
+      natural_width_px: args.widthPx,
+      natural_height_px: args.heightPx,
+      name: "Source",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal" as const,
+      transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
+      // Home transform, set for uniformity. Identity at creation (the base
+      // fills the frame 1:1); the base never shows a Reset control, so this
+      // is only ever carried, never applied. Separate literal — not aliased.
+      original_transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
+      z_index: 0,
+      source: "user" as const,
+      ai_run_id: null,
+      applied_at: now,
+      rejected_at: null,
+      superseded_by: null,
+      created_at: now
+    }
+  ];
+
+  return { manifest, rootGroupId, layers };
+}
+
 export async function persistCaptureFromTempV2(
   args: PersistCaptureFromTempArgs
 ): Promise<PersistCaptureFromTempResult> {
@@ -996,70 +1084,15 @@ export async function persistCaptureFromTempV2(
   }));
   const pairedPngFilename = `${filenameStem}.png`;
 
-  const rootGroupId = nanoid(16);
-  const rasterLayerId = nanoid(16);
-
-  const manifest: BundleManifestV2 = {
-    bundle_format_version: 2,
-    capture_id: id,
-    canvas_dimensions: { width_px: widthPx, height_px: heightPx },
-    paired_png_filename: pairedPngFilename,
-    created_at: now,
-    bundle_modified_at: now,
-    ...(args.lineage === undefined
-      ? {}
-      : manifestLineage({
-          family_id: args.lineage.familyId,
-          duplicated_from: args.lineage.duplicatedFrom
-        }))
-  };
-
-  const initialLayers = [
-    {
-      id: rootGroupId,
-      parent_id: null,
-      kind: "group" as const,
-      collapsed: false,
-      name: "Root",
-      visible: true,
-      locked: false,
-      opacity: 1,
-      blend_mode: "normal" as const,
-      transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
-      z_index: 0,
-      source: "user" as const,
-      ai_run_id: null,
-      applied_at: now,
-      rejected_at: null,
-      superseded_by: null,
-      created_at: now
-    },
-    {
-      id: rasterLayerId,
-      parent_id: rootGroupId,
-      kind: "raster" as const,
-      source_ref: { kind: "embedded" as const, sha256 },
-      natural_width_px: widthPx,
-      natural_height_px: heightPx,
-      name: "Source",
-      visible: true,
-      locked: false,
-      opacity: 1,
-      blend_mode: "normal" as const,
-      transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
-      // Home transform, set for uniformity. Identity at creation (the base
-      // fills the frame 1:1); the base never shows a Reset control, so this
-      // is only ever carried, never applied. Separate literal — not aliased.
-      original_transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
-      z_index: 0,
-      source: "user" as const,
-      ai_run_id: null,
-      applied_at: now,
-      rejected_at: null,
-      superseded_by: null,
-      created_at: now
-    }
-  ];
+  const { manifest, rootGroupId, layers: initialLayers } = buildInitialV2Tree({
+    captureId: id,
+    createdAt: now,
+    sha256,
+    widthPx,
+    heightPx,
+    pairedPngFilename,
+    lineage: args.lineage
+  });
 
   // Optional cursor layer (cursor-capture Phase 3): embed the sampled
   // sprite as a second content-addressed source and stack a deletable

@@ -62,7 +62,7 @@ test.describe("Library Focus close — scroll restoration (macOS)", () => {
     // gives the row virtualizer enough rows to require scroll while
     // keeping the seed cheap.
     await app.electronApp.evaluate(
-      (
+      async (
         _electron,
         payload: {
           count: number;
@@ -71,7 +71,7 @@ test.describe("Library Focus close — scroll restoration (macOS)", () => {
         }
       ) => {
         type Bridge = {
-          seedCapture: (input: {
+          seedCaptures: (inputs: Array<{
             id: string;
             kind: "image" | "video";
             captured_at: string;
@@ -83,12 +83,13 @@ test.describe("Library Focus close — scroll restoration (macOS)", () => {
             device_pixel_ratio: number;
             byte_size: number;
             sha256: string;
-          }) => unknown;
+          }>) => Promise<unknown>;
         };
         const bridge = (
           globalThis as unknown as { __PWRSNAP_TEST__: Bridge }
         ).__PWRSNAP_TEST__;
         const now = Date.now();
+        const inputs: Parameters<Bridge["seedCaptures"]>[0] = [];
         for (let i = 0; i < payload.count; i++) {
           // 3 per day → captures span ~count/3 days.
           const dayOffset = Math.floor(i / 3);
@@ -97,7 +98,7 @@ test.describe("Library Focus close — scroll restoration (macOS)", () => {
             now - dayOffset * payload.dayMs + intraDay * 1000
           ).toISOString();
           const id = `focus-scroll-${i.toString().padStart(4, "0")}`;
-          bridge.seedCapture({
+          inputs.push({
             id,
             kind: "image",
             captured_at: ts,
@@ -111,13 +112,16 @@ test.describe("Library Focus close — scroll restoration (macOS)", () => {
             sha256: id
           });
         }
+        // One call: a single transaction, and the fixture's bundle
+        // source + thumbnail are built once for all rows.
+        await bridge.seedCaptures(inputs);
       },
       { count: SEED_COUNT, dayMs: DAY_MS, pngPath }
     );
 
     // The renderer's `useLibrary` only refetches on the
-    // `events:captures:changed` broadcast — `seedCapture` writes
-    // straight through `insertCapture` and bypasses the bus,
+    // `events:captures:changed` broadcast — `seedCaptures` writes
+    // straight to the repo and bypasses the bus,
     // so kick the broadcast manually after seeding.
     await app.electronApp.evaluate((electronModule) => {
       const { BrowserWindow } = electronModule;

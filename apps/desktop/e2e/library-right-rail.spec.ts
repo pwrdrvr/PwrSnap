@@ -225,14 +225,14 @@ test("library-right-rail: a trim refresh keeps an off-page video in Focus", asyn
     });
     const win = app.window;
 
-    await app.electronApp.evaluate((_electron) => {
+    await app.electronApp.evaluate(async (_electron) => {
       const bridge = (
         globalThis as unknown as {
-          __PWRSNAP_TEST__: { seedCaptures: (inputs: Record<string, unknown>[]) => void };
+          __PWRSNAP_TEST__: { seedCaptures: (inputs: Record<string, unknown>[]) => Promise<unknown> };
         }
       ).__PWRSNAP_TEST__;
       const now = Date.now();
-      bridge.seedCaptures(
+      await bridge.seedCaptures(
         Array.from({ length: 101 }, (_, index) => ({
           id: `trim-page-one-${index.toString().padStart(3, "0")}`,
           kind: "image",
@@ -414,16 +414,16 @@ async function seedVideoCapture(
   await writeFile(mp4Path, Buffer.from("fake mp4 placeholder bytes"));
 
   await app.electronApp.evaluate(
-    (_electron, payload: { id: string; mp4Path: string; capturedAt: string }) => {
+    async (_electron, payload: { id: string; mp4Path: string; capturedAt: string }) => {
       const bridge = (
         globalThis as unknown as {
           __PWRSNAP_TEST__: {
-            seedCapture: (input: Record<string, unknown>) => unknown;
+            seedCapture: (input: Record<string, unknown>) => Promise<unknown>;
             seedVideoMetadata: (input: Record<string, unknown>) => void;
           };
         }
       ).__PWRSNAP_TEST__;
-      bridge.seedCapture({
+      await bridge.seedCapture({
         id: payload.id,
         kind: "video",
         captured_at: payload.capturedAt,

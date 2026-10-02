@@ -56,12 +56,12 @@ async function seedDays(app: LaunchedApp, days: SeedDay[], idPrefix: string): Pr
   await writeFile(pngPath, Buffer.from(PNG_HEX, "hex"));
 
   await app.electronApp.evaluate(
-    (
+    async (
       _electron,
       payload: { days: SeedDay[]; dayMs: number; pngPath: string; idPrefix: string }
     ) => {
       type Bridge = {
-        seedCapture: (input: {
+        seedCaptures: (inputs: Array<{
           id: string;
           kind: "image" | "video";
           captured_at: string;
@@ -73,11 +73,12 @@ async function seedDays(app: LaunchedApp, days: SeedDay[], idPrefix: string): Pr
           device_pixel_ratio: number;
           byte_size: number;
           sha256: string;
-        }) => unknown;
+        }>) => Promise<unknown>;
       };
       const bridge = (globalThis as unknown as { __PWRSNAP_TEST__: Bridge }).__PWRSNAP_TEST__;
       const now = Date.now();
       let seq = 0;
+      const inputs: Parameters<Bridge["seedCaptures"]>[0] = [];
       for (const day of payload.days) {
         for (let i = 0; i < day.count; i++) {
           // Space intra-day captures a minute apart, oldest first, so
@@ -87,7 +88,7 @@ async function seedDays(app: LaunchedApp, days: SeedDay[], idPrefix: string): Pr
           ).toISOString();
           const id = `${payload.idPrefix}-${seq.toString().padStart(4, "0")}`;
           seq += 1;
-          bridge.seedCapture({
+          inputs.push({
             id,
             kind: "image",
             captured_at: ts,
@@ -102,6 +103,7 @@ async function seedDays(app: LaunchedApp, days: SeedDay[], idPrefix: string): Pr
           });
         }
       }
+      await bridge.seedCaptures(inputs);
     },
     { days, dayMs: DAY_MS, pngPath, idPrefix }
   );
@@ -109,7 +111,7 @@ async function seedDays(app: LaunchedApp, days: SeedDay[], idPrefix: string): Pr
   await broadcastCapturesChanged(app);
 }
 
-// `seedCapture` writes straight through `insertCapture` and bypasses
+// `seedCaptures` writes straight to the captures repo and bypasses
 // the bus — the renderer's `useLibrary` only refetches on the
 // `events:captures:changed` broadcast, so kick it manually.
 async function broadcastCapturesChanged(app: LaunchedApp): Promise<void> {

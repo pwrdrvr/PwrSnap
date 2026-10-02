@@ -15,8 +15,19 @@ export function accel(): "Meta" | "Control" {
   return process.platform === "darwin" ? "Meta" : "Control";
 }
 
-/** Poll `layers:list` until the capture has exactly `count` layers. */
-export async function expectLayerCount(
+/** The layers a spec placed: every layer except the root group and the
+ *  "Source" raster that every seeded capture starts with (the seeder
+ *  writes the same tree `persistCaptureFromTempV2` does). Pasted images
+ *  are rasters too, but are named "Pasted Image", so they still count. */
+export function placedLayers<T extends { kind: string; name: string }>(layers: readonly T[]): T[] {
+  return layers.filter(
+    (layer) => layer.kind !== "group" && !(layer.kind === "raster" && layer.name === "Source")
+  );
+}
+
+/** Poll `layers:list` until the capture has exactly `count` placed
+ *  layers (see `placedLayers`). */
+export async function expectPlacedLayerCount(
   app: LaunchedApp,
   captureId: string,
   count: number
@@ -25,7 +36,7 @@ export async function expectLayerCount(
     .poll(async () => {
       const result = await app.dispatch("layers:list", { captureId });
       if (!result.ok) return -1;
-      return result.value.length;
+      return placedLayers(result.value).length;
     })
     .toBe(count);
 }
@@ -38,7 +49,7 @@ export async function seedImageCapture(
   const { idPrefix = "img", sourceName = "Editor Spec" } = opts;
   const dir = await mkdtemp(path.join(os.tmpdir(), `pwrsnap-${idPrefix}-spec-`));
   const pngPath = path.join(dir, "fixture.png");
-  // 1×1 transparent PNG — loaded via pwrsnap-capture://, never decoded.
+  // 1×1 transparent PNG — the seeder stretches it to the 800×600 canvas.
   const pngBytes = Buffer.from(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c63000100000005000158d57340000000049454e44ae426082",
     "hex"
@@ -49,7 +60,7 @@ export async function seedImageCapture(
     .toString(36)
     .slice(2, 8)}`;
   await app.electronApp.evaluate(
-    (_electron, payload: { id: string; pngPath: string; sourceName: string }) => {
+    async (_electron, payload: { id: string; pngPath: string; sourceName: string }) => {
       const bridge = (
         globalThis as unknown as {
           __PWRSNAP_TEST__: {
@@ -66,11 +77,11 @@ export async function seedImageCapture(
               byte_size: number;
               sha256: string;
               bundle_format_version?: number;
-            }) => unknown;
+            }) => Promise<unknown>;
           };
         }
       ).__PWRSNAP_TEST__;
-      bridge.seedCapture({
+      await bridge.seedCapture({
         id: payload.id,
         kind: "image",
         captured_at: new Date().toISOString(),
@@ -92,8 +103,9 @@ export async function seedImageCapture(
 
 /** Seed a REAL raster-backed v2 capture (root group + raster at the PNG's
  *  natural dims) through the production persistCaptureFromTempV2 pipeline —
- *  for specs that need an actual base image layer (crop / source-hide),
- *  which the record-only `seedImageCapture` doesn't create. The output dir
+ *  for specs that need the real capture path (crop / source-hide) and
+ *  specific source pixels. `seedImageCapture` also writes a root group +
+ *  Source raster, but from a stretched placeholder image. The output dir
  *  is pinned under a tmpdir so the bundle never lands in the host's real
  *  ~/Documents/PwrSnap. */
 export async function seedRasterCapture(

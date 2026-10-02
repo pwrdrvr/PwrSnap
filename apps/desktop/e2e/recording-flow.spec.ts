@@ -54,16 +54,16 @@ test.describe("video float-over", () => {
     await writeFile(mp4Path, Buffer.from("fake mp4 placeholder bytes"));
 
     await app.electronApp.evaluate(
-      (_electron, payload: { id: string; path: string }) => {
+      async (_electron, payload: { id: string; path: string }) => {
         const bridge = (
           globalThis as unknown as {
             __PWRSNAP_TEST__: {
-              seedCapture: (input: Record<string, unknown>) => unknown;
+              seedCapture: (input: Record<string, unknown>) => Promise<unknown>;
               seedVideoMetadata: (input: Record<string, unknown>) => void;
             };
           }
         ).__PWRSNAP_TEST__;
-        bridge.seedCapture({
+        await bridge.seedCapture({
           id: payload.id,
           kind: "video",
           captured_at: new Date().toISOString(),
@@ -200,16 +200,16 @@ test.describe("video float-over", () => {
       await writeFile(mp4Path, Buffer.from("x"));
 
       await app.electronApp.evaluate(
-        (_electron, payload: { id: string; path: string }) => {
+        async (_electron, payload: { id: string; path: string }) => {
           const bridge = (
             globalThis as unknown as {
               __PWRSNAP_TEST__: {
-                seedCapture: (input: Record<string, unknown>) => unknown;
+                seedCapture: (input: Record<string, unknown>) => Promise<unknown>;
                 seedVideoMetadata: (input: Record<string, unknown>) => void;
               };
             }
           ).__PWRSNAP_TEST__;
-          bridge.seedCapture({
+          await bridge.seedCapture({
             id: payload.id,
             kind: "video",
             captured_at: new Date().toISOString(),
@@ -278,16 +278,16 @@ test.describe("video float-over", () => {
       await writeFile(mp4Path, Buffer.from("x"));
 
       await app.electronApp.evaluate(
-        (_electron, payload: { id: string; path: string }) => {
+        async (_electron, payload: { id: string; path: string }) => {
           const bridge = (
             globalThis as unknown as {
               __PWRSNAP_TEST__: {
-                seedCapture: (input: Record<string, unknown>) => unknown;
+                seedCapture: (input: Record<string, unknown>) => Promise<unknown>;
                 seedVideoMetadata: (input: Record<string, unknown>) => void;
               };
             }
           ).__PWRSNAP_TEST__;
-          bridge.seedCapture({
+          await bridge.seedCapture({
             id: payload.id,
             kind: "video",
             captured_at: new Date().toISOString(),
@@ -339,17 +339,17 @@ test.describe("video float-over", () => {
       const mp4Path = path.join(captureDir, `${captureId}.mp4`);
       await writeFile(mp4Path, Buffer.from("x"));
       await app.electronApp.evaluate(
-        (_electron, payload: { id: string; path: string }) => {
+        async (_electron, payload: { id: string; path: string }) => {
           const bridge = (
             globalThis as unknown as {
               __PWRSNAP_TEST__: {
-                seedCapture: (input: Record<string, unknown>) => unknown;
+                seedCapture: (input: Record<string, unknown>) => Promise<unknown>;
                 seedVideoMetadata: (input: Record<string, unknown>) => void;
                 setFloatOverState: (event: unknown) => void;
               };
             }
           ).__PWRSNAP_TEST__;
-          bridge.seedCapture({
+          await bridge.seedCapture({
             id: payload.id,
             kind: "video",
             captured_at: new Date().toISOString(),

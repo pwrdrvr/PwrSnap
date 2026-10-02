@@ -1993,6 +1993,10 @@
   --psl-ov-fg: var(--media-scrim-text);
   --psl-ov-ring: 0 0 0 1px color-mix(in srgb, var(--media-scrim-text) 30%, transparent),
     0 1px 4px color-mix(in srgb, var(--shadow-base) 55%, transparent);
+  /* The same hairline + lift for something with no box of its own (the
+     collapsed app icon): drop-shadows follow the element's alpha. */
+  --psl-ov-halo: drop-shadow(0 0 0.5px color-mix(in srgb, var(--media-scrim-text) 45%, transparent))
+    drop-shadow(0 1px 2px color-mix(in srgb, var(--shadow-base) 60%, transparent));
 }
 /* Transparency checker behind the thumbnail for captures whose source PNG
    has alpha (`Capture.hasAlpha`). Gated, not blanket: a blanket checker
@@ -2102,18 +2106,38 @@
    selector mirrors the reveal rule on `.psl__cell-trash` below. 240px is
    where a ~90px name plus the rail's two 28px buttons and a duration chip
    stop fitting. `.psl__cell-thumb` is the size container: it takes its
-   width from the grid, so inline-size containment costs it nothing. */
+   width from the grid, so inline-size containment costs it nothing.
+   With the name gone, the copper pill outline would wrap only the icon and
+   read as a ring around it — the one ringed app icon left in the app (the
+   sidebar's are ringless). So the collapsed chip drops the pill entirely
+   and the icon stands alone, wearing `--psl-ov-halo`: the overlay chips'
+   light hairline + dark lift, as a filter that follows the icon's own
+   squircle instead of a box. It cannot go bare: an app icon's colors are
+   unknown, and with nothing around it a white icon vanishes on a white
+   capture and a dark one on a dark capture. The tile keeps its size, so
+   nothing moves when the pointer arrives. */
 .psl__cell-thumb { container: psl-thumb / inline-size; }
 @container psl-thumb (width < 240px) {
   .psl__cell:is(:hover, :has(.psl__cell-trash:focus-visible))
     .psl__cell-app-overlay > .ps-app-tag.is-sm {
-    padding-right: 0;
+    padding: 0;
     gap: 0;
+    border-color: transparent;
+    background: transparent;
   }
   .psl__cell:is(:hover, :has(.psl__cell-trash:focus-visible))
     .psl__cell-app-overlay .ps-app-tag__name { display: none; }
+  /* `--ps-app-glyph-fg`: the clipboard glyph is a bare stroke, not a
+     filled icon, so it takes the overlay glyph color like Edit / Trash —
+     its own `--text-secondary` is dark in the light theme. */
   .psl__cell:is(:hover, :has(.psl__cell-trash:focus-visible))
-    .psl__cell-app-overlay .ps-app-tag__tile { border-right: 0; border-radius: 4px; }
+    .psl__cell-app-overlay .ps-app-tag__tile {
+    border-right: 0;
+    border-radius: 4px;
+    background: transparent;
+    filter: var(--psl-ov-halo);
+    --ps-app-glyph-fg: var(--psl-ov-fg);
+  }
 }
 /* Center play button — the primary, at-a-glance "this is a video" cue
    (a duration chip alone is too easy to miss). Translucent so it never

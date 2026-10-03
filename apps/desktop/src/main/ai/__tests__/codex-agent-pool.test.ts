@@ -990,3 +990,33 @@ describe("Codex agent pool", () => {
   // Published CodexThreadClient.startTurn resumes this id on the replacement child.
   expect(mockCodexClientOptions.at(-1)?.clientName).toBe("PwrSnap");
  });
+
+ test.each(["renewed", "disabled", "revoked"] as const)(
+  "Stop interrupts the current SIWC child when the session is %s",
+  async (sessionState) => {
+    mockPlanRuntime.mockResolvedValue({ accessToken: "fixture-access", generation: "fixture-1" });
+    const view = acquireCodexAgentBackendView({
+      command: "codex",
+      env: { CODEX_HOME: `/tmp/pwrsnap-siwc-stop-${sessionState}` },
+      loggerScope: "test"
+    });
+    await view.startThread({ model: "fixture-model" });
+    await view.startTurn({ threadId: "thread-1", input: { text: "fixture prompt" } });
+    const runningClient = mockCodexThreadClients.at(-1)!;
+    const clientCount = mockCodexThreadClients.length;
+    mockPlanRuntime.mockClear();
+    if (sessionState === "renewed") {
+      mockPlanRuntime.mockResolvedValue({ accessToken: "fixture-renewed-access", generation: "fixture-2" });
+    } else if (sessionState === "disabled") {
+      mockPlanRuntime.mockResolvedValue(null);
+    } else {
+      mockPlanRuntime.mockRejectedValue(new Error("fixture revoked session"));
+    }
+
+    await expect(view.interruptTurn("thread-1")).resolves.toBeUndefined();
+
+    expect(runningClient.interruptTurn).toHaveBeenCalledExactlyOnceWith("thread-1");
+    expect(mockPlanRuntime).not.toHaveBeenCalled();
+    expect(mockCodexThreadClients).toHaveLength(clientCount);
+  }
+ );

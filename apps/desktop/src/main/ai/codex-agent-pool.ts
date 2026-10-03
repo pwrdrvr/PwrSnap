@@ -156,8 +156,9 @@ class CodexBackendView implements AgentBackend {
   }
 
   async interruptTurn(threadId: string): Promise<void> {
-    const client = await this.owner.compatibleClient();
-    await client.interruptTurn(threadId);
+    // Stop targets the running child even when renewal, revoked credentials,
+    // or a billing change prevents preparing a client for the next action.
+    await this.owner.client.interruptTurn(threadId);
   }
 
   async forkThread(options: AgentForkThreadOptions): Promise<AgentBackendStartThreadResult> {

@@ -24,9 +24,19 @@ permissions:
   id-token: none
 
 jobs:
+  distribution-audit:
+    name: Inspect Winget and Homebrew before release
+    if: ${{ github.event_name != 'pull_request' }}
+    uses: ./.github/workflows/distribution-audit.yml
+    with:
+      stage: before-release
+    secrets:
+      DISTRIBUTION_READ_TOKEN: ${{ secrets.DISTRIBUTION_READ_TOKEN }}
+
   prepare:
     name: Test and prepare signing input
     if: ${{ github.event_name != 'pull_request' }}
+    needs: distribution-audit
     runs-on: macos-26 # Icon Composer's actool requires the matching macOS 26 host.
     timeout-minutes: 75
     permissions:
@@ -786,3 +796,12 @@ jobs:
             --json isPrerelease \
             --jq '.isPrerelease')"
           test "$is_prerelease" = "true"
+
+  distribution-audit-after:
+    name: Inspect Winget and Homebrew after publication
+    needs: publish-release-assets
+    uses: ./.github/workflows/distribution-audit.yml
+    with:
+      stage: after-publication
+    secrets:
+      DISTRIBUTION_READ_TOKEN: ${{ secrets.DISTRIBUTION_READ_TOKEN }}

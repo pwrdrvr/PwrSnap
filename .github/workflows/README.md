@@ -10,6 +10,31 @@ with `ci:` when they start, skip, or narrow CI work.
 
 If another label changes workflow behavior, document it here in the same change.
 
+## Public distribution-source audit
+
+`distribution-audit.yml` audits authoritative Winget/Homebrew sources and existing
+identities/submissions on relevant PRs, manual dispatch, and as a reusable release
+preflight/follow-up. Its helper/tests need Node and `gh`, with no dependency install.
+It has `contents: read`; the public-read step alone uses
+`GH_TOKEN: ${{ secrets.DISTRIBUTION_READ_TOKEN || github.token }}`. Checkout and
+artifact upload retain the default token. The organization-provided fine-grained
+PAT is public-read-only with no additional permissions, explicitly shared with
+PwrSnap/PwrGit/PwrAgent; it cannot submit/push/merge or publish a release.
+
+Fork PRs without the secret fall back to `github.token`. User authentication
+addresses the prior HTTP 429 context, not a missing public-access grant, and is
+still subject to code-search/secondary limits. The helper retries at most three
+times, honors server delays within its budget, and rejects incomplete/truncated
+searches instead of declaring absence. Every run preserves a JSON snapshot or
+blocker and logs only the credential source boolean, never the value.
+
+Harold/the organization secret maintainer owns expiry tracking and rotation under
+the same secret name without widening permissions or changing the selected-repo
+list. After rotation, run the audit in each recipient repo. See the
+[package-manager runbook](../../docs/package-manager-release-runbook.md#organization-provided-public-read-credential)
+for metadata-only sharing checks and runtime verification. A post-publication
+audit failure needs an owned retry; it does not mean GitHub publication failed.
+
 ## Windows installer name
 
 The release publishes two Windows installer assets that are the same bytes:

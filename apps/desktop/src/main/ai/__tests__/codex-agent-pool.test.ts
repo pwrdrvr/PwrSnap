@@ -402,7 +402,7 @@ describe("Codex agent pool", () => {
       if (method === "config/read") {
         return {
           config: {
-            features: { code_mode: true },
+            features: { code_mode: true, hooks: true },
             mcp_servers: {
               context7: { command: "npx", env: { SECRET: "never-forward-me" } },
               pwrsnap: { command: "pwrsnap-mcp-server" }
@@ -487,6 +487,7 @@ describe("Codex agent pool", () => {
         config: {
           project_doc_max_bytes: 0,
           features: {
+            hooks: false,
             code_mode: {
               direct_only_tool_namespaces: ["pwrsnap_library", "pwrsnap_sizzle"],
               enabled: true
@@ -506,6 +507,62 @@ describe("Codex agent pool", () => {
     expect(calls.some(([method]) => method === "turn/interrupt")).toBe(false);
     expect(calls.some(([method]) => method === "thread/rollback")).toBe(false);
   });
+
+  test.each([undefined, { features: { hooks: true, plugins: false }, notify: ["notify-script"] }])(
+    "disables inherited hooks for enrichment and preserves chat hooks (config: %j)",
+    async (threadConfig) => {
+      mockConnectionRequest.mockImplementation(async (method: string, params: unknown) => {
+        if (method === "config/read") {
+          return { config: { features: { hooks: true }, notify: ["notify-script"] } };
+        }
+        if (method === "thread/start") return { thread: { id: "enrichment-thread" } };
+        if (method === "turn/start") {
+          const { threadId } = params as { threadId: string };
+          setTimeout(() => {
+            mockCodexThreadClients[0]?.emitEvent({
+              kind: "agent_message", threadId, turnId: "turn-1", message: { text: "{}" }
+            });
+            mockCodexThreadClients[0]?.emitEvent({
+              kind: "turn_completed", threadId, turnId: "turn-1", status: "completed"
+            });
+          }, 0);
+          return { turn: { id: "turn-1" } };
+        }
+        return {};
+      });
+      const originalConfig = structuredClone(threadConfig);
+      const options = {
+        command: "codex-test",
+        env: { CODEX_HOME: "/tmp/pwrsnap-codex-pool-hooks-test" },
+        workspaceDir: "/tmp/pwrsnap-enrichment-jail",
+        prompt: "describe this image",
+        ...(threadConfig !== undefined ? { threadConfig } : {})
+      };
+      await runCodexOneShotFromPool(options);
+      const start = mockConnectionRequest.mock.calls.find(([method]) => method === "thread/start");
+      expect(start?.[1]).toHaveProperty("config.features.hooks", false);
+      expect(start?.[1]).toHaveProperty("config.notify", []);
+      if (threadConfig !== undefined) {
+        expect(start?.[1]).toHaveProperty("config.features.plugins", false);
+      }
+      expect(threadConfig).toEqual(originalConfig);
+
+      // Chat shares this owner/process. Its start and fork must retain the
+      // user's hook choice after enrichment, with no jail profile leaking in.
+      const view = acquireCodexAgentBackendView({ ...options, loggerScope: "test-hooks" });
+      const chatConfig = { features: { hooks: true }, notify: ["notify-script"] };
+      await view.startThread({ config: chatConfig });
+      await view.forkThread?.({ sourceThreadId: "chat-thread", config: chatConfig });
+      for (const call of [mockCodexThreadClients[0]?.startThread, mockCodexThreadClients[0]?.forkThread]) {
+        expect(call).toHaveBeenCalledWith(expect.objectContaining({ config: chatConfig }));
+        expect(call?.mock.calls[0]?.[0]).not.toHaveProperty("config.default_permissions");
+      }
+      expect(mockCodexThreadClients).toHaveLength(1);
+      expect(mockConnectionRequest.mock.calls.some(([method]) =>
+        method === "config/value/write" || method === "config/batchWrite"
+      )).toBe(false);
+    }
+  );
 
   test.each(["gpt-6-luna", "gpt-6.1-sol"])(
     "survives retained-config reload before inference with %s",
@@ -730,6 +787,10 @@ describe("Codex agent pool", () => {
     expect(starts[1]?.[1]).toMatchObject({ sandbox: "read-only" });
     expect(starts[1]?.[1]).not.toHaveProperty("permissions");
     expect(starts[1]?.[1]).not.toHaveProperty("config.default_permissions");
+    for (const [, params] of starts) {
+      expect(params).toHaveProperty("config.features.hooks", false);
+      expect(params).toHaveProperty("config.notify", []);
+    }
     // The degradation is visible, not silent.
     expect(mockLogger.warn).toHaveBeenCalledWith(
       expect.stringContaining("does NOT restrict reads"),

@@ -598,7 +598,20 @@ class CodexAgentOwner {
             ...(threadConfig ?? {}),
             // The profile the `permissions` id above resolves to. Harmless on
             // the fallback path — an unreferenced profile is inert.
-            ...codexEnrichmentPermissionProfile(workspaceDir, kind)
+            ...codexEnrichmentPermissionProfile(workspaceDir, kind),
+            // Trusted lifecycle hooks execute outside the agent sandbox and
+            // can inject context before inference. Enrichment has no reason
+            // to run them. Pin the feature off in this retained thread layer,
+            // including on the fallback, without changing the shared process
+            // or chat's hook settings. Preserve the other feature overrides.
+            features: {
+              ...(asRecord(threadConfig?.["features"]) ?? {}),
+              hooks: false
+            },
+            // Legacy `notify` commands are dispatched separately from the
+            // hooks feature and receive the model's last message. An empty
+            // array replaces the inherited command without copying its argv.
+            notify: []
           },
           experimentalRawEvents: false
         },

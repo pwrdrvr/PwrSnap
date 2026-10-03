@@ -17,6 +17,7 @@ import {
   codexEffortForModel,
   hasObsoleteCodexDefaults,
   resolveManagedCodexEnrichmentModel,
+  isCustomProvider,
   resolveCustomModel,
   err,
   ok
@@ -603,9 +604,17 @@ export function registerCodexHandlers(params?: {
     }
 
     const enrichmentProvider = settings.ai.defaults.enrichment.provider;
-    if (triggerSource === "auto-enrichment" && settings.codex.chatgptPlanEnabled &&
-        (!enrichmentProvider || enrichmentProvider === "codex") && !settings.codex.chatgptBackgroundConsent) {
-      return validationError("chatgpt_background_consent_required", "Allow automatic post-capture use in Sign in with ChatGPT settings first.");
+    // Sign in with ChatGPT: automatic post-capture work on the user's plan
+    // needs its own consent. A clicked action (regenerate) is the user's own
+    // request and runs without it.
+    if (triggerSource === "auto-enrichment" && isCustomProvider(enrichmentProvider) &&
+        settings.ai.chatgptPlan?.backgroundConsent !== true) {
+      const model = resolveCustomModel(settings.ai.customConnections, settings.ai.customModels,
+        enrichmentProvider!.slice("custom:".length));
+      if (model?.auth.type === "chatgpt") {
+        return validationError("chatgpt_background_consent_required",
+          "Allow automatic use for new captures in Settings → AI Providers → ChatGPT first.");
+      }
     }
     if (refreshDefaultsBeforeEnrichment && (!enrichmentProvider || enrichmentProvider === "codex") &&
         !managedEnrichmentByCatalog.has(codexCatalogKey(settings)) &&

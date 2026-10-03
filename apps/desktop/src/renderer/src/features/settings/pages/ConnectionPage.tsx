@@ -62,12 +62,13 @@ import {
 import { useSettingsContext } from "../SettingsContext";
 import { setActivePage } from "../useActivePage";
 import { formatLastSetAt } from "./ai-format";
+import { ChatgptConnectionPage } from "./ChatgptConnection";
 
 type StepId = "where" | "auth" | "models" | "jobs";
 type Note = { tone: "ok" | "warn" | "bad"; text: ReactNode };
 /** The endpoint's model list, remembered for the connection it was read
  *  from — a list read before the address changed is not this one's. */
-type Discovery =
+export type Discovery =
   | { key: string; kind: "loading" }
   | { key: string; kind: "done"; result: CustomModelDiscovery }
   | { key: string; kind: "error"; message: string; rejected: boolean };
@@ -97,7 +98,7 @@ function messageOf(r: { ok: false; error: { message: string } }): string {
 
 /** The endpoint's model list for `connection`, read on request. Both
  *  layouts use it: the sign-in check IS a listing (no model runs). */
-function useDiscovery(connection: CustomConnection | null): {
+export function useDiscovery(connection: CustomConnection | null): {
   current: Discovery | null;
   runDiscover: () => Promise<Discovery | null>;
 } {
@@ -136,6 +137,7 @@ export function ConnectionPage({ connectionId }: { connectionId: string | null }
       </>
     );
   }
+  if (status.connection.auth.type === "chatgpt") return <ChatgptConnectionPage status={status} />;
   return <SavedConnection status={status} />;
 }
 
@@ -440,7 +442,7 @@ function CredentialCheck({ connection, secret, discovery, onCheck }: {
   );
 }
 
-function SavedModels({ models, settings }: { models: readonly CustomModel[]; settings: Settings }): ReactElement {
+export function SavedModels({ models, settings }: { models: readonly CustomModel[]; settings: Settings }): ReactElement {
   const [tests, setTests] = useState<Readonly<Record<string, { ok: boolean | null; text: string }>>>({});
   const test = async (m: CustomModel): Promise<void> => {
     setTests((prev) => ({ ...prev, [m.id]: { ok: null, text: "Asking it to reply…" } }));
@@ -487,7 +489,7 @@ function SavedModels({ models, settings }: { models: readonly CustomModel[]; set
   );
 }
 
-function RemoveConnection({ connection, models, label }: {
+export function RemoveConnection({ connection, models, label }: {
   connection: CustomConnection;
   models: readonly CustomModel[];
   label: string;
@@ -520,7 +522,7 @@ function RemoveConnection({ connection, models, label }: {
 
 // ---- Chrome -----------------------------------------------------------------
 
-function PageHeader({ title, sub, right }: { title: string; sub: string; right?: ReactNode }): ReactElement {
+export function PageHeader({ title, sub, right }: { title: string; sub: string; right?: ReactNode }): ReactElement {
   return (
     <div className="pss__main-hdr">
       <div className="pss__main-hdr-l">
@@ -557,7 +559,7 @@ function Step({ n, title, state, summary, summaryOk, right, children }: {
   );
 }
 
-function ToggleButton({ open, label, onToggle }: { open: boolean; label: string; onToggle: (open: boolean) => void }): ReactElement {
+export function ToggleButton({ open, label, onToggle }: { open: boolean; label: string; onToggle: (open: boolean) => void }): ReactElement {
   return (
     <button className="pss__top-btn" type="button" aria-expanded={open} onClick={() => onToggle(!open)}>
       {open ? "Close" : label}
@@ -565,7 +567,7 @@ function ToggleButton({ open, label, onToggle }: { open: boolean; label: string;
   );
 }
 
-function ListAgainButton({ discovery, onDiscover }: { discovery: Discovery | null; onDiscover: () => Promise<Discovery | null> }): ReactElement {
+export function ListAgainButton({ discovery, onDiscover }: { discovery: Discovery | null; onDiscover: () => Promise<Discovery | null> }): ReactElement {
   return (
     <button className="pss__top-btn" type="button" disabled={discovery?.kind === "loading"} onClick={() => { void onDiscover(); }}>
       {discovery?.kind === "loading" ? "Listing…" : "List again"}
@@ -949,7 +951,7 @@ type Row = {
 };
 type RowEdit = Partial<Pick<Row, "checked" | "displayName" | "vision" | "enrichmentReasoning">>;
 
-function ModelsStep({ connection, models, discovery, onDiscover, onSaved }: {
+export function ModelsStep({ connection, models, discovery, onDiscover, onSaved }: {
   connection: CustomConnection;
   models: readonly CustomModel[];
   discovery: Discovery | null;
@@ -1123,7 +1125,8 @@ function ModelsStep({ connection, models, discovery, onDiscover, onSaved }: {
           <button className="pss__key-btn" type="button" onClick={() => setAdding(null)}>Cancel</button>
         </div>
       )}
-      <details className="pss__dapi-details">
+      {/* Plan usage fixes both: it always streams and takes no output limit. */}
+      {connection.auth.type === "chatgpt" ? null : <details className="pss__dapi-details">
         <summary>Output limit and streaming</summary>
         <div className="pss__dapi-grid3">
           <Field label="Max output tokens">
@@ -1138,7 +1141,7 @@ function ModelsStep({ connection, models, discovery, onDiscover, onSaved }: {
           </div>
         </div>
         <p className="pss__dapi-hint">Applies to every model saved here. Turn streaming off for a server that can't send server-sent events.</p>
-      </details>
+      </details>}
       {!namesOk ? <p className="pss__dapi-hint">Enter a display name for each selected model. If the endpoint does not supply one, choose a name here.</p> : null}
       <NoteView note={note} />
       <div className="pss__dapi-actions">

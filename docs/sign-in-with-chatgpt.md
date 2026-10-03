@@ -1,90 +1,145 @@
 # Sign in with ChatGPT
 
-PwrSnap is a free MIT local desktop app. Settings → AI Providers → Sign in
-with ChatGPT offers **Continue with ChatGPT** and **Use your ChatGPT plan**
-without a paid PwrSnap upgrade. [Learn more](https://help.openai.com/en/articles/20001542-using-your-chatgpt-plan-in-other-apps-and-sites).
+PwrSnap is a free MIT desktop app that runs locally. **Continue with ChatGPT**
+lets an eligible ChatGPT plan pay for PwrSnap's AI, with no API key, no Codex
+install and no paid PwrSnap upgrade.
+[Learn more](https://help.openai.com/en/articles/20001542-using-your-chatgpt-plan-in-other-apps-and-sites).
 Eligible Plus and Pro accounts can grant plan usage. Business and Enterprise
-plan usage must not be assumed available. Signing in alone does not grant it.
+plans may not offer it, and signing in does not grant it on its own.
 
-When enabled, existing Codex jobs use this connection: annotations,
-descriptions, smart filenames, sensitive-data scan, Library and reel chat,
-and other current Codex text/image jobs. ACP and custom API connections retain
-their own billing. Model choices come from the authenticated account's
-`GET https://api.openai.com/v1/models`, keeping `visibility=list` in server order.
-Use only a model that accepts images for image-bearing jobs; model names do
-not establish that capability. SIWC does not support audio/video input,
-transcription or realtime voice. Those features must use another provider.
+## Shape: a Direct API connection, not an agent
 
-Automatic post-capture enrichment remains off on this connection until
-**Allow automatic post-capture use** is explicitly checked. This is separate
-from the existing AI consent. Clicked AI actions are ordinary user activity.
-The first plan grant shows a welcome. **Using ChatGPT plan** and **Manage usage**
-identify billing; manage per-app caps/access at
-[ChatGPT usage settings](https://chatgpt.com/settings/usage). Usage-limit errors
-must lead there without guessing a reset time. PwrSnap never buys credits,
-rotates accounts to avoid limits, resells plan access or offers a general API.
+Sign in with ChatGPT (SIWC) is a Direct API connection whose auth is
+`{ type: "chatgpt" }`. PwrSnap calls `https://api.openai.com/v1/responses`
+itself, with the plan's access token as the bearer, through the same
+`customModels:*` path as any API-key connection. The connection's address
+and protocol are fixed, and there is at most one. Picking its models works
+the same way: they appear in every picker as `custom:<id>`, and Settings → AI
+Features routes jobs to them.
 
-## Local protocol and credentials
+So everything Direct API means applies here:
+
+- **No tools.** Chat on this connection can discuss text and the current
+  image. It cannot edit captures, browse the library or change reels. Those
+  need an agent (Codex or ACP), which keeps its own sign-in and billing.
+- **No harness.** No Codex child, no app-server, no ACP process is started
+  for it. The agent harnesses are unchanged and unrelated.
+- **Images only where the model says so.** Vision comes from the catalog's
+  `input_modalities`. A model with no stated modalities is "unknown", and its
+  name is never used to guess. SIWC does not take audio or video, and does not
+  do transcription or realtime voice.
+
+Settings → AI Providers offers the plan on the Connections card until the
+connection exists. A first sign-in creates the connection and fills the
+pickers from the account's `GET /v1/models` list: rows with
+`visibility: "list"`, in server order, at most 20.
+
+## The request
+
+`invokeApi` in `direct-api/transport.ts` builds the body. For a chatgpt
+connection it always sends `stream: true` and `store: false`, puts the system
+prompt in `instructions`, and sends `input` as an array. It omits
+`max_output_tokens`, which the preview rejects. It never sends
+`previous_response_id`, `background`, `conversation`, `max_tool_calls`,
+`metadata`, `moderation`, `multi_agent`, `prompt`, `prompt_cache_retention`,
+`safety_identifier`, `temperature`, `top_p`, `truncation`, `user` or tools.
+A turn succeeds only on `response.completed`.
+
+`CustomCredentials.headers` sends the token only when the connection's
+address is exactly `https://api.openai.com/v1`, so an edited settings file
+cannot send the token anywhere else.
+
+## Errors
+
+OpenAI returns an HTTP status and an `error.code`; a stream ends in
+`response.failed` with `response.error.code`. `chatgpt-plan/errors.ts` turns
+each documented code into a sentence. The code itself stays on
+`DirectApiError.code` and is never shown. A usage limit reads as
+`CHATGPT_USAGE_LIMIT_MESSAGE`, and the chat surfaces recognize that sentence
+and offer **Manage usage**, never a guessed reset time. A code that means only
+a new sign-in will help (`subscription_sharing_invalid_user`,
+`chatpass_v2_scope_not_authorized`, `chatpass_v2_invalid_authorization_context`)
+clears the local tokens, so Settings shows the connection signed out.
+
+## Consent and disclosure
+
+Automatic post-capture enrichment does not run on the plan until **Allow
+automatic use for new captures** is on (`ai.chatgptPlan.backgroundConsent`).
+The `codex:enrich` gate refuses an `auto-enrichment` trigger routed to a
+chatgpt model without it (`chatgpt_background_consent_required`). This is in
+addition to the general AI consent. Clicked actions are the user's own
+requests and run without it.
+
+OpenAI's UI guidelines fix the wording:
+
+- the sign-in button says **Continue with ChatGPT**;
+- the first ready visit shows **You're using your ChatGPT plan**, with
+  **Got it** focused;
+- **Using ChatGPT plan** appears under the chat's backend chips and as the
+  connection's status;
+- wherever the plan is offered: "Eligible usage in this app uses your ChatGPT
+  plan." and "Manage usage in your ChatGPT settings.";
+- **Manage usage** opens [ChatGPT usage settings](https://chatgpt.com/settings/usage).
+
+The two OpenAI pages are allowed in `external-url-allowlist.ts` as exact
+URLs, not as hosts. **The ChatGPT logo is not in the tree.** The guidelines
+require it on the sign-in button, the welcome and the limit message; it has
+to come from OpenAI's brand kit before distribution.
+
+PwrSnap never buys credits, rotates accounts to avoid limits, resells plan
+access or offers a general API. The MCP tool registry exposes no
+`chatgptPlan:*` verb.
+
+## Credentials and sessions
 
 Main implements the published public native-client protocol with Node crypto
-and HTTP, not the noncommercial DevKit. There is no SIWC SDK dependency or
-copied DevKit code/logo. The separate custom-provider OAuth helper is unused.
-Initial registration uses `dynamic_agent_client`, PKCE S256, random state and
-nonce, `agent_name_hint=PwrSnap`, a persisted opaque installation host id,
-and `http://127.0.0.1:<port>/auth/callback`. Only the port varies. Subsequent
-sign-ins use the issued `oaiapp_…` client id. ID-token validation checks the
-JWKS signature, issuer, audience, expiration, nonce and returning identity.
+and HTTP (`chatgpt-plan/oauth-client.ts`). It has no SIWC SDK dependency and
+copies no DevKit code or logo. Registration uses `dynamic_agent_client`, PKCE
+S256, random state and nonce, `agent_name_hint=PwrSnap`, a persisted opaque
+installation host id, and `http://127.0.0.1:<port>/auth/callback`. Later
+sign-ins reuse the issued `oaiapp_…` client id. ID-token validation checks the
+JWKS signature, issuer, audience, expiry, nonce and returning identity.
 
-Registration and tokens stay in the existing encrypted OS-user secret store;
-no plaintext fallback, remote persistence or renderer/MCP token projection.
-Status reads use public settings and the secret index without decrypting.
-The agent process alone serializes rotating refresh tokens. A private
-bridge-only command can supply the local Library main process in split mode.
-Refresh restarts app-server; the next turn resumes the thread. A refresh
-invalid-grant clears local tokens while retaining the issued registration and
-host id. Network failures retain credentials. Sign-out sends the refresh token,
-`token_type_hint=refresh_token` and issued client id to the discovered revocation
-endpoint. Even if remote revocation is unconfirmed, local tokens are removed
-and the UI says so. Signing out retains registration metadata for reconnecting.
-
-The Codex child receives `ACCESS_TOKEN` and the published
-`openai_chatgpt_plan` provider (`https://api.openai.com/v1`, Responses wire API,
-`requires_openai_auth=false`, `supports_websockets=false`). Its client identity
-is `PwrSnap`. No inference is sent to ChatGPT's backend-api. Enrichment keeps
-its existing transport-enforced jail, bounded image input and deny handlers.
-
-PwrSnap makes no direct SIWC Responses call. Codex owns Responses serialization:
-`store=false`, `stream=true`, array input, instructions/developer messages,
-and success only on completed turns. The preview rejects system message items,
-`previous_response_id`, `background`, `conversation`, `max_output_tokens`,
-`max_tool_calls`, `metadata`, `moderation`, `multi_agent`, `prompt`,
-`prompt_cache_retention`, `safety_identifier`, `temperature`, `top_p`,
-`truncation`, `user` and other fields in the published limitations. No image
-generation, Code Interpreter, hosted MCP, file search, native computer use or
-Responses tool_search is added. Local PwrSnap editing tools remain on
-user-facing chat; automatic enrichment has no tools.
+- The registration and tokens are one `DesktopSecretStore` secret,
+  `chatgptPlanRegistration`. It has no plaintext fallback, and no renderer or
+  MCP caller can read it.
+- `ai.chatgptPlan` in settings holds only the account label and the
+  `planGranted` / `backgroundConsent` / `welcomeSeen` booleans. It is
+  main-owned: `settings:write` refuses it, and `chatgptPlan:configure` takes
+  only the two user booleans. Status reads never decrypt.
+- Refresh tokens rotate, so the agent process alone refreshes, serialized.
+  In split mode the Library main process gets a token over the bridge-only
+  `chatgptPlan:runtime` verb.
+- A token within 60 s of expiry is refreshed before the request. A rejected
+  refresh clears the tokens but keeps the registration and host id. A network
+  failure keeps everything.
+- Sign-out revokes the refresh token at the discovered endpoint. If OpenAI
+  doesn't confirm, the local tokens are still removed and the UI says so.
 
 ## Operator steps before distribution
 
-Implementation authorization is not an OpenAI eligibility ruling or acceptance
-of the SIWC Terms. PwrSnap is free, public MIT and locally run, but signed
-company distribution by PwrDrvr LLC has an unresolved OSS-versus-commercial
-classification ambiguity. OpenAI's docs do not expressly resolve that case.
+Implementing this is not an OpenAI eligibility ruling or an acceptance of the
+SIWC Terms. PwrSnap is free, MIT and runs locally, but PwrDrvr LLC
+distributes signed builds, and OpenAI's docs do not settle whether that counts
+as open source or commercial use.
 
-Harold must decide whether to distribute under the
+The maintainer must decide whether to distribute under the
 [SIWC Terms](https://openai.com/policies/sign-in-with-chatgpt-terms/), which say
-integration/use constitutes agreement. He may seek clarification or optionally
-submit the [interest form](https://openai.com/form/sign-in-with-chatgpt-interest/).
-This implementation does not submit it, accept terms in a browser, buy anything
-or sign in as him. He must manually verify with his own Plus or Pro account:
-first registration, declined plan scope, returning sign-in, model choices,
-clicked image/text jobs, consent-off automatic capture, consent-on capture,
-refresh/thread resume, usage limits and remote disconnect/sign-out. CI uses
-fake endpoints and fixtures only, with no live OpenAI calls or tokens.
+that integrating or using it means agreement. They may ask OpenAI to clarify,
+or submit the
+[interest form](https://openai.com/form/sign-in-with-chatgpt-interest/).
+Nothing in this change submits the form, accepts terms, buys anything or
+signs in on anyone's behalf. Verify by hand with a real Plus or Pro account:
+
+- first registration, a declined plan scope, and a returning sign-in;
+- the model list, and clicked image and text jobs;
+- a new capture with consent off, and with consent on;
+- token refresh, a usage limit, and remote disconnect and sign-out.
+
+CI uses loopback fakes and fixtures only, never live OpenAI calls or tokens.
 
 Protocol references: [registration](https://developers.openai.com/siwc/token-sharing-open-source/sign-in),
 [sessions](https://developers.openai.com/siwc/token-sharing-open-source/profiles-and-sessions),
-[app-server](https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server),
 [preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations),
 [errors](https://developers.openai.com/siwc/token-sharing-open-source/errors-and-recovery),
 [UI guidance](https://developers.openai.com/siwc/ui-ux-guidelines).

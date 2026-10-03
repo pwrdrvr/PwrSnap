@@ -1,4 +1,3 @@
-import { ChatgptUsageAction, isChatgptUsageLimit } from "./ChatgptUsageAction";
 // Shared Library/Sizzle chat widget. Surface-specific wrappers provide only
 // scope identity and root test id; this component owns the lifecycle once so
 // Stop, drafts, streams, approvals, archive, and terminal races cannot drift.
@@ -35,6 +34,7 @@ import {
   type ChatBackendAvailability,
   type ChatBackendChoice
 } from "./ChatBackendChips";
+import { ChatgptPlanNote, ChatgptUsageAction, chatgptPlanProviders, isChatgptUsageLimit } from "./ChatgptUsageAction";
 import "./chat-panel.css";
 
 type ChatSurface = "library" | "sizzle";
@@ -193,7 +193,7 @@ export function ChatPanelSurface({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [codexError, setCodexError] = useState<ChatPanelError | null>(null);
-  const [chatgptPlanEnabled, setChatgptPlanEnabled] = useState(false);
+  const [planProviders, setPlanProviders] = useState<ReadonlySet<string>>(() => new Set());
   const [actionError, setActionError] = useState<string | null>(null);
   const [draftResetVersion, setDraftResetVersion] = useState(0);
   const [loading, setLoading] = useState<boolean>(true);
@@ -321,7 +321,7 @@ export function ChatPanelSurface({
   useEffect(() => {
     let cancelled = false;
     const updateProviders = (settings: Settings): void => {
-      setChatgptPlanEnabled(settings.codex?.chatgptPlanEnabled === true);
+      setPlanProviders(chatgptPlanProviders(settings));
       const enabled = settings.ai?.acp?.enabledAgentIds ?? [];
       setProviders(["codex", ...enabled.map((id) => `acp:${id}`), ...(settings.ai?.customModels ?? []).map((m) => `custom:${m.id}`)]);
       setProviderLabels(Object.fromEntries((settings.ai?.customModels ?? []).map((m) => [`custom:${m.id}`, m.displayName])));
@@ -924,8 +924,6 @@ export function ChatPanelSurface({
       </div>
 
       <div className="ps-libchat-main">
-        {chatgptPlanEnabled && (lockedChoice?.provider ?? draftConfig.provider) === "codex" ?
-          <div className="ps-libchat-empty-body">Using ChatGPT plan <ChatgptUsageAction /></div> : null}
         {showGreeting ? (
           <div className="ps-libchat-greeting">
             <div className="ps-libchat-empty-title">
@@ -957,6 +955,7 @@ export function ChatPanelSurface({
                 ? { onAvailabilityChange: setBackendAvailability }
                 : {})}
             />
+            {planProviders.has(draftConfig.provider) ? <ChatgptPlanNote /> : null}
             {draftHint !== null ? (
               <p className="ps-libchat-empty-body" style={{ color: "var(--accent)" }}>
                 {draftHint}
@@ -966,6 +965,7 @@ export function ChatPanelSurface({
         ) : (
           <>
             {lockedChoice !== null ? <LockedBackendChips choice={lockedChoice} providerLabels={providerLabels} /> : null}
+            {lockedChoice !== null && planProviders.has(lockedChoice.provider) ? <ChatgptPlanNote /> : null}
             <MessageList
               messages={messages}
               streamingMessageId={streamingMessageId}

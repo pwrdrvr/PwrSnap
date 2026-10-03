@@ -69,10 +69,10 @@ provider you've already set Codex up with.
   Codex is set to talk to (OpenAI by default — Codex itself is an OpenAI
   product — but Codex can be configured to route elsewhere), billed to
   the plan you already have with that provider through Codex. PwrSnap
-  can also use **Sign in with ChatGPT**: local encrypted OAuth tokens authorize
-  the Codex child to use your eligible ChatGPT plan at OpenAI’s Responses API.
-  Automatic post-capture use requires separate consent. PwrSnap is free;
-  **Use your ChatGPT plan** requires no paid PwrSnap upgrade.
+  can also use **Sign in with ChatGPT**: it calls OpenAI’s Responses API
+  itself, billed to your eligible ChatGPT plan, with no Codex install and no
+  API key. Automatic post-capture use requires separate consent. PwrSnap is
+  free; **Use your ChatGPT plan** requires no paid PwrSnap upgrade.
   [Learn more](https://help.openai.com/en/articles/20001542-using-your-chatgpt-plan-in-other-apps-and-sites)
   and [connection details and operator steps](docs/sign-in-with-chatgpt.md).
   Custom API connections additionally make requests directly from main with

@@ -1,4 +1,3 @@
-import { ChatgptUsageAction, isChatgptUsageLimit } from "./ChatgptUsageAction";
 // MessageList — the shared streaming message-list primitive for every
 // PwrSnap chat surface (Library DetailRail chat, editor chat). Pure
 // presentational: props in, callbacks out, NO bus / IPC wiring. The
@@ -49,6 +48,7 @@ import type {
   ChatMessageContent,
   ChatMessageStatus
 } from "@pwrsnap/shared";
+import { ChatgptUsageAction, isChatgptUsageLimit } from "./ChatgptUsageAction";
 import "./MessageList.css";
 
 /** A friendly, present-tense record of one tool the agent ran this turn

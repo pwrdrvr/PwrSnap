@@ -153,9 +153,6 @@ export function validateSettingsWrite(
       };
     }
     const codex = p.codex as Record<string, unknown>;
-    if (Object.keys(codex).some(key => key.startsWith("chatgpt"))) {
-      return { ok: false, error: validationError("main_owned_setting", "Use the ChatGPT provider controls") };
-    }
     // pinnedPath: non-nullable string. `null` is rejected; "" is a valid clear.
     if (!isUndefined(codex.pinnedPath) && !isString(codex.pinnedPath)) {
       return {
@@ -232,6 +229,11 @@ export function validateSettingsWrite(
     // without clearing the key bound to the old one.
     if (ai.customModels !== undefined || ai.customConnections !== undefined) {
       return { ok: false, error: validationError("custom_models_main_owned", "Use Settings → AI Providers to change Direct API connections.") };
+    }
+    // Main-owned: the chatgptPlan:* verbs keep this projection in step with
+    // the stored SIWC tokens, and background consent is theirs to grant.
+    if (ai.chatgptPlan !== undefined) {
+      return { ok: false, error: validationError("chatgpt_plan_main_owned", "Use Settings → AI Providers → ChatGPT.") };
     }
     if (!isUndefined(ai.enabled) && !isBoolean(ai.enabled)) {
       return {

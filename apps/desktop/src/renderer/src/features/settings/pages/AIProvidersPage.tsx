@@ -1,4 +1,4 @@
-import { ChatgptPlanCard } from "./ChatgptPlanCard";
+import { ChatgptOffer } from "./ChatgptConnection";
 import { ConnectionIndex } from "./ConnectionIndex";
 import { ConnectionPage } from "./ConnectionPage";
 import { CodexUpgradeStrip } from "../CodexUpgradeHelp";
@@ -286,8 +286,8 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
           <h1 className="pss__main-title">AI Providers</h1>
           <p className="pss__main-sub">
             Two ways to run AI. Installed agents are CLIs you already use, signed in to your
-            own account. Direct API connections are called by PwrSnap itself, with your key,
-            on your provider's bill. Pick which one does each job in{" "}
+            own account. Direct API connections are called by PwrSnap itself, with your
+            ChatGPT plan or with a key on your provider's bill. Pick which one does each job in{" "}
             <button
               type="button"
               className="pss__text-link"
@@ -302,7 +302,6 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
         </div>
       </div>
 
-      <ChatgptPlanCard />
       <Card eyebrow="INSTALLED AGENTS" title="Agents">
         <Row
           label="Ready to use?"
@@ -329,6 +328,9 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
           label="One endpoint, one credential"
           sub="Each connection is a base URL, a protocol and a key or sign-in. Add as many of that endpoint's models as you like; they share the credential. Chat through a connection has no editing tools; captions need a model that accepts images."
         >
+          {/* Until there is a ChatGPT connection, the plan is offered first:
+              for anyone without an API key it is the shortest way to AI. */}
+          {connections.some((c) => c.connection.auth.type === "chatgpt") ? null : <ChatgptOffer />}
           {connections.length > 0 ? (
             <ConnectionIndex
               connections={connections}

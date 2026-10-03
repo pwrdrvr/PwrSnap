@@ -1,8 +1,3 @@
-import { app } from "electron";
-import { planErrorMessage, requiresPlanSignIn } from "./chatgpt-plan/errors";
-import { StdioJsonRpcTransport } from "@pwrdrvr/agent-transport";
-import { planRuntime, accountModels, invalidatePlanSession } from "./chatgpt-plan/session";
-import { CHATGPT_PLAN_CONFIG, CHATGPT_PLAN_PROVIDER, chatgptPlanArgs } from "./chatgpt-plan/codex-config";
 // App-wide Codex App Server owner.
 //
 // agent-kit exposes a pooled ACP client, but the published Codex client owns a
@@ -131,11 +126,10 @@ class CodexBackendView implements AgentBackend {
   private async prepareThreadOptions<T extends AgentStartThreadOptions>(
     options: T
   ): Promise<T> {
-    const plan = this.owner.planThreadOptions(options);
-    if (plan.config === undefined) return plan;
+    if (options.config === undefined) return options;
     return {
-      ...plan,
-      config: await this.owner.prepareThreadConfig(plan.config!, plan.cwd)
+      ...options,
+      config: await this.owner.prepareThreadConfig(options.config, options.cwd)
     };
   }
 
@@ -156,9 +150,8 @@ class CodexBackendView implements AgentBackend {
   }
 
   async interruptTurn(threadId: string): Promise<void> {
-    // Stop targets the running child even when renewal, revoked credentials,
-    // or a billing change prevents preparing a client for the next action.
-    await this.owner.client.interruptTurn(threadId);
+    const client = await this.owner.compatibleClient();
+    await client.interruptTurn(threadId);
   }
 
   async forkThread(options: AgentForkThreadOptions): Promise<AgentBackendStartThreadResult> {
@@ -208,10 +201,7 @@ class CodexBackendView implements AgentBackend {
 }
 
 class CodexAgentOwner {
-  client: CodexThreadClient;
-  private planGeneration: string | null = null;
-  private runtimePreparation: Promise<void> | null = null;
-  private usingPlan = false;
+  readonly client: CodexThreadClient;
   private compatibilityCheck: Promise<void> | null = null;
   private readonly threadHandlers = new Map<string, CodexViewHandlers>();
   private readonly activeTurns = new Map<string, CodexViewHandlers>();
@@ -242,44 +232,7 @@ class CodexAgentOwner {
     return new CodexBackendView(this);
   }
 
-  planThreadOptions<T extends AgentStartThreadOptions>(options: T): T {
-    return this.usingPlan ? { ...options, modelProvider: CHATGPT_PLAN_PROVIDER,
-      config: { ...options.config, ...CHATGPT_PLAN_CONFIG } } : options;
-  }
-
-  private async prepareRuntime(): Promise<void> {
-    const runtime = await planRuntime();
-    const generation = runtime?.generation ?? null;
-    if (generation === this.planGeneration) return;
-    // Do not kill another surface's running turn during renewal or billing changes.
-    if (this.activeTurns.size > 0) throw new Error("ChatGPT plan changed; wait for the current AI job and retry.");
-    await this.client.close();
-    this.planGeneration = generation;
-    this.usingPlan = runtime !== null;
-    this.rawNotificationTapInstalled = false;
-    this.client = new CodexThreadClient({
-      command: this.options.command,
-      env: this.options.env ?? process.env,
-      clientName: runtime ? "PwrSnap" : PWRSNAP_CLIENT_NAME,
-      ...(runtime ? { clientVersion: app.getVersion() } : {}),
-      clientTitle: PWRSNAP_CLIENT_TITLE,
-      serviceName: PWRSNAP_SERVICE_NAME,
-      ...(runtime ? { transportFactory: (command: string) => new StdioJsonRpcTransport({
-        command, args: chatgptPlanArgs(), env: { ...(this.options.env ?? process.env), ACCESS_TOKEN: runtime.accessToken },
-        logger: toAgentKitLogger(this.options.loggerScope)
-      }) } : {}),
-      logger: toAgentKitLogger(this.options.loggerScope)
-    });
-    this.client.onEvent(event => this.routeEvent(event));
-    this.client.onToolCall(call => this.routeToolCall(call));
-    this.client.onApprovalRequest((method, params) => this.routeApprovalRequest(method, params));
-    // CodexThreadClient.startTurn calls thread/resume on the replacement process.
-  }
-
   async compatibleClient(): Promise<CodexThreadClient> {
-    const preparation = this.runtimePreparation ?? this.prepareRuntime();
-    this.runtimePreparation = preparation;
-    try { await preparation; } finally { if (this.runtimePreparation === preparation) this.runtimePreparation = null; }
     const check =
       this.compatibilityCheck ??
       (async () => {
@@ -403,10 +356,6 @@ class CodexAgentOwner {
   }
 
   private routeEvent(event: NormalizedThreadEvent): void {
-    if (this.usingPlan && event.kind === "error") {
-      if (requiresPlanSignIn(event.message, event.code)) void invalidatePlanSession().catch(() => undefined);
-      event = { ...event, message: planErrorMessage(event.message, event.code) };
-    }
     const threadId = threadIdFromEvent(event);
     if (threadId !== null && event.kind === "turn_completed") {
       this.activeTurns.delete(threadId);
@@ -495,7 +444,6 @@ class CodexAgentOwner {
         throw new DOMException("one-shot turn aborted", "AbortError");
       }
       thread = await this.startOneShotThread(options, connection, requestTimeoutMs, handlers);
-      this.markActiveTurn(thread.threadId, handlers);
       const input = [
         { type: "text", text: options.prompt, text_elements: [] },
         ...imagePathsToLocalImageInputs(options.imagePaths ?? [])
@@ -633,9 +581,9 @@ class CodexAgentOwner {
         "thread/start",
         {
           model: options.model ?? null,
-          ...(this.usingPlan ? { modelProvider: CHATGPT_PLAN_PROVIDER } :
-            options.modelProvider !== null && options.modelProvider !== undefined
-            ? { modelProvider: options.modelProvider } : {}),
+          ...(options.modelProvider !== null && options.modelProvider !== undefined
+            ? { modelProvider: options.modelProvider }
+            : {}),
           // The security-relevant posture — ephemeral thread, scratch-dir cwd +
           // workspace roots, no approvals, read scoping, no environments — is
           // owned by `enrichment-sandbox.ts` and pinned by a test. Do NOT
@@ -648,7 +596,6 @@ class CodexAgentOwner {
           ...(baseInstructions.length > 0 ? { baseInstructions } : {}),
           config: {
             ...(threadConfig ?? {}),
-            ...(this.usingPlan ? CHATGPT_PLAN_CONFIG : {}),
             // The profile the `permissions` id above resolves to. Harmless on
             // the fallback path — an unreferenced profile is inert.
             ...codexEnrichmentPermissionProfile(workspaceDir)
@@ -748,10 +695,6 @@ class CodexAgentOwner {
         }
         if (event.status === "interrupted" || event.status === "cancelled") {
           reject(new DOMException("one-shot turn aborted", "AbortError"));
-          return;
-        }
-        if (event.status !== "completed") {
-          reject(new Error("Codex turn did not complete"));
           return;
         }
         const rawText = agentMessages.at(-1)?.trim();
@@ -910,7 +853,6 @@ export function acquireCodexAgentBackendView(options: CodexBackendViewOptions): 
 }
 
 export async function listCodexModelsFromPool(options: CodexModelListOptions): Promise<CodexModelOption[]> {
-  if ((await getDesktopSettingsStore().read()).codex.chatgptPlanEnabled) return accountModels();
   return await getCodexOwner({
     command: options.command,
     env: options.env,

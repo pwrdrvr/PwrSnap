@@ -23,13 +23,15 @@ allowBuilds:
   esbuild: true
   sharp: true
 
-# The @pwrdrvr/agent-kit packages are PwrDrvr's own, freshly published, and
-# pinned — exempt them from the 7-day minimumReleaseAge gate (which targets
-# untrusted third-party releases) so PwrSnap can consume 0.1.0 immediately.
 minimumReleaseAgeExclude:
-  # Security backport: GHSA-qw65-cvwx-89v3 and GHSA-58mr-gqgx-xq4g.
-  # Exempt only this release; future fast-uri versions retain the age gate.
-  - "fast-uri@3.1.7"
+  # Security updates: GHSA-hxh3-vqpv-xpqv (hono),
+  # GHSA-2vr4-cq9g-pvrc and GHSA-h3mg-xc3c-68pw (ip-address).
+  # Exempt only these pinned releases; future versions retain the age gate.
+  - "hono@4.13.12"
+  - "ip-address@10.7.3"
+  # The @pwrdrvr/agent-kit packages are PwrDrvr's own, freshly published, and
+  # pinned — exempt them from the 7-day minimumReleaseAge gate (which targets
+  # untrusted third-party releases) so PwrSnap can consume 0.1.0 immediately.
   - "@pwrdrvr/codex-app-server-protocol"
   - "@pwrdrvr/agent-core"
   - "@pwrdrvr/agent-transport"

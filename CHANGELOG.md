@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.1.14 - 2026-10-02
+
+This patch restores capture enrichment with newer Codex installations.
+
+- Codex Enrichment - Fixed capture descriptions and other AI metadata from
+  failing on Codex 0.160 with "failed to load workspace requirements," and
+  improved configuration-error guidance when enrichment cannot start.
+
 ## v1.1.13 - 2026-10-02
 
 This release adds freehand drawing and flexible toolbar docking, and improves

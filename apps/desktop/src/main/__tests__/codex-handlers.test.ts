@@ -499,6 +499,11 @@ describe("Codex handlers", () => {
       settings.ai.chatgptPlan.backgroundConsent = true;
       const allowed = await bus.dispatch("codex:enrich", { captureId: "cap_1", triggerSource: "auto-enrichment" }, { principal: "ipc" });
       expect(allowed.ok).toBe(true);
+      if (!allowed.ok) return;
+      // Dispatch only schedules enrichment; keep its service and HTTP fixture
+      // alive until completion, before afterEach closes the database.
+      await waitFor(() => getAiRun(allowed.value.runId)?.status === "completed");
+      expect(requests).toBe(2);
       expect(clientFactory).not.toHaveBeenCalled();
     } finally {
       serviceSpy.mockRestore();

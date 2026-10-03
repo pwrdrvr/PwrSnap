@@ -42,7 +42,14 @@
   "pnpm": {
     "overrides": {
       "@types/node": "24.12.4",
-      "tar": "7.5.22"
+      "brace-expansion@1": "1.1.21",
+      "brace-expansion@2": "2.1.7",
+      "brace-expansion@5": "5.0.12",
+      "fast-uri@3": "3.1.8",
+      "hono@4": "4.13.12",
+      "ip-address@10": "10.7.3",
+      "tar": "7.5.22",
+      "undici@7": "7.30.0"
     }
   }
 }

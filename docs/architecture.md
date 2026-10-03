@@ -200,6 +200,18 @@ Completions, and Anthropic Messages. Main makes these requests itself; no
 agent, external proxy, or subprocess is required. Legacy text `/completions`
 is a different protocol and is not supported.
 
+Sign in with ChatGPT is a Direct API connection with `auth: { type: "chatgpt" }`.
+Main calls `https://api.openai.com/v1/responses` itself with the plan's access
+token, through the same path as an API-key connection. Like every direct
+connection, it has no tools, and no agent, app-server or subprocess serves it;
+the Codex and ACP harnesses are unchanged. The token goes only to that exact
+address. The registration and rotating tokens stay in DesktopSecretStore, and
+the agent process alone refreshes them (a bridge-only command serves the split
+Library main process). `ai.chatgptPlan` holds only a label and booleans, and is
+main-owned. Automatic post-capture use on the plan needs its own consent on top
+of the general AI consent. See [Sign in with ChatGPT](sign-in-with-chatgpt.md)
+for the request shape, errors and operator steps.
+
 Codex model choices come from the selected installation's live catalog.
 Normal pickers hide GPT-5.5 and the GPT-5.6 family, each model only when its
 own replacement is advertised, so a saved default never disappears without

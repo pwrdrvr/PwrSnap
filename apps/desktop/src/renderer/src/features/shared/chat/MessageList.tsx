@@ -48,6 +48,7 @@ import type {
   ChatMessageContent,
   ChatMessageStatus
 } from "@pwrsnap/shared";
+import { ChatgptUsageAction, isChatgptUsageLimit } from "./ChatgptUsageAction";
 import "./MessageList.css";
 
 /** A friendly, present-tense record of one tool the agent ran this turn
@@ -330,12 +331,13 @@ const MessageBubble = memo(function MessageBubble(
           />
         )}
 
+        {message.status === "failed" && isChatgptUsageLimit(messageText) ? <ChatgptUsageAction /> : null}
         <StatusFooter
           status={message.status}
           messageId={message.id}
           aiRunId={message.aiRunId}
           onRejectAiRun={onRejectAiRun}
-          onRetry={onRetry}
+          onRetry={isChatgptUsageLimit(messageText) ? undefined : onRetry}
           testIdPrefix={testIdPrefix}
         />
       </div>

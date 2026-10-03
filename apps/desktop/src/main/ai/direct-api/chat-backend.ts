@@ -64,6 +64,7 @@ export class DirectChatBackend implements AgentBackend {
         reasoningOutputTokens: result.tokens.reasoningOutputTokens } });
       this.emit({ kind: "turn_completed", threadId, turnId, status: "completed" });
     } catch (e) {
+      await this.service.credentials.noteFailure(model, e);
       if (signal.aborted) this.emit({ kind: "turn_completed", threadId, turnId, status: "interrupted" });
       else this.emit({ kind: "error", threadId, turnId, willRetry: false,
         message: e instanceof DirectApiError ? e.message : "Direct model request failed. Check connection and secure storage." });

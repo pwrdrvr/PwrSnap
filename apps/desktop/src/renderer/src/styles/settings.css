@@ -3262,3 +3262,92 @@ a.pss__top-btn[aria-disabled="true"]:hover {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
+
+/* ---- Sign in with ChatGPT (AI Providers → ChatGPT, hub offer) ----------
+   "Continue with ChatGPT" is OpenAI's sign-in button, so it is drawn as an
+   inverse pill rather than PwrSnap's tangerine primary: bone on black in
+   the dark theme, near-black on white in the light one. */
+.pss__chatgpt-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: flex-start;
+  height: 32px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--text-primary);
+  color: var(--bg-app);
+  font: 600 13px/1 var(--font-sans);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.pss__chatgpt-btn:hover { background: color-mix(in srgb, var(--text-primary) 88%, transparent); }
+.pss__chatgpt-btn:disabled { opacity: 0.6; cursor: default; }
+
+.pss__chatgpt-disc {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  font: 400 12px/1.45 var(--font-sans);
+  color: var(--text-secondary);
+  text-wrap: pretty;
+}
+.pss__chatgpt-link { align-self: flex-start; font-size: 12px; }
+.pss__chatgpt-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+.pss__chatgpt-note { margin: 0; padding: 0 20px 16px; }
+
+.pss__chatgpt-acct {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+.pss__chatgpt-acct-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.pss__chatgpt-acct-name {
+  font: 600 13px/1.2 var(--font-sans);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pss__chatgpt-acct-sub { font: 400 11px/1.3 var(--font-mono); color: var(--text-muted); }
+
+.pss__chatgpt-offer {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 10px;
+  padding: 14px 16px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+}
+.pss__chatgpt-offer-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.pss__chatgpt-offer-title { font: 600 13.5px/1.25 var(--font-sans); color: var(--text-primary); }
+.pss__chatgpt-offer-sub { font: 400 12px/1.4 var(--font-sans); color: var(--text-muted); text-wrap: pretty; }
+
+/* Got it is first in the DOM so it takes the dialog's initial focus;
+   it still sits on the right, where a dialog's primary action goes. */
+.pss__chatgpt-welcome-footer { flex-direction: row-reverse; justify-content: flex-start; }

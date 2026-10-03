@@ -90,6 +90,7 @@ import { getToolRpcServer } from "./ai/mcp/pwrsnap-tool-rpc-server";
 import { closeAcpAgentPool } from "./ai/acp-agent-pool";
 import { closeCodexAgentPool } from "./ai/codex-agent-pool";
 import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
+import { registerChatgptPlanHandlers } from "./handlers/chatgpt-plan-handlers";
 import { registerCodexHandlers } from "./handlers/codex-handlers";
 import { registerDiagnosticsHandlers } from "./handlers/diagnostics-handlers";
 import {
@@ -2110,6 +2111,7 @@ export function bootstrapApp(): void {
       );
       registerCaptureStorageHandlers();
       registerCodexHandlers();
+      registerChatgptPlanHandlers();
       registerCodexProfileHandlers();
       registerAcpHandlers();
       // `capture:saveAs` is the one capture verb owned by the Library in

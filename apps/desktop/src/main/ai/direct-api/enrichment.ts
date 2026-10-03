@@ -19,17 +19,25 @@ export class DirectEnrichmentBackend implements EnrichmentBackend {
       const mime = bytes[0] === 0xff && bytes[1] === 0xd8 ? "image/jpeg" : "image/png";
       images.push(`data:${mime};base64,${bytes.toString("base64")}`);
     }
-    const result = await invokeApi({ model: this.model, headers: await this.service.credentials.headers(this.model, req.abortSignal),
-      timeoutMs: DIRECT_ENRICHMENT_TIMEOUT_MS,
-      ...(this.model.enrichmentReasoning ? { reasoningMode: this.model.enrichmentReasoning } : {}),
-      system: `${CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS}\nReturn ONLY a JSON object conforming to this schema:\n${JSON.stringify(CAPTURE_ENRICHMENT_SCHEMA)}`,
-      messages: [{ role: "user", text: buildCaptureEnrichmentPrompt(req.metadata), images }],
-      ...(req.abortSignal ? { signal: req.abortSignal } : {}) });
+    const result = await this.invoke(images, req);
     let parsed: CaptureEnrichmentResponse["result"];
     try { parsed = parseCaptureEnrichmentResponse(result.text); }
     catch { throw new DirectApiError("Model returned invalid enrichment JSON. Try another model or increase the output token limit."); }
     return { result: parsed, threadId: `direct-${randomUUID()}`, turnId: randomUUID(),
       userAgent: "PwrSnap Direct API", model: this.model.modelId, modelProvider: `custom:${this.model.id}`, serviceTier: null, tokens: result.tokens };
+  }
+  private async invoke(images: string[], req: CaptureEnrichmentRequest): ReturnType<typeof invokeApi> {
+    try {
+      return await invokeApi({ model: this.model, headers: await this.service.credentials.headers(this.model, req.abortSignal),
+        timeoutMs: DIRECT_ENRICHMENT_TIMEOUT_MS,
+        ...(this.model.enrichmentReasoning ? { reasoningMode: this.model.enrichmentReasoning } : {}),
+        system: `${CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS}\nReturn ONLY a JSON object conforming to this schema:\n${JSON.stringify(CAPTURE_ENRICHMENT_SCHEMA)}`,
+        messages: [{ role: "user", text: buildCaptureEnrichmentPrompt(req.metadata), images }],
+        ...(req.abortSignal ? { signal: req.abortSignal } : {}) });
+    } catch (e) {
+      await this.service.credentials.noteFailure(this.model, e);
+      throw e;
+    }
   }
   async close(): Promise<void> {}
 }

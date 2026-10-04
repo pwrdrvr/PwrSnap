@@ -107,9 +107,9 @@ PwrSnap is an App Server **client only** — never an App Server
 
 The full and authoritative list of conventions, gotchas, and load-bearing
 patterns (popover sizing, `setMinimumSize(0, 0)`, settings substrate,
-better-sqlite3 native binding repair) lives in
+better-sqlite3's prebuilt binding) lives in
 **[AGENTS.md](AGENTS.md)** — read it before touching window code,
-settings, or the native sidecar.
+settings, or native dependencies.
 
 ## Testing
 
@@ -274,45 +274,19 @@ rewritten baselines. Both Linux and macOS Desktop E2E
 checkouts fetch these LFS objects; regular build, lint, unit-test, and Windows
 E2E jobs do not download them.
 
-## better-sqlite3 Native Binding Repair
+## better-sqlite3 Native Binding
 
-PwrSnap uses `better-sqlite3`, which ships a native `.node` binary. The
-system Node ABI and Electron ABI can diverge — especially after switching
-worktrees, updating Electron, or running `pnpm install` under a different
-Node version. The usual symptom during `pnpm dev` is:
+`better-sqlite3` 13 is an N-API addon that ships its prebuilt binaries inside
+the npm package, one per platform and architecture. The same binary loads in
+system Node (unit tests, scripts) and in Electron (the app), so nothing is
+compiled at install time and no Electron-specific rebuild exists. A
+`NODE_MODULE_VERSION` error naming `better_sqlite3.node` should no longer be
+possible; if you see one, the tree is still on a pre-13 install, and
+`pnpm install` from the repo root fixes it.
 
-```text
-better_sqlite3.node was compiled against a different Node.js version
-NODE_MODULE_VERSION <old>. This version of Node.js requires NODE_MODULE_VERSION <new>.
-```
-
-Do not chase this as a database bug. Repair the native sidecar from the repo
-root:
-
-```bash
-pnpm install
-cd apps/desktop && node ./scripts/rebuild-native-for-electron.mjs
-```
-
-The script keeps two binaries on purpose:
-
-- `better-sqlite3/build/Release/better_sqlite3.node` stays compiled for
-  system Node so unit tests and scripts can `require("better-sqlite3")`.
-- `better-sqlite3/electron-native/better_sqlite3.node` is compiled or
-  downloaded for Electron and is what the app loads at runtime.
-
-There is no better-sqlite3 prebuild for the current Electron, so the script
-compiles it from source (about 12s). That needs a C++ toolchain and Python 3:
-Xcode Command Line Tools on macOS, `build-essential` on Linux, or the Visual
-Studio C++ build tools on Windows.
-
-For release/package work, the Electron sidecar must be built for the target
-architecture, not necessarily the host. The script honors `npm_config_arch`
-/ `npm_config_target_arch` (including `"universal"`, which lipos arm64 +
-x64 builds into a fat binary), and
-`apps/desktop/src/main/persistence/native-binding.ts` ignores the sidecar
-unless its metadata matches the running Electron version, `better-sqlite3`
-version, and `process.arch`.
+Release packaging keeps only the target's prebuilds: both darwin slices in
+the universal DMG, `darwin-arm64` in the Apple Silicon one, `win32-x64` on
+Windows. AGENTS.md has the details.
 
 ## Release Pipeline
 

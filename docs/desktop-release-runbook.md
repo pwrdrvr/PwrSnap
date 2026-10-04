@@ -386,11 +386,13 @@ APP=apps/desktop/release-stage/dist/mac-universal/PwrSnap.app
 # Identity must be PwrDrvr LLC
 codesign -dv --verbose=4 "$APP"
 
-# Universal: main executable and native sidecar must contain both Apple
-# Silicon and Intel slices.
+# Universal: the main executable and helpers carry both Apple Silicon and
+# Intel slices. better-sqlite3 ships one thin prebuild per arch instead, and
+# loads whichever matches the running CPU: expect `arm64` and `x86_64`.
 lipo -archs "$APP/Contents/MacOS/PwrSnap"
 lipo -archs "$APP/Contents/Resources/PwrSnapWindowList"
-lipo -archs "$APP/Contents/Resources/app.asar.unpacked/node_modules/better-sqlite3/electron-native/better_sqlite3.node"
+lipo -archs "$APP/Contents/Resources/app.asar.unpacked/node_modules/better-sqlite3/prebuilds/darwin-arm64.node"
+lipo -archs "$APP/Contents/Resources/app.asar.unpacked/node_modules/better-sqlite3/prebuilds/darwin-x64.node"
 
 # Gatekeeper-approved (Notarized Developer ID)
 spctl -a -vv "$APP"

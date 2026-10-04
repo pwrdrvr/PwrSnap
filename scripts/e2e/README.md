@@ -126,8 +126,9 @@ for every workspace's `node_modules`:
 ```
 
 Without these, the bind would expose the host's macOS-arm64
-prebuilt `.node` binaries (`better-sqlite3.node`, `sharp/*.node`)
-to the Linux container, which crash on load. The anonymous
+node_modules to the Linux container, whose platform-specific
+packages (Electron itself, sharp's native slice) do not run there.
+The anonymous
 volumes are empty on first start; `pnpm install` (which the
 wrapper always runs) populates them with Linux-native binaries
 that stay invisible to the host.

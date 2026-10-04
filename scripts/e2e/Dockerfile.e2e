@@ -61,9 +61,9 @@ RUN corepack enable
 
 # Hermetic install dir: bind the repo at /work, but install into a
 # container-local pnpm store so we don't fight the host's
-# .pnpm-store or arch-specific .node binaries (better-sqlite3 +
-# sharp ship per-platform prebuilt .node files; the host's macOS
-# arm64 .node files would crash inside the container).
+# .pnpm-store or platform-specific packages (Electron itself and
+# sharp's native slice install per platform; the host's macOS arm64
+# copies would not run inside the container).
 ENV PNPM_HOME=/root/.local/share/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 ENV CI=1

@@ -3197,23 +3197,14 @@ pnpm.cmd install
 
 The root `preinstall` script checks that `node` exactly matches `.nvmrc` and,
 on local POSIX machines with `~/.nvm`, that the active Node binary is coming
-from nvm. Do not bypass this check. Native modules are sensitive to the Node/Electron
-ABI they were built against; installing with the wrong Node can leave
-`better-sqlite3.node` built for the wrong `NODE_MODULE_VERSION` and Electron
-will fail at runtime with a message like:
+from nvm. Do not bypass this check.
 
-```text
-was compiled against a different Node.js version using NODE_MODULE_VERSION ...
-```
-
-If that happens, switch to the pinned nvm Node and rebuild Electron native
-dependencies from the repo root:
-
-```bash
-source ~/.nvm/nvm.sh
-nvm use
-pnpm rebuild:electron-native
-```
+PwrSnap's native addons (better-sqlite3 and sharp) are N-API, so one prebuilt
+binary loads in system Node and in Electron alike, and there is no
+`NODE_MODULE_VERSION` to rebuild for. `pnpm rebuild:electron-native` now only
+builds the platform helpers (`build-native.mjs`, the same as `build:native`).
+The name is kept because tooling outside this repo, including the PwrSuiteLab
+PwrSnap workload, runs it.
 
 ## Linux sandbox setup
 
@@ -3234,64 +3225,52 @@ package node_modules can resolve workspace imports into the donor checkout,
 and installs/native staging then mutate shared dependencies. A symlink to the
 same repaired helper inherits its permissions but is not a complete setup fix.
 
-## better-sqlite3 + Electron native binding repair
+## better-sqlite3 loads its own N-API prebuild — nothing is rebuilt for Electron
 
-PwrSnap uses `better-sqlite3`, which ships a native `.node` binary. The
-system Node ABI and Electron ABI can diverge, especially after switching
-worktrees, updating Electron, or running `pnpm install` under a different Node
-version. The usual symptom during `pnpm --filter @pwrsnap/desktop dev` is:
+**better-sqlite3 13 is N-API and ships a prebuild for every platform it
+supports inside the one npm package, as `prebuilds/<platform>-<arch>.node`.
+Its loader picks the file for `process.platform` / `process.arch` at runtime,
+so unit tests under system Node and the app under Electron load the same
+binary. Do not reintroduce a `nativeBinding` override, an Electron-only
+rebuild, or a second binding beside the first.** Pinned by
+[better-sqlite3-prebuilds.test.mjs](apps/desktop/scripts/better-sqlite3-prebuilds.test.mjs).
 
-```text
-better_sqlite3.node was compiled against a different Node.js version
-NODE_MODULE_VERSION <old>. This version of Node.js requires NODE_MODULE_VERSION <new>.
-```
+Until 13, better-sqlite3 was written against V8's own API: one prebuild per
+Electron ABI, and none for Electron 44 (ABI 149). Every install and every
+packaging stage compiled an Electron copy into an `electron-native/` sidecar
+beside the system-Node one, `native-binding.ts` chose between them by a
+metadata file, and the compile needed a C++ toolchain plus a GCC 12 workaround
+for V8 15's headers. All of that is gone, and an old note that tells you to
+"repair the native sidecar" is describing it.
 
-Do not chase this as a database bug. Repair the native sidecar from the repo
-root:
+Things that bite:
 
-```bash
-source ~/.nvm/nvm.sh
-nvm use
-pnpm install
-pnpm rebuild:electron-native
-```
-
-The script keeps two binaries on purpose:
-
-- `better-sqlite3/build/Release/better_sqlite3.node` stays compiled for system
-  Node so unit tests and scripts can `require("better-sqlite3")`.
-- `better-sqlite3/electron-native/better_sqlite3.node` is downloaded or
-  compiled for Electron and is what the app loads at runtime.
-
-**Expect it to compile.** The script tries `prebuild-install` first and falls
-back to `node-gyp` against the Electron headers when there is no prebuild.
-better-sqlite3 12.x is built on the V8 API, not N-API, so it publishes one
-prebuild per Electron ABI, and nothing covers Electron 44 (ABI 149).
-prebuild-install's `node-abi` also throws `Could not detect abi` for an
-Electron it does not know, whether or not a prebuild exists. So every install
-and every packaging stage compiles. That takes about 12s per architecture and
-needs a C++ toolchain plus Python 3, which every CI image and the Docker E2E
-image already have. The headers are cached in `~/.electron-gyp`. The compile
-runs in a scratch copy of the package because `node-gyp rebuild` deletes
-`build/`, which holds the system-Node binding. It also clears the release
-scripts' `npm_config_arch` / `npm_config_target` for the child process,
-because node-gyp reads those AFTER its argv and `universal` would override
-`--arch`. It also compiles with `-UV8_DEPRECATION_WARNINGS`. node-gyp defines
-that macro, and it puts `[[deprecated]]` ahead of `__attribute__((visibility))`
-in a V8 15 class head, an ordering GCC 12 rejects. Without the `-U`, the
-Debian bookworm Docker E2E image could not build the binding. better-sqlite3
-13 is N-API with bundled prebuilds, and migrating to it removes all of this.
-
-For release/package work, the Electron sidecar must be built for the target
-architecture, not necessarily the host architecture. The script honors
-`npm_config_arch` / `npm_config_target_arch` before falling back to
-`process.arch`, and `apps/desktop/src/main/persistence/native-binding.ts`
-ignores the sidecar unless its metadata matches the running Electron version,
-`better-sqlite3` version, and `process.arch`.
-
-Do not "fix" the ABI mismatch by copying the Electron binary over
-`build/Release`, because that breaks Node-based tests with the inverse
-`NODE_MODULE_VERSION` mismatch.
+- **`allowBuilds: better-sqlite3: false` in `pnpm-workspace.yaml` is a
+  guard.** pnpm 10 ignored the package's `gypfile: false` and ran an
+  implicit `node-gyp rebuild` because a `binding.gyp` is present. With a
+  prebuild for the host, every target in that file is `type: none`, so the
+  run compiled nothing, yet it still needed Python and make (Visual Studio
+  on Windows) just to configure. pnpm 12.9.1 honors `gypfile: false`:
+  measured, it builds nothing even with the entry set to `true`. `false`
+  keeps a future pnpm from bringing the build back. The cost: a host with no
+  prebuild fails to load at runtime instead of compiling. Every target
+  PwrSnap ships or tests on has one, and the test above checks the installed
+  package for each.
+- **Packaging keeps only the target's prebuilds.** `release.mjs` and
+  `package-win.mjs` call `pruneBetterSqlite3Prebuilds` on the stage, the same
+  way sharp's foreign `@img` packages are pruned. The universal Mac keeps
+  `darwin-arm64.node` + `darwin-x64.node`, the arm64-only Mac keeps
+  `darwin-arm64.node`, and Windows keeps `win32-x64.node`. The other six are
+  ~2 MB each. `verify-asar-contents.mjs` fails on a missing target prebuild
+  and on a foreign one.
+- **The darwin pair are thin Mach-Os, identical in both per-arch app trees,
+  so they are in `mac.x64ArchFiles`.** `@electron/universal` aborts the merge
+  on an identical thin Mach-O that glob does not cover. The old sidecar never
+  hit this because it was already fat, and the merge skips fat files.
+  `verifyPackagedArchitecture` expects each one thin, at its own arch.
+- **The Linux prebuild needs glibc 2.34 and `GLIBCXX_3.4.29`**: Ubuntu 22.04
+  or later, or Debian bookworm, which is the Docker E2E image. A musl host
+  gets the `linuxmusl-*` file.
 
 ## sharp in Electron on Linux runs its WebAssembly build
 

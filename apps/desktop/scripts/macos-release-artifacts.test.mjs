@@ -138,7 +138,7 @@ describe("macOS paired release", () => {
   test("archives both stages and the tools needed after the signing boundary", () => {
     const workflow = readFileSync(new URL("../../../.github/workflows/release.yml", import.meta.url), "utf8");
     const archive = workflow.split("- name: Archive signing input")[1].split("- name: Upload signing input")[0];
-    for (const input of ["apps/desktop/release-stage-arm64", "apps/desktop/scripts/macos-release-artifacts.mjs", "apps/desktop/scripts/sharp-platform-packages.mjs", "scripts/lib/cli-entrypoint.mjs"]) expect(archive).toContain(input);
+    for (const input of ["apps/desktop/release-stage-arm64", "apps/desktop/scripts/macos-release-artifacts.mjs", "apps/desktop/scripts/sharp-platform-packages.mjs", "apps/desktop/scripts/better-sqlite3-prebuilds.mjs", "scripts/lib/cli-entrypoint.mjs"]) expect(archive).toContain(input);
     expect(workflow).toContain("--sign-stage-only --no-publish --arch=arm64");
     expect(workflow).toContain("mac-dist/dist/PwrSnap-arm64.dmg");
     expect(workflow).toContain("--draft=false --prerelease");

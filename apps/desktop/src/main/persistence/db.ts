@@ -33,7 +33,6 @@ import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getMainLogger } from "../log";
 import { pendingMigrationFiles } from "./migration-pending";
-import { getNativeBinding } from "./native-binding";
 import { getDbPath } from "./paths";
 
 const log = getMainLogger("pwrsnap:db");
@@ -91,7 +90,10 @@ export async function openDatabase(
   }
 
   log.info("opening database", { dbPath });
-  const db = new Database(dbPath, { nativeBinding: getNativeBinding() });
+  // better-sqlite3 13 is N-API, so the prebuild it bundles for this
+  // platform/arch loads in Electron and in system Node alike. No
+  // `nativeBinding` override: there is no second, Electron-only build.
+  const db = new Database(dbPath);
 
   configureDatabaseConnection(db);
 

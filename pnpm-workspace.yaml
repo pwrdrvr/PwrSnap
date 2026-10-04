@@ -22,7 +22,11 @@ supportedArchitectures:
     - arm64
     - current
 allowBuilds:
-  better-sqlite3: true
+  # better-sqlite3 13 loads its bundled N-API prebuild, so nothing builds it.
+  # pnpm 10 ignored its `gypfile: false` and ran a node-gyp rebuild that
+  # needed Python and a C++ toolchain; pnpm 12 honors it. This keeps it that
+  # way. See AGENTS.md.
+  better-sqlite3: false
   electron: true
   electron-winstaller: true
   esbuild: true

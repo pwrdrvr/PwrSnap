@@ -88,7 +88,7 @@ describe("Linux sandbox integration", () => {
     expect(dev).toContain('import { runCli as checkLinuxSandbox } from "../../../scripts/linux-sandbox.mjs"');
     const repair = dev.indexOf("const electronStatus = ensureElectronInstalled(env)");
     const check = dev.indexOf('checkLinuxSandbox(["--warn"])');
-    const staging = dev.indexOf('"./scripts/rebuild-native-for-electron.mjs"', repair);
+    const staging = dev.indexOf('"./scripts/build-native.mjs"', repair);
     const launch = dev.indexOf('return runLongLived(node, [electronViteJs, "dev"');
     expect(repair).toBeGreaterThan(-1);
     expect(check).toBeGreaterThan(repair);

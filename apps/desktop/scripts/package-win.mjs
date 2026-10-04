@@ -38,6 +38,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, write
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { pruneSharpNativePackages } from "./sharp-platform-packages.mjs";
+import { pruneBetterSqlite3Prebuilds } from "./better-sqlite3-prebuilds.mjs";
 import { stagedPnpmConfigEnv } from "./staged-pnpm-config.mjs";
 // windowsInstallerArtifacts + writeWindowsChecksums live beside the alias
 // writer that reads SHA256SUMS back, so the manifest has one definition.
@@ -105,15 +106,6 @@ function resolveElectronBuilderCli() {
   throw new Error(
     `electron-builder CLI missing at ${staged} and ${dev}; run \`pnpm install\` from the repo root first`
   );
-}
-
-function readElectronBuilderVersion() {
-  const config = readFileSync(join(desktopRoot, "electron-builder.yml"), "utf8");
-  const match = /^electronVersion:\s*([^\s#]+)/m.exec(config);
-  if (!match) {
-    throw new Error("electron-builder.yml is missing electronVersion");
-  }
-  return match[1];
 }
 
 function readStagedPackageJson(pkgName) {
@@ -375,16 +367,15 @@ if (!signStageOnly) {
     `  = retained native slice(s): ${sharpPrune.required.map((name) => `@img/${name}`).join(", ")}`
   );
 
-  // 4. Build the staged Electron-native better-sqlite3 sidecar for win32-x64.
-  step("prepare staged better-sqlite3 Electron sidecar (win32-x64)");
-  runChecked("node", ["scripts/rebuild-native-for-electron.mjs"], {
-    cwd: stageDir,
-    env: {
-      PWRSNAP_ELECTRON_VERSION: readElectronBuilderVersion(),
-      npm_config_arch: targetArch,
-      npm_config_target_arch: targetArch
-    }
+  // 4. Keep only the better-sqlite3 prebuild this installer loads. Its N-API
+  //    prebuilds serve Electron as-is, so nothing is rebuilt here.
+  step(`prune foreign better-sqlite3 prebuilds (keep ${targetPlatform}/${targetArch})`);
+  const sqlitePrune = pruneBetterSqlite3Prebuilds({
+    nodeModulesDir: join(stageDir, "node_modules"),
+    platform: targetPlatform,
+    arch: targetArch
   });
+  console.log(`  = retained: ${sqlitePrune.kept.join(", ")}`);
 
   // 5. Seed the stage with build output + electron-builder inputs.
   step("seed stage with build output + builder inputs");

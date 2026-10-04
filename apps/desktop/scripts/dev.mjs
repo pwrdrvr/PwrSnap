@@ -434,13 +434,8 @@ export async function main(argv = process.argv.slice(2), inputEnv = process.env)
   checkLinuxSandbox(["--warn"]);
 
   const node = process.execPath;
-  for (const script of [
-    "./scripts/rebuild-native-for-electron.mjs",
-    "./scripts/build-native.mjs"
-  ]) {
-    const status = run(node, [script], env);
-    if (status !== 0) return status;
-  }
+  const nativeStatus = run(node, ["./scripts/build-native.mjs"], env);
+  if (nativeStatus !== 0) return nativeStatus;
 
   // Run electron-vite's JS entry directly with node rather than the
   // node_modules/.bin shim. The `.bin/electron-vite` entry is a platform-

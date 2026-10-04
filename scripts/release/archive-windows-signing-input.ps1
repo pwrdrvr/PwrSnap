@@ -23,6 +23,7 @@ $paths = @(
   # and owns the SHA256SUMS format package-win.mjs writes.
   "apps/desktop/scripts/windows-release-artifacts.mjs",
   "apps/desktop/scripts/sharp-platform-packages.mjs",
+  "apps/desktop/scripts/better-sqlite3-prebuilds.mjs",
   "apps/desktop/scripts/packaged-html-rules.mjs",
   "apps/desktop/scripts/verify-asar-contents.mjs",
   # The signing job has no checkout, so every check it runs must travel with the

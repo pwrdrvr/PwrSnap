@@ -1078,6 +1078,126 @@ describe("U5 — multi-window pick set", () => {
     expect(document.body.dataset.interaction).toBe("snap");
   });
 
+  describe("lone-pick grippers", () => {
+    function grips(): HTMLElement | null {
+      const el = container?.querySelector('[data-testid="region-pick-grips"]');
+      return el instanceof HTMLElement ? el : null;
+    }
+    function gripStyle(): { left: number; top: number; width: number; height: number } {
+      const el = grips();
+      if (el === null) throw new Error("no grippers");
+      const num = (v: string): number => Number.parseFloat(v.replace("px", ""));
+      return {
+        left: num(el.style.left),
+        top: num(el.style.top),
+        width: num(el.style.width),
+        height: num(el.style.height)
+      };
+    }
+    function gripper(h: string): HTMLElement {
+      const el = grips()?.querySelector(`.region-handle.${h}`);
+      if (!(el instanceof HTMLElement)) throw new Error(`gripper ${h} not found`);
+      return el;
+    }
+
+    test("one pick gets all eight grippers on its box; hover and two picks get none", async () => {
+      await mountScene();
+      await mouseMove(centerOf(WIN).x, centerOf(WIN).y);
+      expect(grips()).toBeNull(); // a hover is a candidate, not a selection
+      await clickWindow(WIN);
+      expect(gripStyle()).toEqual({ left: 200, top: 150, width: 400, height: 300 });
+      expect(grips()?.querySelectorAll("[data-handle]")).toHaveLength(8);
+      expect(container?.querySelector(".region-hint")?.textContent).toContain("handlestrim");
+      await clickWindow(WIN_B);
+      expect(grips()).toBeNull(); // the box is a derived union now
+    });
+
+    test("dragging the bottom-right gripper keeps only the window's top-left", async () => {
+      await mountScene();
+      await clickWindow(WIN);
+      await mouseDown(600, 450, gripper("br"));
+      // The press itself is the promotion: no pick, a resize under way.
+      expect(document.body.dataset.interaction).toBe("resizing");
+      expect(pickBoxes()).toHaveLength(0);
+      expect(grips()).toBeNull();
+      // The whole window stays outlined, and the readout says of what.
+      const ghost = container?.querySelector('[data-testid="region-trim-ghost"]');
+      expect(ghost).toBeInstanceOf(HTMLElement);
+      expect((ghost as HTMLElement).style.width).toBe("400px");
+      await mouseMove(400, 300);
+      expect(container?.querySelector(".region-dims-chip")?.textContent).toBe(
+        "200 × 150of 400 × 300"
+      );
+      await mouseUp(400, 300);
+      expect(document.body.dataset.interaction).toBe("adjusting");
+      expect(container?.querySelector('[data-testid="region-trim-ghost"]')).toBeNull();
+      expect(rectStyle()).toEqual({ left: 200, top: 150, width: 200, height: 150 });
+      await keyDown("Enter");
+      const payload = submitRegion.mock.calls[0]?.[0];
+      expect(payload.rect).toEqual({ x: 200, y: 150, w: 200, h: 150 });
+      // Still attributed to the window it came from, but shipped as the
+      // trimmed rect: no extents to mask, no full-window route.
+      expect(payload.snappedWindowId).toBe(WIN.windowId);
+      expect(payload).not.toHaveProperty("extents");
+      expect(payload).not.toHaveProperty("fullWindow");
+    });
+
+    test("a trim in window mode leaves the full-window route", async () => {
+      // `screencapture -l` never reads the rect, so a trimmed window
+      // sent that way would come back whole.
+      await mountScene({ mode: "window" });
+      await clickWindow(WIN);
+      await mouseDown(600, 450, gripper("br"));
+      await mouseMove(450, 350);
+      await mouseUp(450, 350);
+      await keyDown("Enter");
+      const payload = submitRegion.mock.calls[0]?.[0];
+      expect(payload.rect).toEqual({ x: 200, y: 150, w: 250, h: 200 });
+      expect(payload).not.toHaveProperty("fullWindow");
+    });
+
+    test("over a gripper the window behind the edge is not offered as the next pick", async () => {
+      await mountScene();
+      await clickWindow(WIN);
+      await mouseMove(650, 400); // WIN_OVERLAP, clear of WIN
+      expect(container?.querySelector(".region-pick-hover")).not.toBeNull();
+      // The bottom-right gripper overhangs WIN's corner by half its
+      // size, and (603,447) is that overhang: outside WIN, inside
+      // WIN_OVERLAP. A plain hit-test there would advertise WIN_OVERLAP.
+      await act(async () => {
+        gripper("br").dispatchEvent(
+          new MouseEvent("mousemove", { clientX: 603, clientY: 447, bubbles: true })
+        );
+      });
+      expect(container?.querySelector(".region-pick-hover")).toBeNull();
+      expect(pickBoxes()).toHaveLength(1);
+    });
+
+    test("a window hanging off screen gets grippers on its visible edges", async () => {
+      const OFF: WindowSnapEntry = {
+        ...WIN,
+        windowId: 21,
+        rect: { x: -100, y: 150, w: 400, h: 300 },
+        rawRect: { x: -100, y: 150, w: 400, h: 300 }
+      };
+      await mount();
+      await emitMode({ mode: "auto" });
+      await emitSnapshot({
+        windows: [OFF],
+        displayBounds: { width: window.innerWidth, height: window.innerHeight }
+      });
+      await clickWindow({ ...OFF, rawRect: { x: 0, y: 150, w: 300, h: 300 } });
+      expect(gripStyle()).toEqual({ left: 0, top: 150, width: 300, height: 300 });
+      // The left gripper sits at the screen edge, so a 50px drag moves
+      // the left edge to 50 — not to -50, where the window's real
+      // (unreachable) edge would put it.
+      await mouseDown(0, 300, gripper("lm"));
+      await mouseMove(50, 300);
+      await mouseUp(50, 300);
+      expect(rectStyle()).toEqual({ left: 50, top: 150, width: 250, height: 300 });
+    });
+  });
+
   test("Tab then click picks the window Tab highlighted, not the one on top", async () => {
     // Tab exists to reach a window BURIED under another, and in window
     // mode it is the only way. It moves the snap target without moving

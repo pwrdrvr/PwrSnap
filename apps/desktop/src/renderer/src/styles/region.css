@@ -204,6 +204,34 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
   width: 8px;
 }
 
+/* A lone pick's grippers. Positioning only — the handles inside are
+   the `.region-handle` boxes above, unchanged, so nothing about them
+   shifts when the first drag promotes the pick into `adjusting` and
+   the same handles reappear on `.region-rect`. Only the handles take
+   the pointer: the frame between them still belongs to picking. */
+.region-pick-grips {
+  position: fixed;
+  pointer-events: none;
+}
+
+/* Where the whole window was, while a window-derived rect is being
+   resized. Dashed like the next-pick preview — it is a reference, not
+   part of the selection. */
+.region-trim-ghost {
+  position: fixed;
+  border: 1.5px dashed color-mix(in srgb, var(--accent) 55%, transparent);
+  pointer-events: none;
+}
+
+.region-dims-chip__of {
+  color: var(--text-muted);
+}
+/* The record picker paints the chip red with white text (inline); a
+   muted grey on that red is unreadable. */
+.region-dims-chip[data-intent="video"] .region-dims-chip__of {
+  color: inherit;
+}
+
 .region-dims-chip {
   position: fixed;
   display: inline-flex;

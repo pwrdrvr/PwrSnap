@@ -68,6 +68,26 @@ export function clampRectToViewport(rect: Rect, viewport: Viewport): Rect {
 }
 
 /**
+ * The part of `rect` that is on screen. Unlike `clampRectToViewport`,
+ * which keeps the SIZE and slides the rect back inside, this keeps the
+ * on-screen EDGES where they are and cuts off whatever hangs past the
+ * viewport. Resize handles need this one: a handle drawn at the screen
+ * edge has to be the rect's edge, or `applyResize` measures the drag
+ * from an edge the user cannot see and the rect lags the cursor by the
+ * off-screen overhang.
+ *
+ * Returns `null` when nothing of the rect is on screen.
+ */
+export function intersectRectWithViewport(rect: Rect, viewport: Viewport): Rect | null {
+  const left = Math.max(0, rect.x);
+  const top = Math.max(0, rect.y);
+  const right = Math.min(viewport.width, rect.x + rect.w);
+  const bottom = Math.min(viewport.height, rect.y + rect.h);
+  if (right <= left || bottom <= top) return null;
+  return { x: left, y: top, w: right - left, h: bottom - top };
+}
+
+/**
  * True when `(px, py)` is inside (or on the border of) `rect`.
  */
 export function isPointInsideRect(rect: Rect, px: number, py: number): boolean {

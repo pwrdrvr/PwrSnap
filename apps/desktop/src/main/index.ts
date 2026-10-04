@@ -15,6 +15,7 @@ import {
   dialog,
   globalShortcut,
   Menu,
+  nativeImage,
   nativeTheme,
   shell,
   webContents
@@ -260,6 +261,7 @@ import { resolveCacheFile } from "./render/coordinator";
 import { destroyTextBakePool } from "./render/text-html-bake";
 import { shutdownCompositeThumbnailWorker } from "./workers/composite-thumbnail-worker-client";
 import { clipboardEvents } from "./clipboard-events";
+import { readMacPasteboardPng } from "./clipboard/macos-pasteboard-png";
 import { clearClipboard, readClipboard, writeClipboardText } from "./clipboard/system-clipboard";
 import { CHROMIUM_DISK_CACHE_LIMIT_BYTES } from "./storage/accounting";
 import { installProtocolHandlers, registerSchemesAsPrivileged, type ProtocolResolver } from "./protocols";
@@ -2487,8 +2489,14 @@ export function bootstrapApp(): void {
         // when the clipboard doesn't currently hold an image. Used by
         // clipboard-copy.spec.ts to verify each preset (low/med/high)
         // produces an image of the expected width on the clipboard.
+        // On macOS that is the pasteboard PNG, which Electron 44 cannot see
+        // beside the file URL every PwrSnap copy writes
+        // (clipboard/macos-pasteboard-png.ts).
         readClipboardImage: async () => {
-          const img = await (await readClipboard()).readImage();
+          const img =
+            process.platform === "darwin"
+              ? nativeImage.createFromBuffer((await readMacPasteboardPng()) ?? Buffer.alloc(0))
+              : await (await readClipboard()).readImage();
           if (img.isEmpty()) return null;
           const size = img.getSize();
           return { width: size.width, height: size.height, isEmpty: false };

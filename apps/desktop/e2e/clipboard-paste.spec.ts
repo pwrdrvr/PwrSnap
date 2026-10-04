@@ -74,6 +74,9 @@ async function clearClipboard(app: Awaited<ReturnType<typeof launchPwrSnap>>): P
   });
 }
 
+// `menu-will-show` starts an async clipboard probe (Electron 44 reads the
+// clipboard asynchronously), and `enabled` changes when it lands. So this
+// returns the answer of the previous probe; poll it until it settles.
 async function readPasteMenuEnabled(app: Awaited<ReturnType<typeof launchPwrSnap>>): Promise<boolean> {
   return await app.electronApp.evaluate(({ Menu }) => {
     const menu = Menu.getApplicationMenu();
@@ -116,14 +119,14 @@ test.describe("clipboard paste into library", () => {
     const app = await launchPwrSnap();
     try {
       await clearClipboard(app);
-      expect(await readPasteMenuEnabled(app)).toBe(false);
+      await expect.poll(() => readPasteMenuEnabled(app)).toBe(false);
 
       await writeClipboardImage(app, await makeClipboardPng(80, 45));
-      expect(await readPasteMenuEnabled(app)).toBe(true);
+      await expect.poll(() => readPasteMenuEnabled(app)).toBe(true);
 
       await clearClipboard(app);
       await writeClipboardImageFileUrl(app, await makeClipboardPng(90, 50));
-      expect(await readPasteMenuEnabled(app)).toBe(true);
+      await expect.poll(() => readPasteMenuEnabled(app)).toBe(true);
     } finally {
       await app.close();
     }

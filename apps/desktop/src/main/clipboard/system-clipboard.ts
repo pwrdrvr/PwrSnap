@@ -25,6 +25,14 @@
 //     those rejects, which is why callers look for `text/uri-list`.
 //   • `getType("image/png")` hands back the pasteboard's own PNG bytes
 //     verbatim when there is one, and a PNG Chromium converted otherwise.
+//   • An image beside a file URL is not listed at all. Chromium's
+//     `ClipboardMac::GetStandardFormats` drops `image/png` whenever a file
+//     URL is present (Finder's Cmd+C puts the file's icon there too), and
+//     Electron leaves `public.png` out of the raw formats because PNG is a
+//     standard format. Every PwrSnap copy writes both, so this module cannot
+//     read back the PNG PwrSnap copied. Paste follows the file URL instead;
+//     the E2E bridge reads the PNG through AppKit
+//     (macos-pasteboard-png.ts).
 //   • A private UTI written through `osclipboard` is listed under its
 //     literal name, even from an unpackaged build whose Info.plist does not
 //     declare it.

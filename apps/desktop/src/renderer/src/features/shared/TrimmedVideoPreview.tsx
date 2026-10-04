@@ -151,7 +151,8 @@ export function TrimmedVideoPreview({
       const r = rangeRef.current;
       // mediaTime, not currentTime: the latter is a playback clock, not
       // proof that the decoded picture belongs to the kept interval.
-      if (!el.seeking && metadata.mediaTime >= r.start && metadata.mediaTime < r.end) {
+      if (!el.seeking && el.currentTime >= r.start && el.currentTime < r.end &&
+          metadata.mediaTime >= r.start && metadata.mediaTime < r.end) {
         const canvas = canvasRef.current;
         if (canvas !== null) {
           const width = Math.min(metadata.width, 800);

@@ -192,6 +192,14 @@ describe("trimmed hover preview", () => {
     expect(draw).toHaveBeenCalledTimes(1);
   });
 
+  test("a delayed kept-frame callback cannot copy media after the clock crosses the out-point", async () => {
+    const video = await render();
+    video.currentTime = 3.5;
+    decoded(3.3);
+    expect(draw).not.toHaveBeenCalled();
+    expect(clock()).toBe("0:01.6 / 0:01.6");
+  });
+
   test("expanding the trim after playback ends adopts the head's new relative time", async () => {
     const video = await render();
     video.currentTime = 3.5;

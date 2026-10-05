@@ -3271,9 +3271,11 @@ Four things that bite:
 - **The install needs the `.pnpmfile.cjs` hook.** sharp does not depend on
   `@img/sharp-wasm32` (its docs say to install it alongside), and pnpm's
   isolated layout hides a sibling from sharp's loader. The hook adds it to
-  sharp's optional dependencies at sharp's own version. It gates the package
-  to `os: linux` so macOS and Windows release staging never ship it (the
-  license notice does not disclose it). It also drops the edge from sharp's
+  sharp's optional dependencies at sharp's own version. It declares `cpu: any`
+  explicitly: pnpm 12 otherwise infers `wasm32` from the name and skips it on
+  native Linux CPUs. It gates the package to `os: linux` so macOS and Windows
+  release staging never ship it (the license notice does not disclose it).
+  It also drops the edge from sharp's
   FreeBSD and WebContainers wrappers: pnpm 10.33 otherwise reaches the
   package through them first, skips it along with them, and never
   reconsiders.

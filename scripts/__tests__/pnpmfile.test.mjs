@@ -128,10 +128,10 @@ describe("readPackage / sharp wasm wiring", () => {
     });
   });
 
-  test("gates @img/sharp-wasm32 to linux", () => {
+  test("gates @img/sharp-wasm32 to linux without pnpm inferring a wasm32 host CPU", () => {
     const pkg = { name: "@img/sharp-wasm32", version: "0.35.4", cpu: ["wasm32"] };
     readPackage(pkg);
-    expect(pkg.cpu).toBeUndefined();
+    expect(pkg.cpu).toEqual(["any"]);
     expect(pkg.os).toEqual(["linux"]);
   });
 
@@ -150,12 +150,25 @@ describe("readPackage / sharp wasm wiring", () => {
     expect(pkg).toEqual({ name: "@img/sharp-linux-x64", os: ["linux"], cpu: ["x64"], libc: ["glibc"] });
   });
 
+  test("the installed sharp exposes its wasm binding only on Linux", () => {
+    const desktopRequire = createRequire(
+      fileURLToPath(new URL("../../apps/desktop/package.json", import.meta.url))
+    );
+    const sharpRequire = createRequire(desktopRequire.resolve("sharp"));
+    const resolveBinding = () => sharpRequire.resolve("@img/sharp-wasm32/sharp.node");
+    if (process.platform === "linux") {
+      expect(resolveBinding()).toContain("sharp-wasm32");
+    } else {
+      expect(resolveBinding).toThrow(/Cannot find module/);
+    }
+  });
+
   test("the lockfile carries both edits, so a frozen install on Linux gets the wasm build", () => {
     const lockfile = readFileSync(fileURLToPath(new URL("../../pnpm-lock.yaml", import.meta.url)), "utf8");
     const packageEntry = /\n {2}'@img\/sharp-wasm32@[^']+':\n((?: {4}.*\n)+)/.exec(lockfile);
     expect(packageEntry, "@img/sharp-wasm32 package entry").not.toBeNull();
     expect(packageEntry[1]).toMatch(/^ {4}os: \[linux\]$/m);
-    expect(packageEntry[1]).not.toMatch(/^ {4}cpu:/m);
+    expect(packageEntry[1]).toMatch(/^ {4}cpu: \[any\]$/m);
 
     const snapshots = lockfile.slice(lockfile.lastIndexOf("\nsnapshots:\n"));
     const sharpSnapshot = /\n {2}sharp@([0-9][^(':]*)[^:]*:\n((?: {4}.*\n)+)/.exec(snapshots);

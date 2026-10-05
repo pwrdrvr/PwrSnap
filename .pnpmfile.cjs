@@ -111,7 +111,11 @@ function wireSharpWasmForLinux(pkg) {
     return;
   }
   if (pkg.name !== SHARP_WASM_PACKAGE) return;
-  delete pkg.cpu;
+  // pnpm 12 fills absent platform fields from package-name tokens. Leaving
+  // cpu unset makes it infer wasm32 and skip the package on native Linux.
+  // The wasm runtime works on every host CPU; declare that explicitly while
+  // retaining the Linux-only OS gate for release/license boundaries.
+  pkg.cpu = ["any"];
   pkg.os = ["linux"];
 }
 

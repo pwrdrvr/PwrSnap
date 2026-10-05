@@ -173,7 +173,7 @@ overrides:
   tar: 7.5.22
   undici@7: 7.30.0
 
-pnpmfileChecksum: sha256-CJw7V28SgeXRsYtkP+NhSpNAFZwzibWLZLoSmySPmok=
+pnpmfileChecksum: sha256-0yn1Uqytqut/elypYRfsWuDPVsWZj1YJ00R31+hde1o=
 
 untrackedPnpmfileReadPackageHook: false
 
@@ -1023,6 +1023,7 @@ packages:
   '@img/sharp-wasm32@0.35.4':
     resolution: {integrity: sha512-zQnl4Kwp7Q6NHsENtU2T/00Zi+w3AQNwz3+UaTyVBy2FpXrzXzGjndpK61onhZjRtRpQXxCTeqw19bVyXOh7jA==}
     engines: {node: '>=20.9.0'}
+    cpu: [any]
     os: [linux]
 
   '@img/sharp-webcontainers-wasm32@0.35.4':

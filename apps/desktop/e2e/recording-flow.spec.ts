@@ -136,9 +136,13 @@ test.describe("video float-over", () => {
         const pixel = async (): Promise<boolean> => {
           // The custom-protocol video can taint a canvas. Sample the
           // rendered picture instead of requiring canvas read access.
+          // Locator screenshots include overlapping siblings, so use
+          // the center, clear of the corner badges and bottom controls.
           const screenshot = await page.locator(".fo__preview canvas").screenshot();
+          const { width, height } = await sharp(screenshot).metadata();
           const [r, g, b] = await sharp(screenshot)
-            .extract({ left: 10, top: 10, width: 1, height: 1 }).raw().toBuffer();
+            .extract({ left: Math.floor(width! / 2), top: Math.floor(height! / 2), width: 1, height: 1 })
+            .raw().toBuffer();
           return r! < 10 && g! > 100 && b! < 10;
         };
         await expect.poll(pixel, { timeout: 5000 }).toBe(true);

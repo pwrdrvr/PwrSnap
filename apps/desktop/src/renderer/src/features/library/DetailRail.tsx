@@ -82,7 +82,7 @@ import type { LayersPanelApi } from "../editor/Editor";
 import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag, subscribe } from "../../lib/pwrsnap";
 import { copyImagePreset, copyImagePresetPath } from "../../lib/clipboard-copy";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
-import { useCart } from "./CartContext";
+import { useCart, useCartLoaded } from "./CartContext";
 import { CartPanel } from "./CartPanel";
 import { DuplicateChooser, type DuplicateRequest } from "./DuplicateChooser";
 import { FamilyTab } from "./FamilyTab";
@@ -370,6 +370,7 @@ export function DetailRail({
   // the tab badge + the auto-pop effect below.
   const cart = useCart();
   const cartCount = cart.captureIds.length;
+  const cartLoaded = useCartLoaded();
 
   const isPinControlled =
     pinnedProp !== undefined && onPinChange !== undefined;
@@ -509,13 +510,27 @@ export function DetailRail({
   // the user can switch to the Info tab while collecting without the
   // cart yanking focus back on every check. Tracks the previous count
   // in a ref so we only fire on the rising 0→1 edge.
-  const prevCartCountRef = useRef(cartCount);
+  //
+  // Two things this must not do, both of which left the editor opening
+  // on Cart instead of Info:
+  //   • Fire on the saved cart LOADING. The cart persists across
+  //     launches and reads as empty until `cart:get` answers, so every
+  //     launch with a non-empty cart looked like a 0 → N add. The ref
+  //     stays null until the cart has loaded, so the first count it
+  //     sees is the baseline, not an edge.
+  //   • Pop the focus/reel tab from Grid. That tab is the persisted
+  //     `lastSelectedTab`, which Grid does not even show, so the pop was
+  //     invisible until the next capture opened. Grid pops its own tab.
+  const prevCartCountRef = useRef<number | null>(null);
+  const isGridView = view.kind === "grid";
   useEffect(() => {
+    if (!cartLoaded) return;
     if (prevCartCountRef.current === 0 && cartCount > 0) {
-      writeActiveTab("cart");
+      if (isGridView) setGridTab("cart");
+      else writeActiveTab("cart");
     }
     prevCartCountRef.current = cartCount;
-  }, [cartCount, writeActiveTab]);
+  }, [cartLoaded, cartCount, isGridView, setGridTab, writeActiveTab]);
 
   useEffect(() => {
     if (record === null) {

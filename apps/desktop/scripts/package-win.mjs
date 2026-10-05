@@ -68,12 +68,11 @@ if (prepareOnly && publish) {
   throw new Error("--prepare-only and --publish cannot be combined");
 }
 
-// Force pnpm to ignore any user-level global-pnpmfile inside child
-// processes — mirrors release.mjs so the staged install resolves the
-// same pnpmfile combination CI's --frozen-lockfile recorded.
+// Disable user-level global hooks in electron-builder child processes,
+// including stages restored outside the source workspace.
 const pnpmProjectConfigEnv = {
-  npm_config_global_pnpmfile: "",
-  NPM_CONFIG_GLOBAL_PNPMFILE: ""
+  pnpm_config_global_pnpmfile: "",
+  PNPM_CONFIG_GLOBAL_PNPMFILE: ""
 };
 
 function step(label) {
@@ -408,7 +407,6 @@ if (!signStageOnly) {
     join(desktopRoot, "electron-builder.yml"),
     join(stageDir, "electron-builder.yml")
   );
-  cpSync(join(repoRoot, ".npmrc"), join(stageDir, ".npmrc"));
   for (const file of ["THIRD_PARTY_LICENSES", "CHANGELOG.md"]) {
     cpSync(join(repoRoot, file), join(stageDir, file));
   }

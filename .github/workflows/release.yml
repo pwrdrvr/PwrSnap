@@ -52,7 +52,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@e1bd1cc1494a20f0ee91dae622b0d2523b6fb53c # v1.4.0
+        uses: pwrdrvr/configure-nodejs@8876dbf3c524c8a765543dae3ae5b55d7b5ecfb3 # v1.6.0
         with:
           node-version: "24.14.1"
 
@@ -94,7 +94,8 @@ jobs:
             package.json \
             pnpm-lock.yaml \
             pnpm-workspace.yaml \
-            .npmrc \
+            .pnpmfile.cjs \
+            .pnpmfile-global.cjs \
             CHANGELOG.md \
             scripts/check-desktop-release-metadata.mjs \
             scripts/check-app-metadata-policy.mjs \
@@ -354,7 +355,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@e1bd1cc1494a20f0ee91dae622b0d2523b6fb53c # v1.4.0
+        uses: pwrdrvr/configure-nodejs@8876dbf3c524c8a765543dae3ae5b55d7b5ecfb3 # v1.6.0
         with:
           node-version: "24.14.1"
 
@@ -394,7 +395,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@e1bd1cc1494a20f0ee91dae622b0d2523b6fb53c # v1.4.0
+        uses: pwrdrvr/configure-nodejs@8876dbf3c524c8a765543dae3ae5b55d7b5ecfb3 # v1.6.0
         with:
           node-version: "24.14.1"
           cache-electron: "true"

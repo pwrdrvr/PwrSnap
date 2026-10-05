@@ -62,8 +62,8 @@ const repoRoot = resolve(desktopRoot, "..", "..");
 const releaseArch = releaseArchitecture(process.argv.slice(2));
 const stageDir = join(desktopRoot, stageName(releaseArch));
 const pnpmProjectConfigEnv = {
-  npm_config_global_pnpmfile: "",
-  NPM_CONFIG_GLOBAL_PNPMFILE: ""
+  pnpm_config_global_pnpmfile: "",
+  PNPM_CONFIG_GLOBAL_PNPMFILE: ""
 };
 let codesignKeychainCleanup = null;
 
@@ -528,7 +528,6 @@ if (!signStageOnly) {
     }
     writeFileSync(configPath, config.replaceAll("arch: [universal]", "arch: [arm64]"));
   }
-  run(`cp ${join(repoRoot, ".npmrc")} ${join(stageDir, ".npmrc")}`);
   for (const file of ["THIRD_PARTY_LICENSES", "CHANGELOG.md"]) {
     run(`cp ${join(repoRoot, file)} ${join(stageDir, file)}`);
   }

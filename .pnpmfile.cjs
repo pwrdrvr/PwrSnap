@@ -1,11 +1,8 @@
 // Project-level pnpm install hooks. Loaded automatically by pnpm
 // every time it resolves dependencies (`pnpm install`, `pnpm add`,
-// `pnpm install --frozen-lockfile` in CI). The companion `.npmrc`
-// sets `global-pnpmfile=` so contributors with a user-level
-// `global-pnpmfile` configured don't accidentally double-apply hooks
-// and break `--frozen-lockfile` via pnpmfileChecksum drift — every
-// machine that runs pnpm in this repo (yours, mine, CI) hashes
-// exactly this file and nothing else.
+// `pnpm install --frozen-lockfile` in CI). pnpm-workspace.yaml sets
+// `globalPnpmfile` to a project-owned no-op so contributors' global hooks
+// cannot change the pnpmfile checksum that CI records.
 //
 // ── Why this file exists ────────────────────────────────────────────
 //
@@ -63,7 +60,7 @@ const DEPENDENCY_FIELDS = [
 // `git@github.com:user/repo.git` still matches, via the `git@` branch
 // above rather than this one, so the exclusion costs no coverage.
 const GIT_SPEC_PATTERN =
-  /^(?:git(?:\+|:)|git@|ssh:\/\/git@|github:|gitlab:|bitbucket:|https?:\/\/(?:www\.)?(?:github|gitlab|bitbucket)\.com\/|[^/@\s:]+\/[^/\s]+(?:#.*)?$)/;
+  /^(?:git(?:\+|:)|git@|ssh:\/\/git@|github:|gitlab:|bitbucket:|https?:\/\/(?:www\.)?(?:(?:github|gitlab|bitbucket)\.com|bitbucket\.org)\/|[^/@\s:]+\/[^/\s]+(?:#.*)?$)/;
 
 function isGitSpec(spec) {
   return typeof spec === "string" && GIT_SPEC_PATTERN.test(spec);
@@ -290,36 +287,28 @@ function isWorkspaceRootPackage(pkg) {
 // package's manifest at fetch time), the corresponding pnpm fetcher
 // itself refuses to run.
 //
-// pnpm's `hooks.fetchers` API treats each entry as a FACTORY function
-// that's called with `({ defaultFetchers })` at fetcher-registry
-// build time; the factory's RETURN VALUE is the actual fetcher pnpm
-// invokes later when a dep needs fetching. So this function takes
-// the factory shape (the arg is ignored — we're not delegating to a
-// default) and returns the throwing fetcher.
-function blockGitFetcher(/* { defaultFetchers } */) {
-  return async () => {
+// pnpm 12 invokes top-level fetcher objects before its built-in fetchers,
+// including frozen installs where readPackage does not re-resolve manifests.
+const blockedGitFetcher = {
+  canFetch(_pkgId, resolution) {
+    if (resolution.type === "git" || typeof resolution.repo === "string") return true;
+    if (isGitSpec(resolution.tarball)) return true;
+    // Hosted git archives also use codeload.github.com rather than github.com.
+    return typeof resolution.tarball === "string" &&
+      /^https?:\/\/codeload\.github\.com\//.test(resolution.tarball);
+  },
+  async fetch() {
     throw new Error(
       "[pwrsnap pnpmfile] Blocked pnpm git dependency fetch. See .pnpmfile.cjs."
     );
-  };
-}
+  }
+};
 
 module.exports = {
-  // Exported for `scripts/__tests__/pnpmfile.test.mjs`. pnpm only ever
-  // reads `hooks`, so extra keys here are inert at install time.
+  // Exported for `scripts/__tests__/pnpmfile.test.mjs`.
   isGitSpec,
   gitSpecsInWorkspaceOverrides,
   wireSharpWasmForLinux,
-  hooks: {
-    readPackage,
-    fetchers: {
-      // `git`: direct git URL fetches (`git+ssh://`, `git@`, etc.)
-      // `gitHostedTarball`: pnpm's shortcut for github/gitlab/bitbucket
-      //   URLs and `user/repo` shortcuts — pnpm downloads a tarball of
-      //   the resolved commit instead of cloning. Different fetcher,
-      //   same supply-chain concern.
-      git: blockGitFetcher,
-      gitHostedTarball: blockGitFetcher
-    }
-  }
+  hooks: { readPackage },
+  fetchers: [blockedGitFetcher]
 };

@@ -27,6 +27,7 @@ const { readPackage } = pnpmfile.hooks;
 // Every shape pnpm resolves through the `git` or `gitHostedTarball`
 // fetcher. Widening the allow side must not quietly drop one of these.
 const GIT_SPECS = [
+  "https://bitbucket.org/user/repo/get/v1.0.0.tar.gz",
   "github:user/repo",
   "user/repo",
   "user/repo#v1.0.0",
@@ -156,7 +157,7 @@ describe("readPackage / sharp wasm wiring", () => {
     expect(packageEntry[1]).toMatch(/^ {4}os: \[linux\]$/m);
     expect(packageEntry[1]).not.toMatch(/^ {4}cpu:/m);
 
-    const snapshots = lockfile.slice(lockfile.indexOf("\nsnapshots:\n"));
+    const snapshots = lockfile.slice(lockfile.lastIndexOf("\nsnapshots:\n"));
     const sharpSnapshot = /\n {2}sharp@([0-9][^(':]*)[^:]*:\n((?: {4}.*\n)+)/.exec(snapshots);
     expect(sharpSnapshot, "sharp snapshot entry").not.toBeNull();
     expect(sharpSnapshot[2]).toContain(`'@img/sharp-wasm32': ${sharpSnapshot[1]}`);
@@ -227,11 +228,13 @@ describe("readPackage / override fields", () => {
     const root = JSON.parse(
       readFileSync(fileURLToPath(new URL("../../package.json", import.meta.url)), "utf8")
     );
-    const overrides = root.pnpm?.overrides ?? {};
-    expect(Object.keys(overrides).length).toBeGreaterThan(0);
-    expect(() =>
-      readPackage({ name: root.name, pnpm: { overrides: { ...overrides } } })
-    ).not.toThrow();
+    const workspace = readFileSync(
+      fileURLToPath(new URL("../../pnpm-workspace.yaml", import.meta.url)), "utf8"
+    );
+    expect(root.pnpm).toBeUndefined();
+    expect(workspace).toMatch(/^overrides:$/m);
+    expect(gitSpecsInWorkspaceOverrides(workspace)).toEqual([]);
+    expect(() => readPackage(root)).not.toThrow();
   });
 
   test("a missing or empty overrides block is not an error", () => {
@@ -309,5 +312,32 @@ describe("gitSpecsInWorkspaceOverrides", () => {
       "utf8"
     );
     expect(gitSpecsInWorkspaceOverrides(text)).toEqual([]);
+  });
+});
+
+// Frozen installs can fetch locked packages without calling readPackage.
+// pnpm 12 reads this array at the top level, not under hooks.fetchers.
+describe("pnpm 12 git fetch guard", () => {
+  const [fetcher] = pnpmfile.fetchers;
+
+  test.each([
+    { type: "git", repo: "https://example.com/team/pkg.git", commit: "abc" },
+    { tarball: "https://github.com/team/pkg/archive/abc.tar.gz" },
+    { tarball: "https://codeload.github.com/team/pkg/tar.gz/abc" },
+    { tarball: "https://gitlab.com/team/pkg/-/archive/abc/pkg.tar.gz" },
+    { tarball: "https://bitbucket.org/team/pkg/get/abc.tar.gz" }
+  ])("blocks locked git resolution %j", async (resolution) => {
+    expect(fetcher.canFetch("pkg", resolution)).toBe(true);
+    await expect(fetcher.fetch(null, resolution)).rejects.toThrow(
+      "Blocked pnpm git dependency fetch"
+    );
+  });
+
+  test.each([
+    { integrity: "sha512-example" },
+    { tarball: "https://registry.npmjs.org/pkg/-/pkg-1.0.0.tgz" },
+    { type: "directory", directory: "../local" }
+  ])("leaves registry and local resolution %j to pnpm", (resolution) => {
+    expect(fetcher.canFetch("pkg", resolution)).toBe(false);
   });
 });

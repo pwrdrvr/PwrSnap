@@ -3127,7 +3127,7 @@ caught this at tag time, which is the worst moment to find it.
 ## Dependencies and tooling
 
 - Node version pinned in `.nvmrc` (currently `v24.14.1`).
-- Package manager: `pnpm@10.33.0` (set in root `package.json`'s
+- Package manager: `pnpm@12.9.1` (set in root `package.json`'s
   `packageManager` field).
 - Electron + electron-vite versions pinned in `apps/desktop/package.json`,
   matching PwrAgnt for tool consistency.

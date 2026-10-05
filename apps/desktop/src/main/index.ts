@@ -1161,6 +1161,7 @@ async function runInteractiveRecord(
     // recording — worse than the pre-chip behavior, where the same
     // setting was simply ignored end-to-end. protocol.ts states the rule:
     // unsupported controls are omitted, not rendered as if they might work.
+    cameraOffered: recordingSources.webcam,
     ...(recordingSources.microphone || recordingSources.systemAudio
       ? {
           sourcesDefault: {

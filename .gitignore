@@ -78,3 +78,5 @@ design/.thumbnail
 
 # /ce:review scratch dir — ephemeral review todos, not source
 todos/
+
+/apps/desktop/src/renderer/public/mediapipe/

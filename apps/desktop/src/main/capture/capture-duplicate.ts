@@ -1,3 +1,5 @@
+import { cp } from "node:fs/promises";
+import { cameraDirectory } from "../recording/camera-track-store";
 // Duplicate a capture into a new, independent one (`capture:duplicate`).
 //
 // A copy owns everything it points at — its own id, its own `.pwrsnap`
@@ -576,6 +578,10 @@ async function publishVideoCopy(
 ): Promise<void> {
   await rename(paths.stagingPath, paths.destPath);
   try {
+    const source = getCaptureById(paths.sourceId);
+    if (source?.video?.camera && source.legacy_src_path) {
+      await cp(cameraDirectory(source.legacy_src_path, source.id), cameraDirectory(paths.destPath, paths.captureId), { recursive: true, errorOnExist: true, force: false });
+    }
     commit(paths);
   } catch (cause) {
     await discardVideoCopy(paths);
@@ -589,7 +595,8 @@ async function publishVideoCopy(
 async function discardVideoCopy(paths: VideoCopyPaths): Promise<void> {
   const removals = await Promise.allSettled([
     rm(paths.stagingPath, { force: true }),
-    rm(paths.destPath, { force: true })
+    rm(paths.destPath, { force: true }),
+    rm(cameraDirectory(paths.destPath, paths.captureId), { recursive: true, force: true })
   ]);
   if (removals.some((removal) => removal.status === "rejected")) {
     log.warn("video duplicate cleanup incomplete; retrying at next start", {
@@ -645,6 +652,7 @@ function copyVideoMetadata(fromId: string, toId: string, withEdits: boolean): vo
     overrides.default_range_start_sec = "0";
     overrides.default_range_end_sec = "duration_sec";
     overrides.segments_json = "NULL";
+    overrides.avatar_json = "NULL";
   }
   const selectList = columns.map((name) => overrides[name] ?? name).join(", ");
   const result = db

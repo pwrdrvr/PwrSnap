@@ -1,3 +1,6 @@
+import { dispatch } from "../../lib/pwrsnap";
+import { AvatarOverlay } from "../camera/AvatarOverlay";
+import { AvatarControls } from "../camera/AvatarControls";
 // Video stage — the `kind === "video"` arm of the Library Focus / Reel
 // stage. Replaces the bare `<video controls>` with:
 //
@@ -725,9 +728,10 @@ export function VideoStage({
       void document.exitFullscreen().catch(() => undefined);
       return;
     }
-    void el.requestFullscreen?.().catch(() => undefined);
+    void (record.video?.camera ? el.parentElement : el)?.requestFullscreen?.().catch(() => undefined);
   };
 
+  const [avatarError, setAvatarError] = useState("");
   const onStripWidth = useCallback((w: number) => setStripWidth(w), []);
 
   return (
@@ -758,7 +762,15 @@ export function VideoStage({
           onClick={() => runIntent({ type: "togglePlay" })}
           onDoubleClick={toggleFullscreen}
         />
+        <AvatarOverlay capture={record} videoRef={videoRef} />
       </div>
+      {record.video?.camera && <details className="avatar-settings" onKeyDown={event => event.stopPropagation()}>
+        <summary>Presenter settings</summary>
+        <AvatarControls value={record.video.avatar} cameraAspectRatio={record.video.camera.width / record.video.camera.height} canvasAspectRatio={record.width_px / record.height_px} onChange={avatar => {
+          void dispatch("video:setAvatar", { captureId: record.id, avatar }).then(result => setAvatarError(result.ok ? "" : result.error.message));
+        }} />
+        {avatarError && <div role="alert">{avatarError}</div>}
+      </details>}
       <VideoTransport
         playing={playing}
         currentTime={currentTime}

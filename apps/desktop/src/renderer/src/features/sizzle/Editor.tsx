@@ -496,6 +496,7 @@ export function Editor(props: EditorProps): ReactElement {
 
       {project.scenes.length > 0 ? (
         <ReelPlayer
+          scenes={project.scenes}
           model={timelineModel}
           captureMap={captureMap}
           beatById={beatById}
@@ -567,6 +568,7 @@ export function Editor(props: EditorProps): ReactElement {
             return createPortal(
               <SceneInspector
                 scene={sceneRecord}
+                presenterCapture={(sceneRecord.kind === "sequence" ? (sceneRecord.beats ?? []).map(beat => beat.captureId) : [sceneRecord.captureId]).map(id => captureMap.get(id)).find(capture => capture?.video?.camera != null)}
                 region={region}
                 sceneCount={project.scenes.length}
                 playheadLocalSec={

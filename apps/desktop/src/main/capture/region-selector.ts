@@ -1,3 +1,4 @@
+import { RecordingCameraSchema } from "@pwrsnap/shared";
 // Pre-warmed per-display region-selector windows. Cold BrowserWindow
 // creation is 150–400ms; the ⌘⇧P → first-paint budget is 120ms. So
 // we create one window per display at boot (`show: false`), rebuild
@@ -702,7 +703,8 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
           if (payload.sources !== undefined) {
             result.sources = {
               microphone: payload.sources.microphone,
-              systemAudio: payload.sources.systemAudio
+              systemAudio: payload.sources.systemAudio,
+              ...(payload.sources.camera ? { camera: payload.sources.camera } : {})
             };
           }
           if (payload.action === "record") {
@@ -821,6 +823,7 @@ export async function pickRegion(
      *  path too whenever the chooser can reach one, for the same reason
      *  `cursorDefault` is passed there. */
     sourcesDefault?: RecordingCapabilities;
+    cameraOffered?: boolean;
     /** Selector-based image-capture diagnostics. Omitted by video flows. */
     latencyTrace?: CaptureLatencyTrace;
     /** Snap-vs-Record policy for this show (issue #75), from
@@ -1158,6 +1161,7 @@ export async function pickRegion(
             intent,
             cursor: cursorDefault,
             ...(sourcesDefault !== undefined ? { sources: sourcesDefault } : {}),
+            cameraOffered: opts.cameraOffered === true,
             quickCaptureAction,
             ...(latencyTrace !== undefined && presentationGeneration !== undefined
               ? {
@@ -2250,7 +2254,7 @@ function isSelectorPayload(value: unknown): value is {
   snappedWindowId?: number;
   fullWindow?: boolean;
   captureCursor?: boolean;
-  sources?: { microphone: boolean; systemAudio: boolean };
+  sources?: RecordingCapabilities;
   action?: "snap" | "record";
   extents?: { x: number; y: number; w: number; h: number }[];
   outputMode?: "windows" | "rectangle";
@@ -2288,6 +2292,7 @@ function isSelectorPayload(value: unknown): value is {
     if (sources === null || typeof sources !== "object") return false;
     if (typeof sources.microphone !== "boolean") return false;
     if (typeof sources.systemAudio !== "boolean") return false;
+    if (sources.camera !== undefined && !RecordingCameraSchema.safeParse(sources.camera).success) return false;
   }
   if (v.action !== undefined && v.action !== "snap" && v.action !== "record") {
     return false;

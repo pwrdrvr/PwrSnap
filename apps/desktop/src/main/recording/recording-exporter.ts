@@ -1,3 +1,4 @@
+import { avatarCacheKey, prepareAvatarVideo } from "./avatar-video";
 // GIF / MP4 quick-output exporter. Reads the original source clip
 // produced by the recorder, slices the requested range, applies the
 // requested quality preset (LMH), and writes a cache artifact under
@@ -176,7 +177,8 @@ function multiSpans(input: ExportInput): readonly VideoRange[] | null {
 /** '' for the single-range path; the canonical span list otherwise. */
 function exportSegmentsKey(input: ExportInput): string {
   const spans = multiSpans(input);
-  return spans === null ? "" : videoSpansKey(spans);
+  const cuts = spans === null ? "" : videoSpansKey(spans);
+  return input.video.camera ? `${cuts}:avatar:${avatarCacheKey(input.record)}` : cuts;
 }
 
 /** Seconds of video the export produces. */
@@ -663,6 +665,7 @@ async function encodeAndRecord(
       `recording-exporter: capture ${input.record.id} has no legacy_src_path`
     );
   }
+  const presenterSource = await prepareAvatarVideo(input.record, undefined, signal);
 
   const spans = multiSpans(input);
   const durationSec = exportDurationSec(input);
@@ -674,7 +677,7 @@ async function encodeAndRecord(
         onProgress({ phase: input.format === "gif" ? "palette" : "encoding", ratio: null });
         await encodeSegmented(
           ffmpeg,
-          input.record.legacy_src_path,
+          presenterSource,
           input,
           spans,
           { widthPx, heightPx },
@@ -688,7 +691,7 @@ async function encodeAndRecord(
         onProgress({ phase: "palette", ratio: null });
         await encodeGif(
           ffmpeg,
-          input.record.legacy_src_path,
+          presenterSource,
           input.range,
           GIF_PRESETS[input.preset],
           stagingPath,
@@ -701,7 +704,7 @@ async function encodeAndRecord(
         onProgress({ phase: "encoding", ratio: null });
         await encodeMp4(
           ffmpeg,
-          input.record.legacy_src_path,
+          presenterSource,
           input.video,
           input.range,
           input.audio,

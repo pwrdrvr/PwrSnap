@@ -1,0 +1,106 @@
+.camera-setup {
+  position: relative;
+}
+.camera-setup__panel {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  width: 260px;
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+  background: var(--bg-panel-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: 12px;
+}
+.camera-setup__panel video {
+  width: 100%;
+  max-height: 150px;
+  object-fit: contain;
+  transform: scaleX(-1);
+}
+.camera-setup__panel label,
+.avatar-controls label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.camera-setup__panel span {
+  font-size: 11px;
+}
+.camera-setup__panel select {
+  width: 100%;
+  min-width: 0;
+}
+.avatar-controls {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--border-default);
+  padding: 10px;
+  margin: 8px 0;
+  border-radius: 8px;
+}
+.avatar-controls label:has(input[type="range"]),
+.avatar-controls label:has(select) {
+  justify-content: space-between;
+}
+.avatar-controls input[type="range"] {
+  min-width: 60px;
+  width: 50%;
+}
+.avatar-controls__corners {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+.avatar-overlay {
+  position: absolute;
+  height: auto;
+  pointer-events: none;
+  z-index: 2;
+}
+.avatar-error {
+  position: absolute;
+  bottom: 4px;
+  left: 4px;
+  font-size: 11px;
+  z-index: 3;
+}
+
+.psl__video-frame {
+  position: relative;
+  overflow: hidden;
+}
+
+.avatar-settings {
+  flex: 0 0 auto;
+  max-height: 45%;
+  overflow: auto;
+  font-size: 12px;
+}
+.avatar-settings summary {
+  cursor: pointer;
+  padding: 6px 0;
+  color: var(--text-secondary);
+}
+.avatar-controls button,
+.avatar-controls select,
+.avatar-controls input[type="number"],
+.camera-setup select {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  padding: 4px 6px;
+}
+.avatar-controls button:hover {
+  border-color: var(--accent-border);
+}
+.avatar-controls input {
+  accent-color: var(--accent);
+}
+.avatar-controls input[type="number"] {
+  width: 80px;
+}

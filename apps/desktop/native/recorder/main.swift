@@ -616,6 +616,9 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             // arriving first is fine — audio PTS is on the same
             // host-clock timebase as video PTS in SCStream.)
             startedAtCMTime = CMSampleBufferGetPresentationTimeStamp(buf)
+            // Node's hrtime and CoreMedia host time both use mach_absolute_time.
+            // Report the file's actual epoch, including an audio-first start.
+            emit(["event": "timeline", "hostTimeSec": CMTimeGetSeconds(startedAtCMTime)])
             let ok = writer.startWriting()
             diag("first sample: type=\(type) startWriting()->\(ok) writer.status=\(writer.status.rawValue) error=\(writer.error?.localizedDescription ?? "nil")")
             writer.startSession(atSourceTime: startedAtCMTime)

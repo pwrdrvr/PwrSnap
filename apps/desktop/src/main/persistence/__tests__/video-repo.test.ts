@@ -405,3 +405,16 @@ describe("normalizeRange", () => {
     expect(normalizeRange({ start: 2, end: 8 }, 10)).toEqual({ start: 2, end: 8 });
   });
 });
+
+test("avatar edits preserve immutable camera metadata and screen identity", async () => {
+  const { DEFAULT_AVATAR_STYLE } = await import("@pwrsnap/shared");
+  const { insertVideoMetadata, getVideoMetadata, setVideoAvatar, setVideoCamera } = await import("../video-repo");
+  insertCaptureRow(mocks.db!, "camera-1", "video");
+  insertVideoMetadata({ captureId: "camera-1", durationSec: 10, containerFormat: "mp4", hasSystemAudio: false, hasMicrophoneAudio: false, requestedMicrophone: false, requestedSystemAudio: false, subject: { kind: "display", displayId: 1 } });
+  const camera = { version: 1 as const, durationSec: 13, width: 1280, height: 720, offsetSec: -3, sha256: "c".repeat(64), mimeType: "video/mp4" as const };
+  setVideoCamera("camera-1", camera);
+  setVideoAvatar("camera-1", { ...DEFAULT_AVATAR_STYLE, x: 0.1, visible: false });
+  expect(getVideoMetadata("camera-1")?.camera).toEqual(camera);
+  expect(getVideoMetadata("camera-1")?.avatar?.visible).toBe(false);
+  expect(mocks.db!.prepare("SELECT sha256 FROM captures WHERE id = ?").get("camera-1")).toEqual({ sha256: "sha-camera-1" });
+});

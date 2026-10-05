@@ -1,3 +1,6 @@
+import { AvatarStyleSchema, RecordingCameraSchema } from "@pwrsnap/shared";
+import { acceptCameraChunk } from "../recording/camera-recording";
+import { setVideoAvatar } from "../persistence/video-repo";
 // Command-bus handlers for the `permissions:*`, `recording:*`, and
 // `video:*` namespaces. Splits cleanly off settings-handlers and
 // capture-handlers because:
@@ -334,12 +337,14 @@ export function validateRecordingStartRequest(
   const capabilities = value.capabilities;
   if (
     !isObjectRecord(capabilities) ||
-    !hasOnlyKeys(capabilities, ["systemAudio", "microphone"]) ||
+    !hasOnlyKeys(capabilities, ["systemAudio", "microphone", "camera"]) ||
     typeof capabilities.systemAudio !== "boolean" ||
     typeof capabilities.microphone !== "boolean"
   ) {
     return invalid();
   }
+
+  if (capabilities.camera !== undefined && !RecordingCameraSchema.safeParse(capabilities.camera).success) return invalid();
 
   if (
     value.countdownSeconds !== undefined &&
@@ -596,6 +601,24 @@ function getService(): RecordingService {
 }
 
 export function registerRecordingHandlers(): void {
+  bus.register("recording:cameraChunk", async (req, ctx) => {
+    if (ctx.principal !== "ipc") return ok({ accepted: false });
+    return ok({ accepted: await acceptCameraChunk(req.token, ctx.sourceWindowId, req.bytes) });
+  });
+  bus.register("video:camera", async req => {
+    const capture = getCaptureById(req.captureId);
+    const camera = capture?.video?.camera;
+    return ok(capture && !capture.deleted_at && camera ? { camera, url: `pwrsnap-capture://c/${capture.id}` } : null);
+  });
+  bus.register("video:setAvatar", async req => {
+    const avatar = AvatarStyleSchema.safeParse(req.avatar);
+    const capture = getCaptureById(req.captureId);
+    if (!avatar.success || !capture?.video?.camera || capture.deleted_at) return err(validationError("invalid_avatar", "Choose a recording with a camera and valid avatar settings."));
+    setVideoAvatar(capture.id, avatar.data);
+    broadcastCapturesChanged([capture.id]);
+    return ok({ saved: true as const });
+  });
+
   // ---- permissions ----
 
   bus.register("permissions:readiness", async () => {

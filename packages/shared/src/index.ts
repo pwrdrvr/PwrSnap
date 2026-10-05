@@ -44,3 +44,5 @@ export * from "./popover-sizing";
 
 export * from "./custom-models";
 export * from "./codex-model-policy";
+
+export * from "./camera";

@@ -100,6 +100,27 @@ build cannot do is show the strokes, or move its own edits to the capture
 into the bundle. Adding a kind is still additive (no `schemaVersion` bump),
 but it is not free; weigh it against reusing an existing kind.
 
+**Presenter cameras are separate sources.** Enabling Camera in the capture
+selector opens a device picker and preview. A sandboxed Electron renderer
+records the selected camera to its own immutable file; it is never muxed into
+or painted onto the screen original. `<capture-id>.camera` beside the screen
+file holds the source and a timing/hash manifest. Copy, trash, restore and
+purge treat both sources as one capture. Source time maps through a stored
+camera-start minus screen-start offset (the native host clock on macOS,
+gdigrab's input timestamp on Windows); an editor sync adjustment can refine it.
+
+Background removal uses the bundled Apache-2.0 MediaPipe landscape selfie
+segmenter in a worker on both platforms. It is a soft person mask, with
+imperfect hair and fast-motion edges. Raw recording never depends on a mask
+pass. Masks and composed videos are disposable caches keyed by source hash,
+model revision and processing settings. Nothing uploads camera frames.
+Crop, placement, size, mirror, background, visibility and sync adjustment are
+data: a Library default and optional independent overrides on each reel scene.
+Preview overlays the camera at the screen's source time; export composes it
+on the final reel canvas before applying cuts and speed changes, so letterboxing
+the screen never moves the presenter. The delivered video is
+opaque, and the original camera remains editable.
+
 **Recorded audio remains editable.** On macOS, the capture selector
 offers independent system-audio and default-microphone choices, both
 opt-in, with a live level meter on the microphone. The original MP4

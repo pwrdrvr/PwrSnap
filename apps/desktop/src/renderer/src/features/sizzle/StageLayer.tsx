@@ -1,3 +1,5 @@
+import { AvatarOverlay } from "../camera/AvatarOverlay";
+import type { AvatarStyle } from "@pwrsnap/shared";
 // One layer of a preview stage: the picture for a clip, plus the CSS
 // animations that make it move.
 //
@@ -48,6 +50,7 @@ export function timedAnimation(
 
 export function StageLayer({
   role,
+  avatar,
   captureId,
   capture,
   kenBurns,
@@ -60,6 +63,7 @@ export function StageLayer({
   dataBeat,
   testId
 }: {
+  avatar?: AvatarStyle | undefined;
   role: "outgoing" | "incoming";
   captureId: string;
   capture: CaptureRecord | null;
@@ -89,12 +93,13 @@ export function StageLayer({
   } else if (isVideo) {
     media =
       videoRef !== undefined ? (
-        <video ref={videoRef} key={captureId} src={captureSrcUrl(captureId)} muted playsInline />
+        <video style={capture?.video?.camera ? { objectFit: "contain" } : undefined} ref={videoRef} key={captureId} src={captureSrcUrl(captureId)} muted playsInline />
       ) : (
         // A still of the incoming clip, parked at the frame the export
         // will cut to — never a second live player.
         <video
           key={`still:${captureId}`}
+          style={capture?.video?.camera ? { objectFit: "contain" } : undefined}
           src={`${captureSrcUrl(captureId)}#t=${Math.max(0, posterStartSec ?? 0).toFixed(3)}`}
           muted
           playsInline
@@ -133,6 +138,7 @@ export function StageLayer({
       data-progress={blend !== null ? (blend.elapsedSec / Math.max(0.05, blend.durationSec)).toFixed(3) : undefined}
     >
       {media}
+      {capture?.video?.camera && <AvatarOverlay fit="canvas" capture={capture} videoRef={videoRef} avatar={avatar} time={posterStartSec ?? 0} />}
     </div>
   );
 }

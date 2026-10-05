@@ -1,3 +1,4 @@
+import { CameraTrackMetadataSchema, AvatarStyleSchema, type AvatarStyle, type CameraTrackMetadata } from "@pwrsnap/shared";
 // Video-captures metadata read/write surface. Companion to
 // captures-repo.ts — every video metadata mutation goes through here.
 // The 1:1 FK to `captures.id` means we never INSERT a video_captures
@@ -24,6 +25,8 @@ import { getDb } from "./db";
 import { prepareCached } from "./prepare-cached";
 
 type VideoRow = {
+  camera_json?: string | null;
+  avatar_json?: string | null;
   capture_id: string;
   duration_sec: number;
   container_format: "mp4" | "mov";
@@ -76,6 +79,8 @@ function segmentsFromRow(row: VideoRow): VideoRange[] {
 function rowToMetadata(row: VideoRow): VideoCaptureMetadata {
   return {
     durationSec: row.duration_sec,
+    camera: parseCameraJson(row.camera_json),
+    avatar: parseAvatarJson(row.avatar_json),
     containerFormat: row.container_format,
     hasSystemAudio: row.has_system_audio === 1,
     hasMicrophoneAudio: row.has_microphone_audio === 1,
@@ -436,4 +441,18 @@ export function recordExport(input: RecordExportInsert): void {
     path: input.path,
     size: input.byteSize
   });
+}
+
+export function setVideoCamera(captureId: string, camera: CameraTrackMetadata): void {
+  getDb().prepare("UPDATE video_captures SET camera_json = ? WHERE capture_id = ?").run(JSON.stringify(camera), captureId);
+}
+export function setVideoAvatar(captureId: string, avatar: AvatarStyle): void {
+  getDb().prepare("UPDATE video_captures SET avatar_json = ? WHERE capture_id = ?").run(JSON.stringify(AvatarStyleSchema.parse(avatar)), captureId);
+}
+
+function parseCameraJson(raw?: string | null): CameraTrackMetadata | null {
+  try { return CameraTrackMetadataSchema.safeParse(JSON.parse(raw ?? "null")).data ?? null; } catch { return null; }
+}
+function parseAvatarJson(raw?: string | null): AvatarStyle | null {
+  try { return AvatarStyleSchema.safeParse(JSON.parse(raw ?? "null")).data ?? null; } catch { return null; }
 }

@@ -1,3 +1,4 @@
+import { prepareAvatarVideo } from "../recording/avatar-video";
 import { BrowserWindow, app, shell } from "electron";
 import { join } from "node:path";
 import { mkdir, readFile, stat } from "node:fs/promises";
@@ -289,6 +290,8 @@ async function prepareSceneInput(args: {
   apiKey: string | null;
   sceneIdx: number;
   imageWidth: number;
+  imageHeight: number;
+  signal?: AbortSignal | undefined;
 }): Promise<SceneInput> {
   const { scene, capture, effectiveAudio, project, apiKey, sceneIdx, imageWidth } = args;
   let audioPath: string;
@@ -380,7 +383,7 @@ async function prepareSceneInput(args: {
 
     return {
       kind: "video",
-      videoPath: capture.legacy_src_path!,
+      videoPath: await prepareAvatarVideo(capture, scene.avatar, args.signal, { width: args.imageWidth, height: args.imageHeight }),
       startSec: spans[0]!.start,
       trimDurationSec: trimDur,
       durationSec,
@@ -1273,9 +1276,14 @@ export function registerSizzleHandlers(
                 imagePathByCaptureId.set(beat.captureId, imagePath);
               })
             );
+            const presenterCaptures = new Map(captureMap);
+            for (const beat of scene.beats ?? []) {
+              const source = captureMap.get(beat.captureId);
+              if (source?.video?.camera) presenterCaptures.set(source.id, { ...source, legacy_src_path: await prepareAvatarVideo(source, scene.avatar, ctx.signal, { width: dims.w, height: dims.h }) });
+            }
             sceneInputGroups[i] = planSequenceScene({
               scene,
-              capturesById: captureMap,
+              capturesById: presenterCaptures,
               imagePathByCaptureId,
               narrationAudioPath: tts.audioPath,
               speechTiming
@@ -1288,7 +1296,9 @@ export function registerSizzleHandlers(
               project,
               apiKey,
               sceneIdx: i + 1,
-              imageWidth: dims.w
+              imageWidth: dims.w,
+              imageHeight: dims.h,
+              signal: ctx.signal
             });
             sceneInputGroups[i] = [sceneInput];
           }

@@ -1,3 +1,4 @@
+import type { SizzleScene } from "@pwrsnap/shared";
 // The reel player: a stage for the WHOLE reel plus its transport, sitting
 // directly above the timeline that scrubs it.
 //
@@ -35,6 +36,7 @@ import type { ReelPlayback } from "./useReelPlayback";
 import type { TimelineModel } from "./timeline/timeline-model";
 
 export function ReelPlayer({
+  scenes,
   model,
   captureMap,
   beatById,
@@ -45,6 +47,7 @@ export function ReelPlayer({
   renderTitle,
   onRender
 }: {
+  scenes?: SizzleScene[];
   model: TimelineModel;
   captureMap: Map<string, CaptureRecord>;
   /** Stored beats by id — a video clip's trim and fit policy live there,
@@ -174,6 +177,7 @@ export function ReelPlayer({
             <StageLayer
               key={`out:${active.clip.beatId}`}
               role="outgoing"
+              avatar={scenes?.find(scene => scene.id === active.clip.sceneId)?.avatar}
               captureId={active.clip.captureId}
               capture={captureMap.get(active.clip.captureId) ?? null}
               kenBurns={
@@ -201,6 +205,7 @@ export function ReelPlayer({
               <StageLayer
                 key={`in:${incoming.clip.beatId}`}
                 role="incoming"
+                avatar={scenes?.find(scene => scene.id === incoming.clip.sceneId)?.avatar}
                 captureId={incoming.clip.captureId}
                 capture={captureMap.get(incoming.clip.captureId) ?? null}
                 kenBurns={

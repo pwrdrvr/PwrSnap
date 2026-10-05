@@ -1,3 +1,4 @@
+import { AvatarControls } from "../camera/AvatarControls";
 // The scene inspector — the right-rail drawer for a selected SCENE (plan
 // PR 8), sharing the clip inspector's slot and styling. What a scene has
 // that a clip does not: the transition INTO the scene (type and
@@ -14,6 +15,7 @@ import {
   sizzleTransitionDurationSec,
   sizzleTransitionType,
   type SizzleScene,
+  type CaptureRecord,
   type SizzleTransitionType
 } from "@pwrsnap/shared";
 import { formatSpan, formatTimecode } from "../shared/video-range";
@@ -26,6 +28,7 @@ export type SceneInspectorProps = {
   scene: SizzleScene;
   region: TimelineSceneRegion;
   sceneCount: number;
+  presenterCapture?: CaptureRecord | undefined;
   /** The project playhead, as seconds into THIS scene — null when it sits
    *  in another scene. */
   playheadLocalSec: number | null;
@@ -120,6 +123,11 @@ export function SceneInspector(props: SceneInspectorProps): ReactElement {
 
   return (
     <section className="szl__insp" aria-label={`Scene ${index + 1} inspector`} data-testid="sizzle-scene-inspector">
+      {props.presenterCapture?.video?.camera && <AvatarControls
+        value={scene.avatar ?? props.presenterCapture.video.avatar}
+        cameraAspectRatio={props.presenterCapture.video.camera.width / props.presenterCapture.video.camera.height}
+        canvasAspectRatio={16 / 9}
+        onChange={avatar => onEditScene({ avatar })} />}
       <header className="szl__insp-head">
         <span className="szl__insp-eyebrow">
           Scene {index + 1} of {sceneCount}

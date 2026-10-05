@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.1.15 - 2026-10-05
+
+This patch improves recording previews and background capture enrichment.
+
+- Recording Preview - Fixed playback to stay within the current trim range,
+  so previews reflect the portion of the recording you intend to keep.
+- Codex Enrichment - Improved isolation of background capture descriptions
+  by disabling user lifecycle hooks and notification commands for enrichment,
+  without changing your chat configuration.
+
 ## v1.1.14 - 2026-10-02
 
 This patch restores capture enrichment with newer Codex installations.

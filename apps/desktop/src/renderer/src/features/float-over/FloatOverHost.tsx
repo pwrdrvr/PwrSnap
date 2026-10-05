@@ -309,6 +309,7 @@ export function FloatOverHost({
   const toastItem = currentDockItem(state, shownRef.current?.addedAt ?? 0);
   const currentRef = useRef(toastItem);
   currentRef.current = toastItem;
+  const videoRefreshSequenceRef = useRef(0);
   if (state.kind === "loaded" && state.settings !== null) lastSettingsRef.current = state.settings;
   const loadedSettings = state.kind === "loaded" ? state.settings : null;
   const enrichmentProviderAvailable = isEnrichmentProviderAvailable({
@@ -608,6 +609,9 @@ export function FloatOverHost({
   useEffect(() => {
     const unsubscribe = window.pwrsnapApi?.on(EVENT_CHANNELS.floatOverState, (payload) => {
       const event = payload as FloatOverEvent;
+      // A record refresh belongs to the toast that requested it, even
+      // if the same capture is opened again before the read resolves.
+      videoRefreshSequenceRef.current += 1;
       // A shortcut is a one-shot action for the currently mounted toast.
       // Do not replay the last action if the same capture is re-shown later.
       setVideoCopyShortcut(null);
@@ -785,21 +789,33 @@ export function FloatOverHost({
   }, [queue]);
 
   // A waiting snap was deleted or edited somewhere else. Deleted: off the
-  // dock. Edited: its thumbnail follows the new edits version.
+  // dock. Edited: its thumbnail follows the new edits version. The active
+  // video's trim must also follow the refreshed record, not just its rail.
   useEffect(() => {
+    let disposed = false;
     const unsubscribe = window.pwrsnapApi?.on(EVENT_CHANNELS.capturesChanged, (payload) => {
       const changed = capturesChangedIds(payload);
       if (catalogRef.current.started && changed.length > 0) refreshCatalogRecords(changed);
+      const active = currentRef.current;
+      const videoId = active?.record?.kind === "video" ? active.captureId : null;
+      const sequence = videoId !== null && changed.includes(videoId)
+        ? ++videoRefreshSequenceRef.current : null;
       const ids = changed.filter((id) =>
-        queueRef.current.some((item) => item.captureId === id)
+        id === videoId || queueRef.current.some((item) => item.captureId === id)
       );
       for (const captureId of ids) {
         void dispatch("library:byId", { id: captureId }).then((result) => {
-          if (!result.ok) return;
+          if (disposed || !result.ok) return;
           const record = result.value;
           if (record === null || record.deleted_at !== null) {
             commitQueue(removeDockItem(queueRef.current, captureId));
             return;
+          }
+          if (captureId === videoId && sequence === videoRefreshSequenceRef.current) {
+            setState((current) =>
+              current.kind === "loaded" && current.record.id === captureId
+                ? { ...current, record } : current
+            );
           }
           const entry = queueRef.current.find((item) => item.captureId === captureId);
           if (entry === undefined) return;
@@ -808,6 +824,7 @@ export function FloatOverHost({
       }
     });
     return () => {
+      disposed = true;
       unsubscribe?.();
     };
   }, []);

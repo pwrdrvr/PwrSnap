@@ -14,8 +14,9 @@
 // This spec only retains tests that inspect real BrowserWindow
 // lifecycle + rendered DOM, which the bus mock can't reproduce.
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import sharp from "sharp";
 import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 
 const isMac = process.platform === "darwin";
@@ -39,7 +40,8 @@ test.describe("video float-over", () => {
    * doesn't 404 on the `<video>` element's metadata load.
    */
   async function seedVideoCapture(
-    app: Awaited<ReturnType<typeof launchPwrSnap>>
+    app: Awaited<ReturnType<typeof launchPwrSnap>>,
+    fixture?: "cfr" | "vfr"
   ): Promise<string> {
     const captureId = `vid-e2e-${Date.now().toString(36)}`;
     const captureDir = path.join(app.homeRoot, "Documents", "PwrSnap");
@@ -51,10 +53,13 @@ test.describe("video float-over", () => {
     // answers the media stack's opening `bytes=0-` request with a
     // full 200 (and real mid-file ranges with 206) and the element
     // transitions to `metadata` ready state.
-    await writeFile(mp4Path, Buffer.from("fake mp4 placeholder bytes"));
+    const bytes = fixture === undefined
+      ? Buffer.from("fake mp4 placeholder bytes")
+      : await readFile(new URL(`./fixtures/trimmed-preview-${fixture}.mp4`, import.meta.url));
+    await writeFile(mp4Path, bytes);
 
     await app.electronApp.evaluate(
-      async (_electron, payload: { id: string; path: string }) => {
+      async (_electron, payload: { id: string; path: string; real: boolean; byteSize: number }) => {
         const bridge = (
           globalThis as unknown as {
             __PWRSNAP_TEST__: {
@@ -70,26 +75,28 @@ test.describe("video float-over", () => {
           source_app_bundle_id: null,
           source_app_name: null,
           src_path: payload.path,
-          width_px: 1920,
-          height_px: 1080,
+          width_px: payload.real ? 160 : 1920,
+          height_px: payload.real ? 90 : 1080,
           device_pixel_ratio: 1,
-          byte_size: 25,
+          byte_size: payload.byteSize,
           sha256: payload.id
         });
         bridge.seedVideoMetadata({
           captureId: payload.id,
-          durationSec: 12.5,
+          durationSec: payload.real ? 4 : 12.5,
           containerFormat: "mp4",
-          hasSystemAudio: true,
+          hasSystemAudio: !payload.real,
           hasMicrophoneAudio: false,
+          requestedSystemAudio: !payload.real,
+          requestedMicrophone: false,
           subject: {
             kind: "region",
-            rect: { x: 0, y: 0, w: 1920, h: 1080 },
+            rect: { x: 0, y: 0, w: payload.real ? 160 : 1920, h: payload.real ? 90 : 1080 },
             displayId: 1
           }
         });
       },
-      { id: captureId, path: mp4Path }
+      { id: captureId, path: mp4Path, real: fixture !== undefined, byteSize: bytes.length }
     );
     return captureId;
   }
@@ -102,6 +109,57 @@ test.describe("video float-over", () => {
       if (url.includes("stage=float-over")) return page;
     }
     return null;
+  }
+
+  for (const fixture of ["cfr", "vfr"] as const) {
+    test(`paused ${fixture} preview resolves a kept frame at a non-frame-aligned in-point`, async () => {
+      const app = await launchPwrSnap();
+      try {
+        // Tiny generated silent MP4s, no operator footage. CFR: 4 s at
+        // 30 fps, red through frame 54 (1.8 s) and at frame 66 (2.2 s),
+        // green from frame 55 (1.833 s), blue from frame 102 (3.4 s).
+        // VFR: only frames 0/red, 72/green (2.4 s), 102/blue.
+        // Both paused in-points below resolve to excluded red frames
+        // unless the preview advances the decoder to a kept picture.
+        const captureId = await seedVideoCapture(app, fixture);
+        const trim = await app.dispatch("video:setDefaultRange", {
+          captureId, range: { start: 1.81, end: 3.41 }
+        });
+        expect(trim.ok).toBe(true);
+        await app.electronApp.evaluate((_electron, id) => {
+          (globalThis as unknown as {
+            __PWRSNAP_TEST__: { setFloatOverState: (event: unknown) => void }
+          }).__PWRSNAP_TEST__.setFloatOverState({ kind: "show-loaded", captureId: id });
+        }, captureId);
+        await expect.poll(async () => (await findFloatOverPage(app)) !== null).toBe(true);
+        const page = (await findFloatOverPage(app))!;
+        const pixel = async (): Promise<boolean> => {
+          // The custom-protocol video can taint a canvas. Sample the
+          // rendered picture instead of requiring canvas read access.
+          // Locator screenshots include overlapping siblings, so use
+          // the center, clear of the corner badges and bottom controls.
+          const screenshot = await page.locator(".fo__preview canvas").screenshot();
+          const { width, height } = await sharp(screenshot).metadata();
+          const [r, g, b] = await sharp(screenshot)
+            .extract({ left: Math.floor(width! / 2), top: Math.floor(height! / 2), width: 1, height: 1 })
+            .raw().toBuffer();
+          return r! < 10 && g! > 100 && b! < 10;
+        };
+        await expect.poll(pixel, { timeout: 5000 }).toBe(true);
+        await expect(page.getByTestId("preview-timecode")).toHaveText("0:00.0 / 0:01.6");
+        expect(await page.locator("video").evaluate((v) => (v as HTMLVideoElement).paused)).toBe(true);
+
+        const edit = await app.dispatch("video:setDefaultRange", {
+          captureId, range: { start: 2.21, end: 3.41 }
+        });
+        expect(edit.ok).toBe(true);
+        await expect(page.getByTestId("preview-timecode")).toHaveText("0:00.0 / 0:01.2");
+        await expect.poll(pixel, { timeout: 5000 }).toBe(true);
+        expect(await page.locator("video").evaluate((v) => (v as HTMLVideoElement).paused)).toBe(true);
+      } finally {
+        await app.close();
+      }
+    });
   }
 
   test("video asset renders <video> + GIF/MP4 buttons + Discard footer action", async () => {

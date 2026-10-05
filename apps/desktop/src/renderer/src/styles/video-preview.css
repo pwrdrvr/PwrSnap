@@ -1,0 +1,64 @@
+.video-preview {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: var(--bg-app);
+}
+
+/* The decoder stays offscreen; only verified frames reach the canvas. */
+.video-preview__source {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.video-preview__picture {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.video-preview__controls {
+  position: absolute;
+  inset: auto 8px 8px;
+  padding: 6px;
+  border-radius: 4px;
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font: 11px var(--font-mono);
+}
+
+.video-preview__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.video-preview__row span {
+  flex: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.video-preview__row button {
+  border: 0;
+  border-radius: 3px;
+  padding: 3px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.video-preview__row button:hover {
+  color: var(--accent);
+}
+
+.video-preview__controls input {
+  display: block;
+  width: 100%;
+  margin: 5px 0 0;
+  accent-color: var(--accent);
+}

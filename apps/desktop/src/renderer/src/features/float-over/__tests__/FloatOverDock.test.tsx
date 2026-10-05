@@ -10,7 +10,8 @@ import {
   EVENT_CHANNELS,
   type CaptureEnrichment,
   type CaptureRecord,
-  type Settings
+  type Settings,
+  type VideoRange
 } from "@pwrsnap/shared";
 import { FloatOver } from "../FloatOver";
 import { FloatOverHost } from "../FloatOverHost";
@@ -124,7 +125,7 @@ type HostApi = {
 function installHostApi(options: {
   dock?: boolean;
   enrichmentFor?: (captureId: string) => CaptureEnrichment | null;
-  byId?: (id: string) => CaptureRecord | null;
+  byId?: (id: string) => CaptureRecord | null | Promise<CaptureRecord | null>;
   library?: CaptureRecord[];
   pageSize?: number;
 } = {}): HostApi {
@@ -143,6 +144,7 @@ function installHostApi(options: {
       case "settings:refreshCodexDiscovery":
         return { ok: true, value: codexSnapshot };
       case "capture:presetMetrics":
+      case "video:presetMetrics":
         return { ok: true, value: { metrics: [] } };
       case "codex:enrichment":
         return {
@@ -175,7 +177,7 @@ function installHostApi(options: {
       case "library:byId":
         return {
           ok: true,
-          value: options.byId !== undefined ? options.byId(req.id as string) : record(req.id as string)
+          value: options.byId !== undefined ? await options.byId(req.id as string) : record(req.id as string)
         };
       default:
         return { ok: true, value: undefined };
@@ -273,6 +275,94 @@ afterEach(async () => {
   container = null;
   root = null;
   vi.useRealTimers();
+});
+
+describe("FloatOverHost active video revalidation", () => {
+  function videoRecord(id: string, range: VideoRange): CaptureRecord {
+    return {
+      ...record(id), kind: "video",
+      video: {
+        durationSec: 4, containerFormat: "mp4", hasSystemAudio: false, hasMicrophoneAudio: false,
+        requestedSystemAudio: false, requestedMicrophone: false, defaultRange: range, segments: [range],
+        previewPath: null, previewStatus: "failed"
+      }
+    };
+  }
+  const initial = { start: 1.81, end: 3.41 };
+  const edited = { start: 2.21, end: 3.41 };
+  const clock = (el: HTMLElement): string | null =>
+    el.querySelector('[data-testid="preview-timecode"]')?.textContent ?? null;
+  async function showVideo(api: HostApi, id: string, range = initial): Promise<void> {
+    await push(api, EVENT_CHANNELS.floatOverState, {
+      kind: "show-loaded", captureId: id, record: videoRecord(id, range)
+    });
+  }
+
+  test("a capture-change broadcast updates the paused toast's trim, clock, and source position", async () => {
+    const api = installHostApi({ byId: (id) => videoRecord(id, edited) });
+    const el = await mountHost();
+    await showVideo(api, "vid_1");
+    await push(api, EVENT_CHANNELS.aiRunUpdated, { enrichment: enrichment("vid_1", "completed") });
+    expect(clock(el)).toBe("0:00.0 / 0:01.6");
+    await push(api, EVENT_CHANNELS.capturesChanged, { changedIds: ["vid_1"] });
+    expect(clock(el)).toBe("0:00.0 / 0:01.2");
+    expect(el.querySelector<HTMLVideoElement>(".fo__preview video")?.currentTime).toBe(2.21);
+    expect(el.querySelector(".fo__preview-size")?.textContent).toBe("1.2s");
+    expect(el.querySelector('[data-testid="video-timeline-trim-label"]')?.textContent)
+      .toBe("TRIM 0:02.2 – 0:03.4 · 1.2 s");
+    expect(el.textContent).toContain("Codex drafted a title + description.");
+  });
+
+  test("a broadcast for another capture does not replace or re-read the active video", async () => {
+    const api = installHostApi();
+    const el = await mountHost();
+    await showVideo(api, "vid_1");
+    await push(api, EVENT_CHANNELS.capturesChanged, { changedIds: ["other"] });
+    expect(api.calls("library:byId")).toEqual([]);
+    expect(clock(el)).toBe("0:00.0 / 0:01.6");
+  });
+
+  test("an older refresh cannot restore a trim after a newer broadcast resolves", async () => {
+    let resolveOld!: (value: CaptureRecord) => void;
+    let reads = 0;
+    const newer = { start: 2.41, end: 3.41 };
+    const api = installHostApi({ byId: (id) => ++reads === 1
+      ? new Promise<CaptureRecord>((resolve) => { resolveOld = resolve; })
+      : videoRecord(id, newer) });
+    const el = await mountHost();
+    await showVideo(api, "vid_1");
+    await push(api, EVENT_CHANNELS.capturesChanged, { changedIds: ["vid_1"] });
+    await push(api, EVENT_CHANNELS.capturesChanged, { changedIds: ["vid_1"] });
+    expect(clock(el)).toBe("0:00.0 / 0:01.0");
+    await act(async () => resolveOld(videoRecord("vid_1", edited)));
+    await flush();
+    expect(clock(el)).toBe("0:00.0 / 0:01.0");
+  });
+
+  test("a refresh from a previous toast cannot replace a newly shown capture", async () => {
+    let resolveOld!: (value: CaptureRecord) => void;
+    const api = installHostApi({ byId: () => new Promise<CaptureRecord>((resolve) => { resolveOld = resolve; }) });
+    const el = await mountHost();
+    await showVideo(api, "vid_1");
+    await push(api, EVENT_CHANNELS.capturesChanged, { changedIds: ["vid_1"] });
+    await showVideo(api, "vid_2", { start: 0, end: 4 });
+    await act(async () => resolveOld(videoRecord("vid_1", edited)));
+    await flush();
+    expect(el.querySelector(".fo__preview video")?.getAttribute("src")).toBe("pwrsnap-capture://r/vid_2");
+    expect(clock(el)).toBe("0:00.0 / 0:04.0");
+  });
+
+  test("reopening the same capture retires a refresh from its previous showing", async () => {
+    let resolveOld!: (value: CaptureRecord) => void;
+    const api = installHostApi({ byId: () => new Promise<CaptureRecord>((resolve) => { resolveOld = resolve; }) });
+    const el = await mountHost();
+    await showVideo(api, "vid_1");
+    await push(api, EVENT_CHANNELS.capturesChanged, { changedIds: ["vid_1"] });
+    await showVideo(api, "vid_1", { start: 2.81, end: 3.41 });
+    await act(async () => resolveOld(videoRecord("vid_1", edited)));
+    await flush();
+    expect(clock(el)).toBe("0:00.0 / 0:00.6");
+  });
 });
 
 describe("FloatOver tuck countdown", () => {

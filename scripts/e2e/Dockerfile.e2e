@@ -5,19 +5,19 @@
 # `playwright install-deps` because Chrome+Firefox ship preinstalled
 # and drag in the GTK/libnss/libgbm/libasound stack Electron needs.
 #
-# We mimic that: noble-based Node 24.14.1 image + the runtime libs
+# We mimic that: a bookworm-based Node 24.21 image + the runtime libs
 # Electron needs + xvfb. The repo is bind-mounted at run time, so
 # the image stays generic and fast to rebuild when only the test
 # code changes.
 #
-# Multi-arch: built off `node:24.14.1-noble`, which has linux/amd64
+# Multi-arch: built off `node:24.21-bookworm`, which has linux/amd64
 # AND linux/arm64 variants. On Apple Silicon hosts it runs natively
 # (arm64) — that's slightly faster than GHA's amd64 hardware but
 # the test flake we're reproducing is timing-based, not arch-
 # specific. If a future check wants exact-arch parity, add
 # `--platform linux/amd64` to the docker build/run invocation.
 
-FROM node:24.14-bookworm
+FROM node:24.21-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC

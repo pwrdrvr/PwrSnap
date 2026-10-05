@@ -132,7 +132,7 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
         with:
-          node-version: "24.14.1"
+          node-version: "^24.21.0"
           lookup-only: "true"
 
   windows-install-deps:
@@ -147,7 +147,7 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
         with:
-          node-version: "24.14.1"
+          node-version: "^24.21.0"
           lookup-only: "true"
 
   lint:
@@ -162,7 +162,7 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
         with:
-          node-version: "24.14.1"
+          node-version: "^24.21.0"
 
       - name: Lint
         run: pnpm run lint
@@ -179,7 +179,7 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
         with:
-          node-version: "24.14.1"
+          node-version: "^24.21.0"
 
       - name: Build
         run: pnpm run build
@@ -196,7 +196,7 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
         with:
-          node-version: "24.14.1"
+          node-version: "^24.21.0"
 
       - name: Test
         run: pnpm run test
@@ -221,7 +221,7 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
         with:
-          node-version: "24.14.1"
+          node-version: "^24.21.0"
 
       - name: Run desktop Electron E2E specs
         # The macOS-only specs (screencapture-based) are gated via
@@ -287,7 +287,7 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
         with:
-          node-version: "24.14.1"
+          node-version: "^24.21.0"
 
       - name: Build native helpers
         run: pnpm rebuild:electron-native
@@ -330,7 +330,7 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
         with:
-          node-version: "24.14.1"
+          node-version: "^24.21.0"
 
       - name: Lint
         run: pnpm run lint
@@ -371,7 +371,7 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
         with:
-          node-version: "24.14.1"
+          node-version: "^24.21.0"
 
       - name: Run desktop Electron E2E specs (Windows)
         # windows-latest provides an interactive desktop session, so (unlike the

@@ -15,7 +15,8 @@ settings substrate, popover sizing gotchas, native binding repair), read
 
 ## Development Setup
 
-1. Install Node.js from `.nvmrc` (currently `v24.14.1`).
+1. Install Node.js from `.nvmrc` (currently `v24.21.0`, the Node inside
+   Electron 44). Any later 24.x also passes the install check.
 2. Run `pnpm install` from the repo root.
 3. Run `pnpm dev` for the desktop app.
 

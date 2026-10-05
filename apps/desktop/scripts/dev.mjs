@@ -3,13 +3,13 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { nodeVersionSatisfies, readPinnedNodeVersion } from "../../../scripts/check-node-version.mjs";
 import { runCli as checkLinuxSandbox } from "../../../scripts/linux-sandbox.mjs";
 import { ensureWindowsDevFfmpeg } from "./dev-ffmpeg.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const desktopRoot = resolve(__dirname, "..");
-const repoRoot = resolve(desktopRoot, "../..");
 const WINDOWS_UTF8_CHILD_ARG = "--pwrsnap-windows-utf8-child";
 
 export const ELECTRON_DEV_ENV_KEYS = [
@@ -41,18 +41,13 @@ export function normalizeNodeVersion(version) {
   return version.trim().replace(/^v/, "");
 }
 
+/** The same `^<.nvmrc>` rule `pnpm install`'s preinstall applies. */
 export function checkNodeVersion(actualVersion, nvmrcContents) {
-  const actual = normalizeNodeVersion(actualVersion);
-  const expected = normalizeNodeVersion(nvmrcContents);
   return {
-    actual,
-    expected,
-    ok: actual === expected
+    actual: normalizeNodeVersion(actualVersion),
+    expected: normalizeNodeVersion(nvmrcContents),
+    ok: nodeVersionSatisfies(actualVersion, nvmrcContents)
   };
-}
-
-function readExpectedNodeVersion() {
-  return readFileSync(resolve(repoRoot, ".nvmrc"), "utf8").trim();
 }
 
 function run(command, args, env) {
@@ -411,10 +406,10 @@ export function configureDevFfmpeg(env, provision = ensureWindowsDevFfmpeg, logg
 }
 
 export async function main(argv = process.argv.slice(2), inputEnv = process.env) {
-  const nodeCheck = checkNodeVersion(process.version, readExpectedNodeVersion());
+  const nodeCheck = checkNodeVersion(process.version, readPinnedNodeVersion());
   if (!nodeCheck.ok) {
     console.error(
-      `[dev] Node ${process.version} does not match .nvmrc v${nodeCheck.expected}.`
+      `[dev] Node ${process.version} does not satisfy ^${nodeCheck.expected} from .nvmrc.`
     );
     console.error("[dev] Run `nvm use` from the repo root, then retry `pnpm dev`.");
     return 1;

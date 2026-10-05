@@ -54,7 +54,7 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@8876dbf3c524c8a765543dae3ae5b55d7b5ecfb3 # v1.6.0
         with:
-          node-version: "24.14.1"
+          node-version: "^24.21.0"
 
       - name: Check release metadata
         env:
@@ -358,7 +358,7 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@8876dbf3c524c8a765543dae3ae5b55d7b5ecfb3 # v1.6.0
         with:
-          node-version: "24.14.1"
+          node-version: "^24.21.0"
 
       # Linux distribution remains Phase 8b, but a tag cannot create a release
       # unless the desktop code builds successfully on Linux.
@@ -398,7 +398,7 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@8876dbf3c524c8a765543dae3ae5b55d7b5ecfb3 # v1.6.0
         with:
-          node-version: "24.14.1"
+          node-version: "^24.21.0"
           cache-electron: "true"
 
       - name: Check release metadata

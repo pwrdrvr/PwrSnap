@@ -3166,7 +3166,10 @@ caught this at tag time, which is the worst moment to find it.
 
 ## Dependencies and tooling
 
-- Node version pinned in `.nvmrc` (currently `v24.14.1`).
+- Node version pinned in `.nvmrc` (currently `v24.21.0`, the Node inside
+  Electron 44). Every GitHub Actions job asks for `^24.21.0`, the same range,
+  so a runner uses the 24.x already in its tool cache. Move `.nvmrc` and the
+  workflow pins together.
 - Package manager: `pnpm@12.9.1` (set in root `package.json`'s
   `packageManager` field).
 - Electron + electron-vite versions pinned in `apps/desktop/package.json`,
@@ -3195,9 +3198,12 @@ corepack.cmd enable
 pnpm.cmd install
 ```
 
-The root `preinstall` script checks that `node` exactly matches `.nvmrc` and,
-on local POSIX machines with `~/.nvm`, that the active Node binary is coming
-from nvm. Do not bypass this check.
+The root `preinstall` script ([check-node-version.mjs](scripts/check-node-version.mjs))
+checks that `node` satisfies `^<.nvmrc>`: the same major, and no older than
+the pin. `pnpm dev` applies the same rule. On local POSIX machines with
+`~/.nvm`, it also checks that the active Node binary comes from nvm. Do not
+bypass this check. It required an exact match until every native addon was
+N-API; do not tighten it back, or a runner's cached Node fails every install.
 
 PwrSnap's native addons (better-sqlite3 and sharp) are N-API, so one prebuilt
 binary loads in system Node and in Electron alike, and there is no

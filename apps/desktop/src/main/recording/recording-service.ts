@@ -943,6 +943,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
   private child: ChildProcessWithoutNullStreams | null = null;
   private sessionId: string | null = null;
   private subject: RecordingSubject | null = null;
+  private capabilities: RecordingCapabilities | null = null;
   /** Raw request snapshot. `undefined` intentionally preserves the documented
    *  default-on behavior when restart() plans the replacement FFmpeg process. */
   private captureCursor: boolean | undefined = undefined;
@@ -1054,6 +1055,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
 
     this.sessionId = sessionId;
     this.subject = options.subject;
+    this.capabilities = snapshotStartOptions(options).capabilities;
     this.captureCursor = options.captureCursor;
     this.tempDir = tmpDir;
     this.outputPath = outputPath;
@@ -1276,16 +1278,17 @@ class WindowsFfmpegRecorderService implements RecordingService {
   }
 
   async restart(): Promise<{ sessionId: string }> {
-    if (this.subject === null) {
+    if (this.subject === null || this.capabilities === null) {
       throw new Error("not_recording");
     }
     const subject = this.subject;
+    const capabilities = this.capabilities;
     const captureCursor = this.captureCursor;
     const trustedWindowIdentity = this.trustedWindowIdentity;
     await this.cancel();
     const restarted = await this.start({
       subject,
-      capabilities: { systemAudio: false, microphone: false },
+      capabilities: { ...capabilities, systemAudio: false, microphone: false },
       captureCursor,
       countdownSeconds: 3
     });
@@ -1395,6 +1398,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
     this.child = null;
     this.sessionId = null;
     this.subject = null;
+    this.capabilities = null;
     this.captureCursor = undefined;
     this.outputPath = null;
     this.startedAtMs = 0;

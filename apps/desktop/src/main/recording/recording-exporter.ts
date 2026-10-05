@@ -174,11 +174,11 @@ function multiSpans(input: ExportInput): readonly VideoRange[] | null {
   return input.spans !== undefined && input.spans.length > 1 ? input.spans : null;
 }
 
-/** '' for the single-range path; the canonical span list otherwise. */
-function exportSegmentsKey(input: ExportInput): string {
-  const spans = multiSpans(input);
-  const cuts = spans === null ? "" : videoSpansKey(spans);
-  return input.video.camera ? `${cuts}:avatar:${avatarCacheKey(input.record)}` : cuts;
+/** Shared with preset metrics so it looks up exactly the rows exports write. */
+export function exportSegmentsKey(input: Pick<ExportInput, "record" | "spans">): string {
+  const spans = input.spans;
+  const cuts = spans !== undefined && spans.length > 1 ? videoSpansKey(spans) : "";
+  return input.record.video?.camera ? `${cuts}:avatar:${avatarCacheKey(input.record)}` : cuts;
 }
 
 /** Seconds of video the export produces. */

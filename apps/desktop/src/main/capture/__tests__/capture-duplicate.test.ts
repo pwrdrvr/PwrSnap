@@ -51,9 +51,20 @@ vi.mock("../../log", () => ({
 // attempt runs there and a permission error retries in `capturesRoot`,
 // the way the real wrapper falls back to ~/PwrSnap.
 let deniedRoot: string | null = null;
+let rootLockHeld = false;
+let rootLockTail: Promise<unknown> = Promise.resolve();
+function underRootLock<T>(operation: () => Promise<T>): Promise<T> {
+  const pending = rootLockTail.catch(() => undefined).then(async () => {
+    rootLockHeld = true;
+    try { return await operation(); }
+    finally { rootLockHeld = false; }
+  });
+  rootLockTail = pending;
+  return pending;
+}
 
 vi.mock("../capture-storage-gate", () => ({
-  runWithCapturesDirFallback: async <T>(operation: (root: string) => Promise<T>): Promise<T> => {
+  runWithCapturesDirFallback: <T>(operation: (root: string) => Promise<T>): Promise<T> => underRootLock(async () => {
     if (deniedRoot === null) return operation(capturesRoot);
     try {
       return await operation(deniedRoot);
@@ -62,9 +73,9 @@ vi.mock("../capture-storage-gate", () => ({
       if (code !== "EACCES" && code !== "EPERM") throw cause;
       return operation(capturesRoot);
     }
-  },
+  }),
   runExclusiveCapturesRootOperation: async <T>(operation: () => Promise<T>): Promise<T> =>
-    operation()
+    underRootLock(operation)
 }));
 
 // The copy primitives have their own tests (file-copy.test.ts). Here the
@@ -76,7 +87,9 @@ const copyControl: {
   gate: Promise<void> | null;
   failAfterBytes: number | null;
   streamCalls: number;
-} = { cloneMode: "clone", gate: null, failAfterBytes: null, streamCalls: 0 };
+  cameraClone: boolean;
+  onStream: ((source: string) => Promise<void>) | null;
+} = { cloneMode: "clone", gate: null, failAfterBytes: null, streamCalls: 0, cameraClone: true, onStream: null };
 
 vi.mock("../file-copy", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../file-copy")>();
@@ -84,7 +97,9 @@ vi.mock("../file-copy", async (importOriginal) => {
   return {
     ...actual,
     cloneFileFast: async (src: string, dest: string): Promise<boolean> => {
+      expect(rootLockHeld).toBe(false);
       if (copyControl.cloneMode === "no-clone") return false;
+      if (!copyControl.cameraClone && src.includes(".camera")) return false;
       try {
         await copyFile(src, dest);
         return true;
@@ -99,6 +114,7 @@ vi.mock("../file-copy", async (importOriginal) => {
       options: import("../file-copy").StreamCopyOptions = {}
     ): Promise<number> => {
       copyControl.streamCalls += 1;
+      await copyControl.onStream?.(src);
       if (copyControl.gate !== null) await copyControl.gate;
       const failAfter = copyControl.failAfterBytes;
       return actual.streamCopyFile(src, dest, {
@@ -123,9 +139,10 @@ const { insertLayer, listLayerTree } = await import("../../persistence/layers-re
 const { getCaptureById, insertCapture, softDeleteCapture, restoreCapture, hardDeleteCapture } =
   await import("../../persistence/captures-repo");
 const { setFamiliesChangedListener } = await import("../../persistence/family-change-signal");
-const { insertVideoMetadata, setVideoSegments, getVideoMetadata } = await import(
+const { insertVideoMetadata, setVideoSegments, getVideoMetadata, setVideoCamera } = await import(
   "../../persistence/video-repo"
 );
+const { cameraDirectory, writeCameraManifest } = await import("../../recording/camera-track-store");
 const { addUserTag, getCaptureEnrichment } = await import("../../persistence/enrichment-repo");
 const { listCaptureFamilies, listFamilyMembers } = await import(
   "../../persistence/capture-families-repo"
@@ -423,6 +440,8 @@ describe("video copies that cannot be cloned", () => {
     copyControl.gate = null;
     copyControl.failAfterBytes = null;
     copyControl.streamCalls = 0;
+    copyControl.cameraClone = true;
+    copyControl.onStream = null;
     setDuplicateProgressIntervalForTests(0);
     setDuplicateJobListener((job) =>
       events.push({ jobId: job.jobId, state: job.state, bytesCopied: job.bytesCopied })
@@ -432,6 +451,8 @@ describe("video copies that cannot be cloned", () => {
   afterEach(() => {
     setDuplicateJobListener(null);
     copyControl.cloneMode = "clone";
+    copyControl.cameraClone = true;
+    copyControl.onStream = null;
   });
 
   /** Hold the byte copy until `open()` is called. */
@@ -446,6 +467,76 @@ describe("video copies that cannot be cloned", () => {
   async function capturesRootEntries(): Promise<string[]> {
     return (await readdir(capturesRoot)).sort();
   }
+
+  async function addCamera(sourceId: string): Promise<string> {
+    const source = getCaptureById(sourceId)!;
+    const dir = cameraDirectory(source.legacy_src_path!, sourceId);
+    await mkdir(dir);
+    const bytes = Buffer.alloc(8192, 7);
+    const camera = {
+      version: 1 as const, durationSec: 30, width: 640, height: 480,
+      offsetSec: 0.04, mimeType: "video/mp4" as const,
+      sha256: createHash("sha256").update(bytes).digest("hex")
+    };
+    await writeFile(join(dir, "source.mp4"), bytes);
+    await writeCameraManifest(dir, camera);
+    setVideoCamera(sourceId, camera);
+    return dir;
+  }
+
+  test.each(["clone", "no-clone"] as const)("camera byte copies stay cancellable outside the root lock (screen %s)", async (cloneMode) => {
+    copyControl.cloneMode = cloneMode;
+    copyControl.cameraClone = false;
+    const sourceId = await recordVideo(4096);
+    const cameraDir = await addCamera(sourceId);
+    const before = await capturesRootEntries();
+    let entered!: () => void;
+    const cameraStarted = new Promise<void>((resolve) => { entered = resolve; });
+    let release!: () => void;
+    const cameraGate = new Promise<void>((resolve) => { release = resolve; });
+    copyControl.onStream = async (path) => {
+      expect(rootLockHeld).toBe(false);
+      if (path === join(cameraDir, "source.mp4")) { entered(); await cameraGate; }
+    };
+    const { job, record } = await startCaptureDuplicate(sourceId, { withEdits: true });
+    expect(record).toBeNull();
+    expect(job).not.toBeNull();
+    const completed = waitForDuplicateJob(job!.jobId);
+    try {
+      await cameraStarted;
+      // A new capture can acquire the publication lock while the camera
+      // drive is stalled. Cancellation is still available at this point.
+      await underRootLock(async () => { expect(rootLockHeld).toBe(true); });
+      expect(getCaptureById(job!.captureId)).toBeNull();
+      expect(cancelDuplicateJob(job!.jobId)).toBe(true);
+    } finally { release(); }
+    expect((await completed)?.state).toBe("cancelled");
+    expect(await capturesRootEntries()).toEqual(before);
+    expect(listCaptureDuplicateIntents()).toEqual([]);
+    expect(await readFile(join(cameraDir, "source.mp4"))).toEqual(Buffer.alloc(8192, 7));
+  });
+
+  test.each([true, false])("publishes both immutable sources together (camera clone: %s)", async (cameraClone) => {
+    copyControl.cloneMode = "clone";
+    copyControl.cameraClone = cameraClone;
+    const sourceId = await recordVideo(4096);
+    const cameraDir = await addCamera(sourceId);
+    const outcome = await startCaptureDuplicate(sourceId, { withEdits: true });
+    if (cameraClone) {
+      expect(outcome.job).toBeNull();
+      expect(copyControl.streamCalls).toBe(0);
+    } else {
+      const total = 4096 + 8192 + (await stat(join(cameraDir, "track.json"))).size;
+      expect(outcome.job?.totalBytes).toBe(total);
+      expect(await waitForDuplicateJob(outcome.job!.jobId)).toMatchObject({ state: "done", bytesCopied: total });
+    }
+    const copy = outcome.record ?? getCaptureById(outcome.job!.captureId)!;
+    expect(copy.video?.camera).toEqual(getCaptureById(sourceId)!.video?.camera);
+    for (const name of ["source.mp4", "track.json"]) {
+      expect(await readFile(join(cameraDirectory(copy.legacy_src_path!, copy.id), name))).toEqual(await readFile(join(cameraDir, name)));
+    }
+    expect(listCaptureDuplicateIntents()).toEqual([]);
+  });
 
   test("a clone answers with the record and sends no job events", async () => {
     copyControl.cloneMode = "clone";
@@ -640,6 +731,11 @@ describe("interrupted video duplicates", () => {
     });
     await writeFile(`${destPath}.partial`, "half a recording");
     await writeFile(destPath, "a whole recording with no row");
+    const cameraDir = cameraDirectory(destPath, "crashedcopy00001");
+    await mkdir(cameraDir);
+    await mkdir(`${cameraDir}.partial`);
+    await writeFile(join(cameraDir, "source.mp4"), "published camera");
+    await writeFile(join(`${cameraDir}.partial`, "source.mp4"), "partial camera");
     const bystander = join(capturesRoot, "bystander.mp4.partial");
     await writeFile(bystander, "not ours");
 
@@ -647,6 +743,8 @@ describe("interrupted video duplicates", () => {
 
     await expect(stat(`${destPath}.partial`)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(stat(destPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(cameraDir)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(`${cameraDir}.partial`)).rejects.toMatchObject({ code: "ENOENT" });
     // Only named paths are touched — nothing is swept by pattern.
     expect((await stat(bystander)).isFile()).toBe(true);
     expect(listCaptureDuplicateIntents()).toEqual([]);

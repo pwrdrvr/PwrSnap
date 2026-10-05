@@ -114,6 +114,10 @@ segmenter in a worker on both platforms. It is a soft person mask, with
 imperfect hair and fast-motion edges. Raw recording never depends on a mask
 pass. Masks and composed videos are disposable caches keyed by source hash,
 model revision and processing settings. Nothing uploads camera frames.
+The agent owns presenter preparation in split mode; reel scenes request it
+through the video command bus. Shared mask and composition jobs survive one
+consumer cancelling while another still needs them. Cache cleanup aborts and
+drains these jobs in the owning process before removing their files.
 Crop, placement, size, mirror, background, visibility and sync adjustment are
 data: a Library default and optional independent overrides on each reel scene.
 Preview overlays the camera at the screen's source time; export composes it
@@ -205,12 +209,16 @@ Linux) commits before `capture:duplicate` answers. Anything else, which
 includes every Windows copy, answers at once with a job. The bytes stream
 outside the captures-root lock so screenshots are not blocked. Progress goes
 to every window on `events:capture-duplicate:job`, relayed across the process
-split because `capture:*` is agent-owned. The job can be cancelled. Until the
-commit, the bytes live under `<copy>.partial`, and no row points at that name.
+split because `capture:*` is agent-owned. Screen and camera clones are attempted
+outside the captures-root lock; if either needs a byte copy, that work belongs
+to the same cancellable job. Until the commit, screen bytes live under
+`<copy>.partial` and camera bytes under `<copy-id>.camera.partial`, and no row
+points at them.
 An intent row (`capture_duplicate_intents`) names the staging and destination
 paths before anything is written. It is deleted in the transaction that
 inserts the capture, so a crash leaves a record, and the next start removes
-those two paths. Recovery never lists the captures root
+those paths and the camera directories derived from the copy id. Recovery
+never lists the captures root
 (`capture/file-copy.ts`, `capture/duplicate-jobs.ts`).
 
 ## AI uses the user's chosen agent or direct API

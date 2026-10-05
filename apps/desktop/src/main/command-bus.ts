@@ -181,6 +181,17 @@ class CommandBus {
     req: Req<C>,
     options: CommandDispatchOptions
   ): Promise<Result<Res<C>, PwrSnapError>> {
+    // A bridge request can be followed immediately by its cancellation.
+    // Reserve internal scopes before authorization's first microtask so the
+    // receiving process cannot drop that cancellation while admitting work.
+    // External agent requests still authenticate before allocating a scope.
+    const internalKey = options.principal === "bridge" ? options.cancellationKey : undefined;
+    const reservedController = internalKey === undefined
+      ? null
+      : this.cancellation.get(internalKey) ?? new AbortController();
+    if (internalKey !== undefined && reservedController !== null) {
+      this.cancellation.set(internalKey, reservedController);
+    }
     const authorizedOptions = await this.authorizeLocalAgent(name, req, options);
     if (!authorizedOptions.ok) return authorizedOptions;
     options = authorizedOptions.value;
@@ -217,7 +228,7 @@ class CommandBus {
     const cancellationKey = options.cancellationKey;
     let controller: AbortController;
     if (cancellationKey !== undefined) {
-      controller = this.cancellation.get(cancellationKey) ?? new AbortController();
+      controller = reservedController ?? this.cancellation.get(cancellationKey) ?? new AbortController();
       this.cancellation.set(cancellationKey, controller);
     } else {
       controller = new AbortController();

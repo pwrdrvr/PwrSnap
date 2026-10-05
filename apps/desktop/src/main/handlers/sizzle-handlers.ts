@@ -1,4 +1,4 @@
-import { prepareAvatarVideo } from "../recording/avatar-video";
+import { prepareSceneAvatar } from "../sizzle/avatar-preparation";
 import { BrowserWindow, app, shell } from "electron";
 import { join } from "node:path";
 import { mkdir, readFile, stat } from "node:fs/promises";
@@ -383,7 +383,9 @@ async function prepareSceneInput(args: {
 
     return {
       kind: "video",
-      videoPath: await prepareAvatarVideo(capture, scene.avatar, args.signal, { width: args.imageWidth, height: args.imageHeight }),
+      videoPath: await prepareSceneAvatar(capture, scene.avatar, args.signal, {
+        width: args.imageWidth, height: args.imageHeight
+      }),
       startSec: spans[0]!.start,
       trimDurationSec: trimDur,
       durationSec,
@@ -1279,7 +1281,14 @@ export function registerSizzleHandlers(
             const presenterCaptures = new Map(captureMap);
             for (const beat of scene.beats ?? []) {
               const source = captureMap.get(beat.captureId);
-              if (source?.video?.camera) presenterCaptures.set(source.id, { ...source, legacy_src_path: await prepareAvatarVideo(source, scene.avatar, ctx.signal, { width: dims.w, height: dims.h }) });
+              if (source?.video?.camera) {
+                presenterCaptures.set(source.id, {
+                  ...source,
+                  legacy_src_path: await prepareSceneAvatar(source, scene.avatar, ctx.signal, {
+                    width: dims.w, height: dims.h
+                  })
+                });
+              }
             }
             sceneInputGroups[i] = planSequenceScene({
               scene,

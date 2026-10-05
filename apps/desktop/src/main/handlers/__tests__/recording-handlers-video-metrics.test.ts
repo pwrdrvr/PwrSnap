@@ -5,6 +5,8 @@
 
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { CaptureRecord } from "@pwrsnap/shared";
+import { DEFAULT_AVATAR_STYLE } from "@pwrsnap/shared";
+import { exportSegmentsKey } from "../../recording/recording-exporter";
 
 const mocks = vi.hoisted(() => ({
   capture: null as CaptureRecord | null,
@@ -138,8 +140,35 @@ function mp4LookupAudio(): unknown[] {
 describe("video:presetMetrics", () => {
   beforeEach(() => {
     mocks.capture = videoCapture();
-    mocks.lookupExport.mockClear();
+    mocks.lookupExport.mockReset();
+    mocks.lookupExport.mockReturnValue(null);
     mocks.readRecordingSettings.mockClear();
+  });
+
+  test.each([
+    { segments: [{ start: 0, end: 3 }] },
+    { segments: [{ start: 0, end: 1 }, { start: 2, end: 3 }] }
+  ])("returns actual presenter export bytes for $segments and invalidates a changed placement", async ({ segments }) => {
+    const record = videoCapture();
+    record.video!.camera = {
+      version: 1, durationSec: 3, width: 640, height: 480, offsetSec: 0,
+      sha256: "b".repeat(64), mimeType: "video/mp4"
+    };
+    record.video!.avatar = { ...DEFAULT_AVATAR_STYLE };
+    mocks.capture = record;
+    const segmentsKey = exportSegmentsKey({ record, spans: segments });
+    mocks.lookupExport.mockImplementation((key) =>
+      (key as { segmentsKey: string }).segmentsKey === segmentsKey
+        ? { byteSize: 12345 } : null
+    );
+    const cached = await mp4Metrics({ segments });
+    expect([...cached.values()]).toHaveLength(6);
+    for (const metric of cached.values()) {
+      expect(metric).toMatchObject({ byteSize: 12345, fromCache: true });
+    }
+    record.video!.avatar.x = 0.7;
+    const moved = await mp4Metrics({ segments });
+    expect([...moved.values()].every((metric) => !metric.fromCache)).toBe(true);
   });
 
   test("rejects explicit segments with no surviving footage before cache lookup", async () => {

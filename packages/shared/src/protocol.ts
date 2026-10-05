@@ -5177,6 +5177,16 @@ export type Commands = {
     req: { captureId: string; avatar: AvatarStyle };
     res: { saved: true };
   };
+  /** Main-process scene preparation. The video/cache owner resolves the
+   * source by id and publishes the presenter cache under its admission gate. */
+  "video:prepareAvatar": {
+    req: {
+      captureId: string;
+      avatar?: AvatarStyle;
+      canvas?: { width: number; height: number };
+    };
+    res: { path: string };
+  };
   "recording:start": {
     req: {
       subject: RecordingSubject;

@@ -287,6 +287,62 @@ describe("deadlock guards", () => {
 });
 
 describe("coalescing", () => {
+  test.each([false, true])("one cancelled consumer leaves a shared write alive (other has signal: %s)", async (withSignal) => {
+    const ready = deferred<string>();
+    const first = new AbortController();
+    const other = new AbortController();
+    const work = vi.fn(async (_signal: AbortSignal) => ready.promise);
+    const a = runGatedCacheWrite("cap-a", "mask", work, first.signal).catch((cause: unknown) => cause);
+    const b = runGatedCacheWrite("cap-a", "mask", work, withSignal ? other.signal : undefined);
+    await settle();
+    first.abort();
+    expect(await a).toMatchObject({ name: "AbortError" });
+    expect(work.mock.calls[0]![0].aborted).toBe(false);
+    ready.resolve("shared mask");
+    expect(await b).toBe("shared mask");
+    expect(work).toHaveBeenCalledTimes(1);
+  });
+
+  test("last-consumer cancellation drains before a retry can reuse its staging path", async () => {
+    const drained = deferred<string>();
+    const consumer = new AbortController();
+    const work = vi.fn(async (_signal: AbortSignal) => drained.promise);
+    const first = runGatedCacheWrite("cap-a", "mask", work, consumer.signal).catch((cause: unknown) => cause);
+    await settle();
+    consumer.abort();
+    expect(await first).toMatchObject({ name: "AbortError" });
+    expect(work.mock.calls[0]![0].aborted).toBe(true);
+    const retryWork = vi.fn(async () => "retry");
+    const retry = runGatedCacheWrite("cap-a", "mask", retryWork);
+    await settle();
+    expect(retryWork).not.toHaveBeenCalled();
+    drained.resolve("aborted output");
+    expect(await retry).toBe("retry");
+    expect(retryWork).toHaveBeenCalledTimes(1);
+  });
+
+  test("cleanup drains work even after all of its consumers have cancelled", async () => {
+    const drained = deferred<string>();
+    const consumer = new AbortController();
+    const pending = runGatedCacheWrite("cap-a", "mask", async () => drained.promise, consumer.signal).catch(() => undefined);
+    await settle();
+    consumer.abort();
+    await pending;
+    const remove = vi.fn(async () => undefined);
+    const cleanup = withDerivedCacheCleanup("all", remove);
+    await settle();
+    expect(remove).not.toHaveBeenCalled();
+    drained.resolve("aborted output");
+    await cleanup;
+    expect(remove).toHaveBeenCalledOnce();
+  });
+
+  test("an already-cancelled consumer never starts work", async () => {
+    const work = vi.fn(async () => "unused");
+    await expect(runGatedCacheWrite("cap-a", "mask", work, AbortSignal.abort())).rejects.toMatchObject({ name: "AbortError" });
+    expect(work).not.toHaveBeenCalled();
+  });
+
   test("two writers of the same artifact share one run", async () => {
     const work = vi.fn(async () => "shared");
     const [a, b] = await Promise.all([

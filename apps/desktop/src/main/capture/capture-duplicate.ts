@@ -1,5 +1,4 @@
-import { cp } from "node:fs/promises";
-import { cameraDirectory } from "../recording/camera-track-store";
+import { cameraDirectory, cameraSourceFile } from "../recording/camera-track-store";
 // Duplicate a capture into a new, independent one (`capture:duplicate`).
 //
 // A copy owns everything it points at — its own id, its own `.pwrsnap`
@@ -31,7 +30,7 @@ import { cameraDirectory } from "../recording/camera-track-store";
 // source's family (see capture-families-repo.ts). Enrichment is copied, not
 // re-run.
 
-import { lstat, mkdtemp, open, rename, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 
@@ -390,6 +389,17 @@ type VideoCopyPaths = {
   destPath: string;
 };
 
+type VideoCopyFile = {
+  sourcePath: string;
+  stagingPath: string;
+  bytes: number;
+  cloned: boolean;
+};
+
+function cameraCopyStagingPath(paths: VideoCopyPaths): string {
+  return `${cameraDirectory(paths.destPath, paths.captureId)}.partial`;
+}
+
 /**
  * Every video duplicate follows one protocol, cloned or not:
  *
@@ -404,11 +414,11 @@ type VideoCopyPaths = {
  * intent, and the next start removes the paths it names
  * (`recoverInterruptedVideoDuplicates`) — no directory is ever listed.
  *
- * Steps 1 and 2's clone attempt run under the captures-root lock, like
- * every write into the root; a clone is instant, or abandoned after
- * CLONE_GRACE_MS. A byte copy does NOT: holding the lock for minutes
- * would stall every screenshot taken meanwhile. It streams outside the
- * lock and takes it again only for step 3.
+ * The root lock only reserves the paths and publishes the completed copy.
+ * Both screen and camera clone attempts and byte copies run outside it.
+ * A camera that cannot be cloned makes this a cancellable background job
+ * even when the screen clone succeeded. Camera staging/destination paths
+ * derive from the intent's destination and id, so recovery removes them too.
  */
 async function startVideoDuplicate(
   source: CaptureRecord,
@@ -455,6 +465,8 @@ async function startVideoDuplicate(
     })();
   };
   let handedOff = false;
+  let reservedPaths: VideoCopyPaths | null = null;
+  const camera = source.video?.camera;
   try {
     const started = await runWithCapturesDirFallback(async (capturesRoot) => {
       // A fresh id per attempt: a fallback retry must not collide with
@@ -470,33 +482,53 @@ async function startVideoDuplicate(
       };
       insertCaptureDuplicateIntent(attempt);
       try {
-        if (await cloneFileFast(sourcePath, attempt.stagingPath)) {
-          await publishVideoCopy(attempt, commit);
-          return { cloned: true as const, paths: attempt, totalBytes: 0 };
+        const files: VideoCopyFile[] = [{
+          sourcePath, stagingPath: attempt.stagingPath,
+          bytes: (await stat(sourcePath)).size, cloned: false
+        }];
+        if (camera) {
+          const cameraStage = cameraCopyStagingPath(attempt);
+          await mkdir(cameraStage);
+          for (const name of [cameraSourceFile(camera), "track.json"]) {
+            const from = join(cameraDirectory(sourcePath, source.id), name);
+            files.push({
+              sourcePath: from, stagingPath: join(cameraStage, name),
+              bytes: (await stat(from)).size, cloned: false
+            });
+          }
         }
-        const totalBytes = (await stat(sourcePath)).size;
         // Prove the root takes a write while still inside the fallback
         // wrapper: a Documents denial must switch roots here, not fail
         // the background copy later with nobody left to retry it.
         await (await open(attempt.stagingPath, "wx")).close();
         await rm(attempt.stagingPath);
-        return { cloned: false as const, paths: attempt, totalBytes };
+        return { paths: attempt, files };
       } catch (cause) {
         await discardVideoCopy(attempt);
         throw cause;
       }
     });
+    reservedPaths = started.paths;
+    for (const file of started.files) {
+      file.cloned = await cloneFileFast(file.sourcePath, file.stagingPath);
+    }
     const newId = started.paths.captureId;
-    if (started.cloned) return { record: await finish(newId), job: null };
+    if (started.files.every((file) => file.cloned)) {
+      await runExclusiveCapturesRootOperation(() =>
+        publishVideoCopy(started.paths, commit, camera != null)
+      );
+      reservedPaths = null;
+      return { record: await finish(newId), job: null };
+    }
 
     const job = startDuplicateJob({
       sourceId: source.id,
       captureId: newId,
       withEdits,
-      totalBytes: started.totalBytes
+      totalBytes: started.files.reduce((sum, file) => sum + file.bytes, 0)
     });
     handedOff = true;
-    void copyVideoInBackground(job, sourcePath, started.paths, commit, finish)
+    void copyVideoInBackground(job, started.files, started.paths, camera != null, commit, finish)
       .catch((cause: unknown) => {
         log.error("video duplicate crashed", {
           captureId: newId,
@@ -507,35 +539,37 @@ async function startVideoDuplicate(
       .finally(claim.release);
     return { record: null, job: job.snapshot };
   } finally {
-    if (!handedOff) claim.release();
+    if (!handedOff) {
+      if (reservedPaths !== null) await discardVideoCopy(reservedPaths);
+      claim.release();
+    }
   }
 }
 
 async function copyVideoInBackground(
   job: StartedDuplicateJob,
-  sourcePath: string,
+  files: VideoCopyFile[],
   paths: VideoCopyPaths,
+  withCamera: boolean,
   commit: (paths: VideoCopyPaths) => void,
   finish: (newId: string) => Promise<CaptureRecord>
 ): Promise<void> {
   let committed = false;
   try {
-    await streamCopyFile(sourcePath, paths.stagingPath, {
-      signal: job.signal,
-      onProgress: (copied, total) => reportDuplicateProgress(job.jobId, copied, total)
-    });
+    const totalBytes = files.reduce((sum, file) => sum + file.bytes, 0);
+    let copiedBytes = files.filter((file) => file.cloned).reduce((sum, file) => sum + file.bytes, 0);
+    reportDuplicateProgress(job.jobId, copiedBytes, totalBytes);
+    for (const file of files) {
+      if (file.cloned) continue;
+      const copied = await streamCopyFile(file.sourcePath, file.stagingPath, {
+        signal: job.signal,
+        onProgress: (bytes) => reportDuplicateProgress(job.jobId, copiedBytes + bytes, totalBytes)
+      });
+      copiedBytes += copied;
+    }
     await runExclusiveCapturesRootOperation(async () => {
       if (!job.beginCommit()) job.signal.throwIfAborted();
-      // The original can be purged while its copy streams. Its
-      // video_captures row goes with it, and that is what the copy's is
-      // made from.
-      if (getCaptureById(paths.sourceId) === null) {
-        throw new CaptureDuplicateError(
-          "not_found",
-          "The original recording was deleted while it was being copied."
-        );
-      }
-      await publishVideoCopy(paths, commit);
+      await publishVideoCopy(paths, commit, withCamera);
       committed = true;
     });
     await finish(paths.captureId);
@@ -574,14 +608,18 @@ async function copyVideoInBackground(
  *  A failed commit takes the file back out. */
 async function publishVideoCopy(
   paths: VideoCopyPaths,
-  commit: (paths: VideoCopyPaths) => void
+  commit: (paths: VideoCopyPaths) => void,
+  withCamera: boolean
 ): Promise<void> {
-  await rename(paths.stagingPath, paths.destPath);
   try {
+    // Purging the original during a clone or stream removes the metadata
+    // row that commit copies. Check again under the publication lock.
     const source = getCaptureById(paths.sourceId);
-    if (source?.video?.camera && source.legacy_src_path) {
-      await cp(cameraDirectory(source.legacy_src_path, source.id), cameraDirectory(paths.destPath, paths.captureId), { recursive: true, errorOnExist: true, force: false });
+    if (source === null) {
+      throw new CaptureDuplicateError("not_found", "The original recording was deleted while it was being copied.");
     }
+    await rename(paths.stagingPath, paths.destPath);
+    if (withCamera) await rename(cameraCopyStagingPath(paths), cameraDirectory(paths.destPath, paths.captureId));
     commit(paths);
   } catch (cause) {
     await discardVideoCopy(paths);
@@ -596,6 +634,7 @@ async function discardVideoCopy(paths: VideoCopyPaths): Promise<void> {
   const removals = await Promise.allSettled([
     rm(paths.stagingPath, { force: true }),
     rm(paths.destPath, { force: true }),
+    rm(cameraCopyStagingPath(paths), { recursive: true, force: true }),
     rm(cameraDirectory(paths.destPath, paths.captureId), { recursive: true, force: true })
   ]);
   if (removals.some((removal) => removal.status === "rejected")) {
@@ -622,6 +661,7 @@ export async function recoverInterruptedVideoDuplicates(): Promise<number> {
       // this cannot happen — but if it did, the file is the capture's.
       deleteCaptureDuplicateIntent(intent.captureId);
       await rm(intent.stagingPath, { force: true }).catch(() => undefined);
+      await rm(cameraCopyStagingPath(intent), { recursive: true, force: true }).catch(() => undefined);
       continue;
     }
     await discardVideoCopy(intent);

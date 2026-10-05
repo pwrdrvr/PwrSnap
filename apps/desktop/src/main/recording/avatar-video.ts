@@ -14,6 +14,7 @@ import { runGatedCacheWrite } from "../persistence/derived-cache-gate";
 import { resolveFfmpegPath } from "./ffmpeg-resolver";
 import { resolveCameraSource } from "./camera-track-store";
 import { CameraWorker } from "./camera-worker";
+import { getRuntimeProcessRole } from "../process-role";
 
 const MODEL_REVISION = "mediapipe-landscape-490e9ea7-v1";
 const FPS = 15;
@@ -85,7 +86,7 @@ function ffmpegRun(args: string[], signal: AbortSignal) {
 async function prepareMask(
   record: CaptureRecord,
   directory: string,
-  signal: AbortSignal,
+  callerSignal: AbortSignal,
 ): Promise<string> {
   const camera = record.video!.camera!;
   const path = join(
@@ -95,8 +96,7 @@ async function prepareMask(
   return runGatedCacheWrite(
     record.id,
     `mask-${camera.sha256}-${MODEL_REVISION}`,
-    async (cacheSignal) => {
-      signal = AbortSignal.any([signal, cacheSignal]);
+    async (signal) => {
       signal.throwIfAborted();
       if (await exists(path)) return path;
       const worker = new CameraWorker();
@@ -178,6 +178,7 @@ async function prepareMask(
         await rm(staging, { force: true });
       }
     },
+    callerSignal,
   );
 }
 
@@ -216,6 +217,10 @@ export async function prepareAvatarVideo(
   callerSignal?: AbortSignal,
   canvas?: AvatarCanvas,
 ): Promise<string> {
+  if (getRuntimeProcessRole() === "library") {
+    throw new Error("Presenter preparation must run in the video cache owner.");
+  }
+  callerSignal?.throwIfAborted();
   const source = record.legacy_src_path;
   if (!source) throw new Error("Recording source missing");
   const camera = record.video?.camera;
@@ -227,10 +232,7 @@ export async function prepareAvatarVideo(
   if (offset + camera.durationSec <= 0 || offset >= record.video!.durationSec)
     return source;
   const key = avatarCacheKey(record, style, canvas);
-  return runGatedCacheWrite(record.id, `avatar-${key}`, async (cacheSignal) => {
-    const signal = callerSignal
-      ? AbortSignal.any([cacheSignal, callerSignal])
-      : cacheSignal;
+  return runGatedCacheWrite(record.id, `avatar-${key}`, async (signal) => {
     const directory = join(getCacheRoot(), "video", record.id);
     const path = join(directory, `avatar-${key}.mp4`);
     if (await exists(path)) return path;
@@ -282,5 +284,5 @@ export async function prepareAvatarVideo(
     } finally {
       await rm(staging, { force: true });
     }
-  });
+  }, callerSignal);
 }

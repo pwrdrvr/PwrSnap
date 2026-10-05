@@ -20,6 +20,10 @@ export function TrimmedVideoPreview({
   const paintedTime = useRef<number | null>(null);
   const atOutPoint = useRef(false);
   const lastSeek = useRef<number | null>(null);
+  // A paused seek may decode the frame before the requested in-point.
+  // Probe forward without playing audio or moving the visible clock.
+  const pausedProbe = useRef<{ requested: number; step: number; attempts: number } | null>(null);
+  const recoveredPosition = useRef<number | null>(null);
   const resume = useRef<{ time: number; playing: boolean } | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -35,7 +39,9 @@ export function TrimmedVideoPreview({
     captureId, video,
     onBeforeSwap: () => {
       const el = mediaRef.current;
-      if (el !== null) resume.current = { time: el.currentTime, playing: !el.paused };
+      if (el !== null) resume.current = {
+        time: recoveredPosition.current ?? el.currentTime, playing: !el.paused
+      };
       clearPicture();
     }
   });
@@ -46,9 +52,10 @@ export function TrimmedVideoPreview({
 
   const publish = useCallback((time: number): void => {
     const r = rangeRef.current;
+    const position = mediaRef.current?.paused === true ? recoveredPosition.current ?? time : time;
     setElapsed(roundTime(atOutPoint.current && mediaRef.current?.paused === true
       ? rangeDuration(r)
-      : Math.min(Math.max(time - r.start, 0), rangeDuration(r))));
+      : Math.min(Math.max(position - r.start, 0), rangeDuration(r))));
   }, []);
 
   // The out-point is excluded. Park just inside it when scrubbing the
@@ -64,6 +71,10 @@ export function TrimmedVideoPreview({
     if (el === null) return;
     atOutPoint.current = time >= rangeRef.current.end;
     const target = boundedTime(time);
+    recoveredPosition.current = null;
+    pausedProbe.current = el.paused
+      ? { requested: Math.max(rangeRef.current.start, time), step: DEFAULT_FRAME_STEP_SEC, attempts: 0 }
+      : null;
     lastSeek.current = target;
     el.currentTime = target;
     publish(time);
@@ -72,8 +83,13 @@ export function TrimmedVideoPreview({
     const el = mediaRef.current;
     if (el === null) return;
     const r = rangeRef.current;
-    if (el.currentTime < r.start || el.currentTime >= r.end || elapsed >= rangeDuration(r)) {
+    const position = recoveredPosition.current ?? el.currentTime;
+    if (position < r.start || position >= r.end || elapsed >= rangeDuration(r)) {
       seek(r.start);
+    } else if (position !== el.currentTime) {
+      // Probing only chooses a paused picture. Playback still starts at
+      // the user's requested time, including a sparse VFR still stretch.
+      seek(position);
     }
     void el.play().catch(() => setPlaying(false));
   }, [elapsed, seek]);
@@ -83,11 +99,16 @@ export function TrimmedVideoPreview({
   useLayoutEffect(() => {
     atOutPoint.current = false;
     const time = paintedTime.current;
-    if (time !== null && (time < range.start || time >= range.end)) clearPicture();
+    const removed = time !== null && (time < range.start || time >= range.end);
+    if (removed) clearPicture();
     const el = mediaRef.current;
     if (el === null) return;
-    if (el.currentTime < range.start || el.currentTime >= range.end) seek(el.currentTime);
-    else publish(el.currentTime);
+    const position = recoveredPosition.current ?? el.currentTime;
+    if (position < range.start || position >= range.end ||
+        el.currentTime < range.start || el.currentTime >= range.end || removed || pausedProbe.current !== null) {
+      seek(position);
+    }
+    else publish(position);
   }, [range.start, range.end, clearPicture, publish, seek]);
 
   useLayoutEffect(() => {
@@ -119,12 +140,15 @@ export function TrimmedVideoPreview({
       if (!el.paused) raf = requestAnimationFrame(tick);
     };
     const onPlay = (): void => {
+      pausedProbe.current = null;
+      recoveredPosition.current = null;
       setPlaying(true);
       cancelAnimationFrame(raf);
       checkTime();
       if (!el.paused) raf = requestAnimationFrame(tick);
     };
     const onPause = (): void => {
+      recoveredPosition.current = null;
       setPlaying(false);
       cancelAnimationFrame(raf);
       publish(el.currentTime);
@@ -142,6 +166,10 @@ export function TrimmedVideoPreview({
       // logical end-of-selection readout.
       if (lastSeek.current === null || Math.abs(el.currentTime - lastSeek.current) > 0.001) {
         atOutPoint.current = false;
+        recoveredPosition.current = null;
+        pausedProbe.current = el.paused
+          ? { requested: el.currentTime, step: DEFAULT_FRAME_STEP_SEC, attempts: 0 }
+          : null;
       }
       if (el.currentTime < r.start || el.currentTime >= r.end) seek(el.currentTime);
       else publish(el.currentTime);
@@ -163,6 +191,24 @@ export function TrimmedVideoPreview({
           }
           canvas.getContext("2d")?.drawImage(el, 0, 0, width, height);
           paintedTime.current = metadata.mediaTime;
+          pausedProbe.current = null;
+        }
+      } else if (!el.seeking && el.paused && metadata.mediaTime < r.start) {
+        const probe = pausedProbe.current;
+        if (probe !== null) {
+          // Start with one frame step, then widen for sparse/VFR gaps.
+          // The final probe approaches the exclusive out-point so an
+          // unknown frame rate cannot hide a kept frame near the end.
+          const next = Math.min(r.end - 0.00001, el.currentTime + probe.step);
+          if (probe.attempts >= 24 || next <= el.currentTime) {
+            pausedProbe.current = null;
+          } else {
+            recoveredPosition.current = probe.requested;
+            probe.attempts += 1;
+            probe.step *= 2;
+            lastSeek.current = next;
+            el.currentTime = next;
+          }
         }
       }
       if (!el.seeking) checkTime();

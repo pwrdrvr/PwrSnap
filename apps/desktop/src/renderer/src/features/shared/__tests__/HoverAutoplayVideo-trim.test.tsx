@@ -97,6 +97,79 @@ describe("trimmed hover preview", () => {
     expect(video.currentTime).toBe(1.8);
   });
 
+  test("a paused non-frame-aligned in-point resolves a kept picture without starting playback", async () => {
+    const video = await render({ start: 1.81, end: 3.41 });
+    decoded(1.8);
+    expect(draw).not.toHaveBeenCalled();
+    expect(video.currentTime).toBeGreaterThan(1.81);
+    expect(video.currentTime).toBeLessThan(3.41);
+    decoded(1.833333);
+    expect(draw).toHaveBeenCalledTimes(1);
+    expect(video.paused).toBe(true);
+    expect(video.play).not.toHaveBeenCalled();
+    expect(clock()).toBe("0:00.0 / 0:01.6");
+  });
+
+  test("a paused in-point edit resolves a replacement after clearing the removed picture", async () => {
+    const video = await render({ start: 0, end: 4 });
+    video.currentTime = 1.8;
+    decoded(1.8);
+    clear.mockClear();
+    await render({ start: 1.81, end: 3.41 });
+    expect(clear).toHaveBeenCalled();
+    decoded(1.8);
+    expect(video.currentTime).toBeGreaterThan(1.81);
+    decoded(1.833333);
+    expect(draw).toHaveBeenCalledTimes(2);
+    expect(video.paused).toBe(true);
+    expect(clock()).toBe("0:00.0 / 0:01.6");
+  });
+
+  test("paused boundary recovery crosses a sparse VFR gap while retaining the requested clock", async () => {
+    const video = await render({ start: 1.81, end: 3.41 });
+    for (let attempt = 0; attempt < 16 && video.currentTime < 2.4; attempt++) decoded(0);
+    expect(video.currentTime).toBeGreaterThanOrEqual(2.4);
+    expect(video.currentTime).toBeLessThan(3.41);
+    decoded(2.4);
+    expect(draw).toHaveBeenCalledTimes(1);
+    expect(clock()).toBe("0:00.0 / 0:01.6");
+    act(() => host.querySelector("button")!.click());
+    expect(video.currentTime).toBe(1.81);
+  });
+
+  test("a new trim clamps the requested paused position rather than the decoder's probe position", async () => {
+    const video = await render({ start: 1.81, end: 3.41 });
+    for (let attempt = 0; attempt < 16 && video.currentTime < 2.4; attempt++) decoded(0);
+    decoded(2.4);
+    await render({ start: 2.21, end: 3.41 });
+    expect(video.currentTime).toBe(2.21);
+    expect(clock()).toBe("0:00.0 / 0:01.2");
+  });
+
+  test("an audio source swap preserves the requested paused position after recovery", async () => {
+    const video = await render({ start: 1.81, end: 3.41 });
+    for (let attempt = 0; attempt < 16 && video.currentTime < 2.4; attempt++) decoded(0);
+    decoded(2.4);
+    act(() => playback.beforeSwap!());
+    playback.src = "mixed.mp4";
+    await render({ start: 1.81, end: 3.41 });
+    emit(video, "loadedmetadata");
+    expect(video.currentTime).toBe(1.81);
+    expect(clock()).toBe("0:00.0 / 0:01.6");
+  });
+
+  test("paused recovery stops when the selection contains no kept encoded frame", async () => {
+    const video = await render({ start: 1.81, end: 1.91 });
+    for (let attempt = 0; attempt < 24; attempt++) decoded(0);
+    expect(draw).not.toHaveBeenCalled();
+    expect(video.currentTime).toBeLessThan(1.91);
+    const settled = video.currentTime;
+    decoded(0);
+    expect(video.currentTime).toBe(settled);
+    expect(video.play).not.toHaveBeenCalled();
+    expect(clock()).toBe("0:00.0 / 0:00.1");
+  });
+
   test.each([0, 1.79, 3.4, 4])("never paints a decoded frame outside the trim (%s s)", async (time) => {
     await render();
     decoded(time);

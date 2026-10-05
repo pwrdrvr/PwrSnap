@@ -15,6 +15,13 @@ afterPack: "scripts/afterpack-sign-appex.mjs"
 
 electronVersion: 44.4.5
 
+# No @electron/rebuild pass while packaging. The only native module it finds
+# is better-sqlite3, whose N-API prebuilds already load in Electron (sharp
+# loads its @img prebuilt packages and is not touched). On 44.4.5 the pass
+# ran once per arch and compiled nothing, but its fallback is a node-gyp
+# source build that needs Python and a C++ toolchain. PwrGit sets the same.
+npmRebuild: false
+
 asar: true
 asarUnpack:
   - "**/*.node"

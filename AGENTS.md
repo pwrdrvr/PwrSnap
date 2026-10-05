@@ -3262,6 +3262,10 @@ Things that bite:
   prebuild fails to load at runtime instead of compiling. Every target
   PwrSnap ships or tests on has one, and the test above checks the installed
   package for each.
+- **`npmRebuild: false` in `electron-builder.yml` is on purpose too.** With
+  it on, electron-builder runs `@electron/rebuild` over better-sqlite3 once
+  per arch. On 44.4.5 that compiled nothing, but its fallback is a node-gyp
+  source build. PwrGit sets the same.
 - **Packaging keeps only the target's prebuilds.** `release.mjs` and
   `package-win.mjs` call `pruneBetterSqlite3Prebuilds` on the stage, the same
   way sharp's foreign `@img` packages are pruned. The universal Mac keeps

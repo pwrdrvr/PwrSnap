@@ -49,7 +49,10 @@ vi.mock("../camera-recording", () => ({
   beginCameraRecording: mocks.beginCamera,
   cancelCameraRecording: mocks.cancelCamera,
   finishCameraRecording: async () => null,
-  markCameraScreenStart: vi.fn()
+  markCameraScreenStart: vi.fn(),
+  markCameraScreenStartUtc: vi.fn(),
+  prepareCameraPreview: vi.fn(),
+  confirmCameraPreviewExclusion: vi.fn()
 }));
 
 class FakeChild extends EventEmitter {

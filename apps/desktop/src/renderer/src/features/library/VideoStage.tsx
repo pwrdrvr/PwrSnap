@@ -1,6 +1,6 @@
 import { dispatch } from "../../lib/pwrsnap";
 import { AvatarOverlay } from "../camera/AvatarOverlay";
-import { AvatarControls } from "../camera/AvatarControls";
+import { CameraTrack } from "../camera/CameraTrack";
 // Video stage — the `kind === "video"` arm of the Library Focus / Reel
 // stage. Replaces the bare `<video controls>` with:
 //
@@ -764,13 +764,6 @@ export function VideoStage({
         />
         <AvatarOverlay capture={record} videoRef={videoRef} />
       </div>
-      {record.video?.camera && <details className="avatar-settings" onKeyDown={event => event.stopPropagation()}>
-        <summary>Presenter settings</summary>
-        <AvatarControls value={record.video.avatar} cameraAspectRatio={record.video.camera.width / record.video.camera.height} canvasAspectRatio={record.width_px / record.height_px} onChange={avatar => {
-          void dispatch("video:setAvatar", { captureId: record.id, avatar }).then(result => setAvatarError(result.ok ? "" : result.error.message));
-        }} />
-        {avatarError && <div role="alert">{avatarError}</div>}
-      </details>}
       <VideoTransport
         playing={playing}
         currentTime={currentTime}
@@ -803,7 +796,13 @@ export function VideoStage({
         onWidthChange={onStripWidth}
         onInteractingChange={onTimelineInteracting}
         label="Recording timeline"
+        cameraTrack={record.video?.camera ?? undefined}
       />
+      {record.video?.camera && <CameraTrack capture={record} error={avatarError} onChange={avatar => {
+        void dispatch("video:setAvatar", { captureId: record.id, avatar })
+          .then(result => setAvatarError(result.ok ? "" : result.error.message))
+          .catch(cause => setAvatarError(cause instanceof Error ? cause.message : "Avatar settings could not be saved."));
+      }} />}
       {video.requestedSystemAudio && !video.hasSystemAudio && (
         // The one thing left worth saying. The preview now plays what the
         // waveform draws, so the old "system audio only" apology is gone —

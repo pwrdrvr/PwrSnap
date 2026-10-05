@@ -43,9 +43,13 @@ export class PersonSegmenter {
       throw new Error("Background removal stopped.");
     }
     const id = ++this.id;
-    const result = new Promise<ImageData>((resolve, reject) =>
-      this.pending.set(id, { resolve, reject }),
-    );
+    const result = new Promise<ImageData>((resolve, reject) => {
+      const timer = setTimeout(() => this.close(), 10_000);
+      this.pending.set(id, {
+        resolve: value => { clearTimeout(timer); resolve(value); },
+        reject: error => { clearTimeout(timer); reject(error); },
+      });
+    });
     this.worker.postMessage(
       { id, image, base: new URL("./", document.baseURI).href },
       [image],

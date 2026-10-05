@@ -36,6 +36,7 @@
 }
 .avatar-controls {
   display: grid;
+  font-family: var(--font-sans);
   gap: 8px;
   border: 1px solid var(--border-default);
   padding: 10px;
@@ -74,17 +75,107 @@
   overflow: hidden;
 }
 
-.avatar-settings {
+.camera-track {
+  position: relative;
   flex: 0 0 auto;
-  max-height: 45%;
-  overflow: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: var(--bg-panel);
+}
+.camera-track__thumbnail {
+  width: 56px;
+  height: 32px;
+  object-fit: cover;
+  border-radius: 4px;
+}
+.camera-track__label {
+  display: grid;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+  font: 11px var(--font-sans);
+}
+.camera-track__label strong {
   font-size: 12px;
 }
-.avatar-settings summary {
-  cursor: pointer;
-  padding: 6px 0;
+.camera-track__label strong span {
+  margin-left: 8px;
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+.camera-track__label > span {
   color: var(--text-secondary);
 }
+.camera-track button {
+  background: var(--bg-panel-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font: 11px var(--font-sans);
+  cursor: pointer;
+}
+.camera-track__settings {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  width: min(320px, 90vw);
+  max-height: min(560px, 65vh);
+  overflow: auto;
+  z-index: 12;
+  padding: 12px;
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  background: var(--bg-panel-elevated);
+  box-shadow: 0 8px 32px var(--shadow-base);
+}
+.camera-track__heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font: 12px var(--font-sans);
+}
+.camera-track__notice {
+  font: 11px/1.4 var(--font-sans);
+  color: var(--text-secondary);
+}
+.camera-track .avatar-controls {
+  border: 0;
+  padding: 0;
+  margin-bottom: 0;
+}
+.camera-track .avatar-controls legend {
+  display: none;
+}
+.camera-track .avatar-controls label {
+  font-size: 11px;
+}
+.vtl__camera {
+  position: relative;
+  height: 22px;
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border-default);
+  border-bottom: 1px solid var(--border-default);
+}
+.vtl__camera > div {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--accent) 15%, var(--bg-panel));
+  border: 1px solid var(--accent-border);
+}
+.vtl__camera span {
+  display: block;
+  padding: 2px 8px;
+  font: 9px var(--font-mono);
+  color: var(--accent);
+}
+
 .avatar-controls button,
 .avatar-controls select,
 .avatar-controls input[type="number"],

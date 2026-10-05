@@ -49,11 +49,25 @@ export const CameraTrackMetadataSchema = z
     width: z.number().int().min(2).max(8192),
     height: z.number().int().min(2).max(8192),
     offsetSec: z.number().finite().min(-86400).max(86400),
+    /** Older recordings with incompatible clock epochs use end-aligned timing. */
+    timing: z.literal("estimated").optional(),
     sha256: z.string().regex(/^[a-f0-9]{64}$/),
     mimeType: z.enum(["video/mp4", "video/webm"]),
   })
   .strict();
 export type CameraTrackMetadata = z.infer<typeof CameraTrackMetadataSchema>;
+
+/** Repair the old macOS clock-domain bug on read, without rewriting the source
+ * or its manifest. Only impossible, widely separated timelines qualify; normal
+ * preroll and partially overlapping tracks keep their measured offset. */
+export function recoverCameraTiming(
+  camera: CameraTrackMetadata | null,
+  screenDurationSec: number,
+): CameraTrackMetadata | null {
+  if (!camera || (camera.offsetSec < screenDurationSec + 60 &&
+    camera.offsetSec + camera.durationSec > -60)) return camera;
+  return { ...camera, offsetSec: screenDurationSec - camera.durationSec, timing: "estimated" };
+}
 
 export function cameraTimeAt(
   screenTime: number,

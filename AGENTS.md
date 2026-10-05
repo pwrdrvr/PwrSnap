@@ -2607,13 +2607,20 @@ GLOBAL — see the coordinate-space note at the head of
 [rect-overlap.ts](apps/desktop/src/main/capture/rect-overlap.ts) before
 touching the arithmetic.
 
-## Mid-take UI: the HUD is the only surface, and it never takes focus
+## Mid-take UI: only the HUD asks questions, and nothing takes focus
 
 **During a live take, the recording-controller HUD is the ONLY surface
 PwrSnap may ask the user anything on, and it must stay non-activating
 for the whole take. No native dialog, and no `setFocusable(true)`.**
 (The frame overlay is also on screen throughout — it is click-through
 and asks nothing, and the section above governs where it may paint.)
+The camera recorder may show a passive, nonfocusable preview on macOS only.
+It must fit wholly outside the recorded rectangle, and ScreenCaptureKit must
+confirm an explicit window exclusion before it becomes visible. Missing
+exclusion, no free area, or changed display geometry hides it. Never rely on
+`setContentProtection(true)` alone: recent macOS ScreenCaptureKit ignores
+`NSWindow.sharingType`. Never exclude the main PID to hide the preview, since
+that also removes Library windows the user may be recording.
 Owners:
 [recording-controller.ts](apps/desktop/src/main/recording/recording-controller.ts)
 (the phase arms) and [tray.ts](apps/desktop/src/main/tray.ts)

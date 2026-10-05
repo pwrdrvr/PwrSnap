@@ -166,6 +166,21 @@ export async function beginCameraRecording(
 export function markCameraScreenStart(hostTimeMs?: number): void {
   active?.markScreenStart(hostTimeMs);
 }
+
+/** Native CoreMedia host time excludes sleep, whereas libuv's clock may include
+ * it. Translate a native UTC sample into our calibrated monotonic domain rather
+ * than treating their uptime epochs as interchangeable. */
+export function markCameraScreenStartUtc(utcMs: number): void {
+  if (Number.isFinite(utcMs)) markCameraScreenStart(utcMs + now() - Date.now());
+}
+
+export function prepareCameraPreview(displayId: number, rect: { x: number; y: number; w: number; h: number }): { title: string; ownerPid: number } | undefined {
+  return active?.worker.preparePreview(displayId, rect);
+}
+
+export function confirmCameraPreviewExclusion(excluded: boolean): void {
+  active?.worker.confirmPreviewExclusion(excluded);
+}
 export async function finishCameraRecording(): Promise<CameraRecording | null> {
   const recording = active;
   if (recording) await recording.finish();

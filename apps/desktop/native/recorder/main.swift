@@ -59,6 +59,14 @@ struct StartRequest: Decodable {
     /// the daemon-side filter surface unnecessarily. Each PID is
     /// matched against `SCRunningApplication.processID`.
     let excludePids: [Int]?
+    /// Camera preview is excluded by window identity, never by the Electron
+    /// main PID (which would also remove the user's Library window).
+    let cameraPreview: CameraPreviewIdentity?
+}
+
+struct CameraPreviewIdentity: Decodable {
+    let title: String
+    let ownerPid: Int
 }
 
 struct RectPayload: Decodable {
@@ -370,7 +378,12 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         let started = await openStream(
             display: display,
             applications: freshDisplays.applications,
+            windows: freshDisplays.windows,
             excludePids: excludePids,
+            previewWindows: freshDisplays.windows.filter {
+                guard let preview = req.cameraPreview else { return false }
+                return $0.title == preview.title && Int($0.owningApplication?.processID ?? 0) == preview.ownerPid
+            },
             cfg: cfg
         )
         diag("openStream attempt 1 returned \(started)")
@@ -399,7 +412,13 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         let retried = await openStream(
             display: display,
             applications: freshDisplays.applications,
+            windows: freshDisplays.windows,
             excludePids: [],
+            // Preserve the window exclusion even on the app-filter fallback.
+            previewWindows: freshDisplays.windows.filter {
+                guard let preview = req.cameraPreview else { return false }
+                return $0.title == preview.title && Int($0.owningApplication?.processID ?? 0) == preview.ownerPid
+            },
             cfg: cfg
         )
         diag("openStream attempt 2 returned \(retried)")
@@ -443,7 +462,9 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private func openStream(
         display: SCDisplay,
         applications: [SCRunningApplication],
+        windows: [SCWindow],
         excludePids: Set<Int>,
+        previewWindows: [SCWindow],
         cfg: SCStreamConfiguration
     ) async -> Bool {
         diag("openStream entered displayId=\(display.displayID) excludePids=\(excludePids.sorted())")
@@ -455,11 +476,17 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
         let excludedApps = applications.filter { excludePids.contains(Int($0.processID)) }
         diag("filter built: \(excludedApps.count) app(s) excluded")
-        let filter = SCContentFilter(
-            display: display,
-            excludingApplications: excludedApps,
-            exceptingWindows: []
-        )
+        let filter: SCContentFilter
+        if previewWindows.isEmpty {
+            filter = SCContentFilter(display: display, excludingApplications: excludedApps, exceptingWindows: [])
+        } else {
+            // A window exclusion preserves desktop/dock pixels and removes only
+            // the preview plus the windows belonging to already-excluded HUD PIDs.
+            let previewIds = Set(previewWindows.map { $0.windowID })
+            filter = SCContentFilter(display: display, excludingWindows: windows.filter {
+                previewIds.contains($0.windowID) || excludePids.contains(Int($0.owningApplication?.processID ?? 0))
+            })
+        }
         diag("creating SCStream")
         let s = SCStream(filter: filter, configuration: cfg, delegate: self)
         diag("SCStream created, adding outputs")
@@ -508,6 +535,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
         diag("settle window clean, transitioning to active")
         streamPhase = "active"
+        emit(["event": "cameraPreview", "excluded": !previewWindows.isEmpty])
         return true
     }
 
@@ -616,9 +644,12 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             // arriving first is fine — audio PTS is on the same
             // host-clock timebase as video PTS in SCStream.)
             startedAtCMTime = CMSampleBufferGetPresentationTimeStamp(buf)
-            // Node's hrtime and CoreMedia host time both use mach_absolute_time.
-            // Report the file's actual epoch, including an audio-first start.
-            emit(["event": "timeline", "hostTimeSec": CMTimeGetSeconds(startedAtCMTime)])
+            // CoreMedia host time and Node/libuv uptime can differ by all time
+            // spent asleep. Convert the actual first-sample PTS through UTC,
+            // sampled here rather than when stdout reaches the main process.
+            let hostNow = CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock()))
+            let utcTimeMs = (Date().timeIntervalSince1970 + CMTimeGetSeconds(startedAtCMTime) - hostNow) * 1000
+            emit(["event": "timeline", "utcTimeMs": utcTimeMs])
             let ok = writer.startWriting()
             diag("first sample: type=\(type) startWriting()->\(ok) writer.status=\(writer.status.rawValue) error=\(writer.error?.localizedDescription ?? "nil")")
             writer.startSession(atSourceTime: startedAtCMTime)

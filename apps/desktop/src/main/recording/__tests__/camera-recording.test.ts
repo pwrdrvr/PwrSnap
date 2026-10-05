@@ -39,6 +39,7 @@ import {
   cancelCameraRecording,
   finishCameraRecording,
   markCameraScreenStart,
+  markCameraScreenStartUtc,
 } from "../camera-recording";
 import { resolveCameraSource } from "../camera-track-store";
 let root: string | undefined;
@@ -76,4 +77,16 @@ test("cancellation closes the camera and rejects late chunks", async () => {
   expect(state.closed).toBe(true);
   expect(await acceptCameraChunk(state.token, 731, [1])).toBe(false);
   expect(await finishCameraRecording()).toBeNull();
+});
+
+test("native UTC bridges a host clock separated from Node by hours of sleep", async () => {
+  root = await mkdtemp(join(tmpdir(), "pwrsnap-camera-sleep-test-"));
+  await beginCameraRecording({ deviceId: "chosen-camera" });
+  // CoreMedia could report an uptime 36,280 seconds behind libuv. Its UTC
+  // sample still identifies the same epoch as this calibrated camera clock.
+  markCameraScreenStartUtc(Date.now() + 3000);
+  await acceptCameraChunk(state.token, 731, [0, 1, 2]);
+  const stopped = await finishCameraRecording();
+  const metadata = await stopped!.adopt(join(root, "screen.mp4"), "sleep-clock");
+  expect(metadata.offsetSec).toBeCloseTo(-3, 1);
 });

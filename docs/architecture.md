@@ -106,8 +106,18 @@ records the selected camera to its own immutable file; it is never muxed into
 or painted onto the screen original. `<capture-id>.camera` beside the screen
 file holds the source and a timing/hash manifest. Copy, trash, restore and
 purge treat both sources as one capture. Source time maps through a stored
-camera-start minus screen-start offset (the native host clock on macOS,
+camera-start minus screen-start offset (the native host clock converted through UTC on macOS,
 gdigrab's input timestamp on Windows); an editor sync adjustment can refine it.
+Earlier macOS recordings whose incompatible uptime epochs put the entire camera
+hours outside the screen timeline are recovered on read by aligning their ends.
+This is labelled estimated timing; the source, manifest and stored index remain
+untouched. The Library shows a separate camera lane and source thumbnail, with
+placement controls in a popover that leaves the video stage at its full size.
+During native macOS recording, the same camera stream may appear in a
+nonfocusable preview outside the recorded rectangle. Native ScreenCaptureKit
+must confirm its explicit window exclusion before the preview becomes visible.
+Missing exclusion, changed display geometry, or no free area hides the preview;
+other platforms keep it hidden. Electron content protection alone is insufficient.
 
 Background removal uses the bundled Apache-2.0 MediaPipe landscape selfie
 segmenter in a worker on both platforms. It is a soft person mask, with

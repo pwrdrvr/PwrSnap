@@ -4,7 +4,7 @@ import { PersonSegmenter } from "./segmentation";
 const video = document.createElement("video");
 video.muted = true;
 video.playsInline = true;
-document.body.append(video);
+document.body.insertBefore(video, document.querySelector("footer"));
 let stream: MediaStream | null = null;
 let recorder: MediaRecorder | null = null;
 let chunks: Promise<void> = Promise.resolve();

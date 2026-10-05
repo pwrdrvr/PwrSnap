@@ -418,3 +418,13 @@ test("avatar edits preserve immutable camera metadata and screen identity", asyn
   expect(getVideoMetadata("camera-1")?.avatar?.visible).toBe(false);
   expect(mocks.db!.prepare("SELECT sha256 FROM captures WHERE id = ?").get("camera-1")).toEqual({ sha256: "sha-camera-1" });
 });
+
+test("opening a camera take with incompatible uptime recovers playback without rewriting stored metadata", async () => {
+  const { insertVideoMetadata, getVideoMetadata, setVideoCamera } = await import("../video-repo");
+  insertCaptureRow(mocks.db!, "camera-clock", "video");
+  insertVideoMetadata({ captureId: "camera-clock", durationSec: 9.190416, containerFormat: "mp4", hasSystemAudio: false, hasMicrophoneAudio: false, requestedMicrophone: false, requestedSystemAudio: false, subject: { kind: "display", displayId: 1 } });
+  const camera = { version: 1 as const, durationSec: 13.2307, width: 1280, height: 720, offsetSec: 36276.61846, sha256: "c".repeat(64), mimeType: "video/mp4" as const };
+  setVideoCamera("camera-clock", camera);
+  expect(getVideoMetadata("camera-clock")?.camera).toEqual({ ...camera, offsetSec: 9.190416 - 13.2307, timing: "estimated" });
+  expect(mocks.db!.prepare("SELECT camera_json FROM video_captures WHERE capture_id = ?").get("camera-clock")).toEqual({camera_json:JSON.stringify(camera)});
+});

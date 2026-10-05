@@ -1,4 +1,4 @@
-import { CameraTrackMetadataSchema, AvatarStyleSchema, type AvatarStyle, type CameraTrackMetadata } from "@pwrsnap/shared";
+import { CameraTrackMetadataSchema, AvatarStyleSchema, recoverCameraTiming, type AvatarStyle, type CameraTrackMetadata } from "@pwrsnap/shared";
 // Video-captures metadata read/write surface. Companion to
 // captures-repo.ts — every video metadata mutation goes through here.
 // The 1:1 FK to `captures.id` means we never INSERT a video_captures
@@ -79,7 +79,7 @@ function segmentsFromRow(row: VideoRow): VideoRange[] {
 function rowToMetadata(row: VideoRow): VideoCaptureMetadata {
   return {
     durationSec: row.duration_sec,
-    camera: parseCameraJson(row.camera_json),
+    camera: recoverCameraTiming(parseCameraJson(row.camera_json), row.duration_sec),
     avatar: parseAvatarJson(row.avatar_json),
     containerFormat: row.container_format,
     hasSystemAudio: row.has_system_audio === 1,

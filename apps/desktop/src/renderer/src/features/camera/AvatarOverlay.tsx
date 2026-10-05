@@ -73,6 +73,7 @@ export function AvatarOverlay({
     const canvas = document.createElement("canvas"),
       maskCanvas = document.createElement("canvas");
     let engine: PersonSegmenter | null = null;
+    let maskFailed = false;
     setError("");
     async function paint() {
       const target = output.current;
@@ -112,23 +113,34 @@ export function AvatarOverlay({
         lastTime = video.currentTime;
         const current = latest.current.style;
         lastStyle = current;
-        if (current.background === "remove") {
-          engine ??= new PersonSegmenter();
-          const mask = await engine.mask(canvas);
+        if (current.background === "remove" && !maskFailed) {
+          let mask: ImageData | null = null;
+          try {
+            engine ??= new PersonSegmenter();
+            mask = await engine.mask(canvas);
+          } catch {
+            if (retired) return;
+            maskFailed = true;
+            engine?.close();
+          }
           if (retired) return;
-          for (let i = 0; i < mask.data.length; i += 4)
-            mask.data[i + 3] = mask.data[i]!;
-          maskCanvas.width = mask.width;
-          maskCanvas.height = mask.height;
-          maskCanvas.getContext("2d")!.putImageData(mask, 0, 0);
-          context.globalCompositeOperation = "destination-in";
-          context.drawImage(maskCanvas, 0, 0, width, height);
-          context.globalCompositeOperation = "source-over";
+          if (mask) {
+            for (let i = 0; i < mask.data.length; i += 4)
+              mask.data[i + 3] = mask.data[i]!;
+            maskCanvas.width = mask.width;
+            maskCanvas.height = mask.height;
+            maskCanvas.getContext("2d")!.putImageData(mask, 0, 0);
+            context.globalCompositeOperation = "destination-in";
+            context.drawImage(maskCanvas, 0, 0, width, height);
+            context.globalCompositeOperation = "source-over";
+          }
         }
         const crop = current.crop;
         target.width = Math.max(1, Math.round(width * crop.width));
         target.height = Math.max(1, Math.round(height * crop.height));
-        setError("");
+        setError(maskFailed && current.background === "remove"
+          ? "Background removal unavailable. Showing the original camera."
+          : "");
         target
           .getContext("2d")!
           .drawImage(
@@ -158,6 +170,7 @@ export function AvatarOverlay({
     video.onerror = () => {
       if (!retired) setError("Camera track could not be opened.");
     };
+    video.load();
     let tick = 0;
     const loop = (now: number) => {
       if (retired) return;

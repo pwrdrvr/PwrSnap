@@ -1,4 +1,4 @@
-import { beginCameraRecording, markCameraScreenStart, finishCameraRecording, cancelCameraRecording } from "./camera-recording";
+import { beginCameraRecording, markCameraScreenStart, markCameraScreenStartUtc, prepareCameraPreview, confirmCameraPreviewExclusion, finishCameraRecording, cancelCameraRecording } from "./camera-recording";
 import { setVideoCamera } from "../persistence/video-repo";
 // Main-process recording service. Wraps the `PwrSnapRecorder` Swift
 // binary (apps/desktop/native/recorder/main.swift) over stdin/stdout
@@ -198,7 +198,7 @@ type RecorderStoppedEvent = {
   outputPath: string;
 };
 type RecorderErrorEvent = { event: "error"; code: string; message: string };
-type RecorderEvent = RecorderStartedEvent | RecorderStoppedEvent | RecorderErrorEvent | { event: "timeline"; hostTimeSec: number };
+type RecorderEvent = RecorderStartedEvent | RecorderStoppedEvent | RecorderErrorEvent | { event: "timeline"; utcTimeMs?: number } | { event: "cameraPreview"; excluded: boolean };
 
 /**
  * Real recorder backed by the Swift binary. Single session lifetime
@@ -450,6 +450,14 @@ class NativeRecorderService implements RecordingService {
     // narrowed this to JUST the HUD instead of every PwrSnap PID.
     const captureAtMs = Date.now() + options.countdownSeconds * 1000;
     const excludePids = collectOurPids();
+    let cameraPreview: ReturnType<typeof prepareCameraPreview>;
+    try { cameraPreview = prepareCameraPreview(displayId, physicalRect); }
+    catch (cause) {
+      confirmCameraPreviewExclusion(false);
+      log.warn("camera preview unavailable; recording remains hidden", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
     try {
       child.stdin.write(
         JSON.stringify({
@@ -463,7 +471,8 @@ class NativeRecorderService implements RecordingService {
           // recorder falls back to its `showsCursor ?? true` default.
           showsCursor: options.captureCursor,
           captureAtMs,
-          excludePids
+          excludePids,
+          cameraPreview
         }) + "\n"
       );
     } catch (cause) {
@@ -762,7 +771,12 @@ class NativeRecorderService implements RecordingService {
       }
       switch (parsed.event) {
         case "timeline":
-          if (Number.isFinite(parsed.hostTimeSec)) markCameraScreenStart(parsed.hostTimeSec * 1000);
+          // Older helper binaries do not emit UTC. Their generic `started`
+          // receipt is a usable fallback; never use an incompatible uptime.
+          if (parsed.utcTimeMs !== undefined) markCameraScreenStartUtc(parsed.utcTimeMs);
+          break;
+        case "cameraPreview":
+          confirmCameraPreviewExclusion(parsed.excluded === true);
           break;
         case "started":
           markCameraScreenStart();

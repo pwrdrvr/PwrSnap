@@ -11,7 +11,6 @@ import { join, resolve, sep } from "node:path";
 // .github/workflows/release.yml — that list is an allowlist, not a glob.
 import { isCliEntrypoint } from "../../../scripts/lib/cli-entrypoint.mjs";
 import {
-  inspectSharpNativePackages,
   partitionSharpNativePackages,
   sharpNativePackagesForTarget
 } from "./sharp-platform-packages.mjs";
@@ -118,21 +117,25 @@ const sharedSharpAsarRuntime = [
 // from the exact version in pnpm-lock.yaml.
 const macRequiredUnpackedNative = [
   {
+    packageName: "sharp-darwin-arm64",
     label: "@img/sharp-darwin-arm64 native binding",
     dir: "app.asar.unpacked/node_modules/@img/sharp-darwin-arm64/lib",
     filePattern: /\.node$/
   },
   {
+    packageName: "sharp-darwin-x64",
     label: "@img/sharp-darwin-x64 native binding",
     dir: "app.asar.unpacked/node_modules/@img/sharp-darwin-x64/lib",
     filePattern: /\.node$/
   },
   {
+    packageName: "sharp-libvips-darwin-arm64",
     label: "@img/sharp-libvips-darwin-arm64 dylib",
     dir: "app.asar.unpacked/node_modules/@img/sharp-libvips-darwin-arm64/lib",
     filePattern: /\.dylib$/
   },
   {
+    packageName: "sharp-libvips-darwin-x64",
     label: "@img/sharp-libvips-darwin-x64 dylib",
     dir: "app.asar.unpacked/node_modules/@img/sharp-libvips-darwin-x64/lib",
     filePattern: /\.dylib$/
@@ -190,6 +193,12 @@ function packagedPlatform(appPath) {
   return appPath.endsWith(".app") ? "darwin" : "win32";
 }
 
+// The target a bare call checks, matching what runCli assumes when
+// PWRSNAP_TARGET_ARCH is unset: the universal mac app, the x64 Windows app.
+function defaultArch(platform) {
+  return platform === "darwin" ? "universal" : "x64";
+}
+
 function resourcesPath(appPath, platform = packagedPlatform(appPath)) {
   return platform === "darwin"
     ? resolve(appPath, "Contents/Resources")
@@ -206,10 +215,10 @@ function requiredResourcesFor(platform) {
   return required;
 }
 
-function requiredUnpackedNativeFor(platform, arch = "x64") {
-  return platform === "darwin"
-    ? macRequiredUnpackedNative.filter((entry) => arch !== "arm64" || !entry.dir.includes("-x64/"))
-    : windowsRequiredUnpackedRuntime(arch);
+function requiredUnpackedNativeFor(platform, arch = defaultArch(platform)) {
+  if (platform !== "darwin") return windowsRequiredUnpackedRuntime(arch);
+  const required = new Set(sharpNativePackagesForTarget({ platform, arch }));
+  return macRequiredUnpackedNative.filter((entry) => required.has(entry.packageName));
 }
 
 function normalizedAsarEntries(listing) {
@@ -227,7 +236,7 @@ function windowsSharpAsarRuntime(arch) {
   ];
 }
 
-export function findMissingSharpAsarRuntime(listing, platform, arch = "x64") {
+export function findMissingSharpAsarRuntime(listing, platform, arch = defaultArch(platform)) {
   const entries = new Set(normalizedAsarEntries(listing));
   const required = platform === "win32"
     ? windowsSharpAsarRuntime(arch)
@@ -235,17 +244,27 @@ export function findMissingSharpAsarRuntime(listing, platform, arch = "x64") {
   return required.filter(({ path }) => !entries.has(path));
 }
 
+// Any depth, not just the top-level scope: a package nested under another
+// package's node_modules ships just the same.
+const imgPackagePattern = /(?:^|\/)node_modules\/@img\/([^/]+)(?:\/|$)/;
+
 function imgPackageNamesFromAsar(listing) {
   const packages = new Set();
   for (const entry of normalizedAsarEntries(listing)) {
-    const match = /(?:^|\/)node_modules\/@img\/([^/]+)(?:\/|$)/.exec(entry);
+    const match = imgPackagePattern.exec(entry);
     if (match) packages.add(match[1]);
   }
   return [...packages];
 }
 
-export function findForeignSharpAsarPackages(listing, platform, arch = "x64") {
-  if (platform !== "win32" && !(platform === "darwin" && arch === "arm64")) return [];
+/**
+ * Sharp native packages in the archive that the target does not use. Every
+ * shipped target is checked, the universal mac app included: it keeps both
+ * Darwin slices and refuses everything else, `@img/sharp-wasm32` among them.
+ * An unknown target throws (via sharpNativePackagesForTarget) rather than
+ * passing with nothing checked.
+ */
+export function findForeignSharpAsarPackages(listing, platform, arch = defaultArch(platform)) {
   return partitionSharpNativePackages(imgPackageNamesFromAsar(listing), {
     platform,
     arch
@@ -277,7 +296,7 @@ export function findMissingPackagedResources(appPath, platform = packagedPlatfor
 export function findMissingUnpackedNative(
   appPath,
   platform = packagedPlatform(appPath),
-  arch = "x64"
+  arch = defaultArch(platform)
 ) {
   const root = resourcesPath(appPath, platform);
   const missing = [];
@@ -307,18 +326,42 @@ export function findMissingUnpackedNative(
   return missing;
 }
 
+// Names of every package in an `@img` scope anywhere under `root`, at any
+// depth. Links are recorded by name and never followed.
+function imgPackageNamesUnder(root) {
+  const packages = new Set();
+  const walk = (dir, insideNodeModules) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch (error) {
+      if (error?.code === "ENOENT" && dir === root) return;
+      throw error;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const path = join(dir, entry.name);
+      if (insideNodeModules && entry.name === "@img") {
+        for (const scoped of readdirSync(path, { withFileTypes: true })) {
+          if (scoped.isDirectory() || scoped.isSymbolicLink()) packages.add(scoped.name);
+          if (scoped.isDirectory()) walk(join(path, scoped.name), false);
+        }
+        continue;
+      }
+      walk(path, entry.name === "node_modules");
+    }
+  };
+  walk(root, false);
+  return [...packages];
+}
+
 export function findForeignUnpackedNative(
   appPath,
   platform = packagedPlatform(appPath),
-  arch = "x64"
+  arch = defaultArch(platform)
 ) {
-  if (platform !== "win32" && !(platform === "darwin" && arch === "arm64")) return [];
-  const nodeModulesDir = resolve(
-    resourcesPath(appPath, platform),
-    "app.asar.unpacked/node_modules"
-  );
-  return inspectSharpNativePackages({
-    nodeModulesDir,
+  const unpackedRoot = resolve(resourcesPath(appPath, platform), "app.asar.unpacked");
+  return partitionSharpNativePackages(imgPackageNamesUnder(unpackedRoot), {
     platform,
     arch
   }).removed;
@@ -347,7 +390,7 @@ export function verifyAsarListing(listing) {
   throw new Error(formatForbiddenViolations(violations));
 }
 
-export function verifySharpAsarRuntime(listing, platform, arch = "x64") {
+export function verifySharpAsarRuntime(listing, platform, arch = defaultArch(platform)) {
   const missing = findMissingSharpAsarRuntime(listing, platform, arch);
   const foreign = findForeignSharpAsarPackages(listing, platform, arch);
   if (missing.length === 0 && foreign.length === 0) return;
@@ -484,7 +527,7 @@ export function verifyPackagedResources(appPath, platform = packagedPlatform(app
 export function verifyUnpackedNative(
   appPath,
   platform = packagedPlatform(appPath),
-  arch = "x64"
+  arch = defaultArch(platform)
 ) {
   const missing = findMissingUnpackedNative(appPath, platform, arch);
   const foreign = findForeignUnpackedNative(appPath, platform, arch);
@@ -505,8 +548,10 @@ export function verifyUnpackedNative(
     "",
     "If sharp packages are missing: pnpm deploy is dropping platform-specific",
     "optionalDependencies — see the release packager's injection step. If",
-    "foreign native slices are present, the staged Sharp pruning step did",
-    "not run. If a native library is missing despite its package being present,",
+    "foreign native slices are present, the stage step that prunes them",
+    "(Windows, arm64 mac) or refuses them (universal mac) did not run.",
+    "@img/sharp-wasm32 is Linux-only and must never ship.",
+    "If a native library is missing despite its package being present,",
     "the asarUnpack",
     "rule for @img/** is gone from electron-builder.yml."
   );
@@ -516,7 +561,7 @@ export function verifyUnpackedNative(
 export function runCli(args = process.argv.slice(2)) {
   const appPath = args[0] ?? resolve("release-stage/dist/mac-universal/PwrSnap.app");
   const platform = packagedPlatform(appPath);
-  const arch = process.env.PWRSNAP_TARGET_ARCH?.trim() || (platform === "darwin" ? "universal" : "x64");
+  const arch = process.env.PWRSNAP_TARGET_ARCH?.trim() || defaultArch(platform);
   if (platform === "darwin" && !["universal", "arm64"].includes(arch)) throw new Error(`Unsupported macOS target: ${arch}`);
   const asarPath = join(resourcesPath(appPath, platform), "app.asar");
   if (!existsSync(asarPath)) {

@@ -437,6 +437,129 @@ describe("Apple Silicon unpacked runtime", () => {
   });
 });
 
+const darwinSlices = [
+  "sharp-darwin-arm64",
+  "sharp-darwin-x64",
+  "sharp-libvips-darwin-arm64",
+  "sharp-libvips-darwin-x64"
+];
+
+function universalSharpAsarListing() {
+  return [
+    ...sharpEsmRuntimePaths.map((runtimePath) => `/node_modules/sharp/${runtimePath}`),
+    "/node_modules/sharp/package.json",
+    "/node_modules/sharp/LICENSE",
+    "/node_modules/@img/colour/package.json",
+    "/node_modules/@img/colour/index.cjs",
+    "/node_modules/@img/colour/color.cjs",
+    ...darwinSlices.map((name) => `/node_modules/@img/${name}/package.json`)
+  ];
+}
+
+// The Linux-only wasm build: .pnpmfile.cjs gates it to os: linux, and
+// THIRD_PARTY_LICENSES does not disclose its LGPL libvips.
+const wasmAsarEntries = [
+  "/node_modules/@img/sharp-wasm32/package.json",
+  "/node_modules/@img/sharp-wasm32/lib/sharp-wasm32.node.wasm"
+];
+
+describe("universal macOS Sharp runtime", () => {
+  test("passes a clean universal app that carries both Darwin slices", () => {
+    const { appPath, resources } = fakeApp();
+    writeUnpackedNativeFixtures(resources);
+    const listing = universalSharpAsarListing();
+
+    expect(findForeignSharpAsarPackages(listing, "darwin", "universal")).toEqual([]);
+    expect(findForeignUnpackedNative(appPath, "darwin", "universal")).toEqual([]);
+    expect(() => verifySharpAsarRuntime(listing, "darwin", "universal")).not.toThrow();
+    expect(() => verifyUnpackedNative(appPath, "darwin", "universal")).not.toThrow();
+    // A bare call checks the universal app, which is what runCli assumes.
+    expect(() => verifySharpAsarRuntime(listing, "darwin")).not.toThrow();
+    expect(() => verifyUnpackedNative(appPath)).not.toThrow();
+  });
+
+  test("refuses @img/sharp-wasm32 in the universal ASAR listing", () => {
+    const listing = [...universalSharpAsarListing(), ...wasmAsarEntries];
+
+    expect(findForeignSharpAsarPackages(listing, "darwin", "universal")).toEqual([
+      "sharp-wasm32"
+    ]);
+    expect(() => verifySharpAsarRuntime(listing, "darwin", "universal")).toThrow(
+      /foreign Sharp native slice\(s\): @img\/sharp-wasm32/
+    );
+    expect(() => verifySharpAsarRuntime(listing, "darwin")).toThrow(/@img\/sharp-wasm32/);
+  });
+
+  test("refuses @img/sharp-wasm32 nested under another package in the listing", () => {
+    const listing = [
+      ...universalSharpAsarListing(),
+      "/node_modules/sharp/node_modules/@img/sharp-wasm32/package.json"
+    ];
+    expect(findForeignSharpAsarPackages(listing, "darwin", "universal")).toEqual([
+      "sharp-wasm32"
+    ]);
+  });
+
+  test("refuses @img/sharp-wasm32 in the universal unpacked payload, at any depth", () => {
+    const { appPath, resources } = fakeApp();
+    writeUnpackedNativeFixtures(resources, [
+      ...allUnpackedNativeFixtures,
+      "app.asar.unpacked/node_modules/@img/sharp-wasm32/lib/sharp-wasm32.node.wasm"
+    ]);
+    expect(findForeignUnpackedNative(appPath, "darwin", "universal")).toEqual([
+      "sharp-wasm32"
+    ]);
+    expect(() => verifyUnpackedNative(appPath, "darwin", "universal")).toThrow(
+      /foreign Sharp native slice\(s\): @img\/sharp-wasm32.*Linux-only/s
+    );
+
+    const nested = fakeApp();
+    writeUnpackedNativeFixtures(nested.resources, [
+      ...allUnpackedNativeFixtures,
+      "app.asar.unpacked/node_modules/sharp/node_modules/@img/sharp-wasm32/lib/sharp-wasm32.node.wasm"
+    ]);
+    expect(findForeignUnpackedNative(nested.appPath, "darwin", "universal")).toEqual([
+      "sharp-wasm32"
+    ]);
+  });
+
+  test("refuses non-Darwin native slices in the universal app", () => {
+    const listing = [
+      ...universalSharpAsarListing(),
+      "/node_modules/@img/sharp-win32-x64/package.json",
+      "/node_modules/@img/sharp-linux-arm64/package.json"
+    ];
+    expect(findForeignSharpAsarPackages(listing, "darwin", "universal")).toEqual([
+      "sharp-linux-arm64",
+      "sharp-win32-x64"
+    ]);
+  });
+
+  test("refuses @img/sharp-wasm32 on every shipped target", () => {
+    for (const [platform, arch, base] of [
+      ["darwin", "universal", universalSharpAsarListing()],
+      ["darwin", "arm64", universalSharpAsarListing().filter((entry) => !entry.includes("-x64/"))],
+      ["win32", "x64", windowsSharpAsarListing("x64")],
+      ["win32", "arm64", windowsSharpAsarListing("arm64")]
+    ]) {
+      expect(findForeignSharpAsarPackages(base, platform, arch)).toEqual([]);
+      expect(findForeignSharpAsarPackages([...base, ...wasmAsarEntries], platform, arch)).toEqual([
+        "sharp-wasm32"
+      ]);
+    }
+  });
+
+  test("fails closed for a target nobody mapped", () => {
+    const listing = universalSharpAsarListing();
+    expect(() => findForeignSharpAsarPackages(listing, "linux", "x64")).toThrow(
+      /unsupported Sharp package target: linux\/x64/
+    );
+    expect(() => findForeignSharpAsarPackages(listing, "darwin", "ia32")).toThrow(
+      /unsupported Sharp package target: darwin\/ia32/
+    );
+  });
+});
+
 describe("packaged renderer HTML", () => {
   const cleanReader = (entry) => {
     if (entry === "/out/renderer/index.html") {

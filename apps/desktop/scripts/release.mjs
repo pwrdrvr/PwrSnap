@@ -54,7 +54,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { stagedPnpmConfigEnv } from "./staged-pnpm-config.mjs";
-import { releaseArchitecture, stageName, verifyStageTarget, thinStagedHelpers, thinStagedFfmpeg, verifyPackagedArchitecture, pruneStagedArm64Sharp } from "./macos-release-artifacts.mjs";
+import { releaseArchitecture, stageName, verifyStageTarget, thinStagedHelpers, thinStagedFfmpeg, verifyPackagedArchitecture, pruneStagedSharp, assertStagedSharpTarget } from "./macos-release-artifacts.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -482,9 +482,12 @@ if (!signStageOnly) {
   //     bug in Beta.3 — every install was DOA).
   step("inject darwin platform packages from workspace pnpm store");
   injectDarwinPlatformPackages();
-  if (releaseArch === "arm64") {
-    pruneStagedArm64Sharp(stageDir);
-  }
+  //     Then narrow the stage to this target's slices. Both stages need it:
+  //     deploy links the win32 slices beside sharp too, and until this ran
+  //     for universal the universal app shipped them. A slice no shipped
+  //     target uses (e.g. the Linux-only @img/sharp-wasm32) is refused.
+  pruneStagedSharp(stageDir, releaseArch);
+  assertStagedSharpTarget(stageDir, releaseArch);
 
   // 6. Build the staged Electron-native sqlite sidecar. The stage contains only
   //    production dependencies, so the script gets the packaged Electron version
@@ -570,6 +573,8 @@ if (!signStageOnly) {
 }
 
 verifyStageTarget(stageDir, releaseArch, JSON.parse(readFileSync(join(desktopRoot, "package.json"), "utf8")).version);
+// Again here, for the --sign-stage-only job: its stage crossed a job boundary.
+assertStagedSharpTarget(stageDir, releaseArch);
 if (releaseArch === "arm64") thinStagedFfmpeg(stageDir);
 
 // 8. electron-builder.

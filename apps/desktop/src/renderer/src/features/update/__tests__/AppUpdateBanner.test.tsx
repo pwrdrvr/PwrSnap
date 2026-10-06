@@ -337,7 +337,7 @@ describe("AppUpdateBanner", () => {
   });
 
   test("picks the live card up mid-download when a check joins one", async () => {
-    // Help -> Check for Updates while a background download is already running
+    // Check for Updates… (menu) while a background download is already running
     // joins it in main, so the `checking` tick arrives after the status has
     // moved on. Rewinding the card there would report a finished step.
     const api = await renderBanner({ status: "downloading", version: "1.0.0", percent: 70 });

@@ -202,8 +202,13 @@ export function buildApplicationMenuTemplate(
 
   // Reload Window is always there: it is the way back when the renderer
   // stops drawing its own controls. Force Reload and Developer Tools stay
-  // behind Developer Mode. Toggle Full Screen is listed off macOS only —
-  // see the decision-E note at the end of this file.
+  // behind Developer Mode.
+  //
+  // Toggle Full Screen stays on macOS too. The standard drops it there on
+  // the theory that AppKit adds its own and the menu shows two; decision E
+  // was to check before removing it. Measured (macos-fullscreen-menu-probe
+  // .cjs): AppKit inserts "Enter Full Screen" only into a View menu that
+  // has no full-screen item, so with the stock role there is exactly one.
   const viewMenu: Item = {
     label: "View",
     submenu: [
@@ -215,7 +220,8 @@ export function buildApplicationMenuTemplate(
       { role: "resetZoom" },
       { role: "zoomIn" },
       { role: "zoomOut" },
-      ...((isMac ? [] : [separator, { role: "togglefullscreen" }]) as Item[])
+      separator,
+      { role: "togglefullscreen" }
     ]
   };
 

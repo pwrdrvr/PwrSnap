@@ -162,6 +162,7 @@ describe("verify-asar-contents", () => {
     const { appPath, resources } = fakeApp();
     writeResource(resources, "THIRD_PARTY_LICENSES");
     writeResource(resources, "CHANGELOG.md");
+    writeResource(resources, "LICENSE");
     writeResource(resources, "PwrSnapFFmpeg");
 
     expect(findMissingPackagedResources(appPath)).toEqual([]);
@@ -171,6 +172,7 @@ describe("verify-asar-contents", () => {
   test("fails packaged resource verification when third-party notices are missing", () => {
     const { appPath, resources } = fakeApp();
     writeResource(resources, "CHANGELOG.md");
+    writeResource(resources, "LICENSE");
     writeResource(resources, "PwrSnapFFmpeg");
 
     expect(findMissingPackagedResources(appPath)).toEqual(["THIRD_PARTY_LICENSES"]);
@@ -182,6 +184,7 @@ describe("verify-asar-contents", () => {
   test("fails packaged resource verification when changelog is missing", () => {
     const { appPath, resources } = fakeApp();
     writeResource(resources, "THIRD_PARTY_LICENSES");
+    writeResource(resources, "LICENSE");
     writeResource(resources, "PwrSnapFFmpeg");
 
     expect(findMissingPackagedResources(appPath)).toEqual(["CHANGELOG.md"]);
@@ -190,11 +193,24 @@ describe("verify-asar-contents", () => {
     );
   });
 
+  test("fails packaged resource verification when the license is missing", () => {
+    const { appPath, resources } = fakeApp();
+    writeResource(resources, "THIRD_PARTY_LICENSES");
+    writeResource(resources, "CHANGELOG.md");
+    writeResource(resources, "PwrSnapFFmpeg");
+
+    expect(findMissingPackagedResources(appPath)).toEqual(["LICENSE"]);
+    expect(() => verifyPackagedResources(appPath)).toThrow(
+      /missing packaged resource\(s\): LICENSE/,
+    );
+  });
+
   test("verifies Windows resources and native runtime sidecars", () => {
     const { appPath, resources } = fakeWindowsApp();
     for (const name of [
       "THIRD_PARTY_LICENSES",
       "CHANGELOG.md",
+      "LICENSE",
       "PwrSnapWindowList.exe",
       "PwrSnapScreenSnapshot.exe"
     ]) {
@@ -339,6 +355,7 @@ describe("verify-asar-contents", () => {
     for (const name of [
       "THIRD_PARTY_LICENSES",
       "CHANGELOG.md",
+      "LICENSE",
       "PwrSnapWindowList.exe",
       "PwrSnapScreenSnapshot.exe"
     ]) {

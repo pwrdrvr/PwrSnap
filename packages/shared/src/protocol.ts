@@ -2591,7 +2591,29 @@ export type AiEnrichmentBudgetStatus = {
   disabledAt: string | null;
 };
 
-export type AppDocumentKind = "changelog" | "third-party-licenses";
+export type AppDocumentKind = "changelog" | "license" | "third-party-licenses";
+
+/** Every bundled app document, in the order Help lists them. The kind id
+ *  `third-party-licenses` predates the menu name and is kept so an open
+ *  window's URL and every bus caller stay valid; what the user reads is
+ *  `APP_DOCUMENT_TITLES`. */
+export const APP_DOCUMENT_KINDS = [
+  "changelog",
+  "license",
+  "third-party-licenses"
+] as const satisfies readonly AppDocumentKind[];
+
+/** User-visible name of each document — the window's crumb and, prefixed
+ *  with "PwrSnap", its title. Matches the Help menu's wording. */
+export const APP_DOCUMENT_TITLES: Readonly<Record<AppDocumentKind, string>> = {
+  changelog: "Changelog",
+  license: "License",
+  "third-party-licenses": "Third-Party Notices"
+};
+
+export function isAppDocumentKind(value: unknown): value is AppDocumentKind {
+  return (APP_DOCUMENT_KINDS as readonly unknown[]).includes(value);
+}
 
 export type AppDocument = {
   kind: AppDocumentKind;

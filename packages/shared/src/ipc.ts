@@ -337,6 +337,14 @@ export const EVENT_CHANNELS = {
    */
   libraryDuplicate: "events:library:duplicate",
   /**
+   * Main → the window a menu command came from: a short confirmation for
+   * an action that has no surface of its own, such as Help ▸ Copy
+   * Diagnostics Info. The Library shows it as a transient toast; a window
+   * that renders no toast stack ignores it, and the action has already
+   * happened either way. Payload: `{ message: string }`.
+   */
+  appNotice: "events:app:notice",
+  /**
    * Main → every BrowserWindow: a Library chat thread's metadata
    * changed (created, renamed, archived, anchor moved, status flipped
    * to streaming/awaiting-approval/idle, or last-message preview
@@ -626,6 +634,7 @@ export type EventPayloads = {
   [EVENT_CHANNELS.cartChanged]: { cart: DraftCart };
   [EVENT_CHANNELS.cartExportProgress]: CartExportProgressEvent;
   [EVENT_CHANNELS.renderProgress]: VideoExportProgressEvent;
+  [EVENT_CHANNELS.appNotice]: { message: string };
   [EVENT_CHANNELS.libraryChatThreadUpdated]: { thread: LibraryChatThreadView };
   [EVENT_CHANNELS.libraryChatStreamDelta]: LibraryChatStreamDeltaEvent;
   [EVENT_CHANNELS.libraryChatToolCall]: LibraryChatToolCallEvent;

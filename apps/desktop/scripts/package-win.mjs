@@ -401,7 +401,7 @@ if (!signStageOnly) {
     join(desktopRoot, "electron-builder.yml"),
     join(stageDir, "electron-builder.yml")
   );
-  for (const file of ["THIRD_PARTY_LICENSES", "CHANGELOG.md", ".pnpmfile-global.cjs"]) {
+  for (const file of ["THIRD_PARTY_LICENSES", "CHANGELOG.md", "LICENSE", ".pnpmfile-global.cjs"]) {
     cpSync(join(repoRoot, file), join(stageDir, file));
   }
   copyWindowsFfmpegIntoStage({ required: releaseMode });

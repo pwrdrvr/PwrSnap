@@ -1,4 +1,4 @@
-// Help → Check for Updates, end to end.
+// Check for Updates… (app menu on macOS, Help elsewhere), end to end.
 //
 // Driven through the dev/QA fake (`simulateDevUpdateCheck`) rather than
 // GitHub — which is the point: the fake walks the same status machine a real
@@ -48,18 +48,18 @@ async function clickCheckForUpdates(app: LaunchedApp): Promise<void> {
   await app.electronApp.evaluate(({ Menu }) => {
     for (const top of Menu.getApplicationMenu()?.items ?? []) {
       const item = top.submenu?.items.find(
-        (candidate) => candidate.label === "Check for Updates"
+        (candidate) => candidate.label === "Check for Updates…"
       );
       if (item !== undefined) {
         item.click();
         return;
       }
     }
-    throw new Error("Menu item not found: Check for Updates");
+    throw new Error("Menu item not found: Check for Updates…");
   });
 }
 
-test.describe("Help → Check for Updates", () => {
+test.describe("Check for Updates… menu item", () => {
   test("reports itself live and ends on an actionable offer", async () => {
     const app = await launchWithFakeUpdates();
     try {

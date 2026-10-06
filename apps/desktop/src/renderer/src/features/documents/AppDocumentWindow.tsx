@@ -1,5 +1,9 @@
 import { useEffect, useState, type ReactElement } from "react";
-import type { AppDocument, AppDocumentKind } from "@pwrsnap/shared";
+import {
+  APP_DOCUMENT_TITLES,
+  type AppDocument,
+  type AppDocumentKind
+} from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import { WindowControls } from "../shared/WindowControls";
@@ -34,8 +38,7 @@ export function AppDocumentWindow({ kind }: Props): ReactElement {
     };
   }, [kind]);
 
-  const title =
-    kind === "third-party-licenses" ? "Third-party Licenses" : "Changelog";
+  const title = APP_DOCUMENT_TITLES[kind ?? "changelog"];
 
   return (
     <div className="ps-doc">

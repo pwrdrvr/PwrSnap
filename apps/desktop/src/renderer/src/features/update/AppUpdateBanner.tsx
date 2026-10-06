@@ -2,7 +2,7 @@
 // window has to say about updates. Three jobs, all driven from main and all
 // deliberately non-modal:
 //
-//  - A user-initiated Help -> Check for Updates gets a LIVE card for as long
+//  - A user-initiated Check for Updates… (menu) gets a LIVE card for as long
 //    as it is working: an indeterminate sweep while the release read is out,
 //    a real meter with a Cancel button once bytes are moving. It carries no
 //    dismiss countdown, because the work it reports has no fixed duration.

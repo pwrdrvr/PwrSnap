@@ -6,16 +6,28 @@
 // menu model cannot answer that — AppKit's item never appears in
 // `Menu.getApplicationMenu()` — so this probe reads the real NSMenu
 // through Accessibility, for a View menu built with and without the
-// stock role, and screenshots each one open.
+// stock role, before and while the menu is open.
+//
+// Measured 2026-10-06, Electron 41.10.7, macOS 15.7.7 (PwrSuiteLab VM):
+//
+//   with the stock role     Reload Window, -, Actual Size, Zoom In,
+//                           Zoom Out, -, Toggle Full Screen
+//   without it              Reload Window, -, Actual Size, Zoom In,
+//                           Zoom Out, Enter Full Screen   (AppKit's)
+//
+// One item either way: AppKit adds its own only when the menu has none, so
+// the stock role is NOT duplicated and stays (application-menu.ts).
 //
 // It opens a window and drives the menu bar, so run it in the
 // PwrSuiteLab macOS VM, never on the operator's desktop (AGENTS.md
-// §Workflow). The parent process needs Accessibility (System Events)
-// and Screen Recording (screencapture). Plain Electron, no build:
+// §Workflow). The parent process needs Accessibility (System Events).
+// Plain Electron, no build:
 //
 //   electron apps/desktop/scripts/macos-fullscreen-menu-probe.cjs [outDir]
 //
-// Writes <outDir>/result.json plus one PNG per variant.
+// Writes <outDir>/result.json. No screenshot: `screencapture` from a lab
+// job raises a screen-recording consent prompt for the job's shell, and
+// the menu is a separate window it would not show anyway.
 
 const { app, BrowserWindow, Menu } = require("electron");
 const { execFile } = require("node:child_process");
@@ -73,15 +85,13 @@ async function probeVariant(name, withStockFullScreen) {
   await delay(1_000);
   const beforeOpen = await readViewItems();
   // AppKit may only insert its item as the menu is about to show, so read
-  // the items again with the menu open, and photograph it.
+  // the items again with the menu open.
   const open = await systemEvents('click menu bar item "View" of menu bar 1');
   await delay(1_000);
   const whileOpen = await readViewItems();
-  const png = resolve(outDir, `${name}.png`);
-  const screenshot = await run("screencapture", ["-x", png]);
   await systemEvents("key code 53");
   await delay(500);
-  return { name, withStockFullScreen, beforeOpen, open, whileOpen, screenshot, png };
+  return { name, withStockFullScreen, beforeOpen, open, whileOpen };
 }
 
 app.whenReady().then(async () => {

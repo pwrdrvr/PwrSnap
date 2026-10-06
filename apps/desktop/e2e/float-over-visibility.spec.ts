@@ -268,7 +268,14 @@ test.describe("float-over visibility", () => {
           }, { channel: EVENT_CHANNELS.aiRunUpdated, enrichment });
         }
         await expect(page.locator(".fod-tab")).toHaveAttribute("data-status", status === null ? "none" : status === "completed" ? "ready" : "failed", { timeout: 12_000 });
-        await waitForStableFloatOverSize(app);
+        // The toast is gone after tucking. Its sizing helper requires
+        // .fo and can never settle for the dock; wait for the native
+        // window to finish reshaping to the single tab instead.
+        await expect.poll(() => inspectFloatOver(app)).toMatchObject({
+          visible: true,
+          opacity: 1,
+          contentSize: { width: 18, height: 54 }
+        });
         const info = await inspectFloatOver(app);
         expect(info.visible).toBe(true);
         expect(info.opacity).toBe(1);

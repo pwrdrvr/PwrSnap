@@ -35,7 +35,9 @@ test.skipIf(process.platform === "win32")("pnpm list in a relocated standalone s
   const preparedStage = join(root, "prepared");
   const restoredStage = join(root, "restored stage with spaces");
   mkdirSync(preparedStage);
-  writeFileSync(join(preparedStage, "package.json"), JSON.stringify({ name: "staged-pnpm-probe", private: true }));
+  // Outside the workspace, Corepack otherwise selects the machine's default pnpm.
+  const { packageManager } = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+  writeFileSync(join(preparedStage, "package.json"), JSON.stringify({ name: "staged-pnpm-probe", private: true, packageManager }));
   cpSync(join(repoRoot, ".pnpmfile-global.cjs"), join(preparedStage, ".pnpmfile-global.cjs"));
   renameSync(preparedStage, restoredStage);
 

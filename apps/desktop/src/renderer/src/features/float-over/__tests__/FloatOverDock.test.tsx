@@ -124,6 +124,7 @@ type HostApi = {
 
 function installHostApi(options: {
   dock?: boolean;
+  settings?: Settings;
   enrichmentFor?: (captureId: string) => CaptureEnrichment | null;
   byId?: (id: string) => CaptureRecord | null | Promise<CaptureRecord | null>;
   library?: CaptureRecord[];
@@ -140,7 +141,7 @@ function installHostApi(options: {
       case "float-over:overflowMenu":
         return { ok: true, value: { choice: null } };
       case "settings:read":
-        return { ok: true, value: settings };
+        return { ok: true, value: options.settings ?? settings };
       case "settings:refreshCodexDiscovery":
         return { ok: true, value: codexSnapshot };
       case "capture:presetMetrics":
@@ -469,6 +470,143 @@ describe("FloatOver tuck countdown", () => {
 });
 
 describe("FloatOverHost dock", () => {
+  const offlineSettings: Settings = {
+    ...settings,
+    ai: {
+      ...settings.ai,
+      defaults: {
+        ...settings.ai.defaults,
+        enrichment: { provider: "custom:11111111-1111-4111-8111-111111111111" }
+      },
+      customModels: [{
+        id: "11111111-1111-4111-8111-111111111111",
+        connectionId: "22222222-2222-4222-8222-222222222222",
+        displayName: "Local vision model",
+        modelId: "local-vision",
+        capabilities: { vision: true, streaming: true },
+        maxOutputTokens: 4096
+      }]
+    }
+  };
+  const endpointFailure = (captureId: string): CaptureEnrichment => ({
+    ...enrichment(captureId, "failed"),
+    error: "Could not reach the configured endpoint. Check its address and TLS configuration."
+  });
+
+  test("an unreachable local model leaves a failed tab after the toast times out", async () => {
+    const api = installHostApi({ settings: offlineSettings });
+    const el = await mountHost();
+    await showSnap(api, "cap_1", "running");
+    await push(api, EVENT_CHANNELS.aiRunUpdated, { enrichment: endpointFailure("cap_1") });
+
+    await advance(DOCK_TUCK_COUNTDOWN_MS + 500);
+    expect(api.calls("float-over:tuck")).toEqual([{}]);
+    expect(api.calls("float-over:dismiss")).toEqual([]);
+    await push(api, EVENT_CHANNELS.floatOverState, { kind: "tucked", side: "right" });
+    expect(el.querySelector(".fod-tab")?.getAttribute("data-status")).toBe("failed");
+
+    // Opening reads the saved failure without retrying inference, and
+    // the next timeout returns the snap to the recent-capture sidebar.
+    await press(el.querySelector(".fod-tab")!);
+    await push(api, EVENT_CHANNELS.floatOverState, { kind: "show-loaded", captureId: "cap_1" });
+    expect(el.textContent).toContain("Could not reach the configured endpoint.");
+    expect(api.calls("codex:enrich")).toEqual([]);
+    await advance(DOCK_TUCK_COUNTDOWN_MS + 500);
+    expect(api.calls("float-over:dismiss")).toEqual([]);
+    expect(api.calls("float-over:tuck")).toEqual([{}, {}]);
+  });
+
+  test("a new capture preserves an unopened model failure on the dock", async () => {
+    const api = installHostApi({ settings: offlineSettings });
+    const el = await mountHost();
+    await showSnap(api, "cap_1", "failed");
+    await push(api, EVENT_CHANNELS.floatOverState, { kind: "show-idle" });
+    expect(api.calls("float-over:tuck")).toEqual([{ markOnly: true }]);
+    await showSnap(api, "cap_2", "completed");
+    await advance(DOCK_TUCK_COUNTDOWN_MS + 500);
+    await push(api, EVENT_CHANNELS.floatOverState, { kind: "tucked", side: "right" });
+    expect(Array.from(el.querySelectorAll(".fod-tab"), (tab) => tab.getAttribute("data-status"))).toEqual(["ready", "failed"]);
+    expect(api.calls("float-over:dismiss")).toEqual([]);
+  });
+
+  test("explicitly dismissing a failed toast clears it", async () => {
+    const api = installHostApi({ settings: offlineSettings });
+    const el = await mountHost();
+    await showSnap(api, "cap_1", "failed");
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('button[aria-label="Dismiss"]')?.click();
+    });
+    await advance(300);
+    expect(api.calls("float-over:dismiss")).toEqual([{}]);
+    expect(api.calls("float-over:tuck")).toEqual([]);
+  });
+
+  test("opening a saved failure outside the catalog keeps it available without retrying", async () => {
+    const api = installHostApi({ settings: offlineSettings, enrichmentFor: endpointFailure });
+    const el = await mountHost();
+    await push(api, EVENT_CHANNELS.floatOverState, { kind: "show-loaded", captureId: "cap_1" });
+    expect(el.textContent).toContain("Could not reach the configured endpoint.");
+    await advance(DOCK_TUCK_COUNTDOWN_MS + 500);
+    expect(api.calls("float-over:dismiss")).toEqual([]);
+    expect(api.calls("float-over:tuck")).toEqual([{}]);
+    expect(api.calls("codex:enrich")).toEqual([]);
+  });
+
+  test("a retry that fails after opening a failed tab needs attention again", async () => {
+    const api = installHostApi({ settings: offlineSettings });
+    const el = await mountHost();
+    await showSnap(api, "cap_1", "failed");
+    await advance(DOCK_TUCK_COUNTDOWN_MS + 500);
+    await push(api, EVENT_CHANNELS.floatOverState, { kind: "tucked", side: "right" });
+    await press(el.querySelector(".fod-tab")!);
+    await push(api, EVENT_CHANNELS.floatOverState, { kind: "show-loaded", captureId: "cap_1" });
+    await push(api, EVENT_CHANNELS.aiRunUpdated, {
+      enrichment: { ...enrichment("cap_1", "running"), latestRunId: "retry_1" }
+    });
+    await push(api, EVENT_CHANNELS.aiRunUpdated, {
+      enrichment: { ...endpointFailure("cap_1"), latestRunId: "retry_1" }
+    });
+    await advance(DOCK_TUCK_COUNTDOWN_MS + 500);
+    expect(api.calls("float-over:tuck")).toEqual([{}, {}]);
+    expect(api.calls("float-over:dismiss")).toEqual([]);
+  });
+
+  test.each(["completed", "cancelled"] as const)("a %s run remains on the sidebar after timeout", async (status) => {
+    const api = installHostApi({ settings: offlineSettings });
+    const el = await mountHost();
+    await showSnap(api, "cap_1", status);
+    await advance(DOCK_TUCK_COUNTDOWN_MS + 500);
+    expect(api.calls("float-over:dismiss")).toEqual([]);
+    expect(api.calls("float-over:tuck")).toEqual([{}]);
+    await push(api, EVENT_CHANNELS.floatOverState, { kind: "tucked", side: "right" });
+    expect(el.querySelector(".fod-tab")?.getAttribute("data-status")).toBe(status === "completed" ? "ready" : "failed");
+  });
+
+  test.each(["off", "unavailable"])("the sidebar keeps a snap with AI %s without a waiting glyph", async (availability) => {
+    const api = installHostApi({ settings: {
+      ...offlineSettings,
+      ai: { ...offlineSettings.ai, enabled: availability !== "off", customModels: [] }
+    } });
+    const el = await mountHost();
+    await push(api, EVENT_CHANNELS.floatOverState, { kind: "show-loaded", captureId: "cap_1", record: record("cap_1") });
+    await advance(20_000);
+    expect(api.calls("float-over:dismiss")).toEqual([]);
+    expect(api.calls("float-over:tuck")).toEqual([{}]);
+    await push(api, EVENT_CHANNELS.floatOverState, { kind: "tucked", side: "right" });
+    expect(el.querySelectorAll(".fod-tab")).toHaveLength(1);
+    expect(el.querySelector(".fod-st")).toBeNull();
+    expect(el.querySelector(".fod-tab")?.getAttribute("aria-label")).not.toContain("waiting");
+  });
+
+  test("a failed run cannot leave a tab where dock placement is unavailable", async () => {
+    const api = installHostApi({ settings: offlineSettings, dock: false });
+    await mountHost();
+    await showSnap(api, "cap_1", "failed");
+    await advance(20_000);
+    expect(api.calls("float-over:dismiss")).toEqual([{}]);
+    expect(api.calls("float-over:tuck")).toEqual([]);
+  });
+
   test("a snap still being read tucks to the dock, and opens from it", async () => {
     const api = installHostApi();
     const el = await mountHost();
@@ -579,7 +717,8 @@ describe("FloatOverHost dock", () => {
     expect(toast?.classList.contains("is-paused")).toBe(false);
 
     await advance(8_000);
-    expect(api.calls("float-over:dismiss")).toEqual([{}]);
+    expect(api.calls("float-over:tuck")).toEqual([{ markOnly: true }, {}]);
+    expect(api.calls("float-over:dismiss")).toEqual([]);
   });
 
   test("the see-through area beside the rail lets clicks through, the rail and toast do not", async () => {
@@ -627,16 +766,16 @@ describe("FloatOverHost dock", () => {
     expect(el.querySelectorAll(".fo-rail__item")).toHaveLength(2);
   });
 
-  test("a finished snap does not wait, and an empty dock goes away", async () => {
+  test("a finished snap stays when a new capture starts", async () => {
     const api = installHostApi();
     await mountHost();
     await showSnap(api, "cap_1", "completed");
 
     await push(api, EVENT_CHANNELS.floatOverState, { kind: "show-idle" });
-    expect(api.calls("float-over:tuck")).toEqual([]);
+    expect(api.calls("float-over:tuck")).toEqual([{ markOnly: true }]);
 
     await push(api, EVENT_CHANNELS.floatOverState, { kind: "tucked", side: "right" });
-    expect(api.calls("float-over:dismiss")).toEqual([{}]);
+    expect(api.calls("float-over:dismiss")).toEqual([]);
   });
 
   test("where the dock is unavailable the toast holds the corner while the model reads", async () => {
@@ -766,7 +905,7 @@ describe("FloatOverHost rail: the recent-snaps catalog", () => {
     expect(el.querySelector(".fo-rail__age")?.textContent).toBe("3m 24s");
   });
 
-  test("an older snap with no run does not wait on the dock when left", async () => {
+  test("an older snap with no run stays in the sidebar without a waiting glyph", async () => {
     vi.setSystemTime(new Date("2026-09-27T10:00:05.000Z"));
     const api = installHostApi({ library: [record("toast_old", "2026-09-26T09:00:00.000Z")] });
     const el = await mountHost();
@@ -776,8 +915,8 @@ describe("FloatOverHost rail: the recent-snaps catalog", () => {
     await push(api, EVENT_CHANNELS.floatOverState, { kind: "show-loaded", captureId: "toast_old" });
     expect(el.querySelector('.fo-rail__item.is-current .fod-st')).toBeNull();
     await push(api, EVENT_CHANNELS.floatOverState, { kind: "show-loaded", captureId: "cap_new" });
-    expect(api.calls("float-over:tuck")).toEqual([]);
-    expect(el.querySelectorAll(".fo-rail__item .fod-st")).toHaveLength(0);
+    expect(api.calls("float-over:tuck")).toEqual([{ markOnly: true }, { markOnly: true }]);
+    expect(el.querySelector('.fo-rail__item:not(.is-current) .fod-st')).toBeNull();
   });
 
   test("scrolling near the end loads the next page", async () => {

@@ -33,7 +33,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
-import { popoverWidthDip } from "@pwrsnap/shared";
+import { EVENT_CHANNELS, popoverWidthDip, type CaptureEnrichment } from "@pwrsnap/shared";
 
 const isMac = process.platform === "darwin";
 
@@ -239,6 +239,49 @@ test.describe("float-over visibility", () => {
     !isMac && process.platform !== "win32",
     "float-over visibility runs on macOS + Windows (Linux/xvfb excluded)"
   );
+
+  for (const status of [null, "completed", "failed"] as const) {
+    test(`recent sidebar survives timeout with enrichment ${status ?? "off"}`, async () => {
+      const app = await launchPwrSnap();
+      try {
+        const captureId = await seedCapture(app);
+        await setFloatOverState(app, { kind: "show-loaded", captureId });
+        await expect.poll(() => app.electronApp.windows().some((page) => page.url().includes("stage=float-over"))).toBe(true);
+        const page = app.electronApp.windows().find((candidate) => candidate.url().includes("stage=float-over"))!;
+        await expect(page.locator(".fo")).toBeVisible();
+        if (status !== null) {
+          const enrichment: CaptureEnrichment = {
+            captureId, latestRunId: `run_${captureId}`, status,
+            error: status === "failed" ? "Could not reach the configured endpoint." : null,
+            ocrText: null, suggestedTitle: null, acceptedTitle: null, titleAcceptedAt: null,
+            suggestedFilenameStem: null, acceptedFilenameStem: null, filenameAcceptedAt: null,
+            suggestedDescription: null, acceptedDescription: null, descriptionAcceptedAt: null,
+            suggestedTags: [], acceptedTags: []
+          };
+          await app.electronApp.evaluate(({ BrowserWindow }, payload) => {
+            const bridge = (globalThis as unknown as {
+              __PWRSNAP_TEST__: { getFloatOverWindowId: () => number };
+            }).__PWRSNAP_TEST__;
+            BrowserWindow.fromId(bridge.getFloatOverWindowId())!.webContents.send(payload.channel, {
+              enrichment: payload.enrichment
+            });
+          }, { channel: EVENT_CHANNELS.aiRunUpdated, enrichment });
+        }
+        await expect(page.locator(".fod-tab")).toHaveAttribute("data-status", status === null ? "none" : status === "completed" ? "ready" : "failed", { timeout: 12_000 });
+        await waitForStableFloatOverSize(app);
+        const info = await inspectFloatOver(app);
+        expect(info.visible).toBe(true);
+        expect(info.opacity).toBe(1);
+        expect(info.contentSize?.width).toBe(18);
+        const workArea = await app.electronApp.evaluate(({ screen }) => screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea);
+        expect(info.bounds!.x).toBeGreaterThanOrEqual(workArea.x);
+        expect(info.bounds!.x + info.bounds!.width).toBeLessThanOrEqual(workArea.x + workArea.width);
+        if (status === null) await expect(page.locator(".fod-st")).toHaveCount(0);
+      } finally {
+        await app.close();
+      }
+    });
+  }
 
   test("show-loaded reaches visible within 200ms and stays past 4s", async () => {
     const app = await launchPwrSnap();

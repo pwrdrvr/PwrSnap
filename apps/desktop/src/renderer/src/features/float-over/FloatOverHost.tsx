@@ -18,8 +18,8 @@
 // to FloatOver in this same phase clears the timer on unmount.
 //
 // The host also owns the screen-edge DOCK (float-over-dock-model.ts):
-// the snaps a slow enrichment model is still reading when their toast's
-// countdown runs out. It is the renderer's list because the renderer is
+// recent snaps retained when their toast's countdown runs out, regardless
+// of model status. It is the renderer's list because the renderer is
 // what knows each snap's enrichment status; main only knows where the
 // dock sits and whether the window is showing the toast or the tabs.
 // The same window draws both — `mode` says which, and every layout post
@@ -54,7 +54,6 @@ import {
   clearFinishedDockItems,
   dockItemLabel,
   hasFinishedDockItems,
-  isLeavingSnapInFlight,
   mayAwaitFirstRun,
   catalogRailItems,
   mergeCatalogRecords,
@@ -325,26 +324,26 @@ export function FloatOverHost({
     loadedSettings.ai.budgetSafetyDisabledAt === null &&
     enrichmentProviderAvailable !== false;
 
+  const retainSnap = (item: DockItem): void => {
+    commitQueue(upsertDockItem(queueRef.current, {
+      ...item,
+      awaitingFirstRun: aiWillRunRef.current && mayAwaitFirstRun(item.record, Date.now())
+    }));
+  };
+
   /**
    * The snap on the toast is leaving it because something else took the
-   * window: a new capture, another snap opened, the tuck. One the model
-   * is still reading waits on the dock; a finished one has been on
-   * screen, so it is done. Main is told that snaps are waiting, without
-   * touching the screen, so the end of the capture session can bring the
+   * window: a new capture, another snap opened, the tuck. Every snap
+   * stays available on the dock, independent of AI status. Main is told
+   * that snaps remain without touching the screen, so the end of the capture session can bring the
    * dock back even though this toast never tucked.
    */
   const leaveCurrent = (): void => {
     const leaving = currentRef.current;
     if (leaving === null || settledRef.current === leaving.captureId) return;
     settledRef.current = leaving.captureId;
-    if (
-      dockSupportedRef.current &&
-      isLeavingSnapInFlight(
-        leaving.enrichment,
-        aiWillRunRef.current && mayAwaitFirstRun(leaving.record, Date.now())
-      )
-    ) {
-      commitQueue(upsertDockItem(queueRef.current, leaving));
+    if (dockSupportedRef.current) {
+      retainSnap(leaving);
       void dispatch("float-over:tuck", { markOnly: true });
       return;
     }
@@ -354,18 +353,15 @@ export function FloatOverHost({
   /**
    * The toast is closing by the host's own hand: the countdown ran out,
    * or the user dismissed it, opened it in the Library, or discarded it.
-   * With snaps still waiting the window becomes the dock; with none it
+   * With recent snaps retained the window becomes the dock; with none it
    * goes away.
    */
-  const closeToast = (keepWaiting: boolean): void => {
+  const closeToast = (keepRecent: boolean): void => {
     const closing = currentRef.current;
     if (closing !== null && settledRef.current !== closing.captureId) {
       settledRef.current = closing.captureId;
-      commitQueue(
-        keepWaiting && dockSupportedRef.current
-          ? upsertDockItem(queueRef.current, closing)
-          : removeDockItem(queueRef.current, closing.captureId)
-      );
+      if (keepRecent && dockSupportedRef.current) retainSnap(closing);
+      else commitQueue(removeDockItem(queueRef.current, closing.captureId));
     }
     if (queueRef.current.length === 0) {
       void dispatch("float-over:dismiss", {});
@@ -1231,10 +1227,10 @@ export function FloatOverHost({
           // echo resets us to IDLE.
           closeToast(false);
         }}
-        onTimeout={({ inFlight }) => {
-          // The countdown ran out, or the user pressed Tuck. A snap the
-          // model is still reading goes to the dock.
-          closeToast(inFlight);
+        onTimeout={() => {
+          // Timeout is not an explicit dismissal: keep the snap available
+          // even when AI finished quickly, failed, or is disabled.
+          closeToast(true);
         }}
         dockable={dockSupported}
         externalHover={(showRail && railHover) || menuOpen}

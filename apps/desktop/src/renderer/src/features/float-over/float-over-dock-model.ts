@@ -1,10 +1,10 @@
 // The float-over's screen-edge dock, as data.
 //
 // A slow (local) enrichment model can take 40s+ per snap. The toast's
-// countdown runs anyway; if the model is still reading when it runs out,
-// the toast tucks to a stack of tabs on the screen edge, and the snap
-// waits there until the user opens it. Several snaps can be waiting at
-// once. While a toast is open, the same list shows as a rail beside it.
+// countdown runs anyway; when it runs out, the toast tucks to a stack
+// of recent-capture tabs on the screen edge, regardless of AI status.
+// Snaps stay available until explicitly dismissed or cleared. While a
+// toast is open, they also appear in the recent-snaps rail beside it.
 //
 // The RENDERER owns this list because it is the one that knows each
 // snap's enrichment status; main only knows where the dock sits. Pure
@@ -27,6 +27,9 @@ export type DockItem = {
   readonly addedAt: number;
   readonly record: CaptureRecord | null;
   readonly enrichment: CaptureEnrichment | null;
+  /** False when a snap without a run is not expecting one (AI off,
+   *  unavailable, or an older snap). Omitted by callers that await AI. */
+  readonly awaitingFirstRun?: boolean | undefined;
 };
 
 /**
@@ -53,12 +56,18 @@ export function dockStatus(enrichment: CaptureEnrichment | null): DockStatus {
   }
 }
 
-export function isDockStatusInFlight(status: DockStatus): boolean {
+/** An ordinary retained capture has no AI glyph, rather than waiting forever. */
+export function dockItemStatus(item: DockItem): DockStatus | null {
+  if (item.enrichment?.status == null && item.awaitingFirstRun === false) return null;
+  return dockStatus(item.enrichment);
+}
+
+export function isDockStatusInFlight(status: DockStatus | null): boolean {
   return status === "waiting" || status === "reading";
 }
 
 /**
- * Whether a snap that is leaving the toast should wait on the dock.
+ * Whether a snap on the toast expects an enrichment status glyph.
  * A run that exists and is not finished always counts. A snap with no
  * run yet counts only when enrichment is actually going to run for it —
  * with AI off, "no run" means "never", not "not yet".
@@ -104,7 +113,8 @@ export function upsertDockItem(queue: readonly DockItem[], item: DockItem): Dock
     captureId: existing.captureId,
     addedAt: existing.addedAt,
     record: item.record ?? existing.record,
-    enrichment: item.enrichment ?? existing.enrichment
+    enrichment: item.enrichment ?? existing.enrichment,
+    awaitingFirstRun: item.awaitingFirstRun ?? existing.awaitingFirstRun
   };
   return queue.map((entry) => (entry.captureId === item.captureId ? merged : entry));
 }
@@ -130,7 +140,7 @@ export function hasFinishedDockItems(
 ): boolean {
   return queue.some(
     (entry) =>
-      entry.captureId !== exceptCaptureId && !isDockStatusInFlight(dockStatus(entry.enrichment))
+      entry.captureId !== exceptCaptureId && !isDockStatusInFlight(dockItemStatus(entry))
   );
 }
 
@@ -142,7 +152,7 @@ export function clearFinishedDockItems(
 ): DockItem[] {
   return queue.filter(
     (entry) =>
-      entry.captureId === exceptCaptureId || isDockStatusInFlight(dockStatus(entry.enrichment))
+      entry.captureId === exceptCaptureId || isDockStatusInFlight(dockItemStatus(entry))
   );
 }
 
@@ -225,7 +235,7 @@ export function catalogRailItems(
       captureId: record.id,
       record,
       enrichment: entry?.enrichment ?? enrichments.get(record.id) ?? null,
-      status: entry === undefined ? null : dockStatus(entry.enrichment)
+      status: entry === undefined ? null : dockItemStatus(entry)
     };
   });
 }
@@ -267,5 +277,6 @@ export function dockItemTitle(item: DockItem): string {
 
 /** One overflow-menu row: `Title — reading`. */
 export function dockItemLabel(item: DockItem): string {
-  return `${dockItemTitle(item)} — ${STATUS_WORDS[dockStatus(item.enrichment)]}`;
+  const status = dockItemStatus(item);
+  return status === null ? dockItemTitle(item) : `${dockItemTitle(item)} — ${STATUS_WORDS[status]}`;
 }

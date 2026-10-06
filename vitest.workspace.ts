@@ -39,7 +39,12 @@ export default defineConfig({
             "apps/desktop/src/preload/**/__tests__/**/*.test.ts",
             "apps/desktop/src/test-setup/**/__tests__/**/*.test.ts"
           ],
-          setupFiles: ["apps/desktop/src/test-setup/outbound-fetch-guard.ts"]
+          // electron-log-isolation keeps fixture warnings out of the
+          // operator's real ~/Library/Logs/PwrSnap/main.log.
+          setupFiles: [
+            "apps/desktop/src/test-setup/outbound-fetch-guard.ts",
+            "apps/desktop/src/test-setup/electron-log-isolation.ts"
+          ]
         }
       },
       {

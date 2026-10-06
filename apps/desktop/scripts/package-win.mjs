@@ -38,6 +38,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, write
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { pruneSharpNativePackages } from "./sharp-platform-packages.mjs";
+import { stagedPnpmConfigEnv } from "./staged-pnpm-config.mjs";
 // windowsInstallerArtifacts + writeWindowsChecksums live beside the alias
 // writer that reads SHA256SUMS back, so the manifest has one definition.
 import {
@@ -67,13 +68,6 @@ if (prepareOnly && signStageOnly) {
 if (prepareOnly && publish) {
   throw new Error("--prepare-only and --publish cannot be combined");
 }
-
-// Disable user-level global hooks in electron-builder child processes,
-// including stages restored outside the source workspace.
-const pnpmProjectConfigEnv = {
-  pnpm_config_global_pnpmfile: "",
-  PNPM_CONFIG_GLOBAL_PNPMFILE: ""
-};
 
 function step(label) {
   console.log(`\n→ ${label}`);
@@ -407,7 +401,7 @@ if (!signStageOnly) {
     join(desktopRoot, "electron-builder.yml"),
     join(stageDir, "electron-builder.yml")
   );
-  for (const file of ["THIRD_PARTY_LICENSES", "CHANGELOG.md"]) {
+  for (const file of ["THIRD_PARTY_LICENSES", "CHANGELOG.md", ".pnpmfile-global.cjs"]) {
     cpSync(join(repoRoot, file), join(stageDir, file));
   }
   copyWindowsFfmpegIntoStage({ required: releaseMode });
@@ -465,7 +459,7 @@ if (azureSign) {
 }
 runChecked("node", builderArgs.filter(Boolean), {
   cwd: stageDir,
-  env: pnpmProjectConfigEnv
+  env: stagedPnpmConfigEnv(stageDir)
 });
 
 // 7. Verify the installer actually landed. electron-builder can exit 0 even

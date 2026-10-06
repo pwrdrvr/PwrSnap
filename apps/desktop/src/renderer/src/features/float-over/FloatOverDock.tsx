@@ -1,6 +1,6 @@
 // The float-over's screen-edge dock (tabs), and the rail beside an open
-// toast. The dock holds the snaps waiting on the model; the rail is the
-// recent-snaps catalog, with the dock's glyphs on the snaps that wait.
+// toast. The dock keeps recent snaps regardless of model status; the rail
+// is the recent-snaps catalog, with AI glyphs where a run exists or is expected.
 // Same thumbnails, same glyphs; see float-over-dock-model.ts for who is
 // in each list and why.
 
@@ -10,7 +10,7 @@ import { cacheUrl, captureSrcUrl } from "../../lib/pwrsnap";
 import { FoIcon } from "./FoIcons";
 import {
   dockItemTitle,
-  dockStatus,
+  dockItemStatus,
   type DockItem,
   type DockStatus,
   type RailItem
@@ -70,7 +70,8 @@ function DockThumb({ item }: { item: Pick<DockItem, "captureId" | "record"> }): 
 }
 
 function itemAriaLabel(item: DockItem): string {
-  return `${dockItemTitle(item)} — ${STATUS_LABEL[dockStatus(item.enrichment)]}`;
+  const status = dockItemStatus(item);
+  return status === null ? dockItemTitle(item) : `${dockItemTitle(item)} — ${STATUS_LABEL[status]}`;
 }
 
 export type FloatOverDockProps = {
@@ -211,22 +212,22 @@ export function FloatOverDock({
         setUnderId(null);
       }}
     >
-      <div className="fod__stack" role="group" aria-label="Snaps waiting for enrichment">
+      <div className="fod__stack" role="group" aria-label="Recent snaps">
         {items.map((item) => {
-          const status = dockStatus(item.enrichment);
+          const status = dockItemStatus(item);
           return (
             <button
               key={item.captureId}
               type="button"
               className={`fod-tab${underId === item.captureId ? " is-under" : ""}`}
-              data-status={status}
+              data-status={status ?? "none"}
               aria-label={`Open ${itemAriaLabel(item)}`}
               title={dockItemTitle(item)}
               onMouseEnter={() => setUnderId(item.captureId)}
               {...pointerHandlers(item.captureId)}
             >
               <DockThumb item={item} />
-              <DockStatusGlyph status={status} />
+              {status !== null ? <DockStatusGlyph status={status} /> : null}
             </button>
           );
         })}

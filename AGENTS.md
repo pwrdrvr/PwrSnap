@@ -2420,8 +2420,8 @@ Measurements, the two failure timelines, and the probe:
 
 ## The float-over dock is the toast's own window, and it never lands in a capture
 
-**When a snap's enrichment is still running as its toast's countdown ends,
-the toast tucks to tabs on the screen edge. The dock is the SAME
+**When a toast's countdown ends, the snap stays in tabs on the screen edge,
+regardless of whether AI is off, running, completed, or failed. The dock is the SAME
 BrowserWindow as the toast, reshaped. It is placed inside the work area,
 excluded from screen capture, and hidden for every snapshot and every
 recording.** Owners: `enterTucked` / `applyDockLayout` /
@@ -2498,15 +2498,23 @@ and
   time. The dock's glyphs sit on the snaps that are waiting; everything
   else is a plain thumbnail with its age. Ages count from `captured_at`,
   never from when a snap joined the dock.
+- **Dock membership does not depend on enrichment status.** Timeout or
+  replacement by another capture keeps the snap; opening it does not
+  remove it. Explicit dismissal, discard, Library handoff, deletion, or
+  "Clear finished" removes it. A failed run shows `!`; a completed run
+  shows `✓`. A snap with no expected AI run has no AI glyph.
+  Re-read an active image on capture-change broadcasts too: deletion
+  closes its toast before it can be retained on the dock.
 - **"No run yet" means "not yet" only for a snap just taken**
-  (`mayAwaitFirstRun`). An older snap opened from the rail with no
-  enrichment row would otherwise join the dock as "waiting" when left,
-  for a run that never comes.
+  (`mayAwaitFirstRun`) with AI enabled and available. `awaitingFirstRun`
+  keeps an older snap or one with AI off from showing a waiting glyph
+  or being counted as in-flight. A real queued/running run still wins.
+  Expire that expectation after `FIRST_RUN_GRACE_MS` when no run arrives,
+  so a skipped enrichment becomes a plain tab eligible for "Clear finished".
 - **A snap's fate is decided once, at the close the host caused.**
   `settledRef` stops main's echo of that close from deciding again. By
-  then the model may have answered, and a snap tucked unread would be
-  dropped as "finished". A snap that has been on the dock stays, ✓ and
-  all, until it is opened or cleared.
+  then the model may have answered. A snap that has been on the dock
+  stays, ✓ and all, until explicitly dismissed or cleared.
 - **No dock where placement is not ours** (`windowPlacementIsOurs()`,
   native Wayland). `float-over:capabilities` says so. The toast then holds
   the corner while the model reads, as it did before the dock existed.

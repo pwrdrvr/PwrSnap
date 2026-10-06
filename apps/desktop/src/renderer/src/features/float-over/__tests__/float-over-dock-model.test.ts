@@ -4,6 +4,7 @@ import {
   clearFinishedDockItems,
   dockItemLabel,
   dockItemTitle,
+  dockItemStatus,
   dockStatus,
   hasFinishedDockItems,
   isLeavingSnapInFlight,
@@ -86,6 +87,16 @@ function item(
 }
 
 describe("dock status", () => {
+  test("a retained snap with no expected AI run has no status glyph and can be cleared", () => {
+    const saved = { ...item("saved", 1, null), awaitingFirstRun: false };
+    expect(dockItemStatus(saved)).toBeNull();
+    expect(dockItemLabel(saved)).toBe(dockItemTitle(saved));
+    expect(hasFinishedDockItems([saved])).toBe(true);
+    expect(clearFinishedDockItems([saved])).toEqual([]);
+    expect(catalogRailItems([saved.record!], [saved], null, false)[0]?.status).toBeNull();
+    expect(dockItemStatus({ ...saved, enrichment: enrichment("saved", "running") })).toBe("reading");
+  });
+
   test("maps every enrichment status onto the four glyphs", () => {
     expect(dockStatus(null)).toBe("waiting");
     expect(dockStatus(enrichment("a", "queued"))).toBe("waiting");

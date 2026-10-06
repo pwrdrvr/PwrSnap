@@ -770,7 +770,7 @@ export function FloatOver({
     const timer = setTimeout(() => setAwaitingAiTimedOut(true), 3000);
     return () => clearTimeout(timer);
   }, [aiNeedsConsent, aiStatus]);
-  const awaitingAi = !aiNeedsConsent && aiStatus === null && !awaitingAiTimedOut;
+  const awaitingAi = !aiNeedsConsent && providerAvailable && aiStatus === null && !awaitingAiTimedOut;
 
   const hasUserDescription =
     description.trim().length > 0 && descriptionOrigin === "manual";

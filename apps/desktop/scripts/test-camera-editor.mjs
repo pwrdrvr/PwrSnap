@@ -92,52 +92,61 @@ app.whenReady().then(async()=>{
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.goto(origin);
+  const painted = () => page.waitForFunction(() => {
+    const canvas = document.querySelector(".pres-obj__canvas");
+    return canvas && canvas.width > 1 && canvas.getContext("2d").getImageData(0,0,1,1).data[3] > 200;
+  });
   try {
-    await page.getByTestId("camera-track").getByText("640 × 360 · 8.0s saved").waitFor({timeout:10_000});
+    await page.getByTestId("video-timeline-camera-span").waitFor({timeout:10_000});
+    await painted();
   } catch (error) {
     console.error({errors, body: await page.locator("body").innerText()});
     throw error;
   }
-  await page.waitForFunction(() => {
-    const canvas = document.querySelector(".avatar-overlay");
-    return canvas && canvas.width > 1 && canvas.getContext("2d").getImageData(0,0,1,1).data[3] > 200;
-  });
   assert(await page.getByTestId("video-timeline-camera").isVisible());
+  // Selecting the presenter floats its toolbar over the stage; the video
+  // frame keeps its size.
   const before = await page.locator(".psl__video-frame").boundingBox();
-  await page.getByRole("button", {name:"Avatar settings"}).click();
+  const presenter = page.getByTestId("presenter-object");
+  await presenter.click();
+  await page.getByTestId("presenter-toolbar").waitFor();
   assert.deepEqual(await page.locator(".psl__video-frame").boundingBox(), before);
-  const old = await page.locator(".avatar-overlay").boundingBox();
-  await page.getByRole("button", {name:"Top left",exact:true}).click();
-  await page.waitForFunction(previous => document.querySelector(".avatar-overlay").getBoundingClientRect().left < previous, old.x, {timeout:5000});
-  const moved = await page.locator(".avatar-overlay").boundingBox();
+  const old = await presenter.boundingBox();
+  await page.getByTestId("presenter-place").click();
+  await page.getByRole("menuitemradio", {name:"Top left",exact:true}).click();
+  await page.waitForFunction(previous => document.querySelector("[data-testid=presenter-object]").getBoundingClientRect().left < previous, old.x, {timeout:5000});
+  const moved = await presenter.boundingBox();
   assert(moved.x < old.x && moved.y < old.y);
+  // Escape closes an open menu and returns focus to its button; the next
+  // Escape deselects the presenter.
+  await page.getByTestId("presenter-place").click();
+  await page.getByTestId("presenter-place-menu").waitFor();
   await page.keyboard.press("Escape");
-  assert.equal(await page.getByRole("dialog", {name:"Avatar settings"}).count(), 0);
-  assert(await page.getByRole("button", {name:"Avatar settings"}).evaluate(el => el === document.activeElement));
-  await page.getByRole("button", {name:"Hide avatar"}).click();
-  assert.equal(await page.locator(".avatar-overlay").count(), 0);
-  assert(await page.getByTestId("camera-track").isVisible());
-  await page.getByRole("button", {name:"Show avatar"}).click();
-  await page.waitForFunction(() => {
-    const canvas = document.querySelector(".avatar-overlay");
-    return canvas && canvas.getContext("2d").getImageData(0,0,1,1).data[3] > 200;
-  });
+  assert.equal(await page.getByTestId("presenter-place-menu").count(), 0);
+  assert(await page.getByTestId("presenter-place").evaluate(el => el === document.activeElement));
+  await page.keyboard.press("Escape");
+  await page.getByTestId("presenter-toolbar").waitFor({state:"detached"});
+  // Hiding the presenter keeps the camera lane.
+  await page.getByTestId("video-transport-presenter").click();
+  assert.equal(await presenter.count(), 0);
+  assert(await page.getByTestId("video-timeline-camera").isVisible());
+  await page.getByTestId("video-transport-presenter").click();
+  await painted();
   const screenshot = process.env.CAMERA_EDITOR_SCREENSHOT;
   if (screenshot) {
     await page.screenshot({path:screenshot});
-    await page.getByRole("button", {name:"Avatar settings"}).click();
-    await page.screenshot({path:screenshot.replace(/\.png$/, "-settings.png")});
+    await presenter.click();
+    await page.screenshot({path:screenshot.replace(/\.png$/, "-selected.png")});
   }
   // An unavailable segmentation worker must not make a valid camera disappear.
   await page.evaluate(() => {
     window.fixtureWorker = window.Worker;
     window.Worker = class { constructor() { throw new Error("Forced worker failure"); } };
   });
-  if (!await page.getByRole("dialog", {name:"Avatar settings"}).count())
-    await page.getByRole("button", {name:"Avatar settings"}).click();
-  await page.getByLabel("Remove background").check();
-  await page.getByText("Presenter: Background removal unavailable. Showing the original camera.").waitFor();
-  assert(await page.locator(".avatar-overlay").evaluate(canvas => canvas.getContext("2d").getImageData(0,0,1,1).data[3] > 200));
+  if (!await page.getByTestId("presenter-toolbar").count()) await presenter.click();
+  await page.getByTestId("presenter-look-cut").click();
+  await page.getByTestId("presenter-mask-failed").waitFor();
+  assert(await page.locator(".pres-obj__canvas").evaluate(canvas => canvas.getContext("2d").getImageData(0,0,1,1).data[3] > 200));
   await page.evaluate(() => { window.Worker = window.fixtureWorker; });
   assert.deepEqual(errors, []);
   // Exercise the packaged file:// asset path as well as the dev/http editor.
@@ -156,7 +165,7 @@ app.whenReady().then(async()=>{
   }, worker);
   assert(maskBytes > 100);
   assert.equal(await electron.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows().some(w => w.isVisible())), false);
-  console.log("Hidden Electron camera editor passed: real protocol decode and canvas, aligned source lane, fixed stage size, placement, visibility, Escape focus return, raw preview after worker failure, packaged local MediaPipe inference.");
+  console.log("Hidden Electron camera editor passed: real protocol decode and canvas, camera lane, fixed stage size, presenter placement, visibility, Escape focus return, raw preview after worker failure, packaged local MediaPipe inference.");
 } finally {
   await electron?.close();
   await server?.close();

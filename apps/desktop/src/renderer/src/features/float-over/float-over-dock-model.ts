@@ -85,6 +85,15 @@ export function isLeavingSnapInFlight(
  *  this a snap with no run is one enrichment is not going to reach. */
 export const FIRST_RUN_GRACE_MS = 60_000;
 
+/** A missing run gets a bounded expectation, even without a valid capture
+ *  timestamp or if the clock moved backwards since the capture. */
+export function firstRunDeadline(item: DockItem): number | null {
+  if (item.awaitingFirstRun !== true || item.enrichment?.status != null) return null;
+  const capturedAt = item.record === null ? NaN : Date.parse(item.record.captured_at);
+  const startedAt = Number.isFinite(capturedAt) ? Math.min(capturedAt, item.addedAt) : item.addedAt;
+  return startedAt + FIRST_RUN_GRACE_MS;
+}
+
 /**
  * Whether "no run yet" can still mean "not yet" for this snap. True for
  * a capture just taken; false for an older snap opened from the rail,

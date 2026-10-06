@@ -53,6 +53,7 @@ import {
   DOCK_VISIBLE_CAP,
   clearFinishedDockItems,
   dockItemLabel,
+  firstRunDeadline,
   hasFinishedDockItems,
   mayAwaitFirstRun,
   catalogRailItems,
@@ -308,7 +309,7 @@ export function FloatOverHost({
   const toastItem = currentDockItem(state, shownRef.current?.addedAt ?? 0);
   const currentRef = useRef(toastItem);
   currentRef.current = toastItem;
-  const videoRefreshSequenceRef = useRef(0);
+  const activeCaptureRefreshSequenceRef = useRef(0);
   if (state.kind === "loaded" && state.settings !== null) lastSettingsRef.current = state.settings;
   const loadedSettings = state.kind === "loaded" ? state.settings : null;
   const enrichmentProviderAvailable = isEnrichmentProviderAvailable({
@@ -607,7 +608,7 @@ export function FloatOverHost({
       const event = payload as FloatOverEvent;
       // A record refresh belongs to the toast that requested it, even
       // if the same capture is opened again before the read resolves.
-      videoRefreshSequenceRef.current += 1;
+      activeCaptureRefreshSequenceRef.current += 1;
       // A shortcut is a one-shot action for the currently mounted toast.
       // Do not replay the last action if the same capture is re-shown later.
       setVideoCopyShortcut(null);
@@ -784,30 +785,55 @@ export function FloatOverHost({
     }
   }, [queue]);
 
-  // A waiting snap was deleted or edited somewhere else. Deleted: off the
-  // dock. Edited: its thumbnail follows the new edits version. The active
-  // video's trim must also follow the refreshed record, not just its rail.
+  // Enrichment can be skipped before a run row is created (for example,
+  // by the budget limit). Retain the snap, but stop claiming it is waiting
+  // once its first-run grace ends. Actual queued/running rows never expire.
+  useEffect(() => {
+    const deadlines = queue.map(firstRunDeadline).filter((at): at is number => at !== null);
+    if (deadlines.length === 0) return;
+    const timer = window.setTimeout(() => {
+      const now = Date.now();
+      commitQueue(queueRef.current.map((item) => {
+        const deadline = firstRunDeadline(item);
+        return deadline !== null && deadline <= now ? { ...item, awaitingFirstRun: false } : item;
+      }));
+    }, Math.max(0, Math.min(...deadlines) - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [queue]);
+
+  // A snap was deleted or edited somewhere else. Re-read the active image
+  // as well as queued snaps and videos, so a deleted toast cannot become a
+  // retained tab. The active video's trim also follows the refreshed record.
   useEffect(() => {
     let disposed = false;
+    const refreshSequences = new Map<string, number>();
     const unsubscribe = window.pwrsnapApi?.on(EVENT_CHANNELS.capturesChanged, (payload) => {
       const changed = capturesChangedIds(payload);
       if (catalogRef.current.started && changed.length > 0) refreshCatalogRecords(changed);
       const active = currentRef.current;
-      const videoId = active?.record?.kind === "video" ? active.captureId : null;
-      const sequence = videoId !== null && changed.includes(videoId)
-        ? ++videoRefreshSequenceRef.current : null;
+      const activeId = active?.captureId ?? null;
+      const sequence = activeId !== null && changed.includes(activeId)
+        ? ++activeCaptureRefreshSequenceRef.current : null;
       const ids = changed.filter((id) =>
-        id === videoId || queueRef.current.some((item) => item.captureId === id)
+        id === activeId || queueRef.current.some((item) => item.captureId === id)
       );
       for (const captureId of ids) {
+        const refreshSequence = (refreshSequences.get(captureId) ?? 0) + 1;
+        refreshSequences.set(captureId, refreshSequence);
         void dispatch("library:byId", { id: captureId }).then((result) => {
-          if (disposed || !result.ok) return;
+          // The newest broadcast wins even if the toast has since tucked.
+          if (disposed || !result.ok || refreshSequences.get(captureId) !== refreshSequence) return;
+          // A newer refresh or re-show of this same toast supersedes the
+          // old read, including an old deletion followed by a restore.
+          if (captureId === activeId && currentRef.current?.captureId === captureId &&
+            sequence !== activeCaptureRefreshSequenceRef.current) return;
           const record = result.value;
           if (record === null || record.deleted_at !== null) {
             commitQueue(removeDockItem(queueRef.current, captureId));
+            if (currentRef.current?.captureId === captureId) dockActionsRef.current.closeToast(false);
             return;
           }
-          if (captureId === videoId && sequence === videoRefreshSequenceRef.current) {
+          if (captureId === activeId && sequence === activeCaptureRefreshSequenceRef.current) {
             setState((current) =>
               current.kind === "loaded" && current.record.id === captureId
                 ? { ...current, record } : current

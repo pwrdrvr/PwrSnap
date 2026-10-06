@@ -2503,10 +2503,14 @@ and
   remove it. Explicit dismissal, discard, Library handoff, deletion, or
   "Clear finished" removes it. A failed run shows `!`; a completed run
   shows `✓`. A snap with no expected AI run has no AI glyph.
+  Re-read an active image on capture-change broadcasts too: deletion
+  closes its toast before it can be retained on the dock.
 - **"No run yet" means "not yet" only for a snap just taken**
   (`mayAwaitFirstRun`) with AI enabled and available. `awaitingFirstRun`
   keeps an older snap or one with AI off from showing a waiting glyph
   or being counted as in-flight. A real queued/running run still wins.
+  Expire that expectation after `FIRST_RUN_GRACE_MS` when no run arrives,
+  so a skipped enrichment becomes a plain tab eligible for "Clear finished".
 - **A snap's fate is decided once, at the close the host caused.**
   `settledRef` stops main's echo of that close from deciding again. By
   then the model may have answered. A snap that has been on the dock

@@ -10,12 +10,13 @@ import {
   EVENT_CHANNELS,
   type CaptureEnrichment,
   type CaptureRecord,
+  type FloatOverOverflowChoice,
   type Settings,
   type VideoRange
 } from "@pwrsnap/shared";
 import { FloatOver } from "../FloatOver";
 import { FloatOverHost } from "../FloatOverHost";
-import { DOCK_TUCK_COUNTDOWN_MS } from "../float-over-dock-model";
+import { DOCK_TUCK_COUNTDOWN_MS, FIRST_RUN_GRACE_MS } from "../float-over-dock-model";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -129,6 +130,7 @@ function installHostApi(options: {
   byId?: (id: string) => CaptureRecord | null | Promise<CaptureRecord | null>;
   library?: CaptureRecord[];
   pageSize?: number;
+  overflowChoice?: FloatOverOverflowChoice;
 } = {}): HostApi {
   const subscribers = new Map<string, Set<EventHandler>>();
   const library: CaptureRecord[] = options.library ?? [];
@@ -139,7 +141,7 @@ function installHostApi(options: {
       case "float-over:tuck":
         return { ok: true, value: { docked: options.dock ?? true } };
       case "float-over:overflowMenu":
-        return { ok: true, value: { choice: null } };
+        return { ok: true, value: { choice: options.overflowChoice ?? null } };
       case "settings:read":
         return { ok: true, value: options.settings ?? settings };
       case "settings:refreshCodexDiscovery":
@@ -607,6 +609,57 @@ describe("FloatOverHost dock", () => {
     expect(api.calls("float-over:tuck")).toEqual([]);
   });
 
+  test("a recent snap with no queued run stops waiting when the first-run grace expires", async () => {
+    vi.setSystemTime(new Date("2026-09-27T10:00:00.000Z"));
+    const api = installHostApi({ library: [record("older", "2026-09-27T09:00:00.000Z")] });
+    const el = await mountHost();
+    await push(api, EVENT_CHANNELS.floatOverState, {
+      kind: "show-loaded", captureId: "no_run", record: record("no_run")
+    });
+    expect(el.querySelector('[data-testid="float-over-rail"] b[title$="still with the model"]')?.textContent).toBe("1");
+    await advance(DOCK_TUCK_COUNTDOWN_MS + 500);
+    await push(api, EVENT_CHANNELS.floatOverState, { kind: "tucked", side: "right" });
+    expect(el.querySelector(".fod-tab")?.getAttribute("data-status")).toBe("waiting");
+
+    await advance(FIRST_RUN_GRACE_MS - DOCK_TUCK_COUNTDOWN_MS - 501);
+    expect(el.querySelector(".fod-tab")?.getAttribute("data-status")).toBe("waiting");
+    await advance(1);
+    expect(el.querySelector(".fod-tab")?.getAttribute("data-status")).toBe("none");
+    expect(api.calls("float-over:dismiss")).toEqual([]);
+
+    await push(api, EVENT_CHANNELS.floatOverState, { kind: "show-loaded", captureId: "no_run" });
+    expect(el.querySelector('[data-testid="float-over-rail"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="float-over-rail"] b[title$="still with the model"]')).toBeNull();
+    expect(api.calls("codex:enrich")).toEqual([]);
+
+    // A real run that arrives late still owns the status.
+    await push(api, EVENT_CHANNELS.aiRunUpdated, { enrichment: enrichment("no_run", "running") });
+    await advance(DOCK_TUCK_COUNTDOWN_MS + 500);
+    await push(api, EVENT_CHANNELS.floatOverState, { kind: "tucked", side: "right" });
+    expect(el.querySelector(".fod-tab")?.getAttribute("data-status")).toBe("reading");
+  });
+
+  test("Clear finished removes expired no-run snaps while keeping actual queued and running runs", async () => {
+    vi.setSystemTime(new Date("2026-09-27T10:00:00.000Z"));
+    const api = installHostApi({ overflowChoice: { kind: "clear-finished" } });
+    const el = await mountHost();
+    for (const id of ["no_run_1", "no_run_2", "no_run_3", "no_run_4"]) {
+      await push(api, EVENT_CHANNELS.floatOverState, { kind: "show-loaded", captureId: id, record: record(id) });
+      await push(api, EVENT_CHANNELS.floatOverState, { kind: "show-idle" });
+    }
+    await showSnap(api, "queued", "queued");
+    await push(api, EVENT_CHANNELS.floatOverState, { kind: "show-idle" });
+    await showSnap(api, "running", "running");
+    await push(api, EVENT_CHANNELS.floatOverState, { kind: "show-idle" });
+    await push(api, EVENT_CHANNELS.floatOverState, { kind: "tucked", side: "right" });
+    await advance(FIRST_RUN_GRACE_MS);
+
+    await press(el.querySelector(".fod-more")!);
+    expect(api.calls("float-over:overflowMenu").at(-1)).toMatchObject({ canClearFinished: true });
+    expect(Array.from(el.querySelectorAll(".fod-tab"), (tab) => tab.getAttribute("data-status")))
+      .toEqual(["reading", "waiting"]);
+  });
+
   test("a snap still being read tucks to the dock, and opens from it", async () => {
     const api = installHostApi();
     const el = await mountHost();
@@ -801,6 +854,81 @@ describe("FloatOverHost dock", () => {
     await push(api, EVENT_CHANNELS.capturesChanged, { changedIds: ["cap_1"] });
     expect(el.querySelectorAll(".fod-tab")).toHaveLength(0);
     expect(api.calls("float-over:dismiss")).toEqual([{}]);
+  });
+
+  test.each([
+    ["AI off", null, null],
+    ["AI off", null, "2026-09-27T10:00:01.000Z"],
+    ["completed", "completed", null],
+    ["completed", "completed", "2026-09-27T10:00:01.000Z"]
+  ] as const)("deleting an active %s image (%s, tombstone %s) dismisses it before timeout", async (_label, status, deletedAt) => {
+    const api = installHostApi({
+      settings: status === null ? { ...settings, ai: { ...settings.ai, enabled: false } } : settings,
+      byId: (id) => deletedAt === null ? null : { ...record(id), deleted_at: deletedAt }
+    });
+    const el = await mountHost();
+    if (status === null) {
+      await push(api, EVENT_CHANNELS.floatOverState, { kind: "show-loaded", captureId: "cap_1", record: record("cap_1") });
+    } else await showSnap(api, "cap_1", status);
+    await push(api, EVENT_CHANNELS.capturesChanged, { changedIds: ["cap_1"] });
+    expect(api.calls("float-over:dismiss")).toEqual([{}]);
+    await push(api, EVENT_CHANNELS.floatOverState, { kind: "dismiss" });
+    await advance(20_000);
+    expect(api.calls("float-over:tuck")).toEqual([]);
+    expect(el.querySelector(".fod-tab")).toBeNull();
+  });
+
+  test("deleting the active image returns to other retained snaps without restoring the deleted one", async () => {
+    const api = installHostApi({ byId: () => null });
+    const el = await mountHost();
+    await showSnap(api, "cap_1", "completed");
+    await showSnap(api, "deleted", "completed");
+    await push(api, EVENT_CHANNELS.capturesChanged, { changedIds: ["deleted"] });
+    expect(api.calls("float-over:tuck")).toEqual([{ markOnly: true }, {}]);
+    await push(api, EVENT_CHANNELS.floatOverState, { kind: "tucked", side: "right" });
+    expect(el.querySelectorAll(".fod-tab")).toHaveLength(1);
+    await press(el.querySelector(".fod-tab")!);
+    expect(api.calls("float-over:open")).toEqual([{ captureId: "cap_1" }]);
+  });
+
+  test("a deletion read finishing after timeout removes the image that just joined the dock", async () => {
+    let resolveDeleted!: (value: CaptureRecord | null) => void;
+    const api = installHostApi({ byId: () => new Promise<CaptureRecord | null>((resolve) => { resolveDeleted = resolve; }) });
+    const el = await mountHost();
+    await showSnap(api, "cap_1", "completed");
+    await push(api, EVENT_CHANNELS.capturesChanged, { changedIds: ["cap_1"] });
+    expect(api.calls("library:byId")).toEqual([{ id: "cap_1" }]);
+    await advance(DOCK_TUCK_COUNTDOWN_MS + 500);
+    await push(api, EVENT_CHANNELS.floatOverState, { kind: "tucked", side: "right" });
+    await act(async () => resolveDeleted(null));
+    await flush();
+    expect(el.querySelector(".fod-tab")).toBeNull();
+    expect(api.calls("float-over:dismiss")).toEqual([{}]);
+  });
+
+  test.each(["toast", "dock"])("an older deletion read cannot remove a restored image from the %s", async (mode) => {
+    let resolveDeleted!: (value: CaptureRecord | null) => void;
+    let reads = 0;
+    const api = installHostApi({ byId: (id) => ++reads === 1
+      ? new Promise<CaptureRecord | null>((resolve) => { resolveDeleted = resolve; })
+      : record(id) });
+    const el = await mountHost();
+    await showSnap(api, "cap_1", "completed");
+    await push(api, EVENT_CHANNELS.capturesChanged, { changedIds: ["cap_1"] });
+    await push(api, EVENT_CHANNELS.capturesChanged, { changedIds: ["cap_1"] });
+    expect(api.calls("library:byId")).toHaveLength(2);
+    if (mode === "dock") {
+      await advance(DOCK_TUCK_COUNTDOWN_MS + 500);
+      await push(api, EVENT_CHANNELS.floatOverState, { kind: "tucked", side: "right" });
+    }
+    await act(async () => resolveDeleted(null));
+    await flush();
+    expect(api.calls("float-over:dismiss")).toEqual([]);
+    if (mode === "toast") {
+      await advance(DOCK_TUCK_COUNTDOWN_MS + 500);
+      await push(api, EVENT_CHANNELS.floatOverState, { kind: "tucked", side: "right" });
+    }
+    expect(el.querySelector(".fod-tab")?.getAttribute("data-status")).toBe("ready");
   });
 
   test("snaps past three fold into the overflow menu", async () => {

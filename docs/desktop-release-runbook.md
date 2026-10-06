@@ -182,6 +182,14 @@ it cannot steal `/releases/latest` from the Stable train. Promote a smoked
 alpha by bumping `apps/desktop/package.json` and the CHANGELOG heading to
 the beta version, then tagging that commit. Do not retag the alpha SHA.
 
+Beta · Prerelease is the most adventurous slot, so it also offers any Stable
+candidate that outranks Stable Latest. That covers a `-prerelease.N` or
+`-rc.N` maintenance candidate, and a bare `vX.Y.Z` still staged as a GitHub
+Pre-release. Selection is by semver precedence, so a newer alpha or beta still
+wins. A candidate at or below Stable Latest stays out. Semver sorts `rc` after
+`prerelease`, and both after `alpha` and `beta`. A `v1.2.0-alpha.N` tag
+therefore sorts below an existing `v1.2.0-prerelease.N`.
+
 Moving a slot BACKWARD is supported. If a build ends up ahead of the slot the
 user selected — someone on a 1.1 alpha who picks Stable · Latest, or a tester
 stepping off Beta — the resolved release is older than what they are running,

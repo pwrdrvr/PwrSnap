@@ -57,7 +57,9 @@ export type ApplicationMenuActions = {
   onOpenLicense: (window: MenuSourceWindow) => void;
   onOpenThirdPartyNotices: (window: MenuSourceWindow) => void;
   onOpenLogs: (window: MenuSourceWindow) => void;
-  onCopyDiagnostics: (window: MenuSourceWindow) => void;
+  /** Reload Window. The handler decides which windows may be reloaded. */
+  onReloadWindow: (window: MenuSourceWindow) => void;
+  onCopyDiagnostics: () => void;
   onOpenExternal: (url: string) => void;
   onFocusWindow: (id: number) => void;
 };
@@ -212,7 +214,14 @@ export function buildApplicationMenuTemplate(
   const viewMenu: Item = {
     label: "View",
     submenu: [
-      { role: "reload", label: "Reload Window" },
+      // Not `role: "reload"`: that reloads whatever is focused, and ⌘R /
+      // Ctrl+R would then reach the region selector, tray popover or
+      // recording HUD too. The action reloads only PwrSnap's own windows.
+      {
+        label: "Reload Window",
+        accelerator: "CmdOrCtrl+R",
+        click: (_item, window) => actions.onReloadWindow(window)
+      },
       ...((options.developerMode
         ? [{ role: "forceReload" }, { role: "toggleDevTools" }]
         : []) as Item[]),
@@ -270,7 +279,7 @@ export function buildApplicationMenuTemplate(
       link("Report a Security Vulnerability…", PWRSNAP_MENU_LINKS.security),
       {
         label: "Copy Diagnostics Info",
-        click: (_item, window) => actions.onCopyDiagnostics(window)
+        click: () => actions.onCopyDiagnostics()
       },
       { label: "Logs", click: (_item, window) => actions.onOpenLogs(window) },
       separator,

@@ -67,6 +67,7 @@ import {
   type OpenWindowEntry
 } from "./application-menu";
 import { formatDiagnosticsInfo } from "./diagnostics-info";
+import { isAllowedExternalUrl } from "./external-url-allowlist";
 import { installTerminalSignalShutdown } from "./terminal-signal-shutdown";
 import { installTransientWindowTeardown } from "./transient-window-teardown";
 import {
@@ -313,6 +314,20 @@ import { broadcastCapturesChanged } from "./events";
 const APP_NAME = "PwrSnap";
 
 /**
+ * The window a menu click acts on. The item's `click` gives us a
+ * `BaseWindow` (no `webContents`), so resolve it to the owning
+ * `BrowserWindow`; fall back to the focused window if needed.
+ */
+function resolveMenuTargetWindow(window: Electron.BaseWindow | undefined): BrowserWindow | null {
+  const candidate =
+    window !== undefined && !window.isDestroyed()
+      ? BrowserWindow.fromId(window.id)
+      : null;
+  const target = candidate ?? BrowserWindow.getFocusedWindow();
+  return target === null || target.isDestroyed() ? null : target;
+}
+
+/**
  * Route a native Edit ▸ Undo / Edit ▸ Redo activation to the focused
  * window's renderer. The menu item's `click` gives us a `BaseWindow`
  * (no `webContents`), so resolve it to the owning `BrowserWindow`;
@@ -328,12 +343,8 @@ function sendEditCommand(
   channel: (typeof EVENT_CHANNELS)["editUndo" | "editRedo"],
   event?: Electron.KeyboardEvent
 ): void {
-  const candidate =
-    window !== undefined && !window.isDestroyed()
-      ? BrowserWindow.fromId(window.id)
-      : null;
-  const target = candidate ?? BrowserWindow.getFocusedWindow();
-  if (target === null || target.isDestroyed()) return;
+  const target = resolveMenuTargetWindow(window);
+  if (target === null) return;
   target.webContents.send(channel, {
     viaAccelerator: event?.triggeredByAccelerator === true
   });
@@ -349,12 +360,8 @@ function sendLibraryDuplicate(
   mode: "duplicate" | "edit-copy",
   event?: Electron.KeyboardEvent
 ): void {
-  const candidate =
-    window !== undefined && !window.isDestroyed()
-      ? BrowserWindow.fromId(window.id)
-      : null;
-  const target = candidate ?? BrowserWindow.getFocusedWindow();
-  if (target === null || target.isDestroyed()) return;
+  const target = resolveMenuTargetWindow(window);
+  if (target === null) return;
   target.webContents.send(EVENT_CHANNELS.libraryDuplicate, {
     mode,
     viaAccelerator: event?.triggeredByAccelerator === true
@@ -464,12 +471,10 @@ function installApplicationMenu(developerMode: boolean = lastKnownDeveloperMode)
   // Window-menu list) inherits the rule without repeating it.
   if (getRuntimeProcessRole() === "agent") return;
   lastKnownDeveloperMode = developerMode;
+  const openWindows = isMac ? [] : openWindowMenuEntries();
+  installedWindowMenuSignature = JSON.stringify(openWindows);
   const template = buildApplicationMenuTemplate(
-    {
-      developerMode,
-      openWindows: isMac ? [] : openWindowMenuEntries(),
-      actions: applicationMenuActions
-    },
+    { developerMode, openWindows, actions: applicationMenuActions },
     process.platform
   );
   const menu = Menu.buildFromTemplate(template);
@@ -507,15 +512,22 @@ function openWindowMenuEntries(): OpenWindowEntry[] {
 }
 
 let windowMenuRefreshQueued = false;
+/** The Window list the installed menu was built with, so a refresh can tell
+ *  whether anything it shows actually changed. */
+let installedWindowMenuSignature = "";
 
 /** Rebuild the menu on the next tick so the Window list tracks windows
  *  opening, closing and taking focus. Coalesced: one window opening fires
- *  several of these events at once. */
+ *  several of these events at once. Skipped when the list is unchanged —
+ *  most events come from chrome that is never listed (tray popover,
+ *  float-over, selector, recording HUD), and a rebuild re-runs
+ *  `setApplicationMenu`, which re-sets the menu on every window. */
 function queueWindowMenuRefresh(): void {
   if (windowMenuRefreshQueued) return;
   windowMenuRefreshQueued = true;
   setImmediate(() => {
     windowMenuRefreshQueued = false;
+    if (JSON.stringify(openWindowMenuEntries()) === installedWindowMenuSignature) return;
     installApplicationMenu();
   });
 }
@@ -532,7 +544,7 @@ function wireWindowMenuRefresh(): void {
   });
 }
 
-function copyDiagnosticsInfo(sourceWindow: MenuSourceWindow): void {
+function copyDiagnosticsInfo(): void {
   clipboard.writeText(
     formatDiagnosticsInfo({
       version: resolveAppVersion(),
@@ -545,16 +557,12 @@ function copyDiagnosticsInfo(sourceWindow: MenuSourceWindow): void {
       nodeVersion: process.versions.node ?? ""
     })
   );
-  // The copy has already happened; the toast only confirms it, in a window
-  // that renders the toast stack (the Library). Others ignore the event.
-  const candidate =
-    sourceWindow !== undefined && !sourceWindow.isDestroyed()
-      ? BrowserWindow.fromId(sourceWindow.id)
-      : null;
-  const target =
-    candidate ?? BrowserWindow.getFocusedWindow() ?? findMainLibraryWindow();
-  if (target === null || target.isDestroyed()) return;
-  target.webContents.send(EVENT_CHANNELS.appNotice, { message: "Diagnostics info copied" });
+  // The copy has already happened; the toast only confirms it. Only the
+  // Library renders the toast stack, so it goes there whichever window the
+  // click came from.
+  findMainLibraryWindow()?.webContents.send(EVENT_CHANNELS.appNotice, {
+    message: "Diagnostics info copied"
+  });
 }
 
 const applicationMenuActions: ApplicationMenuActions = {
@@ -612,9 +620,30 @@ const applicationMenuActions: ApplicationMenuActions = {
   onOpenLogs: (window) => {
     void bus.dispatch("logs:openWindow", {}, menuDispatchOptions(window));
   },
+  onReloadWindow: (window) => {
+    // Only PwrSnap's own windows. ⌘R / Ctrl+R reaching the region selector,
+    // tray popover, float-over or recording HUD would reload that chrome
+    // mid-use, so the menu never targets them.
+    const target = resolveMenuTargetWindow(window);
+    if (target === null) return;
+    if (!listOpenAppWindows().some((entry) => entry.window === target)) return;
+    target.webContents.reload();
+  },
   onCopyDiagnostics: copyDiagnosticsInfo,
   onOpenExternal: (url) => {
-    void shell.openExternal(url);
+    // The same allowlist every outbound URL clears (navigation-guard.ts).
+    if (!isAllowedExternalUrl(url)) {
+      getMainLogger("pwrsnap:menu").warn("menu link refused by the external URL allowlist", {
+        url
+      });
+      return;
+    }
+    shell.openExternal(url).catch((cause: unknown) => {
+      getMainLogger("pwrsnap:menu").warn("menu link failed to open", {
+        url,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    });
   },
   onFocusWindow: (id) => {
     const window = BrowserWindow.fromId(id);

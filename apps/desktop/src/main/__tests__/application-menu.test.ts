@@ -36,6 +36,7 @@ function actions(): ApplicationMenuActions {
     onOpenLicense: vi.fn(),
     onOpenThirdPartyNotices: vi.fn(),
     onOpenLogs: vi.fn(),
+    onReloadWindow: vi.fn(),
     onCopyDiagnostics: vi.fn(),
     onOpenExternal: vi.fn(),
     onFocusWindow: vi.fn()
@@ -357,7 +358,7 @@ describe("menu actions", () => {
       expect(a.onCheckForUpdates).toHaveBeenCalledOnce();
       expect(a.onOpenSettings).toHaveBeenCalledWith(fakeWindow);
       expect(a.onOpenChangelog).toHaveBeenCalledWith(fakeWindow);
-      expect(a.onCopyDiagnostics).toHaveBeenCalledWith(fakeWindow);
+      expect(a.onCopyDiagnostics).toHaveBeenCalledOnce();
       expect(a.onOpenLogs).toHaveBeenCalledWith(fakeWindow);
       expect(a.onOpenLicense).toHaveBeenCalledWith(fakeWindow);
       expect(a.onOpenThirdPartyNotices).toHaveBeenCalledWith(fakeWindow);
@@ -388,6 +389,18 @@ describe("menu actions", () => {
     expect(PWRSNAP_MENU_LINKS.security).toBe(
       "https://github.com/pwrdrvr/PwrSnap/security/advisories/new"
     );
+  });
+
+  test("Reload Window is ⌘R / Ctrl+R through the action, not the stock role", () => {
+    for (const platform of ["darwin", ...OTHER_PLATFORMS] as const) {
+      const opts = options();
+      const reload = find(submenuOf(platform, "View", opts), "Reload Window");
+      // The stock role reloads whatever is focused, chrome windows included.
+      expect(reload?.role).toBeUndefined();
+      expect(reload?.accelerator).toBe("CmdOrCtrl+R");
+      click(reload);
+      expect(opts.actions.onReloadWindow).toHaveBeenCalledWith(fakeWindow);
+    }
   });
 
   test("Paste from Clipboard starts disabled and is found by id", () => {

@@ -100,8 +100,9 @@ build cannot do is show the strokes, or move its own edits to the capture
 into the bundle. Adding a kind is still additive (no `schemaVersion` bump),
 but it is not free; weigh it against reusing an existing kind.
 
-**Presenter cameras are separate sources.** Enabling Camera in the capture
-selector opens a device picker and preview. A sandboxed Electron renderer
+**Presenter cameras are separate sources.** In the capture selector the
+camera is a source chip beside the microphone (`K`); arming it opens a live
+preview, and its caret a device list. A sandboxed Electron renderer
 records the selected camera to its own immutable file; it is never muxed into
 or painted onto the screen original. `<capture-id>.camera` beside the screen
 file holds the source and a timing/hash manifest. Copy, trash, restore and
@@ -111,8 +112,13 @@ gdigrab's input timestamp on Windows); an editor sync adjustment can refine it.
 Earlier macOS recordings whose incompatible uptime epochs put the entire camera
 hours outside the screen timeline are recovered on read by aligning their ends.
 This is labelled estimated timing; the source, manifest and stored index remain
-untouched. The Library shows a separate camera lane and source thumbnail, with
-placement controls in a popover that leaves the video stage at its full size.
+untouched. In UI copy CAMERA is the source (device, file, timeline lane) and
+PRESENTER is the object drawn on the canvas; "avatar" is the schema's name only.
+The presenter is edited as an object on the Library's video stage, never in a
+form: select it, drag it (it snaps to the edges and centre lines), resize it
+from a corner, and use the toolbar that rides above it for look, framing,
+mirror, position, size and frame-step sync. The timeline's camera lane shows
+where the camera ran, and dragging it is the sync control.
 During native macOS recording, the same camera stream may appear in a
 nonfocusable preview outside the recorded rectangle. Native ScreenCaptureKit
 must confirm its explicit window exclusion before the preview becomes visible.
@@ -128,8 +134,15 @@ The agent owns presenter preparation in split mode; reel scenes request it
 through the video command bus. Shared mask and composition jobs survive one
 consumer cancelling while another still needs them. Cache cleanup aborts and
 drains these jobs in the owning process before removing their files.
-Crop, placement, size, mirror, background, visibility and sync adjustment are
-data: a Library default and optional independent overrides on each reel scene.
+Crop, placement, size, mirror, background, outline shape, visibility and sync
+adjustment are data: a Library default and optional independent overrides on
+each reel scene. A scene inherits the recording's presenter until it is edited
+in the scene inspector. A recording nobody has edited gets a computed default
+for its camera and canvas aspect (a head-and-shoulders cut-out flush in the
+bottom-right, unmirrored). Every renderer resolves the style through the same
+shared geometry (`packages/shared/src/presenter.ts`), and circle and rounded
+outlines use one corner-radius rule in CSS and in the FFmpeg alpha mask, so the
+stage preview and the exported file agree.
 Preview overlays the camera at the screen's source time; export composes it
 on the final reel canvas before applying cuts and speed changes, so letterboxing
 the screen never moves the presenter. The delivered video is

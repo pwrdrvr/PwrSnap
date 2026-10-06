@@ -15,6 +15,7 @@ import {
   type CameraTrackMetadata
 } from "@pwrsnap/shared";
 import { PresenterIcon } from "./PresenterIcons";
+import { syncNudgeKeys } from "./PresenterToolbar";
 
 export type CameraLaneModel = {
   readonly track: CameraTrackMetadata;
@@ -45,10 +46,14 @@ export function CameraLane({
   const drag = useRef<Drag | null>(null);
   const sync = draftSync ?? style.syncOffsetSec ?? 0;
   const startSec = track.offsetSec + sync;
-  const pct = (sec: number): string => `${(Math.max(0, Math.min(durationSec, sec)) / durationSec) * 100}%`;
+  const frac = (sec: number): number => Math.max(0, Math.min(durationSec, sec)) / durationSec;
+  const pct = (sec: number): string => `${Math.round(frac(sec) * 10000) / 100}%`;
+  const fromRight = (sec: number): string => `${Math.round((1 - frac(sec)) * 10000) / 100}%`;
   const left = pct(startSec);
-  const right = `calc(100% - ${pct(startSec + track.durationSec)})`;
-  const ghost = draftSync !== null ? { left: pct(track.offsetSec + (style.syncOffsetSec ?? 0)), right: `calc(100% - ${pct(track.offsetSec + (style.syncOffsetSec ?? 0) + track.durationSec)})` } : null;
+  const right = fromRight(startSec + track.durationSec);
+  const savedStart = track.offsetSec + (style.syncOffsetSec ?? 0);
+  const ghost =
+    draftSync !== null ? { left: pct(savedStart), right: fromRight(savedStart + track.durationSec) } : null;
 
   const badge = lane.missing
     ? { tone: "is-bad", text: "Camera file missing" }
@@ -116,7 +121,7 @@ export function CameraLane({
           aria-valuetext={formatSyncOffset(sync)}
           data-presenter-ui=""
           data-tip="Drag to sync the camera"
-          data-tip-detail="⌥← ⌥→ moves it one frame"
+          data-tip-detail={`${syncNudgeKeys()} moves it one frame`}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={finish(true)}

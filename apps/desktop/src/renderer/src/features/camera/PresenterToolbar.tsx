@@ -16,6 +16,7 @@ import {
   type RefObject
 } from "react";
 import {
+  acceleratorToDisplayKeys,
   formatSyncOffset,
   framingCrop,
   presenterAnchor,
@@ -29,6 +30,7 @@ import {
   type PresenterLook,
   type PresenterSize
 } from "@pwrsnap/shared";
+import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import { useDismissable } from "../../lib/useDismissable";
 import { useMenuNavigation } from "../../lib/useMenuNavigation";
 import { closeWhenFocusLeaves } from "../shared/close-when-focus-leaves";
@@ -72,6 +74,14 @@ const ANCHOR_LABEL = (a: PresenterAnchor): string =>
   a.v === "middle" && a.h === "center"
     ? "Centre"
     : `${a.v === "middle" ? "Middle" : a.v === "top" ? "Top" : "Bottom"} ${a.h === "center" ? "centre" : a.h}`;
+
+/** "⌥← ⌥→" on macOS, "Alt+← Alt+→" elsewhere. */
+export function syncNudgeKeys(): string {
+  const platform = rendererShortcutPlatform();
+  const alt = acceleratorToDisplayKeys("Alt", platform)[0] ?? "Alt";
+  const join = platform === "darwin" ? "" : "+";
+  return `${alt}${join}← ${alt}${join}→`;
+}
 
 export function PresenterToolbar({
   style,
@@ -272,7 +282,7 @@ export function PresenterToolbar({
         role="group"
         aria-label="Camera sync"
         data-tip="Camera sync"
-        data-tip-keys="⌥← ⌥→"
+        data-tip-keys={syncNudgeKeys()}
         data-tip-detail="One frame earlier or later. Or drag the camera lane."
       >
         <span className="pres-sync__lbl" aria-hidden="true">

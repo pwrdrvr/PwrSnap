@@ -53,6 +53,7 @@ import {
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { stagedPnpmConfigEnv } from "./staged-pnpm-config.mjs";
 import { releaseArchitecture, stageName, verifyStageTarget, thinStagedHelpers, thinStagedFfmpeg, verifyPackagedArchitecture, pruneStagedArm64Sharp } from "./macos-release-artifacts.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -61,10 +62,6 @@ const desktopRoot = resolve(__dirname, "..");
 const repoRoot = resolve(desktopRoot, "..", "..");
 const releaseArch = releaseArchitecture(process.argv.slice(2));
 const stageDir = join(desktopRoot, stageName(releaseArch));
-const pnpmProjectConfigEnv = {
-  npm_config_global_pnpmfile: "",
-  NPM_CONFIG_GLOBAL_PNPMFILE: ""
-};
 let codesignKeychainCleanup = null;
 
 const args = process.argv.slice(2);
@@ -528,8 +525,7 @@ if (!signStageOnly) {
     }
     writeFileSync(configPath, config.replaceAll("arch: [universal]", "arch: [arm64]"));
   }
-  run(`cp ${join(repoRoot, ".npmrc")} ${join(stageDir, ".npmrc")}`);
-  for (const file of ["THIRD_PARTY_LICENSES", "CHANGELOG.md"]) {
+  for (const file of ["THIRD_PARTY_LICENSES", "CHANGELOG.md", ".pnpmfile-global.cjs"]) {
     run(`cp ${join(repoRoot, file)} ${join(stageDir, file)}`);
   }
 
@@ -633,7 +629,7 @@ builderArgs.push(publish ? "--publish" : "--publish=never", publish ? "always" :
 const cleanedArgs = builderArgs.filter((arg) => arg !== "");
 runChecked("node", [electronBuilderCli(), ...cleanedArgs], {
   cwd: stageDir,
-  env: pnpmProjectConfigEnv
+  env: stagedPnpmConfigEnv(stageDir)
 });
 if (codesignKeychainCleanup !== null) {
   codesignKeychainCleanup();

@@ -1,6 +1,11 @@
 packages:
   - apps/*
   - packages/*
+# Keep user-level hooks out of the project checksum on every machine.
+globalPnpmfile: ./.pnpmfile-global.cjs
+# Scripts consume the explicitly installed tree, including release stages and
+# the privileged metadata-only install that intentionally skips scripts.
+verifyDepsBeforeRun: false
 minimumReleaseAge: 10080
 # Release builds produce a universal macOS app and an x64 Windows installer.
 # Runtime packages like sharp publish OS+CPU-specific optional dependencies,
@@ -39,3 +44,15 @@ minimumReleaseAgeExclude:
   - "@pwrdrvr/agent-client"
   - "@pwrdrvr/agent-acp"
   - "@pwrdrvr/agent-chat-react"
+
+# Security and type overrides formerly stored in package.json.
+overrides:
+  "@types/node": "24.12.4"
+  "brace-expansion@1": "1.1.21"
+  "brace-expansion@2": "2.1.7"
+  "brace-expansion@5": "5.0.12"
+  "fast-uri@3": "3.1.8"
+  "hono@4": "4.13.12"
+  "ip-address@10": "10.7.3"
+  "tar": "7.5.22"
+  "undici@7": "7.30.0"

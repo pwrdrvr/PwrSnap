@@ -1,5 +1,5 @@
-import { AvatarOverlay } from "../camera/AvatarOverlay";
-import type { AvatarStyle } from "@pwrsnap/shared";
+import { PresenterLayer } from "../camera/PresenterLayer";
+import { geometryFor, resolvePresenterStyle, type AvatarStyle } from "@pwrsnap/shared";
 // One layer of a preview stage: the picture for a clip, plus the CSS
 // animations that make it move.
 //
@@ -138,7 +138,20 @@ export function StageLayer({
       data-progress={blend !== null ? (blend.elapsedSec / Math.max(0.05, blend.durationSec)).toFixed(3) : undefined}
     >
       {media}
-      {capture?.video?.camera && <AvatarOverlay fit="canvas" capture={capture} videoRef={videoRef} avatar={avatar} time={posterStartSec ?? 0} />}
+      {capture?.video?.camera && (
+        // The reel stage is the 16:9 output canvas, so the presenter is
+        // placed against the whole layer, not the letterboxed picture.
+        <PresenterLayer
+          fit="canvas"
+          capture={capture}
+          videoRef={videoRef}
+          style={resolvePresenterStyle(
+            avatar ?? capture.video.avatar,
+            geometryFor(capture.video.camera, { width: 16, height: 9 })
+          )}
+          time={posterStartSec ?? 0}
+        />
+      )}
     </div>
   );
 }

@@ -2010,8 +2010,8 @@
    only needs the name plus the layer's own timing. */
 .szl__sequence-preview-layer.is-incoming.is-dip-black > video,
 .szl__sequence-preview-layer.is-incoming.is-dip-white > video,
-.szl__sequence-preview-layer.is-incoming.is-dip-black > .avatar-overlay,
-.szl__sequence-preview-layer.is-incoming.is-dip-white > .avatar-overlay {
+.szl__sequence-preview-layer.is-incoming.is-dip-black > .pres-layer,
+.szl__sequence-preview-layer.is-incoming.is-dip-white > .pres-layer {
   animation-name: szl-xf-dip-media;
   animation-duration: inherit;
   animation-delay: inherit;

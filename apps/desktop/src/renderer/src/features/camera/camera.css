@@ -20,8 +20,7 @@
   object-fit: contain;
   transform: scaleX(-1);
 }
-.camera-setup__panel label,
-.avatar-controls label {
+.camera-setup__panel label {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -33,165 +32,9 @@
 .camera-setup__panel select {
   width: 100%;
   min-width: 0;
-}
-.avatar-controls {
-  display: grid;
-  font-family: var(--font-sans);
-  gap: 8px;
-  border: 1px solid var(--border-default);
-  padding: 10px;
-  margin: 8px 0;
-  border-radius: 8px;
-}
-.avatar-controls label:has(input[type="range"]),
-.avatar-controls label:has(select) {
-  justify-content: space-between;
-}
-.avatar-controls input[type="range"] {
-  min-width: 60px;
-  width: 50%;
-}
-.avatar-controls__corners {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px;
-}
-.avatar-overlay {
-  position: absolute;
-  height: auto;
-  pointer-events: none;
-  z-index: 2;
-}
-.avatar-error {
-  position: absolute;
-  bottom: 4px;
-  left: 4px;
-  font-size: 11px;
-  z-index: 3;
-}
-
-.psl__video-frame {
-  position: relative;
-  overflow: hidden;
-}
-
-.camera-track {
-  position: relative;
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 10px;
-  border: 1px solid var(--border-default);
-  border-radius: 8px;
-  background: var(--bg-panel);
-}
-.camera-track__thumbnail {
-  width: 56px;
-  height: 32px;
-  object-fit: cover;
-  border-radius: 4px;
-}
-.camera-track__label {
-  display: grid;
-  gap: 3px;
-  flex: 1;
-  min-width: 0;
-  font: 11px var(--font-sans);
-}
-.camera-track__label strong {
-  font-size: 12px;
-}
-.camera-track__label strong span {
-  margin-left: 8px;
-  color: var(--text-secondary);
-  font-weight: 400;
-}
-.camera-track__label > span {
-  color: var(--text-secondary);
-}
-.camera-track button {
-  background: var(--bg-panel-elevated);
-  color: var(--text-primary);
-  border: 1px solid var(--border-default);
-  border-radius: 6px;
-  padding: 5px 8px;
-  font: 11px var(--font-sans);
-  cursor: pointer;
-}
-.camera-track__settings {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  right: 0;
-  width: min(320px, 90vw);
-  max-height: min(560px, 65vh);
-  overflow: auto;
-  z-index: 12;
-  padding: 12px;
-  border: 1px solid var(--border-default);
-  border-radius: 10px;
-  background: var(--bg-panel-elevated);
-  box-shadow: 0 8px 32px var(--shadow-base);
-}
-.camera-track__heading {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font: 12px var(--font-sans);
-}
-.camera-track__notice {
-  font: 11px/1.4 var(--font-sans);
-  color: var(--text-secondary);
-}
-.camera-track .avatar-controls {
-  border: 0;
-  padding: 0;
-  margin-bottom: 0;
-}
-.camera-track .avatar-controls legend {
-  display: none;
-}
-.camera-track .avatar-controls label {
-  font-size: 11px;
-}
-.vtl__camera {
-  position: relative;
-  height: 22px;
-  background: var(--bg-panel);
-  border-top: 1px solid var(--border-default);
-  border-bottom: 1px solid var(--border-default);
-}
-.vtl__camera > div {
-  position: absolute;
-  top: 2px;
-  bottom: 2px;
-  border-radius: 3px;
-  background: color-mix(in srgb, var(--accent) 15%, var(--bg-panel));
-  border: 1px solid var(--accent-border);
-}
-.vtl__camera span {
-  display: block;
-  padding: 2px 8px;
-  font: 9px var(--font-mono);
-  color: var(--accent);
-}
-
-.avatar-controls button,
-.avatar-controls select,
-.avatar-controls input[type="number"],
-.camera-setup select {
   background: var(--bg-panel);
   color: var(--text-primary);
   border: 1px solid var(--border-default);
   border-radius: 6px;
   padding: 4px 6px;
-}
-.avatar-controls button:hover {
-  border-color: var(--accent-border);
-}
-.avatar-controls input {
-  accent-color: var(--accent);
-}
-.avatar-controls input[type="number"] {
-  width: 80px;
 }

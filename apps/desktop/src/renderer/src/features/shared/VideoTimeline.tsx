@@ -58,9 +58,9 @@ import {
   type VideoActivityTrack,
   type VideoFramesResult,
   type VideoPiece,
-  type VideoRange,
-  type CameraTrackMetadata
+  type VideoRange
 } from "@pwrsnap/shared";
+import { CAMERA_LANE_H, CameraLane, type CameraLaneModel } from "../camera/CameraLane";
 import type { PlayheadSource } from "./playhead";
 import { SequenceWaveform } from "./SequenceWaveform";
 import {
@@ -79,7 +79,9 @@ import {
 
 export type VideoTimelineProps = {
   durationSec: number;
-  cameraTrack?: CameraTrackMetadata | undefined;
+  /** A recording with a camera track gets a lane under the filmstrip;
+   *  dragging it is how the camera is synced. */
+  cameraLane?: CameraLaneModel | undefined;
   /** Playhead position. Ignored (not rendered) in `compact` mode.
    *  During playback this prop only carries DISCRETE positions (seek,
    *  pause) — the live head arrives on `playhead`. */
@@ -670,7 +672,7 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
   );
 
   const filmH = compact ? 40 : 56;
-  const cameraH = !compact && props.cameraTrack ? 22 : 0;
+  const cameraH = !compact && props.cameraLane !== undefined ? CAMERA_LANE_H : 0;
   const waveH = compact ? 0 : 24;
   const showActivity = !compact && activity !== undefined;
   const actH = showActivity ? ACTIVITY_H : 0;
@@ -858,12 +860,9 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
             )}
           </div>
 
-          {cameraH > 0 && props.cameraTrack && <div className="vtl__camera" aria-label="Camera avatar track" data-testid="video-timeline-camera">
-            <div style={{
-              left: `${Math.max(0, props.cameraTrack.offsetSec) / durationSec * 100}%`,
-              right: `${Math.max(0, durationSec - props.cameraTrack.offsetSec - props.cameraTrack.durationSec) / durationSec * 100}%`,
-            }}><span>CAMERA · AVATAR</span></div>
-          </div>}
+          {cameraH > 0 && props.cameraLane !== undefined && (
+            <CameraLane lane={props.cameraLane} durationSec={durationSec} width={width} />
+          )}
 
           {/* Activity lane — how much of the frame changed, per moment.
               Bars rise with the level; long still stretches (what

@@ -42,6 +42,7 @@ import {
   mergeSceneIntoPrevious,
   moveSceneBy,
   patchScene,
+  setScenePresenter,
   patchSequenceBeat,
   refitSceneOffsets,
   removeSceneById,
@@ -568,6 +569,7 @@ export function Editor(props: EditorProps): ReactElement {
             return createPortal(
               <SceneInspector
                 scene={sceneRecord}
+                onScenePresenter={(avatar) => onScenes(setScenePresenter(project.scenes, sceneRecord.id, avatar))}
                 presenterCapture={(sceneRecord.kind === "sequence" ? (sceneRecord.beats ?? []).map(beat => beat.captureId) : [sceneRecord.captureId]).map(id => captureMap.get(id)).find(capture => capture?.video?.camera != null)}
                 region={region}
                 sceneCount={project.scenes.length}

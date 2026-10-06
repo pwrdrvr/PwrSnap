@@ -11,6 +11,7 @@ import {
   normalizeSizzleSequenceBeatContinuity,
   normalizeWord,
   tokenizeWords,
+  type AvatarStyle,
   type SizzleBeatTiming,
   type SizzleScene,
   type SizzleSequenceBeat,
@@ -37,6 +38,21 @@ export function patchScene(
   patch: Partial<SizzleScene>
 ): SizzleScene[] {
   return scenes.map((s) => (s.id === id ? { ...s, ...patch } : s));
+}
+
+/** Give a scene its own presenter, or (`null`) drop it so the scene
+ *  inherits its recording's presenter again. */
+export function setScenePresenter(
+  scenes: SizzleScene[],
+  id: string,
+  avatar: AvatarStyle | null
+): SizzleScene[] {
+  return scenes.map((s) => {
+    if (s.id !== id) return s;
+    if (avatar !== null) return { ...s, avatar };
+    const { avatar: _dropped, ...rest } = s;
+    return rest;
+  });
 }
 
 export function patchSequenceBeat(

@@ -1,6 +1,3 @@
-import { dispatch } from "../../lib/pwrsnap";
-import { AvatarOverlay } from "../camera/AvatarOverlay";
-import { CameraTrack } from "../camera/CameraTrack";
 // Video stage — the `kind === "video"` arm of the Library Focus / Reel
 // stage. Replaces the bare `<video controls>` with:
 //
@@ -62,6 +59,8 @@ import {
   stepTime
 } from "../shared/video-range";
 import { VideoTransport } from "./VideoTransport";
+import { PresenterLayer } from "../camera/PresenterLayer";
+import { presenterKeyAction, usePresenter } from "../camera/usePresenter";
 import {
   isTextEntryTarget,
   nextShuttleRate,
@@ -499,8 +498,20 @@ export function VideoStage({
     [currentTime, durationSec, pause, play, playing, seek, setRange, setSegments, shuttle]
   );
 
+  const presenter = usePresenter(record);
+
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
     if (isTextEntryTarget(e.target)) return;
+    if (presenter !== null) {
+      const action = presenterKeyAction(e, presenter.selected);
+      if (action !== null) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (action === "deselect") presenter.setSelected(false);
+        else presenter.act(action);
+        return;
+      }
+    }
     // A focused transport button keeps native space/enter activation.
     if ((e.key === " " || e.key === "Enter") && (e.target as HTMLElement).tagName === "BUTTON") return;
     const intent = transportIntentForKey(e);
@@ -731,7 +742,6 @@ export function VideoStage({
     void (record.video?.camera ? el.parentElement : el)?.requestFullscreen?.().catch(() => undefined);
   };
 
-  const [avatarError, setAvatarError] = useState("");
   const onStripWidth = useCallback((w: number) => setStripWidth(w), []);
 
   return (
@@ -740,7 +750,15 @@ export function VideoStage({
       className="psl__video-stage"
       tabIndex={0}
       onKeyDown={onKeyDown}
-      onPointerDownCapture={() => {
+      onPointerDownCapture={(e) => {
+        // A press anywhere but the presenter, its toolbar or its lane
+        // deselects it — the same rule as an annotation in the editor.
+        if (
+          presenter?.selected === true &&
+          !(e.target instanceof Element && e.target.closest("[data-presenter-ui]") !== null)
+        ) {
+          presenter.setSelected(false);
+        }
         // Clicking anywhere in the stage arms the keyboard model.
         const root = rootRef.current;
         if (root !== null && !root.contains(document.activeElement)) {
@@ -762,7 +780,14 @@ export function VideoStage({
           onClick={() => runIntent({ type: "togglePlay" })}
           onDoubleClick={toggleFullscreen}
         />
-        <AvatarOverlay capture={record} videoRef={videoRef} />
+        {presenter !== null && (
+          <PresenterLayer
+            capture={record}
+            style={presenter.style}
+            videoRef={videoRef}
+            editing={presenter.editing}
+          />
+        )}
       </div>
       <VideoTransport
         playing={playing}
@@ -776,6 +801,11 @@ export function VideoStage({
         onTogglePlay={() => runIntent({ type: "togglePlay" })}
         onToggleLoop={() => setLoopInRange((v) => !v)}
         onSplit={() => runIntent({ type: "split" })}
+        presenter={
+          presenter === null
+            ? undefined
+            : { visible: presenter.style.visible, onToggle: () => presenter.act({ type: "toggleVisible" }) }
+        }
         onToggleMute={toggleMute}
         onFullscreen={toggleFullscreen}
       />
@@ -796,13 +826,13 @@ export function VideoStage({
         onWidthChange={onStripWidth}
         onInteractingChange={onTimelineInteracting}
         label="Recording timeline"
-        cameraTrack={record.video?.camera ?? undefined}
+        cameraLane={presenter?.lane}
       />
-      {record.video?.camera && <CameraTrack capture={record} error={avatarError} onChange={avatar => {
-        void dispatch("video:setAvatar", { captureId: record.id, avatar })
-          .then(result => setAvatarError(result.ok ? "" : result.error.message))
-          .catch(cause => setAvatarError(cause instanceof Error ? cause.message : "Avatar settings could not be saved."));
-      }} />}
+      {presenter !== null && presenter.error !== "" && (
+        <p className="psl__video-audio-note" role="alert">
+          The presenter could not be saved: {presenter.error}
+        </p>
+      )}
       {video.requestedSystemAudio && !video.hasSystemAudio && (
         // The one thing left worth saying. The preview now plays what the
         // waveform draws, so the old "system audio only" apology is gone —

@@ -1,4 +1,4 @@
-import { CameraSetup } from "../camera/CameraSetup";
+import { CameraChip } from "../camera/CameraChip";
 // Region-selector renderer.
 //
 // State machine (post-feedback redesign):
@@ -305,6 +305,10 @@ export function RegionSelector() {
   // back: a take the user recorded silent must not silently disarm the
   // microphone for every future take.
   const [cameraOffered, setCameraOffered] = useState(false);
+  const cameraOfferedRef = useRef(false);
+  // The camera chip's arm state. Off on every show: a camera light that
+  // comes on just because the selector opened is not acceptable.
+  const [cameraOn, setCameraOn] = useState(false);
   const [cameraSession, setCameraSession] = useState(0);
   const [audioOffered, setAudioOffered] = useState(false);
   const audioOfferedRef = useRef(false);
@@ -793,6 +797,8 @@ export function RegionSelector() {
       // synchronously too — `commit()` is captured once at mount by the
       // global keydown listener and reads the ref, not the state.
       setCameraOffered(payload.cameraOffered === true);
+      cameraOfferedRef.current = payload.cameraOffered === true;
+      setCameraOn(false);
       setCameraSession(previous => previous + 1);
       cameraReadyRef.current = true; setCameraReady(true);
       audioOfferedRef.current = payload.sources !== undefined;
@@ -1082,6 +1088,15 @@ export function RegionSelector() {
    * A key can never be live under a chip the user cannot see: a bare
    * `M` that silently disarms the microphone is worse than no shortcut.
    */
+  /** `K` arms the camera wherever its chip is on screen. */
+  function cameraKeyBound(): boolean {
+    return (
+      cameraOfferedRef.current &&
+      (intentRef.current === "video" || recordAvailable()) &&
+      hudShownRef.current
+    );
+  }
+
   function sourceKeysBound(): boolean {
     return (
       sourcesRef.current !== null && audioOfferedRef.current &&
@@ -1419,7 +1434,11 @@ export function RegionSelector() {
   }
 
   function resetToSnap(): void {
-    if (submittedRef.current) setCameraOffered(false);
+    if (submittedRef.current) {
+      setCameraOffered(false);
+      cameraOfferedRef.current = false;
+      setCameraOn(false);
+    }
     setInteraction({ kind: "snap" });
     setSnapTarget({ kind: "display" });
     setRect(displaySnapRect());
@@ -1665,6 +1684,19 @@ export function RegionSelector() {
         // once, in a recording someone cared about.
         event.preventDefault();
         toggleSource("systemAudio");
+        return;
+      }
+      if (
+        (event.key === "k" || event.key === "K") &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        cameraKeyBound()
+      ) {
+        // Recording-only: arm / disarm the camera track for this take.
+        event.preventDefault();
+        setSourcesTouched(true);
+        setCameraOn((prev) => !prev);
         return;
       }
       if (event.key === "Tab" && interactionRef.current.kind === "snap") {
@@ -2992,13 +3024,6 @@ export function RegionSelector() {
               <kbd>C</kbd>
             </button>
           )}
-          {cameraOffered && recordingControls && <CameraSetup key={cameraSession} value={sources?.camera} onReady={ready => { cameraReadyRef.current = ready; setCameraReady(ready); }} onChange={camera => {
-            setSourcesTouched(true);
-            setSources(previous => {
-              const { camera: _old, ...rest } = previous ?? { microphone: false, systemAudio: false };
-              return camera ? { ...rest, camera } : rest;
-            });
-          }} />}
           {sourcesOffered && audioOffered && (
             <>
               <SourceChip
@@ -3042,6 +3067,27 @@ export function RegionSelector() {
               />
             </>
           )}
+          {cameraOffered && recordingControls && (
+            <CameraChip
+              key={cameraSession}
+              enabled={cameraOn}
+              onToggle={(next) => {
+                setSourcesTouched(true);
+                setCameraOn(next);
+              }}
+              value={sources?.camera}
+              onReady={(ready) => {
+                cameraReadyRef.current = ready;
+                setCameraReady(ready);
+              }}
+              onChange={(camera) => {
+                setSources((previous) => {
+                  const { camera: _old, ...rest } = previous ?? { microphone: false, systemAudio: false };
+                  return camera ? { ...rest, camera } : rest;
+                });
+              }}
+            />
+          )}
         </div>
       )}
 
@@ -3064,6 +3110,14 @@ export function RegionSelector() {
                 <span className="region-hint-sep">·</span>
                 <span>
                   <kbd>A</kbd>system audio: {sources?.systemAudio ? "on" : "off"}
+                </span>
+                <span className="region-hint-sep">·</span>
+              </>
+            )}
+            {cameraKeyBound() && (
+              <>
+                <span>
+                  <kbd>K</kbd>camera: {cameraOn ? "on" : "off"}
                 </span>
                 <span className="region-hint-sep">·</span>
               </>
@@ -3104,6 +3158,14 @@ export function RegionSelector() {
                     <span className="region-hint-sep">·</span>
                     <span>
                       <kbd>A</kbd>system audio: {sources?.systemAudio ? "on" : "off"}
+                    </span>
+                  </>
+                )}
+                {cameraKeyBound() && (
+                  <>
+                    <span className="region-hint-sep">·</span>
+                    <span>
+                      <kbd>K</kbd>camera: {cameraOn ? "on" : "off"}
                     </span>
                   </>
                 )}
